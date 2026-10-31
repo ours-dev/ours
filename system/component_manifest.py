@@ -45,9 +45,11 @@ from typing import Any, Dict, List, Optional, Tuple
 # "OSCM" as the first four bytes of the file, read as a little-endian u32.
 MAGIC = 0x4D43534F
 
-# 2 since a protocol capability and a protocol use carry a type string. The
+# 3 since a directory capability carries a path and rights and an expose
+# carries a subdir and rights, the fields an offer and a use already have.
+# (2 gave a protocol capability and a protocol use a type string.) The
 # decoder refuses any other version, and no manifest outlives its build.
-VERSION = 2
+VERSION = 3
 
 # How long a name may be: a child's name, a capability's, an `as`. A protocol
 # name of at most 100 bytes always fits the one path segment it becomes under
@@ -135,10 +137,10 @@ HEADER = struct.Struct("<IHHIIIIIIIIII")  # 48 bytes
 PROGRAM = struct.Struct("<IIII")  # runner, reserved, binary
 ARG = struct.Struct("<II")  # value
 CHILD = struct.Struct("<IIIIII")  # name, url, startup, reserved
-CAPABILITY = struct.Struct("<IIIIII")  # kind, reserved, name, type: 24 bytes
+CAPABILITY = struct.Struct("<IIIIIIIIQ")  # 40 bytes: kind, flags, name, type, path, rights at 32
 USE = struct.Struct("<IIIIIIIIIIIIQ")  # 56 bytes, the rights at offset 48
 OFFER = struct.Struct("<IIIIIIIIIIIIQ")  # 56 bytes
-EXPOSE = struct.Struct("<IIIIIIIIII")  # 40 bytes
+EXPOSE = struct.Struct("<IIIIIIIIIIIIQ")  # 56 bytes, an Offer's layout: subdir at 40, rights at 48
 
 # A name: a letter, digit or underscore, then those and '-' and '.', so that
 # it is one path segment and never '.' or '..'.
@@ -174,6 +176,11 @@ class Capability:
     # The protocol it speaks, as the manifest wrote it. Empty when the
     # manifest states none, which the decoder reads as the name.
     type: str = ""
+    # Where a directory capability sits in the provider's outgoing directory,
+    # and the most it allows. Both left empty for every capability the
+    # language can write today.
+    path: str = ""
+    rights: Optional[int] = None
 
 
 @dataclass
@@ -204,6 +211,10 @@ class Expose:
     source: Ref
     source_name: str
     target_name: str
+    # What a directory expose narrows, as an offer's. Both left empty for
+    # every expose the language can write today.
+    subdir: str = ""
+    rights: Optional[int] = None
 
 
 @dataclass
@@ -817,8 +828,14 @@ def encode(decl: Decl) -> bytes:
     for child in decl.children:
         tables += CHILD.pack(*strings.add(child.name), *strings.add(child.url), STARTUP_EAGER, 0)
     for capability in decl.capabilities:
+        flags, mask = rights(capability.rights)
         tables += CAPABILITY.pack(
-            capability.kind, 0, *strings.add(capability.name), *strings.add(capability.type)
+            capability.kind,
+            flags,
+            *strings.add(capability.name),
+            *strings.add(capability.type),
+            *strings.add(capability.path),
+            mask,
         )
     for use in decl.uses:
         flags, mask = rights(use.rights)
@@ -846,14 +863,17 @@ def encode(decl: Decl) -> bytes:
             mask,
         )
     for expose in decl.exposes:
+        flags, mask = rights(expose.rights)
         tables += EXPOSE.pack(
             expose.kind,
-            0,
+            flags,
             *ref(expose.source),
             *strings.add(expose.source_name),
             REF_PARENT,
             0,
             *strings.add(expose.target_name),
+            *strings.add(expose.subdir),
+            mask,
         )
 
     table = strings.data()

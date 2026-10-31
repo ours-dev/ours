@@ -40,8 +40,17 @@ struct Capability final {
     Kind kind;
     std::string_view name;
     /// The protocol this capability speaks. The name when the manifest states
-    /// no type, so a reader never sees an empty one.
+    /// no type, so a reader never sees an empty one. Only a protocol's type
+    /// means anything: a directory has none, and its view holds the name.
     std::string_view type;
+    /// Where a directory capability sits in the provider's outgoing
+    /// directory, as the manifest wrote it. Empty for a protocol. The decoder
+    /// does not check that a directory states one or that it is absolute.
+    std::string_view path;
+    /// The most a directory capability allows. None when the declaration
+    /// states none, as a protocol's never does; a route reads that as a
+    /// declaration that narrows nothing.
+    ustl::Option<Rights> rights;
 };
 
 struct Use final {
@@ -76,6 +85,11 @@ struct Expose final {
     std::string_view source_name;
     Ref target;
     std::string_view target_name;
+    /// Empty when the expose names none, as a protocol expose never does.
+    std::string_view subdir;
+    /// None when the expose states none, as a protocol expose never does: an
+    /// expose that states none narrows nothing.
+    ustl::Option<Rights> rights;
 };
 
 namespace detail {
@@ -207,14 +221,16 @@ class Records final {
 /// The decoder checks structure only: the header, that every table and the
 /// string table fit the bytes exactly, that every string lies inside the
 /// string table, that every enum value and flag is one the format defines,
-/// that reserved fields are zero, and that every child index resolves. That
-/// is enough for any input to be read without going out of bounds. Whether
-/// the manifest makes sense -- unique names, `from: "self"` naming a declared
-/// capability, no offer cycle, paths that do not nest -- the compiler
-/// checked when it wrote the file (//system/component_manifest.py), and the
-/// build alone writes the BootFS the root reads it from, so the root does not
-/// run those checks again when it resolves a component; the design records
-/// that choice.
+/// that rights are stated only under the flag that states them and name only
+/// known bits, that reserved fields are zero, and that every child index
+/// resolves. That is enough for any input to be read without going out of
+/// bounds. Whether the manifest makes sense -- unique names, `from: "self"`
+/// naming a declared capability, no offer cycle, paths that do not nest, a
+/// directory declaration that states a path and rights and a protocol one
+/// that states neither -- the compiler checked when it wrote the file
+/// (//system/component_manifest.py), and the build alone writes the BootFS
+/// the root reads it from, so the root does not run those checks again when
+/// it resolves a component; the design records that choice.
 class Decl final {
   public:
     using Result = ustl::Result<Decl, ours::Status>;

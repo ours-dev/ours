@@ -11,6 +11,7 @@
 #include <array>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <cstddef>
@@ -22,6 +23,7 @@
 namespace {
 using component::Decl;
 using component::Kind;
+using component::RecordFlags;
 using component::RefKind;
 using component::Rights;
 using component::StartupMode;
@@ -95,9 +97,45 @@ auto raw_at(std::span<u8 const> const bytes, usize const offset) -> Raw {
     return raw;
 }
 
+/// Adds |text| to the string table, which ends the file, and answers where.
+auto append_string(std::vector<u8> &bytes, std::string_view const text) -> format::String {
+    auto header = tables_of(bytes).header;
+    auto const string =
+        format::String{.offset = header.string_table_size, .size = static_cast<u32>(text.size())};
+    bytes.insert(bytes.end(), text.begin(), text.end());
+    header.string_table_size += string.size;
+    header.total_size += string.size;
+    patch(bytes, 0, header);
+    return string;
+}
+
 constexpr auto ECHO = "ours.example.Echo"sv;
 constexpr auto LAUNCHER = "ours.process.Launcher"sv;
 constexpr auto HOLLOW = "ours.example.Hollow"sv;
+
+/// PROVIDER with its capability made a directory at /export/data stating r*,
+/// and its expose a directory's stating rx* and the subdir shared/docs: the
+/// records no fixture compiled today holds, written the way the compiler will
+/// write them. The decoder checks structure only, so the rest of the manifest
+/// stays a protocol server's.
+auto directory_provider() -> std::vector<u8> {
+    auto bytes = bytes_of(fixtures::PROVIDER);
+    auto const tables = tables_of(bytes);
+
+    auto const capability = tables.capabilities;
+    patch(bytes, capability + offsetof(format::Capability, kind), Kind::Directory);
+    patch(bytes, capability + offsetof(format::Capability, flags), RecordFlags::RightsStated);
+    patch(bytes, capability + offsetof(format::Capability, rights), Rights::RStarDir);
+    patch(bytes, capability + offsetof(format::Capability, path),
+          append_string(bytes, "/export/data"));
+
+    auto const expose = tables.exposes;
+    patch(bytes, expose + offsetof(format::Expose, kind), Kind::Directory);
+    patch(bytes, expose + offsetof(format::Expose, flags), RecordFlags::RightsStated);
+    patch(bytes, expose + offsetof(format::Expose, rights), Rights::RxStarDir);
+    patch(bytes, expose + offsetof(format::Expose, subdir), append_string(bytes, "shared/docs"));
+    return bytes;
+}
 
 TEST(Decl, Realm) {
     auto const decl = decode(fixtures::REALM);
@@ -370,7 +408,8 @@ TEST(Decl, RefusesABadHeader) {
     };
     EXPECT_EQ(refused(offsetof(format::Header, magic), u32{0x4D43534E}), Status::InvArgs);
     EXPECT_EQ(refused(offsetof(format::Header, version), u16{1}), Status::NotSupported);
-    EXPECT_EQ(refused(offsetof(format::Header, version), u16{3}), Status::NotSupported);
+    EXPECT_EQ(refused(offsetof(format::Header, version), u16{2}), Status::NotSupported);
+    EXPECT_EQ(refused(offsetof(format::Header, version), u16{4}), Status::NotSupported);
     EXPECT_EQ(refused(offsetof(format::Header, reserved), u16{1}), Status::InvArgs);
     EXPECT_EQ(refused(offsetof(format::Header, reserved2), u32{1}), Status::InvArgs);
     EXPECT_EQ(refused(offsetof(format::Header, program_count), u32{2}), Status::InvArgs);
@@ -380,39 +419,72 @@ TEST(Decl, RefusesABadHeader) {
     EXPECT_EQ(refused(offsetof(format::Header, child_count), u32{0xFFFF'FFFF}), Status::InvArgs);
 }
 
-/// |manifest| as version 1 laid it out: the same records without the `type`
-/// string of a Capability and of a Use, and the version in the header. The
-/// string table is left as it is, so every string still resolves.
-auto as_version_one(std::span<u8 const> const manifest) -> std::vector<u8> {
+/// |manifest| as an older version laid it out, with |version| in the header
+/// and total_size to match. Version 2 had a Capability of 24 bytes, ending at
+/// its `type` (|path| and |rights| came after), and an Expose of 40, ending at
+/// its target name (|subdir| and |rights| came after): the first bytes of
+/// version 3's records, which only grew at their ends. Version 1 had neither
+/// `type` string, of a Capability nor of a Use. The string table is left as
+/// it is, so every string still resolves.
+auto as_older_version(std::span<u8 const> const manifest, u16 const version) -> std::vector<u8> {
     auto const tables = tables_of(manifest);
     auto bytes = std::vector<u8>(manifest.begin(), manifest.begin() + tables.capabilities);
     auto const append = [&bytes, &manifest](usize const from, usize const size) {
         bytes.insert(bytes.end(), manifest.begin() + from, manifest.begin() + from + size);
     };
+    auto const capability_size = [version] {
+        if (version == 1) {
+            return offsetof(format::Capability, type);
+        }
+        return offsetof(format::Capability, path);
+    }();
     for (u32 index = 0; index < tables.header.capability_count; ++index) {
-        auto const record =
-            tables.capabilities + static_cast<usize>(index) * sizeof(format::Capability);
-        append(record, offsetof(format::Capability, type));
+        append(tables.capabilities + static_cast<usize>(index) * sizeof(format::Capability),
+               capability_size);
     }
     for (u32 index = 0; index < tables.header.use_count; ++index) {
         auto const record = tables.uses + static_cast<usize>(index) * sizeof(format::Use);
-        append(record, offsetof(format::Use, type));
-        append(record + offsetof(format::Use, rights), sizeof(Rights));
+        if (version == 1) {
+            append(record, offsetof(format::Use, type));
+            append(record + offsetof(format::Use, rights), sizeof(Rights));
+        } else {
+            append(record, sizeof(format::Use));
+        }
     }
-    append(tables.offers, manifest.size() - tables.offers);
-    patch(bytes, offsetof(format::Header, version), u16{1});
+    append(tables.offers, tables.header.offer_count * sizeof(format::Offer));
+    for (u32 index = 0; index < tables.header.expose_count; ++index) {
+        append(tables.exposes + static_cast<usize>(index) * sizeof(format::Expose),
+               offsetof(format::Expose, subdir));
+    }
+    append(tables.exposes + tables.header.expose_count * sizeof(format::Expose),
+           tables.header.string_table_size);
+    patch(bytes, offsetof(format::Header, version), version);
     patch(bytes, offsetof(format::Header, total_size), static_cast<u32>(bytes.size()));
     return bytes;
 }
 
-/// A version-1 file is refused for its version, before its records are read
-/// as version 2's, which are bigger: they would be taken for others.
-TEST(Decl, RefusesAVersionOneFile) {
-    EXPECT_EQ(format::VERSION, u16{2});
+/// A version-1 or version-2 file is refused for its version, before its
+/// records are read as version 3's, which are bigger: they would be taken for
+/// others. Each file below is whole in its own version's layout, so the
+/// version is what refuses it: patched to 3, the same bytes are refused for
+/// their size instead. The manifests are those with a record that changed:
+/// a Capability or an Expose for version 2, a `type` string for version 1.
+TEST(Decl, RefusesAnOlderFile) {
+    EXPECT_EQ(format::VERSION, u16{3});
+    auto const check = [](u16 const version, std::vector<u8> const &manifest) {
+        auto bytes = as_older_version(manifest, version);
+        ASSERT_LT(bytes.size(), manifest.size()) << "version " << version;
+        EXPECT_EQ(refusal(bytes), Status::NotSupported) << "version " << version;
+
+        patch(bytes, offsetof(format::Header, version), format::VERSION);
+        EXPECT_EQ(refusal(bytes), Status::InvArgs) << "version " << version;
+    };
     for (auto const &manifest: {bytes_of(fixtures::PROVIDER), bytes_of(fixtures::CONSUMER)}) {
-        auto const bytes = as_version_one(manifest);
-        ASSERT_LT(bytes.size(), manifest.size());
-        EXPECT_EQ(refusal(bytes), Status::NotSupported);
+        check(1, manifest);
+    }
+    for (auto const &manifest: {bytes_of(fixtures::PROVIDER), bytes_of(fixtures::HOLLOW),
+                                bytes_of(fixtures::REALM), bytes_of(fixtures::TOP)}) {
+        check(2, manifest);
     }
 }
 
@@ -463,6 +535,164 @@ TEST(Decl, RefusesATypeOutsideTheTable) {
         bytes = original;
         patch(bytes, offset, format::String{.offset = 0, .size = table_size + 1});
         EXPECT_EQ(refusal(bytes), Status::OutOfRange) << "offset " << offset;
+    }
+}
+
+/// The format is version 3, and the two records that grew are the size and
+/// have the fields at the offsets that //system/component_manifest.py writes
+/// (its EncodeTest says the same numbers). Everything the header counts is
+/// still read from the file the compiler wrote.
+TEST(Decl, TheFormatIsVersionThree) {
+    EXPECT_EQ(format::VERSION, u16{3});
+    for (auto const &manifest: {bytes_of(fixtures::REALM), bytes_of(fixtures::PROVIDER),
+                                bytes_of(fixtures::CONSUMER), bytes_of(fixtures::HOLLOW)}) {
+        EXPECT_EQ(raw_at<format::Header>(manifest, 0).version, u16{3});
+    }
+
+    EXPECT_EQ(sizeof(format::Capability), 40U);
+    EXPECT_EQ(offsetof(format::Capability, kind), 0U);
+    EXPECT_EQ(offsetof(format::Capability, flags), 4U);
+    EXPECT_EQ(offsetof(format::Capability, name), 8U);
+    EXPECT_EQ(offsetof(format::Capability, type), 16U);
+    EXPECT_EQ(offsetof(format::Capability, path), 24U);
+    EXPECT_EQ(offsetof(format::Capability, rights), 32U);
+
+    EXPECT_EQ(sizeof(format::Expose), 56U);
+    EXPECT_EQ(offsetof(format::Expose, flags), 4U);
+    EXPECT_EQ(offsetof(format::Expose, source), 8U);
+    EXPECT_EQ(offsetof(format::Expose, source_name), 16U);
+    EXPECT_EQ(offsetof(format::Expose, target), 24U);
+    EXPECT_EQ(offsetof(format::Expose, target_name), 32U);
+    EXPECT_EQ(offsetof(format::Expose, subdir), 40U);
+    EXPECT_EQ(offsetof(format::Expose, rights), 48U);
+}
+
+/// Every capability and expose the compiler writes today states no path, no
+/// subdir and no rights, so the new fields read as empty and none, and the
+/// tables still hold what they held: the header's counts say how many.
+TEST(Decl, TheNewFieldsOfTheManifestsAboveAreEmpty) {
+    for (auto const &manifest:
+         {bytes_of(fixtures::REALM), bytes_of(fixtures::PROVIDER), bytes_of(fixtures::HOLLOW),
+          bytes_of(fixtures::TOP), bytes_of(fixtures::USER)}) {
+        auto const decl = decode(manifest);
+        for (auto const capability: decl.capabilities()) {
+            EXPECT_EQ(capability.path, "");
+            EXPECT_TRUE(capability.rights.is_none());
+        }
+        for (auto const expose: decl.exposes()) {
+            EXPECT_EQ(expose.subdir, "");
+            EXPECT_TRUE(expose.rights.is_none());
+        }
+    }
+    auto const provider = decode(fixtures::PROVIDER);
+    EXPECT_EQ(provider.capabilities()[0].name, ECHO);
+    EXPECT_EQ(provider.exposes()[0].target_name, ECHO);
+}
+
+/// A declaration with a path and rights, and an expose with a subdir and
+/// rights, read back through the views. The kind is what the patch set; the
+/// rest of each record is the fixture's.
+TEST(Decl, ADirectoryStatesItsPathAndRightsAndAnExposeItsSubdirAndRights) {
+    auto const bytes = directory_provider();
+    auto const decl = decode(bytes);
+
+    ASSERT_EQ(decl.capabilities().size(), 1U);
+    auto const capability = decl.capabilities()[0];
+    EXPECT_EQ(capability.kind, Kind::Directory);
+    EXPECT_EQ(capability.name, ECHO);
+    EXPECT_EQ(capability.path, "/export/data");
+    EXPECT_EQ(rights(capability.rights), static_cast<u64>(Rights::RStarDir));
+
+    ASSERT_EQ(decl.exposes().size(), 1U);
+    auto const expose = decl.exposes()[0];
+    EXPECT_EQ(expose.kind, Kind::Directory);
+    EXPECT_EQ(expose.source.kind, RefKind::Self);
+    EXPECT_EQ(expose.target_name, ECHO);
+    EXPECT_EQ(expose.subdir, "shared/docs");
+    EXPECT_EQ(rights(expose.rights), static_cast<u64>(Rights::RxStarDir));
+}
+
+/// A stated empty set is not an unstated one: a hop that states no rights
+/// narrows nothing, and one that states none of them allows nothing.
+TEST(Decl, AStatedEmptySetOfRightsIsNotNone) {
+    auto bytes = bytes_of(fixtures::PROVIDER);
+    auto const tables = tables_of(bytes);
+    patch(bytes, tables.capabilities + offsetof(format::Capability, flags),
+          RecordFlags::RightsStated);
+    patch(bytes, tables.exposes + offsetof(format::Expose, flags), RecordFlags::RightsStated);
+    auto const decl = decode(bytes);
+    ASSERT_TRUE(decl.capabilities()[0].rights.is_some());
+    EXPECT_EQ(decl.capabilities()[0].rights.value(), Rights::None);
+    ASSERT_TRUE(decl.exposes()[0].rights.is_some());
+    EXPECT_EQ(decl.exposes()[0].rights.value(), Rights::None);
+}
+
+/// The new strings are strings like any other: inside the table, and one that
+/// ends exactly at the end is inside.
+TEST(Decl, RefusesAPathOrASubdirOutsideTheTable) {
+    auto const original = bytes_of(fixtures::PROVIDER);
+    auto const tables = tables_of(original);
+    auto const table_size = tables.header.string_table_size;
+    for (auto const offset: {
+             tables.capabilities + offsetof(format::Capability, path),
+             tables.exposes + offsetof(format::Expose, subdir),
+         }) {
+        auto bytes = original;
+        patch(bytes, offset, format::String{.offset = table_size, .size = 1});
+        EXPECT_EQ(refusal(bytes), Status::OutOfRange) << "offset " << offset;
+
+        bytes = original;
+        patch(bytes, offset, format::String{.offset = table_size - 1, .size = 1});
+        EXPECT_EQ(refusal(bytes), Status::Ok) << "offset " << offset;
+
+        // An offset near 4 GiB must not wrap back inside.
+        bytes = original;
+        patch(bytes, offset, format::String{.offset = 0xFFFF'FFFF, .size = 2});
+        EXPECT_EQ(refusal(bytes), Status::OutOfRange) << "offset " << offset;
+
+        bytes = original;
+        patch(bytes, offset, format::String{.offset = 0, .size = table_size + 1});
+        EXPECT_EQ(refusal(bytes), Status::OutOfRange) << "offset " << offset;
+    }
+}
+
+/// Rights go through the function a use already goes through, on both records:
+/// without the flag the word must be zero, with it only the bits the format
+/// defines are allowed, and an unknown flag is refused.
+TEST(Decl, RefusesBadRightsAndFlagsOnACapabilityAndAnExpose) {
+    auto const original = bytes_of(fixtures::PROVIDER);
+    auto const tables = tables_of(original);
+    struct Record final {
+        char const *name;
+        usize flags;
+        usize rights;
+    };
+    constexpr auto STATED = std::to_underlying(RecordFlags::RightsStated);
+    for (auto const &record: {
+             Record{"capability", tables.capabilities + offsetof(format::Capability, flags),
+                    tables.capabilities + offsetof(format::Capability, rights)},
+             Record{"expose", tables.exposes + offsetof(format::Expose, flags),
+                    tables.exposes + offsetof(format::Expose, rights)},
+         }) {
+        auto const refused = [&](u32 const flags, u64 const rights) {
+            auto bytes = original;
+            patch(bytes, record.flags, flags);
+            patch(bytes, record.rights, rights);
+            return refusal(bytes);
+        };
+        EXPECT_EQ(refused(0, 0), Status::Ok) << record.name;
+        // Rights with no flag to state them.
+        EXPECT_EQ(refused(0, 1), Status::InvArgs) << record.name;
+        // Stated: any known bit, all of them, none.
+        EXPECT_EQ(refused(STATED, 0x1), Status::Ok) << record.name;
+        EXPECT_EQ(refused(STATED, 0x1FF), Status::Ok) << record.name;
+        EXPECT_EQ(refused(STATED, 0), Status::Ok) << record.name;
+        // Stated, with a bit the format does not define.
+        EXPECT_EQ(refused(STATED, 0x200), Status::InvArgs) << record.name;
+        EXPECT_EQ(refused(STATED, u64{1} << 63), Status::InvArgs) << record.name;
+        // A flag the format does not define, alone and beside the one it does.
+        EXPECT_EQ(refused(2, 0), Status::InvArgs) << record.name;
+        EXPECT_EQ(refused(STATED | 2, 0), Status::InvArgs) << record.name;
     }
 }
 
@@ -517,19 +747,15 @@ TEST(Decl, RefusesUnknownValues) {
     EXPECT_EQ(refusal(bytes), Status::InvArgs);
 }
 
+/// The records that still have a reserved word. A Capability's and an Expose's
+/// became their flags in version 3.
 TEST(Decl, RefusesANonzeroReservedField) {
     auto const original = bytes_of(fixtures::PROVIDER);
-    auto const tables = tables_of(original);
-    for (auto const offset: {
-             sizeof(format::Header) + offsetof(format::Program, reserved),
-             tables.capabilities + offsetof(format::Capability, reserved),
-             tables.exposes + offsetof(format::Expose, reserved),
-         }) {
-        auto bytes = original;
-        patch(bytes, offset, u32{1});
-        EXPECT_EQ(refusal(bytes), Status::InvArgs) << "offset " << offset;
-    }
-    auto bytes = bytes_of(fixtures::REALM);
+    auto bytes = original;
+    patch(bytes, sizeof(format::Header) + offsetof(format::Program, reserved), u32{1});
+    EXPECT_EQ(refusal(bytes), Status::InvArgs);
+
+    bytes = bytes_of(fixtures::REALM);
     patch(bytes, tables_of(bytes).children + offsetof(format::Child, reserved), u32{1});
     EXPECT_EQ(refusal(bytes), Status::InvArgs);
 }
@@ -562,7 +788,8 @@ auto check_every_byte(std::span<u8 const> const manifest) -> void {
                 EXPECT_TRUE(inside(bytes, child.name) && inside(bytes, child.url));
             }
             for (auto const capability: decl.capabilities()) {
-                EXPECT_TRUE(inside(bytes, capability.name) && inside(bytes, capability.type));
+                EXPECT_TRUE(inside(bytes, capability.name) && inside(bytes, capability.type) &&
+                            inside(bytes, capability.path));
             }
             for (auto const use: decl.uses()) {
                 EXPECT_TRUE(inside(bytes, use.source_name) && inside(bytes, use.target_path) &&
@@ -578,7 +805,8 @@ auto check_every_byte(std::span<u8 const> const manifest) -> void {
                 }
             }
             for (auto const expose: decl.exposes()) {
-                EXPECT_TRUE(inside(bytes, expose.source_name) && inside(bytes, expose.target_name));
+                EXPECT_TRUE(inside(bytes, expose.source_name) &&
+                            inside(bytes, expose.target_name) && inside(bytes, expose.subdir));
             }
         }
     }
@@ -589,5 +817,8 @@ TEST(Decl, EveryOneByteChangeStaysInBounds) {
     check_every_byte(fixtures::PROVIDER);
     check_every_byte(fixtures::CONSUMER);
     check_every_byte(fixtures::HOLLOW);
+    // The records with a path, a subdir and rights stated, which no fixture
+    // above holds.
+    check_every_byte(directory_provider());
 }
 } // namespace

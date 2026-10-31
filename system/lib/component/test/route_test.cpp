@@ -10,8 +10,15 @@
 ///
 /// Each expectation compares a one-line description of what route() answered,
 /// so that a failure prints the whole answer: the provider or built-in, the
-/// name, the subdir and the rights of a Route, or the status, the instance,
-/// the verb and the name of a RouteError, and for a BadType the two types.
+/// name, the declared path of a directory, the subdir and the rights of a
+/// Route, or the status, the instance, the verb and the name of a RouteError,
+/// and for a BadType the two types.
+///
+/// No fixture declares a directory, so the tests of a directory route end at
+/// a provider with the bytes of the protocol route of leaf's `echo` patched by
+/// hand: each record on it is made a directory's and states what the test
+/// says (see Chain). The compiler will write such manifests in a later step;
+/// the patched bytes are what it will write.
 ///
 /// P3 of the component-framework plan reserves route() for the user to write
 /// by hand against these tests. The AI wrote it for the MVP on the user's
@@ -169,7 +176,10 @@ class Tree final {
 
     /// The tree rooted at |root|, "realm.cm", "top.cm" or "mismatch.cm", with
     /// the root resolved, as the root resolves `meta/root.cm` before anything else.
-    explicit Tree(std::string_view const root) {
+    /// |prepare|, when given, runs first, on the tree with every manifest's bytes
+    /// loaded and nothing resolved: the one chance to patch the root's own.
+    explicit Tree(std::string_view const root,
+                  std::function<void(Tree &)> const &prepare = nullptr) {
         constexpr std::array<std::pair<std::string_view, std::span<u8 const>>, 8> MANIFESTS{{
             {"realm.cm", fixtures::REALM},
             {"provider.cm", fixtures::PROVIDER},
@@ -182,6 +192,9 @@ class Tree final {
         }};
         for (auto const &[name, bytes]: MANIFESTS) {
             m_bytes.emplace(url_of(name), std::vector<u8>(bytes.begin(), bytes.end()));
+        }
+        if (prepare) {
+            prepare(*this);
         }
         m_root = std::make_unique<Node>(*this, nullptr, 0, "", url_of(root));
         m_instances = 1;
@@ -331,15 +344,26 @@ auto Node::child(u32 const index) -> Node & {
 
 using RouteResult = ustl::Result<component::Route<Node>, component::RouteError<Node>>;
 
+/// The rights a manifest spells r*, rx*, rw* and w*, by their ours.io values.
+constexpr auto R_STAR = Rights::RStarDir;
+constexpr auto RX_STAR = Rights::RxStarDir;
+constexpr auto W_STAR = Rights::Connect | Rights::Enumerate | Rights::Traverse |
+                        Rights::WriteBytes | Rights::ModifyDirectory | Rights::UpdateAttributes;
+constexpr auto RW_STAR = R_STAR | W_STAR;
+
 auto rights_text(ustl::Option<Rights> const &rights) -> std::string {
     if (rights.is_none()) {
         return "none";
     }
     switch (rights.value()) {
-        case Rights::RStarDir:
+        case R_STAR:
             return "r*";
-        case Rights::RxStarDir:
+        case RX_STAR:
             return "rx*";
+        case W_STAR:
+            return "w*";
+        case RW_STAR:
+            return "rw*";
         default:
             return std::format("{:#x}", static_cast<u64>(rights.value()));
     }
@@ -362,11 +386,14 @@ auto verb_text(Verb const verb) -> std::string {
 /// What route() answered, in one line:
 ///   built-in boot, subdir "config/ours", rights r*
 ///   realm/provider serves ours.example.Echo, subdir "", rights none
+///   realm/provider serves ours.example.Echo, path "/export/data", subdir "a", rights r*
 ///   NotFound at hollow: Declare ours.example.Hollow
 ///   AccessDenied at the built-ins: Declare boot
 ///   BadType at provider: Declare ours.example.Echo (wants x, got ours.example.Echo)
 /// The types are named only when the error has them, so every other
-/// expectation also pins that want and got are empty.
+/// expectation also pins that want and got are empty; the same goes for the
+/// path of a Route, so every protocol and built-in expectation pins that it
+/// has none.
 auto describe(RouteResult const &result) -> std::string {
     if (result.is_ok()) {
         auto const &route = result.value();
@@ -374,7 +401,11 @@ auto describe(RouteResult const &result) -> std::string {
         if (route.provider != nullptr) {
             source = route.provider->moniker() + " serves " + std::string(route.name);
         }
-        return std::format("{}, subdir \"{}\", rights {}", source, route.subdir.view(),
+        auto path = std::string();
+        if (!route.path.empty()) {
+            path = std::format(", path \"{}\"", route.path);
+        }
+        return std::format("{}{}, subdir \"{}\", rights {}", source, path, route.subdir.view(),
                            rights_text(route.rights));
     }
     auto const &error = result.error();
@@ -501,6 +532,125 @@ auto builtins_with_launcher(std::string_view const type, ustl::Option<Rights> co
         }
     }
     return builtins;
+}
+
+// --- Directory routes: patched records ------------------------------------------
+
+/// What one hop of a directory route states: its rights, none for a hop that
+/// states none, and its subdir.
+struct Hop final {
+    ustl::Option<Rights> rights = ustl::NONE;
+    std::string_view subdir = {};
+};
+
+/// Makes the record at |record| of the table of |Raw| (a Use, an Offer or an
+/// Expose, which share their field names) a directory's, stating |hop|.
+template <typename Raw>
+auto make_directory_hop(std::vector<u8> &bytes, usize const record, Hop const &hop) -> void {
+    patch(bytes, record + offsetof(Raw, kind), Kind::Directory);
+    if (hop.rights.is_some()) {
+        patch(bytes, record + offsetof(Raw, flags), RecordFlags::RightsStated);
+        patch(bytes, record + offsetof(Raw, rights), hop.rights.value());
+    }
+    if (!hop.subdir.empty()) {
+        patch(bytes, record + offsetof(Raw, subdir), append_string(bytes, hop.subdir));
+    }
+}
+
+/// |manifest|'s use named |source_name| as a directory use stating |hop|.
+auto directory_use(Tree &tree, std::string_view const manifest, std::string_view const source_name,
+                   Hop const &hop) -> void {
+    auto &bytes = tree.bytes(manifest);
+    auto const index =
+        index_of(Decl::decode(bytes).unwrap().uses(), [source_name](component::Use const &use) {
+            return use.source_name == source_name;
+        });
+    make_directory_hop<format::Use>(bytes, tables_of(bytes).uses + index * sizeof(format::Use),
+                                    hop);
+}
+
+/// |manifest|'s offer that targets |target_name|, as a directory offer.
+auto directory_offer(Tree &tree, std::string_view const manifest,
+                     std::string_view const target_name, Hop const &hop) -> void {
+    auto &bytes = tree.bytes(manifest);
+    auto const index = index_of(
+        Decl::decode(bytes).unwrap().offers(),
+        [target_name](component::Offer const &offer) { return offer.target_name == target_name; });
+    make_directory_hop<format::Offer>(bytes,
+                                      tables_of(bytes).offers + index * sizeof(format::Offer), hop);
+}
+
+/// |manifest|'s expose that targets |target_name|, as a directory expose.
+auto directory_expose(Tree &tree, std::string_view const manifest,
+                      std::string_view const target_name, Hop const &hop) -> void {
+    auto &bytes = tree.bytes(manifest);
+    auto const index = index_of(Decl::decode(bytes).unwrap().exposes(),
+                                [target_name](component::Expose const &expose) {
+                                    return expose.target_name == target_name;
+                                });
+    make_directory_hop<format::Expose>(
+        bytes, tables_of(bytes).exposes + index * sizeof(format::Expose), hop);
+}
+
+/// |manifest|'s capability named |name| as a directory declared at |path|,
+/// stating |rights|.
+auto directory_capability(Tree &tree, std::string_view const manifest, std::string_view const name,
+                          ustl::Option<Rights> const &rights, std::string_view const path) -> void {
+    auto &bytes = tree.bytes(manifest);
+    auto const index = index_of(
+        Decl::decode(bytes).unwrap().capabilities(),
+        [name](component::Capability const &capability) { return capability.name == name; });
+    auto const record = tables_of(bytes).capabilities + index * sizeof(format::Capability);
+    patch(bytes, record + offsetof(format::Capability, kind), Kind::Directory);
+    if (rights.is_some()) {
+        patch(bytes, record + offsetof(format::Capability, flags), RecordFlags::RightsStated);
+        patch(bytes, record + offsetof(format::Capability, rights), rights.value());
+    }
+    patch(bytes, record + offsetof(format::Capability, path), append_string(bytes, path));
+}
+
+/// What each record on one route states. The route is leaf's `echo` in top.cm's
+/// tree, six records long, from the use to the declaration:
+///
+///   use              leaf.cm,     use `echo`                          (Use, at user/leaf)
+///   user_offer       user.cm,     offer to #leaf as `echo`            (Offer, at user)
+///   top_offer        top.cm,      offer to #user of RealmEcho         (Offer, at the root)
+///   realm_expose     realm.cm,    expose of RealmEcho from #provider  (Expose, at realm)
+///   provider_expose  provider.cm, expose of Echo from self            (Expose, at realm/provider)
+///   declared, path   provider.cm, capability Echo                     (Declare, at realm/provider)
+///
+/// A hop that states nothing narrows nothing, and the default Chain asks r*
+/// of a provider that allows r*, at /export/data: the route that works.
+struct Chain final {
+    Hop use = {.rights = R_STAR};
+    Hop user_offer = {};
+    Hop top_offer = {};
+    Hop realm_expose = {};
+    Hop provider_expose = {};
+    ustl::Option<Rights> declared = R_STAR;
+    std::string_view path = "/export/data";
+};
+
+/// The records of |chain| made directory records, in |tree|, which must not
+/// have resolved any of those manifests yet.
+auto make_directory_chain(Tree &tree, Chain const &chain) -> void {
+    directory_use(tree, "leaf.cm", "echo", chain.use);
+    directory_offer(tree, "user.cm", "echo", chain.user_offer);
+    directory_offer(tree, "top.cm", "ours.example.RealmEcho", chain.top_offer);
+    directory_expose(tree, "realm.cm", "ours.example.RealmEcho", chain.realm_expose);
+    directory_expose(tree, "provider.cm", "ours.example.Echo", chain.provider_expose);
+    directory_capability(tree, "provider.cm", "ours.example.Echo", chain.declared, chain.path);
+}
+
+/// top.cm's tree with leaf's `echo` made a directory route as |chain| says.
+auto directory_tree(Chain const &chain) -> Tree {
+    return Tree("top.cm", [&chain](Tree &tree) { make_directory_chain(tree, chain); });
+}
+
+/// The route of leaf's `echo` through |chain|, described.
+auto route_chain(Chain const &chain) -> std::string {
+    auto tree = directory_tree(chain);
+    return route_use(tree, "user/leaf", "echo");
 }
 
 // --- Subdir ------------------------------------------------------------------
@@ -1085,5 +1235,319 @@ TEST(RouteTypes, ARouteThatFailsForAnotherReasonKeepsItsStatus) {
     auto const narrow = builtins_with_launcher("ours.example.Other", Rights::RStarDir);
     EXPECT_EQ(route_use(denied, "consumer", "ours.process.Launcher", narrow),
               "AccessDenied at the built-ins: Declare ours.process.Launcher");
+}
+
+// --- Directory routes ------------------------------------------------------------
+//
+// A directory use that ends at a provider: the declaration states a path and
+// rights, an expose may state rights and a subdir, and both are hops. The
+// records are patched by hand (Chain); the route's other hops, in top.cm's
+// tree, are those of the protocol routes above.
+
+TEST(RouteDirectories, ADirectoryUseEndsAtTheProviderWithTheDeclaredPath) {
+    EXPECT_EQ(route_chain({}),
+              "realm/provider serves ours.example.Echo, path \"/export/data\", subdir \"\", "
+              "rights r*");
+}
+
+/// The answer field by field: the declared path is a view of the provider's
+/// manifest bytes and apart from the subdir, which the hops joined; the rights
+/// are the use's, not the declaration's rw*.
+TEST(RouteDirectories, TheRouteCarriesThePathApartFromTheSubdirAndTheUsesRights) {
+    auto tree = directory_tree({
+        .use = {.rights = R_STAR, .subdir = "docs"},
+        .realm_expose = {.subdir = "shared"},
+        .declared = RW_STAR,
+    });
+    auto *const leaf = tree.resolved("user/leaf");
+    ASSERT_NE(leaf, nullptr);
+    auto const use = leaf->decl().uses()[index_of(
+        leaf->decl().uses(), [](component::Use const &use) { return use.source_name == "echo"; })];
+    auto const result = component::route(*leaf, use, BUILTINS);
+    ASSERT_TRUE(result.is_ok()) << describe(result);
+    auto const &route = result.value();
+    EXPECT_EQ(route.provider, tree.peek("realm/provider"));
+    EXPECT_EQ(route.name, "ours.example.Echo");
+    EXPECT_EQ(route.path, "/export/data");
+    EXPECT_EQ(route.subdir.view(), "shared/docs");
+    ASSERT_TRUE(route.rights.is_some());
+    EXPECT_EQ(route.rights.value(), R_STAR);
+}
+
+/// A protocol route and a built-in route have no declared path: the Route of a
+/// protocol provider and of a built-in directory leave it empty. (Every
+/// protocol and built-in expectation above also pins it, since describe() names
+/// a path only when there is one.)
+TEST(RouteDirectories, AProtocolAndABuiltinHaveNoPath) {
+    auto tree = Tree("top.cm");
+    auto *const user = tree.resolved("user");
+    auto *const leaf = tree.resolved("user/leaf");
+    ASSERT_NE(user, nullptr);
+    ASSERT_NE(leaf, nullptr);
+    auto const find = [](component::Decl const &decl, std::string_view const name) {
+        return decl.uses()[index_of(
+            decl.uses(), [name](component::Use const &use) { return use.source_name == name; })];
+    };
+
+    auto const protocol = component::route(*leaf, find(leaf->decl(), "echo"), BUILTINS);
+    ASSERT_TRUE(protocol.is_ok()) << describe(protocol);
+    EXPECT_NE(protocol.value().provider, nullptr);
+    EXPECT_TRUE(protocol.value().path.empty());
+
+    auto const builtin = component::route(*user, find(user->decl(), "boot"), BUILTINS);
+    ASSERT_TRUE(builtin.is_ok()) << describe(builtin);
+    EXPECT_EQ(builtin.value().provider, nullptr);
+    EXPECT_TRUE(builtin.value().path.empty());
+}
+
+/// A protocol capability that states a path and rights, which the compiler
+/// never writes and the decoder lets through: the route still ends there as a
+/// protocol, with no path, and the rights are not a hop.
+TEST(RouteDirectories, ADeclarationOfAProtocolIsNoHopAndStatesNoPath) {
+    auto tree = Tree("top.cm", [](Tree &tree) {
+        auto &leaf = tree.bytes("leaf.cm");
+        auto const echo =
+            index_of(Decl::decode(leaf).unwrap().uses(),
+                     [](component::Use const &use) { return use.source_name == "echo"; });
+        auto const use = tables_of(leaf).uses + echo * sizeof(format::Use);
+        patch(leaf, use + offsetof(format::Use, flags), RecordFlags::RightsStated);
+        patch(leaf, use + offsetof(format::Use, rights), RX_STAR);
+
+        auto &provider = tree.bytes("provider.cm");
+        auto const capability = tables_of(provider).capabilities;
+        patch(provider, capability + offsetof(format::Capability, flags),
+              RecordFlags::RightsStated);
+        patch(provider, capability + offsetof(format::Capability, rights), R_STAR);
+        patch(provider, capability + offsetof(format::Capability, path),
+              append_string(provider, "/export/data"));
+        ASSERT_TRUE(Decl::decode(provider).is_ok());
+    });
+    // r* is less than the rx* the use asks, and a directory declaration would
+    // be AccessDenied for it.
+    EXPECT_EQ(route_use(tree, "user/leaf", "echo"),
+              "realm/provider serves ours.example.Echo, subdir \"\", rights rx*");
+}
+
+// Rights at the declaration.
+
+/// user offers rx*, and the provider allows r*: the offer asks for more than
+/// the declaration has, so the declaration is the hop at fault.
+TEST(RouteDirectories, ADeclarationNarrowerThanTheOfferIsAccessDeniedAtTheProvider) {
+    EXPECT_EQ(route_chain({.user_offer = {.rights = RX_STAR}, .declared = R_STAR}),
+              "AccessDenied at realm/provider: Declare ours.example.Echo");
+}
+
+TEST(RouteDirectories, ADeclarationAsWideAsTheOfferOrWiderIsRouted) {
+    constexpr auto ROUTED =
+        "realm/provider serves ours.example.Echo, path \"/export/data\", subdir \"\", rights r*";
+    EXPECT_EQ(route_chain({.user_offer = {.rights = R_STAR}, .declared = R_STAR}), ROUTED);
+    EXPECT_EQ(route_chain({.user_offer = {.rights = R_STAR}, .declared = RW_STAR}), ROUTED);
+    EXPECT_EQ(route_chain({.user_offer = {.rights = RX_STAR}, .declared = RX_STAR}), ROUTED);
+}
+
+/// The rights contain the hop before, not merely differ from it: w* allows
+/// writes where r* allows reads, and holds neither the other's.
+TEST(RouteDirectories, ADeclarationThatAllowsOtherRightsIsAccessDenied) {
+    EXPECT_EQ(route_chain({.declared = W_STAR}),
+              "AccessDenied at realm/provider: Declare ours.example.Echo");
+}
+
+/// Rights are held against the hop before the declaration, not against the use:
+/// the use asks r*, which the declaration's r* meets, but user offered rx* and
+/// the exposes between state none.
+TEST(RouteDirectories, TheDeclarationIsHeldAgainstTheLastHopThatStatedRights) {
+    EXPECT_EQ(route_chain({.user_offer = {.rights = RX_STAR}, .declared = R_STAR}),
+              "AccessDenied at realm/provider: Declare ours.example.Echo");
+    EXPECT_EQ(route_chain({.top_offer = {.rights = RX_STAR},
+                           .realm_expose = {},
+                           .provider_expose = {},
+                           .declared = R_STAR}),
+              "AccessDenied at realm/provider: Declare ours.example.Echo");
+}
+
+/// A declaration that states no rights narrows nothing, as a hop that states
+/// none never does. The compiler refuses to write one for a directory; the
+/// decoder lets it through.
+TEST(RouteDirectories, ADeclarationThatStatesNoRightsNarrowsNothing) {
+    EXPECT_EQ(route_chain({.user_offer = {.rights = RX_STAR}, .declared = ustl::NONE}),
+              "realm/provider serves ours.example.Echo, path \"/export/data\", subdir \"\", "
+              "rights r*");
+}
+
+// Rights and subdirs at an expose.
+
+/// realm exposes r* what top offered it as rx*: the expose is the hop at
+/// fault, and the error is at realm, the child the walk turned down into. r*
+/// is all the use asks, which is why the offer's rx* is what it is held
+/// against, not the use.
+TEST(RouteDirectories, AnExposeNarrowerThanTheOfferBeforeItIsAccessDeniedAtTheChild) {
+    EXPECT_EQ(route_chain({.top_offer = {.rights = RX_STAR},
+                           .realm_expose = {.rights = R_STAR},
+                           .declared = RX_STAR}),
+              "AccessDenied at realm: Expose ours.example.RealmEcho");
+}
+
+/// The second expose of the walk, provider's, against realm's before it. The
+/// name is the one provider knows the capability by.
+TEST(RouteDirectories, AnExposeIsHeldAgainstTheExposeBeforeIt) {
+    EXPECT_EQ(route_chain({.realm_expose = {.rights = RX_STAR},
+                           .provider_expose = {.rights = R_STAR},
+                           .declared = RX_STAR}),
+              "AccessDenied at realm/provider: Expose ours.example.Echo");
+}
+
+/// The expose is the hop before the declaration when it stated rights: the
+/// provider exposes rx* what it declares as r*, so the declaration is the
+/// hop at fault, at the provider and not at the expose.
+TEST(RouteDirectories, AnExposeWiderThanTheDeclarationIsAccessDeniedAtTheProvider) {
+    EXPECT_EQ(route_chain({.provider_expose = {.rights = RX_STAR}, .declared = R_STAR}),
+              "AccessDenied at realm/provider: Declare ours.example.Echo");
+}
+
+/// Stated rights only grow toward the source: an expose that states more than
+/// the offer before it is routed.
+TEST(RouteDirectories, AnExposeWiderThanTheOfferBeforeItIsRouted) {
+    EXPECT_EQ(route_chain({.top_offer = {.rights = R_STAR},
+                           .realm_expose = {.rights = RX_STAR},
+                           .provider_expose = {.rights = RX_STAR},
+                           .declared = RX_STAR}),
+              "realm/provider serves ours.example.Echo, path \"/export/data\", subdir \"\", "
+              "rights r*");
+}
+
+/// An expose that states none narrows nothing and is not the hop before the
+/// next one: the offer's rx* still is.
+TEST(RouteDirectories, AnExposeThatStatesNoRightsNarrowsNothing) {
+    EXPECT_EQ(route_chain({.top_offer = {.rights = RX_STAR}, .declared = RX_STAR}),
+              "realm/provider serves ours.example.Echo, path \"/export/data\", subdir \"\", "
+              "rights r*");
+    EXPECT_EQ(route_chain({.top_offer = {.rights = RX_STAR}, .declared = R_STAR}),
+              "AccessDenied at realm/provider: Declare ours.example.Echo");
+}
+
+/// Every hop's subdir goes in front, the source's side first, and the expose
+/// subdirs are among them: provider's first, then realm's, top's offer, user's
+/// offer and leaf's own. The declared path stays a path of its own.
+TEST(RouteDirectories, ExposeSubdirsJoinBetweenTheOffersAndTheDeclaration) {
+    EXPECT_EQ(route_chain({
+                  .use = {.rights = R_STAR, .subdir = "u"},
+                  .user_offer = {.subdir = "o1"},
+                  .top_offer = {.subdir = "o2"},
+                  .realm_expose = {.subdir = "e1"},
+                  .provider_expose = {.subdir = "e2"},
+              }),
+              "realm/provider serves ours.example.Echo, path \"/export/data\", "
+              "subdir \"e2/e1/o2/o1/u\", rights r*");
+}
+
+// The length of the Open.
+
+/// The root opens the declared path without its leading '/', joined with the
+/// subdir. "/export/data" is "export/data", 11 bytes, so a subdir of 1012
+/// bytes after the joining '/' is exactly MAX_PATH_LENGTH, and 1013 is one
+/// past it. The leading '/' is not counted: it is not in the Open.
+TEST(RouteDirectories, ThePathAndTheSubdirTogetherMustFitOneOpen) {
+    constexpr auto OPEN_PATH = std::string_view("export/data").size();
+    auto const fits = std::string(component::MAX_PATH_LENGTH - OPEN_PATH - 1, 'a');
+    EXPECT_EQ(route_chain({.use = {.rights = R_STAR, .subdir = fits}}),
+              std::format("realm/provider serves ours.example.Echo, path \"/export/data\", "
+                          "subdir \"{}\", rights r*",
+                          fits));
+
+    auto const past = std::string(fits.size() + 1, 'a');
+    EXPECT_EQ(route_chain({.use = {.rights = R_STAR, .subdir = past}}),
+              "NotFound at realm/provider: Declare ours.example.Echo");
+}
+
+/// The path alone can be too long too, which the compiler refuses and the
+/// decoder does not.
+TEST(RouteDirectories, ADeclaredPathTooLongIsNotFoundAtTheProvider) {
+    auto const fits = "/" + std::string(component::MAX_PATH_LENGTH, 'a');
+    EXPECT_EQ(route_chain({.path = fits}),
+              std::format("realm/provider serves ours.example.Echo, path \"{}\", subdir \"\", "
+                          "rights r*",
+                          fits));
+
+    auto const past = "/" + std::string(component::MAX_PATH_LENGTH + 1, 'a');
+    EXPECT_EQ(route_chain({.path = past}), "NotFound at realm/provider: Declare ours.example.Echo");
+}
+
+/// An expose whose subdir overflows the joined one is NotFound at the expose,
+/// before the walk reaches the declaration, as an offer's is at the offer. The
+/// use's 1000 bytes leave room for 23 more after the joining '/'.
+TEST(RouteDirectories, AnExposesSubdirTooLongIsNotFoundAtTheChild) {
+    auto const use = std::string(1000, 'a');
+    EXPECT_EQ(route_chain({
+                  .use = {.rights = R_STAR, .subdir = use},
+                  .provider_expose = {.subdir = std::string_view("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")},
+              }),
+              "NotFound at realm/provider: Expose ours.example.Echo");
+    EXPECT_EQ(route_chain({
+                  .use = {.rights = R_STAR, .subdir = use},
+                  .realm_expose = {.subdir = std::string_view("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")},
+              }),
+              "NotFound at realm: Expose ours.example.RealmEcho");
+
+    // 1000 + '/' + 23 is a subdir of exactly MAX_PATH_LENGTH: the expose
+    // passes, and it is the declaration that finds no room for its path.
+    EXPECT_EQ(route_chain({
+                  .use = {.rights = R_STAR, .subdir = use},
+                  .provider_expose = {.subdir = std::string_view("bbbbbbbbbbbbbbbbbbbbbbb")},
+              }),
+              "NotFound at realm/provider: Declare ours.example.Echo");
+}
+
+/// The rights come first, as at every hop: a route that is denied and too long
+/// is denied.
+TEST(RouteDirectories, TheRightsOfTheDeclarationAreCheckedBeforeTheLength) {
+    auto const past = std::string(component::MAX_PATH_LENGTH, 'a');
+    EXPECT_EQ(route_chain({
+                  .use = {.rights = R_STAR, .subdir = past},
+                  .user_offer = {.rights = RX_STAR},
+                  .declared = R_STAR,
+              }),
+              "AccessDenied at realm/provider: Declare ours.example.Echo");
+}
+
+// Kinds, programs and types.
+
+/// The provider's capability of that name is a protocol: a directory use, with
+/// every record before it a directory's, never reaches it.
+TEST(RouteDirectories, ADirectoryUseNeverReachesAProtocolCapability) {
+    auto tree = Tree("top.cm", [](Tree &tree) {
+        make_directory_chain(tree, {});
+        auto &provider = tree.bytes("provider.cm");
+        patch(provider, tables_of(provider).capabilities + offsetof(format::Capability, kind),
+              Kind::Protocol);
+    });
+    EXPECT_EQ(route_use(tree, "user/leaf", "echo"),
+              "NotFound at realm/provider: Declare ours.example.Echo");
+}
+
+/// hollow.cm declares and exposes ours.example.Hollow and has no program to
+/// serve it. Made a directory route, it is NotFound at hollow, Declare, even
+/// where the declaration would also have been denied: the program comes first.
+TEST(RouteDirectories, AProviderWithoutAProgramIsNotFound) {
+    auto tree = Tree("top.cm", [](Tree &tree) {
+        directory_use(tree, "consumer.cm", "ours.example.Hollow", {.rights = R_STAR});
+        directory_offer(tree, "realm.cm", "ours.example.Hollow", {.rights = RX_STAR});
+        directory_expose(tree, "hollow.cm", "ours.example.Hollow", {});
+        directory_capability(tree, "hollow.cm", "ours.example.Hollow", R_STAR, "/export/data");
+    });
+    EXPECT_EQ(route_use(tree, "realm/consumer", "ours.example.Hollow"),
+              "NotFound at realm/hollow: Declare ours.example.Hollow");
+}
+
+/// A directory has no type: the use states one and the capability another, and
+/// the route is not BadType. (The protocol side is pinned by RouteTypes.)
+TEST(RouteDirectories, BadTypeIsForProtocolsOnly) {
+    auto tree = Tree("top.cm", [](Tree &tree) {
+        make_directory_chain(tree, {});
+        set_use_type(tree, "leaf.cm", "echo", "ours.example.Other");
+        set_capability_type(tree, "provider.cm", "ours.example.Echo", "ours.example.Another");
+    });
+    EXPECT_EQ(route_use(tree, "user/leaf", "echo"),
+              "realm/provider serves ours.example.Echo, path \"/export/data\", subdir \"\", "
+              "rights r*");
 }
 } // namespace

@@ -369,6 +369,31 @@ class CompileTest(unittest.TestCase):
         manifest = {"expose": [{"directory": "boot", "from": "self"}]}
         self.refuses("cannot expose a directory", source(manifest), [], [])
 
+    def test_the_language_is_not_opened_by_the_format_change(self) -> None:
+        # Format 3 has room for a declared directory with a path and rights,
+        # an exposed directory with a subdir and rights, and a directory offer
+        # from self or a child. The compiler writes none of them yet: each is
+        # still refused, the full spelling the design uses included.
+        self.refuses(
+            "cannot declare a directory",
+            source({"capabilities": [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}]}),
+            [],
+            [],
+        )
+        manifest = {
+            "capabilities": [{"protocol": "p"}],
+            "expose": [{"directory": "data", "from": "self", "rights": ["r*"], "subdir": "shared"}],
+        }
+        self.refuses("cannot expose a directory", source(manifest), [], [])
+        for origin in ["self", "#b"]:
+            manifest = {"offer": [{"directory": "data", "from": origin, "to": "#a", "rights": ["r*"]}]}
+            self.refuses(
+                "is not one of: parent",
+                source(manifest, children=[child("a"), child("b")]),
+                [],
+                child_meta("a", "b"),
+            )
+
     def test_expose_from_self_names_a_declared_capability(self) -> None:
         self.refuses("does not declare", source({"expose": [{"protocol": "p", "from": "self"}]}), [], [])
 
@@ -502,10 +527,10 @@ class EncodeTest(unittest.TestCase):
             (cm.PROGRAM, 16),
             (cm.ARG, 8),
             (cm.CHILD, 24),
-            (cm.CAPABILITY, 24),
+            (cm.CAPABILITY, 40),
             (cm.USE, 56),
             (cm.OFFER, 56),
-            (cm.EXPOSE, 40),
+            (cm.EXPOSE, 56),
         ]
         for layout, size in sizes:
             self.assertEqual(layout.size, size)
@@ -552,18 +577,113 @@ class EncodeTest(unittest.TestCase):
         self.assertEqual(expose[2:4], (cm.REF_SELF, 0))
         self.assertEqual(expose[6:8], (cm.REF_PARENT, 0))
 
-    def test_the_format_is_version_two(self) -> None:
-        self.assertEqual(cm.VERSION, 2)
-        self.assertEqual(Reader(self.compiled()).version, 2)
+    def test_the_format_is_version_three(self) -> None:
+        self.assertEqual(cm.VERSION, 3)
+        data = self.compiled()
+        self.assertEqual(Reader(data).version, 3)
+        # The header's version is a u16 at offset 4, read here without the
+        # struct that wrote it.
+        self.assertEqual(struct.unpack_from("<H", data, 4), (3,))
 
-    def test_the_type_strings_sit_where_format_hpp_puts_them(self) -> None:
-        # offsetof(Capability, type) == 16, offsetof(Use, type) == 40 and
-        # offsetof(Use, rights) == 48 in format.hpp.
-        capability = cm.CAPABILITY.pack(*range(1, 7))
+    def test_the_fields_sit_where_format_hpp_puts_them(self) -> None:
+        # offsetof(Capability, flags) == 4, name == 8, type == 16, path == 24
+        # and rights == 32; offsetof(Use, type) == 40 and rights == 48;
+        # offsetof(Expose, target) == 24, subdir == 40 and rights == 48.
+        capability = cm.CAPABILITY.pack(*range(1, 9), 99)
+        self.assertEqual(struct.unpack_from("<I", capability, 4), (2,))
+        self.assertEqual(struct.unpack_from("<II", capability, 8), (3, 4))
         self.assertEqual(struct.unpack_from("<II", capability, 16), (5, 6))
+        self.assertEqual(struct.unpack_from("<II", capability, 24), (7, 8))
+        self.assertEqual(struct.unpack_from("<Q", capability, 32), (99,))
         use = cm.USE.pack(*range(1, 13), 99)
         self.assertEqual(struct.unpack_from("<II", use, 40), (11, 12))
         self.assertEqual(struct.unpack_from("<Q", use, 48), (99,))
+        expose = cm.EXPOSE.pack(*range(1, 13), 99)
+        self.assertEqual(struct.unpack_from("<I", expose, 4), (2,))
+        self.assertEqual(struct.unpack_from("<II", expose, 24), (7, 8))
+        self.assertEqual(struct.unpack_from("<II", expose, 40), (11, 12))
+        self.assertEqual(struct.unpack_from("<Q", expose, 48), (99,))
+        # An Expose has an Offer's layout, so a reader that handles one
+        # handles the other.
+        self.assertEqual(cm.EXPOSE.format, cm.OFFER.format)
+
+    def test_existing_capabilities_and_exposes_encode_the_new_fields_empty(self) -> None:
+        # Every capability and expose the language can write today: a
+        # protocol states no path, no subdir and no rights.
+        reader = Reader(self.compiled())
+        (capability,) = reader.tables["capability"]
+        kind, flags, *strings, rights = capability
+        self.assertEqual((kind, flags, rights), (cm.KIND_PROTOCOL, 0, 0))
+        self.assertEqual(strings[4:6][1], 0)  # the path, empty
+        self.assertEqual(reader.text(*strings[0:2]), "ours.example.Echo")
+        (expose,) = reader.tables["expose"]
+        self.assertEqual((expose[0], expose[1], expose[12]), (cm.KIND_PROTOCOL, 0, 0))
+        self.assertEqual(expose[10:12][1], 0)  # the subdir, empty
+        self.assertEqual(reader.text(*expose[4:6]), "ours.example.Echo")
+        # An empty string adds no byte to the table.
+        self.assertEqual(reader.strings.count(b"ours.example.Echo"), 1)
+
+    def test_a_directory_capability_and_expose_encode_at_the_offsets_format_hpp_gives(self) -> None:
+        # Records built by hand, since the language cannot write them yet,
+        # read back at the offsets format.hpp's static_asserts fix and without
+        # the structs that wrote them: header 48, Capability 40, Expose 56.
+        decl = cm.Decl(
+            capabilities=[
+                cm.Capability(cm.KIND_DIRECTORY, "data", "", "/export/data", cm.RIGHTS["rw*"]),
+                cm.Capability(cm.KIND_DIRECTORY, "stated-empty", "", "/export/none", 0),
+            ],
+            exposes=[
+                cm.Expose(
+                    cm.KIND_DIRECTORY, cm.Ref(cm.REF_SELF), "data", "docs", "shared/x", cm.RIGHTS["r*"]
+                ),
+                cm.Expose(cm.KIND_DIRECTORY, cm.Ref(cm.REF_SELF), "data", "plain"),
+            ],
+        )
+        data = cm.encode(decl)
+        header = 48
+        capabilities = header
+        exposes = capabilities + 2 * 40
+        strings = exposes + 2 * 56
+        self.assertEqual(struct.unpack_from("<I", data, 8), (len(data),))
+        self.assertEqual(struct.unpack_from("<I", data, 12), (len(data) - strings,))
+        self.assertEqual(struct.unpack_from("<II", data, 28), (2, 0))  # capabilities, uses
+        self.assertEqual(struct.unpack_from("<II", data, 36), (0, 2))  # offers, exposes
+
+        def text(offset: int) -> str:
+            start, size = struct.unpack_from("<II", data, offset)
+            return data[strings + start : strings + start + size].decode()
+
+        # data: kind, flags, name, type, path, rights.
+        self.assertEqual(struct.unpack_from("<II", data, capabilities), (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED))
+        self.assertEqual(text(capabilities + 8), "data")
+        self.assertEqual(text(capabilities + 16), "")
+        self.assertEqual(text(capabilities + 24), "/export/data")
+        self.assertEqual(struct.unpack_from("<Q", data, capabilities + 32), (cm.RIGHTS["rw*"],))
+        # A stated empty set is the flag and a zero word, not an unstated one.
+        second = capabilities + 40
+        self.assertEqual(struct.unpack_from("<II", data, second), (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED))
+        self.assertEqual(text(second + 24), "/export/none")
+        self.assertEqual(struct.unpack_from("<Q", data, second + 32), (0,))
+
+        # docs: kind, flags, source, source_name, target, target_name, subdir, rights.
+        self.assertEqual(struct.unpack_from("<II", data, exposes), (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED))
+        self.assertEqual(struct.unpack_from("<II", data, exposes + 8), (cm.REF_SELF, 0))
+        self.assertEqual(text(exposes + 16), "data")
+        self.assertEqual(struct.unpack_from("<II", data, exposes + 24), (cm.REF_PARENT, 0))
+        self.assertEqual(text(exposes + 32), "docs")
+        self.assertEqual(text(exposes + 40), "shared/x")
+        self.assertEqual(struct.unpack_from("<Q", data, exposes + 48), (cm.RIGHTS["r*"],))
+        # The second expose states neither.
+        plain = exposes + 56
+        self.assertEqual(struct.unpack_from("<II", data, plain), (cm.KIND_DIRECTORY, 0))
+        self.assertEqual(text(plain + 32), "plain")
+        self.assertEqual(text(plain + 40), "")
+        self.assertEqual(struct.unpack_from("<Q", data, plain + 48), (0,))
+
+        # The file reads back through the second reading of the format, too.
+        reader = Reader(data)
+        self.assertEqual(reader.tables["capability"][0][8], cm.RIGHTS["rw*"])
+        self.assertEqual(reader.tables["expose"][0][12], cm.RIGHTS["r*"])
 
     def compiled_with_types(self, capability: Dict[str, Any], use: Dict[str, Any]) -> Reader:
         manifest = {"capabilities": [capability], "use": [use]}
@@ -619,7 +739,7 @@ class EncodeTest(unittest.TestCase):
         # The rights words fall on multiples of 8 in each record, and every
         # record size is one, so a reader that maps the file sees them
         # naturally aligned.
-        self.assertEqual(struct.calcsize("<IIIIIIIIII"), 40)
+        self.assertEqual(struct.calcsize("<IIIIIIII"), 32)
         self.assertEqual(struct.calcsize("<IIIIIIIIIIII"), 48)
         for layout in [cm.HEADER, cm.PROGRAM, cm.ARG, cm.CHILD, cm.CAPABILITY, cm.USE, cm.OFFER, cm.EXPOSE]:
             self.assertEqual(layout.size % 8, 0)
