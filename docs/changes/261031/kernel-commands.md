@@ -193,3 +193,53 @@ None.
 - `gn check` passed with four owners missing from the list. Which path through the graph satisfied it, and what would you change to make it start failing?
 - The four files compile with the include directories of lib/arch and ustl on their command line, with no edge to either. Where do those come from, and what does that make an edge to a `:headers` target in this kernel?
 - The entry above applied two tests to one list. Which two, and why does each give a different list?
+
+## Title: The user shell's list of kernel commands, which the move of four tests reordered, is cut at 2048 bytes: measured, and written up as a repair item (2026-10-31)
+
+**Files**
+- `docs/repairs/261031/shell.md` — new: item 1, the buffer, the missing offset and the link order, with the options and an acceptance.
+- `docs/changes/261031/kernel-commands.md` — this entry.
+
+**Symptom**
+The first entry of this record says, under Verification, that the user shell keeps the first 2048 bytes of the registry, that the list "was already cut", that the commands which fall off its end "are different ones" after the move, and that this was "not measured, and nothing checks which are shown". It did not say what the move did to what the shell shows, and no repair item recorded the truncation. Measured now on the boot logs of `3eb20421` (both images show the same):
+- 41 `GKTL_COMMAND` records, 4002 bytes of registry text (each as `ours::syscall::command_list()` writes it), against a buffer that holds 2047 bytes and a NUL.
+- 20 commands shown, the last one (`pagesource.test`) with its help cut; 21 not shown, `timer.test` to `tickbcast.test`, listed in the item.
+- The boot listing prints "(truncated: the registry outgrew this program's buffer)" after them; the `commands` built-in, which reads the same buffer, reports every status except `NoSpace`, so it prints the same text and no tail.
+- Reconstructed from `//kernel/commands`' sources list before the move, with a method that reproduces today's 20 names exactly: before it, `pager.test` was the last (half-cut) entry and `timershare.test` was not shown; after it, `timershare.test` is shown and `pager.test` is not. Not a measurement of the old build.
+
+**Cause**
+The registry is a section of records in link order, `command_list()` copies it from the start with no way to ask for the rest, and the shell's buffer is a fixed 2048 bytes because the image has no allocator. The registry has outgrown the buffer, so what a reader sees depends on where the linker put each object. Linking the four tests with x86's kernel target put them ahead of `//kernel/commands`' objects (the registration order the first entry shows), which is why the set of commands shown changed although no command did. The first entry was right that nothing reads the registry's order for lookup (`gktl::run_command()` builds a radix tree) and wrong to treat the one reader that does as a footnote: it is a user-visible list that was already half empty.
+
+The order change is a consequence of the placement the user chose on 2026-10-30, `kernel/arch/x86/commands` over `kernel/commands/x86/`. It was not put to them as a question of its own: this entry records it and returns it as one, with the repair's options, and does not change the placement or the order to hide it.
+
+**Change**
+No code change. The repair item holds the problem for whoever takes it: enlarge the buffer, or add an offset to `command_list()` (a user ABI change, so the user's call), with a sorted list as an addition to either, and `boot_check.py` made to fail on the "(truncated" tail so a later command cannot push another off without anyone being told.
+
+Rejected:
+- Putting the four tests after `//kernel/commands` in the link to keep `timershare.test` where it was. Link order of two source sets is not a thing to tune for what a truncated list shows, and the next command anywhere would move it again.
+- Fixing the buffer here. It is a different problem from where four files live, in a different library (`system/app/shell`) and, for the better option, in the system call table.
+
+**Reference**
+Zircon's `help` command, `cmd_help` (`zircon/kernel/lib/console/mod.rs:420`), prints inside the kernel and sorts by name when it may allocate; it has no buffer between the registry and the reader. The shell here is a user program reading through a system call, so the buffer is its.
+
+**Verification**
+- Registry text: `registry_size.py`, a throwaway script (not kept) that reads every `GKTL_COMMAND(NAME, CMD, HANDLER, HELP)` in `kernel/`, `benches/`, `system/` and `examples/`, joins adjacent string literals and sums `<cmd>` + (`  <help>` if any) + newline: 41 commands, 4002 bytes. The count agrees with the first entry's 41 records and "about 4000 bytes".
+- What is shown: the `dbg.log` and `rel.log` of `boot_check.py` cut at the "(truncated" tail, from the first registry line (`interruptline.test`) to the cut: 2047 bytes and 20 commands in each, the same names in each. The 21 hidden are the registry minus those 20.
+- The old order: the script's sources reordered as `//kernel/commands`' `sources = [...]` of `3135d44a~1` had them (mm's `dump-frame` and the two benches first, then the files in list order, the four tests among them), cut at 2047 bytes. The same method applied to today's order gives the boot log's 20 names, in order; that is its only check.
+- `lint_docs.py --changed` on the repair item and on this record: no violations. No code, GN or script is touched, so no build or boot is needed for this commit; `ours-verify` runs after the last commit of this round.
+
+**Deliberately not done**
+- The buffer, the syscall and `boot_check.py` are not changed; they are the item.
+- `docs/repairs/261031/shell.md` is not given a severity higher than Medium: the boot listing says it was cut, and the shell's comment accepts it. The `commands` built-in saying nothing is what keeps it from being Low.
+- The first entry is not edited; this one corrects it.
+
+**How it was found**
+The independent review of `3135d44a` ran `boot_check.py --no-build` and read the end of the dbg boot log: the list opened with the four moved tests, then `dump-frame` and the benches, and ended at `pagesource.test  pagesource.test: page faults that wait for a p(truncated: ...`. For this entry the same two logs were cut at the tail and measured, the registry was summed from the sources, and `grep` over `docs/repairs` for the truncation found nothing.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Lookup of a command by name does not depend on the registry's order, so why does moving four files change anything a user can see?
+- The registry is 4002 bytes and the buffer 2048. Which of the three options in the repair item would make 8 KiB the wrong answer a second time, and which would not?
+- The `commands` built-in and the boot listing read the same buffer. What does each print when the registry does not fit, and why is the built-in's the worse one?
