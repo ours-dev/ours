@@ -744,3 +744,38 @@ None.
 - A comment says "the include check passed there; riscv's does not". Which change elsewhere makes it false, and what does the comment that replaced it say that stays true?
 - Why does `kernel/commands` keep "GN checks per target, not per header" when it drops "no longer reports them"?
 - Comments and change records both record history. What goes in which, and how do you tell a lasting reason from the story of how a line was found?
+
+## Title: A note on the `.ninja` counts of the build-directory entries: 711 and 707 are the files of directories that hold orphans, and a fresh `gn gen` has 709 and 668 (2026-10-30)
+
+**Files**
+- `docs/changes/261030/kernel-arch-seam.md` — this entry. No source or build file changes.
+
+**Symptom**
+The entries on the seven generic targets, on `physload.core` and on the comment trim say "all 711 x86 and 707 riscv `.ninja` files are byte-identical". The numbers are what `find` counts in `out/bringup.x86` and `out/bringup.riscv`, and a reader who runs `gn gen` into an empty directory gets other numbers and may think a different graph was compared.
+
+**Cause**
+A build directory keeps what earlier generations wrote: `gn gen` rewrites the files of the targets it knows and does not delete those of targets that are gone. A fresh generation of the same `args.gn` gives 709 x86 `.ninja` files and 668 riscv ones. The x86 directory has two more: `kernel_x86.dbg.0` and `.dbg.1`'s `preempt-reset-bench.ninja`, from a benchmark target that is in no file of this tree (`git grep` finds only this entry). The riscv directory has 39 more, written by an earlier generation of the directory that had more targets than today's riscv graph (for example the `kernel_riscv.dbg.1` files of `userabi`, `syscall`, `elfload` and `bootfs`; which generation, and from which branch, was not looked into). Neither affects the comparison: an orphan is the same before and after, and `ninja` never reads it. It does mean the count is a property of the directory and not of the graph, which matters when the claim is "byte-identical": the claim is about the files the graph writes, and a directory that is not fresh can only show it by the same files being the same.
+
+**Change**
+None. The comparisons were made as described (copies of the directory's `.ninja` files before the edit, `gn gen`, compared one by one), and fresh generations would show the same identity over 709 and 668 files.
+
+**Reference**
+None, this project's own tooling.
+
+**Verification**
+- `gn gen` of each `args.gn` into an empty scratch directory (removed afterwards): 709 and 668 `.ninja` files, against 711 and 707 in the existing directories; the two extra x86 files are the `preempt-reset-bench` ones.
+
+**Deliberately not done**
+- The earlier entries are not edited (history). The build directories are not cleaned: they are the user's, and a clean regeneration costs a full rebuild.
+- The riscv directory's 39 orphans are not listed or removed.
+
+**How it was found**
+Reported by an independent review that regenerated both build directories from scratch to compare the entries' numbers, and found different counts with the same identity claims.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does `gn gen` leave a `.ninja` file for a target that no longer exists, and why can `ninja` ignore it?
+- "711 files are byte-identical" is a claim about a directory. What would make it a claim about the graph, and does it matter for what the entries concluded?
+- Which kind of leftover could change a comparison between two generations, and which kind cannot?
