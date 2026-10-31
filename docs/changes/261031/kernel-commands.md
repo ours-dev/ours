@@ -98,3 +98,98 @@ None.
 - `//kernel/commands` depended on `//kernel/arch/$ours_cpu/kernel:headers` for `aspace_layout.hpp`. Why did that one edge also hide four tests' includes of x86-private headers from `gn check --check-system`, and why does moving the files, not a better dependency, make riscv stop compiling them?
 - The edge to `//kernel/arch/x86/commands` is in x86's kernel target and not in `//kernel/top`. What would each choice put in `//kernel/top`'s BUILD.gn, and which one is the same for every `$ours_cpu`?
 - The symbol lists before and after are identical, yet every address moved and `.data` grew by 8 bytes. What decides where an object lands in the link, and why is padding the only thing that can account for the 8 when every symbol has the same size?
+
+## Title: //kernel/arch/x86/commands lists an edge for every target that owns a header its four files include, as its comment says, instead of the seven it took from //kernel/commands (2026-10-31)
+
+**Files**
+- `kernel/arch/x86/commands/BUILD.gn` — four edges added (`//kernel/arch/x86:headers`, `//kernel/lib/arch:headers`, `//system/lib/ustl:headers`, `//system/public`); every edge has a comment naming the headers it is for; the comment on the list states the rule and its one exception.
+- `docs/changes/261031/kernel-commands.md` — this entry.
+
+**Symptom**
+The comment on the list read "One edge for each target that owns a header the four files include", and the entry above and the body of `3135d44a` say the same. Matching every `<...>` header the four files include directly to the target that lists it (`gn refs`) against the target's deps (`gn desc ... deps`) finds four owners that were not edges:
+
+| Owner that was not an edge | Headers the files include from it |
+|---|---|
+| `//kernel/lib/arch:headers` | `arch/spin_hint.hpp` (all four), `arch/tick.hpp` (`timer_share_test.cpp`), `arch/auto_interrupt_disabler.hpp` (`ioport_test.cpp`) |
+| `//kernel/arch/x86:headers` | `arch/x86/interrupt.hpp` (`interrupt_line_test.cpp:88`) |
+| `//system/lib/ustl:headers` | `ustl/option.hpp` and `ustl/rc.hpp` (`ioport_test.cpp:51-52`) |
+| `//system/public` | `ours/interrupt.hpp`, `ours/port.hpp`, `ours/syscall.hpp` (`interrupt_line_test.cpp:69,78,79`) |
+
+The review of `3135d44a` named the first three; the fourth turned up when the list was rebuilt from `gn refs`. `gn desc` of the target already showed their `headers.config`s among its configs, though nothing on its list named them. Nothing failed: `gn check` and `gn check --check-system` pass either way (37 and 22 pairs of findings before and after, the same sets).
+
+**Cause**
+GN lets a target include the headers of any target it reaches through `public_deps`, not only of its direct deps. The one edge to `//kernel/arch/x86/kernel:headers` reaches all four owners that way (`gn path` prints the chain): `kernel:headers` has `//kernel/arch/x86/lib/page_tables` as a public dep, which has `//kernel/arch/x86:headers`, `//kernel/lib/arch:headers` and `//system/lib/ustl:headers` as public deps, and `//kernel/lib/arch:headers` has `//system/public`. So the checker was satisfied by a chain that has nothing to do with these four files, and the same goes for gktl, heap and `//kernel/mm:headers`, which the entry above kept for exactly that reason.
+
+The compile does not need the edges either. The kernel toolchain puts the include directories of lib/arch, gktl, arch/x86, arch/x86/kernel, mm, platform, ustl, logz4 and a few more on every kernel target (`prefix_configs` in `build/switch/kernel_switchset.gni`), and `//kernel/products:kernel.config` adds `//kernel/include` and `//system/public`. Only `//kernel/object:headers`' directory comes from an edge. So an edge in this kernel is a declaration read by `gn check` and nothing else, and "needed to build" is the wrong test for one.
+
+The entry above used two tests on one list. It removed each dep in turn and asked whether the build or `--check-system` failed (the "needed" test), and dropped `ktl` and `lockdep` on that. It also kept `gktl`, `heap` and `//kernel/mm:headers`, which pass that test, on the rule "owns a header the files include directly, and the edge should not depend on which other dep happens to bring it" (include-what-you-use). The second rule was applied to three of the seven and to nothing else. The seven were `//kernel/commands`' twelve minus what the four did not need, so which targets were on the list was inherited, and the targets `//kernel/commands` never named (lib/arch, x86's arch headers, ustl, public) were off it for the same reason. The rule the comment wrote down and the list disagreed.
+
+The entry above also says `//kernel/commands` "had two more" deps than the new target. It had five that the new target lacks: `ktl` and `lockdep`, which no comment ties to a file, and `//kernel/lib/lockup_detector:headers`, `//kernel/lib/user_copy` and `//system/lib/profdata`, which belong to other files' commands (`lockup status`, `user_copy_test.cpp`, `cov dump`).
+
+**Change**
+The list now holds one edge per owner, and each edge says which headers it is for:
+
+```gn
+# before
+  # One edge for each target that owns a header the four files include.
+  deps = [
+    # <ours/arch/x86/apic.hpp>, io_bitmap.hpp and percpu.hpp, and
+    # <ours/arch/aspace_layout.hpp> for the user address range.
+    "//kernel/arch/x86/kernel:headers",
+    "//kernel/lib/gktl",
+    "//kernel/lib/heap",
+    "//kernel/mm:headers",
+    "//kernel/object:headers",
+    "//kernel/platform:headers",
+    "//system/lib/logz4:headers",
+  ]
+
+# after: the same seven, plus four, each with its own comment
+  deps = [
+    "//kernel/arch/x86:headers",          # <arch/x86/interrupt.hpp>
+    "//kernel/arch/x86/kernel:headers",
+    "//kernel/lib/arch:headers",          # <arch/spin_hint.hpp>, tick.hpp, auto_interrupt_disabler.hpp
+    "//kernel/lib/gktl",
+    "//kernel/lib/heap",
+    "//kernel/mm:headers",
+    "//kernel/object:headers",
+    "//kernel/platform:headers",
+    "//system/lib/logz4:headers",
+    "//system/lib/ustl:headers",          # <ustl/option.hpp>, rc.hpp
+    "//system/public",                    # <ours/interrupt.hpp>, port.hpp, syscall.hpp
+  ]
+```
+
+The comment on the list now defines "owns": the target that lists the header or publishes the include directory it is under, or the library that exports that target (`gktl` and `heap`, whose `:headers` targets list `gktl/command.hpp` and `heap/new.hpp`). It says an edge stays when another reaches the same target through `public_deps`, and names the one exception, the headers under `//kernel/include`, which no target owns.
+
+Rejected:
+- Keeping the seven and rewording the comment to what the compile and `--check-system` need. It is honest, and it is the shape of `//kernel/commands`' list. It makes the list depend on other targets' deps (take `page_tables`' public deps away and an edge becomes necessary), which is the property the entry above argued against; and for these headers nothing is "needed" to compile, so `gktl`, `heap` and `//kernel/mm:headers` would have needed some other explanation.
+- Editing `//kernel/commands`' list or any other target's to the same rule. That is a rule for the whole kernel graph and not for this target; it is returned as a question.
+- Naming `//kernel/lib/gktl:headers` and `//kernel/lib/heap:headers` in place of the libraries. The libraries are link edges the entry above chose and the link must not change.
+
+**Reference**
+None, this project's own build graph. The rule being applied is GN's include check: `gn help check` says a target may include the headers of its direct deps and of what they reach through `public_deps`.
+
+**Verification**
+- `gn desc` of the target: 11 deps, the 7 before and the 4 above. `gn refs` over every `<...>` include of the four files: each owner is now an edge, except `gktl:headers` and `heap:headers` (their libraries are), `//kernel/mm:headers`, which lists none of its headers (`docs/repairs/261030/build-headers.md` item 1) and is an edge as the publisher of its directory, and the headers under `//kernel/include`, which no target lists.
+- `gn gen` on both directories, `.ninja` files compared (713 for x86 and 707 for riscv, counted with `find` including orphans): only x86's two `commands.ninja` (dbg.0 and dbg.1) changed, and in it the target's `linkdeps` edge holds the same 25 order-only inputs in a different order (every added target was already reached); riscv's graph does not contain the target, and none of its files changed. `compile_commands.json`: the same 752 entries as a set before and after, so no compile command, the four objects' included, changed.
+- `gn check`: `Header dependency check OK` on both directories. `gn check --check-system`, as distinct (file, line, include) pairs: x86 37 and riscv 22 before and after, identical sets.
+- x86 `boot_check.py`: build ok (0.5 s, nothing to recompile); dbg PASS shell finished at 5.8s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 5.0s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed; headers PASS 8 targets, 8 include roots, 106 headers under //kernel/arch/ and //kernel/lib/arch:, every one listed · 1.9s.
+- riscv `boot_check.py --out out/bringup.riscv`: riscv PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi; headers PASS 8 targets, 8 include roots, 81 headers under //kernel/arch/ and //kernel/lib/arch:, every one listed · 1.6s.
+- `format_gn.py --check` on `kernel/arch/x86/commands/BUILD.gn` and `lint_docs.py --changed` on this record: no violations.
+
+**Deliberately not done**
+- No other target's deps are changed. `//kernel/commands` has no edge to `//kernel/lib/arch:headers` or `//system/lib/ustl:headers` although its files include `<arch/...>` and `<ustl/...>` headers, and so do many more targets. Whether every kernel target should list its header owners is a decision about the graph's convention; it is put to the user.
+- `//kernel/include` has no owning target, so there is no edge to add for `ours/cpu.hpp`, `ours/task/thread.hpp`, `ours/time/clock.hpp` and the rest of what the four include from it.
+- No dep is removed. `gktl`, `heap` and `//kernel/mm:headers` are the edges the rule keeps.
+
+**How it was found**
+The independent review of `3135d44a` read `gn desc` of the new target, saw `//kernel/lib/arch:headers.config`, `//kernel/arch/x86:headers.config` and `//system/lib/ustl:headers.config` among its configs with no matching dep, and compared that with the comment. For the fix, a throwaway script resolved each included header against the target's `include_dirs`, ran `gn refs` on the file to find the target that lists it, and printed the ones that were not deps; `gn path` from `//kernel/arch/x86/kernel:headers` to each of them gave the chain.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- `gn check` passed with four owners missing from the list. Which path through the graph satisfied it, and what would you change to make it start failing?
+- The four files compile with the include directories of lib/arch and ustl on their command line, with no edge to either. Where do those come from, and what does that make an edge to a `:headers` target in this kernel?
+- The entry above applied two tests to one list. Which two, and why does each give a different list?

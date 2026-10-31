@@ -19,17 +19,48 @@ source_set("commands") {
     "timer_share_test.cpp",
   ]
 
-  # One edge for each target that owns a header the four files include.
+  # One edge for each target that owns a header the four files include
+  # directly: the one that lists the header or publishes the include directory
+  # it is under, or the library that exports that target (gktl, heap). An edge
+  # stays when another one reaches the same target through public_deps, since
+  # GN accepts an include through either and the list should not change when
+  # some other target's own deps do. The headers under //kernel/include are the
+  # exception: no target owns them, and //kernel/products:kernel.config puts
+  # that directory on every kernel target.
   deps = [
+    # <arch/x86/interrupt.hpp>.
+    "//kernel/arch/x86:headers",
+
     # <ours/arch/x86/apic.hpp>, io_bitmap.hpp and percpu.hpp, and
     # <ours/arch/aspace_layout.hpp> for the user address range.
     "//kernel/arch/x86/kernel:headers",
+
+    # <arch/spin_hint.hpp>, tick.hpp and auto_interrupt_disabler.hpp.
+    "//kernel/lib/arch:headers",
+
+    # <gktl/command.hpp>, for GKTL_COMMAND.
     "//kernel/lib/gktl",
+
+    # <heap/new.hpp>.
     "//kernel/lib/heap",
+
+    # <ours/mm/gaf.hpp> and vm_aspace.hpp.
     "//kernel/mm:headers",
+
+    # <ours/object/handle.hpp> and the dispatchers' headers.
     "//kernel/object:headers",
+
+    # <ours/platform/isa.hpp>.
     "//kernel/platform:headers",
+
+    # <logz4/log.hpp>.
     "//system/lib/logz4:headers",
+
+    # <ustl/option.hpp> and rc.hpp.
+    "//system/lib/ustl:headers",
+
+    # <ours/interrupt.hpp>, port.hpp and syscall.hpp.
+    "//system/public",
   ]
   visibility = [ "//kernel/arch/x86/kernel" ]
 }
