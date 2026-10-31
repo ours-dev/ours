@@ -261,6 +261,15 @@ component_manifest("root.cm") {
         ]
       },
 
+      # The block device driver's protocol, from the sibling that exposes
+      # it: routing_checks reads a block through it when the image carries a
+      # disk, and finds the route answer NotFound when it does not.
+      {
+        protocol = "ours.block.Block"
+        from = "#virtio-blk"
+        to = [ "#routing_checks" ]
+      },
+
       # echo's protocol, from the sibling that exposes it, renamed on the
       # way: echo serves it as ours.examples.echo.Echo, and routing_checks
       # finds it at /svc/ours.test.Echo.

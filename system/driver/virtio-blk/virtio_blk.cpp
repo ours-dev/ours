@@ -2,16 +2,19 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// virtio-blk -- the userspace driver of QEMU's virtio block device
-/// (storage-layer plan, .agents/tasks/storage-layer). It drives the device
-/// through the legacy (transitional) interface: the I/O-port BAR that QEMU's
-/// virtio-pci keeps beside the modern one, whose registers are one field
-/// each, at one offset, with one width.
+/// (storage-layer plan, .agents/tasks/storage-layer), as a component that
+/// provides ours.block.Block: a client opens the protocol, asks for the
+/// device's geometry or for blocks by number, and the driver drives the
+/// hardware on its behalf.
 ///
-/// The legacy interface is the working path, and why it is tells you what
-/// the modern one costs here: the modern common config's queue section does
-/// not answer on this QEMU build -- queue_size reads 0xFFFF, num_queues 0,
-/// and a queue whose size the device never states is never configured, so
-/// its doorbell is ignored (evidence and the monitor ground truth:
+/// The device is driven through the legacy (transitional) interface: the
+/// I/O-port BAR that QEMU's virtio-pci keeps beside the modern one, whose
+/// registers are one field each, at one offset, with one width. The legacy
+/// interface is the working path, and why it is tells you what the modern
+/// one costs here: the modern common config's queue section does not answer
+/// on this QEMU build -- queue_size reads 0xFFFF, num_queues 0, and a queue
+/// whose size the device never states is never configured, so its doorbell
+/// is ignored (evidence and the monitor ground truth:
 /// .agents/tasks/storage-layer/QEMU-CFG-FINDINGS.md). The legacy registers
 /// answered from the first read.
 ///
@@ -22,39 +25,53 @@
 ///   - the Ioport root resource: ioports_request opens the device's I/O
 ///     ports to this process's threads, and the legacy registers are read
 ///     and written with in and out from then on;
-///   - the ring: one contiguous run of two pages from
-///     vmo_create_contiguous, pinned to one address. The legacy layout puts
-///     the used ring on the page boundary after the available ring, so the
-///     run is two pages, and the device computes the used ring's address
-///     from the page frame number the same way;
-///   - the request: header, sector and status in the run's second page.
+///   - the IOMMU System resource: a stub IOMMU, one BTI for the device, and
+///     the pin that hands the ring and the request buffer to the device by
+///     one physical address;
+///   - the ring: one contiguous run of pages from vmo_create_contiguous.
+///     The legacy layout puts the used ring on the page boundary after the
+///     available ring, and the request's header, data and status live
+///     behind it;
+///   - the Loop, on which the outgoing directory and every client
+///     connection wait;
+///   - the BlockServer, the connections an Open of the protocol brings,
+///     each answered one message at a time. A Read runs the device
+///     synchronously -- the poll is on the same thread as everything else,
+///     so requests serialize, which one device queue makes true anyway.
 ///
-/// The events: reset (status 0, read back), ACKNOWLEDGE, DRIVER, features
-/// accepted as none, the queue selected and its depth read back, the ring
-/// registered by page frame number, DRIVER_OK, one descriptor chain offered
-/// through the available ring, the queue rung through the notify register,
-/// and the used ring polled until the answer comes. Before any pin is
-/// undone the device is stopped and observed stopped, so the kernel never
-/// has to quarantine what this driver pinned.
+/// The events: the root routes a client's Open into the outgoing directory
+/// (design D11); the BlockServer takes the channel, and each Read on it
+/// writes the request header, offers the descriptor chain through the
+/// available ring, rings the queue, and polls the used ring until the
+/// device answers. Before the driver leaves, the device is stopped and
+/// observed stopped, so the kernel never has to quarantine what it pinned.
 #include <ours/bti.hpp>
 #include <ours/port.hpp>
 #include <ours/process_args.hpp>
+#include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
 
 #include <array>
+#include <string_view>
 
 #include <cstdint>
 
+#include <ioservice/outgoing.hpp>
+#include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
+#include <ours_block/ours_block.hpp>
 #include <ours_resource/client.hpp>
 #include <ours_resource/ours_resource.hpp>
+#include <ustl/lazy_init.hpp>
+#include <wire/wire.hpp>
 
 namespace {
+using ours::Signals;
 using ours::Status;
 using ours::Uandle;
 
@@ -93,7 +110,7 @@ constexpr auto PAGE = usize{4096};
 constexpr auto SECTOR = usize{512};
 constexpr auto HEADER = usize{16};
 
-/// The queue's depth, as the device's own queue_num register says it. A
+/// The queue's depth, the driver's choice within the device's maximum. A
 /// legacy ring is the descriptor table, the available ring after it, and
 /// the used ring on the next page boundary, so it spans two pages whatever
 /// the depth: the used ring always starts on the page after the one the
@@ -105,12 +122,24 @@ constexpr auto AVAIL_BYTES = 6 + LEGACY_QUEUE_NUM * 2;
 constexpr auto USED_OFFSET = (AVAIL_OFFSET + AVAIL_BYTES + PAGE - 1) & ~(PAGE - 1);
 constexpr auto USED_END = USED_OFFSET + 6 + LEGACY_QUEUE_NUM * 8;
 
-/// The contiguous run: the ring's two pages, then the request in the
-/// region's tail.
-constexpr auto REGION_PAGES = usize{3};
+/// The contiguous run: the ring's pages, then the request behind the used
+/// ring, on a 16-byte boundary. Its tail holds the biggest request the
+/// protocol carries: header, MAX_READ_SECTORS blocks, status.
+constexpr auto REGION_PAGES = usize{4};
 constexpr auto REGION_BYTES = REGION_PAGES * PAGE;
-/// The request goes past the used ring, on a 16-byte boundary.
 constexpr auto REQUEST_OFFSET = (USED_END + 15) & ~usize{15};
+constexpr auto DATA_OFFSET = REQUEST_OFFSET + HEADER;
+
+/// How many clients may be connected at once. One is all dev's routing
+/// checks use; a client past them is refused with NoResource.
+constexpr auto MAX_CLIENTS = usize{2};
+
+/// The Loop's slots: one per connection to the outgoing directory, one per
+/// client.
+constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS;
+
+static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
+static_assert(DATA_OFFSET + ours_block::MAX_READ_BLOCKS * SECTOR + 1 <= REGION_BYTES);
 
 /// Configuration space as this driver sees it: a mapped window plus the
 /// offset of one function in it.
@@ -178,11 +207,6 @@ class LegacyRegs final {
         out32(0x08, static_cast<u32>(paddr >> 12));
     }
 
-    [[nodiscard]]
-    auto queue_pfn() const -> u32 {
-        return in32(0x08);
-    }
-
     /// QUEUE_NUM: the depth the device runs this queue at, read as its
     /// maximum and written as the driver's choice.
     [[nodiscard]]
@@ -210,6 +234,13 @@ class LegacyRegs final {
 
     auto set_status(u8 const value) const -> void {
         out8(0x12, value);
+    }
+
+    /// The device config's capacity, in blocks: two reads of the u64 the
+    /// legacy layout puts behind the common registers, without MSI-X enabled.
+    [[nodiscard]]
+    auto capacity() const -> u64 {
+        return static_cast<u64>(in32(0x14)) | (static_cast<u64>(in32(0x18)) << 32);
     }
 
   private:
@@ -251,12 +282,299 @@ class LegacyRegs final {
 
     u16 m_base;
 };
+
+/// The device, once brought up: everything the ring and the requests touch.
+/// One instance, in Storage below, and only the Loop's thread reaches it.
+class Device final {
+  public:
+    auto init(u16 const io_ports, ours::VirtAddr const region_map_address,
+              ours::PhysAddr const region_base) -> void {
+        m_regs = LegacyRegs{io_ports};
+        m_region_map = region_map_address;
+        m_region_phys = region_base;
+    }
+
+    /// The device's capacity, in blocks, for GetInfo.
+    [[nodiscard]]
+    auto blocks() const -> u64 {
+        return m_regs.capacity();
+    }
+
+    /// Reads |count| blocks starting at |lba| into the region's data area,
+    /// and returns the region offset the data landed at -- the caller reads
+    /// it there, through the same mapping. The whole request runs on the
+    /// caller's thread: the header and descriptors are written, the chain
+    /// offered, the queue rung, and the used ring polled until the answer
+    /// comes. Requests serialize on this, which one device queue makes true
+    /// anyway.
+    [[nodiscard]]
+    auto read_blocks(u64 const lba, usize const count) -> Status {
+        if (count == 0 || DATA_OFFSET + count * SECTOR + 1 > REGION_BYTES) {
+            return Status::InvArgs;
+        }
+        auto *const bytes = reinterpret_cast<volatile u8 *>(m_region_map);
+        // The header: a read, from |lba|.
+        *reinterpret_cast<volatile u32 *>(bytes + REQUEST_OFFSET) = 0;
+        *reinterpret_cast<volatile u32 *>(bytes + REQUEST_OFFSET + 4) = 0;
+        *reinterpret_cast<volatile u64 *>(bytes + REQUEST_OFFSET + 8) = lba;
+
+        auto const buf_base = m_region_phys + REQUEST_OFFSET;
+        auto const put64 = [&](usize index, usize field, u64 value) -> void {
+            *reinterpret_cast<volatile u64 *>(bytes + index * 16 + field) = value;
+        };
+        auto const put32 = [&](usize index, usize field, u32 value) -> void {
+            *reinterpret_cast<volatile u32 *>(bytes + index * 16 + field) = value;
+        };
+        auto const put16 = [&](usize index, usize field, u16 value) -> void {
+            *reinterpret_cast<volatile u16 *>(bytes + index * 16 + field) = value;
+        };
+        // desc[0]: the header, read by the device, chained to desc[1].
+        put64(0, 0, buf_base);
+        put32(0, 8, HEADER);
+        put16(0, 12, DESC_NEXT);
+        put16(0, 14, 1);
+        // desc[1]: the blocks, written by the device, chained to desc[2].
+        put64(1, 0, buf_base + HEADER);
+        put32(1, 8, static_cast<u32>(count * SECTOR));
+        put16(1, 12, DESC_NEXT | DESC_WRITE);
+        put16(1, 14, 2);
+        // desc[2]: the status byte, written by the device, end of the chain.
+        put64(2, 0, buf_base + count * SECTOR);
+        put32(2, 8, 1);
+        put16(2, 12, DESC_WRITE);
+        put16(2, 14, 0);
+
+        // The available ring: one offered chain, the device's cursor moving
+        // past it. x86 orders stores strongly; no barrier is asked for here.
+        auto *const avail = bytes + AVAIL_OFFSET;
+        auto const offered = static_cast<u16>((m_offered + 1) % LEGACY_QUEUE_NUM);
+        *reinterpret_cast<volatile u16 *>(avail + 4 + 2 * (m_offered % LEGACY_QUEUE_NUM)) = 0;
+        *reinterpret_cast<volatile u16 *>(avail + 2) = offered;
+        m_offered += 1;
+        m_regs.notify(0);
+
+        // Poll the used ring until the entry for this request comes.
+        // Interrupts come when the kernel can name this device's line; the
+        // poll is the interim shape.
+        auto *const used = bytes + USED_OFFSET;
+        for (auto tries = u32{0}; tries < 100'000'000; ++tries) {
+            if (*reinterpret_cast<volatile u16 const *>(used + 2) == static_cast<u16>(m_seen + 1)) {
+                m_seen += 1;
+                auto const status_byte = *reinterpret_cast<volatile u8 const *>(
+                    bytes + REQUEST_OFFSET + HEADER + count * SECTOR);
+                return status_byte == 0 ? Status::Ok : Status::BadState;
+            }
+            ort::spin_hint();
+        }
+        return Status::TimeOut;
+    }
+
+  private:
+    LegacyRegs m_regs = LegacyRegs{0};
+    ours::VirtAddr m_region_map = ours::VirtAddr{0};
+    ours::PhysAddr m_region_phys = ours::PhysAddr{0};
+    /// The chains offered so far, and the used entries seen so far: the two
+    /// cursors of the ring, the device's behind the driver's by exactly the
+    /// requests in flight.
+    u64 m_offered = 0;
+    u64 m_seen = 0;
+};
+
+/// The Block server: the connections ioservice::Outgoing hands it, each
+/// served on a Loop slot of its own, one message per on_signals(). The
+/// shape is the echo server's; the methods are ours.block's.
+class BlockServer final: public ioservice::Handler {
+  private:
+    class Client final: public loop::Waiter {
+      public:
+        BlockServer *server = nullptr;
+        Uandle channel = Uandle::Invalid;
+
+      private:
+        auto on_signals(Signals const observed) -> loop::Action override {
+            return server->serve(*this, observed);
+        }
+
+        auto on_rearm_failed(Status const) -> void override {
+            server->rearm_failed(*this);
+        }
+    };
+
+  public:
+    struct Storage {
+        std::array<Client, MAX_CLIENTS> clients;
+        std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
+        std::array<Uandle, wire::MAX_MESSAGE_HANDLES> request_handles;
+        std::array<u8, wire::MAX_MESSAGE_BYTES> reply_bytes;
+    };
+
+    BlockServer(Storage &storage, loop::Loop &loop, Device &device, ours::VirtAddr region_map)
+        : m_storage(&storage), m_loop(&loop), m_device(&device), m_region_map(region_map) {}
+
+    BlockServer(BlockServer const &) = delete;
+    auto operator=(BlockServer const &) -> BlockServer & = delete;
+
+  private:
+    auto connect(Uandle const channel) -> void override {
+        for (auto &client: m_storage->clients) {
+            if (client.channel != Uandle::Invalid) {
+                continue;
+            }
+            client.server = this;
+            client.channel = channel;
+            if (auto const added =
+                    m_loop->add(channel, Signals::Readable | Signals::PeerClosed, client);
+                added.is_err()) {
+                client.channel = Uandle::Invalid;
+                auto _ = ort::debug_line(
+                    {"virtio-blk: cannot wait on a client: ", ours::to_string(added.unwrap_err())});
+                close_with_epitaph(channel, added.unwrap_err());
+            }
+            return;
+        }
+        close_with_epitaph(channel, Status::NoResource);
+    }
+
+    static auto release(Client &client) -> loop::Action {
+        client.channel = Uandle::Invalid;
+        return loop::Action::Close;
+    }
+
+    auto rearm_failed(Client &client) -> void {
+        client.channel = Uandle::Invalid;
+        auto _ = ort::debug_line("virtio-blk: cannot wait on a client again");
+    }
+
+    auto serve(Client &client, Signals const observed) -> loop::Action {
+        if (!(observed & Signals::Readable)) {
+            return release(client);
+        }
+        auto &storage = *m_storage;
+        auto num_bytes = u32{0};
+        auto num_handles = u32{0};
+        if (auto const read = ours::channel_read(
+                client.channel, ours::ChannelReadOptions::None, storage.request_bytes.data(),
+                storage.request_handles.data(), static_cast<u32>(storage.request_bytes.size()),
+                static_cast<u32>(storage.request_handles.size()), &num_bytes, &num_handles);
+            read != Status::Ok) {
+            return release(client);
+        }
+        auto const message = wire::Message{
+            .bytes = std::span{storage.request_bytes}.first(num_bytes),
+            .handles = std::span{storage.request_handles}.first(num_handles),
+        };
+
+        // The header first: the direction byte decides whatever follows.
+        auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
+        if (header.is_err()) {
+            for (auto const handle: message.handles) {
+                auto _ = ours::handle_close(handle);
+            }
+            return release(client);
+        }
+        // Node.Close: the client's fsio::close sends it, and the answer must
+        // come before the connection ends.
+        if (header->ordinal == ours_block::CLOSE.ordinal) {
+            if (auto const request = ours_block::decode_close(message); request.is_ok()) {
+                auto const reply = ours_block::encode_close_reply(
+                    storage.reply_bytes, request->txid, {.status = Status::Ok});
+                if (reply.is_err() || write(client.channel, reply.unwrap()) != Status::Ok) {
+                    return release(client);
+                }
+                return release(client);
+            }
+        }
+        // A closed protocol: an ordinal it does not know, or a message its
+        // decoder refuses, closes the connection without an epitaph.
+        if (header->ordinal == ours_block::GET_INFO.ordinal) {
+            if (auto const request = ours_block::decode_get_info(message); request.is_ok()) {
+                return get_info(client, *request);
+            }
+        } else if (header.is_ok() && header->ordinal == ours_block::READ.ordinal) {
+            if (auto const request = ours_block::decode_read(message); request.is_ok()) {
+                return read(client, *request);
+            }
+        }
+        for (auto const handle: message.handles) {
+            auto _ = ours::handle_close(handle);
+        }
+        return release(client);
+    }
+
+    auto get_info(Client &client, ours_block::GetInfoRequest const &request) -> loop::Action {
+        auto const reply = ours_block::encode_get_info_reply(m_storage->reply_bytes, request.txid,
+                                                             {.status = Status::Ok,
+                                                              .block_size = ours_block::BLOCK_SIZE,
+                                                              .blocks = m_device->blocks()});
+        if (reply.is_err() || write(client.channel, reply.unwrap()) != Status::Ok) {
+            return release(client);
+        }
+        return loop::Action::Rearm;
+    }
+
+    auto read(Client &client, ours_block::ReadRequest const &request) -> loop::Action {
+        // The device writes the blocks into the region's data area, where
+        // this reply's encoder reads them from: no copy but the one into the
+        // reply.
+        auto const status = m_device->read_blocks(request.lba, request.count);
+        if (status != Status::Ok) {
+            auto const reply = ours_block::encode_read_reply(m_storage->reply_bytes, request.txid,
+                                                             {.status = status});
+            if (reply.is_err() || write(client.channel, reply.unwrap()) != Status::Ok) {
+                return release(client);
+            }
+            return loop::Action::Rearm;
+        }
+        auto const reply = ours_block::encode_read_reply(
+            m_storage->reply_bytes, request.txid,
+            {.status = Status::Ok,
+             .data = std::span{reinterpret_cast<u8 const *>(m_region_map + REQUEST_OFFSET + HEADER),
+                               request.count * SECTOR}});
+        if (reply.is_err() || write(client.channel, reply.unwrap()) != Status::Ok) {
+            return release(client);
+        }
+        return loop::Action::Rearm;
+    }
+
+    auto write(Uandle const channel, wire::Message const message) const -> Status {
+        return ours::channel_write(channel, ours::ChannelWriteOptions::None, message.bytes.data(),
+                                   static_cast<u32>(message.bytes.size()), message.handles.data(),
+                                   static_cast<u32>(message.handles.size()));
+    }
+
+    auto close_with_epitaph(Uandle const channel, Status const status) const -> void {
+        std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
+        if (auto const epitaph = wire::encode_epitaph(bytes, status); epitaph.is_ok()) {
+            auto _ = write(channel, epitaph.unwrap());
+        }
+        auto _ = ours::handle_close(channel);
+    }
+
+    Storage *m_storage;
+    loop::Loop *m_loop;
+    Device *m_device;
+    /// The region's CPU mapping, where the device leaves the data a Read
+    /// answers with.
+    ours::VirtAddr m_region_map = ours::VirtAddr{0};
+};
+} // namespace
+
+namespace {
+constinit ustl::LazyInit<ioservice::Outgoing::Storage> OUTGOING_STORAGE;
+constinit ustl::LazyInit<BlockServer::Storage> SERVER_STORAGE;
+constinit ustl::LazyInit<Device> DEVICE_STORAGE;
+constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 } // namespace
 
 auto main(int, char **) -> int {
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (vma == Uandle::Invalid) {
         auto _ = ort::debug_line("virtio-blk: started without VmaRoot");
+        return 1;
+    }
+    auto const directory_request = ort::take_startup_handle(ours::HandleType::DirectoryRequest, 0);
+    if (directory_request == Uandle::Invalid) {
+        auto _ = ort::debug_line("virtio-blk: started without a DirectoryRequest handle");
         return 1;
     }
     auto const mmio_resource = ours_resource::get(ours_resource::MMIO_PROTOCOL);
@@ -288,6 +606,7 @@ auto main(int, char **) -> int {
         status != Status::Ok) {
         auto _ =
             ort::debug_line({"virtio-blk: cannot map the ECAM window: ", ours::to_string(status)});
+        auto _ = ours::handle_close(iommu_resource.unwrap());
         auto _ = ours::handle_close(ioport_resource.unwrap());
         auto _ = ours::handle_close(mmio_resource.unwrap());
         return 1;
@@ -322,63 +641,58 @@ auto main(int, char **) -> int {
     auto _ = ours::handle_close(mmio_resource.unwrap());
     if (device_offset == 0) {
         // A boot without the device attached is an answer, not a failure: the
-        // boot check runs on images whose QEMU carries no disk.
+        // boot check runs on images whose QEMU carries no disk. The routes to
+        // this component's protocol answer NotFound while it is gone.
         auto _ = ort::debug_line("virtio-blk: no virtio block device on bus 0");
+        auto _ = ours::handle_close(iommu_resource.unwrap());
         auto _ = ours::handle_close(ioport_resource.unwrap());
         return 0;
     }
 
-    // Everything the shutdown owns, and the one place that puts it down. An
+    // The device, brought up once and served forever.
+    auto port = Uandle::Invalid;
+    if (auto const status = ours::port_create(ours::PortCreateOptions::None, &port);
+        status != Status::Ok) {
+        auto _ = ort::debug_line({"virtio-blk: cannot make its port: ", ours::to_string(status)});
+        auto _ = ours::handle_close(iommu_resource.unwrap());
+        auto _ = ours::handle_close(ioport_resource.unwrap());
+        return 1;
+    }
+    loop::Loop loop(port, SLOT_STORAGE);
+
+    // Everything the device owns, and the one place that puts it down. An
     // error path past the pin must stop the device and observe it stopped
     // before unpinning, or the kernel quarantines the memory.
-    struct Owned {
-        bool device_started = false;
-        Uandle iommu = Uandle::Invalid;
-        Uandle bti = Uandle::Invalid;
-        Uandle region_vmo = Uandle::Invalid;
-        Uandle region_pmt = Uandle::Invalid;
-        ours::VirtAddr region_map = ours::VirtAddr{0};
-    } owned;
-    auto cleanup = [&](Status const status) -> int {
-        if (owned.device_started) {
-            auto const regs = LegacyRegs{io_base};
-            regs.set_status(0);
-            for (auto tries = u32{0}; tries < 1'000'000; ++tries) {
-                if (regs.status() == 0) {
-                    break;
-                }
-                ort::spin_hint();
-            }
+    Uandle iommu = Uandle::Invalid;
+    Uandle bti = Uandle::Invalid;
+    Uandle region_vmo = Uandle::Invalid;
+    Uandle region_pmt = Uandle::Invalid;
+    ours::VirtAddr region_map = ours::VirtAddr{0};
+    auto fail = [&](Status const status) -> int {
+        if (region_pmt != Uandle::Invalid) {
+            auto _ = ours::pmt_unpin(region_pmt);
         }
-        if (owned.region_pmt != Uandle::Invalid) {
-            auto _ = ours::pmt_unpin(owned.region_pmt);
+        if (region_map != ours::VirtAddr{0}) {
+            auto _ = ours::vma_unmap(vma, region_map, REGION_BYTES);
         }
-        if (owned.region_map != ours::VirtAddr{0}) {
-            auto _ = ours::vma_unmap(vma, owned.region_map, REGION_BYTES);
+        if (region_vmo != Uandle::Invalid) {
+            auto _ = ours::handle_close(region_vmo);
         }
-        if (owned.region_vmo != Uandle::Invalid) {
-            auto _ = ours::handle_close(owned.region_vmo);
+        if (bti != Uandle::Invalid) {
+            auto _ = ours::handle_close(bti);
         }
-        if (owned.bti != Uandle::Invalid) {
-            auto _ = ours::handle_close(owned.bti);
+        if (iommu != Uandle::Invalid) {
+            auto _ = ours::handle_close(iommu);
         }
-        if (owned.iommu != Uandle::Invalid) {
-            auto _ = ours::handle_close(owned.iommu);
-        }
+        auto _ = ours::handle_close(iommu_resource.unwrap());
         auto _ = ours::handle_close(ioport_resource.unwrap());
-        if (status != Status::Ok) {
-            auto _ = ort::debug_line({"virtio-blk: failed: ", ours::to_string(status)});
-            return 1;
-        }
-        auto _ = ort::debug_line("virtio-blk: sector 0 read");
-        return 0;
+        auto _ = ort::debug_line({"virtio-blk: failed: ", ours::to_string(status)});
+        return 1;
     };
 
-    // Open the device's I/O ports to this process's threads.
     if (auto const status = ours::ioports_request(ioport_resource.unwrap(), io_base, 0x80);
         status != Status::Ok) {
-        auto _ = ort::debug_line({"virtio-blk: cannot open its ports: ", ours::to_string(status)});
-        return cleanup(status);
+        return fail(status);
     }
     auto const regs = LegacyRegs{io_base};
 
@@ -395,148 +709,69 @@ auto main(int, char **) -> int {
     (void)regs.host_features();
     regs.accept_no_features();
 
-    // The queue: selected, its maximum depth read from the device, the
-    // driver's depth written back, and the ring registered by page frame.
     regs.select_queue(0);
     auto const queue_max = regs.queue_num();
-    {
-        char num_text[10];
-        auto _ = ort::debug_line({"virtio-blk: queue 0 max ", ort::decimal(queue_max, num_text)});
-    }
     if (queue_max == 0) {
-        return cleanup(Status::OutOfRange);
+        return fail(Status::OutOfRange);
     }
     // The legacy depth is the driver's to choose, within the device's
     // maximum: written back before the ring is registered, so the device
     // computes the rings' addresses from the same depth this driver laid
     // them out with.
-    regs.set_queue_num(LEGACY_QUEUE_NUM);
+    regs.set_queue_num(static_cast<u16>(LEGACY_QUEUE_NUM));
 
-    // The DMA resources: a stub IOMMU and one BTI for this device.
-    if (auto const status = ours::iommu_create(iommu_resource.unwrap(), ours::IommuType::Stub,
-                                               nullptr, 0, &owned.iommu);
-        status != Status::Ok) {
-        return cleanup(status);
-    }
-    if (auto const status = ours::bti_create(owned.iommu, 0, 0, &owned.bti); status != Status::Ok) {
-        return cleanup(status);
-    }
     if (auto const status =
-            ours::vmo_create_contiguous(owned.bti, REGION_BYTES, 0, &owned.region_vmo);
+            ours::iommu_create(iommu_resource.unwrap(), ours::IommuType::Stub, nullptr, 0, &iommu);
         status != Status::Ok) {
-        return cleanup(status);
+        return fail(status);
+    }
+    if (auto const status = ours::bti_create(iommu, 0, 0, &bti); status != Status::Ok) {
+        return fail(status);
+    }
+    if (auto const status = ours::vmo_create_contiguous(bti, REGION_BYTES, 0, &region_vmo);
+        status != Status::Ok) {
+        return fail(status);
     }
     auto region_phys = ours::PhysAddr{0};
     if (auto const status =
-            ours::bti_pin(owned.bti,
+            ours::bti_pin(bti,
                           ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite |
                               ours::BtiPinOptions::Contiguous,
-                          owned.region_vmo, 0, REGION_BYTES, &region_phys, 1, &owned.region_pmt);
+                          region_vmo, 0, REGION_BYTES, &region_phys, 1, &region_pmt);
         status != Status::Ok) {
-        return cleanup(status);
+        return fail(status);
     }
     if (auto const status =
             ours::vma_map(vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite, 0,
-                          owned.region_vmo, 0, REGION_BYTES, &owned.region_map);
+                          region_vmo, 0, REGION_BYTES, &region_map);
         status != Status::Ok) {
-        return cleanup(status);
+        return fail(status);
     }
     regs.set_queue_pfn(region_phys);
-    {
-        char pfn_text[18];
-        char phys_text[18];
-        auto _ = ort::debug_line({"virtio-blk: pfn register reads ",
-                                  ort::hex(regs.queue_pfn(), pfn_text), " for region ",
-                                  ort::hex(region_phys, phys_text)});
-    }
 
     // The device is told the driver is ready, and may now be served.
     regs.set_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK | STATUS_DRIVER_OK);
-    owned.device_started = true;
 
-    // One read request: header (device reads), data and status (device
-    // writes), chained through the descriptor table. The request lives in
-    // the region's tail, past the used ring.
-    auto const buf_base = region_phys + REQUEST_OFFSET;
-    auto *const descriptors = reinterpret_cast<volatile u8 *>(owned.region_map);
-    auto const put64 = [&](usize const index, usize const field, u64 const value) -> void {
-        *reinterpret_cast<volatile u64 *>(descriptors + index * 16 + field) = value;
-    };
-    auto const put32 = [&](usize const index, usize const field, u32 const value) -> void {
-        *reinterpret_cast<volatile u32 *>(descriptors + index * 16 + field) = value;
-    };
-    auto const put16 = [&](usize const index, usize const field, u16 const value) -> void {
-        *reinterpret_cast<volatile u16 *>(descriptors + index * 16 + field) = value;
-    };
-    // The request reads sector 0, whose first bytes the image was given:
-    // what comes back is the end-to-end answer, checked against what was
-    // written there.
-    *reinterpret_cast<volatile u64 *>(owned.region_map + REQUEST_OFFSET + 8) = 0;
-    // desc[0]: the header, read by the device, chained to desc[1].
-    put64(0, 0, buf_base);
-    put32(0, 8, HEADER);
-    put16(0, 12, DESC_NEXT);
-    put16(0, 14, 1);
-    // desc[1]: the sector, written by the device, chained to desc[2].
-    put64(1, 0, buf_base + HEADER);
-    put32(1, 8, SECTOR);
-    put16(1, 12, DESC_NEXT | DESC_WRITE);
-    put16(1, 14, 2);
-    // desc[2]: the status byte, written by the device, end of the chain.
-    put64(2, 0, buf_base + HEADER + SECTOR);
-    put32(2, 8, 1);
-    put16(2, 12, DESC_WRITE);
-    put16(2, 14, 0);
+    // The server, over the device.
+    auto &storage = *SERVER_STORAGE.init();
+    auto &device = *DEVICE_STORAGE.init();
+    device.init(io_base, region_map, region_phys);
+    BlockServer server(storage, loop, device, region_map);
 
-    // The available ring: one offered chain, the device's cursor moving past
-    // it. x86 orders stores strongly; no barrier is asked for here.
-    auto *const avail = descriptors + AVAIL_OFFSET;
-    *reinterpret_cast<volatile u16 *>(avail + 2) = 1;
-    *reinterpret_cast<volatile u16 *>(avail + 4) = 0;
-
-    // Ring the queue.
-    regs.notify(0);
-
-    // Poll the used ring until the device answers. Interrupts come when the
-    // kernel can name this device's line; the poll is the interim shape.
-    auto *const used = descriptors + USED_OFFSET;
-    auto completed = false;
-    for (auto tries = u32{0}; tries < 100'000'000; ++tries) {
-        if (*reinterpret_cast<volatile u16 const *>(used + 2) != 0) {
-            completed = true;
-            break;
-        }
-        ort::spin_hint();
+    auto &outgoing_storage = *OUTGOING_STORAGE.init();
+    ioservice::Outgoing outgoing(outgoing_storage, loop);
+    if (auto const status = outgoing.add_protocol(ours_block::BLOCK_NAME, server);
+        status != Status::Ok) {
+        return fail(status);
     }
-    if (!completed) {
-        return cleanup(Status::TimeOut);
-    }
-    auto const used_id = *reinterpret_cast<volatile u32 const *>(used + 4);
-    auto const used_len = *reinterpret_cast<volatile u32 const *>(used + 8);
-    auto const status_byte =
-        *reinterpret_cast<volatile u8 const *>(owned.region_map + REQUEST_OFFSET + HEADER + SECTOR);
-    {
-        char id_text[18];
-        char len_text[18];
-        auto _ = ort::debug_line({"virtio-blk: used entry id ", ort::hex(used_id, id_text), " len ",
-                                  ort::hex(used_len, len_text)});
-    }
-    if (status_byte != 0) {
-        char status_text[10];
-        auto _ = ort::debug_line({"virtio-blk: the request failed with status ",
-                                  ort::decimal(status_byte, status_text)});
-        return cleanup(Status::BadState);
+    if (auto const status = outgoing.serve(directory_request); status != Status::Ok) {
+        return fail(status);
     }
 
-    // What came back, as the answer to the whole exercise.
-    auto read_bytes = std::array<u8, 16>{};
-    for (auto index = usize{0}; index < read_bytes.size(); ++index) {
-        read_bytes[index] = *reinterpret_cast<volatile u8 const *>(owned.region_map +
-                                                                   REQUEST_OFFSET + HEADER + index);
-    }
+    // Stop ends the program from inside an on_signals(); run() comes back
+    // only when the port itself fails.
+    auto _ = ort::debug_line({"virtio-blk: serving ", ours_block::BLOCK_NAME});
     auto _ = ort::debug_line(
-        {"virtio-blk: sector 0 starts \"",
-         std::string_view{reinterpret_cast<char const *>(read_bytes.data()), read_bytes.size()},
-         "\""});
-    return cleanup(Status::Ok);
+        {"virtio-blk: its Loop stopped: ", ours::to_string(loop.run(ours::INSTANT_INFINITE))});
+    return 1;
 }

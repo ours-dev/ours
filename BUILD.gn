@@ -79,6 +79,10 @@ group("default") {
     # hosted main()s, hence the host toolchain as for the tests above.
     "//system/lib/ustl:tests($host_toolchain)",
 
+    # ours.block's codec: the two methods and their replies, written, read
+    # back and broken on purpose, from bytes alone.
+    "//system/lib/ours.block:tests($host_toolchain)",
+
     # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
     # decision over two token values and its state is one std::atomic, so the
     # whole protocol runs on the host; the concurrent half it cannot reach is

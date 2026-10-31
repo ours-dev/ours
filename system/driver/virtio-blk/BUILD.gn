@@ -26,7 +26,11 @@ user_executable("virtio-blk") {
   sources = [ "virtio_blk.cpp" ]
   deps = [
     "//system/lib/fsio",
+    "//system/lib/ioservice:outgoing",
+    "//system/lib/loop",
+    "//system/lib/ours.block",
     "//system/lib/ours.resource:client",
+    "//system/lib/ustl",
     "//system/lib/wire",
   ]
 }
@@ -44,6 +48,17 @@ component_manifest("virtio-blk.cm") {
       },
       {
         protocol = "ours.resource.Ioport"
+      },
+    ]
+    capabilities = [
+      {
+        protocol = "ours.block.Block"
+      },
+    ]
+    expose = [
+      {
+        protocol = "ours.block.Block"
+        from = "self"
       },
     ]
   }

@@ -1,0 +1,45 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# ours.block -- the protocol the block device driver provides, encoded and
+# decoded by hand on //system/lib/wire, as the ours.* codecs under
+# //system/lib are (component-framework design D20). Bytes alone, no system
+# call, so it builds in every toolchain, the host one included, where its
+# tests run.
+#
+# Under //system/lib rather than beside a driver: any component that a route
+# hands a disk to speaks it, the same way every component speaks
+# ours.resource's protocols.
+source_set("ours.block") {
+  sources = [ "src/ours_block.cpp" ]
+
+  # Its messages are wire::Message and its methods wire::Methods, so a user
+  # of the codec is a user of the framing too.
+  public_deps = [
+    ":headers",
+    "//system/lib/wire",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/ours_block/ours_block.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:ours_block($host_toolchain)" ]
+}

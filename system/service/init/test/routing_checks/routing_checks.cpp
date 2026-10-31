@@ -68,6 +68,7 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
+#include <ours_block/ours_block.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
 #include <ours_io/ours_io.hpp>
 #include <ours_process/ours_process.hpp>
@@ -103,6 +104,7 @@ constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
 constexpr auto UNDECLARED = std::string_view{"/svc/ours.test.Undeclared"};
 /// echo's protocol, under the name root.cm's offer gives it.
 constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
+constexpr auto BLOCK = std::string_view{"/svc/ours.block.Block"};
 
 /// The line check_irq_resource() takes: ISA 3, COM2's, which is free, since
 /// QEMU has no COM2 with one serial port and the kernel keeps only its own
@@ -1439,6 +1441,79 @@ auto check_undeclared() -> void {
 /// The sibling route, end to end: EchoString from echo through root.cm's
 /// renaming offer and echo's expose, then Stop, then a route to echo that
 /// answers NotFound, as one to a component that has exited does (D23).
+
+/// The block device through its protocol, when the image carries a disk:
+/// GetInfo names a 512-byte block size, and Read brings block 0 back, whose
+/// first bytes the image was written with. The route answers NotFound while
+/// there is no disk, which is the image boot_check boots, so the check skips
+/// rather than fails there.
+auto check_block() -> void {
+    auto const connection = connect_or_fail(BLOCK);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    // GetInfo is the probe: a route to a disk that is not there answers
+    // NotFound (an epitaph on this connection, or the connection closed
+    // outright), and the check skips -- the images boot_check boots carry no
+    // disk. Anything else is the disk's to answer.
+    auto const txid = next_txid();
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const info = ours_block::encode_get_info(bytes, {.txid = txid});
+    if (!expect("Block.GetInfo", status_of(info), Status::Ok)) {
+        return;
+    }
+    Incoming reply;
+    auto const answered = call(connection, info.unwrap(), reply);
+    if (answered == Status::PeerClosed || answered == Status::NotFound) {
+        auto _ = ort::debug_line("routing_checks: no block device, skipped");
+        return;
+    }
+    if (!expect("Block.GetInfo", answered, Status::Ok)) {
+        return;
+    }
+    if (auto const epitaph = wire::decode_epitaph(reply.message()); epitaph.is_ok()) {
+        if (epitaph.unwrap() == Status::NotFound) {
+            auto _ = ort::debug_line("routing_checks: no block device, skipped");
+            return;
+        }
+        fail("Block.GetInfo: the route answered with an epitaph");
+        return;
+    }
+    auto const geometry = ours_block::decode_get_info_reply(reply.message(), txid);
+    if (!expect("Block.GetInfo's reply", status_of(geometry), Status::Ok) ||
+        !expect("Block.GetInfo's status", geometry->status, Status::Ok)) {
+        return;
+    }
+    if (geometry->block_size != ours_block::BLOCK_SIZE) {
+        fail("Block.GetInfo: the block size is not 512");
+        return;
+    }
+
+    auto const read_txid = next_txid();
+    auto const read = ours_block::encode_read(bytes, {.txid = read_txid, .lba = 0, .count = 1});
+    if (!expect("Block.Read", status_of(read), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Read", call(connection, read.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const block = ours_block::decode_read_reply(reply.message(), read_txid);
+    if (!expect("Block.Read's reply", status_of(block), Status::Ok) ||
+        !expect("Block.Read's status", block->status, Status::Ok)) {
+        return;
+    }
+    if (block->data.size() != ours_block::BLOCK_SIZE) {
+        fail("Block.Read: the block is not 512 bytes");
+        return;
+    }
+    if (block->data[0] != 'O' || block->data[1] != 'U' || block->data[2] != 'R' ||
+        block->data[3] != 'S') {
+        fail("Block.Read: block 0 does not start with the disk's magic");
+        return;
+    }
+    expect("close", fsio::close(connection), Status::Ok);
+}
+
 auto check_echo() -> void {
     auto const connection = connect_or_fail(ECHO);
     if (connection == Uandle::Invalid) {
@@ -1559,6 +1634,7 @@ auto main(int argc, char **argv) -> int {
         check_launcher_refusals(job);
         check_spawn(job);
     }
+    check_block();
     check_echo();
 
     if (FAILURES != 0) {
