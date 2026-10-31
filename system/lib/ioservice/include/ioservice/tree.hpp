@@ -163,6 +163,12 @@ class Tree final {
     [[nodiscard]]
     auto service(NodeId node) const -> ustl::Option<u64>;
 
+    /// How many more nodes the storage has room for: what is left before an
+    /// add answers NoResource. A caller that has to add several nodes or none
+    /// asks first, since a node, once added, stays.
+    [[nodiscard]]
+    auto available() const -> usize;
+
     /// The first child of the directory |directory|, in name order; none when
     /// it has none, or is not a directory of this tree.
     [[nodiscard]]

@@ -151,6 +151,30 @@ TEST(IoserviceTree, AddRefusals) {
     EXPECT_EQ(children(tree, root), (std::vector<std::string_view>{"a", "readme"}));
 }
 
+TEST(IoserviceTree, AvailableCountsTheRoomLeft) {
+    auto nodes = std::array<ioservice::Node, 4>{};
+    auto tree = Tree(nodes);
+    EXPECT_EQ(tree.available(), 4u);
+
+    auto const root = tree.add_root().unwrap();
+    EXPECT_EQ(tree.available(), 3u);
+    ASSERT_TRUE(tree.add_directory(root, "a").is_ok());
+    ASSERT_TRUE(tree.add_file(root, "b", file()).is_ok());
+    EXPECT_EQ(tree.available(), 1u);
+
+    // A refused add takes nothing.
+    EXPECT_EQ(tree.add_directory(root, "a").unwrap_err(), Status::AlreadyExists);
+    EXPECT_EQ(tree.add_directory(root, "").unwrap_err(), Status::InvArgs);
+    EXPECT_EQ(tree.available(), 1u);
+
+    // The last node goes, and then an add is refused for room, which is what
+    // available() == 0 says beforehand.
+    ASSERT_TRUE(tree.add_service(root, "c", 1).is_ok());
+    EXPECT_EQ(tree.available(), 0u);
+    EXPECT_EQ(tree.add_directory(root, "d").unwrap_err(), Status::NoResource);
+    EXPECT_EQ(tree.available(), 0u);
+}
+
 TEST(IoserviceTree, Lookup) {
     auto nodes = std::array<ioservice::Node, 8>{};
     auto tree = Tree(nodes);

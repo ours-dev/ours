@@ -97,8 +97,15 @@ auto Tree::find_child(Node const &directory, std::string_view const name) const
     return ustl::NONE;
 }
 
+auto Tree::available() const -> usize {
+    // The storage's size, and the index no node may have (NO_NODE ends a list
+    // of siblings), whichever comes first.
+    auto const limit = std::min<usize>(m_nodes.size(), index_of(detail::NO_NODE));
+    return limit - m_size;
+}
+
 auto Tree::allocate(Node const &node) -> ustl::Result<NodeId, Status> {
-    if (m_size >= m_nodes.size() || m_size >= index_of(detail::NO_NODE)) {
+    if (available() == 0) {
         return ustl::err(Status::NoResource);
     }
     auto const id = NodeId{static_cast<u32>(m_size)};

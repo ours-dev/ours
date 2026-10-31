@@ -17,13 +17,19 @@
 
 /// The provider side of a component (component-framework design,
 /// "Outgoing"): the outgoing directory a component serves on the
-/// DirectoryRequest handle its runner hands it, with one entry under svc/ per
-/// protocol it provides. A protocol's channel is handed to the program as
-/// it comes, and the program serves it however it likes.
+/// DirectoryRequest handle its runner hands it. It holds two kinds of thing:
+///
+///   svc/<name>         a protocol the component provides (add_protocol()):
+///                      a service node, whose Open hands the request's channel
+///                      to the program, which serves it however it likes;
+///   export/data/...    a directory capability the component declares
+///                      (add_directory()), at the path its declaration names,
+///                      with a tree under it that the program fills in.
 ///
 /// The objects:
-///   - the tree: the outgoing directory, its svc/ directory, and a service
-///     node per protocol, all in an Tree (<ioservice/tree.hpp>);
+///   - the tree: the outgoing directory, its svc/ directory, a service node
+///     per protocol and the tree of each directory capability, all in a
+///     Tree (<ioservice/tree.hpp>);
 ///   - the LoopServer that serves the tree on the Loop, with its
 ///     connection table: the DirectoryRequest channel is the first
 ///     connection, and an Open or Clone of a directory through it makes
@@ -39,12 +45,26 @@
 /// client and this component talk directly: the Handler usually adds the
 /// channel to the same Loop.
 ///
-/// An Open the directory refuses, the usual one being a name it does not
-/// serve because the manifest and add_protocol() spell the protocol
-/// differently, is answered with an epitaph the client reads and nothing
-/// else, so the Outgoing says so on the debug console with one line: the
-/// path the Open asked for and the status. It does that with the vDSO's
-/// debug_write, as it closes handles with the vDSO's handle_close, so a
+/// A directory capability is routed the same way, by one Open the root writes
+/// when the consumer starts: Open("export/data/<subdir>", rights |
+/// PROTOCOL_DIRECTORY, channel). The server walks the path like any other,
+/// and a directory node at its end makes a connection on the channel with
+/// exactly the rights asked for; from then on the consumer and this
+/// component talk directly, and every Open through that connection is held
+/// to its rights. The Open needs no code of this class: the tree is the whole
+/// of it.
+///
+/// An Open the outgoing directory itself refuses, the usual one being a name
+/// it does not serve because the manifest and add_protocol() or
+/// add_directory() spell the protocol or the path differently, is answered
+/// with an epitaph the client reads and nothing else, so the Outgoing says so
+/// on the debug console with one line: the path the Open asked for and the
+/// status. The outgoing directory here is the root and svc/, the two places
+/// the root's Opens arrive at. An Open refused through a connection of a
+/// directory capability, at or below its declared path, is one of the
+/// consumer's, who reads the epitaph: it is not said, so that a consumer
+/// cannot fill the provider's console. The line is written with the vDSO's
+/// debug_write, as handles are closed with the vDSO's handle_close, so a
 /// program has nothing to set up and the library needs no print helper of
 /// its own.
 ///
@@ -77,20 +97,36 @@ class Outgoing final: private LoopServer::Delegate {
     /// How many protocols one outgoing directory may serve.
     static constexpr auto MAX_PROTOCOLS = usize{8};
 
-    /// How many connections to the outgoing directory and its svc/ directory
-    /// may be open at once: the root's own, on the DirectoryRequest channel,
-    /// and whatever Clone or Open of a directory a client makes through it. An
+    /// How many connections to the outgoing directory may be open at once:
+    /// the root's own, on the DirectoryRequest channel, and whatever Clone or
+    /// Open of a directory is made through it. A directory capability spends
+    /// one on each consumer's entry, one on every directory or file a
+    /// consumer opens below it, and one on each clone made of an entry. An
     /// Open of a protocol makes none: its channel goes to the protocol's
-    /// Handler.
-    static constexpr auto MAX_CONNECTIONS = usize{4};
+    /// Handler. A program's Loop needs a slot for each, so its table is this
+    /// plus whatever else it waits on.
+    static constexpr auto MAX_CONNECTIONS = usize{32};
+
+    /// How many nodes the tree holds: the outgoing root, svc/ and a service
+    /// node per protocol (2 + MAX_PROTOCOLS of them once every protocol is
+    /// added), and the rest for the directory capabilities: a node for each
+    /// segment of a declared path, a segment two paths share once, and every
+    /// directory and file the program adds below it. The nodes are one pool,
+    /// not a share for each use, so a program that wants all its protocols
+    /// adds them before a large tree.
+    static constexpr auto MAX_NODES = usize{32};
+    static_assert(MAX_NODES >= 2 + MAX_PROTOCOLS);
 
     /// The directory protocols live in, inside the outgoing directory: where
     /// the root forwards an Open to.
     static constexpr auto SVC_DIRECTORY = std::string_view{"svc"};
 
     /// The rights the outgoing directory is served with: every right ours.io
-    /// defines. The tree holds no file, so none of them reaches anything to
-    /// write or run; whoever opens it is held to its own Open's rights.
+    /// defines. This is the ceiling of the root's first Open of a declared
+    /// directory, so the only limit on it is the route's own check. A file in
+    /// the tree is a VmoFile, which the server never lets be written and lets
+    /// be run only if it was added executable, so no right reaches anything
+    /// it should not; whoever opens it is held to its own Open's rights.
     static constexpr auto OUTGOING_RIGHTS =
         ours_io::Operations::Connect | ours_io::Operations::ReadBytes |
         ours_io::Operations::WriteBytes | ours_io::Operations::Execute |
@@ -98,17 +134,22 @@ class Outgoing final: private LoopServer::Delegate {
         ours_io::Operations::Enumerate | ours_io::Operations::Traverse |
         ours_io::Operations::ModifyDirectory;
 
-    /// Everything the directory keeps, sized by MAX_PROTOCOLS and
-    /// MAX_CONNECTIONS: about 9 KiB, most of it the two message buffers, so
-    /// a program declares it constinit, outside its stack. Only the Outgoing
-    /// reads or writes what is inside.
+    /// Everything the directory keeps, sized by MAX_NODES, MAX_PROTOCOLS and
+    /// MAX_CONNECTIONS: about 13 KB (13,000 bytes in a user program), two
+    /// thirds of it the message buffers, so a program declares it constinit,
+    /// outside its stack. Only the Outgoing reads or writes what is inside.
     struct Storage {
-        /// The outgoing directory, svc/, and a service node per protocol.
-        std::array<ioservice::Node, 2 + MAX_PROTOCOLS> nodes;
+        /// The outgoing directory, svc/, a service node per protocol, and the
+        /// trees of the directory capabilities.
+        std::array<ioservice::Node, MAX_NODES> nodes;
         std::array<ioservice::Connection, MAX_CONNECTIONS> connections;
         std::array<ioservice::LoopServer::Binding, MAX_CONNECTIONS> bindings;
         /// Indexed by the value each service node was added with.
         std::array<Handler *, MAX_PROTOCOLS> handlers;
+        /// The node at the end of each declared path, in the order they were
+        /// added. A declaration takes a node of its own, so there are never
+        /// more than MAX_NODES.
+        std::array<NodeId, MAX_NODES> directories;
         /// Where a connection's callback reads the one message it handles,
         /// and where the server builds its answer. One of each serves every
         /// callback, since one callback runs at a time.
@@ -138,6 +179,52 @@ class Outgoing final: private LoopServer::Delegate {
     [[nodiscard]]
     auto add_protocol(std::string_view name, Handler &handler) -> ours::Status;
 
+    /// Puts a directory capability's tree at its declared path: makes the
+    /// directory |path| ends at, and every directory missing on the way,
+    /// and returns the last one. |path| is the absolute path the manifest's
+    /// declaration states, such as "/export/data". The program fills the tree
+    /// below the returned node with the calls that follow, and the root's
+    /// Open of "export/data" and of what lies under it reaches it. Two paths
+    /// may share the directories they begin with, "/export/a" and
+    /// "/export/b" sharing export/.
+    ///
+    /// May be called before or after serve(). |path| is kept as views, one
+    /// for each directory's name, so its bytes must outlive the directory.
+    /// Refused with:
+    ///   - InvArgs when |path| is not absolute, is "/", or holds an empty,
+    ///     "." or ".." segment or a segment that is not a valid ours.io name
+    ///     (is_valid_path()), or is "/svc" or lies under it, where the
+    ///     protocols are (by segments: "/svcx" is fine);
+    ///   - AlreadyExists when |path| is equal to, above or below a directory
+    ///     already added, by segments ("/export/data2" is not below
+    ///     "/export/data"). The manifest compiler refuses the same overlaps;
+    ///     they are held again here because a program can be wrong without a
+    ///     manifest;
+    ///   - NoResource when the nodes it needs do not fit.
+    /// A refused call changes nothing: it is judged whole before the first
+    /// directory is made, since a node, once added, stays.
+    [[nodiscard]]
+    auto add_directory(std::string_view path) -> ustl::Result<NodeId, ours::Status>;
+
+    /// Adds an empty directory named |name| to |parent|, a node that
+    /// add_directory(path) or this call returned, so that the tree of a
+    /// directory capability can be filled in. Refused as Tree::add_directory()
+    /// refuses it. |name| is kept as a view, so its bytes must outlive the
+    /// directory.
+    ///
+    /// The tree itself is not reachable: the Outgoing keeps the service nodes
+    /// under svc/ pointing at the handlers it holds, and the declared paths
+    /// it has checked, and a program that could add a node anywhere could
+    /// break either.
+    [[nodiscard]]
+    auto add_directory(NodeId parent, std::string_view name) -> ustl::Result<NodeId, ours::Status>;
+
+    /// Adds a file named |name| serving |file| to |parent|, as above. The
+    /// bytes |name| and |file| view must outlive the directory.
+    [[nodiscard]]
+    auto add_file(NodeId parent, std::string_view name, VmoFile const &file)
+        -> ustl::Result<NodeId, ours::Status>;
+
     /// Serves the outgoing directory on |directory_request|, the server end
     /// of the DirectoryRequest startup handle, with OUTGOING_RIGHTS, and
     /// waits on it. The program takes the handle itself, with
@@ -157,10 +244,15 @@ class Outgoing final: private LoopServer::Delegate {
     auto connect(u64 service, ours::Uandle channel) -> void override;
 
     /// Writes the one line that says an Open of |path| was refused with
-    /// |status|. The directory is not named: the outgoing directory and its
-    /// svc/ are the only ones, and a client of either asks for a path.
+    /// |status|, when |directory| is the outgoing root or svc/. The directory
+    /// is not named: the root's Opens arrive at one of those two, and say a
+    /// path from it. An Open refused below a declared path is not said.
     auto open_refused(ioservice::NodeId directory, std::string_view path, ours::Status status)
         -> void override;
+
+    /// Whether |node| is the end of a path add_directory() was given.
+    [[nodiscard]]
+    auto is_declared(NodeId node) const -> bool;
 
     Storage *m_storage;
     Tree m_tree;
@@ -169,6 +261,8 @@ class Outgoing final: private LoopServer::Delegate {
     NodeId m_svc;
     /// The first m_protocols handlers are in use.
     usize m_protocols = 0;
+    /// The first m_declared entries of Storage::directories are in use.
+    usize m_declared = 0;
 };
 } // namespace ioservice
 

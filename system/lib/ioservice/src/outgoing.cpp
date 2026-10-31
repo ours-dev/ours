@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <span>
 
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
@@ -17,6 +18,20 @@ namespace {
     /// ours.io allows, which is more than one debug_write takes. A longer
     /// path is cut (printable_path()).
     constexpr auto MAX_SHOWN_PATH = usize{128};
+
+    /// Takes the first segment off |rest|, which holds a valid path or
+    /// nothing, and leaves what follows its '/'. So the last segment leaves
+    /// |rest| empty, and a valid path never has an empty one before it.
+    auto take_segment(std::string_view &rest) -> std::string_view {
+        auto const slash = rest.find('/');
+        auto const segment = rest.substr(0, slash);
+        if (slash == std::string_view::npos) {
+            rest = {};
+        } else {
+            rest.remove_prefix(slash + 1);
+        }
+        return segment;
+    }
 
     /// A line being assembled in the room one debug_write takes, with no
     /// allocation: the pieces are copied in, and a piece that does not fit is
@@ -79,6 +94,88 @@ auto Outgoing::add_protocol(std::string_view const name, Handler &handler) -> St
     return Status::Ok;
 }
 
+auto Outgoing::is_declared(NodeId const node) const -> bool {
+    auto const declared = std::span{m_storage->directories}.first(m_declared);
+    return std::ranges::find(declared, node) != declared.end();
+}
+
+auto Outgoing::add_directory(std::string_view const path) -> ustl::Result<NodeId, Status> {
+    // 1. The path's syntax, judged before the tree is looked at. The
+    //    relative form is what the tree walks: it is a valid ours.io path
+    //    but for ".", which is the directory itself and not a place to put
+    //    one.
+    if (!path.starts_with('/')) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto const relative = path.substr(1);
+    if (relative == "." || !is_valid_path(relative)) {
+        return ustl::err(Status::InvArgs);
+    }
+    // 2. svc/ is the protocols', by segment: "svcx" is a name of its own.
+    if (auto rest = relative; take_segment(rest) == SVC_DIRECTORY) {
+        return ustl::err(Status::InvArgs);
+    }
+
+    // 3. Where the path leaves the tree. Walked a segment at a time, so
+    //    "overlaps" means sharing nodes, never sharing leading bytes. Every
+    //    node outside svc/ is on the way to a declared directory, is one, or
+    //    is below one, so a path that meets a declared directory is equal to
+    //    it or below it, and one that is wholly there is above one.
+    auto parent = m_root;
+    auto missing = relative;
+    while (!missing.empty()) {
+        auto rest = missing;
+        auto const found = m_tree.lookup(parent, take_segment(rest));
+        if (found.is_err()) {
+            if (found.unwrap_err() != Status::NotFound) {
+                return ustl::err(found.unwrap_err());
+            }
+            break;
+        }
+        parent = found.unwrap();
+        if (is_declared(parent)) {
+            return ustl::err(Status::AlreadyExists);
+        }
+        missing = rest;
+    }
+    if (missing.empty()) {
+        return ustl::err(Status::AlreadyExists);
+    }
+
+    // 4. Room for the whole of what is missing, so that no refusal leaves
+    //    the first directories of the path behind.
+    auto needed = usize{1};
+    for (auto const byte: missing) {
+        if (byte == '/') {
+            needed += 1;
+        }
+    }
+    if (m_tree.available() < needed) {
+        return ustl::err(Status::NoResource);
+    }
+
+    // 5. Made. Nothing below can fail: the names are valid, none exists in
+    //    its parent, the parents are directories and there is room, and
+    //    unwrap() traps if one ever does. A declaration is a node, so the
+    //    table of them has room for it too.
+    while (!missing.empty()) {
+        parent = m_tree.add_directory(parent, take_segment(missing)).unwrap();
+    }
+    m_storage->directories[m_declared] = parent;
+    m_declared += 1;
+    return ustl::ok(parent);
+}
+
+auto Outgoing::add_directory(NodeId const parent, std::string_view const name)
+    -> ustl::Result<NodeId, Status> {
+    return m_tree.add_directory(parent, name);
+}
+
+auto Outgoing::add_file(NodeId const parent, std::string_view const name, VmoFile const &file)
+    -> ustl::Result<NodeId, Status> {
+    return m_tree.add_file(parent, name, file);
+}
+
 auto Outgoing::serve(Uandle const directory_request) -> Status {
     return m_server.serve(directory_request, m_root, OUTGOING_RIGHTS);
 }
@@ -96,7 +193,15 @@ auto Outgoing::connect(u64 const service, Uandle const channel) -> void {
     m_storage->handlers[service]->connect(channel);
 }
 
-auto Outgoing::open_refused(NodeId, std::string_view const path, Status const status) -> void {
+auto Outgoing::open_refused(NodeId const directory, std::string_view const path,
+                            Status const status) -> void {
+    // Only the Opens the root writes, which arrive at the outgoing root or
+    // at svc/. One through a connection of a declared directory is a
+    // consumer's, which it reads in its own epitaph, and saying it here would
+    // let any consumer with a connection fill the provider's console.
+    if (directory != m_root && directory != m_svc) {
+        return;
+    }
     // Every refusal, not only a name that is not served: the others (a path
     // that is not valid, rights the connection does not hold, flags that do
     // not fit the node) are as silent to the provider, and the status says
