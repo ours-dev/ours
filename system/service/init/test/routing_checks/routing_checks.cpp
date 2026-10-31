@@ -77,8 +77,10 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
+#include <ours_block/client.hpp>
 #include <ours_block/ours_block.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
+#include <ours_gpt/ours_gpt.hpp>
 #include <ours_io/ours_io.hpp>
 #include <ours_process/ours_process.hpp>
 #include <ours_resource/client.hpp>
@@ -1604,6 +1606,9 @@ auto check_undeclared() -> void {
 /// renaming offer and echo's expose, then Stop, then a route to echo that
 /// answers NotFound, as one to a component that has exited does (D23).
 
+auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE_BYTES> &bytes,
+                       Incoming &reply) -> void;
+
 /// The block device through its protocol, when the image carries a disk:
 /// GetInfo names a 512-byte block size, and Read brings block 0 back, whose
 /// first bytes the image was written with. The route answers NotFound while
@@ -1668,15 +1673,47 @@ auto check_block() -> void {
         fail("Block.Read: the block is not 512 bytes");
         return;
     }
-    if (block->data[0] != 'O' || block->data[1] != 'U' || block->data[2] != 'R' ||
-        block->data[3] != 'S') {
-        fail("Block.Read: block 0 does not start with the disk's magic");
+    if (block->data[0] == 'O' && block->data[1] == 'U' && block->data[2] == 'R' &&
+        block->data[3] == 'S') {
+        check_block_write(connection, bytes, reply);
         return;
     }
 
-    // Write a pattern to a scratch block and read it back: the write path
-    // end to end. LBA 1000 is far from the magic and from any GPT that a
-    // later milestone puts at the front of the disk.
+    // Not the plain disk's magic. A GPT disk's block 0 is its protective
+    // MBR, and check_gpt() takes that shape: one probe of LBA 1 says which
+    // disk this is. The plain checks stop here; the write check below runs
+    // on either shape.
+    auto const probe_txid = next_txid();
+    auto const probe = ours_block::encode_read(bytes, {.txid = probe_txid, .lba = 1, .count = 1});
+    if (!expect("Block.Read", status_of(probe), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Read", call(connection, probe.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const lba1 = ours_block::decode_read_reply(reply.message(), probe_txid);
+    if (!expect("Block.Read's reply", status_of(lba1), Status::Ok) ||
+        !expect("Block.Read's status", lba1->status, Status::Ok)) {
+        return;
+    }
+    constexpr auto GPT_SIGNATURE = std::string_view{"EFI PART"};
+    if (std::string_view{reinterpret_cast<char const *>(lba1->data.data()), GPT_SIGNATURE.size()} ==
+        GPT_SIGNATURE) {
+        auto _ = ort::debug_line("routing_checks: a GPT disk, plain checks skipped");
+        check_block_write(connection, bytes, reply);
+        return;
+    }
+    fail("Block.Read: block 0 does not start with the disk's magic");
+    expect("close", fsio::close(connection), Status::Ok);
+}
+
+/// The write path end to end, the part of the block check that runs on
+/// either disk shape: a pattern written to the scratch LBA 1000 and read
+/// back over its two blocks, the one before it untouched. LBA 1000 sits
+/// below the first partition a GPT image names and above the plain image's
+/// magic, so neither shape minds the traffic.
+auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE_BYTES> &bytes,
+                       Incoming &reply) -> void {
     constexpr auto SCRATCH_LBA = u64{1000};
     std::array<u8, ours_block::BLOCK_SIZE> pattern{};
     pattern.fill(0xA5);
@@ -1749,6 +1786,70 @@ auto check_block() -> void {
     auto _ = ort::debug_line({"virtio-blk: reply data [1004..1024): ", hex.data()});
     fail("Block.Write: the scratch block does not read back the pattern");
     expect("close", fsio::close(connection), Status::Ok);
+}
+
+/// The disk's partition table, when the disk carries one: ours.gpt reads the
+/// GPT through the block connection, and the ours-fs partition it names must
+/// hold the marker scripts/make_gpt_disk.py wrote at its first block. Skips
+/// on a disk with no GPT -- most disks the checks see are the plain image --
+/// and on no disk at all, as check_block does.
+auto check_gpt() -> void {
+    auto const connection = connect_or_fail(BLOCK);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    ours_block::Client block{connection};
+    auto geometry = block.get_info();
+    if (geometry.is_err() && geometry.unwrap_err() == Status::NotFound) {
+        auto _ = ort::debug_line("routing_checks: no block device, GPT skipped");
+        return;
+    }
+    if (!expect("Gpt.GetInfo", status_of(geometry), Status::Ok)) {
+        return;
+    }
+
+    auto partitions = std::array<ours_gpt::Partition, 8>{};
+    auto table = ours_gpt::read(block, geometry->block_size, partitions);
+    if (table.is_err() && table.unwrap_err() == Status::NotFound) {
+        auto _ = ort::debug_line("routing_checks: no GPT on the disk, skipped");
+        return;
+    }
+    if (!expect("Gpt.Read", status_of(table), Status::Ok)) {
+        return;
+    }
+
+    // The one partition the image was written with: ours-fs, at the LBA the
+    // script names, whose first block carries its marker.
+    auto found = ustl::Option<usize>{ustl::NONE};
+    for (auto index = usize{0}; index < *table; ++index) {
+        if (partitions[index].type == ours_gpt::Guid{ours_gpt::OURS_FS_TYPE_BYTES}) {
+            found = ustl::some(index);
+            break;
+        }
+    }
+    if (found.is_none()) {
+        fail("Gpt.Read: no partition of the ours-fs type");
+        return;
+    }
+    auto const &partition = partitions[*found];
+    if (std::string_view{partition.name.data()} != "ours-fs") {
+        fail("Gpt.Read: the ours-fs partition is not named ours-fs");
+        return;
+    }
+    if (partition.first_lba != 2048) {
+        fail("Gpt.Read: the ours-fs partition does not start at LBA 2048");
+        return;
+    }
+
+    auto marker = std::array<u8, ours_block::BLOCK_SIZE>{};
+    if (!expect("Gpt partition read", block.read(partition.first_lba, 1, marker), Status::Ok)) {
+        return;
+    }
+    constexpr auto MARKER = std::string_view{"OURS-fs-partition"};
+    if (std::string_view{reinterpret_cast<char const *>(marker.data()), MARKER.size()} != MARKER) {
+        fail("Gpt.Read: the partition does not start with its marker");
+        return;
+    }
 }
 
 auto check_echo() -> void {
@@ -2018,6 +2119,7 @@ auto main(int argc, char **argv) -> int {
         check_spawn(job);
     }
     check_block();
+    check_gpt();
     check_echo();
 
     if (FAILURES != 0) {

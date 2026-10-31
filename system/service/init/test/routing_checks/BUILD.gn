@@ -22,6 +22,8 @@ user_executable("routing_checks") {
     "//examples/echo/protocol",
     "//system/lib/fsio",
     "//system/lib/ours.block",
+    "//system/lib/ours.block:client",
+    "//system/lib/ours.gpt",
     "//system/lib/ours.io",
     "//system/lib/ours.resource:client",
     "//system/lib/ours.process",
