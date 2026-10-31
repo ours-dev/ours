@@ -9,6 +9,7 @@
 #include <ours/status.hpp>
 
 #include <functional>
+#include <type_traits>
 
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
@@ -279,6 +280,36 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         return m_aspace->get_lock();
     }
 
+    /// Walks every area and mapping under an area, depth first in address
+    /// order, each with its depth: the shape of an address-space dump. An
+    /// area is handed out before its children. The same climb by base as
+    /// VmArea::MappingEnumerator, so it keeps no stack whatever the nesting,
+    /// and like it must not be used by a walk that erases. Most callers want
+    /// descend().
+    class NodeEnumerator;
+
+    /// Calls |visit| for this node and every node under it, depth first in
+    /// address order: this one first, each area before its children. A mapping
+    /// has nothing under it and is visited alone.
+    ///
+    /// What a visitor looks like, in order of preference:
+    ///
+    ///   - one that takes a VmAreaOrMapping &, and tells the two apart itself
+    ///     (is_mapping());
+    ///   - one that has an overload for each kind, a VmMapping & and a VmArea
+    ///     &. Both are required, so that a kind added to a walk by mistake or
+    ///     left out of it is a compile error and not a silent skip; a visitor
+    ///     with nothing to do for one writes it empty.
+    ///
+    /// Each also takes, after the node, a `usize depth` if it wants one: 0 for
+    /// this node, one more for each level under it.
+    ///
+    /// Under the address space's lock, which |visit| runs with held; it must
+    /// not add or remove nodes. Defined in vm_area.hpp, which a caller
+    /// includes.
+    template <typename Visitor>
+    auto descend(Visitor &&visit) -> void;
+
     FORCE_INLINE
     auto check_range(VirtAddr base, usize size) const -> bool {
         return base >= m_base && size <= m_size && (base - m_base) <= m_size - size;
@@ -393,6 +424,40 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
             };
         }
     };
+
+  private:
+    /// |visit| called with |node| and, when it takes one, |depth|.
+    template <typename Node, typename Visitor>
+    static auto call_visitor(Visitor &visit, Node &node, usize const depth) -> void {
+        if constexpr (std::is_invocable_v<Visitor &, Node &, usize>) {
+            visit(node, depth);
+        } else {
+            static_assert(std::is_invocable_v<Visitor &, Node &>,
+                          "a visitor of descend() takes the node, and optionally its depth");
+            visit(node);
+        }
+    }
+
+    /// |node| as the kind it is, which the caller has found out: a cast whose
+    /// target is a template argument, so that it is checked where it is used
+    /// and not here, where VmMapping is not yet complete.
+    template <typename Kind>
+    static auto downcast(VmAreaOrMapping &node) -> Kind & {
+        return static_cast<Kind &>(node);
+    }
+
+    /// Hands |node| to |visit| by the shape descend() documents.
+    template <typename Visitor>
+    static auto visit_node(Visitor &visit, VmAreaOrMapping &node, usize const depth) -> void {
+        if constexpr (std::is_invocable_v<Visitor &, VmAreaOrMapping &, usize> ||
+                      std::is_invocable_v<Visitor &, VmAreaOrMapping &>) {
+            call_visitor(visit, node, depth);
+        } else if (node.is_mapping()) {
+            call_visitor(visit, downcast<VmMapping>(node), depth);
+        } else {
+            call_visitor(visit, downcast<VmArea>(node), depth);
+        }
+    }
 
   protected:
     /// `magic` is the derived class's own `gktl::magic<Derived>()`, passed in

@@ -249,3 +249,121 @@ None.
 1. `run()` calls `slot.m_waiter->on_signals()` with no null check. Which invariant between the slot's handle and its Waiter makes that safe, which three places keep it, and what became of the `InvArgs` that a null callback used to get?
 2. A `Slot` is 8 bytes smaller, yet over the whole task `init`'s `.data` + `.bss` grew by 64 bytes and its file by 23,664. Where do the 1,408 bytes this step saves go, which objects paid the 1,472 before, and what makes the file grow by so much more than the RAM?
 3. This step changed no registration site, yet `.text` fell by 400 bytes in both programs. Which functions went, and why is the dispatch itself one indirect branch shorter?
+
+## Title: the Loop tells a Waiter when it cannot arm its wait again, through a second virtual function, on_rearm_failed() (2026-10-30)
+
+**Files**
+- `system/lib/loop/include/loop/loop.hpp` — `Waiter` gains `virtual auto on_rearm_failed(ours::Status cause) -> void`, with an empty inline body; its comment says when it is called, what state the Loop leaves the slot in, and when it is not called; `run()`'s steps 3 and 4 and its invariants I1 and I3 say the new call; the namespace comment says it
+- `system/lib/loop/src/loop.cpp` — `run()` keeps the status of step 3's `arm()`, and step 4 calls `waiter.on_rearm_failed(rearm)` after the slot is free, for a failed re-arm only
+- `system/lib/loop/test/loop_test.cpp` — `Client` records what it is told; six tests are new (`RunTellsTheWaiterWhenTheRearmFailsForWantOfMemory`, `...OnABadHandle`, `RunDoesNotTellAWaiterThatAnsweredClose`, `RunLetsTheWaiterAddFromOnRearmFailed`, `AddDoesNotTellTheWaiterWhenItFails`, `Loop.DoesNotCallOrTellItsWaitersWhenItGoes`), and `RunClosesTheSlotWhenTheRearmFails` expects the log `a!ab`
+- `system/lib/loop/README.md` — names the second function
+- `system/service/init/realm.hpp` — the comments of `OutgoingWaiter` and `TerminatedWaiter` say why they keep the default (see `init.md` of this day)
+- the owners that override it are in `ioservice.md`, `init.md` and `echo.md` of this day
+
+**Symptom**
+Latent, cannot be triggered today; it needs `object_wait_async` to refuse the re-arm of a handle it accepted when the slot was added. If it did, `Loop::run()` closed the slot's handle and freed the slot, and the `Waiter`'s owner was not told. Every owner that keeps an entry per slot then kept the entry for ever: `ioservice::Server`'s connection table through `LoopServer::Binding` (128 entries in the root's /boot, 4 in each `Outgoing`), echo's client table (4), and the root's `ResourceServer` and `LauncherServer` connection pools (4 each, five resource servers). After enough failures such a server answers `NoResource` to everyone. This is item 1 of `docs/repairs/261029/ioservice.md` and item 2 of `docs/repairs/261029/echo.md`, both deleted by this change; the root's pools had the same defect and were never listed.
+
+**Cause**
+Why `arm()` can fail at all. A `Waiter` never arms its next wait: it answers `Rearm` and `run()` arms (step 3), so that a `Waiter` cannot leave a slot with two waits or none. `arm()` is `object_wait_async`, and the kernel can refuse it: `NoMemory`, which is the realistic one: `HandleTable::attach_port_observer()` allocates a `PortObserver` on every arm and answers `NoMemory` when it cannot (`kernel/object/handle_table.cpp:218`), so a process under memory pressure meets it on any arm; `BadHandle`, from the same function, when a `Waiter` broke the rules of `Waiter`'s comment and closed or sent away its own handle and still answered `Rearm`; and in theory `BadType`, `AccessDenied` and `InvArgs`, from the same function, and `NoResource`, from `PortDispatcher::register_observer()` when the port is at its observer limit (`kernel/object/port_dispatcher.cpp:341`, reached through `Dispatcher::attach_port_observer()`, `kernel/object/dispatcher.cpp:119`), which the build-time `static_assert` on the table's size rules out. Step 4 of `run()` closed the handle and freed the slot for all of them, as it must: with no wait armed and its packet taken, the slot has nothing left to be called for.
+
+Why only the `Waiter`'s owner can fix it. After the free, the Loop has nothing that names the entry: the slot is clear, and the key of the dead life matches nothing. The owner's entry (a `Connection` of the `Server`, a `ResourceConnection`, an echo `Client`) is reachable only through the `Waiter`, and the `Waiter` had been called for the last time. An owner cannot tell a re-arm that worked from one that did not: the answer `Rearm` is the same, and nothing is called when the wait fires again, since it will not. A poll would have to ask the Loop whether a slot is still in use, which is a second interface for what the Loop already knows at the one moment it matters. So the Loop tells it, once.
+
+Why a second virtual function and not the other two options of the repair item (the maintainer chose the first). (b) treating a failed re-arm as an answer of `Close` would have to call `on_signals()` again or invent a call that looks like one, and a `Waiter` cannot tell "I answered Close" from "the Loop closed me"; its release paths are written for the first. (c) leaving it would keep the comment of `handle()` honest and the defect. A second function says the true thing: the slot is gone, and why.
+
+Why the call comes last, after the close, the new generation and the free. Three reasons, each a test. The handle is closed, so its number may name another object by now: a `Waiter` told earlier could touch someone else's handle (`check_failed_rearm_is_told` checks that the fake kernel shows the handle closed and exactly one `handle_close` when the `Waiter` is told). The slot is free, so an `add()` from the callback takes it, even in a table that is full (`RunLetsTheWaiterAddFromOnRearmFailed` fills the table and replaces the slot's occupant from inside the call; moving the call before the slot is cleared fails it). And a packet of the dead life still queued behind is dropped by step 1's generation check and reaches neither the old nor the new `Waiter` (the same test queues one). The `Waiter` pointer and the status are therefore kept in locals before the slot is cleared, and `run()` does not touch `slot` after the call.
+
+Why it is not called in the other three cases. After `Close` the `Waiter` has released what it held in the same call, and it cannot be told twice. When `add()` fails the caller has the status and keeps the handle (it may still send an epitaph on it), and no slot was ever in use. And in the Loop's destructor nothing is running and the owners of the `Waiter`s go with the Loop; calling them from a destructor would run owner code while the owner is half torn down.
+
+Why the default does nothing, and the destructor and constructor are as they were. A `Waiter` that only ever answers `Close` (`OutgoingWaiter`, `TerminatedWaiter`) is never told, so it needs no override; an empty body also means a `Waiter` written before this change still compiles and behaves as it did. The destructor stays protected and non-virtual and the constructor `constexpr`, for the reasons of step 1.
+
+**Change**
+```cpp
+// loop.hpp, class Waiter
+virtual auto on_signals(ours::Signals observed) -> Action = 0;
+
+virtual auto on_rearm_failed([[maybe_unused]] ours::Status const cause) -> void {}
+
+// loop.cpp, run(): before
+if (action == Action::Rearm && arm(key.index()) == ours::Status::Ok) {
+    continue;
+}
+auto _ = ours::handle_close(slot.m_handle);
+slot.m_handle = ours::Uandle::Invalid;
+slot.m_signals = ours::Signals::None;
+slot.m_waiter = nullptr;
+++slot.m_generation;
+
+// loop.cpp, run(): after
+auto rearm = ours::Status::Ok;
+if (action == Action::Rearm) {
+    rearm = arm(key.index());
+    if (rearm == ours::Status::Ok) {
+        continue;
+    }
+}
+auto &waiter = *slot.m_waiter;
+auto _ = ours::handle_close(slot.m_handle);
+slot.m_handle = ours::Uandle::Invalid;
+slot.m_signals = ours::Signals::None;
+slot.m_waiter = nullptr;
+++slot.m_generation;
+if (action == Action::Rearm) {
+    waiter.on_rearm_failed(rearm);
+}
+```
+Reaching step 4 with `action == Rearm` means the re-arm failed, so that condition is the whole test for "tell". `run()` makes no new system call (I1) and the order of the four steps is as it was; I3 now reads "for that slot's own Waiter's answer, or for the failure of the re-arm that answer asked for". The comment on the close in step 4, "the Loop owns the handle, so the close cannot be refused", gained its one exception: a `Waiter` that closed the handle itself earns `BadHandle` from `arm()`, and then the Loop's close is refused too, and nothing is to be done about that either.
+
+What it costs. Per `Waiter` class: one slot in its vtable (8 bytes, and one relative relocation of 24 bytes in `.rela.dyn` for the function address). Per object: nothing; no `Waiter` grew, no field was added, and `.data` and `.bss` of both programs are byte-for-byte the same size. Per dispatch: nothing; `on_signals()` is called as before, and `on_rearm_failed()` is reached only on a failed re-arm. The default is one shared inline function (6 bytes in `init`). The programs measured, with `llvm-size -A` on the unstripped program and `llvm-objcopy --strip-all` for the file, built from `a8489d18` and from this tree with the same toolchain:
+
+| `init` | Before | After | Change |
+|---|---|---|---|
+| `.text` | 108,878 | 109,358 | +480 |
+| `.data` | 51,360 | 51,360 | 0 |
+| `.bss` | 55,296 | 55,296 | 0 |
+| `.data.rel.ro` | 2,296 | 2,624 | +328 |
+| `.rela.dyn` | 5,712 | 6,696 | +984 |
+| `.rodata` | 6,012 | 6,108 | +96 |
+| stripped file | 177,776 | 179,656 | +1,880 |
+
+| `echo_server` | Before | After | Change |
+|---|---|---|---|
+| `.text` | 25,294 | 25,470 | +176 |
+| `.data` | none | none | |
+| `.bss` | 22,960 | 22,960 | 0 |
+| `.data.rel.ro` | 392 | 408 | +16 |
+| `.rela.dyn` | 600 | 648 | +48 |
+| stripped file | 30,240 | 30,512 | +272 |
+
+Where `init`'s numbers come from (`llvm-nm -S` of both programs, `llvm-objdump`). `.text`: 434 bytes of functions and 46 of alignment. The new functions are `ResourceServer::rearm_failed` 154 and `LauncherServer::rearm_failed` 120 (each builds a debug line from several strings), `ResourceConnection::on_rearm_failed` 19, `LauncherConnection::on_rearm_failed` 15 and its thunk 16, `LoopServer::Binding::on_rearm_failed` 26, `LoopServer::rearm_failed` 15 and the shared default `loop::Waiter::on_rearm_failed` 6; `Loop::run()` grew from 313 to 379 bytes; `ours::to_string` shrank by 3. `.data.rel.ro` and `.rela.dyn`: of the 328 and 984 bytes, **48 and 144 are the second virtual function**: five vtables each grew by 8 bytes (`Binding`, `ResourceConnection`, `OutgoingWaiter`, `TerminatedWaiter`) or 16 (`LauncherConnection`, which has a slot and a thunk to its `Waiter` subobject), and each new slot is one relative relocation, 6 in all. **The other 280 and 840 bytes are not the Waiter.** They are a new 35-entry table of absolute addresses in `.data.rel.ro`, with its 35 relocations, that `ours::to_string(Status)` now indexes. `init` links one of three weak copies of that `inline` function (from `ort/start.cpp`, `launcher_server.cpp` and `realm.cpp`) and the copy it keeps changed from a table of 32-bit offsets in `.rodata` to a table of addresses; this commit added calls to `to_string` in `launcher_server.cpp`, and the compiler chose the other table there. I did not find why. It is recorded as `docs/repairs/261029/abi.md` item 1. `echo_server` keeps the first form of `to_string` (`.rela.dyn` +48 is its two new vtable slots), so its table is the Waiter's cost without it: +16 and +48 bytes of data and relocations, and +176 of code (`Client::on_rearm_failed` 49, `Binding` 26, `LoopServer::rearm_failed` 15, `run()` +66, and alignment). The file figures include the same: 1,120 of `init`'s 1,880 stripped bytes are `to_string`'s table and its relocations.
+
+The step-6 section of this file measured the whole Waiter task as +64 bytes of `.data` + `.bss` in `init`; this change adds none to that figure.
+
+Rejected: a pure virtual `on_rearm_failed()`, which every `Waiter` would have to write, including the two that answer only `Close` and the shell's `LoopClient`; and a flag in the answer (`Action::RearmOrDie`), which would let a `Waiter` choose to be told and still not release.
+
+**Reference**
+None, this project's own design: the second option of the repair item (`docs/repairs/261029/ioservice.md` item 1), chosen by the maintainer.
+
+**Verification**
+- `prebuilt/ninja/ninja -C out/bringup.x86` (the whole default build, with `-Werror`) and `phony/benches/benches` build. Host tests, run from `out/bringup.x86`: `host/obj/system/lib/loop/test/loop` 27 passed (the 21 of before and six new ones), `host/obj/system/lib/ioservice/test/loop_server` 15 (13 and two), `.../ioservice/test/outgoing` 9, `.../ioservice/test/ioservice` 42, `host/obj/system/service/init/test/autorun` 5, all with 0 failed.
+- Five deliberate breakages of `Loop::run()`, the source put back after each and compared with `cmp` against a saved copy. (M1) the call removed: 4 loop tests fail (`RunClosesTheSlotWhenTheRearmFails`, both `RunTellsTheWaiter...`, `RunLetsTheWaiterAddFromOnRearmFailed`). (M2) the guard `action == Rearm` removed, so a `Close` is told too: 5 fail (`RunClosesTheSlotWhenItsWaiterAnswersClose`, `...WithAMessageUnread`, `RunDoesNotTellAWaiterThatAnsweredClose`, `RunDropsAPacketForASlotFreedInItsNextLife`, `RunClosesOnlyTheSlotWhoseWaiterAnswersClose`). (M3) told before the handle is closed: 3 fail (both `RunTellsTheWaiter...` and `RunLetsTheWaiterAddFromOnRearmFailed`). (M4) told with `Ok` in place of the cause: 2 fail (both `RunTellsTheWaiter...`). (M5) told after the close but before the slot is cleared: 1 fails, `RunLetsTheWaiterAddFromOnRearmFailed`, and only it: it is the test that fills the table, and the other tests would not have noticed the order.
+- clang-tidy against `out/bringup.x86`, `--header-filter` on the four directories, on `loop.cpp`, `loop_test.cpp`, `loop_server.cpp`, `loop_server_test.cpp`, `fake_kernel.cpp`, `resource_server.cpp`, `launcher_server.cpp`, `realm.cpp` and `echo_server.cpp`: exit 0, no diagnostic. `scripts/format_cpp.py --check` on every C++ file changed: clean. `scripts/lint_docs.py --changed` on each document: no violations.
+- `python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/lw-notify`, in `.worktrees/lw-notify` with the final tree: build ok in 7.4 s; dbg PASS (shell finished at 5.7 s, 44 passed, 4 skipped, 0 failed, 0 error lines); rel PASS (4.9 s, 41 passed, 8 skipped, 0 failed, 6/6 required lines, 0 error lines); host tests PASS (148 programs passed, 0 failed). `rel.log` holds `routing_checks: passed`, `init: echo exited with 0` and `pc-ps2: key a`, and both logs hold `shell: loop checks passed`. No log holds a `cannot wait on a client again` line, as expected: no program breaks the rules and the kernel never refused a re-arm in the boot.
+- Not measured: the time of a dispatch (nothing on the path changed but `run()`'s step 4, which runs once per close), and anything on x86-64 hardware. The path itself is not run on the target: a failed re-arm needs the kernel to refuse `object_wait_async`, which it does for no program here; the host tests with the fake kernel are the proof of it.
+
+**Deliberately not done**
+- The shell's `check_loop()` has no check of the new path. The only way to reach it on the real kernel is a `Waiter` that breaks the rules (closes its own handle and answers `Rearm`, which earns `BadHandle`); that would be a check of the rule-breaking, and the host tests already pin the Loop's side with the fake.
+- No notification at the Loop's destructor, and none for `add()`'s failure; see the Cause.
+- `Delegate` (`LoopServer`) is not told: `write_failed()` exists so that a program can say a reply failed, and a failed re-arm is the Loop's, which the `Binding` answers by releasing. The owner that wants to log has the cause in `on_rearm_failed()`; the `ioservice` library has no debug-line dependency, so its `Binding` does not log.
+- The repair items' numbers are not closed up: after the deletions `ioservice.md` has items 2 and 3 and `echo.md` items 1 and 3, because documents cite them by number.
+- `docs/guide/` and `examples/hello` are not touched; another step updates them. The lines of `examples/echo/echo_server.cpp` that moved are listed in `.agents/tasks/loop-waiter-notify/RESULT.md`.
+
+**How it was found**
+None for the defect: it was recorded as latent when `LoopServer::Binding` and echo's `Client` became `Waiter`s (`ioservice.md` and `echo.md` of this day). The `to_string` table was found by looking for what the 984 bytes of `.rela.dyn` were: `llvm-readelf -r` counted 214 relative relocations before and 255 after, `llvm-nm -S` showed that only five vtables changed size (48 bytes), `llvm-nm`'s gaps in `.data.rel.ro` showed a 280-byte object with no symbol that had not been there, and `llvm-objdump -d` showed `ours::to_string` as the one function that loads from it, with the baseline's copy loading 32-bit offsets from `.rodata`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. `run()` calls `on_rearm_failed()` after the slot is cleared and its generation bumped, not before. Which three things go wrong if it is called earlier, and which test fails when the call sits between the close and the clearing?
+2. Why is a `Waiter` not told when `add()` fails, when the Loop's destructor frees its slots, or after its own `Close`, although in each the slot ends free?
+3. The second virtual function adds 8 bytes to a vtable, yet `init`'s `.rela.dyn` grew by 984 bytes. Which part is the Waiter's, which is not, and how can the same inline function compile to two different tables in two translation units?

@@ -1,5 +1,13 @@
+#include <ours/boot/options.hpp>
+#include <ours/init.hpp>
 #include <ours/lockdep.hpp>
+#include <ours/mm/gaf.hpp>
+#include <ours/mm/memmap.hpp>
 #include <ours/mm/page_queues.hpp>
+#include <ours/mm/pm_node.hpp>
+#include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vm_cow_pages.hpp>
+#include <ours/mm/vmm.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
@@ -7,24 +15,12 @@
 #include <atomic>
 #include <utility>
 
+#include <gktl/init_hook.hpp>
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours::mm {
-namespace {
-    /// How often aging runs, when something runs it.
-    ///
-    /// Placeholders, and knowingly so: the right numbers come from watching a
-    /// reclaimer decide badly because the generations were too coarse or too
-    /// fine, and there is no reclaimer to watch. The values are borrowed, not
-    /// measured, and where they come from is recorded in
-    /// docs/changes/261004/comment-rule.md. The pair exists because
-    /// aging wants a floor and a ceiling rather than a period: rotate no more
-    /// often than the floor however much pressure there is, and no less often
-    /// than the ceiling however little.
-    constexpr auto DEFAULT_MIN_ROTATE_TIME = 10_s;
-    constexpr auto DEFAULT_MAX_ROTATE_TIME = 60_s;
-} // namespace
-
 /// Held through Arc<> by PageQueues, so it has to be reference counted.
 ///
 /// Empty on purpose. The work splits across two threads: an MRU thread that
@@ -61,7 +57,11 @@ class PageQueues::LruRunner: public ustl::RefCounted<LruRunner, ustl::sync::Thre
         Shutdown,
     };
 
-    explicit LruRunner(PageQueues *owner) : m_owner(owner), m_state(State::Running) {}
+    explicit LruRunner(PageQueues *owner) : m_owner(owner), m_state(State::Running), m_thread() {}
+
+    /// Starts the thread that runs run(). The runner outlives it: PageQueues
+    /// holds the runner for the life of the node, and nothing stops either.
+    auto start() -> Status;
 
     auto run() -> void;
 
@@ -74,9 +74,26 @@ class PageQueues::LruRunner: public ustl::RefCounted<LruRunner, ustl::sync::Thre
   private:
     PageQueues *m_owner;
     std::atomic<State> m_state;
-    [[maybe_unused]]
     task::Thread *m_thread;
 };
+
+auto PageQueues::LruRunner::start() -> Status {
+    // Thread::spawn() takes a plain function: this one finds the runner it
+    // was handed and runs it.
+    m_thread = task::Thread::spawn(
+        "page-aging",
+        [](void *const self) -> i32 {
+            static_cast<Self *>(self)->run();
+            return 0;
+        },
+        this, task::DEFAULT_PRIORITY);
+    if (m_thread == nullptr) {
+        return Status::OutOfMem;
+    }
+    auto _ = m_thread->detach();
+    auto _ = m_thread->resume();
+    return Status::Ok;
+}
 
 auto PageQueues::LruRunner::run() -> void {
     // A worker loop runs *until* it is shut down. What stood here --
@@ -86,11 +103,11 @@ auto PageQueues::LruRunner::run() -> void {
     // did anything either way, just a CPU held at 100%.
     while (State::Running == m_state.load(std::memory_order_acquire)) {
         // Sleep to an instant rather than for an interval. The next rotation
-        // is due one minimum period after the last one actually happened, so
-        // this cadence does not drift by however long a rotation took, and a
+        // is due one period after the last one actually happened, so this
+        // cadence does not drift by however long a rotation took, and a
         // manual rotation pushes the next automatic one out instead of the
         // two landing on top of each other.
-        auto const next = m_owner->m_last_age_time + m_owner->m_min_rotate_time;
+        auto const next = m_owner->next_rotation_due();
         // Whether it slept the whole way or was woken is read from m_state
         // below, not from the answer.
         auto _ =
@@ -104,6 +121,14 @@ auto PageQueues::LruRunner::run() -> void {
             break;
         }
 
+        // A manual rotation may have moved the deadline while this slept.
+        if (time::SteadyClock::now() < m_owner->next_rotation_due()) {
+            continue;
+        }
+        // Harvested first, so that a page used through a mapping in the
+        // period that ends is in the newest generation when it becomes one
+        // older, as one the kernel used is.
+        auto _ = m_owner->harvest_accessed();
         m_owner->rotate_reclaimable_queues(AgeReason::Timeout);
     }
 
@@ -122,20 +147,166 @@ auto PageQueues::LruRunner::request_shutdown() -> void {
                                     std::memory_order_acquire);
 }
 
-auto PageQueues::start_runners() -> void {
-    // Deliberately starts nothing, and the queues do not need it to: every
-    // operation here is synchronous, and rotate_reclaimable_queues() can be
-    // driven by whoever wants aging to happen.
-    //
-    // A thread would age a ring that is always empty. Nothing files a page on
-    // these queues yet -- that waits on VmCowPages becoming a real page store
-    // -- and nothing reads a generation back, because there is no reclaimer:
-    // no swap, no pager, no compression, so there is nowhere for a reclaimed
-    // page to go. Aging exists to rank pages for a reclaimer to choose from,
-    // and a ranking with no consumer is a periodic wakeup for nothing.
-    //
-    // What has to be true before this starts the loop above is written down in
-    // docs/repairs/260903/mm.md.
+auto PageQueues::start_runners(Duration const period) -> Status {
+    DEBUG_ASSERT(!m_lru_runner, "the page queues' thread started twice");
+    {
+        Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+        m_aging_period = period;
+        // The first rotation one period from now, not at once: a page filed
+        // during boot is as young as the clock says.
+        m_last_age_time = time::SteadyClock::now();
+    }
+
+    auto *const runner = new (GAF_KERNEL) LruRunner(this);
+    if (runner == nullptr) {
+        return Status::OutOfMem;
+    }
+    m_lru_runner = ustl::Arc<LruRunner>::adopt(runner);
+    return m_lru_runner->start();
+}
+
+auto PageQueues::rotate() -> void {
+    auto _ = harvest_accessed();
+    rotate_reclaimable_queues(AgeReason::Manual);
+}
+
+struct PageQueues::Candidate {
+    ustl::Arc<VmCowPages> owner;
+    PgOff index = 0;
+    VmPage *page = nullptr;
+};
+
+auto PageQueues::adopt_first_locked(VmPage::List &list, Candidate *const out) -> bool {
+    for (auto &page: list) {
+        auto adopted =
+            ustl::Arc<VmCowPages>::try_adopt(static_cast<VmCowPages *>(page.get_object()));
+        if (!adopted) {
+            continue;
+        }
+        out->owner = ustl::move(adopted);
+        out->index = page.get_pgoff();
+        out->page = &page;
+        return true;
+    }
+    return false;
+}
+
+auto PageQueues::oldest_reclaimable(Candidate *const out) -> bool {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+
+    // Generations [lru, mru] are live, the oldest first, and in each the page
+    // filed first is first.
+    auto const lru = m_lrugen.load(std::memory_order_relaxed);
+    auto const mru = m_mrugen.load(std::memory_order_relaxed);
+    for (auto gen = lru; gen != mru + 1; ++gen) {
+        if (adopt_first_locked(m_queues[queue_index(reclaimable_queue(gen))], out)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto PageQueues::oldest_zero_fork(Candidate *const out) -> bool {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+
+    return adopt_first_locked(m_queues[queue_index(QueueType::AnonymousZeroFork)], out);
+}
+
+auto PageQueues::reclaim(usize const target_frames) -> usize {
+    usize freed = 0;
+    // Each page is looked at once at most. What stays is not on the ring, bar
+    // a page that should never be there, which reclaim_page() files as just
+    // used; the bound does not rest on it.
+    auto looks = count(PageKind::Reclaimable);
+    while (freed < target_frames && looks != 0) {
+        looks -= 1;
+        Candidate candidate;
+        if (!oldest_reclaimable(&candidate)) {
+            break;
+        }
+        if (VmCowPages::ReclaimResult::Evicted ==
+            candidate.owner->reclaim_page(candidate.index, candidate.page)) {
+            freed += 1;
+        }
+        // |candidate| goes here, with no lock of this node's held: its owner
+        // may be dying, and its destructor takes the queue lock.
+    }
+    return freed;
+}
+
+auto PageQueues::dedup_zero_pages(usize const target_frames) -> usize {
+    usize freed = 0;
+    // Each page once at most: one found not to be zero leaves the queue.
+    auto looks = count(PageKind::AnonymousZeroFork);
+    while (freed < target_frames && looks != 0) {
+        looks -= 1;
+        Candidate candidate;
+        if (!oldest_zero_fork(&candidate)) {
+            break;
+        }
+        if (VmCowPages::ReclaimResult::Evicted ==
+            candidate.owner->dedup_zero_page(candidate.index, candidate.page)) {
+            freed += 1;
+        }
+    }
+    return freed;
+}
+
+auto PageQueues::harvest_accessed() -> usize {
+    // The harvest takes a plain function: this one finds the queues it was
+    // handed and asks them.
+    auto const cleared = VmAspace::harvest_all_user_accessed(
+        [](void *const self, PhysAddr const pa, usize const size) -> bool {
+            return static_cast<Self *>(self)->take_accessed(pa, size);
+        },
+        this);
+    log::trace("mm: page queues harvested {} accessed bits", cleared);
+    return cleared;
+}
+
+/// Under the page table's lock, with the leaf present: the page cannot be
+/// freed meanwhile, since its object unmaps it, under that lock, before it
+/// frees it. So the descriptor is the page's, and mark_accessed() may read it.
+///
+/// A 2 MiB leaf maps one block, contiguous, so its pages are on one node: the
+/// first says whose they are.
+auto PageQueues::take_accessed(PhysAddr const pa, usize const size) -> bool {
+    auto *const first = phys_to_frame(pa);
+    if (first == get_zero_page()) {
+        return false;
+    }
+    if (&PmNode::node(first->nid())->page_queues() != this) {
+        return false;
+    }
+    for (usize offset = 0; offset < size; offset += PAGE_SIZE) {
+        mark_accessed(phys_to_frame(pa + offset));
+    }
+    return true;
+}
+
+auto PageQueues::age_of(VmPage const &page) const -> usize {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+    auto const type = QueueType(page.page_queue());
+    DEBUG_ASSERT(type >= QueueType::ReclaimableStart && type <= QueueType::ReclaimableEnd,
+                 "the age of a page that is not reclaimable");
+    auto const slot = queue_index(type) - queue_index(QueueType::ReclaimableStart);
+    auto const newest = m_mrugen.load(std::memory_order_relaxed) % NUM_RECLAIMABLE;
+    return (newest + NUM_RECLAIMABLE - slot) % NUM_RECLAIMABLE;
+}
+
+auto PageQueues::next_rotation_due() const -> TimePoint<> {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+    return m_last_age_time + m_aging_period;
+}
+
+auto to_string(PageQueues::AgeReason const reason) -> char const * {
+    switch (reason) {
+        case PageQueues::AgeReason::Timeout:
+            return "timeout";
+        case PageQueues::AgeReason::Manual:
+            return "manual";
+    }
+    return "?";
 }
 
 /// The two generation counters have to start equal: `mru - lru + 1` is the
@@ -154,13 +325,10 @@ PageQueues::PageQueues()
     ,
     // Value-initialised, i.e. the clock's epoch, not "now": this runs from
     // PmNode's constructor, which is far too early to read a clock that the
-    // platform has not brought up. The effect is that the first rotation
-    // deadline is already in the past, so a runner that does start rotates
-    // once straight away and settles into the cadence from there.
+    // platform has not brought up. start_runners() sets it when the clock is
+    // there.
     m_last_age_time()
-    , m_last_age_reason(AgeReason::Manual)
-    , m_min_rotate_time(duration_cast<Duration>(DEFAULT_MIN_ROTATE_TIME))
-    , m_max_rotate_time(duration_cast<Duration>(DEFAULT_MAX_ROTATE_TIME)) {}
+    , m_aging_period(Duration::zero()) {}
 
 PageQueues::~PageQueues() = default;
 
@@ -176,10 +344,72 @@ auto PageQueues::set_anonymous(VmPage *page, VmCowPages *object, PgOff pgoff) ->
     return set_queue_backlink_locked(page, object, pgoff, QueueType::Anonymous);
 }
 
+auto PageQueues::set_anonymous_zero_fork(VmPage *page, VmCowPages *object, PgOff pgoff) -> void {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+
+    return set_queue_backlink_locked(page, object, pgoff, QueueType::AnonymousZeroFork);
+}
+
 auto PageQueues::set_reclaimable(VmPage *page, VmCowPages *object, PgOff pgoff) -> void {
     Guard<sync::SpinLock, IrqSave> guard{get_lock()};
 
     return set_queue_backlink_locked(page, object, pgoff, mru_queue());
+}
+
+auto PageQueues::set_owner(VmPage *page, VmCowPages *object, PgOff pgoff) -> void {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+
+    if (QueueType::None == QueueType(page->page_queue())) {
+        return;
+    }
+    // Under the lock a reclaimer reads the backlink with: it must see the old
+    // owner or the new one, never half of each.
+    page->set_object(object);
+    page->set_pgoff(pgoff);
+}
+
+auto PageQueues::kind_of(VmPage const &page) const -> PageKind {
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+    auto const type = QueueType(page.page_queue());
+    switch (type) {
+        case QueueType::None:
+            return PageKind::None;
+        case QueueType::Anonymous:
+            return PageKind::Anonymous;
+        case QueueType::AnonymousZeroFork:
+            return PageKind::AnonymousZeroFork;
+        case QueueType::Pinned:
+            return PageKind::Pinned;
+        default:
+            break;
+    }
+    DEBUG_ASSERT(type >= QueueType::ReclaimableStart && type <= QueueType::ReclaimableEnd,
+                 "a page on queue {}, which does not exist", std::to_underlying(type));
+    return PageKind::Reclaimable;
+}
+
+auto PageQueues::count(PageKind const kind) const -> usize {
+    auto const size = [this](QueueType const type) {
+        return m_sizes[queue_index(type)].load(std::memory_order_relaxed);
+    };
+    switch (kind) {
+        case PageKind::None:
+            return 0;
+        case PageKind::Pinned:
+            return size(QueueType::Pinned);
+        case PageKind::Anonymous:
+            return size(QueueType::Anonymous);
+        case PageKind::AnonymousZeroFork:
+            return size(QueueType::AnonymousZeroFork);
+        case PageKind::Reclaimable:
+            break;
+    }
+    usize total = 0;
+    for (auto i = queue_index(QueueType::ReclaimableStart);
+         i <= queue_index(QueueType::ReclaimableEnd); ++i) {
+        total += m_sizes[i].load(std::memory_order_relaxed);
+    }
+    return total;
 }
 
 auto PageQueues::remove(VmPage *page) -> void {
@@ -322,7 +552,27 @@ auto PageQueues::rotate_reclaimable_queues(AgeReason reason) -> void {
     m_mrugen.store(mru + 1, std::memory_order_relaxed);
 
     m_last_age_time = time::SteadyClock::now();
-    m_last_age_reason = reason;
+    log::trace("mm: page queues aged ({}), generations {}..{}", to_string(reason),
+               m_lrugen.load(std::memory_order_relaxed), mru + 1);
 }
+
+namespace {
+    /// Starts every node's aging thread, once threads can be made.
+    INIT_CODE
+    auto start_page_aging() -> void {
+        auto const seconds = boot::options().page_aging_seconds();
+        auto const period = duration_cast<Duration>(Seconds(seconds));
+        PmNode::for_each_node(PmNode::State::Online, [seconds, period](PmNode &node) {
+            if (auto const status = node.page_queues().start_runners(period);
+                Status::Ok != status) {
+                log::error("mm: no page aging thread for node {}: {}", node.nid(),
+                           to_string(status));
+                return;
+            }
+            log::info("mm: node {} ages its pages every {} s", node.nid(), seconds);
+        });
+    }
+    GKTL_INIT_HOOK(PageAging, start_page_aging, gktl::InitLevel::Threading + 1);
+} // namespace
 
 } // namespace ours::mm

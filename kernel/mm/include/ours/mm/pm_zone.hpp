@@ -6,19 +6,21 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/node_mask.hpp>
 #include <ours/mm/pm_frame.hpp>
+#include <ours/mm/priv/alloc_request.hpp>
 #include <ours/mm/priv/frame_buddy.hpp>
-#include <ours/mm/priv/memory_allocation_context.hpp>
+#include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
 
 #include <array>
 #include <atomic>
+#include <utility>
 
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/collections/static_vec.hpp>
+#include <ustl/option.hpp>
 #include <ustl/traits/is_invocable.hpp>
 #include <ustl/views/span.hpp>
 
@@ -26,71 +28,6 @@ namespace ours::mm {
 template <usize MaxOrder>
 class FramePcpuCache {
     std::array<PmFrame::List, MaxOrder> lists_;
-};
-
-/// Locked wrapper around the pure FrameBuddy. The buddy algorithm
-/// itself is kept free of kernel globals so the exact same code runs in host unit
-/// tests without booting a kernel.
-class FrameSet {
-    using Self = FrameSet;
-
-  public:
-    /// The one way to make a frame set: for the zone's span of pfns, fixed
-    /// from the start. It holds no descriptor of its own: each free hands it
-    /// one, with its pfn, and the buddy finds the partners from there.
-    FrameSet(Pfn start_pfn, Pfn end_pfn) : m_buddy(start_pfn, end_pfn) {}
-
-    /// Unlocked, both of them. The zone is the only thing that reaches a
-    /// FrameSet, and it has a lock of its own; a second one here would serialise
-    /// the same accesses twice and -- worse -- give the allocator two places to
-    /// take a lock from, which is how a path that allocates and frees under one
-    /// call ends up deadlocking against itself.
-    ///
-    /// So the rule is: PmZone serialises, FrameSet does not. Anything calling
-    /// these holds the zone's lock.
-    auto acquire_frame(usize order) -> PmFrame * {
-        return m_buddy.allocate(order);
-    }
-
-    /// |pfn| is |frame|'s: the buddy cannot work it out from the descriptor.
-    auto release_frame(PmFrame *frame, Pfn pfn, usize order) -> void {
-        m_buddy.release(frame, pfn, order);
-    }
-
-    /// Whether some free block of at least |order| is on the lists, i.e.
-    /// whether an allocation of |order| could be served without reclaim.
-    /// Cheap: at most one emptiness test per order.
-    [[nodiscard]]
-    auto has_free_block(usize order) const -> bool {
-        for (auto o = order; o < FrameBuddy::NUM_ORDERS; ++o) {
-            if (!m_buddy.empty(o)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// Free frames, counted in pages: every block on every order's list,
-    /// weighted by its size. A walk of the lists, not a counter, so it costs
-    /// time proportional to how fragmented the set is -- for a diagnostic,
-    /// not a hot path.
-    [[nodiscard]]
-    auto free_frames() const -> usize {
-        usize total = 0;
-        for (usize order = 0; order < FrameBuddy::NUM_ORDERS; ++order) {
-            total += m_buddy.free_count(order) << order;
-        }
-        return total;
-    }
-
-    /// Free blocks of exactly |order|: the length of one list, walked.
-    [[nodiscard]]
-    auto free_blocks(usize order) const -> usize {
-        return m_buddy.free_count(order);
-    }
-
-  private:
-    FrameBuddy m_buddy;
 };
 
 /// `PmZone` describes a memory zone with a specific responsibility and
@@ -120,14 +57,14 @@ class PmZone {
     /// lines an allocation is admitted against. That classification is a
     /// different job -- what gets reported outward as memory pressure -- and
     /// nothing read these three, so the names were free to take.
-    enum class WaterMark {
+    enum class WaterMark : u32 {
         Min,
         Low,
         High,
         Count,
     };
 
-    PmZone(NnId, ZoneType, Pfn start_pfn, Pfn end_pfn, usize present_frame);
+    PmZone(NodeId, ZoneType, Pfn start_pfn, Pfn end_pfn, usize present_frame);
 
     ~PmZone();
 
@@ -147,16 +84,16 @@ class PmZone {
     /// The zone of node |nid| and type |type|, or null when the node has no
     /// memory of that type.
     [[nodiscard]]
-    static auto at(NnId const nid, ZoneType const type) -> PmZone * {
-        DEBUG_ASSERT(nid < NUMA_MAX_NODE && static_cast<usize>(type) < NR_ZONES_PER_NODE);
-        return TABLE[nid][static_cast<usize>(type)];
+    static auto at(NodeId const nid, ZoneType const type) -> PmZone * {
+        DEBUG_ASSERT(nid < MAX_NODES && std::to_underlying(type) < NR_ZONES_PER_NODE);
+        return TABLE[nid][std::to_underlying(type)];
     }
 
     /// Node |nid|'s row of the table, by type, with null where it has no
     /// memory of a type.
     [[nodiscard]]
-    static auto row(NnId const nid) -> ustl::views::Span<PmZone *const> {
-        DEBUG_ASSERT(nid < NUMA_MAX_NODE);
+    static auto row(NodeId const nid) -> ustl::views::Span<PmZone *const> {
+        DEBUG_ASSERT(nid < MAX_NODES);
         return {TABLE[nid].data(), TABLE[nid].size()};
     }
 
@@ -187,18 +124,27 @@ class PmZone {
     [[nodiscard]]
     auto contains(usize order) -> bool;
 
-    /// Allocate a frame whose order equals to |order|
+    /// A block of 2^|request.order()| frames for |request|, or none when this
+    /// zone cannot serve it.
+    ///
+    /// An Option and not a pointer because a zone failing to serve an
+    /// allocation is the ordinary case the walk is built around -- it is why
+    /// there is a fallback order at all -- and the caller has to handle it on
+    /// every call. Null for "nothing" is the shape that let a null travel
+    /// inside `ustl::ok()` as far as the frame-list loops; `ktl::Result` stays
+    /// where it belongs, at the public interface in pmm.hpp, where a caller
+    /// distinguishes one failure from another. Here there is one.
     ///
     /// Assumptions:
-    ///     1) |order| must be lesser than `MAX_FRAME_ORDER`.
-    auto alloc_frames(Gaf, usize, AllocationOptions, MemoryAllocationContext const &) -> PmFrame *;
+    ///     1) |request.order()| must be lesser than `MAX_FRAME_ORDER`.
+    auto alloc_frames(AllocRequest const &request) -> ustl::Option<PmFrame &>;
 
-    auto alloc_frame(Gaf gaf, usize order) -> PmFrame *;
+    auto alloc_frame(Gaf gaf, usize order) -> ustl::Option<PmFrame &>;
 
     auto free_frame(PmFrame *frame, usize order) -> void;
 
     /// How many frames this zone could hand out right now, counted out of the
-    /// buddy's free lists under the zone lock; see FrameSet::free_frames().
+    /// buddy's free lists under the zone lock.
     ///
     /// Exact as of the moment the lock is held, and that is what it costs: it
     /// takes the lock the allocation path wants. For the cheap approximate
@@ -216,7 +162,7 @@ class PmZone {
     auto find_frame(usize order) -> PmFrame *;
 
     FORCE_INLINE
-    constexpr auto which_node() const -> NnId {
+    constexpr auto which_node() const -> NodeId {
         return m_nid;
     }
 
@@ -309,7 +255,7 @@ class PmZone {
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto watermark(WaterMark const mark) const -> usize {
-        return m_watermarks[static_cast<usize>(mark)];
+        return m_watermarks[std::to_underlying(mark)];
     }
 
     /// Whether |order| frames can come out of this zone without taking its
@@ -373,13 +319,12 @@ class PmZone {
     /// type. Written by create_all() alone. A fixed grid of every node the
     /// kernel can have by every type, so that a zone is found by its two
     /// numbers, and a zone added later would only fill a cell.
-    static inline constinit std::array<std::array<PmZone *, NR_ZONES_PER_NODE>, NUMA_MAX_NODE>
-        TABLE{};
+    static inline constinit std::array<std::array<PmZone *, NR_ZONES_PER_NODE>, MAX_NODES> TABLE{};
 
     gktl::Canary m_canary;
     char const *m_name;
     PmNode *m_node;
-    NnId m_nid;
+    NodeId m_nid;
     Flags m_flags;
 
     sync::SpinLock m_lock;
@@ -407,18 +352,27 @@ class PmZone {
 
     std::atomic<usize> m_reserved_frames;
 
-    std::array<usize, static_cast<usize>(WaterMark::Count)> m_watermarks;
-
-    std::array<PmFrame::List, NR_FRAME_ORDERS> m_frames;
+    std::array<usize, std::to_underlying(WaterMark::Count)> m_watermarks;
 
     typedef FramePcpuCache<MAX_PCPU_CACHE_ORDER> PcpuCache;
     CpuLocal::PerCpu<PcpuCache> m_frame_cache;
 
-    /// The zone's free lists. The set has no lock of its own (see FrameSet),
-    /// so every use of it holds m_lock -- except the constructor's, which
-    /// gives it the zone's span before the zone is on any list another CPU
-    /// could reach it through.
-    FrameSet m_fset TA_GUARDED(m_lock);
+    /// The zone's free lists.
+    ///
+    /// The buddy has no lock of its own, on purpose, and this zone is the only
+    /// thing that reaches it: a second lock down there would serialise the
+    /// same accesses twice and, worse, give the allocator two places to take a
+    /// lock from, which is how a path that allocates and frees under one call
+    /// ends up deadlocking against itself. So the rule is that PmZone
+    /// serialises and the buddy does not, and every use of this member holds
+    /// m_lock -- except the constructor's, which gives it the zone's span
+    /// before the zone is on any list another CPU could reach it through.
+    ///
+    /// The buddy used to sit behind a FrameSet that added no behaviour of its
+    /// own: five methods over this member, three of them one-line forwards,
+    /// with one caller. Its two loops are now where they are used, in
+    /// count_free_frames() and contains().
+    FrameBuddy m_buddy TA_GUARDED(m_lock);
 };
 
 } // namespace ours::mm

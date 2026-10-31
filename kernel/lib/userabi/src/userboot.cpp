@@ -355,11 +355,12 @@ namespace {
     ///               to start;
     ///   SystemResource
     ///               one per System slot minted here, the slot in the
-    ///               handle_info's argument: VMEX and SAMPLING always, DEBUG
+    ///               handle_info's argument: VMEX, SAMPLING and IOMMU always, DEBUG
     ///               when the boot options ask for debug input;
-    ///   IrqResource, IoportResource
-    ///               the roots of the two ranged kinds a driver needs, every
-    ///               interrupt line and every I/O port;
+    ///   IrqResource, IoportResource, MmioResource
+    ///               the roots of the three ranged kinds a driver needs, every
+    ///               interrupt line, every I/O port and the physical address
+    ///               space;
     ///   VmoBootdata the boot image (make_boot_image_handle()), which userboot
     ///               unpacks the user BootFS from. The kernel gives it no
     ///               BootFS: it neither builds nor reads the user's.
@@ -385,8 +386,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[11];
-        u32 infos[11] = {};
+        ustl::Box<object::Handle> handles[13];
+        u32 infos[13] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -447,6 +448,17 @@ namespace {
         }
         infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_SAMPLING_BASE));
 
+        // iommu: the capability to make an IOMMU, and with it BTIs and pins of
+        // memory for a device to reach (iommu_create). Minted here only, as
+        // vmex is, since holding it is being trusted to point a device at
+        // memory; always, because nothing is pinned until someone holding it
+        // asks.
+        handles[count] = make_system_resource_handle(RSRC_SYSTEM_IOMMU_BASE, "iommu");
+        if (!handles[count]) {
+            return Status::NoResource;
+        }
+        infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_IOMMU_BASE));
+
         // The roots of the interrupt lines and of the I/O ports, minted here
         // only, as the System slots are: whoever holds them decides which
         // driver gets which line and which port. Neither reaches what the
@@ -464,6 +476,15 @@ namespace {
             return Status::NoResource;
         }
         infos[count++] = handle_info(HandleType::IoportResource, 0);
+        // The root of the physical address space, minted here only, like the
+        // two above. It reaches neither the kernel's own memory nor the
+        // devices the kernel drives: validate_ranged_resource() refuses both,
+        // the root included.
+        handles[count] = make_root_resource_handle(RsrcKind::MmIo, "mmio");
+        if (!handles[count]) {
+            return Status::NoResource;
+        }
+        infos[count++] = handle_info(HandleType::MmioResource, 0);
 
         // The previous boot's crash record, when there was one; taken out of
         // crashlog_vmo, so it is handed over once.

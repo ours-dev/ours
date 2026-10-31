@@ -22,16 +22,19 @@
 /// entry, whose status every open() under it answers.
 ///
 /// Its manifest also uses five protocols, which live in its /svc: the root's
-/// built-ins ours.process.Launcher, ours.resource.Debug, ours.resource.Irq
-/// and ours.resource.Ioport, which root.cm offers, and ours.test.Unoffered,
+/// built-ins ours.process.Launcher, ours.resource.Debug, ours.resource.Irq,
+/// ours.resource.Ioport and ours.resource.Mmio, which root.cm offers, and
+/// ours.test.Unoffered,
 /// which nobody offers. It checks that each ours.resource Get hands out a
 /// resource that does what it is for -- debug_read takes the Debug resource,
 /// interrupt_create takes the root of the interrupt lines for a free line,
 /// ioports_request takes the root of the I/O ports for a port the kernel
-/// does not drive -- that the unoffered protocol answers NotFound, that the
-/// Launcher refuses what it cannot start -- a VMO without Execute, a
-/// reserved handle type, too many handles, a malformed message -- and that
-/// fsio::spawn() refuses a program /boot does not have. Then it spawns itself
+/// does not drive, and object_get_info says the Mmio resource is the root of
+/// the physical address space -- that the unoffered protocol answers NotFound, that so
+/// does a name its manifest does not use at all, that the Launcher refuses
+/// what it cannot start -- a VMO without Execute, a reserved handle type,
+/// too many handles, a malformed message -- and that fsio::spawn() refuses a
+/// program /boot does not have. Then it spawns itself
 /// with the argument `child` through fsio::spawn(), and expects that copy,
 /// which only reads one file through the namespace it was handed, to exit 0.
 ///
@@ -96,6 +99,8 @@ constexpr auto MISSING = std::string_view{"/boot/bin/no_such_program"};
 /// The protocols its manifest uses, each at /svc/<name> (design D3).
 constexpr auto LAUNCHER = std::string_view{"/svc/ours.process.Launcher"};
 constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
+/// A name its manifest does not use at all, so its /svc has no entry for it.
+constexpr auto UNDECLARED = std::string_view{"/svc/ours.test.Undeclared"};
 /// echo's protocol, under the name root.cm's offer gives it.
 constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
 
@@ -554,6 +559,494 @@ auto check_ioport_resource() -> void {
     auto _ = ours::handle_close(ioport);
 }
 
+/// The physical address of the PCI Express configuration window (ECAM) on
+/// QEMU's q35, the machine this image runs on: bus 0, device 0, function 0,
+/// the host bridge, is its first 4 KiB. A driver reads where the window is from
+/// ACPI's MCFG table; nothing here parses it, so this test knows the machine
+/// and its firmware: the window is where the firmware puts it, and the image
+/// boots under edk2, which puts it at 0xE0000000 (SeaBIOS uses 0xB0000000).
+constexpr auto ECAM_BASE = ours::PhysAddr{0xE000'0000};
+
+/// What the host bridge's vendor id register, the first 16 bits of its
+/// configuration space, holds on QEMU's q35: Intel's.
+constexpr auto INTEL_VENDOR_ID = u16{0x8086};
+
+/// A page inside the RAM of any machine this image boots (the smallest has
+/// 512 MiB), and the local APIC's registers, which the kernel drives itself.
+/// No MmIo resource grants either.
+constexpr auto SOME_RAM = ours::PhysAddr{0x1000'0000};
+constexpr auto LOCAL_APIC = ours::PhysAddr{0xFEE0'0000};
+
+/// vmo_create_physical with the resource Mmio.Get gave, the window it makes
+/// and what that window refuses.
+///
+/// What no resource grants is refused whoever asks: RAM and the local APIC
+/// come back AccessDenied from the root of the physical address space, where
+/// the arguments that make no window come back InvArgs and OutOfRange, a
+/// handle of another kind BadType and no handle BadHandle. Then the window onto
+/// the host bridge's configuration space is mapped and its vendor id read:
+/// the first time anything in user space has read a device's register. The
+/// window is the hardware's, so vmo_read and a slice of it say NotSupported.
+auto check_physical_vmo(Uandle const vma, Uandle const mmio) -> void {
+    auto none = Uandle::Invalid;
+    expect("vmo_create_physical(the MmIo root, RAM)",
+           ours::vmo_create_physical(mmio, SOME_RAM, PAGE, &none), Status::AccessDenied);
+    expect("vmo_create_physical(the MmIo root, the local APIC)",
+           ours::vmo_create_physical(mmio, LOCAL_APIC, PAGE, &none), Status::AccessDenied);
+    expect("vmo_create_physical(an unaligned base)",
+           ours::vmo_create_physical(mmio, ECAM_BASE + 1, PAGE, &none), Status::InvArgs);
+    expect("vmo_create_physical(a size of part of a page)",
+           ours::vmo_create_physical(mmio, ECAM_BASE, PAGE + 1, &none), Status::InvArgs);
+    expect("vmo_create_physical(a size of 0)", ours::vmo_create_physical(mmio, ECAM_BASE, 0, &none),
+           Status::InvArgs);
+    expect("vmo_create_physical(a window past the top of the space)",
+           ours::vmo_create_physical(mmio, ~ours::PhysAddr{0} & ~(PAGE - 1), 2 * PAGE, &none),
+           Status::OutOfRange);
+    expect("vmo_create_physical(no resource)",
+           ours::vmo_create_physical(Uandle::Invalid, ECAM_BASE, PAGE, &none), Status::BadHandle);
+    if (auto const irq = get_resource(ours_resource::IRQ_PROTOCOL); irq != Uandle::Invalid) {
+        expect("vmo_create_physical(the Irq root)",
+               ours::vmo_create_physical(irq, ECAM_BASE, PAGE, &none), Status::BadType);
+        auto _ = ours::handle_close(irq);
+    }
+
+    auto window = Uandle::Invalid;
+    if (!expect("vmo_create_physical(the MmIo root, the host bridge's configuration space)",
+                ours::vmo_create_physical(mmio, ECAM_BASE, PAGE, &window), Status::Ok)) {
+        return;
+    }
+
+    auto size = u64{0};
+    expect("vmo_get_size(the window)", ours::vmo_get_size(window, &size), Status::Ok);
+    if (size != PAGE) {
+        fail("the window onto one page is not one page");
+    }
+
+    // Mapped with no MapRange: a physical VMO is always populated, and a map
+    // that left the window unfilled would die on the read below.
+    auto address = ours::VirtAddr{0};
+    if (expect("vma_map(the window, PermRead)",
+               ours::vma_map(vma, ours::VmOptions::PermRead, 0, window, 0, PAGE, &address),
+               Status::Ok)) {
+        auto const vendor = *reinterpret_cast<volatile u16 const *>(address);
+        if (vendor != INTEL_VENDOR_ID) {
+            char text[18];
+            auto _ = ort::debug_line(
+                {"routing_checks: the host bridge's vendor id reads ", ort::hex(vendor, text)});
+            fail("the vendor id of the host bridge, read through the window, is not Intel's");
+        }
+        expect("vma_unmap(the window)", ours::vma_unmap(vma, address, PAGE), Status::Ok);
+    }
+
+    std::array<u8, 4> bytes{};
+    expect("vmo_read(the window)", ours::vmo_read(window, bytes.data(), 0, bytes.size()),
+           Status::NotSupported);
+    auto slice = Uandle::Invalid;
+    expect("vmo_create_child(a slice of the window)",
+           ours::vmo_create_child(window, ours::VmoChildOptions::Slice, 0, PAGE, &slice),
+           Status::NotSupported);
+    auto _ = ours::handle_close(window);
+}
+
+/// The calls that put memory within a device's reach, refused as far as they
+/// can be without the System resource of the IOMMU slot, which this program is
+/// not given yet: a handle that names nothing, a handle of another kind, and a
+/// resource of another kind (the MmIo root). What a real IOMMU, BTI and pin
+/// answer needs that slot, and is checked where it arrives.
+///
+/// pmt_unpin closes a handle that is a pin and nothing else, so the VMO it is
+/// given here is still there afterwards, and is closed by this check.
+auto check_device_dma_refusals(Uandle const mmio) -> void {
+    auto vmo = Uandle::Invalid;
+    if (!expect("vmo_create(a page)", ours::vmo_create(PAGE, ours::VmoOptions::None, &vmo),
+                Status::Ok)) {
+        return;
+    }
+    auto none = Uandle::Invalid;
+    std::array<ours::PhysAddr, 1> addresses{};
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+
+    expect("iommu_create(no resource)",
+           ours::iommu_create(Uandle::Invalid, ours::IommuType::Stub, nullptr, 0, &none),
+           Status::BadHandle);
+    expect("iommu_create(a VMO)", ours::iommu_create(vmo, ours::IommuType::Stub, nullptr, 0, &none),
+           Status::BadType);
+    expect("iommu_create(the MmIo root)",
+           ours::iommu_create(mmio, ours::IommuType::Stub, nullptr, 0, &none), Status::BadType);
+    expect("bti_create(no IOMMU)", ours::bti_create(Uandle::Invalid, 0, 0, &none),
+           Status::BadHandle);
+    expect("bti_create(a VMO)", ours::bti_create(vmo, 0, 0, &none), Status::BadType);
+    expect("bti_pin(no BTI)",
+           ours::bti_pin(Uandle::Invalid, RW, vmo, 0, PAGE, addresses.data(), 1, &none),
+           Status::BadHandle);
+    expect("bti_pin(a VMO as the BTI)",
+           ours::bti_pin(vmo, RW, vmo, 0, PAGE, addresses.data(), 1, &none), Status::BadType);
+    expect("bti_release_quarantine(no BTI)", ours::bti_release_quarantine(Uandle::Invalid),
+           Status::BadHandle);
+    expect("bti_release_quarantine(a VMO)", ours::bti_release_quarantine(vmo), Status::BadType);
+    expect("pmt_unpin(no handle)", ours::pmt_unpin(Uandle::Invalid), Status::BadHandle);
+    if (none != Uandle::Invalid) {
+        fail("a refused call wrote a handle");
+    }
+
+    expect("pmt_unpin(a VMO)", ours::pmt_unpin(vmo), Status::BadType);
+    auto size = u64{0};
+    expect("vmo_get_size(the VMO pmt_unpin was given)", ours::vmo_get_size(vmo, &size), Status::Ok);
+    auto _ = ours::handle_close(vmo);
+}
+
+/// Mmio.Get answers with the root of the physical address space: an MmIo
+/// resource of base 0 and size 0. The kernel is asked what the resource is,
+/// which shows the root did not hand out the root of another kind in its place,
+/// and then it is used: check_physical_vmo(), and as the wrong kind of resource
+/// for the calls that want a System one: check_device_dma_refusals().
+auto check_mmio_resource(Uandle const vma) -> void {
+    auto const mmio = get_resource(ours_resource::MMIO_PROTOCOL);
+    if (mmio == Uandle::Invalid) {
+        return;
+    }
+    ours::InfoResource info{};
+    auto actual = usize{0};
+    auto available = usize{0};
+    if (expect("object_get_info(the resource Mmio.Get gave)",
+               ours::object_get_info(mmio, ours::InfoTopic::Resource, &info, sizeof(info), &actual,
+                                     &available),
+               Status::Ok)) {
+        if (info.kind != ours::RsrcKind::MmIo || info.base != 0 || info.size != 0) {
+            fail("the resource Mmio.Get gave is not the root of the physical address space");
+        }
+    }
+    if (vma == Uandle::Invalid) {
+        fail("started without VmaRoot, so the MmIo root has nothing to map into");
+    } else {
+        check_physical_vmo(vma, mmio);
+    }
+    check_device_dma_refusals(mmio);
+    auto _ = ours::handle_close(mmio);
+}
+
+/// The pages the DMA checks pin, and what a physical address of one looks like.
+constexpr auto DMA_PAGES = usize{4};
+
+/// A second handle to |handle| with |rights|, or Invalid after saying why not.
+auto narrowed(Uandle const handle, ours::Rights const rights) -> Uandle {
+    auto copy = Uandle::Invalid;
+    if (!expect("handle_duplicate(narrowed)", ours::handle_duplicate(handle, rights, &copy),
+                Status::Ok)) {
+        return Uandle::Invalid;
+    }
+    return copy;
+}
+
+/// Whether anything of |vmo| is pinned: a snapshot of a VMO with a pinned page
+/// is refused (BadState), and made when nothing is. The child is closed.
+auto is_pinned(Uandle const vmo) -> bool {
+    auto child = Uandle::Invalid;
+    auto const status =
+        ours::vmo_create_child(vmo, ours::VmoChildOptions::SnapshotOnWrite, 0, PAGE, &child);
+    if (status == Status::Ok) {
+        auto _ = ours::handle_close(child);
+        return false;
+    }
+    if (status != Status::BadState) {
+        fail("vmo_create_child(a snapshot, to see whether it is pinned)", status, Status::BadState);
+    }
+    return true;
+}
+
+/// bti_pin with |bti|, and everything it refuses without pinning a page: the
+/// options, the arguments, the count of addresses, the rights on the BTI and
+/// on the VMO, and the order in which they are asked.
+auto check_pin_refusals(Uandle const bti, Uandle const vmo) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    std::array<ours::PhysAddr, 2 * DMA_PAGES> addresses{};
+    auto none = Uandle::Invalid;
+    auto const ask = [&](ours::BtiPinOptions const options, Uandle const from, u64 const offset,
+                         u64 const size, usize const count) {
+        return ours::bti_pin(bti, options, from, offset, size, addresses.data(), count, &none);
+    };
+
+    expect("bti_pin(no Perm bit)", ask(ours::BtiPinOptions::None, vmo, 0, PAGE, 1),
+           Status::InvArgs);
+    expect("bti_pin(Compress alone)", ask(ours::BtiPinOptions::Compress, vmo, 0, PAGE, 1),
+           Status::InvArgs);
+    expect("bti_pin(an option that means nothing)",
+           ask(RW | static_cast<ours::BtiPinOptions>(1U << 9), vmo, 0, PAGE, 1), Status::InvArgs);
+    expect(
+        "bti_pin(Compress with Contiguous)",
+        ask(RW | ours::BtiPinOptions::Compress | ours::BtiPinOptions::Contiguous, vmo, 0, PAGE, 1),
+        Status::InvArgs);
+    expect("bti_pin(an unaligned offset)", ask(RW, vmo, 1, PAGE, 1), Status::InvArgs);
+    expect("bti_pin(a size of 0)", ask(RW, vmo, 0, 0, 0), Status::InvArgs);
+    expect("bti_pin(a size of part of a page)", ask(RW, vmo, 0, PAGE + 1, 1), Status::InvArgs);
+    expect("bti_pin(one address too few)", ask(RW, vmo, 0, DMA_PAGES * PAGE, DMA_PAGES - 1),
+           Status::InvArgs);
+    expect("bti_pin(one address too many)", ask(RW, vmo, 0, DMA_PAGES * PAGE, DMA_PAGES + 1),
+           Status::InvArgs);
+    expect("bti_pin(a range past the end)", ask(RW, vmo, 0, (DMA_PAGES + 1) * PAGE, DMA_PAGES + 1),
+           Status::OutOfRange);
+    expect("bti_pin(a range that starts at the end)", ask(RW, vmo, DMA_PAGES * PAGE, PAGE, 1),
+           Status::OutOfRange);
+
+    // The size bounds the call, not only the count: Contiguous is one address
+    // for any size.
+    auto huge = Uandle::Invalid;
+    if (expect(
+            "vmo_create(one page more than a pin may be)",
+            ours::vmo_create((ours::BTI_PIN_MAX_PAGES + 1) * PAGE, ours::VmoOptions::None, &huge),
+            Status::Ok)) {
+        expect("bti_pin(Contiguous over more pages than a pin may be)",
+               ask(RW | ours::BtiPinOptions::Contiguous, huge, 0,
+                   (ours::BTI_PIN_MAX_PAGES + 1) * PAGE, 1),
+               Status::InvArgs);
+        auto _ = ours::handle_close(huge);
+    }
+
+    // Rights: what the device may do is limited by what this program may.
+    auto const read_only = narrowed(vmo, ours::Rights::Read | ours::Rights::Map);
+    auto const no_map = narrowed(vmo, ours::Rights::Read | ours::Rights::Write);
+    auto const bti_no_map = narrowed(bti, ours::Rights::Write);
+    if (read_only != Uandle::Invalid) {
+        expect("bti_pin(PermWrite over a VMO that cannot be written)",
+               ask(RW, read_only, 0, PAGE, 1), Status::AccessDenied);
+        expect("bti_pin(PermWrite alone over a VMO that cannot be written)",
+               ask(ours::BtiPinOptions::PermWrite, read_only, 0, PAGE, 1), Status::AccessDenied);
+        auto _ = ours::handle_close(read_only);
+    }
+    if (no_map != Uandle::Invalid) {
+        expect("bti_pin(a VMO without Map)", ask(RW, no_map, 0, PAGE, 1), Status::AccessDenied);
+        auto _ = ours::handle_close(no_map);
+    }
+    if (bti_no_map != Uandle::Invalid) {
+        expect("bti_pin(a BTI without Map)",
+               ours::bti_pin(bti_no_map, RW, vmo, 0, PAGE, addresses.data(), 1, &none),
+               Status::AccessDenied);
+        // The BTI is looked at first: its answer is the one given when the VMO
+        // handle is bad as well.
+        expect("bti_pin(a BTI without Map, and no VMO)",
+               ours::bti_pin(bti_no_map, RW, Uandle::Invalid, 0, PAGE, addresses.data(), 1, &none),
+               Status::AccessDenied);
+        auto _ = ours::handle_close(bti_no_map);
+    }
+    expect("bti_pin(no VMO)", ask(RW, Uandle::Invalid, 0, PAGE, 1), Status::BadHandle);
+    expect("bti_pin(a BTI where the VMO is wanted)", ask(RW, bti, 0, PAGE, 1), Status::BadType);
+
+    if (none != Uandle::Invalid) {
+        fail("a refused bti_pin wrote a handle");
+    }
+    if (is_pinned(vmo)) {
+        fail("a refused bti_pin left a page pinned");
+    }
+}
+
+/// The addresses a pin hands over are the pages' own: distinct, whole pages,
+/// and the same again for a second pin of the same pages, which do not move.
+/// Compress is the same here as no option; Contiguous is one address, and for
+/// four pages it is Ok exactly when the four are one run.
+auto check_pin_addresses(Uandle const bti, Uandle const vmo) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    std::array<ours::PhysAddr, DMA_PAGES> first{};
+    std::array<ours::PhysAddr, DMA_PAGES> again{};
+    std::array<ours::PhysAddr, DMA_PAGES> compressed{};
+    auto pin_a = Uandle::Invalid;
+    auto pin_b = Uandle::Invalid;
+    auto pin_c = Uandle::Invalid;
+    if (!expect("bti_pin(four pages)",
+                ours::bti_pin(bti, RW, vmo, 0, DMA_PAGES * PAGE, first.data(), DMA_PAGES, &pin_a),
+                Status::Ok)) {
+        return;
+    }
+
+    auto sound = true;
+    for (auto at = usize{0}; at < DMA_PAGES; ++at) {
+        sound = sound && first[at] != 0 && first[at] % PAGE == 0;
+        for (auto other = at + 1; other < DMA_PAGES; ++other) {
+            sound = sound && first[at] != first[other];
+        }
+    }
+    if (!sound) {
+        fail("the addresses of a pin are not four distinct whole pages");
+    }
+    if (!is_pinned(vmo)) {
+        fail("a pin left its pages unpinned");
+    }
+
+    if (expect("bti_pin(the same four pages again)",
+               ours::bti_pin(bti, RW, vmo, 0, DMA_PAGES * PAGE, again.data(), DMA_PAGES, &pin_b),
+               Status::Ok) &&
+        again != first) {
+        fail("a second pin of the same pages gave other addresses");
+    }
+    if (expect("bti_pin(Compress)",
+               ours::bti_pin(bti, RW | ours::BtiPinOptions::Compress, vmo, 0, DMA_PAGES * PAGE,
+                             compressed.data(), DMA_PAGES, &pin_c),
+               Status::Ok) &&
+        compressed != first) {
+        fail("Compress gave other addresses than none, though a page is the smallest run");
+    }
+
+    // Four pages as one address: the same as the first of the four when they
+    // are one run, and BadState when they are not.
+    auto one = std::array<ours::PhysAddr, 1>{};
+    auto contiguous_pin = Uandle::Invalid;
+    auto one_run = true;
+    for (auto at = usize{1}; at < DMA_PAGES; ++at) {
+        one_run = one_run && first[at] == first[0] + at * PAGE;
+    }
+    auto const contiguous = ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, vmo, 0,
+                                          DMA_PAGES * PAGE, one.data(), 1, &contiguous_pin);
+    if (one_run) {
+        if (expect("bti_pin(Contiguous, four pages that are one run)", contiguous, Status::Ok) &&
+            one[0] != first[0]) {
+            fail("Contiguous gave an address that is not the first page's");
+        }
+    } else {
+        expect("bti_pin(Contiguous, four pages that are not one run)", contiguous,
+               Status::BadState);
+    }
+    auto single = Uandle::Invalid;
+    if (expect("bti_pin(Contiguous, one page)",
+               ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, vmo, 0, PAGE, one.data(), 1,
+                             &single),
+               Status::Ok) &&
+        one[0] != first[0]) {
+        fail("Contiguous over one page gave an address that is not that page's");
+    }
+
+    // Each pin ends once. A handle is closed by its unpin, so a second unpin
+    // of it finds nothing.
+    for (auto const pin: {pin_a, pin_b, pin_c, contiguous_pin, single}) {
+        if (pin != Uandle::Invalid) {
+            expect("pmt_unpin", ours::pmt_unpin(pin), Status::Ok);
+        }
+    }
+    expect("pmt_unpin(a pin already unpinned)", ours::pmt_unpin(pin_a), Status::BadHandle);
+    if (is_pinned(vmo)) {
+        fail("every pin was unpinned and a page is still pinned");
+    }
+}
+
+/// A pin whose last handle is closed with no unpin is quarantined: its page
+/// stays pinned, the BTI answers BadState to every pin after it, and
+/// bti_release_quarantine, which needs Write, lets it go. This is what happens
+/// to a driver that dies with its device running, minus the dying.
+auto check_quarantine(Uandle const bti) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    auto vmo = Uandle::Invalid;
+    if (!expect("vmo_create(a page)", ours::vmo_create(PAGE, ours::VmoOptions::None, &vmo),
+                Status::Ok)) {
+        return;
+    }
+    std::array<ours::PhysAddr, 1> address{};
+    auto lost = Uandle::Invalid;
+    auto refused = Uandle::Invalid;
+    if (expect("bti_pin(a page, to lose)",
+               ours::bti_pin(bti, RW, vmo, 0, PAGE, address.data(), 1, &lost), Status::Ok)) {
+        expect("handle_close(a pin, with no unpin)", ours::handle_close(lost), Status::Ok);
+    }
+    if (!is_pinned(vmo)) {
+        fail("a pin whose last handle was closed let its page go");
+    }
+    expect("bti_pin(a BTI with a quarantine)",
+           ours::bti_pin(bti, RW, vmo, 0, PAGE, address.data(), 1, &refused), Status::BadState);
+
+    auto const bti_no_write = narrowed(bti, ours::Rights::Map);
+    if (bti_no_write != Uandle::Invalid) {
+        expect("bti_release_quarantine(a BTI without Write)",
+               ours::bti_release_quarantine(bti_no_write), Status::AccessDenied);
+        auto _ = ours::handle_close(bti_no_write);
+    }
+    if (!is_pinned(vmo)) {
+        fail("a refused bti_release_quarantine let the page go");
+    }
+
+    expect("bti_release_quarantine", ours::bti_release_quarantine(bti), Status::Ok);
+    expect("bti_release_quarantine(nothing left)", ours::bti_release_quarantine(bti), Status::Ok);
+    auto again = Uandle::Invalid;
+    if (expect("bti_pin(once the quarantine is released)",
+               ours::bti_pin(bti, RW, vmo, 0, PAGE, address.data(), 1, &again), Status::Ok)) {
+        expect("pmt_unpin", ours::pmt_unpin(again), Status::Ok);
+    }
+    if (is_pinned(vmo)) {
+        fail("the quarantine was released and the page is still pinned");
+    }
+    auto _ = ours::handle_close(vmo);
+}
+
+/// iommu_create and bti_create with what they refuse, then the checks of the
+/// pins on the BTI they make.
+auto check_iommu_and_bti(Uandle const resource) -> void {
+    auto none = Uandle::Invalid;
+    std::array<u8, 8> descriptor{};
+    expect("iommu_create(a type nothing implements)",
+           ours::iommu_create(resource, static_cast<ours::IommuType>(7), nullptr, 0, &none),
+           Status::NotSupported);
+    expect("iommu_create(a descriptor, for a stub that has no hardware)",
+           ours::iommu_create(resource, ours::IommuType::Stub, descriptor.data(), descriptor.size(),
+                              &none),
+           Status::InvArgs);
+    expect("iommu_create(a descriptor past the limit)",
+           ours::iommu_create(resource, ours::IommuType::Stub, nullptr,
+                              ours::IOMMU_DESC_MAX_SIZE + 1, &none),
+           Status::InvArgs);
+    if (auto const debug = get_resource(ours_resource::DEBUG_PROTOCOL); debug != Uandle::Invalid) {
+        expect("iommu_create(the System resource of another slot)",
+               ours::iommu_create(debug, ours::IommuType::Stub, nullptr, 0, &none),
+               Status::OutOfRange);
+        auto _ = ours::handle_close(debug);
+    }
+    if (none != Uandle::Invalid) {
+        fail("a refused iommu_create wrote a handle");
+    }
+
+    auto iommu = Uandle::Invalid;
+    if (!expect("iommu_create(Stub)",
+                ours::iommu_create(resource, ours::IommuType::Stub, nullptr, 0, &iommu),
+                Status::Ok)) {
+        return;
+    }
+    expect("bti_create(an option nothing defines)", ours::bti_create(iommu, 1, 0x1234, &none),
+           Status::InvArgs);
+    auto bti = Uandle::Invalid;
+    if (expect("bti_create", ours::bti_create(iommu, 0, 0x1234, &bti), Status::Ok)) {
+        auto vmo = Uandle::Invalid;
+        if (expect("vmo_create(four pages)",
+                   ours::vmo_create(DMA_PAGES * PAGE, ours::VmoOptions::None, &vmo), Status::Ok)) {
+            check_pin_refusals(bti, vmo);
+            check_pin_addresses(bti, vmo);
+            auto _ = ours::handle_close(vmo);
+        }
+        check_quarantine(bti);
+        auto _ = ours::handle_close(bti);
+    }
+    auto _ = ours::handle_close(iommu);
+}
+
+/// Iommu.Get answers with the System resource of the IOMMU slot: a resource of
+/// that kind, at that base, of size 1. It is then used as a driver would: to
+/// make an IOMMU and a BTI, and pin memory through them.
+auto check_iommu_resource() -> void {
+    auto const resource = get_resource(ours_resource::IOMMU_PROTOCOL);
+    if (resource == Uandle::Invalid) {
+        return;
+    }
+    ours::InfoResource info{};
+    auto actual = usize{0};
+    auto available = usize{0};
+    if (expect("object_get_info(the resource Iommu.Get gave)",
+               ours::object_get_info(resource, ours::InfoTopic::Resource, &info, sizeof(info),
+                                     &actual, &available),
+               Status::Ok)) {
+        if (info.kind != ours::RsrcKind::System || info.base != ours::RSRC_SYSTEM_IOMMU_BASE ||
+            info.size != 1) {
+            fail("the resource Iommu.Get gave is not the System IOMMU slot");
+            return;
+        }
+    }
+    check_iommu_and_bti(resource);
+    auto _ = ours::handle_close(resource);
+}
+
 /// A protocol use that nobody offers: the connection arrives, since Open is
 /// one-way, and the root closes it with the route's status, NotFound.
 auto check_unoffered() -> void {
@@ -819,6 +1312,16 @@ auto connect_status(std::string_view const path) -> Status {
     return status;
 }
 
+/// A protocol its manifest does not use at all: its /svc has no entry of that
+/// name, so the root's /svc refuses the Open itself with NotFound, before any
+/// route is walked (check_unoffered() is the other NotFound: an entry that
+/// exists, whose route ends at an offer nobody made). The root says so on its
+/// console, `init: routing_checks's /svc refuses an open of
+/// "ours.test.Undeclared": NotFound`; that line is why this check is here.
+auto check_undeclared() -> void {
+    expect("a protocol the manifest does not use", connect_status(UNDECLARED), Status::NotFound);
+}
+
 /// The sibling route, end to end: EchoString from echo through root.cm's
 /// renaming offer and echo's expose, then Stop, then a route to echo that
 /// answers NotFound, as one to a component that has exited does (D23).
@@ -931,8 +1434,11 @@ auto main(int argc, char **argv) -> int {
     check_debug_resource();
     check_irq_resource();
     check_ioport_resource();
+    check_mmio_resource(vma);
+    check_iommu_resource();
     check_sampling_resource();
     check_unoffered();
+    check_undeclared();
     if (job == Uandle::Invalid) {
         fail("started without JobDefault");
     } else {

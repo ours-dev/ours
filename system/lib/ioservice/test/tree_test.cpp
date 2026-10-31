@@ -225,4 +225,40 @@ TEST(IoserviceTree, WalkStopsAtARemoteNodeWithTheRestOfThePath) {
     EXPECT_EQ(held(tree.remote(boot)), ours::Uandle{0x1001});
     EXPECT_TRUE(tree.remote(sub).is_none());
 }
+
+// --- printable_path ---------------------------------------------------------------
+
+TEST(IoservicePrintablePath, APrintablePathComesBackAsItWas) {
+    auto buffer = std::array<char, 32>{};
+    EXPECT_EQ(ioservice::printable_path("bin/shell", buffer), "bin/shell");
+    EXPECT_EQ(ioservice::printable_path("", buffer), "");
+    // The view is of the buffer, not of the path.
+    EXPECT_EQ(ioservice::printable_path("a", buffer).data(), buffer.data());
+}
+
+TEST(IoservicePrintablePath, EveryByteOutsidePrintableAsciiBecomesAQuestionMark) {
+    auto buffer = std::array<char, 32>{};
+    EXPECT_EQ(ioservice::printable_path("a\nb\rc\x1b[2J", buffer), "a?b?c?[2J");
+    EXPECT_EQ(ioservice::printable_path(std::string_view{"a\0b", 3}, buffer), "a?b");
+    EXPECT_EQ(ioservice::printable_path("a\x7f\x80\xffz", buffer), "a???z");
+    // The ends of the printable range stay.
+    EXPECT_EQ(ioservice::printable_path(" ~", buffer), " ~");
+}
+
+TEST(IoservicePrintablePath, ALongPathIsCutToTheBufferAndEndsInEllipsis) {
+    auto buffer = std::array<char, 8>{};
+    // Exactly the room: nothing is cut.
+    EXPECT_EQ(ioservice::printable_path("12345678", buffer), "12345678");
+    // One byte over: the last three of the room become "...".
+    EXPECT_EQ(ioservice::printable_path("123456789", buffer), "12345...");
+    // The cut is applied after the bytes are made printable.
+    EXPECT_EQ(ioservice::printable_path("12\n45678901", buffer), "12?45...");
+}
+
+TEST(IoservicePrintablePath, ABufferTooSmallForTheEllipsisIsJustCut) {
+    auto buffer = std::array<char, 2>{};
+    EXPECT_EQ(ioservice::printable_path("abcdef", buffer), "ab");
+    auto none = std::array<char, 0>{};
+    EXPECT_EQ(ioservice::printable_path("abcdef", none), "");
+}
 } // namespace

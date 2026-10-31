@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/boot/options.hpp>
 #include <ours/init.hpp>
+#include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/memory_watchdog.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/task/thread.hpp>
@@ -127,8 +128,26 @@ auto MemoryWatchdog::run() -> i32 {
 
 auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
     Guard guard{m_lock};
-    auto const free = approx_free_frame_count();
-    auto const found = m_levels.pressure_at(free);
+    auto free = approx_free_frame_count();
+    auto found = m_levels.pressure_at(free);
+
+    // What is asked of the reclaimer is the distance to where this pressure
+    // ends, the upper edge of its bounds: free memory there looks, to this,
+    // like the pressure above.
+    if (found == MemoryPressure::OutOfMemory) {
+        // Nothing waits for a thread here: the allocations that could wait are
+        // about to be refused, so what can be given back is given back first,
+        // on this thread, and what is found afterwards is what is declared.
+        auto const goal = m_levels.bounds_of(found).upper;
+        if (auto const freed = MemoryReclaimer::get().reclaim(goal - free); freed != 0) {
+            log::info("mm: out of memory: gave back {} frames before refusing anything", freed);
+            free = approx_free_frame_count();
+            found = m_levels.pressure_at(free);
+        }
+    }
+    if (found == MemoryPressure::Warning || found == MemoryPressure::Critical) {
+        MemoryReclaimer::get().request(m_levels.bounds_of(found).upper - free);
+    }
     auto const now = time::SteadyClock::now();
 
     auto deadline = time::Deadline::infinite();

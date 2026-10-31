@@ -71,7 +71,7 @@ A server calls `ours::channel_read`, `ours::channel_write` and the other system 
 
 On the host nobody binds them, so the test executable defines them itself. A *fake kernel* here is a small model of ports and channels held in ordinary memory, plus those definitions, which forward each call to the model. `system/lib/ioservice/test/fake_kernel.cpp` ends with them:
 
-`system/lib/ioservice/test/fake_kernel.cpp:212-214`:
+`system/lib/ioservice/test/fake_kernel.cpp:221-223`:
 
 ```cpp
 auto ours::channel_create(ChannelCreateOptions, Uandle *const out0, Uandle *const out1) -> Status {
@@ -83,24 +83,25 @@ The library under test is compiled unchanged and linked against these definition
 
 Do not confuse this with `//kernel/tests/fake-kernel`. That is a different thing, a stand-in kernel image that proves the boot chain reached it (`kernel/tests/fake-kernel/README.md:1-8`).
 
-The model keeps the rules of the real kernel that the libraries depend on, and nothing more (`system/lib/ioservice/test/fake_kernel.hpp:25-35`):
+The model keeps the rules of the real kernel that the libraries depend on, and nothing more (`system/lib/ioservice/test/fake_kernel.hpp:25-37`):
 
 - A channel end is readable while messages are queued on it, and reports its peer closed once the peer is closed.
 - A write queues the message on the peer, and fails with `PeerClosed` once the peer is gone. The handles in the message are consumed either way.
 - A wait is one-shot and level-triggered: armed on an object that already asserts one of its signals, its packet is queued at once; otherwise when the object first asserts one.
 - Closing a handle ends its armed waits without a packet, and closes the channel for its peer.
 - A port hands its packets out in the order they were queued.
+- A wait that a test has made fail answers the status it was given and arms nothing (`fail_next_wait_async()`, `system/lib/ioservice/test/fake_kernel.hpp:49-52`), which is how a test reaches a `Binding`'s `on_rearm_failed`.
 
-It leaves out rights, and the moving of handles between tables: a handle written into a message keeps its value and stays open in the model (`system/lib/ioservice/test/fake_kernel.hpp:37-40`). So a test against the fake cannot show that the real kernel agrees. That is what the boot is for.
+It leaves out rights, and the moving of handles between tables: a handle written into a message keeps its value and stays open in the model (`system/lib/ioservice/test/fake_kernel.hpp:39-42`). So a test against the fake cannot show that the real kernel agrees. That is what the boot is for.
 
-A test can also look inside the model: whether a handle is still open, how many messages are queued on a channel end, which handles were closed and in what order (`system/lib/ioservice/test/fake_kernel.hpp:47-57`).
+A test can also look inside the model: whether a handle is still open, how many messages are queued on a channel end, which handles were closed and in what order (`system/lib/ioservice/test/fake_kernel.hpp:54-64`).
 
 ### How the `ioservice` and `loop` tests use one
 
 There are two fakes, one per test directory, and they differ in how much they model.
 
 - `system/lib/loop/test/fake_kernel.*` models only the three calls the Loop makes, `port_wait`, `object_wait_async` and `handle_close`. Because its tests have no real client, it gives them ways to make things happen: queue messages on an object, take one off, close the peer, queue a packet by hand, and make the next wait fail (`system/lib/loop/test/fake_kernel.hpp:57-76`). That last one produces a failure the real kernel does not produce on demand. It also answers `BadState` to a wait with no deadline on an empty port, which no real `port_wait` does, so that a test that would block for ever fails instead (`system/lib/loop/test/fake_kernel.hpp:97-100`).
-- `system/lib/ioservice/test/fake_kernel.*` models the channel and port calls and `handle_close`; its `handle_duplicate` only answers `NotSupported` (`system/lib/ioservice/test/fake_kernel.cpp:233-237`). Its tests need no helpers to move state, because they act as a client through the same calls the server uses: `ours::channel_create`, `ours::channel_write` and `ours::channel_read`, which land in the fake.
+- `system/lib/ioservice/test/fake_kernel.*` models the channel and port calls and `handle_close`; its `handle_duplicate` only answers `NotSupported` (`system/lib/ioservice/test/fake_kernel.cpp:242-246`). Its tests need no helpers to move state, because they act as a client through the same calls the server uses: `ours::channel_create`, `ours::channel_write` and `ours::channel_read`, which land in the fake.
 
 A test of a server on a Loop, such as `system/lib/ioservice/test/loop_server_test.cpp`, goes in five steps:
 
@@ -134,7 +135,7 @@ Read it as a table. A connection to the `/svc` directory that holds the ours.io 
 
 The same refusal, through a real Loop and the fake kernel, also checks what was not done:
 
-`system/lib/ioservice/test/loop_server_test.cpp:293-303`:
+`system/lib/ioservice/test/loop_server_test.cpp:294-304`:
 
 ```cpp
 TEST_F(LoopServerTest, OpenOfAMissingNameAnswersNotFound) {
@@ -192,7 +193,7 @@ group("tests") {
 
 **The default build.** Name the group in the `deps` of `group("default")` in the root `BUILD.gn`:
 
-`BUILD.gn:210`:
+`BUILD.gn:220`:
 
 ```gn
     "//system/lib/loop:tests",
@@ -266,7 +267,7 @@ init: routing_checks exited with 0
 
 Two kinds of line in it look like failures and are not. The two `routes nowhere` lines are the refusals that the next section sets up, and the `launch failed` line is `routing_checks` asking the Launcher (`ours.process.Launcher`, which starts programs) to start something it must refuse. A failure has `FAILED` in it.
 
-A server prints with `ort::debug_line`, which writes one line to the kernel's debug console, which the scripts read from QEMU's serial port (`system/lib/ort/include/ort/debug.hpp:16-40`; `scripts/qemu_boot.py:231`). The runtime has no formatted printing: the C library a program links is only the memory and string functions, so a line is built from pieces, and a number goes through `ort::decimal` (`system/lib/ort/include/ort/debug.hpp:45-52`). A line longer than one system call may carry can be split by another program's output, so keep a line short (`system/lib/ort/include/ort/debug.hpp:38-39`).
+A server prints with `ort::debug_line`, which writes one line to the kernel's debug console, which the scripts read from QEMU's serial port (`system/lib/ort/include/ort/debug.hpp:16-40`; `scripts/qemu_boot.py:265`). The runtime has no formatted printing: the C library a program links is only the memory and string functions, so a line is built from pieces, and a number goes through `ort::decimal` (`system/lib/ort/include/ort/debug.hpp:45-52`). A line longer than one system call may carry can be split by another program's output, so keep a line short (`system/lib/ort/include/ort/debug.hpp:38-39`).
 
 `examples/echo/echo_server.cpp` shows the habit worth copying: one `report(what, status)` function that prints `echo: <what>: <Status>`, called wherever the server gives up (`examples/echo/echo_server.cpp:63-66`). With the program's name first, `grep` finds every line of one component, and with the status last the line says why.
 
@@ -422,18 +423,18 @@ Notes on the causes:
 Where each cause is produced, for when you read the code:
 
 - Cause 1: `system/lib/fsio/include/fsio/namespace.hpp:124`; the root makes a `/svc` only for a component with a protocol use, `system/service/init/realm.cpp:551`.
-- Cause 2: the lookup, `system/lib/ioservice/src/tree.cpp:203`; the refusal, `system/lib/ioservice/src/server.cpp:529-532` and `:96-102`; written on the client's channel, `system/lib/ioservice/src/loop_server.cpp:163-169`; the entries, `system/service/init/realm.cpp:707-729`.
+- Cause 2: the lookup, `system/lib/ioservice/src/tree.cpp:203`; the refusal, `system/lib/ioservice/src/server.cpp:529-532` and `:96-102`; written on the client's channel, `system/lib/ioservice/src/loop_server.cpp:177-183`; the entries, `system/service/init/realm.cpp:707-729`.
 - Cause 3: the status, `system/lib/component/include/component/route.hpp:412-415`, `:427-430`, `:444-451` and `:458-464`, listed at `:307-317`; the reply, `system/service/init/realm.cpp:751-755`; the line, `system/service/init/realm.cpp:201-203`.
 - Cause 4: `system/service/init/realm.cpp:793-796`; the state is set at `system/service/init/realm.cpp:420` and `:865`, and the lines are printed at `system/service/init/realm.cpp:415` and `:858-859`.
 - Cause 5: `system/lib/ioservice/src/tree.cpp:203` in the provider's own node tree; `system/lib/ioservice/test/outgoing_test.cpp:204-217`; `system/service/init/realm.cpp:809-833`.
 - Cause 6: `system/lib/component/include/component/route.hpp:271-282` and `:318`; `system/service/init/realm.cpp:514-535`; the client, `system/lib/fsio/include/fsio/fsio.hpp:66-74`.
 - Cause 7: `system/lib/component/include/component/route.hpp:301-305`, `:421-423` and `:465-467`; the reply, `system/service/init/realm.cpp:754`; the line, `system/service/init/realm.cpp:188-199`.
-- Cause 8: `system/service/init/launcher_server.cpp:79`, `system/service/init/resource_server.cpp:55`, `system/service/init/pools.hpp:32` and `:46`; `system/service/init/realm.cpp:781-786`.
+- Cause 8: `system/service/init/launcher_server.cpp:83`, `system/service/init/resource_server.cpp:59`, `system/service/init/pools.hpp:32` and `:46`; `system/service/init/realm.cpp:781-786`.
 - Cause 9: `system/service/init/realm.cpp:700-702` and `:551-563`; `system/service/init/pools.hpp:55`; the client, `system/lib/fsio/include/fsio/fsio.hpp:66-74`.
-- Cause 10: `examples/echo/echo_server.cpp:54` and `:158`; when the Loop cannot take the channel, `examples/echo/echo_server.cpp:149-155`.
+- Cause 10: `examples/echo/echo_server.cpp:54` and `:168`; when the Loop cannot take the channel, `examples/echo/echo_server.cpp:159-165`.
 - Cause 11: `system/service/init/realm.cpp:825-833`; the system call, `system/public/ours/syscalls.gni:197-208`; the limit, `kernel/object/include/ours/object/channel_dispatcher.hpp:20-28`.
 - Cause 12: `system/service/init/test/routing_checks/routing_checks.cpp:805-825`, which retries once.
-- Cause 13: `examples/echo/echo_server.cpp:189-208`; `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40`; `system/lib/ioservice/src/server.cpp:561-565`.
+- Cause 13: `examples/echo/echo_server.cpp:207-226`; `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40`; `system/lib/ioservice/src/server.cpp:561-565`.
 - The verbs and the `at` field of cause 3: `system/service/init/realm.cpp:156-168` and `:182-187`. The Open checks behind the hand-built Open: `system/lib/ioservice/src/server.cpp:248-250` and `:335-337`, and `system/lib/ioservice/test/server_test.cpp:602-606`.
 
 ### Other lines the root prints
@@ -485,4 +486,4 @@ The lines about a component's life (`started`, `exited with`) are described in "
 - `docs/architecture/component-framework/glossary.md`, `docs/development/debugging.md`, `vendor/googletest/docs/advanced.md`
 - a real `rel.log` of a passing boot, for the lines quoted in "Read the boot log"
 
-Checked against commit `3cb0d8a5` on 2026-10-29.
+Checked against commit `561571b7` on 2026-10-30.

@@ -102,6 +102,7 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
         : m_deposits(&m_arena), m_root(m_arena.make()), m_splits(splits) {}
 
     using X86PageTableImpl::free_tables;
+    using X86PageTableImpl::harvest_accessed;
     using X86PageTableImpl::map;
     using X86PageTableImpl::map_frames;
     using X86PageTableImpl::protect;
@@ -443,6 +444,67 @@ TEST(Protect, PartOfALargeLeafSplitsItAndNarrowsOnlyThatPart) {
               MmuFlags::Present | MmuFlags::User | MmuFlags::Readable);
     EXPECT_EQ(table.query(0x7f'e000).value().flags, MmuFlags::Present | USER_RWX);
     EXPECT_EQ(table.query(0x7f'e000).value().size, 4 * KB);
+}
+
+/// What a harvest asked about, in order.
+struct Visited {
+    PhysAddr phys;
+    usize size;
+
+    auto operator==(Visited const &) const -> bool = default;
+};
+
+TEST(HarvestAccessed, ClearsTheBitOfEveryLeafItIsToldToAndNoOtherBit) {
+    HostTable table;
+    table.small_leaves(0x40'0000, 0x10'0000, 2, USER_RWX);
+    auto const before = table.leaf_entry(0x40'1000);
+    ASSERT_NE(before & MmuFormat::ACCESSED, 0U);
+
+    std::vector<Visited> visited;
+    auto visit = [&visited](PhysAddr const phys, usize const size) {
+        visited.push_back({phys, size});
+        return phys == 0x10'1000;
+    };
+    usize cleared = 0;
+    EXPECT_EQ(table.harvest_accessed(0x40'0000, 2, visit, &cleared), Status::Ok);
+    EXPECT_EQ(cleared, 1U);
+    EXPECT_EQ(visited, (std::vector<Visited>{{0x10'0000, 4 * KB}, {0x10'1000, 4 * KB}}));
+    EXPECT_EQ(table.leaf_entry(0x40'1000), before & ~MmuFormat::ACCESSED);
+    EXPECT_NE(table.leaf_entry(0x40'0000) & MmuFormat::ACCESSED, 0U);
+}
+
+TEST(HarvestAccessed, ALeafWithoutTheBitIsNotAskedAbout) {
+    HostTable table;
+    table.small_leaves(0x40'0000, 0x10'0000, 2, USER_RWX);
+    auto take_all = [](PhysAddr, usize) { return true; };
+    usize cleared = 0;
+    ASSERT_EQ(table.harvest_accessed(0x40'0000, 1, take_all, &cleared), Status::Ok);
+
+    usize asked = 0;
+    auto count = [&asked](PhysAddr, usize) {
+        asked += 1;
+        return true;
+    };
+    EXPECT_EQ(table.harvest_accessed(0x40'0000, 2, count, &cleared), Status::Ok);
+    EXPECT_EQ(asked, 1U);
+    EXPECT_EQ(cleared, 1U);
+}
+
+TEST(HarvestAccessed, ALargeLeafIsAskedAboutOnceWithItsSize) {
+    HostTable table(true);
+    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, USER_RWX);
+
+    std::vector<Visited> visited;
+    auto visit = [&visited](PhysAddr const phys, usize const size) {
+        visited.push_back({phys, size});
+        return true;
+    };
+    usize cleared = 0;
+    EXPECT_EQ(table.harvest_accessed(0x60'0000, 512, visit, &cleared), Status::Ok);
+    EXPECT_EQ(visited, (std::vector<Visited>{{0x4000'0000, 2 * MB}}));
+    EXPECT_EQ(cleared, 1U);
+    EXPECT_EQ(table.leaf_entry(0x60'0000) & MmuFormat::ACCESSED, 0U);
+    EXPECT_EQ(table.query(0x60'0000).value().size, 2 * MB);
 }
 
 /// The same tables and the same calls, one run by the paging engine and one

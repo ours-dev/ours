@@ -4,8 +4,9 @@
 // ioservice::Outgoing on a real Loop, against the fake kernel of fake_kernel.hpp:
 // what add_protocol() and serve() refuse, and what each kind of message on
 // the outgoing directory comes to -- an Open of svc/<name> handed to that
-// protocol's handler, an Open of a name it does not serve answered NotFound,
-// a directory opened through it, a malformed message and a client gone.
+// protocol's handler, an Open of a name it does not serve answered NotFound
+// and said on the debug console, a directory opened through it, a malformed
+// message and a client gone.
 #include <ioservice/outgoing.hpp>
 
 #include <array>
@@ -13,6 +14,7 @@
 #include <optional>
 #include <ostream>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -214,6 +216,87 @@ TEST_F(OutgoingTest, OpenOfAnUnservedNameAnswersNotFound) {
     EXPECT_EQ(epitaph(client), Status::NotFound);
     EXPECT_FALSE(fake::kernel().is_open(server));
     EXPECT_TRUE(fake::kernel().is_open(directory));
+}
+
+TEST_F(OutgoingTest, OpenOfAnUnservedNameIsSaidOnTheConsole) {
+    Calls calls;
+    ASSERT_EQ(outgoing().add_protocol(ECHO, calls), Status::Ok);
+    auto const directory = serve();
+
+    auto const [client, server] = channel();
+    open(directory, "svc/ours.test.Missing", Flags::ProtocolService, server);
+    run();
+
+    // One line, written in one call, with the path as asked for and the
+    // status the client read in its epitaph.
+    EXPECT_EQ(fake::kernel().debug_writes(),
+              std::vector<std::string>{"ioservice: the outgoing directory refused an Open of "
+                                       "\"svc/ours.test.Missing\": NotFound\n"});
+    EXPECT_EQ(epitaph(client), Status::NotFound);
+}
+
+TEST_F(OutgoingTest, TheLineSaysWhichStatusTheOpenWasRefusedWith) {
+    Calls calls;
+    ASSERT_EQ(outgoing().add_protocol(ECHO, calls), Status::Ok);
+    auto const directory = serve();
+
+    // A name it serves, asked for as a file.
+    auto const [client, server] = channel();
+    open(directory, "svc/ours.test.Echo", Flags::ProtocolFile, server);
+    run();
+
+    EXPECT_EQ(fake::kernel().debug_writes(),
+              std::vector<std::string>{"ioservice: the outgoing directory refused an Open of "
+                                       "\"svc/ours.test.Echo\": NotFile\n"});
+    EXPECT_TRUE(calls.channels.empty());
+}
+
+TEST_F(OutgoingTest, OpensThatSucceedSayNothing) {
+    Calls echo_calls;
+    ASSERT_EQ(outgoing().add_protocol(ECHO, echo_calls), Status::Ok);
+    auto const directory = serve();
+
+    auto const [client, server] = channel();
+    open(directory, "svc/ours.test.Echo", Flags::ProtocolService, server);
+    auto const [svc_client, svc_server] = channel();
+    open(directory, "svc", Flags::ProtocolDirectory | Flags::PermConnect | Flags::PermTraverse,
+         svc_server);
+    run();
+
+    EXPECT_EQ(echo_calls.channels.size(), 1u);
+    EXPECT_TRUE(fake::kernel().debug_writes().empty());
+}
+
+TEST_F(OutgoingTest, ALongPathIsCutToFitTheLine) {
+    auto const directory = serve();
+    // A valid path ours.io carries, several times what one debug_write
+    // takes. Were the line not cut, the console would refuse it whole.
+    auto const name = std::string(200, 'x');
+    auto const [client, server] = channel();
+    open(directory, "svc/" + name, Flags::ProtocolService, server);
+    run();
+
+    ASSERT_EQ(fake::kernel().debug_writes().size(), 1u);
+    auto const &line = fake::kernel().debug_writes()[0];
+    EXPECT_LE(line.size(), ours::MAX_DEBUG_WRITE);
+    // The beginning of the path is shown, cut with "...", and the status
+    // still ends the line.
+    EXPECT_TRUE(line.starts_with("ioservice: the outgoing directory refused an Open of "
+                                 "\"svc/xxxxxxxx"));
+    EXPECT_TRUE(line.ends_with("xxx...\": NotFound\n"));
+}
+
+TEST_F(OutgoingTest, AClientCannotEndTheLineWithItsPath) {
+    auto const directory = serve();
+    // A name is bytes: a newline and an escape are valid in one. Quoted as
+    // sent, they would end the line and write another, or drive the console.
+    auto const [client, server] = channel();
+    open(directory, "svc/a\nioservice: forged\x1b[2J\xff", Flags::ProtocolService, server);
+    run();
+
+    EXPECT_EQ(fake::kernel().debug_writes(),
+              std::vector<std::string>{"ioservice: the outgoing directory refused an Open of "
+                                       "\"svc/a?ioservice: forged?[2J?\": NotFound\n"});
 }
 
 TEST_F(OutgoingTest, ProtocolsReachedThroughAnOpenedSvcDirectory) {

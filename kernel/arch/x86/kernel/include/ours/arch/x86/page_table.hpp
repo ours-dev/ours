@@ -91,6 +91,12 @@ class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
     /// X86PageTableImpl::protect().
     auto protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status;
 
+    /// Asks |visit| about every leaf in [va, va + n pages) with its accessed
+    /// bit set, and clears the bit when the answer is true and |clear| is; see
+    /// X86PageTableImpl::harvest_accessed().
+    auto harvest_accessed_pages(VirtAddr va, usize n, bool clear, AccessedVisitor visit,
+                                void *context, usize *cleared) -> Status;
+
     /// Whether the 2 MiB entry |va| falls under is empty, so that a 2 MiB leaf
     /// could be written there; see X86PageTableImpl::second_level_empty().
     [[nodiscard]]

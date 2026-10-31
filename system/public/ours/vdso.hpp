@@ -23,6 +23,7 @@
 
 #ifdef __cplusplus
 
+#include <ours/bti.hpp>
 #include <ours/exception.hpp>
 #include <ours/interrupt.hpp>
 #include <ours/object_info.hpp>

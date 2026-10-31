@@ -1,0 +1,52 @@
+import("//build/cpp/cpp_interface.gni")
+
+# <ours/cpu_mask.hpp> and <ours/node_mask.hpp> live in //kernel/include, which
+# the kernel toolchain carries on its global include path and the host
+# toolchain does not. A public config so that the host test gets it too, the
+# way //kernel/lib/arch:cpu-mask-smoke spells it out for itself.
+config("machine_shape") {
+  include_dirs = [ "//kernel/include" ]
+
+  if (toolchain_environment != "kernel") {
+    # A host build has no machine, so the counts the tables are sized by have
+    # to be supplied. Sixteen CPUs and NUMA on is what the host test needs to
+    # tell two nodes and two CPUs apart; with MAX_NODES at 1 every case in it
+    # collapses, since the only legal node id is 0.
+    #
+    # //kernel/lib/arch:cpu-mask-smoke passes MP_MAX_CPUS on the target for the
+    # same reason. It is a config here rather than a target define because this
+    # library has a source of its own, and a define on the test would not
+    # reach it.
+    defines = [
+      "MP_MAX_CPUS=16",
+      "MM_NUMA=1",
+    ]
+  }
+}
+
+# The machine's NUMA tables, and the node ordering derived from them
+source_set("numa") {
+  sources = [
+    "src/fallback_order.cpp",
+    "src/topology.cpp",
+  ]
+  public_deps = [ ":headers" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [
+    "include/numa/fallback_order.hpp",
+    "include/numa/topology.hpp",
+  ]
+  public_configs = [ ":machine_shape" ]
+
+  # NodeId and the assertions come from //system/public; NodeMask is a
+  # ustl::BitSet.
+  public_deps = [
+    "//system/public",
+    "//system/lib/ustl:headers",
+  ]
+}

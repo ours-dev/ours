@@ -101,6 +101,18 @@ auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
     return protect(va, n, flags);
 }
 
+auto PageTable::harvest_accessed_pages(VirtAddr const va, usize const n, bool const clear,
+                                       AccessedVisitor const visit, void *const context,
+                                       usize *const cleared) -> Status {
+    // No TLB is flushed here either: the caller harvests a whole address space
+    // and flushes it once (ArchVmAspace::invalidate_all()).
+    auto ask = [clear, visit, context](PhysAddr const pa, usize const size) {
+        return visit(context, pa, size) && clear;
+    };
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
+    return harvest_accessed(va, n, ask, cleared);
+}
+
 auto PageTable::second_level_empty(VirtAddr const va) -> bool {
     Guard<sync::SpinLock, IrqSave> guard(m_lock);
     return Base::second_level_empty(va);

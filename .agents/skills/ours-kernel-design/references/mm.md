@@ -51,7 +51,7 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   from the progress made. Reference: Zircon's
   `VmObjectPaged::ReadUser()`/`WriteUser()`.
 
-## Page aging (decided 2026-10-25, not built yet)
+## Page aging (decided 2026-10-25, built 2026-10-30)
 
 - Recent use of a page is recorded in two ways. The hardware sets the A bit
   of the page-table entry an access went through, and the scanner harvests
@@ -74,7 +74,47 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   changes how every caller reaches a page. Reference: Zircon
   `VmObjectPaged::GetPage()`, which calls `DisableMarkAccessed()` on its
   cursor for `VMM_PF_FLAG_HW_FAULT`.
-- Until page aging exists, `VmfCause::Software` has no reader. Keep it.
+- Built: one aging thread per node rotates the ring every
+  `kernel.mm.page-aging-seconds` (5 by default); every exit of the cursor
+  goes through `handed_out()`, and `disable_mark_accessed()` is the opt-out.
+  `PageQueues::kind_of()` and `mark_accessed()` read the queue byte under the
+  queue lock: the aging thread rewrites it under that lock alone, so a VMO's
+  lock does not make an unlocked read safe.
+- The harvest runs in the aging thread before each rotation: for every user
+  address space, every mapping of a paged object, the page table clears the
+  accessed bit of each leaf the node's queues take (`take_accessed()`), and
+  one whole-space shootdown follows (`ArchVmAspace::invalidate_all()`, a CR3
+  reload on each CPU running the space; without it a hot page hits the TLB
+  and never sets the bit again). The visitor runs under the page table's spin
+  lock and takes the queue lock inside it: VMO lock, page-table lock, queue
+  lock. Each node's thread keeps its own pages' bits and leaves the others'.
+
+## Page reclaim (decided 2026-10-30, pager pages built)
+
+- A reclaimer finds a page on a queue with only a raw `VmCowPages *`. It makes
+  it a reference with `Rc::try_adopt()` under the queue lock, which is safe
+  because the owner's destructor takes its pages off the queues under that lock
+  before its storage goes. It then takes the owner's lock and checks the page
+  again before it does anything (`VmCowPages::reclaim_page()`), and drops the
+  reference with no lock held.
+- Reclaimable means clean. A page of a node with a page source is mapped
+  read-only (`Cursor::writable_here()`), so the first write comes back to
+  `require_owned_page()`, which files the page anonymous
+  (`file_dirty_locked()`). Until a pager VMO can be written back, such a page is
+  never evicted.
+
+- Zero pages are deduplicated in leaf nodes only
+  (`VmCowPages::dedup_zero_page()`):
+  look, take Write from every mapping, look again, unmap, swap the page for a
+  marker in place. The second look is the one that counts, since a write then
+  faults and needs the lock. A hidden node's pages are shared with the nodes
+  below, whose mappings the hidden node cannot reach, so they stay.
+
+- `MemoryReclaimer` runs only when the watchdog asks (D3 of page-reclaim): a
+  request at Warning and Critical, served on its own thread, and a synchronous
+  `reclaim()` on the watchdog's thread at OutOfMemory, before anything is
+  refused. Zero pages go before pager pages. The target is the distance to the
+  upper edge of the pressure's bounds.
 
 ## CpuLocal (Linux, not Zircon)
 

@@ -66,6 +66,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         /// and holds nothing yet (fill_block_locked()); a hole where none fits,
         /// or when the allocator has no block, gets one page as any node's.
         LargeBlocks = 1_bit,
+
+        /// The pages of a pinned VMO (VmoFlags::Pinned): filed on the pinned
+        /// queue, never reclaimed. The VMO is what is pinned, but it is the
+        /// node that files its pages, so the node is told.
+        Pinned = 2_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
@@ -220,6 +225,55 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     TA_REQUIRES(m_lock)
     auto change_range_locked(u64 offset, u64 len, RangeChange change) -> void;
 
+    /// What reclaim_page() or dedup_zero_page() did.
+    enum class ReclaimResult : u8 {
+        /// The page is gone from the node, unmapped and freed. The next access
+        /// to its offset asks the page source for it again, or, for a page
+        /// that was all zero, finds a zero marker and reads zero.
+        Evicted,
+        /// The page is here and stays: it is not one the node can give back.
+        Kept,
+        /// The page is no longer the node's at that offset; nothing was done.
+        Gone,
+    };
+
+    /// Gives |page|, the one a reclaimer found at |index| of this node, back
+    /// to the system if it can be asked of the page source again: removes it
+    /// from every mapping of every object over the node, takes it out of the
+    /// node and frees it. Takes the node's lock itself.
+    ///
+    /// A reclaimer finds a page on a queue, with no lock of this node held, so
+    /// everything it was told is checked again here: the page may have moved,
+    /// gone, or been written since. Only a page the queues still file as
+    /// reclaimable is evicted, and a page written is never that (see
+    /// file_dirty_locked()).
+    ///
+    /// The last reference to this node must not be released by the caller
+    /// while it holds a queue lock; the caller holds one of its own.
+    auto reclaim_page(PgOff index, VmPage *page) -> ReclaimResult;
+
+    /// Replaces |page|, the one a reclaimer found at |index| of this node
+    /// among those committed in place of zero content, by a zero marker if it
+    /// is all zero: removes it from every mapping, and frees it. A read then
+    /// maps the shared zero page and a write commits a new one. Takes the
+    /// node's lock itself, and checks what the reclaimer was told again, as
+    /// reclaim_page() does.
+    ///
+    /// The page is looked at twice. The first look is cheap and may be wrong:
+    /// it reads the page while a program may be writing it, and a page that is
+    /// not zero is left in its mappings, writable, which is why this is not
+    /// done after taking them away. A page that looks zero then loses Write in
+    /// every mapping, which returns only once no CPU can write it through a
+    /// cached entry, and is looked at again: now it cannot change, since a
+    /// write faults and the fault needs the lock held here. Only then is it
+    /// unmapped and freed.
+    ///
+    /// A page found not to be zero is filed anonymous, so that it is not the
+    /// reclaimer's again. So is one this node cannot dedup: a hidden node's
+    /// pages are shared with the nodes below it, and the mappings of those
+    /// are not this node's to take Write from.
+    auto dedup_zero_page(PgOff index, VmPage *page) -> ReclaimResult;
+
     /// How many nodes hang directly under this one.
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto nr_children_locked() const -> usize {
@@ -234,6 +288,36 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     TA_REQUIRES(m_lock)
     auto commit_range_locked(VirtAddr offset, usize size, MultiPageRequest *request,
                              usize *nr_commited) -> Status;
+
+    /// Makes every page of [offset, offset + size) the node's own, as
+    /// commit_range_locked() does, and pins each one, from the start: a pinned
+    /// page stays where it is, in this node and in the same frame, until every
+    /// pin on it is undone. A page that is pinned is filed as pinned, and not
+    /// reclaimable.
+    ///
+    /// Counted: a page pinned twice needs two unpins. A page that already holds
+    /// 255 pins is NoResource. |nr_pinned| is how many pages from the start of
+    /// the range were pinned, whatever the answer: ShouldWait when a page source
+    /// has to supply a page first, the request raised in |request| as for
+    /// commit_range_locked(), and the caller calls again from the page it
+    /// stopped at; any other error leaves those pages pinned, for the caller
+    /// to undo with unpin_range_locked() or to go on from.
+    TA_REQUIRES(m_lock)
+    auto pin_range_locked(VirtAddr offset, usize size, MultiPageRequest *request, usize *nr_pinned)
+        -> Status;
+
+    /// Undoes one pin of each page of [offset, offset + size). BadState, and no
+    /// pin undone, if any page of the range holds none: unpinning what was not
+    /// pinned is the caller's bug, and a count that wrapped would hold a page
+    /// for ever. A page whose last pin goes is filed again as its kind says.
+    TA_REQUIRES(m_lock)
+    auto unpin_range_locked(VirtAddr offset, usize size) -> Status;
+
+    /// How many pages of this node are pinned.
+    TA_REQUIRES(m_lock)
+    auto nr_pinned_pages_locked() const -> usize {
+        return m_nr_pinned_pages;
+    }
 
     TA_REQUIRES(m_lock)
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor, Status>;
@@ -416,6 +500,46 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// from a caller that holds locks it cannot let go of, the same answer is
     /// OutOfMem, as for a waiter that was refused.
     auto alloc_pages(usize order, VmPage **page, AnonymousPageRequest *request) -> Status;
+
+    /// How a page came into this node, which picks its queue
+    /// (file_page_locked()): with content of its own (supplied, copied,
+    /// wired), or committed in place of zero content.
+    enum class Fill : u8 {
+        Content,
+        ZeroFork,
+    };
+
+    /// Files |page|, just put at |index| of this node, on its node's page
+    /// queue for its kind, with the backlink to this node: pinned for a
+    /// pinned node, reclaimable for a node with a page source, and otherwise
+    /// anonymous, zero-fork or not by |fill|. Called with this node's lock
+    /// held, right after the page went into the page list, so that a page is
+    /// never in the list and on no queue while anyone else can look.
+    auto file_page_locked(VmPage *page, PgOff index, Fill fill) -> void;
+
+    /// The pages in this node's list now belong to it: after it took another
+    /// node's list whole (a clone's pages, to the new hidden node).
+    auto own_all_pages_locked() -> void;
+
+    /// |page| now belongs to |owner|, at |index|, on the queue it is on.
+    static auto set_page_owner(VmPage *page, VmCowPages *owner, PgOff index) -> void;
+
+    /// Takes |page| off its queue and drops its backlink: it leaves the node
+    /// for a list of pages taken. Before free_page() or a hand-over, since a
+    /// frame has one list hook, and the free lists use it too.
+    static auto unfile_page(VmPage *page) -> void;
+
+    /// |page|, which a write is about to change in place at |index|, is no
+    /// longer content the page source can supply again: if this node has one,
+    /// the page leaves the reclaimable queues for the anonymous one, and stays
+    /// there. Writing it back is later work, and until then a reclaimer that
+    /// took it would throw the write away. A pinned node's page is already
+    /// where it belongs.
+    TA_REQUIRES(m_lock)
+    auto file_dirty_locked(VmPage *page, PgOff index) -> void;
+
+    /// Takes |page| off its queue and gives it back to the allocator.
+    static auto free_page(VmPage *page) -> void;
 
     /// Fills the hole at |offset| with the whole 2 MiB block it lies in, and
     /// answers the block's page at |offset|; null, with nothing changed, when
@@ -628,6 +752,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// The objects over these pages. Under the tree's lock. Empty for a hidden
     /// node, which is no object's.
     Attachment::List m_attachments TA_GUARDED(m_lock);
+
+    /// How many of this node's pages hold a pin (pinned_count above zero), kept
+    /// beside the pages so that the operations a pin forbids, a clone above all,
+    /// can ask in one read. Under the tree's lock, as the pins it counts are.
+    usize m_nr_pinned_pages TA_GUARDED(m_lock) = 0;
 };
 
 /// A walk over one contiguous byte range of a VmCowPages, handing out the page
@@ -694,11 +823,33 @@ class VmCowPages::Cursor {
     /// make one. What a mapping that maps only what is there wants.
     auto maybe_page() -> ustl::Option<RequireResult>;
 
+    /// Hand pages out without marking them used.
+    ///
+    /// Every page the lookups above hand out is marked used now, which brings
+    /// a page a page source supplied back to its node's newest generation: the
+    /// record of an access through the physmap, which no page table entry the
+    /// aging thread looks at sees. A caller whose access goes through a page
+    /// table entry turns that off, because the entry records the access
+    /// itself: a hardware fault, and a mapping filled ahead of use. On by
+    /// default, because a forgotten mark gets a page in use reclaimed, while
+    /// one made twice costs nothing.
+    auto disable_mark_accessed() -> void {
+        m_mark_accessed = false;
+    }
+
     auto create_read_request(usize nr_pages, PageRequest *request) -> Status;
     auto create_dirty_request(usize nr_pages, PageRequest *request) -> Status;
 
   private:
     auto convert_reference_to_page(AnonymousPageRequest *request) -> Status;
+
+    /// Marks |result|'s page used, unless disable_mark_accessed() said not to,
+    /// and hands |result| back. Every exit that hands a page out goes through
+    /// here, so a lookup added later marks too.
+    auto handed_out(RequireResult result) -> RequireResult;
+
+    /// Whether a page found in the node's own store may be mapped writable.
+    auto writable_here(FoundContent const &found) const -> bool;
 
     [[nodiscard]]
     auto is_type_reference() const -> bool;
@@ -741,6 +892,7 @@ class VmCowPages::Cursor {
     /// physical VMO need not begin on a page boundary.
     VirtAddr m_offset;
     VirtAddr m_end;
+    bool m_mark_accessed;
 };
 
 } // namespace ours::mm

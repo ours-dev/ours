@@ -5,6 +5,7 @@
 
 #include <deque>
 #include <map>
+#include <string>
 #include <vector>
 
 #include <ours/port.hpp>
@@ -18,8 +19,8 @@
 /// fake_kernel.cpp defines them under the vDSO's own symbol names
 /// (<ours/vdso.hpp>), so the library's source is compiled unchanged and links
 /// against these instead: channel_create, channel_read, channel_write,
-/// handle_close, handle_duplicate, object_wait_async, port_create and
-/// port_wait. A call the library is not meant to make has no definition
+/// handle_close, handle_duplicate, object_wait_async, port_create,
+/// port_wait and debug_write. A call the library is not meant to make has no definition
 /// here, and the test fails to link.
 ///
 /// The model keeps the kernel's rules the library depends on:
@@ -32,7 +33,12 @@
 ///     otherwise when the object first asserts one;
 ///   - closing a handle ends its armed waits without a packet, and closes
 ///     the channel for its peer;
-///   - a port hands its packets out in the order they were queued.
+///   - a port hands its packets out in the order they were queued;
+///   - a wait a test has made fail (fail_next_wait_async()) answers the
+///     status it was given and arms nothing;
+///   - a debug_write longer than MAX_DEBUG_WRITE answers OutOfRange and
+///     writes nothing, as the kernel does, so that a library that does not
+///     split or cut its line shows as a line that is missing.
 ///
 /// What it leaves out: rights, and moving handles between tables. A handle
 /// written into a message keeps its value and stays open in the model, and
@@ -43,6 +49,11 @@ class Kernel final {
   public:
     /// Forgets every object, packet, wait and record.
     auto reset() -> void;
+
+    /// The next object_wait_async answers |status| and arms nothing, as the
+    /// kernel does when it has no memory for the wait. A Loop's re-arm is an
+    /// object_wait_async, so this is how a test makes one fail.
+    auto fail_next_wait_async(ours::Status status) -> void;
 
     /// Whether |handle| names an open object.
     [[nodiscard]]
@@ -56,6 +67,10 @@ class Kernel final {
     [[nodiscard]]
     auto closed() const -> std::vector<ours::Uandle> const &;
 
+    /// What each debug_write call that was accepted wrote, oldest first.
+    [[nodiscard]]
+    auto debug_writes() const -> std::vector<std::string> const &;
+
     auto channel_create(ours::Uandle *out0, ours::Uandle *out1) -> ours::Status;
     auto channel_write(ours::Uandle channel, void const *bytes, u32 num_bytes,
                        ours::Uandle const *handles, u32 num_handles) -> ours::Status;
@@ -67,6 +82,7 @@ class Kernel final {
         -> ours::Status;
     auto object_wait_async(ours::Uandle handle, ours::Uandle port, u64 key, ours::Signals signals,
                            ours::WaitAsyncOptions options) -> ours::Status;
+    auto debug_write(char const *buffer, usize length) -> ours::Status;
 
   private:
     struct Message {
@@ -107,6 +123,8 @@ class Kernel final {
     std::map<ours::Uandle, Object> m_objects;
     std::vector<Armed> m_armed;
     std::vector<ours::Uandle> m_closed;
+    std::vector<std::string> m_debug_writes;
+    ours::Status m_fail_next = ours::Status::Ok;
 };
 
 /// The one model the fake system calls reach.

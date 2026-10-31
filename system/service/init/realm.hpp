@@ -115,7 +115,9 @@ class Instance final {
     /// directory (Realm::resolve() registers it): when the wait fires, the
     /// call goes to the Realm's on_outgoing() with the instance. A member of
     /// the instance rather than the instance itself, since the instance has
-    /// a second wait with another behaviour.
+    /// a second wait with another behaviour. It answers Close only, so the
+    /// Loop never arms its wait again and never calls on_rearm_failed(); the
+    /// default, which does nothing, stays.
     class OutgoingWaiter final: public loop::Waiter {
       public:
         constexpr OutgoingWaiter() = default;
@@ -131,7 +133,8 @@ class Instance final {
 
     /// The Waiter of the wait on the instance's process (Realm::run()
     /// registers it): when the process has terminated, the call goes to the
-    /// Realm's on_terminated() with the instance.
+    /// Realm's on_terminated() with the instance. It answers Close only, as
+    /// OutgoingWaiter does, so on_rearm_failed() stays the default.
     class TerminatedWaiter final: public loop::Waiter {
       public:
         constexpr TerminatedWaiter() = default;
@@ -201,6 +204,8 @@ struct BuiltinServers {
     ResourceServer *debug_resource;
     ResourceServer *irq_resource;
     ResourceServer *ioport_resource;
+    ResourceServer *mmio_resource;
+    ResourceServer *iommu_resource;
     ResourceServer *sampling_resource;
     /// ours.kernel.RootJob, which hands out the root job.
     ResourceServer *root_job;
@@ -283,13 +288,25 @@ class Realm final: private ioservice::LoopServer::Delegate {
     /// its connection ends: the root says so.
     auto write_failed(ours::Status status) -> void override;
 
+    /// An Open was refused on |directory|, a directory the root serves: of
+    /// /boot, of a subdirectory a component holds as a namespace entry, or of
+    /// some component's /svc. The root says so for a /svc and only for a
+    /// /svc: that component asked for a protocol it has no entry for, or
+    /// asked for its entry in a way the directory does not allow, and its
+    /// client has only the epitaph to read. A refusal on /boot is ordinary, a
+    /// file that is not there, and stays silent.
+    auto open_refused(ioservice::NodeId directory, std::string_view path, ours::Status status)
+        -> void override;
+
     /// Writes Open(|path|, |flags|, |channel|) on |provider|'s outgoing
-    /// directory, and does not wait, as OutgoingConnector::send does; a
-    /// provider that has exited answers NotFound (D23). A protocol's path is
-    /// svc/<name> with PROTOCOL_SERVICE; a directory's is its exposed name,
-    /// with the use's rights as the flags. Consumes |channel|.
-    auto forward(Instance &provider, std::string_view path, ours_io::Flags flags,
-                 ours::Uandle channel) -> void;
+    /// directory, and does not wait, as OutgoingConnector::send does. A
+    /// protocol's path is svc/<name> with PROTOCOL_SERVICE; a directory's is
+    /// its exposed name, the use's joined subdir under it, with the use's
+    /// rights as the flags. A provider that has exited answers NotFound
+    /// (D23), and the root logs that, like any route that ends nowhere, as
+    /// |consumer|'s |use| routing nowhere. Consumes |channel|.
+    auto forward(Instance const &consumer, component::Use const &use, Instance &provider,
+                 std::string_view path, ours_io::Flags flags, ours::Uandle channel) -> void;
 
     /// What the wait on |instance|'s outgoing directory's client end does
     /// when it fires: Instance::OutgoingWaiter hands the call here.

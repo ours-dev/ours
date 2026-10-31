@@ -7,6 +7,7 @@
 
 #include <array>
 #include <span>
+#include <string_view>
 
 #include <ours/rights.hpp>
 #include <ours/status.hpp>
@@ -99,7 +100,8 @@ enum class Action : u8 {
     Connect,
     /// Open or Clone failed: write |message|, an epitaph, on |handle|, the
     /// request's channel, then close |handle|. The connection the request
-    /// came on stays.
+    /// came on stays. |status| and, for an Open, |path| say what was refused
+    /// and why, for a program that reports it.
     Refuse,
     /// Open reached a remote entry: |message| is the Open to serve there,
     /// with |handle|, the request's server end, among its handles, to be
@@ -121,6 +123,14 @@ struct Outcome {
     u64 service = 0;
     /// Forward: the remote entry's channel, where |message| goes.
     ours::Uandle forward_channel = ours::Uandle::Invalid;
+    /// Refuse: the status |message|'s epitaph carries, so that the program
+    /// need not decode its own answer to report it.
+    ours::Status status = ours::Status::Ok;
+    /// Refuse: the path the refused Open asked for, whatever it was, a bad
+    /// one included; none for a refused Clone, which asks for no path. A view
+    /// of the request's bytes, so it holds until the program reads its next
+    /// message.
+    ustl::Option<std::string_view> path = ustl::NONE;
 };
 
 /// One connection, as a Server's table holds it (design "ioservice connection").

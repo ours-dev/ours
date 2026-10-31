@@ -1,25 +1,29 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/mm/gaf.hpp>
+#include <ours/mm/vmm.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/resource_dispatcher.hpp>
 #include <ours/platform/ioport.hpp>
+#include <ours/platform/mmio.hpp>
 
 #include <heap/new.hpp>
 
 namespace ours::object {
 namespace {
     /// How many numbers the space of a ranged kind holds: interrupt lines are
-    /// numbered by a u32 (VIrqNum), I/O ports by a u16. Zero for a kind with
-    /// no ranges here: System is numbered by slot, and MmIo is not supported
-    /// yet.
+    /// numbered by a u32 (VIrqNum), I/O ports by a u16, and physical addresses
+    /// by as many bits as the CPU can put on its bus. Zero for a kind with no
+    /// ranges here: System is numbered by slot.
     auto space_of(RsrcKind const kind) -> u64 {
         switch (kind) {
             case RsrcKind::Irq:
                 return u64{1} << 32;
             case RsrcKind::IoPort:
                 return u64{1} << 16;
+            case RsrcKind::MmIo:
+                return u64{1} << mm::get_phys_addr_bits();
             default:
                 return 0;
         }
@@ -54,7 +58,7 @@ ResourceDispatcher::ResourceDispatcher(Kind kind, u64 base, u64 size, Flag flags
 /// refused first, and then a Root resource was refused unless its size was 0
 /// -- and returned Ok without ever constructing a dispatcher, leaving |out|
 /// empty for a caller told it had succeeded. It now builds one, for System
-/// slots and for the Irq and IoPort ranges.
+/// slots and for the Irq, IoPort and MmIo ranges.
 auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind kind, u64 base,
                                 u64 size, Flag flags, Name const &name, Storage *storage)
     -> Status {
@@ -71,7 +75,8 @@ auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind ki
             }
             break;
         case Kind::Irq:
-        case Kind::IoPort: {
+        case Kind::IoPort:
+        case Kind::MmIo: {
             // The root, or at least one number inside the kind's space,
             // compared so that nothing overflows.
             auto const space = space_of(kind);
@@ -81,8 +86,6 @@ auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind ki
             }
             break;
         }
-        case Kind::MmIo:
-            return Status::NotSupported;
         default:
             // A number the ABI names no kind for, such as the 3 and 4 it
             // keeps out of use.
@@ -138,6 +141,12 @@ auto validate_ranged_resource(ResourceDispatcher const &resource, RsrcKind const
     // Checked for every IoPort resource, the root included, since the root
     // is the one that covers these ports.
     if (kind == RsrcKind::IoPort && touches_kernel_ioports(base, size)) {
+        return Status::AccessDenied;
+    }
+
+    // The same for MmIo, and for the same reason: the root covers all the
+    // physical address space, the kernel's own memory and devices included.
+    if (kind == RsrcKind::MmIo && platform::touches_kernel_physical(base, size)) {
         return Status::AccessDenied;
     }
     return Status::Ok;

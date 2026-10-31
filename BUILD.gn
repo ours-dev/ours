@@ -93,12 +93,22 @@ group("default") {
     # gktl::DeferredAction's run-at-most-once contract; see the target.
     "//kernel/lib/gktl:tests($host_toolchain)",
 
+    # The machine's NUMA tables, and the node ordering derived from them:
+    # static arrays behind bounds-checked accessors plus a pure function over
+    # the distance matrix, all of which needed a booted kernel only while they
+    # lived inside the page allocator.
+    "//kernel/lib/numa/test:tests($host_toolchain)",
+
     # //kernel/mm's pure-bookkeeping smoke tests: plain hosted main()s over
-    # the mm sources they exercise (the buddy allocator, the protection-range
-    # tracker). The group sat unwired for a while -- frame-buddy-smoke was
-    # never built by anything -- so both are named here explicitly.
-    "//kernel/mm/tests:frame-buddy-smoke($host_toolchain)",
-    "//kernel/mm/tests:protection-ranges-smoke($host_toolchain)",
+    # the parts of mm that touch no kernel globals -- the buddy allocator, the
+    # protection-range tracker, and resolving an allocation request.
+    #
+    # Through the group, not one entry per executable. The two that existed
+    # were named here individually because the group had sat unwired and
+    # frame-buddy-smoke was built by nothing, but that left two places to
+    # remember: a third test added to the group alone compiled, linked and was
+    # never run, because host_tests.py finds only what //:default reaches.
+    "//kernel/mm/tests:tests($host_toolchain)",
 
     # Benchmarks, which report timings rather than passing or failing. Here so
     # that they keep compiling; the numbers are quoted in docs/changes.

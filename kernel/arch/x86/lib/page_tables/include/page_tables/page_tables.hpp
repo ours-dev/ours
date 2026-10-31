@@ -286,6 +286,49 @@ class X86PageTableImpl {
         return walk_range<Derived::top_level()>(derived().root(), cursor, narrow);
     }
 
+    /// For every leaf in [va, va + n pages) whose accessed bit is set, asks
+    /// |visit|(phys, size), with the memory the leaf maps and the leaf's size,
+    /// and clears the bit when the answer is true; how many it cleared goes to
+    /// |cleared|. Splits as unmap() does; on an error, what came before it is
+    /// done.
+    ///
+    /// The bit is cleared by an atomic read-modify-write, not a load and a
+    /// store: the hardware writes the accessed and dirty bits of an entry
+    /// without the table's lock, and a store of what was loaded would undo a
+    /// dirty bit set in between, once leaves are made without it
+    /// (X86Pte::make() sets it in every writable leaf today).
+    ///
+    /// No TLB is invalidated: that is the caller's. Until it is, a CPU that
+    /// holds a cleared leaf's translation goes on using it, and never sets
+    /// the bit again: an access the next harvest does not see.
+    template <typename Visitor>
+    [[nodiscard]]
+    auto harvest_accessed(VirtAddr const va, usize const n, Visitor &visit, usize *const cleared)
+        -> ours::Status {
+        report(cleared, 0);
+        if (n == 0) {
+            return ours::Status::Ok;
+        }
+        if (!range_is_valid(va, n)) {
+            return ours::Status::InvArgs;
+        }
+        using Format = typename Derived::Format;
+        RangeCursor cursor{va, n * PAGE_SIZE};
+        usize count = 0;
+        auto harvest = [&visit, &count](Pte &entry, PageTableLevel const level, PhysAddr) {
+            if ((entry.value & Format::ACCESSED) == 0 ||
+                !visit(address(entry.value), page_size(level))) {
+                return;
+            }
+            std::atomic_ref<PteVal>(entry.value)
+                .fetch_and(~Format::ACCESSED, std::memory_order_relaxed);
+            count += 1;
+        };
+        auto const status = walk_range<Derived::top_level()>(derived().root(), cursor, harvest);
+        report(cleared, count);
+        return status;
+    }
+
     /// Maps [va, va + n pages) to the frames from |pa| on, with a leaf as
     /// large as the range and its alignment allow at each step: 4 KiB, 2 MiB
     /// and 1 GiB in a table that does not split its large leaves; in one that

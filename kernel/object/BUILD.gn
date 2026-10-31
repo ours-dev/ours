@@ -3,6 +3,7 @@ import("//build/cpp/cpp_interface.gni")
 if (toolchain_environment == "kernel") {
   source_set("object") {
     sources = [
+      "bti_dispatcher.cpp",
       "channel_dispatcher.cpp",
       "dispatcher.cpp",
       "exception_dispatcher.cpp",
@@ -11,10 +12,12 @@ if (toolchain_environment == "kernel") {
       "handle_table.cpp",
       "interrupt_dispatcher.cpp",
       "interrupt_event_dispatcher.cpp",
+      "iommu_dispatcher.cpp",
       "job_dispatcher.cpp",
       "message_packet.cpp",
       "pager_dispatcher.cpp",
       "pager_proxy.cpp",
+      "pmt_dispatcher.cpp",
       "port_dispatcher.cpp",
       "process_dispatcher.cpp",
       "resource_dispatcher.cpp",
@@ -41,6 +44,7 @@ if (toolchain_environment == "kernel") {
 
 cpp_interface("headers") {
   public = [
+    "include/ours/object/bti_dispatcher.hpp",
     "include/ours/object/channel_dispatcher.hpp",
     "include/ours/object/dispatcher.hpp",
     "include/ours/object/exception_dispatcher.hpp",
@@ -49,11 +53,13 @@ cpp_interface("headers") {
     "include/ours/object/handle.hpp",
     "include/ours/object/interrupt_dispatcher.hpp",
     "include/ours/object/interrupt_event_dispatcher.hpp",
+    "include/ours/object/iommu_dispatcher.hpp",
     "include/ours/object/job_dispatcher.hpp",
     "include/ours/object/message_packet.hpp",
     "include/ours/object/observer.hpp",
     "include/ours/object/pager_dispatcher.hpp",
     "include/ours/object/pager_proxy.hpp",
+    "include/ours/object/pmt_dispatcher.hpp",
     "include/ours/object/port_dispatcher.hpp",
     "include/ours/object/process_dispatcher.hpp",
     "include/ours/object/resource_dispatcher.hpp",

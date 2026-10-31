@@ -70,7 +70,10 @@ class HelloServer final: public ioservice::Handler {
     /// never moves, and an entry is taken again only after the Loop has freed
     /// the slot it released: release() answers Close, run() then closes the
     /// channel and frees the slot, and connect(), which runs on the same
-    /// thread, finds the entry free only after that.
+    /// thread, finds the entry free only after that. When run() cannot arm
+    /// the wait again it closes the channel and frees the slot first and then
+    /// calls on_rearm_failed(), which frees the entry, so the order is the
+    /// same.
     class Client final: public loop::Waiter {
       public:
         HelloServer *server = nullptr;
@@ -83,6 +86,13 @@ class HelloServer final: public ioservice::Handler {
         /// Loop reaches it, through Waiter.
         auto on_signals(Signals const observed) -> loop::Action override {
             return server->serve(*this, observed);
+        }
+
+        /// What the Loop calls when it could not arm the wait again, after it
+        /// has closed the channel and freed the slot: the server's
+        /// rearm_failed() of this client. Private for the same reason.
+        auto on_rearm_failed(Status const cause) -> void override {
+            server->rearm_failed(*this, cause);
         }
     };
 
@@ -137,6 +147,14 @@ class HelloServer final: public ioservice::Handler {
     static auto release(Client &client) -> loop::Action {
         client.channel = Uandle::Invalid;
         return loop::Action::Close;
+    }
+
+    /// Frees |client|'s entry after the Loop failed to arm its wait again.
+    /// The Loop has closed the channel and freed the slot, so the entry is
+    /// all that is left to free.
+    auto rearm_failed(Client &client, Status const cause) -> void {
+        client.channel = Uandle::Invalid;
+        report("cannot wait on a client again", cause);
     }
 
     /// Handles what |observed| says happened on |client|'s channel: one

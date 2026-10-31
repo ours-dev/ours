@@ -20,7 +20,7 @@ namespace {
     /// Unlike the range below, a hole may genuinely have no descriptor behind
     /// it, so this asks pfn_valid() first instead of asserting.
     INIT_CODE
-    auto init_memmap_reserved(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid) -> void {
+    auto init_memmap_reserved(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NodeId nid) -> void {
         for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
             if (!pfn_valid(pfn)) {
                 continue;
@@ -33,7 +33,7 @@ namespace {
     }
 
     INIT_CODE
-    auto init_memmap_range(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid) -> void {
+    auto init_memmap_range(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NodeId nid) -> void {
         for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
             auto frame = pfn_to_frame(pfn);
             DEBUG_ASSERT(frame, "A usable pfn with no descriptor behind it");
@@ -46,7 +46,7 @@ namespace {
     /// that is really there. Returns the first pfn it did not initialise.
     INIT_CODE
     auto init_memmap_zone(ZoneType zone, Pfn zone_start, Pfn zone_end, Pfn start, Pfn end,
-                          Pfn hole_start, NnId nid) -> Pfn {
+                          Pfn hole_start, NodeId nid) -> Pfn {
         auto const first = std::clamp(start, zone_start, zone_end);
         auto const last = std::clamp(end, zone_start, zone_end);
 
@@ -163,7 +163,6 @@ namespace {
                 if (node == nullptr) {
                     continue;
                 }
-                node->add_reserved_frames(1);
                 if (auto *const zone = PmZone::at(frame->nid(), frame->zone())) {
                     zone->add_reserved_frames(1);
                 }

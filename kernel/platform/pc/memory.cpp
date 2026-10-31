@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <type_traits>
+#include <utility>
 
 #include <heap/new.hpp>
 #include <ustl/util/type_list.hpp>
@@ -40,7 +41,7 @@ auto platform_init_pmm_with_config(ustl::TypeList<LinearZoneMaxPfns...>) -> void
     auto handle_item =
         [&]<mm::ZoneType Type, usize Pfn, bool Enable>(MaxZonePfn<Type, Pfn, Enable>) {
             static_assert(Enable, "There is a disabled zone type");
-            max_zone_pfns[static_cast<usize>(Type)] = std::min(Pfn, mm::max_pfn());
+            max_zone_pfns[std::to_underlying(Type)] = std::min(Pfn, mm::max_pfn());
         };
 
     (handle_item(LinearZoneMaxPfns()), ...);

@@ -6,6 +6,7 @@
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
+#include <ours/mm/vm_object_paged.hpp>
 
 #include <arch/interrupt.hpp>
 #include <gktl/counter.hpp>
@@ -161,6 +162,9 @@ auto VmAspace::sync_kernel_aspace() -> void {}
 /// dereferences it afterwards (ArchVmAspace::switch_context ignores `from`
 /// entirely), and it only happened to work because m_arch is not at offset 0.
 auto VmAspace::switch_aspace(Self *prev, Self *next) -> void {
+    if (prev == next) {
+        return;
+    }
     ArchVmAspace::switch_context(prev ? &prev->m_arch : nullptr, next ? &next->m_arch : nullptr);
 }
 
@@ -314,16 +318,93 @@ auto VmAspace::for_each_node(void *const context, NodeVisitor const visit) -> St
     if (!!(m_flags & Flags::Destroyed)) {
         return Status::BadState;
     }
-    visit(context, *m_root_vma, 1);
-    VmArea::NodeEnumerator enumerator{*m_root_vma, 2};
-    while (true) {
-        auto const [node, depth] = enumerator.next();
-        if (node == nullptr) {
-            break;
-        }
-        visit(context, *node, depth);
-    }
+    // The root is at depth 1 here, one more than descend() counts it.
+    m_root_vma->descend([context, visit](VmAreaOrMapping &node, usize const depth) {
+        visit(context, node, depth + 1);
+    });
     return Status::Ok;
+}
+
+auto VmAspace::harvest_accessed(AccessedVisitor const visit, void *const context) -> usize {
+    m_canary.verify<Self>();
+
+    Guard<sync::Mutex> guard{m_lock};
+    if (!!(m_flags & Flags::Destroyed)) {
+        return 0;
+    }
+    constexpr auto ACTION = HarvestOptions::UpdateAge | HarvestOptions::ResetUnaccessed;
+    // Only the mappings of paged objects have leaves to harvest.
+    struct Harvest {
+        VmAspace &aspace;
+        AccessedVisitor visit;
+        void *context;
+        usize cleared = 0;
+
+        auto operator()(VmArea &) -> void {}
+
+        auto operator()(VmMapping &mapping) -> void {
+            auto vmo = mapping.vmo();
+            if (as<VmObjectPaged>(vmo.as_ptr_mut()) == nullptr) {
+                return;
+            }
+            usize here = 0;
+            auto const status = aspace.m_arch.harvest_accessed(
+                mapping.base(), mapping.size() / PAGE_SIZE, ACTION, visit, context, &here);
+            // A mapping's leaves lie inside it, so no walk can meet a large
+            // leaf it covers in part, the one thing that fails.
+            DEBUG_ASSERT(Status::Ok == status, "harvesting a mapping of '{}' failed: {}",
+                         aspace.name(), to_string(status));
+            cleared += here;
+        }
+    } harvest{.aspace = *this, .visit = visit, .context = context};
+    m_root_vma->descend(harvest);
+    auto const cleared = harvest.cleared;
+    if (cleared != 0) {
+        m_arch.invalidate_all();
+    }
+    return cleared;
+}
+
+/// One space at a time, and without ALL_ASPACE_LIST_LOCK while it is
+/// harvested: that lock is a spin lock, and a harvest takes the space's mutex.
+/// So the walk holds a reference to the space it is on, which keeps it on the
+/// list (its destructor is what takes it off), steps from it to the next under
+/// the lock, and lets go of it after the lock.
+///
+/// The next one is taken with try_adopt(): a space on the list may already
+/// have lost its last reference and be waiting in its destructor for the lock
+/// this holds, and a reference cannot be taken to it any more; it is passed
+/// over. Letting go of the previous one after the lock is not a nicety either:
+/// that may be its last reference, and its destructor takes the lock.
+auto VmAspace::harvest_all_user_accessed(AccessedVisitor const visit, void *const context)
+    -> usize {
+    usize cleared = 0;
+    ustl::Arc<Self> current;
+    while (true) {
+        ustl::Arc<Self> next;
+        {
+            Guard<sync::SpinLock, IrqSave> guard{ALL_ASPACE_LIST_LOCK};
+            auto at = ALL_ASPACE_LIST.begin();
+            if (current) {
+                at = ALL_ASPACE_LIST.iterator_to(*current);
+                ++at;
+            }
+            for (; at != ALL_ASPACE_LIST.end(); ++at) {
+                if (!at->is_user()) {
+                    continue;
+                }
+                next = ustl::Arc<Self>::try_adopt(&*at);
+                if (next) {
+                    break;
+                }
+            }
+        }
+        current = ustl::move(next);
+        if (!current) {
+            return cleared;
+        }
+        cleared += current->harvest_accessed(visit, context);
+    }
 }
 
 auto VmAspace::find_mapping(VirtAddr const va, ustl::Arc<VmMapping> *const out) -> Status {

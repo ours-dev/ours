@@ -40,7 +40,7 @@ At the final state (`008fb0c6`):
 
 ## Not done
 - **Memory hotplug.** The table leaves room for it (a new node fills a row, memory of a new type fills a cell), but a zone that grows needs its `FrameSet` to grow, and a zone that goes needs its readers drained first; neither is designed.
-- **A running total of free frames**, which would make the free count one load: `docs/repairs/261029/mm.md` item 1, to be measured.
+- **A running total of free frames**, which would make the free count one load: `docs/repairs/261029/mm.md` item 3, to be measured.
 - **The unmerged `feat/pmm-cpp-vocabulary` and `feat/pmm-layering`** change `pm_zone.hpp`, `pm_zone.cpp`, `pm_node.hpp` and `pm_node_init.cpp` too; merging either meets this task in those files.
 - **`modernize-use-nodiscard` on `ZoneList::fallback()`, `begin()` and `end()`** in `pm_node.hpp`, on lines this task did not touch.
 - **`out/zone-table.numa`**, the NUMA build directory made for this task, is still there for the next comparison.

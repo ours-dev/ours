@@ -36,23 +36,46 @@ namespace {
         static_cast<PhysAddr>(std::numeric_limits<u32>::max());
 
     /// Points the trampoline at the GDT and the kernel's top-level page table,
-    /// as 32-bit physical addresses: where they are, or a copy below 4 GiB
-    /// inside the buffer when they are above it. Returns the GDT's address.
+    /// as 32-bit physical addresses. Returns the GDT's address.
     ///
-    /// A copy is a snapshot, so it is taken again each time a CPU is started
-    /// (prepare_bootstrap_area()): a top-level entry the kernel added since
-    /// boot would be missing from the boot-time one.
+    /// The GDT is always a copy, just past the data in the buffer's second
+    /// page. `lgdtl` records its physical address before paging is on, and
+    /// the far return after paging is on is the first thing to read the
+    /// table, at that same address now taken as linear -- so its page has to
+    /// be identity-mapped, and the buffer is the one place
+    /// make_bootstrap_area() maps that way. The kernel's own GDT used to be
+    /// used wherever it lay below 4 GiB, with an identity map of its own page,
+    /// and copied only when it lay above: two paths, of which the copy ran on
+    /// no machine until one had RAM above 4 GiB, and then failed at once,
+    /// because its address is not page aligned and its page was already
+    /// mapped. One path is one that every boot runs.
+    ///
+    /// The top-level page table is used where it is, or copied into the
+    /// buffer's third page when it is above 4 GiB. That copy lasts only as
+    /// long as the trampoline: x86_start_nonboot_cpu() moves each AP onto the
+    /// kernel's own root as soon as it can (leave_trampoline_tables(), which
+    /// names the one CPU left halted on it). A copy is a snapshot: at boot the
+    /// one make_bootstrap_area() takes, after it has mapped the buffer,
+    /// serves every AP, and prepare_bootstrap_area() takes both again
+    /// each time a CPU is restarted through hotplug. Neither copy can have
+    /// gone stale by then -- the kernel half is one top-level entry, which
+    /// the copy shares, and the buffer's map is the only one the kernel makes
+    /// in the lower half -- but taking them again costs nothing and keeps
+    /// that true if either fact changes.
     CPU_INIT_CODE
     auto fill_bootstrap_tables(u8 *const area, BootstrapData *const data) -> PhysAddr {
-        auto gdt_base = mm::virt_to_phys(VirtAddr(x86_get_gdt()));
-        if (gdt_base > MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (GDT_SIZE - 1)) {
-            auto gdt_start = reinterpret_cast<u8 *>(
-                ustl::round_up(reinterpret_cast<VirtAddr>(data + sizeof(*data)), 16));
-            ASSERT(gdt_start + GDT_SIZE <= area + PAGE_SIZE * 2);
-            memcpy(gdt_start, x86_get_gdt(), GDT_SIZE);
-            gdt_base = BOOTSTRAP16_BUFFER_BASE + static_cast<PhysAddr>(gdt_start - area);
-        }
-        ASSERT(gdt_base <= MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (GDT_SIZE - 1));
+        // `data + 1`, one structure on. This was `data + sizeof(*data)`,
+        // which on a BootstrapData pointer steps sizeof(*data) structures --
+        // 56 times 56 bytes, so the copy sat 0xC40 into the page instead of
+        // 0x40, inside it only because the structure is small: at 64 bytes
+        // it would have stepped a whole page and failed the ASSERT below.
+        auto *const gdt_start =
+            reinterpret_cast<u8 *>(ustl::round_up(reinterpret_cast<VirtAddr>(data + 1), 16));
+        ASSERT(gdt_start + GDT_SIZE <= area + PAGE_SIZE * 2);
+        memcpy(gdt_start, x86_get_gdt(), GDT_SIZE);
+        // Inside the buffer, which set_bootstrap16_buffer() keeps below
+        // 64 KiB, so the 32-bit base below cannot truncate it.
+        auto const gdt_base = BOOTSTRAP16_BUFFER_BASE + static_cast<PhysAddr>(gdt_start - area);
         data->gdtr_limit = static_cast<u16>(GDT_SIZE - 1);
         data->gdtr_base = static_cast<u32>(gdt_base);
 
@@ -106,9 +129,6 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     log::trace("Bootstrap long code phys base=0x{:X}", bootstrap_data->long_mode_phys_entry);
     log::trace("Bootstrap long mode code virt base=0x{:X}", bootstrap_data->long_mode_virt_entry);
 
-    auto const gdt_base = fill_bootstrap_tables(bootstrap_area_start, bootstrap_data);
-    log::trace("Bootstrap GDT at 0x{:X}", gdt_base);
-
     if constexpr (KERNEL_DEBUG_LEVEL) {
         log::trace("Debug symbol[0] offset={:X}", DEBUG_SYMBOL0 - BOOTSTRAP_AREA_START);
         log::trace("Debug symbol[1] offset={:X}", DEBUG_SYMBOL1 - BOOTSTRAP_AREA_START);
@@ -116,7 +136,6 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
         log::trace("Debug symbol[3] offset={:X}", DEBUG_SYMBOL3 - BOOTSTRAP_AREA_START);
         log::trace("Debug symbol[4] offset={:X}", DEBUG_SYMBOL4 - BOOTSTRAP_AREA_START);
     }
-    log::trace("Bootstrap PGD at 0x{:X}", bootstrap_data->pgd);
     *data = bootstrap_data;
 #ifdef CONFIG_CPU_HOTPLUG
     BOOTSTRAP_DATA = bootstrap_data;
@@ -125,16 +144,28 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     log::trace("Bootstrap16 data at v:0x{:X}, p:0x{:X}", VirtAddr(bootstrap_data),
                mm::PhysMap::virt_to_phys(bootstrap_data));
 
-    auto status = mm::VmAspace::kernel_aspace()->arch_aspace().map(
+    // One identity map is all the trampoline needs once paging is on: its
+    // code, its data, the GDT copy and any page-table copy all lie in the
+    // buffer. The lower half is empty by now -- x86_init_mmu_early()
+    // replaced physload's identity map, and x86_setup_mmu() cleared what
+    // replaced it -- so the buffer is mapped back here.
+    auto const status = mm::VmAspace::kernel_aspace()->arch_aspace().map(
         BOOTSTRAP16_BUFFER_BASE, BOOTSTRAP16_BUFFER_BASE, MIN_BOOTSTRAP16_BUFFER_SIZE >> PAGE_SHIFT,
         mm::MmuFlags::PermMask | mm::MmuFlags::Discache,
-        mm::ArchMapOptions::ErrorIfExisting | mm::ArchMapOptions::UndoOnFailure, 0);
+        mm::ArchMapOptions::ErrorIfExisting | mm::ArchMapOptions::UndoOnFailure, nullptr);
     ASSERT(Status::Ok == status);
 
-    status = mm::VmAspace::kernel_aspace()->arch_aspace().map(
-        gdt_base, gdt_base, 1, mm::MmuFlags::PermMask | mm::MmuFlags::Discache,
-        mm::ArchMapOptions::ErrorIfExisting | mm::ArchMapOptions::UndoOnFailure, 0);
-    ASSERT(Status::Ok == status);
+    // After the map, not before it. Where the root is above 4 GiB the APs
+    // started at boot run on a copy of it, taken here once, and the map
+    // above is what gives the root its lower-half top-level entry -- the
+    // one the trampoline's first fetch after paging is on goes through. A
+    // copy taken before the map lacked that entry, and the first AP faulted
+    // there with no IDT and reset the machine. The kernel half needs no such
+    // care: it is one top-level entry, and the copy shares every table
+    // beneath it.
+    auto const gdt_base = fill_bootstrap_tables(bootstrap_area_start, bootstrap_data);
+    log::trace("Bootstrap GDT at 0x{:X}", gdt_base);
+    log::trace("Bootstrap PGD at 0x{:X}", bootstrap_data->pgd);
 
     return BOOTSTRAP16_BUFFER_BASE;
 }
@@ -168,7 +199,12 @@ auto prepare_bootstrap_area(CpuNum const cpu, VirtAddr const stack_top, VirtAddr
 }
 #else
 /// Without CPU hotplug no CPU starts after boot, so the buffer goes back once
-/// every one has. Its identity mapping is left: nothing reaches it.
+/// every one has. Its identity mapping is left: nothing reaches it. Nor does
+/// any CPU that came online still run on the page-table copy in its third
+/// page: each left it for the kernel's own root in x86_start_nonboot_cpu()
+/// before it did. A CPU x86_bring_aps() gave up waiting for is not covered,
+/// by this or by anything else about the buffer: it may still be running
+/// from any of the three pages.
 INIT_CODE
 static auto free_bootstrap16_buffer() -> void {
     for (auto offset = usize{0}; offset < MIN_BOOTSTRAP16_BUFFER_SIZE; offset += PAGE_SIZE) {

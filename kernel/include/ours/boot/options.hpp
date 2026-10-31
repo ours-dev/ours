@@ -68,6 +68,10 @@ class BootOptions final {
     static constexpr std::string_view OOM_DEBOUNCE_OPTION{"kernel.oom.debounce-mb"};
     static constexpr std::string_view OOM_HYSTERESIS_OPTION{"kernel.oom.hysteresis-seconds"};
 
+    /// How often each node's page queues age; see page_aging_seconds().
+    static constexpr std::string_view PAGE_AGING_OPTION{"kernel.mm.page-aging-seconds"};
+    static constexpr u32 DEFAULT_PAGE_AGING_SECONDS{5};
+
     /// What each of them is when absent.
     static constexpr u32 DEFAULT_OOM_OUT_OF_MEMORY_MB{50};
     static constexpr u32 DEFAULT_OOM_CRITICAL_MB{150};
@@ -246,6 +250,18 @@ class BootOptions final {
         return m_oom_hysteresis_seconds;
     }
 
+    /// `kernel.mm.page-aging-seconds=<seconds>`: every this many seconds each
+    /// node's reclaimable pages age by one generation (//kernel/mm,
+    /// page_queues.hpp). DEFAULT_PAGE_AGING_SECONDS when absent; 0 is taken
+    /// as 1, since a period of nothing would rotate without pause.
+    [[nodiscard]]
+    auto page_aging_seconds() const -> u32 {
+        if (0 == m_page_aging_seconds) {
+            return 1;
+        }
+        return m_page_aging_seconds;
+    }
+
   private:
     /// The yes/no options, as one word. Written only by apply(), which
     /// setup_options() runs once on the boot CPU before anything reads them;
@@ -285,6 +301,7 @@ class BootOptions final {
     u32 m_oom_warning_mb{DEFAULT_OOM_WARNING_MB};
     u32 m_oom_debounce_mb{DEFAULT_OOM_DEBOUNCE_MB};
     u32 m_oom_hysteresis_seconds{DEFAULT_OOM_HYSTERESIS_SECONDS};
+    u32 m_page_aging_seconds{DEFAULT_PAGE_AGING_SECONDS};
 };
 
 /// Parses the image's command line into the options options() returns.

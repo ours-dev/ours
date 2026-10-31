@@ -19,6 +19,10 @@ auto Kernel::reset() -> void {
     *this = Kernel{};
 }
 
+auto Kernel::fail_next_wait_async(ours::Status const status) -> void {
+    m_fail_next = status;
+}
+
 auto Kernel::is_open(ours::Uandle const handle) const -> bool {
     return m_objects.contains(handle);
 }
@@ -29,6 +33,10 @@ auto Kernel::queued_messages(ours::Uandle const handle) const -> usize {
 
 auto Kernel::closed() const -> std::vector<ours::Uandle> const & {
     return m_closed;
+}
+
+auto Kernel::debug_writes() const -> std::vector<std::string> const & {
+    return m_debug_writes;
 }
 
 auto Kernel::make(Kind const kind) -> ours::Uandle {
@@ -188,6 +196,11 @@ auto Kernel::port_wait(ours::Uandle const port, ours::Instant const deadline,
 auto Kernel::object_wait_async(ours::Uandle const handle, ours::Uandle const port, u64 const key,
                                ours::Signals const signals, ours::WaitAsyncOptions const options)
     -> ours::Status {
+    if (m_fail_next != ours::Status::Ok) {
+        auto const status = m_fail_next;
+        m_fail_next = ours::Status::Ok;
+        return status;
+    }
     auto const found_port = m_objects.find(port);
     if (found_port == m_objects.end() || found_port->second.kind != Kind::Port) {
         return ours::Status::BadHandle;
@@ -201,6 +214,14 @@ auto Kernel::object_wait_async(ours::Uandle const handle, ours::Uandle const por
     }
     m_armed.push_back(Armed{handle, port, key, signals});
     fire(handle);
+    return ours::Status::Ok;
+}
+
+auto Kernel::debug_write(char const *const buffer, usize const length) -> ours::Status {
+    if (length > ours::MAX_DEBUG_WRITE) {
+        return ours::Status::OutOfRange;
+    }
+    m_debug_writes.emplace_back(buffer, length);
     return ours::Status::Ok;
 }
 } // namespace fake
@@ -248,4 +269,8 @@ auto ours::port_wait(Uandle const port, Instant const deadline, PortPacket *cons
 auto ours::object_wait_async(Uandle const handle, Uandle const port, u64 const key,
                              Signals const signals, WaitAsyncOptions const options) -> Status {
     return fake::kernel().object_wait_async(handle, port, key, signals, options);
+}
+
+auto ours::debug_write(char const *const buffer, usize const length) -> Status {
+    return fake::kernel().debug_write(buffer, length);
 }

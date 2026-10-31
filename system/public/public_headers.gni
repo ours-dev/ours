@@ -8,6 +8,7 @@
 # and the generated sysroot.
 ours_public_headers = [
   "ours/assert.hpp",
+  "ours/bti.hpp",
   "ours/compiler.hpp",
   "ours/exception.hpp",
   "ours/interrupt.hpp",

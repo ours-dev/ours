@@ -10,15 +10,25 @@ if (toolchain_environment == "kernel") {
       "page_table.cpp",
     ]
 
+    # ours/task/thread.hpp holds a sampler::StackSampleRequest.
+    deps = [ "//kernel/lib/sampler:request" ]
+
     if (mm_numa || mm_numa_emulation) {
       sources += [
         "numa.cpp",
         "srat.cpp",
       ]
-    }
 
-    # ours/task/thread.hpp holds a sampler::StackSampleRequest.
-    deps = [ "//kernel/lib/sampler:request" ]
+      # srat.cpp is the firmware side: it fills the distance matrix and the
+      # CPU placement that kernel/lib/numa holds. Inside the conditional
+      # because nothing else here names the library.
+      #
+      # Appended, and after the unconditional deps rather than before it: `=`
+      # here assigned a nonempty list that the next statement then assigned
+      # over, which GN refuses outright -- so `mm_numa = true` could not even
+      # be configured, let alone built.
+      deps += [ "//kernel/lib/numa" ]
+    }
 
     public_deps = [
       ":headers",

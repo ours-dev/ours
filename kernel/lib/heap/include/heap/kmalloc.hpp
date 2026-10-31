@@ -12,7 +12,7 @@ namespace heap {
 /// too, so taking the alias would put ktl on the path between them for no
 /// reason. The types are identical either way -- ktl::Gaf *is*
 /// ours::mm::Gaf -- so nothing at a call site changes.
-using ours::NnId;
+using ours::NodeId;
 using ours::mm::Gaf;
 
 /// The size-class ladder, and with it the largest request kmalloc can serve.
@@ -32,7 +32,7 @@ auto init_kmalloc() -> void;
 
 auto kmalloc(usize size, Gaf gaf) -> void *;
 
-auto kmalloc(usize size, Gaf gaf, NnId nid) -> void *;
+auto kmalloc(usize size, Gaf gaf, NodeId nid) -> void *;
 
 auto kfree(void *object) -> void;
 

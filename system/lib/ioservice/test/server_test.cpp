@@ -596,6 +596,45 @@ TEST_F(IoserviceServer, AFullTableRefusesWithNoResource) {
     EXPECT_TRUE(m_server.channel(root).is_none());
 }
 
+TEST_F(IoserviceServer, ARefusedOpenSaysWhatItAskedForAndWhy) {
+    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+
+    // The status the epitaph carries, and the path as it was asked for.
+    auto const missing = open(root, "bin/nope", Flags::None);
+    ASSERT_EQ(missing.action, Action::Refuse);
+    EXPECT_EQ(missing.status, Status::NotFound);
+    EXPECT_EQ(epitaph(missing), missing.status);
+    ASSERT_TRUE(missing.path.is_some());
+    EXPECT_EQ(*missing.path, "bin/nope");
+
+    // A path the server will not judge valid is still the path that was
+    // asked for, and is passed on as it came.
+    auto const invalid = open(root, "a//b", Flags::None);
+    ASSERT_EQ(invalid.action, Action::Refuse);
+    EXPECT_EQ(invalid.status, Status::BadPath);
+    ASSERT_TRUE(invalid.path.is_some());
+    EXPECT_EQ(*invalid.path, "a//b");
+
+    // The ones refused by a check before the tree, too.
+    auto const denied = open(root, "bin", Flags::PermWriteBytes);
+    ASSERT_EQ(denied.action, Action::Refuse);
+    EXPECT_EQ(denied.status, Status::AccessDenied);
+    ASSERT_TRUE(denied.path.is_some());
+    EXPECT_EQ(*denied.path, "bin");
+}
+
+TEST_F(IoserviceServer, ARefusedCloneAsksForNoPath) {
+    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    for (auto count = 1; count < 4; ++count) {
+        bind(m_root, ours_io::R_STAR_DIR);
+    }
+    auto const cloned = clone(root, OBJECT);
+    ASSERT_EQ(cloned.action, Action::Refuse);
+    EXPECT_EQ(cloned.status, Status::NoResource);
+    EXPECT_EQ(epitaph(cloned), cloned.status);
+    EXPECT_TRUE(cloned.path.is_none());
+}
+
 // --- Services ------------------------------------------------------------------
 
 TEST_F(IoserviceServer, OpeningAServiceHandsTheChannelBack) {

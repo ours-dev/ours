@@ -11,11 +11,11 @@
 #include <ustl/views/span.hpp>
 
 namespace bootmem {
-using ours::NnId;
+using ours::NodeId;
 using ours::PhysAddr;
 using ours::Status;
 
-inline constexpr auto ANY_NODE = std::numeric_limits<NnId>::max();
+inline constexpr auto ANY_NODE = std::numeric_limits<NodeId>::max();
 
 struct Range final {
     PhysAddr base{};
@@ -41,7 +41,7 @@ struct Range final {
 
 struct MemoryRegion final {
     Range range{};
-    NnId node{};
+    NodeId node{};
 };
 
 /// What a range of physical memory is, and -- when it is reserved -- what it is
@@ -190,7 +190,7 @@ struct AllocationRequest final {
     usize alignment{};
     PhysAddr lower{};
     PhysAddr upper{};
-    NnId node{ANY_NODE};
+    NodeId node{ANY_NODE};
     AllocationDirection direction{AllocationDirection::BottomUp};
     /// What the allocation is for; recorded on the reservation it creates.
     MemoryType type{MemoryType::Unknown};
@@ -204,7 +204,7 @@ enum class MemoryView : u8 {
 struct MemoryQuery final {
     PhysAddr lower{};
     PhysAddr upper{};
-    NnId node{ANY_NODE};
+    NodeId node{ANY_NODE};
     MemoryView view{MemoryView::Usable};
 };
 

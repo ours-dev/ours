@@ -38,7 +38,7 @@ struct EarlyMem {
     }
 
     [[nodiscard]]
-    static auto set_node(PhysAddr const base, usize const size, NnId const node) -> Status {
+    static auto set_node(PhysAddr const base, usize const size, NodeId const node) -> Status {
         auto const range = bootmem::Range::from(base, size);
         if (range.is_err()) {
             return range.unwrap_err();
@@ -52,20 +52,20 @@ struct EarlyMem {
     /// what a reserved range was for -- an allocation site that does not say is
     /// a range that can never be described again.
     template <typename T = u8>
-    static auto allocate(usize const count, NnId const node, bootmem::MemoryType const type)
+    static auto allocate(usize const count, NodeId const node, bootmem::MemoryType const type)
         -> T * {
         return allocate<T>(count, alignof(T), min_address(), max_address(), node, type);
     }
 
     template <typename T = u8>
-    static auto allocate(usize const count, usize const alignment, NnId const node,
+    static auto allocate(usize const count, usize const alignment, NodeId const node,
                          bootmem::MemoryType const type) -> T * {
         return allocate<T>(count, alignment, min_address(), max_address(), node, type);
     }
 
     template <typename T = u8>
     static auto allocate(usize const count, usize const alignment, PhysAddr const lower,
-                         PhysAddr const upper, NnId const node, bootmem::MemoryType const type)
+                         PhysAddr const upper, NodeId const node, bootmem::MemoryType const type)
         -> T * {
         if (BOOTMEM == nullptr || count > std::numeric_limits<usize>::max() / sizeof(T)) {
             return nullptr;
@@ -116,7 +116,7 @@ struct EarlyMem {
 
     template <typename Visitor>
     [[nodiscard]]
-    static auto visit_usable(PhysAddr const lower, PhysAddr const upper, NnId const node,
+    static auto visit_usable(PhysAddr const lower, PhysAddr const upper, NodeId const node,
                              Visitor &&visitor) -> Status {
         return visit(
             {
@@ -130,7 +130,7 @@ struct EarlyMem {
 
     template <typename Visitor>
     [[nodiscard]]
-    static auto visit_free(PhysAddr const lower, PhysAddr const upper, NnId const node,
+    static auto visit_free(PhysAddr const lower, PhysAddr const upper, NodeId const node,
                            Visitor &&visitor) -> Status {
         return visit(
             {
@@ -142,7 +142,7 @@ struct EarlyMem {
             visitor);
     }
 
-    static auto get_pfn_range_node(NnId nid) -> gktl::Range<Pfn>;
+    static auto get_pfn_range_node(NodeId nid) -> gktl::Range<Pfn>;
 
     static auto count_present_frames(Pfn start, Pfn end) -> usize;
 

@@ -450,3 +450,41 @@ Two departures from the brief, both forced by GN and both in the change record. 
 - The reader's instructions for the free-form parts (where a blank line goes between pasted pieces) were applied by one reader, a script; the chapter fixes the result at the end of level 4, so a different layout shows as a diff against the finished copy.
 - The tutorial's edits to `routing_checks.cpp`, `routing_checks/BUILD.gn`, the dev image's manifest and `boot_check.py` are not in the finished copy and so cannot be compared; they were booted, not diffed.
 - `ninja -n` after the final build was not run clean: the worktree's BUILD.gn files had been touched for the comparison, which makes ninja regenerate; the build itself passed and the boot used it.
+
+## Revision 4
+
+The Loop now tells a Waiter when it cannot arm its wait again (`57c17730`, `8c012c9c`: `loop::Waiter::on_rearm_failed(Status)`, with an empty default; echo's `Client`, `LoopServer::Binding`, `ResourceConnection` and `LauncherConnection` override it). `examples/hello` and the guide copy echo, so they follow. Uncommitted in the main checkout: the eight documents of `docs/guide/`, this file and `docs/changes/261029/examples-hello.md`. Committed in a scratch worktree, left for cherry-picking: branch `guide-sync`, commit `0d71493e` (`feat(examples): hello follows echo, a client is told when its wait cannot be armed again`), one file, `examples/hello/hello_server.cpp`, 19 lines added and 1 changed. A second worktree used for the literal run is removed with its branch.
+
+### The answer
+
+`answer.py` (session scratchpad) derived `examples/hello` again from the new `examples/echo/echo_server.cpp` by the chapter's rules (the six-row table, echo's first `#include` to the end of `main`, `usize{1}`, the formatters). Only `hello_server.cpp` differs from the committed copy, by echo's three hunks renamed (`Client`'s comment, `Client::on_rearm_failed()`, `HelloServer::rearm_failed()`); the rename table needed no row, since none of the new lines names echo.
+
+- `boot_check.py --out out/guide-sync`: `dbg PASS` (44 passed, 4 skipped), `rel PASS` (41 passed, 8 skipped, 6/6 required), `host-tests PASS` (151 passed): the same counts as before the change.
+- `ordinals_test.py`: `OK`. `format_cpp.py --check`: clean. `clang-tidy -p out/guide-sync` on `hello_server.cpp`: no diagnostic.
+
+### The literal run
+
+A second worktree from `0d71493e`; `reader.py` (scratchpad) sets `examples/hello` aside as the chapter says and applies levels 0 to 5 from the chapter's text, finding each edit by content and taking the reader-written code out of the chapter's blocks. Level 3: `rel` 6/6, `routing_checks: hello checked`. Level 4: `rel` 6/6 with `hello: stopping, as a client asked`, `init: hello exited with 0` and `routing_checks: hello checked`. After the formatters, the full command: `dbg PASS` (44), `rel PASS` (41, 8/8 required), `host-tests PASS` (151). `git status examples/hello` and `git diff -- examples/hello` printed nothing. The chapter needed no change for this; its line numbers did.
+
+### The guide
+
+- **Citations.** Every `path:N` of the eight documents (full cites, and the bare `:N` that follows one) was mapped from `3cb0d8a5`, the commit the guide was last checked against, to `HEAD` with `git diff -U0`, by `cites.py` (scratchpad). 106 citations of `examples/echo/echo_server.cpp`, `loop.hpp`, `loop_server.*`, `resource_server.cpp`, `launcher_server.cpp`, `realm.hpp`, `init.cpp`, `qemu_boot.py` and the ioservice fakes had moved with no change to the cited lines, and were rewritten; nine citations whose range covers changed lines, or whose size changed, were read and rewritten by hand (below). `snippets.py` then compared every fence with a cite beside it: all match, but one in chapter 3 (`cpp_interface.gni:15-18`), which did not before either. The text around every citation of the changed files was read too: the first cited line of each is in the table printed during the run and says what the sentence says.
+- **01-concepts.md.** The `Waiter` snippet is the new class (12 lines, `loop.hpp:106-117`); the text says the class has two virtual functions and says when `on_rearm_failed` is called (only after `Rearm` when the Loop could not arm the wait again, after it closed the handle and freed the slot), what it is for, what the status is, that its default does nothing and why that is right for a waiter that only answers `Close`. The list of what `run` does for a packet has a fourth step. "Who closes the handle" mentions it, echo's `Client` is said to override it, and "Where this is stated" cites the new comment (`loop.hpp:63-89`).
+- **02-first-server.md.** Level 3 names the new method in the declaration sentence and has one paragraph where `on_rearm_failed` is first met (what it is for, what not to touch, that the default does nothing, a link to W9 of the checklist). The class bullet lists `rearm_failed`. Every echo line number in the prose and the tables is the new one (the class 86-247 and 269-271, the `Stop` branch 218-221, `stop` 249-267, the storage 273-282, `main` 284-318, `EchoServer server` 301, `greet` 229-247). The command that prints the commit and the commit are `8c012c9c`.
+- **04-tree-servers.md.** The `Binding` paragraph says that a failed re-arm releases the connection through `on_rearm_failed` (`loop_server.cpp:78-88`); "the steps above" is `loop_server.cpp:90-126`.
+- **05-testing-and-debugging.md.** The fake kernel's list of rules has a sixth entry, a wait a test has made fail (`fail_next_wait_async()`, `fake_kernel.hpp:49-52`), and says it is how a test reaches a `Binding`'s `on_rearm_failed`.
+- **06-checklist.md.** No item is added or renumbered. W9 ("Free your record of a client when you close it") gets the new obligation: when the Loop tells you it could not arm your wait again, free the record in `on_rearm_failed()`. Its Why says the callback has returned by then, that only `on_rearm_failed()` is left to free it, that it is called once after the slot is free and so must not touch the handle; its Where has echo's `rearm_failed` as a second snippet (`echo_server.cpp:178-184`). W5 says the Loop arms, and tells the waiter if it cannot. The "callback" section describes both functions. W3, W19 and the other citations of `loop.hpp` and `echo_server.cpp` are new numbers (W19 adds that the waiter stays where it is until `on_rearm_failed()` returns).
+- **03-protocols.md, README.md, 00-setup.md.** Citation numbers only (chapter 3), and the footer.
+- **"Checked against".** Every chapter and the README end with `8c012c9c` and 2026-10-30, the answer of `git log -1 --format=%h -- system examples tools scripts build kernel/products` in the main checkout today. Once the `guide-sync` commit is cherry-picked the same command answers with that commit, because it touches `examples`; the lines are then one commit behind, and nothing they cite changed in it. Chapter 2's own command (`... -- examples/echo system kernel/products .agents/skills/ours-verify/scripts`) is not affected.
+
+### Checks
+
+- `python3 scripts/lint_docs.py --changed` on the eight documents, this file and the change record: no violations.
+- `check_guide_all.py`: only the known flags (the eight reader-written blocks of chapter 2, and one each in chapters 0, 3 and 5, which were flagged before this revision too).
+- `verify_chapter.py` for chapter 2: 19 snippets verbatim at their cited lines, 25 prose citations, 41 links with anchors.
+
+### Not verified
+
+- That a citation was true at `3cb0d8a5` before it was moved: the mapping is only as good as the guide's last check. The ranges that moved contain the text the sentences say (the table printed in the run), which is as far as I took it.
+- The failing path itself on the target: no program can provoke it (the loop-waiter-notify result says why), so the new paragraphs rest on the Loop's comment and its host tests.
+- Chapters 4 and 5 describe the root's resource and launcher servers only through the numbers of the `NoResource` lines they cite; the commits that gave those servers `on_rearm_failed` did not change what the chapters say about them.

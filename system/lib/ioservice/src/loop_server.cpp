@@ -35,6 +35,8 @@ namespace {
 
 auto LoopServer::Delegate::write_failed(Status) -> void {}
 
+auto LoopServer::Delegate::open_refused(NodeId, std::string_view, Status) -> void {}
+
 LoopServer::LoopServer(Tree const &tree, loop::Loop &loop, Syscalls const syscalls,
                        Memory const memory, Delegate *const delegate)
     : m_loop(&loop)
@@ -75,11 +77,25 @@ auto LoopServer::Binding::on_signals(Signals const observed) -> loop::Action {
     return m_server->handle(m_connection, observed);
 }
 
+auto LoopServer::Binding::on_rearm_failed(Status) -> void {
+    m_server->rearm_failed(m_connection);
+}
+
+auto LoopServer::rearm_failed(ConnectionId const connection) -> void {
+    // The cause is the Loop's to report and no one here can act on it; the
+    // connection is released as it is when its client goes, so that its entry
+    // is handed out again. The Loop closed the channel, so nothing is closed
+    // here.
+    m_server.release(connection);
+}
+
 auto LoopServer::handle(ConnectionId const connection, Signals const observed) -> loop::Action {
     auto const channel = m_server.channel(connection);
     if (channel.is_none()) {
-        // Nothing releases a connection without closing its slot in the same
-        // callback, so this is a slot outliving its connection: close it.
+        // Nothing releases a connection without its slot closing too: in the
+        // same callback, which answers Close, or, after a re-arm that failed,
+        // with the slot already free. So this is a slot outliving its
+        // connection: close it.
         return loop::Action::Close;
     }
     // The client went away with nothing left to read. The slot's own
@@ -165,6 +181,16 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
             // be gone already; the handle closes either way.
             auto _ = write(outcome.handle, outcome.message);
             auto _ = ours::handle_close(outcome.handle);
+            // Reported once the client has its answer, so that a delegate
+            // that is slow to say so delays nobody's. The path still views
+            // the request buffer, which nothing has touched since the read.
+            // A Clone has no path and is not reported; the connection is
+            // still the server's, so its directory is there to ask.
+            if (m_delegate != nullptr && outcome.path.is_some()) {
+                if (auto const directory = m_server.node(connection); directory.is_some()) {
+                    m_delegate->open_refused(*directory, *outcome.path, outcome.status);
+                }
+            }
             return loop::Action::Rearm;
         }
         case Action::Forward: {

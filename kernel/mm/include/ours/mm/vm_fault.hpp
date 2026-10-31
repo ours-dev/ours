@@ -18,10 +18,10 @@ enum class VmfCause {
     /// The fault was raised by the kernel (VmAspace::soft_fault()), not by the
     /// hardware: a copy that captured a fault resolves it out of line.
     ///
-    /// Nothing reads it yet. It is kept for page aging: the access of a
-    /// hardware fault is retried through the page-table entry, whose accessed
-    /// bit records it, so the lookup that resolves such a fault will skip the
-    /// software mark that every other lookup makes.
+    /// For page aging: the access of a hardware fault is retried through the
+    /// page-table entry, whose accessed bit records it, so the lookup that
+    /// resolves a fault without this cause skips the software mark that every
+    /// other lookup makes (VmCowPages::Cursor::disable_mark_accessed()).
     Software = 3_bit,
 
     /// The access was an instruction fetch.

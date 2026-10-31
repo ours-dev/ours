@@ -35,9 +35,46 @@ class PageQueues {
     /// generation has to be folded forward.
     static constexpr auto NUM_RECLAIMABLE = 8_usize;
 
+    /// Which kind of queue a page is on, as callers outside see it: the
+    /// generations of the reclaimable ring are one kind.
+    enum class PageKind : u8 {
+        None,
+        Pinned,
+        Anonymous,
+        AnonymousZeroFork,
+        Reclaimable,
+    };
+
+    /// Files |page|, the one at |pgoff| of |object|, on the queue for its
+    /// kind, with that backlink. A page already on a queue moves.
+    ///
+    /// Pinned: never reclaimed. Anonymous: content of the VMO's own, a copy
+    /// or what was supplied. Anonymous zero-fork: committed in place of zero
+    /// content, by a write to a hole or a zero marker, so the one kind of
+    /// anonymous page likely to be all zero again. Reclaimable: content a
+    /// page source supplied, which it can supply again; filed in the newest
+    /// generation.
     auto set_pinned(VmPage *, VmCowPages *, PgOff) -> void;
     auto set_anonymous(VmPage *, VmCowPages *, PgOff) -> void;
+    auto set_anonymous_zero_fork(VmPage *, VmCowPages *, PgOff) -> void;
     auto set_reclaimable(VmPage *, VmCowPages *, PgOff) -> void;
+
+    /// |page| now belongs to |object|, at |pgoff|, on the queue it is on: for
+    /// a page that moves from one node to another (a clone's pages to the new
+    /// hidden node, a hidden node's page to the leaf that takes it). Nothing if
+    /// the page is on no queue.
+    auto set_owner(VmPage *page, VmCowPages *object, PgOff pgoff) -> void;
+
+    /// The kind of queue |page| is on. Under the lock, though the caller holds
+    /// the lock of the object that files the page: the aging thread rewrites
+    /// the queue byte of a page whose generation it folds, under this lock
+    /// alone.
+    [[nodiscard]]
+    auto kind_of(VmPage const &page) const -> PageKind;
+
+    /// How many pages are on the queues of |kind|.
+    [[nodiscard]]
+    auto count(PageKind kind) const -> usize;
 
     /// Takes |page| off whatever queue holds it and drops its backlink.
     ///
@@ -54,7 +91,50 @@ class PageQueues {
     /// it was last touched, and aging degenerates into a FIFO.
     auto mark_accessed(VmPage *page) -> void;
 
-    auto start_runners() -> void;
+    /// Starts the thread that ages this node's reclaimable pages by one
+    /// generation every |period|. Once, at boot. OutOfMem when there is no
+    /// thread for it.
+    auto start_runners(Duration period) -> Status;
+
+    /// Harvests and then ages the reclaimable pages by one generation now, as
+    /// the thread does every period, and puts the thread's next rotation a
+    /// period from now. For tests, which want an age without waiting for it.
+    auto rotate() -> void;
+
+    /// Gives back up to |target_frames| frames of this node's reclaimable
+    /// pages, the oldest first: each is evicted by the node that holds it
+    /// (VmCowPages::reclaim_page()). How many frames it gave back, which is
+    /// fewer when the queues run out, or hold pages that stay.
+    ///
+    /// A page is found with no lock of its owner's held, so what the queues
+    /// can tell about the owner is a raw pointer. It is made a reference under
+    /// the queue lock with Rc::try_adopt(), which gives none for an owner that
+    /// has lost its last reference: that owner's destructor takes the pages
+    /// off the queues, under this lock, before its storage goes, so while the
+    /// lock is held the storage is there. The reference is dropped after the
+    /// owner's lock and this one are, and may be the last.
+    ///
+    /// Takes locks that sleep: not for interrupt context or under a spin lock.
+    auto reclaim(usize target_frames) -> usize;
+
+    /// Turns up to |target_frames| of this node's anonymous pages that are all
+    /// zero into zero markers, oldest first, and frees them: only pages
+    /// committed in place of zero content are looked at (the zero-fork queue),
+    /// the ones likely to be zero again. How many frames it freed. A page that
+    /// is not zero is moved to the anonymous queue, so it is looked at once.
+    /// The lifetime rule and the locks are reclaim()'s.
+    auto dedup_zero_pages(usize target_frames) -> usize;
+
+    /// How many generations |page| is behind the newest: 0 for a page filed or
+    /// used since the last rotation. Only for a reclaimable page.
+    [[nodiscard]]
+    auto age_of(VmPage const &page) const -> usize;
+
+    /// How many times the ring has rotated, by the thread or by rotate().
+    [[nodiscard]]
+    auto rotations() const -> u32 {
+        return m_mrugen.load(std::memory_order_relaxed);
+    }
 
     PageQueues();
 
@@ -71,6 +151,7 @@ class PageQueues {
     enum class QueueType : u8 {
         None,
         Anonymous,
+        AnonymousZeroFork,
         Pinned,
         ReclaimableStart,
         ReclaimableEnd = ReclaimableStart + NUM_RECLAIMABLE - 1,
@@ -79,6 +160,21 @@ class PageQueues {
 
     class MruRunner;
     class LruRunner;
+
+    /// A reclaimable page and the reference to its owner that was taken with
+    /// it; defined where VmCowPages is complete.
+    struct Candidate;
+
+    /// The oldest reclaimable page whose owner can be held, into |out|, or
+    /// false when there is none. A page whose owner is dying is passed over:
+    /// it leaves the queue when the destructor gets the lock.
+    auto oldest_reclaimable(Candidate *out) -> bool;
+
+    /// The oldest page on the zero-fork queue whose owner can be held.
+    auto oldest_zero_fork(Candidate *out) -> bool;
+
+    /// The first page of |list| whose owner can be held, into |out|.
+    auto adopt_first_locked(VmPage::List &list, Candidate *out) -> bool;
 
     auto set_queue_backlink_locked(VmPage *, VmCowPages *, PgOff, QueueType) -> void;
 
@@ -92,6 +188,17 @@ class PageQueues {
         Manual,
     };
     friend auto to_string(AgeReason) -> char const *;
+
+    /// Moves every page of this node that a user mapping used since the last
+    /// harvest to the newest generation, by the accessed bits of the user
+    /// page tables (VmAspace::harvest_all_user_accessed()), and clears those
+    /// bits. Another node's pages are left with their bits for that node's own
+    /// thread, which walks the same tables. How many bits it cleared.
+    auto harvest_accessed() -> usize;
+
+    /// What harvest_accessed() answers for one leaf: true, after marking its
+    /// pages used, when they are this node's.
+    auto take_accessed(PhysAddr pa, usize size) -> bool;
 
     /// Ages every reclaimable page by one generation.
     ///
@@ -109,12 +216,16 @@ class PageQueues {
     /// -- see the comment on the definition.
     auto advance_lru_locked() -> void;
 
-    auto get_lock() -> sync::SpinLock & {
+    auto get_lock() const -> sync::SpinLock & {
         return m_lock;
     }
 
+    /// When the thread rotates next: a period after the last rotation, the
+    /// thread's or rotate()'s.
+    auto next_rotation_due() const -> TimePoint<>;
+
     static constexpr auto queue_index(QueueType type) -> usize {
-        return static_cast<usize>(std::to_underlying(type));
+        return std::to_underlying(type);
     }
 
     /// The ring slot holding generation |gen|.
@@ -143,7 +254,7 @@ class PageQueues {
     /// function's body is only compiled at the closing brace of the class, so
     /// it cannot be constant-evaluated by a static data member initializer
     /// that appears in the same class.
-    static constexpr auto NUM_QUEUES = static_cast<usize>(std::to_underlying(QueueType::NumTypes));
+    static constexpr auto NUM_QUEUES = std::to_underlying(QueueType::NumTypes);
 
     mutable sync::SpinLock m_lock;
     std::array<VmPage::List, NUM_QUEUES> m_queues;
@@ -151,13 +262,14 @@ class PageQueues {
     std::atomic<u32> m_lrugen;
     std::atomic<u32> m_mrugen;
 
+    /// When the ring last rotated, under m_lock.
     TimePoint<> m_last_age_time;
-    AgeReason m_last_age_reason;
 
     ustl::Arc<MruRunner> m_mru_runner;
     ustl::Arc<LruRunner> m_lru_runner;
-    Duration m_min_rotate_time;
-    Duration m_max_rotate_time;
+
+    /// How often the thread rotates the ring, set when it starts.
+    Duration m_aging_period;
 };
 
 } // namespace ours::mm

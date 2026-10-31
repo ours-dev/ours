@@ -21,7 +21,8 @@ auto allocate(usize const size, ours::mm::Gaf const gaf) noexcept -> void * {
 }
 
 [[nodiscard]]
-auto allocate(usize const size, ours::mm::Gaf const gaf, ours::NnId const nid) noexcept -> void * {
+auto allocate(usize const size, ours::mm::Gaf const gaf, ours::NodeId const nid) noexcept
+    -> void * {
     if (size > heap::KMALLOC_MAX_SIZE) {
         return heap::vmalloc(size, gaf);
     }
@@ -68,12 +69,12 @@ auto operator new[](usize const size, ours::mm::Gaf const gaf) noexcept -> void 
     return allocate(size, gaf);
 }
 
-auto operator new(usize const size, ours::mm::Gaf const gaf, ours::NnId const nid) noexcept
+auto operator new(usize const size, ours::mm::Gaf const gaf, ours::NodeId const nid) noexcept
     -> void * {
     return allocate(size, gaf, nid);
 }
 
-auto operator new[](usize const size, ours::mm::Gaf const gaf, ours::NnId const nid) noexcept
+auto operator new[](usize const size, ours::mm::Gaf const gaf, ours::NodeId const nid) noexcept
     -> void * {
     return allocate(size, gaf, nid);
 }

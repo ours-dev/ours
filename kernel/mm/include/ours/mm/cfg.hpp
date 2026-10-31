@@ -8,7 +8,7 @@
 /// //kernel/products:memory), while everything below is written in terms of the
 /// OURS_CONFIG_* names. Derive one from the other here rather than leaving two
 /// spellings of one switch to drift: they had drifted, and a build with
-/// `mm_numa = true` still got NUMA_MAX_NODE == 1 and a PmFrame with its node
+/// `mm_numa = true` still got MAX_NODES == 1 and a PmFrame with its node
 /// field compiled out -- NUMA was selectable but never actually on.
 #ifndef OURS_CONFIG_NUMA
 #if defined(MM_NUMA) && MM_NUMA
@@ -46,25 +46,17 @@
 #define OURS_CONFIG_ZONE_DYNAMIC 0
 #endif
 
-/// NUMA_MAX_NODES_BITS is the width in bits of NUMA_MAX_NODE, written out next
-/// to it because the header is also read by assembly, which has no bit_width().
-/// pm_frame.hpp static_asserts the pair, so changing one without the other
-/// does not build.
-#ifndef OURS_CONFIG_NUMA_MAX_NODES
-#if OURS_CONFIG_NUMA == 1 || OURS_CONFIG_NUMA_EMULATION == 1
-#define NUMA_MAX_NODE 32
-#define NUMA_MAX_NODES_BITS 6
-#else
-#define NUMA_MAX_NODE 1
-#define NUMA_MAX_NODES_BITS 1
-#endif
-#endif
-#define NUMA_NO_NODE (NUMA_MAX_NODE + 1)
+/// The node count, its bit width and the not-a-node sentinel moved to
+/// <ours/node_mask.hpp>, beside MAX_CPU and CpuMask: how many nodes a machine
+/// can have is a property of the machine, and leaving it here meant that
+/// naming a node required including a memory-management header. They are
+/// `inline constexpr` there rather than macros, and the bit width is computed
+/// from the count instead of being written out next to it.
 
 #define MAX_PHYSADDR_BITS OURS_CONFIG_MAX_PHYSADDR_BITS
 
 /// [Node.MaxZoneNum]
-#define MAX_ZONES (NR_ZONES_PER_NODE * NUMA_MAX_NODE)
+#define MAX_ZONES (NR_ZONES_PER_NODE * MAX_NODES)
 
 /// [Frame.Shift]
 #ifndef OURS_CONFIG_PAGE_SHIFT

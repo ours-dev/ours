@@ -7,17 +7,17 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/node_mask.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_zone.hpp>
-#include <ours/mm/priv/memory_allocation_context.hpp>
+#include <ours/mm/priv/alloc_request.hpp>
 #include <ours/mm/priv/memory_allocation_policy.hpp>
+#include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
 
 #include <array>
 #include <atomic>
+#include <utility>
 
 #include <gktl/canary.hpp>
 #include <ktl/result.hpp>
@@ -54,7 +54,7 @@ class ZoneList {
     using ZoneRef = PmZone *;
     using Zones = ustl::views::Span<ZoneRef const>;
 
-    explicit ZoneList(NnId nid) : m_fallback(), m_connected(), m_nid(nid) {}
+    explicit ZoneList(NodeId nid) : m_fallback(), m_connected(), m_nid(nid) {}
 
     /// Puts this node's own zones, its row of the table, at the head of the
     /// fallback order, in type order -- before connect() appends anyone
@@ -65,9 +65,15 @@ class ZoneList {
         for_each_local_zone([this](PmZone &zone) { push_fallback(&zone); });
     }
 
-    /// Chains the zones of every node in |nodemask| behind this node's own,
-    /// nearest node first.
-    auto connect(NodeMask const &nodemask) -> void;
+    /// Chains the zones of every node in |order| behind this node's own, in
+    /// the order given.
+    ///
+    /// A list of node ids rather than a set: it used to take the set and
+    /// derive the order itself, from the machine's distance matrix, which made
+    /// "which nodes" and "in what order" one argument and put a NUMA concept
+    /// inside the allocator's data structure. The derivation is
+    /// numa::build_fallback_orders() now, and this appends what it was handed.
+    auto connect(ustl::views::Span<NodeId const> order) -> void;
 
     /// This node's zone of |ztype|, or null when the node has none.
     [[nodiscard]]
@@ -124,7 +130,7 @@ class ZoneList {
 
     /// The remote nodes connect() chained into the fallback order.
     NodeMask m_connected;
-    NnId m_nid;
+    NodeId m_nid;
 };
 
 /// `PmNode` is a class that describes a NUMA domain.
@@ -138,73 +144,23 @@ class PmNode {
   public:
     /// Whether a node has memory of a zone type is not a state: it is whether
     /// PmZone::at() has a zone for it.
-    enum class State {
+    enum class State : u32 {
         Memory,
         Online,
         Possible,
         NumStates,
     };
 
-    class Current;
-    class Topology;
-
-    /// The other nodes with memory, nearest first, as seen from one node: the
-    /// order that node's allocations fall back through. ZoneList::connect()
-    /// chains their zones behind the node's own in this order.
-    ///
-    /// Nested because it is part of how a node is wired up; its one user in
-    /// the allocator is ZoneList::connect(). Public so that pmnode.test can
-    /// check the order it produces directly. It was a free-standing NodeRoute that the caller created empty
-    /// and handed to PmNode::build_optimal_node_route() to fill; build() now
-    /// returns a finished one.
-    class Router {
-      public:
-        /// Every node with memory in |candidates| other than |from|, nearest
-        /// first.
-        static auto build(NnId from, NodeMask const &candidates) -> Router;
-
-        template <typename F, typename... Args>
-            requires ustl::traits::Invocable<F, PmNode &, Args...>
-        auto for_each_node(F &&f, Args &&...args) const -> void;
-
-        FORCE_INLINE
-        constexpr auto clear() -> void {
-            m_path.clear();
-        }
-
-        FORCE_INLINE
-        constexpr auto begin() const {
-            return m_path.begin();
-        }
-
-        FORCE_INLINE
-        constexpr auto end() const {
-            return m_path.end();
-        }
-
-      private:
-        /// Appends the next hop. Fixed capacity: one hop per other node, so
-        /// overflowing it means a node was visited twice.
-        FORCE_INLINE
-        constexpr auto push_back(NnId to) -> void {
-            auto const result = m_path.push_back(to);
-            DEBUG_ASSERT(result, "Router overflowed its {} hop capacity", NUMA_MAX_NODE - 1);
-        }
-
-        /// The hops, and their count: StaticVec keeps both.
-        ustl::collections::StaticVec<NnId, NUMA_MAX_NODE - 1> m_path;
-    };
-
     template <typename F>
-        requires ustl::traits::Invocable<F, NnId>
-    static auto for_each_nid(State state, F &&f) -> ustl::traits::InvokeResultT<F, NnId> {
-        return STATES[static_cast<usize>(state)].for_each(ustl::forward<F>(f));
+        requires ustl::traits::Invocable<F, NodeId>
+    static auto for_each_nid(State state, F &&f) -> ustl::traits::InvokeResultT<F, NodeId> {
+        return STATES[std::to_underlying(state)].for_each(ustl::forward<F>(f));
     }
 
     template <typename F>
         requires ustl::traits::Invocable<F, Self &>
     static auto for_each_node(State state, F &&f) -> ustl::traits::InvokeResultT<F, Self &> {
-        return STATES[static_cast<usize>(state)].for_each([&f](NnId nid) {
+        return STATES[std::to_underlying(state)].for_each([&f](NodeId nid) {
             DEBUG_ASSERT(Self::node(nid), "Touched an absent node in {}", __func__);
             return f(*Self::node(nid));
         });
@@ -212,23 +168,30 @@ class PmNode {
 
     FORCE_INLINE
     static auto node_online_mask() -> NodeMask const & {
-        return STATES[static_cast<usize>(State::Online)];
+        return STATES[std::to_underlying(State::Online)];
     }
 
     FORCE_INLINE
     static auto node_possible_mask() -> NodeMask const & {
-        return STATES[static_cast<usize>(State::Possible)];
+        return STATES[std::to_underlying(State::Possible)];
+    }
+
+    /// The nodes that own memory -- the ones worth falling back to, and so the
+    /// members the fallback order is derived over.
+    FORCE_INLINE
+    static auto node_memory_mask() -> NodeMask const & {
+        return STATES[std::to_underlying(State::Memory)];
     }
 
     /// Marks `nid` present in one of the state masks. The NUMA bring-up
     /// path (SRAT discovery) uses this to declare a domain Possible before
     /// the PMM builds its nodes.
-    static auto set_state(NnId nid, State state, bool on = true) -> void {
-        STATES[static_cast<usize>(state)].set(nid, on);
+    static auto set_state(NodeId nid, State state, bool on = true) -> void {
+        STATES[std::to_underlying(state)].set(nid, on);
     }
 
     FORCE_INLINE
-    constexpr static auto node(NnId nid) -> PmNode * {
+    constexpr static auto node(NodeId nid) -> PmNode * {
         return NODES[nid];
     }
 
@@ -247,6 +210,30 @@ class PmNode {
     }
 
     static auto bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status;
+
+    /// Records |cpu| as working on the node the placement table puts it on,
+    /// and caches that node in |cpu|'s slot. Nothing for a CPU still on the
+    /// MAX_NODES sentinel.
+    static auto publish_cpu(CpuNum cpu) -> void;
+
+    /// publish_cpu() for every CPU claimed so far. Run once, from an init
+    /// hook, as soon as per-CPU storage exists; see the definition for why it
+    /// is unconditional rather than going through set_cpu_node().
+    static auto publish_cpus() -> void;
+
+    /// Gives every CPU the firmware reported a node, and publishes it, before
+    /// any of them starts. Run once, from an init hook after the MADT parse;
+    /// see the definition for why bootstrap() could not do this itself.
+    static auto claim_possible_cpus() -> void;
+
+    /// Moves |cpu| to node |nid|: out of its old node's CPU mask, into the new
+    /// one's, and the placement table and its cache along with them.
+    ///
+    /// No caller yet. It is kept because it is the one place that knows what a
+    /// move has to touch, and it is three objects wide -- two nodes' masks,
+    /// each under its own lock, and the placement -- so the next thing that
+    /// re-homes a CPU should not have to rediscover the order.
+    static auto set_cpu_node(CpuNum cpu, NodeId nid) -> void;
 
     /// Works out how many frames the machine holds back from allocation and
     /// gives every zone its share of it as three watermarks.
@@ -313,7 +300,7 @@ class PmNode {
     auto dump() const -> void;
 
     FORCE_INLINE
-    constexpr auto nid() const -> NnId {
+    constexpr auto nid() const -> NodeId {
         return m_id;
     }
 
@@ -341,19 +328,10 @@ class PmNode {
         return &m_zone_list;
     }
 
-    /// Records |count| frames of this node as taken before the buddy existed.
-    /// The node's total, kept alongside the same per-zone tally; see
-    /// PmZone::add_reserved_frames().
+    /// The queues this node's VMO pages are filed on, by kind and by age.
     FORCE_INLINE
-    auto add_reserved_frames(usize const count) -> void {
-        m_reserved_frames += count;
-    }
-
-    /// The node's side of PmZone::sub_reserved_frames().
-    FORCE_INLINE
-    auto sub_reserved_frames(usize const count) -> void {
-        DEBUG_ASSERT(count <= m_reserved_frames, "more reserved frames released than recorded");
-        m_reserved_frames -= count;
+    auto page_queues() -> PageQueues & {
+        return m_page_queues;
     }
 
     /// TA_RETURN_CAPABILITY ties the accessor to the member for the
@@ -367,7 +345,7 @@ class PmNode {
   private:
     friend class ZoneList;
 
-    PmNode(NnId nid);
+    PmNode(NodeId nid);
 
     ~PmNode() = default;
 
@@ -385,27 +363,16 @@ class PmNode {
     ///     1). Range [start, end) is sorted by address.
     auto init() -> Status;
 
-    auto get_frame_from_zone_list(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
-        -> PmFrame *;
+    auto get_frame_from_zone_list(AllocRequest const &request) -> PmFrame *;
 
-    /// Fills in the context the zone walk filters on.
-    ///
-    /// `fallback` is the caller's nodemask and has to reach the context, because
-    /// get_frame_from_zone_list() skips any zone whose node is not in
-    /// `allowed_nodes` -- a context left default-constructed rejects every zone,
-    /// and the slowpath then spins waiting for a reclaim that will never make
-    /// the walk succeed.
-    auto alloc_frames_preamble(Gaf gaf, usize order, NodeMask const &fallback,
-                               MemoryAllocationContext *context) -> Status;
-
-    auto alloc_frames_postamble(PmFrame *, Gaf, usize, MemoryAllocationContext const &) -> void;
+    auto alloc_frames_postamble(PmFrame *, AllocRequest const &) -> void;
 
     [[no_unique_address]]
     gktl::Canary m_canary;
 
-    NnId m_id;
+    NodeId m_id;
 
-    /// Held with interrupts off. PmNode::Current::init() publishes every CPU
+    /// Held with interrupts off. PmNode::publish_cpus() publishes every CPU
     /// under it at InitLevel::CpuLocal + 1, long before InitLevel::Threading
     /// gives the boot CPU a thread whose preemption could be held off, and
     /// work_cpus() reads it at run time; IrqSave is the option that is right
@@ -433,209 +400,20 @@ class PmNode {
 
     std::atomic<usize> m_spanned_frames;
 
-    //! @brief present_pages is physical pages existing within the zone,
-    //! which is calculated as:
-    //!	    present_frames_ = spanned_frames_ - absent_frames_(pages in holes).
-    std::atomic<usize> m_present_frames;
-
-    std::atomic<usize> m_reserved_frames;
-
     ZoneList m_zone_list;
     PageQueues m_page_queues;
 
     [[no_unique_address]]
     MemoryAllocationPolicy m_node_policy;
 
-    constexpr static usize NUM_STATES = static_cast<usize>(State::NumStates);
+    constexpr static usize NUM_STATES = std::to_underlying(State::NumStates);
     static std::array<NodeMask, NUM_STATES> STATES;
 
-    static std::array<PmNode *, NUMA_MAX_NODE> NODES;
+    static std::array<PmNode *, MAX_NODES> NODES;
 
     // Th fields bottom is readonly after initializing logically.
     static usize NUM_NODES;
 };
-
-/// The machine's NUMA layout, as the firmware describes it: how far apart the
-/// nodes are, and which node each CPU belongs to.
-///
-/// Facts about the machine rather than about any PmNode, which is why they are
-/// kept apart from the nodes: the SRAT parse (x86 srat.cpp, InitLevel::PrePmm
-/// + 1) records them before a single PmNode exists, and a caller that only
-/// wants a node number -- mm::current_node() has dozens -- has no business
-/// with zones and free lists. They used to be spread over PmNode's statics
-/// (NODE_DISTANCE) and PmNode::Current's (STATIC_/DYNAMIC_CPU_TO_NODE).
-///
-/// Nested in PmNode so that the NUMA vocabulary stays under one name, the way
-/// PmNode::Current already is. What changes a PmNode when a CPU joins or
-/// leaves it -- its CPU masks, the per-CPU PmNode pointer -- stays with
-/// PmNode::Current; this only holds the tables.
-class PmNode::Topology {
-  public:
-    /// The firmware's distance between two nodes (the SLIT, or what the SRAT
-    /// parse fills in). Zero until someone sets it.
-    FORCE_INLINE
-    static auto distance(NnId const x, NnId const y) -> usize {
-        DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE);
-        return DISTANCE[x][y];
-    }
-
-    FORCE_INLINE
-    static auto set_distance(NnId const x, NnId const y, usize const distance) -> void {
-        DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE);
-        DISTANCE[x][y] = distance;
-    }
-
-    /// The node |cpu| works on now; NUMA_MAX_NODE while nothing has claimed
-    /// it. Starts as firmware_node() and follows set_cpu_node() after that.
-    FORCE_INLINE
-    static auto cpu_to_node(CpuNum const cpu) -> NnId {
-        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        return CPU_TO_NODE[cpu];
-    }
-
-    /// The node the calling CPU belongs to.
-    ///
-    /// Read out of the table rather than through PmNode::Current, and not as
-    /// an optimisation. Current is a per-CPU `PmNode *`, so
-    /// `CURRENT_INSTANCE->m_id` dereferences the *template* copy of that
-    /// pointer at compile time -- it folds to `&(nullptr->m_id)`, i.e. the
-    /// constant 4, which then gets handed to %gs as if it were a per-CPU
-    /// handle. That is a wild access whichever model is in effect, and it
-    /// stays wrong after the pointer is set, because the fold already
-    /// happened.
-    ///
-    /// The table is also the only answer that works this early: nothing fills
-    /// the per-CPU pointer until PmNode::Current::init() runs from an init
-    /// hook, while allocation starts asking for a node long before that.
-    FORCE_INLINE
-    static auto current_node() -> NnId {
-        return cpu_to_node(CpuLocal::current_cpu());
-    }
-
-    /// The node the firmware put |cpu| on -- what a node's hard affinity is
-    /// built from. Unlike cpu_to_node(), a run-time move does not change it.
-    FORCE_INLINE
-    static auto firmware_node(CpuNum const cpu) -> NnId {
-        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        return FIRMWARE_CPU_TO_NODE[cpu];
-    }
-
-    /// Records the firmware's placement of |cpu|, which is also where it
-    /// starts out. Only while bringing up: the SRAT parse, and the fallback
-    /// claims in PmNode::bootstrap() and PmNode::Current::claim_possible_cpus().
-    FORCE_INLINE
-    static auto set_cpu_node_early(CpuNum const cpu, NnId const nid) -> void {
-        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        FIRMWARE_CPU_TO_NODE[cpu] = nid;
-        CPU_TO_NODE[cpu] = nid;
-    }
-
-    /// Moves |cpu| to |nid| in the table. Only the table: the nodes' own CPU
-    /// masks are PmNode::Current::set_nid()'s to update, which calls this.
-    FORCE_INLINE
-    static auto set_cpu_node(CpuNum const cpu, NnId const nid) -> void {
-        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        CPU_TO_NODE[cpu] = nid;
-    }
-
-  private:
-    static std::array<std::array<usize, NUMA_MAX_NODE>, NUMA_MAX_NODE> DISTANCE;
-
-    /// Both start out on NUMA_MAX_NODE, the "no node known yet" sentinel;
-    /// see pm_node_topology.cpp.
-    static std::array<NnId, MAX_CPU> FIRMWARE_CPU_TO_NODE;
-    static std::array<NnId, MAX_CPU> CPU_TO_NODE;
-};
-
-/// The helper class be used to describe PmNode associated with current cpu context.
-class PmNode::Current: public CpuLocal::Current<PmNode *> {
-  public:
-    static auto alloc_frames(Gaf gaf, usize order = 0,
-                             NodeMask const &fallback = node_online_mask())
-        -> ktl::Result<PmFrame *>;
-
-    static auto alloc_frames_fragment(Gaf gaf, usize n,
-                                      NodeMask const &fallback = node_online_mask())
-        -> ktl::Result<PmFrame::List>;
-
-    static auto alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallback = node_online_mask())
-        -> ktl::Result<PmFrame::List>;
-
-    FORCE_INLINE
-    static auto hard_affinity() -> CpuMask const & {
-        return CpuLocal::access(CURRENT_INSTANCE->m_hard_affinity);
-    }
-
-    static auto set_nid(NnId nid) -> void;
-    static auto set_nid(CpuNum cpunum, NnId nid) -> void;
-
-    /// Publishes every claimed CPU's node into its per-CPU slot. Run once,
-    /// from an init hook, as soon as per-CPU storage exists; see the
-    /// definition for why it does not go through set_nid().
-    static auto init() -> void;
-
-    /// Gives every CPU the firmware reported a node, and publishes it, before
-    /// any of them starts. Run once, from an init hook after the MADT parse;
-    /// see the definition for why bootstrap() could not do this itself.
-    static auto claim_possible_cpus() -> void;
-
-  private:
-    friend class PmNode;
-
-    /// Where the calling thread's memory policy says its frames should come
-    /// from. Only for the node-less entries: a caller that names a node has
-    /// already said where, which is why PmNode::alloc_frames() does not apply
-    /// it. Whether the thread may allocate at all is a different question,
-    /// asked in PmNode::alloc_frames() for every caller.
-    static auto apply_thread_policy(Gaf &gaf) -> Status;
-
-    /// apply_thread_policy() and resolve_local_node() together: what each
-    /// node-less alloc_* entry does before handing the request to a node. The
-    /// calling CPU's node, or why there is none.
-    static auto local_node_for(Gaf &gaf) -> ktl::Result<PmNode *>;
-
-    /// The calling CPU's PmNode, answered even before CURRENT_INSTANCE exists.
-    ///
-    /// The per-CPU pointer is filled by Current::init(), an init hook at
-    /// InitLevel::CpuLocal + 1 -- i.e. after CpuLocal::init(), which allocates
-    /// the per-CPU units themselves and the page tables that map them. Read
-    /// before that, `get()` answers null, and a null PmNode is not a failure
-    /// the allocation paths below notice on their own: they walk straight into
-    /// it and read a ZoneList out of low memory, which phys's identity map
-    /// still makes readable, so the wreck surfaces somewhere else entirely.
-    /// That has happened twice -- once on init_vmm_preheap()'s zero-page
-    /// allocation (see the comment on publish()), once as a #GP inside
-    /// CpuLocal::init() -- which is why the resolution lives here rather than
-    /// in each caller.
-    ///
-    /// Topology::current_node() is what makes an answer possible this early:
-    /// it reads Topology's table, which bootstrap() fills for the boot CPU long
-    /// before any per-CPU storage exists.
-    static auto resolve_local_node() -> PmNode *;
-
-    /// Records |cpu| in its node's CPU masks and points its per-CPU slot at
-    /// the node. Nothing for a CPU still on the NUMA_MAX_NODE sentinel.
-    static auto publish(CpuNum cpu) -> void;
-
-    // Not read yet. Kept as planned per-CPU state (the node, and the
-    // affinities an allocation from this CPU should honour); nothing
-    // constructs a Current instance today, which is why the compiler first
-    // noticed m_node once Current lost its static tables to Topology.
-    [[maybe_unused]]
-    PmNode *m_node;
-    NodeMask m_hard_affinity;
-    NodeMask m_soft_affinity;
-};
-
-template <typename F, typename... Args>
-    requires ustl::traits::Invocable<F, PmNode &, Args...>
-auto PmNode::Router::for_each_node(F &&f, Args &&...args) const -> void {
-    // void, not the callback's result: every node is visited and nothing is
-    // collected.
-    for (auto const nid: m_path) {
-        f(*PmNode::node(nid), ustl::forward<Args>(args)...);
-    }
-}
 
 } // namespace ours::mm
 

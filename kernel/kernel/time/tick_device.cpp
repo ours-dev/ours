@@ -331,8 +331,9 @@ auto TickDevice::restart_after_offline() -> Status {
 
 namespace {
     /// The Tick level's CPU hotplug hook (ours/cpu_hotplug_hook.hpp): the
-    /// lowest level, so it stops last on the way down and starts first on
-    /// the way up, the levels above arming timers on it.
+    /// lowest of the device levels, so it stops last on the way down and,
+    /// after only the CPU's switch onto the kernel's page tables, starts
+    /// first on the way up, the levels above arming timers on it.
     auto stop_tick_for_offline() -> void {
         TickDevice::Current::get().stop_for_offline();
     }

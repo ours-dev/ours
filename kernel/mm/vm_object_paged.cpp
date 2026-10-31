@@ -70,6 +70,9 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     if (!!(vmof & VmoFlags::LargePages)) {
         cow_flags |= VmCowPages::Flags::LargeBlocks;
     }
+    if (!!(vmof & VmoFlags::Pinned)) {
+        cow_flags |= VmCowPages::Flags::Pinned;
+    }
     ustl::Arc<VmCowPages> cow_pages;
     auto status = VmCowPages::create(gaf, size, cow_flags, &cow_pages);
     if (Status::Ok != status) {
@@ -320,6 +323,112 @@ auto VmObjectPaged::decommit(VirtAddr offset, usize size) -> Status {
     m_canary.verify<Self>();
 
     return Status::Unimplemented;
+}
+
+auto VmObjectPaged::pin_range(VirtAddr const offset, usize const size) -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
+        return Status::InvArgs;
+    }
+
+    // One call pins as much as it can and stops early only with ShouldWait, as
+    // commit_range_internal() does: the request is waited on with the lock let
+    // go, and the next call starts at the first page not yet pinned. The pages
+    // pinned meanwhile stay pinned, which is what makes the wait safe.
+    MultiPageRequest request;
+    usize done = 0;
+    auto status = Status::Ok;
+    while (done < size) {
+        {
+            Guard guard{m_lock};
+            // Rechecked each time the lock is retaken, written so that it cannot
+            // wrap, as commit_range_internal() does.
+            if (size > m_size || offset > m_size - size) {
+                status = Status::OutOfRange;
+                break;
+            }
+
+            usize nr_pinned = 0;
+            assert_cow_pages_locked();
+            status = m_cow_pages->pin_range_locked(m_cow_offset + offset + done, size - done,
+                                                   &request, &nr_pinned);
+            done += nr_pinned * PAGE_SIZE;
+            if (Status::ShouldWait != status) {
+                break;
+            }
+        }
+
+        // Suspendable, as the commit's wait is.
+        status = request.wait(true);
+        if (Status::Ok != status) {
+            break;
+        }
+    }
+
+    if (Status::Ok != status && done != 0) {
+        // Whole or not at all: what was pinned before the failure is let go.
+        Guard guard{m_lock};
+        assert_cow_pages_locked();
+        [[maybe_unused]]
+        auto const undone = m_cow_pages->unpin_range_locked(m_cow_offset + offset, done);
+        DEBUG_ASSERT(Status::Ok == undone, "pages this call pinned were not pinned");
+    }
+    return status;
+}
+
+auto VmObjectPaged::unpin_range(VirtAddr const offset, usize const size) -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
+        return Status::InvArgs;
+    }
+
+    Guard guard{m_lock};
+    if (size > m_size || offset > m_size - size) {
+        return Status::OutOfRange;
+    }
+    assert_cow_pages_locked();
+    return m_cow_pages->unpin_range_locked(m_cow_offset + offset, size);
+}
+
+auto VmObjectPaged::lookup_contiguous(VirtAddr const offset, usize const size, PhysAddr *const out)
+    -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
+        return Status::InvArgs;
+    }
+
+    Guard guard{m_lock};
+    if (size > m_size || offset > m_size - size) {
+        return Status::OutOfRange;
+    }
+
+    assert_cow_pages_locked();
+    auto cursor = m_cow_pages->make_cursor(m_cow_offset + offset, size);
+    if (!cursor) {
+        return cursor.unwrap_err();
+    }
+    // Looking is not using: the answer is about where the pages are, and an
+    // access through the physmap that this is not.
+    cursor->disable_mark_accessed();
+
+    auto first = PhysAddr{0};
+    for (usize at = 0; at < size; at += PAGE_SIZE) {
+        auto const found = cursor->maybe_page();
+        if (found.is_none()) {
+            return Status::BadState;
+        }
+        auto const frame = frame_to_phys(found.value().page);
+        if (at == 0) {
+            first = frame;
+        } else if (frame != first + at) {
+            return Status::BadState;
+        }
+    }
+    *out = first;
+    return Status::Ok;
 }
 
 auto VmObjectPaged::take_pages(VirtAddr const offset, usize const size,

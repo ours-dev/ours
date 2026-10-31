@@ -17,6 +17,7 @@
 #include <ioservice/tree.hpp>
 #include <loop/loop.hpp>
 #include <ours_io/ours_io.hpp>
+#include <ustl/option.hpp>
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
 
@@ -132,9 +133,17 @@ class BootServer final {
     auto add_service(ioservice::NodeId directory, std::string_view name, u64 service)
         -> ours::Status;
 
+    /// The value of the first service in |directory|; none when it has no
+    /// child or its first child is no service. This is how the root tells a
+    /// component's /svc from /boot: every child of a /svc is a service, whose
+    /// value says which instance's it is (add_service()), and /boot and its
+    /// subdirectories, the namespace entries, hold no service at all.
+    [[nodiscard]]
+    auto first_service(ioservice::NodeId directory) const -> ustl::Option<u64>;
+
     /// Sets where Opens of service nodes go, and who is told of a reply that
-    /// cannot be written: the root's Realm. Until it is set, such an Open's
-    /// channel is closed.
+    /// cannot be written or an Open that was refused: the root's Realm. Until
+    /// it is set, such an Open's channel is closed.
     auto set_delegate(ioservice::LoopServer::Delegate *delegate) -> void {
         m_server.set_delegate(delegate);
     }

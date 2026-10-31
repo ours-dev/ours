@@ -32,7 +32,7 @@ Chapter 1 is read in pieces. Each level that needs one says "Read now" and links
 
 The finished result of this chapter is in the tree, as `examples/hello`. The default build compiles it so that it stays true, and no image starts it. It is what to compare with when a build fails: after you set it aside, `git diff -- examples/hello` shows every line where your copy differs from it, and `git status examples/hello` prints nothing when the two are the same. To do the tutorial yourself, set the finished copy aside first, because the tutorial creates the same directory (with the copy still there, `cp -R` would nest yours inside it, and two protocols would have the same method numbers). Run `rm -r examples/hello`. In the root `BUILD.gn`, delete the block that starts with the comment `# The finished result of chapter 2 of the developer's guide` and ends with the line `"//examples/hello/protocol($host_toolchain)",`. `examples/BUILD.gn` names `hello` too and needs no edit: nothing reads that file once the root stops naming `//examples:hello`. If your checkout has no `examples/hello`, there is nothing to set aside, and nothing to compare with.
 
-The line numbers in this chapter were checked against commit `3cb0d8a5`, the last commit that changed the files it quotes. `git log -1 --format=%h -- examples/echo system kernel/products .agents/skills/ours-verify/scripts` prints that commit for your checkout. If it prints another, a number may have moved: every edit below names the text it is about before it gives a number, so look for the text.
+The line numbers in this chapter were checked against commit `8c012c9c`, the last commit that changed the files it quotes. `git log -1 --format=%h -- examples/echo system kernel/products .agents/skills/ours-verify/scripts` prints that commit for your checkout. If it prints another, a number may have moved: every edit below names the text it is about before it gives a number, so look for the text.
 
 ## The places you will touch
 
@@ -185,9 +185,9 @@ This level makes `hello` a server that a client can reach, in two halves. Level 
 
 This half makes `hello_server.cpp` a server. Two ideas are new: serving a protocol, and where a program's memory comes from. Nothing can reach the server yet, so the proof is that it stays up.
 
-The root gives every component that has a program the server end of its *outgoing directory*, as a startup handle. Echo's `main` takes it first (`examples/echo/echo_server.cpp:269`). It then makes a port and a Loop to wait on, and an `ioservice::Outgoing`, which serves the outgoing directory on that Loop:
+The root gives every component that has a program the server end of its *outgoing directory*, as a startup handle. Echo's `main` takes it first (`examples/echo/echo_server.cpp:287`). It then makes a port and a Loop to wait on, and an `ioservice::Outgoing`, which serves the outgoing directory on that Loop:
 
-`examples/echo/echo_server.cpp:275-283`:
+`examples/echo/echo_server.cpp:293-301`:
 
 ```cpp
     auto port = Uandle::Invalid;
@@ -203,7 +203,7 @@ The root gives every component that has a program the server end of its *outgoin
 
 It registers the protocol under its name, serves the directory, and runs the Loop, which comes back only if the port fails:
 
-`examples/echo/echo_server.cpp:285-299`:
+`examples/echo/echo_server.cpp:303-317`:
 
 ```cpp
     if (auto const status = outgoing.add_protocol(ours_examples_echo::ECHO_NAME, server);
@@ -261,14 +261,14 @@ Build `hello_server.cpp` from echo's, with the rename table of level 0 applied t
 | the first `#include` to `using ours::Uandle;` (27-50) | includes, `namespace {` and the `using`s | none |
 | `constexpr auto SLOTS` with the comment above it, and the `static_assert` (56-61) | the Loop's slot count | `SLOTS` is `ioservice::Outgoing::MAX_CONNECTIONS` for now: a slot for each connection to the outgoing directory |
 | from the comment `/// Says |what| failed` to the end of `close_with_epitaph` (63-84) | `report`, `write`, `close_with_epitaph` | none |
-| from the comment `// What the server keeps` to `} // namespace` (255-264) | the storage | leave out the `ECHO_STORAGE` line for now |
-| from `auto main(int, char **) -> int {` to its closing brace (266-300) | `main` | `HelloServer server;` replaces the `EchoServer server(...)` line |
+| from the comment `// What the server keeps` to `} // namespace` (273-282) | the storage | leave out the `ECHO_STORAGE` line for now |
+| from `auto main(int, char **) -> int {` to its closing brace (284-318) | `main` | `HelloServer server;` replaces the `EchoServer server(...)` line |
 
 The table of level 0 changes exactly these names in echo's program: `ours_examples_echo` (the header and the namespace); `ECHO_NAME`, `ECHO_STRING` and `ECHO_STORAGE`; `EchoServer` and `EchoStringRequest`; `decode_echo_string`, `encode_echo_string_reply` and the method `echo_string`; and the three strings that start `echo:`, which the log shows as `hello:`. `STOP`, `StopRequest`, `decode_stop` and `encode_stop_reply` stay as they are.
 
 A program here has no heap, and nothing runs the constructors of its global objects. So its tables are globals that are built with the program, marked `constinit`, and a type with a destructor sits in a `ustl::LazyInit`, raw storage that `main` builds the object in, once, with `init()`. These are echo's three:
 
-`examples/echo/echo_server.cpp:261-263`:
+`examples/echo/echo_server.cpp:279-281`:
 
 ```cpp
 constinit ustl::LazyInit<ioservice::Outgoing::Storage> OUTGOING_STORAGE;
@@ -353,13 +353,15 @@ This level makes the server answer `Greet`. Each client gets a slot in the Loop,
 
 ### The server
 
-A slot waits on a `loop::Waiter`, and `on_signals` is what the Loop calls when the wait fires, with the signals it saw. Its whole declaration is in [chapter 1](01-concepts.md#the-loop-and-its-slots): one virtual function, `on_signals(ours::Signals observed) -> loop::Action`, and a protected constructor and destructor so that nothing deletes a waiter through it.
+A slot waits on a `loop::Waiter`, and `on_signals` is what the Loop calls when the wait fires, with the signals it saw. Its whole declaration is in [chapter 1](01-concepts.md#the-loop-and-its-slots): two virtual functions, `on_signals(ours::Signals observed) -> loop::Action`, which you define, and `on_rearm_failed(ours::Status cause) -> void`, which you may, and a protected constructor and destructor so that nothing deletes a waiter through it.
 
 It does one unit of work and answers `loop::Action::Rearm`, to wait again for the same signals, or `Close`, and then the Loop closes the handle and frees the slot. The rules it must keep are in the comment above `Waiter` and in [06-checklist.md](06-checklist.md#the-callback-that-w4-to-w9-bind); this chapter does not repeat them.
 
+The second function is for the one thing a waiter cannot see. After `Rearm` the Loop arms the wait again for you, and that can fail: the kernel may have no memory for it. The Loop then closes the handle and frees the slot, as it does for `Close`, and calls `on_rearm_failed(cause)` once, with the kernel's status. That is where you free what you kept for the client, here its entry in the table, because nothing else will: a table that loses an entry for each failure ends by refusing everyone. Do not touch the channel there, which is closed. The default does nothing, and echo's `Client` overrides it. [W9 of the checklist](06-checklist.md#w9-free-your-record-of-a-client-when-you-close-it) is the rule.
+
 A client's channel is registered with `Loop::add(handle, signals, waiter)`. Echo's `connect` does it for each new client, asking to be woken by `Readable` (a message is waiting) or `PeerClosed` (the client is gone). `client` is an entry of a table in the server's storage, and it is a `Waiter`:
 
-`examples/echo/echo_server.cpp:147-156`:
+`examples/echo/echo_server.cpp:157-166`:
 
 ```cpp
             client.server = this;
@@ -376,14 +378,14 @@ A client's channel is registered with `Loop::add(handle, signals, waiter)`. Echo
 
 Replace the stub with echo's class, and its limits, renamed with the table of level 0:
 
-- **The class.** From the comment `/// The Echo server: the connections` above `class EchoServer` to the end of `echo_string()` (its last statement is `return loop::Action::Rearm;`), then the two members and the closing brace (`Storage *m_storage;`, `loop::Loop *m_loop;`, `};`). At the checked commit that is lines 86-229 and 251-253. It holds a `Client` (a `Waiter` whose `on_signals` calls `serve`), a `Storage` struct, `connect`, `release` (frees the entry and answers `Close`), `serve` and `echo_string`, which the table renames `greet`.
-- **What to leave out.** In `serve`, the `else if` that handles `Stop`: the four lines from `} else if (header.is_ok() && header->ordinal == ours_examples_echo::STOP.ordinal) {` (lines 200-203). The `}` after them closes the `if` and stays. The branch comes back in level 4.
+- **The class.** From the comment `/// The Echo server: the connections` above `class EchoServer` to the end of `echo_string()` (its last statement is `return loop::Action::Rearm;`), then the two members and the closing brace (`Storage *m_storage;`, `loop::Loop *m_loop;`, `};`). At the checked commit that is lines 86-247 and 269-271. It holds a `Client` (a `Waiter` whose `on_signals` calls `serve` and whose `on_rearm_failed` calls `rearm_failed`), a `Storage` struct, `connect`, `release` (frees the entry and answers `Close`), `rearm_failed` (frees it after a failed re-arm), `serve` and `echo_string`, which the table renames `greet`.
+- **What to leave out.** In `serve`, the `else if` that handles `Stop`: the four lines from `} else if (header.is_ok() && header->ordinal == ours_examples_echo::STOP.ordinal) {` (lines 218-221). The `}` after them closes the `if` and stays. The branch comes back in level 4.
 - **The limits.** Replace your `SLOTS` lines by echo's, from the comment `/// How many clients may be connected at once` to the `static_assert` (lines 52-61). Make `MAX_CLIENTS` `usize{1}`: one client is all the check needs, and level 4 relies on it.
-- **The storage.** Put the `ECHO_STORAGE` line back (it is `HELLO_STORAGE` now), and in `main` replace `HelloServer server;` by echo's `EchoServer server(*ECHO_STORAGE.init(), loop);` (line 283), renamed.
+- **The storage.** Put the `ECHO_STORAGE` line back (it is `HELLO_STORAGE` now), and in `main` replace `HelloServer server;` by echo's `EchoServer server(*ECHO_STORAGE.init(), loop);` (line 301), renamed.
 
 (`serve` is echo's name for the function that handles one message; it has nothing to do with serving the outgoing directory.) It reads the one message, decodes its header, and picks the method by its number. This is the branch for `Greet`; the `if` it opens is closed after the `else if` you leave out, and a method it does not know falls out of the bottom, which level 4 shows:
 
-`examples/echo/echo_server.cpp:194-199`:
+`examples/echo/echo_server.cpp:212-217`:
 
 ```cpp
         auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
@@ -394,7 +396,7 @@ Replace the stub with echo's class, and its limits, renamed with the table of le
             }
 ```
 
-`greet` (echo's `echo_string`, lines 211-229) builds the reply with the request's `txid`, the *transaction id* that a client uses to match a reply to its request, writes it, and answers `Rearm`, only after the message was read.
+`greet` (echo's `echo_string`, lines 229-247) builds the reply with the request's `txid`, the *transaction id* that a client uses to match a reply to its request, writes it, and answers `Rearm`, only after the message was read.
 
 ### The client
 
@@ -475,7 +477,7 @@ This level makes the server answer what it cannot do. A server has no heap, so e
 
 - **A client past `MAX_CLIENTS`.** A free entry takes the client and returns. When the loop over the entries finds none, `connect` falls out of it to a refusal with an epitaph, and the client reads `NoResource`:
 
-`examples/echo/echo_server.cpp:156-159`:
+`examples/echo/echo_server.cpp:166-169`:
 
 ```cpp
             return;
@@ -486,7 +488,7 @@ This level makes the server answer what it cannot do. A server has no heap, so e
 
 - **A method it does not know**, or a message its decoder refuses. `serve` falls out of its `if` and `else if` to these lines: close any handles the message carried, free the entry, answer `Close`. Nothing is written, so the client reads `PeerClosed` and no epitaph. This is what makes `Hello` a closed protocol ([03-protocols.md](03-protocols.md#closed-protocols)):
 
-`examples/echo/echo_server.cpp:205-208`:
+`examples/echo/echo_server.cpp:223-226`:
 
 ```cpp
         for (auto const handle: message.handles) {
@@ -497,7 +499,7 @@ This level makes the server answer what it cannot do. A server has no heap, so e
 
 - **A reply that cannot be written.** The client would wait for ever, so its entry is freed and its channel closed. No check of yours makes a write fail, so this one is read, not run:
 
-`examples/echo/echo_server.cpp:223-227`:
+`examples/echo/echo_server.cpp:241-245`:
 
 ```cpp
         // A reply that cannot be written leaves its client waiting for good,
@@ -509,7 +511,7 @@ This level makes the server answer what it cannot do. A server has no heap, so e
 
 - **Exit.** Nothing starts a component again once it has exited. `Stop` answers Ok and then ends the process, whether or not the answer could be written. The Loop has no quit, so ending the program from inside `on_signals` is `process_exit`:
 
-`examples/echo/echo_server.cpp:240-249`:
+`examples/echo/echo_server.cpp:258-267`:
 
 ```cpp
     [[noreturn]]
@@ -524,7 +526,7 @@ This level makes the server answer what it cannot do. A server has no heap, so e
     }
 ```
 
-Put back what you left out: the `else if` that handles `Stop` in `serve` (lines 200-203), and the function `stop`, from its comment `/// Stop: answers Ok, then exits with 0` to its closing brace (lines 231-249), after `greet` and before the two members. Your class is now echo's again, from `class EchoServer` to its closing `};`, renamed. So is the whole file: `hello_server.cpp` is echo's file from its first `#include` to the end of `main`, renamed with the table of level 0, with `MAX_CLIENTS` `usize{1}`, and nothing else differs.
+Put back what you left out: the `else if` that handles `Stop` in `serve` (lines 218-221), and the function `stop`, from its comment `/// Stop: answers Ok, then exits with 0` to its closing brace (lines 249-267), after `greet` and before the two members. Your class is now echo's again, from `class EchoServer` to its closing `};`, renamed. So is the whole file: `hello_server.cpp` is echo's file from its first `#include` to the end of `main`, renamed with the table of level 0, with `MAX_CLIENTS` `usize{1}`, and nothing else differs.
 
 Extend the client, in `routing_checks.cpp` after `check_hello_greet`. Each function must come before the one that calls it, so write them in this order. `check_hello_unknown` sends `hello` a request it has no method for, echo's own `EchoString` request; `hello` closes the channel without a word, so `call` returns `PeerClosed`:
 
@@ -668,4 +670,4 @@ Then read your server once against [the checklist](06-checklist.md#what-a-first-
 - `scripts/new_worktree.py`: the copy of the checkout to work in. `scripts/format_cpp.py`, `scripts/format_gn.py`: the formatters.
 - `examples/hello`, `BUILD.gn`, `examples/BUILD.gn`: the finished result, and how the default build names it.
 
-Checked against commit `3cb0d8a5` on 2026-10-29.
+Checked against commit `561571b7` on 2026-10-30.

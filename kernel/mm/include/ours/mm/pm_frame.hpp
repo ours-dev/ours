@@ -6,9 +6,12 @@
 #include <ours/assert.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/types.hpp>
+#include <ours/node_mask.hpp>
 
 #include <atomic>
+#include <limits>
 #include <type_traits>
+#include <utility>
 
 #include <ustl/bit.hpp>
 #include <ustl/bitfields.hpp>
@@ -36,7 +39,7 @@ namespace page {
     /// for any Vmm page; kmalloc pages are Slab and vmalloc pages Vmm; and a
     /// compound page is the m_compound stamp, which a Slab of order above 0
     /// carries too, so it cannot be an exclusive role.
-    enum class Role {
+    enum class Role : u32 {
         /// Allocated, with no owner yet: what the buddy hands out and what
         /// init() leaves, so also a reserved boot frame other than a page
         /// table, until unwire_frame() hands it on.
@@ -74,7 +77,7 @@ namespace page {
     /// Each bit has its own writer and the others are left alone: there is no
     /// setter that assigns the whole field, because the one there was made
     /// every mark erase the rest. That is how page tables lost Reserved.
-    enum class Flags {
+    enum class Flags : u32 {
         /// Held since boot, not the allocator's: set when the boot chain's
         /// reservations are stamped and on holes, cleared by unwire_frame()
         /// when a frame leaves the reserved books. A bit, not a role, so that
@@ -101,20 +104,21 @@ namespace page {
         ustl::bitfields::Field<ustl::bitfields::Id<Index>, ustl::bitfields::Type<Type>,
                                ustl::bitfields::Bits<Bits>, ustl::bitfields::Enable<Enabled>>;
 
-    // cfg.hpp spells NUMA_MAX_NODES_BITS out by hand, because assembly reads it
-    // too; this is what keeps it equal to the width of NUMA_MAX_NODE.
-    static_assert(NUMA_MAX_NODES_BITS == ustl::bit_width(static_cast<usize>(NUMA_MAX_NODE)));
+    // MAX_NODES_BITS used to be a second #define per NUMA branch, written out
+    // beside the count, and the static_assert here was what caught the two
+    // drifting apart. <ours/node_mask.hpp> computes it from the count now, so
+    // there is nothing left for an assertion to check.
 
     using Status = ustl::BitFields<
-        Field<Index::Role, Role, ustl::bit_width(static_cast<usize>(Role::Count))>,
-        Field<Index::Flags, Flags, ustl::bit_width(static_cast<usize>(Flags::Count))>,
+        Field<Index::Role, Role, ustl::bit_width(std::to_underlying(Role::Count))>,
+        Field<Index::Flags, Flags, ustl::bit_width(std::to_underlying(Flags::Count))>,
         Field<Index::Order, usize, ustl::bit_width(static_cast<usize>(MAX_FRAME_ORDER))>,
         // Readonly after initialized
-        Field<Index::ZoneType, ZoneType, ustl::bit_width(static_cast<usize>(ZoneType::Count))>,
+        Field<Index::ZoneType, ZoneType, ustl::bit_width(std::to_underlying(ZoneType::Count))>,
         // Readonly after initialized
         Field<Index::Section, SecNum, MAX_PHYSADDR_BITS - SECTION_SIZE_BITS>,
         // Readonly after initialized
-        Field<Index::Node, NnId, NUMA_MAX_NODES_BITS, OURS_CONFIG_NUMA>>;
+        Field<Index::Node, NodeId, MAX_NODES_BITS, OURS_CONFIG_NUMA>>;
 
     /// Per-role payload. Exactly one of these is live at a time, selected by
     /// `Index::Role` in the Status word above.
@@ -147,6 +151,15 @@ namespace page {
         std::atomic<u32> vmo_index;    // Index in VMO's page list
         std::atomic<u16> num_mappings; // 65536 mappings
         std::atomic<u16> num_users;    // 65536 users
+
+        /// How many pins hold this page in place (VmCowPages::pin_range_locked()):
+        /// a page with any cannot be reclaimed, zero-deduplicated, taken out of
+        /// its node, or shared with a clone, because something other than the
+        /// CPU, a device that does DMA to it, knows where it is.
+        ///
+        /// Written only under the lock of the node that holds the page, so a
+        /// pin and an unpin never race each other; atomic only so that a reader
+        /// without the lock, a dump or a test, reads a whole value.
         std::atomic<u8> pinned_count;
 
         /// How many more than one of the copy-on-write tree's leaves can see
@@ -254,7 +267,7 @@ class PageFrame {
 
     constexpr static auto ALIGNMENT = sizeof(usize) * 8;
 
-    auto init(ZoneType ztype, SecNum secnum, NnId nid) -> void {
+    auto init(ZoneType ztype, SecNum secnum, NodeId nid) -> void {
         DEBUG_ASSERT(!(flags() & Flags::Initialized), "Duplicated to initialize a frame");
 
         m_status.set<Index::ZoneType>(ztype);
@@ -267,7 +280,7 @@ class PageFrame {
     }
 
     FORCE_INLINE
-    constexpr auto nid() const -> NnId {
+    constexpr auto nid() const -> NodeId {
         return m_status.get<Index::Node>();
     }
 
@@ -447,6 +460,35 @@ class PageFrame {
 
     auto num_mappings() const -> usize {
         return as<page::VmmBody>().num_mappings.load();
+    }
+
+    /// See VmmBody::pinned_count.
+    auto pinned_count() const -> usize {
+        return as<page::VmmBody>().pinned_count.load();
+    }
+
+    /// One more pin. False, and nothing changed, when the count is at its limit
+    /// (255): a pin has to be refused there, not wrapped to none. The caller
+    /// holds the lock of the node that holds this page, so the read and the
+    /// write are not one atomic step and do not need to be.
+    [[nodiscard]]
+    auto increase_pinned() -> bool {
+        auto &count = as<page::VmmBody>().pinned_count;
+        auto const now = count.load();
+        if (now == std::numeric_limits<u8>::max()) {
+            return false;
+        }
+        count.store(static_cast<u8>(now + 1));
+        return true;
+    }
+
+    /// One pin fewer. The count is unsigned, so an unpin of none would wrap to
+    /// 255 and hold the page for ever: an assertion, as drop_share() is.
+    auto decrease_pinned() -> void {
+        auto &count = as<page::VmmBody>().pinned_count;
+        auto const now = count.load();
+        DEBUG_ASSERT(now > 0, "a page with no pin lost one");
+        count.store(static_cast<u8>(now - 1));
     }
 
     /// See VmmBody::share_count. The caller holds the lock of the tree whose

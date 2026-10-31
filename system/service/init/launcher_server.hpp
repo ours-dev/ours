@@ -31,13 +31,12 @@ class LauncherServer;
 /// (launch::ProcessLauncherState). A program declares an array of them for
 /// a LauncherServer to use; only the server reads or writes what is inside.
 ///
-/// The pool is a constinit global of the root's, and [[clang::no_destroy]]:
+/// The pool is a ustl::LazyInit of the root's, which main() builds in place:
 /// nothing runs a user program's dynamic initialisers, and the runtime
-/// defines no __cxa_atexit, so the state must be wired to its LauncherOps at
-/// compile time and its destructor must never be registered. The connection
-/// is its state's LauncherOps, itself, whose address is a constant there,
-/// rather than the server, which main() builds at run time; the connection
-/// finds its server through m_server, which bind() sets.
+/// defines no __cxa_atexit, so the pool is raw storage until then, and a
+/// connection that ends is reset, never destroyed. The connection is its
+/// state's LauncherOps, itself; it finds its server through m_server, which
+/// bind() sets.
 ///
 /// It is also the Waiter of its own Loop slot: a connection has one slot and
 /// one behaviour, so the Loop calls the connection itself, and the connection
@@ -47,8 +46,11 @@ class LauncherServer;
 /// names, so the connection derives from both without ambiguity, at the price
 /// of a second vptr. The Loop keeps the entry's address without owning it,
 /// which is safe because the pool is a global that never moves, and an entry
-/// is bound again only after the Loop has freed the slot it released: the
-/// one thread that runs the Loop is also the one that binds.
+/// is bound again only after it was released and the Loop has freed its slot:
+/// handle() releases an entry as it answers Close, so that the Loop frees the
+/// slot before any other callback runs, and on_rearm_failed() releases it
+/// after the Loop has freed the slot. The one thread that runs the Loop is
+/// also the one that binds.
 class LauncherConnection final: private launch::LauncherOps, public loop::Waiter {
   public:
     constexpr LauncherConnection() : m_state(*this) {}
@@ -64,6 +66,11 @@ class LauncherConnection final: private launch::LauncherOps, public loop::Waiter
     /// handle() of this connection. Private, like the entry's fields: only
     /// the Loop reaches it, through Waiter.
     auto on_signals(ours::Signals observed) -> loop::Action override;
+
+    /// What the Loop calls when it could not arm the connection's wait again,
+    /// after it has closed the channel and freed the slot: the server's
+    /// rearm_failed() of this connection. Private for the same reason.
+    auto on_rearm_failed(ours::Status cause) -> void override;
 
     /// Starts what the state judged: LauncherServer::start().
     auto start(launch::Startup const &startup) -> ustl::Result<ours::Uandle, ours::Status> override;
@@ -87,8 +94,8 @@ class LauncherConnection final: private launch::LauncherOps, public loop::Waiter
 class LauncherServer final {
   public:
     /// Everything the server keeps, sized by the pools (pools.hpp): a
-    /// constinit, [[clang::no_destroy]] global of the root's (see
-    /// LauncherConnection), about 28 KiB, too much for the stack.
+    /// ustl::LazyInit of the root's (see LauncherConnection), about 28 KiB,
+    /// too much for the stack.
     struct Storage {
         std::array<LauncherConnection, MAX_LAUNCHER_CONNECTIONS> connections;
         /// Where a connection's on_signals() reads the one message it handles.
@@ -135,6 +142,12 @@ class LauncherServer final {
     /// added and the state still holds is closed (reset()), and the entry
     /// can be bound again. The channel is the slot's, which closes it.
     static auto release(LauncherConnection &connection) -> void;
+
+    /// Frees |connection|'s entry after the Loop failed to arm its wait
+    /// again, as release() does, and says so on the debug console. The Loop
+    /// has closed the channel and freed the slot already. What
+    /// LauncherConnection::on_rearm_failed() calls.
+    auto rearm_failed(LauncherConnection &connection, ours::Status cause) -> void;
 
     /// Starts the program a Launch asked for, which the state has judged:
     /// launch::start() on the client's VMO under the client's job, then the

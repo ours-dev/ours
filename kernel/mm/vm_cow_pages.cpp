@@ -1,7 +1,9 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/object_cache.hpp>
+#include <ours/mm/page_queues.hpp>
 #include <ours/mm/physmap.hpp>
+#include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_object_paged.hpp>
@@ -18,6 +20,160 @@
 
 namespace ours::mm {
 using VmCowPagesCache = ObjectCache::Instance<VmCowPages>;
+
+namespace {
+    /// The queues of the node |page|'s frame is on: a page is filed with the
+    /// memory it is, wherever its VMO is used from.
+    auto queues_of(VmPage const *page) -> PageQueues & {
+        auto *const node = PmNode::node(page->nid());
+        DEBUG_ASSERT(node, "a VMO page on node {}, which does not exist", page->nid());
+        return node->page_queues();
+    }
+
+    /// Whether every byte of |page| is zero, read through the physmap. Not
+    /// atomic as a whole: a program writing the page meanwhile may be seen
+    /// half way, which dedup_zero_page() allows for.
+    auto is_zero_filled(VmPage const *page) -> bool {
+        auto const *const words =
+            reinterpret_cast<u64 const *>(PhysMap::phys_to_virt(frame_to_phys(page)));
+        for (usize i = 0; i < PAGE_SIZE / sizeof(u64); ++i) {
+            if (words[i] != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+} // namespace
+
+auto VmCowPages::file_page_locked(VmPage *const page, PgOff const index, Fill const fill) -> void {
+    auto &queues = queues_of(page);
+    if (!!(m_flags & Flags::Pinned)) {
+        queues.set_pinned(page, this, index);
+    } else if (m_page_source) {
+        queues.set_reclaimable(page, this, index);
+    } else if (Fill::ZeroFork == fill) {
+        queues.set_anonymous_zero_fork(page, this, index);
+    } else {
+        queues.set_anonymous(page, this, index);
+    }
+}
+
+auto VmCowPages::file_dirty_locked(VmPage *const page, PgOff const index) -> void {
+    if (!m_page_source || !!(m_flags & Flags::Pinned)) {
+        return;
+    }
+    auto &queues = queues_of(page);
+    if (PageQueues::PageKind::Reclaimable == queues.kind_of(*page)) {
+        queues.set_anonymous(page, this, index);
+    }
+}
+
+auto VmCowPages::reclaim_page(PgOff const index, VmPage *const page) -> ReclaimResult {
+    Guard<sync::Mutex> guard{m_lock};
+
+    auto const slot = m_pages.lookup(index);
+    if (!slot.is_page() || slot.page() != page) {
+        return ReclaimResult::Gone;
+    }
+    auto &queues = queues_of(page);
+    if (PageQueues::PageKind::Reclaimable != queues.kind_of(*page)) {
+        // Written, or pinned, since the reclaimer chose it: not on the ring any more.
+        return ReclaimResult::Kept;
+    }
+    if (is_hidden() || !m_page_source) {
+        // Nothing files such a page as reclaimable. Were it so, the page would
+        // be the oldest again at once, and the reclaimer would look at it for ever.
+        queues.mark_accessed(page);
+        return ReclaimResult::Kept;
+    }
+
+    // The entries go first, as in take_pages_locked(): a frame that leaves
+    // must leave no mapping behind. No fault can map the page again until the
+    // lock is let go, since every fault takes it to find the page, and by
+    // then the slot is a hole.
+    change_range_locked(u64(index) << PAGE_SHIFT, PAGE_SIZE, RangeChange::Unmap);
+
+    [[maybe_unused]]
+    auto *const removed = m_pages.remove_page(index);
+    DEBUG_ASSERT(removed == page, "the page at {} left the list under the lock", index);
+    free_page(page);
+    return ReclaimResult::Evicted;
+}
+
+auto VmCowPages::dedup_zero_page(PgOff const index, VmPage *const page) -> ReclaimResult {
+    Guard<sync::Mutex> guard{m_lock};
+
+    auto const slot = m_pages.lookup(index);
+    if (!slot.is_page() || slot.page() != page) {
+        return ReclaimResult::Gone;
+    }
+    auto &queues = queues_of(page);
+    if (PageQueues::PageKind::AnonymousZeroFork != queues.kind_of(*page)) {
+        return ReclaimResult::Kept;
+    }
+
+    // Not the reclaimer's again, whatever the reason.
+    auto const leave = [&]() {
+        queues.set_anonymous(page, this, index);
+        return ReclaimResult::Kept;
+    };
+    // A node with relatives shares what it holds: a hidden node's page is seen
+    // by every node below, through mappings that are not this node's to change;
+    // a node with children is the same in a tree only a test makes.
+    if (is_hidden() || nr_children_locked() != 0 || VmPageList::Tag::Owned != slot.tag()) {
+        return leave();
+    }
+    if (!is_zero_filled(page)) {
+        return leave();
+    }
+
+    // The page looks zero. Take Write from every mapping, and look again: it
+    // cannot change from here, so what is seen now is what will be freed.
+    auto const offset = u64(index) << PAGE_SHIFT;
+    change_range_locked(offset, PAGE_SIZE, RangeChange::RemoveWrite);
+    if (!is_zero_filled(page)) {
+        return leave();
+    }
+
+    // The entries go before the frame does, as in reclaim_page(), and the slot
+    // keeps the content as a marker, which allocates nothing.
+    change_range_locked(offset, PAGE_SIZE, RangeChange::Unmap);
+    [[maybe_unused]]
+    auto *const taken = m_pages.replace_page_with_zero_marker(index);
+    DEBUG_ASSERT(taken == page, "the page at {} left the list under the lock", index);
+    free_page(page);
+    return ReclaimResult::Evicted;
+}
+
+auto VmCowPages::own_all_pages_locked() -> void {
+    PgOff index = 0;
+    PgOff next = 0;
+    while (true) {
+        auto const slot = m_pages.next_slot(next, &index);
+        if (slot.is_empty()) {
+            break;
+        }
+        next = index + 1;
+        if (auto *const page = slot.page()) {
+            set_page_owner(page, this, index);
+        }
+    }
+}
+
+auto VmCowPages::set_page_owner(VmPage *const page, VmCowPages *const owner, PgOff const index)
+    -> void {
+    queues_of(page).set_owner(page, owner, index);
+}
+
+auto VmCowPages::unfile_page(VmPage *const page) -> void {
+    queues_of(page).remove(page);
+}
+
+auto VmCowPages::free_page(VmPage *const page) -> void {
+    DEBUG_ASSERT(page->pinned_count() == 0, "a pinned page is being freed");
+    unfile_page(page);
+    free_frames(page, 0);
+}
 
 VmCowPages::VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
                        ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit,
@@ -94,7 +250,14 @@ VmCowPages::~VmCowPages() {
         }
     }
 
-    m_pages.drain_owned([](VmPage *const page) { free_frames(page, 0); });
+    DEBUG_ASSERT(m_nr_pinned_pages == 0, "a node with {} pinned pages is being destroyed",
+                 m_nr_pinned_pages);
+
+    // Each page off its queue, under the queue's lock, before this node's
+    // storage goes: a reclaimer that found a page on a queue reads its owner
+    // under that lock, and the owner must still be there to be read
+    // (Rc::try_adopt()).
+    m_pages.drain_owned([](VmPage *const page) { free_page(page); });
 }
 
 auto VmCowPages::change_range_locked(u64 const offset, u64 const len, RangeChange const change)
@@ -144,7 +307,7 @@ auto VmCowPages::stop_viewing_locked(FoundContent const &found) -> void {
     [[maybe_unused]]
     auto *const taken = found.owner->m_pages.remove_page(PgOff(found.offset >> PAGE_SHIFT));
     DEBUG_ASSERT(taken == page, "the page left a slot other than the one it was found in");
-    free_frames(page, 0);
+    free_page(page);
 }
 
 auto VmCowPages::merge_into_only_child_locked() -> void {
@@ -196,7 +359,7 @@ auto VmCowPages::merge_into_only_child_locked() -> void {
             [[maybe_unused]]
             auto *const taken = m_pages.remove_page(index);
             DEBUG_ASSERT(taken == page);
-            free_frames(page, 0);
+            free_page(page);
             continue;
         }
 
@@ -214,6 +377,7 @@ auto VmCowPages::merge_into_only_child_locked() -> void {
         [[maybe_unused]]
         auto *const taken = m_pages.remove_page(index);
         DEBUG_ASSERT(taken == page);
+        set_page_owner(page, &survivor, there);
     }
 
     // What the survivor sees of this node's parent: its window in this node,
@@ -371,6 +535,12 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
     if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
     }
+    // A clone makes this node's pages shared, by moving them under a hidden
+    // node, and a pinned page must stay in the frame a device writes: the whole
+    // node, and not only the window, since the hidden node takes all it holds.
+    if (m_nr_pinned_pages != 0) {
+        return Status::BadState;
+    }
 
     // How much of the window is this node's own content: past this node's end
     // there is nothing to see, and the clone reads zero there.
@@ -455,6 +625,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
         hidden_node->m_parent_offset = m_parent_offset;
         hidden_node->m_parent_limit = m_parent_limit;
         hidden_node->m_pages.take_all_from(m_pages);
+        hidden_node->own_all_pages_locked();
         if (m_parent) {
             // Not an in-place replacement: the list is in no particular order.
             m_parent->m_children.erase(*this);
@@ -612,13 +783,22 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
             return nullptr;
         }
     }
+    // Filed once all are in: a failure above gives back pages no queue has.
+    for (usize i = 0; i < NR_PAGES; ++i) {
+        file_page_locked(&block[i], first + i, Fill::ZeroFork);
+    }
     return &block[(offset - start) >> PAGE_SHIFT];
 }
 
 auto VmCowPages::add_new_page_locked(usize const index, VmPage *const page) -> Status {
     DEBUG_ASSERT(index < m_size / PAGE_SIZE, "page {} is past the node's end", index);
     page->become<page::VmmBody>();
-    return m_pages.insert_page(index, page, VmPageList::Tag::Owned);
+    if (auto const status = m_pages.insert_page(index, page, VmPageList::Tag::Owned);
+        Status::Ok != status) {
+        return status;
+    }
+    file_page_locked(page, index, Fill::Content);
+    return Status::Ok;
 }
 
 /// A marker over an empty slot hides what the node saw there through its
@@ -736,6 +916,21 @@ auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSplice
     if (m_page_source) {
         return Status::NotSupported;
     }
+    // A pinned page cannot be taken out: a device holds its address. Looked at
+    // only when there is one, so a node with no pin pays nothing.
+    if (m_nr_pinned_pages != 0) {
+        PgOff at = 0;
+        for (auto from = PgOff(offset >> PAGE_SHIFT); from < PgOff((offset + len) >> PAGE_SHIFT);
+             from = at + 1) {
+            auto const slot = m_pages.next_slot(from, &at);
+            if (slot.is_empty() || at >= PgOff((offset + len) >> PAGE_SHIFT)) {
+                break;
+            }
+            if (slot.is_page() && slot.page()->pinned_count() != 0) {
+                return Status::BadState;
+            }
+        }
+    }
 
     // The entries go first: a frame that leaves this node must not stay
     // reachable through a mapping of it. Harmless if a step below fails: the
@@ -805,6 +1000,7 @@ auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSplice
         } else {
             page = m_pages.remove_page(index);
         }
+        unfile_page(page);
         [[maybe_unused]]
         auto const appended = pages->append_page(at, page);
         DEBUG_ASSERT(Status::Ok == appended, "the room made above ran out");
@@ -854,6 +1050,76 @@ auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, MultiPageReque
     return status;
 }
 
+auto VmCowPages::pin_range_locked(VirtAddr const offset, usize const size,
+                                  MultiPageRequest *const request, usize *const nr_pinned)
+    -> Status {
+    *nr_pinned = 0;
+    if (!size) {
+        return Status::InvArgs;
+    }
+    if (offset + size > m_size) {
+        return Status::InvArgs;
+    }
+
+    auto cursor = make_cursor(offset, size);
+    if (!cursor) {
+        return Status::InternalError;
+    }
+
+    // The node's own page first, then the pin: the cursor hands out a page this
+    // node owns and no one else sees, which is the one a device may write. A page
+    // that was viewed through an ancestor has been copied by then.
+    for (usize at = 0; at < size; at += PAGE_SIZE) {
+        auto result = cursor->require_owned_page(1, request);
+        if (!result) {
+            return result.unwrap_err();
+        }
+        auto *const page = result->page;
+        if (!page->increase_pinned()) {
+            return Status::NoResource;
+        }
+        if (page->pinned_count() == 1) {
+            // Its first pin: out of the queue the reclaimer reads. A reclaimer
+            // that chose it a moment ago finds it not reclaimable when it takes
+            // this lock (reclaim_page()), and lets it go.
+            queues_of(page).set_pinned(page, this, PgOff((offset + at) >> PAGE_SHIFT));
+            m_nr_pinned_pages += 1;
+        }
+        *nr_pinned += 1;
+    }
+    return Status::Ok;
+}
+
+auto VmCowPages::unpin_range_locked(VirtAddr const offset, usize const size) -> Status {
+    if (!size) {
+        return Status::InvArgs;
+    }
+    if (offset + size > m_size) {
+        return Status::InvArgs;
+    }
+
+    // All or nothing: every page is looked at before any pin is undone.
+    for (usize at = 0; at < size; at += PAGE_SIZE) {
+        auto const slot = m_pages.lookup(PgOff((offset + at) >> PAGE_SHIFT));
+        if (!slot.is_page() || slot.page()->pinned_count() == 0) {
+            return Status::BadState;
+        }
+    }
+
+    for (usize at = 0; at < size; at += PAGE_SIZE) {
+        auto const index = PgOff((offset + at) >> PAGE_SHIFT);
+        auto *const page = m_pages.lookup(index).page();
+        page->decrease_pinned();
+        if (page->pinned_count() == 0) {
+            m_nr_pinned_pages -= 1;
+            // Filed as its kind says, as when it was put here: a pinned node's
+            // pages go back on the pinned queue, a pager's become reclaimable.
+            file_page_locked(page, index, Fill::Content);
+        }
+    }
+    return Status::Ok;
+}
+
 auto VmCowPages::find_content(u64 offset) -> FoundContent {
     auto *node = this;
 
@@ -893,6 +1159,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
         [[maybe_unused]]
         auto *const taken = holder->m_pages.remove_page(PgOff(found.offset >> PAGE_SHIFT));
         DEBUG_ASSERT(taken == source, "the page left a slot other than the one it was found in");
+        set_page_owner(source, this, PgOff(offset >> PAGE_SHIFT));
         return ktl::ok(source);
     }
 
@@ -912,6 +1179,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
         free_frames(copy, 0);
         return ktl::err(status);
     }
+    file_page_locked(copy, PgOff(offset >> PAGE_SHIFT), Fill::Content);
 
     // Only a hidden node's page carries a count; a page a plain node holds
     // has no other viewer to lose.
@@ -925,7 +1193,28 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
 
 VmCowPages::Cursor::Cursor(VmCowPages *target, VirtAddr offset, usize size)
     // Initializer order follows the member declaration order in the header.
-    : m_target(target), m_offset(offset), m_end(offset + size) {}
+    : m_target(target), m_offset(offset), m_end(offset + size), m_mark_accessed(true) {}
+
+/// A page found in the node's own store may be written through a mapping, but
+/// not in a node with a page source: such a page is mapped read-only, so that
+/// the first write faults and comes to require_owned_page(), which is where
+/// the page is marked written (file_dirty_locked()). A page mapped writable
+/// would be written with nobody told, and a reclaimer would evict it and lose
+/// the write. A hidden node's pages are shared, and never written through it.
+auto VmCowPages::Cursor::writable_here(FoundContent const &found) const -> bool {
+    return found.owner == m_target && !m_target->is_hidden() && !m_target->m_page_source;
+}
+
+auto VmCowPages::Cursor::handed_out(RequireResult const result) -> RequireResult {
+    // The shared zero page is no node's and on no queue. Any other page goes
+    // to the queues, which move it only if it is reclaimable: whether it is
+    // can only be read under their lock, since the aging thread rewrites the
+    // queue byte under that lock alone.
+    if (m_mark_accessed && result.page != get_zero_page()) {
+        queues_of(result.page).mark_accessed(result.page);
+    }
+    return result;
+}
 
 auto VmCowPages::Cursor::require_page(bool will_write, usize nr_pages, MultiPageRequest *request)
     -> ktl::Result<RequireResult> {
@@ -968,8 +1257,10 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     auto const found = m_target->find_content(m_offset);
     if (found.page) {
         if (found.owner == m_target) {
+            m_target->lock().assert_held();
+            m_target->file_dirty_locked(found.page, index());
             advance();
-            return ktl::ok(RequireResult{.page = found.page, .writable = true});
+            return ktl::ok(handed_out({.page = found.page, .writable = true}));
         }
 
         auto owned = m_target->cow_page(m_offset, found, request->get_anonymous());
@@ -977,7 +1268,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
             return ktl::err(owned.unwrap_err());
         }
         advance();
-        return ktl::ok(RequireResult{.page = *owned, .writable = true});
+        return ktl::ok(handed_out({.page = *owned, .writable = true}));
     }
 
     // A zero marker in this node's own slot: the content is zero and known to
@@ -991,8 +1282,9 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
             return ktl::err(status);
         }
         m_target->m_pages.replace_zero_marker(index(), page, VmPageList::Tag::Owned);
+        m_target->file_page_locked(page, index(), Fill::ZeroFork);
         advance();
-        return ktl::ok(RequireResult{.page = page, .writable = true});
+        return ktl::ok(handed_out({.page = page, .writable = true}));
     }
 
     // Nothing here, or a zero marker further up. Who answers that depends on
@@ -1018,7 +1310,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         m_target->lock().assert_held();
         if (auto *const page = m_target->fill_block_locked(m_offset)) {
             advance();
-            return ktl::ok(RequireResult{.page = page, .writable = true});
+            return ktl::ok(handed_out({.page = page, .writable = true}));
         }
     }
 
@@ -1037,9 +1329,10 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         free_frames(page, 0);
         return ktl::err(status);
     }
+    m_target->file_page_locked(page, index(), Fill::ZeroFork);
 
     advance();
-    return ktl::ok(RequireResult{.page = page, .writable = true});
+    return ktl::ok(handed_out({.page = page, .writable = true}));
 }
 
 auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *request)
@@ -1053,8 +1346,7 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     auto const found = m_target->find_content(m_offset);
     if (found.page) {
         advance();
-        return ktl::ok(RequireResult{
-            .page = found.page, .writable = found.owner == m_target && !m_target->is_hidden()});
+        return ktl::ok(handed_out({.page = found.page, .writable = writable_here(found)}));
     }
 
     // A zero marker, in this node or further up: the shared zero page,
@@ -1062,7 +1354,7 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     // source is not asked: the marker is the content it already gave.
     if (found.zero_marker) {
         advance();
-        return ktl::ok(RequireResult{.page = get_zero_page(), .writable = false});
+        return ktl::ok(handed_out({.page = get_zero_page(), .writable = false}));
     }
 
     // Nothing there. A node that hangs under another, and a hidden one, reads
@@ -1071,7 +1363,7 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     // parent's content does not reach.
     if (m_target->m_parent || m_target->is_hidden()) {
         advance();
-        return ktl::ok(RequireResult{.page = get_zero_page(), .writable = false});
+        return ktl::ok(handed_out({.page = get_zero_page(), .writable = false}));
     }
 
     // A read of an offset nobody has populated reads zero. It could be
@@ -1097,8 +1389,7 @@ auto VmCowPages::Cursor::maybe_page() -> ustl::Option<RequireResult> {
     if (!found.page) {
         return ustl::NONE;
     }
-    return ustl::some(RequireResult{.page = found.page,
-                                    .writable = found.owner == m_target && !m_target->is_hidden()});
+    return ustl::some(handed_out({.page = found.page, .writable = writable_here(found)}));
 }
 
 /// What the cursor is currently sitting on, in the node's own slot.

@@ -5,7 +5,7 @@
 ///
 /// userboot starts it on the runtime (//system/lib/ort), when the image
 /// names it with `userboot.next=bin/init`, with the root job, the read-only
-/// BootFS, VMEX, the vDSO's VMO, the Debug and Sampling resources, the roots
+/// BootFS, VMEX, the vDSO's VMO, the Debug, Sampling and IOMMU resources, the roots
 /// of the interrupt lines and the I/O ports, and its root region. It runs the
 /// component framework (docs/design/261004/component-framework.md); since
 /// step 15 of that plan it starts nothing but components, and it:
@@ -23,7 +23,8 @@
 ///     of which hands out a duplicate of a resource the root keeps --
 ///     ours.resource.Debug the Debug resource the shell reads the console
 ///     with, ours.resource.Sampling the Sampling resource a profiler creates
-///     its session with, ours.resource.Irq and ours.resource.Ioport the
+///     its session with, ours.resource.Iommu the IOMMU resource a bus driver
+///     makes its BTIs from, ours.resource.Irq and ours.resource.Ioport the
 ///     roots of the interrupt lines and the I/O ports, for drivers;
 ///   - then waits for everything at once on one Loop: every /boot and /svc
 ///     connection, every Launcher and resource connection, and every
@@ -98,29 +99,38 @@ auto to_str(std::string_view const text) -> std::string_view {
 
 // What the root keeps, sized by its pools (pools.hpp): globals, because
 // together they are far more than the stack, and constinit, because nothing
-// runs a user program's dynamic initialisers. The storage of /boot and the
-// instance pool hold types with destructors (ustl::Option among their
-// members), which as plain globals would register those destructors with
-// __cxa_atexit, which the runtime does not have and the root never needs,
-// since it never exits; ustl::LazyInit is raw storage that main() builds
-// them in instead.
+// runs a user program's dynamic initialisers. All but the Loop's slots are
+// ustl::LazyInit, raw storage that main() builds the object in, for one or
+// both of two reasons:
+//   - The storage of /boot, the instance pool and the Launcher hold types
+//     with destructors that are not trivial (ustl::Option among the first
+//     two's members), which as plain globals would register those destructors
+//     with __cxa_atexit, which the runtime does not have and the root never
+//     needs, since it never exits. A connection that ends is reset, not
+//     destroyed.
+//   - The storage of the resource servers and of the Launcher holds
+//     connections that are loop::Waiters, so each has a vptr (the Launcher's
+//     two), which is not zero. A constinit object with any non-zero byte lies
+//     in .data, which init's file stores whole, where an all-zero one lies in
+//     .bss, which it does not: the five resource storages would put their
+//     4 KiB message buffers, all zeros, into the file, 22 KiB of it, and the
+//     Launcher's pool 28 KiB. As LazyInit they are zeros in .bss, and main()
+//     writes the vptrs when it builds them. The state of each Launcher
+//     connection holds hooks that point back at its own entry, which its
+//     constructor wires wherever it runs: the entry is built in place and
+//     never moves. Nothing about a server needs its storage to exist at
+//     compile time.
 constinit ustl::LazyInit<init::BootServer::Storage> BOOT_STORAGE;
 constinit ustl::LazyInit<std::array<init::Instance, init::MAX_INSTANCES>> INSTANCES;
 constinit std::array<loop::Slot, init::LOOP_SLOTS> SLOTS{};
-constinit init::ResourceServer::Storage DEBUG_RESOURCE_STORAGE{};
-constinit init::ResourceServer::Storage IRQ_RESOURCE_STORAGE{};
-constinit init::ResourceServer::Storage IOPORT_RESOURCE_STORAGE{};
-constinit init::ResourceServer::Storage SAMPLING_RESOURCE_STORAGE{};
-constinit init::ResourceServer::Storage ROOT_JOB_STORAGE{};
-
-// The Launcher's connections are built at compile time instead: each one's
-// state holds hooks that point back at its own entry, which constinit can
-// write into the image, and nothing need be built in main(). Their state's
-// destructor is not trivial, and [[clang::no_destroy]] keeps the compiler
-// from registering it with __cxa_atexit: the root never exits, and a
-// connection that ends is reset, not destroyed.
-[[clang::no_destroy]]
-constinit init::LauncherServer::Storage LAUNCHER_STORAGE{};
+constinit ustl::LazyInit<init::LauncherServer::Storage> LAUNCHER_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> DEBUG_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> IRQ_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> IOPORT_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> MMIO_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> IOMMU_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> SAMPLING_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> ROOT_JOB_STORAGE;
 
 /// launch::start()'s failures, for the Launcher and autorun, on the debug
 /// console. Only the errors: the shell's printer also shows every import
@@ -234,16 +244,23 @@ auto main(int, char **) -> int {
     // only through ours.resource.Sampling, when the manifests route it one.
     auto const sampling = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
+    // The IOMMU resource, kept like Sampling: a component gets a duplicate
+    // only through ours.resource.Iommu, when the manifests route it one.
+    auto const iommu = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                                u16(ours::RSRC_SYSTEM_IOMMU_BASE));
+    if (iommu == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("init: started without the IOMMU resource");
+    }
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
         vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
         auto _ = ort::debug_line("init: cannot start (missing BootFS, vmex, vDSO or VmaRoot)");
         halt();
     }
-    // The roots of the interrupt lines and the I/O ports, which the root
-    // keeps, as it keeps VMEX: a component gets a duplicate only through
-    // ours.resource.Irq or ours.resource.Ioport, when the manifests route it
-    // one, as a driver's do. A root without them still starts the rest, as
+    // The roots of the interrupt lines, the I/O ports and the physical address
+    // space, which the root keeps, as it keeps VMEX: a component gets a
+    // duplicate only through ours.resource.Irq, ours.resource.Ioport or
+    // ours.resource.Mmio, when the manifests route it one, as a driver's do. A root without them still starts the rest, as
     // one without the Debug resource does: it says what it has, and a Get it
     // cannot answer says why in its reply.
     auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
@@ -252,6 +269,12 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line("init: holding the IRQ and I/O port resources");
     } else {
         auto _ = ort::debug_line("init: started without the IRQ or I/O port resource");
+    }
+    auto const mmio = ort::take_startup_handle(ours::HandleType::MmioResource, 0);
+    if (mmio != ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("init: holding the MMIO resource");
+    } else {
+        auto _ = ort::debug_line("init: started without the MMIO resource");
     }
 
     // The BootFS, mapped read-only for good: /boot's Read copies from it,
@@ -296,26 +319,32 @@ auto main(int, char **) -> int {
         .vdso_file = vdso_file->bytes,
         .vma = vma,
     };
-    init::LauncherServer launcher_server(LAUNCHER_STORAGE, loop, environment,
+    init::LauncherServer launcher_server(*LAUNCHER_STORAGE.init(), loop, environment,
                                          {.report = print_launch_error, .context = nullptr});
-    init::ResourceServer debug_resource_server(DEBUG_RESOURCE_STORAGE, loop,
+    init::ResourceServer debug_resource_server(*DEBUG_RESOURCE_STORAGE.init(), loop,
                                                ours_resource::DEBUG_PROTOCOL, debug);
-    init::ResourceServer irq_resource_server(IRQ_RESOURCE_STORAGE, loop,
+    init::ResourceServer irq_resource_server(*IRQ_RESOURCE_STORAGE.init(), loop,
                                              ours_resource::IRQ_PROTOCOL, irq);
-    init::ResourceServer ioport_resource_server(IOPORT_RESOURCE_STORAGE, loop,
+    init::ResourceServer ioport_resource_server(*IOPORT_RESOURCE_STORAGE.init(), loop,
                                                 ours_resource::IOPORT_PROTOCOL, ioport);
-    init::ResourceServer sampling_resource_server(SAMPLING_RESOURCE_STORAGE, loop,
+    init::ResourceServer mmio_resource_server(*MMIO_RESOURCE_STORAGE.init(), loop,
+                                              ours_resource::MMIO_PROTOCOL, mmio);
+    init::ResourceServer iommu_resource_server(*IOMMU_RESOURCE_STORAGE.init(), loop,
+                                               ours_resource::IOMMU_PROTOCOL, iommu);
+    init::ResourceServer sampling_resource_server(*SAMPLING_RESOURCE_STORAGE.init(), loop,
                                                   ours_resource::SAMPLING_PROTOCOL, sampling);
     // The root job the root was started with, which stays the root's: each
     // Get answers a duplicate with every right of it.
-    init::ResourceServer root_job_server(ROOT_JOB_STORAGE, loop, ours_resource::ROOT_JOB_PROTOCOL,
-                                         job);
+    init::ResourceServer root_job_server(*ROOT_JOB_STORAGE.init(), loop,
+                                         ours_resource::ROOT_JOB_PROTOCOL, job);
     init::Realm realm(*INSTANCES.init(), boot, loop, environment,
                       {
                           .launcher = &launcher_server,
                           .debug_resource = &debug_resource_server,
                           .irq_resource = &irq_resource_server,
                           .ioport_resource = &ioport_resource_server,
+                          .mmio_resource = &mmio_resource_server,
+                          .iommu_resource = &iommu_resource_server,
                           .sampling_resource = &sampling_resource_server,
                           .root_job = &root_job_server,
                       });

@@ -7,6 +7,8 @@
 #include <ours/panic.hpp>
 #include <ours/types.hpp>
 
+#include <utility>
+
 #include <arch/paging/controls.hpp>
 #include <arch/paging/mmu_flags.hpp>
 #include <gktl/range.hpp>
@@ -27,7 +29,14 @@ using ArchMapOptions = ::arch::paging::MapOptions;
 using ::arch::paging::MmuFlags;
 using ::arch::paging::UnmapOptions;
 
-enum class ZoneType {
+/// What a harvest of accessed bits asks about each leaf it finds with the bit
+/// set: the memory the leaf maps, |pa|, and the leaf's size. True to have the
+/// bit cleared, false to leave it for another harvest to see. Called under the
+/// page table's spin lock, with interrupts off, so it may take only a spin
+/// lock (a node's page queues') and must not sleep.
+using AccessedVisitor = bool (*)(void *context, PhysAddr pa, usize size);
+
+enum class ZoneType : u32 {
     Dma,
     Dma32,
     Normal,
@@ -36,16 +45,16 @@ enum class ZoneType {
     Count,
 };
 
-constexpr auto NR_ZONES_PER_NODE = static_cast<usize>(ZoneType::Count);
+constexpr auto NR_ZONES_PER_NODE = std::to_underlying(ZoneType::Count);
 
-enum class MigrateType {
+enum class MigrateType : u32 {
     Unmovable,
     Movable,
     Reclaimable,
     Count,
 };
 
-constexpr auto NR_MIGRATION_TYPES = static_cast<usize>(MigrateType::Count);
+constexpr auto NR_MIGRATION_TYPES = std::to_underlying(MigrateType::Count);
 
 /// `SecNum` is a shordhand of section table entry
 ///

@@ -24,7 +24,7 @@ namespace slab {
     /// |size| is the object stride and |next_offset| where inside an object
     /// the free-list pointer lives; both come from the owner's layout.
     auto create(MemCache *owner, void *node_cache, Gaf gaf, usize order, usize size,
-                usize next_offset, NnId nid) -> Slab *;
+                usize next_offset, NodeId nid) -> Slab *;
 
     /// Hands the frame back to the buddy allocator.
     auto destroy(Slab *slab) -> void;

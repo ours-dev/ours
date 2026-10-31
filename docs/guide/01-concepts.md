@@ -126,12 +126,14 @@ Waiting on a port is the same few lines in every server: arm a wait for each han
 
 A program here has no heap, so the Loop does not allocate ([the next section](#where-a-servers-memory-comes-from) says what that costs). You give it a port and a fixed table of `loop::Slot`, sized when you build. A *slot* holds one wait: the handle it waits on, the signals it waits for, the *waiter* to call, and a generation count. A slot is free while its handle is `Invalid`. `Loop::add(handle, signals, waiter)` puts a handle in the lowest free slot and arms its wait, or answers `NoResource` if every slot is taken. `Loop::run` is the loop itself.
 
-A *waiter* is an object of your own that derives from `loop::Waiter` and has one function, `on_signals`. This is the whole class (`system/lib/loop/include/loop/loop.hpp:74`):
+A *waiter* is an object of your own that derives from `loop::Waiter` and has two virtual functions, `on_signals`, which you define, and `on_rearm_failed`, which you may. This is the whole class (`system/lib/loop/include/loop/loop.hpp:106-117`):
 
 ```cpp
 class Waiter {
   public:
     virtual auto on_signals(ours::Signals observed) -> Action = 0;
+
+    virtual auto on_rearm_failed([[maybe_unused]] ours::Status const cause) -> void {}
 
   protected:
     constexpr Waiter() = default;
@@ -141,15 +143,16 @@ class Waiter {
 };
 ```
 
-The Loop calls `on_signals` with the signals the wait observed, once per packet. It handles one unit of work, usually reading one message, and answers a `loop::Action`: `Rearm`, to wait again for the same signals, or `Close`, which closes the handle and frees the slot. (Other chapters call this function the callback.) The destructor is protected and not virtual because nothing is ever deleted through a `Waiter`. The slot keeps only the waiter's address, so a waiter has to stay where it is from `add` until the slot is freed. [loop.hpp](../../system/lib/loop/include/loop/loop.hpp) is the specification of the Loop.
+The Loop calls `on_signals` with the signals the wait observed, once per packet. It handles one unit of work, usually reading one message, and answers a `loop::Action`: `Rearm`, to wait again for the same signals, or `Close`, which closes the handle and frees the slot. (Other chapters call this function the callback.) The Loop calls `on_rearm_failed` in one case only: the waiter answered `Rearm` and the Loop then could not arm the wait again, because the kernel refused (`NoMemory`, when it has no memory for the wait, is the one to expect). The Loop has already closed the handle and freed the slot, as it does for `Close`, so the waiter must not touch the handle; it is told because only the waiter's owner knows what it kept for the slot, an entry of a table of clients, say, and has to let it go, or the table loses that entry for good. The Loop passes the kernel's status as `cause`. The default does nothing, which is right for a waiter that only ever answers `Close`: it is never told. The destructor is protected and not virtual because nothing is ever deleted through a `Waiter`. The slot keeps only the waiter's address, so a waiter has to stay where it is from `add` until the slot is freed. [loop.hpp](../../system/lib/loop/include/loop/loop.hpp) is the specification of the Loop.
 
-In echo, `EchoServer::Client` is such a waiter, one for each client. `EchoServer::connect` fills in a free one and calls `m_loop->add(channel, Signals::Readable | Signals::PeerClosed, client)` (`examples/echo/echo_server.cpp:149`). [02-first-server.md](02-first-server.md) builds the whole class.
+In echo, `EchoServer::Client` is such a waiter, one for each client. `EchoServer::connect` fills in a free one and calls `m_loop->add(channel, Signals::Readable | Signals::PeerClosed, client)` (`examples/echo/echo_server.cpp:159`), and `Client` overrides `on_rearm_failed` to free its entry. [02-first-server.md](02-first-server.md) builds the whole class.
 
 For each packet `run` does, in order:
 
 1. Finds the slot the packet's key names. A key carries the slot's index and its generation, which is bumped each time the slot is freed, so a packet left over from before the slot was reused names nothing and is dropped.
 2. Calls the slot's waiter.
 3. If the answer is `Rearm`, arms the wait again; if it is `Close`, or arming again fails, closes the handle and frees the slot.
+4. If arming again failed, calls the waiter's `on_rearm_failed`, once, with the kernel's status, now that the slot is free.
 
 `run` returns only when waiting on the port itself fails, so a server calls it last.
 
@@ -158,7 +161,7 @@ Four consequences, each of which a later chapter turns into a rule:
 - **One thread.** `on_signals` runs to completion before the next starts, so a server's state needs no locks. The price: a call that takes long delays every other client.
 - **One message per call.** A client with more messages queued is not called again at once; its re-armed wait queues a new packet behind everyone else's. A busy client is served in turns.
 - **Read before `Rearm`.** The wait is level-triggered, so a waiter that answers `Rearm` with its message still unread is called again at once, on every turn.
-- **Who closes the handle.** Once `add` succeeds, the handle is the Loop's. A waiter never closes its own handle; it answers `Close` and the Loop does. If `add` fails, nothing changed and the handle is still yours, so you can still write a last message on it before closing it. The echo server does this when it cannot add a client: it writes an epitaph on the channel (a last message that says why; [Epitaphs](#epitaphs) defines it), then closes it (`examples/echo/echo_server.cpp:154`).
+- **Who closes the handle.** Once `add` succeeds, the handle is the Loop's. A waiter never closes its own handle; it answers `Close` and the Loop does (the Loop closes it too, and tells the waiter, if it cannot arm the wait again). If `add` fails, nothing changed and the handle is still yours, so you can still write a last message on it before closing it. The echo server does this when it cannot add a client: it writes an epitaph on the channel (a last message that says why; [Epitaphs](#epitaphs) defines it), then closes it (`examples/echo/echo_server.cpp:164`).
 
 Echo sizes the table. `MAX_CLIENTS` is how many clients may be connected at once (the dev image's `routing_checks` uses one; a client past them is refused with `NoResource`). A slot is needed for each client and for each *connection* to the server's outgoing directory, which [a later section](#svc-and-the-outgoing-directory) explains (`examples/echo/echo_server.cpp:54`):
 
@@ -173,7 +176,7 @@ constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS;
 static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
 ```
 
-`examples/echo/echo_server.cpp:275` makes the port and the Loop at the start of `main`. The table itself, `SLOT_STORAGE`, is declared in [the next section](#where-a-servers-memory-comes-from):
+`examples/echo/echo_server.cpp:293` makes the port and the Loop at the start of `main`. The table itself, `SLOT_STORAGE`, is declared in [the next section](#where-a-servers-memory-comes-from):
 
 ```cpp
     auto port = Uandle::Invalid;
@@ -185,7 +188,7 @@ static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
     loop::Loop loop(port, SLOT_STORAGE);
 ```
 
-`Stop` is the second of echo's two methods (`EchoString`, the first, answers with the string it was sent): it ends the program from inside `on_signals`. So `examples/echo/echo_server.cpp:296` ends `main` by running the Loop, which comes back only if the port fails:
+`Stop` is the second of echo's two methods (`EchoString`, the first, answers with the string it was sent): it ends the program from inside `on_signals`. So `examples/echo/echo_server.cpp:314` ends `main` by running the Loop, which comes back only if the port fails:
 
 ```cpp
     // Stop ends the program from inside an on_signals(); run() comes back only
@@ -196,8 +199,8 @@ static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
 
 Where this is stated:
 
-- The Loop's whole specification, including the order of the steps above: the comment on `Loop::run` in `system/lib/loop/include/loop/loop.hpp:204`.
-- The rules for a waiter (one unit of work, never closes its own handle, `Rearm` only after reading): the comment on `Waiter`, `system/lib/loop/include/loop/loop.hpp:43`.
+- The Loop's whole specification, including the order of the steps above: the comment on `Loop::run` in `system/lib/loop/include/loop/loop.hpp:238`.
+- The rules for a waiter (one unit of work, never closes its own handle, `Rearm` only after reading): the comment on `Waiter`, `system/lib/loop/include/loop/loop.hpp:44-61`. When `on_rearm_failed` is called and what it must do: the same comment, `system/lib/loop/include/loop/loop.hpp:63-89`.
 - One thread, nothing locked: `system/lib/ioservice/include/ioservice/outgoing.hpp:42`.
 
 ## Where a server's memory comes from
@@ -209,7 +212,7 @@ Two more things are missing, and they decide how that memory is declared:
 - **Nothing runs the constructors of global objects.** The runtime does not walk the list of start-up initialisers, so a global that needs a constructor to run would silently start out as zeros.
 - **There is no `__cxa_atexit`**, the function the compiler uses to register the destructor of a global that has one. A global of a type with a destructor would not link.
 
-So a server keeps what it holds in a few globals that the compiler can build at compile time. This is echo's (`examples/echo/echo_server.cpp:261`):
+So a server keeps what it holds in a few globals that the compiler can build at compile time. This is echo's (`examples/echo/echo_server.cpp:279`):
 
 ```cpp
 constinit ustl::LazyInit<ioservice::Outgoing::Storage> OUTGOING_STORAGE;
@@ -221,7 +224,7 @@ constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 - `ustl::LazyInit<T>` is raw, suitably aligned bytes with a `constexpr` constructor, so it can be `constinit`, and no `T` exists in it yet. The program builds one in place, once, with `init()`, which returns a pointer to it. That is the way for a type that has a destructor: a `LazyInit` is only bytes, so the compiler registers no destructor for it. (`ustl` is the repository's own library of small standard-library-like types; see [Words used elsewhere](#words-used-elsewhere).)
 - A table of a type with nothing to destroy, such as `loop::Slot`, is a plain `constinit` array.
 
-`main` builds the two `LazyInit`s when it needs them (`examples/echo/echo_server.cpp:281`):
+`main` builds the two `LazyInit`s when it needs them (`examples/echo/echo_server.cpp:299`):
 
 ```cpp
     loop::Loop loop(port, SLOT_STORAGE);
@@ -235,9 +238,9 @@ Where this is stated:
 
 - No `operator new`, and an `operator delete` that stops on a real pointer: `system/lib/ort/src/cpp_dependencies.cpp:27`.
 - No start-up initialisers are run: `system/lib/ort/src/start.cpp:42`.
-- No `__cxa_atexit`, and why echo's storage is a `LazyInit`: the comment at `examples/echo/echo_server.cpp:255`.
+- No `__cxa_atexit`, and why echo's storage is a `LazyInit`: the comment at `examples/echo/echo_server.cpp:273`.
 - `LazyInit`: `system/lib/ustl/include/ustl/lazy_init.hpp:12`.
-- Echo's storage is about 8 KiB, most of it message buffers: `examples/echo/echo_server.cpp:116`.
+- Echo's storage is about 8 KiB, most of it message buffers: `examples/echo/echo_server.cpp:126`.
 
 ## Components and manifests
 
@@ -450,7 +453,7 @@ class Handler {
 };
 ```
 
-`EchoServer` is echo's handler, a class in `echo_server.cpp` and no part of a library. Its `connect` gives each channel a Loop slot, as the last section showed. `examples/echo/echo_server.cpp:282`, in `main`:
+`EchoServer` is echo's handler, a class in `echo_server.cpp` and no part of a library. Its `connect` gives each channel a Loop slot, as the last section showed. `examples/echo/echo_server.cpp:300`, in `main`:
 
 ```cpp
     ioservice::Outgoing outgoing(*OUTGOING_STORAGE.init(), loop);
@@ -468,7 +471,7 @@ class Handler {
     }
 ```
 
-`directory_request` is taken at the top of `main` with `ort::take_startup_handle(ours::HandleType::DirectoryRequest, 0)` (`examples/echo/echo_server.cpp:269`).
+`directory_request` is taken at the top of `main` with `ort::take_startup_handle(ours::HandleType::DirectoryRequest, 0)` (`examples/echo/echo_server.cpp:287`).
 
 Two things are called svc, and they are opposite ends of this picture. A component's `/svc` is the namespace entry that holds what it *uses*. The `svc/` directory inside its outgoing directory holds what it *provides*. Their names for one protocol can differ: the client above asks for `ours.test.Echo`, and the server serves `ours.examples.echo.Echo`. The root translates one into the other when it routes.
 
@@ -557,4 +560,4 @@ The other chapters use a few words that this one does not need to define in orde
 - `docs/architecture/component-framework/glossary.md`, `docs/architecture/component-framework/libraries.md`: the words and the library layers.
 - `examples/echo/echo_server.cpp`, `examples/echo/BUILD.gn`, `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp`, `kernel/products/image/dev/BUILD.gn`, `kernel/lib/obi/include/obi/package_format.hpp`, `system/service/init/test/routing_checks/BUILD.gn`, `system/service/init/test/routing_checks/routing_checks.cpp`: the running example.
 
-Checked against commit `3cb0d8a5` on 2026-10-29.
+Checked against commit `561571b7` on 2026-10-30.

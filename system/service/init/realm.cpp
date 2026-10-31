@@ -44,10 +44,12 @@ namespace {
     /// What `from: "parent"` means at the root (design "built-ins"): the
     /// directory `boot`, /boot itself with rx*, and the protocols the root
     /// serves itself: ours.process.Launcher (launcher_server.hpp), and
-    /// ours.resource.Debug, ours.resource.Sampling, ours.resource.Irq and
-    /// ours.resource.Ioport (resource_server.hpp), which hand out the Debug
-    /// and Sampling resources and the roots of the interrupt lines and the
-    /// I/O ports, and ours.kernel.RootJob, which hands out the root job.
+    /// ours.resource.Debug, ours.resource.Sampling, ours.resource.Irq,
+    /// ours.resource.Ioport, ours.resource.Mmio and ours.resource.Iommu
+    /// (resource_server.hpp), which hand out the Debug, Sampling and IOMMU
+    /// resources and the roots of the
+    /// interrupt lines, the I/O ports and the physical address space, and
+    /// ours.kernel.RootJob, which hands out the root job.
     ///
     /// The list is not written here: builtins.json is the one list of them,
     /// which the manifest compiler also reads, to check at build time that a
@@ -76,6 +78,8 @@ namespace {
     static_assert(has_protocol_builtin(ours_resource::SAMPLING_PROTOCOL.name));
     static_assert(has_protocol_builtin(ours_resource::IRQ_PROTOCOL.name));
     static_assert(has_protocol_builtin(ours_resource::IOPORT_PROTOCOL.name));
+    static_assert(has_protocol_builtin(ours_resource::MMIO_PROTOCOL.name));
+    static_assert(has_protocol_builtin(ours_resource::IOMMU_PROTOCOL.name));
     static_assert(has_protocol_builtin(ours_resource::ROOT_JOB_PROTOCOL.name));
 
     /// Where every protocol use lives in the namespace (D3): a component's
@@ -97,6 +101,22 @@ namespace {
     constexpr auto service_key(usize const instance, u32 const use) -> u64 {
         return (static_cast<u64>(instance) << 32) | use;
     }
+
+    /// service_key()'s two halves: the pool index of the instance whose /svc
+    /// has the entry, and the index of the use in its manifest.
+    constexpr auto key_instance(u64 const key) -> usize {
+        return static_cast<usize>(key >> 32);
+    }
+
+    constexpr auto key_use(u64 const key) -> u32 {
+        return static_cast<u32>(key);
+    }
+
+    static_assert(key_instance(service_key(7, 3)) == 7 && key_use(service_key(7, 3)) == 3);
+
+    /// How much of a refused path the root's line shows. The path is the
+    /// component's own bytes, so it goes through ioservice::printable_path().
+    constexpr auto MAX_LOGGED_PATH = usize{128};
 
     // A route's rights are ours.io's Operations by their wire values
     // (component/format.hpp), which is what a connection holds.
@@ -554,7 +574,7 @@ auto Realm::run(Instance &instance) -> Status {
                     std::memcpy(path_bytes.data() + routed->name.size() + 1, subdir.data(),
                                 subdir.size());
                 }
-                forward(*routed->provider, {path_bytes.data(), joined},
+                forward(instance, use, *routed->provider, {path_bytes.data(), joined},
                         to_flags(to_operations(*routed->rights)), server);
             }
         } else {
@@ -771,11 +791,36 @@ auto Realm::write_failed(Status const status) -> void {
     auto _ = ort::debug_line({"init: /boot cannot answer a client: ", ours::to_string(status)});
 }
 
+auto Realm::open_refused(ioservice::NodeId const directory, std::string_view const path,
+                         Status const status) -> void {
+    // A /svc is the one directory whose children are services, and the key of
+    // each names the instance it belongs to (serve_svc()). /boot, and the
+    // subdirectories of it that components hold, have no service in them, so
+    // no key: a refused Open there is a file that is not there, which is
+    // ordinary. The line is as unthrottled as log_route_error()'s are: a
+    // component can make the root print one line per Open it sends, and
+    // already can with a use that routes nowhere.
+    auto const key = m_boot->first_service(directory);
+    if (key.is_none()) {
+        return;
+    }
+    auto const pool_index = key_instance(*key);
+    if (pool_index >= m_used) {
+        return;
+    }
+    // The path is the component's own bytes: a newline in it must not end the
+    // line and start one of the root's.
+    std::array<char, MAX_LOGGED_PATH> shown{};
+    auto _ = ort::debug_line(
+        {"init: ", Moniker(m_pool[pool_index]).view(), "'s /svc refuses an open of \"",
+         ioservice::printable_path(path, shown), "\": ", ours::to_string(status)});
+}
+
 auto Realm::connect(u64 const service, Uandle const channel) -> void {
     // The key serve_svc() gave the entry. Both halves name what it named
     // then: instances are never destroyed, and a decl never changes.
-    auto const pool_index = static_cast<usize>(service >> 32);
-    auto const use_index = static_cast<u32>(service);
+    auto const pool_index = key_instance(service);
+    auto const use_index = key_use(service);
     if (pool_index >= m_used || use_index >= m_pool[pool_index].decl().uses().size()) {
         close_with_epitaph(channel, Status::NotFound);
         return;
@@ -801,7 +846,7 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
         std::memcpy(path_bytes.data(), OUTGOING_SVC_PREFIX.data(), OUTGOING_SVC_PREFIX.size());
         std::memcpy(path_bytes.data() + OUTGOING_SVC_PREFIX.size(), routed->name.data(),
                     routed->name.size());
-        forward(*routed->provider,
+        forward(instance, use, *routed->provider,
                 {path_bytes.data(), OUTGOING_SVC_PREFIX.size() + routed->name.size()},
                 ours_io::Flags::ProtocolService, channel);
         return;
@@ -823,6 +868,10 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
         status = m_builtins.irq_resource->bind(channel);
     } else if (routed->name == ours_resource::IOPORT_PROTOCOL.name) {
         status = m_builtins.ioport_resource->bind(channel);
+    } else if (routed->name == ours_resource::MMIO_PROTOCOL.name) {
+        status = m_builtins.mmio_resource->bind(channel);
+    } else if (routed->name == ours_resource::IOMMU_PROTOCOL.name) {
+        status = m_builtins.iommu_resource->bind(channel);
     } else if (routed->name == ours_resource::ROOT_JOB_PROTOCOL.name) {
         status = m_builtins.root_job->bind(channel);
     }
@@ -834,12 +883,23 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
     }
 }
 
-auto Realm::forward(Instance &provider, std::string_view const path, ours_io::Flags const flags,
-                    Uandle const channel) -> void {
+auto Realm::forward(Instance const &consumer, component::Use const &use, Instance &provider,
+                    std::string_view const path, ours_io::Flags const flags, Uandle const channel)
+    -> void {
     // A provider that has exited answers NotFound (D23), and so does one
     // whose outgoing directory's client end the Loop has closed: it is gone,
-    // or never had one to serve from.
+    // or never had one to serve from. The design counts it a routing error
+    // like the others, so it gets log_route_error()'s line in its shape,
+    // with the provider as the place the walk stopped; route() cannot
+    // report it, since it knows nothing of instance states.
     if (provider.m_state == InstanceState::Exited || provider.m_outgoing == Uandle::Invalid) {
+        auto why = std::string_view{"exited"};
+        if (provider.m_state != InstanceState::Exited) {
+            why = "its outgoing directory is closed";
+        }
+        auto _ = ort::debug_line({"init: ", Moniker(consumer).view(), "'s use of \"",
+                                  use.source_name, "\" routes nowhere: NotFound at ",
+                                  Moniker(provider).view(), " (", why, ")"});
         close_with_epitaph(channel, Status::NotFound);
         return;
     }

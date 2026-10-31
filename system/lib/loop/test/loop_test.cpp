@@ -75,11 +75,35 @@ struct Client final: loop::Waiter {
     /// Run inside on_signals() before it answers, when set.
     std::function<void()> during;
 
-    /// Where every call appends its client's name, in call order.
+    /// Run inside on_rearm_failed(), when set.
+    std::function<void()> during_rearm_failed;
+
+    /// Where every on_signals() appends its client's name, in call order, and
+    /// every on_rearm_failed() a '!' and then the name.
     std::string *log = nullptr;
 
-    /// The observed signals of each call.
+    /// The observed signals of each on_signals() call.
     std::vector<Signals> observed;
+
+    /// The cause of each on_rearm_failed() call.
+    std::vector<Status> rearm_failures;
+
+    /// What the fake kernel showed when on_rearm_failed() ran: whether the
+    /// client's handle was still open, and how many handle_close calls had
+    /// been made. The Loop is to have closed the handle by then.
+    bool open_when_told = true;
+    usize closes_when_told = 0;
+
+    auto on_rearm_failed(Status const cause) -> void override {
+        log->push_back('!');
+        log->push_back(name);
+        rearm_failures.push_back(cause);
+        open_when_told = fake::kernel().is_open(handle);
+        closes_when_told = fake::kernel().closes().size();
+        if (during_rearm_failed) {
+            during_rearm_failed();
+        }
+    }
 
     auto on_signals(Signals const signals) -> Action override {
         log->push_back(name);
@@ -141,6 +165,50 @@ class LoopTest: public ::testing::Test {
             return Key{0xFFFF'FFFF, 0xFFFF'FFFF};
         }
         return added.unwrap();
+    }
+
+    /// Two clients, a and b, each with a message queued, and behind their
+    /// packets a stale one that carries a's key. The next object_wait_async,
+    /// which is a's re-arm, answers |cause| and arms nothing. Runs the Loop
+    /// dry, and checks that a was told once with |cause|, after its handle
+    /// was closed and its slot freed, and that nothing else was: not b, and
+    /// not a again.
+    auto check_failed_rearm_is_told(Status const cause) -> void {
+        Client a;
+        Client b;
+        auto const key = add(a, 'a');
+        add(b, 'b');
+        fake::kernel().write(a.handle, 1);
+        fake::kernel().write(b.handle, 1);
+        fake::kernel().queue(m_port, signal_packet(key));
+        fake::kernel().fail_next_wait_async(cause);
+
+        EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+
+        // a is called, then told; b is called and re-armed; the stale packet
+        // reaches no one.
+        EXPECT_EQ(m_log, "a!ab");
+        EXPECT_EQ(a.observed.size(), 1U);
+        EXPECT_EQ(a.rearm_failures, (std::vector<Status>{cause}));
+        EXPECT_TRUE(b.rearm_failures.empty());
+        // The handle was closed once, before a was told, and by the Loop.
+        EXPECT_FALSE(a.open_when_told);
+        EXPECT_EQ(a.closes_when_told, 1U);
+        auto const &closes = fake::kernel().closes();
+        ASSERT_EQ(closes.size(), 1U);
+        EXPECT_EQ(closes[0].handle, a.handle);
+        EXPECT_EQ(closes[0].status, Status::Ok);
+        // Two adds, then a's re-arm, which failed, and b's.
+        auto const &waits = fake::kernel().waits();
+        ASSERT_EQ(waits.size(), 4U);
+        EXPECT_EQ(waits[2].handle, a.handle);
+        EXPECT_EQ(waits[2].status, cause);
+        EXPECT_EQ(waits[3].handle, b.handle);
+        EXPECT_EQ(waits[3].status, Status::Ok);
+        EXPECT_EQ(fake::kernel().queued_on(m_port), 0U);
+        // The slot is free, in a new life.
+        Client c;
+        EXPECT_EQ(add(c, 'c'), (Key{0, 1}));
     }
 
     std::array<loop::Slot, SLOTS> m_slots{};
@@ -218,6 +286,31 @@ TEST_F(LoopTest, AddLeavesTheSlotFreeAndTheHandleWithTheCallerWhenTheWaitFails) 
     EXPECT_EQ(add(a, 'a'), (Key{0, 0}));
 }
 
+// A failed add() is answered to its caller, who keeps the handle: the Waiter
+// is not told, whatever the reason, and is never called.
+TEST_F(LoopTest, AddDoesNotTellTheWaiterWhenItFails) {
+    Client refused;
+    refused.log = &m_log;
+    auto const handle = fake::kernel().make_object();
+    fake::kernel().fail_next_wait_async(Status::NoMemory);
+    ASSERT_TRUE(m_loop.add(handle, MESSAGES, refused).is_err());
+    ASSERT_TRUE(m_loop.add(Uandle::Invalid, MESSAGES, refused).is_err());
+
+    // The table full: NoResource.
+    std::array<Client, SLOTS> clients;
+    for (auto &client: clients) {
+        add(client, 'x');
+    }
+    auto const full = m_loop.add(handle, MESSAGES, refused);
+    ASSERT_TRUE(full.is_err());
+    EXPECT_EQ(full.unwrap_err(), Status::NoResource);
+
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_TRUE(refused.rearm_failures.empty());
+    EXPECT_TRUE(refused.observed.empty());
+    EXPECT_TRUE(m_log.empty());
+}
+
 TEST(Loop, ClosesItsHandlesAndThenItsPortWhenItGoes) {
     fake::kernel().reset();
     auto const port = fake::kernel().make_port();
@@ -241,6 +334,30 @@ TEST(Loop, ClosesItsHandlesAndThenItsPortWhenItGoes) {
     for (auto const &close: closes) {
         EXPECT_EQ(close.status, Status::Ok);
     }
+}
+
+// The Loop's destructor frees every slot in use, but it is not a failed
+// re-arm: the Waiters' owners go with the Loop, and no Waiter is called or
+// told.
+TEST(Loop, DoesNotCallOrTellItsWaitersWhenItGoes) {
+    fake::kernel().reset();
+    auto const port = fake::kernel().make_port();
+    auto log = std::string{};
+    Client one;
+    Client two;
+    one.log = &log;
+    two.log = &log;
+    {
+        std::array<loop::Slot, 2> slots{};
+        loop::Loop scoped{port, slots};
+        ASSERT_TRUE(scoped.add(fake::kernel().make_object(), MESSAGES, one).is_ok());
+        ASSERT_TRUE(scoped.add(fake::kernel().make_object(), MESSAGES, two).is_ok());
+    }
+    EXPECT_TRUE(log.empty());
+    EXPECT_TRUE(one.rearm_failures.empty());
+    EXPECT_TRUE(two.rearm_failures.empty());
+    EXPECT_TRUE(one.observed.empty());
+    EXPECT_TRUE(two.observed.empty());
 }
 
 // --- run(): the function P3 reserves for the user. Each fails on a stub. ---
@@ -364,7 +481,8 @@ TEST_F(LoopTest, RunClosesTheSlotWhenItsWaiterAnswersCloseWithAMessageUnread) {
     EXPECT_EQ(add(b, 'b'), (Key{0, 1}));
 }
 
-// Step 4 for a failed re-arm: the same as Close, and run() goes on.
+// Step 4 for a failed re-arm: the same as Close, and run() goes on. The log
+// shows a told ("!a") before b is called; what a is told is checked below.
 TEST_F(LoopTest, RunClosesTheSlotWhenTheRearmFails) {
     Client a;
     Client b;
@@ -374,13 +492,70 @@ TEST_F(LoopTest, RunClosesTheSlotWhenTheRearmFails) {
     fake::kernel().write(b.handle, 1);
     fake::kernel().fail_next_wait_async(Status::NoResource);
     EXPECT_EQ(m_loop.run(0), Status::TimeOut);
-    EXPECT_EQ(m_log, "ab");
+    EXPECT_EQ(m_log, "a!ab");
     auto const &closes = fake::kernel().closes();
     ASSERT_EQ(closes.size(), 1U);
     EXPECT_EQ(closes[0].handle, a.handle);
     EXPECT_EQ(fake::kernel().armed_on(b.handle), 1U);
     Client c;
     EXPECT_EQ(add(c, 'c'), (Key{0, 1}));
+}
+
+// Step 4 for a failed re-arm, once more: the Waiter is told, with the status
+// arm() answered. NoMemory is the realistic cause (the kernel allocates an
+// observer on every arm), BadHandle the one a Waiter that closed its own
+// handle and answered Rearm earns. The helper has the checks.
+TEST_F(LoopTest, RunTellsTheWaiterWhenTheRearmFailsForWantOfMemory) {
+    check_failed_rearm_is_told(Status::NoMemory);
+}
+
+TEST_F(LoopTest, RunTellsTheWaiterWhenTheRearmFailsOnABadHandle) {
+    check_failed_rearm_is_told(Status::BadHandle);
+}
+
+// Only a failed re-arm is told. A Waiter that answers Close has released what
+// it held, and the Loop makes no re-arm for it: the failure the fake has
+// waiting is not met, and nothing is told.
+TEST_F(LoopTest, RunDoesNotTellAWaiterThatAnsweredClose) {
+    Client a;
+    a.answer = Answer::Close;
+    add(a, 'a');
+    fake::kernel().write(a.handle, 1);
+    fake::kernel().fail_next_wait_async(Status::NoMemory);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "a");
+    EXPECT_TRUE(a.rearm_failures.empty());
+    EXPECT_EQ(fake::kernel().waits().size(), 1U);
+    EXPECT_EQ(fake::kernel().closes().size(), 1U);
+}
+
+// A Waiter that is told the slot is free may add(): the slot is its own to
+// take again, even in a table that is otherwise full, in a new life. A packet
+// of the earlier life, queued behind, does not reach what took the slot.
+TEST_F(LoopTest, RunLetsTheWaiterAddFromOnRearmFailed) {
+    Client a;
+    Client replacement;
+    std::array<Client, SLOTS - 1> others;
+    auto const key = add(a, 'a');
+    for (auto &other: others) {
+        add(other, 'x');
+    }
+    auto replacement_key = Key{0xFFFF'FFFF, 0xFFFF'FFFF};
+    a.during_rearm_failed = [&] {
+        replacement_key = add(replacement, 'n');
+        fake::kernel().write(replacement.handle, 1);
+    };
+    fake::kernel().write(a.handle, 1);
+    fake::kernel().queue(m_port, signal_packet(key));
+    fake::kernel().fail_next_wait_async(Status::NoMemory);
+
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(replacement_key, (Key{0, 1}));
+    EXPECT_EQ(m_log, "a!an");
+    EXPECT_EQ(a.observed.size(), 1U);
+    EXPECT_EQ(replacement.observed.size(), 1U);
+    EXPECT_TRUE(replacement.rearm_failures.empty());
+    EXPECT_EQ(fake::kernel().queued_on(m_port), 0U);
 }
 
 // Step 1: a packet that names no slot in use in its current life calls

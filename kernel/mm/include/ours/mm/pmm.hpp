@@ -7,9 +7,9 @@
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/init_stage.hpp>
 #include <ours/mm/memmap.hpp>
-#include <ours/mm/node_mask.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_frame.hpp>
+#include <ours/node_mask.hpp>
 #include <ours/status.hpp>
 
 #include <bootmem/types.hpp>
@@ -74,22 +74,22 @@ inline auto heap_enabled() -> bool {
 }
 
 [[nodiscard]]
-auto cpu_to_node(CpuNum cpunum) -> NnId;
+auto cpu_to_node(CpuNum cpunum) -> NodeId;
 
 [[nodiscard]]
-auto current_node() -> NnId;
+auto current_node() -> NodeId;
 
 [[nodiscard]]
 /// By value: the node's mask is rewritten when a CPU is re-homed, so there
 /// is no reference to it that stays valid outside the node lock. An empty
 /// mask for a node that does not exist.
-auto node_work_cpus(NnId nid) -> CpuMask;
+auto node_work_cpus(NodeId nid) -> CpuMask;
 
 [[nodiscard]]
-auto node_soft_affinity(NnId nid) -> CpuMask const *;
+auto node_soft_affinity(NodeId nid) -> CpuMask const *;
 
 [[nodiscard]]
-auto node_hard_affinity(NnId nid) -> CpuMask const *;
+auto node_hard_affinity(NodeId nid) -> CpuMask const *;
 
 [[nodiscard]]
 auto node_online_mask() -> NodeMask const &;
@@ -135,14 +135,14 @@ inline auto alloc_frame_n(Gaf gaf, usize nr_frames, NodeMask const &nodes = node
 
 /// Allocate the a frame on a specified node.
 [[nodiscard]]
-auto alloc_frames(NnId, Gaf, PmFrame::List *, usize, NodeMask const & = node_online_mask())
+auto alloc_frames(NodeId, Gaf, PmFrame::List *, usize, NodeMask const & = node_online_mask())
     -> Status;
 
 [[nodiscard]]
-auto alloc_frames(NnId, Gaf, usize, NodeMask const & = node_online_mask()) -> PmFrame *;
+auto alloc_frames(NodeId, Gaf, usize, NodeMask const & = node_online_mask()) -> PmFrame *;
 
 FORCE_INLINE [[nodiscard]]
-inline auto alloc_frame_n(NnId nid, Gaf gaf, usize nr_frames,
+inline auto alloc_frame_n(NodeId nid, Gaf gaf, usize nr_frames,
                           NodeMask const &nodes = node_online_mask()) -> PmFrame * {
     return alloc_frames(nid, gaf, get_order(nr_frames), nodes);
 }
@@ -168,7 +168,7 @@ auto get_frames_n(Gaf gaf, usize nr_frame, NodeMask const &nodes = node_online_m
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
 FORCE_INLINE
-auto get_frames(NnId nid, Gaf gaf, usize order = 0, NodeMask const &nodes = node_online_mask())
+auto get_frames(NodeId nid, Gaf gaf, usize order = 0, NodeMask const &nodes = node_online_mask())
     -> T * {
     if (auto frame = alloc_frames(nid, gaf, order, nodes)) {
         return PhysMap::phys_to_virt<T>(frame_to_phys(frame));
@@ -180,7 +180,7 @@ auto get_frames(NnId nid, Gaf gaf, usize order = 0, NodeMask const &nodes = node
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
 FORCE_INLINE
-auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame, NodeMask const &nodes = node_online_mask())
+auto get_frame_n(NodeId nid, Gaf gaf, usize nr_frame, NodeMask const &nodes = node_online_mask())
     -> T * {
     return get_frame<T>(nid, gaf, get_order(nr_frame), nodes);
 }
@@ -208,7 +208,7 @@ auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame, NodeMask const &nodes = node
 /// copy of it does not go away, and the next Gaf::Zero allocation to land on
 /// that frame zeroes a live page table.
 [[nodiscard]]
-auto alloc_page_table(usize size, usize alignment, NnId node = bootmem::ANY_NODE) -> PhysAddr;
+auto alloc_page_table(usize size, usize alignment, NodeId node = bootmem::ANY_NODE) -> PhysAddr;
 
 /// Only the buddy path returns anything; an early table page is not reclaimable.
 /// The frame must still be Role::Mmu, as alloc_page_table() left it; a debug

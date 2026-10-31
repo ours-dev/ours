@@ -62,6 +62,22 @@ Activate (satisfy any of the following criteria):
 
 1. Always prefer `enum class` over traditional `enum` for better type safety and scoping. Enum constants are `CamelCase` (`.clang-tidy`'s `EnumConstantCase`), e.g. `Status::Ok`, `AllocationDirection::TopDown` — not `SCREAMING_SNAKE_CASE`.
 
+1. **`std::to_underlying` converts an enumerator, never
+   `static_cast<Underlying>`** (the user's rule, 2026-10-28). The cast names a
+   type the enum already knows, so it keeps compiling after the enum's base
+   changes and quietly converts to the wrong width or signedness;
+   `std::to_underlying(x)` cannot be wrong about it. `<utility>` is where it
+   comes from.
+
+   This only reads well if the enum has an unsigned base, so **give every
+   `enum class` used as an index or a bit count an explicit one** -- `: u32`
+   keeps the width the implicit `int` had, so no layout changes. Without a
+   base the underlying type is `int`, and then `-Wconversion`
+   (`build/config/BUILD.gn:185`) objects to indexing an array with it and
+   `std::bit_width` refuses it outright, which is what brings the cast back:
+   `static_cast<usize>(std::to_underlying(x))` is the worst of both and was
+   what `page_queues.hpp` had. Fix the enum, not the call site.
+
 1. Prefer a `Flags` word (an `enum class` with `USTL_ENABLE_ENUM_BITMASK`,
    tested and set with bit operations) over separate `bool` members or
    variables wherever state is a set of yes/no facts about one object (the

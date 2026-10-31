@@ -20,26 +20,6 @@ None, this project's own tests.
 **Acceptance**
 A test that fails when the unknown-method branch of `EchoServer::serve()` answers instead of closing, and one that fails when the full-table branch of `EchoServer::connect()` closes without an epitaph.
 
-## 2. An echo client's entry stays held when the Loop frees its slot after a failed re-arm
-
-**Severity**
-Low: wrong, but not reached today, and in an example program. It needs `object_wait_async` to refuse the re-arm of a handle it accepted when the client was added.
-
-**Symptom**
-Latent, cannot be triggered today. Were it to happen, the client's channel is closed and its Loop slot freed, but its entry in `EchoServer::Storage::clients` still has `channel` set, so `connect()` never takes it again. After `MAX_CLIENTS` (4) such events every Open of the protocol is closed with an epitaph of `NoResource`.
-
-**Cause**
-The same as item 1 of `docs/repairs/261029/ioservice.md`, in another program. `Loop::run()` step 4 closes a slot's handle and frees the slot not only for the answer `Close` but also when step 3's `arm()` fails after an answer of `Rearm`. `EchoServer::release()` frees an entry only on the paths where `serve()` answers `Close`, and the Loop never tells a `Waiter` that its slot was freed. `echo_string()` answers `Rearm` and so is the path this would take. It cannot happen today for the reasons that item gives: the re-arm is the wait the first `add()` armed, on the same handle with the same rights for the same signals, and `SLOTS` is `static_assert`ed not to exceed `ours::PORT_MAX_OBSERVERS`. The root's `ResourceServer` and `LauncherServer` entries have the same property; they are not listed here because they are not part of this change.
-
-**Change**
-Not decided, and not independent in what it needs: it follows the user's choice among the options of `docs/repairs/261029/ioservice.md` item 1 (a second virtual function of `Waiter`, a failed re-arm treated as `Close`, or leaving it). The fix in this file is then to use whichever mechanism is chosen in `Client`. Taken alone, the item can be closed by deciding to leave it, with the comment of `EchoServer::Client` kept honest.
-
-**Reference**
-None, this project's own design.
-
-**Acceptance**
-Once the Loop tells a `Waiter` about a slot freed without its `Close`, a read of `Client` and `EchoServer::release()` shows that every freed slot releases its entry. The echo program has no host test; the boot check (`routing_checks: passed`) shows the normal path still works.
-
 ## 3. The only client of an example server is a 900-line boot test, so a tutorial has the reader edit that
 
 **Severity**

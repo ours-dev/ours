@@ -31,6 +31,7 @@
 // waiter is a real thread asleep on the real event.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/gaf.hpp>
+#include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/memory_watchdog.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_area.hpp>
@@ -407,6 +408,10 @@ namespace {
     auto check_watchdog(Tally &tally) -> void {
         using mm::MemoryPressure;
         using mm::MemoryWatchdog;
+        // These move the levels to where free memory is and look at what the
+        // watchdog decides; what it has the reclaimer give back would move
+        // free memory off them (pagereclaim.test checks that).
+        mm::MemoryReclaimer::Pause no_reclaim;
         constexpr usize K = NR_CROSSING;
         /// A debounce of a few frames, and no hysteresis, so that each move
         /// shows at once.

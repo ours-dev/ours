@@ -13,7 +13,7 @@ class PhysicalMemory final {
     constexpr explicit PhysicalMemory(PhysicalMemoryStorage const storage) : storage_(storage) {}
 
     [[nodiscard]]
-    auto add_usable(Range const range, NnId const node) -> Status {
+    auto add_usable(Range const range, NodeId const node) -> Status {
         if (auto const status = range_status(range); status != Status::Ok) {
             return status;
         }
@@ -184,7 +184,7 @@ class PhysicalMemory final {
     }
 
     [[nodiscard]]
-    auto assign_node(Range const range, NnId const node) -> Status {
+    auto assign_node(Range const range, NodeId const node) -> Status {
         if (auto const status = range_status(range); status != Status::Ok) {
             return status;
         }

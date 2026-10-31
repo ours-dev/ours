@@ -29,7 +29,8 @@
 /// The events: add() takes a free slot and arms its wait; run() takes a
 /// packet, finds its slot by the key and calls the slot's Waiter, which
 /// handles one message and answers Rearm or Close; run() then arms the wait
-/// again or closes the handle and frees the slot.
+/// again or closes the handle and frees the slot. When it could not arm the
+/// wait again, it also tells the Waiter, once the slot is free.
 namespace loop {
 /// What a Waiter asks the Loop to do with its slot once on_signals() returns.
 enum class Action : u8 {
@@ -59,21 +60,54 @@ enum class Action : u8 {
 /// (the packet queues behind everyone else's, I4), but it is the one thread's
 /// CPU.
 ///
+/// on_rearm_failed() is the one other thing the Loop tells a Waiter. A Waiter
+/// that answered Rearm is not told whether the wait was armed again: arming
+/// is the Loop's (a Waiter never arms its next wait itself), and it can fail.
+/// object_wait_async answers NoMemory when the kernel has no memory for the
+/// wait, and, in theory, NoResource, BadType, AccessDenied and InvArgs; it
+/// answers BadHandle when a Waiter broke the rules above and closed or sent
+/// away its own handle and still answered Rearm. The Loop then frees the slot
+/// as it does for Close, and the Waiter's owner is the only one who knows
+/// what it keeps for a slot -- an entry of a connection table, a client's
+/// state -- and so the only one who can let it go. Without the call it would
+/// keep it for ever, and a table of such entries would refuse everyone after
+/// enough failures.
+///
+/// The Loop calls on_rearm_failed() once, with the status arm() answered as
+/// |cause|, after it has closed the slot's handle, bumped the slot's
+/// generation and freed the slot. So the Waiter must not touch the handle,
+/// which is closed and whose number may name another object by now, and must
+/// release whatever it holds for the slot, the way it does when it answers
+/// Close. It may add() new slots, this one's among them: the slot is free,
+/// and a wait armed in it has the new generation. Like on_signals(), it never
+/// waits and never calls run().
+///
+/// It is not called after the answer Close, whose release the Waiter has
+/// done itself; not when add() fails, whose caller has the status and keeps
+/// the handle; and not by the Loop's destructor, which runs only when the
+/// Waiters' owners are going too. Its default does nothing, which is right
+/// for a Waiter that only ever answers Close, and so is never told.
+///
 /// The Loop does not own a Waiter: add() keeps its address, and nothing
 /// copies, moves or deletes it. It must outlive its slot, which is to say
 /// that it stays where it is from add() until the slot is freed -- by its
-/// Close, by a re-arm that failed, or by the Loop's destructor. The Loop
-/// reaches it only through on_signals(), and only for a packet that names its
-/// slot in use (step 1 of run()); once the slot is freed no packet does, so
-/// the Waiter may go then.
+/// Close, by a re-arm that failed, or by the Loop's destructor -- and, after a
+/// re-arm that failed, until on_rearm_failed() returns. The Loop reaches it
+/// only through on_signals(), and only for a packet that names its slot in
+/// use (step 1 of run()), and through on_rearm_failed(), once, right after it
+/// frees the slot; once the slot is freed no packet names it, so the Waiter
+/// may go then.
 ///
 /// Nothing is deleted through a Waiter, so its destructor is not virtual: a
 /// virtual one would add a deleting destructor, which a program with no heap
 /// has no use for. Its constructor is constexpr, so that a derived class can
-/// be constant-initialised.
+/// be constant-initialised. The second virtual function costs a slot in the
+/// vtable of each Waiter class, and nothing in each object.
 class Waiter {
   public:
     virtual auto on_signals(ours::Signals observed) -> Action = 0;
+
+    virtual auto on_rearm_failed([[maybe_unused]] ours::Status const cause) -> void {}
 
   protected:
     constexpr Waiter() = default;
@@ -240,17 +274,24 @@ class Loop final {
     ///   4. If it answered Close, or if arm() failed in step 3: close the
     ///      slot's handle, bump the slot's generation and free the slot (its
     ///      handle Invalid, so that add() may take it). Nothing else is
-    ///      closed, and nothing is armed for it.
+    ///      closed, and nothing is armed for it. If it was arm() that failed,
+    ///      then, with the slot already free, call the slot's Waiter's
+    ///      on_rearm_failed() once, with the status arm() answered. The Waiter
+    ///      and the status are taken before the slot is cleared. run() touches
+    ///      the slot no more after the call: an add() from it may have taken
+    ///      the slot again, in its new life.
     ///
     /// Invariants it keeps (the design's "Concurrency" section):
     ///   - I1: it blocks only in port_wait, and makes no system call but
-    ///     port_wait, object_wait_async (through arm()) and handle_close. The
-    ///     host test links a fake of exactly those three.
+    ///     port_wait, object_wait_async (through arm()) and handle_close;
+    ///     on_rearm_failed() adds none of its own. The host test links a fake
+    ///     of exactly those three.
     ///   - I3: a slot's handle is closed only in step 4, for that slot's own
-    ///     Waiter's answer. When on_signals() runs, the slot's only wait has
-    ///     fired and its packet has been taken, so closing the handle there
-    ///     leaves nothing of the slot on the port; the generation check of
-    ///     step 1 is a defence, for packets no wait of this Loop's queued.
+    ///     Waiter's answer, or for the failure of the re-arm that answer
+    ///     asked for. When on_signals() runs, the slot's only wait has fired
+    ///     and its packet has been taken, so closing the handle there leaves
+    ///     nothing of the slot on the port; the generation check of step 1 is
+    ///     a defence, for packets no wait of this Loop's queued.
     ///   - I4: one on_signals() per packet, then re-arm. A client with more
     ///     messages queued is not called again at once: its level-triggered
     ///     wait queues a fresh packet behind everyone else's, so a busy client

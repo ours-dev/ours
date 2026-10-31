@@ -585,9 +585,7 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     //
     // Note here we assump that all user address spaces include a duplication
     // of kernel address space.
-    if (curr->aspace() != next->aspace()) {
-        mm::VmAspace::switch_aspace(curr->aspace(), next->aspace());
-    }
+    mm::VmAspace::switch_aspace(curr->aspace(), next->aspace());
 
     // The incoming thread's PI lock is taken here, by the outgoing side, and
     // travels across the switch: the thread that resumes on the other end

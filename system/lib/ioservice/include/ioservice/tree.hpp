@@ -251,6 +251,16 @@ auto is_valid_name(std::string_view name) -> bool;
 /// spelling.
 [[nodiscard]]
 auto is_valid_path(std::string_view path) -> bool;
+
+/// |path|, as a client sent it, made fit for one line of a log: copied into
+/// |buffer| and returned as the view of what was copied. A path is bytes the
+/// client chose, so a line that quoted it as it came would let a client end
+/// the line and write another, or send the console a control sequence. Every
+/// byte outside printable ASCII (0x20 to 0x7E) becomes '?'. A path longer
+/// than |buffer| is cut to fit and ends in "...", when |buffer| has room for
+/// them. Allocates nothing; the view lives as long as |buffer| does.
+[[nodiscard]]
+auto printable_path(std::string_view path, std::span<char> buffer) -> std::string_view;
 } // namespace ioservice
 
 #endif // #ifndef IOSERVICE_TREE_HPP
