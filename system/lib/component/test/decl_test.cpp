@@ -97,45 +97,13 @@ auto raw_at(std::span<u8 const> const bytes, usize const offset) -> Raw {
     return raw;
 }
 
-/// Adds |text| to the string table, which ends the file, and answers where.
-auto append_string(std::vector<u8> &bytes, std::string_view const text) -> format::String {
-    auto header = tables_of(bytes).header;
-    auto const string =
-        format::String{.offset = header.string_table_size, .size = static_cast<u32>(text.size())};
-    bytes.insert(bytes.end(), text.begin(), text.end());
-    header.string_table_size += string.size;
-    header.total_size += string.size;
-    patch(bytes, 0, header);
-    return string;
-}
+/// rw*: what store.cm declares its directory as.
+constexpr auto RW_STAR =
+    Rights::RStarDir | Rights::WriteBytes | Rights::ModifyDirectory | Rights::UpdateAttributes;
 
 constexpr auto ECHO = "ours.example.Echo"sv;
 constexpr auto LAUNCHER = "ours.process.Launcher"sv;
 constexpr auto HOLLOW = "ours.example.Hollow"sv;
-
-/// PROVIDER with its capability made a directory at /export/data stating r*,
-/// and its expose a directory's stating rx* and the subdir shared/docs: the
-/// records no fixture compiled today holds, written the way the compiler will
-/// write them. The decoder checks structure only, so the rest of the manifest
-/// stays a protocol server's.
-auto directory_provider() -> std::vector<u8> {
-    auto bytes = bytes_of(fixtures::PROVIDER);
-    auto const tables = tables_of(bytes);
-
-    auto const capability = tables.capabilities;
-    patch(bytes, capability + offsetof(format::Capability, kind), Kind::Directory);
-    patch(bytes, capability + offsetof(format::Capability, flags), RecordFlags::RightsStated);
-    patch(bytes, capability + offsetof(format::Capability, rights), Rights::RStarDir);
-    patch(bytes, capability + offsetof(format::Capability, path),
-          append_string(bytes, "/export/data"));
-
-    auto const expose = tables.exposes;
-    patch(bytes, expose + offsetof(format::Expose, kind), Kind::Directory);
-    patch(bytes, expose + offsetof(format::Expose, flags), RecordFlags::RightsStated);
-    patch(bytes, expose + offsetof(format::Expose, rights), Rights::RxStarDir);
-    patch(bytes, expose + offsetof(format::Expose, subdir), append_string(bytes, "shared/docs"));
-    return bytes;
-}
 
 TEST(Decl, Realm) {
     auto const decl = decode(fixtures::REALM);
@@ -589,27 +557,92 @@ TEST(Decl, TheNewFieldsOfTheManifestsAboveAreEmpty) {
     EXPECT_EQ(provider.exposes()[0].target_name, ECHO);
 }
 
-/// A declaration with a path and rights, and an expose with a subdir and
-/// rights, read back through the views. The kind is what the patch set; the
-/// rest of each record is the fixture's.
+/// store.cm, as the compiler wrote it: a directory with a path and rights, a
+/// protocol beside it that states neither, and the exposes of both, the
+/// directory's three ways, read back through the views.
 TEST(Decl, ADirectoryStatesItsPathAndRightsAndAnExposeItsSubdirAndRights) {
-    auto const bytes = directory_provider();
-    auto const decl = decode(bytes);
+    auto const decl = decode(fixtures::STORE);
 
-    ASSERT_EQ(decl.capabilities().size(), 1U);
-    auto const capability = decl.capabilities()[0];
-    EXPECT_EQ(capability.kind, Kind::Directory);
-    EXPECT_EQ(capability.name, ECHO);
-    EXPECT_EQ(capability.path, "/export/data");
-    EXPECT_EQ(rights(capability.rights), static_cast<u64>(Rights::RStarDir));
+    ASSERT_EQ(decl.capabilities().size(), 2U);
+    auto const data = decl.capabilities()[0];
+    EXPECT_EQ(data.kind, Kind::Directory);
+    EXPECT_EQ(data.name, "data");
+    EXPECT_EQ(data.path, "/export/data");
+    EXPECT_EQ(rights(data.rights), static_cast<u64>(RW_STAR));
+    // A directory has no type: the view reads it as the name, as for any
+    // record that states none.
+    EXPECT_EQ(data.type, "data");
+    auto const status = decl.capabilities()[1];
+    EXPECT_EQ(status.kind, Kind::Protocol);
+    EXPECT_EQ(status.name, "status");
+    EXPECT_EQ(status.path, "");
+    EXPECT_TRUE(status.rights.is_none());
 
-    ASSERT_EQ(decl.exposes().size(), 1U);
-    auto const expose = decl.exposes()[0];
-    EXPECT_EQ(expose.kind, Kind::Directory);
-    EXPECT_EQ(expose.source.kind, RefKind::Self);
-    EXPECT_EQ(expose.target_name, ECHO);
-    EXPECT_EQ(expose.subdir, "shared/docs");
-    EXPECT_EQ(rights(expose.rights), static_cast<u64>(Rights::RxStarDir));
+    ASSERT_EQ(decl.exposes().size(), 4U);
+    auto const shared = decl.exposes()[0];
+    EXPECT_EQ(shared.kind, Kind::Directory);
+    EXPECT_EQ(shared.source.kind, RefKind::Self);
+    EXPECT_EQ(shared.source_name, "data");
+    EXPECT_EQ(shared.target_name, "data");
+    EXPECT_EQ(shared.subdir, "shared");
+    EXPECT_EQ(rights(shared.rights), static_cast<u64>(Rights::RStarDir));
+
+    auto const wide = decl.exposes()[1];
+    EXPECT_EQ(wide.source_name, "data");
+    EXPECT_EQ(wide.target_name, "data-wide");
+    EXPECT_EQ(wide.subdir, "");
+    EXPECT_EQ(rights(wide.rights), static_cast<u64>(Rights::RxStarDir));
+
+    // An expose that states nothing: the flag is off, so the rights are none
+    // and not an empty set.
+    auto const plain = decl.exposes()[2];
+    EXPECT_EQ(plain.target_name, "data-plain");
+    EXPECT_EQ(plain.subdir, "");
+    EXPECT_TRUE(plain.rights.is_none());
+
+    auto const protocol = decl.exposes()[3];
+    EXPECT_EQ(protocol.kind, Kind::Protocol);
+    EXPECT_EQ(protocol.target_name, "status");
+    EXPECT_EQ(protocol.subdir, "");
+    EXPECT_TRUE(protocol.rights.is_none());
+}
+
+/// shelf.cm's offers of it, and reader.cm's uses: the subdir and rights of
+/// each hop of the route `notes`, from the use to the declaration.
+TEST(Decl, TheHopsOfADirectoryRouteStateTheirRightsAndSubdirs) {
+    auto const shelf = decode(fixtures::SHELF);
+    auto const children = shelf.children();
+    ASSERT_EQ(children.size(), 3U);
+    EXPECT_EQ(children[0].name, "store");
+    EXPECT_EQ(children[1].name, "reader");
+    EXPECT_EQ(children[2].name, "bare");
+    ASSERT_EQ(shelf.offers().size(), 8U);
+    auto const notes = shelf.offers()[0];
+    EXPECT_EQ(notes.kind, Kind::Directory);
+    EXPECT_EQ(notes.source.kind, RefKind::Child);
+    EXPECT_EQ(children[notes.source.child].name, "store");
+    EXPECT_EQ(notes.source_name, "data");
+    EXPECT_EQ(notes.target_name, "notes");
+    EXPECT_EQ(notes.subdir, "public");
+    EXPECT_EQ(rights(notes.rights), static_cast<u64>(Rights::RStarDir));
+
+    auto const reader = decode(fixtures::READER);
+    ASSERT_EQ(reader.uses().size(), 8U);
+    auto const use = reader.uses()[0];
+    EXPECT_EQ(use.kind, Kind::Directory);
+    EXPECT_EQ(use.source_name, "notes");
+    EXPECT_EQ(use.target_path, "/notes");
+    EXPECT_EQ(use.subdir, "docs");
+    EXPECT_EQ(rights(use.rights), static_cast<u64>(Rights::RStarDir));
+    // The protocol use among them is the last.
+    EXPECT_EQ(reader.uses()[7].kind, Kind::Protocol);
+    EXPECT_EQ(reader.uses()[7].target_path, "/svc/not-a-protocol");
+
+    // bare.cm has no program, and states what store does of its directory.
+    auto const bare = decode(fixtures::BARE);
+    EXPECT_TRUE(bare.program().is_none());
+    ASSERT_EQ(bare.capabilities().size(), 1U);
+    EXPECT_EQ(bare.capabilities()[0].path, "/export/data");
 }
 
 /// A stated empty set is not an unstated one: a hop that states no rights
@@ -817,8 +850,10 @@ TEST(Decl, EveryOneByteChangeStaysInBounds) {
     check_every_byte(fixtures::PROVIDER);
     check_every_byte(fixtures::CONSUMER);
     check_every_byte(fixtures::HOLLOW);
-    // The records with a path, a subdir and rights stated, which no fixture
-    // above holds.
-    check_every_byte(directory_provider());
+    // The records with a path, a subdir and rights stated.
+    check_every_byte(fixtures::STORE);
+    check_every_byte(fixtures::READER);
+    check_every_byte(fixtures::SHELF);
+    check_every_byte(fixtures::BARE);
 }
 } // namespace

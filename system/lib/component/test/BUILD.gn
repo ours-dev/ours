@@ -46,6 +46,27 @@ _manifests = [
     name = "MISMATCH"
     label = "$_fixtures:mismatch.cm($default_toolchain)"
   },
+
+  # The directories a component provides: shelf.cm as the root, with a store
+  # that declares and exposes directories, a reader that uses them and a bare
+  # one with no program. Three of reader's uses are denied on purpose, which
+  # the build warns about and goes on.
+  {
+    name = "SHELF"
+    label = "$_fixtures:shelf.cm($default_toolchain)"
+  },
+  {
+    name = "STORE"
+    label = "$_fixtures:store.cm($_user_toolchain)"
+  },
+  {
+    name = "READER"
+    label = "$_fixtures:reader.cm($_user_toolchain)"
+  },
+  {
+    name = "BARE"
+    label = "$_fixtures:bare.cm($_user_toolchain)"
+  },
 ]
 
 _header = "$target_gen_dir/fixtures/manifests.hpp"

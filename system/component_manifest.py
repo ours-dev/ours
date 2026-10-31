@@ -17,11 +17,14 @@ the structure, because the build alone writes the BootFS the root reads its
 manifests from: a manifest that reached the root passed them already.
 
 A manifest with children also checks its whole tree (--tree lists every
-descendant's scope): each protocol use is walked the way route() walks it, up
-through the parents' offers and down through the children's exposes, and a
-route that ends at a capability of another protocol type is an error. A route
-that does not resolve is left to run time. "The type check" below has the
-rules.
+descendant's scope), twice. Each protocol use is walked the way route() walks
+it, up through the parents' offers and down through the children's exposes,
+and a route that ends at a capability of another protocol type is an error.
+Each directory use is walked the same way and held to its rights at every hop,
+and a hop that states fewer than the hop before it is a warning, not an error:
+the root answers that use AccessDenied when its component starts, and a
+deliberate failure must still build. A route that does not resolve is left to
+run time by both. "The type check" and "The rights walk" below have the rules.
 
 Standard library only: the host's python3 is 3.9, with nothing installed
 beside it.
@@ -177,8 +180,8 @@ class Capability:
     # manifest states none, which the decoder reads as the name.
     type: str = ""
     # Where a directory capability sits in the provider's outgoing directory,
-    # and the most it allows. Both left empty for every capability the
-    # language can write today.
+    # and the most it allows. Both stated by every directory capability and by
+    # no protocol one.
     path: str = ""
     rights: Optional[int] = None
 
@@ -211,8 +214,9 @@ class Expose:
     source: Ref
     source_name: str
     target_name: str
-    # What a directory expose narrows, as an offer's. Both left empty for
-    # every expose the language can write today.
+    # What a directory expose narrows, as an offer's: the subdirectory it
+    # passes on and the most it allows, either of which it may leave unstated.
+    # A protocol expose states neither.
     subdir: str = ""
     rights: Optional[int] = None
 
@@ -469,26 +473,81 @@ def _children(
     return children
 
 
+# Where a provider's outgoing directory holds its protocols, one node each at
+# svc/<name>. A directory capability is served at a path of its own, so it may
+# not be served there, under it, or above it.
+SERVICE_PATH = "/svc"
+
+
 def _capabilities(manifest: Dict[str, Any], where: str) -> List[Capability]:
     capabilities = []
     seen = set()
+    # The path of each directory declared so far, and where it was written.
+    served: List[Tuple[str, str]] = []
     for index, clause in enumerate(_list(manifest, "capabilities", where)):
         at = f"{where}.capabilities[{index}]"
-        if isinstance(clause, dict) and "directory" in clause:
+        if isinstance(clause, dict) and "subdir" in clause:
             raise ManifestError(
-                f"{at}: a component cannot declare a directory; the only one is the "
-                "root's built-in `boot` (D3)"
+                f"{at}.subdir: a declaration has no `subdir`: the place a directory is served "
+                "at is its `path`, and a use, an offer or an expose chooses a subdirectory of it"
             )
-        clause = _check_keys(clause, ("protocol", "type"), at)
-        if "protocol" not in clause:
-            raise ManifestError(f"{at}: needs `protocol`")
-        names = _one_or_many_names(clause["protocol"], f"{at}.protocol")
-        type_ = _stated_type(clause, at)
-        for name in names:
-            if name in seen:
-                raise ManifestError(f"{at}: '{name}' is a duplicate capability name")
-            seen.add(name)
-            capabilities.append(Capability(KIND_PROTOCOL, name, type_))
+        clause = _check_keys(clause, ("protocol", "directory", "type", "path", "rights"), at)
+        kind, names = _capability_names(clause, at)
+
+        if kind == KIND_PROTOCOL:
+            for key in ("path", "rights"):
+                if key in clause:
+                    raise ManifestError(
+                        f"{at}.{key}: a protocol declaration has no `{key}`; only a directory "
+                        "has one (a protocol is served at svc/<name>, and has no rights to hold)"
+                    )
+            type_ = _stated_type(clause, at)
+            for name in names:
+                if name in seen:
+                    raise ManifestError(f"{at}: '{name}' is a duplicate capability name")
+                seen.add(name)
+                capabilities.append(Capability(KIND_PROTOCOL, name, type_))
+            continue
+
+        if "type" in clause:
+            raise ManifestError(
+                f"{at}.type: a directory has no `type`; only a protocol has one, and a "
+                "directory's hops are compared by their rights"
+            )
+        if len(names) != 1:
+            raise ManifestError(
+                f"{at}.directory: a declaration names one directory, since it states one `path`"
+            )
+        if "path" not in clause:
+            raise ManifestError(
+                f"{at}: a directory declaration needs `path`, the place in the outgoing "
+                "directory that it is served at, such as /export/data"
+            )
+        if "rights" not in clause:
+            raise ManifestError(
+                f"{at}: a directory declaration needs `rights`, the most it allows, such as "
+                '[ "r*" ]; every hop of a route is held to it'
+            )
+        path = check_path(clause["path"], f"{at}.path")
+        if _is_prefix(SERVICE_PATH, path) or _is_prefix(path, SERVICE_PATH):
+            raise ManifestError(
+                f"{at}.path: '{path}' is {SERVICE_PATH} or lies under or above it; "
+                f"{SERVICE_PATH} of the outgoing directory holds the protocols"
+            )
+        for other, other_at in served:
+            if _is_prefix(path, other) or _is_prefix(other, path):
+                raise ManifestError(
+                    f"{at}.path: '{path}' overlaps '{other}' ({other_at}); a directory is "
+                    "served at a path that is neither another's nor under it"
+                )
+        rights = check_rights(clause["rights"], f"{at}.rights")
+
+        name = names[0]
+        if name in seen:
+            raise ManifestError(f"{at}: '{name}' is a duplicate capability name")
+        seen.add(name)
+        served.append((path, f"{at}.path"))
+        capabilities.append(Capability(KIND_DIRECTORY, name, "", path, rights))
     return capabilities
 
 
@@ -561,6 +620,22 @@ def _uses(manifest: Dict[str, Any], where: str) -> List[Use]:
     return uses
 
 
+def _untyped_message(clause: Dict[str, Any], what: str, where: str) -> str:
+    """Why an offer or an expose, |what|, may not state a `type`: it passes a
+    capability on under another name, and the type belongs where the
+    capability is declared and used. A directory has none to state."""
+    if "directory" in clause:
+        return (
+            f"{where}: a directory {what} has no `type`; only a protocol has one, and a "
+            "directory's hops are compared by their rights"
+        )
+    return (
+        f"{where}: an {what} has no `type`: `as` renames the capability, not the "
+        "protocol. State the type where the capability is declared (`capabilities`) "
+        "and where it is used (`use`)"
+    )
+
+
 def _offers(
     manifest: Dict[str, Any],
     children: Dict[str, int],
@@ -572,11 +647,7 @@ def _offers(
     for index, clause in enumerate(_list(manifest, "offer", where)):
         at = f"{where}.offer[{index}]"
         if isinstance(clause, dict) and "type" in clause:
-            raise ManifestError(
-                f"{at}.type: an offer has no `type`: `as` renames the capability, not the "
-                "protocol. State the type where the capability is declared (`capabilities`) "
-                "and where it is used (`use`)"
-            )
+            raise ManifestError(_untyped_message(clause, "offer", f"{at}.type"))
         clause = _check_keys(
             clause, ("protocol", "directory", "from", "to", "as", "rights", "subdir"), at
         )
@@ -584,12 +655,12 @@ def _offers(
         if "from" not in clause or "to" not in clause:
             raise ManifestError(f"{at}: an offer needs `from` and `to`")
 
-        # A directory can only come from the parent: no component provides
-        # one, so `boot` from the root is the only source there is (D3).
-        allowed: Tuple[str, ...] = ("parent", "self", "#child")
-        if kind == KIND_DIRECTORY:
-            allowed = ("parent",)
-        source = _source_ref(clause["from"], allowed, children, f"{at}.from")
+        # A directory comes from the same places a protocol does: the parent
+        # (the root's built-in `boot` is the one at the top), this component's
+        # own declaration, or a child that exposes it.
+        source = _source_ref(
+            clause["from"], ("parent", "self", "#child"), children, f"{at}.from"
+        )
         if source.kind == REF_SELF:
             for name in names:
                 if declared.get(name) != kind:
@@ -657,18 +728,11 @@ def _exposes(
     targets: Dict[str, str] = {}
     for index, clause in enumerate(_list(manifest, "expose", where)):
         at = f"{where}.expose[{index}]"
-        if isinstance(clause, dict) and "directory" in clause:
-            raise ManifestError(
-                f"{at}: a component cannot expose a directory; the only one is the root's "
-                "built-in `boot` (D3)"
-            )
         if isinstance(clause, dict) and "type" in clause:
-            raise ManifestError(
-                f"{at}.type: an expose has no `type`: `as` renames the capability, not the "
-                "protocol. State the type where the capability is declared (`capabilities`) "
-                "and where it is used (`use`)"
-            )
-        clause = _check_keys(clause, ("protocol", "from", "as", "to"), at)
+            raise ManifestError(_untyped_message(clause, "expose", f"{at}.type"))
+        clause = _check_keys(
+            clause, ("protocol", "directory", "from", "as", "to", "rights", "subdir"), at
+        )
         kind, names = _capability_names(clause, at)
         if "from" not in clause:
             raise ManifestError(f"{at}: an expose needs `from`")
@@ -682,6 +746,16 @@ def _exposes(
                     )
         if clause.get("to", "parent") != "parent":
             raise ManifestError(f"{at}.to: an expose goes to the parent only")
+
+        # A directory expose may narrow what it passes on, as an offer does;
+        # a protocol has nothing to narrow.
+        if kind == KIND_PROTOCOL:
+            for key in ("rights", "subdir"):
+                if key in clause:
+                    raise ManifestError(f"{at}.{key}: only a directory expose has `{key}`")
+        rights = check_rights(clause["rights"], f"{at}.rights") if "rights" in clause else None
+        subdir = check_subdir(clause["subdir"], f"{at}.subdir") if "subdir" in clause else ""
+
         if "as" in clause and len(names) != 1:
             raise ManifestError(f"{at}.as: `as` renames one capability, not {len(names)}")
         renamed = check_name(clause["as"], f"{at}.as") if "as" in clause else None
@@ -694,7 +768,7 @@ def _exposes(
                     f"the parent ({targets[target_name]})"
                 )
             targets[target_name] = at
-            exposes.append(Expose(kind, source, name, target_name))
+            exposes.append(Expose(kind, source, name, target_name, subdir, rights))
     return exposes
 
 
@@ -912,7 +986,8 @@ def encode(decl: Decl) -> bytes:
 # It differs from route() in four ways, all on purpose:
 # - A protocol use, offer and expose state no rights and no subdir, so the hop
 #   rules (detail::Hops) have nothing to apply. A directory use is not walked
-#   at all: its hops are compared by their rights, not by a type.
+#   here at all: its hops are compared by their rights, not by a type, in
+#   "The rights walk" below.
 # - A route that does not resolve is no error here. route() would answer
 #   NotFound or AccessDenied for it; the build leaves that to run time, as
 #   before, so that routing_checks' deliberate failures still build.
@@ -1035,28 +1110,42 @@ def _ref_text(ref: Ref) -> str:
 _HOP_WORD_WIDTH = len("expose") + 1
 
 
-def _use_line(instance: Instance, use: Use, root_name: str) -> str:
-    return f'{"use":<{_HOP_WORD_WIDTH}}{_where(instance, root_name)} "{use.source_name}"'
+# What each hop says after its word, shared by the type check's lines and the
+# rights walk's.
+def _use_text(instance: Instance, use: Use, root_name: str) -> str:
+    return f'{_where(instance, root_name)} "{use.source_name}"'
 
 
-def _offer_line(parent: Instance, offer: Offer, root_name: str) -> str:
-    line = (
-        f'{"offer":<{_HOP_WORD_WIDTH}}{_where(parent, root_name)} "{offer.source_name}" '
+def _offer_text(parent: Instance, offer: Offer, root_name: str) -> str:
+    text = (
+        f'{_where(parent, root_name)} "{offer.source_name}" '
         f"from {_ref_text(offer.source)} to {_ref_text(offer.target)}"
     )
     if offer.target_name != offer.source_name:
-        line += f' as "{offer.target_name}"'
-    return line
+        text += f' as "{offer.target_name}"'
+    return text
 
 
-def _expose_line(child: Instance, expose: Expose, root_name: str) -> str:
-    line = (
-        f'{"expose":<{_HOP_WORD_WIDTH}}{_where(child, root_name)} "{expose.source_name}" '
+def _expose_text(child: Instance, expose: Expose, root_name: str) -> str:
+    text = (
+        f'{_where(child, root_name)} "{expose.source_name}" '
         f"from {_ref_text(expose.source)} to parent"
     )
     if expose.target_name != expose.source_name:
-        line += f' as "{expose.target_name}"'
-    return line
+        text += f' as "{expose.target_name}"'
+    return text
+
+
+def _use_line(instance: Instance, use: Use, root_name: str) -> str:
+    return f'{"use":<{_HOP_WORD_WIDTH}}{_use_text(instance, use, root_name)}'
+
+
+def _offer_line(parent: Instance, offer: Offer, root_name: str) -> str:
+    return f'{"offer":<{_HOP_WORD_WIDTH}}{_offer_text(parent, offer, root_name)}'
+
+
+def _expose_line(child: Instance, expose: Expose, root_name: str) -> str:
+    return f'{"expose":<{_HOP_WORD_WIDTH}}{_expose_text(child, expose, root_name)}'
 
 
 def route_protocol_use(
@@ -1254,6 +1343,282 @@ def format_mismatch(mismatch: Mismatch) -> str:
     return "\n".join(lines) + "\n"
 
 
+# --- The rights walk ---------------------------------------------------------
+#
+# A directory use is held to its rights at every hop, and route() answers
+# AccessDenied at the first hop that states fewer than the hop before it. The
+# root finds that out when it starts the component, logs one line and closes
+# the entry. The walk below finds it when the image is built, from the same
+# tree the type check reads, and only warns: the root's answer is the signal
+# that matters, and a deliberate failure (routing_checks' `/denied`) has to
+# build.
+#
+# It is route()'s directory walk written out again in Python, as the type
+# check's is for a protocol: the use, the offers up through the parents, the
+# exposes down through the children, then the provider's declaration or the
+# root's built-in, with the same lookups (_find_offer, _find_expose,
+# _find_capability, _find_builtin) and the rule of detail::Hops::apply. A hop
+# that states no rights narrows nothing and is skipped; one that does must
+# contain every right stated by the last hop before it that stated any.
+#
+# It differs from route() in three ways, all on purpose:
+# - The first failure on the walk is the answer, as in route(), but only an
+#   AccessDenied is reported. A route that does not resolve (route() answers
+#   NotFound) is left to run time, as for a protocol.
+# - The subdirs are not joined, so a joined path that would be too long
+#   (route()'s NotFound) is not seen, and a route that route() would stop
+#   there with NotFound before it reached the hop that holds less is reported
+#   for that hop. The compiler refuses any single subdir longer than
+#   MAX_PATH_LENGTH; the sum of several is a case nobody writes.
+# - "The root" is the top of the tree being compiled, as for the type check:
+#   above it are the built-ins when a list was given, and nothing when none was.
+
+
+@dataclass
+class RightsHop:
+    """One hop of a directory route, as the warning prints it."""
+
+    # The word the hop's line starts with, and what the manifest says after it.
+    word: str
+    text: str
+    # What the hop states; None when it states none.
+    rights: Optional[int]
+    # Where route() reports an error at this hop: the instance (None for the
+    # built-ins), the verb and the capability's name there.
+    at: Optional[Instance]
+    verb: str
+    name: str
+
+
+@dataclass
+class RightsWalk:
+    """A directory route that reached a provider or a built-in, or was denied
+    on the way. When denied, `hops` end with the hop that holds less and
+    `against` is the hop it was held against; `end` is None."""
+
+    hops: List[RightsHop]
+    end: Optional[End]
+    against: Optional[int] = None
+
+    @property
+    def denied(self) -> bool:
+        return self.end is None
+
+
+@dataclass
+class RightsWarning:
+    """A directory use whose route holds less at some hop."""
+
+    label: str
+    root_name: str
+    instance: Instance
+    use: Use
+    walk: RightsWalk
+
+
+class _Hops:
+    """What the walk carries from one hop to the next: the hops so far, and
+    which of them stated rights last (detail::Hops)."""
+
+    def __init__(self) -> None:
+        self.hops: List[RightsHop] = []
+        self.last: Optional[int] = None
+
+    def apply(self, hop: RightsHop) -> bool:
+        """Adds |hop|. False when it states rights that do not contain the
+        last stated ones, the hop being then the last of the list."""
+        self.hops.append(hop)
+        if hop.rights is None:
+            return True
+        if self.last is not None:
+            held = self.hops[self.last].rights
+            if hop.rights & held != held:
+                return False
+        self.last = len(self.hops) - 1
+        return True
+
+
+def route_directory_use(
+    target: Instance, use: Use, builtins: Optional[List[Any]], root_name: str
+) -> Optional[RightsWalk]:
+    """Walks |use|, a directory use of |target|, to the capability's source,
+    as route() does; None when the route does not resolve before a hop holds
+    less than the one before it.
+
+    The state and the lookups are route_protocol_use()'s; only the hops
+    differ, since each one may state rights.
+    """
+    kind = use.kind
+    hops = _Hops()
+
+    def denied() -> RightsWalk:
+        # The hop that failed is the last one added; the one it was held
+        # against is the last that stated rights before it, which a failed
+        # apply() left as it was.
+        assert hops.last is not None
+        return RightsWalk(hops.hops, None, hops.last)
+
+    # The use is the first hop: its rights are the first any hop states.
+    hops.apply(
+        RightsHop("use", _use_text(target, use, root_name), use.rights, target, "Use", use.source_name)
+    )
+    at = target
+    source = Ref(REF_PARENT)
+    name = use.source_name
+    while source.kind != REF_SELF:
+        if source.kind == REF_PARENT:
+            parent = at.parent
+            if parent is None:
+                # **from is the parent, and |at| is the root**: the built-ins.
+                builtin = _find_builtin(builtins, kind, name)
+                if builtin is None:
+                    return None
+                hop = RightsHop(
+                    "built-in", f'"{builtin.name}"', builtin.rights, None, "Declare", name
+                )
+                if not hops.apply(hop):
+                    return denied()
+                return RightsWalk(hops.hops, End(None, builtin.name, ""))
+
+            # **from is the parent**: the parent's offer to this child.
+            offer = _find_offer(parent.decl, kind, at.path[-1], name)
+            if offer is None:
+                return None
+            hop = RightsHop(
+                "offer", _offer_text(parent, offer, root_name), offer.rights, parent, "Offer", name
+            )
+            if not hops.apply(hop):
+                return denied()
+            at = parent
+            source = offer.source
+            name = offer.source_name
+            continue
+
+        # **from is the child c**: its expose, which is a hop at the child.
+        child = at.children[source.child]
+        expose = _find_expose(child.decl, kind, name)
+        if expose is None or expose.source.kind == REF_PARENT:
+            return None
+        hop = RightsHop(
+            "expose", _expose_text(child, expose, root_name), expose.rights, child, "Expose", name
+        )
+        if not hops.apply(hop):
+            return denied()
+        at = child
+        source = expose.source
+        name = expose.source_name
+
+    # **from is self**: |at| serves it, if it has a program, and its
+    # declaration is the last hop.
+    if not at.has_program:
+        return None
+    capability = _find_capability(at.decl, kind, name)
+    if capability is None:
+        return None
+    hop = RightsHop(
+        "declare",
+        f'{_where(at, root_name)} "{capability.name}" at {capability.path}',
+        capability.rights,
+        at,
+        "Declare",
+        capability.name,
+    )
+    if not hops.apply(hop):
+        return denied()
+    return RightsWalk(hops.hops, End(at, capability.name, ""))
+
+
+def check_directory_rights(
+    source: Dict[str, Any],
+    decl: Decl,
+    sources: Dict[str, Dict[str, Any]],
+    builtins: Optional[List[Any]],
+) -> List[RightsWarning]:
+    """Every directory use in the tree of the manifest being compiled whose
+    route is denied by a hop that states fewer rights than the hop before it,
+    ordered by instance path and then by use. Arguments as check_types()."""
+    root = build_tree(source, decl, sources)
+    label = source["label"]
+    root_name = label.rsplit(":", 1)[-1]
+    warnings = []
+    for instance in instances(root):
+        for use in instance.decl.uses:
+            if use.kind != KIND_DIRECTORY:
+                continue
+            walk = route_directory_use(instance, use, builtins, root_name)
+            if walk is not None and walk.denied:
+                warnings.append(RightsWarning(label, root_name, instance, use, walk))
+    return warnings
+
+
+def rights_text(rights: Optional[int]) -> str:
+    """|rights| as a manifest writes it: the alias when the mask is exactly
+    one, otherwise the words of its bits."""
+    if rights is None:
+        return "none"
+    for word, mask in RIGHTS.items():
+        if word.endswith("*") and mask == rights:
+            return word
+    words = [word for word, mask in RIGHTS.items() if not word.endswith("*") and rights & mask]
+    return ",".join(words) or "(empty)"
+
+
+# What a hop is called in "holds less at ...", and the fix that is its own.
+_HOLDS_LESS_AT = {
+    "offer": "an offer",
+    "expose": "an expose",
+    "declare": "the declaration",
+    "built-in": "the root's built-in",
+}
+_FIX = {
+    "offer": "Offer",
+    "expose": "Expose",
+    "declare": "Declare",
+}
+
+
+def format_rights_warning(warning: RightsWarning) -> str:
+    """The build warning for |warning|: the use and what it asked, the hops up
+    to the one that holds less, each with the rights it states, and the fix."""
+    indent = " " * len("warning: ")
+    use, walk = warning.use, warning.walk
+    assert walk.against is not None
+    held = walk.hops[-1]
+    against = walk.hops[walk.against]
+    # The rights column, after the longest hop and three spaces; the word's
+    # column wide enough for the longest word of this block.
+    width = max(_HOP_WORD_WIDTH, *(len(hop.word) + 1 for hop in walk.hops))
+    hop_lines = [f"{hop.word:<{width}}{hop.text}" for hop in walk.hops]
+    column = max(len(line) for line in hop_lines) + 3
+    rows = []
+    for index, (hop, line) in enumerate(zip(walk.hops, hop_lines)):
+        row = f"{line:<{column}}{rights_text(hop.rights)}"
+        if index == len(walk.hops) - 1:
+            row += "   <- holds less"
+        rows.append(f"{indent}  {row}")
+
+    asked = rights_text(use.rights)
+    wanted = rights_text(against.rights)
+    if held.word == "built-in":
+        fix = (
+            f"The root's built-in allows only {rights_text(held.rights)}; ask the "
+            f"{against.word} for no more than that."
+        )
+    else:
+        fix = (
+            f"{_FIX[held.word]} rights that contain {wanted}, or ask the {against.word} "
+            "for fewer."
+        )
+    text = [
+        f"warning: {warning.label}: {_where(warning.instance, warning.root_name)} uses directory "
+        f'"{use.source_name}" with rights {asked},',
+        f"{indent}but the route holds less at {_HOLDS_LESS_AT[held.word]}:",
+        *rows,
+        f"{indent}The root will answer AccessDenied for this use. {fix}",
+    ]
+    return "\n".join(text) + "\n"
+
+
 def load_tree(entries: Any) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
     """The scope of every descendant, by label, from the `--tree` file's
     entries `{label, source}`, and the paths that were read, for the depfile."""
@@ -1312,8 +1677,10 @@ def main(argv: List[str]) -> int:
     parser.add_argument(
         "--no-type-check",
         action="store_true",
-        help="do not check that every route in the tree ends at a capability of the type its "
-        "use asks for; for a fixture that exercises the run-time check on a mismatch",
+        help="do not walk the tree at all: neither the type check (that every protocol route "
+        "ends at a capability of the type its use asks for) nor the rights walk (a warning for "
+        "every directory route that holds less than its use asks); for a fixture that "
+        "exercises the run-time answer to a mismatch or a denied route",
     )
     args = parser.parse_args(argv)
 
@@ -1330,6 +1697,12 @@ def main(argv: List[str]) -> int:
                 import component_builtins
 
                 builtins = component_builtins.load(args.builtins)
+            # Warnings first, and whatever the type check finds: they are
+            # facts about the same tree, and a build that fails should say
+            # everything it knows. They do not change the exit status.
+            warnings = check_directory_rights(scope, decl, sources, builtins)
+            if warnings:
+                print("\n".join(format_rights_warning(w) for w in warnings), end="", file=sys.stderr)
             mismatches = check_types(scope, decl, sources, builtins)
             if mismatches:
                 # The mismatches' own text starts `error:`, which ninja shows
