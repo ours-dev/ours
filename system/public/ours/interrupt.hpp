@@ -18,8 +18,9 @@ namespace ours {
 ///     kernel turns it into the line that IRQ arrives on. The firmware's
 ///     tables may move an ISA IRQ to another pin (QEMU's q35 sends ISA 0 to
 ///     GSI 2), and the line is named by the kernel's own number for that
-///     pin. A number past the ISA IRQs already names a line and is taken as
-///     it is.
+///     pin. ISA 2, the cascade between the two legacy controllers, carries
+///     no device and names no line (NoResource). A number past the ISA IRQs
+///     already names a line and is taken as it is.
 ///   - The mode, the three bits of ModeMask: ModeDefault leaves the line
 ///     signalling as it does now, as the firmware or its last owner left it;
 ///     the other four set it. 5 to 7 in the field are refused: 5 would be
@@ -31,7 +32,8 @@ namespace ours {
 /// A line is named by the kernel's number for it, assigned at boot: never the
 /// pin's GSI, and not the same on another machine or another kernel, so a
 /// program does not compute one. RemapIrq gives the number of an ISA device's
-/// line; there is no other way yet to learn the number of another pin's.
+/// line, and interrupt_map the number for any source the firmware names, to
+/// the holder of the interrupt root.
 ///
 /// No option picks the clock a timestamp is taken on or makes the line a
 /// wake source: this kernel has one clock, and no suspend to wake from.

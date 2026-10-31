@@ -250,8 +250,10 @@ namespace {
                 "none");
         verdict(tally,
                 platform::isa_irq_line(arch::NUM_ISA_IRQS) == irq::INVALID_V_IRQ_NUM &&
-                    platform::isa_irq_line(200) == irq::INVALID_V_IRQ_NUM,
-                "a number past the ISA IRQs is no ISA IRQ");
+                    platform::isa_irq_line(200) == irq::INVALID_V_IRQ_NUM &&
+                    platform::isa_irq_line(0x100) == irq::INVALID_V_IRQ_NUM &&
+                    platform::isa_irq_line(0x103) == irq::INVALID_V_IRQ_NUM,
+                "a number past the ISA IRQs is no ISA IRQ, one that wraps as 8 bits included");
         verdict(tally, platform::remap_isa_irq(200) == 200,
                 "and comes back unchanged from remap_isa_irq()");
     }

@@ -512,6 +512,9 @@ auto check_interrupt_map(Uandle const irq) -> void {
     constexpr auto GSI_TIMER = u32{2};
     constexpr auto GSI_FREE = u32{3};
     constexpr auto GSI_PCI = u32{23};
+    constexpr auto GSI_MOVED_OFF = u32{0};
+    constexpr auto ISA_WRAPS_TO_0 = u32{0x100};
+    constexpr auto ISA_WRAPS_TO_3 = u32{0x103};
     constexpr auto ISA_CASCADE = u32{2};
     constexpr auto NOT_ISA = u32{16};
     constexpr auto NO_PIN = u32{200};
@@ -522,6 +525,7 @@ auto check_interrupt_map(Uandle const irq) -> void {
     auto isa_free = UNTOUCHED;
     auto gsi_free = UNTOUCHED;
     auto gsi_pci = UNTOUCHED;
+    auto gsi_moved_off = UNTOUCHED;
     auto ok = true;
     ok &= expect("interrupt_map(Irq root, Isa, 0)",
                  ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_TIMER, &isa_timer),
@@ -537,6 +541,9 @@ auto check_interrupt_map(Uandle const irq) -> void {
                ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_FREE, &gsi_free), Status::Ok);
     ok &= expect("interrupt_map(Irq root, Gsi, 23)",
                  ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_PCI, &gsi_pci), Status::Ok);
+    ok &= expect("interrupt_map(Irq root, Gsi, 0)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_MOVED_OFF, &gsi_moved_off),
+                 Status::Ok);
     if (!ok) {
         return;
     }
@@ -553,6 +560,11 @@ auto check_interrupt_map(Uandle const irq) -> void {
     }
     if (isa_timer == isa_free || isa_free == gsi_pci || isa_timer == gsi_pci) {
         fail("interrupt_map: two sources have one number");
+    }
+    // GSI 0 is the pin ISA 0 was moved off, a line of its own: a Gsi that went
+    // through the ISA overrides would answer the timer's line here.
+    if (gsi_moved_off == isa_timer || gsi_moved_off == gsi_timer) {
+        fail("interrupt_map: GSI 0 is the line ISA 0 was moved to");
     }
 
     auto interrupt = Uandle::Invalid;
@@ -589,6 +601,16 @@ auto check_interrupt_map(Uandle const irq) -> void {
            Status::InvArgs);
     expect("interrupt_map(no handle, kind 0): the kind is checked first",
            ours::interrupt_map(Uandle::Invalid, unknown, ISA_FREE, &refused), Status::InvArgs);
+    expect("interrupt_map(no handle, Gsi, 0xFFFFFFFF): the source is checked before the handle",
+           ours::interrupt_map(Uandle::Invalid, InterruptSourceKind::Gsi, 0xFFFF'FFFF, &refused),
+           Status::InvArgs);
+    // The ISA number is 32 bits; as 8 bits these would be ISA 0 and ISA 3.
+    expect("interrupt_map(Isa, 0x100)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_WRAPS_TO_0, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Isa, 0x103)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_WRAPS_TO_3, &refused),
+           Status::NoResource);
     expect("interrupt_map(Isa, 16)",
            ours::interrupt_map(irq, InterruptSourceKind::Isa, NOT_ISA, &refused),
            Status::NoResource);
@@ -642,6 +664,9 @@ auto check_ioport_resource() -> void {
     expect("ioports_release(the resource Ioport.Get gave, 0x70, 1)",
            ours::ioports_release(ioport, RTC_INDEX_PORT, 1), Status::Ok);
     auto line = u32{0};
+    expect("interrupt_map(the resource Ioport.Get gave, Gsi, 200): the resource is checked first",
+           ours::interrupt_map(ioport, ours::InterruptSourceKind::Gsi, 200, &line),
+           Status::BadType);
     expect("interrupt_map(the resource Ioport.Get gave)",
            ours::interrupt_map(ioport, ours::InterruptSourceKind::Gsi, ISA_FREE, &line),
            Status::BadType);

@@ -77,6 +77,12 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     auto virqnum = static_cast<VIrqNum>(line);
     if (!!(options & InterruptOptions::RemapIrq)) {
         virqnum = platform::remap_isa_irq(line);
+        // An ISA IRQ that has no line (the cascade, ISA 2) answers as any
+        // number no line has, and not as the invalid number, which the irq
+        // layer refuses (InvArgs) and which a caller can also pass as |line|.
+        if (virqnum == irq::INVALID_V_IRQ_NUM && line != irq::INVALID_V_IRQ_NUM) {
+            return Status::NoResource;
+        }
     }
 
     auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(virqnum));

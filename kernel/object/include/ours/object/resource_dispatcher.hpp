@@ -133,12 +133,12 @@ auto validate_ranged_resource(ResourceDispatcher const &resource, RsrcKind kind,
 [[nodiscard]]
 auto validate_ranged_resource(ours::Uandle handle, RsrcKind kind, u64 base, u64 size) -> Status;
 
-/// Whether |resource| is of |kind| and is its root, which covers all of the
-/// kind's space: Ok, or why not.
+/// Whether |resource| is of |kind| and is its root, the resource made with base
+/// 0 and size 0 (is_root()): Ok, or why not.
 ///
 ///   - BadType when it is a resource of another kind;
-///   - AccessDenied when it covers only a part of the kind's space, or when
-///     the kind has no space to cover.
+///   - AccessDenied when it is not the root: a range, even one that covers
+///     the kind's whole space, or a kind that has no space to cover.
 ///
 /// For a call that is the root's alone, such as naming an interrupt source by
 /// the firmware's number, and so cannot be granted by a range.

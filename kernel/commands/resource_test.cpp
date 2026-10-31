@@ -479,8 +479,14 @@ namespace {
                  "mint one interrupt line");
         answered(tally, mint(&irq_all_but_last, RsrcKind::Irq, 0, 0xFFFF'FFFF, "most"), Status::Ok,
                  "mint every interrupt line but the last");
+        KernelHandle<ResourceDispatcher> irq_every_line;
         answered(tally, mint(&ioport_root, RsrcKind::IoPort, 0, 0, "ioport"), Status::Ok,
                  "mint the I/O port root");
+        answered(tally, mint(&irq_every_line, RsrcKind::Irq, 0, u64{1} << 32, "every"), Status::Ok,
+                 "mint a range over every interrupt line");
+        if (!irq_root.dispatcher() || !irq_every_line.dispatcher()) {
+            return;
+        }
         if (!irq_root.dispatcher() || !irq_one.dispatcher() || !irq_all_but_last.dispatcher() ||
             !ioport_root.dispatcher()) {
             return;
@@ -492,6 +498,11 @@ namespace {
                  Status::AccessDenied, "one interrupt line is not the root");
         answered(tally, validate_root_resource(*irq_all_but_last.dispatcher(), RsrcKind::Irq),
                  Status::AccessDenied, "nor is every line but one: a range is not the root");
+        answered(tally, validate_root_resource(*irq_every_line.dispatcher(), RsrcKind::Irq),
+                 Status::AccessDenied,
+                 "a range over every line is not the root, though it grants every line");
+        answered(tally, validate_ranged_resource(*irq_every_line.dispatcher(), RsrcKind::Irq, 5, 1),
+                 Status::Ok, "and it does grant a line");
         answered(tally, validate_root_resource(*ioport_root.dispatcher(), RsrcKind::Irq),
                  Status::BadType, "the I/O port root is no interrupt root");
         answered(tally, validate_root_resource(*irq_root.dispatcher(), RsrcKind::IoPort),

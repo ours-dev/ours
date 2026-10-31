@@ -2301,6 +2301,21 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
     ok &= expect("shell: interrupt_create(a line no pin is) = ",
                  ours::interrupt_create(irq, 200, InterruptOptions::None, &unused),
                  Status::NoResource);
+    // The cascade between the two legacy controllers carries no device and
+    // names no line: the answer for any number that has none, and not the
+    // invalid number's.
+    ok &= expect("shell: interrupt_create(ISA 2, the cascade) = ",
+                 ours::interrupt_create(irq, 2, REMAP, &unused), Status::NoResource);
+    // interrupt_map writes its answer last: an |out| that faults fails a call
+    // that found the line, and takes nothing.
+    auto number = u32{0};
+    ok &= expect("shell: interrupt_map(out = unmapped) = ",
+                 ours::interrupt_map(irq, ours::InterruptSourceKind::Gsi, ISA_FREE,
+                                     reinterpret_cast<u32 *>(UNMAPPED)),
+                 Status::InvArgs);
+    ok &= expect("shell: interrupt_map(Gsi, 3) = ",
+                 ours::interrupt_map(irq, ours::InterruptSourceKind::Gsi, ISA_FREE, &number),
+                 Status::Ok);
     // A line is named by the kernel's number for it, never the pin's GSI.
     // COM2's pin is GSI 3 on q35; taken for a line without RemapIrq, which is
     // what would turn an ISA number into one, it names none.
