@@ -126,3 +126,23 @@ None, this project's own graph.
 
 **Acceptance**
 For each header made held: removing the new edge makes `gn check out/bringup.x86 --check-system` and the riscv directory report the include (put it back), the distinct pairs are 37 and 22 with it, `gn check` passes on both, the `.ninja` diff is understood, and x86 `ours-verify` and the riscv check pass.
+
+## 7. arm's `//kernel/arch/arm:headers` lists its five headers with `public`, so every entry names a file that does not exist
+
+**Severity**
+Low: arm does not generate a build directory (`python3 tools/set.py bringup.arm` writes `args.gn` and `gn gen` fails with `Unresolved dependencies`), so nothing reads the list and `scripts/header_lists.py` cannot see the target.
+
+**Symptom**
+Latent, cannot be triggered today. In `kernel/arch/arm/BUILD.gn`, `cpp_interface("headers")` sets `include_dir = "lib/arch/include"` and spells its list `public = [ "arch/arm/halt.hpp", ... ]` (five entries: `halt`, `spin_hint`, `interrupt`, `random`, `tick`). The files are in `kernel/arch/arm/lib/arch/include/arch/arm/`; `kernel/arch/arm/arch/` does not exist. The day arm generates, `header_lists.py` would report five `stray` entries (each names a file that is not under the root) and five `missing` headers (the same five files, under the root and listed by nothing); that was reasoned from the code, not run, because arm has no graph to ask.
+
+**Cause**
+The same slip x86's target documents in its own `BUILD.gn` (the comment above its `headers = [` list): `cpp_interface()` prefixes `include_dir` onto `headers` and takes `public` as written, source-relative, so with a custom `include_dir` the two spellings differ. x86 found it when `gn check` reported all 24 of its paths; arm's target has the shape x86's had before that fix, and nothing has run against it. The first entry of `docs/changes/261030/ours-verify.md` mentions arm's `kernel:headers` (`public = []`) as unchecked; this is the other arm target, and it is wrong rather than empty.
+
+**Change**
+Spell the list `headers = [ "arch/arm/halt.hpp", ... ]`, in the same order, with the comment x86 has. Also decide, when arm is next brought up, whether `kernel/arch/arm/kernel:headers` should list its include root (it is `public = []`, as riscv's and x86's were).
+
+**Reference**
+None, this project's own graph (`kernel/arch/x86/BUILD.gn`, `cpp_interface("headers")`, for the corrected spelling).
+
+**Acceptance**
+`gn gen` of an arm build directory works (it does not today for other reasons), and `python3 scripts/header_lists.py out/bringup.arm` passes. Until then: `gn desc` cannot be asked, so the acceptance is a read of the list against `ls kernel/arch/arm/lib/arch/include/arch/arm/`, and the `.ninja` files of x86 and riscv do not change.
