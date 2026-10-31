@@ -65,9 +65,23 @@ The user chose Zircon's object model on 2026-10-30 over the smaller flag-and-inf
 
 ### R4: the device's interrupt
 
-- `platform_init_apic` registers every IO-APIC pin as a line, masked, with vector `PlatformIrqMin + GSI` as it does for ISA lines. `interrupt_create(resource, gsi, ModeLevelLow)` then works for a PCI line with no change to the syscall.
-- Which GSI a device is wired to is the driver's business. For now the driver reads the device's Interrupt Line register and falls back to a q35 rule; both are to be checked against QEMU.
-- Zircon: the x86 board driver evaluates the ACPI `_PRT` in userspace and hands the kernel a table (`dev_pin_to_global_irq`). Ours defers that.
+The user asked on 2026-10-31 for two plans, not one: a compromise that gets the system running now, and the plan the system is expected to grow into. They are kept apart here so that the compromise is not mistaken for the design, and so that nothing built for the first one makes the second harder.
+
+**For now (the compromise).**
+- `platform_init_apic` programs every IO-APIC pin the MADT names, masked, with vector `PlatformIrqMin + GSI` as it does for ISA lines, and `init_lines` builds a line for each. Pins whose GSI is past the platform vectors (`PlatformIrqMax - PlatformIrqMin`) are skipped, with a log line. `interrupt_create(resource, line, ModeLevelLow)` then works for a PCI line with no change to the syscall; a PCI INTx is level-triggered and active low, which the existing mode option already says.
+- The vector is fixed by the GSI and every interrupt goes to the boot CPU. No MSI or MSI-X. The line table is a flat array built once and read in interrupt context without a lock.
+- Which GSI a device is wired to is the driver's business. For now the driver reads the device's Interrupt Line register and falls back to a q35 rule; both are to be checked against QEMU. Nothing in the kernel parses the ACPI `_PRT`.
+- Why this is enough: one IO-APIC of 24 pins, one destination CPU, no MSI. The fixed layout is simple, cannot run out of vectors, and is read in interrupt context with no lock.
+
+**Expected later (not decided in detail).**
+- The direction is Zircon's split, not Linux's. The kernel keeps what needs ring 0 or the interrupt context: the IO-APIC and local APIC registers, the vector table and its dispatch, masking and end of interrupt, delivery to the waiting thread, and the allocation of vectors from a bitmap, MSI blocks included (`kernel/platform/pc/interrupt_manager.rs` in the Zircon tree). The policy moves to user space: which GSI a device uses (the ACPI `_PRT`), PCI enumeration, which queue of a device gets which vector, balancing across CPUs.
+- Linux's `irq_domain` and virq namespace are for the benefit of drivers inside the kernel across many controllers; a user-space driver asks for a handle to one interrupt source and needs neither, so they are not planned.
+- What the kernel would gain: dynamic vector allocation from a bitmap, the destination CPU as a property of a line that can change, MSI and MSI-X blocks allocated by a syscall that takes a resource, and lines made when a source is first claimed. The flat array read without a lock would need to become something safe to change while interrupts read it (Linux does this with a per-CPU vector table and RCU on the descriptor tree).
+- Triggers for doing it: a device that needs MSI-X (multi-queue virtio), a need to spread interrupts across CPUs, more than one IO-APIC or a hot-plugged one, more interrupt sources than the platform vectors.
+
+**What keeps the two compatible.** The `line` that `interrupt_create` takes is an opaque platform interrupt number, which on a PC happens to be the GSI; a driver passes the number it was told and does not compute with it. The moment a source can be asked for by a different name than its GSI, the number the driver holds changes meaning and nothing else does. The syscall, the Irq resource that gates it, the modes and the object (`InterruptEventDispatcher`) stay as they are.
+
+Zircon: the x86 board driver evaluates the ACPI `_PRT` in userspace and hands the kernel a table (`dev_pin_to_global_irq`). Ours defers that.
 
 ### Resources
 
@@ -93,6 +107,7 @@ Both privileges reach a component the usual way: a built-in `ours.resource.Mmio`
 | Narrowing syscall | Build now; defer | Defer | None | Wanted, but run-through first, 2026-10-30 |
 | R1 transport | A: open 0xCF9; C: `pci_cfg_pio_rw`; D: ECAM through MmIo | D | None | D, 2026-10-30 |
 | R4 route | Shortcut: open all pins, driver reads Interrupt Line; standard: userspace ACPI; MSI-X | Shortcut | None | Shortcut, 2026-10-30 |
+| R4 shape of the interrupt system | A: fixed vector per GSI, every line built at boot; B: Zircon's split, dynamic vectors and MSI blocks in the kernel, policy in user space; C: Linux's irq domains in the kernel | A now, B when MSI-X or CPU spreading is needed, C not planned | None | Two plans, 2026-10-31: A for now as a compromise, B as the expected direction; the user wanted them kept apart |
 | MmIo denial pattern | A deny list checked even for the root (Zircon's `RootResourceFilter`, and ours for ports); or only a region allocator | Deny list | None | Deny list, 2026-10-30. The question put to the user said Zircon used an allocator and that this departed from it; that was wrong, Zircon uses the same deny list, so there is no departure |
 | Cache attribute of a physical mapping | Uncached from the first version, as Zircon does by default; write-back and later | Uncached | None | Uncached, 2026-10-30 |
 | Exclusive MmIo ranges | Track overlap and an exclusive flag with a region allocator, as Zircon's `ResourceDispatcher::create` does; defer | Defer | None | Open: not needed for the first run |
@@ -109,4 +124,5 @@ Both privileges reach a component the usual way: a built-in `ours.resource.Mmio`
 ## Open questions
 
 - Does the Interrupt Line register hold a GSI on q35 with the firmware these images boot with? Check `info pci`.
+- When the later plan is taken: does the kernel stay the only owner of the vector bitmap when MSI blocks are allocated by a syscall, and what resource gates it (Zircon has an MSI System slot, `ZX_RSRC_SYSTEM_MSI_BASE`)? Decide with the first device that needs MSI-X.
 - Does the page allocator ever take ACPI reclaimable memory? If it does, the managed-memory check must treat it as managed.

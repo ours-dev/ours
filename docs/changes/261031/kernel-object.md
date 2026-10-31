@@ -118,3 +118,65 @@ None.
 1. Why is "look at the handle's type, then remove it" not the same as `remove_as<T>()`?
 2. A thread calls `pmt_unpin` on a handle while another closes it. Who wins, and what does the loser answer?
 3. What does `pmt_unpin` do to the pin and to the handle, in which order, and why that order?
+
+## vmo_create_contiguous gives a device a buffer it can be handed one address of (2026-10-31)
+
+**Files**
+- `kernel/mm/vm_object_paged.cpp`, `kernel/mm/include/ours/mm/vm_object_paged.hpp` — `VmObjectPaged::create_contiguous()`, which was declared and never defined, gains `alignment_log2` and is written.
+- `kernel/object/vmo_dispatcher.{hpp,cpp}` — `VmoDispatcher::create_contiguous()`.
+- `kernel/lib/syscall/src/bti.cpp`, `system/public/ours/syscalls.gni` — the call `vmo_create_contiguous(bti, size, alignment_log2, out)`, appended at the end of the table.
+- `kernel/commands/vmo_contiguous_test.cpp`, `kernel/commands/BUILD.gn` — the console command `vmocontig.test`.
+- `system/service/init/test/routing_checks/routing_checks.cpp` — `check_contiguous_vmo()`.
+- `docs/repairs/261031/mm.md` — three items the review found, none fixed here.
+- `.agents/tasks/driver-capabilities/PLAN.md` — step 7 done.
+
+**Symptom**
+A virtqueue's rings, and any buffer a device reads or writes as one, have to be one run of physical memory: the device is written one base address. `bti_pin` with `Contiguous` could check that a VMO happened to be one run, and could not make one, so a driver that needed a ring of several pages had nothing to ask for.
+
+**Cause**
+Physical contiguity is a property of how frames are chosen, which only the allocator can decide. A page-by-page commit takes whatever frame is next, and the frames of one VMO are adjacent only by luck. The buddy allocator's unit is the block: `alloc_frames(order)` returns 2^order frames that are one run and are aligned to their own size. So the call takes one block, as big as the size needs or as the alignment does if that is bigger (a block aligned to its size is aligned as asked), keeps the first pages and gives the tail back.
+
+The details that decide whether it is right:
+- Frames of a block can be freed one at a time. The buddy works from page frame numbers and a frame's role (`FrameBuddy::is_mergeable()`), not from a record of the block it came from, so after `set_order(0)` on each, the tail goes back page by page and the pages kept are freed one by one with the VMO. `fill_block_locked()` does the same with a block of large pages.
+- The pages go in a node with `Flags::Pinned`, so they are filed on the pinned queue and the reclaimer and the zero dedup leave them alone. That is the queue and not a pin: `pinned_count` is 0, and `pin_range()` counts on top of it as for any page, so the VMO is pinned for a device in the usual way. The object's own `VmoFlags::Pinned` is what makes `create_clone()` and `take_pages()` refuse it, so a snapshot cannot move the pages under a hidden node and a later write cannot copy one to another frame.
+- Zeroed, as every page a program can reach is: `Gaf::Zero` is added to the caller's class, so a kernel-class caller gets zeroed frames too.
+- The largest block is the allocator's `MAX_FRAME_ORDER`, 4 MiB in this build. Past it, and when no block of the size is free, the answer is NoMemory, which does not tell a program to give up from a program to retry; it is the recommendation the user accepted on 2026-10-31, and OutOfRange for the case that can never be met is the alternative.
+
+**Change**
+```cpp
+auto const order = std::max(get_order(nr_pages), alignment_log2 - PAGE_SHIFT);
+if (order > MAX_FRAME_ORDER) { return Status::NoMemory; }
+auto *const block = alloc_frames(gaf | Gaf::Zero, order);
+for (index in 0 .. 2^order) { block[index].set_order(0); }
+for (index in nr_pages .. 2^order) { free_frames(&block[index], 0); }   // the tail
+for (index in 0 .. nr_pages) { cow_pages->add_new_page_locked(index, &block[index]); }
+```
+A failure part way gives back the frames not yet added; the ones added go with the node. The syscall asks for Map on a BTI first: the BTI is the capability for memory of this kind, and the VMO is not tied to it.
+
+Rejected: committing pages one by one and hoping they are adjacent; a separate allocator for contiguous memory; refusing an alignment above the size (the block is only larger, and the cost is repairs item 1).
+
+**Reference**
+Zircon `VmObjectPaged::CreateContiguous()` (`kernel/vm/vm_object_paged.cc`) and `sys_vmo_create_contiguous` (`kernel/lib/syscalls/driver.cc`). Zircon asks its allocator for a run of any number of pages and an alignment (`pmm_alloc_contiguous()`, `kernel/vm/include/vm/pmm.h:83`), which can span more than one block; this takes one buddy block.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped, 0 failed, 0 error lines), rel PASS (41 passed, 8 skipped, 0 failed, 6/6 required), host-tests PASS (151 passed).
+- `kshell_run.py`: `vmocontig.test: ok -- 16 checks` — sizes rounded up, three pages as one run on the block's own alignment and zero, 64 KiB and 2 MiB alignment, the largest block, every refusal, a snapshot refused, the pages still on the pinned queue after `pin_range()` and `unpin_range()`, a BTI pin with `Contiguous` giving the first page's address, and a hundred VMOs made and dropped leaving the allocator its frames (no more than 32 frames lost; it lost none). `bti.test` 79, `btistress.test`, `vmopin.test` 28 unchanged.
+- `routing_checks` (rel, `routing_checks: passed`): every refusal of the call, the size and zero of a VMO of three pages, their addresses following one another when pinned page by page, `Contiguous` giving one address that is the first page's, and two pages on 64 KiB starting on a multiple of 64 KiB.
+- Mutations, each undone afterwards. Against `vmocontig.test`: the tail not given back (the leak check failed); the alignment not choosing the order (alignment checks failed); the node not `Pinned` (pinned-queue checks failed). Against `routing_checks`: the call asking for no right on the BTI (3 checks failed); the "contiguous" VMO made by the ordinary `create()` (8 failed). One survived: taking `Gaf::Zero` out of the allocation. Every caller passes the user class, which has it, and the allocator will not reliably hand back a block just dirtied, so a test cannot make the difference show.
+- An independent read of the call, its objects and tests, by a reviewer given the code and not the conclusions, found no memory-safety defect, leak or double free: that frames of a block can be freed one at a time, every failure path, the arithmetic, and the pinned queue through a pin were each checked. Its suggestions, taken: the call asserts its `Gaf` does not wait; the table lists OutOfRange, the order of the checks, that the VMO is not tied to the BTI, that nothing limits the address to 32 bits, and that a snapshot is refused; the leak check is tighter and the snapshot refusal is tested; a failed first pin no longer produces a second, spurious failure. Not taken, in `docs/repairs/261031/mm.md`: the cost of a large alignment for a small buffer, a refusal of cloning in the node as well as the object, and memory below 4 GiB.
+- clang-tidy and clang-format: no diagnostic on the files changed. arm and riscv were not built.
+- Not exercised: the failure of `add_new_page_locked()` or of creating the VMO object, which no test can cause, and a machine where no 4 MiB block is free, whose answer is NoMemory by the same path as a size past the limit.
+
+**Deliberately not done**
+Asking the allocator for a block in a given zone or address range (repairs item 3). Cutting the cost of a large alignment (repairs item 1, which needs measurements the user decides on). A different status for a request that can never be met (NoMemory, chosen; OutOfRange is the alternative the review raised).
+
+**How it was found**
+None, a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is a block of 2^order frames aligned to 2^order pages, and how does the call use that for `alignment_log2`?
+2. The tail frames of the block are freed one at a time at order 0, though they were allocated together as one block. Why is that valid for this allocator?
+3. A snapshot of the VMO is refused. What would a snapshot do to the device's buffer if it were not?
