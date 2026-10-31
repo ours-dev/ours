@@ -39,6 +39,9 @@ component_manifest("virtio-blk.cm") {
       {
         protocol = "ours.resource.Mmio"
       },
+      {
+        protocol = "ours.resource.Iommu"
+      },
     ]
   }
 }
