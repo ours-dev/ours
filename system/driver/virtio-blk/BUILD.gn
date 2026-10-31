@@ -27,6 +27,7 @@ user_executable("virtio-blk") {
   deps = [
     "//system/lib/fsio",
     "//system/lib/ioservice:outgoing",
+    "//system/lib/server",
     "//system/lib/loop",
     "//system/lib/ours.block",
     "//system/lib/ours.resource:client",

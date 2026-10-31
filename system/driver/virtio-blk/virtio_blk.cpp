@@ -67,6 +67,7 @@
 #include <ours_block/ours_block.hpp>
 #include <ours_resource/client.hpp>
 #include <ours_resource/ours_resource.hpp>
+#include <server/server.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
 
@@ -383,175 +384,90 @@ class Device final {
 /// The Block server: the connections ioservice::Outgoing hands it, each
 /// served on a Loop slot of its own, one message per on_signals(). The
 /// shape is the echo server's; the methods are ours.block's.
-class BlockServer final: public ioservice::Handler {
-  private:
-    class Client final: public loop::Waiter {
-      public:
-        BlockServer *server = nullptr;
-        Uandle channel = Uandle::Invalid;
-
-      private:
-        auto on_signals(Signals const observed) -> loop::Action override {
-            return server->serve(*this, observed);
-        }
-
-        auto on_rearm_failed(Status const) -> void override {
-            server->rearm_failed(*this);
-        }
-    };
-
+class BlockServer final: public server::ProtocolServer<BlockServer, MAX_CLIENTS> {
   public:
-    struct Storage {
-        std::array<Client, MAX_CLIENTS> clients;
-        std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
-        std::array<Uandle, wire::MAX_MESSAGE_HANDLES> request_handles;
-        std::array<u8, wire::MAX_MESSAGE_BYTES> reply_bytes;
-    };
+    using Storage = typename server::ProtocolServer<BlockServer, MAX_CLIENTS>::Storage;
 
     BlockServer(Storage &storage, loop::Loop &loop, Device &device, ours::VirtAddr region_map)
-        : m_storage(&storage), m_loop(&loop), m_device(&device), m_region_map(region_map) {}
+        : server::ProtocolServer<BlockServer, MAX_CLIENTS>(storage, loop)
+        , m_device(&device)
+        , m_region_map(region_map) {}
 
-    BlockServer(BlockServer const &) = delete;
-    auto operator=(BlockServer const &) -> BlockServer & = delete;
+    static constexpr auto MAX_CLIENTS = usize{2};
+
+    /// The pump has decoded the header; dispatch on the ordinal. Node.Close
+    /// first: the client's fsio::close sends it, and the answer must come
+    /// before the connection ends. A closed protocol: an ordinal it does not
+    /// know, or a message its decoder refuses, closes the connection without
+    /// an epitaph.
+    auto on_message(Uandle const channel, wire::Header const header, wire::Message &&message)
+        -> loop::Action {
+        if (header.ordinal == ours_block::CLOSE.ordinal) {
+            auto const request = ours_block::decode_close(message);
+            if (request.is_err()) {
+                close_handles(message);
+                return close_client(channel);
+            }
+            auto const answer = ours_block::encode_close_reply(reply_buffer(), request->txid,
+                                                               {.status = Status::Ok});
+            if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
+                return close_client(channel);
+            }
+            return close_client(channel);
+        }
+        if (header.ordinal == ours_block::GET_INFO.ordinal) {
+            auto const request = ours_block::decode_get_info(message);
+            if (request.is_err()) {
+                close_handles(message);
+                return close_client(channel);
+            }
+            auto const answer =
+                ours_block::encode_get_info_reply(reply_buffer(), request->txid,
+                                                  {.status = Status::Ok,
+                                                   .block_size = ours_block::BLOCK_SIZE,
+                                                   .blocks = m_device->blocks()});
+            if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
+                return close_client(channel);
+            }
+            return loop::Action::Rearm;
+        }
+        if (header.ordinal == ours_block::READ.ordinal) {
+            auto const request = ours_block::decode_read(message);
+            if (request.is_err()) {
+                close_handles(message);
+                return close_client(channel);
+            }
+            return read_block(channel, *request);
+        }
+        close_handles(message);
+        return close_client(channel);
+    }
 
   private:
-    auto connect(Uandle const channel) -> void override {
-        for (auto &client: m_storage->clients) {
-            if (client.channel != Uandle::Invalid) {
-                continue;
-            }
-            client.server = this;
-            client.channel = channel;
-            if (auto const added =
-                    m_loop->add(channel, Signals::Readable | Signals::PeerClosed, client);
-                added.is_err()) {
-                client.channel = Uandle::Invalid;
-                auto _ = ort::debug_line(
-                    {"virtio-blk: cannot wait on a client: ", ours::to_string(added.unwrap_err())});
-                close_with_epitaph(channel, added.unwrap_err());
-            }
-            return;
-        }
-        close_with_epitaph(channel, Status::NoResource);
-    }
-
-    static auto release(Client &client) -> loop::Action {
-        client.channel = Uandle::Invalid;
-        return loop::Action::Close;
-    }
-
-    auto rearm_failed(Client &client) -> void {
-        client.channel = Uandle::Invalid;
-        auto _ = ort::debug_line("virtio-blk: cannot wait on a client again");
-    }
-
-    auto serve(Client &client, Signals const observed) -> loop::Action {
-        if (!(observed & Signals::Readable)) {
-            return release(client);
-        }
-        auto &storage = *m_storage;
-        auto num_bytes = u32{0};
-        auto num_handles = u32{0};
-        if (auto const read = ours::channel_read(
-                client.channel, ours::ChannelReadOptions::None, storage.request_bytes.data(),
-                storage.request_handles.data(), static_cast<u32>(storage.request_bytes.size()),
-                static_cast<u32>(storage.request_handles.size()), &num_bytes, &num_handles);
-            read != Status::Ok) {
-            return release(client);
-        }
-        auto const message = wire::Message{
-            .bytes = std::span{storage.request_bytes}.first(num_bytes),
-            .handles = std::span{storage.request_handles}.first(num_handles),
-        };
-
-        // The header first: the direction byte decides whatever follows.
-        auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
-        if (header.is_err()) {
-            for (auto const handle: message.handles) {
-                auto _ = ours::handle_close(handle);
-            }
-            return release(client);
-        }
-        // Node.Close: the client's fsio::close sends it, and the answer must
-        // come before the connection ends.
-        if (header->ordinal == ours_block::CLOSE.ordinal) {
-            if (auto const request = ours_block::decode_close(message); request.is_ok()) {
-                auto const reply = ours_block::encode_close_reply(
-                    storage.reply_bytes, request->txid, {.status = Status::Ok});
-                if (reply.is_err() || write(client.channel, reply.unwrap()) != Status::Ok) {
-                    return release(client);
-                }
-                return release(client);
-            }
-        }
-        // A closed protocol: an ordinal it does not know, or a message its
-        // decoder refuses, closes the connection without an epitaph.
-        if (header->ordinal == ours_block::GET_INFO.ordinal) {
-            if (auto const request = ours_block::decode_get_info(message); request.is_ok()) {
-                return get_info(client, *request);
-            }
-        } else if (header.is_ok() && header->ordinal == ours_block::READ.ordinal) {
-            if (auto const request = ours_block::decode_read(message); request.is_ok()) {
-                return read(client, *request);
-            }
-        }
-        for (auto const handle: message.handles) {
-            auto _ = ours::handle_close(handle);
-        }
-        return release(client);
-    }
-
-    auto get_info(Client &client, ours_block::GetInfoRequest const &request) -> loop::Action {
-        auto const reply = ours_block::encode_get_info_reply(m_storage->reply_bytes, request.txid,
-                                                             {.status = Status::Ok,
-                                                              .block_size = ours_block::BLOCK_SIZE,
-                                                              .blocks = m_device->blocks()});
-        if (reply.is_err() || write(client.channel, reply.unwrap()) != Status::Ok) {
-            return release(client);
-        }
-        return loop::Action::Rearm;
-    }
-
-    auto read(Client &client, ours_block::ReadRequest const &request) -> loop::Action {
+    auto read_block(Uandle const channel, ours_block::ReadRequest const &request) -> loop::Action {
         // The device writes the blocks into the region's data area, where
         // this reply's encoder reads them from: no copy but the one into the
         // reply.
         auto const status = m_device->read_blocks(request.lba, request.count);
         if (status != Status::Ok) {
-            auto const reply = ours_block::encode_read_reply(m_storage->reply_bytes, request.txid,
-                                                             {.status = status});
-            if (reply.is_err() || write(client.channel, reply.unwrap()) != Status::Ok) {
-                return release(client);
+            auto const answer =
+                ours_block::encode_read_reply(reply_buffer(), request.txid, {.status = status});
+            if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
+                return close_client(channel);
             }
             return loop::Action::Rearm;
         }
-        auto const reply = ours_block::encode_read_reply(
-            m_storage->reply_bytes, request.txid,
+        auto const answer = ours_block::encode_read_reply(
+            reply_buffer(), request.txid,
             {.status = Status::Ok,
              .data = std::span{reinterpret_cast<u8 const *>(m_region_map + REQUEST_OFFSET + HEADER),
                                request.count * SECTOR}});
-        if (reply.is_err() || write(client.channel, reply.unwrap()) != Status::Ok) {
-            return release(client);
+        if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
+            return close_client(channel);
         }
         return loop::Action::Rearm;
     }
 
-    auto write(Uandle const channel, wire::Message const message) const -> Status {
-        return ours::channel_write(channel, ours::ChannelWriteOptions::None, message.bytes.data(),
-                                   static_cast<u32>(message.bytes.size()), message.handles.data(),
-                                   static_cast<u32>(message.handles.size()));
-    }
-
-    auto close_with_epitaph(Uandle const channel, Status const status) const -> void {
-        std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
-        if (auto const epitaph = wire::encode_epitaph(bytes, status); epitaph.is_ok()) {
-            auto _ = write(channel, epitaph.unwrap());
-        }
-        auto _ = ours::handle_close(channel);
-    }
-
-    Storage *m_storage;
-    loop::Loop *m_loop;
     Device *m_device;
     /// The region's CPU mapping, where the device leaves the data a Read
     /// answers with.
