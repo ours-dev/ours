@@ -495,3 +495,62 @@ None was written. The brief expected the five x86-private includes in `kernel/co
 - `//kernel/commands` includes `<ours/arch/x86/apic.hpp>` and the check says nothing after the edge. What is `gn check` actually asking, why does that make a private header pass, and what would bring the finding back without moving the test?
 - `//kernel/mm` passed the check on x86 with no edge of its own and failed it on riscv. What on x86 supplied the edge, why does `//kernel/lib/userabi` not get it from `//kernel/mm`, and what does it say about a check that passes on only one architecture?
 - A `-I` flag moved in two targets' command lines and not one object changed. When would a reordered include path change what a file compiles to, and which two facts here ruled it out?
+
+## Title: kernel/phys/BUILD.gn is put in gn's layout on its own, so the edge the next entry adds is the only line of its diff (2026-10-30)
+
+**Files**
+- `kernel/phys/BUILD.gn` — layout only: `physload_module.gni` moves below `phys_executable.gni` in the import block (gn's order), six blank lines are added before a comment that follows a list or assignment and one extra blank line is removed, and two one-element lists (`defines`, `handoff`'s `public`) are written on one line.
+- `docs/changes/261030/kernel-arch-seam.md` — this entry.
+
+**Symptom**
+Latent, cannot be triggered today: nothing about the build changes. `python3 scripts/format_gn.py --check kernel/phys/BUILD.gn` said `unsafe: the result differs from the source by more than layout` at HEAD, and the pre-commit hook refuses a commit of any GN file that is not in gn's layout, so no edit to this file could be committed as it was.
+
+**Cause**
+Two different things reorder tokens when `gn format` runs, and the tool treats them differently. List contents (`sources`, `deps`) are kept in the order the file wrote them (a `# NOSORT` marker is put above each list for the duration of the format), because their order is the link line and the include path. Import statements are not lists, and `gn format` sorts the contiguous block of them. The tool then checks that the formatted result has the same tokens as the source minus comments and commas; a swapped pair of imports fails that check, and the file is reported as unsafe and left alone rather than formatted. `kernel/phys/BUILD.gn` had three relative imports out of order, so it was in that state.
+
+Reordering imports is the one change of order that is safe by construction here: `import()` evaluates a file in a scope of its own and copies its definitions into the importer, so what the importer has afterwards does not depend on the order, unless two files define the same name, which GN reports as an error. The proof is the build, not the argument: `gn gen` of both build directories produces the same 711 and 707 `.ninja` files byte for byte (below).
+
+This is separate from the edge of the next entry for a reason the previous commit taught: its `kernel/mm/BUILD.gn` needed the same reformat and carried it in the same commit as the dependency, and the dependency became harder to find in the diff.
+
+**Change**
+The import block, before and after (the rest is blank lines and two lists collapsed to one line, in the diff):
+
+```gn
+# before
+import("//kernel/kernel_package.gni")
+import("physload_module.gni")
+import("kernel_elf_interp.gni")
+import("phys_executable.gni")
+
+# after
+import("//kernel/kernel_package.gni")
+import("kernel_elf_interp.gni")
+import("phys_executable.gni")
+import("physload_module.gni")
+```
+
+The tool formatted the rest; I made the import swap by hand, which is the part it will not do. Every list keeps its order.
+
+**Reference**
+None, this project's own tooling (`scripts/format_gn.py`).
+
+**Verification**
+- `format_gn.py --check kernel/phys/BUILD.gn`: clean, from unsafe.
+- `gn gen` of `out/bringup.x86` and `out/bringup.riscv`: all 711 and all 707 `.ninja` files byte-identical to copies taken before, `build.ninja` included; `compile_commands.json` has the same 752 and 638 entries as sets (the files themselves are not byte-identical).
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.7s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.7s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed; headers PASS 7 targets, 7 include roots, 75 headers under //kernel/arch/, every one listed · 1.5s.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+
+**Deliberately not done**
+- No dependency change, no comment changed: only whitespace, one import pair and the two one-element lists.
+- The other GN files that are not in gn's layout are not touched; the hook judges only the ones a commit changes.
+
+**How it was found**
+`format_gn.py --check` on the file the next entry edits, and `gn format --stdin < kernel/phys/BUILD.gn | diff` to see which of the differences were lists (not applied, by the tool) and which were the imports (the tool's reason for calling it unsafe).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- `gn format` would sort `deps`, and the tool forbids it. What does each of the two orders (a `sources` list, a `deps` list) decide in the build, and why is an import block not like them?
+- What does the tool compare to decide a formatted file is "layout only", and why does a swapped import pair fail that comparison although it is harmless?
+- Why is "the `.ninja` files are byte-identical" a better proof that a reformat changed nothing than reading the diff?

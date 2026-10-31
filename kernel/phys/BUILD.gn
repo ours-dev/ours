@@ -5,9 +5,9 @@ import("//build/ours/cpu.gni")
 import("//build/toolchain/ours/ours_toolchain_suite.gni")
 
 import("//kernel/kernel_package.gni")
-import("physload_module.gni")
 import("kernel_elf_interp.gni")
 import("phys_executable.gni")
+import("physload_module.gni")
 
 declare_args() {
   # Expand this phys boot-test rollup for every supported Ours CPU.  The
@@ -21,11 +21,10 @@ config("phys.config") {
     "//kernel/products:warnings",
     "//kernel/arch/$ours_cpu:abi",
   ]
+
   # KERNEL_DEBUG_LEVEL comes from //kernel/products:kernel.config (the
   # switchset-selected level); this config adds only the phys identity.
-  defines = [
-    "PHYS_ENVIRONMENT=1",
-  ]
+  defines = [ "PHYS_ENVIRONMENT=1" ]
 }
 
 link_config("phys.link") {
@@ -134,6 +133,7 @@ source_set("physload.core") {
     "panic.cpp",
     "physload.cpp",
   ]
+
   # phys-module's cflags (-fPIC -fno-plt), not just its ldflags: this is
   # the source_set whose *compiled objects* end up in physload's final
   # ET_DYN link (phys_executable("physload") below has no sources of its
@@ -149,6 +149,7 @@ source_set("physload.core") {
   ]
   public_deps = [
     ":headers",
+
     # Public: phys sources reach the architecture's paging and boot-memory
     # types straight out of these headers.
     "//kernel/arch/$ours_cpu/phys:$ours_cpu",
@@ -181,6 +182,7 @@ source_set("bootshim.core") {
   ]
   public_deps = [
     ":headers",
+
     # elf-image.cpp's declarations reach Aspace (elf-image.hpp's
     # fix_mapping() signature, even though bootshim.core never compiles
     # that body -- elf-image-mapping.cpp stays out of these sources), and
@@ -228,6 +230,7 @@ physload_module("physboot") {
   deps = [
     ":headers",
     "//kernel/arch/$ours_cpu:headers",
+
     # kernel-boot.hpp reaches the kernel's address-space layout constants.
     "//kernel/arch/$ours_cpu/kernel:headers",
     "//kernel/arch/$ours_cpu/phys:headers",
@@ -286,9 +289,7 @@ cpp_interface("boot-obi") {
 # its implementation, while the kernel only needs this propagated header
 # interface and the generated PT_INTERP dependency below.
 cpp_interface("handoff") {
-  public = [
-    "include/ours/phys/handoff.hpp",
-  ]
+  public = [ "include/ours/phys/handoff.hpp" ]
   public_deps = [
     ":boot-obi",
     "//kernel/arch/$ours_cpu/phys:headers",
@@ -315,9 +316,9 @@ phys_executable("physload") {
   deps = [ ":physload.core" ]
 }
 
-
 group("tests") {
   testonly = true
+
   # The default toolchain here is kernel-x86, not host-capable (see
   # kernel/lib/obi:tests for the same fix, documented in
   # .agents/tasks/phys-module-and-obi-tree/DESIGN.md §8.1) -- a plain
