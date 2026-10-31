@@ -83,6 +83,10 @@ group("default") {
     # back and broken on purpose, from bytes alone.
     "//system/lib/ours.block:tests($host_toolchain)",
 
+    # ours.gpt's parser: the CRC-32's known answer, the header and entry
+    # parses and their refusals, and whole tables read through a fake reader.
+    "//system/lib/ours.gpt:tests($host_toolchain)",
+
     # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
     # decision over two token values and its state is one std::atomic, so the
     # whole protocol runs on the host; the concurrent half it cannot reach is
