@@ -46,6 +46,7 @@
 /// device answers. Before the driver leaves, the device is stopped and
 /// observed stopped, so the kernel never has to quarantine what it pinned.
 #include <ours/bti.hpp>
+#include <ours/interrupt.hpp>
 #include <ours/port.hpp>
 #include <ours/process_args.hpp>
 #include <ours/signals.hpp>
@@ -110,6 +111,10 @@ constexpr auto PAGE = usize{4096};
 /// status byte that follows it.
 constexpr auto SECTOR = usize{512};
 constexpr auto HEADER = usize{16};
+
+/// The GSI the device's INTx line is wired to on this machine's chipset:
+/// the first PCI function QEMU adds, slot 3 pin A.
+constexpr auto GSI_DISK = u32{23};
 
 /// The queue's depth, the driver's choice within the device's maximum. A
 /// legacy ring is the descriptor table, the available ring after it, and
@@ -237,6 +242,15 @@ class LegacyRegs final {
         out8(0x12, value);
     }
 
+    /// ISR status: which of the ring and the config asked for attention. One
+    /// read answers and clears it, which drops the device's interrupt line --
+    /// what the driver does after each wait, so the level the device holds
+    /// does not re-fire the moment the kernel unmasks.
+    [[nodiscard]]
+    auto isr() const -> u8 {
+        return in8(0x13);
+    }
+
     /// The device config's capacity, in blocks: two reads of the u64 the
     /// legacy layout puts behind the common registers, without MSI-X enabled.
     [[nodiscard]]
@@ -289,10 +303,11 @@ class LegacyRegs final {
 class Device final {
   public:
     auto init(u16 const io_ports, ours::VirtAddr const region_map_address,
-              ours::PhysAddr const region_base) -> void {
+              ours::PhysAddr const region_base, ours::Uandle const interrupt) -> void {
         m_regs = LegacyRegs{io_ports};
         m_region_map = region_map_address;
         m_region_phys = region_base;
+        m_interrupt = interrupt;
     }
 
     /// The device's capacity, in blocks, for GetInfo.
@@ -305,9 +320,9 @@ class Device final {
     /// and returns the region offset the data landed at -- the caller reads
     /// it there, through the same mapping. The whole request runs on the
     /// caller's thread: the header and descriptors are written, the chain
-    /// offered, the queue rung, and the used ring polled until the answer
-    /// comes. Requests serialize on this, which one device queue makes true
-    /// anyway.
+    /// offered, the queue rung, and the thread parks in interrupt_wait()
+    /// until the device answers. Requests serialize on this, which one device
+    /// queue makes true anyway.
     [[nodiscard]]
     auto read_blocks(u64 const lba, usize const count) -> Status {
         return submit(lba, count, false);
@@ -376,18 +391,29 @@ class Device final {
         m_offered += 1;
         m_regs.notify(0);
 
-        // Poll the used ring until the entry for this request comes.
-        // Interrupts come when the kernel can name this device's line; the
-        // poll is the interim shape.
+        // The device raises the line when the chain's entry lands in the used
+        // ring; the wait parks the thread until it does. A level line stays
+        // masked from its delivery until its ack, and each wait is also the
+        // ack of the one before it, so the wait that comes back from request
+        // N is what arms the line for request N + 1. Reading the ISR register
+        // after each wait clears the device's own level, without which the
+        // unmasked line would re-fire before any new completion. A wait can
+        // come back without this request's entry -- an interrupt the last
+        // request left pending -- so the entry is what ends the loop, not the
+        // wait.
         auto *const used = bytes + USED_OFFSET;
-        for (auto tries = u32{0}; tries < 100'000'000; ++tries) {
+        for (auto waits = u32{0}; waits < 100; ++waits) {
+            if (auto const waited = ours::interrupt_wait(m_interrupt, nullptr);
+                waited != Status::Ok) {
+                return waited;
+            }
+            (void)m_regs.isr();
             if (*reinterpret_cast<volatile u16 const *>(used + 2) == static_cast<u16>(m_seen + 1)) {
                 m_seen += 1;
                 auto const status_byte = *reinterpret_cast<volatile u8 const *>(
                     bytes + REQUEST_OFFSET + HEADER + count * SECTOR);
                 return status_byte == 0 ? Status::Ok : Status::BadState;
             }
-            ort::spin_hint();
         }
         return Status::TimeOut;
     }
@@ -396,6 +422,9 @@ class Device final {
     LegacyRegs m_regs = LegacyRegs{0};
     ours::VirtAddr m_region_map = ours::VirtAddr{0};
     ours::PhysAddr m_region_phys = ours::PhysAddr{0};
+    /// The interrupt object on the device's line, which every submit() parks
+    /// its thread on.
+    ours::Uandle m_interrupt = ours::Uandle::Invalid;
     /// The chains offered so far, and the used entries seen so far: the two
     /// cursors of the ring, the device's behind the driver's by exactly the
     /// requests in flight.
@@ -559,6 +588,15 @@ auto main(int, char **) -> int {
         auto _ = ours::handle_close(mmio_resource.unwrap());
         return 1;
     }
+    auto const irq_resource = ours_resource::get(ours_resource::IRQ_PROTOCOL);
+    if (irq_resource.is_err()) {
+        auto _ = ort::debug_line(
+            {"virtio-blk: no Irq resource: ", ours::to_string(irq_resource.unwrap_err())});
+        auto _ = ours::handle_close(iommu_resource.unwrap());
+        auto _ = ours::handle_close(ioport_resource.unwrap());
+        auto _ = ours::handle_close(mmio_resource.unwrap());
+        return 1;
+    }
 
     // Bus 0 of the ECAM, one window for the whole enumeration.
     auto config_base = ours::VirtAddr{0};
@@ -605,6 +643,7 @@ auto main(int, char **) -> int {
         // boot check runs on images whose QEMU carries no disk. The routes to
         // this component's protocol answer NotFound while it is gone.
         auto _ = ort::debug_line("virtio-blk: no virtio block device on bus 0");
+        auto _ = ours::handle_close(irq_resource.unwrap());
         auto _ = ours::handle_close(iommu_resource.unwrap());
         auto _ = ours::handle_close(ioport_resource.unwrap());
         return 0;
@@ -628,6 +667,11 @@ auto main(int, char **) -> int {
     Uandle bti = Uandle::Invalid;
     Uandle region_vmo = Uandle::Invalid;
     Uandle region_pmt = Uandle::Invalid;
+    Uandle interrupt = Uandle::Invalid;
+    // Whether the root of the interrupt lines is still held: it is closed
+    // once the line is taken, and a second close of a value the kernel may
+    // have handed out again is not a no-op to risk.
+    bool irq_root_held = true;
     ours::VirtAddr region_map = ours::VirtAddr{0};
     auto fail = [&](Status const status) -> int {
         if (region_pmt != Uandle::Invalid) {
@@ -645,6 +689,13 @@ auto main(int, char **) -> int {
         if (iommu != Uandle::Invalid) {
             auto _ = ours::handle_close(iommu);
         }
+        if (interrupt != Uandle::Invalid) {
+            auto _ = ours::handle_close(interrupt);
+        }
+        if (irq_root_held) {
+            irq_root_held = false;
+            auto _ = ours::handle_close(irq_resource.unwrap());
+        }
         auto _ = ours::handle_close(iommu_resource.unwrap());
         auto _ = ours::handle_close(ioport_resource.unwrap());
         auto _ = ort::debug_line({"virtio-blk: failed: ", ours::to_string(status)});
@@ -656,6 +707,29 @@ auto main(int, char **) -> int {
         return fail(status);
     }
     auto const regs = LegacyRegs{io_base};
+
+    // The device's interrupt line. On this machine's chipset a function at
+    // root-bus slot S, pin P, is wired to GSI 20 + ((S + P) & 3), and QEMU
+    // adds the disk's virtio-blk as the first PCI function, slot 3 pin A:
+    // GSI 23. The firmware's tables name the same wiring, and the route
+    // service planned for them will name the line from those instead of this
+    // constant. PCI INTx is level and active low, which ModeLevelLow says.
+    auto line_number = u32{0};
+    if (auto const status = ours::interrupt_map(
+            irq_resource.unwrap(), ours::InterruptSourceKind::Gsi, GSI_DISK, &line_number);
+        status != Status::Ok) {
+        return fail(status);
+    }
+    if (auto const status = ours::interrupt_create(
+            irq_resource.unwrap(), line_number, ours::InterruptOptions::ModeLevelLow, &interrupt);
+        status != Status::Ok) {
+        return fail(status);
+    }
+    // The root is only the means of mapping and taking: the line is held now,
+    // and nothing else is asked of the root. Closing it lets the next driver
+    // reach the resource, as the keyboard's driver does with its line.
+    irq_root_held = false;
+    auto _ = ours::handle_close(irq_resource.unwrap());
 
     // Bring-up, in the order the legacy specification fixes.
     regs.set_status(0);
@@ -720,7 +794,7 @@ auto main(int, char **) -> int {
     // The server, over the device.
     auto &storage = *SERVER_STORAGE.init();
     auto &device = *DEVICE_STORAGE.init();
-    device.init(io_base, region_map, region_phys);
+    device.init(io_base, region_map, region_phys, interrupt);
     BlockServer server(storage, loop, device, region_map);
 
     auto &outgoing_storage = *OUTGOING_STORAGE.init();
