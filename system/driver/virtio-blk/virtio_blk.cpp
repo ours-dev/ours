@@ -310,12 +310,28 @@ class Device final {
     /// anyway.
     [[nodiscard]]
     auto read_blocks(u64 const lba, usize const count) -> Status {
+        return submit(lba, count, false);
+    }
+
+    /// Writes |count| blocks starting at |lba| from the region's data area,
+    /// which the caller filled before the call.
+    [[nodiscard]]
+    auto write_blocks(u64 const lba, usize const count) -> Status {
+        return submit(lba, count, true);
+    }
+
+  private:
+    /// The one device path, both directions: |write| flips the header's type
+    /// and the data descriptor's direction -- the device reads a write's data
+    /// and writes a read's.
+    [[nodiscard]]
+    auto submit(u64 const lba, usize const count, bool const write) -> Status {
         if (count == 0 || DATA_OFFSET + count * SECTOR + 1 > REGION_BYTES) {
             return Status::InvArgs;
         }
         auto *const bytes = reinterpret_cast<volatile u8 *>(m_region_map);
-        // The header: a read, from |lba|.
-        *reinterpret_cast<volatile u32 *>(bytes + REQUEST_OFFSET) = 0;
+        // The header: a read (type 0) or a write (type 1), from |lba|.
+        *reinterpret_cast<volatile u32 *>(bytes + REQUEST_OFFSET) = write ? 1 : 0;
         *reinterpret_cast<volatile u32 *>(bytes + REQUEST_OFFSET + 4) = 0;
         *reinterpret_cast<volatile u64 *>(bytes + REQUEST_OFFSET + 8) = lba;
 
@@ -334,10 +350,12 @@ class Device final {
         put32(0, 8, HEADER);
         put16(0, 12, DESC_NEXT);
         put16(0, 14, 1);
-        // desc[1]: the blocks, written by the device, chained to desc[2].
+        // desc[1]: the blocks, chained to desc[2]. A write's data flows
+        // toward the device, so the WRITE flag -- what the device writes --
+        // is on only for a read.
         put64(1, 0, buf_base + HEADER);
         put32(1, 8, static_cast<u32>(count * SECTOR));
-        put16(1, 12, DESC_NEXT | DESC_WRITE);
+        put16(1, 12, DESC_NEXT | (write ? u16{0} : DESC_WRITE));
         put16(1, 14, 2);
         // desc[2]: the status byte, written by the device, end of the chain.
         put64(2, 0, buf_base + count * SECTOR);
@@ -439,6 +457,14 @@ class BlockServer final: public server::ProtocolServer<BlockServer, MAX_CLIENTS>
             }
             return read_block(channel, *request);
         }
+        if (header.ordinal == ours_block::WRITE.ordinal) {
+            auto const request = ours_block::decode_write(message);
+            if (request.is_err()) {
+                close_handles(message);
+                return close_client(channel);
+            }
+            return write_block(channel, *request, message);
+        }
         close_handles(message);
         return close_client(channel);
     }
@@ -462,6 +488,21 @@ class BlockServer final: public server::ProtocolServer<BlockServer, MAX_CLIENTS>
             {.status = Status::Ok,
              .data = std::span{reinterpret_cast<u8 const *>(m_region_map + REQUEST_OFFSET + HEADER),
                                request.count * SECTOR}});
+        if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
+            return close_client(channel);
+        }
+        return loop::Action::Rearm;
+    }
+
+    auto write_block(Uandle const channel, ours_block::WriteRequest const &request,
+                     wire::Message const &message) -> loop::Action {
+        // The client's blocks arrive in the request body; the one copy of a
+        // Write puts them where the device reads them from.
+        std::memcpy(reinterpret_cast<void *>(m_region_map + REQUEST_OFFSET + HEADER),
+                    message.bytes.data() + 28, request.data.size());
+        auto const status = m_device->write_blocks(request.lba, request.count);
+        auto const answer =
+            ours_block::encode_write_reply(reply_buffer(), request.txid, {.status = status});
         if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
             return close_client(channel);
         }
@@ -664,6 +705,10 @@ auto main(int, char **) -> int {
         return fail(status);
     }
     regs.set_queue_pfn(region_phys);
+    {
+        char phys_text[18];
+        auto _ = ort::debug_line({"virtio-blk: region at ", ort::hex(region_phys, phys_text)});
+    }
 
     // The device is told the driver is ready, and may now be served.
     regs.set_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK | STATUS_DRIVER_OK);

@@ -1511,6 +1511,81 @@ auto check_block() -> void {
         fail("Block.Read: block 0 does not start with the disk's magic");
         return;
     }
+
+    // Write a pattern to a scratch block and read it back: the write path
+    // end to end. LBA 1000 is far from the magic and from any GPT that a
+    // later milestone puts at the front of the disk.
+    constexpr auto SCRATCH_LBA = u64{1000};
+    std::array<u8, ours_block::BLOCK_SIZE> pattern{};
+    pattern.fill(0xA5);
+    constexpr auto MARK = std::string_view{"virtio-blk write check"};
+    std::copy(MARK.begin(), MARK.end(), pattern.begin());
+
+    auto const write_txid = next_txid();
+    auto const write = ours_block::encode_write(
+        bytes, {.txid = write_txid, .lba = SCRATCH_LBA, .count = 1, .data = pattern});
+    if (!expect("Block.Write", status_of(write), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Write", call(connection, write.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const write_status =
+        wire::decode_reply_status(reply.message(), ours_block::WRITE, write_txid);
+    if (!expect("Block.Write's reply", status_of(write_status), Status::Ok) ||
+        !expect("Block.Write's status", write_status.unwrap(), Status::Ok)) {
+        return;
+    }
+
+    // Two blocks from one short of the scratch: block 999 is zeros (never
+    // written), block 1000 the pattern. Where the first differing byte falls
+    // -- at 512+496 (per-block) or 496 (per-buffer) -- says which.
+    auto const verify_txid = next_txid();
+    auto const verify =
+        ours_block::encode_read(bytes, {.txid = verify_txid, .lba = SCRATCH_LBA - 1, .count = 2});
+    if (!expect("Block.Read(scratch)", status_of(verify), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Read(scratch)", call(connection, verify.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const read_back = ours_block::decode_read_reply(reply.message(), verify_txid);
+    if (!expect("Block.Read(scratch)'s reply", status_of(read_back), Status::Ok) ||
+        !expect("Block.Read(scratch)'s status", read_back->status, Status::Ok)) {
+        return;
+    }
+    constexpr auto PATTERN_BYTES = usize{ours_block::BLOCK_SIZE};
+    auto const want = [&](usize const index) -> u8 {
+        // Block 999 was never written: zeros. Block 1000 the pattern.
+        return index >= PATTERN_BYTES ? pattern[index - PATTERN_BYTES] : u8{0};
+    };
+    ustl::Option<usize> first_bad = ustl::NONE;
+    for (auto index = usize{0}; index < read_back->data.size(); ++index) {
+        if (read_back->data[index] != want(index)) {
+            first_bad = ustl::some(index);
+            break;
+        }
+    }
+    if (first_bad.is_none()) {
+        expect("close", fsio::close(connection), Status::Ok);
+        return;
+    }
+    char at_text[10];
+    auto _ = ort::debug_line({"routing_checks: first differing byte at ",
+                              ort::decimal(static_cast<u32>(*first_bad), at_text)});
+    // The tail of the data, as the reply carries it: the last 16 bytes of
+    // the pattern block, and the four before them.
+    auto hex = std::array<char, 4 * 20 + 1>{};
+    auto at = usize{0};
+    for (auto index = usize{1004}; index < 1024; ++index) {
+        constexpr auto DIGITS = "0123456789ABCDEF";
+        hex[at] = DIGITS[read_back->data[index] >> 4];
+        hex[at + 1] = DIGITS[read_back->data[index] & 0xF];
+        at += 2;
+    }
+    hex[at] = 0;
+    auto _ = ort::debug_line({"virtio-blk: reply data [1004..1024): ", hex.data()});
+    fail("Block.Write: the scratch block does not read back the pattern");
     expect("close", fsio::close(connection), Status::Ok);
 }
 

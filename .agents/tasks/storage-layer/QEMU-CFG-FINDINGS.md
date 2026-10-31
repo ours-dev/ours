@@ -112,3 +112,38 @@ land in them?** A minimal reproduction is the driver as committed (exp/fs-servic
 with a virtio-blk-pci and a raw disk whose sector 0 starts with the bytes "OURS"; the boot log
 ends `virtio-blk: failed: TimeOut`, and a monitor `xp` of region+0x2000 (the address the driver's
 log prints as the used ring) shows zeros while the trace shows the completion.
+
+
+## Addendum 2 (2026-11-01): the legacy path works, and every read's DMA is 16 bytes short
+
+The modern path's question is moot -- the driver moved to the legacy interface, where every
+register answers. The driver drives the device end to end: ring from `vmo_create_contiguous` pinned
+`Contiguous`, write and read requests submitted and completed, the data verified against a magic
+written to the image. One defect remains, surgical and deterministic:
+
+**The device's read DMA delivers all but the LAST 16 BYTES of the data buffer.** A 512-byte read:
+bytes 0-495 correct, 496-511 zero. A 1024-byte read (2 blocks): 0-1007 correct, 1008-1023 zero.
+The last 16 bytes stay whatever the buffer held before (zeros, on a freshly created contiguous
+region) -- the first differing byte always sits 16 bytes before the data's end.
+
+Evidence, all from one boot:
+
+- QEMU's own trace: `virtio_blk_handle_read ... sector 1000` then `virtio_blk_req_complete ...
+  status 0` for the read in question -- the device processed and completed it.
+- The disk image after the boot: sector 1000 holds the exact pattern the guest wrote earlier,
+  **including bytes 496-511** (`od -j 512496`: `a5` x 16) -- the write's DMA read the guest buffer
+  in full, and the file is correct.
+- QEMU's RAM at the disputed bytes, read through the monitor (`xp`): **0x00 at the same offset the
+  guest reports** -- the guest's CPU view and QEMU's RAM agree, so the guest's mapping is faithful
+  and the zero is in what the device's DMA wrote (or failed to).
+- The reply the client received carries the same bytes.
+
+The write direction shows no such defect: the file received all 512 bytes including the tail.
+
+The question for the kernel/QEMU side: **why does the read DMA stop 16 bytes short of the data
+descriptor's end?** 16 bytes is the size of the virtio-blk request header (which sits in a
+*separate* descriptor, desc[0], before the data in the same chain) -- or of whatever the QEMU
+build's `virtio_blk_handle_read` subtracts. A minimal reproduction: the driver as committed
+(exp/fs-service, HEAD), booted with a virtio-blk-pci and a raw disk whose sector 0 starts with
+"OURS"; routing_checks fails with `first differing byte at 496` (1-block read) or `1008` (2-block
+read), always exactly 16 before the data's end.
