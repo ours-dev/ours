@@ -243,3 +243,52 @@ None.
 - Lookup of a command by name does not depend on the registry's order, so why does moving four files change anything a user can see?
 - The registry is 4002 bytes and the buffer 2048. Which of the three options in the repair item would make 8 KiB the wrong answer a second time, and which would not?
 - The `commands` built-in and the boot listing read the same buffer. What does each print when the registry does not fit, and why is the built-in's the worse one?
+
+## Title: The header comment of //kernel/arch/x86/commands says what each of the four tests calls, not that all four drive the APIC, the I/O bitmap and the per-CPU block (2026-10-31)
+
+**Files**
+- `kernel/arch/x86/commands/BUILD.gn` — the paragraph that says why these tests are x86's.
+- `docs/changes/261031/kernel-commands.md` — this entry.
+
+**Symptom**
+The comment said the four tests "drive the local APIC, the I/O bitmap and the per-CPU block directly". That is not true of `timer_share_test.cpp`, whose one x86 call is `apic_tsc_hz()` (line 293) and whose only x86 include is `<ours/arch/x86/apic.hpp>` (line 59), for that call. `docs/repairs/261030/x86-apic.md`, edited by the commit that wrote the comment, says the file "needs nothing from x86" once its item 1 lands. Nor does any of them drive the per-CPU block: `ioport_test.cpp` includes `<ours/arch/x86/percpu.hpp>` for `X86Tss::NUM_IO_PORTS`, the task state segment's port count, and uses no member of `X86PerCpu`, the block that holds the segment.
+
+**Cause**
+The comment was written as one sentence for four files, from the headers they include and not from what each calls. Three of them do call the local APIC, the I/O APIC or the I/O bitmap, so the sentence read as a summary of the group and was never checked file by file; the per-CPU block was the header's name (`percpu.hpp`), not something any file used.
+
+**Change**
+Read each file's x86 calls (`grep` for `apic_`, `IoBitmap`, `X86Tss`) and name them: `interrupt_line_test.cpp` sends itself an IPI through the local APIC (`apic_send_ipi_self`, lines 188 and 448) and includes `<arch/x86/interrupt.hpp>`; `irq_test.cpp` asks the I/O APIC for the global number of an ISA line (`apic_io_isa_to_global`, lines 95 and 102); `ioport_test.cpp` opens and closes ports in the I/O bitmap and reads the task state segment's port count (`IoBitmap::open_here`, `X86Tss::NUM_IO_PORTS`); `timer_share_test.cpp` reads the TSC rate the local APIC timer was calibrated against.
+
+```text
+# before
+# tests that only make sense on x86: they drive the local APIC, the I/O
+# bitmap and the per-CPU block directly, which no other architecture has.
+# after
+# tests that only make sense on x86: each calls something no other
+# architecture has, the local APIC (a self-IPI, the TSC rate its timer was
+# calibrated against), the I/O APIC's ISA map, or the I/O bitmap and the task
+# state segment.
+```
+
+The sentence does not say that `timer_share_test.cpp` could be generic once `docs/repairs/261030/x86-apic.md` item 1 is done: that is a statement about the day the comment is read, and goes false when the item lands.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+- Each x86 call named above was read in its file: `grep -n "apic_\|IoBitmap\|X86Tss" kernel/arch/x86/commands/*.cpp`.
+- `gn gen` on both directories: every `.ninja` file byte-identical to the copies taken before the comment changed (713 and 707); `format_gn.py --check` and `lint_docs.py --changed`: no violations. A comment changes no build; `ours-verify` runs after the last commit of this round.
+
+**Deliberately not done**
+- `timer_share_test.cpp` is not moved back to `kernel/commands`; `docs/repairs/261030/x86-apic.md` item 1 is what would make it generic, and where it then lives is not this change's question.
+
+**How it was found**
+The independent review of `3135d44a` read `timer_share_test.cpp` against the comment.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a comment that says "all four do X" need each file read, when the headers they include are all in one place?
+- What does `timer_share_test.cpp` call from x86, and which repair item removes it?
+- Why does the comment not mention that item?
