@@ -38,6 +38,21 @@ cpp_interface("headers") {
   visibility = [ "*" ]
 }
 
+# The client side of the codec: the calls with their plumbing, over one
+# connected channel. Its own target, apart from "headers", because it makes
+# system calls and so builds in a user toolchain only, while the codec alone
+# builds in the host toolchain too, where its tests run.
+cpp_interface("client") {
+  public = [ "include/ours_block/client.hpp" ]
+  public_deps = [
+    ":headers",
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
 # Host unit tests; wired into //:default.
 group("tests") {
   testonly = true
