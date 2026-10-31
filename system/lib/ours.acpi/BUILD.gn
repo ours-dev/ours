@@ -1,0 +1,40 @@
+import("//build/cpp/cpp_interface.gni")
+
+# ours.acpi, the protocol of the ACPI route service -- Route, with IsaIrq and
+# EcamBase -- encoded and decoded by hand on //system/lib/wire, as ours.resource
+# is (component-framework design S6, D19). Bytes alone, no system call, so it
+# builds in every toolchain, the host one included, where its tests run.
+#
+# The directory and the target are named after the protocol library, so that
+# //system/lib/ours.acpi is its label; the include prefix and the namespace are
+# ours_acpi, the library's name with its dot made an underscore.
+source_set("ours.acpi") {
+  sources = [ "src/ours_acpi.cpp" ]
+
+  # Its messages are wire::Message and its methods wire::Method, so a user of
+  # the codec is a user of the framing too.
+  public_deps = [
+    ":headers",
+    "//system/lib/wire",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/ours_acpi/ours_acpi.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:ours_acpi($host_toolchain)" ]
+}

@@ -11,9 +11,9 @@ The user approved on 2026-10-31 a first slice of the ACPI route service that nee
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. The protocol | one protocol, `ours.acpi.Route`, with `IsaIrq` and `EcamBase`; or one protocol for each | one: it is the name and the pair of methods the Driver Manager draft already uses | None | Open |
-| D2. Who is offered it in this step | routing_checks alone; routing_checks and pc-ps2 | routing_checks alone: pc-ps2 moves with the removal of `Isa`, which is a step of its own | None | Open |
-| D3. When there are no tables | the program exits and a route to it answers NotFound; or it stays and answers every question NotFound | exits: a route service with nothing to read has nothing to be, and the framework already answers NotFound for a component that has gone | None | Open |
+| D1. The protocol | one protocol, `ours.acpi.Route`, with `IsaIrq` and `EcamBase`; or one protocol for each | one: it is the name and the pair of methods the Driver Manager draft already uses | None | One, 2026-10-31, as recommended |
+| D2. Who is offered it in this step | routing_checks alone; routing_checks and pc-ps2 | routing_checks alone: pc-ps2 moves with the removal of `Isa`, which is a step of its own | None | routing_checks alone, 2026-10-31, as recommended |
+| D3. When there are no tables | the program exits and a route to it answers NotFound; or it stays and answers every question NotFound | exits: a route service with nothing to read has nothing to be, and the framework already answers NotFound for a component that has gone | None | Exits, 2026-10-31, as recommended |
 
 ## Steps
 
