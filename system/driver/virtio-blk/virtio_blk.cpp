@@ -183,10 +183,15 @@ class LegacyRegs final {
         return in32(0x08);
     }
 
-    /// QUEUE_NUM, the depth the device runs this queue at.
+    /// QUEUE_NUM: the depth the device runs this queue at, read as its
+    /// maximum and written as the driver's choice.
     [[nodiscard]]
     auto queue_num() const -> u16 {
         return in16(0x0C);
+    }
+
+    auto set_queue_num(u16 const num) const -> void {
+        out16(0x0C, num);
     }
 
     auto select_queue(u16 const index) const -> void {
@@ -390,17 +395,22 @@ auto main(int, char **) -> int {
     (void)regs.host_features();
     regs.accept_no_features();
 
-    // The queue: selected, its depth read from the device, its ring
-    // registered by page frame.
+    // The queue: selected, its maximum depth read from the device, the
+    // driver's depth written back, and the ring registered by page frame.
     regs.select_queue(0);
-    auto const queue_num = regs.queue_num();
+    auto const queue_max = regs.queue_num();
     {
         char num_text[10];
-        auto _ = ort::debug_line({"virtio-blk: queue 0 num ", ort::decimal(queue_num, num_text)});
+        auto _ = ort::debug_line({"virtio-blk: queue 0 max ", ort::decimal(queue_max, num_text)});
     }
-    if (queue_num == 0 || queue_num > LEGACY_QUEUE_NUM) {
+    if (queue_max == 0) {
         return cleanup(Status::OutOfRange);
     }
+    // The legacy depth is the driver's to choose, within the device's
+    // maximum: written back before the ring is registered, so the device
+    // computes the rings' addresses from the same depth this driver laid
+    // them out with.
+    regs.set_queue_num(LEGACY_QUEUE_NUM);
 
     // The DMA resources: a stub IOMMU and one BTI for this device.
     if (auto const status = ours::iommu_create(iommu_resource.unwrap(), ours::IommuType::Stub,
@@ -449,18 +459,19 @@ auto main(int, char **) -> int {
     // the region's tail, past the used ring.
     auto const buf_base = region_phys + REQUEST_OFFSET;
     auto *const descriptors = reinterpret_cast<volatile u8 *>(owned.region_map);
-    auto const desc_word = [&](usize const index)->volatile u32 * {
-        return reinterpret_cast<volatile u32 *>(descriptors + index * 16);
-    };
     auto const put64 = [&](usize const index, usize const field, u64 const value) -> void {
         *reinterpret_cast<volatile u64 *>(descriptors + index * 16 + field) = value;
     };
     auto const put32 = [&](usize const index, usize const field, u32 const value) -> void {
-        *desc_word(index) = value;
+        *reinterpret_cast<volatile u32 *>(descriptors + index * 16 + field) = value;
     };
     auto const put16 = [&](usize const index, usize const field, u16 const value) -> void {
         *reinterpret_cast<volatile u16 *>(descriptors + index * 16 + field) = value;
     };
+    // The request reads sector 0, whose first bytes the image was given:
+    // what comes back is the end-to-end answer, checked against what was
+    // written there.
+    *reinterpret_cast<volatile u64 *>(owned.region_map + REQUEST_OFFSET + 8) = 0;
     // desc[0]: the header, read by the device, chained to desc[1].
     put64(0, 0, buf_base);
     put32(0, 8, HEADER);
@@ -498,34 +509,6 @@ auto main(int, char **) -> int {
         ort::spin_hint();
     }
     if (!completed) {
-        // The device completed the request (its trace says so), so the used
-        // ring grew somewhere other than this driver's computation of its
-        // address. Scan the region for the entry: one idx of 1 followed by
-        // the head descriptor's id and a length.
-        auto const magic = std::array<u8, 4>{'O', 'U', 'R', 'S'};
-        for (auto offset = usize{0}; offset + 4 <= REGION_BYTES; offset += 4) {
-            auto const here = *reinterpret_cast<volatile u32 const *>(owned.region_map + offset);
-            if (here == *reinterpret_cast<const u32 *>(magic.data())) {
-                char at_text[18];
-                auto _ = ort::debug_line(
-                    {"virtio-blk: the disk's magic sits at offset ", ort::hex(offset, at_text)});
-            }
-        }
-        for (auto offset = usize{0}; offset + 12 <= REGION_BYTES; offset += 2) {
-            auto const candidate =
-                *reinterpret_cast<volatile u16 const *>(owned.region_map + offset);
-            if (candidate != 1) {
-                continue;
-            }
-            auto const len = *reinterpret_cast<volatile u32 const *>(owned.region_map + offset + 8);
-            if (len == 0 || len > SECTOR + 1) {
-                continue;
-            }
-            char at_text[18];
-            char len_text[18];
-            auto _ = ort::debug_line({"virtio-blk: the used entry sits at offset ",
-                                      ort::hex(offset, at_text), " len ", ort::hex(len, len_text)});
-        }
         return cleanup(Status::TimeOut);
     }
     auto const used_id = *reinterpret_cast<volatile u32 const *>(used + 4);
