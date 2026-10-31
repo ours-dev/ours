@@ -108,6 +108,12 @@ enum class HandleType : u8 {
     /// generic file type told apart by the VMO's name: VMOs have no names
     /// here.
     VmoCrashlog = 0xe0,
+
+    /// The machine's ACPI tables, as a read-only VMO in the layout of
+    /// <ours/acpi_tables.hpp>: a directory, then the firmware's own bytes.
+    /// Present only when the platform read ACPI tables. The root serves it on
+    /// as the built-in ours.boot.Acpi.
+    VmoAcpi = 0xe1,
     User0 = 0xf0,
     User1 = 0xf1,
     User2 = 0xf2,

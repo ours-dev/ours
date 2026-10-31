@@ -38,6 +38,11 @@
 /// with the argument `child` through fsio::spawn(), and expects that copy,
 /// which only reads one file through the namespace it was handed, to exit 0.
 ///
+/// ours.boot.Acpi, which root.cm offers too, hands out the machine's ACPI tables
+/// as a read-only VMO. It checks that the handle cannot write, that the
+/// directory in the VMO is well formed, and that every table in it has the
+/// signature and length of its own header and adds up to zero.
+///
 /// Its sixth protocol use, ours.test.Echo, is the one route here that ends
 /// in another component: root.cm offers it from the sibling echo
 /// (//examples/echo), renamed from ours.examples.echo.Echo, which echo
@@ -49,6 +54,7 @@
 /// Each failure prints a line with FAILED in it, which fails ours-verify's
 /// boot check. All passing, it prints `routing_checks: passed` and exits 0,
 /// which the root logs as `init: routing_checks exited with 0`.
+#include <ours/acpi_tables.hpp>
 #include <ours/interrupt.hpp>
 #include <ours/object_info.hpp>
 #include <ours/process_args.hpp>
@@ -60,9 +66,12 @@
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
 
+#include <algorithm>
 #include <array>
 #include <span>
 #include <string_view>
+
+#include <cstring>
 
 #include <fsio/fsio.hpp>
 #include <ort/debug.hpp>
@@ -1629,6 +1638,151 @@ auto run_child() -> int {
     }
     return 0;
 }
+
+/// The most entries the ACPI directory is checked for. A q35 machine has about
+/// ten tables.
+constexpr auto ACPI_MAX_ENTRIES = usize{64};
+
+/// An ACPI signature as the directory spells it: the first character in the
+/// low byte.
+constexpr auto acpi_signature(char const (&name)[5]) -> u32 {
+    return u32(u8(name[0])) | u32(u8(name[1])) << 8 | u32(u8(name[2])) << 16 |
+           u32(u8(name[3])) << 24;
+}
+
+/// Whether the |length| bytes of |vmo| at |offset| add up to zero modulo 256,
+/// which is how ACPI checksums a table. Read in pieces: a table can be larger
+/// than anything worth keeping on this stack. Says why and answers false if a
+/// read fails.
+auto acpi_bytes_sum_to_zero(Uandle const vmo, u64 const offset, u32 const length) -> bool {
+    auto sum = u8{0};
+    auto done = u32{0};
+    while (done < length) {
+        std::array<u8, 256> piece{};
+        auto const n = std::min<usize>(piece.size(), length - done);
+        if (!expect("vmo_read(an ACPI table)", ours::vmo_read(vmo, piece.data(), offset + done, n),
+                    Status::Ok)) {
+            return false;
+        }
+        for (auto i = usize{0}; i < n; ++i) {
+            sum = u8(sum + piece[i]);
+        }
+        done += u32(n);
+    }
+    return sum == 0;
+}
+
+/// Acpi.Get answers with the machine's ACPI tables: a VMO that is read and
+/// mapped and cannot be written, holding the directory of
+/// <ours/acpi_tables.hpp> and then the firmware's tables, the DSDT first. The
+/// directory is read as the route service will read it: every entry lies
+/// inside the VMO, on an 8 byte boundary and after the entry before it; its
+/// signature and length are those of the table's own header; and the table's
+/// bytes add up to zero, which is ACPI's checksum. QEMU's q35 has a FADT and a
+/// MADT, so those two are asked for by name.
+auto check_acpi_tables() -> void {
+    auto const vmo = get_resource(ours_resource::ACPI_PROTOCOL);
+    if (vmo == Uandle::Invalid) {
+        return;
+    }
+
+    ours::InfoHandleBasic basic{};
+    auto actual = usize{0};
+    auto available = usize{0};
+    if (expect("object_get_info(the VMO Acpi.Get gave)",
+               ours::object_get_info(vmo, ours::InfoTopic::HandleBasic, &basic, sizeof(basic),
+                                     &actual, &available),
+               Status::Ok)) {
+        if ((basic.rights & ours::Rights::Read) == ours::Rights::None ||
+            (basic.rights & ours::Rights::Map) == ours::Rights::None) {
+            fail("the VMO Acpi.Get gave cannot be read or mapped");
+        }
+        if ((basic.rights & ours::Rights::Write) != ours::Rights::None) {
+            fail("the VMO Acpi.Get gave can be written");
+        }
+    }
+    auto const byte = u8{0};
+    expect("vmo_write(the ACPI tables)", ours::vmo_write(vmo, &byte, 0, 1), Status::AccessDenied);
+
+    auto size = u64{0};
+    if (!expect("vmo_get_size(the ACPI tables)", ours::vmo_get_size(vmo, &size), Status::Ok)) {
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+    ours::AcpiDirectory directory{};
+    if (size < sizeof(directory) || size % PAGE != 0 ||
+        !expect("vmo_read(the ACPI directory)",
+                ours::vmo_read(vmo, &directory, 0, sizeof(directory)), Status::Ok)) {
+        fail("the ACPI tables' VMO is not a whole number of pages, or cannot be read");
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+    if (directory.magic != ours::ACPI_DIRECTORY_MAGIC ||
+        directory.version != ours::ACPI_DIRECTORY_VERSION) {
+        fail("the ACPI directory has the wrong magic or version");
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+    auto const entries_end =
+        sizeof(directory) + usize{directory.count} * sizeof(ours::AcpiDirectoryEntry);
+    if (directory.count == 0 || directory.count > ACPI_MAX_ENTRIES || directory.size > size ||
+        entries_end > directory.size) {
+        fail("the ACPI directory's count or size is out of range");
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+
+    std::array<ours::AcpiDirectoryEntry, ACPI_MAX_ENTRIES> entries{};
+    if (!expect("vmo_read(the ACPI entries)",
+                ours::vmo_read(vmo, entries.data(), sizeof(directory),
+                               usize{directory.count} * sizeof(ours::AcpiDirectoryEntry)),
+                Status::Ok)) {
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+
+    auto found_fadt = false;
+    auto found_madt = false;
+    auto previous_end =
+        (entries_end + ours::ACPI_TABLE_ALIGNMENT - 1) & ~(ours::ACPI_TABLE_ALIGNMENT - 1);
+    for (auto index = usize{0}; index < directory.count; ++index) {
+        auto const &entry = entries[index];
+        if (entry.reserved != 0 || entry.offset % ours::ACPI_TABLE_ALIGNMENT != 0 ||
+            entry.length < 36 || entry.offset < previous_end ||
+            u64{entry.offset} + entry.length > directory.size) {
+            fail("an entry of the ACPI directory is out of place");
+            break;
+        }
+        previous_end = usize{entry.offset} + entry.length;
+
+        // The table's own header says what the entry says: signature at 0,
+        // length at 4.
+        std::array<u8, 36> header{};
+        if (!expect("vmo_read(an ACPI table's header)",
+                    ours::vmo_read(vmo, header.data(), entry.offset, header.size()), Status::Ok)) {
+            break;
+        }
+        auto signature = u32{0};
+        auto length = u32{0};
+        std::memcpy(&signature, header.data(), sizeof(signature));
+        std::memcpy(&length, header.data() + 4, sizeof(length));
+        if (signature != entry.signature || length != entry.length) {
+            fail("an ACPI table's header disagrees with its directory entry");
+        }
+        if (!acpi_bytes_sum_to_zero(vmo, entry.offset, entry.length)) {
+            fail("an ACPI table in the directory does not add up to zero");
+        }
+        found_fadt = found_fadt || entry.signature == acpi_signature("FACP");
+        found_madt = found_madt || entry.signature == acpi_signature("APIC");
+    }
+    if (entries[0].signature != acpi_signature("DSDT")) {
+        fail("the first table in the ACPI directory is not the DSDT");
+    }
+    if (!found_fadt || !found_madt) {
+        fail("the ACPI directory has no FADT or no MADT");
+    }
+    auto _ = ours::handle_close(vmo);
+}
 } // namespace
 
 auto main(int argc, char **argv) -> int {
@@ -1665,6 +1819,7 @@ auto main(int argc, char **argv) -> int {
     check_ioport_resource();
     check_mmio_resource(vma);
     check_iommu_resource();
+    check_acpi_tables();
     check_sampling_resource();
     check_unoffered();
     check_undeclared();

@@ -198,6 +198,15 @@ component_manifest("root.cm") {
         to = [ "#routing_checks" ]
       },
 
+      # The machine's ACPI tables, to routing_checks alone: it reads the
+      # directory and checks every table's checksum, as the route service
+      # will, which does not exist yet.
+      {
+        protocol = [ "ours.boot.Acpi" ]
+        from = "parent"
+        to = [ "#routing_checks" ]
+      },
+
       # echo's protocol, from the sibling that exposes it, renamed on the
       # way: echo serves it as ours.examples.echo.Echo, and routing_checks
       # finds it at /svc/ours.test.Echo.

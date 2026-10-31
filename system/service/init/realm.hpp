@@ -207,6 +207,8 @@ struct BuiltinServers {
     ResourceServer *mmio_resource;
     ResourceServer *iommu_resource;
     ResourceServer *sampling_resource;
+    /// ours.boot.Acpi, which hands out the ACPI tables' VMO.
+    ResourceServer *acpi;
     /// ours.kernel.RootJob, which hands out the root job.
     ResourceServer *root_job;
 };

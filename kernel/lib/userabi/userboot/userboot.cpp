@@ -92,6 +92,7 @@ struct HandedHandles {
     ours::Uandle irq;
     ours::Uandle ioport;
     ours::Uandle mmio;
+    ours::Uandle acpi;
 };
 
 /// Prints "<what><status name>".
@@ -322,8 +323,8 @@ auto start_next(launch::BootfsLauncher const &launcher, HandedHandles const &han
     // the launcher has made the child and handed both back; their
     // handle_info is known already, so the message can be encoded before.
     // Room for them and every handle |handed| holds.
-    ours::Uandle handles[12] = {ours::Uandle::Invalid, ours::Uandle::Invalid, handed.job};
-    u32 infos[12] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
+    ours::Uandle handles[13] = {ours::Uandle::Invalid, ours::Uandle::Invalid, handed.job};
+    u32 infos[13] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
                      ours::handle_info(ours::HandleType::ProcSelf, 0),
                      ours::handle_info(ours::HandleType::JobDefault, 0)};
     u32 count = 3;
@@ -353,6 +354,9 @@ auto start_next(launch::BootfsLauncher const &launcher, HandedHandles const &han
     add(handed.irq, ours::handle_info(ours::HandleType::IrqResource, 0));
     add(handed.ioport, ours::handle_info(ours::HandleType::IoportResource, 0));
     add(handed.mmio, ours::handle_info(ours::HandleType::MmioResource, 0));
+    // The ACPI tables, read only, which this program has no use for: the next
+    // serves them on as ours.boot.Acpi. Absent on a platform that read none.
+    add(handed.acpi, ours::handle_info(ours::HandleType::VmoAcpi, 0));
 
     // The header, as many handle_infos as |infos| holds, a name of at most
     // 63 bytes and its NUL -- the kernel keeps program names in 64 -- and the
@@ -460,6 +464,7 @@ auto main(int, char **) -> int {
     auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
     auto const ioport = ort::take_startup_handle(ours::HandleType::IoportResource, 0);
     auto const mmio = ort::take_startup_handle(ours::HandleType::MmioResource, 0);
+    auto const acpi = ort::take_startup_handle(ours::HandleType::VmoAcpi, 0);
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     report_crashlog();
@@ -523,6 +528,7 @@ auto main(int, char **) -> int {
         .irq = irq,
         .ioport = ioport,
         .mmio = mmio,
+        .acpi = acpi,
     };
     auto const status = start_next(launcher, handed, next, handed_on);
     // The executable copy was only for the launch; the next program makes
