@@ -48,6 +48,44 @@ auto BtiDispatcher::create(ustl::Arc<IommuDispatcher> iommu, u64 const bti_id,
     return Status::Ok;
 }
 
+auto BtiDispatcher::check_options(BtiPinOptions const options) -> Status {
+    constexpr auto PERMS =
+        BtiPinOptions::PermRead | BtiPinOptions::PermWrite | BtiPinOptions::PermExecute;
+    constexpr auto KNOWN = PERMS | BtiPinOptions::Compress | BtiPinOptions::Contiguous;
+    if (!!(options & ~KNOWN) || !(options & PERMS)) {
+        return Status::InvArgs;
+    }
+    if (!!(options & BtiPinOptions::Compress) && !!(options & BtiPinOptions::Contiguous)) {
+        return Status::InvArgs;
+    }
+    return Status::Ok;
+}
+
+auto BtiDispatcher::pieces(BtiPinOptions const options, u64 const size, Pieces &out) const
+    -> Status {
+    if (auto const status = check_options(options); status != Status::Ok) {
+        return status;
+    }
+    if (size == 0 || !ustl::is_aligned(size, PAGE_SIZE)) {
+        return Status::InvArgs;
+    }
+
+    auto piece = u64{PAGE_SIZE};
+    if (!!(options & BtiPinOptions::Compress)) {
+        piece = minimum_contiguity();
+    } else if (!!(options & BtiPinOptions::Contiguous)) {
+        piece = size;
+    }
+    // Rounded up: the last piece is what is left, and a pin that is not a
+    // whole number of pieces has one more.
+    auto count = size / piece;
+    if (size % piece != 0) {
+        count += 1;
+    }
+    out = {.size = piece, .count = count};
+    return Status::Ok;
+}
+
 auto BtiDispatcher::unpin_and_free(ustl::Box<Pin> pin) -> void {
     auto const status = pin->vmo->unpin_range(pin->offset, pin->size);
     if (status != Status::Ok) {
@@ -64,14 +102,11 @@ auto BtiDispatcher::pin(ustl::Arc<mm::VmObject> vmo, u64 const offset, u64 const
                         Rights &rights_out) -> Status {
     m_canary.verify<Self>();
 
-    constexpr auto PERMS =
-        BtiPinOptions::PermRead | BtiPinOptions::PermWrite | BtiPinOptions::PermExecute;
-    constexpr auto KNOWN = PERMS | BtiPinOptions::Compress | BtiPinOptions::Contiguous;
-    if (!vmo || !!(options & ~KNOWN) || !(options & PERMS)) {
+    if (!vmo) {
         return Status::InvArgs;
     }
-    if (!!(options & BtiPinOptions::Compress) && !!(options & BtiPinOptions::Contiguous)) {
-        return Status::InvArgs;
+    if (auto const status = check_options(options); status != Status::Ok) {
+        return status;
     }
     if (size == 0 || !ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;

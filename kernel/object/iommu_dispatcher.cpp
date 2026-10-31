@@ -8,12 +8,15 @@
 namespace ours::object {
 IommuDispatcher::IommuDispatcher(IommuType const type) : Base(), m_type(type) {}
 
-auto IommuDispatcher::create(IommuType const type, KernelHandle<Self> &handle_out,
-                             Rights &rights_out) -> Status {
+auto IommuDispatcher::create(IommuType const type, usize const desc_size,
+                             KernelHandle<Self> &handle_out, Rights &rights_out) -> Status {
     // A value outside the enum is a type this kernel has no code for, as much
     // as a named one it has not built yet.
     if (type != IommuType::Stub) {
         return Status::NotSupported;
+    }
+    if (desc_size != 0) {
+        return Status::InvArgs;
     }
 
     auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(type));

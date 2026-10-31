@@ -8,6 +8,8 @@
 #include <ours/object/handle.hpp>
 #include <ours/object/types.hpp>
 
+#include <span>
+
 namespace ours::object {
 /// Rights a freshly created pinned memory token carries: to be looked at, and
 /// nothing else. It is not duplicated or sent on, since the last handle to it
@@ -55,6 +57,21 @@ class PmtDispatcher final: public PmtDispatcherBase {
     ///   - BadState for a token that has been unpinned or quarantined.
     auto query_address(u64 offset, u64 size, Address &out) -> Status;
 
+    /// The addresses of the pieces the pin is cut into, which is how bti_pin
+    /// hands them over: piece k is [k * |piece_size|, (k + 1) * |piece_size|)
+    /// of the pin, the last one shorter if the pin is not a whole number of
+    /// them, and |out[i]| is where piece |first_piece| + i is for the device.
+    /// BtiDispatcher::pieces() says how big the pieces are for the options a
+    /// pin was made with.
+    ///
+    /// Each piece has to be one run; a piece that is not is InternalError, since
+    /// the options that made the pieces promised it and the pin checked it.
+    ///
+    ///   - InvArgs for a |piece_size| that is not a whole number of pages;
+    ///   - OutOfRange for a piece that starts past the end of the pin;
+    ///   - BadState for a token that has been unpinned or quarantined.
+    auto query_pieces(u64 piece_size, u64 first_piece, std::span<PhysAddr> out) -> Status;
+
     /// The driver says its device no longer touches the memory: the pages are
     /// let go. Does nothing more for a token that was unpinned already, so a
     /// path that fails after pinning can call it without asking whether it did.
@@ -69,6 +86,12 @@ class PmtDispatcher final: public PmtDispatcherBase {
 
     explicit PmtDispatcher(ustl::Arc<BtiDispatcher> bti);
     ~PmtDispatcher() override = default;
+
+    /// Where [offset, offset + size) of |pin| is, as query_address() answers.
+    /// The caller has checked that the range lies inside the pin and holds the
+    /// token's lock, which is what keeps |pin| alive.
+    TA_REQUIRES(get_lock())
+    auto run_at_locked(BtiDispatcher::Pin &pin, u64 offset, u64 size, Address &out) -> Status;
 
     /// Points the token at |pin|, which the BTI has just published. Called once,
     /// before the token is reachable from anywhere else.

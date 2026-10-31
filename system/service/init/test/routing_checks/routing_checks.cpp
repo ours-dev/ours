@@ -616,10 +616,58 @@ auto check_physical_vmo(Uandle const vma, Uandle const mmio) -> void {
     auto _ = ours::handle_close(window);
 }
 
+/// The calls that put memory within a device's reach, refused as far as they
+/// can be without the System resource of the IOMMU slot, which this program is
+/// not given yet: a handle that names nothing, a handle of another kind, and a
+/// resource of another kind (the MmIo root). What a real IOMMU, BTI and pin
+/// answer needs that slot, and is checked where it arrives.
+///
+/// pmt_unpin consumes its handle whatever it answers, so the VMO it is given
+/// here is gone afterwards: BadHandle for the next question about it.
+auto check_device_dma_refusals(Uandle const mmio) -> void {
+    auto vmo = Uandle::Invalid;
+    if (!expect("vmo_create(a page)", ours::vmo_create(PAGE, ours::VmoOptions::None, &vmo),
+                Status::Ok)) {
+        return;
+    }
+    auto none = Uandle::Invalid;
+    std::array<ours::PhysAddr, 1> addresses{};
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+
+    expect("iommu_create(no resource)",
+           ours::iommu_create(Uandle::Invalid, ours::IommuType::Stub, nullptr, 0, &none),
+           Status::BadHandle);
+    expect("iommu_create(a VMO)", ours::iommu_create(vmo, ours::IommuType::Stub, nullptr, 0, &none),
+           Status::BadType);
+    expect("iommu_create(the MmIo root)",
+           ours::iommu_create(mmio, ours::IommuType::Stub, nullptr, 0, &none), Status::BadType);
+    expect("bti_create(no IOMMU)", ours::bti_create(Uandle::Invalid, 0, 0, &none),
+           Status::BadHandle);
+    expect("bti_create(a VMO)", ours::bti_create(vmo, 0, 0, &none), Status::BadType);
+    expect("bti_pin(no BTI)",
+           ours::bti_pin(Uandle::Invalid, RW, vmo, 0, PAGE, addresses.data(), 1, &none),
+           Status::BadHandle);
+    expect("bti_pin(a VMO as the BTI)",
+           ours::bti_pin(vmo, RW, vmo, 0, PAGE, addresses.data(), 1, &none), Status::BadType);
+    expect("bti_release_quarantine(no BTI)", ours::bti_release_quarantine(Uandle::Invalid),
+           Status::BadHandle);
+    expect("bti_release_quarantine(a VMO)", ours::bti_release_quarantine(vmo), Status::BadType);
+    expect("pmt_unpin(no handle)", ours::pmt_unpin(Uandle::Invalid), Status::BadHandle);
+    if (none != Uandle::Invalid) {
+        fail("a refused call wrote a handle");
+    }
+
+    expect("pmt_unpin(a VMO)", ours::pmt_unpin(vmo), Status::BadType);
+    auto size = u64{0};
+    expect("vmo_get_size(the VMO pmt_unpin was given)", ours::vmo_get_size(vmo, &size),
+           Status::BadHandle);
+}
+
 /// Mmio.Get answers with the root of the physical address space: an MmIo
 /// resource of base 0 and size 0. The kernel is asked what the resource is,
 /// which shows the root did not hand out the root of another kind in its place,
-/// and then it is used: check_physical_vmo().
+/// and then it is used: check_physical_vmo(), and as the wrong kind of resource
+/// for the calls that want a System one: check_device_dma_refusals().
 auto check_mmio_resource(Uandle const vma) -> void {
     auto const mmio = get_resource(ours_resource::MMIO_PROTOCOL);
     if (mmio == Uandle::Invalid) {
@@ -641,6 +689,7 @@ auto check_mmio_resource(Uandle const vma) -> void {
     } else {
         check_physical_vmo(vma, mmio);
     }
+    check_device_dma_refusals(mmio);
     auto _ = ours::handle_close(mmio);
 }
 

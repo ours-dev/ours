@@ -307,7 +307,7 @@ namespace {
 
         object::KernelHandle<object::IommuDispatcher> iommu;
         auto rights = Rights::None;
-        if (object::IommuDispatcher::create(IommuType::Stub, iommu, rights) != Status::Ok ||
+        if (object::IommuDispatcher::create(IommuType::Stub, 0, iommu, rights) != Status::Ok ||
             object::BtiDispatcher::create(iommu.dispatcher(), 1, state->bti_handle, rights) !=
                 Status::Ok) {
             log::error("btistress.test: could not make an IOMMU and a BTI");

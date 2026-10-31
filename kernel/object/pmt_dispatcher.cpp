@@ -4,6 +4,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/object/pmt_dispatcher.hpp>
 
+#include <algorithm>
 #include <utility>
 
 #include <logz4/log.hpp>
@@ -38,6 +39,11 @@ auto PmtDispatcher::query_address(u64 const offset, u64 const size, Address &out
         return Status::OutOfRange;
     }
 
+    return run_at_locked(pin, offset, size, out);
+}
+
+auto PmtDispatcher::run_at_locked(BtiDispatcher::Pin &pin, u64 const offset, u64 const size,
+                                  Address &out) -> Status {
     // The whole range as one run, and if that is not one, its first page.
     // Rounding up cannot leave the pin: it is a whole number of pages.
     auto length = ustl::round_up(size, PAGE_SIZE);
@@ -60,6 +66,46 @@ auto PmtDispatcher::query_address(u64 const offset, u64 const size, Address &out
         return Status::InternalError;
     }
     return status;
+}
+
+auto PmtDispatcher::query_pieces(u64 const piece_size, u64 const first_piece,
+                                 std::span<PhysAddr> const out) -> Status {
+    m_canary.verify<Self>();
+
+    if (piece_size == 0 || !ustl::is_aligned(piece_size, PAGE_SIZE)) {
+        return Status::InvArgs;
+    }
+
+    Guard guard{get_lock()};
+    if (m_pin == nullptr) {
+        return Status::BadState;
+    }
+    auto &pin = *m_pin;
+
+    for (usize at = 0; at < out.size(); ++at) {
+        // The piece's start, compared as an index so that nothing overflows:
+        // the last piece that starts inside the pin has this index.
+        auto const index = first_piece + at;
+        if (index < first_piece || index > (pin.size - 1) / piece_size) {
+            return Status::OutOfRange;
+        }
+        auto const start = index * piece_size;
+        auto const length = std::min(piece_size, pin.size - start);
+
+        // Each piece asks about its own bytes and no more. A question about the
+        // rest of the pin, to share its answer with the pieces after, would
+        // scan what is left of the pin once for every piece when the pin is not
+        // one run: work that grows with the square of what the caller chose.
+        Address run{};
+        if (auto const status = run_at_locked(pin, start, length, run); status != Status::Ok) {
+            return status;
+        }
+        if (run.size < length) {
+            return Status::InternalError;
+        }
+        out[at] = run.address;
+    }
+    return Status::Ok;
 }
 
 auto PmtDispatcher::unpin() -> void {

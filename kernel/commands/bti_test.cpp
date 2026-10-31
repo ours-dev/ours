@@ -17,6 +17,8 @@
 //     asked where the memory is: one run for the whole range if it is one, or
 //     its first page if not, inside the range and nowhere else;
 //   - Contiguous asks for one run and is refused for pages that are not;
+//   - the addresses of a pin come back cut into pieces, a page each or the whole
+//     pin as one, and the pieces and the shape they have are as asked;
 //   - an unpin lets the pages go, and answering twice is harmless;
 //   - the last handle of a token closed without an unpin quarantines the pin:
 //     the pages stay pinned, the BTI refuses new pins, and release_quarantine
@@ -41,6 +43,8 @@
 #include <ours/object/iommu_dispatcher.hpp>
 #include <ours/object/pmt_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
+
+#include <array>
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
@@ -128,12 +132,18 @@ namespace {
         object::KernelHandle<object::IommuDispatcher> iommu_handle;
         auto iommu_rights = Rights::None;
         verdict(tally,
-                object::IommuDispatcher::create(static_cast<IommuType>(7), iommu_handle,
+                object::IommuDispatcher::create(static_cast<IommuType>(7), 0, iommu_handle,
                                                 iommu_rights) == Status::NotSupported &&
                     !iommu_handle.dispatcher(),
                 "an IOMMU of a type that is not the stub is NotSupported, and makes nothing");
         verdict(tally,
-                object::IommuDispatcher::create(IommuType::Stub, iommu_handle, iommu_rights) ==
+                object::IommuDispatcher::create(IommuType::Stub, 8, iommu_handle, iommu_rights) ==
+                        Status::InvArgs &&
+                    !iommu_handle.dispatcher(),
+                "a stub IOMMU has no hardware to describe, so a descriptor is InvArgs, and makes "
+                "nothing");
+        verdict(tally,
+                object::IommuDispatcher::create(IommuType::Stub, 0, iommu_handle, iommu_rights) ==
                         Status::Ok &&
                     iommu_handle.dispatcher()->iommu_type() == IommuType::Stub &&
                     iommu_rights == object::RIGHTS_DEFAULT_IOMMU && !(iommu_rights & Rights::Wait),
@@ -195,6 +205,30 @@ namespace {
         }
         verdict(tally, nr_pinned(*vmo) == 0 && bti.pin_count() == 0,
                 "none of them left a page pinned or a pin counted");
+
+        // ---- how many addresses a pin is handed over as
+        {
+            object::BtiDispatcher::Pieces shape{};
+            verdict(tally,
+                    bti.pieces(RW, 3 * P, shape) == Status::Ok && shape.size == P &&
+                        shape.count == 3,
+                    "pieces: a page each by default");
+            verdict(tally,
+                    bti.pieces(RW | BtiPinOptions::Compress, 3 * P, shape) == Status::Ok &&
+                        shape.size == bti.minimum_contiguity() && shape.count == 3,
+                    "pieces: a run of the minimum contiguity each with Compress");
+            verdict(tally,
+                    bti.pieces(RW | BtiPinOptions::Contiguous, 3 * P, shape) == Status::Ok &&
+                        shape.size == 3 * P && shape.count == 1,
+                    "pieces: the whole pin, once, with Contiguous");
+            verdict(tally,
+                    bti.pieces(BtiPinOptions::None, P, shape) == Status::InvArgs &&
+                        bti.pieces(RW | BtiPinOptions::Compress | BtiPinOptions::Contiguous, P,
+                                   shape) == Status::InvArgs &&
+                        bti.pieces(RW, 0, shape) == Status::InvArgs &&
+                        bti.pieces(RW, P + 1, shape) == Status::InvArgs,
+                    "pieces: the options and the size pin() refuses are InvArgs here too");
+        }
 
         // ---- a physical VMO is not pinned
         {
@@ -336,7 +370,36 @@ namespace {
                         "without Contiguous the same pages are pinned, and asked for as the layout "
                         "allows");
                 if (plain.token.dispatcher()) {
-                    plain.token.dispatcher()->unpin();
+                    // The same pin, cut into pieces as bti_pin hands it over.
+                    auto &pinned_token = *plain.token.dispatcher();
+                    auto const second_frame = phys_of(*layout, 1);
+                    std::array<PhysAddr, 2> by_page{};
+                    std::array<PhysAddr, 1> one{};
+                    verdict(tally,
+                            pinned_token.query_pieces(P, 0, by_page) == Status::Ok &&
+                                by_page[0] == first_frame && by_page[1] == second_frame,
+                            "in pieces of a page, each page's address");
+                    verdict(tally,
+                            pinned_token.query_pieces(P, 1, one) == Status::Ok &&
+                                one[0] == second_frame,
+                            "a later piece alone");
+                    one[0] = 0;
+                    verdict(tally,
+                            pinned_token.query_pieces(2 * P, 0, one) ==
+                                    choose(one_run, Status::Ok, Status::InternalError) &&
+                                one[0] == choose<PhysAddr>(one_run, first_frame, 0),
+                            "the whole pin as one piece is Ok for one run and InternalError for "
+                            "pages apart");
+                    verdict(tally,
+                            pinned_token.query_pieces(P, 2, one) == Status::OutOfRange &&
+                                pinned_token.query_pieces(P, ~u64{0}, one) == Status::OutOfRange &&
+                                pinned_token.query_pieces(0, 0, one) == Status::InvArgs &&
+                                pinned_token.query_pieces(P + 1, 0, one) == Status::InvArgs,
+                            "a piece past the pin is OutOfRange, though the VMO goes on, and a "
+                            "piece that is not whole pages is InvArgs");
+                    pinned_token.unpin();
+                    verdict(tally, pinned_token.query_pieces(P, 0, by_page) == Status::BadState,
+                            "an unpinned token answers BadState to pieces too");
                 }
                 verdict(tally, nr_pinned(*layout) == 0 && bti.pin_count() == 0,
                         "and unpinned again");

@@ -88,6 +88,24 @@ class BtiDispatcher final: public BtiDispatcherBase {
     static auto create(ustl::Arc<IommuDispatcher> iommu, u64 bti_id, KernelHandle<Self> &handle_out,
                        Rights &rights_out) -> Status;
 
+    /// How a pin of |size| bytes made with |options| is handed over: cut into
+    /// |count| pieces, each |size| bytes long but the last, which may be
+    /// shorter, and each given one address.
+    ///
+    ///   - none of Compress and Contiguous: one piece to a page;
+    ///   - Compress: one piece to a run of minimum_contiguity() bytes, which
+    ///     for this IOMMU is a page, so the same as no option;
+    ///   - Contiguous: the whole pin is one piece.
+    ///
+    /// The same options and size pin() takes, and the same InvArgs for the ones
+    /// it refuses, so that a caller can ask how many addresses to make room for
+    /// before pinning anything.
+    struct Pieces {
+        u64 size;
+        u64 count;
+    };
+    auto pieces(BtiPinOptions options, u64 size, Pieces &out) const -> Status;
+
     /// Pins [offset, offset + size) of |vmo| for the device, and makes the
     /// token for it.
     ///
@@ -145,6 +163,10 @@ class BtiDispatcher final: public BtiDispatcherBase {
   private:
     BtiDispatcher(ustl::Arc<IommuDispatcher> iommu, u64 bti_id);
     ~BtiDispatcher() override;
+
+    /// The options pin() accepts: only known bits, at least one permission, and
+    /// not Compress with Contiguous.
+    static auto check_options(BtiPinOptions options) -> Status;
 
     /// Whether a pin made now would be published: the last handle is not gone
     /// and nothing is quarantined. A snapshot.

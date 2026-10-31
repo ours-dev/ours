@@ -9,6 +9,13 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours {
+/// The most pages one bti_pin pins, whatever the options: the size of a call a
+/// program chooses is bounded, and so are the addresses it writes. 128 MiB.
+inline constexpr u64 BTI_PIN_MAX_PAGES = 32768;
+
+/// The longest hardware description iommu_create takes, in bytes.
+inline constexpr usize IOMMU_DESC_MAX_SIZE = 4096;
+
 /// iommu_create's |type|: which IOMMU the object stands for. The values are
 /// ABI and never change.
 ///

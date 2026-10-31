@@ -37,10 +37,13 @@ class IommuDispatcher final: public IommuDispatcherBase {
   public:
     static constexpr auto TYPE_TAG = type_tag(ObjectType::Iommu);
 
-    /// An IOMMU of |type|. NotSupported for a type this kernel has no
-    /// implementation of, which is every value but IommuType::Stub.
-    static auto create(IommuType type, KernelHandle<Self> &handle_out, Rights &rights_out)
-        -> Status;
+    /// An IOMMU of |type|, whose hardware |desc_size| bytes describe.
+    /// NotSupported for a type this kernel has no implementation of, which is
+    /// every value but IommuType::Stub; the stub has no hardware to describe, so
+    /// its |desc_size| is 0 and anything else is InvArgs. A type that has some
+    /// will take the bytes themselves here.
+    static auto create(IommuType type, usize desc_size, KernelHandle<Self> &handle_out,
+                       Rights &rights_out) -> Status;
 
     /// Which kind of IOMMU this is; type() is the kind of object, already
     /// taken by Dispatcher.

@@ -3,6 +3,7 @@
 #ifndef SYSCALL_HANDLERS_HPP
 #define SYSCALL_HANDLERS_HPP 1
 
+#include <ours/bti.hpp>
 #include <ours/exception.hpp>
 #include <ours/interrupt.hpp>
 #include <ours/object_info.hpp>

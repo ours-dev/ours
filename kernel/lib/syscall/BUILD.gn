@@ -24,9 +24,11 @@ source_set("syscall") {
   # table.cpp owns syscall_dispatch(), which syscall.S calls, the dispatch
   # table it indexes and the shims that unpack the frame. argument.hpp is the
   # shims' register conversion, and every other file holds the handlers of one
-  # family. task.cpp has the thread calls and task_suspend.
+  # family. task.cpp has the thread calls and task_suspend; bti.cpp the
+  # IOMMU, the BTI and the pinned memory a device reaches.
   sources = [
     "src/argument.hpp",
+    "src/bti.cpp",
     "src/channel.cpp",
     "src/command.cpp",
     "src/debug.cpp",
