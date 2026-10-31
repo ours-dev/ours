@@ -18,6 +18,11 @@ fake.obi packs physload, physboot and the fake kernel, so it builds only
 once all of them build for riscv; until then the shim boots without an
 initrd, and the summary says why. Nothing on riscv halts the machine, so
 QEMU is killed once the verdict is in or the timeout runs out.
+
+Once the boot is over it also runs scripts/header_lists.py's check on this
+build directory and prints its `headers` line: the header lists of
+//kernel/arch/riscv/{kernel,mm,phys} are in the riscv graph only, so the x86
+run cannot see them. A failing list fails the check like a failing boot.
 """
 
 # macOS still ships Python 3.9 as python3; this keeps the annotations lazy.
@@ -32,8 +37,9 @@ import threading
 import time
 from pathlib import Path
 
-# scripts/scratch_dir.py; boot_check.py, the only importer of this file, has
-# put scripts/ on sys.path.
+# scripts/scratch_dir.py and scripts/header_lists.py; boot_check.py, the only
+# importer of this file, has put scripts/ on sys.path.
+import header_lists
 import scratch_dir
 
 # The shim OpenSBI starts (//kernel/arch/riscv/phys/bootshim), and the image
@@ -256,7 +262,8 @@ class Boot:
         return False
 
 
-def run(root: Path, out: Path, product: str, no_build: bool, timeout: float | None) -> int:
+def run(root: Path, out: Path, product: str, no_build: bool, timeout: float | None,
+        no_tests: bool = False) -> int:
     if not no_build:
         if not configure(root, out, product):
             return 1
@@ -282,11 +289,12 @@ def run(root: Path, out: Path, product: str, no_build: bool, timeout: float | No
         time.sleep(0.1)
     boot.finish()
 
-    ok = boot.report()
+    results = [boot.report()]
     print(f"{'host-tests':<10} not run in the riscv mode; the x86 check runs them")
     # The x86 graph holds riscv's host-toolchain headers target and none of
-    # //kernel/arch/riscv/{kernel,mm,phys}, so its check does not cover them.
-    print(f"{'headers':<10} not run in the riscv mode, and the x86 check does not see "
-          f"riscv's own header targets: run scripts/header_lists.py on this build directory")
+    # //kernel/arch/riscv/{kernel,mm,phys}, so only this directory's check
+    # covers them. --no-tests skips it, as it does in the x86 mode.
+    if not no_tests:
+        results.append(header_lists.report(root, out))
     print(f"logs       {boot.log_path}")
-    return 0 if ok else 1
+    return 0 if all(results) else 1

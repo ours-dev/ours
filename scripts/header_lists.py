@@ -44,10 +44,12 @@ report that every one of zero headers is listed. A label is
 that directory's subdirectories, and one that ends in `:` the targets of that
 directory alone (`//kernel/mm:` is mm's, `//kernel/mm/` is not).
 
-Used by the `ours-verify` skill's boot_check.py, which runs it on an x86 build
-directory beside the host tests. It works on any generated build directory of
-the checkout the script is in, whatever the working directory: for a riscv one,
-`python3 scripts/header_lists.py out/bringup.riscv`.
+Used by the `ours-verify` skill's boot_check.py: its x86 mode runs it on the
+build directory beside the host tests, and its riscv mode (riscv_boot.py) on
+the riscv one after the boot, because each directory's graph holds targets the
+other's does not (the riscv directory alone has //kernel/arch/riscv/{kernel,
+mm,phys}). It works on any generated build directory of the checkout the
+script is in, whatever the working directory.
 """
 # macOS still ships Python 3.9 as python3; this keeps the annotations lazy.
 from __future__ import annotations

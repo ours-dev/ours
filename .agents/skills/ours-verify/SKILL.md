@@ -49,7 +49,8 @@ from GN (`gn desc //*`, then `gn desc` of each target's own `<label>.config`
 for its one include directory), so a new architecture target is held to it
 as soon as it is in the graph of the build directory that is checked: the x86
 directory holds riscv's host-toolchain `//kernel/arch/riscv:headers` and not
-its `kernel`, `mm` and `phys` targets, which only the riscv directory has.
+its `kernel`, `mm` and `phys` targets, which only the riscv directory has, so
+the riscv mode runs the same check on its own directory (see "riscv").
 Targets that publish one root between them (sampler, phys) are judged by the
 union of their lists. A header is a file named like one (`.h`, `.hpp`, `.inc`,
 `.tcc`, ...), and the check fails naming each:
@@ -87,9 +88,9 @@ already quiet when its timeout comes is let run until it is NMI'd.
 
 Flags: `--out out/<dir>` (configured automatically if new), `--no-build`,
 `--only dbg|rel`, `--timeout N`, `--no-tests` (skip the host tests and the
-header lists, for a loop of boots only; never for the check before a
-commit). `SMP=1`, `NUMA=1` and the other `scripts/qemu_boot.py` variables
-pass through.
+header lists, in the riscv mode the header lists alone, for a loop of boots
+only; never for the check before a commit). `SMP=1`, `NUMA=1` and the other
+`scripts/qemu_boot.py` variables pass through.
 
 ## riscv
 
@@ -124,12 +125,17 @@ phys `[error]` line or OpenSBI's `sbi_trap_error:` fails it at once; short of
 `riscv.log` in the directory named by the same rule as the x86 mode's,
 `$TMPDIR/ours-verify-bringup.riscv-<hash>/`. `--no-build` boots what is
 there, `fake.obi` included if it exists; `--only` is refused, and the host
-tests and the header lists do not run: the x86 check runs the tests, and stays
-the check before a commit. Its last lines say so. The x86 check's header lists
-do not cover riscv's own targets (`kernel`, `mm` and `phys` under
-`//kernel/arch/riscv`, which are in no x86 graph): those are one command away
-(`python3 scripts/header_lists.py out/bringup.riscv`), and it is the one to
-run after adding a riscv header.
+tests do not run: the x86 check runs them, and stays the check before a
+commit. The riscv mode's `host-tests` line says so.
+
+The header lists do run, once the boot is over, and its `headers` line counts
+in the exit code like the boot's: the riscv directory is the only one that
+holds riscv's own targets (`kernel`, `mm` and `phys` under
+`//kernel/arch/riscv`, which are in no x86 graph), so the x86 check cannot see
+them and this run is where a riscv header missing from its list is caught. The
+line is the x86 mode's, with the riscv graph's counts, and `--no-tests` skips
+it. A commit that adds a header under `kernel/arch` needs both runs: the x86
+one for x86's lists, this one for riscv's.
 
 For C++ edits, `cpp-write-and-verify` (clang-format and clang-tidy) comes
 first; this skill checks behaviour, that one checks the source.

@@ -49,7 +49,8 @@ scripts/qemu_boot.py.
 
 A build directory configured for riscv (target_cpu = "riscv" in its args.gn)
 is checked by riscv_boot.py instead: the phys chain on QEMU's virt machine,
-up to the fake kernel's "[fake-kernel] handoff ok".
+up to the fake kernel's "[fake-kernel] handoff ok", and then that directory's
+own header lists, which the x86 directory cannot see.
 
     python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/bringup.riscv
 """
@@ -587,7 +588,8 @@ def main(argv: list[str]) -> int:
     if target_cpu(out, args.product) == "riscv":
         if args.only is not None:
             parser.error("--only picks an x86 image; a riscv build directory boots one chain")
-        return riscv_boot.run(root, out, args.product, args.no_build, args.timeout)
+        return riscv_boot.run(root, out, args.product, args.no_build, args.timeout,
+                              args.no_tests)
     if args.timeout is None:
         args.timeout = 60.0
 
