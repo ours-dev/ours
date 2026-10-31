@@ -491,11 +491,127 @@ auto check_sampling_resource() -> void {
     auto _ = ours::handle_close(sampling);
 }
 
+/// interrupt_map gives the number interrupt_create takes for a source the
+/// firmware names, to the holder of the interrupt root. On QEMU's q35, the
+/// machine this image runs on, ISA 0 (the timer) is on GSI 2, ISA 3 on GSI 3,
+/// and the pins from GSI 16 up are PCI's. What is checked:
+///   - a line's number is not the pin's: the number for ISA 0 is not 0;
+///   - ISA 0 and GSI 2 are one line, the kernel's timer, which is taken for
+///     good (AlreadyBound), so the number is the line's;
+///   - ISA 3 and GSI 3 are one free line, taken with the number as given,
+///     without RemapIrq; and a PCI pin, GSI 23, has a line of its own, which
+///     an interrupt object takes level-triggered, as a PCI function's INTx
+///     is;
+///   - the refusals: a kind the kernel does not know and the invalid source
+///     are InvArgs, ahead of the handle; a source with no line (an ISA IRQ
+///     past 15, the cascade, a number no pin has) is NoResource; no handle is
+///     BadHandle. A refused call writes nothing.
+auto check_interrupt_map(Uandle const irq) -> void {
+    using ours::InterruptSourceKind;
+    constexpr auto ISA_TIMER = u32{0};
+    constexpr auto GSI_TIMER = u32{2};
+    constexpr auto GSI_FREE = u32{3};
+    constexpr auto GSI_PCI = u32{23};
+    constexpr auto ISA_CASCADE = u32{2};
+    constexpr auto NOT_ISA = u32{16};
+    constexpr auto NO_PIN = u32{200};
+    constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
+
+    auto isa_timer = UNTOUCHED;
+    auto gsi_timer = UNTOUCHED;
+    auto isa_free = UNTOUCHED;
+    auto gsi_free = UNTOUCHED;
+    auto gsi_pci = UNTOUCHED;
+    auto ok = true;
+    ok &= expect("interrupt_map(Irq root, Isa, 0)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_TIMER, &isa_timer),
+                 Status::Ok);
+    ok &= expect("interrupt_map(Irq root, Gsi, 2)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_TIMER, &gsi_timer),
+                 Status::Ok);
+    ok &=
+        expect("interrupt_map(Irq root, Isa, 3)",
+               ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_FREE, &isa_free), Status::Ok);
+    ok &=
+        expect("interrupt_map(Irq root, Gsi, 3)",
+               ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_FREE, &gsi_free), Status::Ok);
+    ok &= expect("interrupt_map(Irq root, Gsi, 23)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_PCI, &gsi_pci), Status::Ok);
+    if (!ok) {
+        return;
+    }
+
+    if (isa_timer != gsi_timer) {
+        fail("interrupt_map: ISA 0 and GSI 2 are one line, and their numbers differ");
+    }
+    if (isa_free != gsi_free) {
+        fail("interrupt_map: ISA 3 and GSI 3 are one line, and their numbers differ");
+    }
+    if (isa_timer == ISA_TIMER || gsi_timer == GSI_TIMER || isa_free == ISA_FREE ||
+        gsi_pci == GSI_PCI) {
+        fail("interrupt_map: a line's number is the pin's number");
+    }
+    if (isa_timer == isa_free || isa_free == gsi_pci || isa_timer == gsi_pci) {
+        fail("interrupt_map: two sources have one number");
+    }
+
+    auto interrupt = Uandle::Invalid;
+    expect("interrupt_create(the number interrupt_map gave for ISA 0, the timer's line)",
+           ours::interrupt_create(irq, isa_timer, ours::InterruptOptions::None, &interrupt),
+           Status::AlreadyBound);
+    if (expect("interrupt_create(the number interrupt_map gave for ISA 3, no RemapIrq)",
+               ours::interrupt_create(irq, isa_free, ours::InterruptOptions::None, &interrupt),
+               Status::Ok)) {
+        expect("close(the interrupt on the number interrupt_map gave for ISA 3)",
+               ours::handle_close(interrupt), Status::Ok);
+    }
+    interrupt = Uandle::Invalid;
+    if (expect(
+            "interrupt_create(the number interrupt_map gave for GSI 23, ModeLevelLow)",
+            ours::interrupt_create(irq, gsi_pci, ours::InterruptOptions::ModeLevelLow, &interrupt),
+            Status::Ok)) {
+        expect("close(the interrupt on the number interrupt_map gave for GSI 23)",
+               ours::handle_close(interrupt), Status::Ok);
+    }
+
+    auto refused = UNTOUCHED;
+    auto const unknown = static_cast<InterruptSourceKind>(0);
+    auto const unknown_too = static_cast<InterruptSourceKind>(99);
+    expect("interrupt_map(kind 0)", ours::interrupt_map(irq, unknown, ISA_FREE, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(kind 99)", ours::interrupt_map(irq, unknown_too, ISA_FREE, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(Isa, 0xFFFFFFFF)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, 0xFFFF'FFFF, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(Gsi, 0xFFFFFFFF)",
+           ours::interrupt_map(irq, InterruptSourceKind::Gsi, 0xFFFF'FFFF, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(no handle, kind 0): the kind is checked first",
+           ours::interrupt_map(Uandle::Invalid, unknown, ISA_FREE, &refused), Status::InvArgs);
+    expect("interrupt_map(Isa, 16)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, NOT_ISA, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Isa, 2), the cascade",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_CASCADE, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Gsi, 200)",
+           ours::interrupt_map(irq, InterruptSourceKind::Gsi, NO_PIN, &refused),
+           Status::NoResource);
+    expect("interrupt_map(no handle, Gsi, 3)",
+           ours::interrupt_map(Uandle::Invalid, InterruptSourceKind::Gsi, GSI_FREE, &refused),
+           Status::BadHandle);
+    if (refused != UNTOUCHED) {
+        fail("interrupt_map wrote its output though it refused");
+    }
+}
+
 /// Irq.Get answers with the root of the interrupt lines, which
 /// interrupt_create takes for a physical line: an interrupt on the free ISA 3
 /// is made with it, which takes the line, and closed, which lets the line go.
 /// The I/O port root, a resource of another kind, would be refused with
-/// BadType, so this also shows the root did not mix the two up.
+/// BadType, so this also shows the root did not mix the two up. The same root
+/// is what interrupt_map asks for.
 auto check_irq_resource() -> void {
     auto const irq = get_resource(ours_resource::IRQ_PROTOCOL);
     if (irq == Uandle::Invalid) {
@@ -507,6 +623,7 @@ auto check_irq_resource() -> void {
                Status::Ok)) {
         expect("close(the interrupt on ISA 3)", ours::handle_close(interrupt), Status::Ok);
     }
+    check_interrupt_map(irq);
     auto _ = ours::handle_close(irq);
 }
 
@@ -524,6 +641,10 @@ auto check_ioport_resource() -> void {
            ours::ioports_request(ioport, RTC_INDEX_PORT, 1), Status::Ok);
     expect("ioports_release(the resource Ioport.Get gave, 0x70, 1)",
            ours::ioports_release(ioport, RTC_INDEX_PORT, 1), Status::Ok);
+    auto line = u32{0};
+    expect("interrupt_map(the resource Ioport.Get gave)",
+           ours::interrupt_map(ioport, ours::InterruptSourceKind::Gsi, ISA_FREE, &line),
+           Status::BadType);
     auto _ = ours::handle_close(ioport);
 }
 

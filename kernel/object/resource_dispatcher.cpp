@@ -162,4 +162,24 @@ auto validate_ranged_resource(ours::Uandle const handle, RsrcKind const kind, u6
     }
     return validate_ranged_resource(*resource, kind, base, size);
 }
+
+auto validate_root_resource(ResourceDispatcher const &resource, RsrcKind const kind) -> Status {
+    if (resource.kind() != kind) {
+        return Status::BadType;
+    }
+    if (!resource.is_root()) {
+        return Status::AccessDenied;
+    }
+    return Status::Ok;
+}
+
+auto validate_root_resource(ours::Uandle const handle, RsrcKind const kind) -> Status {
+    ustl::Arc<ResourceDispatcher> resource;
+    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
+            handle, Rights::None, &resource);
+        Status::Ok != status) {
+        return status;
+    }
+    return validate_root_resource(*resource, kind);
+}
 } // namespace ours::object

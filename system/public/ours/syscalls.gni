@@ -1419,6 +1419,48 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "interrupt_map"
+    brief = "Writes into |out| the number interrupt_create takes for the interrupt source the firmware names."
+    doc = [
+      "An interrupt line is named by the kernel's own number for it, which no",
+      "program computes (interrupt_create). This gives the number of the line",
+      "made for a source: an ISA IRQ (Isa, 0 to 15, the pin the firmware's",
+      "tables route that legacy device to) or a global system interrupt (Gsi,",
+      "the firmware's number for a pin of an interrupt controller). It is for",
+      "the one component that reads those tables, and so needs the root of",
+      "the interrupt lines: |resource| must be an Irq resource that covers all",
+      "of them (BadHandle, BadType for a resource of another kind,",
+      "AccessDenied for an Irq resource that covers only a part). A device",
+      "driver should be handed its interrupt object, and not a number.",
+      "Nothing is taken: the line stays free until interrupt_create.",
+      "|kind| must be a kind this kernel knows, and |source| not 0xFFFFFFFF",
+      "(InvArgs, both checked before the resource). NoResource if the source",
+      "has no line: an ISA IRQ past 15 or the cascade, ISA 2, any ISA IRQ on",
+      "a platform without them, or a number no pin has.",
+    ]
+    args = [
+      {
+        name = "resource"
+        type = "Uandle"
+      },
+      {
+        name = "kind"
+        type = "InterruptSourceKind"
+      },
+      {
+        name = "source"
+        type = "u32"
+      },
+      {
+        name = "out"
+        type = "u32"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "interrupt_wait"
     brief = "Waits for the next interrupt on |handle| and writes when it arrived to |out_timestamp|."
     doc = [

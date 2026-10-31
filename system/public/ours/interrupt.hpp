@@ -48,6 +48,19 @@ enum class InterruptOptions : u32 {
 };
 USTL_ENABLE_ENUM_BITMASK(InterruptOptions);
 
+/// What the number given to interrupt_map is the number of. The values are
+/// ABI and never change; 0 is no kind, so an argument left zero is refused.
+enum class InterruptSourceKind : u32 {
+    /// An ISA IRQ, 0 to 15, on a platform that has them (a PC): the number a
+    /// legacy device is known by, routed to a pin as the firmware's tables
+    /// say. ISA 2, the cascade between the two legacy controllers, carries no
+    /// device and names no line.
+    Isa = 1,
+    /// A global system interrupt: the number the firmware gives a pin of an
+    /// interrupt controller (ACPI's GSI).
+    Gsi = 2,
+};
+
 /// interrupt_trigger's options. None is the only one; any other value is
 /// refused.
 enum class InterruptTriggerOptions : u32 {

@@ -224,6 +224,17 @@ auto platform::remap_isa_irq(u32 const isa_irq) -> VIrqNum {
     if (isa_irq >= arch::NUM_ISA_IRQS) {
         return isa_irq;
     }
+    return isa_irq_line(isa_irq);
+}
+
+/// The bound comes first here too, for the same reason. The cascade is left
+/// out: platform_init_apic() does not program it, and its GSI is commonly the
+/// timer's (q35 sends ISA 0 to GSI 2 and leaves ISA 2 on it), so naming it
+/// would hand out the timer's line under a second name.
+auto platform::isa_irq_line(u32 const isa_irq) -> VIrqNum {
+    if (isa_irq >= arch::NUM_ISA_IRQS || isa_irq == ISA_IRQ_PIC2) {
+        return irq::INVALID_V_IRQ_NUM;
+    }
     return irq::virq_of_hwirq(apic_io_isa_to_global(static_cast<u8>(isa_irq)));
 }
 } // namespace ours

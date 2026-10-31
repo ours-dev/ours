@@ -464,6 +464,40 @@ namespace {
         }
     }
 
+    /// validate_root_resource(): the root of a kind is the one resource that
+    /// passes, whatever the range a narrower one covers. interrupt_map asks it
+    /// of the Irq resource, and a user program cannot make a narrower one, so
+    /// this is where AccessDenied is shown.
+    auto check_root_only(Tally &tally) -> void {
+        KernelHandle<ResourceDispatcher> irq_root;
+        KernelHandle<ResourceDispatcher> irq_one;
+        KernelHandle<ResourceDispatcher> irq_all_but_last;
+        KernelHandle<ResourceDispatcher> ioport_root;
+        answered(tally, mint(&irq_root, RsrcKind::Irq, 0, 0, "irq"), Status::Ok,
+                 "mint the interrupt root");
+        answered(tally, mint(&irq_one, RsrcKind::Irq, 3, 1, "one"), Status::Ok,
+                 "mint one interrupt line");
+        answered(tally, mint(&irq_all_but_last, RsrcKind::Irq, 0, 0xFFFF'FFFF, "most"), Status::Ok,
+                 "mint every interrupt line but the last");
+        answered(tally, mint(&ioport_root, RsrcKind::IoPort, 0, 0, "ioport"), Status::Ok,
+                 "mint the I/O port root");
+        if (!irq_root.dispatcher() || !irq_one.dispatcher() || !irq_all_but_last.dispatcher() ||
+            !ioport_root.dispatcher()) {
+            return;
+        }
+
+        answered(tally, validate_root_resource(*irq_root.dispatcher(), RsrcKind::Irq), Status::Ok,
+                 "the interrupt root is the root of the interrupt lines");
+        answered(tally, validate_root_resource(*irq_one.dispatcher(), RsrcKind::Irq),
+                 Status::AccessDenied, "one interrupt line is not the root");
+        answered(tally, validate_root_resource(*irq_all_but_last.dispatcher(), RsrcKind::Irq),
+                 Status::AccessDenied, "nor is every line but one: a range is not the root");
+        answered(tally, validate_root_resource(*ioport_root.dispatcher(), RsrcKind::Irq),
+                 Status::BadType, "the I/O port root is no interrupt root");
+        answered(tally, validate_root_resource(*irq_root.dispatcher(), RsrcKind::IoPort),
+                 Status::BadType, "and the interrupt root is no I/O port root");
+    }
+
     auto resource_test_command(int, char **) -> int {
         Tally tally;
 
@@ -471,6 +505,7 @@ namespace {
         check_ioport_root(tally);
         check_ioport_range(tally);
         check_irq_root(tally);
+        check_root_only(tally);
         check_mmio_tables(tally);
         check_mmio_root(tally);
         check_mmio_range(tally);

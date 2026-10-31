@@ -21,7 +21,8 @@
 //     what it does not hold, at both ends of both tables, the interrupt path
 //     included;
 //   - each ISA IRQ names the line made for the pin the MADT sends it to,
-//     asked of the firmware's tables and not of the irq layer;
+//     asked of the firmware's tables and not of the irq layer, and the
+//     cascade names none (interrupt_map's Isa kind asks the same function);
 //   - a pin from the ISA range up is idle: its entry is masked, and it
 //     signals as PCI does, level-triggered;
 //   - a GSI used as a virq names no line, and neither does the number past
@@ -217,11 +218,26 @@ namespace {
     /// one names must be the one made for the pin the MADT sends it to,
     /// apic_io_isa_to_global(), which comes from the firmware's tables and not
     /// from the irq layer: the other tests get their line from
-    /// remap_isa_irq() and use whatever it answers.
+    /// remap_isa_irq() and use whatever it answers. The cascade, ISA 2,
+    /// carries no device and names none; remap_isa_irq() answers what
+    /// isa_irq_line() does for the ISA IRQs, and a number past them comes back
+    /// unchanged from one and is no line for the other.
     auto check_isa_lines(Tally &tally) -> void {
         auto wrong = usize{0};
         for (auto isa = u32{0}; isa < arch::NUM_ISA_IRQS; ++isa) {
-            auto const line = platform::remap_isa_irq(isa);
+            auto const line = platform::isa_irq_line(isa);
+            if (platform::remap_isa_irq(isa) != line) {
+                wrong += 1;
+                log::error("pinlines.test:   ISA {}: remap_isa_irq() and isa_irq_line() differ",
+                           isa);
+            }
+            if (isa == ISA_IRQ_PIC2) {
+                if (line != irq::INVALID_V_IRQ_NUM) {
+                    wrong += 1;
+                    log::error("pinlines.test:   the cascade names line {}", line);
+                }
+                continue;
+            }
             auto const pin = apic_io_isa_to_global(static_cast<u8>(isa));
             if (irq::hwirq_of_virq(line) != pin) {
                 wrong += 1;
@@ -230,9 +246,14 @@ namespace {
             }
         }
         verdict(tally, wrong == 0,
-                "each ISA IRQ names the line made for the pin the MADT sends it to");
+                "each ISA IRQ names the line made for the pin the MADT sends it to, the cascade "
+                "none");
+        verdict(tally,
+                platform::isa_irq_line(arch::NUM_ISA_IRQS) == irq::INVALID_V_IRQ_NUM &&
+                    platform::isa_irq_line(200) == irq::INVALID_V_IRQ_NUM,
+                "a number past the ISA IRQs is no ISA IRQ");
         verdict(tally, platform::remap_isa_irq(200) == 200,
-                "a number past the ISA IRQs comes back unchanged");
+                "and comes back unchanged from remap_isa_irq()");
     }
 
     auto check_pins_are_idle(Tally &tally) -> void {

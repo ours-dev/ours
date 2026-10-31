@@ -35,12 +35,25 @@ constexpr auto ISA_IRQ_IDE0 = IsaIrqNum(14);
 constexpr auto ISA_IRQ_IDE1 = IsaIrqNum(15);
 
 namespace platform {
+    /// The interrupt line ISA IRQ `isa_irq` arrives on, by the number the irq
+    /// layer names lines with, its virq: on a PC the line made for the pin the
+    /// MADT's overrides send it to (q35 sends ISA 0 to GSI 2).
+    /// INVALID_V_IRQ_NUM if `isa_irq` is no ISA IRQ of this platform (past 15,
+    /// or any number on a platform that has no ISA interrupts), if it is the
+    /// cascade between the two legacy controllers, ISA 2, which carries no
+    /// device, or if no line was made for its pin.
+    ///
+    /// This is what interrupt_map's Isa kind asks for.
+    [[nodiscard]]
+    auto isa_irq_line(u32 isa_irq) -> VIrqNum;
+
     /// The interrupt line ISA IRQ `irq` arrives on, by the number the irq
     /// layer names lines with, its virq. On a PC the ISA IRQ gives a GSI,
     /// which the MADT's overrides may move (q35 sends ISA 0 to GSI 2), and
-    /// the line is the one made for that GSI. A number past the ISA IRQs is
-    /// no ISA IRQ and comes back unchanged, since it already names a line; so
-    /// does every number on a platform that has no ISA interrupts.
+    /// the line is the one made for that GSI (isa_irq_line()). A number past
+    /// the ISA IRQs is no ISA IRQ and comes back unchanged, since it already
+    /// names a line; so does every number on a platform that has no ISA
+    /// interrupts.
     ///
     /// This is what interrupt_create's RemapIrq asks for: a driver that knows
     /// its device by its ISA IRQ, as the PS/2 controller's is 1, names its

@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
 
+#include <ours/irq/mod.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
@@ -10,6 +11,7 @@
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/resource_dispatcher.hpp>
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
+#include <ours/platform/isa.hpp>
 #include <ours/status.hpp>
 
 namespace ours::syscall {
@@ -69,6 +71,44 @@ auto interrupt_create(ours::Uandle const resource, u32 const line, InterruptOpti
     }
     auto _ = table.add(ustl::move(handle));
     return Status::Ok;
+}
+
+/// The number interrupt_create takes for a source the firmware names. Nothing
+/// is taken, only looked up, so it changes no state and has nothing to give
+/// back; the only thing it can fail after is writing |out|.
+///
+/// The kind and the source are checked before the resource, as
+/// interrupt_create checks its options before it looks at the resource: each
+/// check names the argument it is about. The resource must be the root of the
+/// interrupt lines, not a range of them: the firmware's numbers are not the
+/// numbers a range is made of, so a narrowed resource cannot say which of
+/// them it covers.
+auto interrupt_map(ours::Uandle const resource, InterruptSourceKind const kind, u32 const source,
+                   user_copy::UserOutPtr<u32> const out) -> Status {
+    if (kind != InterruptSourceKind::Isa && kind != InterruptSourceKind::Gsi) {
+        return Status::InvArgs;
+    }
+    if (source == irq::INVALID_H_IRQ_NUM) {
+        return Status::InvArgs;
+    }
+    if (auto const status = object::validate_root_resource(resource, RsrcKind::Irq);
+        status != Status::Ok) {
+        return status;
+    }
+
+    auto virq = irq::INVALID_V_IRQ_NUM;
+    switch (kind) {
+        case InterruptSourceKind::Isa:
+            virq = platform::isa_irq_line(source);
+            break;
+        case InterruptSourceKind::Gsi:
+            virq = irq::virq_of_hwirq(source);
+            break;
+    }
+    if (virq == irq::INVALID_V_IRQ_NUM) {
+        return Status::NoResource;
+    }
+    return out.copy_to_user(virq);
 }
 
 /// Takes the next interrupt, blocking until one arrives: Cancelled once the
