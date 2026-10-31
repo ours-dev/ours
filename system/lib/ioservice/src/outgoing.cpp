@@ -33,6 +33,23 @@ namespace {
         return segment;
     }
 
+    /// Whether |node| is |ancestor| or lies below it, found by walking
+    /// |ancestor|'s children: a Tree keeps no link from a node to its parent.
+    /// The walk recurses once for each level of the tree, and a tree is never
+    /// deeper than the nodes its storage holds (Outgoing::MAX_NODES).
+    auto at_or_below(Tree const &tree, NodeId const ancestor, NodeId const node) -> bool {
+        if (ancestor == node) {
+            return true;
+        }
+        for (auto child = tree.first_child(ancestor); child.is_some();
+             child = tree.next_sibling(*child)) {
+            if (at_or_below(tree, *child, node)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// A line being assembled in the room one debug_write takes, with no
     /// allocation: the pieces are copied in, and a piece that does not fit is
     /// cut. Written out in one call, so that the line cannot be split by
@@ -79,24 +96,30 @@ Outgoing::Outgoing(Storage &storage, loop::Loop &loop)
     , m_svc(m_tree.add_directory(m_root, SVC_DIRECTORY).unwrap()) {}
 
 auto Outgoing::add_protocol(std::string_view const name, Handler &handler) -> Status {
-    if (m_protocols == MAX_PROTOCOLS) {
+    if (m_handlers == MAX_PROTOCOLS) {
         return Status::NoResource;
     }
     // The service node's value is the handler's index, which connect() takes
     // back. The handler is stored only once the node is in, so a refused
     // name leaves nothing behind.
-    auto const added = m_tree.add_service(m_svc, name, m_protocols);
+    auto const added = m_tree.add_service(m_svc, name, m_handlers);
     if (added.is_err()) {
         return added.unwrap_err();
     }
-    m_storage->handlers[m_protocols] = &handler;
-    m_protocols += 1;
+    m_storage->handlers[m_handlers] = &handler;
+    m_handlers += 1;
     return Status::Ok;
 }
 
 auto Outgoing::is_declared(NodeId const node) const -> bool {
     auto const declared = std::span{m_storage->directories}.first(m_declared);
     return std::ranges::find(declared, node) != declared.end();
+}
+
+auto Outgoing::in_declared_tree(NodeId const node) const -> bool {
+    auto const declared = std::span{m_storage->directories}.first(m_declared);
+    return std::ranges::any_of(
+        declared, [this, node](NodeId const root) { return at_or_below(m_tree, root, node); });
 }
 
 auto Outgoing::add_directory(std::string_view const path) -> ustl::Result<NodeId, Status> {
@@ -176,16 +199,45 @@ auto Outgoing::add_file(NodeId const parent, std::string_view const name, VmoFil
     return m_tree.add_file(parent, name, file);
 }
 
+auto Outgoing::add_service(NodeId const parent, std::string_view const name, Handler &handler)
+    -> ustl::Result<NodeId, Status> {
+    // 1. Only a directory capability's tree. The protocols' nodes are
+    //    add_protocol()'s: a service node at the root or in svc/ would be
+    //    one the program has not declared, or one add_protocol() did not make
+    //    and could answer AlreadyExists for. A parent that is no node of the
+    //    tree at all is refused here too, which is what Tree would say.
+    if (!in_declared_tree(parent)) {
+        return ustl::err(Status::InvArgs);
+    }
+    // 2. Room in the table of handlers, before the tree is touched: a node,
+    //    once added, stays, and one whose value indexes past the table would
+    //    be an Open that reaches no handler.
+    if (m_handlers == MAX_PROTOCOLS) {
+        return ustl::err(Status::NoResource);
+    }
+    // 3. The tree's own refusals. The value is the handler's index, which
+    //    connect() takes back, and the handler is stored only once the node
+    //    is in, so a refused name leaves nothing behind.
+    auto const added = m_tree.add_service(parent, name, m_handlers);
+    if (added.is_err()) {
+        return added;
+    }
+    m_storage->handlers[m_handlers] = &handler;
+    m_handlers += 1;
+    return added;
+}
+
 auto Outgoing::serve(Uandle const directory_request) -> Status {
     return m_server.serve(directory_request, m_root, OUTGOING_RIGHTS);
 }
 
 auto Outgoing::connect(u64 const service, Uandle const channel) -> void {
-    // An Open of svc/<name>: the protocol's handler owns the channel from
-    // here. The value is an index add_protocol() gave out, and the tree holds
-    // no other service node; one past them would be a bug, and its channel
-    // only closes.
-    if (service >= m_protocols) {
+    // An Open of svc/<name>, or of a service node in a directory
+    // capability's tree: the node's handler owns the channel from here. The
+    // value is an index add_protocol() or add_service() gave out, and the
+    // tree holds no other service node; one past them would be a bug, and its
+    // channel only closes.
+    if (service >= m_handlers) {
         // Nothing can be done about a close that fails.
         auto _ = ours::handle_close(channel);
         return;

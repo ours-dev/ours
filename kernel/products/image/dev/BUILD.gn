@@ -74,7 +74,8 @@ if (defined(ours.with)) {
 #     sibling: whole, through a subdirectory, through an offer that asks more
 #     than files' expose states, through an expose that asks more than the
 #     declaration allows, a directory the program does not serve, and a
-#     subdirectory that is a file;
+#     subdirectory that is a file; and, last, through files' service node
+#     `stop`, which makes files exit, so that the provider-exit case runs;
 #   - shell, the serial console's shell, with /boot rx* and the same three
 #     protocols: it runs its commands through the Launcher, reads the
 #     console with the resource ours.resource.Debug gives it, and holds

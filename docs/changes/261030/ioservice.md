@@ -101,3 +101,101 @@ None.
 1. Why must `add_directory("/x/y")` ask whether two nodes fit before it makes `x`, when `Tree` could answer NoResource at `y`?
 2. `/export/data2` and `/svcx` are legal beside `/export/data` and `/svc`. What makes the walk refuse neither, and what would a string-prefix test have done?
 3. Why does the console line stop at the outgoing root and `svc/`, and what would a consumer be able to do to the provider's console if it did not?
+
+## Title: A directory capability's tree can hold a service node, and its handler comes from the table the protocols use (2026-10-31)
+
+**Files**
+- `system/lib/ioservice/include/ioservice/outgoing.hpp` — `Outgoing::add_service(parent, name, handler)`; `in_declared_tree()`; the doc comments of `Handler`, `MAX_PROTOCOLS`, `Storage::handlers` and `add_protocol()` say that the handler table is shared; the private `m_protocols` is `m_handlers`
+- `system/lib/ioservice/src/outgoing.cpp` — `add_service()`, `in_declared_tree()` and the walk under it (`at_or_below()`); `add_protocol()` and `connect()` use `m_handlers`
+- `system/lib/ioservice/test/outgoing_test.cpp` — ten tests (31 to 41 in the file)
+- `system/lib/ioservice/README.md` — `add_service`, and `MAX_PROTOCOLS` counting both
+
+**Symptom**
+Latent, cannot be triggered today: no program calls `add_service()`. The change is step 5 of 9 of `.agents/tasks/directory-capability/DESIGN.md` (decision 11 (c)). Without it the first provider, `examples/files`, has no way to be asked to exit, and the provider-exit case of the design's Testing section (a consumer holds a working entry, the provider exits, the consumer sees it) cannot be run at a moment the test chooses.
+
+**Cause**
+`Outgoing` could put one kind of service node in a tree, the protocols' under `svc/`, and `tree()` is not reachable (step 3). That is deliberate and it is why the call has to be here. A service node's value is an index into `Storage::handlers`: `Server` answers an Open of the node with `Action::Connect` and that value, the `LoopServer` calls the one `Delegate::connect(u64 service, channel)`, and `Outgoing::connect()` reads the value as a place in the table, closing the channel when it is past the end. A program that could call `Tree::add_service()` itself could write any value, including one that indexes a handler that was never added, so the node and the table have one owner: the `Outgoing` adds both.
+
+That decides the shape. The handler goes in the table `add_protocol()` fills and the node's value is its index, so a directory capability's service node and a protocol are the same thing to `connect()`, and `MAX_PROTOCOLS` is a limit on the sum. A second table would need the node's value to say which table it indexes, in a `u64` that is now a plain index; one table costs only that a provider with eight protocols has no room for a service node. The constant keeps its name: it is public, and renaming it is a change to every user for a limit that is nowhere near being reached.
+
+The order of the checks is the part to understand, because a node, once added, stays (`Tree` has no removal):
+
+1. The parent is a node of a declared directory's tree, or InvArgs. The protocols' nodes are `add_protocol()`'s: a service node at the outgoing root or in `svc/` would be one that no declaration accounts for, and one in `svc/` could shadow or collide with a protocol. The directories on the way to a declared path (`export` for `/export/docs`) are refused too, because they belong to no capability. A `Tree` has no link from a node to its parent, so the test walks each declared directory's children (`at_or_below()`) and recurses once for each level, and a tree is never deeper than its storage (`MAX_NODES`, 32). The walk needs no storage of its own, where a flag per node would have put a "mark" in a generic tree, or an array in `Storage`, for the one question.
+2. The table has room, or NoResource, before the tree is touched. Were it judged after `Tree::add_service()`, a full table would leave the node behind with a value one past the table, and every later Open of it would reach no handler: `connect()` would close the channel. That is the bug the order prevents, and the test for it opens the name after the refusal and adds a file of the same name.
+3. `Tree::add_service()`'s own refusals (InvArgs for a bad name, NotDir, AlreadyExists, NoResource for the nodes), and only when the node is in is the handler stored and the count raised. The count is raised after, so that a refusal of the tree takes no slot: a test adds `MAX_PROTOCOLS - 1` services after a run of refusals and needs them all to fit.
+
+**Change**
+```cpp
+// before                                              // after
+usize m_protocols = 0;                                 usize m_handlers = 0;   // protocols and service nodes
+
+auto add_protocol(name, handler)                       auto add_protocol(name, handler)   // unchanged, but for the name
+                                                       auto add_service(NodeId parent, std::string_view name, Handler &handler)
+                                                           -> ustl::Result<NodeId, Status>;
+```
+```cpp
+auto Outgoing::add_service(NodeId const parent, std::string_view const name, Handler &handler)
+    -> ustl::Result<NodeId, Status> {
+    if (!in_declared_tree(parent)) {
+        return ustl::err(Status::InvArgs);
+    }
+    if (m_handlers == MAX_PROTOCOLS) {
+        return ustl::err(Status::NoResource);
+    }
+    auto const added = m_tree.add_service(parent, name, m_handlers);
+    if (added.is_err()) {
+        return added;
+    }
+    m_storage->handlers[m_handlers] = &handler;
+    m_handlers += 1;
+    return added;
+}
+```
+
+The shape follows step 3's wrappers: `add_service(parent, name, handler)` takes a node `add_directory(path)` or `add_directory(parent, name)` returned and returns the new node, as `add_directory(parent, name)` and `add_file(parent, name, file)` do. The design wrote `add_service(path, handler)`. That form would walk a path a second time, to find a parent the program already holds, and would have to invent the rule for a path whose last segment is the node's name; the wrapper form needs no such rule and keeps the three adders alike. The cost is that a program passes a `NodeId` it kept. The Open of the node with `PROTOCOL_SERVICE` reaches `handler.connect()` through the server as before, a `PROTOCOL_DIRECTORY` Open of it is NotDir and a `PROTOCOL_FILE` one NotFile (the server's service branch, unchanged), and a connection without CONNECT is AccessDenied (check 4, and the last check of the service branch for a request that names no protocol). Nothing in `server.cpp` changed.
+
+**Reference**
+None for the shape: this project's own design (decision 11 (c)). The nearest piece in Fuchsia is a service entry added to a pseudo-directory, `vfs::PseudoDir::AddEntry()` with a `vfs::Service` (`sdk/lib/vfs/cpp/pseudo_dir.h`, `sdk/lib/vfs/cpp/service.h`), and `endpoint()` in the Rust vfs (`src/storage/lib/vfs/rust/src/service.rs:73`); both let the caller put the entry in any directory and hold the callback themselves. Ours restricts the parent because the node's value belongs to the `Outgoing`.
+
+**Verification**
+- Ten tests on the fake kernel, `outgoing` 31 to 41: a service node at a declared directory and below it reaches the handler it was added with and the Open's channel, before and after `serve()`; through a consumer's entry (a `r*` entry connects); a connection without CONNECT is AccessDenied for the service flag and for a request that names no protocol, and rights beyond the entry's are refused first; as a directory it is NotDir (from the root and through an entry) and as a file NotFile, never reaching the handler; the refused parents (the outgoing root, `svc/`, a protocol's node, the directory on the way to a declared path, an id of no node) with nothing made and no handler taken; the tree's refusals (bad names, a file, a directory and a service with the name, a file as parent) with the table intact; the nodes used up; eight protocols leave no room for a service node and the reverse, with the node not left behind; and eight handlers, alternately protocols and service nodes, each reached by its own path and no other.
+- Mutations of the sources, each built and run and reverted (script in the session scratchpad, not in the tree); `outgoing`'s tests fail for every one except an equivalent:
+
+  | Mutation | Caught by |
+  |---|---|
+  | the table check after the node is added | `EightProtocolsLeaveNoRoomForAServiceNode` |
+  | no check of the parent | `AddServiceRefusesAParentThatIsNotInADeclaredTree` |
+  | only `svc/` refused | the same |
+  | the root and `svc/` refused, the way to a declared path not | the same |
+  | a protocol's own node accepted as a parent | the same |
+  | only the declared node itself accepted, nothing below it | `AServiceNodeInADeclaredTreeReachesItsHandler`, `AddServiceRefusesAsTheTreeDoesAndLeavesNothingBehind` |
+  | `connect()` always reaches the first handler | four tests, among them the one that mixes protocols and service nodes and two older ones |
+  | the node carries value 0 | `AServiceNodeInADeclaredTreeReachesItsHandler`, `ProtocolsAndServiceNodesTakeTheirHandlersFromOneTableInOrder` |
+  | `add_service()` does not count its handler | six tests |
+  | `add_service()` cannot use the last slot | four, among them both orders of the shared table |
+  | a refused call takes a slot | `AddServiceRefusesAsTheTreeDoesAndLeavesNothingBehind` |
+  | `add_protocol()` ignores the service nodes | `EightServiceNodesLeaveNoRoomForAProtocol` |
+  | a service opened as a directory answers BadType | `AServiceNodeOpenedAsADirectoryOrAFileIsRefusedAndNotConnected` and three older tests |
+  | the last CONNECT check of the service branch removed | `AServiceNodeNeedsAConnectionThatHoldsConnect` |
+  | check 4 (CONNECT for the service flag) removed alone | not caught, and equivalent: the last check of the branch refuses the same request, so only the two removed together change an answer, and that is caught |
+
+- `boot_check.py --out out/dc-step5`: dbg PASS, 44 passed, 4 skipped; rel PASS, 41 passed, 8 skipped, 7 of 7 required (see `routing-checks.md`); host tests PASS, 151 passed.
+- clang-tidy (`prebuilt/clang/llvm-23`, `-p out/dc-step5`) on `outgoing.cpp` with its header and on `outgoing_test.cpp`: no diagnostic on any line of `system/lib/ioservice`; what the second prints is googletest's own header. `format_cpp.py --check` clean.
+
+**Deliberately not done**
+- `tree()` is still not reachable, and no `add_service(path, handler)`.
+- `MAX_PROTOCOLS` is not renamed or raised, and the table is not split.
+- A service node under `svc/`, or at the outgoing root: refused, not allowed with a flag.
+- A check that the same `Handler` is not added twice: one handler may serve any number of nodes, which is how a program with one `stop` handler for several directories would do it.
+- A removal: a node, once added, stays, as everywhere in `Tree`.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. `add_service()` judges the table before it calls `Tree::add_service()`, and raises the count after. What would each of the two orders reversed leave behind, and how does a test tell?
+2. Why can the call not accept a parent of `svc/`, though a service node would work there, and why is the directory on the way to `/export/docs` refused too?
+3. `MAX_PROTOCOLS` is eight and `files` has one service node. What does a provider with eight protocols lose, and what would two tables have cost instead?

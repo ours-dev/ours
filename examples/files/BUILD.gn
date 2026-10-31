@@ -15,8 +15,9 @@ assert(
 
 # A component that provides directories, the first one: it serves a small
 # tree of files from its outgoing directory, ioservice::Outgoing on a Loop
-# (files_server.cpp). It provides no protocol and so has no way to be asked
-# to stop; it runs until the system goes.
+# (files_server.cpp). It provides no protocol; it runs until the system goes
+# or a consumer connects to the service node `stop` inside the tree it
+# serves, which makes the program exit with 0.
 user_executable("files_server") {
   visibility = [ "//examples/*" ]
   sources = [ "files_server.cpp" ]

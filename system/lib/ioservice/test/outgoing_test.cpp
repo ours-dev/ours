@@ -8,7 +8,9 @@
 // NotFound and said on the debug console, a directory opened through it, a
 // malformed message and a client gone. And a directory capability's tree at
 // its declared path: the Open the root writes for it, the rights it keeps,
-// and the connections and nodes that run out.
+// and the connections and nodes that run out. And a service node inside that
+// tree (add_service()): the handler an Open of it reaches, the table it shares
+// with the protocols, and what it refuses.
 #include <ioservice/outgoing.hpp>
 
 #include <array>
@@ -879,5 +881,275 @@ TEST_F(OutgoingTest, AnOpenRefusedBelowADeclaredPathIsTheConsumersAndNotSaid) {
             "ioservice: the outgoing directory refused an Open of \"svc/missing\": NotFound\n",
             "ioservice: the outgoing directory refused an Open of \"missing\": NotFound\n",
         }));
+}
+// --- a service node in a directory capability's tree -------------------------------
+
+/// The flags of a connect() through a namespace entry: the protocol bit, and
+/// no right, since the connection's own CONNECT is what is checked.
+constexpr auto CONNECT_TO_SERVICE = Flags::ProtocolService;
+
+/// The ids of the first nodes of a fresh tree. A Tree numbers its nodes in
+/// the order they are added: the outgoing root, then svc/, then whatever the
+/// test adds. The tests use them to name a parent add_service() must refuse,
+/// which the Outgoing does not hand out.
+constexpr auto ROOT_NODE = NodeId{0};
+constexpr auto SVC_NODE = NodeId{1};
+
+TEST_F(OutgoingTest, AServiceNodeInADeclaredTreeReachesItsHandler) {
+    Calls stop_calls;
+    Calls late_calls;
+    Calls nested_calls;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    auto const sub = outgoing().add_directory(data, "sub").unwrap();
+    // Before and after serve(), and at the declared directory and below it.
+    auto const stop = outgoing().add_service(data, "stop", stop_calls);
+    ASSERT_TRUE(stop.is_ok());
+    ASSERT_TRUE(outgoing().add_service(sub, "nested", nested_calls).is_ok());
+    auto const directory = serve();
+    ASSERT_TRUE(outgoing().add_service(data, "late", late_calls).is_ok());
+
+    // Each Open reaches the handler its node was added with and no other,
+    // with the Open's channel, which the handler now owns.
+    auto const opened = open_through(directory, "export/data/stop", CONNECT_TO_SERVICE);
+    EXPECT_EQ(opened.status, Status::Ok);
+    ASSERT_EQ(stop_calls.channels.size(), 1u);
+    EXPECT_EQ(stop_calls.channels[0], opened.server);
+    EXPECT_TRUE(late_calls.channels.empty());
+    EXPECT_TRUE(nested_calls.channels.empty());
+    EXPECT_TRUE(fake::kernel().is_open(opened.server));
+    EXPECT_EQ(fake::kernel().queued_messages(opened.client), 0u);
+
+    auto const late = open_through(directory, "export/data/late", CONNECT_TO_SERVICE);
+    EXPECT_EQ(late.status, Status::Ok);
+    ASSERT_EQ(late_calls.channels.size(), 1u);
+    EXPECT_EQ(late_calls.channels[0], late.server);
+
+    auto const nested = open_through(directory, "export/data/sub/nested", CONNECT_TO_SERVICE);
+    EXPECT_EQ(nested.status, Status::Ok);
+    ASSERT_EQ(nested_calls.channels.size(), 1u);
+    EXPECT_EQ(nested_calls.channels[0], nested.server);
+    EXPECT_EQ(stop_calls.channels.size(), 1u);
+    EXPECT_EQ(late_calls.channels.size(), 1u);
+
+    // The node is the tree's, never svc/'s, and a connect() is not a refusal
+    // the provider's console would say.
+    EXPECT_EQ(open_through(directory, "svc/stop", CONNECT_TO_SERVICE).status, Status::NotFound);
+    EXPECT_EQ(fake::kernel().debug_writes(),
+              std::vector<std::string>{"ioservice: the outgoing directory refused an Open of "
+                                       "\"svc/stop\": NotFound\n"});
+}
+
+TEST_F(OutgoingTest, AServiceNodeIsReachedThroughAConsumersEntry) {
+    Calls calls;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    ASSERT_TRUE(outgoing().add_service(data, "stop", calls).is_ok());
+    auto const directory = serve();
+
+    // What a consumer's connect("/files/stop") writes on its entry: the
+    // entry's r* holds CONNECT and TRAVERSE.
+    auto const entry = open_through(directory, "export/data", READABLE_DIRECTORY);
+    ASSERT_EQ(entry.status, Status::Ok);
+    auto const connected = open_through(entry.client, "stop", CONNECT_TO_SERVICE);
+    EXPECT_EQ(connected.status, Status::Ok);
+    ASSERT_EQ(calls.channels.size(), 1u);
+    EXPECT_EQ(calls.channels[0], connected.server);
+    // A service takes a channel and no connection: the entry's is the only
+    // one besides the root's.
+    EXPECT_TRUE(fake::kernel().debug_writes().empty());
+}
+
+TEST_F(OutgoingTest, AServiceNodeNeedsAConnectionThatHoldsConnect) {
+    Calls calls;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    ASSERT_TRUE(outgoing().add_service(data, "stop", calls).is_ok());
+    auto const directory = serve();
+
+    // An entry that can read and walk but not connect: as a use of rights
+    // without CONNECT would be.
+    auto const entry =
+        open_through(directory, "export/data",
+                     Flags::ProtocolDirectory | Flags::PermReadBytes | Flags::PermTraverse);
+    ASSERT_EQ(entry.status, Status::Ok);
+
+    // Asked for as a service, and with no protocol named at all, which a
+    // service would otherwise let through the generic checks: both need
+    // CONNECT.
+    auto const as_service = open_through(entry.client, "stop", CONNECT_TO_SERVICE);
+    EXPECT_EQ(as_service.status, Status::AccessDenied);
+    EXPECT_FALSE(fake::kernel().is_open(as_service.server));
+    auto const unnamed = open_through(entry.client, "stop", Flags::None);
+    EXPECT_EQ(unnamed.status, Status::AccessDenied);
+    EXPECT_FALSE(fake::kernel().is_open(unnamed.server));
+    // Rights beyond the entry's are refused first, as for any node.
+    EXPECT_EQ(
+        open_through(entry.client, "stop", Flags::ProtocolService | Flags::PermWriteBytes).status,
+        Status::AccessDenied);
+    EXPECT_TRUE(calls.channels.empty());
+
+    // The root's own connection holds CONNECT, and reaches it.
+    EXPECT_EQ(open_through(directory, "export/data/stop", CONNECT_TO_SERVICE).status, Status::Ok);
+    EXPECT_EQ(calls.channels.size(), 1u);
+}
+
+TEST_F(OutgoingTest, AServiceNodeOpenedAsADirectoryOrAFileIsRefusedAndNotConnected) {
+    Calls calls;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    ASSERT_TRUE(outgoing().add_service(data, "stop", calls).is_ok());
+    auto const directory = serve();
+    auto const entry = open_through(directory, "export/data", READABLE_DIRECTORY);
+    ASSERT_EQ(entry.status, Status::Ok);
+
+    // What the root writes for a use whose joined path ends at the node.
+    auto const root_open = open_through(directory, "export/data/stop", READABLE_DIRECTORY);
+    EXPECT_EQ(root_open.status, Status::NotDir);
+    EXPECT_FALSE(fake::kernel().is_open(root_open.server));
+    // And a consumer opening it as a directory through its entry.
+    auto const entry_open = open_through(entry.client, "stop", READABLE_DIRECTORY);
+    EXPECT_EQ(entry_open.status, Status::NotDir);
+    EXPECT_FALSE(fake::kernel().is_open(entry_open.server));
+    EXPECT_EQ(open_through(entry.client, "stop", Flags::ProtocolFile | Flags::PermReadBytes).status,
+              Status::NotFile);
+    EXPECT_TRUE(calls.channels.empty());
+}
+
+TEST_F(OutgoingTest, AddServiceRefusesAParentThatIsNotInADeclaredTree) {
+    Calls calls;
+    ASSERT_EQ(outgoing().add_protocol(ECHO, calls), Status::Ok);
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    auto const other = outgoing().add_directory("/other").unwrap();
+    // The nodes added, in order: root 0, svc/ 1, the protocol's 2, export/ 3,
+    // data 4, other 5. A parent the program can only get by guessing.
+    auto const protocol_node = NodeId{2};
+    auto const on_the_way = NodeId{std::to_underlying(data) - 1};
+    ASSERT_EQ(std::to_underlying(on_the_way), 3u);
+
+    // The outgoing root and svc/ are the protocols' places, the directory on
+    // the way to a declared path belongs to no capability, a protocol's own
+    // node is no place for a child, and an id of no node names nothing.
+    for (auto const parent: {ROOT_NODE, SVC_NODE, protocol_node, on_the_way, NodeId{0xFFFF}}) {
+        EXPECT_EQ(refusal(outgoing().add_service(parent, "x", calls)), Status::InvArgs)
+            << std::to_underlying(parent);
+    }
+
+    // Nothing was made by any of them, nor a handler taken.
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "x", CONNECT_TO_SERVICE).status, Status::NotFound);
+    EXPECT_EQ(open_through(directory, "svc/x", CONNECT_TO_SERVICE).status, Status::NotFound);
+    EXPECT_EQ(open_through(directory, "export/x", CONNECT_TO_SERVICE).status, Status::NotFound);
+    EXPECT_TRUE(calls.channels.empty());
+
+    // Every declared directory is a place, whichever it is.
+    EXPECT_TRUE(outgoing().add_service(data, "x", calls).is_ok());
+    EXPECT_TRUE(outgoing().add_service(other, "x", calls).is_ok());
+}
+
+TEST_F(OutgoingTest, AddServiceRefusesAsTheTreeDoesAndLeavesNothingBehind) {
+    Calls calls;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    ASSERT_TRUE(outgoing().add_directory(data, "sub").is_ok());
+    auto const file = outgoing().add_file(data, "file", file_of(HELLO)).unwrap();
+    ASSERT_TRUE(outgoing().add_service(data, "stop", calls).is_ok());
+
+    // An invalid name; a name a file, a directory or a service has; a
+    // parent that is a file.
+    EXPECT_EQ(refusal(outgoing().add_service(data, "", calls)), Status::InvArgs);
+    EXPECT_EQ(refusal(outgoing().add_service(data, ".", calls)), Status::InvArgs);
+    EXPECT_EQ(refusal(outgoing().add_service(data, "..", calls)), Status::InvArgs);
+    EXPECT_EQ(refusal(outgoing().add_service(data, "a/b", calls)), Status::InvArgs);
+    EXPECT_EQ(refusal(outgoing().add_service(data, "file", calls)), Status::AlreadyExists);
+    EXPECT_EQ(refusal(outgoing().add_service(data, "sub", calls)), Status::AlreadyExists);
+    EXPECT_EQ(refusal(outgoing().add_service(data, "stop", calls)), Status::AlreadyExists);
+    EXPECT_EQ(refusal(outgoing().add_service(file, "child", calls)), Status::NotDir);
+
+    // None of them took a handler: the table still has room for the other
+    // MAX_PROTOCOLS - 1, and then none.
+    for (auto index = usize{1}; index < ioservice::Outgoing::MAX_PROTOCOLS; ++index) {
+        EXPECT_TRUE(outgoing().add_service(data, keep("s" + std::to_string(index)), calls).is_ok())
+            << index;
+    }
+    EXPECT_EQ(refusal(outgoing().add_service(data, "one-too-many", calls)), Status::NoResource);
+}
+
+TEST_F(OutgoingTest, AddServiceRefusedForTheNodesLeavesTheTreeAsItWas) {
+    Calls calls;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    // export/ and data are two of the nodes for directories; the rest go to
+    // files, so that the next node of any kind is refused.
+    for (auto index = usize{0}; index < NODES_FOR_DIRECTORIES - 2; ++index) {
+        ASSERT_TRUE(
+            outgoing().add_file(data, keep("f" + std::to_string(index)), file_of(HELLO)).is_ok());
+    }
+    EXPECT_EQ(refusal(outgoing().add_service(data, "stop", calls)), Status::NoResource);
+
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "export/data/stop", CONNECT_TO_SERVICE).status,
+              Status::NotFound);
+    EXPECT_TRUE(calls.channels.empty());
+}
+
+TEST_F(OutgoingTest, EightProtocolsLeaveNoRoomForAServiceNode) {
+    Calls calls;
+    for (auto index = usize{0}; index < ioservice::Outgoing::MAX_PROTOCOLS; ++index) {
+        ASSERT_EQ(outgoing().add_protocol(keep("p" + std::to_string(index)), calls), Status::Ok);
+    }
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    EXPECT_EQ(refusal(outgoing().add_service(data, "stop", calls)), Status::NoResource);
+
+    // Refused before the node was added: the name is still free, which a node
+    // left behind would have answered AlreadyExists, and an Open of it
+    // reaches nothing.
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "export/data/stop", CONNECT_TO_SERVICE).status,
+              Status::NotFound);
+    EXPECT_TRUE(outgoing().add_file(data, "stop", file_of(HELLO)).is_ok());
+    EXPECT_TRUE(calls.channels.empty());
+}
+
+TEST_F(OutgoingTest, EightServiceNodesLeaveNoRoomForAProtocol) {
+    Calls calls;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    for (auto index = usize{0}; index < ioservice::Outgoing::MAX_PROTOCOLS; ++index) {
+        ASSERT_TRUE(outgoing().add_service(data, keep("s" + std::to_string(index)), calls).is_ok());
+    }
+    EXPECT_EQ(outgoing().add_protocol(ECHO, calls), Status::NoResource);
+    EXPECT_EQ(refusal(outgoing().add_service(data, "stop", calls)), Status::NoResource);
+
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "svc/ours.test.Echo", CONNECT_TO_SERVICE).status,
+              Status::NotFound);
+}
+
+TEST_F(OutgoingTest, ProtocolsAndServiceNodesTakeTheirHandlersFromOneTableInOrder) {
+    // Eight handlers, each told apart, alternately added as a protocol and as a
+    // service node: every Open reaches its own and no other, so the value a
+    // node was added with indexes the one table whichever call made it.
+    constexpr auto COUNT = ioservice::Outgoing::MAX_PROTOCOLS;
+    std::array<Calls, COUNT> handlers;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    auto paths = std::vector<std::string>{};
+    for (auto index = usize{0}; index < COUNT; ++index) {
+        auto const name = keep("n" + std::to_string(index));
+        if (index % 2 == 0) {
+            ASSERT_EQ(outgoing().add_protocol(name, handlers[index]), Status::Ok);
+            paths.push_back("svc/n" + std::to_string(index));
+        } else {
+            ASSERT_TRUE(outgoing().add_service(data, name, handlers[index]).is_ok());
+            paths.push_back("export/data/n" + std::to_string(index));
+        }
+    }
+    auto const directory = serve();
+
+    for (auto index = usize{0}; index < COUNT; ++index) {
+        auto const opened = open_through(directory, paths[index], CONNECT_TO_SERVICE);
+        ASSERT_EQ(opened.status, Status::Ok) << paths[index];
+        for (auto other = usize{0}; other < COUNT; ++other) {
+            if (other <= index) {
+                ASSERT_EQ(handlers[other].channels.size(), 1u) << index << " " << other;
+            } else {
+                ASSERT_TRUE(handlers[other].channels.empty()) << index << " " << other;
+            }
+        }
+        EXPECT_EQ(handlers[index].channels[0], opened.server) << paths[index];
+    }
 }
 } // namespace

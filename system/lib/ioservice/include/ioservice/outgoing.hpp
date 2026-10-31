@@ -24,7 +24,10 @@
 ///                      to the program, which serves it however it likes;
 ///   export/data/...    a directory capability the component declares
 ///                      (add_directory()), at the path its declaration names,
-///                      with a tree under it that the program fills in.
+///                      with a tree under it that the program fills in. The
+///                      tree may hold service nodes of its own
+///                      (add_service()), which hand an Open's channel to the
+///                      program exactly as a protocol's does.
 ///
 /// The objects:
 ///   - the tree: the outgoing directory, its svc/ directory, a service node
@@ -34,8 +37,9 @@
 ///     connection table: the DirectoryRequest channel is the first
 ///     connection, and an Open or Clone of a directory through it makes
 ///     another, each with a Loop slot;
-///   - a Handler per protocol, which an Open of svc/<name> hands the
-///     request's channel to.
+///   - a Handler per protocol and per service node, which an Open of the
+///     node hands the request's channel to. They are one table, whichever
+///     call added them.
 ///
 /// The events: the root routes a client's Open of /svc/<name> to this
 /// component and writes Open("svc/<name>", PROTOCOL_SERVICE, channel) on the
@@ -72,10 +76,11 @@
 /// to completion before the next one starts.
 namespace ioservice {
 
-/// What an Open of one protocol is handed to: the program's object that
-/// serves the protocol, and derives from this. Nothing is deleted through a
-/// Handler, so its destructor is not virtual: a virtual one would add a
-/// deleting destructor, which a program with no heap has no use for.
+/// What an Open of one protocol, or of one service node in a directory
+/// capability's tree, is handed to: the program's object that serves it, and
+/// derives from this. Nothing is deleted through a Handler, so its destructor
+/// is not virtual: a virtual one would add a deleting destructor, which a
+/// program with no heap has no use for.
 class Handler {
   public:
     /// |channel| is the request's, and the function owns it from the call on:
@@ -94,7 +99,12 @@ class Handler {
 /// an Open of a service node comes back to it with the node's value.
 class Outgoing final: private LoopServer::Delegate {
   public:
-    /// How many protocols one outgoing directory may serve.
+    /// How many handlers one outgoing directory may hold: its protocols
+    /// (add_protocol()) and its service nodes (add_service()) together, since
+    /// both register their Handler in the one table that a service node's
+    /// value indexes. So it is a limit on the sum: eight protocols leave no
+    /// room for a service node, and the reverse. The constant keeps the name
+    /// it had before add_service() shared the table.
     static constexpr auto MAX_PROTOCOLS = usize{8};
 
     /// How many connections to the outgoing directory may be open at once:
@@ -144,7 +154,8 @@ class Outgoing final: private LoopServer::Delegate {
         std::array<ioservice::Node, MAX_NODES> nodes;
         std::array<ioservice::Connection, MAX_CONNECTIONS> connections;
         std::array<ioservice::LoopServer::Binding, MAX_CONNECTIONS> bindings;
-        /// Indexed by the value each service node was added with.
+        /// Indexed by the value each service node was added with: the
+        /// protocols' and the directory capabilities' alike.
         std::array<Handler *, MAX_PROTOCOLS> handlers;
         /// The node at the end of each declared path, in the order they were
         /// added. A declaration takes a node of its own, so there are never
@@ -175,7 +186,8 @@ class Outgoing final: private LoopServer::Delegate {
     ///   - InvArgs when |name| is not a valid ours.io name
     ///     (is_valid_name());
     ///   - AlreadyExists when svc/ has an entry of that name;
-    ///   - NoResource once MAX_PROTOCOLS are served.
+    ///   - NoResource once MAX_PROTOCOLS handlers are held, protocols and
+    ///     service nodes together (add_service()).
     [[nodiscard]]
     auto add_protocol(std::string_view name, Handler &handler) -> ours::Status;
 
@@ -225,6 +237,39 @@ class Outgoing final: private LoopServer::Delegate {
     auto add_file(NodeId parent, std::string_view name, VmoFile const &file)
         -> ustl::Result<NodeId, ours::Status>;
 
+    /// Adds a service node named |name| to |parent|, a directory capability's
+    /// tree: the node add_directory(path) returned or one made below it. An
+    /// Open of the node with PROTOCOL_SERVICE, by a connection that holds
+    /// CONNECT, hands the request's channel to |handler|'s connect(), as an
+    /// Open of svc/<name> hands it to a protocol's; an Open of it as a
+    /// directory or a file is refused with NotDir or NotFile, and a listing
+    /// of its directory shows it as a service. The connection the Open comes
+    /// through must hold CONNECT, as every use that asks for r* does, so a
+    /// consumer that can read the directory can also connect to the node.
+    ///
+    /// The node is in the tree of the capability, never under svc/, which is
+    /// add_protocol()'s: |parent| that is not at or below a declared
+    /// directory, such as the outgoing root, svc/, the directories on the way
+    /// to a declared path, or an id of no node, is refused.
+    ///
+    /// |handler| is registered in the table add_protocol() fills, so
+    /// MAX_PROTOCOLS limits the two together. |name| is kept as a view and
+    /// |handler| by address, so both must outlive the directory. May be
+    /// called before or after serve(). Refused with, in this order:
+    ///   - InvArgs when |parent| is not a node of a declared directory's tree
+    ///     (above);
+    ///   - NoResource when MAX_PROTOCOLS handlers are held already;
+    ///   - what Tree::add_service() refuses with: InvArgs for a |name| that is
+    ///     not a valid ours.io name, NotDir when |parent| is not a directory,
+    ///     AlreadyExists when it has a child of that name, and NoResource when
+    ///     the nodes are used up.
+    /// A refused call changes nothing. The handler table is judged before the
+    /// node is added, since a node, once added, stays: one added without a
+    /// handler to give it would be an Open that reaches nothing.
+    [[nodiscard]]
+    auto add_service(NodeId parent, std::string_view name, Handler &handler)
+        -> ustl::Result<NodeId, ours::Status>;
+
     /// Serves the outgoing directory on |directory_request|, the server end
     /// of the DirectoryRequest startup handle, with OUTGOING_RIGHTS, and
     /// waits on it. The program takes the handle itself, with
@@ -254,13 +299,20 @@ class Outgoing final: private LoopServer::Delegate {
     [[nodiscard]]
     auto is_declared(NodeId node) const -> bool;
 
+    /// Whether |node| is a declared directory or lies below one: a node of a
+    /// directory capability's tree, where the program's own nodes go.
+    [[nodiscard]]
+    auto in_declared_tree(NodeId node) const -> bool;
+
     Storage *m_storage;
     Tree m_tree;
     LoopServer m_server;
     NodeId m_root;
     NodeId m_svc;
-    /// The first m_protocols handlers are in use.
-    usize m_protocols = 0;
+    /// The first m_handlers entries of Storage::handlers are in use: the
+    /// protocols' and the directory capabilities' service nodes', in the
+    /// order they were added.
+    usize m_handlers = 0;
     /// The first m_declared entries of Storage::directories are in use.
     usize m_declared = 0;
 };

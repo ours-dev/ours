@@ -123,3 +123,67 @@ None.
 1. The manifest says `/export/docs` and the program says `DOCS_PATH`. Which string would you change to make every consumer read `NotFound`, where would the typo show in the logs, and why is that line on the provider's console and not the root's?
 2. `docs-wide` is exposed with `rx*` over a declaration of `r*`. Which hop is denied, which of the build and the root says so first, and what does the consumer of `/files-wide` read?
 3. Why is `ghost` served by nothing and still routed without a warning, while `files-denied` is routed to nothing and warned about?
+
+## Title: files exits when a consumer connects to its service node stop (2026-10-31)
+
+**Files**
+- `examples/files/files_server.cpp` — `StopHandler`, whose `connect()` exits the process with 0; `build_tree()` takes it and adds the service node `stop` under `export/docs` with `Outgoing::add_service()`; the header comment says what the node is for and who can reach it
+- `examples/files/BUILD.gn` — the comment above `files_server` no longer says the program has no way to be asked to stop
+- `kernel/products/image/dev/BUILD.gn` — the comment above `root.cm` lists the stop node among what routing_checks reaches
+
+**Symptom**
+Latent, cannot be triggered before this change: `files` served for as long as the system ran, so the provider-exit case of the design's Testing section (a consumer holds a working entry, the provider exits, the consumer sees it) had no provider that would exit when the test wanted. Visible now: `/files` lists a fifth name, `stop`, between `numbers.txt` and `sub`, and the rel log holds `files: stopping, as a consumer asked` and `init: files exited with 0`. The change is step 5 of 9 of `.agents/tasks/directory-capability/DESIGN.md`.
+
+**Cause**
+The case needs the provider to die at a moment the consumer chooses, after the entry has worked and after the consumer holds a connection of its own, and it must die in the way a provider dies: by exiting, so that the kernel closes its handles. The design weighed four ways and took the service node (decision 11 (c)): the other three cost a codec library and a second capability for a `Stop` protocol (a), a handler node that does not exist before step 9 (b), or a hook for a connection that ended and a test whose timing the client does not control (d). The service node costs one `Outgoing` call (`add_service()`, `ioservice.md`) and puts a service inside a directory, which nothing else exercised.
+
+The decisions inside the example, which the design left to this step:
+
+- **The exit is `process_exit(0)` from inside the handler**, as echo's `stop()` does. The other form, `main` returning 0, needs the Loop to stop, and it cannot: `Loop::run()` returns only when the port fails, and there is no call that quits it. The root logs `init: files exited with 0` either way.
+- **The channel is dropped, not closed.** The handler never touches it, and it closes with every other handle as the process dies. This matters to the test, not to the example: the consumer's wait on the channel is then a wait for the death. A handler that closed it first would end that wait while `files` was alive, and the consumer would go on to check connections that were still open. It also orders the closes. The kernel empties a process's handle table in the order the handles arrived (`HandleTable::clean()`, as `check_echo()` relies on), and the stop channel is the newest handle `files` holds, so the held connection and the entries (older) are closed by the time the stop channel reads PEER_CLOSED, and the first `open()` on the entry afterwards answers PeerClosed with no retry.
+- **The handler is a local of `main`, declared before the `Outgoing`.** The `Outgoing` keeps it by address and the program never returns from `main` but through the exit; the order is for the sake of reading it right.
+
+Who can stop it: the node is in the tree a consumer's entry shows, and an entry of `r*` holds CONNECT, so any component offered `docs` can stop `files`. That is acceptable in an example whose point is to be stopped by its test, and wrong in a service. The design's last open question says so, and the header comment of the program too.
+
+**Change**
+```cpp
+// before                                              // after
+auto build_tree(ioservice::Outgoing &outgoing)         auto build_tree(ioservice::Outgoing &outgoing, StopHandler &stop)
+                                                           ...
+                                                           outgoing.add_service(docs.unwrap(), STOP_NAME, stop)
+
+                                                       class StopHandler final: public ioservice::Handler {
+                                                         public:
+                                                           auto connect(Uandle) -> void override {
+                                                               auto _ = ort::debug_line("files: stopping, as a consumer asked");
+                                                               ours::process_exit(0);
+                                                           }
+                                                       };
+```
+`files.cm` does not change: the node is inside `docs`, which the manifest already declares and exposes. The tree has 9 nodes of the 32.
+
+**Reference**
+None for the exit: this project's own test hook. The exit from a Loop callback is echo's `EchoServer::stop()` (`examples/echo/echo_server.cpp`).
+
+**Verification**
+- `boot_check.py --out out/dc-step5`: dbg PASS, 44 passed, 4 skipped; rel PASS, 41 passed, 8 skipped, 7 of 7 required (`init: files exited with 0` is now one of them; see `routing-checks.md`); host tests 151.
+- Sizes (`llvm-size`): `files_server` text 28,509 (27,717 in step 4's note), data 664 (640); `kernel.dev.obi` 1,018,448 (1,017,128), `kernel.dev.dbg_1.obi` 954,512, `files.cm` 438 and `root.cm` 1,840 unchanged. The note's bss, 22,320, is not comparable with this build's 21,496; I did not trace why (the command the note used is not recorded).
+- On the target, the mutations that touch this program, each built, booted on rel and reverted: the handler does not exit (the boot hangs in `routing_checks` and `boot_check.py` reports `no "routing_checks: passed", "init: files exited with 0"` after its timeout), the handler closes the channel and does not exit (the same), the handler exits with 1 (`routing_checks: passed` but no `init: files exited with 0`), and no stop node (the listing check and the connect both FAILED). Table in `routing-checks.md`.
+- clang-tidy on `files_server.cpp`: no diagnostic.
+
+**Deliberately not done**
+- A reply on the stop channel, or any protocol on it: the node only takes a channel.
+- Stopping on the first of several kinds of request, or after a delay.
+- A check that the caller is allowed to stop the program. There is nothing to check against; the point of the node is that the test can.
+- A change to the manifest.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. The handler never closes the channel it is given. What would a consumer that waits for the channel to close learn if it did, and how does the order in which a process's handles close make the entry read PeerClosed on the first `open()` afterwards?
+2. Why is `process_exit(0)` in a Loop callback the program's way to quit, and what does the root see of it?
+3. Any component offered `docs` can stop `files`. Which two facts make that true, and what would a service have to do instead?

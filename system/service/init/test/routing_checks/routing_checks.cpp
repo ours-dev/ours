@@ -41,7 +41,10 @@
 /// It reads the files through /files and checks their bytes, lists the
 /// directory and checks the names in order, asks for write and for more rights
 /// than the use has and expects AccessDenied from files' server, and checks
-/// that /files-sub shows only nested.txt.
+/// that /files-sub shows only nested.txt. Last of all it connects to the
+/// service node /files/stop, which makes files exit, and checks what a
+/// consumer that held the entry sees of a provider that has gone: a
+/// connection it held and the entry both read PEER_CLOSED.
 ///
 /// Its manifest also uses seven protocols, which live in its /svc: the root's
 /// built-ins ours.process.Launcher, ours.resource.Debug,
@@ -130,6 +133,10 @@ constexpr auto FILES = std::string_view{"/files"};
 constexpr auto FILES_SUB = std::string_view{"/files-sub"};
 constexpr auto GHOST = std::string_view{"/ghost"};
 constexpr auto FILES_FILE = std::string_view{"/files-file"};
+/// The service node inside /files that makes files exit when it is connected
+/// to (examples/files/files_server.cpp): a connect() through the entry, whose
+/// r* holds CONNECT.
+constexpr auto FILES_STOP = std::string_view{"/files/stop"};
 
 /// What files serves under /files (examples/files/files_server.cpp), which
 /// this program spells again as its own: a file's path, its bytes, and the
@@ -140,7 +147,7 @@ constexpr auto NUMBERS_PATH = std::string_view{"/files/numbers.txt"};
 constexpr auto NUMBERS_TEXT = std::string_view{"one\ntwo\nthree\nfour\n"};
 constexpr auto NESTED_PATH = std::string_view{"/files/sub/nested.txt"};
 constexpr auto NESTED_TEXT = std::string_view{"nested in sub\n"};
-constexpr auto FILES_NAMES = std::string_view{".,hello.txt,numbers.txt,sub"};
+constexpr auto FILES_NAMES = std::string_view{".,hello.txt,numbers.txt,stop,sub"};
 constexpr auto SUB_NAMES = std::string_view{".,nested.txt"};
 
 /// The line check_irq_resource() takes: ISA 3, COM2's, which is free, since
@@ -1063,6 +1070,108 @@ auto check_echo() -> void {
     expect("a route to echo once it has exited", answered, Status::NotFound);
 }
 
+/// The provider asked to stop, after its entry has worked
+/// (.agents/tasks/directory-capability/DESIGN.md, decision 11 (c)): a
+/// consumer that connects to files' service node `stop` hands files a channel
+/// and files exits. What this program held of it then is gone, as it would be
+/// for a provider that died on its own: a connection opened before reads
+/// PEER_CLOSED, and so does the entry. The root is not involved, so there is
+/// no epitaph for a consumer that already had the entry to read: open() on it
+/// answers PeerClosed, where one started after the exit is answered NotFound
+/// by the root (D23, the route to echo in check_echo()).
+///
+/// It runs last, after every case that uses /files, /files-sub, /files-file,
+/// /ghost, /files-denied and /files-wide. The first two are the entries that
+/// stay connected to files and die with it; /ghost and /files-file were closed
+/// by files' server with a status, /files-denied and /files-wide by the root,
+/// and keep that status. A case that opened a file or listed a directory after
+/// the stop would read PeerClosed, not the bytes. check_spawn() is the one
+/// later check that touches them without using them: fsio::export_namespace()
+/// clones every live entry for the program it starts, and skips one whose
+/// server is gone (it marks it closed), so spawning after the stop would still
+/// pass today. That is a property of fsio and not of this case, so nothing is
+/// left to depend on it: nothing follows this case but the summary, and no
+/// later check can hang or fail on its account.
+///
+/// Its waits are Incoming::receive()'s, as check_echo()'s are: an infinite
+/// wait for a message or PEER_CLOSED, since object_wait_one takes no other
+/// deadline until a program can read a clock (repair item 2 of
+/// docs/repairs/261029/routing-checks.md). What they rely on is that files
+/// exits once the stop node has its channel, and that the kernel closes every
+/// handle of a process that exits. A wrong path does not hang: files' server
+/// answers an Open it refuses with an epitaph on the channel, the first wait
+/// reads it as a status that is not PeerClosed, a FAILED line says so, and the
+/// case ends before the wait that only an exit would end. A stop node that
+/// does not exit leaves that first wait for good, and the failure is then the
+/// missing `routing_checks: passed`, as for any wait in this file.
+///
+/// What it relies on for the entry to read PeerClosed at once, with no retry:
+/// the kernel closes a process's handles in the order the process received
+/// them (HandleTable::clean()), as check_echo() relies on too. files received
+/// the entries' server ends when the root forwarded the uses, at its start,
+/// then the connection held below, and the stop channel last. files drops the
+/// stop channel and does not close it (StopHandler), so the stop channel reads
+/// PEER_CLOSED only as the newest of them is closed, when the held connection
+/// and the entries already are. A close ahead of the rest would show as a
+/// first open() that is accepted and lost with the entry, which this check
+/// reports and does not allow for.
+auto check_files_stop() -> void {
+    // A connection opened through the entry before the stop, and known to
+    // work: a file, which has nothing to say until it is asked.
+    auto const held = open_or_fail(HELLO_PATH, Flags::PermReadBytes);
+    if (held == Uandle::Invalid) {
+        return;
+    }
+    std::array<u8, 1> byte{};
+    if (!expect("read of a connection held before files stopped", status_of(fsio::read(held, byte)),
+                Status::Ok)) {
+        auto _ = ours::handle_close(held);
+        return;
+    }
+
+    // The stop: files takes the channel and exits, so the channel closes with
+    // nothing on it. Any other answer is the route's or the server's: the
+    // path is wrong, or the node is not what it should be.
+    if (!expect("a connection to files' stop node", connect_status(FILES_STOP),
+                Status::PeerClosed)) {
+        // files may be running still, and a wait for the held connection would
+        // never end.
+        auto _ = ours::handle_close(held);
+        return;
+    }
+
+    // files is dead. The connection held before reads PEER_CLOSED, as a wait
+    // that ends only on the exit sees it.
+    Incoming closed;
+    expect("files' end of a connection held before it stopped", closed.receive(held),
+           Status::PeerClosed);
+    auto _ = ours::handle_close(held);
+
+    // The entry: its server end was closed with the process, with no
+    // epitaph, so the write of the Open is refused and open() answers
+    // PeerClosed. The binding keeps the answer, so a later open() under the
+    // entry gets it without touching the channel. Another entry of the same
+    // provider reads the same, and so does the stop node itself.
+    expect("open() on the entry of a provider that exited",
+           status_of(fsio::open(HELLO_PATH, Flags::PermReadBytes)), Status::PeerClosed);
+    expect("a later open() under that entry",
+           status_of(fsio::open("/files/sub/nested.txt", Flags::PermReadBytes)),
+           Status::PeerClosed);
+    expect("open() on another entry of that provider",
+           status_of(fsio::open("/files-sub/nested.txt", Flags::PermReadBytes)),
+           Status::PeerClosed);
+    auto client = Uandle::Invalid;
+    auto server = Uandle::Invalid;
+    if (expect("channel_create",
+               ours::channel_create(ours::ChannelCreateOptions::None, &client, &server),
+               Status::Ok)) {
+        // Consumes |server| whatever the answer.
+        expect("connect() to the stop node of a provider that exited",
+               fsio::connect(FILES_STOP, server), Status::PeerClosed);
+        auto _ = ours::handle_close(client);
+    }
+}
+
 /// The copy check_spawn() starts: the namespace it was handed is a clone of
 /// its parent's, read through once. Started by the shell instead (plan step
 /// 15), it gets the shell's namespace, which has /boot too. /denied is
@@ -1142,6 +1251,9 @@ auto main(int argc, char **argv) -> int {
         check_spawn(job);
     }
     check_echo();
+    // Last, whatever else is added above: it ends the provider that the
+    // entries of /files route to (check_files_stop()).
+    check_files_stop();
 
     if (FAILURES != 0) {
         char count[10];
