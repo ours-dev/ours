@@ -337,3 +337,59 @@ None.
 - Which directories provide the name `arch/` in Zircon and which provide `ours/arch/` here, and what tells generic code from per-arch code in each?
 - Two different headers open with the same guard and a `.cpp` includes both. What does the compiler say, and why is the error nowhere near the include line?
 - A grep for `ours/arch/hpet.hpp` finds nothing in live files. Which other spellings of a moved header's old path should you also search for, and which of the remaining hits were rightly left alone?
+
+## Title: x86's `time.hpp` comment is re-wrapped to 80 columns, because naming the moved header in it made the line 81 (2026-10-30)
+
+**Files**
+- `kernel/arch/x86/kernel/include/ours/arch/x86/time.hpp` — the paragraph above `set_global_clock_event()` breaks one word earlier, so its second line is 73 columns instead of 81 and the third takes `through`. Same number of lines, same words.
+- `docs/changes/261030/kernel-arch-seam.md` — this entry.
+
+**Symptom**
+Nothing at run time: a comment. The R8 move left one line of 81 columns in a header whose longest line was 77 before it, and no `///` line in the nineteen headers of `ours/arch/x86/` is longer than 80.
+
+**Cause**
+The R8 commit changed the path in the comment from `ours/arch/hpet.hpp` to `ours/arch/x86/hpet.hpp`, four characters longer, on a line that had been filled to 77. Nothing objected because nothing here reflows or limits a comment at that width: `.clang-format` has `ColumnLimit: 100` and `ReflowComments: false`, so `clang-format` neither flags a comment of 81 columns nor wraps it, and `format_cpp.py --check` was clean. The 80-column fill is a habit of how these doc comments are written (the plain `//` register notes of `hpet_regs.hpp` already ran to 95 before the move), not a rule a tool holds, so a rename that lengthens a path inside a comment lengthens the line silently. The rename sweep of R8 (`git grep` for every spelling of the old path) is where it should have been caught: a path that grows is a line that may no longer fit.
+
+I scanned every comment line R8 added in `.hpp`, `.cpp` and `.S` files for more than 80 columns: this was the only one.
+
+**Change**
+Before:
+
+```cpp
+/// Points the legacy timer line, ISA 0, at `device`. hpet_init(PhysAddr)
+/// (ours/arch/x86/hpet.hpp) calls it once it has taken IRQ0 from the PIT through
+/// the legacy replacement route.
+```
+
+After:
+
+```cpp
+/// Points the legacy timer line, ISA 0, at `device`. hpet_init(PhysAddr)
+/// (ours/arch/x86/hpet.hpp) calls it once it has taken IRQ0 from the PIT
+/// through the legacy replacement route.
+```
+
+**Reference**
+None, this project's own habit: the width the other comments of the directory are filled to.
+
+**Verification**
+- `awk 'length>80'` on the file: nothing; its longest line is 75. No `///` line of the nineteen headers in `ours/arch/x86/` is over 80 (checked in Python, line by line).
+- `format_cpp.py --check` on the file: clean. `clang-tidy -p out/bringup.x86` on `kernel/arch/x86/kernel/time/time.cpp`, which includes it: no error and no diagnostic in `time.hpp` (the warnings it prints are in other headers and were there before).
+- The dbg `vmours` and `vmours.with-tests` hash the same before and after, in `.text`, `.rodata` and `.data` (`llvm-objcopy --dump-section`, sha256 prefix): `.text` `8c224710bf1e37dd` and `a4537ef1107cff4a`. The objects of `hpet.cpp` and `time.cpp` were rebuilt, and the comment has no effect on them.
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.6s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.8s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+
+**Deliberately not done**
+- No check was added to hold comments to 80 columns: the width is a habit, and the one place a tool could enforce it (`ColumnLimit`) is 100 for the code's sake.
+- The other comments R8 changed are not re-read for wording; only their width was scanned.
+
+**How it was found**
+An independent review ran `awk 'length>80'` over the headers R8 touched and compared the one hit with the file before the move.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did `clang-format` and `format_cpp.py --check` both pass an 81-column comment?
+- A rename makes a path four characters longer. Which lines of the tree can be affected beyond the ones that fail to compile, and how would you find them?
+- The section hashes came out equal for a comment-only edit. What kind of edit to a header would change `.rodata` although no code changed, and why could this one not?
