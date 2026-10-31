@@ -384,3 +384,45 @@ None.
 - `gn desc` answers for one build directory. Which of the architecture header targets are in each of the x86 and riscv ones, and why is `//kernel/arch/riscv:headers` in both while `//kernel/arch/riscv/kernel:headers` is in one?
 - "The x86 check runs it" is true of the script. Why is it false of what the script is able to see, and what would a riscv header added to a list-less target do to each directory's line?
 - What would running `header_lists.report()` in the riscv mode change about what that mode is a gate for, and why is that a decision and not a wording fix?
+
+## Title: A correction to the Reference of the header-lists entry: Zircon's `library_headers()` lists headers in many places, and has empty lists in the three the seam work compared (2026-10-30)
+
+**Files**
+- `docs/changes/261030/ours-verify.md` — this entry. The entry it corrects is not edited.
+
+**Symptom**
+A wrong sentence in a document that exists to teach. The Reference of the first entry of this file says "Zircon's `library_headers()` lists no headers at all, so it has no list to drift". That is true of the targets the architecture seam work compared and false as a statement about the template.
+
+**Cause**
+The sentence was generalised from one file. The seam entry's Reference scopes the same fact correctly, to `zircon/kernel/arch/x86/BUILD.gn` (`library_headers("headers")` with `headers = []`); when the header-lists entry was written the scope was dropped, and a fact about three targets became a fact about the template. Checking the Fuchsia tree (`zircon/kernel`, a read of each declaration) gives the actual shape:
+
+- `headers = []` in `zircon/kernel/arch/x86/BUILD.gn:264-265`, `zircon/kernel/lib/ktl/BUILD.gn:9-10` and `zircon/kernel/arch/riscv64/BUILD.gn:77-78`: the three that matter for the per-arch headers, whose include roots are carried by `public_configs` and `public_deps`.
+- A real list in `zircon/kernel/platform/BUILD.gn:56-61` (`platform/uart.h`, `platform/mexec.h`) and in `zircon/kernel/lib/arch/host/BUILD.gn:9-16` (`lib/arch/intrin.h`, `lib/arch/ticks.h`).
+- Over the whole of `zircon/kernel`: 114 `library_headers(` declarations and 25 lines reading `headers = []`, so the empty list is a common choice and not the template's rule.
+
+The distinction matters for what this tree learns from the reference. Zircon does not avoid the problem by design: where it lists headers it has the same drift (a header added to the directory and not to the list), and where it writes `headers = []` it has the blind spot this project had at 24 of 25 (`gn check` holds an include only to a header some target lists, and an empty list lists none). What is true is narrower: for the architecture's own target Zircon chose the empty list, so its include checking for those headers is the same as this project's was before the listing.
+
+**Change**
+None to code. The correct statement of the Reference is: Zircon's `library_headers()` takes a `headers` list that GN's include check reads, and the architecture, `ktl` and riscv64 targets set it to `[]`; other targets (`platform`, `lib/arch/host`) list their headers and are exposed to the same drift the new check finds here.
+
+**Reference**
+`zircon/kernel/arch/x86/BUILD.gn` (`library_headers("headers")`, `headers = []`), `zircon/kernel/lib/ktl/BUILD.gn`, `zircon/kernel/arch/riscv64/BUILD.gn`; `zircon/kernel/platform/BUILD.gn` and `zircon/kernel/lib/arch/host/BUILD.gn` for lists that are not empty.
+
+**Verification**
+- The five files above were read in the Fuchsia checkout (`~/Workspaces/projects/fuchsia`), and the two counts are `grep -rn "library_headers(" zircon/kernel --include=BUILD.gn | wc -l` (114) and `grep -rn "headers = \[\]"` over the same (25).
+- `lint_docs.py --changed`: no violations. No code or build file changed, so the previous commit's `ours-verify` lines stand.
+
+**Deliberately not done**
+- The first entry's Reference is not rewritten (history), and its sentence is not repeated anywhere else in the tree: `git grep "lists no headers at all"` finds only that entry (and this one, quoting it). The seam entry's Reference says it of `zircon/kernel/arch/x86/BUILD.gn` alone, which is right.
+- Whether this project should list nothing, like Zircon's architecture target, is not reopened: the listing was approved on 2026-10-30 and is what makes the include check work.
+
+**How it was found**
+Reported by an independent review that read the Fuchsia tree for the claim. Reproduced by reading the same declarations and counting.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- A Zircon target writes `headers = []`. What does `gn check` then hold includes of its headers to, and how is that the same as this project's x86 target before it listed its 25 headers?
+- The first draft of the Reference turned "three targets" into "the template". What would have caught it, and what does the seam entry's wording do that the other did not?
+- Zircon's `platform` target lists two headers. Which of this entry's two failure kinds, missing and stray, could happen to such a list, and which check would find it?
