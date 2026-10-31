@@ -118,6 +118,10 @@ group("default") {
     # the whole library runs on the host against synthesised table images.
     "//kernel/lib/acpi:tests($host_toolchain)",
 
+    # The ACPI route service's logic: the reader of the tables the kernel hands
+    # user space, and the two answers it gives from the static tables.
+    "//system/service/acpi-route:tests($host_toolchain)",
+
     # The OBI container format: the parser, the builder, the CLI and the
     # command-line/memory-config views.  The group qualifies the host
     # toolchain itself -- the labels inside are plain hosted `int main()`

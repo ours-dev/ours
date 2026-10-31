@@ -21,6 +21,7 @@ cpp_interface("header") {
     "include/acpi/structures/header.hpp",
     "include/acpi/structures/hpet.hpp",
     "include/acpi/structures/madt.hpp",
+    "include/acpi/structures/mcfg.hpp",
     "include/acpi/structures/root.hpp",
     "include/acpi/structures/slit.hpp",
     "include/acpi/structures/srat.hpp",
