@@ -108,3 +108,106 @@ None.
 - Why does `#include <ours/arch/thread.hpp>` compile on x86 and fail on riscv without anyone editing the include line, and what in the build decides which file it means?
 - A generic file includes `<ours/arch/x86/apic.hpp>`. What does a riscv build say, and why is that better than what `<ours/arch/apic.hpp>` said?
 - `ours/arch/x86/cpu.hpp` and the generic `ours/cpu.hpp` have similar names. What keeps their include guards apart, and what does the compiler do with a second header that happens to reuse a guard already defined?
+
+## Title: x86's `headers` target lists the 25 headers of its include root instead of one, so GN knows which target owns them (2026-10-30)
+
+**Files**
+- `kernel/arch/x86/kernel/BUILD.gn` — the `public` list of `cpp_interface("headers")` goes from `hpet_regs.hpp` alone to every header under `include/ours/arch/` (six) and `include/ours/arch/x86/` (nineteen), in three groups: the five headers of the per-arch set, `vm_aspace.hpp` (a stub, not part of the set) alone, then x86's own, each group alphabetical. A comment above the target says what the list is for, and one above each group says what the group is.
+
+**Symptom**
+Latent, cannot be triggered today: nothing fails at build or run time. `gn desc` of the target listed one header while the include root held twenty-five (`find kernel/arch/x86/kernel/include -type f` finds 25), so twenty-four headers belonged to no target. It would show the day someone runs `gn check --check-system`, or an IDE indexes the target: an include of any of the twenty-four was invisible to the checker, and the indexer found one file.
+
+**Cause**
+`cpp_interface()` (`build/cpp/cpp_interface.gni`) makes a `source_set` with no sources, so there is nothing to compile; what it forwards is the `public` list, and it publishes `include/` as an include directory to dependents. The ninja file of the target says nothing about `public`: `kernel_x86.dbg.1/obj/kernel/arch/x86/kernel/headers.ninja` holds an `include_dirs` line and two `phony` edges, and no header name. So the list is metadata for GN, not an input of the build, and a header missing from it cannot make a compile fail. That is why it stayed at one entry while the directory grew: the target was made in `feec7b72` (2026-08-24, the Bazel-to-GN checkpoint) with one entry, the hyphenated `hpet-regs.hpp`, and `25c50029` (2026-08-30) only repointed that entry at the renamed `hpet_regs.hpp`. Nothing in either commit says why that header and not the others, and no compile ever objected.
+
+What the list is for is `gn check`, and two of its rules decide whether a gap matters (`gn help check`):
+- It only checks an include that names a file some target lists ("includes matching unknown paths are ignored"). A header owned by no target can be included from anywhere with no dependency at all, and nothing says so.
+- It reads `"quoted"` includes always and `<angle>` includes only with `--check-system`. The kernel includes its architecture headers with angle brackets everywhere: 71 files have `#include <ours/arch/...>` and none has the quoted form. So a plain `gn check` never looked at these includes even when the header was listed, which is why it passed before and passes after.
+
+The listing is also not what makes the headers findable. The toolchain puts `-I kernel/arch/<cpu>/kernel/include` on every kernel compile (`build/switch/kernel_switchset.gni`, `build/toolchain/ours/BUILD.gn`: `headers.config` in the prefix configs), so `<ours/arch/thread.hpp>` resolves in a target that never depends on `:headers`. Ownership and findability are two separate facts; this target had the second for every header and the first for one.
+
+riscv's target was already complete in the same sense: its one entry, `aspace_layout.hpp`, is every header riscv's include root has. x86's was the one that fell behind.
+
+**Change**
+Before:
+
+```gn
+cpp_interface("headers") {
+  public = [ "include/ours/arch/x86/hpet_regs.hpp" ]
+```
+
+After (the paths are the real ones, relative to the BUILD.gn file, which is the `public` spelling the target already used):
+
+```gn
+cpp_interface("headers") {
+  public = [
+    # ours/arch/ is the per-arch set: ...
+    "include/ours/arch/aspace_layout.hpp",
+    "include/ours/arch/cpu_local.hpp",
+    "include/ours/arch/entry.hpp",
+    "include/ours/arch/idle_thread.hpp",
+    "include/ours/arch/thread.hpp",
+
+    # Not part of that set: a migration stub ...
+    "include/ours/arch/vm_aspace.hpp",
+
+    # ours/arch/x86/ is private to x86: ...
+    "include/ours/arch/x86/apic.hpp",
+    "include/ours/arch/x86/asm.hpp",
+    "include/ours/arch/x86/bootstrap.hpp",
+    "include/ours/arch/x86/cpu.hpp",
+    "include/ours/arch/x86/descriptor.hpp",
+    "include/ours/arch/x86/entry.hpp",
+    "include/ours/arch/x86/faults.hpp",
+    "include/ours/arch/x86/feature.hpp",
+    "include/ours/arch/x86/hpet.hpp",
+    "include/ours/arch/x86/hpet_regs.hpp",
+    "include/ours/arch/x86/idt.hpp",
+    "include/ours/arch/x86/init.hpp",
+    "include/ours/arch/x86/io_bitmap.hpp",
+    "include/ours/arch/x86/mem_cfg.hpp",
+    "include/ours/arch/x86/mp.hpp",
+    "include/ours/arch/x86/numa.hpp",
+    "include/ours/arch/x86/page_table.hpp",
+    "include/ours/arch/x86/percpu.hpp",
+    "include/ours/arch/x86/time.hpp",
+  ]
+```
+
+The groups mirror the two promises the previous entry separated, so the list itself shows which headers every architecture provides and which are x86's. `vm_aspace.hpp`, the migration stub, has a group of its own: it sits in `ours/arch/` but is not part of the set (nothing includes it, and the x86 virtual-address-space interface will replace it), and a list that put it beside `thread.hpp` would say otherwise. The first comment is also worded as what the set is, not as a promise riscv already keeps: riscv's own `headers` target lists only `aspace_layout.hpp`, because that is all riscv has written so far. `page_table.hpp` was already named by the target's `public_deps` comment ("whoever includes it needs that library's headers"), which only made sense for a header the target owned; now it does.
+
+Rejected: listing only the five contract headers, which would leave x86's own includers (the `//kernel/arch/x86/apic` target includes `ours/arch/x86/apic.hpp` and `feature.hpp`) as unchecked as before; and `headers = [ "ours/arch/..." ]`, which gives the same files with shorter lines but changes the spelling the target used without gaining anything.
+
+**Reference**
+None, this project's own choice. Zircon's `zircon/kernel/arch/x86/BUILD.gn` declares `library_headers("headers")` with `headers = []` and lets the include path carry everything, so it does not list its headers at all. Here the listing is kept for the reason `docs/changes/261028/riscv-paging.md` gives for riscv's: `gn check` and an IDE can only work with headers a target owns.
+
+**Verification**
+- Before the change, at `a63e4664`: the x86 `ours-verify` (dbg 44 passed, 4 skipped; rel 41 passed, 8 skipped; host-tests 153 passed) and the riscv check (handoff ok) gave the pass counts the previous entry records, and the x86 dbg `vmours` and `vmours.with-tests` hashed the same (`llvm-objcopy --dump-section`, sha256 prefix): `.text` `8c224710bf1e37dd` and `a4537ef1107cff4a`, `.rodata` `339ce0defeee43f2` and `beafba3cbeccc3a6`, `.data` `6b949fe14e37ba92` and `68d80ba4bacc5723`. The previous commit's claims reproduce.
+- `gn desc out/bringup.x86 '//kernel/arch/x86/kernel:headers(//build/switch/set/dbg.1:kernel_x86.dbg.1)' public` lists the 25 files. (The bare label matches no target: the kernel is built in variant toolchains.)
+- `gn check out/bringup.x86` and `gn check out/bringup.riscv`: `Header dependency check OK`, before and after.
+- `gn check --check-system --error-limit=1000000`, which already fails before the change on both architectures. riscv: 85 error lines before and after (its graph does not read x86's BUILD.gn, and its `build.ninja` was not even regenerated). x86: 91 error lines before and 143 after. GN prints an error once for each toolchain variant that builds the file (`kernel_x86.dbg.0` and `kernel_x86.dbg.1`), so counted as distinct (file, line, include) pairs that is 44 before and 70 after, and the 52 new lines are 26 new pairs, none gone. 25 of them are an `Include not allowed` whose owner is `//kernel/arch/x86/kernel:headers`, and one is a different error, `Can't include this header from here` (`//kernel/lib/userabi/src/userboot.cpp:19`, `<ours/arch/aspace_layout.hpp>`): there `//kernel/lib/userabi:userabi` does reach `:headers`, but through a dependency that is not `public`, so GN says to depend on the target directly or have the intermediate one forward it. By kind the pairs go from 39 to 64 `Include not allowed` and from 5 to 6 `Can't include this header from here`. By header: `ours/arch/aspace_layout.hpp` 16, `ours/arch/x86/apic.hpp` 6, and one each of `ours/arch/entry.hpp`, `ours/arch/x86/feature.hpp`, `ours/arch/x86/io_bitmap.hpp`, `ours/arch/x86/percpu.hpp`. By includer: fifteen in `//kernel/commands:commands`, four in `//kernel/arch/x86/apic:apic`, three in `//kernel/object:object`, and one each in `//benches/kernel/mm:large-page-bench`, `//kernel/kernel/irq:irq`, `//kernel/lib/user_copy:user_copy` and `//kernel/lib/userabi:userabi`.
+- The build did not change. After `gn` regenerated `out/bringup.x86`, all 711 `.ninja` files are byte-identical to the copies taken before, and `compile_commands.json` has the same 752 entries as a set (the file's order is not stable). riscv: 707 `.ninja` files identical, 638 entries.
+- The same six section hashes as above after the change, so the x86 dbg `vmours` and `vmours.with-tests` are unchanged in `.text`, `.rodata` and `.data`.
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.6s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.6s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- `format_gn.py` reports the file already formatted; the list is in the order written.
+
+**Deliberately not done**
+- No `deps = [ "//kernel/arch/x86/kernel:headers" ]` was added to the 26 includers above, and `--check-system` was not made a gate. It fails on 44 pairs before this change, so it was never one. The 26 are three kinds, and only the first two are the user's call:
+  - Seventeen are in generic targets (`//kernel/commands`, `//kernel/object`, `//kernel/lib/user_copy`, `//kernel/kernel/irq`, `//benches/kernel/mm:large-page-bench`, `//kernel/lib/userabi`) including a header of the per-arch set (`ours/arch/aspace_layout.hpp` sixteen times, `ours/arch/entry.hpp` once). They cannot name x86's label without becoming x86-only, and the other way to spell it, `//kernel/arch/$ours_cpu/kernel:headers`, is a design choice about how generic code declares that it needs the architecture's headers. The `userabi` one is the odd one: that target already reaches `:headers` through a dependency that is not `public`, so it needs the same answer as the other sixteen, not a different one.
+  - Five are in four `kernel/commands` tests that include x86's private headers (`apic.hpp` three times, `io_bitmap.hpp` and `percpu.hpp` once, the last two in `ioport_test.cpp`): the leak the previous entry already names, which a dependency would paper over. Where such a test belongs is the user's call.
+  - Four are x86's own `//kernel/arch/x86/apic:apic` including `apic.hpp` and `feature.hpp`. Neither argument above applies to them: an x86 target can name x86's label. They are not a design question, and the next entry adds the dependency.
+- riscv's `headers` target is unchanged: its list is already its whole include root.
+- No header was edited, moved or deleted; `vm_aspace.hpp` stays the stub it is.
+- The other `cpp_interface` targets of x86 (`//kernel/arch/x86:headers`, `//kernel/arch/x86/mm:headers`, `//kernel/arch/x86/lib/page_tables`) were not audited for the same gap.
+
+**How it was found**
+The previous entry promised it as "the next commit". `find kernel/arch/x86/kernel/include -type f` gave 25 files and `gn desc` of the target gave one. `gn help check` gave the two rules above, and running `gn check --check-system` on both build directories before touching anything gave the baseline (91 and 85 error lines) that the 52 new lines on x86 (26 pairs times two toolchain variants) are measured against. A grep for `#include "ours/arch` (no hits) against `#include <ours/arch/` (71 files) is what showed that a plain `gn check` never reads these includes.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Listing 24 more headers changed not one byte of any `.ninja` file or of the kernel's `.text`. Why not, and what did it change?
+- Why does a plain `gn check` read none of the `#include <ours/arch/...>` lines, and what does `--check-system` do with them that it did not do before this change?
+- `//kernel/object` includes `<ours/arch/aspace_layout.hpp>` and compiles without depending on x86's `:headers`. What puts the directory on its command line, and why would a `deps` line naming x86's label in that target be the wrong fix?

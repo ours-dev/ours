@@ -50,8 +50,49 @@ source_set("kernel") {
   visibility = [ "*" ]
 }
 
+# Every header in this directory's include root. The toolchain already puts the
+# root on every kernel compile's -I line, so listing the files does not make
+# them findable; it tells GN which target owns them. That is what
+# `gn check --check-system` reads (the kernel includes with <angle brackets>,
+# which a plain `gn check` skips): it ignores an include of a header no target
+# lists, and holds an include of a listed one to a dependency on its target.
 cpp_interface("headers") {
-  public = [ "include/ours/arch/x86/hpet_regs.hpp" ]
+  public = [
+    # ours/arch/ is the per-arch set: the headers every architecture provides
+    # under the same name, which generic code includes as <ours/arch/NAME.hpp>.
+    # riscv's own headers target lists the ones riscv has written so far.
+    "include/ours/arch/aspace_layout.hpp",
+    "include/ours/arch/cpu_local.hpp",
+    "include/ours/arch/entry.hpp",
+    "include/ours/arch/idle_thread.hpp",
+    "include/ours/arch/thread.hpp",
+
+    # Not part of that set: a migration stub that nothing includes, which the
+    # x86 virtual-address-space interface will replace.
+    "include/ours/arch/vm_aspace.hpp",
+
+    # ours/arch/x86/ is private to x86: a path with x86/ in it resolves only
+    # while x86's include root is on the command line.
+    "include/ours/arch/x86/apic.hpp",
+    "include/ours/arch/x86/asm.hpp",
+    "include/ours/arch/x86/bootstrap.hpp",
+    "include/ours/arch/x86/cpu.hpp",
+    "include/ours/arch/x86/descriptor.hpp",
+    "include/ours/arch/x86/entry.hpp",
+    "include/ours/arch/x86/faults.hpp",
+    "include/ours/arch/x86/feature.hpp",
+    "include/ours/arch/x86/hpet.hpp",
+    "include/ours/arch/x86/hpet_regs.hpp",
+    "include/ours/arch/x86/idt.hpp",
+    "include/ours/arch/x86/init.hpp",
+    "include/ours/arch/x86/io_bitmap.hpp",
+    "include/ours/arch/x86/mem_cfg.hpp",
+    "include/ours/arch/x86/mp.hpp",
+    "include/ours/arch/x86/numa.hpp",
+    "include/ours/arch/x86/page_table.hpp",
+    "include/ours/arch/x86/percpu.hpp",
+    "include/ours/arch/x86/time.hpp",
+  ]
 
   # ours/arch/x86/page_table.hpp derives from the page-table walks' base, so
   # whoever includes it needs that library's headers.
