@@ -28,8 +28,8 @@
 //   - a GSI used as a virq names no line, and neither does the number past
 //     the last virq, nor one past the platform vectors; the invalid number
 //     is refused;
-//   - an interrupt object takes the last pin, by its virq, with a level-low
-//     mode: the line then reads level and is unmasked, a second create
+//   - an interrupt object takes GSI 16, the first pin past the ISA range, by
+//     its virq, with a level-low mode: the line then reads level and is unmasked, a second create
 //     answers AlreadyBound, a destroy lets the line go masked, and a create
 //     takes it again.
 //
@@ -108,17 +108,6 @@ namespace {
                 visit(static_cast<HIrqNum>(ioapic.gsi_base() + pin));
             }
         }
-    }
-
-    /// The highest GSI of any pin.
-    auto last_pin() -> HIrqNum {
-        auto last = HIrqNum{0};
-        for_each_pin([&last](HIrqNum const gsi) -> void {
-            if (gsi > last) {
-                last = gsi;
-            }
-        });
-        return last;
     }
 
     auto check_pins_have_lines(Tally &tally) -> void {
@@ -304,12 +293,15 @@ namespace {
     }
 
     auto check_object_on_a_pin(Tally &tally) -> void {
-        auto const gsi = last_pin();
-        if (gsi < arch::NUM_ISA_IRQS || gsi > LAST_GSI) {
-            verdict(tally, false, "there is a pin past the ISA range to take");
+        // GSI 16, the first pin past the ISA range. On q35 a PCI function at
+        // slot 0 to 24 is wired to GSI 20 to 23 (slot + pin, modulo 4, past
+        // 20), so a device attached with DISK= does not hold this one.
+        auto const gsi = static_cast<HIrqNum>(arch::NUM_ISA_IRQS);
+        auto const pin = irq::virq_of_hwirq(gsi);
+        if (gsi > LAST_GSI || pin == irq::INVALID_V_IRQ_NUM) {
+            verdict(tally, false, "there is a pin just past the ISA range to take");
             return;
         }
-        auto const pin = irq::virq_of_hwirq(gsi);
 
         KernelHandle<InterruptDispatcher> first;
         KernelHandle<InterruptDispatcher> second;
@@ -317,7 +309,7 @@ namespace {
         auto const created =
             InterruptEventDispatcher::create(&first, &rights, pin, InterruptOptions::ModeLevelLow);
         answered(tally, created, Status::Ok,
-                 "an object takes the last pin by its virq, with a level-low mode");
+                 "an object takes the first pin past the ISA range by its virq, level-low");
         if (created != Status::Ok) {
             return;
         }

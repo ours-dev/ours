@@ -101,3 +101,48 @@ The user was asked on 2026-10-31 which of the two lookups, virq to descriptor or
 1. The interrupt entry has the hardware number and a user program has a virq. Which of them indexes the line table, and why does that keep the interrupt path as cheap as it was?
 2. Why must every virq be greater than every hardware number, and what would an identity domain on q35 have hidden from every test that existed before `pinlines.test` gained its three checks?
 3. `HIrqNum` and `VIrqNum` are both `u32`. What did you do instead of the compiler to find every place that mixed them up, which mutation shows the interrupt path is guarded, and what kind of place did the author's own search miss that three reviewers found?
+
+## The PCI pin the checks take is GSI 16, not the one a virtio-blk is on (2026-10-31)
+
+**Files**
+- `kernel/commands/pin_lines_test.cpp` — the object check takes GSI 16, the first pin past the ISA range, and not the last pin; `last_pin()` is gone.
+- `system/service/init/test/routing_checks/routing_checks.cpp` — the PCI pin `interrupt_map` is asked for is GSI 16.
+
+**Symptom**
+Latent, cannot be triggered today. Both checks took GSI 23 as "a PCI pin", chosen as the last pin the machine has. With `DISK=` set a virtio-blk is on GSI 23, so a driver that held its interrupt object while `routing_checks` ran (`rel` runs it at every boot) would make the check's `interrupt_create` answer `AlreadyBound`, and the image would report a failure that is no fault of the kernel.
+
+**Cause**
+The pin was picked for being the last one, with no thought for which PCI function the machine wires to it. On QEMU's q35 a function on the root bus at slot S, interrupt pin P (A is 0), is wired to a pin like this:
+
+- The ICH9 chipset sends INT[A-D] of slot S to PIRQ `(S + P) % 4 + 4`, that is PIRQ E to H (`hw/isa/lpc_ich9.c`, `ich9_cc_init()`), and in APIC mode PIRQ n is GSI `16 + n` (`ich9_pirq_to_gsi()`): GSI 20 + ((S + P) & 3). Slots 25 to 29 and 31 go to PIRQ A to D instead: GSI 16 + P.
+- The firmware hands the operating system the same table as ACPI's `_PRT` (`hw/i386/acpi-build.c`, `build_q35_routing_table()`).
+
+The first function QEMU adds is at slot 3, pin A: GSI 20 + 3 = 23.
+
+**Change**
+Both checks take GSI 16 (PIRQ A), which no function at slots 0 to 24 uses.
+
+**Reference**
+None, this project's own tooling. The rule is read from QEMU 8.2.2's source (the Ubuntu source package `qemu_8.2.2+ds.orig.tar.xz`, checked against its published SHA-256).
+
+**Verification**
+Run in a cloud container with substituted tools (QEMU 8.2.2 and Ubuntu's OVMF, not the project's QEMU 11.1.1; no KVM; gn `1000 (1a7c151)`).
+
+- The rule was checked against the table the firmware gave the guest, and not only against the source: the guest was booted with `DISK=`, its memory dumped through the QEMU monitor (`pmemsave`), and the routing table for APIC mode found in the dump and decoded. Slot 3, pin A to D: GSI 23, 20, 21, 22. Slot 1: 21, 22, 23, 20. Slot 4 and slot 24: 20, 21, 22, 23. Slots 25, 29, 31: 16, 17, 18, 19. All agree with the rule.
+- `pinlines.test`: ok, 28 checks. `boot_check.py`: dbg PASS, 44 passed, 4 skipped, 0 failed; rel PASS, 41 passed, 8 skipped, 0 failed, 6/6 required; host tests 151 passed, 0 failed; the same with `DISK=` set.
+
+Not measured: that an interrupt from the virtio-blk arrives on GSI 23 (the table says where it is wired; nothing here made the device raise one); QEMU 11.1.1 and its firmware.
+
+**Deliberately not done**
+- A device driver or a device interrupt test in the tree: the user decided on 2026-10-31 that the virtio-blk driver on the other side is the first test of a device's interrupt.
+
+**How it was found**
+From the rule itself. Working out which GSI a PCI function gets for the hand-over (the Interrupt Line register reads 11, which is not a GSI) showed that the pin the tests had picked is the one the first function lands on.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. A PCI function at slot 3, pin A, on q35: which GSI, and by which two steps from the slot and the pin?
+2. Why is the Interrupt Line register no help, and where does the operating system read the routing from instead?
+3. Why does it matter that a check takes a pin no function is wired to, when the check closes its object again at once?

@@ -498,8 +498,8 @@ auto check_sampling_resource() -> void {
 ///   - a line's number is not the pin's: the number for ISA 0 is not 0;
 ///   - ISA 0 and GSI 2 are one line, the kernel's timer, which is taken for
 ///     good (AlreadyBound), so the number is the line's;
-///   - ISA 3 and GSI 3 are one free line, taken with the number as given,
-///     as given; and a PCI pin, GSI 23, has a line of its own, which
+///   - ISA 3 and GSI 3 are one free line, taken with the number as given;
+///     and a PCI pin, GSI 16, has a line of its own, which
 ///     an interrupt object takes level-triggered, as a PCI function's INTx
 ///     is;
 ///   - the refusals: a kind the kernel does not know and the invalid source
@@ -511,7 +511,7 @@ auto check_interrupt_map(Uandle const irq) -> void {
     constexpr auto ISA_TIMER = u32{0};
     constexpr auto GSI_TIMER = u32{2};
     constexpr auto GSI_FREE = u32{3};
-    constexpr auto GSI_PCI = u32{23};
+    constexpr auto GSI_PCI = u32{16};
     constexpr auto GSI_MOVED_OFF = u32{0};
     constexpr auto ISA_WRAPS_TO_0 = u32{0x100};
     constexpr auto ISA_WRAPS_TO_3 = u32{0x103};
@@ -539,7 +539,7 @@ auto check_interrupt_map(Uandle const irq) -> void {
     ok &=
         expect("interrupt_map(Irq root, Gsi, 3)",
                ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_FREE, &gsi_free), Status::Ok);
-    ok &= expect("interrupt_map(Irq root, Gsi, 23)",
+    ok &= expect("interrupt_map(Irq root, Gsi, 16)",
                  ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_PCI, &gsi_pci), Status::Ok);
     ok &= expect("interrupt_map(Irq root, Gsi, 0)",
                  ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_MOVED_OFF, &gsi_moved_off),
@@ -579,10 +579,10 @@ auto check_interrupt_map(Uandle const irq) -> void {
     }
     interrupt = Uandle::Invalid;
     if (expect(
-            "interrupt_create(the number interrupt_map gave for GSI 23, ModeLevelLow)",
+            "interrupt_create(the number interrupt_map gave for GSI 16, ModeLevelLow)",
             ours::interrupt_create(irq, gsi_pci, ours::InterruptOptions::ModeLevelLow, &interrupt),
             Status::Ok)) {
-        expect("close(the interrupt on the number interrupt_map gave for GSI 23)",
+        expect("close(the interrupt on the number interrupt_map gave for GSI 16)",
                ours::handle_close(interrupt), Status::Ok);
     }
 
