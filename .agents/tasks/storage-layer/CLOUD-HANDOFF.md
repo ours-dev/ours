@@ -1,5 +1,9 @@
 # storage-layer: 交接给 Cloud 的两个 virtio-blk 内核/QEMU 侧问题
 
+**2026-11-01 更新：问题 1 已解决，无需你处理** —— 是驱动侧的缺陷：状态字节描述符的地址
+漏加 16 字节请求头（`virtio_blk.cpp` desc[2]），设备把状态写进数据尾部、驱动读到陈旧的 0
+误判为 Ok。修复与完整定位过程见 docs/changes/261101/virtio-blk.md（d9abe81f）。问题 2 不变。
+
 你在 feat/driver-caps 分支上为用户态 virtio-blk 驱动实现的内核能力（Mmio/Iommu/BTI/Pin、
 vmo_create_contiguous）工作正常，驱动已经用它们把设备驱动起来了。下面是用户态排查到底、
 需要你定夺的两个问题。仓库：exp/fs-service 分支（worktree `.worktrees/fs-service`），
