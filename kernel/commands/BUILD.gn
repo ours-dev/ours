@@ -57,11 +57,10 @@ source_set("commands") {
   deps = [
     # The memory tests include <ours/arch/aspace_layout.hpp> for the user
     # address range. The edge is to the running architecture's headers, and GN
-    # checks per target, not per header, so it also covers the four tests that
-    # include x86's own (<ours/arch/x86/...>): interrupt_line_test, irq_test,
-    # timer_share_test and ioport_test. Those belong in
-    # kernel/arch/x86/commands rather than in a generic target, and with this
-    # edge the include check no longer reports them.
+    # checks per target, not per header, so it also satisfies the four tests
+    # that include x86's own (<ours/arch/x86/...>): interrupt_line_test,
+    # irq_test, timer_share_test and ioport_test. Those belong in
+    # kernel/arch/x86/commands rather than in a generic target.
     "//kernel/arch/$ours_cpu/kernel:headers",
     "//kernel/lib/gktl",
     "//kernel/lib/heap",

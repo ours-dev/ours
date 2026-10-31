@@ -687,3 +687,60 @@ None.
 - GN read `vmalloc.hpp` and found nothing to check. Which step of `gn check` failed, why does a source set pass that step and a `cpp_interface` not, and what does a bare edge on the header target change?
 - Adding the architecture's config to `heap:headers` makes a finding appear, and adding a `public_deps` edge makes nine disappear. What is each doing to the include resolution and the reachability that the check is made of?
 - Two of the five headers have no owning target. Why is that a different kind of gap from a header missing from a list, and why can `header_lists.py` not see it?
+
+## Title: Two comments on the new edges say why the edge is declared, and no longer what the include checker did before it (2026-10-30)
+
+**Files**
+- `kernel/mm/BUILD.gn` — the comment on `//kernel/arch/$ours_cpu/kernel:headers` names the includers and says the edge is declared here and not left to `//kernel/arch/$ours_cpu/mm` to forward; it no longer says that the check "passed" on x86 and not on riscv.
+- `kernel/commands/BUILD.gn` — the comment on the same edge keeps what GN checks (per target, not per header) and which four tests include x86's own headers, and drops "with this edge the include check no longer reports them".
+- `docs/changes/261030/kernel-arch-seam.md` — this entry.
+
+**Symptom**
+Latent, cannot be triggered today: comments only, no generated build file changes. The two comments recorded a fact about the checker at one point in time, and each becomes false by a change somebody will make for another reason: `//kernel/mm`'s when `//kernel/arch/riscv/mm` gains the edge (the sentence "riscv's does not" is then wrong), `//kernel/commands`'s when the four tests move to `kernel/arch/x86/commands` and the check could report them again.
+
+**Cause**
+A comment on a dependency edge answers "why is this here", and that answer has to hold as long as the edge does. "The include check passed there, and does not on riscv" is how the edge was found, not why it exists: it describes the checker's behaviour on the day, and it is already in the change record, where history belongs. The reason that lasts is a structural one: these sources include this header, and the edge is to the running architecture's headers, declared by the includer rather than inherited from whichever target happens to forward them. `kernel/commands` keeps one more sentence because it is a lasting property of the tool, not of the day: GN's include check is per target, so while the four x86-private tests are in a generic target a passing check says nothing about them, and a reader of the file should not take it for a clean target.
+
+**Change**
+`kernel/mm/BUILD.gn`, before and after:
+
+```gn
+# before
+      # vmm.cpp, init_vmm.cpp, vm_aspace.cpp and cpu_local.cpp include
+      # <ours/arch/aspace_layout.hpp>. On x86 //kernel/arch/x86/mm already
+      # depends on these headers, which is why the include check passed there;
+      # riscv's does not.
+# after
+      # vmm.cpp, init_vmm.cpp, vm_aspace.cpp and cpu_local.cpp include
+      # <ours/arch/aspace_layout.hpp>. The edge is to the running
+      # architecture's headers, declared here and not left to
+      # //kernel/arch/$ours_cpu/mm to forward them.
+```
+
+`kernel/commands/BUILD.gn`: "so it also covers the four tests" becomes "so it also satisfies the four tests", and the clause ", and with this edge the include check no longer reports them" is deleted, the sentence ending at "rather than in a generic target".
+
+The comments on the other five edges (object, user_copy, irq, userabi, the benchmark) were read for the same fault and say only what is included and, for userabi, why the edge is named outright; they are left.
+
+**Reference**
+None, this project's own graph.
+
+**Verification**
+- `gn gen` of both build directories: all 711 x86 and 707 riscv `.ninja` files byte-identical to copies taken before; `compile_commands.json` the same 752 and 638 entries as sets.
+- `format_gn.py --check` on both files: clean.
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.4s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.6s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed; headers PASS 7 targets, 7 include roots, 75 headers under //kernel/arch/, every one listed · 1.4s.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+
+**Deliberately not done**
+- No dependency changes. The earlier entry's account of how the edge was found stays as it is.
+- The "belong in kernel/arch/x86/commands" sentence stays: it is the plan (R25), and it is a plan the comment should lose when the tests move.
+
+**How it was found**
+Reported by an independent review of the commit. Checked here by reading all seven comments against one question, whether each would still be true if the other architecture's mm target forwarded the header or the four tests moved.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- A comment says "the include check passed there; riscv's does not". Which change elsewhere makes it false, and what does the comment that replaced it say that stays true?
+- Why does `kernel/commands` keep "GN checks per target, not per header" when it drops "no longer reports them"?
+- Comments and change records both record history. What goes in which, and how do you tell a lasting reason from the story of how a line was found?

@@ -53,9 +53,9 @@ if (toolchain_environment == "kernel") {
       "//kernel/arch/$ours_cpu/mm",
 
       # vmm.cpp, init_vmm.cpp, vm_aspace.cpp and cpu_local.cpp include
-      # <ours/arch/aspace_layout.hpp>. On x86 //kernel/arch/x86/mm already
-      # depends on these headers, which is why the include check passed there;
-      # riscv's does not.
+      # <ours/arch/aspace_layout.hpp>. The edge is to the running
+      # architecture's headers, declared here and not left to
+      # //kernel/arch/$ours_cpu/mm to forward them.
       "//kernel/arch/$ours_cpu/kernel:headers",
 
       # VmObjectPaged::read_user()/write_user() copy between a VMO page and a
