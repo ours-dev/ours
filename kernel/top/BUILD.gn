@@ -51,7 +51,9 @@ source_set("top") {
   # Both go together. kshell is the front end that runs commands; //kernel/
   # commands exists only to put commands on its prompt (its BUILD.gn says so),
   # so without the shell it is callbacks nothing can reach and help strings
-  # nothing prints.
+  # nothing prints. An architecture's own commands (kernel/arch/<cpu>/commands)
+  # go the same way under the same switch, but its kernel target links them and
+  # not this file, which has to stay the same for every $ours_cpu.
   #
   # What deliberately stays is the registry itself. gktl is not the console --
   # it also carries the init hooks and counters every kernel needs -- and a

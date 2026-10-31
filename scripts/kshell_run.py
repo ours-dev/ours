@@ -11,13 +11,14 @@ belongs to the user shell (kernel.shell=false since the interactive user
 shell), so --image rel reaches no kernel command.
 
 The kernel shell (//kernel/lib/kshell) reads COM1 and runs registered console
-commands, the *.test commands of //kernel/commands among them. Nothing runs
-them at boot, which is what this is for. The commands are typed once the boot
+commands, the *.test commands among them (those of //kernel/commands, and
+x86's own in //kernel/arch/x86/commands). Nothing runs them at boot, which is
+what this is for. The commands are typed once the boot
 is over -- the user shell's closing "--- end ---" line -- one at a time, or
 --delay seconds after it, for a command such as `lockup status` whose answer
 means more the longer the machine has run. A
 *.test command is done at its verdict, the "<name>: ok" or "<name>: FAILED"
-line every test there ends with. Any other command is done when the kernel
+line every test ends with. Any other command is done when the kernel
 shell prints its "kshell> " prompt again. The prompt ends no line, so the
 serial port is read in raw chunks rather than by line, or a quiet image would
 never show it. It is also written a byte at a time, outside the log's lock, so
@@ -27,8 +28,8 @@ prints none may need a longer --command-timeout.
 
 A command fails if it prints a FAILED line or an error-level line, or if the
 prompt is not back within --command-timeout. A *.test command also fails
-unless it says "<name>: ok", as every test in //kernel/commands does when it
-passes: the kernel shell says nothing about a name it does not know, so a
+unless it says "<name>: ok", as every test does when it passes: the kernel
+shell says nothing about a name it does not know, so a
 misspelt test would otherwise pass. Debug and trace lines are left out
 of what is printed unless --all is given; the whole serial log stays on disk.
 Environment variables such as SMP=1 pass straight through to

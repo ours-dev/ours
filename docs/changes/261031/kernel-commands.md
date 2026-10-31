@@ -292,3 +292,47 @@ None.
 - Why does a comment that says "all four do X" need each file read, when the headers they include are all in one place?
 - What does `timer_share_test.cpp` call from x86, and which repair item removes it?
 - Why does the comment not mention that item?
+
+## Title: The riscv plan, kshell_run.py and //kernel/top say where x86's own commands are now, and no longer describe their gating as open work (2026-10-31)
+
+**Files**
+- `.agents/tasks/riscv-kernel/PLAN.md` — the decision row for step 1b ("How kshell and ... leave the riscv link") and step 7 no longer list gating the x86-only commands as something still to do.
+- `scripts/kshell_run.py` — the docstring says the `*.test` commands are those of `//kernel/commands` and x86's own in `//kernel/arch/x86/commands`.
+- `kernel/top/BUILD.gn` — the comment on the `kernel_shell_enabled` block says an architecture's own commands go with the shell under the same switch, linked by its kernel target.
+- `docs/changes/261031/kernel-commands.md` — this entry.
+
+**Symptom**
+Three places still described the old state, after the entry at the top of this record edited others:
+- `PLAN.md` line 34 (step 1b) already said the x86-only commands were out of the riscv link, but the decision row on line 20 still asked how "kshell and the x86-only commands" leave it and listed "gate the x86-only commands by arch" and "placeholders for ... the APIC and I/O-bitmap calls" as options, and step 7 (line 40) still read "x86-only commands gated by arch" as work to do.
+- `scripts/kshell_run.py` told a reader the `*.test` commands were those of `//kernel/commands`, and that "every test there" ends with its verdict line, when four of them are in another directory.
+- `kernel/top/BUILD.gn` explains what `kernel_shell_enabled` links and what stays, and `kernel/kernel_params.gni` sends readers to it for "what stays and why". `kernel_params.gni` names the architecture's commands among what the switch drops; the comment `top` points to did not.
+
+**Cause**
+The move was documented where the commit touched (the skill, the timer note, the plan's step 1b), and these three were not on the list of files that name the old placement because none of them names a path: they describe a set ("the x86-only commands", "the tests of //kernel/commands", "what the switch gates"), and the set changed shape under them. `grep` for the path finds a document that names the path; it does not find one that describes the group.
+
+**Change**
+- `PLAN.md`: the row's subject becomes "How kshell and the generic commands leave the riscv link until step 7 (step 1b; the x86-only commands already have, since arch-platform-seams R25 on 2026-10-31)"; the first option loses "the APIC and I/O-bitmap calls" (the symbols only those commands needed) and the second loses "gate the x86-only commands by arch and". Step 7 reads "(the x86-only commands are already gated by arch: arch-platform-seams R25, 2026-10-31)" in place of the phrase. The row's choice and recommendation, `kernel_shell_enabled` defaulting to `ours_cpu != "riscv"`, are not touched: they are still the user's to make, and what is put to them is now what is left.
+- `kshell_run.py`: two sentences of the docstring, no code.
+- `kernel/top/BUILD.gn`: two lines in the comment, no dep.
+
+**Reference**
+None, this project's own documents.
+
+**Verification**
+- `gn gen` on both directories: every `.ninja` file byte-identical to the copies taken before (713 x86, 707 riscv); `format_gn.py --check` on `kernel/top/BUILD.gn` and `lint_docs.py --changed` on the plan and this record: no violations; `python3 -m py_compile scripts/kshell_run.py`: compiles.
+- This is the last commit of the round, so the whole round's tree was verified with it. x86 `boot_check.py`: build ok; dbg PASS shell finished at 5.9s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 5.0s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed; headers PASS 8 targets, 8 include roots, 106 headers under //kernel/arch/ and //kernel/lib/arch:, every one listed · 1.8s; exit code 0. riscv `boot_check.py --out out/bringup.riscv`: riscv PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi; headers PASS 8 targets, 8 include roots, 81 headers under //kernel/arch/ and //kernel/lib/arch:, every one listed · 1.6s; exit code 0. None of the three changes what a build or a boot does.
+
+**Deliberately not done**
+- `.agents/tasks/arch-platform-seams/DESIGN.md` is still not edited: it is brought up to date in one pass later.
+- No other document was searched for the old placement beyond what the review listed and the skill and `CLAUDE.md` (which already name `kernel/arch/<cpu>/commands`). An older change record that says "`//kernel/commands`" for the four tests is history and stays.
+
+**How it was found**
+The independent review of `3135d44a` read the plan and `kshell_run.py` for the words "x86-only commands" and "`*.test` commands of `//kernel/commands`", and `kernel/top/BUILD.gn` against `kernel_params.gni`'s pointer to it.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a search for the old path not find a document that describes "the commands of //kernel/commands" as a set?
+- `kernel_params.gni` points readers to `kernel/top/BUILD.gn` for what stays and why. What did a reader of that comment learn wrongly before, and from which line?
+- The plan's decision row was open when the move landed. Why is trimming the options that became moot not the same as making the decision?
