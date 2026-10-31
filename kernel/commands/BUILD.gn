@@ -13,6 +13,11 @@ import("//build/ours/cpu.gni")
 # Commands that are a natural part of a subsystem's own file -- mm's
 # `dump-frame`, say -- stay where they are; this directory is for the ones
 # that would otherwise need a file of their own.
+#
+# A file here is one every architecture is to build. A command that only makes
+# sense on one, because it includes that architecture's private headers, goes
+# in that architecture's own directory, kernel/arch/<cpu>/commands, which its
+# kernel target links under the same kernel_shell_enabled switch.
 
 source_set("commands") {
   sources = [
@@ -22,10 +27,7 @@ source_set("commands") {
     "dpc_test.cpp",
     "hotplug_test.cpp",
     "idle.cpp",
-    "interrupt_line_test.cpp",
     "interrupt_test.cpp",
-    "ioport_test.cpp",
-    "irq_test.cpp",
     "large_page_test.cpp",
     "lockup.cpp",
     "log.cpp",
@@ -44,7 +46,6 @@ source_set("commands") {
     "tick_broadcast_test.cpp",
     "tick_fallback_test.cpp",
     "tick_replace_test.cpp",
-    "timer_share_test.cpp",
     "timer_test.cpp",
     "user_copy_test.cpp",
     "vma_phys_test.cpp",
@@ -56,11 +57,9 @@ source_set("commands") {
   ]
   deps = [
     # The memory tests include <ours/arch/aspace_layout.hpp> for the user
-    # address range. The edge is to the running architecture's headers, and GN
-    # checks per target, not per header, so it also satisfies the four tests
-    # that include x86's own (<ours/arch/x86/...>): interrupt_line_test,
-    # irq_test, timer_share_test and ioport_test. Those belong in
-    # kernel/arch/x86/commands rather than in a generic target.
+    # address range, a header every architecture provides under that name. The
+    # tests that include one architecture's own headers are in that
+    # architecture's commands directory (//kernel/arch/x86/commands).
     "//kernel/arch/$ours_cpu/kernel:headers",
     "//kernel/lib/gktl",
     "//kernel/lib/heap",

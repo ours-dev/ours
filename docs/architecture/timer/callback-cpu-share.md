@@ -71,7 +71,7 @@ $$g \ge \lambda C \;\Longrightarrow\; s \ge \frac{\lambda}{1 + \lambda}$$
 
 ## 在 QEMU TCG 上的实测
 
-`timershare.test`(`kernel/commands/timer_share_test.cpp`)把上面的公式拿去对照。$P = 10\,\mu s$,一颗 CPU 上固定一个线程,先独占跑一份固定工作,再挂上回调耗时为 $C$ 的周期定时器跑同样的工作,两次耗时之比就是份额 $s$。每个点重复 5 次,取中位数。四次一次性模式的运行:
+`timershare.test`(`kernel/arch/x86/commands/timer_share_test.cpp`)把上面的公式拿去对照。$P = 10\,\mu s$,一颗 CPU 上固定一个线程,先独占跑一份固定工作,再挂上回调耗时为 $C$ 的周期定时器跑同样的工作,两次耗时之比就是份额 $s$。每个点重复 5 次,取中位数。四次一次性模式的运行:
 
 | 要求的 $C$ | 回调实际耗时 | 线程份额(中位数) | 回调间隔 | 公式给出 |
 |---|---|---|---|---|

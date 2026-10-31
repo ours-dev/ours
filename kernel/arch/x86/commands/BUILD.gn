@@ -1,0 +1,35 @@
+# x86's console commands.
+#
+# The same kind of file as //kernel/commands holds -- the callbacks that put
+# something on the kshell prompt, and the state only they need -- for the
+# tests that only make sense on x86: they drive the local APIC, the I/O
+# bitmap and the per-CPU block directly, which no other architecture has. A
+# command that every architecture can run goes in //kernel/commands.
+#
+# x86's kernel target links this directory when kernel_shell_enabled
+# (//kernel/kernel_params.gni) links the shell, as //kernel/top does
+# //kernel/commands, so a kernel built for another architecture, or without a
+# console, never compiles them.
+
+source_set("commands") {
+  sources = [
+    "interrupt_line_test.cpp",
+    "ioport_test.cpp",
+    "irq_test.cpp",
+    "timer_share_test.cpp",
+  ]
+
+  # One edge for each target that owns a header the four files include.
+  deps = [
+    # <ours/arch/x86/apic.hpp>, io_bitmap.hpp and percpu.hpp, and
+    # <ours/arch/aspace_layout.hpp> for the user address range.
+    "//kernel/arch/x86/kernel:headers",
+    "//kernel/lib/gktl",
+    "//kernel/lib/heap",
+    "//kernel/mm:headers",
+    "//kernel/object:headers",
+    "//kernel/platform:headers",
+    "//system/lib/logz4:headers",
+  ]
+  visibility = [ "//kernel/arch/x86/kernel" ]
+}

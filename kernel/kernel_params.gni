@@ -60,7 +60,8 @@ declare_args() {
   # anyone who can write to the serial line can run every console command. The
   # boot option `kernel.shell` keeps it from starting; this keeps it from
   # existing, which is the answer for a kernel that must not carry it. False
-  # drops //kernel/lib/kshell and //kernel/commands from the link (see
+  # drops //kernel/lib/kshell, //kernel/commands and the architecture's own
+  # commands (//kernel/arch/x86/commands) from the link (see
   # //kernel/top/BUILD.gn for what stays and why).
   #
   # True by default so the bring-up images, which are driven over that console,

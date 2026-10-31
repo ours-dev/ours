@@ -166,8 +166,9 @@ cache.
 
 ## Kernel tests
 
-The kernel's `*.test` commands (`//kernel/commands`) do not run at boot.
-After a change to what one covers, run it on the dbg image, after the build:
+The kernel's `*.test` commands (`//kernel/commands`, and x86's own in
+`//kernel/arch/x86/commands`) do not run at boot. After a change to what one
+covers, run it on the dbg image, after the build:
 
 ```bash
 python3 scripts/kshell_run.py --out out/<dir> vmosnapshot.test

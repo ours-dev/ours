@@ -1,3 +1,5 @@
+import("//kernel/kernel_params.gni")
+
 # x86_64 main 架构特有代码
 source_set("kernel") {
   sources = [
@@ -47,6 +49,15 @@ source_set("kernel") {
     "//kernel/lib/mtl:headers",
     "//kernel/mm:headers",
   ]
+
+  # The console commands that only make sense on x86, linked when the kernel
+  # has a console, as //kernel/top links //kernel/commands: a kernel built
+  # without kshell has no use for their callbacks. They go in with x86's
+  # kernel target and not with //kernel/top, which has to stay the same for
+  # every $ours_cpu.
+  if (kernel_shell_enabled) {
+    deps += [ "//kernel/arch/x86/commands" ]
+  }
   visibility = [ "*" ]
 }
 

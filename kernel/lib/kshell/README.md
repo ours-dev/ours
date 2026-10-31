@@ -35,7 +35,8 @@ the serial line, so it is switched at two levels:
   the user shell. Off, the log says
   `kshell: not started (kernel.shell is off)`.
 - **Build:** the GN argument `kernel_shell_enabled = false`
-  (`//kernel/kernel_params.gni`) leaves this library and `//kernel/commands`
-  out of the link, whatever the command line says.
+  (`//kernel/kernel_params.gni`) leaves this library, `//kernel/commands` and
+  the architecture's own commands (`//kernel/arch/x86/commands`) out of the
+  link, whatever the command line says.
 
       tools/set.py bringup.x86 --args kernel_shell_enabled=false
