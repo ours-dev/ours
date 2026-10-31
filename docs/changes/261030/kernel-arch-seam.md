@@ -626,3 +626,64 @@ None.
 - `gn check` passed for `physload.core` before and after the edge. What does it ask, why is a chain of public edges enough to satisfy it, and why does that make a clean check a weak argument for "this target declares what it uses"?
 - The previous entry's survey of includers came from the checker's complaints. What did that miss, and what is the survey that does not depend on the checker?
 - Why is the edge private and not public, when `physload.core` already reaches the headers publicly?
+
+## Title: A correction to the seven-targets entry: GN does read the includes of a header-only target and cannot resolve the per-arch ones there, so five generic headers are held by nothing (2026-10-30)
+
+**Files**
+- `docs/repairs/261030/build-headers.md` — new item 6: the five headers, the three ways to hold them, and what each costs.
+- `docs/changes/261030/kernel-arch-seam.md` — this entry. No source or build file changes.
+
+**Symptom**
+Latent, cannot be triggered today. The entry on the seven generic targets (and its commit message, and its "Deliberately not done") says GN does not read the includes of header-only targets, which is why the edges went on source sets, and it hedged that conclusion once ("consistent with ... not tested beyond this one header"). The statement is wrong in its general form, and the consequence the hedge hid is a gap: `//kernel/lib/heap:headers` is a generic target whose `vmalloc.hpp` includes `<ours/arch/aspace_layout.hpp>`, owned by `//kernel/arch/<cpu>/kernel:headers`, with no edge to it, and `gn check --check-system` has nothing to say about it.
+
+**Cause**
+`gn check` finds the target a header belongs to by resolving each `#include` to a file, through the include directories of the including target, and then asks whether that target reaches the owner. The including target can be any target that lists the file, a header-only one included: GN reads `vmalloc.hpp` as part of `//kernel/lib/heap:headers` (it is in its `public`). What fails there is the first step. `cpp_interface()` sets `configs = []` so that a header target does not inherit the consuming toolchain's binary configs, and what is left in its include directories is its own root, the configs it publishes by hand (`//kernel/mm:headers.config`, which is how it gets `PAGE_SIZE`) and the ones its public dependencies publish. The architecture's `kernel/include` is not among them (the toolchain puts it on every compile of the kernel, in a config that a header target does not inherit), so `<ours/arch/aspace_layout.hpp>` resolves to no file, and `gn help check` says "includes matching unknown paths are ignored". A source set (`//kernel/lib/heap:heap`) has the toolchain's configs, resolves the include, and is held to an edge. So the real rule is that an include is checked from the target where GN can find the file, and for the per-arch headers that is every ordinary target and no header-only one.
+
+The probe that shows it, on a copy of `kernel/lib/heap/BUILD.gn` edited and restored, on both build directories (`gn gen` into a scratch directory with the same `args.gn`, then `gn check --check-system --error-limit=1000000`, distinct pairs):
+
+| Edit to `//kernel/lib/heap:headers` | x86 | riscv | what the check says |
+|---|---|---|---|
+| none | 37 | 22 | nothing about `vmalloc.hpp` |
+| the architecture's `kernel:headers.config` added to `public_configs` | 38 | 23 | `vmalloc.hpp:6: Include not allowed. It is not in any dependency of //kernel/lib/heap:headers. The include file is in the target(s): //kernel/arch/<cpu>/kernel:headers` |
+| a private `deps` edge to `//kernel/arch/<cpu>/kernel:headers` | 37 | 22 | nothing: the edge is there, and the include still does not resolve |
+| that config and that edge | 37 | 22 | nothing: the include resolves and is held, and the edge satisfies it |
+| a `public_deps` edge instead | 28 on x86 | 22 | nothing about heap, and nine other pairs gone: every dependent now receives the headers target, so includers without an edge pass |
+
+Two things follow that the earlier entry did not have. The second row is the disproof: GN does read the include in a header-only target once it can resolve it. And the third is a correction to the obvious fix: a bare edge on `heap:headers` changes no check result, so it would document a dependency and hold nothing; what makes the include held is the include directory, with the edge to satisfy it. The fifth row is why `public_deps` stays rejected, for the reason the previous entry gave (it hides which includer needs the header).
+
+Which headers this concerns. A scan of every `.hpp` and `.h` outside the architectures' directories for `#include <ours/arch/NAME.hpp>`, NAME being a header of a per-arch set, finds five:
+- `kernel/lib/heap/include/heap/vmalloc.hpp` (`aspace_layout.hpp`), in `//kernel/lib/heap:headers`;
+- `kernel/mm/include/ours/mm/cpu_local.hpp` (`cpu_local.hpp`) and `physmap.hpp` (`aspace_layout.hpp`), in `//kernel/mm:headers`, whose list is empty (repair item 1);
+- `kernel/include/ours/task/thread.hpp` (`thread.hpp`) and `idle_thread.hpp` (`idle_thread.hpp`): `kernel/include` is not any `cpp_interface`'s root but a directory the kernel products put on the include path (`kernel/products/BUILD.gn`, `//kernel/include`), so these headers have no owning target at all, and listing mm's headers will not surface them.
+
+The three in targets that could list them surface, when their targets are made to, only if the include also resolves; the two without a target are a larger question, because "which target owns `ours/task/thread.hpp`" is not a gap in a list.
+
+**Change**
+None to the build. The correction is this entry, and the open work is item 6 of `docs/repairs/261030/build-headers.md`, with the three options (an include-path config with an edge on `//kernel/lib/heap:headers`, the same on `//kernel/mm:headers` once item 1 lists it, and an owner for `kernel/include`).
+
+I did not add the edge to `heap:headers`, though the probe says it builds and passes. It is the only one of the five that a single line could hold, but it is a layering decision: heap is a low-level library whose header target says in a comment that it takes mm's headers as an include-path config on purpose, to avoid a cycle, and the same shape for the architecture's headers (config and edge) would make heap's header target one more place that knows the running architecture. Whether it should is the user's.
+
+**Reference**
+None, this project's own graph. `gn help check` states the rule that unresolvable includes are ignored.
+
+**Verification**
+- The probe table above: every row is a run on both build directories, `gn gen` ok and `gn check --check-system` counted, with `kernel/lib/heap/BUILD.gn` restored after each (`git diff` of it is empty afterwards) and the scratch build directories removed.
+- The scan of headers for per-arch includes (five hits) and of `//kernel/include` as an include root of any `cpp_interface` (none, on x86 and riscv).
+- `lint_docs.py --changed` on the two documents: no violations.
+- No source or build file changed, so the x86 and riscv `ours-verify` lines of the previous commit stand.
+
+**Deliberately not done**
+- No edge, config or list change for any of the five headers (see Change).
+- The earlier entry is not edited: it is history, and this one corrects it.
+- The commit message of the seven-targets commit says "GN does not read includes in header-only targets"; commits are not rewritten.
+
+**How it was found**
+Reported by an independent review, which added the architecture's config to `heap:headers` in a scratch copy, saw the finding appear, and scanned the headers for the other four. Reproduced here in place with a restoring script, and extended by the rows with a bare edge and with the config and the edge together, which show what each part contributes. The check of `kernel/include` as an include root came from asking why the reviewer's four did not all belong to targets that item 1 would list.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- GN read `vmalloc.hpp` and found nothing to check. Which step of `gn check` failed, why does a source set pass that step and a `cpp_interface` not, and what does a bare edge on the header target change?
+- Adding the architecture's config to `heap:headers` makes a finding appear, and adding a `public_deps` edge makes nine disappear. What is each doing to the include resolution and the reachability that the check is made of?
+- Two of the five headers have no owning target. Why is that a different kind of gap from a header missing from a list, and why can `header_lists.py` not see it?

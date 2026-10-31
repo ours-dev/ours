@@ -99,3 +99,30 @@ None, this project's own tooling.
 
 **Acceptance**
 `python3 scripts/header_lists.py out/bringup.x86` and `... out/bringup.riscv` both pass with no `--scope` or `--all`, and `boot_check.py` prints `headers    PASS` with that wider count.
+
+## 6. Five generic headers include a header of the per-arch set, and no check holds those includes
+
+**Severity**
+Low: nothing fails at build or run time, and `gn check` passes on both architectures; the gap is that the dependency of these headers on the architecture's headers is declared nowhere and checked by nothing.
+
+**Symptom**
+Latent, cannot be triggered today. A scan of every header outside the architectures' directories for `#include <ours/arch/NAME.hpp>`, NAME a header of a per-arch set (`aspace_layout`, `cpu_local`, `entry`, `idle_thread`, `thread`, `vm_aspace`), finds five: `heap/vmalloc.hpp` (`aspace_layout.hpp`) in `//kernel/lib/heap:headers`; `ours/mm/cpu_local.hpp` (`cpu_local.hpp`) and `ours/mm/physmap.hpp` (`aspace_layout.hpp`) in `//kernel/mm:headers`; `ours/task/thread.hpp` (`thread.hpp`) and `ours/task/idle_thread.hpp` (`idle_thread.hpp`) under `kernel/include`. `gn check --check-system` says nothing about any of them on either build directory.
+
+**Cause**
+GN holds an include only where it can resolve the file, and a `cpp_interface()` target (`configs = []`) has in its include directories only its own root, the configs it publishes and the ones its public dependencies publish, not the architecture's `kernel/include`, which the toolchain gives ordinary targets. So from a header target `<ours/arch/aspace_layout.hpp>` resolves to nothing and is ignored; a source set resolves it and is held to an edge, which is why the seven generic source sets have one (`docs/changes/261030/kernel-arch-seam.md`, the entry on them and the correction after it). Probe, on `//kernel/lib/heap:headers`: a bare `deps` edge to `//kernel/arch/$ours_cpu/kernel:headers` changes no result (x86 37 pairs, riscv 22, as before); adding `//kernel/arch/$ours_cpu/kernel:headers.config` to `public_configs` makes the finding appear (38 and 23); the config and the edge together pass (37 and 22); a `public_deps` edge instead drops x86 to 28 because every dependent receives the headers.
+
+`//kernel/mm:headers` is also item 1: its list is empty, so its two headers are unowned until it is listed. The two under `kernel/include` have no owning target at all: `kernel/include` is the include path of the kernel products (`//kernel/products:headers`), not a `cpp_interface` root, so no list can name them.
+
+**Change**
+This is a layering decision, not a mechanical one, and belongs to the user: should a generic header target depend on the running architecture's headers, and by what. The options:
+- The include-path config with an edge, on `//kernel/lib/heap:headers` (one line each: `//kernel/arch/$ours_cpu/kernel:headers.config` in `public_configs` and `//kernel/arch/$ours_cpu/kernel:headers` in `deps`, private). It is the shape `//kernel/mm:headers.config` already has in that target, and the probe shows no cycle. It forwards the architecture's include directory to every dependent of `heap:headers`, which changes the `-I` order of their command lines, so check the `.ninja` diff as the seven-target entry did. Do the same for `//kernel/mm:headers` after item 1 lists it.
+- Leave them, and keep the five in this item as the known gap.
+- For `ours/task/thread.hpp` and `idle_thread.hpp`: give `kernel/include` an owner (a `cpp_interface` with its root), which is a much larger change, or accept them as unowned. Do not do this one without a design.
+
+Not chosen: a bare `deps` edge (documents a dependency and holds nothing) and `public_deps` (hides which includer needs the header).
+
+**Reference**
+None, this project's own graph.
+
+**Acceptance**
+For each header made held: removing the new edge makes `gn check out/bringup.x86 --check-system` and the riscv directory report the include (put it back), the distinct pairs are 37 and 22 with it, `gn check` passes on both, the `.ninja` diff is understood, and x86 `ours-verify` and the riscv check pass.
