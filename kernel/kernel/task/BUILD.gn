@@ -32,6 +32,9 @@ source_set("task") {
     "//kernel/mm:headers",
     "//kernel/object:headers",
     "//system/lib/lockdep",
+
+    # <logz4/log.hpp> (cpu_hotplug.cpp, idle_thread.cpp, thread.cpp).
+    "//system/lib/logz4:headers",
   ]
   visibility = [ "*" ]
 }

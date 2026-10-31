@@ -19,6 +19,12 @@ source_set("time") {
     "//kernel/lib/mtl:headers",
     "//kernel/mm:headers",
     "//system/lib/lockdep",
+
+    # <arch/auto_interrupt_disabler.hpp> and <arch/spin_hint.hpp> (timer.cpp,
+    # timer_queue.cpp), the generic half of the architecture's interface, and
+    # <logz4/log.hpp> (the clock and tick files and timer_queue.cpp).
+    "//kernel/lib/arch:headers",
+    "//system/lib/logz4:headers",
   ]
   visibility = [ "*" ]
 }

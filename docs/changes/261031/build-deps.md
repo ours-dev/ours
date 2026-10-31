@@ -138,3 +138,68 @@ None.
 1. Why is the user toolchain's `libc` object the one the section hashes of the kernel could not vouch for, and what did vouch for it?
 2. What did `user_executable()` add for a user program that `source_set("libc")` did not have, and why does the library now have it too?
 3. Why is the edge on `:libc` and not on `:impl`?
+
+## Title: The kernel's sync, task, sched and time source sets list //kernel/lib/arch:headers and //system/lib/logz4:headers, the owners of the headers their sources include (2026-10-31)
+
+**Files**
+- `kernel/kernel/sync/BUILD.gn` — `//kernel/lib/arch:headers` (`event.cpp` and `semaphore.cpp` include `<arch/auto_interrupt_disabler.hpp>`, `mutex.cpp` and `spin_lock.cpp` `<arch/spin_hint.hpp>`).
+- `kernel/kernel/task/BUILD.gn` — `//system/lib/logz4:headers` (`<logz4/log.hpp>` in `cpu_hotplug.cpp`, `idle_thread.cpp`, `thread.cpp`).
+- `kernel/kernel/task/sched/BUILD.gn` — `//kernel/lib/arch:headers` (`scheduler.cpp` includes `<arch/auto_interrupt_disabler.hpp>`). The target lists `fair.cpp` when the Normal discipline is fair; no `fair.*` file is touched and none was read for this.
+- `kernel/kernel/time/BUILD.gn` — `//kernel/lib/arch:headers` (`timer.cpp`, `timer_queue.cpp`) and `//system/lib/logz4:headers` (`clock_event_device.cpp`, `clock_source.cpp`, `tick_broadcast.cpp`, `tick_device.cpp`, `timer_queue.cpp`).
+- `docs/changes/261031/build-deps.md` — this entry.
+
+**Symptom**
+Latent, cannot be triggered today. `gn check --check-system` reported 17 pairs on x86 and 8 on riscv against these four targets: x86 sync 4, sched 1, time 9 (4 arch, 5 logz4), task 3; riscv task 3 and time 5, all of them logz4. All `Include not allowed`. After this change: x86 29 to 12 pairs (24 lines), riscv 14 to 6 (12 lines), none new.
+
+**Cause**
+The same as the first entry of this file for logz4. The arch half is a different shape worth reading: `<arch/auto_interrupt_disabler.hpp>` and `<arch/spin_hint.hpp>` belong to `//kernel/lib/arch:headers`, the generic half of the `<arch/...>` headers, and the architecture's own half sits under `kernel/arch/<cpu>` (`<arch/x86/spin_hint.hpp>`, `<arch/riscv/spin_hint.hpp>`). A kernel source set that includes the generic one is a user of the architecture layer and should say so.
+
+x86 reports these pairs and riscv does not, with the same sources and the same include lines, and the reason is not that riscv's includes are right: riscv's are held by an accident of its graph. `gn path` from `//kernel/mm:headers` to `//kernel/lib/arch:headers` finds, in the riscv build directory, `//kernel/mm:headers --[public]--> //kernel/phys:handoff --[public]--> //kernel/arch/riscv/phys:headers --[public]--> //kernel/arch/riscv:headers --[public]--> //kernel/lib/arch:headers`; in the x86 directory it finds no path. These targets depend on `//kernel/mm:headers`, so on riscv they reach the owner through four `public_deps` hops that nobody wrote for them, and GN is satisfied. That is the stricter reading of the convention showing: a target can pass `gn check` for a header it has no edge for, until an unrelated target drops a `public_deps` entry. Both architectures now have the direct edge, which is what the header lists in the file say.
+
+**Change**
+One line plus a comment in each list, appended to the end:
+
+```gn
+# kernel/kernel/sync/BUILD.gn, and sched/BUILD.gn with the one file named
+    "//system/lib/lockdep",
++
++   # <arch/auto_interrupt_disabler.hpp> (event.cpp, semaphore.cpp) and
++   # <arch/spin_hint.hpp> (mutex.cpp, spin_lock.cpp), the generic half of the
++   # architecture's interface.
++   "//kernel/lib/arch:headers",
+
+# kernel/kernel/task/BUILD.gn
++   # <logz4/log.hpp> (cpu_hotplug.cpp, idle_thread.cpp, thread.cpp).
++   "//system/lib/logz4:headers",
+
+# kernel/kernel/time/BUILD.gn
++   "//kernel/lib/arch:headers",
++   "//system/lib/logz4:headers",
+```
+
+Rejected: putting `//kernel/lib/arch:headers` in `public_deps` of these source sets, which would pass it on to every dependent of `//kernel/kernel/sync` and the others; the includes are in `.cpp` files, so `deps` is the right strength.
+
+**Reference**
+None, this project's own build graph.
+
+**Verification**
+- `gn check` plain: OK on both build directories. `--check-system` distinct pairs, sets compared: x86 29 to 12, riscv 14 to 6; 17 and 8 gone, none new.
+- Generated files against the snapshot after the previous commit: eight `.ninja` files differ per architecture (`sync`, `task`, `sched` and `time` in both kernel variants), each only in one `linkdeps` line that gains `phony/kernel/lib/arch/headers.linkdeps` or `phony/system/lib/logz4/headers.linkdeps` (in `task.ninja` the arch token, already there through another dependency, also changes place within the line). `compile_commands.json` is unchanged as a set: 752 commands on x86 and 630 on riscv, none differ.
+- x86 `kernel.dev.obi` `8b3b314bc01688bb`, `kernel.dev.dbg_1.obi` `81aa5ccf6aa6e6a5` and `fake.obi` `c9f47b86e7163e12` (sha256 prefixes) byte-identical before and after, and the dbg `vmours` sections too (`.text` `6250b0ceb2af19c1`, `.rodata` `249063baa8a2be5c`, `.data` `e88a26c4c147e9ca`). riscv `fake.obi` `5636a21138f1b7a1` and `bootshim.bin` `f6be1306ccb3df88` byte-identical.
+- riscv probe: 121 failing compiles before and after, the same objects.
+- x86 `boot_check.py`: dbg PASS shell finished at 5.7s · 44 passed, 4 skipped, 0 failed; rel PASS shell finished at 4.7s · 41 passed, 8 skipped, 0 failed · 6/6 required; host-tests PASS 153 passed, 0 failed; headers PASS 8 targets, 106 headers. riscv `boot_check.py --out out/bringup.riscv`: PASS handoff ok at 0.1s; headers PASS 8 targets, 81 headers.
+
+**Deliberately not done**
+- Any edit of `fair.*`, which belongs to the user. `sched/BUILD.gn` is a dependency list and not part of the discipline.
+- Edges for the other headers these sources include that the check already accepts through some chain (`<ours/...>` headers of the kernel's own include root are unowned, and the mm ones are unlisted, so nothing can be said about them).
+
+**How it was found**
+The parse of `gn check --check-system` as in the first entry; the riscv/x86 difference from `gn path out/bringup.riscv "//kernel/mm:headers(//build/switch/set/dbg.1:kernel_riscv.dbg.1)" "//kernel/lib/arch:headers(...)"` and the same on x86.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why did riscv's `gn check` stay silent about `spin_hint.hpp` in `//kernel/kernel/sync` while x86's did not, with the same source and the same include?
+2. Which of the four hops of that riscv chain could someone remove for an unrelated reason, and what would then happen to the check?
+3. Why is `deps` and not `public_deps` the right strength for these edges?

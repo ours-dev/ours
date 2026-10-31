@@ -25,6 +25,10 @@ source_set("sched") {
     "//kernel/lib/ktl:headers",
     "//kernel/mm:headers",
     "//system/lib/lockdep",
+
+    # <arch/auto_interrupt_disabler.hpp> (scheduler.cpp), the generic half of
+    # the architecture's interface.
+    "//kernel/lib/arch:headers",
   ]
   visibility = [ "*" ]
 }

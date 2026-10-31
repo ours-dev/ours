@@ -14,6 +14,11 @@ source_set("sync") {
     "//kernel/lib/ktl:headers",
     "//kernel/mm:headers",
     "//system/lib/lockdep",
+
+    # <arch/auto_interrupt_disabler.hpp> (event.cpp, semaphore.cpp) and
+    # <arch/spin_hint.hpp> (mutex.cpp, spin_lock.cpp), the generic half of the
+    # architecture's interface.
+    "//kernel/lib/arch:headers",
   ]
   visibility = [ "*" ]
 }
