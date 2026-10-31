@@ -86,6 +86,28 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     auto remove_for_transfer(ours::Uandle const *values, u32 count, Dispatcher const *channel,
                              ustl::Box<Handle> *out) -> Status;
 
+    /// Takes the handle named |value| out of this table, provided it names a T,
+    /// and puts it in |out|, which has to be empty: BadHandle for a value that
+    /// names nothing, BadType for one that names something else, and then the
+    /// table is as it was. The kind is looked at and the handle taken in one
+    /// hold of the lock, so that what was looked at is what is taken. For a call
+    /// that consumes a handle only when it is the right one.
+    template <typename T>
+    [[nodiscard]]
+    auto remove_as(ours::Uandle const value, ustl::Box<Handle> *const out) -> Status {
+        DEBUG_ASSERT(!*out, "remove_as() would drop a handle under the table's lock");
+        Guard guard{m_lock};
+        auto *const handle = lookup_locked(value);
+        if (handle == nullptr) {
+            return Status::BadHandle;
+        }
+        if (!handle->dispatcher().template downcast<T>()) {
+            return Status::BadType;
+        }
+        *out = unlink_locked(handle);
+        return Status::Ok;
+    }
+
     /// The object |value| names, as a T, provided the handle grants every
     /// right in |required|.
     template <typename T>

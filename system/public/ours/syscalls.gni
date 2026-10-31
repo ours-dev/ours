@@ -2086,14 +2086,14 @@ ours_syscalls = [
     brief = "Ends the pin |pmt| names, and closes the handle."
     doc = [
       "The program says its device no longer touches the memory, and the",
-      "pages are let go. The handle is closed whatever the answer: BadHandle",
-      "when it names nothing, BadType when it is not a pin.",
+      "pages are let go, and the handle is closed. A handle that names nothing",
+      "is BadHandle and one that is not a pin is BadType, and neither is",
+      "closed.",
     ]
     args = [
       {
         name = "pmt"
         type = "Uandle"
-        release = true
       },
     ]
     attrs = []

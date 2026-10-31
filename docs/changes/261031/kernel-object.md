@@ -67,3 +67,54 @@ None.
 1. `bti_pin` has pinned the pages and then finds the process is at its handle quota. What happens if it makes the handle with `Handle::make(KernelHandle)` and drops it, and what does it do instead?
 2. Why does `bti_pin` cap the size of the pin and not only `addrs_count`?
 3. `pmt_unpin` is given a handle to a VMO. What is returned, and what is left of the handle?
+
+## pmt_unpin closes a handle only if it names a pin (2026-10-31)
+
+**Files**
+- `kernel/lib/syscall/src/bti.cpp` — `pmt_unpin()` takes the handle out of the table with `remove_as<PmtDispatcher>()`.
+- `kernel/object/include/ours/object/handle_table.hpp` — `HandleTable::remove_as<T>()`.
+- `system/public/ours/syscalls.gni` — the text of `pmt_unpin`, and `release = true` is gone from its argument.
+- `system/service/init/test/routing_checks/routing_checks.cpp` — the VMO given to `pmt_unpin` is still there afterwards.
+
+**Symptom**
+`pmt_unpin(vmo)` answered BadType and closed the handle to the VMO. A program that passed the wrong handle by mistake lost a handle it had not meant to give up, and a stray `pmt_unpin(bti)` closed the only handle to a BTI, which orphans it and leaks its quarantine for good.
+
+**Cause**
+The previous entry copied `vmo_replace_as_executable`: remove the handle first, look at it after, so that "looked at" and "taken" cannot be two steps another thread could come between. That is the right way to be sure a handle is not unpinned and closed twice, but it is wrong about what it consumes: removing first consumes every handle the call is given, including the ones it then refuses. The user's rule for this one is the stricter one, that a call which fails with BadType has done nothing.
+
+Looking first and removing second does not fix it: between the two another thread can close the same handle, and then the pin is quarantined by that close while this call answers as if it had won. So the kind is checked and the handle taken in one hold of the table's lock, which is what `remove_as<T>()` is: BadHandle, BadType, or the handle in the caller's hands with the table as it was left by exactly that removal. The unpin still comes before the handle is closed, so closing finds nothing to quarantine.
+
+The argument's `release = true` meant "consumed whatever the answer" (`build/abi/gen_syscalls.py` takes it as metadata and checks only where it may appear); this call no longer does that, so the flag is gone and the text says what is closed and what is not.
+
+**Change**
+```cpp
+ustl::Box<object::Handle> closed;
+if (auto const status = table.remove_as<PmtDispatcher>(pmt, &closed); status != Status::Ok) {
+    return status;          // BadHandle or BadType: the table is as it was
+}
+closed->dispatcher().downcast<PmtDispatcher>()->unpin();
+return Status::Ok;          // `closed` goes out of scope: the handle is closed
+```
+
+**Reference**
+None, this project's own rule. Zircon's `sys_pmt_unpin` removes first and checks after, as the previous entry did.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped, 0 failed, 0 error lines), rel PASS (41 passed, 8 skipped, 0 failed, 6/6 required), host-tests PASS (151 passed). `routing_checks` now asks `vmo_get_size` of the VMO it gave `pmt_unpin` and expects Ok, then closes it.
+- A mutation, undone afterwards: `pmt_unpin` removing first again made 2 `routing_checks` checks fail (the BadType answer is the same, the handle is gone).
+- clang-format: clean.
+- Not verified: the race itself. A thread that closes the handle while another calls `pmt_unpin` on it is decided by the table's lock, which is an argument and not a test.
+
+**Deliberately not done**
+`vmo_replace_as_executable` still consumes a handle of the wrong type; it is not this change's call to alter.
+
+**How it was found**
+The user read the previous entry's summary and chose the other behaviour.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is "look at the handle's type, then remove it" not the same as `remove_as<T>()`?
+2. A thread calls `pmt_unpin` on a handle while another closes it. Who wins, and what does the loser answer?
+3. What does `pmt_unpin` do to the pin and to the handle, in which order, and why that order?

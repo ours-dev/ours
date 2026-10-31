@@ -622,8 +622,8 @@ auto check_physical_vmo(Uandle const vma, Uandle const mmio) -> void {
 /// resource of another kind (the MmIo root). What a real IOMMU, BTI and pin
 /// answer needs that slot, and is checked where it arrives.
 ///
-/// pmt_unpin consumes its handle whatever it answers, so the VMO it is given
-/// here is gone afterwards: BadHandle for the next question about it.
+/// pmt_unpin closes a handle that is a pin and nothing else, so the VMO it is
+/// given here is still there afterwards, and is closed by this check.
 auto check_device_dma_refusals(Uandle const mmio) -> void {
     auto vmo = Uandle::Invalid;
     if (!expect("vmo_create(a page)", ours::vmo_create(PAGE, ours::VmoOptions::None, &vmo),
@@ -659,8 +659,8 @@ auto check_device_dma_refusals(Uandle const mmio) -> void {
 
     expect("pmt_unpin(a VMO)", ours::pmt_unpin(vmo), Status::BadType);
     auto size = u64{0};
-    expect("vmo_get_size(the VMO pmt_unpin was given)", ours::vmo_get_size(vmo, &size),
-           Status::BadHandle);
+    expect("vmo_get_size(the VMO pmt_unpin was given)", ours::vmo_get_size(vmo, &size), Status::Ok);
+    auto _ = ours::handle_close(vmo);
 }
 
 /// Mmio.Get answers with the root of the physical address space: an MmIo

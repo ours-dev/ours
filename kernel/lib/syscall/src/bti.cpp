@@ -197,20 +197,19 @@ auto bti_pin(ours::Uandle const bti, BtiPinOptions const options, ours::Uandle c
     return Status::Ok;
 }
 
-/// The handle is taken out of the table first and closed whatever the answer,
-/// as vmo_replace_as_executable's is: it is a handle the call consumes. The
-/// unpin comes before it is closed, so that closing finds nothing to
-/// quarantine.
+/// The handle is taken out of the table only if it names a pin (BadHandle and
+/// BadType leave the table as it was), in one hold of the table's lock: a
+/// handle that is looked up and then removed could be closed, and the pin
+/// quarantined, by another thread in between. The unpin comes before the handle
+/// is closed, so that closing finds nothing to quarantine.
 auto pmt_unpin(ours::Uandle const pmt) -> Status {
-    auto closed = ProcessDispatcher::current()->handle_table().remove(pmt);
-    if (!closed) {
-        return Status::BadHandle;
+    ustl::Box<object::Handle> closed;
+    if (auto const status =
+            ProcessDispatcher::current()->handle_table().remove_as<PmtDispatcher>(pmt, &closed);
+        status != Status::Ok) {
+        return status;
     }
-    auto token = closed->dispatcher().downcast<PmtDispatcher>();
-    if (!token) {
-        return Status::BadType;
-    }
-    token->unpin();
+    closed->dispatcher().downcast<PmtDispatcher>()->unpin();
     return Status::Ok;
 }
 
