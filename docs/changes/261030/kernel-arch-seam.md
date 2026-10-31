@@ -275,3 +275,65 @@ None.
 - `//kernel/object` includes `<ours/arch/aspace_layout.hpp>` and has the same missing edge as `apic`. Why is the one-line fix right for `apic` and not for `object`?
 - The edge added one line to each `apic.ninja` and no compile line changed. Which edge is it, and why did ninja recompile nothing?
 - Six errors about headers other than x86's own disappeared when `apic` began to depend on x86's `:headers`. What carried them, and what would break the cover if page_tables stopped forwarding its two owners?
+
+## Title: A correction to the `ours/arch/x86/` entry: Zircon is the one that shares the `arch/` name, the guard rule has one exception, the grep was narrower than it said, and the guard question is now taught (2026-10-30)
+
+**Files**
+- `docs/changes/261030/kernel-arch-seam.md` — this entry only. The entry "x86's seven private headers leave `ours/arch/` for `ours/arch/x86/`" above is history and is not edited; this one says which of its statements are wrong or incomplete, and what is true.
+
+**Symptom**
+None: wrong teaching in a record. Four statements of that entry:
+- Its Reference says "This project shares one `ours/arch/` name between the generic kernel and each architecture ..., so the sub-directory is what separates the two kinds." That is the opposite of the project's rule.
+- Its Change says "Every header already in `ours/arch/x86/` derives its guard from its path". One does not.
+- Its Verification says `git grep` for the old paths finds only `docs/changes/` history and `arch-platform-seams/DESIGN.md`. That is true of one spelling only.
+- Its third question asks what the compiler does with a second header that reuses a guard, and no section of the entry teaches it.
+
+**Cause**
+*Who shares the name.* `layering.md` ("Architecture, platform and drivers") says `ours/arch/` holds only the headers every architecture provides under the same name, its per-arch set, and that generic seams are declared in `kernel/include/ours/arch_<topic>.hpp`. It is Zircon that lets two directories provide one name: `zircon/kernel/include/arch/` holds the generic half (`ops.h`, `thread.h`, `mp.h`, ...) and each `zircon/kernel/arch/<cpu>/include/arch/` the per-arch half (for x86 `arch_ops.h`, `arch_thread.h`, and the `x86/` sub-directory), and the generic `arch/ops.h` includes `<arch/arch_ops.h>` (line 56), the generic `arch/thread.h` `<arch/arch_thread.h>` (line 15). The user kept the split riscv-kernel step 1a made, which stops two directories from providing one `ours/arch/` name (2026-10-30). What this project shares is the name across *architectures*: x86's include root holds one `ours/arch/thread.hpp`, riscv's would hold another, and only one root is on the command line. The entry's own Cause says exactly that. So here `ours/arch/x86/` does not separate the generic kernel from the architecture; it separates, inside the architecture, the per-arch set from x86's private headers. The error was in the Reference, which described Zircon's shape as if it were ours.
+
+*The guard rule.* `kernel/arch/x86/kernel/include/ours/arch/x86/feature.hpp` opens with `OURS_ARCH_X86_FEATURES_HPP`, plural, where the path rule gives `OURS_ARCH_X86_FEATURE_HPP`. The other eighteen of the nineteen headers in `ours/arch/x86/`, the seven moved ones among them, follow the rule, so "every" was one too many. The mismatch predates R8 and R8 did not touch the file, so it stays: whoever next edits `feature.hpp` should rename the guard and say so in that record. It is not a collision either way: no two headers of x86's include root open with the same guard, and each of the seven new guard names appears in one header only.
+
+*The grep.* The recorded pattern, `ours/arch/\(apic\|asm\|cpu\|hpet\|hpet_regs\|mem_cfg\|numa\)\.hpp`, matches the full spelling of the old paths. Two other spellings remain, both history: the read-only `docs/repairs-20260830.md` (four mentions of `arch/hpet.hpp` without the `ours/`), and `.agents/tasks/acpi-lib-redesign/RESULT.md:26`, which names `ours/arch/hpet-regs.hpp`, the hyphenated spelling the header had until `25c50029` renamed it on 2026-08-30. A result record and an archive say what was true when they were written, so neither was updated. What the grep supports is "no live file names the old path in its full form", not "no file names it".
+
+*The include guard, which the third question asked about.* A header opens with `#ifndef G`, `#define G` and closes with `#endif`. The preprocessor decides by the name `G` alone, not by what the file is or where it lives: once `G` is defined in a translation unit, the body of any later header that opens with the same `G` is skipped, with no warning. If two different headers share a guard, whichever is included second is missing from that translation unit, and the symptom is an undeclared identifier or an incomplete type at some use site, far from the include line and present only in the translation units that include both, in that order. That is why the convention derives the guard from the path: a path is unique inside an include root, so a name built from it is unique with it. `ours/arch/x86/cpu.hpp` gives `OURS_ARCH_X86_CPU_HPP` and the generic `ours/cpu.hpp` gives `OURS_CPU_HPP`, so they cannot shadow each other, whatever their similar names. R8 did not rename the seven guards to cure a collision (there was none: the old `OURS_ARCH_CPU_HPP` and a riscv header of the same path would never share a build), but so that a guard keeps telling the truth about the path, as the old directory did not.
+
+**Change**
+The Reference sentence, before:
+
+```text
+This project shares one `ours/arch/` name between the generic kernel and each architecture (...), so the sub-directory is what separates the two kinds.
+```
+
+What it should have said:
+
+```text
+Zircon lets two directories provide the name `arch/`: the generic half in `zircon/kernel/include/arch/` and the per-arch half in `zircon/kernel/arch/x86/include/arch/`. This project kept the split riscv-kernel step 1a made: generic seams are in `ours/arch_<topic>.hpp`, `ours/arch/` is only the per-arch set, and `ours/arch/x86/` is what separates x86's private headers from that set.
+```
+
+The guard and grep statements are corrected by the Cause above; no file other than this record changed.
+
+**Reference**
+Zircon: `zircon/kernel/include/arch/ops.h` and `thread.h` are the generic half; `zircon/kernel/arch/x86/include/arch/arch_ops.h` and `arch_thread.h` are the per-arch halves they include; `arch/x86/apic.h` and `arch/x86/asm.h`, in the `x86/` sub-directory of that include directory, are the counterparts of the two largest moved headers. This project: `.agents/skills/ours-kernel-design/references/layering.md`, "Architecture, platform and drivers", the bullet on where seams are declared.
+
+**Verification**
+- Guard rule, checked over the nineteen headers of `ours/arch/x86/` by deriving `OURS_ARCH_X86_<NAME>_HPP` from each file name and comparing it with the first `#ifndef`: one mismatch, `feature.hpp`. The first `#ifndef` lines of `ours/arch/*.hpp` and `ours/arch/x86/*.hpp` have no duplicate, and `git grep -l` for each of the seven new guard names finds its header and no other file outside `docs/`.
+- `git grep -n -E 'ours/arch/(apic|asm|cpu|hpet|hpet_regs|mem_cfg|numa)\.hpp'` finds only `docs/changes/` and `arch-platform-seams/DESIGN.md`. The abbreviated `arch/(apic|hpet|hpet_regs|hpet-regs|mem_cfg|numa)\.hpp` outside `ours/arch/x86/` finds four lines of `docs/repairs-20260830.md`, and `git grep hpet-regs` outside `docs/changes` finds `acpi-lib-redesign/RESULT.md:26`.
+- `git log --follow` on `hpet_regs.hpp` shows `25c50029` as the rename from `hpet-regs.hpp`.
+- The Zircon paths above exist in the local checkout, and `arch/ops.h:56` and `arch/thread.h:15` hold the two includes named.
+- `scripts/lint_docs.py --changed docs/changes/261030/kernel-arch-seam.md`: no violations. Documents only; no source or build file changed, so no boot was run.
+
+**Deliberately not done**
+- `feature.hpp`'s guard is not renamed: it is a one-line change in a file R8 did not touch, and a header edit would need its own build and boot for a name nothing else reads. It waits for the next edit of the file.
+- The R8 entry, `.agents/tasks/arch-platform-seams/DESIGN.md` (backfilled in one pass), `docs/repairs-20260830.md` and the `acpi-lib-redesign` result are not edited.
+- The R8 entry's third question stays where it is; this entry answers it.
+
+**How it was found**
+An independent review read the R8 entry against `layering.md`, ran the path rule over the headers of `ours/arch/x86/` and ran `git grep` with broader patterns than the entry's. Each of the four was reproduced from the commands in Verification before it was written down here.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which directories provide the name `arch/` in Zircon and which provide `ours/arch/` here, and what tells generic code from per-arch code in each?
+- Two different headers open with the same guard and a `.cpp` includes both. What does the compiler say, and why is the error nowhere near the include line?
+- A grep for `ours/arch/hpet.hpp` finds nothing in live files. Which other spellings of a moved header's old path should you also search for, and which of the remaining hits were rightly left alone?
