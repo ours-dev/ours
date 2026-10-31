@@ -358,7 +358,11 @@ class Device final {
         put16(1, 12, DESC_NEXT | (write ? u16{0} : DESC_WRITE));
         put16(1, 14, 2);
         // desc[2]: the status byte, written by the device, end of the chain.
-        put64(2, 0, buf_base + count * SECTOR);
+        // It sits right after the data, which starts HEADER into the buffer:
+        // drop the HEADER and the device writes the status one header's
+        // width into the data's tail, and the byte read back at the true
+        // status slot is whatever the region held before.
+        put64(2, 0, buf_base + HEADER + count * SECTOR);
         put32(2, 8, 1);
         put16(2, 12, DESC_WRITE);
         put16(2, 14, 0);
