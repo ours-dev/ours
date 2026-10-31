@@ -102,6 +102,7 @@ cpp_interface("headers") {
     "arch/x86/msr.hpp",
     "arch/x86/nospec.hpp",
     "arch/x86/page_table.hpp",
+    "arch/x86/pic.hpp",
     "arch/x86/pmu.hpp",
     "arch/x86/processor.hpp",
     "arch/x86/processor/feature.hpp",

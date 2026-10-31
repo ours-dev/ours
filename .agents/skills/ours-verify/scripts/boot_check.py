@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Build the ours kernel, run its host tests, boot both dev images under QEMU,
-and judge each.
+"""Build the ours kernel, run its host tests, check the architectures' header
+lists, boot both dev images under QEMU, and judge each.
 
 Run from the repo root:
 
@@ -11,6 +11,12 @@ Run from the repo root:
 The host tests are every executable the default build compiles in the host
 toolchain with testonly = true, asked of GN on each run (HostTests). They run
 while the images boot, and one failing fails the check like a failing boot.
+
+The header lists are scripts/header_lists.py's check, run once the boots are
+over: each cpp_interface() of an architecture (//kernel/arch/) must list every
+file of its include root and nothing that is not there. GN reads those lists
+only for `gn check`, so nothing else would notice a gap. It prints one
+`headers` line and fails the check like a failing host test.
 
 A boot passes when the shell prints its closing "--- end ---" line, every
 line the image requires (REQUIRED) appeared, no "FAILED" line appeared, and
@@ -67,6 +73,7 @@ from pathlib import Path
 # the one that names the logs' directory with every boot script.
 # .agents/skills/ours-verify/scripts/boot_check.py -> repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
+import header_lists  # noqa: E402
 import host_tests  # noqa: E402
 import scratch_dir  # noqa: E402
 
@@ -571,7 +578,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--no-build", action="store_true", help="boot what is already built")
     parser.add_argument("--only", choices=sorted(IMAGES), help="boot one image instead of both")
     parser.add_argument("--timeout", type=float, help="seconds per boot (default: 60; riscv: 10)")
-    parser.add_argument("--no-tests", action="store_true", help="skip the host tests")
+    parser.add_argument("--no-tests", action="store_true",
+                        help="skip the host tests and the header-list check")
     args = parser.parse_args(argv)
 
     root = repo_root()
@@ -617,6 +625,7 @@ def main(argv: list[str]) -> int:
     results = [b.report() for b in boots]
     if tests is not None:
         results.append(tests.report())
+        results.append(header_lists.report(root, out))
     print(f"logs       {logdir}/{{{','.join(b.tag for b in boots)}}}.log")
     return 0 if all(results) else 1
 

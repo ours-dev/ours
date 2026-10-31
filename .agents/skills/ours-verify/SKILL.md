@@ -38,6 +38,32 @@ as it is in `//:default`. Each runs from the build directory and passes when
 it exits 0; one failing fails the check, with its last lines printed. All of
 their output is in `host-tests.log` beside the boot logs.
 
+Once the boots are over it checks the header lists and prints a `headers`
+line: every `cpp_interface()` target of an architecture (a label under
+`//kernel/arch/`) must list in `public` each header of its include root, and
+nothing that is not a file there (`scripts/header_lists.py`). Ninja never
+reads those lists; only `gn check` does, and only for a header some target
+lists, so a header no target lists gets no dependency check at all and
+nothing fails to say so. The targets, their roots and their lists all come
+from GN (`gn desc //*`, then `gn desc` of each target's own `<label>.config`
+for its one include directory), so a new architecture target is held to it
+as soon as it exists. Targets that publish one root between them (sampler,
+phys) are judged by the union of their lists. A header is a file named like
+one (`.h`, `.hpp`, `.inc`, `.tcc`, ...), and the check fails naming each:
+
+```text
+headers    FAIL  1 missing, 1 stray among 7 targets, 7 include roots, 75 headers under //kernel/arch/ · 1.5s
+  missing //kernel/arch/x86/kernel/include/ours/arch/x86/hpet.hpp: under the include root of //kernel/arch/x86/kernel:headers, which does not list it
+  stray   //kernel/arch/x86/kernel/include/ours/arch/x86/gone.hpp: listed by //kernel/arch/x86/kernel:headers, and not a file under its include root //kernel/arch/x86/kernel/include/
+```
+
+`missing` is a new or forgotten header: add it to the list. `stray` is a
+name left behind by a rename or a path typo: fix or delete the entry. The
+rest of the tree has older gaps and is not held to this yet
+(`docs/repairs/261030/build-headers.md`); `python3 scripts/header_lists.py
+out/bringup.x86 --all` shows them, `--scope PREFIX` picks other targets, and
+it runs on any generated build directory, riscv's included.
+
 On rel it also types keys: once the PS/2 keyboard driver logs `pc-ps2: ready`,
 it sends `sendkey a` and `sendkey shift-a` to a QEMU monitor on a socket of
 its own, not the one behind Ctrl-A c, whose echo would land inside the serial
@@ -55,9 +81,10 @@ under it and kept in the log (see "Reading a lockup report" below). A boot
 already quiet when its timeout comes is let run until it is NMI'd.
 
 Flags: `--out out/<dir>` (configured automatically if new), `--no-build`,
-`--only dbg|rel`, `--timeout N`, `--no-tests` (skip the host tests, for a
-loop of boots only; never for the check before a commit). `SMP=1`, `NUMA=1`
-and the other `scripts/qemu_boot.py` variables pass through.
+`--only dbg|rel`, `--timeout N`, `--no-tests` (skip the host tests and the
+header lists, for a loop of boots only; never for the check before a
+commit). `SMP=1`, `NUMA=1` and the other `scripts/qemu_boot.py` variables
+pass through.
 
 ## riscv
 
@@ -92,8 +119,11 @@ phys `[error]` line or OpenSBI's `sbi_trap_error:` fails it at once; short of
 `riscv.log` in the directory named by the same rule as the x86 mode's,
 `$TMPDIR/ours-verify-bringup.riscv-<hash>/`. `--no-build` boots what is
 there, `fake.obi` included if it exists; `--only` is refused, and the host
-tests do not run: the x86 check runs them, and stays the check before a
-commit.
+tests and the header lists do not run: the x86 check runs them, and stays the
+check before a commit. Its last lines say so. The header lists of a riscv
+build directory are one command away
+(`python3 scripts/header_lists.py out/bringup.riscv`), and are the ones to
+check after adding a riscv header.
 
 For C++ edits, `cpp-write-and-verify` (clang-format and clang-tidy) comes
 first; this skill checks behaviour, that one checks the source.
@@ -161,6 +191,7 @@ through the script's `nmi`, which is the test of that path.
 | `console silent for Ns before the end, so QEMU was sent nmi` | every CPU stopped, most likely each with interrupts off | read the report printed under it: [Reading a lockup report](#reading-a-lockup-report) |
 | `lockup report, lockup: cpuN took no tick for 10 s` | cpuN stopped taking its tick, and another CPU found it | the same; cpuN's block is printed last |
 | `no "<line>" within Ns` | the shell finished, but a line the image requires (`REQUIRED` in `boot_check.py`) never came: on rel, `routing_checks: passed`, from the root's test component, or a `pc-ps2:` line, from the keyboard driver | read the `init:` and `pc-ps2:` lines in `rel.log`: a component that did not start, or a use that routes nowhere or cannot be served, is logged there, and so is a driver that could not take its ports or line; for a missing `pc-ps2: key` line, `rel.monitor.log` shows whether QEMU took the keys |
+| `headers FAIL` | an architecture's `cpp_interface()` does not list a header of its include root (`missing`), lists a name that is not a file there (`stray`), or GN could not be asked | the files are named under the line: add the missing one to that target's `public` or `headers`, fix or delete the stray entry. Nothing else fails because of it, which is why the check exists |
 | `host-tests FAIL` | a host test exited non-zero, or GN could not list them | the failing test's last lines are printed; `host-tests.log` has all of its output. Run the binary from the build directory to reproduce: `cd out/<dir> && ./host/obj/<path>` |
 | `QEMU exited` | reset or triple fault (`-no-reboot` turns a reset into an exit) | debug under the gdbstub |
 
