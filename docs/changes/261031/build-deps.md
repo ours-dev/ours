@@ -203,3 +203,78 @@ None.
 1. Why did riscv's `gn check` stay silent about `spin_hint.hpp` in `//kernel/kernel/sync` while x86's did not, with the same source and the same include?
 2. Which of the four hops of that riscv chain could someone remove for an unrelated reason, and what would then happen to the check?
 3. Why is `deps` and not `public_deps` the right strength for these edges?
+
+## Title: //kernel/object:object lists //system/lib/logz4:headers directly, because the chain through the sampler is private and GN does not count it (2026-10-31)
+
+**Files**
+- `kernel/object/BUILD.gn` — `source_set("object")` gains `//system/lib/logz4:headers` at the end of its `deps` (`handle.cpp`, `pager_proxy.cpp`, `port_dispatcher.cpp`, `process_dispatcher.cpp` and `thread_dispatcher.cpp` include `<logz4/log.hpp>`), with a comment that says why the sampler's dependency on it is not enough.
+- `docs/changes/261031/build-deps.md` — this entry.
+
+**Symptom**
+Latent, cannot be triggered today. `gn check --check-system` reports five pairs on each architecture against this target (x86 12 pairs before this change and 7 after, riscv 6 and 1), and these are the only five of the sweep that read `Can't include this header from here.` and not `Include not allowed.`:
+
+```text
+The target:
+  //kernel/object:object
+is including a file from the target:
+  //system/lib/logz4:headers
+
+It's usually best to depend directly on the destination target.
+In some cases, the destination target is considered a subcomponent
+of an intermediate target. In this case, the intermediate target
+should depend publicly on the destination to forward the ability
+to include headers.
+
+Dependency chain (there may also be others):
+  //kernel/object:object -->
+  //kernel/lib/sampler:sampler --[private]-->
+  //system/lib/logz4:headers
+```
+
+**Cause**
+This is the other half of the rule the earlier entries only touched. GN lets a target include a header of any target it depends on directly, and of any target reached from those through `public_deps` hops. A `deps` hop (private) ends the reach: what `//kernel/lib/sampler` links against is its own business, and whoever depends on the sampler does not thereby depend on logz4. The two messages say which of the two situations it is: `Include not allowed` means no chain exists, and `Can't include this header from here` means a chain exists and has a private hop in it, which is what happened here. `//kernel/object:object` has a path to logz4's headers through the sampler, and the path is no good for the include.
+
+There were two ways to make it good. The message offers one: make the sampler forward the header (`public_deps`), which would hand logz4's headers to everyone who depends on the sampler on the grounds that this one target needs them. The other is the edge here. `object` includes the header in five of its own `.cpp` files and does not include anything of the sampler's through it, so the dependency is `object`'s own and belongs in `object`'s list. This also keeps the include from depending on the sampler's choice of strength: had the sampler's edge been moved from private to public some day for another reason, the check would have passed with no edge in `object`, and the day it was moved back the check would have gone red in a target nobody touched.
+
+**Change**
+```gn
+     deps = [
+       # (the comment on the first entry is unchanged)
+       "//kernel/arch/$ours_cpu/kernel:headers",
+       "//kernel/lib/sampler",
+       "//kernel/platform:headers",
++
++      # <logz4/log.hpp> (handle.cpp, pager_proxy.cpp, port_dispatcher.cpp,
++      # process_dispatcher.cpp, thread_dispatcher.cpp). //kernel/lib/sampler
++      # depends on it, but privately, so that path does not count: GN reads an
++      # include through a chain of public dependencies only.
++      "//system/lib/logz4:headers",
+     ]
+```
+
+Rejected: the sampler's `deps` entry on `//system/lib/logz4:headers` moved to `public_deps`, as above.
+
+**Reference**
+None, this project's own build graph. The rule is in `gn help check`, on which dependencies an include may be read through.
+
+**Verification**
+- `gn check` plain: OK on both build directories. `--check-system` distinct pairs, sets compared: x86 12 to 7 (14 lines), riscv 6 to 1 (2 lines); five gone on each, none new. The one pair left on riscv is `kmalloc.cpp:8`, repair item 1.
+- Generated files against the snapshot after the previous commit: two `.ninja` files differ per architecture, `object.ninja` in both kernel variants, in one `linkdeps` line. `compile_commands.json` unchanged as a set (752 commands on x86, 630 on riscv).
+- x86 `kernel.dev.obi` `8b3b314bc01688bb`, `kernel.dev.dbg_1.obi` `81aa5ccf6aa6e6a5` and `fake.obi` `c9f47b86e7163e12` byte-identical before and after, the dbg `vmours` sections too (`.text` `6250b0ceb2af19c1`); riscv `fake.obi` `5636a21138f1b7a1` and `bootshim.bin` `f6be1306ccb3df88` byte-identical.
+- riscv probe: 121 failing compiles before and after, the same objects.
+- x86 `boot_check.py`: dbg PASS shell finished at 5.7s · 44 passed, 4 skipped, 0 failed; rel PASS shell finished at 4.8s · 41 passed, 8 skipped, 0 failed · 6/6 required; host-tests PASS 153 passed, 0 failed; headers PASS 8 targets, 106 headers. riscv `boot_check.py --out out/bringup.riscv`: PASS handoff ok at 0.1s; headers PASS 8 targets, 81 headers.
+
+**Deliberately not done**
+- Moving the sampler's edge to `public_deps`, see Change.
+- Auditing the sampler's own includes of logz4; its edge is private on purpose and its own sources are held to it by the same check.
+
+**How it was found**
+The parse of `gn check --check-system` as in the first entry; the two kinds of message are told apart by the first line of each block, and the chain of the `Can't include` ones is printed in the block itself.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. What is the difference between `Include not allowed` and `Can't include this header from here`, and which one means a path to the header exists?
+2. Why is it better for `object` to depend on logz4's headers itself than for the sampler to pass them on?
+3. How could the check have passed for `object` with no edge of its own, and what would have made it stop?

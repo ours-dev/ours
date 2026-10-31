@@ -40,6 +40,12 @@ if (toolchain_environment == "kernel") {
       "//kernel/arch/$ours_cpu/kernel:headers",
       "//kernel/lib/sampler",
       "//kernel/platform:headers",
+
+      # <logz4/log.hpp> (handle.cpp, pager_proxy.cpp, port_dispatcher.cpp,
+      # process_dispatcher.cpp, thread_dispatcher.cpp). //kernel/lib/sampler
+      # depends on it, but privately, so that path does not count: GN reads an
+      # include through a chain of public dependencies only.
+      "//system/lib/logz4:headers",
     ]
   }
 }
