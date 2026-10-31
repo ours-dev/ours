@@ -64,7 +64,7 @@ A server has one channel for each client, and it must answer whichever client wr
 
 A *signal* is a flag that a kernel object raises to describe its state. A channel end raises `Readable` while its queue is not empty, `Writable` while its peer is alive, and `PeerClosed` once its peer is gone. A process raises `Terminated` once it is dead. The type is `ours::Signals`, a set of bits.
 
-The simplest wait is `object_wait_one(handle, signals, deadline, &observed)`, which blocks until the object raises one of the signals. The *deadline* is 0, to look without waiting, or `ours::INSTANT_INFINITE`, to wait as long as it takes; the kernel refuses any other. A client that talks to one server can use it. This is `routing_checks` waiting for a reply or for the server to vanish (`system/service/init/test/routing_checks/routing_checks.cpp:344`):
+The simplest wait is `object_wait_one(handle, signals, deadline, &observed)`, which blocks until the object raises one of the signals. The *deadline* is 0, to look without waiting, or `ours::INSTANT_INFINITE`, to wait as long as it takes; the kernel refuses any other. A client that talks to one server can use it. This is `routing_checks` waiting for a reply or for the server to vanish (`system/service/init/test/routing_checks/routing_checks.cpp:347`):
 
 ```cpp
         auto observed = ours::Signals::None;
@@ -201,7 +201,7 @@ Where this is stated:
 
 - The Loop's whole specification, including the order of the steps above: the comment on `Loop::run` in `system/lib/loop/include/loop/loop.hpp:238`.
 - The rules for a waiter (one unit of work, never closes its own handle, `Rearm` only after reading): the comment on `Waiter`, `system/lib/loop/include/loop/loop.hpp:44-61`. When `on_rearm_failed` is called and what it must do: the same comment, `system/lib/loop/include/loop/loop.hpp:63-89`.
-- One thread, nothing locked: `system/lib/ioservice/include/ioservice/outgoing.hpp:42`.
+- One thread, nothing locked: `system/lib/ioservice/include/ioservice/outgoing.hpp:51`.
 
 ## Where a server's memory comes from
 
@@ -385,9 +385,9 @@ When a component's process exits, the root logs `init: <moniker> exited with <co
 
 Where this is stated:
 
-- The walk, and the three answers: `system/lib/component/include/component/route.hpp` and `system/service/init/realm.cpp:751`.
+- The walk, and the three answers: `system/lib/component/include/component/route.hpp` and `system/service/init/realm.cpp:792`.
 - The rights words: `system/lib/ours.io/include/ours_io/ours_io.hpp:141`.
-- The exit line, and `NotFound` after it: `system/service/init/realm.cpp:858` and `:793`.
+- The exit line, and `NotFound` after it: `system/service/init/realm.cpp:910` and `:838`.
 
 ## `/svc` and the outgoing directory
 
@@ -399,7 +399,7 @@ The pieces on the way use the file-and-directory side of the system, so they nee
 - `Open` asks a directory for the node at a path, and passes the server end of a channel for the answer. It is one-way: it has no reply to carry a failure. A failure shows up on the new channel, as an epitaph.
 - A *namespace* is a process's own table from a path prefix, such as `/svc`, to the client end of a directory channel. The library `fsio` fills it before `main` from the startup handles the root sent, and provides `open()` and `connect()`.
 
-`/svc` is the namespace entry the root serves for each component that uses a protocol, holding one entry for each protocol it uses; it is that component's view, not a registry. A client reaches a protocol by connecting to its entry. `routing_checks` does it in a few lines (`system/service/init/test/routing_checks/routing_checks.cpp:407`):
+`/svc` is the namespace entry the root serves for each component that uses a protocol, holding one entry for each protocol it uses; it is that component's view, not a registry. A client reaches a protocol by connecting to its entry. `routing_checks` does it in a few lines (`system/service/init/test/routing_checks/routing_checks.cpp:410`):
 
 ```cpp
 auto connect_or_fail(std::string_view const path) -> Uandle {
@@ -435,7 +435,7 @@ client (routing_checks)        root (init)                      server (echo)
 
 The *outgoing directory* is the directory a component serves for others. The root creates its channel when it resolves the component and keeps the client end; the component receives the server end as its `DirectoryRequest` startup handle, and serves it. A component without a program gets none, since nothing would serve it. Under `svc/` it holds one entry for each protocol the component provides, a *service node*: a node that, when opened, hands the request's channel to the program. `ioservice::Outgoing` (`system/lib/ioservice`) builds that directory and serves it on the Loop. It keeps a *connection* for each handle that is open on the directory or on `svc/`: a record of one open handle on a node, with a Loop slot to wait on. The `DirectoryRequest` channel it serves is the first; an open or clone of a directory through it makes another. That is why echo's table counts them.
 
-The server registers each protocol with `add_protocol(name, handler)`. The *handler* is an object of the program's own that derives from `ioservice::Handler`, with one function, `connect`, which `Outgoing` calls with the channel of each client. This is the whole class (`system/lib/ioservice/include/ioservice/outgoing.hpp:50`):
+The server registers each protocol with `add_protocol(name, handler)`. The *handler* is an object of the program's own that derives from `ioservice::Handler`, with one function, `connect`, which `Outgoing` calls with the channel of each client. This is the whole class (`system/lib/ioservice/include/ioservice/outgoing.hpp:59`):
 
 ```cpp
 class Handler {
@@ -480,13 +480,13 @@ An outgoing directory is a very small node tree: the directory itself, `svc/` in
 Where this is stated:
 
 - `fsio::connect` writes an `Open` and does not wait: `system/lib/fsio/include/fsio/fsio.hpp:82`.
-- The root forwards the Open into the provider's outgoing directory: `system/service/init/realm.cpp:789`.
-- The outgoing directory, `add_protocol` and `serve`: `system/lib/ioservice/include/ioservice/outgoing.hpp:18` and `:120`.
-- A component without a program gets no outgoing directory: `system/service/init/realm.cpp:364`.
+- The root forwards the Open into the provider's outgoing directory: `system/service/init/realm.cpp:830`.
+- The outgoing directory, `add_protocol` and `serve`: `system/lib/ioservice/include/ioservice/outgoing.hpp:18` and `:129`.
+- A component without a program gets no outgoing directory: `system/service/init/realm.cpp:380`.
 
 ## Epitaphs
 
-An `Open` has no reply, so when it fails, the failure has nowhere to go. The answer is the *epitaph*: the last message a server writes on a channel before it closes it, carrying a status that says why. Every message begins with a 16-byte header, and two of its fields matter here: the *method number* says which method of the protocol the message is, and the *transaction id* ties a reply to its request (a reply carries its request's id, and a one-way message carries 0). An epitaph is a fixed 24-byte message, the same in every protocol: a header with transaction id 0 and, as method number, the reserved all-ones value that no method can have, and then the status (`system/lib/wire/include/wire/wire.hpp:35`). [03-protocols.md](03-protocols.md) has the whole layout.
+An `Open` has no reply, so when it fails, the failure has nowhere to go. The answer is the *epitaph*: the last message a server writes on a channel before it closes it, carrying a status that says why. Every message begins with a 16-byte header, and two of its fields matter here: the *method number* says which method of the protocol the message is, and the *transaction id* ties a reply to its request (a reply carries its request's id, and a one-way message carries 0). An epitaph is a fixed 24-byte message, the same in every protocol: a header with transaction id 0 and, as method number, the reserved all-ones value that no method can have, and then the status (`system/lib/wire/include/wire/wire.hpp:38`). [03-protocols.md](03-protocols.md) has the whole layout.
 
 Three kinds of code write one:
 
@@ -507,7 +507,7 @@ auto close_with_epitaph(Uandle const channel, Status const status) -> void {
 }
 ```
 
-A client sees the epitaph as the first message on its end, after which the channel reads `PeerClosed`. Before it decodes a message as the reply it expects, it asks whether the message is an epitaph, because an epitaph's transaction id is 0 and would not match any reply. This is `routing_checks` doing it (`system/service/init/test/routing_checks/routing_checks.cpp:369`):
+A client sees the epitaph as the first message on its end, after which the channel reads `PeerClosed`. Before it decodes a message as the reply it expects, it asks whether the message is an epitaph, because an epitaph's transaction id is 0 and would not match any reply. This is `routing_checks` doing it (`system/service/init/test/routing_checks/routing_checks.cpp:372`):
 
 ```cpp
     auto epitaph() const -> ustl::Option<Status> {
@@ -560,4 +560,4 @@ The other chapters use a few words that this one does not need to define in orde
 - `docs/architecture/component-framework/glossary.md`, `docs/architecture/component-framework/libraries.md`: the words and the library layers.
 - `examples/echo/echo_server.cpp`, `examples/echo/BUILD.gn`, `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp`, `kernel/products/image/dev/BUILD.gn`, `kernel/lib/obi/include/obi/package_format.hpp`, `system/service/init/test/routing_checks/BUILD.gn`, `system/service/init/test/routing_checks/routing_checks.cpp`: the running example.
 
-Checked against commit `561571b7` on 2026-10-30.
+Checked against commit `10dd8149` on 2026-10-30.

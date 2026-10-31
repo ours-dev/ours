@@ -71,7 +71,7 @@ A server calls `ours::channel_read`, `ours::channel_write` and the other system 
 
 On the host nobody binds them, so the test executable defines them itself. A *fake kernel* here is a small model of ports and channels held in ordinary memory, plus those definitions, which forward each call to the model. `system/lib/ioservice/test/fake_kernel.cpp` ends with them:
 
-`system/lib/ioservice/test/fake_kernel.cpp:221-223`:
+`system/lib/ioservice/test/fake_kernel.cpp:233-235`:
 
 ```cpp
 auto ours::channel_create(ChannelCreateOptions, Uandle *const out0, Uandle *const out1) -> Status {
@@ -79,29 +79,30 @@ auto ours::channel_create(ChannelCreateOptions, Uandle *const out0, Uandle *cons
 }
 ```
 
-The library under test is compiled unchanged and linked against these definitions, "so the library's own source is what runs" (`system/lib/ioservice/test/BUILD.gn:19-21`). There is no interface to inject and no `#ifdef`: "which of the two answers is fixed by what the executable links, so the library has no seam of its own" (`system/lib/loop/BUILD.gn:10-11`). A call the library is not meant to make has no definition in the fake, and the test fails to link (`system/lib/ioservice/test/fake_kernel.hpp:22-23`). That link error is a useful alarm: it says your code made a system call the model does not have.
+The library under test is compiled unchanged and linked against these definitions, "so the library's own source is what runs" (`system/lib/ioservice/test/BUILD.gn:19-21`). There is no interface to inject and no `#ifdef`: "which of the two answers is fixed by what the executable links, so the library has no seam of its own" (`system/lib/loop/BUILD.gn:10-11`). A call the library is not meant to make has no definition in the fake, and the test fails to link (`system/lib/ioservice/test/fake_kernel.hpp:23-24`). That link error is a useful alarm: it says your code made a system call the model does not have.
 
 Do not confuse this with `//kernel/tests/fake-kernel`. That is a different thing, a stand-in kernel image that proves the boot chain reached it (`kernel/tests/fake-kernel/README.md:1-8`).
 
-The model keeps the rules of the real kernel that the libraries depend on, and nothing more (`system/lib/ioservice/test/fake_kernel.hpp:25-37`):
+The model keeps the rules of the real kernel that the libraries depend on, and nothing more (`system/lib/ioservice/test/fake_kernel.hpp:26-41`):
 
 - A channel end is readable while messages are queued on it, and reports its peer closed once the peer is closed.
 - A write queues the message on the peer, and fails with `PeerClosed` once the peer is gone. The handles in the message are consumed either way.
 - A wait is one-shot and level-triggered: armed on an object that already asserts one of its signals, its packet is queued at once; otherwise when the object first asserts one.
 - Closing a handle ends its armed waits without a packet, and closes the channel for its peer.
 - A port hands its packets out in the order they were queued.
-- A wait that a test has made fail answers the status it was given and arms nothing (`fail_next_wait_async()`, `system/lib/ioservice/test/fake_kernel.hpp:49-52`), which is how a test reaches a `Binding`'s `on_rearm_failed`.
+- A wait that a test has made fail answers the status it was given and arms nothing (`fail_next_wait_async()`, `system/lib/ioservice/test/fake_kernel.hpp:53-56`), which is how a test reaches a `Binding`'s `on_rearm_failed`.
+- A `debug_write` longer than the kernel allows answers `OutOfRange` and writes nothing, so that a library that does not cut or split its line shows as a line that is missing (`system/lib/ioservice/test/fake_kernel.hpp:39-41`). The writes that were accepted can be read back.
 
-It leaves out rights, and the moving of handles between tables: a handle written into a message keeps its value and stays open in the model (`system/lib/ioservice/test/fake_kernel.hpp:39-42`). So a test against the fake cannot show that the real kernel agrees. That is what the boot is for.
+It leaves out rights, and the moving of handles between tables: a handle written into a message keeps its value and stays open in the model (`system/lib/ioservice/test/fake_kernel.hpp:43-46`). So a test against the fake cannot show that the real kernel agrees. That is what the boot is for.
 
-A test can also look inside the model: whether a handle is still open, how many messages are queued on a channel end, which handles were closed and in what order (`system/lib/ioservice/test/fake_kernel.hpp:54-64`).
+A test can also look inside the model: whether a handle is still open, how many messages are queued on a channel end, which handles were closed and in what order, what each accepted `debug_write` wrote (`system/lib/ioservice/test/fake_kernel.hpp:58-72`).
 
 ### How the `ioservice` and `loop` tests use one
 
 There are two fakes, one per test directory, and they differ in how much they model.
 
 - `system/lib/loop/test/fake_kernel.*` models only the three calls the Loop makes, `port_wait`, `object_wait_async` and `handle_close`. Because its tests have no real client, it gives them ways to make things happen: queue messages on an object, take one off, close the peer, queue a packet by hand, and make the next wait fail (`system/lib/loop/test/fake_kernel.hpp:57-76`). That last one produces a failure the real kernel does not produce on demand. It also answers `BadState` to a wait with no deadline on an empty port, which no real `port_wait` does, so that a test that would block for ever fails instead (`system/lib/loop/test/fake_kernel.hpp:97-100`).
-- `system/lib/ioservice/test/fake_kernel.*` models the channel and port calls and `handle_close`; its `handle_duplicate` only answers `NotSupported` (`system/lib/ioservice/test/fake_kernel.cpp:242-246`). Its tests need no helpers to move state, because they act as a client through the same calls the server uses: `ours::channel_create`, `ours::channel_write` and `ours::channel_read`, which land in the fake.
+- `system/lib/ioservice/test/fake_kernel.*` models the channel and port calls, `handle_close` and `debug_write`; its `handle_duplicate` only answers `NotSupported` (`system/lib/ioservice/test/fake_kernel.cpp:254-258`). Its tests need no helpers to move state, because they act as a client through the same calls the server uses: `ours::channel_create`, `ours::channel_write` and `ours::channel_read`, which land in the fake.
 
 A test of a server on a Loop, such as `system/lib/ioservice/test/loop_server_test.cpp`, goes in five steps:
 
@@ -135,7 +136,7 @@ Read it as a table. A connection to the `/svc` directory that holds the ours.io 
 
 The same refusal, through a real Loop and the fake kernel, also checks what was not done:
 
-`system/lib/ioservice/test/loop_server_test.cpp:294-304`:
+`system/lib/ioservice/test/loop_server_test.cpp:335-345`:
 
 ```cpp
 TEST_F(LoopServerTest, OpenOfAMissingNameAnswersNotFound) {
@@ -151,7 +152,7 @@ TEST_F(LoopServerTest, OpenOfAMissingNameAnswersNotFound) {
 }
 ```
 
-Four things are pinned. No connect function was called. The client end holds an epitaph with `NotFound`. The channel the Open carried is closed. The directory's own connection is still open for the next request. A server that answered `NotFound` but also dropped the directory connection would pass the first three lines and fail the last. `system/lib/ioservice/test/outgoing_test.cpp:204-217` does the same for the provider side: an Open of an `svc/<name>` the outgoing directory does not serve is answered `NotFound`.
+Four things are pinned. No connect function was called. The client end holds an epitaph with `NotFound`. The channel the Open carried is closed. The directory's own connection is still open for the next request. A server that answered `NotFound` but also dropped the directory connection would pass the first three lines and fail the last. `system/lib/ioservice/test/outgoing_test.cpp:206-219` does the same for the provider side: an Open of an `svc/<name>` the outgoing directory does not serve is answered `NotFound`.
 
 ### Adding a host test of your own
 
@@ -240,7 +241,7 @@ If the check fails, its summary says why. The summaries that concern a server ar
 
 ### Read the boot log
 
-The last line of the output names the directory of the logs, `<dir>/{dbg,rel}.log`. The directory is `ours-verify-<name of the build directory>` under the temporary directory (`.agents/skills/ours-verify/scripts/boot_check.py:560` and `:588`), so two checkouts of the repository that both use `out/bringup.x86` share it. Give each its own `--out`. `host-tests.log` is beside them.
+The last line of the output names the directory of the logs, `<dir>/{dbg,rel}.log`. The directory is `ours-verify-<name of the build directory>-<ten hex digits>` under the temporary directory (`.agents/skills/ours-verify/scripts/boot_check.py:560` and `:588`; `scripts/boot_logdir.py:30-31`). The digits come from the whole path of the build directory, so two checkouts of the repository that both use `out/bringup.x86` have directories of their own. `host-tests.log` is beside them.
 
 A log holds the kernel's lines and the shell's self-checks as well, and can hold a stray NUL byte that makes `grep` treat it as a binary file, so search it for markers with `grep -a`. The root's lines start with `init:`, and a server's start with whatever prefix it prints, as echo's start with `echo:`:
 
@@ -271,7 +272,7 @@ A server prints with `ort::debug_line`, which writes one line to the kernel's de
 
 `examples/echo/echo_server.cpp` shows the habit worth copying: one `report(what, status)` function that prints `echo: <what>: <Status>`, called wherever the server gives up (`examples/echo/echo_server.cpp:63-66`). With the program's name first, `grep` finds every line of one component, and with the status last the line says why.
 
-The root prints two lines about every component's life. It starts the children of `root.cm` in the order they are listed (`system/service/init/realm.cpp:428-439`):
+The root prints two lines about every component's life. It starts the children of `root.cm` in the order they are listed (`system/service/init/realm.cpp:444-455`):
 
 - `init: started <moniker>` when it started the component's process.
 - `init: <moniker> exited with <code>` when the process ended. A server meant to keep running that has this line has stopped, and the lines it printed just before are the first place to look.
@@ -288,7 +289,7 @@ First, the manifest asks for something that must fail. The protocol uses of `rou
 
 Second, the program connects and reads what comes back, and expects the failure. A connect is one-way, so it succeeds before the root has decided anything, and the refusal shows up as the first message on the channel:
 
-`system/service/init/test/routing_checks/routing_checks.cpp:528-541`:
+`system/service/init/test/routing_checks/routing_checks.cpp:531-544`:
 
 ```cpp
     auto const connection = connect_or_fail(UNOFFERED);
@@ -309,15 +310,17 @@ Second, the program connects and reads what comes back, and expects the failure.
 
 Notice that the check is exact on both counts. It requires an epitaph, not a bare close, and it requires `NotFound`, not any error.
 
-Third, a failed check prints a line with `FAILED` in it (`system/service/init/test/routing_checks/routing_checks.cpp:137-141`), and the program ends by printing `routing_checks: passed` and exiting with 0 only if none failed (`system/service/init/test/routing_checks/routing_checks.cpp:906-913`). The root logs the exit as `init: routing_checks exited with 0`.
+Third, a failed check prints a line with `FAILED` in it (`system/service/init/test/routing_checks/routing_checks.cpp:140-144`), and the program ends by printing `routing_checks: passed` and exiting with 0 only if none failed (`system/service/init/test/routing_checks/routing_checks.cpp:920-927`). The root logs the exit as `init: routing_checks exited with 0`.
 
 Fourth, the boot check turns those lines into a verdict. Any `FAILED` line fails the image, and `routing_checks: passed` is among the required lines, so a component that never runs, or stops before the end, fails too.
 
-The root prints a line for each deliberate refusal, and a passing boot holds them. In your `rel.log` you will see these two, the ones the first part sets up:
+The root prints a line for each deliberate refusal, and a passing boot holds them. In your `rel.log` you will see these four. The first two are the ones the first part sets up; the third is `check_undeclared`'s, which asks for a name the manifest does not use (cause 2); the fourth is the route to echo after echo has been stopped on purpose (cause 4):
 
 ```text
 init: routing_checks's use of "denied" routes nowhere: AccessDenied at . (offer of "denied")
 init: routing_checks's use of "ours.test.Unoffered" routes nowhere: NotFound at . (offer of "ours.test.Unoffered")
+init: routing_checks's /svc refuses an open of "ours.test.Undeclared": NotFound
+init: routing_checks's use of "ours.test.Echo" routes nowhere: NotFound at echo (exited)
 ```
 
 A negative case you have never seen fail proves nothing, because a check that cannot fail looks the same as one that passes. Break the thing it checks, reboot, and watch it fail, then restore it. For example, change the status that `check_unoffered` expects, `Status::NotFound` in the snippet above, to `Status::Ok`, and boot: the check prints a line of the shape `routing_checks: <what> = <got> (expected <expected>) FAILED`, which `fail()` builds, and `rel` fails with a `FAILED line(s)` summary. A check that prints nothing when broken guards nothing.
@@ -346,7 +349,7 @@ The result arrives on the channel. The client reads its end and finds one of thr
 
 A client has to wait for the channel to be readable or its peer to be closed, and only then decide which of the first two it has. `routing_checks` does it in one small function, and every check above is built on it. The whole exchange of a client with echo, from encoding a request to decoding the reply, is in [02-first-server.md](02-first-server.md); this is the part that tells the outcome of a connect:
 
-`system/service/init/test/routing_checks/routing_checks.cpp:343-357`:
+`system/service/init/test/routing_checks/routing_checks.cpp:346-360`:
 
 ```cpp
     auto receive(Uandle const channel) -> Status {
@@ -366,7 +369,7 @@ A client has to wait for the channel to be readable or its peer to be closed, an
     }
 ```
 
-A message that is readable may be an epitaph or a reply: the client looks at the header before it decodes (`system/lib/wire/include/wire/wire.hpp:233-243`). Two details matter when you read a client's report:
+A message that is readable may be an epitaph or a reply: the client looks at the header before it decodes (`system/lib/wire/include/wire/wire.hpp:285-295`). Two details matter when you read a client's report:
 
 - A write on a channel whose peer closed answers `PeerClosed`, but the epitaph the peer left is still there to read, so a client that writes first and then reads still gets the reason (`system/lib/ours.resource/src/client.cpp:28-29`).
 - An epitaph whose status is `Ok` says only that the server closed with nothing wrong, and the client libraries read it as `PeerClosed` (`system/lib/ours.resource/src/client.cpp:75-79`).
@@ -377,8 +380,8 @@ When a connect fails, ask these in order. The causes are numbered in "The table"
 
 1. Did `fsio::connect` itself return an error? Then no message was sent. Cause 1 or 9.
 2. If it returned `Ok`, what did the first read give? An epitaph: its status picks the causes. No epitaph, `PeerClosed`: causes 11 to 13.
-3. Does the root's log hold a line for it? Search for `use of "<name>"`, `cannot forward` and `cannot serve`.
-4. If the root's log is silent, who else could have answered? The provider's own program, or the `/svc` that never held the name: causes 2, 4, 5, 10 and 13.
+3. Does the root's log hold a line for it? Search for `use of "<name>"`, `refuses an open of "<name>"`, `cannot forward` and `cannot serve`.
+4. If the root's log is silent, who else could have answered? The provider. Its library prints one `ioservice:` line when its outgoing directory refuses an Open (cause 5); its own program prints what it prints (causes 10 and 13). Cause 12 is a race that leaves no line.
 
 ### The table
 
@@ -388,8 +391,10 @@ Each cause has a number. Find the client's symptom in the first column of the lo
 |---|---|---|
 | `fsio::connect` returns `NotFound`, nothing sent | nothing | 1 |
 | `fsio::connect` returns `NoResource`, for every protocol of that component | `init: <moniker>'s /svc cannot be served: <Status>` | 9 |
-| an epitaph `NotFound` | `... routes nowhere: NotFound at <where> ...` | 3 |
-| an epitaph `NotFound` | nothing for this connect | 2, 4, 5 |
+| an epitaph `NotFound` | `... routes nowhere: NotFound at <where> (<verb> of "<name>")` | 3 |
+| an epitaph `NotFound` | `init: <moniker>'s /svc refuses an open of "<name>": NotFound` | 2 |
+| an epitaph `NotFound` | `... routes nowhere: NotFound at <provider> (exited)` | 4 |
+| an epitaph `NotFound` | nothing from the root; the provider logs `ioservice: the outgoing directory refused an Open of "svc/<name>": NotFound` | 5 |
 | an epitaph `AccessDenied`, on a directory entry only | `... routes nowhere: AccessDenied at <where> ...` | 6 |
 | an epitaph `BadType` | `... reaches another protocol: ...` | 7 |
 | an epitaph `NoResource` | `init: cannot serve <name> to <moniker>: <Status>` | 8 |
@@ -400,10 +405,10 @@ Each cause has a number. Find the client's symptom in the first column of the lo
 The causes, each with what to change:
 
 1. **`fsio::connect` returns `NotFound`; the root logs nothing.** The component has no protocol `use` at all, so the root made it no `/svc`, and the client's namespace has nothing to resolve `/svc/<name>` against. Fix: declare the protocol in the component's `use` list.
-2. **An epitaph `NotFound`; the root logs nothing.** `<name>` is not in this component's `/svc`, which holds one entry per protocol `use`. Fix: spell the name as the `use` does, and add the `use` to the component's manifest if it is missing.
+2. **An epitaph `NotFound`; the root logs `init: <moniker>'s /svc refuses an open of "<name>": NotFound`.** `<name>` is not in this component's `/svc`, which holds one entry per protocol `use`. Fix: spell the name as the `use` does, and add the `use` to the component's manifest if it is missing. The name in the line is the path as the client sent it, with every byte that is not printable ASCII shown as `?`, and a long path cut and ended with `...`: a client chooses those bytes, and they must not be able to end the line and write another of the root's.
 3. **An epitaph `NotFound`; the root logs `init: <moniker>'s use of "<name>" routes nowhere: NotFound at <where> (<verb> of "<name>")`.** The route leads nowhere: the parent offers nothing of that name to this component, a child that should provide it exposes nothing of that name or cannot be resolved, the provider has no program or declares no such capability, or no built-in (a protocol the root itself provides) has the name. Fix: add what the line says is missing, read as the notes below explain: the `offer` at `<where>`, the `expose` of the child, or the capability in the provider's manifest.
-4. **An epitaph `NotFound`; the root logs nothing for this connect, but an earlier line `init: <provider> exited with <code>` or `init: cannot start <provider>: <Status>` is there.** The provider is not running: it exited, or could not be started, and the root does not start it again, so every later route to it ends here. Fix: find why it stopped, in the lines it printed before the `exited with` line. A provider that stops on purpose, as echo does when it is asked to, gives the same answer afterwards. The root prints nothing for the route itself, which is a known limit.
-5. **An epitaph `NotFound`; the root logs nothing.** The provider runs, but its outgoing directory has no `svc/<name>`: its manifest declares the protocol and its program never added it under that name. The root forwards the Open and does not wait, so only the provider's directory answers. Fix: add it in the program under the name the manifest declares, as echo's `main` does with `add_protocol`.
+4. **An epitaph `NotFound`; the root logs `init: <moniker>'s use of "<name>" routes nowhere: NotFound at <provider> (exited)`, and an earlier line `init: <provider> exited with <code>` or `init: cannot start <provider>: <Status>` is there.** The provider is not running: it exited, or could not be started, and the root does not start it again, so every later route to it ends here. The line has cause 3's shape, with the provider after `at` and `(exited)` where cause 3 has the verb. Fix: find why it stopped, in the lines it printed before the `exited with` line. A provider that stops on purpose, as echo does when it is asked to, gives the same answer afterwards: `routing_checks` makes that connect on purpose, and every dev boot holds `init: routing_checks's use of "ours.test.Echo" routes nowhere: NotFound at echo (exited)`. The code has a second wording, `(its outgoing directory is closed)`, for a provider whose outgoing directory is gone while its process has not been seen to end; no boot here printed it.
+5. **An epitaph `NotFound`; the root logs nothing, and the provider logs `ioservice: the outgoing directory refused an Open of "svc/<name>": NotFound`.** The provider runs, but its outgoing directory has no `svc/<name>`: its manifest declares the protocol and its program never added it under that name. The root forwards the Open and does not wait, so only the provider's directory answers, and it says so with that one line. The line has no program name, since the library does not know it and the console adds none; a boot holds none until a name goes wrong, so a search for `ioservice:` finds it. For `hello` with `HELLO_NAME` spelled `ours.examples.hello.Hallo` in the header the log held `ioservice: the outgoing directory refused an Open of "svc/ours.examples.hello.Hello": NotFound`, once for each Open. Fix: add it in the program under the name the manifest declares, as echo's `main` does with `add_protocol`.
 6. **An epitaph `AccessDenied`, on a directory entry only; the root logs `init: routing_checks's use of "denied" routes nowhere: AccessDenied at . (offer of "denied")`.** A directory `use` asks for rights that a hop of its route does not give, such as `rx*` against an offer of `r*`. A protocol use states no rights, so a protocol never meets this. The root closed the entry before the component ran, and the first `fsio::open` under it reads the epitaph and keeps it. Fix: give the offer the rights the use asks for, or ask for fewer.
 7. **An epitaph `BadType`; the root logs `init: <moniker>'s use of "<name>" reaches another protocol: it wants <want>, the route ends at <got> (<where>)`, where `<where>` is `the built-ins` or `provided by <moniker>`.** The route was found, and it ends at a capability of another protocol than the use means. The names agree and the protocols differ, usually after an offer renamed the capability with `as`. The build refuses a mismatch it can see, so this appears when the type check is off or the image was not built from these manifests. Fix: offer a capability of the protocol the use means, under that name, or give the use the `type` it means.
 8. **An epitaph `NoResource`; the root logs `init: cannot serve <name> to <moniker>: <Status>`.** A protocol the root itself provides has no free place for another client: the Launcher and each resource protocol serve four clients at a time. Fix: close the channel to it once you have what you asked for.
@@ -416,26 +421,26 @@ The causes, each with what to change:
 Notes on the causes:
 
 - Cause 3's `<where>` is the moniker of the instance whose declaration the walk stopped at, or `the built-ins` when it stopped above the root. `<verb>` is `offer`, `expose`, `declaration` or `use`. `at .` means the root: the parent had no offer. Read the verb and the name together. For `NotFound`, `offer of "X"` at the parent `P` means `P`'s manifest has no offer of `X` to this component; the same words after `AccessDenied` mean the offer exists and gives too little.
-- A client that built its own Open by hand meets two more statuses on a `/svc`. A flag other than `PROTOCOL_SERVICE` on a service is `InvArgs`, and a right the `/svc` connection does not hold is `AccessDenied`, from the Open's checks, in their fixed order. `fsio::connect` sends `PROTOCOL_SERVICE` alone, so it does not meet them. The order of the checks decides which error a request that is wrong in several ways gets, and [04-tree-servers.md](04-tree-servers.md) walks through it.
+- A client that built its own Open by hand meets two more statuses on a `/svc`. A flag other than `PROTOCOL_SERVICE` on a service is `InvArgs`, and a right the `/svc` connection does not hold is `AccessDenied`, from the Open's checks, in their fixed order, and the root logs each of them as it logs cause 2, with the status after the name. `fsio::connect` sends `PROTOCOL_SERVICE` alone, so it does not meet them. The order of the checks decides which error a request that is wrong in several ways gets, and [04-tree-servers.md](04-tree-servers.md) walks through it.
 - A channel that worked and then reads `PeerClosed` is not a refusal: the server exited or released it. `routing_checks` expects exactly that after it asks `echo` to stop.
 - The statuses are the names `ours::to_string` gives, and the same names appear in the root's lines.
 
 Where each cause is produced, for when you read the code:
 
-- Cause 1: `system/lib/fsio/include/fsio/namespace.hpp:124`; the root makes a `/svc` only for a component with a protocol use, `system/service/init/realm.cpp:551`.
-- Cause 2: the lookup, `system/lib/ioservice/src/tree.cpp:203`; the refusal, `system/lib/ioservice/src/server.cpp:529-532` and `:96-102`; written on the client's channel, `system/lib/ioservice/src/loop_server.cpp:177-183`; the entries, `system/service/init/realm.cpp:707-729`.
-- Cause 3: the status, `system/lib/component/include/component/route.hpp:412-415`, `:427-430`, `:444-451` and `:458-464`, listed at `:307-317`; the reply, `system/service/init/realm.cpp:751-755`; the line, `system/service/init/realm.cpp:201-203`.
-- Cause 4: `system/service/init/realm.cpp:793-796`; the state is set at `system/service/init/realm.cpp:420` and `:865`, and the lines are printed at `system/service/init/realm.cpp:415` and `:858-859`.
-- Cause 5: `system/lib/ioservice/src/tree.cpp:203` in the provider's own node tree; `system/lib/ioservice/test/outgoing_test.cpp:204-217`; `system/service/init/realm.cpp:809-833`.
-- Cause 6: `system/lib/component/include/component/route.hpp:271-282` and `:318`; `system/service/init/realm.cpp:514-535`; the client, `system/lib/fsio/include/fsio/fsio.hpp:66-74`.
-- Cause 7: `system/lib/component/include/component/route.hpp:301-305`, `:421-423` and `:465-467`; the reply, `system/service/init/realm.cpp:754`; the line, `system/service/init/realm.cpp:188-199`.
-- Cause 8: `system/service/init/launcher_server.cpp:83`, `system/service/init/resource_server.cpp:59`, `system/service/init/pools.hpp:32` and `:46`; `system/service/init/realm.cpp:781-786`.
-- Cause 9: `system/service/init/realm.cpp:700-702` and `:551-563`; `system/service/init/pools.hpp:55`; the client, `system/lib/fsio/include/fsio/fsio.hpp:66-74`.
+- Cause 1: `system/lib/fsio/include/fsio/namespace.hpp:124`; the root makes a `/svc` only for a component with a protocol use, `system/service/init/realm.cpp:567`.
+- Cause 2: the lookup, `system/lib/ioservice/src/tree.cpp:204`; the refusal, `system/lib/ioservice/src/server.cpp:538-541` and `:95-110`; written on the client's channel, `system/lib/ioservice/src/loop_server.cpp:177-195`; the entries, `system/service/init/realm.cpp:723-745`; the line, `system/service/init/realm.cpp:753-776`, which the hook `Delegate::open_refused` reaches (`system/lib/ioservice/include/ioservice/loop_server.hpp:84-85`, called at `system/lib/ioservice/src/loop_server.cpp:191`).
+- Cause 3: the status, `system/lib/component/include/component/route.hpp:412-415`, `:427-430`, `:444-451` and `:458-464`, listed at `:307-317`; the reply, `system/service/init/realm.cpp:792-796`; the line, `system/service/init/realm.cpp:217-219`.
+- Cause 4: the check and the line, `system/service/init/realm.cpp:838-848`; the state is set at `system/service/init/realm.cpp:436` and `:917`, and the lines are printed at `system/service/init/realm.cpp:431` and `:910-911`.
+- Cause 5: `system/lib/ioservice/src/tree.cpp:204` in the provider's own node tree; the line, `system/lib/ioservice/src/outgoing.cpp:99-115`; `system/lib/ioservice/test/outgoing_test.cpp:206-219`; `system/service/init/realm.cpp:861-885`.
+- Cause 6: `system/lib/component/include/component/route.hpp:271-282` and `:318`; `system/service/init/realm.cpp:530-551`; the client, `system/lib/fsio/include/fsio/fsio.hpp:66-74`.
+- Cause 7: `system/lib/component/include/component/route.hpp:301-305`, `:421-423` and `:465-467`; the reply, `system/service/init/realm.cpp:795`; the line, `system/service/init/realm.cpp:204-215`.
+- Cause 8: `system/service/init/launcher_server.cpp:83`, `system/service/init/resource_server.cpp:59`, `system/service/init/pools.hpp:32` and `:46`; `system/service/init/realm.cpp:822-827`.
+- Cause 9: `system/service/init/realm.cpp:716-718` and `:567-579`; `system/service/init/pools.hpp:55`; the client, `system/lib/fsio/include/fsio/fsio.hpp:66-74`.
 - Cause 10: `examples/echo/echo_server.cpp:54` and `:168`; when the Loop cannot take the channel, `examples/echo/echo_server.cpp:159-165`.
-- Cause 11: `system/service/init/realm.cpp:825-833`; the system call, `system/public/ours/syscalls.gni:197-208`; the limit, `kernel/object/include/ours/object/channel_dispatcher.hpp:20-28`.
-- Cause 12: `system/service/init/test/routing_checks/routing_checks.cpp:805-825`, which retries once.
-- Cause 13: `examples/echo/echo_server.cpp:207-226`; `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40`; `system/lib/ioservice/src/server.cpp:561-565`.
-- The verbs and the `at` field of cause 3: `system/service/init/realm.cpp:156-168` and `:182-187`. The Open checks behind the hand-built Open: `system/lib/ioservice/src/server.cpp:248-250` and `:335-337`, and `system/lib/ioservice/test/server_test.cpp:602-606`.
+- Cause 11: `system/service/init/realm.cpp:877-885`; the system call, `system/public/ours/syscalls.gni:197-208`; the limit, `kernel/object/include/ours/object/channel_dispatcher.hpp:20-28`.
+- Cause 12: `system/service/init/test/routing_checks/routing_checks.cpp:818-838`, which retries once.
+- Cause 13: `examples/echo/echo_server.cpp:207-226`; `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40`; `system/lib/ioservice/src/server.cpp:570-574`.
+- The verbs and the `at` field of cause 3: `system/service/init/realm.cpp:172-184` and `:198-203`. The Open checks behind the hand-built Open: `system/lib/ioservice/src/server.cpp:257-259` and `:344-346`, and `system/lib/ioservice/test/server_test.cpp:641-645`.
 
 ### Other lines the root prints
 
@@ -450,12 +455,13 @@ Where each cause is produced, for when you read the code:
 | `init: launch failed: <what>` | a step of loading a program failed |
 | `init: cannot watch <moniker>: <Status>` | the root could not wait for the process to end |
 | `init: /boot cannot answer a client: <Status>` | a reply of the root's own file server could not be written |
+| `init: <moniker>'s /svc refuses an open of "<name>": <Status>` | an Open on a component's `/svc` was refused (cause 2 for `NotFound`) |
 
-The lines about a component's life (`started`, `exited with`) are described in "Read the boot log", and the lines of causes 8, 9 and 11 in the list of causes. The root prints more than these; `grep -rn '"init: ' system/service/init` lists them all, with the file and line of each. The ones above are printed by `system/service/init/init.cpp` and `system/service/init/realm.cpp`.
+The lines about a component's life (`started`, `exited with`) are described in "Read the boot log", and the lines of causes 2 to 4, 8, 9 and 11 in the list of causes. A provider's library prints one more kind of line, `ioservice:` (cause 5); it is not the root's. The root prints more than these; `grep -rn '"init: ' system/service/init` lists them all, with the file and line of each. The ones above are printed by `system/service/init/init.cpp` and `system/service/init/realm.cpp`.
 
 ### Two cases worked through
 
-**A route to a protocol nobody offers.** This is cause 3, and the line is the second of the pair in "How `routing_checks` makes a negative case": `init: routing_checks's use of "ours.test.Unoffered" routes nowhere: NotFound at . (offer of "ours.test.Unoffered")`. Read it as: the use is `routing_checks`'s, the walk stopped at the root (`.`), and what was missing was an offer of that name from the root to `routing_checks`. The fix is an `offer` in the parent's manifest, to this child, under that name. If the line is not there at all while the client got `NotFound`, the cause is one of 2, 4 and 5, and the way to tell them apart is the four questions above.
+**A route to a protocol nobody offers.** This is cause 3, and the line is the second of the pair in "How `routing_checks` makes a negative case": `init: routing_checks's use of "ours.test.Unoffered" routes nowhere: NotFound at . (offer of "ours.test.Unoffered")`. Read it as: the use is `routing_checks`'s, the walk stopped at the root (`.`), and what was missing was an offer of that name from the root to `routing_checks`. The fix is an `offer` in the parent's manifest, to this child, under that name. If the line is not there while the client got `NotFound`, look for the other lines that end in `NotFound`: cause 2's `refuses an open` and cause 4's `(exited)` are the root's, and cause 5's `ioservice:` line is the provider's. The four questions above say in which order to look.
 
 **A route that ends at the wrong protocol.** This is cause 7, and its line names the two protocols that were mixed up. Suppose the use of `ours.test.Echo` in `routing_checks` asked for the type `ours.examples.echo.Echo`, and the root's offer under that name had given it a capability of the Launcher. The line would carry `it wants ours.examples.echo.Echo, the route ends at ours.process.Launcher (the built-ins)`. The names agree; the protocols do not, and the client reads `BadType`. The fix is in the manifest: offer a capability of the protocol the use means, under that name, or give the use the `type` it means.
 
@@ -486,4 +492,4 @@ The lines about a component's life (`started`, `exited with`) are described in "
 - `docs/architecture/component-framework/glossary.md`, `docs/development/debugging.md`, `vendor/googletest/docs/advanced.md`
 - a real `rel.log` of a passing boot, for the lines quoted in "Read the boot log"
 
-Checked against commit `561571b7` on 2026-10-30.
+Checked against commit `10dd8149` on 2026-10-30.

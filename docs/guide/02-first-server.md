@@ -23,16 +23,16 @@ python3 .agents/skills/ours-verify/scripts/boot_check.py --only rel --out out/he
 build      ok (.../out/hello, 34.0s)
 rel        PASS  shell finished at 4.6s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end
 host-tests PASS  148 passed, 0 failed · 10.9s · log .../host-tests.log
-logs       .../ours-verify-hello/{rel}.log
+logs       .../ours-verify-hello-<ten hex digits>/{rel}.log
 ```
 
-The last line names the directory that holds `rel.log`, the serial log of the boot: `<dir>` below is that directory (here `.../ours-verify-hello`). This chapter reads the log with `grep -a '<pattern>' <dir>/rel.log`. Give `grep` the `-a`: the log holds a few NUL bytes, so `grep` takes it for a binary file and, without the flag, prints `Binary file ... matches` and no lines. If the script prints `FAIL`, the table "Reading a failure" in the verify script's documentation (named in [the README](README.md#build-and-boot-the-dev-image)) says what each message means.
+The last line names the directory that holds `rel.log`, the serial log of the boot: `<dir>` below is that directory (here `.../ours-verify-hello-` and ten hex digits taken from the path of the build directory). This chapter reads the log with `grep -a '<pattern>' <dir>/rel.log`. Give `grep` the `-a`: the log holds a few NUL bytes, so `grep` takes it for a binary file and, without the flag, prints `Binary file ... matches` and no lines. If the script prints `FAIL`, the table "Reading a failure" in the verify script's documentation (named in [the README](README.md#build-and-boot-the-dev-image)) says what each message means.
 
 Chapter 1 is read in pieces. Each level that needs one says "Read now" and links it, with its size: before level 0 the three sections [Handles and channels](01-concepts.md#handles-and-channels), [Ports and signals](01-concepts.md#ports-and-signals) and [The Loop and its slots](01-concepts.md#the-loop-and-its-slots) (about 2,100 words in all); at level 1 [Components and manifests](01-concepts.md#components-and-manifests) (about 1,200); at level 2 [`/svc` and the outgoing directory](01-concepts.md#svc-and-the-outgoing-directory) (about 900), [Where a server's memory comes from](01-concepts.md#where-a-servers-memory-comes-from) (about 450) and [Epitaphs](01-concepts.md#epitaphs) (about 450). Read the first three now.
 
 The finished result of this chapter is in the tree, as `examples/hello`. The default build compiles it so that it stays true, and no image starts it. It is what to compare with when a build fails: after you set it aside, `git diff -- examples/hello` shows every line where your copy differs from it, and `git status examples/hello` prints nothing when the two are the same. To do the tutorial yourself, set the finished copy aside first, because the tutorial creates the same directory (with the copy still there, `cp -R` would nest yours inside it, and two protocols would have the same method numbers). Run `rm -r examples/hello`. In the root `BUILD.gn`, delete the block that starts with the comment `# The finished result of chapter 2 of the developer's guide` and ends with the line `"//examples/hello/protocol($host_toolchain)",`. `examples/BUILD.gn` names `hello` too and needs no edit: nothing reads that file once the root stops naming `//examples:hello`. If your checkout has no `examples/hello`, there is nothing to set aside, and nothing to compare with.
 
-The line numbers in this chapter were checked against commit `8c012c9c`, the last commit that changed the files it quotes. `git log -1 --format=%h -- examples/echo system kernel/products .agents/skills/ours-verify/scripts` prints that commit for your checkout. If it prints another, a number may have moved: every edit below names the text it is about before it gives a number, so look for the text.
+The line numbers in this chapter were checked against commit `10dd8149`, the last commit that changed the files it quotes. `git log -1 --format=%h -- examples/echo system kernel/products .agents/skills/ours-verify/scripts` prints that commit for your checkout. If it prints another, a number may have moved: every edit below names the text it is about before it gives a number, so look for the text.
 
 ## The places you will touch
 
@@ -40,7 +40,7 @@ A server is spread over seven places. The table lists them in the order you meet
 
 | # | What | Where | Copy or write | Level |
 |---|---|---|---|---|
-| 1 | The protocol library: messages and their codec | `examples/hello/protocol/` | copy `examples/echo/protocol/`, rename, then fix two numbers | 0 |
+| 1 | The protocol library: messages and their codec | `examples/hello/protocol/` | copy `examples/echo/protocol/`, rename | 0 |
 | 2 | The program, and its build target `user_executable("hello_server")` | `examples/hello/hello_server.cpp`, `examples/hello/BUILD.gn` | write a short `main`, then grow it by copying parts of `echo_server.cpp` | 1 to 4 |
 | 3 | The manifest `component_manifest("hello.cm")` | `examples/hello/BUILD.gn` | copy echo's, rename | 1 and 2b |
 | 4 | The root's manifest: a child entry, then an offer | `kernel/products/image/dev/BUILD.gn` | add two entries modelled on echo's | 1 and 2b |
@@ -79,21 +79,18 @@ Yours is `hello`. Its protocol is named `ours.examples.hello.Hello` and its libr
 
 `grep -ri echo examples/hello/protocol` prints nothing when the renames are done. The comments at the top of the header and of `BUILD.gn` still cite design notes that are echo's. Leave them while you follow this chapter, so that your files equal the finished copy; rewrite them to say what your protocol is when the server is yours.
 
-**Fix the method numbers.** A method's number (the code calls it the `ordinal`) is computed from the selector string beside it, and the copy still carries echo's two numbers ([03-protocols.md](03-protocols.md#methods-and-their-numbers) says why). This is how echo declares a method:
+**The method numbers.** There is nothing to fix. A method is declared by its selector and its kind alone, and the compiler computes its number from the selector as the header is compiled ([03-protocols.md](03-protocols.md#methods-and-their-numbers) says how). This is how echo declares `EchoString`, and the table turns it into yours, `GREET` with the selector `ours.examples.hello/Hello.Greet`:
 
-`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:56-60`:
+`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:55-56`:
 
 ```cpp
-inline constexpr auto ECHO_STRING = wire::Method{
-    .selector = "ours.examples.echo/Echo.EchoString",
-    .ordinal = 0x6e80'6bd7'7638'6789,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto ECHO_STRING =
+    wire::method("ours.examples.echo/Echo.EchoString", wire::MethodKind::TwoWay);
 ```
 
-Run `python3 system/lib/wire/test/ordinals_test.py`. It fails and names the right number for each selector, in a line like `...: ours.examples.hello/Hello.Greet is 0x0b34f151d5b5de80, not 0x6e806bd776386789`. Two of its failures say a number is not unique: they clear when both numbers are replaced. Paste each number into the `.ordinal` of its method, with the digits grouped in fours by `'` as the file has them (`0x0b34'f151'd5b5'de80` for `Greet`, `0x3b42'cec6'd122'813b` for `Stop`), and run the test again until it ends with `OK`.
+The header also holds a `static_assert` that its two methods have different numbers (lines 61-63 of echo's), and the table renames that too. One renamed line is two columns too long for the formatter: echo's `STOP` is declared on one line of exactly 100 columns, and with `hello` for `echo` the line has 102. Leave it as it is. Level 5 formats the files, and the formatter wraps it.
 
-Verification: the test prints `OK`. It is all this level can show, because nothing builds the library until level 2. Neither the default build nor a boot runs this test (`system/lib/wire/BUILD.gn:26-27`), so a wrong number would still boot.
+Verification: `grep -ri echo examples/hello/protocol` prints nothing. It is all this level can show, because nothing compiles the library until level 2a, where the compiler also checks that your two methods have different numbers.
 
 ## Level 1: the root starts it
 
@@ -225,7 +222,7 @@ It registers the protocol under its name, serves the directory, and runs the Loo
 
 What receives each client is a `Handler`. This is the whole class:
 
-`system/lib/ioservice/include/ioservice/outgoing.hpp:50-62`:
+`system/lib/ioservice/include/ioservice/outgoing.hpp:59-71`:
 
 ```cpp
 class Handler {
@@ -278,7 +275,7 @@ constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 
 [04-tree-servers.md](04-tree-servers.md#storage-you-lend-and-why-it-is-constinit) says how to size a larger storage.
 
-In `examples/hello/BUILD.gn` put the program's `deps` back (`protocol` is your library, found by its directory; the list is lines 24-28 of echo's file). If the build stops with `'ioservice/outgoing.hpp' file not found`, they are not back.
+In `examples/hello/BUILD.gn` put the program's `deps` back (`protocol` is your library, found by its directory; the list is lines 24-28 of echo's file). If the build stops with `'ioservice/outgoing.hpp' file not found`, they are not back. If it stops with ``static assertion failed due to requirement 'wire::all_distinct(GREET, STOP)': two Hello methods have the same ordinal``, two of the selectors in your protocol's header are the same string.
 
 Verification: boot, then `grep -a 'init: \|hello: ' <dir>/rel.log`. `init: started hello` is there, and `init: hello exited` is not: the program no longer returns from `main`, it waits in the Loop. The boot still reports `6/6 required`.
 
@@ -324,7 +321,7 @@ Who may reach it is decided by its parent, the root. The root's manifest has an 
 
 Add yours after it, with `from = "#hello"` and no `as`: echo's renames its protocol on the way, and yours keeps its name. The client is `routing_checks`. In `system/service/init/test/routing_checks/BUILD.gn` add `//examples/hello/protocol` to its program's `deps` (line 21), and to the `use` list of its manifest (line 53) the entry `{ protocol = "ours.examples.hello.Hello" }`, in the shape of echo's (lines 85-88; echo's has a `type` because its offer renames it).
 
-In `routing_checks.cpp` add the path the client opens, `constexpr auto HELLO = std::string_view{"/svc/ours.examples.hello.Hello"};`, beside echo's (line 97; a component's `/svc` holds one entry for each protocol it uses). Add this function after `check_echo` (which ends at line 826), in the same anonymous namespace. `connect_status` is `routing_checks.cpp:770-788`; it connects and returns the status of the epitaph the server answers with, or `PeerClosed` if the channel closes with none:
+In `routing_checks.cpp` add the path the client opens, `constexpr auto HELLO = std::string_view{"/svc/ours.examples.hello.Hello"};`, beside echo's (line 100; a component's `/svc` holds one entry for each protocol it uses). Add this function after `check_echo` (which ends at line 839), in the same anonymous namespace. `connect_status` is `routing_checks.cpp:773-791`; it connects and returns the status of the epitaph the server answers with, or `PeerClosed` if the channel closes with none:
 
 ```cpp
 auto check_hello() -> void {
@@ -332,7 +329,7 @@ auto check_hello() -> void {
 }
 ```
 
-Call `check_hello();` from `main` after `check_echo();` (line 904).
+Call `check_hello();` from `main` after `check_echo();` (line 918).
 
 Verification: boot, then `grep -a 'init: \|hello: \|routing_checks: ' <dir>/rel.log`. You should find `init: started hello`, no `init: hello exited`, no `routes nowhere` line that names hello, and `routing_checks: passed`. To see that the check has teeth, expect `Status::NoResource` for one boot: the script prints `FAIL` and the log holds `routing_checks: a connection to hello = NotSupported (expected NoResource) FAILED`.
 
@@ -343,7 +340,7 @@ If it fails:
 | the build: ``exposes 'ours.examples.hello.Helo', which `capabilities` does not declare`` | `expose` and `capabilities` spell the name differently |
 | the build: `'#helo' names no child of this component` | `from = "#..."` must be the child's `name` |
 | the root logs `init: routing_checks's use of "ours.examples.hello.Hello" routes nowhere: NotFound at . (offer of "ours.examples.hello.Hello")` | the root has no offer of that name to `routing_checks` |
-| the client reads `NotFound` and the root logs nothing | `HELLO_NAME` is not the name the manifests use, so the provider's directory has no such entry |
+| the client reads `NotFound`, the root logs nothing about it, and the log holds `ioservice: the outgoing directory refused an Open of "svc/<name>": NotFound` | `HELLO_NAME` is not the name the manifests use, so the provider's directory has no such entry |
 
 The protocol's name is spelled in six places: `capabilities`, `expose`, `HELLO_NAME`, the offer, the use and the client's path. The build catches some mismatches and a boot the rest; [the table in chapter 5](05-testing-and-debugging.md#the-table) lists what a client sees for each.
 
@@ -400,11 +397,11 @@ Replace the stub with echo's class, and its limits, renamed with the table of le
 
 ### The client
 
-The client is a check in `routing_checks`. First the include: add `#include <ours_examples_hello/ours_examples_hello.hpp>` after the line `#include <ours_examples_echo/ours_examples_echo.hpp>` (line 68). It resolves because `routing_checks` has depended on your library since level 2b. Then add `constexpr auto HELLO_TEXT = std::string_view{"routing_checks"};` after `ECHO_TEXT` (line 109); any string of at most 64 bytes will do.
+The client is a check in `routing_checks`. First the include: add `#include <ours_examples_hello/ours_examples_hello.hpp>` after the line `#include <ours_examples_echo/ours_examples_echo.hpp>` (line 69). It resolves because `routing_checks` has depended on your library since level 2b. Then add `constexpr auto HELLO_TEXT = std::string_view{"routing_checks"};` after `ECHO_TEXT` (line 112); any string of at most 64 bytes will do.
 
-Copy `check_echo_string` (lines 723-742) next to `check_echo`, apply the table of level 0, and name the copy `check_hello_greet` (the table makes it `check_greet`). It encodes the request and calls `call` (`routing_checks.cpp:424-438`), which writes it, waits for the channel to be readable or closed, reads, and returns the status of an epitaph if the message is one:
+Copy `check_echo_string` (lines 726-745) next to `check_echo`, apply the table of level 0, and name the copy `check_hello_greet` (the table makes it `check_greet`). It encodes the request and calls `call` (`routing_checks.cpp:427-441`), which writes it, waits for the channel to be readable or closed, reads, and returns the status of an epitaph if the message is one:
 
-`system/service/init/test/routing_checks/routing_checks.cpp:723-735`:
+`system/service/init/test/routing_checks/routing_checks.cpp:726-738`:
 
 ```cpp
 auto check_echo_string(Uandle const connection) -> void {
@@ -424,7 +421,7 @@ auto check_echo_string(Uandle const connection) -> void {
 
 It then decodes the reply and compares it with what was sent:
 
-`system/service/init/test/routing_checks/routing_checks.cpp:736-742`:
+`system/service/init/test/routing_checks/routing_checks.cpp:739-745`:
 
 ```cpp
     auto const decoded = ours_examples_echo::decode_echo_string_reply(reply.message(), txid);
@@ -544,7 +541,7 @@ auto check_hello_unknown(Uandle const connection) -> void {
 }
 ```
 
-`stop_hello` is `stop_echo` (lines 746-767) copied with the table of level 0: it sends `Stop`, expects Ok, then `PeerClosed`. It returns a `bool`, as `stop_echo` does, which the next function ignores. The first client greets, then checks the limit while it is still connected, and only then sends the unknown method, which ends it:
+`stop_hello` is `stop_echo` (lines 749-768) copied with the table of level 0: it sends `Stop`, expects Ok, then `PeerClosed`. It returns a `bool`, as `stop_echo` does, which the next function ignores. The first client greets, then checks the limit while it is still connected, and only then sends the unknown method, which ends it:
 
 ```cpp
 auto check_hello_first_client() -> void {
@@ -638,7 +635,7 @@ rel        FAIL  no "init: hello exited with 0", "routing_checks: hello checked"
 
 Put the call back. Run the command without `--only rel`: it boots the debug image too, so the output has a `dbg` line as well (that image starts no components), and the `rel` line now ends in `8/8 required`. A check you have never seen fail proves nothing.
 
-Last, format what you wrote and compare it with the finished copy. Renaming `echo_string` to `greet` shortens lines, and the repository's pre-commit hook refuses C++ and GN files that are not formatted. Format the C++ files under `examples/hello` and the lines you changed in `routing_checks.cpp` with `python3 scripts/format_cpp.py <file>`, and the GN files with `python3 scripts/format_gn.py <file>`. Then `git status examples/hello` prints nothing, and `git diff -- examples/hello` prints nothing: your server is the finished copy.
+Last, format what you wrote and compare it with the finished copy. Renaming changes line lengths, in both directions (`echo_string` becomes the shorter `greet`, and `STOP`'s declaration goes from 100 columns to 102 and has to be wrapped), and the repository's pre-commit hook refuses C++ and GN files that are not formatted. Format the C++ files under `examples/hello` and the lines you changed in `routing_checks.cpp` with `python3 scripts/format_cpp.py <file>`, and the GN files with `python3 scripts/format_gn.py <file>`. Then `git status examples/hello` prints nothing, and `git diff -- examples/hello` prints nothing: your server is the finished copy.
 
 Then read your server once against [the checklist](06-checklist.md#what-a-first-version-needs), which picks the items a first version cannot do without, and the walks of [its review section](06-checklist.md#review). Two to start with: every `return` in `serve` and `greet` is `Rearm` or `Close`, and `Rearm` only after the message was read; and every handle has one owner at each moment: the channel is the Loop's once `add` succeeds, the handles of a message you reject are closed, the port is the Loop's.
 
@@ -664,10 +661,10 @@ Then read your server once against [the checklist](06-checklist.md#what-a-first-
 - `system/lib/loop/include/loop/loop.hpp`, `system/lib/ioservice/include/ioservice/outgoing.hpp`: `Waiter`, `Loop::add`, `Handler`.
 - `kernel/products/image/dev/BUILD.gn`, `system/service/init/test/routing_checks/BUILD.gn`, `system/service/init/test/routing_checks/routing_checks.cpp`: the root's manifest, the client's manifest and the client's checks.
 - `.agents/skills/ours-verify/scripts/boot_check.py`: the lines a boot requires.
-- `system/lib/wire/test/ordinals_test.py`, `system/lib/wire/BUILD.gn`: the method numbers.
+- `system/lib/wire/include/wire/wire.hpp`: `wire::method()`, which computes a method's number from its selector.
 - `system/component_manifest.gni`, `system/component_manifest.py`, `system/user_executable.gni`: the manifest and program templates, the `.cm` name, `startup`, and where a program is installed.
 - `system/lib/ort/include/ort/main.hpp`, `system/lib/ort/include/ort/debug.hpp`, `system/lib/ort/src/start.cpp`, `system/lib/ustl/include/ustl/lazy_init.hpp`: the runtime's `main`, its debug line, and why storage is `constinit`.
 - `scripts/new_worktree.py`: the copy of the checkout to work in. `scripts/format_cpp.py`, `scripts/format_gn.py`: the formatters.
 - `examples/hello`, `BUILD.gn`, `examples/BUILD.gn`: the finished result, and how the default build names it.
 
-Checked against commit `561571b7` on 2026-10-30.
+Checked against commit `10dd8149` on 2026-10-30.

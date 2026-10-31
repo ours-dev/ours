@@ -488,3 +488,45 @@ A second worktree from `0d71493e`; `reader.py` (scratchpad) sets `examples/hello
 - That a citation was true at `3cb0d8a5` before it was moved: the mapping is only as good as the guide's last check. The ranges that moved contain the text the sentences say (the table printed in the run), which is as far as I took it.
 - The failing path itself on the target: no program can provoke it (the loop-waiter-notify result says why), so the new paragraphs rest on the Loop's comment and its host tests.
 - Chapters 4 and 5 describe the root's resource and launcher servers only through the numbers of the `NoResource` lines they cite; the commits that gave those servers `on_rearm_failed` did not change what the chapters say about them.
+
+## Revision 5
+
+Two changes landed on the integration branch (`59a8405d`; the files the guide cites last changed in `10dd8149`). A method's ordinal is now computed at compile time (`e25cc596`, `10dd8149`): a codec declares `wire::method(selector, kind)`, no number is typed, `ordinals_test.py` is gone and each header holds a `static_assert(wire::all_distinct(...))`. Three cases that were silent now log (`dfe6e7c6`, `3f3c43aa`, `e4b4a327`). Uncommitted in the main checkout: the eight documents of `docs/guide/` and this file. `examples/hello` needs no change (the committed answer already follows), so `docs/changes/261029/examples-hello.md` is untouched. The run was cut off once by an API connection error and continued from the edits already on disk.
+
+### The answer
+
+No change. The literal run below ends with `git status examples/hello` and `git diff -- examples/hello` both printing nothing.
+
+### The literal run
+
+A worktree from `59a8405d` (`guide-sync2`, removed at the end); `reader.py` (scratchpad) set `examples/hello` aside and applied levels 0 to 5 from the chapter's text, with the "Fix the method numbers" step gone from it.
+
+- Level 0: `grep -ri echo examples/hello/protocol` prints nothing, as the chapter now says.
+- Level 2a: the renamed header builds with its `static_assert`. A deliberate duplicate selector stops the build with ``static assertion failed due to requirement 'wire::all_distinct(GREET, STOP)': two Hello methods have the same ordinal``, which the chapter now quotes.
+- The renamed `STOP` declaration is 102 columns (echo's is exactly 100), so the formatter of level 5 wraps it; the chapter says so and says to leave the line as renamed.
+- Level 3: `rel` PASS, 6/6 required markers, `routing_checks: hello checked`, `routing_checks: passed`. Level 4: `rel` PASS, 6/6, `hello: stopping, as a client asked`, `init: hello exited with 0`. The same boot holds the two new root lines, `init: routing_checks's /svc refuses an open of "ours.test.Undeclared": NotFound` and `init: routing_checks's use of "ours.test.Echo" routes nowhere: NotFound at echo (exited)`.
+- The full command after the formatters: `dbg` PASS (44 passed), `rel` PASS (41 passed, 8/8 required), 151 host tests; `format_cpp.py --check` clean.
+- Mutation, `HELLO_NAME` spelled `ours.examples.hello.Hallo`: the `rel` image FAILs, three checks FAILED, and the log holds `ioservice: the outgoing directory refused an Open of "svc/ours.examples.hello.Hello": NotFound`, once for each Open.
+
+### The guide
+
+- **02-first-server.md.** The step "Fix the method numbers" is gone, with its mentions in the rename table (row 1 is now "copy `examples/echo/protocol/`, rename") and in the "If it fails" rows. In its place, a short paragraph shows the declaration with `wire::method` (`ours_examples_echo.hpp:55-56`), says the `static_assert` is renamed with it and why `STOP` ends up wrapped. Level 5 says renaming changes line lengths in both directions. The 2b failure row for a wrong `HELLO_NAME` names the `ioservice:` line. The sample `logs` line carries the hash suffix. Every short-name citation (`routing_checks.cpp:773-791`, `427-441`, `726-745`, `749-768`, the `line N` ones) was moved by hand, because the tool does not see them; `stop_echo` was two lines off before and is right now.
+- **03-protocols.md.** "Methods and their numbers" is rewritten around the selector as the input: `wire::method()` and `ordinal_of()` (`wire.hpp:139-147`), the digest worked by hand as an explanation, the `static_assert` (`ours_examples_echo.hpp:61-63`). "Adding a method" is three steps with no number to compute. Step 8 is "Run everything"; the sources line names `sha256.hpp`. The anchor `#methods-and-their-numbers` is kept.
+- **05-testing-and-debugging.md.** The failure table and the causes list now give the real lines for causes 2, 3, 4 and 5 (cause 5 is logged by the provider, not the root), the hand-built-Open note says the root logs those too, and the false "known limit" sentence is gone. The four questions and the "other lines the root prints" table follow, the negative-case block shows the two new lines, and the log directory is `ours-verify-<outname>-<ten hex digits>`. The fake kernel gains `debug_write` / `OutOfRange` (`fake_kernel.hpp`).
+- **04-tree-servers.md.** `LoopServer::Delegate` has two hooks, `write_failed` and `open_refused` (`loop_server.hpp:84-85`, `loop_server.cpp:191`), with who overrides it (`Outgoing`, the root's `Realm`); the `Refuse` row says it.
+- **01-concepts.md, 06-checklist.md, README.md, 00-setup.md.** Citations only, and the footer. No chapter other than 3 and 2 mentioned a typed ordinal or the script (grep `ordinal`, `ordinals_test`, `hashlib`).
+- **Citations.** Every `path:N` of the eight documents was mapped from `8c012c9c` to `HEAD` with `git diff -U0`; pure shifts automatically, ranges over changed lines by hand and against the text they name.
+- **"Checked against".** `10dd8149`, the answer of `git log -1 --format=%h -- system examples tools scripts build kernel/products` (and of chapter 2's narrower command), on 2026-10-30.
+
+### Checks
+
+- `python3 scripts/lint_docs.py --changed` on the eight documents and this file: no violations.
+- `check_guide_all.py`: only the known flags (eight reader-written blocks of chapter 2, one each in chapters 3 and 5, two in chapter 0).
+- `verify_chapter.py` for chapter 2: 19 snippets verbatim at their cited lines, 24 prose citations, 41 links, 0 errors.
+
+### Not verified
+
+- `(its outgoing directory is closed)`, the other wording of the route-to-an-exited-provider line: it is in `realm.cpp`, but no boot reaches it; only `(exited)` was seen.
+- The root's `refuses an open of "<name>"` line for a status other than `NotFound`: the code logs every refusal, the boot produced `NotFound` only.
+- Outgoing's capacity: the task message gave 32 connections and 32 nodes, but `outgoing.hpp` at `59a8405d` has `MAX_PROTOCOLS = 8` and `MAX_CONNECTIONS = 4`, so the guide keeps 8 and 4. If a 32/32 change exists, it is not on this branch.
+- The guide used to say that two checkouts share one log directory. Since `3a3f1a62` `boot_logdir.py` hashes the whole out path, so that is false and the guide no longer says it; the hash was read from the code and seen in the printed `logs` line, not tested across two checkouts.
