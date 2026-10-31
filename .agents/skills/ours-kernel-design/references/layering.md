@@ -208,3 +208,11 @@ adding the missing syscall first.
   declared in `ours/arch_<topic>.hpp`; an architecture without the feature
   answers NotSupported in a real body, which is its correct answer and not a
   placeholder. `ArchVmAspace`'s concept does not list such members.
+- A kernel target lists a dependency on every target that owns a header its
+  sources include directly (include what you use), so that `gn check
+  --check-system` can read each include. An edge to a `:headers` target is a
+  declaration only: the include directories come from the toolchain's prefix
+  configs. The user chose this as the convention, and a sweep of the existing
+  targets, over applying it to new targets alone, 2026-10-31. A header no
+  target lists is invisible to the check until its repair item lists it
+  (docs/repairs/261030/build-headers.md).
