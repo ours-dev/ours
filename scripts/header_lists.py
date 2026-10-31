@@ -40,8 +40,9 @@ gaps that are a repair item of their own (docs/repairs/261030/build-headers.md).
 --all checks every target and shows that debt.
 
 Used by the `ours-verify` skill's boot_check.py, which runs it on an x86 build
-directory beside the host tests. It works on any generated build directory:
-for a riscv one, `python3 scripts/header_lists.py out/bringup.riscv`.
+directory beside the host tests. It works on any generated build directory of
+the checkout the script is in, whatever the working directory: for a riscv one,
+`python3 scripts/header_lists.py out/bringup.riscv`.
 """
 # macOS still ships Python 3.9 as python3; this keeps the annotations lazy.
 from __future__ import annotations
@@ -95,6 +96,15 @@ class Result:
     @property
     def ok(self) -> bool:
         return not self.problems
+
+
+def repo_root() -> Path:
+    """The checkout this script is in: its BUILD.gn files are the ones its
+    build directory was generated from. Not `git rev-parse` of the working
+    directory, which is another checkout's root when the script is run from
+    there, and no root at all outside a repository."""
+    # scripts/header_lists.py -> repo root
+    return Path(__file__).resolve().parents[1]
 
 
 def gn(root: Path, *args: str) -> str:
@@ -233,8 +243,7 @@ def main(argv: list[str]) -> int:
                              f"(repeatable; default: {' '.join(DEFAULT_SCOPE)})")
     parser.add_argument("--all", action="store_true", help="check every target, not only the architectures'")
     args = parser.parse_args(argv)
-    root = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
-                               text=True, check=True).stdout.strip())
+    root = repo_root()
     scope = ALL if args.all else tuple(args.scope or DEFAULT_SCOPE)
     return 0 if report(root, (root / args.out).resolve(), scope) else 1
 

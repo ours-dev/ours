@@ -109,3 +109,67 @@ None. The brief expected that broad existing debt would force a scope of the arc
 - A header is missing from a `cpp_interface`'s list. Why does nothing fail to build or check, and what exactly makes this check able to see it when `gn check` cannot?
 - sampler and phys publish one include root through three targets each, and each target lists only part of it. What would comparing every list with the whole root have reported, and why is the union of the lists, taken per toolchain, the rule that matches their design?
 - `missing` counts only files named like headers while `stray` tests against every file under the root. What goes wrong if both use the same set, in each direction?
+
+## Title: header_lists.py finds the repository from where the script is, not from the working directory's git, because the second is another checkout's root or no root at all (2026-10-30)
+
+**Files**
+- `scripts/header_lists.py` — `repo_root()` returns the directory above `scripts/`; `main()` uses it where it ran `git rev-parse --show-toplevel`; the docstring says the build directory is the one of the checkout the script is in.
+- `scripts/test_header_lists.py` — one new test (`Main`): from a working directory that is in no repository, `main()` hands `report()` the script's checkout and the resolved build directory.
+- `docs/changes/261030/ours-verify.md` — this entry.
+
+**Symptom**
+Two ways to get it wrong, both from the standalone command and neither from `boot_check.py`. From a directory outside any repository, `python3 <abs>/scripts/header_lists.py <abs>/out/bringup.x86` ended in a traceback, `subprocess.CalledProcessError: Command '['git', 'rev-parse', '--show-toplevel']' returned non-zero exit status 128`, where every other failure of this check is one `headers    FAIL` line. From the directory of a different worktree (`.worktrees/feat-pmm-layering`, which still has the old one-of-25 lists), the same command with this worktree's build directory printed `headers    FAIL  26 missing, 0 stray among 6 targets, 6 include roots, 66 headers under //kernel/arch/`: a false failure, about the wrong tree's `BUILD.gn` files, with nothing in the line to say so.
+
+**Cause**
+The check compares two things that have to come from one checkout: the lists GN evaluated into the build directory (`gn desc <out>` reads the `BUILD.gn` files at the time of `gn gen`) and the files on disk under each include root (`files_under(root, ...)` walks `root / "kernel/..."`). `root` was `git rev-parse --show-toplevel` of the working directory, so it was the checkout the shell happened to be in, and nothing tied it to the build directory or to the script. When the shell is in the same checkout the two agree and nobody notices. When it is in another worktree the script reads that worktree's files against this worktree's lists (26 phantom `missing`), and `gn` itself is started from that worktree's `prebuilt/gn/gn` with that worktree as its source root. Outside a repository `git` has no answer and `check=True` turns that into an exception nobody caught.
+
+`boot_check.py` was not affected for a reason that is easy to miss: it passes `root` in, from its own `repo_root()`, which tries git and falls back to the script's location (`parents[4]`). The standalone command had only the first half of that. The script already knows where it is: `scripts/header_lists.py` is one level below the root, and unlike the working directory that cannot differ from run to run. A script that is part of a checkout should name its checkout by where it is, and let a caller who wants another one run that checkout's copy.
+
+**Change**
+Before:
+
+```python
+    root = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
+                               text=True, check=True).stdout.strip())
+```
+
+After:
+
+```python
+def repo_root() -> Path:
+    # scripts/header_lists.py -> repo root
+    return Path(__file__).resolve().parents[1]
+...
+    root = repo_root()
+```
+
+A relative `OUT` is still taken from the root (`root / args.out`), as before; an absolute one stays itself.
+
+Rejected:
+- Copying `boot_check.repo_root()` (git, then the script's location): for a script that lives in the checkout the git answer can only be right when it equals the location, and wrong otherwise, so the fallback would be the only part that ever mattered.
+- Making `boot_check.repo_root()` use the location too: it has the same cwd-dependence (run from another worktree it builds that worktree's tree with this one's scripts), but it is the entry point of every `ours-verify` run and not part of this finding, so it is left (see Deliberately not done).
+
+**Reference**
+None, this project's own tooling. `scripts/host_tests.py` and the other helpers that take a `root` are called with the one `boot_check.py` found; this is the one helper with its own command line.
+
+**Verification**
+- `python3 scripts/test_header_lists.py`: 22 tests pass. The new one fails against the previous file with the same `CalledProcessError` (copied to a scratch directory and run there).
+- From a directory that is in no repository: `headers    PASS  7 targets, 7 include roots, 75 headers under //kernel/arch/, every one listed · 1.5s`, exit 0 (before: the traceback).
+- From `.worktrees/feat-pmm-layering`, with this worktree's absolute build directory: the same PASS line (before: `26 missing, 0 stray among 6 targets, 6 include roots, 66 headers`).
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.7s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.6s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed; headers PASS 7 targets, 7 include roots, 75 headers under //kernel/arch/, every one listed · 1.5s.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+
+**Deliberately not done**
+- `boot_check.repo_root()` still asks git for the working directory's root. Run from another worktree it uses that worktree's root for the build, the images and `header_lists.report()`, while importing its helpers from the checkout the script file is in. It is the same kind of slip and a larger blast radius than this one, and a different file with its own callers, so it is a separate change.
+- No `headers FAIL` line for a missing `git`: there is no `git` call left to fail.
+
+**How it was found**
+Reported by an independent review of the commit that added the check. It ran the command from a temporary directory and got the traceback, then from the detached worktree at an older commit and got the false failure. Reproduced here with the previous file copied to a scratch directory, so the same commands could be run against both versions.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- The check mixes a build directory and a checkout. Which fact in each came from `gn gen` time and which from the moment of the run, and what made 26 files "missing" when the script was run from another worktree?
+- `boot_check.py` never showed this. What did it do that the standalone command did not, and what does it still do wrong?
+- Why is "where this file is" a better answer than "where the shell is" for a script that lives inside the repository it works on, and when would the opposite be right?

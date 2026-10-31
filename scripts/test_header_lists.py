@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -227,6 +228,26 @@ class Report(Tree):
 
     def test_it_is_a_runtime_error_so_boot_check_s_handler_catches_it(self):
         self.assertTrue(issubclass(header_lists.HeaderListsError, RuntimeError))
+
+
+class Main(unittest.TestCase):
+    def test_the_root_is_the_checkout_holding_the_script_not_the_working_directory_s(self):
+        # A temporary directory is in no repository: the git-based root this
+        # replaced raised CalledProcessError here, and from another checkout's
+        # directory it named that checkout.
+        previous = os.getcwd()
+        with tempfile.TemporaryDirectory() as elsewhere, \
+                mock.patch.object(header_lists, "report", return_value=True) as report:
+            os.chdir(elsewhere)
+            try:
+                code = header_lists.main(["out/bringup.x86"])
+            finally:
+                os.chdir(previous)
+        self.assertEqual(code, 0)
+        root = report.call_args.args[0]
+        self.assertEqual(root, Path(header_lists.__file__).resolve().parents[1])
+        self.assertTrue((root / "scripts" / "header_lists.py").is_file())
+        self.assertEqual(report.call_args.args[1], (root / "out/bringup.x86").resolve())
 
 
 if __name__ == "__main__":
