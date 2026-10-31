@@ -180,11 +180,12 @@ namespace {
     }
 
     /// Raises the free line's vector on this CPU by IPI. The platform gave
-    /// every line the vector PlatformIrqMin + its number, so this comes in
-    /// through the interrupt entry as the line's own interrupt would.
+    /// every pin the vector PlatformIrqMin + its hardware number, which is
+    /// not the line's virq, so this comes in through the interrupt entry as
+    /// the line's own interrupt would.
     auto raise() -> void {
         auto const vector = static_cast<arch::IrqVec>(
-            static_cast<usize>(arch::IrqVec::PlatformIrqMin) + free_line());
+            static_cast<usize>(arch::IrqVec::PlatformIrqMin) + irq::hwirq_of_virq(free_line()));
         apic_send_ipi_self(vector, ApicDeliveryMode::Fixed);
     }
 

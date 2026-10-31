@@ -105,8 +105,8 @@ namespace {
         // vector PlatformIrqMin + GSI: first the pins the ISA lines reach, as
         // the MADT's overrides send them, then all the others. faults.cpp
         // turns a vector back into a number by subtracting the same base, so
-        // what reaches platform_handle_irq() is the GSI, the same number the
-        // line is attached by and masked by. One line, one number.
+        // what reaches platform_handle_irq() is the GSI. The irq layer looks
+        // the line up by it; every other part names the line by its virq.
         //
         // The vector is fixed by the GSI, not taken from a pool of free
         // vectors when the first handler registers on a line. One IO-APIC's
@@ -199,8 +199,9 @@ namespace {
 } // namespace
 
 /// `irqnum` is the GSI: the vector less PlatformIrqMin, and platform_init_apic()
-/// programmed every GSI with vector PlatformIrqMin + GSI. The irq layer names
-/// its lines by the same number, so it passes through unchanged.
+/// programmed every GSI with vector PlatformIrqMin + GSI. The irq layer looks
+/// the line up by that hardware number, so it passes through unchanged; the
+/// line's virq is the irq layer's own.
 auto platform_handle_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> bool {
     return irq::handle_irq_generic(irqnum);
 }
@@ -214,13 +215,15 @@ auto platform_finish_handling_irq(HIrqNum irqnum, arch::IrqFrame *) -> bool {
 }
 
 /// The same mapping platform_init_apic() programmed each ISA line at, so the
-/// line a driver names this way is the one its device's interrupts reach.
-/// The bound comes first: apic_io_isa_to_global() takes a u8, and a number
-/// past the ISA lines would wrap into one of them rather than stay itself.
-auto platform::remap_isa_irq(u32 const irq) -> VIrqNum {
-    if (irq >= arch::NUM_ISA_IRQS) {
-        return irq;
+/// line a driver names this way is the one its device's interrupts reach:
+/// the ISA number gives a GSI, and the irq layer says which line was made for
+/// that GSI. The bound comes first: apic_io_isa_to_global() takes a u8, and a
+/// number past the ISA lines would wrap into one of them rather than stay
+/// itself.
+auto platform::remap_isa_irq(u32 const isa_irq) -> VIrqNum {
+    if (isa_irq >= arch::NUM_ISA_IRQS) {
+        return isa_irq;
     }
-    return apic_io_isa_to_global(static_cast<u8>(irq));
+    return irq::virq_of_hwirq(apic_io_isa_to_global(static_cast<u8>(isa_irq)));
 }
 } // namespace ours

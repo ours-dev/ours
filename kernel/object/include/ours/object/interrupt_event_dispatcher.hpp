@@ -11,7 +11,8 @@
 
 namespace ours::object {
 /// An interrupt object on a physical interrupt line, which it names by the
-/// number the irq layer gives the line: the GSI on a PC.
+/// number the irq layer gives the line, its virq. That is not the pin's
+/// hardware number (the GSI on a PC).
 ///
 /// The objects:
 ///   - m_line, the line, fixed at creation, after any RemapIrq.

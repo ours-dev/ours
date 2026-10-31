@@ -2226,8 +2226,9 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 ///     takes it again, and closing the destroyed object's handle leaves the
 ///     new owner the line; closing the owner's last handle lets it go;
 ///   - the I/O port root grants no line (BadType); a mode that names none is
-///     InvArgs, and a number no line has NoResource, except 0xFFFFFFFF,
-///     which the kernel keeps as no line at all: InvArgs.
+///     InvArgs, and a number no line has NoResource, a pin's GSI taken for a
+///     line included, since a line is named by the kernel's own number for it;
+///     except 0xFFFFFFFF, which the kernel keeps as no line at all: InvArgs.
 auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) -> bool {
     using ours::InterruptOptions;
     using ours::InterruptTriggerOptions;
@@ -2299,6 +2300,12 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
                  Status::InvArgs);
     ok &= expect("shell: interrupt_create(a line no pin is) = ",
                  ours::interrupt_create(irq, 200, InterruptOptions::None, &unused),
+                 Status::NoResource);
+    // A line is named by the kernel's number for it, never the pin's GSI.
+    // COM2's pin is GSI 3 on q35; taken for a line without RemapIrq, which is
+    // what would turn an ISA number into one, it names none.
+    ok &= expect("shell: interrupt_create(a GSI, not remapped) = ",
+                 ours::interrupt_create(irq, ISA_FREE, InterruptOptions::None, &unused),
                  Status::NoResource);
     ok &= expect("shell: interrupt_create(line 0xFFFFFFFF) = ",
                  ours::interrupt_create(irq, 0xFFFF'FFFF, InterruptOptions::None, &unused),

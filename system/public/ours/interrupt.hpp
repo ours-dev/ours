@@ -15,10 +15,11 @@ namespace ours {
 /// interrupt_trigger. Without it the object is on a physical line, and the
 /// other options say how that line is named and how it signals:
 ///   - RemapIrq: the line is given by its ISA IRQ number, 0 to 15, and the
-///     kernel turns it into the line that IRQ arrives on. On a PC that is its
-///     GSI, which the firmware's tables may move: QEMU's q35 sends ISA 0 to
-///     GSI 2. A number past the ISA IRQs already names a line and is taken
-///     as it is.
+///     kernel turns it into the line that IRQ arrives on. The firmware's
+///     tables may move an ISA IRQ to another pin (QEMU's q35 sends ISA 0 to
+///     GSI 2), and the line is named by the kernel's own number for that
+///     pin. A number past the ISA IRQs already names a line and is taken as
+///     it is.
 ///   - The mode, the three bits of ModeMask: ModeDefault leaves the line
 ///     signalling as it does now, as the firmware or its last owner left it;
 ///     the other four set it. 5 to 7 in the field are refused: 5 would be
@@ -26,6 +27,11 @@ namespace ours {
 /// A level-triggered line is masked from the moment its interrupt is
 /// delivered until it is acknowledged, since the device holds the level
 /// until its driver has dealt with it; an edge-triggered line is not.
+///
+/// A line is named by the kernel's number for it, assigned at boot: never the
+/// pin's GSI, and not the same on another machine or another kernel, so a
+/// program does not compute one. RemapIrq gives the number of an ISA device's
+/// line; there is no other way yet to learn the number of another pin's.
 ///
 /// No option picks the clock a timestamp is taken on or makes the line a
 /// wake source: this kernel has one clock, and no suspend to wake from.
