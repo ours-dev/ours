@@ -6,6 +6,8 @@ if (toolchain_environment == "kernel") {
       "local_apic.cpp",
     ]
     deps = [
+      # ours/arch/x86/apic.hpp and feature.hpp, which the sources include.
+      "//kernel/arch/x86/kernel:headers",
       "//kernel/lib/mtl:headers",
       "//system/lib/logz4:headers",
       "//kernel/mm:headers",

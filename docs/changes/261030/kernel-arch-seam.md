@@ -211,3 +211,67 @@ None.
 - Listing 24 more headers changed not one byte of any `.ninja` file or of the kernel's `.text`. Why not, and what did it change?
 - Why does a plain `gn check` read none of the `#include <ours/arch/...>` lines, and what does `--check-system` do with them that it did not do before this change?
 - `//kernel/object` includes `<ours/arch/aspace_layout.hpp>` and compiles without depending on x86's `:headers`. What puts the directory on its command line, and why would a `deps` line naming x86's label in that target be the wrong fix?
+
+## Title: x86's `apic` target depends on x86's `headers` target, because two of the headers it includes are owned there (2026-10-30)
+
+**Files**
+- `kernel/arch/x86/apic/BUILD.gn` — `//kernel/arch/x86/kernel:headers` joins the `deps` of `source_set("apic")`, with a comment naming the two headers that need it.
+
+**Symptom**
+Latent, cannot be triggered today: nothing fails at build or run time. `gn check --check-system` on x86 reported four `Include not allowed` errors for this target, which the previous entry's listing of the 25 headers had made visible: `io_apic.cpp:1`, `ipi.cpp:1` and `local_apic.cpp:1` include `<ours/arch/x86/apic.hpp>`, and `local_apic.cpp:2` includes `<ours/arch/x86/feature.hpp>`. Each says "It is not in any dependency of `//kernel/arch/x86/apic:apic`" and names `//kernel/arch/x86/kernel:headers` as the owner.
+
+**Cause**
+The previous entry separated two facts: a header is *findable* (the toolchain puts x86's include root on every kernel compile's `-I`, so `apic.cpp` compiles whatever `deps` says) and a header is *owned* (a target lists it in `public`, and `gn check` then wants an edge from every includer to that target). Before the listing, `apic.hpp` and `feature.hpp` had no owner, so the check had nothing to hold the `apic` target to, and its `deps` list, written without the check in view, never named the owner. After the listing the missing edge is a finding.
+
+The reason the previous entry gave for leaving the includers alone does not reach this one. That reason is about *generic* code: `//kernel/object` or `//kernel/commands` cannot write `//kernel/arch/x86/kernel:headers` without becoming x86-only, so how generic code asks for "the running architecture's headers" is a design question. `//kernel/arch/x86/apic` is not generic. It sits under `kernel/arch/x86/`, it is only loaded in x86's graph, and its sources include x86's own headers; a dependency that says "x86's headers" states something true about it. There is no question to put to the user, only an edge that was never written.
+
+The edge cannot make a cycle: `:headers` has one `public_deps`, `//kernel/arch/x86/lib/page_tables`, which forwards `//kernel/arch/x86:headers`, libarch's headers and ustl's, and none of them depends on `apic`. `gn gen` would refuse a cycle, and it did not.
+
+Six other errors disappeared with it, and they are worth understanding. Those six were already failing before the previous entry (they are among its 44 baseline pairs): `local_apic.cpp` includes `arch/interrupt.hpp`, `arch/spin_hint.hpp` and `arch/tick.hpp`, owned by `//kernel/lib/arch:headers`, and `arch/x86/apic/xapic.hpp` and `arch/x86/msr.hpp`, owned by `//kernel/arch/x86:headers`; `io_apic.cpp` includes `arch/x86/apic/ioapic.hpp`, owned by the same. `apic` had an edge to neither owner. `public_deps` is GN's forwarding: a target that lists `public_deps = [ X ]` lets its dependents include X's headers as if they had depended on X directly. So `apic` depends on `:headers`, which forwards page_tables, which forwards both of those owners, and the check is satisfied through that chain.
+
+**Change**
+Before:
+
+```gn
+    deps = [
+      "//kernel/lib/mtl:headers",
+```
+
+After:
+
+```gn
+    deps = [
+      # ours/arch/x86/apic.hpp and feature.hpp, which the sources include.
+      "//kernel/arch/x86/kernel:headers",
+      "//kernel/lib/mtl:headers",
+```
+
+The edge goes first in the list, ahead of the other headers targets; the list is otherwise in the order it was written.
+
+**Reference**
+None, this project's own graph. Zircon's `zircon/kernel/arch/x86/BUILD.gn` declares `library_headers("headers")` with `headers = []` (line 264) and lists nothing for the check to hold an includer to, so it has no such edge to write; here the listing is kept (previous entry), and with it comes the edge.
+
+**Verification**
+- `gn check out/bringup.x86` and `gn check out/bringup.riscv`: `Header dependency check OK`.
+- `gn check --check-system --error-limit=100000`, parsed into distinct (file, line, include) pairs as in the previous entry. x86: 143 error lines and 70 pairs before, 123 and 60 after. The ten that went are the four above and the six that the forwarding covers; no pair is new. The expected figure was 135 lines (the four pairs times two toolchain variants), and the extra twelve lines are those six pairs. riscv: 85 lines before and after, because `apic` is not in its graph.
+- The build did not change. After `gn gen`, 709 of the 711 x86 `.ninja` files are byte-identical; the two that differ are `apic.ninja` in `kernel_x86.dbg.0` and `kernel_x86.dbg.1`, in one line each: the order-only `linkdeps` phony edge of `apic` now also lists the `linkdeps` of `:headers`, page_tables, x86's headers and libarch's headers. No compile line changed (`compile_commands.json` has the same 752 entries as a set), so nothing recompiled (`ours-verify` build ok in 0.5s).
+- `.text`, `.rodata` and `.data` of the dbg `vmours` (`kernel_x86.dbg.1`) and `vmours.with-tests` (`kernel_x86.dbg.0`) hash the same before and after (`llvm-objcopy --dump-section`, sha256 prefix): `.text` `8c224710bf1e37dd` and `a4537ef1107cff4a`, `.rodata` `339ce0defeee43f2` and `beafba3cbeccc3a6`, `.data` `6b949fe14e37ba92` and `68d80ba4bacc5723`.
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.5s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.7s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- `format_gn.py --check` reports the file already formatted.
+
+**Deliberately not done**
+- The 22 other new pairs of the previous entry (seventeen in generic targets, five in `kernel/commands` tests including x86's private headers) are untouched: they are the user's call, and this edge says nothing about them.
+- `//kernel/lib/arch:headers` and `//kernel/arch/x86:headers` are not named in `apic`'s `deps`. The six includes they own are satisfied through `:headers` forwarding page_tables forwarding both, which holds only while page_tables keeps forwarding them; a direct edge to each would be sturdier. It is a separate change with a separate reason, and forwarding is what GN's `public_deps` is for, so it was left.
+- The other x86 targets were not audited for an include they own no edge to. `--check-system` reports no other x86-internal includer, which is the check there is, and it still skips any header no target lists.
+
+**How it was found**
+An independent review of the previous entry grouped the 26 new `--check-system` pairs by includer target and noticed that one includer, `//kernel/arch/x86/apic:apic`, is x86's own, so the entry's argument for deferring the generic ones did not cover it. `gn check --check-system` on the tree with this edge confirmed the four went and showed the six more.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- `//kernel/object` includes `<ours/arch/aspace_layout.hpp>` and has the same missing edge as `apic`. Why is the one-line fix right for `apic` and not for `object`?
+- The edge added one line to each `apic.ninja` and no compile line changed. Which edge is it, and why did ninja recompile nothing?
+- Six errors about headers other than x86's own disappeared when `apic` began to depend on x86's `:headers`. What carried them, and what would break the cover if page_tables stopped forwarding its two owners?
