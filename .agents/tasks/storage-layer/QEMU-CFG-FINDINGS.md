@@ -75,3 +75,40 @@ python3 scripts/qemu_boot.py -monitor unix:/tmp/qemu-mon,server,nowait \
 The driver's bring-up stops at `virtio-blk: failed: OutOfRange` because queue_size reads 0xFFFF
 and no ring of that size fits the one-page pin the driver is allowed before vmo_create_contiguous
 lands.
+
+
+## Addendum (2026-10-31): the legacy path works, and the writes are one-way
+
+The driver was rewritten onto the legacy (transitional) interface after the modern common config's
+queue section stayed unreadable, and the legacy registers all answer: queue_num reads 256, the PFN
+register reads back exactly what was written, status transitions read back. The device then
+**processes and completes the driver's request** — QEMU's own trace shows
+`virtio_blk_handle_read ... sector 0 nsectors 1` followed by `virtio_blk_req_complete ... status 0`
+for the driver's request (distinguishable from OVMF's earlier partition probes by position and req
+object).
+
+But the device's writes are invisible to the driver, while the driver's writes are visible to the
+device — a one-way asymmetry, pinned down with the QEMU monitor reading guest physical memory while
+the driver was stuck in its poll:
+
+- The driver's available-ring write IS in QEMU's RAM: `xp` shows `idx = 1` at region+0x1002, the
+  exact offset the driver wrote, every boot.
+- The descriptor table at region+0 IS the driver's (flags and next fields verbatim) once a
+  descriptor-writing bug of the driver's own was fixed (a helper dropped the field offset and
+  wrote lengths over addresses).
+- The device's sector data and the used-ring entry are in NEITHER the computed used ring
+  (region+0x2000: all zero through the monitor), NOR anywhere in the whole 12 KiB region (a scan
+  for the used entry and for the disk's on-sector magic found nothing), NOR at the alternative
+  used-ring candidates probed outside the region.
+
+So: guest → device reads and writes are delivered; device → guest writes into the pinned
+contiguous region are not observable by the guest CPU, though the device demonstrably processed
+the descriptors that name that region. The region is 3 pages from `vmo_create_contiguous`, pinned
+with `bti_pin(Contiguous)` to one address, and mapped with `vma_map` of the same VMO; the PFN
+register reads back the region's frame number. The question for the kernel side: **does the CPU
+mapping of a pinned contiguous region (or of a contiguous VMO generally) alias the frames the
+device sees — and if it does, why would QEMU's device-side writes at those physical addresses not
+land in them?** A minimal reproduction is the driver as committed (exp/fs-service, HEAD) booted
+with a virtio-blk-pci and a raw disk whose sector 0 starts with the bytes "OURS"; the boot log
+ends `virtio-blk: failed: TimeOut`, and a monitor `xp` of region+0x2000 (the address the driver's
+log prints as the used ring) shows zeros while the trace shows the completion.

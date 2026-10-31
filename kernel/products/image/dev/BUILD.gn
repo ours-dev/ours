@@ -233,6 +233,7 @@ component_manifest("root.cm") {
         to = [
           "#routing_checks",
           "#pc-ps2",
+          "#virtio-blk",
         ]
       },
 
@@ -248,13 +249,16 @@ component_manifest("root.cm") {
         ]
       },
 
-      # The IOMMU resource, to routing_checks alone: it makes an IOMMU, a BTI
-      # and pins with it, as a bus driver would, and no driver of this image
-      # does DMA yet.
+      # The IOMMU resource, to routing_checks -- which makes an IOMMU, a BTI
+      # and pins with it, as a bus driver would -- and to the block device
+      # driver, whose rings and buffers the device reaches through its pins.
       {
         protocol = [ "ours.resource.Iommu" ]
         from = "parent"
-        to = [ "#routing_checks" ]
+        to = [
+          "#routing_checks",
+          "#virtio-blk",
+        ]
       },
 
       # echo's protocol, from the sibling that exposes it, renamed on the
