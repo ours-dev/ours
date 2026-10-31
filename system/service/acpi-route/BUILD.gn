@@ -3,6 +3,9 @@
 # found in the LICENSE file.
 
 import("//build/cpp/cpp_interface.gni")
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/component_manifest.gni")
+import("//system/user_executable.gni")
 
 # The ACPI route service: the one program that reads the firmware's tables on
 # behalf of the rest of user space, so that no driver has to know a GSI or an
@@ -13,9 +16,10 @@ import("//build/cpp/cpp_interface.gni")
 # not asked of it yet. Design: .agents/tasks/driver-manager/DESIGN.md, the
 # route service.
 #
-# This file holds the part with no system calls in it: the reader of the
-# tables' directory and the two answers. Host-visible, so that the tests
-# reach it; the program itself comes after.
+# The part with no system calls in it, the reader of the tables' directory and
+# the two answers, is host-visible, so that the tests reach it. The program that
+# serves them is user-only, as every program is: GN defines every target of a
+# file it loads, and a user program does not configure in the host toolchain.
 
 cpp_interface("headers") {
   public = [
@@ -53,4 +57,51 @@ executable("acpi-route-test") {
 group("tests") {
   testonly = true
   deps = [ ":acpi-route-test" ]
+}
+
+if (!is_host_toolchain) {
+  assert(
+      toolchain_environment == "user",
+      "acpi-route must be built in a //build/toolchain/ours:user-* toolchain")
+
+  # The program (src/acpi_route.cpp): maps the tables, serves ours.acpi.Route
+  # from its outgoing directory on a Loop, and exits when it has no tables.
+  user_executable("acpi-route") {
+    visibility = [ ":*" ]
+    sources = [ "src/acpi_route.cpp" ]
+    deps = [
+      ":logic",
+      "//system/lib/ioservice:outgoing",
+      "//system/lib/loop",
+      "//system/lib/ours.acpi",
+      "//system/lib/ours.resource:client",
+      "//system/lib/wire",
+    ]
+  }
+
+  # Uses one built-in, ours.boot.Acpi, the tables as a read-only VMO, and
+  # provides ours.acpi.Route to its parent. It holds no resource: dev's root.cm
+  # offers it the tables and nothing else.
+  component_manifest("acpi-route.cm") {
+    visibility = [ "//kernel/products/image/*" ]
+    program = ":acpi-route"
+    manifest = {
+      use = [
+        {
+          protocol = [ "ours.boot.Acpi" ]
+        },
+      ]
+      capabilities = [
+        {
+          protocol = "ours.acpi.Route"
+        },
+      ]
+      expose = [
+        {
+          protocol = "ours.acpi.Route"
+          from = "self"
+        },
+      ]
+    }
+  }
 }

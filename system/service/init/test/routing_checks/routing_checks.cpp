@@ -43,6 +43,12 @@
 /// directory in the VMO is well formed, and that every table in it has the
 /// signature and length of its own header and adds up to zero.
 ///
+/// ours.acpi.Route, which root.cm offers from the sibling acpi-route, answers
+/// from the firmware's tables which GSI an ISA interrupt arrives on and where
+/// a PCI segment's configuration space is. It checks that the answers agree
+/// with the kernel's: the same line for each ISA number, the same refusals,
+/// and the window where QEMU's is.
+///
 /// Its sixth protocol use, ours.test.Echo, is the one route here that ends
 /// in another component: root.cm offers it from the sibling echo
 /// (//examples/echo), renamed from ours.examples.echo.Echo, which echo
@@ -77,6 +83,7 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
+#include <ours_acpi/client.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
 #include <ours_io/ours_io.hpp>
 #include <ours_process/ours_process.hpp>
@@ -1783,6 +1790,84 @@ auto check_acpi_tables() -> void {
     }
     auto _ = ours::handle_close(vmo);
 }
+
+/// Route.IsaIrq and Route.EcamBase answer from the firmware's tables in user
+/// space what the kernel answers from the same tables in its own: two
+/// translations written apart, which have to agree.
+///
+/// For each ISA number 0 to 15 but the cascade, the GSI the service gives, put
+/// to interrupt_map as a Gsi, names the line interrupt_map names for the ISA
+/// number. The cascade and a number past the ISA lines are no line to either:
+/// NotFound from the service, NoResource from the kernel. The service's ECAM
+/// window for segment 0 begins at the address this program already maps QEMU's
+/// window at, and no other segment is listed.
+auto check_acpi_route() -> void {
+    using ours::InterruptSourceKind;
+    constexpr auto NUM_ISA_IRQS = u32{16};
+    constexpr auto CASCADE = u32{2};
+    constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
+
+    auto const irq = get_resource(ours_resource::IRQ_PROTOCOL);
+    if (irq == Uandle::Invalid) {
+        return;
+    }
+
+    for (auto isa = u32{0}; isa < NUM_ISA_IRQS; ++isa) {
+        auto const route = ours_acpi::isa_irq(isa);
+        auto by_isa = UNTOUCHED;
+        auto const kernel_status = ours::interrupt_map(irq, InterruptSourceKind::Isa, isa, &by_isa);
+        if (isa == CASCADE) {
+            expect("Route.IsaIrq(2), the cascade", route.is_ok() ? Status::Ok : route.unwrap_err(),
+                   Status::NotFound);
+            expect("interrupt_map(Isa, 2), the cascade", kernel_status, Status::NoResource);
+            continue;
+        }
+        if (!expect("Route.IsaIrq(an ISA number)", route.is_ok() ? Status::Ok : route.unwrap_err(),
+                    Status::Ok) ||
+            !expect("interrupt_map(Isa, an ISA number)", kernel_status, Status::Ok)) {
+            continue;
+        }
+        auto by_gsi = UNTOUCHED;
+        if (expect("interrupt_map(Gsi, the service's GSI)",
+                   ours::interrupt_map(irq, InterruptSourceKind::Gsi, route->gsi, &by_gsi),
+                   Status::Ok) &&
+            by_gsi != by_isa) {
+            fail("Route.IsaIrq and interrupt_map(Isa) name two lines for one ISA number");
+        }
+    }
+
+    // Not ISA lines: no line to either.
+    for (auto const isa: {NUM_ISA_IRQS, u32{0x100}}) {
+        auto const route = ours_acpi::isa_irq(isa);
+        auto line = UNTOUCHED;
+        expect("Route.IsaIrq(past the ISA lines)", route.is_ok() ? Status::Ok : route.unwrap_err(),
+               Status::NotFound);
+        expect("interrupt_map(Isa, past the ISA lines)",
+               ours::interrupt_map(irq, InterruptSourceKind::Isa, isa, &line), Status::NoResource);
+    }
+    // 0xffffffff is the one number the kernel holds back for itself and answers
+    // InvArgs (check_interrupt_map()); to the service it is just a number that is
+    // no ISA line.
+    auto const reserved = ours_acpi::isa_irq(0xffff'ffff);
+    expect("Route.IsaIrq(0xffffffff)", reserved.is_ok() ? Status::Ok : reserved.unwrap_err(),
+           Status::NotFound);
+
+    auto const window = ours_acpi::ecam_base(0);
+    if (expect("Route.EcamBase(0)", window.is_ok() ? Status::Ok : window.unwrap_err(),
+               Status::Ok)) {
+        if (window->address != ECAM_BASE) {
+            fail("Route.EcamBase(0) is not where QEMU's configuration space is");
+        }
+        if (window->last_bus < window->first_bus ||
+            window->size != (u64{window->last_bus} - window->first_bus + 1) * (u64{1} << 20)) {
+            fail("Route.EcamBase(0): the size is not one MiB to a bus");
+        }
+    }
+    auto const none = ours_acpi::ecam_base(1);
+    expect("Route.EcamBase(1), a segment the MCFG does not list",
+           none.is_ok() ? Status::Ok : none.unwrap_err(), Status::NotFound);
+    auto _ = ours::handle_close(irq);
+}
 } // namespace
 
 auto main(int argc, char **argv) -> int {
@@ -1820,6 +1905,7 @@ auto main(int argc, char **argv) -> int {
     check_mmio_resource(vma);
     check_iommu_resource();
     check_acpi_tables();
+    check_acpi_route();
     check_sampling_resource();
     check_unoffered();
     check_undeclared();

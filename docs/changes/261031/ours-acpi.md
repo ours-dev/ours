@@ -55,3 +55,38 @@ None.
 - A codec encodes the IsaIrq reply with the trigger at offset 28 and decodes it from 28. Why does a round-trip test not notice, and what does?
 - Why must the status-form reply of a failure have nothing after it, and what would two programs that disagree about that do?
 - Why does the wire have enums of its own when the service's library already has a `Trigger` and a `Polarity`?
+
+## The client: `isa_irq()` and `ecam_base()`, one request on a connection of its own (2026-10-31)
+
+**Files**
+- `system/lib/ours.acpi/include/ours_acpi/client.hpp`, `src/client.cpp` — new.
+- `system/lib/ours.acpi/BUILD.gn` — the `client` target, for user programs only.
+
+**Symptom**
+Latent, cannot be triggered today: the codec had nobody to speak it.
+
+**Cause**
+Not a mistake: a program that asks the route service needs the same few steps each time, and they are the ones `ours_resource::get()` has: build a path under `/svc`, connect through the namespace, write one request, wait for a reply or the peer closing, read it, and tell an answer from an epitaph. An epitaph is what a route that leads nowhere closes the connection with, and a component that has exited is one such route, so a client that took it for a malformed reply would hide NotFound as InvArgs.
+
+**Change**
+Two functions, each opening a connection, writing one request, reading one message, decoding it and closing the connection. A reply whose status is not Ok is the function's Err, so a caller asks "is there a line" with `is_ok()`; the codec's replies keep the status inside the reply for a server to write.
+
+**Reference**
+`ours_resource::get()` in `system/lib/ours.resource/src/client.cpp`, whose steps these follow; None else.
+
+**Verification**
+By the program that uses it: `check_acpi_route()` in routing_checks goes through it for every answer (`docs/changes/261031/acpi-route.md`). clang-tidy: no findings. Not tested alone: a client needs a channel and a namespace, which only a booted image has.
+
+**Deliberately not done**
+No connection kept between calls: each call costs a connection, and a driver asks once or twice. No timeout, as `ours_resource::get()` has none.
+
+**How it was found**
+None, a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is a reply with a failure status the function's Err, when the codec returns it as a reply?
+- What would a client that took an epitaph for a malformed reply tell its caller when the service has exited?
+- Why does the client read a message into a buffer that has room for a handle?

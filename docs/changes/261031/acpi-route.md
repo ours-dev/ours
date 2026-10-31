@@ -65,3 +65,69 @@ None.
 - Why is the answer for ISA 0 on q35 GSI 2, and why is the answer for ISA 2 "no line" although the same override table could name it?
 - Why does a MADT whose entries end in a malformed one give an error for an ISA number it did not find, and a normal answer for one it did?
 - An MCFG allocation says base 0x4_0000_0000 and buses 16 to 31. Where does the window start, and what goes wrong for a driver that maps the base?
+
+## The route service is a program, and routing_checks makes its answers agree with the kernel's (2026-10-31)
+
+**Files**
+- `system/service/acpi-route/src/acpi_route.cpp` — new, the program: maps the tables, serves `ours.acpi.Route` on a Loop through `ioservice::Outgoing`, answers each request with `isa_irq_to_gsi()` or `ecam_window()`.
+- `system/service/acpi-route/BUILD.gn` — the user-only part: the program and `acpi-route.cm`, a manifest that uses `ours.boot.Acpi` and exposes `ours.acpi.Route`.
+- `kernel/products/image/dev/BUILD.gn` — `acpi-route` as an eager child of `root.cm`, the tables offered to it, and its protocol offered to routing_checks.
+- `system/lib/ours.acpi/include/ours_acpi/client.hpp`, `src/client.cpp`, `BUILD.gn` — the client: `isa_irq()` and `ecam_base()`, one request on a connection of its own.
+- `system/service/init/test/routing_checks/routing_checks.cpp`, `BUILD.gn` — `check_acpi_route()` and the use of the protocol.
+
+**Symptom**
+Latent, cannot be triggered today: the answers of the previous changes had no program to give them, and nothing compared them with the kernel's. `docs/repairs/261031/syscall.md` item 1 (`Isa` and `kind` leaving `interrupt_map`) waited for a user-space component that could say which GSI the keyboard is on.
+
+**Cause**
+Not a mistake: a missing program, and what it is allowed to hold decides its shape. Four details decide it.
+
+- **It holds the tables and nothing else.** Its manifest uses one capability, `ours.boot.Acpi`, and `root.cm` offers it nothing more: no resource root, no I/O. The bytes it reads are the firmware's, and the logic it runs on them has been tested against crafted ones, but a bug in it would still be a bug in a program that reads untrusted bytes. With only a read-only VMO to hold, the worst that bug does is to take the program down or make it answer wrongly, and a wrong answer is a misrouted interrupt, not access to a device. That is the invariant the Driver Manager's design asks of the party that parses firmware.
+- **No heap, and no copy.** A user program has no heap yet (`system/lib/ort/src/cpp_dependencies.cpp`). Its clients, buffers and slots are `constinit` storage built in `main()`, as the echo server's are, and the tables are read where they are mapped: `TableDirectory` keeps a span over the mapping and cuts tables out of it, so nothing is allocated for them.
+- **No tables, no program.** If the VMO cannot be had, mapped or read as a directory, the program says why and exits with 1. A route to a component that has gone answers NotFound, which is the truthful answer from a route service that has nothing to route by; staying up to answer NotFound to every question would look like a service that read the tables and found no line.
+- **Two translations that must agree.** The kernel turns an ISA number into a line from the MADT; so does this program, written apart, from the copy of the same tables. `check_acpi_route()` makes them meet: for each ISA number 0 to 15 but the cascade, the GSI the service gives, put to `interrupt_map` as a Gsi, must name the line `interrupt_map` names for the ISA number. If either side had a wrong rule for overrides, a wrong default, or a wrong bound, the two would name two lines for one number. The service's ECAM address for segment 0 is compared with the address this program already maps QEMU's window at, which was written into the test by hand, so it is a third, independent source.
+
+What the check found on its first run was a wrong expectation of mine, not a wrong answer: for 0xffffffff the kernel answers InvArgs, not NoResource, because it holds that number back as its own "no such line" (`irq::INVALID_H_IRQ_NUM`), while to the service it is only a number that is no ISA line (NotFound). The check now says so, and the two are allowed to differ there.
+
+**Change**
+The shape of a request in the server, as the echo server's:
+
+```cpp
+auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
+if (header.is_ok() && header->ordinal == ours_acpi::ISA_IRQ.ordinal) {
+    if (auto const request = ours_acpi::decode_isa_irq(message); request.is_ok()) {
+        return isa_irq(client, *request);
+    }
+} // ... EcamBase the same; anything else closes the connection
+```
+
+and the check, for one ISA number:
+
+```cpp
+auto const route = ours_acpi::isa_irq(isa);                       // the service
+ours::interrupt_map(irq, InterruptSourceKind::Isa, isa, &by_isa); // the kernel
+ours::interrupt_map(irq, InterruptSourceKind::Gsi, route->gsi, &by_gsi);
+if (by_gsi != by_isa) { fail("... name two lines for one ISA number"); }
+```
+
+**Reference**
+The echo server (`examples/echo/echo_server.cpp`) is the shape of the program, and `ours_resource::get()` (`system/lib/ours.resource/src/client.cpp`) that of the client. For what the program is, `.agents/tasks/driver-manager/DESIGN.md`, the route service; the kernel's translation it is checked against is `platform::isa_irq_line()` (`kernel/platform/pc/interrupt.cpp`).
+
+**Verification**
+- `boot_check.py`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host tests 154 passed. The root starts the program (`init: started acpi-route`), which says `acpi-route: serving, from 7 ACPI tables`, and `routing_checks: passed`. On this machine every ISA number 0 to 15 but the cascade names the same line both ways, ISA 0 being on GSI 2 (`check_interrupt_map()`), and the ECAM window for segment 0 is at 0xE0000000.
+- Seven mutations, each booted on the rel image and each caught by `routing_checks` (the number of FAILED lines in brackets): the service answering a GSI one too high (16), serving under another name (17), mapping nothing (17), the protocol not offered to routing_checks (17), the overrides ignored (2), the ECAM address one byte off (2), and the cascade made a line (2). The files were restored byte for byte, and the final run above is of the restored sources.
+- clang-tidy on the program and the client: no findings.
+- Not verified: the dbg image runs none of this (its log has no user-space output, as the previous record says), so the check runs in rel alone; any firmware but QEMU's q35 under edk2, and so any MADT whose overrides differ from this one's; the service under a client that sends a malformed message or connects more than four at a time, which only the codec's tests and the code cover.
+
+**Deliberately not done**
+pc-ps2 does not ask the service yet: it still names ISA 1 to `interrupt_map`, and `Isa` and `kind` stay until it does (`docs/repairs/261031/syscall.md`). No second client, no restart of the program (the framework starts no exited component again), no `_PRT` or `_CRS`. The `ECAM_BASE` of `routing_checks` stays a constant that the service is checked against, not a value taken from it.
+
+**How it was found**
+None, a planned step. The one failure of the first run was read from the line `routing_checks: interrupt_map(Isa, past the ISA lines) = InvArgs (expected NoResource) FAILED` in the rel log.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the check give the service's GSI to `interrupt_map` as a Gsi, and not compare the two numbers directly?
+- Why does the program exit when it has no tables, and not stay up to answer NotFound?
+- The kernel answers InvArgs for 0xffffffff and the service NotFound. Why is that a difference to allow and not a bug?
