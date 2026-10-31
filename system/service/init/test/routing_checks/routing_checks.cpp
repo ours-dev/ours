@@ -941,6 +941,119 @@ auto check_quarantine(Uandle const bti) -> void {
     auto _ = ours::handle_close(vmo);
 }
 
+/// vmo_create_contiguous with what it refuses, then a VMO of three pages and
+/// one on 64 KiB: pinned page by page, their addresses follow one another; and
+/// pinned with Contiguous, which is Ok for this memory where it is BadState
+/// for a VMO that merely happens to be scattered, they are one address.
+auto check_contiguous_vmo(Uandle const bti) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    auto none = Uandle::Invalid;
+    // The largest block of the build this image boots with, in pages; the call
+    // says 4 MiB.
+    constexpr auto MOST = usize{1} << 10;
+
+    expect("vmo_create_contiguous(no BTI)",
+           ours::vmo_create_contiguous(Uandle::Invalid, PAGE, 0, &none), Status::BadHandle);
+    auto plain = Uandle::Invalid;
+    if (expect("vmo_create(a page)", ours::vmo_create(PAGE, ours::VmoOptions::None, &plain),
+               Status::Ok)) {
+        expect("vmo_create_contiguous(a VMO as the BTI)",
+               ours::vmo_create_contiguous(plain, PAGE, 0, &none), Status::BadType);
+        auto _ = ours::handle_close(plain);
+    }
+    if (auto const bti_no_map = narrowed(bti, ours::Rights::Write); bti_no_map != Uandle::Invalid) {
+        expect("vmo_create_contiguous(a BTI without Map)",
+               ours::vmo_create_contiguous(bti_no_map, PAGE, 0, &none), Status::AccessDenied);
+        auto _ = ours::handle_close(bti_no_map);
+    }
+    expect("vmo_create_contiguous(a size of 0)", ours::vmo_create_contiguous(bti, 0, 0, &none),
+           Status::InvArgs);
+    expect("vmo_create_contiguous(an alignment below a page)",
+           ours::vmo_create_contiguous(bti, PAGE, 5, &none), Status::InvArgs);
+    expect("vmo_create_contiguous(an alignment that is not a shift)",
+           ours::vmo_create_contiguous(bti, PAGE, 64, &none), Status::InvArgs);
+    expect("vmo_create_contiguous(more than the largest block)",
+           ours::vmo_create_contiguous(bti, (2 * MOST) * PAGE, 0, &none), Status::NoMemory);
+    expect("vmo_create_contiguous(an alignment past the largest block)",
+           ours::vmo_create_contiguous(bti, PAGE, 12 + 11, &none), Status::NoMemory);
+    if (none != Uandle::Invalid) {
+        fail("a refused vmo_create_contiguous wrote a handle");
+    }
+
+    auto vmo = Uandle::Invalid;
+    if (expect("vmo_create_contiguous(three pages)",
+               ours::vmo_create_contiguous(bti, 3 * PAGE, 0, &vmo), Status::Ok)) {
+        auto size = u64{0};
+        expect("vmo_get_size(the contiguous VMO)", ours::vmo_get_size(vmo, &size), Status::Ok);
+        if (size != 3 * PAGE) {
+            fail("a contiguous VMO of three pages is not three pages");
+        }
+
+        std::array<u8, 64> bytes{};
+        bytes.fill(0xFF);
+        expect("vmo_read(the start of a contiguous VMO)",
+               ours::vmo_read(vmo, bytes.data(), 0, bytes.size()), Status::Ok);
+        auto zero = true;
+        for (auto const byte: bytes) {
+            zero = zero && byte == 0;
+        }
+        bytes.fill(0xFF);
+        expect("vmo_read(the end of a contiguous VMO)",
+               ours::vmo_read(vmo, bytes.data(), 3 * PAGE - bytes.size(), bytes.size()),
+               Status::Ok);
+        for (auto const byte: bytes) {
+            zero = zero && byte == 0;
+        }
+        if (!zero) {
+            fail("a contiguous VMO is not zero");
+        }
+
+        std::array<ours::PhysAddr, 3> pages{};
+        std::array<ours::PhysAddr, 1> one{};
+        auto by_page = Uandle::Invalid;
+        auto whole = Uandle::Invalid;
+        if (expect("bti_pin(the contiguous VMO, page by page)",
+                   ours::bti_pin(bti, RW, vmo, 0, 3 * PAGE, pages.data(), 3, &by_page),
+                   Status::Ok)) {
+            if (pages[1] != pages[0] + PAGE || pages[2] != pages[0] + 2 * PAGE) {
+                fail("the pages of a contiguous VMO do not follow one another");
+            }
+            expect("pmt_unpin(page by page)", ours::pmt_unpin(by_page), Status::Ok);
+        } else {
+            // Nothing to compare the next pin's address with.
+            pages[0] = ~ours::PhysAddr{0};
+        }
+        if (expect("bti_pin(the contiguous VMO, Contiguous)",
+                   ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, vmo, 0, 3 * PAGE,
+                                 one.data(), 1, &whole),
+                   Status::Ok)) {
+            if (one[0] != pages[0]) {
+                fail("the one address of a contiguous VMO is not its first page's");
+            }
+            expect("pmt_unpin(Contiguous)", ours::pmt_unpin(whole), Status::Ok);
+        }
+        auto _ = ours::handle_close(vmo);
+    }
+
+    constexpr auto SIXTY_FOUR_KIB = usize{1} << 16;
+    auto aligned = Uandle::Invalid;
+    if (expect("vmo_create_contiguous(two pages on 64 KiB)",
+               ours::vmo_create_contiguous(bti, 2 * PAGE, 16, &aligned), Status::Ok)) {
+        std::array<ours::PhysAddr, 1> one{};
+        auto pin = Uandle::Invalid;
+        if (expect("bti_pin(the aligned VMO, Contiguous)",
+                   ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, aligned, 0, 2 * PAGE,
+                                 one.data(), 1, &pin),
+                   Status::Ok)) {
+            if (one[0] % SIXTY_FOUR_KIB != 0) {
+                fail("a contiguous VMO asked to start on 64 KiB does not");
+            }
+            expect("pmt_unpin(the aligned VMO)", ours::pmt_unpin(pin), Status::Ok);
+        }
+        auto _ = ours::handle_close(aligned);
+    }
+}
+
 /// iommu_create and bti_create with what they refuse, then the checks of the
 /// pins on the BTI they make.
 auto check_iommu_and_bti(Uandle const resource) -> void {
@@ -985,6 +1098,7 @@ auto check_iommu_and_bti(Uandle const resource) -> void {
             auto _ = ours::handle_close(vmo);
         }
         check_quarantine(bti);
+        check_contiguous_vmo(bti);
         auto _ = ours::handle_close(bti);
     }
     auto _ = ours::handle_close(iommu);

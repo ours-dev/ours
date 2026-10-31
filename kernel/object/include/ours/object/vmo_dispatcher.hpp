@@ -60,6 +60,14 @@ class VmoDispatcher final: public VmoDispatcherBase {
     static auto create_paged(usize size, KernelHandle<Self> &handle_out, Rights &rights_out)
         -> Status;
 
+    /// A VMO of |size| bytes (rounded up to whole pages) of physically
+    /// contiguous, zeroed memory that starts on a multiple of
+    /// 2^|alignment_log2| bytes (0 is a page): a buffer a device is given one
+    /// address of (mm::VmObjectPaged::create_contiguous(), which says what it
+    /// can and cannot be). The handle has the default VMO rights.
+    static auto create_contiguous(usize size, usize alignment_log2, KernelHandle<Self> &handle_out,
+                                  Rights &rights_out) -> Status;
+
     /// A paged VMO that takes over |size| bytes of frames at |base|, reserved
     /// since boot, as its own pages (mm::VmObjectPaged::create_from_wired_pages()):
     /// no copy, and the frames go to the page allocator when the VMO dies.

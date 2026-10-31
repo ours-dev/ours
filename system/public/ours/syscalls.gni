@@ -2118,4 +2118,56 @@ ours_syscalls = [
     attrs = []
     ret = "Status"
   },
+  {
+    name = "vmo_create_contiguous"
+    brief = "Makes a VMO of |size| bytes of physically contiguous memory and puts a handle to it in |out|."
+    doc = [
+      "The memory a device reads and writes as one buffer and is given one",
+      "address of, such as a ring: every page of it follows the one before in",
+      "physical memory, it starts on a multiple of 2^|alignment_log2| bytes (0",
+      "is a page), and it is zero. |bti| needs Map, which is the capability for",
+      "memory of this kind (BadHandle, BadType, AccessDenied); the VMO is not",
+      "tied to that BTI, and can be pinned through any. The checks come in this",
+      "order: the handle; then InvArgs for a |size| of 0 and for an",
+      "|alignment_log2| below a page's own or too big to be a shift; then",
+      "OutOfRange for a |size| no VMO can be; then NoMemory.",
+      "",
+      "|size| is rounded up to whole pages. All of it is there from the start",
+      "and none of it is ever reclaimed, and a snapshot of it is refused",
+      "(BadState). It is one block of the page allocator, so at most 4 MiB in",
+      "this build, and what the alignment needs counts toward that: a bigger",
+      "size or alignment is NoMemory, and so is a block of the size that is not",
+      "free now, which the call does not tell apart. Nothing limits where in",
+      "memory the run is, so a device that can reach only 32-bit addresses may",
+      "not reach it.",
+      "",
+      "The handle has the default VMO rights, and the VMO is pinned for the",
+      "device in the usual way, with bti_pin, whose Contiguous option is then",
+      "Ok. Its value goes to |out|, and it is in this process's table only once",
+      "that write has worked: InvArgs, and no new handle, when |out| cannot be",
+      "written. It counts against this process's handle quota: NoResource past",
+      "it, or when the handle arena is full.",
+    ]
+    args = [
+      {
+        name = "bti"
+        type = "Uandle"
+      },
+      {
+        name = "size"
+        type = "u64"
+      },
+      {
+        name = "alignment_log2"
+        type = "u32"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
 ]

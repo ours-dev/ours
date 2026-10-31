@@ -74,6 +74,20 @@ auto VmoDispatcher::create_paged(usize const size, KernelHandle<Self> &handle_ou
     return create(ustl::move(vmo), handle_out, rights_out);
 }
 
+auto VmoDispatcher::create_contiguous(usize const size, usize const alignment_log2,
+                                      KernelHandle<Self> &handle_out, Rights &rights_out)
+    -> Status {
+    ustl::Arc<mm::VmObjectPaged> vmo;
+    // The user class, as every VMO user space can reach.
+    auto const status = mm::VmObjectPaged::create_contiguous(mm::GAF_USER, size, alignment_log2,
+                                                             mm::VmoFlags::Pinned, &vmo);
+    if (Status::Ok != status) {
+        return status;
+    }
+
+    return create(ustl::move(vmo), handle_out, rights_out);
+}
+
 auto VmoDispatcher::create_from_wired_pages(PhysAddr const base, usize const size,
                                             KernelHandle<Self> &handle_out, Rights &rights_out)
     -> Status {

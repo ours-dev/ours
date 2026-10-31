@@ -197,6 +197,28 @@ auto bti_pin(ours::Uandle const bti, BtiPinOptions const options, ours::Uandle c
     return Status::Ok;
 }
 
+/// The BTI first, for Map: it is the capability for memory a device is given the
+/// address of, so a program with a VMO and no BTI cannot make this one.
+/// Everything about the size and the alignment is the object's
+/// (VmoDispatcher::create_contiguous()).
+auto vmo_create_contiguous(ours::Uandle const bti, u64 const size, u32 const alignment_log2,
+                           user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
+    ustl::Arc<BtiDispatcher> bti_object;
+    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
+            bti, Rights::Map, &bti_object);
+        status != Status::Ok) {
+        return status;
+    }
+
+    KernelHandle<VmoDispatcher> vmo;
+    Rights rights = Rights::None;
+    if (auto const status = VmoDispatcher::create_contiguous(size, alignment_log2, vmo, rights);
+        status != Status::Ok) {
+        return status;
+    }
+    return publish(ustl::move(vmo), rights, out);
+}
+
 /// The handle is taken out of the table only if it names a pin (BadHandle and
 /// BadType leave the table as it was), in one hold of the table's lock: a
 /// handle that is looked up and then removed could be closed, and the pin
