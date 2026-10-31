@@ -24,9 +24,9 @@ using object::VirtualInterruptDispatcher;
 
 namespace {
     /// The options interrupt_create knows. Anything else is refused before
-    /// the kind is looked at; each kind then refuses what it does not take.
-    constexpr auto KNOWN_INTERRUPT_OPTIONS =
-        InterruptOptions::RemapIrq | InterruptOptions::ModeMask | InterruptOptions::Virtual;
+    /// the kind is looked at, the retired bit 0x1 included; each kind then
+    /// refuses what it does not take.
+    constexpr auto KNOWN_INTERRUPT_OPTIONS = InterruptOptions::ModeMask | InterruptOptions::Virtual;
 } // namespace
 
 /// A new interrupt object. One on a physical line needs an IRQ resource that

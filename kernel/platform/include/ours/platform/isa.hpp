@@ -14,7 +14,7 @@ namespace ours {
 /// delivered on GSI 2). Past the platform the GSI is the pin: it indexes the
 /// IO-APIC's redirection table and picks the vector. The irq layer names the
 /// line made for a pin by its own number, its virq, which is what
-/// irq::attach() takes: platform::remap_isa_irq() below turns an ISA number
+/// irq::attach() takes: platform::isa_irq_line() below turns an ISA number
 /// into it, so convert with that before using any of these there.
 ///
 /// Constants rather than the `#define`s these used to be: a macro has no type
@@ -46,20 +46,6 @@ namespace platform {
     /// This is what interrupt_map's Isa kind asks for.
     [[nodiscard]]
     auto isa_irq_line(u32 isa_irq) -> VIrqNum;
-
-    /// The interrupt line ISA IRQ `irq` arrives on, by the number the irq
-    /// layer names lines with, its virq. On a PC the ISA IRQ gives a GSI,
-    /// which the MADT's overrides may move (q35 sends ISA 0 to GSI 2), and
-    /// the line is the one made for that GSI (isa_irq_line()). A number past
-    /// the ISA IRQs is no ISA IRQ and comes back unchanged, since it already
-    /// names a line; so does every number on a platform that has no ISA
-    /// interrupts.
-    ///
-    /// This is what interrupt_create's RemapIrq asks for: a driver that knows
-    /// its device by its ISA IRQ, as the PS/2 controller's is 1, names its
-    /// line without reading the firmware's tables itself.
-    [[nodiscard]]
-    auto remap_isa_irq(u32 irq) -> VIrqNum;
 } // namespace platform
 } // namespace ours
 

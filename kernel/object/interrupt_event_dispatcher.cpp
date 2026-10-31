@@ -4,7 +4,6 @@
 #include <ours/irq/mod.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/object/interrupt_event_dispatcher.hpp>
-#include <ours/platform/isa.hpp>
 
 #include <heap/new.hpp>
 #include <ustl/option.hpp>
@@ -43,7 +42,7 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
                                       InterruptOptions const options) -> Status {
     // Only what names a physical line and how it signals: Virtual is the
     // other kind's, and nothing else exists.
-    if (!!(options & ~(InterruptOptions::RemapIrq | InterruptOptions::ModeMask))) {
+    if (!!(options & ~InterruptOptions::ModeMask)) {
         return Status::InvArgs;
     }
 
@@ -71,19 +70,9 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
             return Status::InvArgs;
     }
 
-    // Turned into the line before anything else, so that every step below,
-    // and the object, use the one number: the line's, as the irq layer
-    // names it.
-    auto virqnum = static_cast<VIrqNum>(line);
-    if (!!(options & InterruptOptions::RemapIrq)) {
-        virqnum = platform::remap_isa_irq(line);
-        // An ISA IRQ that has no line (the cascade, ISA 2) answers as any
-        // number no line has, and not as the invalid number, which the irq
-        // layer refuses (InvArgs) and which a caller can also pass as |line|.
-        if (virqnum == irq::INVALID_V_IRQ_NUM && line != irq::INVALID_V_IRQ_NUM) {
-            return Status::NoResource;
-        }
-    }
+    // The line is the number the irq layer names it by, which is what every
+    // step below, and the object, use.
+    auto const virqnum = static_cast<VIrqNum>(line);
 
     auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(virqnum));
     if (!self) {

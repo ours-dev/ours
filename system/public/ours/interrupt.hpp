@@ -13,34 +13,30 @@ namespace ours {
 ///
 /// Virtual makes an interrupt object with no line behind it, raised by
 /// interrupt_trigger. Without it the object is on a physical line, and the
-/// other options say how that line is named and how it signals:
-///   - RemapIrq: the line is given by its ISA IRQ number, 0 to 15, and the
-///     kernel turns it into the line that IRQ arrives on. The firmware's
-///     tables may move an ISA IRQ to another pin (QEMU's q35 sends ISA 0 to
-///     GSI 2), and the line is named by the kernel's own number for that
-///     pin. ISA 2, the cascade between the two legacy controllers, carries
-///     no device and names no line (NoResource). A number past the ISA IRQs
-///     already names a line and is taken as it is.
-///   - The mode, the three bits of ModeMask: ModeDefault leaves the line
-///     signalling as it does now, as the firmware or its last owner left it;
-///     the other four set it. 5 to 7 in the field are refused: 5 would be
-///     both edges, which no controller here can do.
+/// mode says how that line signals: the three bits of ModeMask. ModeDefault
+/// leaves the line signalling as it does now, as the firmware or its last
+/// owner left it; the other four set it. 5 to 7 in the field are refused: 5
+/// would be both edges, which no controller here can do.
+///
+/// The bit 0x1 was RemapIrq, which took the line as an ISA IRQ number. It is
+/// retired and reserved, and not given another meaning: a create that sets it
+/// is refused (InvArgs). A program asks interrupt_map for the number of an
+/// ISA device's line instead.
 /// A level-triggered line is masked from the moment its interrupt is
 /// delivered until it is acknowledged, since the device holds the level
 /// until its driver has dealt with it; an edge-triggered line is not.
 ///
 /// A line is named by the kernel's number for it, assigned at boot: never the
 /// pin's GSI, and not the same on another machine or another kernel, so a
-/// program does not compute one. RemapIrq gives the number of an ISA device's
-/// line, and interrupt_map the number for any source the firmware names, to
-/// the holder of the interrupt root.
+/// program does not compute one. interrupt_map gives the number for any source
+/// the firmware names (an ISA IRQ, a GSI), to the holder of the interrupt
+/// root.
 ///
 /// No option picks the clock a timestamp is taken on or makes the line a
 /// wake source: this kernel has one clock, and no suspend to wake from.
 enum class InterruptOptions : u32 {
     None = 0,
     ModeDefault = 0,
-    RemapIrq = 0x1,
     ModeEdgeLow = 1U << 1,
     ModeEdgeHigh = 2U << 1,
     ModeLevelLow = 3U << 1,

@@ -332,7 +332,7 @@ static auto hpet_init_internal() -> Status {
     // to the IO-APIC under its register lock; the PIT's line is in the line
     // table, made at InitLevel::Irq, before this runs at Irq + 2.
     if (mmio->general_caps.support_legacy()) {
-        auto const line = platform::remap_isa_irq(ISA_IRQ_PIT);
+        auto const line = platform::isa_irq_line(ISA_IRQ_PIT);
         auto const masked = irq::mask(line);
         if (Status::Ok != masked) {
             log::error("HPET: masking the legacy timer's line {}: {}", line, to_string(masked));

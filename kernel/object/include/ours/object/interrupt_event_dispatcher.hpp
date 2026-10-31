@@ -15,7 +15,7 @@ namespace ours::object {
 /// hardware number (the GSI on a PC).
 ///
 /// The objects:
-///   - m_line, the line, fixed at creation, after any RemapIrq.
+///   - m_line, the line, fixed at creation.
 ///   - m_action, the object's place on the line: the irq layer calls its
 ///     handler, in interrupt context and under the line's lock (L1), with the
 ///     object as the context, and the handler hands the interrupt to
@@ -49,11 +49,10 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
   public:
     /// Makes an interrupt object on |line|, which the caller has been
     /// granted through an Irq resource, and hangs it on the line. |options|
-    /// may hold RemapIrq and one mode, nothing else (InvArgs, as for a mode
-    /// that names none).
+    /// may hold one mode, nothing else (InvArgs, as for a mode that names
+    /// none, and for the retired bit 0x1).
     ///
-    /// In order: RemapIrq turns an ISA number into its line before anything
-    /// is made; the object's action goes on the line in the same step that
+    /// In order: the object's action goes on the line in the same step that
     /// sets how the line signals, with a mode other than ModeDefault, or
     /// reads how it signals now, with ModeDefault, and the line's flow
     /// follows that mode, so the line is held masked until the ack exactly

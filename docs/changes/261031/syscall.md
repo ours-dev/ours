@@ -83,3 +83,67 @@ None.
 2. ISA 0 and GSI 2 are one line on q35. Why does the call leave out ISA 2, and what would a driver that asked for it have been given?
 3. A refused call must write nothing. Which of the mutations shows the checks cover that, and what in the order of the checks makes the write the last thing that can fail?
 4. A range over every interrupt line grants every line. Why is it still not enough for `interrupt_map`, and why can no test through the system call tell the root from such a range yet?
+
+## `RemapIrq` is retired: a program asks `interrupt_map` for an ISA device's line (2026-10-31)
+
+**Files**
+- `system/public/ours/interrupt.hpp` — the enumerator `RemapIrq` is gone; the bit `0x1` is documented as retired and reserved.
+- `system/public/ours/syscalls.gni`, `kernel/lib/syscall/src/interrupt.cpp` — `interrupt_create`'s documentation; `0x1` is no longer a known option.
+- `kernel/object/interrupt_event_dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp` — the options are a mode and nothing else; the remapping and its `NoResource` special case are gone.
+- `kernel/platform/include/ours/platform/isa.hpp`, `kernel/platform/pc/interrupt.cpp`, `kernel/platform/arm/isa.cpp`, `kernel/platform/riscv/isa.cpp` — `platform::remap_isa_irq()` is removed; `isa_irq_line()` is the one translation.
+- `kernel/arch/x86/kernel/time/time.cpp`, `kernel/arch/x86/kernel/time/hpet.cpp` — the PIT's line comes from `isa_irq_line()`.
+- `system/driver/pc-ps2/pc_ps2.cpp`, `system/app/shell/shell_tests.cpp`, `system/service/init/test/routing_checks/routing_checks.cpp`, `kernel/commands/interrupt_line_test.cpp`, `kernel/commands/irq_test.cpp`, `kernel/commands/pin_lines_test.cpp` — ask `interrupt_map` (user space) or `isa_irq_line()` (kernel) for a line's number, and check the retired bit.
+
+**Symptom**
+`interrupt_create` took its `line` in two meanings, chosen by an option bit: the kernel's number for the line, or, with `RemapIrq`, an ISA IRQ that the kernel turned into one. It was the one place a number that was not a line's number went into the call, and the review of the previous change found that the two meanings gave different answers for the same ISA 2 (`InvArgs` and `NoResource`).
+
+**Cause**
+Not a mistake: `RemapIrq` was the way across while no call returned a line's number, and `interrupt-system` D5 decided to retire it once `interrupt_map` existed (the user chose "remove now", read as a step of its own after `interrupt_map`). Two meanings for one argument is also what let a program hold a GSI where a line was due: an option bit, easy to leave set, decided which space the number was in.
+
+**Change**
+`interrupt_create(resource, line, options)` has one meaning for `line`. A driver, or a test, that knows a device by its ISA IRQ asks `interrupt_map(root, Isa, irq, &line)` and creates with the number it was given; pc-ps2 does exactly that:
+
+```cpp
+    auto number = u32{0};
+    if (auto const status =
+            ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_KEYBOARD, &number);
+        status != Status::Ok) {
+        report("interrupt_map(ISA 1)", status);
+        return ustl::err(status);
+    }
+    ... ours::interrupt_create(irq, number, OPTIONS, &first)
+```
+
+The bit `0x1` is not reused: option values are ABI, and a program built against the old header that still sets it must be refused and not find another meaning there. The syscall layer refuses it with every option it does not know (`InvArgs`, before the resource is looked at), and the object layer, which a kernel caller reaches without the syscall, refuses all but a mode. The enumerator is removed so that nothing in the tree can set it by name; the comment in `interrupt.hpp` keeps the number reserved.
+
+`platform::remap_isa_irq()` is deleted, and not kept as "the Isa kind's translation" as the plan first said: `isa_irq_line()`, added with `interrupt_map`, is that translation, and `remap_isa_irq()` only added the rule that a number past the ISA IRQs comes back unchanged, which served `RemapIrq` alone. The callers in the kernel (the PIT and HPET code, the tests) ask `isa_irq_line()`.
+
+**Reference**
+None, this project's own design: `.agents/tasks/interrupt-system/DESIGN.md` D5 and `PLAN.md` step I4b.
+
+**Verification**
+Run in a cloud container with substituted tools (QEMU 8.2.2 and Ubuntu's OVMF, not the project's QEMU 11.1.1; no KVM; gn `1000 (1a7c151)`).
+
+- `boot_check.py`: dbg PASS, 44 passed, 4 skipped, 0 failed; rel PASS, 41 passed, 8 skipped, 0 failed, 6/6 required, with `pc-ps2: ready`, `pc-ps2: key a` and `pc-ps2: key A` (the keyboard's interrupt now reaches pc-ps2 through `interrupt_map`); host tests 151 passed, 0 failed. The same with `DISK=` set.
+- `interruptline.test`: ok, 59 checks (58 before): the object layer refuses `0x1` (`InvArgs`), ahead of the line, and a number no line has still answers `NoResource`. `pinlines.test`: ok, 28 checks (29 before: the comparison of `remap_isa_irq()` with `isa_irq_line()` has nothing left to compare). `resource.test` 72, `irqdomain.test` 39, `interrupt.test` 32, `irq.test` 72, all ok.
+- The user shell (dbg) takes its two lines from `interrupt_map` and runs the same group of checks as before, now with the retired bit refused (`InvArgs`), the cascade mapping to nothing, and a create with `Virtual` and a mode refused.
+- Three mutations, each applied alone, built clean and run, then restored: pc-ps2 naming the keyboard's line by its ISA number (rel fails, `3/6 required`: the keyboard never arrives); the object layer letting `0x1` through (`interruptline.test` fails, 1 of 59); both layers letting it through (dbg fails: `shell: interrupt checks`). All caught. The syscall layer's refusal alone is not caught by anything: with only that layer open, the object layer refuses `0x1` itself, so each layer is shown by a different test, the object layer's by `interruptline.test` and the pair by the user shell.
+- `scripts/format_cpp.py` and `scripts/format_gn.py` clean on every changed file; the ARM and RISC-V platform files compile as syntax only (they only lost a function).
+
+Not measured: real hardware, QEMU 11.1.1; a program built against the old header (there is none in the tree).
+
+**Deliberately not done**
+- A compatibility path for `RemapIrq`: nothing outside the tree uses the ABI yet, and a path would keep the two meanings.
+- A named constant for the reserved bit in the public header: a name invites a use.
+- The independent review of this step: it removes a path and adds no call. The previous step's review (three reviewers, a skeptic each) covered `interrupt_map` and the platform function this one relies on.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does the bit `0x1` stay reserved and refused, and not simply become available for a new option?
+2. `remap_isa_irq()` is deleted although the plan first said it would become the Isa kind's translation. What replaced it, and what did it do that nothing needs now?
+3. Which mutation shows that pc-ps2 really gets its line from `interrupt_map`, and what does the rel image report when it does not?

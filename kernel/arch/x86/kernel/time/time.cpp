@@ -91,7 +91,7 @@ auto setup_pit() -> void {
 auto arch_time_init() -> void {
     setup_pit();
 
-    auto const line = platform::remap_isa_irq(ISA_IRQ_PIT);
+    auto const line = platform::isa_irq_line(ISA_IRQ_PIT);
     auto const attached = irq::attach(line, LEGACY_TIMER_ACTION);
     if (Status::Ok != attached) {
         log::error("Failed to attach the legacy timer to line {}: {}", line, to_string(attached));

@@ -215,19 +215,10 @@ auto platform_finish_handling_irq(HIrqNum irqnum, arch::IrqFrame *) -> bool {
 }
 
 /// The same mapping platform_init_apic() programmed each ISA line at, so the
-/// line a driver names this way is the one its device's interrupts reach:
-/// the ISA number gives a GSI, and the irq layer says which line was made for
-/// that GSI. The bound comes first: apic_io_isa_to_global() takes a u8, and a
-/// number past the ISA lines would wrap into one of them rather than stay
-/// itself.
-auto platform::remap_isa_irq(u32 const isa_irq) -> VIrqNum {
-    if (isa_irq >= arch::NUM_ISA_IRQS) {
-        return isa_irq;
-    }
-    return isa_irq_line(isa_irq);
-}
-
-/// The bound comes first here too, for the same reason. The cascade is left
+/// line a driver names this way is the one its device's interrupts reach: the
+/// ISA number gives a GSI, and the irq layer says which line was made for that
+/// GSI. The bound comes first: apic_io_isa_to_global() takes a u8, and a
+/// number past the ISA lines would wrap into one of them. The cascade is left
 /// out: platform_init_apic() does not program it, and its GSI is commonly the
 /// timer's (q35 sends ISA 0 to GSI 2 and leaves ISA 2 on it), so naming it
 /// would hand out the timer's line under a second name.

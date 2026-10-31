@@ -499,7 +499,7 @@ auto check_sampling_resource() -> void {
 ///   - ISA 0 and GSI 2 are one line, the kernel's timer, which is taken for
 ///     good (AlreadyBound), so the number is the line's;
 ///   - ISA 3 and GSI 3 are one free line, taken with the number as given,
-///     without RemapIrq; and a PCI pin, GSI 23, has a line of its own, which
+///     as given; and a PCI pin, GSI 23, has a line of its own, which
 ///     an interrupt object takes level-triggered, as a PCI function's INTx
 ///     is;
 ///   - the refusals: a kind the kernel does not know and the invalid source
@@ -571,7 +571,7 @@ auto check_interrupt_map(Uandle const irq) -> void {
     expect("interrupt_create(the number interrupt_map gave for ISA 0, the timer's line)",
            ours::interrupt_create(irq, isa_timer, ours::InterruptOptions::None, &interrupt),
            Status::AlreadyBound);
-    if (expect("interrupt_create(the number interrupt_map gave for ISA 3, no RemapIrq)",
+    if (expect("interrupt_create(the number interrupt_map gave for ISA 3)",
                ours::interrupt_create(irq, isa_free, ours::InterruptOptions::None, &interrupt),
                Status::Ok)) {
         expect("close(the interrupt on the number interrupt_map gave for ISA 3)",
@@ -640,8 +640,15 @@ auto check_irq_resource() -> void {
         return;
     }
     auto interrupt = Uandle::Invalid;
+    auto line = u32{0};
+    if (!expect("interrupt_map(the resource Irq.Get gave, Isa, 3)",
+                ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_FREE, &line),
+                Status::Ok)) {
+        auto _ = ours::handle_close(irq);
+        return;
+    }
     if (expect("interrupt_create(the resource Irq.Get gave, ISA 3)",
-               ours::interrupt_create(irq, ISA_FREE, ours::InterruptOptions::RemapIrq, &interrupt),
+               ours::interrupt_create(irq, line, ours::InterruptOptions::ModeDefault, &interrupt),
                Status::Ok)) {
         expect("close(the interrupt on ISA 3)", ours::handle_close(interrupt), Status::Ok);
     }
