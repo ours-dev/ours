@@ -1,3 +1,5 @@
+import("//build/ours/cpu.gni")
+
 source_set("irq") {
   sources = [
     "init.cpp",
@@ -6,6 +8,9 @@ source_set("irq") {
     "mod.cpp",
   ]
   deps = [
+    # init.cpp includes <ours/arch/aspace_layout.hpp>.
+    "//kernel/arch/$ours_cpu/kernel:headers",
+
     # ours/task/thread.hpp holds a sampler::StackSampleRequest.
     "//kernel/lib/sampler:request",
     "//kernel/lib/gktl",

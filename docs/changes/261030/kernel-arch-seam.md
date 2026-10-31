@@ -393,3 +393,105 @@ None.
 - Why did `clang-format` and `format_cpp.py --check` both pass an 81-column comment?
 - A rename makes a path four characters longer. Which lines of the tree can be affected beyond the ones that fail to compile, and how would you find them?
 - The section hashes came out equal for a comment-only edit. What kind of edit to a header would change `.rodata` although no code changed, and why could this one not?
+
+## Title: Seven generic targets depend on `//kernel/arch/$ours_cpu/kernel:headers`, because `gn check --check-system` holds an include of a header that target owns to an edge to it (2026-10-30)
+
+**Files**
+- `kernel/commands/BUILD.gn`, `kernel/object/BUILD.gn`, `kernel/lib/user_copy/BUILD.gn`, `kernel/kernel/irq/BUILD.gn`, `kernel/lib/userabi/BUILD.gn`, `kernel/mm/BUILD.gn`, `benches/kernel/mm/BUILD.gn` — `"//kernel/arch/$ours_cpu/kernel:headers"` joins the `deps` of the source set that includes a header of the per-arch set, each with a comment naming the includer and the header. Five of them gain `import("//build/ours/cpu.gni")`, which defines `$ours_cpu` (`user_copy` and `mm` already had it).
+- `kernel/mm/BUILD.gn` — also reformatted as a whole: the two imports are in gn's order, `"tests:tests"` is spelled `"tests"` (the same label), and a stray indent and four missing blank lines before comments are fixed. See Cause for why this file could not be committed otherwise.
+- `docs/changes/261030/kernel-arch-seam.md` — this entry.
+
+**Symptom**
+Latent, cannot be triggered today: nothing fails at build or run time, and a plain `gn check` passes on both architectures before and after. Since the headers target of each architecture lists its include root (the entries above), `gn check --check-system` named every include of one of those headers from a target with no edge to the owner: 22 findings on x86 and 19 on riscv, of which seventeen on x86 and all nineteen on riscv are in generic code (`//kernel/commands`, `//kernel/object`, `//kernel/lib/user_copy`, `//kernel/kernel/irq`, `//benches/kernel/mm:large-page-bench`, `//kernel/lib/userabi` on x86, and `//kernel/mm` on riscv).
+
+**Cause**
+The previous entries separated two facts about a header: it is *findable* (the toolchain puts the architecture's include root on every kernel compile's `-I`) and it is *owned* (a target lists it in `public`, and `gn check` then wants an edge from each includer to that target). Findable is why none of these targets ever failed to compile; owned is what the checker reads, and until the headers target listed its files nothing was owned, so nothing was checked. The listing made the missing edges visible, and the edges were left for the user because generic code cannot name x86's label without becoming x86-only. The user approved the answer on 2026-10-30: say "the running architecture's headers" the way the rest of the tree already does.
+
+That spelling is `$ours_cpu` (`build/ours/cpu.gni`): `current_cpu` inside an ours toolchain and `target_cpu` in the default one, so `//kernel/arch/$ours_cpu/kernel:headers` is x86's label in an x86 build, riscv's in a riscv build. The tree already uses it for exactly this kind of edge: `//kernel/phys` depends on the same label for `kernel-boot.hpp`'s layout constants, and `//kernel/lib/ccrt` and `//kernel/lib/user_copy` depend on `//kernel/arch/$ours_cpu:headers`. The toolchain uses the same variable to put the include root on the command line (`build/switch/kernel_switchset.gni`, `//kernel/arch/$cpu/kernel:headers.config` in `prefix_configs`); the new edge is the second half of that fact, the part GN can check.
+
+Three things the numbers taught, none of which the task's brief had:
+
+- **The list is seven targets, not six.** `//kernel/mm` is the seventh, and only riscv reports it. On x86 `//kernel/mm:mm` depends on `//kernel/arch/x86/mm`, which has `//kernel/arch/x86/kernel:headers` in its `public_deps`, so the check passed there; riscv's `//kernel/arch/riscv/mm` has no such edge, so the same four includes (`vmm.cpp`, `init_vmm.cpp`, `vm_aspace.cpp`, `cpu_local.cpp`, all `aspace_layout.hpp`) failed. A generic target that passes on one architecture because that architecture's own target happens to forward the header is passing by accident, which is what the generic edge replaces. Running the check on both build directories and taking the union is what found it.
+- **GN checks per target, not per header, so the edge hides the five x86-private includes in `//kernel/commands`.** The brief expected `<ours/arch/x86/apic.hpp>` (three tests), `io_bitmap.hpp` and `percpu.hpp` (`ioport_test.cpp`) to stay flagged until R25 moves those tests. They cannot: `//kernel/commands` now depends on the target that owns all 25 headers, and `gn check` asks only whether the includer's target reaches *a* target that lists the header, so every one of the 25 passes. All 22 findings owned by x86's headers target are gone, the five included. The tests are still where they were and still fail to compile on riscv (the probe below), which is now the only thing that says so. The comment on the new edge in `kernel/commands/BUILD.gn` says this, so a reader of the file does not take the passing check for a clean target.
+- **GN does not read header-to-header includes here.** `kernel/lib/heap/include/heap/vmalloc.hpp` includes `<ours/arch/aspace_layout.hpp>` and is owned by `//kernel/lib/heap:headers`, which has no edge to the architecture's headers, and neither architecture reports it. `cpp_interface()` sets `configs = []` (a header target must not inherit the binary configs), so `gn desc` of `//kernel/lib/heap:headers` on riscv lists no `kernel/arch/riscv/kernel/include` among its include directories while the source set `//kernel/lib/heap:heap` lists it; that is consistent with GN resolving an `<angle>` include through the including target's own include directories, so that from a header-only target it finds no file to check (not tested beyond this one header). Only `.cpp` files of ordinary targets are held to an edge. That is why the seven edges go on source sets and not on the `headers` targets next to them.
+
+`//kernel/lib/userabi` needs the edge spelled out even though it reaches the headers: GN's chain for it was `userabi --> //kernel/mm:mm --[private]--> //kernel/arch/x86/mm:mm --> //kernel/arch/x86/kernel:headers`, and a dependency reached through someone's private `deps` is not forwarded. That is the "Can't include this header from here" kind of error, where the other 21 were "Include not allowed". `//kernel/mm` now depends on the headers directly, and still privately, so `userabi` is still flagged without its own edge: with that one line removed, GN's chain became `userabi --> //kernel/mm:mm --[private]--> //kernel/arch/x86/kernel:headers` and the same `Can't include this header from here` error stayed (the line was put back).
+
+One more thing moved. `//kernel/kernel/irq` lost a second finding that is not about this header: `init.cpp:4`, `<arch/interrupt.hpp>`, owned by `//kernel/lib/arch:headers`. x86's headers target forwards `//kernel/arch/x86/lib/page_tables` publicly, which forwards libarch's headers, so the new edge satisfies it by forwarding, as the previous entry's six did. On riscv the headers target forwards nothing and that finding was not there to begin with.
+
+**Change**
+Before and after, for one of the seven (the others differ in the comment only):
+
+```gn
+# before
+    deps = [
+      "//kernel/arch/$ours_cpu:headers",
+      "//kernel/mm:headers",
+    ]
+# after
+    deps = [
+      "//kernel/arch/$ours_cpu:headers",
+
+      # user_copy.cpp includes <ours/arch/aspace_layout.hpp> for the user half
+      # of the address space.
+      "//kernel/arch/$ours_cpu/kernel:headers",
+      "//kernel/mm:headers",
+    ]
+```
+
+Each list otherwise keeps the order its file wrote; the new entry sits first in `commands`, `object`, `irq`, `userabi` and the benchmark (after `//benches/kernel:bench`), after `//kernel/arch/$ours_cpu/mm` in `mm`, and after `//kernel/arch/$ours_cpu:headers` in `user_copy`, where `//kernel/phys` puts it too.
+
+The includers and what they take, as GN reported them:
+
+| Target | Includers | Header |
+|---|---|---|
+| `//kernel/commands` | ten tests (`ioport_test`, `large_page_test`, `page_source_test`, `pager_test`, `user_copy_test`, `vma_phys_test`, `vma_seal_test`, `vma_undo_test`, `vma_wx_test`, `vmo_snapshot_test`) | `aspace_layout.hpp` |
+| `//kernel/commands` | `interrupt_line_test`, `irq_test`, `timer_share_test`, `ioport_test` | x86-private: `x86/apic.hpp` (three), `x86/io_bitmap.hpp`, `x86/percpu.hpp` (x86 only) |
+| `//kernel/object` | `handle.cpp`, `process_dispatcher.cpp` | `aspace_layout.hpp` |
+| `//kernel/object` | `thread_dispatcher.cpp` | `entry.hpp` (x86 only: riscv's list has no `entry.hpp`) |
+| `//kernel/mm` | `vmm.cpp`, `init_vmm.cpp`, `vm_aspace.cpp`, `cpu_local.cpp` | `aspace_layout.hpp` (riscv only) |
+| `//kernel/lib/user_copy`, `//kernel/kernel/irq`, `//kernel/lib/userabi`, `//benches/kernel/mm:large-page-bench` | `user_copy.cpp`, `init.cpp`, `userboot.cpp`, `large_page_bench.cpp` | `aspace_layout.hpp` |
+
+`kernel/mm/BUILD.gn` needed more than one line to be committable. `scripts/format_gn.py --check` called it `unsafe: the result differs from the source by more than layout` at HEAD already, because `gn format` reorders imports and rewrites `"tests:tests"` to `"tests"`, and the tool refuses to format a file where that is not just layout; the pre-commit hook then reports it as not in gn's layout and fails the commit of anything that touches it. I made the two edits by hand (they are the labels' same meaning) and let the formatter do the rest, which is all layout.
+
+Rejected:
+- Naming `//kernel/arch/x86/kernel:headers` in a generic target: x86-only, and riscv's graph would not even have the label.
+- Having `//kernel/mm:headers` or `//kernel/object:headers` forward the architecture's headers publicly, so that every dependent gets them: it hides which file needs the header and widens every dependent of two widely used targets for the benefit of the checker.
+- `// nogncheck` on the includes: it silences the checker, which is the opposite of what the listing was for.
+- Splitting each architecture's headers target into the per-arch set and the architecture's private headers, so that a generic edge could not cover private ones: it keeps the five x86-private includes visible and may be the right shape, but it is a design change to a target the user has just approved the shape of, so it is left as a question (see Deliberately not done).
+
+**Reference**
+None, this project's own graph. The header listing and the "findable versus owned" split are the previous entries'; Zircon's `zircon/kernel/arch/x86/BUILD.gn` declares `library_headers("headers")` with `headers = []` and so has no edge for the checker to ask for. The in-tree precedent for the spelling is `kernel/phys/BUILD.gn` (`//kernel/arch/$ours_cpu/kernel:headers`, with the comment "kernel-boot.hpp reaches the kernel's address-space layout constants") and `kernel/lib/ccrt/BUILD.gn` (`//kernel/arch/$ours_cpu:headers`).
+
+**Verification**
+- `gn check out/bringup.x86` and `gn check out/bringup.riscv`: `Header dependency check OK`, before and after.
+- `gn check --check-system --error-limit=1000000`, parsed into distinct (file, line, include) pairs as in the previous entries (GN prints each finding once for each of the two kernel variants, `kernel_x86.dbg.0` and `.dbg.1`). x86: 123 error lines and 60 pairs before, 77 and 37 after; 23 pairs gone, none new, none changed. riscv: 85 lines and 41 pairs before, 47 and 22 after; 19 gone, none new.
+- The 23 gone on x86, by includer: `//kernel/commands` 15, `//kernel/object` 3, `//kernel/kernel/irq` 2, one each in `user_copy`, `userabi` and `large-page-bench`. By owner: 22 owned by `//kernel/arch/x86/kernel:headers` (seventeen generic, five x86-private) and the one forwarded libarch finding above. The 19 on riscv: `//kernel/commands` 10, `//kernel/mm` 4, `//kernel/object` 2, one each in `user_copy`, `irq` and `large-page-bench`; `userabi` is not in riscv's graph (`KERNEL_NO_USERABI`).
+- What is left, all of it owned by something else: x86 37 pairs (`//system/lib/logz4:headers` 16, `//kernel/lib/arch:headers` 9, `//kernel/platform:headers` 6, `//system/public:public` 5, `//kernel/arch/x86:headers` 1), riscv 22 (logz4 16, `//system/public:public` 5, platform 1). Owned by an architecture's `kernel:headers`: none, on either. `--check-system` is still not a gate.
+- riscv has the target: `//kernel/arch/riscv/kernel:headers` lists `aspace_layout.hpp`, its whole include root. arm has the label too, `cpp_interface("headers")` with `public = []` in `kernel/arch/arm/kernel/BUILD.gn`, so `$ours_cpu` resolves for it; arm does not build and was not generated.
+- x86 build, from the `.ninja` files after `gn gen` (711 of them, compared with copies taken before): 20 differ, which is ten targets in each of the two variants. In every one the order-only `linkdeps` edge changes: seven targets gain two to four phony dependencies (the headers target and page_tables, with what they forward), and `//kernel/mm`, `//kernel/lib/syscall` and `//kernel/lib/userabi` list the same ones in a different order. Order-only dependencies decide when ninja may start a step, not what the step runs. In two targets, `//kernel/commands` and `//kernel/kernel/irq`, the `include_dirs` line is also a reordering of the same set of flags: `-Igen/system/public/public` moves ahead of one other directory (`kernel/lib/heap/include` and `kernel/lib/sampler/include`), the position the new edge's forwarded configs give it. That is more than "order-only", so it was checked: the two directories share no relative path with the generated one, so no include can resolve differently; 82 of the 752 compile entries differ, all of them those two targets' sources, and in each only the order of the words; and the 82 objects of those two targets (both variants) are byte-identical to the copies taken before the rebuild.
+- riscv: all 707 `.ninja` files are byte-identical, and `compile_commands.json` has the same 638 entries as a set. Its headers target forwards nothing, so the edge adds nothing to any command or order-only list.
+- The dbg `vmours` (`kernel_x86.dbg.1`) and `vmours.with-tests` (`kernel_x86.dbg.0`) hash the same before and after (`llvm-objcopy --dump-section`, sha256 prefix): `.text` `8c224710bf1e37dd` and `a4537ef1107cff4a`, `.rodata` `339ce0defeee43f2` and `beafba3cbeccc3a6`, `.data` `6b949fe14e37ba92` and `68d80ba4bacc5723`, the values the previous entries record.
+- riscv probe, `ninja -k 0 kernel_riscv.dbg.1/obj/kernel/products/bin/vmours` in a build directory configured for riscv: 125 failing compiles before and 125 after, the same 125 object names (sorted lists compared). The four x86-private tests of `//kernel/commands` are among them, as before.
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.7s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.7s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+- `format_gn.py --check` reports all seven files already formatted, the lists in the order written.
+
+**Deliberately not done**
+- The four tests that include x86's private headers are not moved or edited (item R25), and nothing replaces the visibility the edge took from them. Where they belong is the user's call: `kernel/arch/x86/commands` (CLAUDE.md's rule for a command that only makes sense on one architecture) is the obvious home, and moving them would put the edge back to being only about generic includes. A path-based check in `ours-verify` (nothing outside `kernel/arch/x86` and `kernel/platform/pc` includes `<ours/arch/x86/...>`) would not depend on which target owns what, and would catch the next one at once; it is not written.
+- `kernel/kernel/irq/init.cpp` includes `<ours/arch/aspace_layout.hpp>` and uses nothing from it. The edge records the include as written; deleting an include is a source edit and is left alone.
+- No edge on any `headers` target next to these source sets, for the reason in Cause: GN does not read their includes.
+- `--check-system` is not made a gate: 37 pairs remain on x86 and 22 on riscv, all owned by other targets.
+- The other generic includers of the per-arch set are not touched because they need nothing: `//kernel/phys` and the architectures' own `phys` and `mm` targets already depend on the label, and no other `.cpp` outside `kernel/arch/<cpu>/` includes one of `aspace_layout`, `cpu_local`, `entry`, `idle_thread`, `thread` or `vm_aspace` (`git grep` over the tree, then each hit's owning target checked against the list).
+- arm was not generated or built.
+
+**How it was found**
+`gn check --check-system --error-limit=1000000` on `out/bringup.x86` and `out/bringup.riscv` before any edit, parsed into (file, line, include, includer target, owner) with a small script, then grouped by includer target. The x86 grouping gave the six targets the brief expected; the riscv one gave the seventh, `//kernel/mm`. A `git grep` of every include of the six per-arch headers (23 `.cpp` files outside the architectures' own directories: the 21 in the seven targets above and two in `//kernel/phys`, which already depends on the label) confirmed nothing else needed an edge. The comparison before and after was `gn gen` into the same build directories, with the `.ninja` files and `compile_commands.json` copied out first. The reordered `-I` was found by classifying each differing line of each differing `.ninja` file as `linkdeps`, `include_dirs` or other, rather than by diffing whole files; the objects were compared with `cmp`.
+
+**The user's prediction**
+None was written. The brief expected the five x86-private includes in `kernel/commands` to stay flagged, and they did not: `gn check` is per target (see Cause), so they went with the seventeen generic ones, 22 findings in all. The brief also expected six targets and the diff of the `.ninja` files to be order-only deps; the result is seven targets and, in two of them, a one-flag reorder of `-I` that changes no object.
+
+**Three questions you should be able to answer**
+- `//kernel/commands` includes `<ours/arch/x86/apic.hpp>` and the check says nothing after the edge. What is `gn check` actually asking, why does that make a private header pass, and what would bring the finding back without moving the test?
+- `//kernel/mm` passed the check on x86 with no edge of its own and failed it on riscv. What on x86 supplied the edge, why does `//kernel/lib/userabi` not get it from `//kernel/mm`, and what does it say about a check that passes on only one architecture?
+- A `-I` flag moved in two targets' command lines and not one object changed. When would a reordered include path change what a file compiles to, and which two facts here ruled it out?

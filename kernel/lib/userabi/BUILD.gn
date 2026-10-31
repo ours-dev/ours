@@ -1,4 +1,5 @@
 import("//build/cpp/cpp_interface.gni")
+import("//build/ours/cpu.gni")
 
 # The user-space ABI bring-up library: constructs the first user process
 # (userboot) from the kernel side. Everything past ProcessDispatcher::create
@@ -31,7 +32,13 @@ source_set("userabi") {
   # binds it to the vDSO: this library picks the program and builds the
   # process around it, and hands the ELF itself to the components whose only
   # job that is.
+  #
+  # userboot.cpp includes <ours/arch/aspace_layout.hpp> for the user stack's
+  # address. The architecture's headers are named outright: //kernel/mm
+  # depends on them privately, and GN does not pass a private dependency on to
+  # whoever depends on //kernel/mm.
   deps = [
+    "//kernel/arch/$ours_cpu/kernel:headers",
     "//system/lib/bootfs",
     "//system/lib/elfload",
     "//kernel/lib/kelfload",

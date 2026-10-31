@@ -1,4 +1,5 @@
 import("//build/cpp/cpp_interface.gni")
+import("//build/ours/cpu.gni")
 
 if (toolchain_environment == "kernel") {
   source_set("object") {
@@ -33,6 +34,10 @@ if (toolchain_environment == "kernel") {
     # asks it which line an ISA IRQ arrives on (<ours/platform/isa.hpp>);
     # SamplerDispatcher owns a sampler::Session and calls into it.
     deps = [
+      # handle.cpp and process_dispatcher.cpp include
+      # <ours/arch/aspace_layout.hpp> for the user address range, and
+      # thread_dispatcher.cpp <ours/arch/entry.hpp>.
+      "//kernel/arch/$ours_cpu/kernel:headers",
       "//kernel/lib/sampler",
       "//kernel/platform:headers",
     ]

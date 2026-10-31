@@ -1,3 +1,5 @@
+import("//build/ours/cpu.gni")
+
 # This file is read in two toolchains: the host one for vma-walk-bench, and
 # the kernel's for largepage.bench, which //kernel/top links. Each target is
 # defined only in its own, since the kernel toolchain already carries
@@ -25,6 +27,10 @@ if (!is_kernel) {
     sources = [ "large_page_bench.cpp" ]
     deps = [
       "//benches/kernel:bench",
+
+      # large_page_bench.cpp includes <ours/arch/aspace_layout.hpp> for the
+      # user address range.
+      "//kernel/arch/$ours_cpu/kernel:headers",
       "//kernel/lib/gktl",
       "//kernel/lib/user_copy",
       "//kernel/mm:headers",

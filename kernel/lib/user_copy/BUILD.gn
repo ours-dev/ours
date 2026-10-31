@@ -13,6 +13,10 @@ if (toolchain_environment == "kernel") {
     public_deps = [ ":headers" ]
     deps = [
       "//kernel/arch/$ours_cpu:headers",
+
+      # user_copy.cpp includes <ours/arch/aspace_layout.hpp> for the user half
+      # of the address space.
+      "//kernel/arch/$ours_cpu/kernel:headers",
       "//kernel/mm:headers",
     ]
     visibility = [ "*" ]

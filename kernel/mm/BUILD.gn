@@ -1,7 +1,7 @@
 import("//build/cpp/cpp_interface.gni")
 import("//build/ours/cpu.gni")
-import("//kernel/kernel_params.gni")
 import("//build/toolchain/toolchain_environment.gni")
+import("//kernel/kernel_params.gni")
 
 if (toolchain_environment == "kernel") {
   source_set("mm") {
@@ -15,7 +15,7 @@ if (toolchain_environment == "kernel") {
       "object_cache.cpp",
       "page_queues.cpp",
       "page_table_deposits.cpp",
-        "page_request.cpp",
+      "page_request.cpp",
       "pm_frame.cpp",
       "pm_node.cpp",
       "pm_node_init.cpp",
@@ -36,6 +36,7 @@ if (toolchain_environment == "kernel") {
       "vm_page_splice_list.cpp",
       "vmm.cpp",
     ]
+
     # The two memory models are mutually exclusive: exactly one is compiled, and
     # `MemMap` names whichever it is. Selecting here rather than with an
     # #if inside the sources keeps the unselected one from having to compile at
@@ -50,6 +51,13 @@ if (toolchain_environment == "kernel") {
       # ours/task/thread.hpp holds a sampler::StackSampleRequest.
       "//kernel/lib/sampler:request",
       "//kernel/arch/$ours_cpu/mm",
+
+      # vmm.cpp, init_vmm.cpp, vm_aspace.cpp and cpu_local.cpp include
+      # <ours/arch/aspace_layout.hpp>. On x86 //kernel/arch/x86/mm already
+      # depends on these headers, which is why the include check passed there;
+      # riscv's does not.
+      "//kernel/arch/$ours_cpu/kernel:headers",
+
       # VmObjectPaged::read_user()/write_user() copy between a VMO page and a
       # user buffer directly, with the fault-capturing copies, and no bounce
       # page in between.
@@ -77,6 +85,7 @@ cpp_interface("headers") {
   public_deps = [
     "//kernel/phys:handoff",
     "//kernel/lib/gktl:headers",
+
     # Every mm source that says `new (gaf)` needs <heap/new.hpp>; heap takes
     # only mm's include-path config back, so this stays a DAG.
     "//kernel/lib/heap:headers",
@@ -90,5 +99,5 @@ cpp_interface("headers") {
 
 group("tests") {
   testonly = true
-  public_deps = [ "tests:tests" ]
+  public_deps = [ "tests" ]
 }
