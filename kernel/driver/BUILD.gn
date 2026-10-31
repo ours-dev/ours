@@ -19,6 +19,10 @@ source_set("driver") {
   sources = [ "clock/i8253.cpp" ]
   public_deps = [ ":headers" ]
   deps = [
+    # <arch/x86/io.hpp> (clock/i8253.cpp): the i8253 is a PC device, and the
+    # one target that links this one is x86's kernel target, so no other
+    # architecture is ever asked for x86's port I/O.
+    "//kernel/arch/x86:headers",
     "//kernel/lib/gktl:headers",
     "//system/lib/logz4:headers",
     "//system/lib/lockdep",

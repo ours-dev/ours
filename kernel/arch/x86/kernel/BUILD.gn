@@ -48,6 +48,13 @@ source_set("kernel") {
     "//system/lib/logz4:headers",
     "//kernel/lib/mtl:headers",
     "//kernel/mm:headers",
+
+    # <ours/platform/init.hpp> (bootstrap.cpp, faults.cpp),
+    # <ours/platform/interrupt.hpp> (faults.cpp) and <ours/platform/isa.hpp>
+    # (time/hpet.cpp, time/time.cpp): the seam x86's kernel code calls the
+    # board through. Before this edge only private ones reached it, such as
+    # the commands below, and GN does not read an include through those.
+    "//kernel/platform:headers",
   ]
 
   # The console commands that only make sense on x86, linked when the kernel

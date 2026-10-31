@@ -278,3 +278,73 @@ None.
 1. What is the difference between `Include not allowed` and `Can't include this header from here`, and which one means a path to the header exists?
 2. Why is it better for `object` to depend on logz4's headers itself than for the sampler to pass them on?
 3. How could the check have passed for `object` with no edge of its own, and what would have made it stop?
+
+## Title: x86's kernel target lists //kernel/platform:headers and the i8253 driver lists //kernel/arch/x86:headers, the last two families of the include-what-you-use sweep (2026-10-31)
+
+**Files**
+- `kernel/arch/x86/kernel/BUILD.gn` — `source_set("kernel")` gains `//kernel/platform:headers` at the end of its `deps` (`bootstrap.cpp` and `faults.cpp` include `<ours/platform/init.hpp>`, `faults.cpp` `<ours/platform/interrupt.hpp>`, `time/hpet.cpp` and `time/time.cpp` `<ours/platform/isa.hpp>`).
+- `kernel/driver/BUILD.gn` — `source_set("driver")` gains `//kernel/arch/x86:headers` (`clock/i8253.cpp` includes `<arch/x86/io.hpp>`), with a comment that the one target that links the driver is x86's kernel target.
+- `docs/changes/261031/build-deps.md` — this entry.
+
+**Symptom**
+Latent, cannot be triggered today. `gn check out/bringup.x86 --check-system` reported six pairs against these two targets: five `Can't include this header from here` for x86's kernel target (the chain it printed was `//kernel/arch/x86/kernel:kernel --> //kernel/arch/x86/commands:commands --[private]--> //kernel/platform:headers`) and one `Include not allowed` for `//kernel/driver:driver`. After this change x86 has 7 pairs less 6, one left (`kmalloc.cpp:8`, repair item 1), and riscv, whose graph holds neither target, is unchanged at 1.
+
+Over the whole sweep (this file, five entries): x86 37 pairs at HEAD `c5ba24d8` and 1 now, riscv 22 and 1; 36 and 21 gone, none new.
+
+**Cause**
+For x86's kernel target: it includes the platform seam in four files and had no edge for it. The only way GN found to the seam was through `//kernel/arch/x86/commands`, which is a private edge and so not one an include may use. That edge exists for the console tests, not for these files, so removing the shell (`kernel_shell_enabled = false` leaves the commands out of the link) takes away the path that happened to exist. Measured, on a throwaway shell-less configuration with the edge taken out again: the same five pairs read `Include not allowed`, no chain of any kind. The include is x86's own: its code calls the board through `ours/platform/`, the seam `kernel/platform` publishes for a generic caller to reach a board without naming it.
+
+For the driver: `clock/i8253.cpp` reads and writes the PIT's ports through `<arch/x86/io.hpp>`. It is generic in name only: nothing but x86's kernel target links `//kernel/driver` (`git grep` of the build files finds `kernel/arch/x86/kernel/BUILD.gn` and nothing else), so the architecture-private include is only ever compiled for x86 and an edge to `//kernel/arch/x86:headers` names x86 in a directory without the architecture in its path where no other architecture builds it. The edge is not what makes the file x86-only; the link is. That is the same rule as for `kernel/arch/x86/commands` (`layering.md`: a feature one architecture has is kept out of the others by what GN links), and the comment in the list says so, so that a second architecture that links `//kernel/driver` finds a reason and not a mystery.
+
+**Change**
+```gn
+# kernel/arch/x86/kernel/BUILD.gn, source_set("kernel")
+     "//kernel/lib/mtl:headers",
+     "//kernel/mm:headers",
++
++    # <ours/platform/init.hpp> (bootstrap.cpp, faults.cpp),
++    # <ours/platform/interrupt.hpp> (faults.cpp) and <ours/platform/isa.hpp>
++    # (time/hpet.cpp, time/time.cpp): the seam x86's kernel code calls the
++    # board through. Before this edge only private ones reached it, such as
++    # the commands below, and GN does not read an include through those.
++    "//kernel/platform:headers",
+   ]
+
+# kernel/driver/BUILD.gn, source_set("driver")
+   deps = [
++    # <arch/x86/io.hpp> (clock/i8253.cpp): the i8253 is a PC device, and the
++    # one target that links this one is x86's kernel target, so no other
++    # architecture is ever asked for x86's port I/O.
++    "//kernel/arch/x86:headers",
+     "//kernel/lib/gktl:headers",
+```
+
+Rejected:
+- `//kernel/arch/$ours_cpu:headers` for the driver: it would resolve to `//kernel/arch/riscv:headers` on riscv, which has no `arch/x86/io.hpp`, and say that the file is architecture-neutral when it is not.
+- Moving `clock/i8253.cpp` under `kernel/arch/x86` or `kernel/platform/pc`: whether a PC device's driver belongs in `kernel/driver` is a placement question (`layering.md`, "Architecture, platform and drivers"), not one a dependency sweep answers; it is not done here.
+
+**Reference**
+None, this project's own build graph.
+
+**Verification**
+- `gn check` plain: OK on both build directories, and on a throwaway shell-less configuration (`tools/set.py bringup.x86 --args kernel_shell_enabled=false`, configured and checked only, not built, and removed): plain OK, `--check-system` 1 pair, `kmalloc.cpp:8`. `--check-system` distinct pairs, sets compared: x86 7 to 1 (2 lines), riscv 1 to 1 (2 lines); six gone on x86, none new.
+- Generated files against the snapshot after the previous commit: six `.ninja` files differ on x86 and none on riscv. `kernel.ninja` in both kernel variants and the two `vmours` link-step files: one `linkdeps` token (`phony/kernel/platform/headers.linkdeps`) changes place in a line; `driver.ninja` in both variants: its `linkdeps` line gains `phony/kernel/arch/x86/headers.linkdeps` and `phony/kernel/lib/arch/headers.linkdeps`, the latter through the x86 headers' own public deps. `compile_commands.json` unchanged as a set (752 commands on x86, 630 on riscv).
+- x86 `kernel.dev.obi` `8b3b314bc01688bb`, `kernel.dev.dbg_1.obi` `81aa5ccf6aa6e6a5` and `fake.obi` `c9f47b86e7163e12` byte-identical before and after, and the dbg `vmours` sections too (`.text` `6250b0ceb2af19c1`, `.rodata` `249063baa8a2be5c`, `.data` `e88a26c4c147e9ca`; `vmours.with-tests` `.text` `c305fc60badab6fb`). riscv `fake.obi` `5636a21138f1b7a1` and `bootshim.bin` `f6be1306ccb3df88` byte-identical.
+- riscv probe: 121 failing compiles before and after, the same objects.
+- x86 `boot_check.py`: dbg PASS shell finished at 6.0s · 44 passed, 4 skipped, 0 failed; rel PASS shell finished at 4.9s · 41 passed, 8 skipped, 0 failed · 6/6 required; host-tests PASS 153 passed, 0 failed; headers PASS 8 targets, 106 headers. riscv `boot_check.py --out out/bringup.riscv`: PASS handoff ok at 0.1s; headers PASS 8 targets, 81 headers.
+
+**Deliberately not done**
+- The placement of the i8253 driver, see Rejected.
+- Anything for the one pair left on both architectures, `kmalloc.cpp:8`: the include is wrong, repair item 1.
+- Edges where GN is already satisfied through a public chain. Entry three found one (riscv's `<arch/...>` reached through four hops); how many such includes remain is a measurement the next entry's repair item records, not a part of this commit.
+
+**How it was found**
+The parse of `gn check --check-system` as in the first entry; the one-line `git grep -n "kernel/driver" -- '*.gn' '*.gni'` showed who links the driver.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why did x86's kernel target get `Can't include this header from here` for the platform seam in the default build, and `Include not allowed` in a shell-less one, with no edge of its own?
+2. Why does the driver's edge name x86 although `kernel/driver` is a generic directory, and what is it that keeps the file out of riscv's build?
+3. Why is `//kernel/arch/$ours_cpu:headers` the wrong edge for `i8253.cpp`, when it is the right one for the memory tests?
