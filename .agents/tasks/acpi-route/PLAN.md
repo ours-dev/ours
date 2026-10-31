@@ -5,7 +5,7 @@
 
 ## Request
 
-The user approved on 2026-10-31 a first slice of the ACPI route service that needs no AML interpreter: it answers which GSI an ISA interrupt arrives on and where a PCI segment's configuration space is, from the tables the kernel hands user space as the read-only VMO `ours.boot.Acpi`. The logic of the two answers is done (`system/service/acpi-route`, `docs/changes/261031/acpi-route.md`). This plan is the program that serves them. Scope ends at a program that `routing_checks` can ask. Moving pc-ps2 onto it (done, `docs/changes/261031/pc-ps2.md`), and then removing `Isa` and `kind` from `interrupt_map` (`docs/repairs/261031/syscall.md`), are the steps after. The AML interpreter and the questions only AML answers (`_PRT`, `_CRS`) are not here; the interpreter needs the user's approval. Design context: `.agents/tasks/driver-manager/DESIGN.md`, the route service.
+The user approved on 2026-10-31 a first slice of the ACPI route service that needs no AML interpreter: it answers which GSI an ISA interrupt arrives on and where a PCI segment's configuration space is, from the tables the kernel hands user space as the read-only VMO `ours.boot.Acpi`. The logic of the two answers is done (`system/service/acpi-route`, `docs/changes/261031/acpi-route.md`). This plan is the program that serves them. Scope ends at a program that `routing_checks` can ask. Moving pc-ps2 onto it (done, `docs/changes/261031/pc-ps2.md`), and then removing `Isa` and `kind` from `interrupt_map` (done, `docs/changes/261031/syscall.md`), are the steps after. The AML interpreter and the questions only AML answers (`_PRT`, `_CRS`) are not here; the interpreter needs the user's approval. Design context: `.agents/tasks/driver-manager/DESIGN.md`, the route service.
 
 ## Decisions
 

@@ -16,6 +16,7 @@ A component touches only what it is routed. The driver's manifest uses these pro
 | `ours.resource.Iommu` | the System IOMMU resource | R3: `iommu_create` |
 | `ours.resource.Irq` | the root of the interrupt lines | R4: `interrupt_map`, `interrupt_create` |
 | `ours.resource.Ioport` | the root of the I/O ports | only for a legacy virtio, whose BAR 0 is I/O ports |
+| `ours.acpi.Route` | which GSI an ISA IRQ arrives on, and where a PCI segment's ECAM window is, from the firmware's tables | R4 for a legacy (ISA) device only; a PCI function's GSI is not answered yet (see "Where the GSI comes from") |
 
 In code: `ours_resource::get(ours_resource::MMIO_PROTOCOL)` and the like (`//system/lib/ours.resource:client`; `system/driver/pc-ps2/pc_ps2.cpp` is a complete example). Each is a duplicate of the root, so the grant is all or nothing: a driver that holds `Mmio` may map any device, not only its own (`docs/repairs/261030/kernel-object.md`, item 2).
 
@@ -64,15 +65,14 @@ The calls, in order:
 ```text
 (config space)  interrupt pin = byte at offset 0x3D, 1 = A ... 4 = D;   slot = the device number
 gsi = 20 + ((slot + pin) & 3)             for a function on bus 0, slot 0 to 24, pin A = 0   (see "Where the GSI comes from")
-interrupt_map(irq_root, InterruptSourceKind::Gsi, gsi, &line)
+interrupt_map(irq_root, gsi, &line)                                                 the platform's number for the pin: a GSI
 interrupt_create(irq_root, line, InterruptOptions::ModeLevelLow, &interrupt)       PCI INTx is level, active low
 port_create(...) + interrupt_bind(interrupt, port, key, Bind) + port_wait(...)     or interrupt_wait(interrupt, &timestamp)
   ... read the device's ISR (clears the cause) ...
 interrupt_ack(interrupt)
 ```
 
-- `interrupt_map` kinds: `Gsi` (the firmware's number for a pin) and `Isa` (0 to 15; the cascade, ISA 2, has no line). `NoResource` for a source with no line; `InvArgs` for an unknown kind or `0xFFFFFFFF`; `AccessDenied` unless the resource is the interrupt root. Nothing is taken until `interrupt_create`.
-- `interrupt_map` is going to lose its `kind` argument (interrupt-system D11): with P2's route service, `Isa` goes and the call becomes `interrupt_map(irq_root, gsi, &line)`. A driver that passes `Gsi` then changes one argument.
+- `interrupt_map(resource, source, out)`: `source` is the platform's own number for the pin, which is a GSI on this (ACPI) platform. There is no `kind` and no ISA number (interrupt-system D11): a legacy device's ISA IRQ is turned into a GSI by whoever reads the firmware's tables, the ACPI route service `ours.acpi.Route` (`ours_acpi::isa_irq(n)`, which gives the GSI with its trigger and polarity; pc-ps2 is the example), and the GSI is what the kernel is given. `NoResource` for a source with no line; `InvArgs` for `0xFFFFFFFF`; `BadHandle`, `BadType`, or `AccessDenied` unless the resource is the interrupt root. Nothing is taken until `interrupt_create`.
 - `interrupt_create` answers `AlreadyBound` if anything holds the line; the kernel's own lines (the timer) are held for good. The line is unmasked once the object has it, and masked again when the object is destroyed or its last handle closed: a driver that dies hands the line back, masked.
 - Bound to a port, an interrupt sends one packet, and interrupts before the ack fold into the next packet, which the ack sends.
 - The interrupt is delivered to the boot CPU, on a fixed vector. There is no MSI or MSI-X yet (P3).

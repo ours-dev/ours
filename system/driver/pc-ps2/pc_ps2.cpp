@@ -156,8 +156,7 @@ auto take_line(Uandle const irq, u32 const gsi) -> ustl::Result<Uandle, Status> 
     // The line is named by the kernel's number for it, and the platform's own
     // number for the pin, the GSI, is what interrupt_map turns into it.
     auto number = u32{0};
-    if (auto const status = ours::interrupt_map(irq, ours::InterruptSourceKind::Gsi, gsi, &number);
-        status != Status::Ok) {
+    if (auto const status = ours::interrupt_map(irq, gsi, &number); status != Status::Ok) {
         report("interrupt_map(the keyboard's GSI)", status);
         return ustl::err(status);
     }

@@ -163,19 +163,18 @@ classDiagram
 ### The call that turns hardware into a virq
 
 ```text
-interrupt_map(resource, kind, hwirq, out virq) -> Status
+interrupt_map(resource, source, out virq) -> Status
     resource  an Irq resource that is the root (decision D4)
-    kind      InterruptSourceKind: Isa, Gsi; later Msi; other architectures add their own
-    hwirq     the number in that kind's space
+    source    the platform's own number for the line: a GSI on an ACPI platform (decision D11)
     out virq  the kernel's number for it
-    BadHandle, BadType, AccessDenied (not the root), InvArgs (unknown kind), NoResource (no such source)
+    BadHandle, BadType, AccessDenied (not the root), InvArgs (0xFFFFFFFF), NoResource (no such source)
 ```
 
 - The mapping is made at boot for every pin the platform programs, and `interrupt_map` looks it up. A source that does not exist is `NoResource`, as `interrupt_create` already answers for a line that does not exist.
-- `Isa` translates through the MADT's overrides, which is what `RemapIrq` does today. `RemapIrq` stays through I3, now yielding a virq, and is retired in I4b once pc-ps2 and the tests use `interrupt_map` (D5).
+- An ISA number is not an argument. It was one (an `Isa` kind, which translated through the MADT's overrides as `RemapIrq` did) until the route service existed, because pc-ps2 knew its line only as ISA 1; the kind went with it (D11). Which pin a legacy device is on is for the route service to say (`ours.acpi.Route`), and `platform::isa_irq_line()` stays for the kernel's own code (the timer, the tests). `RemapIrq` was retired in I4b (D5).
 - `interrupt_create(resource, virq, options)` is unchanged except that `line` is a virq. The resource must cover that virq, so a resource narrowed in P2 limits a driver to its own interrupt.
 - Trigger mode and polarity stay in `interrupt_create`'s mode option (`ModeLevelLow` for PCI INTx), not in `interrupt_map`: they are how the line signals, and the driver or bus service already knows them.
-- **Target form (D11, 2026-10-31): no `kind`.** The call becomes `interrupt_map(resource, source, out virq)`, where `source` is the platform's own number for the line: a GSI on an ACPI platform, the root controller's number elsewhere. The kernel is built for one platform and a platform has one number space, so once `Isa` is gone `kind` selects nothing. The change waits for P2: pc-ps2 asks for ISA 1 because nothing in user space reads the MADT's overrides yet, so `Isa` and `kind` stay as described above until the route service exists (`docs/repairs/261031/syscall.md`). `platform::isa_irq_line()` stays, since the timer code and the tests use it.
+- **The form built (D11, 2026-10-31): no `kind`.** The call is `interrupt_map(resource, source, out virq)`, where `source` is the platform's own number for the line: a GSI on an ACPI platform, the root controller's number elsewhere. The kernel is built for one platform and a platform has one number space, so once `Isa` was gone `kind` selected nothing. It was kept until the route service existed (step 8 of P2), since pc-ps2 asked for ISA 1 and nothing in user space read the MADT's overrides; pc-ps2 now asks `ours.acpi.Route` for the keyboard's GSI, and `Isa` and `kind` are removed (`docs/changes/261031/syscall.md`). `platform::isa_irq_line()` stays, since the timer code and the tests use it.
 
 ### How a device gets its interrupt
 
@@ -190,7 +189,7 @@ sequenceDiagram
     I->>B: ours.resource.Irq (manifest offer)
     B->>B: enumerate PCI, evaluate ACPI _PRT for the device
     Note over B: result: GSI, trigger, polarity
-    B->>K: interrupt_map(irq root, Gsi, gsi)
+    B->>K: interrupt_map(irq root, gsi)
     K-->>B: virq
     B->>K: interrupt_create(irq resource, virq, ModeLevelLow)
     K-->>B: interrupt handle
@@ -293,12 +292,12 @@ A driver that dies closes its handle; the object is destroyed, the action leaves
 | D8. Vectors and MSI | (a) static `PlatformIrqMin + GSI` now, a bitmap and a syscall with P3; (b) dynamic now | (a) | None | (a) for now, 2026-10-31, the compromise; P3 is the expected plan |
 | D9. Where the P1 driver gets a PCI function's GSI | (a) QEMU q35's wiring rule, in the bus service; (b) evaluate the ACPI `_PRT` (a user-space AML interpreter, a third-party library); (c) try each pin until one fires | (a), checked once against a real interrupt in I5 | None | (a), 2026-10-31, as recommended. The check against a real interrupt was dropped with I5 (D10); the rule was checked against the firmware's `_PRT` instead |
 | D10. What I5, a device interrupt arriving, is in the tree | (a) a minimal virtio-blk driver in `routing_checks` reading block 0; (b) a config-change interrupt raised through the QEMU monitor; (c) none: hand the interfaces to the driver's author | (a) | None | (c), 2026-10-31, the user's choice over the recommendation: the hand-over is `.agents/tasks/driver-capabilities/RESULT.md`, and the virtio-blk driver is the first test of a device interrupt |
-| D11. The shape of `interrupt_map` for other platforms | (a) one number, no `kind`, once `Isa` goes; (b) a firmware-neutral specifier (controller and cells), translated in the kernel | (a) now, (b) when the first non-x86 platform arrives | None | (a), 2026-10-31, the user's choice: (b) is too complex for one platform. `Isa` and `kind` go together, with the route service of P2 (`docs/repairs/261031/syscall.md`) |
+| D11. The shape of `interrupt_map` for other platforms | (a) one number, no `kind`, once `Isa` goes; (b) a firmware-neutral specifier (controller and cells), translated in the kernel | (a) now, (b) when the first non-x86 platform arrives | None | (a), 2026-10-31, the user's choice: (b) is too complex for one platform. `Isa` and `kind` go together, with the route service of P2. **Done, 2026-10-31**: `interrupt_map(resource, source, out)` is the call, pc-ps2 takes the keyboard's GSI from `ours.acpi.Route`, and `routing_checks` no longer has the kernel's ISA translation to compare the service with (`docs/changes/261031/syscall.md`) |
 
 ## Testing and verification
 
 - P1 kernel: a kshell test that `interrupt_create` on each programmed pin (virq from the domain) succeeds, that a second one is `AlreadyBound`, that a pin past the vector range has no line, and that the domain's two directions are inverse. A mutation of the mapping must fail it.
-- P1 user: `routing_checks` asks `interrupt_map` for an ISA number, a GSI, an unknown kind (`InvArgs`), a source that does not exist (`NoResource`) and a narrowed resource (`AccessDenied` once P2 exists), then `interrupt_create` on the result.
+- P1 user: `routing_checks` asks `interrupt_map` for a GSI, `0xFFFFFFFF` (`InvArgs`), a source that does not exist (`NoResource`) and a narrowed resource (`AccessDenied` once P2 exists), then `interrupt_create` on the result. (It asked for an ISA number and an unknown kind too, until D11 removed them.)
 - P1 device: with `DISK=` set, a driver sees a virtio-blk, raises its interrupt, and receives it through `interrupt_wait`. Not verifiable in the images `boot_check` boots by default, which have no device.
 - Every phase: `ours-verify` on both images; clang-tidy and clang-format on changed lines.
 - Not verifiable here: real hardware, MSI before P3, other architectures.

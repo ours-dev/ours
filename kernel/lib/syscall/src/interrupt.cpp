@@ -11,7 +11,6 @@
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/resource_dispatcher.hpp>
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
-#include <ours/platform/isa.hpp>
 #include <ours/status.hpp>
 
 namespace ours::syscall {
@@ -73,21 +72,18 @@ auto interrupt_create(ours::Uandle const resource, u32 const line, InterruptOpti
     return Status::Ok;
 }
 
-/// The number interrupt_create takes for a source the firmware names. Nothing
-/// is taken, only looked up, so it changes no state and has nothing to give
-/// back; the only thing it can fail after is writing |out|.
+/// The number interrupt_create takes for the pin the platform's number
+/// |source| names (a GSI on an ACPI platform). Nothing is taken, only looked
+/// up, so it changes no state and has nothing to give back; the only thing it
+/// can fail after is writing |out|.
 ///
-/// The kind and the source are checked before the resource, as
-/// interrupt_create checks its options before it looks at the resource: each
-/// check names the argument it is about. The resource must be the root of the
-/// interrupt lines, not a range of them: the firmware's numbers are not the
-/// numbers a range is made of, so a narrowed resource cannot say which of
-/// them it covers.
-auto interrupt_map(ours::Uandle const resource, InterruptSourceKind const kind, u32 const source,
+/// The source is checked before the resource, as interrupt_create checks its
+/// options before it looks at the resource: each check names the argument it
+/// is about. The resource must be the root of the interrupt lines, not a range
+/// of them: the platform's numbers are not the numbers a range is made of, so
+/// a narrowed resource cannot say which of them it covers.
+auto interrupt_map(ours::Uandle const resource, u32 const source,
                    user_copy::UserOutPtr<u32> const out) -> Status {
-    if (kind != InterruptSourceKind::Isa && kind != InterruptSourceKind::Gsi) {
-        return Status::InvArgs;
-    }
     if (source == irq::INVALID_H_IRQ_NUM) {
         return Status::InvArgs;
     }
@@ -96,15 +92,7 @@ auto interrupt_map(ours::Uandle const resource, InterruptSourceKind const kind, 
         return status;
     }
 
-    auto virq = irq::INVALID_V_IRQ_NUM;
-    switch (kind) {
-        case InterruptSourceKind::Isa:
-            virq = platform::isa_irq_line(source);
-            break;
-        case InterruptSourceKind::Gsi:
-            virq = irq::virq_of_hwirq(source);
-            break;
-    }
+    auto const virq = irq::virq_of_hwirq(source);
     if (virq == irq::INVALID_V_IRQ_NUM) {
         return Status::NoResource;
     }
