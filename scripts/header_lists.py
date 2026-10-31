@@ -173,12 +173,16 @@ def files_under(root: Path, gn_dir: str) -> set[str]:
 
 def compare(root: Path, targets: dict, roots: dict[str, str]) -> Result:
     """Compare each root's files with the lists of the targets publishing it, in
-    each toolchain; the same problem seen in several toolchains is one."""
+    each toolchain. A file is one problem however many toolchains see it, and
+    however many targets publish its root in each: the publishers of the
+    toolchains are merged into the one finding."""
     shared: dict[tuple[str, str], list[str]] = defaultdict(list)  # (root, toolchain) -> labels
     for label, path in roots.items():
         shared[(path, targets[label]["toolchain"])].append(label)
 
-    problems: set[Problem] = set()
+    missing: dict[str, set[str]] = defaultdict(set)  # file -> who publishes a root it is unlisted in
+    missing_root: dict[str, str] = {}  # file -> the first root found it was missing from
+    stray: dict[tuple[str, str], str] = {}  # (entry, the target listing it) -> that target's root
     examined_roots, examined_targets, headers = set(), set(), set()
     for (path, _), labels in sorted(shared.items()):
         on_disk = files_under(root, path)
@@ -191,10 +195,15 @@ def compare(root: Path, targets: dict, roots: dict[str, str]) -> Result:
             public = set(targets[label]["public"])
             listed |= public
             for entry in public - on_disk:
-                problems.add(Problem("stray", entry, (without_toolchain(label),), path))
-        who = tuple(sorted({without_toolchain(label) for label in labels}))
+                stray.setdefault((entry, without_toolchain(label)), path)
+        who = {without_toolchain(label) for label in labels}
         for entry in under - listed:
-            problems.add(Problem("missing", entry, who, path))
+            missing[entry] |= who
+            missing_root.setdefault(entry, path)
+
+    problems = [Problem("stray", entry, (lister,), path) for (entry, lister), path in stray.items()]
+    problems += [Problem("missing", entry, tuple(sorted(who)), missing_root[entry])
+                 for entry, who in missing.items()]
     return Result(sorted(problems, key=lambda p: (p.kind != "missing", p.path, p.targets)),
                   len(examined_roots), len(examined_targets), len(headers), ())
 

@@ -173,3 +173,79 @@ None.
 - The check mixes a build directory and a checkout. Which fact in each came from `gn gen` time and which from the moment of the run, and what made 26 files "missing" when the script was run from another worktree?
 - `boot_check.py` never showed this. What did it do that the standalone command did not, and what does it still do wrong?
 - Why is "where this file is" a better answer than "where the shell is" for a script that lives inside the repository it works on, and when would the opposite be right?
+
+## Title: header_lists.py counts a missing header once per file, not once per different set of targets that publish its root across toolchains (2026-10-30)
+
+**Files**
+- `scripts/header_lists.py` — `compare()` collects `missing` by file (merging the publishers of every toolchain) and `stray` by (entry, listing target), then builds the `Problem`s; the docstring says so.
+- `scripts/test_header_lists.py` — one new test: a root published by two targets in one toolchain and one in another, with one header listed by none, is one problem naming both.
+- `docs/changes/261030/ours-verify.md` — this entry.
+
+**Symptom**
+The `N missing` in the summary line is not a count of files. `header_lists.py out/bringup.x86 --scope //kernel/phys:` printed `30 missing` for 15 files: `//kernel/phys/include/ours/phys/acpi.hpp` was listed twice, once as under the root of `//kernel/phys:boot-obi, //kernel/phys:handoff` and once as under the root of `//kernel/phys:boot-obi, //kernel/phys:handoff, //kernel/phys:headers`. `--all` printed 102 findings on the x86 directory and 103 on riscv for what `docs/repairs/261030/build-headers.md` and the first entry call 87 headers. The default scope (`//kernel/arch/`) was unaffected today, because each of its seven include roots has one publisher (7 targets, 7 roots), and one publisher is the same set in every toolchain; every removal probe in the first entry gave exactly `1 missing`.
+
+**Cause**
+`compare()` judges each include root once per toolchain, because a list may differ by `if (toolchain_environment == ...)`, and it kept its findings in a `set[Problem]` so that "the same problem seen in several toolchains is one". But `Problem` is a frozen dataclass whose identity is every field, and one field is `targets`: the labels that publish the root in that toolchain. Those are the same in every toolchain only when the same targets exist in all of them. `//kernel/phys:headers` is built in the phys toolchain alone (`gn desc` shows `:boot-obi` and `:handoff` in the kernel's two variants and the phys one, `:headers` in the phys one only), so in the phys toolchain the root has three publishers and in the kernel's two, and `acpi.hpp`, unlisted by all of them, produced two `Problem`s that compare unequal. The deduplication was real and was wrong about what "the same" means: the same file in the same state of being unlisted is one thing to fix, whoever happened to publish the root in the toolchain that saw it.
+
+That is also why the numbers in the first entry (87 distinct headers in 13 roots) were right and the line's count was not: the entry counted files, the tool counted (file, publisher set) pairs. A summary that disagrees with what a person counts erodes trust in the line, and the repair items quote counts as acceptance: item 2 says 17.
+
+**Change**
+Before, the findings were a set of whole `Problem`s:
+
+```python
+problems: set[Problem] = set()
+...
+            for entry in public - on_disk:
+                problems.add(Problem("stray", entry, (without_toolchain(label),), path))
+        who = tuple(sorted({without_toolchain(label) for label in labels}))
+        for entry in under - listed:
+            problems.add(Problem("missing", entry, who, path))
+```
+
+After, the key is the file, and what differs between toolchains is merged into the finding:
+
+```python
+    missing: dict[str, set[str]] = defaultdict(set)  # file -> who publishes a root it is unlisted in
+    missing_root: dict[str, str] = {}  # file -> the first root found it was missing from
+    stray: dict[tuple[str, str], str] = {}  # (entry, the target listing it) -> that target's root
+...
+            for entry in public - on_disk:
+                stray.setdefault((entry, without_toolchain(label)), path)
+...
+        for entry in under - listed:
+            missing[entry] |= who
+            missing_root.setdefault(entry, path)
+```
+
+A `missing` line now names the union of the publishers over the toolchains where the file was unlisted. A `stray` entry is still one per target that lists it (it is that target's entry that is wrong, and the fix is in that target's list), keyed without the root so that a list whose root differs by toolchain does not count it twice.
+
+A file under two nested roots is also one problem now (it was one per root); the first root found is kept for the line, which does not print it for `missing`.
+
+Rejected:
+- Dropping `targets` from `Problem`'s identity (`field(compare=False)`) and keeping the first publisher set: the line would name two of three publishers and say nothing of the third, which is where the file could be listed.
+- Counting distinct paths in `summary()` and keeping the duplicate lines: the lines would repeat a file and the first twenty shown would waste a place on each.
+
+**Reference**
+None, this project's own tooling.
+
+**Verification**
+- `python3 scripts/test_header_lists.py`: 23 tests pass. The new one fails against the previous `compare()`: two problems, one naming `:one` and one naming `:one, :two`.
+- `header_lists.py --scope //kernel/phys:`, x86 directory: 15 problems for 15 files (before: 30); `--scope //kernel/phys: --scope //kernel/phys/`: 17 for 17 (the repair file's item 2 figure); `--scope //kernel/mm:`: 46 for 46. The same numbers on the riscv directory.
+- `--all`: x86 86 missing and riscv 87 (before 102 and 103), 0 stray in both; the union of the two graphs is 87 distinct files, the figure the first entry and the repair file give.
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.7s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.6s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed; headers PASS 7 targets, 7 include roots, 75 headers under //kernel/arch/, every one listed · 1.5s.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi.
+
+**Deliberately not done**
+- The earlier entry's `--all` line (`102 findings` and `103 in 12.7 s`) is not edited: it is history and this entry says what the numbers were.
+- No change to what is a problem. A header listed in one toolchain's target and not in another's is still found, because the toolchains are still judged one at a time; only the counting changed.
+
+**How it was found**
+Reported by an independent review. It ran `--scope //kernel/phys:` and got `30 missing` for a directory of 15 files, found `acpi.hpp` twice in the output, and read the two `targets` tuples. Here the old file was run from a scratch directory, `gn desc //*` was read for the `//kernel/phys:` targets per toolchain, and the duplicate paths were counted.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did a `set` of findings not remove the duplicate, and which field of the finding was making equal things unequal?
+- `//kernel/phys:headers` exists in one toolchain and its two siblings in three. Why can the default `//kernel/arch/` scope not show this bug (count its targets and its roots), and what would make it show up there?
+- The summary line is a number people quote as an acceptance criterion. Why is a count that disagrees with a hand count worse than a wrong message under it?

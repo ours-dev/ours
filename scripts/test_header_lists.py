@@ -123,6 +123,24 @@ class Check(Tree):
         self.assertEqual(len(result.problems), 1)
         self.assertEqual((result.targets, result.roots), (1, 1))
 
+    def test_a_file_is_one_problem_when_the_publishers_of_its_root_differ_by_toolchain(self):
+        # Two targets publish the root in the kernel toolchain and one in the
+        # host's (phys's three header targets are like this): new.hpp is listed
+        # by none, in either, and is one file.
+        self.touch("kernel/arch/x86/include/a.hpp", "kernel/arch/x86/include/new.hpp")
+        listed = ["//kernel/arch/x86/include/a.hpp"]
+        targets = {}
+        targets.update(interface(f"//kernel/arch/x86:one({KERNEL})", listed))
+        targets.update(interface(f"//kernel/arch/x86:two({KERNEL})", listed))
+        targets.update(interface(f"//kernel/arch/x86:one({HOST})", listed, toolchain=HOST))
+        roots = {"//kernel/arch/x86:one.config": ["//kernel/arch/x86/include/"],
+                 "//kernel/arch/x86:two.config": ["//kernel/arch/x86/include/"]}
+        result = self.run_check(targets, roots)
+        self.assertEqual([(p.kind, p.path, p.targets) for p in result.problems],
+                         [("missing", "//kernel/arch/x86/include/new.hpp",
+                           ("//kernel/arch/x86:one", "//kernel/arch/x86:two"))])
+        self.assertTrue(header_lists.summary(result).startswith("1 missing, 0 stray among "))
+
     def test_a_problem_in_only_one_toolchain_is_still_found(self):
         self.touch("kernel/arch/x86/include/a.hpp", "kernel/arch/x86/include/b.hpp")
         targets = {}
