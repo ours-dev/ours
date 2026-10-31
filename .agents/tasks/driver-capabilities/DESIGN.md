@@ -26,7 +26,7 @@ Non-goals:
 
 - No IOMMU, no scatter-gather object (a Bus Transaction Initiator), no MSI or MSI-X.
 - No ACPI or AML in the kernel, and no ACPI component yet (see Alternatives).
-- No resource narrowing syscall, and no uncached mapping attribute unless the user decides to take it now (it is one flag where `VmaDispatcher::map()` handles a physical VMO; step 3's review found that the first draft of this document wrongly called it missing from the page tables). Both are recorded in `docs/repairs/261030/kernel-object.md`.
+- No resource narrowing syscall: recorded in `docs/repairs/261030/kernel-object.md`.
 - No performance work.
 
 ## Design
@@ -40,7 +40,7 @@ Each request, the Zircon counterpart (`~/Workspaces/projects/fuchsia/zircon`), a
   - the devices (LAPIC, each IO-APIC, HPET) are recorded by the PC platform's init code through `reserve_kernel_mmio()` and listed by `kernel_mmio()`, beside `kernel_ioports()`;
   - the RAM is a copy of the memory manager's map of usable memory, taken by an init hook and grown to whole pages, listed by `kernel_ram()`. It is a copy because the map itself (`mm::EarlyMem`) lives in the init sections, which `reclaim_init_area()` gives to the page allocator before userboot. A first version read the map directly and an independent review found that it would silently grant all RAM once those frames were reused; a second attempt through `boot::handoff().mem.ranges` faulted at run time, because the spans inside the handoff are physical addresses that only the early identity mapping can read.
   - If the copy was not made, or the device table overflowed, every address counts as owned: a refused request is the safe error.
-- New syscall `vmo_create_physical(resource, paddr, size, out)` calls the existing `VmoDispatcher::create_physical` after `validate_ranged_resource(resource, MmIo, paddr, size)`. The VMO is not resizable, not clonable and not readable through `vmo_read` (NotSupported already). `vma_map` maps it through the existing `map_physical`.
+- New syscall `vmo_create_physical(resource, paddr, size, out)` calls the existing `VmoDispatcher::create_physical` after `validate_ranged_resource(resource, MmIo, paddr, size)`. The VMO is not resizable, not clonable and not readable through `vmo_read` (NotSupported already). `vma_map` maps it through the existing `map_physical`, always populated and always uncached (`MmuFlags::Discache`, the PCD bit): the rule is in `VmaDispatcher::map()` and not in mm, because the kernel maps frames of RAM as physical objects too, and one frame cached under one address and uncached under another is a conflict the CPU does not define.
 - Zircon: `sys_vmo_create_physical` (`kernel/lib/syscalls/driver.cc:107`) validates with `validate_resource_mmio`, which for a root resource asks `root_resource_filter_can_access_region()` (`validate_ranged_resource_dispatcher()`, `kernel/object/resource.rs:78`). That filter (`kernel/lib/root_resource_filter`) is a deny list of RAM, filled from the physboot handoff (`root_resource_filter_ffi.cc`), and of peripherals the kernel owns, added with `root_resource_filter_add_deny_region()` (`kernel/arch/x86/src/lapic.rs:226`, `ioapic.rs:263`, `kernel/platform/debug.cc:258`). It is checked even for the root, and an MMIO request is rounded outward to whole pages first. Ours has the same shape: `reserve_kernel_mmio()` and `touches_kernel_physical()`. What ours does not have is Zircon's separate per-kind `RegionAllocator` (`ResourceDispatcher::create`), which tracks overlap and the exclusive flag and does not decide what RAM is; the `Storage` parameter and flag bit `0x00010000` of ours are kept for it.
 
 ### R1: PCI configuration space through ECAM
@@ -87,6 +87,7 @@ All three privileges reach a component the usual way: a built-in `ours.resource.
 | R1 transport | A: open 0xCF9; C: `pci_cfg_pio_rw`; D: ECAM through MmIo | D | None | D, 2026-10-30 |
 | R4 route | Shortcut: open all pins, driver reads Interrupt Line; standard: userspace ACPI; MSI-X | Shortcut | None | Shortcut, 2026-10-30 |
 | MmIo denial pattern | A deny list checked even for the root (Zircon's `RootResourceFilter`, and ours for ports); or only a region allocator | Deny list | None | Deny list, 2026-10-30. The question put to the user said Zircon used an allocator and that this departed from it; that was wrong, Zircon uses the same deny list, so there is no departure |
+| Cache attribute of a physical mapping | Uncached from the first version, as Zircon does by default; write-back and later | Uncached | None | Uncached, 2026-10-30 |
 | Exclusive MmIo ranges | Track overlap and an exclusive flag with a region allocator, as Zircon's `ResourceDispatcher::create` does; defer | Defer | None | Open: not needed for the first run |
 | DMA address and gate | Dma resource and a VMO info topic; BTI object as Zircon | Resource and info topic | None | Open: a departure from Zircon, to confirm |
 
@@ -96,10 +97,9 @@ All three privileges reach a component the usual way: a built-in `ours.resource.
 - A kshell or user test maps the ECAM window of QEMU's q35 and reads the host bridge's vendor and device id (8086:29c0); a second reads the virtio-blk function.
 - A Dma VMO: physical address is page aligned and contiguous for the whole size, survives memory pressure (pinned), and rejects resize, clone and decommit.
 - `interrupt_create` on a PCI GSI succeeds and an interrupt from the device reaches the port.
-- `ours-verify` before each commit. Not verifiable here: real hardware, uncached MMIO behaviour, an IOMMU.
+- `ours-verify` before each commit. `physvmo.test` shows the entries of a physical mapping carry the cache-disable bit. Not verifiable here: real hardware, what an uncached access does to a device, an IOMMU.
 
 ## Open questions
 
 - Does the Interrupt Line register hold a GSI on q35 with the firmware these images boot with? Check `info pci`.
 - Does the page allocator ever take ACPI reclaimable memory? If it does, the managed-memory check must treat it as managed.
-- Should a user mapping of a physical VMO be uncached from the first version? QEMU does not need it; real hardware does. The attribute exists; setting it is one flag in `VmaDispatcher::map()`. Put to the user at step 3.

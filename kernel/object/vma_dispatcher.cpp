@@ -219,8 +219,17 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     // access that should not have happened (VmMapping::page_fault()). Left to
     // MapRange, a program that forgot it would map the window and then die on
     // its first access.
+    //
+    // And uncached: what a program reaches through such a VMO is device memory,
+    // since no resource grants RAM, and a CPU that kept a register in its cache
+    // would read it stale and write it late. This is decided here, among the
+    // VMOs a program can hold, and not in mm for every physical object: the
+    // kernel maps frames of RAM as physical objects too (the IDT, the GDT), and
+    // a frame mapped uncached under one address and cached under another is
+    // a conflict the CPU does not define.
     if (vmo.is_physical()) {
         populate |= mm::VmMapOption::Populate;
+        mmuf |= mm::MmuFlags::Discache;
     }
 
     // map_with_vmo(), not create_mapping(). create_mapping() builds the

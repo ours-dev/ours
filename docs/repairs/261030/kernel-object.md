@@ -24,27 +24,7 @@ Zircon bounds nothing here either: `VmObjectPhysical::Create` checks the alignme
 **Acceptance**
 A `vmo_create_physical` or a `vma_map` of a window past the cap answers `OutOfRange` or `NoResource`, a window of the largest allowed size maps and unmaps in bounded time, and a test in routing_checks pins both.
 
-## 2. A user mapping of a physical VMO is write-back, not uncached
-
-**Severity**
-Medium: wrong on real hardware, where a CPU may serve a read of a device register from its cache and combine or reorder writes; not reached on QEMU, where the registers are emulated and the cache does not sit in front of them.
-
-**Symptom**
-Latent, cannot be triggered on QEMU. On a real machine a driver that polls a status register through a physical mapping could read a stale value.
-
-**Cause**
-`VmaDispatcher::map()` builds the mapping's `MmuFlags` from the options alone. `MmuFlags::Discache` exists, `arch_mmu_flags.hpp` turns it into the PCD bit, and the kernel's own mappings of the local APIC and the IO-APIC pass it; a user mapping of a physical VMO does not. `vmo_create_physical`'s documentation says the mapping is cacheable. The first draft of the driver-capabilities design wrongly said the page tables had no cache attribute, which would have made this look larger than it is.
-
-**Change**
-One flag, `mmuf |= mm::MmuFlags::Discache`, next to the forced `Populate` for a physical VMO in `VmaDispatcher::map()`; the documentation of the call changes with it. Recommended now, since the reference does it by default; the user decides, as it is a departure either way. Write-combining, which a framebuffer wants, needs the PAT and is a different item.
-
-**Reference**
-Zircon `VmObjectPhysical::Create()` makes every physical VMO uncached by default (`SetMappingCachePolicy(ARCH_MMU_FLAG_UNCACHED)`, `kernel/vm/vm_object_physical.cc:140-160`: "Physical VMOs should default to uncached access"), and `sys_vmo_set_cache_policy()` (`kernel/lib/syscalls/vmo.rs:241`) changes it before the VMO is mapped: the policy belongs to the VMO, not to the mapping. Leaving ours write-back is the departure from the reference, so the recommendation is to take the flag now.
-
-**Acceptance**
-A mapping of a physical VMO has the PCD bit set in its page-table entries, shown by a kernel test that walks the entry, and the routing_checks read of the host bridge's vendor id still passes.
-
-## 3. No resource can be narrowed, so a driver holds the whole MmIo root
+## 2. No resource can be narrowed, so a driver holds the whole MmIo root
 
 **Severity**
 Medium: every component routed `ours.resource.Mmio` can map any device on the machine, not only its own.
@@ -64,7 +44,7 @@ Zircon `sys_resource_create` (`kernel/lib/syscalls/resource.rs:39`).
 **Acceptance**
 A component holding a narrowed MmIo resource maps its own range and is refused (OutOfRange) an address outside it, in a routing_checks test.
 
-## 4. Two drivers can hold the same MmIo range
+## 3. Two drivers can hold the same MmIo range
 
 **Severity**
 Low: nothing in the images maps device registers yet.

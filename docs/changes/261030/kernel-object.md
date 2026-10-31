@@ -163,3 +163,55 @@ None.
 1. Why does `VmaDispatcher::map()` force `Populate` for a physical VMO, and what exactly happens to a program that does not get it?
 2. The resource is checked before the arguments. What does that order mean for a base that wraps the address space?
 3. Why did the first read return 0 and not 0xFFFF, and what does that tell you about the window?
+
+## A user mapping of a physical VMO is uncached, and the test reads the page-table entry (2026-10-30)
+
+**Files**
+- `kernel/object/vma_dispatcher.cpp` — `map()` adds `MmuFlags::Discache` for a physical VMO, beside the `Populate` it already forces.
+- `kernel/commands/vma_physical_test.cpp`, `kernel/commands/BUILD.gn` — the console command `physvmo.test`.
+- `system/public/ours/syscalls.gni` — the text of `vmo_create_physical` says the mapping is uncached.
+- `docs/repairs/261030/kernel-object.md`, `.agents/tasks/driver-capabilities/DESIGN.md`, `PLAN.md` — the repair item leaves the list; the design says what was decided.
+
+**Symptom**
+Latent, cannot be triggered on QEMU, where device registers are emulated and no cache sits in front of them. On a real machine a CPU may serve a read of a status register from its cache and write a register late or merge two writes, so a driver polling through a physical mapping could read a value that is no longer true.
+
+**Cause**
+The previous entry shipped the call with write-back mappings, because the design said the page tables had no cache attribute, and so the cost looked large. That premise was wrong: `MmuFlags::Discache` exists, `arch_mmu_flags.hpp` turns it into the PCD bit, and the kernel's own mappings of the local APIC and IO-APIC pass it. The review of that step found it, and also that the reference makes a physical VMO uncached by default.
+
+Where the rule must live is the part worth learning. The first thought was mm: `VmArea::create_mapping()` knows the VMO, so a physical object could always get `Discache`. A look at the callers of `map_phys()` showed why not: `descriptor.cpp` and `idt.cpp` map frames of ordinary RAM as physical objects (the IDT and the GDT). Mapping a RAM frame uncached would make every interrupt read its descriptor from memory with no cache, and, worse, it would leave the same frame cached under the kernel's own address and uncached under this one. x86 does not define what happens then; the manual calls it an attribute conflict. So the rule is not "physical object means device". It is "a VMO a program can hold means device", which is true only because `validate_ranged_resource()` refuses RAM: the program's physical VMOs are the ones the gate has proved are not RAM. The rule sits in `VmaDispatcher::map()`, in the layer where that proof is the context.
+
+**Change**
+
+```cpp
+if (vmo.is_physical()) {
+    populate |= mm::VmMapOption::Populate;
+    mmuf |= mm::MmuFlags::Discache;
+}
+```
+
+`physvmo.test` builds an address space, wraps its root region in a `VmaDispatcher` and maps two pages of a physical VMO over a page above all RAM, without `MapRange`. It reads each page-table entry back with `arch_aspace().query()` and requires the frame, readable, writable, user and Discache, and that a paged VMO mapped beside it carries no Discache.
+
+Rejected: Discache in `VmArea::create_mapping()` for every physical object, for the aliasing reason above; and a cache policy stored on `VmObjectPhysical` and set by `create_physical()`, which is the reference's shape and the better one once a second policy (write-combining, for a framebuffer) exists, but is more than one flag today.
+
+**Reference**
+Zircon `VmObjectPhysical::Create()` (`kernel/vm/vm_object_physical.cc:140-160`): "Physical VMOs should default to uncached access", `SetMappingCachePolicy(ARCH_MMU_FLAG_UNCACHED)`; `sys_vmo_set_cache_policy()` (`kernel/lib/syscalls/vmo.rs:241`) changes it before the VMO is mapped.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped, 0 failed, 0 error lines), rel PASS (41 passed, 8 skipped, 0 failed, 6/6 required), host-tests PASS (151 passed). rel's routing_checks still reads the host bridge's vendor id through the uncached window.
+- `kshell_run.py physvmo.test vmaphys.test resource.test`: `physvmo.test: ok -- 6 checks`, `vmaphys.test: ok -- 8 checks`, `resource.test: ok -- 60 checks`.
+- A mutation, undone afterwards: with the `Discache` line commented out, `physvmo.test` failed on exactly the uncached check and nothing else.
+- Not measured: real hardware, and what an uncached access does to a device.
+
+**Deliberately not done**
+Write-combining, and a cache policy a program can choose.
+
+**How it was found**
+By the review of the previous step, which read the page-table flags and found `Discache` where the design said there was none.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why is "physical object" the wrong condition for uncached in mm, and what is the right one in the dispatcher?
+2. What does x86 do with a frame mapped cached under one address and uncached under another?
+3. How does `physvmo.test` tell a cached mapping from an uncached one, given that a program cannot see page-table entries?

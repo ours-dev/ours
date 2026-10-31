@@ -5,7 +5,7 @@
 
 ## Request
 
-"先跑通吧": get the path working end to end before widening it. The requester is the userspace virtio-blk driver on `exp/fs-service` (`.agents/tasks/storage-layer/KERNEL-REQUESTS.md`). The scope ends where that driver's acceptance flow can run: enumerate PCI through ECAM, map the BARs, build rings in DMA memory, bind a PCI interrupt, read block 0. The narrowing syscall, uncached mappings, ACPI and MSI-X are out of scope and go to `docs/repairs/`.
+"先跑通吧": get the path working end to end before widening it. The requester is the userspace virtio-blk driver on `exp/fs-service` (`.agents/tasks/storage-layer/KERNEL-REQUESTS.md`). The scope ends where that driver's acceptance flow can run: enumerate PCI through ECAM, map the BARs, build rings in DMA memory, bind a PCI interrupt, read block 0. The narrowing syscall, ACPI and MSI-X are out of scope and go to `docs/repairs/`.
 
 ## Decisions
 
@@ -16,6 +16,7 @@
 | R1 transport | A: open 0xCF9; C: `pci_cfg_pio_rw`; D: ECAM through MmIo | D | None | D, 2026-10-30 |
 | R4 route | Shortcut; standard (userspace ACPI); MSI-X | Shortcut | None | Shortcut, 2026-10-30 |
 | MmIo denial pattern | A deny list checked even for the root; or only a region allocator | Deny list | None | Deny list, 2026-10-30. Zircon uses the same deny list (`RootResourceFilter`), so this is no departure; the question as first put said it was |
+| Cache attribute of a physical mapping | Uncached from the first version; write-back and later | Uncached | None | Uncached, 2026-10-30 |
 | Exclusive MmIo ranges | Track overlap and an exclusive flag with a region allocator; defer | Defer | None | Open: not needed for the first run |
 | DMA address and gate | Dma resource and info topic; BTI object | Resource and info topic | None | Open: a departure from Zircon, to confirm |
 
