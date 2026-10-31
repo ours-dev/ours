@@ -47,9 +47,12 @@ lists, so a header no target lists gets no dependency check at all and
 nothing fails to say so. The targets, their roots and their lists all come
 from GN (`gn desc //*`, then `gn desc` of each target's own `<label>.config`
 for its one include directory), so a new architecture target is held to it
-as soon as it exists. Targets that publish one root between them (sampler,
-phys) are judged by the union of their lists. A header is a file named like
-one (`.h`, `.hpp`, `.inc`, `.tcc`, ...), and the check fails naming each:
+as soon as it is in the graph of the build directory that is checked: the x86
+directory holds riscv's host-toolchain `//kernel/arch/riscv:headers` and not
+its `kernel`, `mm` and `phys` targets, which only the riscv directory has.
+Targets that publish one root between them (sampler, phys) are judged by the
+union of their lists. A header is a file named like one (`.h`, `.hpp`, `.inc`,
+`.tcc`, ...), and the check fails naming each:
 
 ```text
 headers    FAIL  1 missing, 1 stray among 7 targets, 7 include roots, 75 headers under //kernel/arch/ · 1.5s
@@ -121,11 +124,12 @@ phys `[error]` line or OpenSBI's `sbi_trap_error:` fails it at once; short of
 `riscv.log` in the directory named by the same rule as the x86 mode's,
 `$TMPDIR/ours-verify-bringup.riscv-<hash>/`. `--no-build` boots what is
 there, `fake.obi` included if it exists; `--only` is refused, and the host
-tests and the header lists do not run: the x86 check runs them, and stays the
-check before a commit. Its last lines say so. The header lists of a riscv
-build directory are one command away
-(`python3 scripts/header_lists.py out/bringup.riscv`), and are the ones to
-check after adding a riscv header.
+tests and the header lists do not run: the x86 check runs the tests, and stays
+the check before a commit. Its last lines say so. The x86 check's header lists
+do not cover riscv's own targets (`kernel`, `mm` and `phys` under
+`//kernel/arch/riscv`, which are in no x86 graph): those are one command away
+(`python3 scripts/header_lists.py out/bringup.riscv`), and it is the one to
+run after adding a riscv header.
 
 For C++ edits, `cpp-write-and-verify` (clang-format and clang-tidy) comes
 first; this skill checks behaviour, that one checks the source.

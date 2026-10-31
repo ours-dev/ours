@@ -284,7 +284,9 @@ def run(root: Path, out: Path, product: str, no_build: bool, timeout: float | No
 
     ok = boot.report()
     print(f"{'host-tests':<10} not run in the riscv mode; the x86 check runs them")
-    print(f"{'headers':<10} not run in the riscv mode; the x86 check runs it, "
-          f"or run scripts/header_lists.py on this build directory")
+    # The x86 graph holds riscv's host-toolchain headers target and none of
+    # //kernel/arch/riscv/{kernel,mm,phys}, so its check does not cover them.
+    print(f"{'headers':<10} not run in the riscv mode, and the x86 check does not see "
+          f"riscv's own header targets: run scripts/header_lists.py on this build directory")
     print(f"logs       {boot.log_path}")
     return 0 if ok else 1

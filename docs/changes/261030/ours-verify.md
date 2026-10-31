@@ -323,3 +323,64 @@ None.
 - `//kernel/mm/` and `//kernel/mm:` are one character apart. Which targets does each reach, and why did the first one "pass" item 1's acceptance without checking a header?
 - Why is "no target in scope" an error and not a pass of zero headers, and why is the rule on the whole scope rather than on each `--scope`?
 - The repair file quoted 46 and 17 correctly and the commands wrong. What does that say about writing an acceptance criterion from a survey instead of by running it?
+
+## Title: The riscv mode's `headers` line and the skill stop saying the x86 check covers riscv's header lists, because it sees only the host half of them (2026-10-30)
+
+**Files**
+- `.agents/skills/ours-verify/scripts/riscv_boot.py` — the closing `headers` line says the x86 check does not see riscv's own header targets and names the command; a comment says why.
+- `.agents/skills/ours-verify/SKILL.md` — "a new architecture target is held to it as soon as it exists" becomes "as soon as it is in the graph of the build directory that is checked", with the x86 and riscv difference spelled out; the riscv paragraph no longer says the x86 check runs the header lists for riscv.
+- `docs/changes/261030/ours-verify.md` — this entry.
+
+**Symptom**
+The riscv mode ended with `headers    not run in the riscv mode; the x86 check runs it, or run scripts/header_lists.py on this build directory`, and read as "x86 covers riscv". It does not. A riscv header added to `kernel/arch/riscv/kernel/include` and left out of `riscv/kernel:headers`'s list gives `headers FAIL 1 missing` on the riscv build directory and `headers PASS 7 targets, 7 include roots, 75 headers` on the x86 one, so every `ours-verify` line stays green while the list rots. The skill carried the same impression: "held to it as soon as it exists" is true of the graph being checked and false of the one that is not.
+
+**Cause**
+`header_lists.py` asks GN, and GN answers for one build directory. The x86 directory contains `//kernel/arch/riscv:headers`, through the host toolchain (libarch's riscv half builds for the host, so the tests can), and it does not contain `//kernel/arch/riscv/kernel:headers`, `//kernel/arch/riscv/mm:headers` or `//kernel/arch/riscv/phys:headers`: they are built only in a riscv toolchain. The default scope `//kernel/arch/` sees seven targets on each directory (x86: x86's six and riscv's host one; riscv: its four, and the three x86 labels that build for the host there), and they are not the same seven. A statement that "the x86 check runs it" is therefore true as to the script and false as to what the script sees. The wording of the first entry, "held to it the day its `BUILD.gn` exists", had the same slip: the day it exists *in the build directory that is checked*.
+
+Whether the riscv mode should run the check itself is another question, and it is the user's (below); the sentences have to be true either way.
+
+**Change**
+Before:
+
+```python
+    print(f"{'headers':<10} not run in the riscv mode; the x86 check runs it, "
+          f"or run scripts/header_lists.py on this build directory")
+```
+
+After:
+
+```python
+    # The x86 graph holds riscv's host-toolchain headers target and none of
+    # //kernel/arch/riscv/{kernel,mm,phys}, so its check does not cover them.
+    print(f"{'headers':<10} not run in the riscv mode, and the x86 check does not see "
+          f"riscv's own header targets: run scripts/header_lists.py on this build directory")
+```
+
+`SKILL.md` says the same in the paragraph on the check and in the riscv paragraph, and keeps `python3 scripts/header_lists.py out/bringup.riscv` as the command to run after adding a riscv header.
+
+Rejected:
+- Running `header_lists.report()` from `riscv_boot.run()` in this change: it is one call and about 1.3 seconds, and it would make the riscv mode a gate for riscv's lists, which the first entry listed as "the user's call". Changing what a mode gates is not a wording fix.
+
+**Reference**
+None, this project's own tooling.
+
+**Verification**
+- Probe of what each directory's graph holds (`interfaces()` over `gn desc //*`, default scope): x86 `//kernel/arch/riscv:headers` and six x86 labels; riscv `//kernel/arch/riscv/{kernel,mm,phys}:headers`, `//kernel/arch/riscv:headers` and three x86 labels. The riscv directory has no `//kernel/arch/x86/kernel:headers`, and the x86 one none of the three riscv ones.
+- x86 `ours-verify`: build ok; dbg PASS shell finished at 5.5s · 44 passed, 4 skipped, 0 failed · 0 error line(s) · reached: end; rel PASS shell finished at 4.6s · 41 passed, 8 skipped, 0 failed · 6/6 required · 0 error line(s) · reached: end; host-tests PASS 153 passed, 0 failed; headers PASS 7 targets, 7 include roots, 75 headers under //kernel/arch/, every one listed · 1.4s.
+- riscv check: PASS handoff ok at 0.1s · reached: handoff ok · initrd fake.obi, and its closing `headers` line is the new one.
+- `lint_docs.py --changed` on the two documents: no violations.
+
+**Deliberately not done**
+- The riscv mode still does not run the check. Whether it should is a question for the user: the cost is one more line and about 1.3 s in a mode kept small on purpose; the gain is that riscv's `kernel`, `mm` and `phys` lists, which this branch is adding headers to, cannot rot behind a green `ours-verify`. The case for it is the `feat/riscv` branch's own work; the case against is that the riscv mode is the check of the phys boot chain only.
+- The first entry is not edited: it is history, and this one corrects what it said.
+
+**How it was found**
+Reported by an independent review that emptied `riscv/kernel:headers` in a scratch copy and ran the check on both directories: FAIL on the riscv one, PASS on the x86 one, and that the riscv mode's line reads as if x86 covered it. Here the graphs were listed per directory to put the difference in words.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- `gn desc` answers for one build directory. Which of the architecture header targets are in each of the x86 and riscv ones, and why is `//kernel/arch/riscv:headers` in both while `//kernel/arch/riscv/kernel:headers` is in one?
+- "The x86 check runs it" is true of the script. Why is it false of what the script is able to see, and what would a riscv header added to a list-less target do to each directory's line?
+- What would running `header_lists.report()` in the riscv mode change about what that mode is a gate for, and why is that a decision and not a wording fix?
