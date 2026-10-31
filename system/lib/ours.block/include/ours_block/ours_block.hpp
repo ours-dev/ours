@@ -23,11 +23,13 @@
 ///
 ///   Block.GetInfo     two-way  (nothing)
 ///   Block.Read        two-way  u64 lba@16, u32 count@24
+///   Block.Write       two-way  u64 lba@16, u32 count@24, u8 data[]@28
 ///
 /// and their Ok replies, the status at 16 as in every reply:
 ///
 ///   Block.GetInfo     u32 block_size@20, u64 blocks@24
 ///   Block.Read        u8 data[]@20, count * block_size bytes
+///   Block.Write       the status only, nothing follows it
 ///
 /// GetInfo's block_size is 512 and blocks is the device's capacity in those
 /// blocks. Read reads |count| whole blocks starting at block |lba|; a count
@@ -48,8 +50,8 @@ inline constexpr auto BLOCK_NAME = std::string_view{"ours.block.Block"};
 /// are virtio-blk's, whose block is a 512-byte sector.
 inline constexpr auto BLOCK_SIZE = u32{512};
 
-/// The most blocks one Read carries: the data, behind the reply's status,
-/// must fit a channel message.
+/// The most blocks one Read or Write carries: the Read's reply data, or the
+/// Write's request data, must fit a channel message.
 inline constexpr auto MAX_READ_BLOCKS = usize{7};
 
 // The methods, each declared beside the selector its ordinal is hashed from.
@@ -75,6 +77,14 @@ inline constexpr auto CLOSE = wire::Method{
 inline constexpr auto READ = wire::Method{
     .selector = "ours.block/Block.Read",
     .ordinal = 0x4694'd3e4'398f'ba3d,
+    .kind = wire::MethodKind::TwoWay,
+};
+
+/// Writes |count| blocks starting at |lba| (Block.Write), the data in the
+/// request body behind the count.
+inline constexpr auto WRITE = wire::Method{
+    .selector = "ours.block/Block.Write",
+    .ordinal = 0x3bfa'6a1c'c8cf'9490,
     .kind = wire::MethodKind::TwoWay,
 };
 
@@ -111,6 +121,21 @@ struct ReadReply {
     std::span<u8 const> data = {};
 };
 
+/// A Write's |data| is whole blocks, |count| of them: the encoder refuses a
+/// size that says otherwise (InvArgs).
+struct WriteRequest {
+    u32 txid;
+    /// The first block to write, numbered from the start of the device.
+    u64 lba = 0;
+    /// How many blocks, at most MAX_READ_BLOCKS.
+    u32 count = 0;
+    std::span<u8 const> data = {};
+};
+
+struct WriteReply {
+    ours::Status status;
+};
+
 /// Each request, encoded by a client into |bytes| and decoded by the server.
 /// The encoders refuse a txid outside 1 to MAX_TXID and a count above
 /// MAX_READ_SECTORS (InvArgs), and a buffer too short (BufferTooSmall). The
@@ -140,6 +165,13 @@ auto encode_read(std::span<u8> bytes, ReadRequest const &request)
 [[nodiscard]]
 auto decode_read(wire::Message message) -> ustl::Result<ReadRequest, ours::Status>;
 
+[[nodiscard]]
+auto encode_write(std::span<u8> bytes, WriteRequest const &request)
+    -> ustl::Result<wire::Message, ours::Status>;
+
+[[nodiscard]]
+auto decode_write(wire::Message message) -> ustl::Result<WriteRequest, ours::Status>;
+
 /// The replies to the request |txid|, encoded by the server and decoded by
 /// the client. GetInfo's and Read's encoders refuse data next to a failure
 /// (InvArgs). A decoder's Err means the reply is malformed; the server's own
@@ -158,6 +190,13 @@ auto encode_read_reply(std::span<u8> bytes, u32 txid, ReadReply const &reply)
 
 [[nodiscard]]
 auto decode_read_reply(wire::Message message, u32 txid) -> ustl::Result<ReadReply, ours::Status>;
+
+[[nodiscard]]
+auto encode_write_reply(std::span<u8> bytes, u32 txid, WriteReply const &reply)
+    -> ustl::Result<wire::Message, ours::Status>;
+
+[[nodiscard]]
+auto decode_write_reply(wire::Message message, u32 txid) -> ustl::Result<WriteReply, ours::Status>;
 } // namespace ours_block
 
 #endif // #ifndef OURS_BLOCK_OURS_BLOCK_HPP
