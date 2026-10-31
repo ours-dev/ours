@@ -392,6 +392,45 @@ auto VmObjectPaged::unpin_range(VirtAddr const offset, usize const size) -> Stat
     return m_cow_pages->unpin_range_locked(m_cow_offset + offset, size);
 }
 
+auto VmObjectPaged::lookup_contiguous(VirtAddr const offset, usize const size, PhysAddr *const out)
+    -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
+        return Status::InvArgs;
+    }
+
+    Guard guard{m_lock};
+    if (size > m_size || offset > m_size - size) {
+        return Status::OutOfRange;
+    }
+
+    assert_cow_pages_locked();
+    auto cursor = m_cow_pages->make_cursor(m_cow_offset + offset, size);
+    if (!cursor) {
+        return cursor.unwrap_err();
+    }
+    // Looking is not using: the answer is about where the pages are, and an
+    // access through the physmap that this is not.
+    cursor->disable_mark_accessed();
+
+    auto first = PhysAddr{0};
+    for (usize at = 0; at < size; at += PAGE_SIZE) {
+        auto const found = cursor->maybe_page();
+        if (found.is_none()) {
+            return Status::BadState;
+        }
+        auto const frame = frame_to_phys(found.value().page);
+        if (at == 0) {
+            first = frame;
+        } else if (frame != first + at) {
+            return Status::BadState;
+        }
+    }
+    *out = first;
+    return Status::Ok;
+}
+
 auto VmObjectPaged::take_pages(VirtAddr const offset, usize const size,
                                VmPageSpliceList *const pages) -> Status {
     m_canary.verify<Self>();

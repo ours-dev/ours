@@ -44,7 +44,67 @@ Zircon `sys_resource_create` (`kernel/lib/syscalls/resource.rs:39`).
 **Acceptance**
 A component holding a narrowed MmIo resource maps its own range and is refused (OutOfRange) an address outside it, in a routing_checks test.
 
-## 3. Two drivers can hold the same MmIo range
+## 3. The stub IOMMU isolates nothing, so a driver's device can reach all of memory
+
+**Severity**
+Medium: a pin keeps a page where it is and stops the kernel reusing it; it does not stop a device reading or writing any other address. Today the drivers are trusted components and the only devices are QEMU's, so nothing exploits it.
+
+**Symptom**
+Latent, cannot be triggered today. A driver that programs its device with an address it never pinned, or with a pinned address and a longer length, makes the device read or write memory the BTI knows nothing about, including the kernel's. The `PermRead` and `PermWrite` bits of `bti_pin` are checked against the VMO's rights and then nothing enforces them on the device.
+
+**Cause**
+`IommuType::Stub` is the only type: no translation hardware is driven, so a device address is a physical address and a BTI is bookkeeping (`IommuDispatcher`). That is the design for the first driver, chosen so that the interface is the real one and a hardware IOMMU is a new type behind it.
+
+**Change**
+A type for the machine's IOMMU (VT-d needs the ACPI DMAR table, parsed in user space or by the kernel) whose `pin` maps the range into the device's own address space with the permissions of `BtiPinOptions`, whose `query_address` answers device addresses and not physical ones, and whose fault state also covers a device fault. Until then, a device that must not be trusted is not given to a driver.
+
+**Reference**
+Zircon `kernel/dev/iommu/arm_smmu` for the shape of a driver behind `iommu::Bti`; the stub is `kernel/dev/iommu/stub`. The Intel driver is not in the checkout read.
+
+**Acceptance**
+A device address outside the ranges pinned for a BTI faults, in a test on a machine with an IOMMU (QEMU `-device intel-iommu`), and `PermRead` without `PermWrite` refuses a device write.
+
+## 4. A driver that dies with memory pinned leaks it, and a restarted driver cannot release it
+
+**Severity**
+Medium: the kernel stays correct and loses memory, one buffer set per crash of a driver while its device was doing DMA.
+
+**Symptom**
+Latent, cannot be triggered today. A driver process dies with a pin outstanding; its handles close; the token's last handle going quarantines the pin, the BTI's last handle going orphans the BTI, and the quarantine is leaked (the destructor keeps the pages pinned and the VMO alive for good). A restarted driver makes a new BTI, which has no quarantine to release.
+
+**Cause**
+The quarantine belongs to a BTI object, and a BTI object is made fresh by every `bti_create`; nothing keys it by (IOMMU, id). If no process outside the driver holds a handle to the BTI, there is nobody left to say that the device has been reset.
+
+**Change**
+Two options. (a) No kernel change: whoever starts the driver keeps a duplicate of its BTI handle and gives the restarted driver a duplicate again; the BTI then lives across the crash, the new driver resets its device, and calls `bti_release_quarantine`. That is a rule for the component framework and for `init` (step 6 and the hand-over of step 9). (b) The kernel keeps one BTI per (IOMMU, id) and hands it to a later `bti_create`, which makes a driver's crash invisible to the object but needs a place to hold it. Recommended: (a), written into the driver's contract.
+
+**Reference**
+Zircon's stub IOMMU creates a fresh BTI on every `CreateBti` (`kernel/dev/iommu/stub/stub_iommu.cc`), and its header says the quarantine is released by the restarted driver; there the platform bus holds the handle across the restart.
+
+**Acceptance**
+A test that kills a driver component with a pin outstanding, restarts it, and shows the new instance releasing the quarantine and pinning again.
+
+## 5. Pinned memory is not limited, so a driver can pin all of RAM
+
+**Severity**
+Medium: a denial of service by a component that holds an IOMMU and a VMO, not a false grant.
+
+**Symptom**
+Latent, cannot be triggered today. `bti_pin` of a large VMO pins every page of it, a page can be pinned 255 times, and pinned pages cannot be reclaimed; nothing bounds the total. A leaked quarantine (item 4) is permanent.
+
+**Cause**
+`BtiDispatcher::pin()` calls `VmObject::pin_range()`, which counts per page and nothing in total, and the BTI has no limit of its own.
+
+**Change**
+A limit on the pages pinned through one BTI, and one on the system, with `NoResource` past it; the first is cheap (the BTI knows its counts), the second is a counter in the page queues. Decide the numbers when a real driver has a measured need.
+
+**Reference**
+None, this project's own design.
+
+**Acceptance**
+A `bti_pin` past the limit answers `NoResource`, leaves nothing pinned, and the count goes back down on unpin and on release.
+
+## 6. Two drivers can hold the same MmIo range
 
 **Severity**
 Low: nothing in the images maps device registers yet.

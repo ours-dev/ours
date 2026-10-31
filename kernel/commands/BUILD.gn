@@ -14,6 +14,8 @@
 
 source_set("commands") {
   sources = [
+    "bti_stress_test.cpp",
+    "bti_test.cpp",
     "cov.cpp",
     "cpu.cpp",
     "crash.cpp",

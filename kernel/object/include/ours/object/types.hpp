@@ -15,6 +15,9 @@ class PortDispatcher;
 class PortObserver;
 class ResourceDispatcher;
 class SuspendTokenDispatcher;
+class IommuDispatcher;
+class BtiDispatcher;
+class PmtDispatcher;
 
 } // namespace ours::object
 

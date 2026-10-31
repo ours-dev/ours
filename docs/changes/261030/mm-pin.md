@@ -80,3 +80,50 @@ None.
 1. A reclaimer chose a page just before a pin. Which two orders can the pin and the reclaimer's lock go in, and what does each leave?
 2. Why does a clone have to be refused for the whole node when only one page is pinned?
 3. Why can the existing `CommitOptions::Pin` not simply be made to call `pin_range()`?
+
+## VmObject::lookup_contiguous(): where a run of a VMO's pages is, for a device (2026-10-30)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_object.hpp` — the virtual, `NotSupported` by default.
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`, `kernel/mm/vm_object_paged.cpp` — the paged object's answer.
+- `kernel/mm/include/ours/mm/vm_object_physical.hpp` — the physical object's answer.
+
+**Symptom**
+Latent, cannot be triggered today: only the BTI calls it (`BtiDispatcher::pin()` with `Contiguous`, `PmtDispatcher::query_address()`). The need is that a device can be given one address for a buffer only if the buffer is one run in physical memory, and nothing could say whether it is.
+
+**Cause**
+Physical contiguity is a fact about frames, and the VMO is the layer that knows its frames. The BTI could not ask for it by walking pages itself without reaching into the node's cursor and lock, which belong to mm. So the question is a VMO method: "is [offset, offset + size) one run, and where does it start".
+
+Looking is not using, which is why the implementation disables the cursor's access marking: the call must not make a page look recently used to the reclaimer, or asking a device address would keep cold pages warm. It also commits nothing: a page that is not there is BadState, not a page made to answer the question, since the caller pinned the range first and a missing page is a bug in the caller. A page the object sees only through an ancestor counts as there, at the ancestor's frame, which is where a device would find it.
+
+**Change**
+```cpp
+for (usize at = 0; at < size; at += PAGE_SIZE) {
+    auto const found = cursor->maybe_page();
+    if (found.is_none()) { return Status::BadState; }
+    auto const frame = frame_to_phys(found.value().page);
+    if (at == 0) { first = frame; }
+    else if (frame != first + at) { return Status::BadState; }
+}
+```
+The paged object demands a page-aligned, non-empty range; the physical object, which is one run by being one, answers through the range check it already has and takes any non-empty range, since a window need not start on a page.
+
+**Reference**
+Zircon `VmObjectPaged::LookupContiguous()` (`kernel/vm/vm_object_paged.cc:1536`) and `VmObjectPhysical::LookupContiguous()` (`kernel/vm/vm_object_physical.cc:253`), which also answer a physical address for a run and fail when the pages are not adjacent.
+
+**Verification**
+Through `bti.test` (see the entry for the BTI in `kernel-object.md`): both layouts of two pages (adjacent and apart), the answer for a page that is not committed (`phys_of()` of one reads 0), and the refusal of a physical window by `pin()`. Not covered: a page seen only through an ancestor, and a physical object's own answer, which nothing calls yet. clang-tidy: no diagnostic on lines this change wrote.
+
+**Deliberately not done**
+A version that commits what is missing. A contiguous allocation (`vmo_create_contiguous`), which is step 7.
+
+**How it was found**
+None, a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. Why does `lookup_contiguous()` not commit a page that is missing?
+2. Why is it BadState and not InvArgs when two pages are not adjacent?
+3. Why does a physical VMO not need the page alignment a paged one is asked for?

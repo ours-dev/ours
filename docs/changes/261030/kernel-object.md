@@ -215,3 +215,78 @@ None.
 1. Why is "physical object" the wrong condition for uncached in mm, and what is the right one in the dispatcher?
 2. What does x86 do with a frame mapped cached under one address and uncached under another?
 3. How does `physvmo.test` tell a cached mapping from an uncached one, given that a program cannot see page-table entries?
+
+## IOMMU, BTI and PMT objects: pin memory for a device, and keep what cannot be taken back (2026-10-30)
+
+**Files**
+- `system/public/ours/bti.hpp`, `system/public/public_headers.gni` — `IommuType` and `BtiPinOptions`, the two ABI enums of the calls that come next.
+- `system/public/ours/types.hpp`, `kernel/object/include/ours/object/types.hpp` — `ObjectType::{Iommu = 23, Bti = 24, Pmt = 26}` and the forward declarations.
+- `kernel/object/iommu_dispatcher.{hpp,cpp}`, `bti_dispatcher.{hpp,cpp}`, `pmt_dispatcher.{hpp,cpp}`, `kernel/object/BUILD.gn` — the three objects.
+- `kernel/commands/bti_test.cpp`, `kernel/commands/bti_stress_test.cpp`, `kernel/commands/BUILD.gn` — the console commands `bti.test` (one thread, every call and refusal) and `btistress.test` (the races).
+- `docs/repairs/261030/kernel-object.md` — what is left, items 3 to 5.
+
+**Symptom**
+Latent, cannot be triggered today: no system call reaches these objects yet (step 5b of `.agents/tasks/driver-capabilities/PLAN.md`). The need is a user-space block driver, which has to give its device the address of memory the device reads and writes by itself, with no CPU access to go through. Without something that holds the pages where they are, three things go wrong: the reclaimer or a copy-on-write fault moves the page and the device writes into the old frame; the driver dies and the kernel frees its VMO while the device is still writing, so the next owner of those frames has them overwritten; and the kernel has no record of which memory a device can reach, so it cannot tell either case from a normal exit.
+
+**Cause**
+A device does its transfers without the CPU, so two facts that are free for a CPU access have to be made true on purpose. The page has to stay in its frame (the pin of the previous step, `VmObject::pin_range()`), and the frame has to stay out of the page allocator for as long as the device may touch it. The second is the hard one: only the driver knows when its device has stopped, and a driver that is gone cannot say so. With a real IOMMU the kernel could cut the device off and take the memory back. With none (the only kind here, the stub) it cannot, so the only safe answer to "the driver went away with memory pinned" is to keep the pages pinned and say so loudly. That is the whole reason the objects are three and not one:
+
+- the IOMMU says what stands between the device and memory (nothing, for the stub), so that a driver for a real one adds a type and no new way to ask for DMA;
+- the BTI is one device's identity to that IOMMU, and owns the record of every pin made for it, in two lists, active and quarantined;
+- the PMT is the driver's token for one pin: it is what the driver unpins with, and it is what the kernel watches. Closing its last handle without an unpin is the one signal the kernel has that a driver went away with memory in reach.
+
+Why the pin is a record the BTI owns, and the token only points at it. The pin has to outlive the token: a quarantined pin has no handle at all. Making the token itself live in the BTI's lists would make a reference cycle (token to BTI to token), broken only by the unpin or the release; a record owned by the BTI, found by the token through a raw pointer that the two ways out clear under the token's own lock, has no cycle, and the token's lifetime is exactly its handles'.
+
+The worst interleavings. (1) `unpin()` on one handle while `query_address()` runs on another: the question holds the token's lock across its use of the record, and `unpin()` takes the pointer out under the same lock before it touches the record, so the record is freed only after the last question has left. (2) A pin racing the BTI's last handle: `pin()` checks "not orphaned, no quarantine" and publishes the record in one critical section of the BTI's lock, so a pin cannot be published into a BTI that has just stopped taking them; a pin already published is quarantined or unpinned by its token as usual. (3) `release_quarantine()` racing a token closing: the quarantine list is taken whole under the lock, so a pin quarantined a moment later stays, as it should, since the caller has not vouched for its device. The lock order is the token's lock, then the BTI's; the BTI's lock is never held across a call into the VMO (which takes its own locks), and nothing takes the token's lock under the BTI's.
+
+**Change**
+The shape of `pin()`: the pages first, then the allocations, then one short critical section.
+
+```cpp
+if (!accepts_pins()) return BadState;            // advice, before any page is committed
+vmo->pin_range(offset, size);                    // from here every exit must unpin
+if (Contiguous) vmo->lookup_contiguous(...);     // the new mm call: one run, or BadState
+auto record = new Pin(vmo, offset, size);        // both allocated before the lock
+auto token = new PmtDispatcher(Arc<Bti>(this));
+{
+    Guard guard{get_lock()};
+    refused = Orphaned || !m_quarantine.empty(); // the fault state, again: it may have changed
+    if (!refused) m_active.push_back(*record.into_raw());
+}
+if (refused) return fail(BadState);              // unpins; the token points at nothing
+token->attach(*raw_record);
+```
+
+The early `accepts_pins()` was added after an independent review: without it a BTI that was going to refuse still committed and pinned every page of the range, undid the pin, and left the pages committed. It is only advice, since the BTI can change between the ask and the publication, so the check under the lock stays. `query_address()` answers `InternalError` and logs when a pinned page is not in its VMO, where it first asserted: a system call reaches it, and a call must not be able to panic the kernel. An `unpin_range()` that fails when a record is freed is logged at error level in every build, since the assertion that also reports it is compiled out of the release image.
+
+A token closed with no unpin moves its record from the active list to the quarantine and logs; the BTI refuses new pins while the quarantine is not empty (the fault state) until `release_quarantine()` takes the list whole and unpins each record outside the lock. A BTI whose last handle is closed refuses new pins for good, logs what it has quarantined, and when its last reference goes it leaks the quarantine on purpose (`Box::leak()`): nobody can release it now, and the device may still be writing.
+
+`query_address(offset, size)` answers the device address of the range as one run if it is one and otherwise of its first page, in two attempts, so a caller that wants every address asks again from the end of each run. It differs from the reference in one way: the range must lie inside the pin, not merely inside the VMO. The reference asks the VMO, which would tell a driver the address of a page it never pinned.
+
+Rejected: the token living in the BTI's lists (the cycle above); a global list of orphaned BTIs that keeps them alive (the quarantine is leaked from the destructor instead, which needs no list); a flag per pin for "quarantined" (which list the record is on says it, and a flag would be a second fact that could disagree).
+
+**Reference**
+Zircon `BusTransactionInitiatorDispatcher::Pin()` (`kernel/object/bus_transaction_initiator_dispatcher.rs`: zero handles or a fault state is BadState), `iommu::StubBti` (`kernel/dev/iommu/stub/stub_bti.cc`: `Map()`, `ReleaseQuarantine()`, `OnDispatcherZeroHandles()`, `in_fault_state()` is "the quarantine is not empty"), `iommu::StubPmt` (`stub_pmt.cc`: `QueryAddress()` with its two attempts, `OnDispatcherZeroHandles()` moving an active PMT to the quarantine), and the leak reasons in `iommu::Bti::BtiPageLeakReason` (`kernel/dev/iommu/include/dev/iommu/bti.h`). The default rights are the two `DEFAULT_RIGHTS` of `bus_transaction_initiator_dispatcher.rs` and `pinned_memory_token_dispatcher.rs`; the BTI's here lack the property rights, since there is no name to set.
+
+**Verification**
+- `boot_check.py`: dbg PASS (44 passed, 4 skipped, 0 failed, 0 error lines), rel PASS (41 passed, 8 skipped, 0 failed, 6/6 required), host-tests PASS (151 passed).
+- `kshell_run.py`: `bti.test: ok -- 64 checks` and `btistress.test: ok`, with `vmopin.test` 28, `pagereclaim.test` 18, `pager.test` 23, `pagesource.test` 76, `vmosnapshot.test` 241, `pagequeues.test` 12, `mempressure.test` 15, `largepage.test` 28, `vmaphys.test` 8, `physvmo.test` 6 and `resource.test` 60 unchanged. `bti.test` takes both layouts of two pages (frames adjacent and apart, which a boot produced by committing in turn with another VMO) and checks `Contiguous` and `query_address()` against what the frames say; it also pins a clone at an offset, a range that fails at its second page (the first stays unpinned), three pins quarantined and released by one call, a token asked after its quarantine, and a refusal that commits nothing.
+- `btistress.test`, five runs in a row on four CPUs, all ok. Its first race has an unpinning, a closing and an asking thread meet at each of 32 tokens and act in a different order on each; 13 to 22 of the 32 pins ended in the quarantine in a pass (so both outcomes happen), over 6 passes. Its second has one thread pin, one release the quarantine and one close the BTI's last handle at three quarters: about 300 pins were made and 100 refused in each run (both happen). It cannot run on one CPU: see `docs/repairs/261030/kernel-time.md`, item 1, which also stops every one-CPU boot here.
+- Mutations, each undone afterwards, against `bti.test`: no early fault-state check (1 check failed); no bound on `query_address()` (1); the last handle of a token unpinning instead of quarantining (14); the destructor unpinning the quarantine instead of leaking it (1); the destructor freeing the records without unpinning (1, which the earlier version of the leak check missed and the use count now catches); `release_quarantine()` leaving the pages pinned (7); `release_quarantine()` freeing only the first record (4). Against `btistress.test`: the last handle of a token reading its pin without taking it (3 checks failed, the pin was counted twice); no check at all refusing a pin into a BTI that cannot take it (1 failed). One mutation survives and should: taking out only the check under the lock in `pin()`, since the early one refuses first and only a pin that races a quarantine reaches the later one. That check rests on the argument above.
+- An independent read of the objects, the mm call and the test, by a reviewer given the code and not the conclusions, found no concurrency, lifetime, error-path or overflow defect. It made three suggestions (the early check, no panic from `query_address()`, the error log), all taken, and listed the cases `bti.test` lacked (a clone, a partial failure, more than one quarantined pin, a token asked after its quarantine, the leak check being too weak, no second thread), all added.
+- clang-tidy on the three sources, `bti_test.cpp` and `bti_stress_test.cpp`: no diagnostic on a line this change wrote; the two first reported (a destructor without `override`, parameter names with a trailing underscore) were fixed. clang-format: clean.
+- Not measured: the out-of-memory exits of `pin()`, which a test cannot reach. Not exercised by any test: the check under the lock in `pin()` (see the surviving mutation), and a pin of a VMO with a page source.
+
+**Deliberately not done**
+The system calls (`iommu_create`, `bti_create`, `bti_pin`, `pmt_unpin`, `bti_release_quarantine`), the System slot that gates `iommu_create`, and `vmo_create_contiguous`: they are 5b, 6 and 7. An isolating IOMMU: the stub is the only type, and `docs/repairs/261030/kernel-object.md` item 3 says what that costs. A BTI per (IOMMU, id) that a restarted driver can find again (item 4). `object_get_info` for the three objects.
+
+**How it was found**
+None, a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. A driver is killed with a buffer pinned and its device mid-transfer. What happens to the buffer, why can the kernel not free it, and what does the next `bti_pin` on that BTI answer?
+2. Why does `pin()` check "no quarantine and not orphaned" and publish the new record under one hold of the BTI's lock, and not check first and publish after?
+3. Why is the pin a record the BTI owns, with the token only pointing at it, and not the token itself in the BTI's lists?

@@ -90,6 +90,17 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return Status::Unimplemented;
     }
 
+    /// The physical address of the first byte of [offset, offset + size), when
+    /// every page of the range is there and the pages follow one another in
+    /// physical memory: one run, which a device can be given as a single
+    /// address. Looking is not using: nothing is committed to make the answer.
+    /// Not empty (InvArgs), and page aligned for a paged object; within the
+    /// object (OutOfRange); a page that is not committed, or a gap between two
+    /// frames, BadState.
+    virtual auto lookup_contiguous(VirtAddr offset, usize size, PhysAddr *out) -> Status {
+        return Status::NotSupported;
+    }
+
     /// Commits [offset, offset + size) and pins it: the pages stay in the frames
     /// they are in, and in this object, until the pin is undone with
     /// unpin_range(), whatever else happens to the object, so that a device

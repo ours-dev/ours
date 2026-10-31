@@ -121,6 +121,10 @@ class VmObjectPaged: public VmObject {
     /// See VmObject::unpin_range().
     auto unpin_range(VirtAddr offset, usize size) -> Status override;
 
+    /// See VmObject::lookup_contiguous(). A page this object only sees through
+    /// an ancestor counts as there, at the ancestor's frame.
+    auto lookup_contiguous(VirtAddr offset, usize size, PhysAddr *out) -> Status override;
+
     /// Takes [offset, offset + size) of this object's slots into |pages|, a
     /// fresh list of size / PAGE_SIZE slots (see VmCowPages::take_pages_locked()).
     /// Page aligned and the list's length, InvArgs otherwise; OutOfRange past

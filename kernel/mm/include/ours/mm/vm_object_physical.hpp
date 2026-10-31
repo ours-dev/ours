@@ -30,6 +30,17 @@ class VmObjectPhysical: public VmObject {
         return m_size;
     }
 
+    /// A window onto physical memory is contiguous by being one: the address of
+    /// its byte at |offset|. The same range checks as lookup_range(); a window
+    /// that does not start on a page can still be asked for a run of its own
+    /// bytes, so the alignment the paged object demands is not asked here.
+    auto lookup_contiguous(VirtAddr offset, usize size, PhysAddr *out) -> Status override {
+        if (!size) {
+            return Status::InvArgs;
+        }
+        return lookup_range(offset, size, out);
+    }
+
     auto lookup_range(usize offset, usize size, PhysAddr *pa) -> Status {
         m_canary.verify<Self>();
 
