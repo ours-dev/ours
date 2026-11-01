@@ -40,11 +40,17 @@ class MemoryReclaimer {
     /// Starts its thread. OutOfMem when there is none for it.
     auto start() -> Status;
 
-    /// Asks the thread to give back |frames| frames, and returns. A request
-    /// made while one is being served is added to it as the larger of the two,
-    /// not their sum: the watchdog asks again each time it looks, with the
-    /// distance to where it wants free memory, which has not changed.
+    /// Asks the thread to give back |frames| frames, and returns. Two asks
+    /// the thread has not taken keep the larger. Each is a distance from the
+    /// free memory just read, and the thread has not run between them.
     auto request(usize frames) -> void;
+
+    /// The ask the thread has not taken, or 0. The thread walks what this
+    /// returns. A synchronous reclaim calls it and drops the result: that
+    /// walk has its own count, and an ask left from an earlier look is not
+    /// walked after it.
+    [[nodiscard]]
+    auto take() -> usize;
 
     /// Gives back up to |frames| frames now, on the calling thread: zero
     /// pages on every node first, then pager pages on every node. How many

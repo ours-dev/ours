@@ -116,3 +116,53 @@ None
 - Why does `Hold` call `unlock()` before `signal()`, instead of letting the guard's destructor drop the mutex?
 - Why is the `Guard` a member written in the header, rather than an `acquire()` in the `.cpp`?
 - Why can `from_boot_options()` be invalid when `make()` cannot?
+
+## Title: a synchronous reclaim drops the ask the thread has not taken (2026-11-01)
+
+**Files**
+- `kernel/mm/include/ours/mm/memory_reclaimer.hpp`, `kernel/mm/memory_reclaimer.cpp` — `take()` exchanges `m_wanted` for 0
+- `kernel/mm/memory_watchdog.cpp` — OutOfMemory calls `take()` and drops the result before `reclaim()`
+- `.agents/skills/ours-kernel-design/references/mm.md` — the rule next to D3
+
+**Symptom**
+An ask left in `m_wanted` by an earlier look is a count, and `run()` spends it without reading free memory again. OutOfMemory walks on the watchdog's thread and used to leave that count for the thread. At the default levels one such count can be as wide as the Critical band, 100 MiB, or the Warning band, 150 MiB. The pages past the zero pages are clean pager pages, and the program faults them back in.
+
+**Cause**
+`request()` only stores a new distance when it is larger than `m_wanted`. `run()` is what exchanges the word for 0, and it then walks whatever it got. The synchronous `reclaim()` did not touch the word. An ask posted at the previous look stayed until the thread was scheduled, which is after the watchdog's own walk when the thread has not run yet.
+
+The max itself is the choice for two asks the thread has not taken. Each is a distance, the thread has not run between the looks, and free memory usually moves only a little in that gap. The waste that is not that gap is a whole earlier distance walked after the synchronous one.
+
+**Change**
+`take()` exchanges `m_wanted` for 0. `run()` walks what it returns, as it did with the exchange inline. OutOfMemory calls `take()` and drops the result, then `reclaim()` with its own count. The thread then finds 0 and waits. If the look that follows is still Warning or Critical, `request()` posts that distance.
+
+```cpp
+auto _ = m_reclaimer.take();
+if (auto const freed = m_reclaimer.reclaim(goal - free); freed != 0) {
+```
+
+A thread that has already exchanged keeps the count in a local and walks it. `take()` cannot pull that back. That walk is the one already in progress, and the lock makes the watchdog's walk wait for it. Two asks still waiting keep the larger. `request()` is unchanged.
+
+**Reference**
+None
+
+**Verification**
+- clang-format clean on the touched C++ files. clang-tidy `-p out/bringup.x86` on `memory_reclaimer.cpp` and `memory_watchdog.cpp` reported nothing in those files.
+- `python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/reclaim-one`: build ok in 2.3s. dbg PASS, shell at 5.7s, 44 passed, 4 skipped, 0 failed. rel PASS, shell at 4.8s, 41 passed, 8 skipped, 0 failed, 7/7 required. host-tests PASS, 151 passed, 0 failed.
+- `python3 scripts/kshell_run.py --out out/reclaim-one pagereclaim.test mempressure.test`: pagereclaim.test ok, 18 checks; mempressure.test ok, 15 checks.
+- The OutOfMemory check still logs 48 frames on the watchdog's thread and then 40 of 40 on the reclaim thread. That 40 is the distance `request()` posts after the walk, because free memory has landed in Critical (`critical + debounce - free`). It is not a count left over from before `take()`. The test does not show an ask being dropped.
+
+**Deliberately not done**
+- Replacing the max with the latest distance. The gap before the thread runs is the waste accepted here.
+- One walker, with the watchdog waiting on a generation. The synchronous walk stays on the watchdog's thread.
+- The watchdog mutex still covers the walk. A failed arm still calls `look()` again with no bound.
+
+**How it was found**
+The OutOfMemory line of `pagereclaim.test` on 2026-11-01, read against `request()` and `run()`. The decision to drop the untaken ask and keep the max was made then.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why does OutOfMemory drop what `take()` returns, instead of walking it?
+- Why can a walk already inside `reclaim()` still spend the old distance?
+- Why does `request()` still keep the larger of two asks?

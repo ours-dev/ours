@@ -43,6 +43,10 @@ auto MemoryReclaimer::request(usize const frames) -> void {
     m_signal.signal();
 }
 
+auto MemoryReclaimer::take() -> usize {
+    return m_wanted.exchange(0, std::memory_order_acq_rel);
+}
+
 auto MemoryReclaimer::reclaim(usize const frames) -> usize {
     // A pause, or nothing asked, does not wait out a walk already running.
     // The tests that pause the reclaimer must not block behind one.
@@ -71,7 +75,7 @@ auto MemoryReclaimer::reclaim(usize const frames) -> usize {
 auto MemoryReclaimer::run() -> i32 {
     while (true) {
         auto _ = m_signal.wait(time::Deadline::infinite());
-        auto const wanted = m_wanted.exchange(0, std::memory_order_acq_rel);
+        auto const wanted = take();
         if (wanted == 0) {
             continue;
         }

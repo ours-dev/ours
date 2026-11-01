@@ -156,6 +156,10 @@ auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
         // about to be refused, so what can be given back is given back first,
         // on this thread, and what is found afterwards is what is declared.
         auto const goal = m_levels.bounds_of(found).upper;
+        // This walk has its own count. An ask the thread has not taken is an
+        // earlier distance, and reclaim() would spend it even after free
+        // memory is back.
+        auto _ = m_reclaimer.take();
         if (auto const freed = m_reclaimer.reclaim(goal - free); freed != 0) {
             log::info("mm: out of memory: gave back {} frames before refusing anything", freed);
             free = approx_free_frame_count();
