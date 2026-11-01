@@ -19,8 +19,10 @@
 /// connections on its server end, a resolve past the instances to whoever
 /// asked (the router among them, whose termination rests on exactly that).
 namespace init {
-/// Component instances, the root's own among them (D27: 8 components).
-inline constexpr auto MAX_INSTANCES = usize{8};
+/// Component instances, the root's own among them (D27: 8 components; dev
+/// has outgrown the design's count with the filesystem component, and the
+/// next component bumps this with its own).
+inline constexpr auto MAX_INSTANCES = usize{10};
 
 /// /boot connections: namespace entries the root binds, and every Open and
 /// Clone through them (D27: 128).

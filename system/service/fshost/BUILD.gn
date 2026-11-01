@@ -47,6 +47,11 @@ component_manifest("fshost.cm") {
         path = "/tmp"
         rights = [ "rw*" ]
       },
+      {
+        directory = "disk"
+        path = "/disk"
+        rights = [ "rw*" ]
+      },
     ]
     capabilities = [
       {

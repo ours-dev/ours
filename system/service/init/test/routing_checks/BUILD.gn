@@ -87,6 +87,11 @@ component_manifest("routing_checks.cm") {
         rights = [ "rx*" ]
       },
       {
+        directory = "disk"
+        path = "/disk"
+        rights = [ "rw*" ]
+      },
+      {
         protocol = [
           "ours.process.Launcher",
           "ours.resource.Debug",

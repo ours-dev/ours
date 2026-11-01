@@ -58,6 +58,10 @@ using ours::Uandle;
 /// namespace entries: an NsDir handle's arg is its name's index.
 constexpr auto BOOT_PATH = std::string_view{"/boot"};
 constexpr auto TMP_PATH = std::string_view{"/tmp"};
+/// The disk's mount, which only exists when the image carries one: btreefs
+/// exits having served nothing without a disk, so no NsDir for this path
+/// arrives, and no mount point is made.
+constexpr auto DISK_PATH = std::string_view{"/disk"};
 
 /// The two views of the mounts, each exposed as its own directory capability
 /// (system/service/fshost/BUILD.gn): `all` carries every mount point, `ro`
@@ -71,6 +75,7 @@ constexpr auto RO_NAME = std::string_view{"ro"};
 /// exposes and root.cm offers by.
 constexpr auto BOOT_NAME = std::string_view{"boot"};
 constexpr auto TMP_NAME = std::string_view{"tmp"};
+constexpr auto DISK_NAME = std::string_view{"disk"};
 
 /// What the tree is served with: the ceiling of what an Open of either view
 /// may ask, the rights root.cm offers them with -- rx* for the BootFS mount,
@@ -79,8 +84,9 @@ constexpr auto TMP_NAME = std::string_view{"tmp"};
 constexpr auto SERVED_RIGHTS = ours_io::RX_STAR_DIR | ours_io::W_STAR_DIR;
 
 /// How many nodes the tree has room for: the root, the two views, the two
-/// mount points of `all`, `ro`'s boot, and room for the mounts to come.
-constexpr auto NODES = usize{8};
+/// mount points of `all`, `ro`'s boot, the disk's mount when it exists, and
+/// room for the mounts to come.
+constexpr auto NODES = usize{9};
 
 /// How many connections may be live at once: the outgoing directory itself,
 /// plus every view connection and every connection made through them.
@@ -126,7 +132,7 @@ constinit Report REPORT;
 /// The routed directories, taken the way fsio binds its namespace (an NsDir
 /// handle's arg is its name's index): |boot| from /boot, |tmp| from /tmp.
 /// Every other NsDir is closed: this program's manifest uses only these two.
-auto take_mounts(Uandle *boot, Uandle *tmp) -> void {
+auto take_mounts(Uandle *boot, Uandle *tmp, Uandle *disk) -> void {
     auto index = u32{0};
     for (auto const name: ort::process_args().names()) {
         if (index > u16{0xFFFF}) {
@@ -142,6 +148,8 @@ auto take_mounts(Uandle *boot, Uandle *tmp) -> void {
             *boot = directory;
         } else if (name == TMP_PATH) {
             *tmp = directory;
+        } else if (name == DISK_PATH) {
+            *disk = directory;
         } else {
             auto _ = ours::handle_close(directory);
         }
@@ -157,7 +165,8 @@ auto main(int, char **) -> int {
     }
     auto boot = Uandle::Invalid;
     auto tmp = Uandle::Invalid;
-    take_mounts(&boot, &tmp);
+    auto disk = Uandle::Invalid;
+    take_mounts(&boot, &tmp, &disk);
     if (boot == Uandle::Invalid || tmp == Uandle::Invalid) {
         auto _ = ort::debug_line("fshost: started without the boot or the tmp directory");
         auto _ = ours::handle_close(boot);
@@ -183,6 +192,11 @@ auto main(int, char **) -> int {
     if (mounted.is_ok()) {
         mounted = tree.add_remote(all, TMP_NAME, tmp);
     }
+    // The disk's mount is optional: no handle, no entry, and the `all` view
+    // simply carries one mount point fewer.
+    if (mounted.is_ok() && disk != Uandle::Invalid) {
+        mounted = tree.add_remote(all, DISK_NAME, disk);
+    }
     if (mounted.is_ok()) {
         mounted = tree.add_remote(ro, BOOT_NAME, boot);
     }
@@ -191,6 +205,7 @@ auto main(int, char **) -> int {
             {"fshost: a mount point was refused: ", ours::to_string(mounted.unwrap_err())});
         auto _ = ours::handle_close(boot);
         auto _ = ours::handle_close(tmp);
+        auto _ = ours::handle_close(disk);
         auto _ = ours::handle_close(directory_request);
         return 1;
     }

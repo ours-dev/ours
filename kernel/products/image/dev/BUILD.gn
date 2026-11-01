@@ -116,6 +116,11 @@ component_manifest("root.cm") {
       startup = "eager"
     },
     {
+      name = "btreefs"
+      manifest = "//system/service/btreefs:btreefs.cm"
+      startup = "eager"
+    },
+    {
       name = "shell"
       manifest = "//system/app/shell:shell.cm"
       startup = "eager"
@@ -173,6 +178,29 @@ component_manifest("root.cm") {
         directory = "tmp"
         from = "#memfs"
         to = [ "#fshost" ]
+        rights = [ "rw*" ]
+      },
+
+      # The block device's protocol, to the filesystem that lays a volume on
+      # the ours-fs partition. routing_checks reaches the same device for
+      # its table and block checks; the two clients write nothing shared.
+      {
+        protocol = "ours.block.Block"
+        from = "#virtio-blk"
+        to = [ "#btreefs" ]
+      },
+
+      # The filesystem's tree, to fshost -- which mounts it at `disk` -- and
+      # to routing_checks, which creates, writes and reads back a file on it
+      # directly. Nothing offers it where there is no disk: btreefs exits
+      # having served nothing, and the routes answer NotFound.
+      {
+        directory = "disk"
+        from = "#btreefs"
+        to = [
+          "#fshost",
+          "#routing_checks",
+        ]
         rights = [ "rw*" ]
       },
 

@@ -1790,9 +1790,88 @@ auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE
 
 /// The disk's partition table, when the disk carries one: ours.gpt reads the
 /// GPT through the block connection, and the ours-fs partition it names must
-/// hold the marker scripts/make_gpt_disk.py wrote at its first block. Skips
+/// carry the superblock scripts/make_gpt_disk.py lays at its first block. Skips
 /// on a disk with no GPT -- most disks the checks see are the plain image --
 /// and on no disk at all, as check_block does.
+/// The filesystem on the disk's ours-fs partition, through the directory
+/// this process's manifest uses at /disk: create a file, write a pattern
+/// into it, read it back through a fresh open, and find it in the root's
+/// listing. The images without a disk have no /disk at all -- the open of
+/// its root answers NotFound, and the check skips.
+auto check_disk() -> void {
+    constexpr auto DIR = std::string_view{"/disk"};
+    constexpr auto FILE = std::string_view{"/disk/btreefs-check.txt"};
+    constexpr auto MARK = std::string_view{"btreefs write check"};
+    auto pattern = std::array<u8, 64>{};
+    std::memcpy(pattern.data(), MARK.data(), MARK.size());
+    pattern[63] = 0x5A;
+
+    auto const root = fsio::open(DIR, Flags::PermReadBytes | Flags::PermEnumerate);
+    if (root.is_err()) {
+        // No disk, or the filesystem on it having found none: any refusal
+        // here is the check's skip case, as /disk is simply not there.
+        auto _ = ort::debug_line({"routing_checks: no disk directory (",
+                                  ours::to_string(status_of(root)), "), skipped"});
+        return;
+    }
+
+    // Create (or find, a past boot having made it) and write the pattern.
+    auto file =
+        fsio::open(FILE, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("/disk file", status_of(file), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto const wrote = fsio::write(file.unwrap(), pattern);
+    if (!expect("/disk file write", status_of(wrote), Status::Ok)) {
+        auto _ = fsio::close(file.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    if (wrote.unwrap() != pattern.size()) {
+        fail("/disk file write: a short write");
+        auto _ = fsio::close(file.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk file close", fsio::close(file.unwrap()), Status::Ok);
+
+    // Read it back through a fresh open: seek 0, every byte the pattern's.
+    file = fsio::open(FILE, Flags::PermReadBytes);
+    if (!expect("/disk file reopen", status_of(file), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto read_back = std::array<u8, pattern.size()>{};
+    auto const read = fsio::read(file.unwrap(), read_back);
+    if (expect("/disk file read", status_of(read), Status::Ok) && read.unwrap() == pattern.size() &&
+        read_back != pattern) {
+        fail("/disk file read: the bytes are not the pattern");
+    }
+    auto _ = fsio::close(file.unwrap());
+
+    // The listing names it.
+    auto listing = std::array<u8, 512>{};
+    auto const dirents = fsio::read_dirents(root.unwrap(), listing);
+    if (expect("/disk listing", status_of(dirents), Status::Ok)) {
+        auto reader = ours_io::DirentReader(std::span{listing}.first(dirents.unwrap()));
+        auto named = false;
+        while (true) {
+            auto const entry = reader.next();
+            if (entry.is_err() || entry->is_none()) {
+                break;
+            }
+            if ((*entry)->name == "btreefs-check.txt") {
+                named = true;
+            }
+        }
+        if (!named) {
+            fail("/disk listing: the file is not named");
+        }
+    }
+    auto _ = fsio::close(root.unwrap());
+}
+
 auto check_gpt() -> void {
     auto const connection = connect_or_fail(BLOCK);
     if (connection == Uandle::Invalid) {
@@ -1841,13 +1920,16 @@ auto check_gpt() -> void {
         return;
     }
 
-    auto marker = std::array<u8, ours_block::BLOCK_SIZE>{};
-    if (!expect("Gpt partition read", block.read(partition.first_lba, 1, marker), Status::Ok)) {
+    auto super = std::array<u8, ours_block::BLOCK_SIZE>{};
+    if (!expect("Gpt partition read", block.read(partition.first_lba, 1, super), Status::Ok)) {
         return;
     }
-    constexpr auto MARKER = std::string_view{"OURS-fs-partition"};
-    if (std::string_view{reinterpret_cast<char const *>(marker.data()), MARKER.size()} != MARKER) {
-        fail("Gpt.Read: the partition does not start with its marker");
+    // The script lays a formatted btreefs volume on the partition; its
+    // superblock's magic is what the first block starts with, and what
+    // btreefs opens the volume by.
+    constexpr auto MAGIC = std::string_view{"BTREEFS"};
+    if (std::string_view{reinterpret_cast<char const *>(super.data()), MAGIC.size()} != MAGIC) {
+        fail("Gpt.Read: the partition does not start with the volume's magic");
         return;
     }
 }
@@ -2076,8 +2158,8 @@ auto main(int argc, char **argv) -> int {
         auto _ = ort::debug_line("routing_checks: FAILED");
         return 1;
     }
-    if (auto const bound = fsio::installed_namespace().size(); bound != 6) {
-        fail("the namespace does not hold the manifest's five directory uses and /svc");
+    if (auto const bound = fsio::installed_namespace().size(); bound != 7) {
+        fail("the namespace does not hold the manifest's six directory uses and /svc");
     }
     check_process_self("object_get_info(process_self())");
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
@@ -2120,6 +2202,7 @@ auto main(int argc, char **argv) -> int {
     }
     check_block();
     check_gpt();
+    check_disk();
     check_echo();
 
     if (FAILURES != 0) {

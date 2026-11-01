@@ -3,14 +3,14 @@
 
 The image carries what ours_gpt parses on a booted system: a protective MBR,
 a GPT header at LBA 1, and the partition entry array at LBA 2, with one
-partition of the "ours filesystem" type whose first block holds a marker the
+partition of the "ours filesystem" type carrying a formatted btreefs volume
 booted check reads back. Usage:
 
     python3 scripts/make_gpt_disk.py <image> [<size-mib>]
 
 The partition starts at LBA 2048, which keeps the write check's scratch LBA
 1000 -- and anything a later milestone puts below the first partition --
-outside the partition the marker lives in.
+the volume's metadata lives outside the partition's first blocks.
 """
 
 import argparse
@@ -27,7 +27,7 @@ PARTITION_BLOCKS = 2048
 # "ours filesystem", the type GUID ours_gpt names, in mixed-endian bytes.
 OURS_FS_TYPE = uuid.UUID("5E3C4A9D-2B71-4F08-9A3D-6CE1F042B867").bytes_le
 # What the booted check expects at the partition's first block.
-MARKER = b"OURS-fs-partition\x00"
+MAGIC = b"BTREEFS"
 
 
 def crc32(data: bytes) -> int:
@@ -114,9 +114,28 @@ def main() -> None:
     entries = entry_array()
     image[LBA : 2 * LBA] = gpt_header(entries, disk_blocks)
     image[2 * LBA : 2 * LBA + NUM_ENTRIES * ENTRY_BYTES] = entries
-    # The partition's marker, at the partition's first block.
+    # The partition carries a formatted btreefs volume from the first block:
+    # the superblock btreefs opens, then its free bitmap. The bytes follow
+    # ours_btreefs's format (system/lib/ours.btreefs) -- superblock fields
+    # little-endian at their offsets, the metadata's blocks marked used in
+    # the bitmap -- so a boot finds the volume made and serves it.
     start = PARTITION_FIRST_LBA * LBA
-    image[start : start + len(MARKER)] = MARKER
+    BLOCK = 4096
+    volume_blocks = PARTITION_BLOCKS * LBA // BLOCK
+    bitmap_blocks = (volume_blocks + BLOCK * 8 - 1) // (BLOCK * 8)
+    super = bytearray(BLOCK)
+    super[0 : len(MAGIC)] = MAGIC
+    super[8:16] = volume_blocks.to_bytes(8, "little")
+    super[32:40] = (1).to_bytes(8, "little")  # the bitmap, from block 1
+    super[40:44] = bitmap_blocks.to_bytes(4, "little")
+    super[48:56] = (1).to_bytes(8, "little")  # the next object id
+    image[start : start + BLOCK] = super
+    bits = bytearray(BLOCK)
+    for block in range(1 + bitmap_blocks):
+        bits[block // 8] |= 1 << (block % 8)
+    for index in range(bitmap_blocks):
+        at = start + (1 + index) * BLOCK
+        image[at : at + BLOCK] = bits if index == 0 else bytearray(BLOCK)
 
     with open(args.image, "wb") as f:
         f.write(image)
