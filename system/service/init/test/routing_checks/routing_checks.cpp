@@ -1967,10 +1967,7 @@ auto check_disk() -> void {
     // The mounted capability is THIS handle's rights: everything the
     // mounted path will ever ask must be asked here too, so the listing's
     // Enumerate and GetAttributes ride along.
-    auto const disk_dir =
-        fsio::open("/disk", Flags::PermConnect | Flags::PermReadBytes | Flags::PermWriteBytes |
-                                Flags::PermTraverse | Flags::PermModifyDirectory |
-                                Flags::PermEnumerate | Flags::PermGetAttributes);
+    auto const disk_dir = fsio::open("/disk", ours_io::PERM_READABLE | ours_io::PERM_WRITABLE);
     if (disk_dir.is_err()) {
         // No disk, or the filesystem on it having found none: any refusal
         // here is the skip case, as /disk is simply not there.
@@ -2089,6 +2086,36 @@ auto check_disk() -> void {
     // directory, whose Open forwards through the mount, so the mounted
     // path works exactly like the disk's own.
     expect("mounted unlink", fsio::unlink("/vfs-all/extra/mounted-check.txt"), Status::Ok);
+
+    // The working directory on the mounted filesystem: relative create,
+    // write, and read back -- the cwd handle is a direct line to this
+    // filesystem, so relative opens need no namespace and no forwarding.
+    auto const cwd_flags = ours_io::PERM_READABLE | ours_io::PERM_WRITABLE;
+    expect("chdir mounted", fsio::chdir("/vfs-all/extra", cwd_flags), Status::Ok);
+    auto const cwd_file = fsio::open("cwd-check.txt", Flags::PermReadBytes | Flags::PermWriteBytes |
+                                                          Flags::FlagMaybeCreate);
+    if (!expect("cwd create", status_of(cwd_file), Status::Ok)) {
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    if (!expect("cwd write", status_of(fsio::write(cwd_file.unwrap(), mount_mark)), Status::Ok)) {
+        auto _ = fsio::close(cwd_file.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    expect("cwd close", fsio::close(cwd_file.unwrap()), Status::Ok);
+    auto const cwd_reopen = fsio::open("cwd-check.txt", Flags::PermReadBytes);
+    if (expect("cwd reopen", status_of(cwd_reopen), Status::Ok)) {
+        auto back = std::array<u8, mount_mark.size()>{};
+        auto const read = fsio::read(cwd_reopen.unwrap(), back);
+        if (expect("cwd read back", status_of(read), Status::Ok) &&
+            (read.unwrap() != mount_mark.size() || back != mount_mark)) {
+            fail("cwd read back: the bytes are not the mark");
+        }
+        auto _ = fsio::close(cwd_reopen.unwrap());
+    }
+    expect("cwd unlink", fsio::unlink("/vfs-all/extra/cwd-check.txt"), Status::Ok);
+    auto _ = ours::handle_close(admin);
 
     // The isolation half: the read-only view does not carry the mount. An
     // open's refusal surfaces at the handle's first use, so the probe
@@ -2219,6 +2246,36 @@ auto check_gpt() -> void {
         fail("Gpt.Read: the partition does not start with the volume's magic");
         return;
     }
+}
+
+/// The working directory: relative opens resolve against it, chdir accepts
+/// absolute and relative paths, and a ".." past it is refused. Probes on
+/// /boot, which every image carries -- read-only, but the cwd needs only
+/// read and traverse.
+auto check_cwd() -> void {
+    // Before any chdir, a relative open names nothing: BadPath.
+    expect("cwd before chdir", status_of(fsio::open("cwd-early.txt", Flags::PermReadBytes)),
+           Status::BadPath);
+
+    // chdir into the writable view, then a relative open walks from it:
+    // this program's own image, read through the working directory. (The
+    // chdir's flags include Modify -- a writable cwd -- so a read-only dir
+    // like /boot would refuse, its epitaph surfacing at the first relative
+    // use; the writable view is the honest probe.)
+    expect("chdir /vfs-all", fsio::chdir("/vfs-all", ours_io::PERM_READABLE), Status::Ok);
+    auto const self = fsio::open("boot/bin/routing_checks", Flags::PermReadBytes);
+    if (!expect("cwd open relative", status_of(self), Status::Ok)) {
+        return;
+    }
+    auto magic = std::array<u8, 4>{};
+    if (expect("cwd read", status_of(fsio::read(self.unwrap(), magic)), Status::Ok) &&
+        (magic[0] != 0x7f || magic[1] != 'E' || magic[2] != 'L' || magic[3] != 'F')) {
+        fail("cwd read: the bytes are not ELF");
+    }
+    auto _ = fsio::close(self.unwrap());
+
+    // Climbing past the working directory is refused client-side.
+    expect("cwd dotdot", status_of(fsio::open("../tmp", Flags::PermReadBytes)), Status::BadPath);
 }
 
 auto check_echo() -> void {
@@ -2487,6 +2544,7 @@ auto main(int argc, char **argv) -> int {
         check_launcher_refusals(job);
         check_spawn(job);
     }
+    check_cwd();
     check_block();
     check_gpt();
     check_disk();

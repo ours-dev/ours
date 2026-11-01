@@ -28,6 +28,10 @@ namespace {
     /// dynamic initialisers (//system/lib/ort, src/start.cpp).
     constinit Namespace INSTALLED;
 
+    /// The working directory's handle, Invalid until the first chdir(): the
+    /// handle relative opens resolve against. Per process, not inherited.
+    Uandle CWD_DIRECTORY = Uandle::Invalid;
+
     /// install()'s first answer, which every later call gives again. Plain
     /// variables, constant-initialised: the runtime makes the first call
     /// before main, on the only thread there is.
@@ -370,6 +374,26 @@ auto open(std::string_view const path, Flags const flags, Uandle const object) -
     if (auto const status = clean_path(path, clean); status != Status::Ok) {
         return refuse(status);
     }
+
+    // A relative path resolves against the working directory -- the same
+    // Open message the namespace open sends, on the working directory's
+    // handle. A ".." past the working directory is refused here: a
+    // directory handle has no above for the walk to climb to.
+    if (!clean.view().starts_with('/')) {
+        if (CWD_DIRECTORY == Uandle::Invalid || clean.view().starts_with("..")) {
+            return refuse(Status::BadPath);
+        }
+        auto const written = send_open(CWD_DIRECTORY, clean.view(), flags, object);
+        if (written != Status::PeerClosed) {
+            return written;
+        }
+        // The working directory's server is gone; the handle names nothing
+        // now, and the next chdir() sets a fresh one.
+        auto _ = ours::handle_close(CWD_DIRECTORY);
+        CWD_DIRECTORY = Uandle::Invalid;
+        return Status::PeerClosed;
+    }
+
     auto const resolved = INSTALLED.resolve(clean);
     if (resolved.is_err()) {
         return refuse(resolved.unwrap_err());
@@ -736,6 +760,22 @@ auto unlink(std::string_view const path) -> ours::Status {
     }
     auto _ = ours::handle_close(parent.unwrap());
     return decoded.unwrap();
+}
+
+auto chdir(std::string_view const path, ours_io::Flags const flags) -> Status {
+    // The open itself resolves absolute paths through the namespace and
+    // relative ones against the working directory -- so a relative chdir
+    // naturally lands under the current one. |flags| become the working
+    // directory's rights: the capability the relative opens live within.
+    auto const opened = open(path, flags);
+    if (opened.is_err()) {
+        return opened.unwrap_err();
+    }
+    if (CWD_DIRECTORY != Uandle::Invalid) {
+        auto _ = ours::handle_close(CWD_DIRECTORY);
+    }
+    CWD_DIRECTORY = opened.unwrap();
+    return Status::Ok;
 }
 
 auto read_dirents(Uandle const directory, std::span<u8> const buffer)

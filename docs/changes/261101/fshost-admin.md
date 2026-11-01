@@ -60,12 +60,15 @@ PASS 158 -- diskless, where the mount check skips. With the GPT disk:
 `routing_checks: passed` -- the mount lands, a file created through
 `/vfs-all/extra/` reads back through a fresh open AND through `/disk/`
 (one filesystem, two namespace names), a `fsio::list` through the mounted
-path names the file (the mounted capability is the passed handle's rights:
-the check's first /disk handle lacked Enumerate and the forwarded open was
-correctly refused -- the rights model working end to end), the unlink goes
-through the mounted path (fsio unlinks via the parent directory), and
+path names the file, a working directory set to the mounted path serves
+relative create/write/read, the unlink goes through the mounted path, and
 `/vfs/extra` opens Ok but reads NotFound -- the read-only view's epitaph
-surfacing at first use. clang-tidy quiet.
+surfacing at first use. Two rights lessons the run taught, both the model
+working end to end: the mounted capability is the passed handle's rights
+(the first /disk handle lacked Enumerate and the forwarded open was
+correctly refused), and the working directory's rights are chdir's flags
+(a PERM_READABLE-only chdir yields a cwd whose relative creates are
+correctly refused). clang-tidy quiet.
 
 **Deliberately not done**
 - Unmount: wants a rule for active connections; the mount point dies with
