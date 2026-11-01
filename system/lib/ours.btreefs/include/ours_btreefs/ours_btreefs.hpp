@@ -450,6 +450,32 @@ auto lookup(Device &device, Volume const &volume, Key const &key, Value &value) 
     return ours::Status::NotFound;
 }
 
+/// Replaces the value at |key| where it lies -- no structure changes, the
+/// key and its neighbours untouched. NotFound when no item carries it.
+template <typename Device>
+auto update(Device &device, Volume const &volume, Key const &key, Value const &value)
+    -> ours::Status {
+    auto block = volume.root;
+    for (u8 level = 0; level < volume.height; ++level) {
+        auto node = std::array<u8, BLOCK_BYTES>{};
+        if (auto const status = device.read_block(block, std::span{node});
+            status != ours::Status::Ok) {
+            return status;
+        }
+        auto const count = usize{detail::load_le16(node, detail::COUNT_OFFSET)};
+        if (level + 1 == volume.height) {
+            auto const at = detail::leaf_upper_bound(node, count, key);
+            if (at == 0 || detail::leaf_key(node, at - 1) != key) {
+                return ours::Status::NotFound;
+            }
+            detail::store_leaf_value(node, at - 1, value);
+            return device.write_block(block, std::span{node});
+        }
+        block = detail::child_for(node, count, key);
+    }
+    return ours::Status::NotFound;
+}
+
 /// Calls |visit| on every item from |from| onward, in key order, along the
 /// leaves' chain, until |visit| answers false or the chain ends. |visit|
 /// takes (Key const &, Value const &) and answers bool.

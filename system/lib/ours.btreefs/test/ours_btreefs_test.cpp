@@ -304,6 +304,30 @@ TEST(BtreefsTree, KeepsObjectsApart) {
     EXPECT_EQ(marker_of(value), u64{0});
 }
 
+TEST(BtreefsTree, UpdatesAValueInPlace) {
+    Mounted fs(256, 1);
+    insert_all(fs, 1, {0, 1, 2});
+    EXPECT_EQ(ours_btreefs::update(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1),
+                                   value_of(99)),
+              Status::Ok);
+    auto value = Value{};
+    ASSERT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1),
+                                   value),
+              Status::Ok);
+    EXPECT_EQ(marker_of(value), u64{99});
+    ASSERT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 0),
+                                   value),
+              Status::Ok);
+    EXPECT_EQ(marker_of(value), u64{0});
+}
+
+TEST(BtreefsTree, UpdateMissesWhatIsNotThere) {
+    Mounted fs(256, 1);
+    EXPECT_EQ(ours_btreefs::update(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 0),
+                                   value_of(1)),
+              Status::NotFound);
+}
+
 // --- Scans. ---
 
 TEST(BtreefsScan, WalksTheWholeTreeInOrder) {
