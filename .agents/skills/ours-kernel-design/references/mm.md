@@ -123,8 +123,10 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   larger. The watchdog is built holding that reclaimer; `look()` does not
   call `get()`. A test's
   `Hold` is a `Guard` on the watchdog mutex, dropped before the wake, so
-  lockdep sees the hold. `MemoryPressureLevels::make()` is the only builder
-  of a nested value.
+  lockdep sees the hold. `look()` drops `m_lock` for the OutOfMemory walk
+  and reads the levels again before it declares (2026-11-02): the walk
+  sleeps, and the mutex guards the levels and the declaration.
+  `MemoryPressureLevels::make()` is the only builder of a nested value.
 
 ## CpuLocal (Linux, not Zircon)
 

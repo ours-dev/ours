@@ -144,28 +144,40 @@ auto MemoryWatchdog::run() -> i32 {
 }
 
 auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
-    Guard guard{m_lock};
-    auto free = approx_free_frame_count();
-    auto found = m_levels.pressure_at(free);
-
-    // What is asked of the reclaimer is the distance to where this pressure
-    // ends, the upper edge of its bounds: free memory there looks, to this,
-    // like the pressure above.
-    if (found == MemoryPressure::OutOfMemory) {
-        // Nothing waits for a thread here: the allocations that could wait are
-        // about to be refused, so what can be given back is given back first,
-        // on this thread, and what is found afterwards is what is declared.
-        auto const goal = m_levels.bounds_of(found).upper;
+    // The count is taken under the lock. The walk sleeps in the page owner's
+    // lock, and m_lock guards only the levels and the declaration, so it is
+    // dropped for the walk. Hold and set_levels() can run then. What is
+    // declared below reads the levels and the free memory again.
+    usize frames = 0;
+    {
+        Guard guard{m_lock};
+        auto const free = approx_free_frame_count();
+        auto const found = m_levels.pressure_at(free);
+        if (found == MemoryPressure::OutOfMemory) {
+            // Nothing waits for a thread here: the allocations that could wait
+            // are about to be refused, so what can be given back is given back
+            // first, on this thread. The distance is to the upper edge of this
+            // pressure's bounds.
+            auto const goal = m_levels.bounds_of(found).upper;
+            if (goal > free) {
+                frames = goal - free;
+            }
+        }
+    }
+    if (frames != 0) {
         // This walk has its own count. An ask the thread has not taken is an
         // earlier distance, and reclaim() would spend it even after free
         // memory is back.
         auto _ = m_reclaimer.take();
-        if (auto const freed = m_reclaimer.reclaim(goal - free); freed != 0) {
+        auto const freed = m_reclaimer.reclaim(frames);
+        if (freed != 0) {
             log::info("mm: out of memory: gave back {} frames before refusing anything", freed);
-            free = approx_free_frame_count();
-            found = m_levels.pressure_at(free);
         }
     }
+
+    Guard guard{m_lock};
+    auto free = approx_free_frame_count();
+    auto found = m_levels.pressure_at(free);
     if (found == MemoryPressure::Warning || found == MemoryPressure::Critical) {
         m_reclaimer.request(m_levels.bounds_of(found).upper - free);
     }
