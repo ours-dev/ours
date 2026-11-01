@@ -93,7 +93,7 @@ line's lock L1.
   virqs are consecutive in the order of the hardware numbers, from the first
   multiple of 32 past the highest one, so no virq equals any hardware number.
   The table is indexed by hardware number, so the interrupt path, which has
-  that number from the vector, needs no lookup; a control call (`attach`,
+  that number from the root handler, needs no lookup; a control call (`attach`,
   `mask`, `configure`, ...) turns the virq into the hardware number first.
   Anything that needs the vector of a line (a test raising it by IPI) asks
   for the hardware number, never `PlatformIrqMin + virq`.

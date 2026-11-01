@@ -133,7 +133,7 @@ auto handle_irq_for_test(VIrqNum) -> IrqReturn;   // thread context: the flow wi
 } // namespace ours::irq
 ```
 
-If `handle_irq_generic` answers false, arch sends the LAPIC EOI itself. Every vector therefore gets exactly one EOI.
+If `handle_irq_generic` answers false, arch sends the LAPIC EOI itself. Every vector therefore gets exactly one EOI. (Superseded on 2026-11-01 by irq-multi-arch D3 (c), `13a1cc09`: the root handler sends it, not arch.)
 
 ### Responsibility allocation
 

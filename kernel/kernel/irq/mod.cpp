@@ -16,10 +16,12 @@ namespace {
     CPU_LOCAL
     arch::IrqFrame *CURRENT_FRAME;
 
-    // The root controller's handler. Written once by set_root_handler(), before
-    // the first interrupt of the root controller can be taken, and read in
-    // interrupt context on every CPU with no lock. The release store and the
-    // acquire load are what let a CPU that starts later see it.
+    // The root controller's handler. Written once by set_root_handler() on the
+    // boot CPU, in the controller's start-up hook, which runs before that CPU
+    // enables interrupts and before any other CPU starts; read in interrupt
+    // context on every CPU with no lock. That order is what keeps a CPU from
+    // reading it too early. The release store and the acquire load make the
+    // line table, built before the store, visible to whoever reads a handler.
     std::atomic<RootHandler> ROOT_HANDLER{nullptr};
 } // namespace
 

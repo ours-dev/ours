@@ -271,11 +271,14 @@ auto handle_irq_postamble() -> bool;
 
 /// The function the root interrupt controller's driver gives arch. Arch calls
 /// it for an interrupt that comes through the root controller, after it has
-/// separated the CPU's own causes (the local timer, the inter-processor
-/// interrupts) and before the postamble. The handler finds out which interrupt
-/// it is in the way its controller allows (a vector, an acknowledge read, a
-/// claim), hands it to handle_irq_generic(), and ends the interrupt itself if
-/// no line had it, since nothing else knows how.
+/// separated the causes it can tell apart without the controller (x86's
+/// vector, a RISC-V trap cause: the local timer and the inter-processor
+/// interrupts) and before the postamble. Where only the controller's own read
+/// tells them apart (an acknowledge read returns the processor-local
+/// interrupts too), the handler hands those back to arch. The handler finds
+/// out which interrupt it is in the way its controller allows (a vector, an
+/// acknowledge read, a claim), hands it to handle_irq_generic(), and ends the
+/// interrupt itself if no line had it, since nothing else knows how.
 using RootHandler = auto (*)(::arch::IrqFrame *frame) -> void;
 
 /// Installs `handler` as the root handler. There is one for the kernel, and it
