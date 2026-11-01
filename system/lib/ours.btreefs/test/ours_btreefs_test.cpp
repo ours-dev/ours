@@ -10,6 +10,7 @@
 #include <map>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -18,7 +19,6 @@
 namespace {
 using ours::Status;
 using ours_btreefs::BLOCK_BYTES;
-using ours_btreefs::Item;
 using ours_btreefs::Key;
 using ours_btreefs::Value;
 using ours_btreefs::Volume;
@@ -426,9 +426,9 @@ TEST(BtreefsRemove, BorrowKeepsTheParentTrue) {
             if (mid_start <= kept && kept <= offset) {
                 continue;
             }
-            auto const seen = ours_btreefs::lookup(
-                fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, kept), value);
-            ASSERT_EQ(seen, Status::Ok);
+            ASSERT_EQ(ours_btreefs::lookup(fs.device, fs.volume,
+                                           key_of(1, ours_btreefs::ItemType::Data, kept), value),
+                      Status::Ok);
         }
     }
     auto value = Value{};
