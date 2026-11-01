@@ -24,7 +24,7 @@ Goals:
 Non-goals:
 - An AML interpreter in the kernel (microkernel-interrupts D4 keeps AML and `_PRT` in a user-space ACPI component).
 - In-kernel threaded handlers (irq-genirq D3).
-- Interrupt remapping, x2APIC, and any port to ARM or RISC-V: the ABI is kept neutral, the implementations are not planned here.
+- Interrupt remapping, x2APIC, and any port to ARM or RISC-V: the ABI is kept neutral, the implementations are not planned here. The line layer, the platform entry and the chip contract for the ports are taken up by `.agents/tasks/irq-multi-arch/` from 2026-11-01, when riscv and arm became near work; the controllers themselves are still not planned here.
 - Performance work. Any performance item found goes to `docs/repairs/` and is put to the user first.
 
 ## Design
