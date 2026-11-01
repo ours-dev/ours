@@ -15,7 +15,7 @@ The full table, with options and reasons, is in `DESIGN.md`. Those that gate a s
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D0. What happens to `kernel/irq` (gates every step) | keep and extend at its edges; shrink in place; fold into `platform/pc` | keep and extend | None | |
+| D0. What happens to `kernel/irq` (gates every step) | keep and extend at its edges; shrink in place; fold into `platform/pc` | keep and extend | None | Keep and extend, 2026-11-01, left to the assistant by the user; the user may reopen it |
 | D3. The interrupt entry (gates step 2) | `platform_handle_irq(frame)` with no number, the decoder ending what no line has; two entries; the controller's driver installs the entry. Deadline: before riscv-kernel step 2 | the first | None | |
 | D9. Merge order (gates step 2) | per step, see Steps | steps 4 and 5 only on `feat/driver-caps`; steps 2 and 3 on whichever branch the user names | None | |
 | D8. The hands-off pieces (gates step 3) | change only the `set_affinity` stub to NotSupported; leave the rest | that | None | |

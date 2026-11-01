@@ -152,7 +152,7 @@ Each is "not recommended" with its decision row; none is the user's rejection.
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D0. What happens to `kernel/irq` | keep and extend at its edges; shrink in place; fold into `platform/pc` | Keep and extend | None | |
+| D0. What happens to `kernel/irq` | keep and extend at its edges; shrink in place; fold into `platform/pc` | Keep and extend | None | Keep and extend, 2026-11-01. The user was not sure and left it to the assistant ("D0我不确定，你看着来吧"), so the choice is the assistant's, on the reasons in Problem, and the user may reopen it |
 | D1. The test for the kernel and user split | K1 and K2; the root controller only; by privilege alone | K1 and K2 | None | |
 | D2. Per-CPU interrupts | out of the line layer, arch-owned; lines in `Desc` | Out. The user's placement rule of 2026-10-30 supports it for the local APIC and the hart's timer and IPIs; extending it to the GIC's SGIs and PPIs is the open part | None | |
 | D3. The interrupt entry (arch-platform-seams P-irq) | (a) `platform_handle_irq(frame)` with no number, the decoder owning spurious ids and the no-line end; (b) two entries; (c) the controller's driver installs the entry. Deadline: before riscv-kernel step 2 | (a) | None | |
