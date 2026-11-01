@@ -4,6 +4,8 @@
 #define OURS_TASK_IRQ_RCU_HPP 1
 
 #include <ours/assert.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
+#include <ours/task/thread.hpp>
 
 #include <atomic>
 
@@ -36,44 +38,80 @@ namespace ours::task {
 /// short and never blocks: no sleeping, no allocation that can wait, no copy
 /// from user memory, no mutex. That is also what a read of the line layer is
 /// already, because the line lock is taken with interrupts off.
+///
+/// A read is also never switched out. Interrupts off keep the CPU from taking
+/// the rendezvous, but not a thread from being parked in the middle of its
+/// read: a read that wakes another thread on this CPU asks for a reschedule,
+/// and the next time the preemption count falls to zero (the release of a
+/// lock that disables preemption, say) the thread is switched out with its
+/// read open, and the CPU runs another thread with interrupts on. So the
+/// guard holds preemption off as well, for a thread; before the first thread
+/// exists, at boot, there is none to switch and nothing to hold. A handler
+/// has both off by its gate and its preamble.
+///
+/// A CPU reads only while it is in the online mask: the rendezvous asks the
+/// online CPUs. The only reads outside it are on the way in and the way out
+/// of a CPU's life, with interrupts off, before the bit is set and after it
+/// is cleared, and those must not touch what this protects.
 
 /// A read of what irq_rcu_synchronize() protects: interrupts are off on this
 /// CPU for the guard's life. Nests, and is legal with interrupts already off
 /// (a handler, or inside a spin lock), in which case it changes nothing.
-class IrqRcuReadGuard {
+class IrqRcuReadGuard final {
   public:
-    IrqRcuReadGuard() = default;
+    IrqRcuReadGuard() : m_preempt(AutoPreemptDisabler::Defer) {
+        // After the interrupts are off, so the current thread cannot change
+        // under the check, and before the thread is set up there is none.
+        if (Thread::Current::get() != nullptr) {
+            m_preempt.disable();
+        }
+    }
+
     USTL_NO_MOVEABLE_AND_COPYABLE(IrqRcuReadGuard);
     ~IrqRcuReadGuard() = default;
 
   private:
+    /// Declared in this order on purpose: the members are destroyed last
+    /// first, so a reschedule that waited for the read to end is delivered
+    /// here, with interrupts still off and nothing left open.
     arch::AutoInterruptDisabler m_irqs;
+    AutoPreemptDisabler m_preempt;
 };
 
 /// Returns once every read that began before the call has ended, and so
 /// every pointer a writer had retracted before the call is no longer in use.
 ///
 /// Thread context, interrupts and preemption on, no spin lock held, not
-/// inside a guard, and not under cpu_hotplug_lock(), which it takes to hold
-/// the set of online CPUs still: a Dpc callback or a CPU hotplug hook must not
-/// call it. It waits for the longest span with interrupts off on any online
-/// CPU, as a TLB shootdown does, and holds the hotplug lock for as long.
+/// inside a guard, not on an idle thread, and not under cpu_hotplug_lock(),
+/// which it takes: all asserted. A Dpc callback must not call it either,
+/// since take_cpu_offline() waits for a running Dpc with that lock held (this
+/// one is by convention, a Dpc worker being a thread like any other), and a
+/// CPU hotplug hook runs with interrupts off, which the assert catches. It
+/// waits for the longest span with interrupts off on any online CPU, as a
+/// TLB shootdown does, and holds the hotplug lock for as long, so nothing
+/// that can run under that lock may wait for it.
 ///
-/// A CPU that comes online while it runs is reached too. The ones the lock
-/// covers cannot arrive halfway; one that starts without it (an application
-/// processor that took longer than the boot waited for it) is found by
-/// reading the online mask again after the others have answered.
+/// What the argument rests on for a CPU that joins while it runs, an
+/// application processor that took longer than the boot waited for it being
+/// the one that can: the full fence between the writer's retract and its read
+/// of the online mask, and the joining CPU's store of its bit being ordered
+/// before its first read (Cpu::set_state()). Either the mask read sees the
+/// bit and the CPU is asked, or the CPU's read sees the retract. The hotplug
+/// lock and the second read of the mask narrow what can change during the
+/// call; they are not what the argument needs.
 auto irq_rcu_synchronize() -> void;
 
-/// A pointer to a thing readers find through it and a writer replaces or
-/// removes under irq_rcu_synchronize().
+/// A pointer to a thing readers find through it, which a writer installs
+/// into an empty pointer and removes with retract() and
+/// irq_rcu_synchronize(). Writers are serialised by their caller.
 template <typename T>
-class IrqRcuPointer {
+class IrqRcuPointer final {
   public:
-    /// Makes |object| what readers find. Its contents are written before the
-    /// call: the release is what lets a reader that finds the pointer see
-    /// them.
+    /// Makes |object| what readers find, in a pointer that holds nothing. Its
+    /// contents are written before the call: the release is what lets a
+    /// reader that finds the pointer see them.
     auto publish(T *const object) -> void {
+        DEBUG_ASSERT(m_object.load(std::memory_order_relaxed) == nullptr);
         m_object.store(object, std::memory_order_release);
     }
 

@@ -276,7 +276,10 @@ The user's call, 2026-10-12; the design is in
   (2026-10-30). Only the CPU's own steps
   (deactivate, the online mask) are named in the idle thread. A subsystem
   whose control path touches every online CPU takes `cpu_hotplug_lock()`
-  before its own lock (the sampler does), so task never depends on it (the
+  before its own lock (the sampler does, and so does `irq_rcu_synchronize()`,
+  whose wait lasts as long as the longest span with interrupts off on any
+  online CPU: nothing that can run under the lock may wait for it), so task
+  never depends on it (the
   user's call, 2026-10-13, after the first version called each subsystem by
   name).
 - The AP start-up path (`CPU_INIT_CODE`, the trampoline buffer) stays after

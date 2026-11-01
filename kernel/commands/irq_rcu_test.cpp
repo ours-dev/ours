@@ -11,15 +11,19 @@
 //     until the outermost ends, and one taken with interrupts already off
 //     changes nothing;
 //   - irq_rcu_synchronize() with no reader returns at once, twice;
-//   - the barrier, on two CPUs: a reader that has interrupts off on one CPU
-//     keeps a synchronize() called from another from returning, and the call
-//     returns after the reader leaves, having seen it leave;
-//   - the stress: readers on every other CPU load a published object and
-//     look at it for a while, a writer retracts it, synchronizes and marks it
-//     dead; a reader must never find it dead. With synchronize() returning
-//     early this is what fails;
-//   - with CPU hotplug built in, the highest online CPU taken offline: the
-//     call still returns, and the CPU comes back.
+//   - the barrier, once for every online CPU but the writer's: a reader that
+//     has interrupts off there keeps a synchronize() called from the writer's
+//     CPU from returning for as long as the reader's section is open. The
+//     reader decides, not a timer on the command: it starts its clock when
+//     the writer says it is about to call, and looks at `returned` as the
+//     last thing inside its section;
+//   - the stress: a reader on every online CPU but the writer's loads an
+//     object published for a while and looks at it, the writer retracts it,
+//     synchronizes and marks it dead for good (a fresh object every round); a
+//     reader must never find it dead, and every reader must have seen some;
+//   - with CPU hotplug built in, a CPU other than the clock owner taken
+//     offline: the call still returns, and once the CPU is back a reader
+//     there is waited for.
 //
 // It needs two online CPUs for the barrier and the stress, and says so
 // if there is one.
@@ -31,6 +35,7 @@
 #include <ours/task/sched/common.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/time/clock_source.hpp>
 
 #include <atomic>
 
@@ -47,21 +52,24 @@ namespace {
     using task::Thread;
 
     constexpr auto LOST_AFTER = Seconds(5);
-    /// How long a reader holds its section while the writer is known to be
-    /// waiting for it.
+    /// How long a reader holds its section after the writer has said it is
+    /// about to call synchronize().
     constexpr auto HOLD = Milliseconds(50);
+    /// The longest a reader waits for the writer before it leaves anyway, so
+    /// that a writer that never starts does not keep a CPU's interrupts off.
+    constexpr auto GIVE_UP = Seconds(2);
     /// What a synchronize() with nothing to wait for may take. Far above an
     /// inter-processor interrupt under emulation, far below LOST_AFTER.
     constexpr auto PROMPT = Milliseconds(500);
     constexpr usize STRESS_ROUNDS = 400;
     /// How many spins a stress reader looks at the object for: long enough
-    /// that a writer which does not wait for it frees the object under it.
+    /// that a writer which does not wait for it marks the object dead under it.
     constexpr usize LOOK_FOR = 2000;
-    constexpr usize MAX_READERS = 2;
 
     struct Tally {
         usize passed = 0;
         usize failed = 0;
+        usize skipped = 0;
     };
 
     auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
@@ -78,18 +86,6 @@ namespace {
         return time::SteadyClock::now() - start;
     }
 
-    /// Waits for |flag|, up to LOST_AFTER.
-    auto wait_for(std::atomic<bool> const &flag) -> bool {
-        auto const give_up = time::SteadyClock::now() + LOST_AFTER;
-        while (!flag.load(std::memory_order_acquire)) {
-            if (time::SteadyClock::now() > give_up) {
-                return false;
-            }
-            auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
-        }
-        return true;
-    }
-
     auto spawn_pinned(char const *const name, Thread::StartRoutine const routine, void *const arg,
                       CpuNum const cpu) -> Thread * {
         auto *const thread = Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
@@ -97,6 +93,7 @@ namespace {
             return nullptr;
         }
         thread->set_cpu_affinity_hard(CpuMask::of(cpu));
+        // A thread that does not start is found by its join, which times out.
         auto _ = thread->resume();
         return thread;
     }
@@ -160,6 +157,16 @@ namespace {
         }
         verdict(tally, kept_off && !arch::irqs_disabled(),
                 "a guard taken with interrupts off changes nothing when it ends");
+
+        auto const count_before = Thread::Current::preemption_state().preemption_disabled_count();
+        auto count_inside = count_before;
+        {
+            IrqRcuReadGuard const guard;
+            count_inside = Thread::Current::preemption_state().preemption_disabled_count();
+        }
+        auto const count_after = Thread::Current::preemption_state().preemption_disabled_count();
+        verdict(tally, count_inside == count_before + 1 && count_after == count_before,
+                "a guard in a thread also holds preemption off, and gives it back");
     }
 
     auto check_idle(Tally &tally) -> void {
@@ -175,96 +182,127 @@ namespace {
                 "synchronize() with no reader returns at once, twice");
     }
 
-    /// The barrier case: one reader keeps its section open until released,
-    /// one writer calls synchronize().
+    /// The barrier case: one reader keeps its section open until the writer
+    /// has been inside synchronize() for HOLD, one writer calls it.
     struct Barrier {
         std::atomic<bool> in_section{false};
-        std::atomic<bool> release{false};
-        std::atomic<bool> left{false};
+        /// The writer is about to call; |entered_at| is written before it.
+        std::atomic<bool> entered{false};
+        TimePoint<> entered_at;
+        std::atomic<bool> held_long_enough{false};
         std::atomic<bool> returned{false};
-        std::atomic<bool> left_before_return{false};
+        /// The reader's last act inside its section: whether the call had
+        /// returned by then.
+        std::atomic<bool> returned_in_section{false};
     };
     Barrier BARRIER;
 
     auto barrier_reader(void *) -> i32 {
-        {
-            IrqRcuReadGuard const guard;
-            BARRIER.in_section.store(true, std::memory_order_release);
-            while (!BARRIER.release.load(std::memory_order_acquire)) {
-                arch::spin_hint();
+        IrqRcuReadGuard const guard;
+        BARRIER.in_section.store(true, std::memory_order_release);
+        auto const give_up = time::SteadyClock::now() + GIVE_UP;
+        for (;;) {
+            auto const now = time::SteadyClock::now();
+            if (BARRIER.entered.load(std::memory_order_acquire) &&
+                now >= BARRIER.entered_at + HOLD) {
+                BARRIER.held_long_enough.store(true, std::memory_order_relaxed);
+                break;
             }
-            // The last act inside the section.
-            BARRIER.left.store(true, std::memory_order_release);
+            if (now > give_up) {
+                break;
+            }
+            arch::spin_hint();
         }
+        BARRIER.returned_in_section.store(BARRIER.returned.load(std::memory_order_acquire),
+                                          std::memory_order_relaxed);
         return 0;
     }
 
     auto barrier_writer(void *) -> i32 {
+        BARRIER.entered_at = time::SteadyClock::now();
+        BARRIER.entered.store(true, std::memory_order_release);
         task::irq_rcu_synchronize();
-        BARRIER.left_before_return.store(BARRIER.left.load(std::memory_order_acquire),
-                                         std::memory_order_relaxed);
         BARRIER.returned.store(true, std::memory_order_release);
         return 0;
     }
 
-    auto check_barrier(Tally &tally, CpuNum const reader_cpu, CpuNum const writer_cpu) -> void {
+    auto wait_for_section() -> bool {
+        auto const give_up = time::SteadyClock::now() + LOST_AFTER;
+        while (!BARRIER.in_section.load(std::memory_order_acquire)) {
+            if (time::SteadyClock::now() > give_up) {
+                return false;
+            }
+            auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
+        }
+        return true;
+    }
+
+    /// Whether the case held. A reader that never got into its section, or
+    /// that gave up before the writer came, is a failure of the test.
+    auto check_barrier(Tally &tally, CpuNum const reader_cpu, CpuNum const writer_cpu) -> bool {
+        log::info("irqrcu.test: barrier, reader on CPU {}, writer on CPU {}", reader_cpu,
+                  writer_cpu);
         BARRIER.in_section.store(false, std::memory_order_relaxed);
-        BARRIER.release.store(false, std::memory_order_relaxed);
-        BARRIER.left.store(false, std::memory_order_relaxed);
+        BARRIER.entered.store(false, std::memory_order_relaxed);
+        BARRIER.held_long_enough.store(false, std::memory_order_relaxed);
         BARRIER.returned.store(false, std::memory_order_relaxed);
-        BARRIER.left_before_return.store(false, std::memory_order_relaxed);
+        BARRIER.returned_in_section.store(false, std::memory_order_relaxed);
 
         auto *const reader =
             spawn_pinned("irqrcu.test/reader", barrier_reader, nullptr, reader_cpu);
-        auto const reading = wait_for(BARRIER.in_section);
-        verdict(tally, reader != nullptr && reading, "the reader is in its section");
-
+        auto const reading = wait_for_section();
         auto *const writer =
             spawn_pinned("irqrcu.test/writer", barrier_writer, nullptr, writer_cpu);
-        auto _ = Thread::Current::sleep_for(HOLD, task::Interruptible::No);
-        verdict(tally, !BARRIER.returned.load(std::memory_order_acquire),
-                "synchronize() does not return while a reader has interrupts off");
+        auto const joined_reader = join_within(reader);
+        auto const joined_writer = join_within(writer);
 
-        BARRIER.release.store(true, std::memory_order_release);
-        verdict(tally, join_within(reader), "the reader ends its section");
-        verdict(tally, join_within(writer) && BARRIER.returned.load(std::memory_order_acquire),
-                "and then synchronize() returns");
-        verdict(tally, BARRIER.left_before_return.load(std::memory_order_relaxed),
-                "having seen the reader leave");
+        verdict(tally, reading && joined_reader && joined_writer,
+                "the reader is in its section and both threads end");
+        verdict(tally, BARRIER.held_long_enough.load(std::memory_order_relaxed),
+                "the reader held its section for as long as the writer had been in the call");
+        verdict(tally, !BARRIER.returned_in_section.load(std::memory_order_relaxed),
+                "synchronize() had not returned while the reader's section was open");
+        verdict(tally, BARRIER.returned.load(std::memory_order_acquire),
+                "and it returns once the reader has left");
+        return reading && joined_reader && joined_writer &&
+               BARRIER.held_long_enough.load(std::memory_order_relaxed);
     }
 
-    /// The stress case: the object readers look at, and what each reader saw.
+    /// The stress case: a fresh object for every round, so a reader that is
+    /// late finds it dead however long after the writer's mark it looks.
     struct Stress {
         IrqRcuPointer<Probe> pointer;
-        Probe probe;
+        Probe probes[STRESS_ROUNDS];
         std::atomic<bool> stop{false};
-        std::atomic<u64> seen[MAX_READERS]{};
-        std::atomic<u64> dead[MAX_READERS]{};
+        std::atomic<u64> seen[MAX_CPU]{};
+        std::atomic<u64> dead[MAX_CPU]{};
     };
     Stress STRESS;
+    /// What each reader is told, by value in the thread's argument.
+    CpuNum STRESS_CPUS[MAX_CPU];
 
-    /// One read: whether it found the object. The guard ends with the call,
-    /// so the reader's loop has interrupts on between two reads.
-    auto look_once(usize const index) -> bool {
+    /// One read: whether it found the object.
+    auto look_once(CpuNum const cpu) -> bool {
         IrqRcuReadGuard const guard;
         auto *const probe = STRESS.pointer.read(guard);
         if (probe == nullptr) {
             return false;
         }
-        STRESS.seen[index].fetch_add(1, std::memory_order_relaxed);
+        STRESS.seen[cpu].fetch_add(1, std::memory_order_relaxed);
         for (usize i = 0; i < LOOK_FOR; ++i) {
+            if (!probe->alive.load(std::memory_order_acquire)) {
+                STRESS.dead[cpu].fetch_add(1, std::memory_order_relaxed);
+                break;
+            }
             arch::spin_hint();
-        }
-        if (!probe->alive.load(std::memory_order_acquire)) {
-            STRESS.dead[index].fetch_add(1, std::memory_order_relaxed);
         }
         return true;
     }
 
     auto stress_reader(void *const arg) -> i32 {
-        auto const index = *static_cast<usize *>(arg);
+        auto const cpu = *static_cast<CpuNum *>(arg);
         while (!STRESS.stop.load(std::memory_order_acquire)) {
-            if (!look_once(index)) {
+            if (!look_once(cpu)) {
                 for (usize i = 0; i < 64; ++i) {
                     arch::spin_hint();
                 }
@@ -273,73 +311,79 @@ namespace {
         return 0;
     }
 
-    auto check_stress(Tally &tally, CpuMask const &reader_cpus) -> void {
+    auto check_stress(Tally &tally, CpuMask const &reader_cpus) -> bool {
         STRESS.stop.store(false, std::memory_order_relaxed);
-        STRESS.probe.alive.store(false, std::memory_order_relaxed);
-        for (usize i = 0; i < MAX_READERS; ++i) {
+        for (usize i = 0; i < MAX_CPU; ++i) {
             STRESS.seen[i].store(0, std::memory_order_relaxed);
             STRESS.dead[i].store(0, std::memory_order_relaxed);
         }
+        for (auto &probe: STRESS.probes) {
+            probe.alive.store(false, std::memory_order_relaxed);
+        }
 
-        usize indexes[MAX_READERS]{};
-        Thread *readers[MAX_READERS]{};
-        auto num_readers = usize{0};
-        reader_cpus.for_each([&](CpuNum const cpu) {
-            if (num_readers < MAX_READERS) {
-                indexes[num_readers] = num_readers;
-                readers[num_readers] =
-                    spawn_pinned("irqrcu.test/look", stress_reader, &indexes[num_readers], cpu);
-                num_readers += 1;
-            }
+        Thread *readers[MAX_CPU]{};
+        reader_cpus.for_each([&readers](CpuNum const cpu) {
+            STRESS_CPUS[cpu] = cpu;
+            readers[cpu] = spawn_pinned("irqrcu.test/look", stress_reader, &STRESS_CPUS[cpu], cpu);
         });
 
         for (usize round = 0; round < STRESS_ROUNDS; ++round) {
-            STRESS.probe.alive.store(true, std::memory_order_release);
-            STRESS.pointer.publish(&STRESS.probe);
+            auto &probe = STRESS.probes[round];
+            probe.alive.store(true, std::memory_order_release);
+            STRESS.pointer.publish(&probe);
             auto _ = Thread::Current::sleep_for(Microseconds(200), task::Interruptible::No);
             auto *const gone = STRESS.pointer.retract();
             task::irq_rcu_synchronize();
-            // What a writer does once the object is no longer in use.
+            // What a writer does once the object is no longer in use; never
+            // undone, so a reader that is late finds it dead.
             gone->alive.store(false, std::memory_order_release);
         }
         STRESS.stop.store(true, std::memory_order_release);
 
         auto joined = true;
-        for (usize i = 0; i < num_readers; ++i) {
-            joined &= join_within(readers[i]);
-        }
+        auto every_reader_saw = true;
         auto seen = u64{0};
         auto dead = u64{0};
-        for (usize i = 0; i < num_readers; ++i) {
-            seen += STRESS.seen[i].load(std::memory_order_relaxed);
-            dead += STRESS.dead[i].load(std::memory_order_relaxed);
-        }
+        reader_cpus.for_each([&](CpuNum const cpu) {
+            joined &= join_within(readers[cpu]);
+            auto const saw = STRESS.seen[cpu].load(std::memory_order_relaxed);
+            every_reader_saw &= saw > 0;
+            seen += saw;
+            dead += STRESS.dead[cpu].load(std::memory_order_relaxed);
+        });
         log::info("irqrcu.test: {} rounds, {} readers saw the object {} times, {} of them dead",
-                  STRESS_ROUNDS, num_readers, seen, dead);
-        verdict(tally, joined && num_readers > 0, "the readers start and end");
-        verdict(tally, seen > 0, "the readers did look at the object");
+                  STRESS_ROUNDS, reader_cpus.count(), seen, dead);
+        verdict(tally, joined, "the readers start and end");
+        verdict(tally, every_reader_saw && seen >= STRESS_ROUNDS / 4,
+                "every reader looked at the object, in at least a quarter of the rounds in all");
         verdict(tally, dead == 0, "and none found it dead");
+        return joined;
     }
 
-    auto check_offline(Tally &tally, CpuNum const cpu) -> void {
+    auto check_offline(Tally &tally, CpuNum const cpu, CpuNum const writer_cpu) -> void {
         auto const deadline = time::Deadline::at(time::SteadyClock::now() + LOST_AFTER);
         auto const taken = task::take_cpu_offline(cpu, deadline);
         if (taken == Status::NotSupported) {
             log::info("irqrcu.test: no CPU hotplug in this build, the offline case is skipped");
+            tally.skipped += 1;
             return;
         }
         verdict(tally, taken == Status::Ok && !Cpu::online_mask().test(cpu),
                 "a CPU is taken offline");
-        if (taken == Status::Ok) {
-            auto const start = time::SteadyClock::now();
-            task::irq_rcu_synchronize();
-            verdict(tally, elapsed_since(start) < Duration(PROMPT),
-                    "synchronize() returns with it away");
-            verdict(tally,
-                    task::bring_cpu_online(cpu) == Status::Ok && Cpu::online_mask().test(cpu),
-                    "and the CPU comes back");
-            task::irq_rcu_synchronize();
-            verdict(tally, true, "and synchronize() returns again with it back");
+        if (taken != Status::Ok) {
+            log::error("irqrcu.test:   take_cpu_offline answered {}", to_string(taken));
+            return;
+        }
+        auto const start = time::SteadyClock::now();
+        task::irq_rcu_synchronize();
+        verdict(tally, elapsed_since(start) < Duration(PROMPT),
+                "synchronize() returns with it away");
+        auto const back = task::bring_cpu_online(cpu);
+        verdict(tally, back == Status::Ok && Cpu::online_mask().test(cpu),
+                "and the CPU comes back");
+        if (back == Status::Ok) {
+            // The CPU is waited for again: a reader there keeps the call out.
+            check_barrier(tally, cpu, writer_cpu);
         }
     }
 
@@ -352,28 +396,70 @@ namespace {
 
         auto const online = Cpu::online_mask();
         if (online.count() < 2) {
-            log::info("irqrcu.test: one CPU only, the barrier and the stress are skipped");
+            log::info("irqrcu.test: one CPU only, the barrier, the stress and the offline case are "
+                      "skipped");
+            tally.skipped += 3;
         } else {
-            auto lowest = INVALID_CPU_NUM;
-            auto highest = INVALID_CPU_NUM;
-            online.for_each([&](CpuNum const cpu) {
-                if (lowest == INVALID_CPU_NUM) {
-                    lowest = cpu;
+            auto writer_cpu = INVALID_CPU_NUM;
+            online.for_each([&writer_cpu](CpuNum const cpu) {
+                if (writer_cpu == INVALID_CPU_NUM) {
+                    writer_cpu = cpu;
                 }
-                highest = cpu;
             });
-            check_barrier(tally, highest, lowest);
-
             auto readers = online;
-            readers.reset(lowest);
-            check_stress(tally, readers);
-            check_offline(tally, highest);
+            readers.reset(writer_cpu);
+
+            // The command thread runs on the writer's CPU for the cases
+            // below. A reader holds its CPU with interrupts and preemption
+            // off, so a command thread that shared that CPU would be parked
+            // behind it, and the writer it has yet to start would wait for
+            // the reader to give up. Affinity takes effect at the next sleep.
+            auto *const self = Thread::Current::get();
+            self->set_cpu_affinity_hard(CpuMask::of(writer_cpu));
+            auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
+            if (Cpu::id() != writer_cpu) {
+                log::error("irqrcu.test: FAILED -- the command did not move to CPU {}", writer_cpu);
+                self->set_cpu_affinity_hard(cpu_possible_mask());
+                return 1;
+            }
+
+            auto barriers_held = true;
+            readers.for_each(
+                [&](CpuNum const cpu) { barriers_held &= check_barrier(tally, cpu, writer_cpu); });
+            auto stress_ended = check_stress(tally, readers);
+
+            // The offline target is the highest CPU that is not the clock
+            // owner, as hotplug.test picks it; and not while a thread left
+            // over from a failed case may still be pinned somewhere.
+            auto target = INVALID_CPU_NUM;
+            online.for_each([&target](CpuNum const cpu) {
+                if (cpu != time::ClockSource::Default::cpunum()) {
+                    target = cpu;
+                }
+            });
+            if (!barriers_held || !stress_ended) {
+                log::error("irqrcu.test:   a case above left a thread behind; the offline case is "
+                           "not run");
+                tally.failed += 1;
+            } else if (target == INVALID_CPU_NUM || target == writer_cpu) {
+                log::info("irqrcu.test: no CPU to take offline but the writer's and the clock "
+                          "owner's, the offline case is skipped");
+                tally.skipped += 1;
+            } else {
+                check_offline(tally, target, writer_cpu);
+            }
+            self->set_cpu_affinity_hard(cpu_possible_mask());
         }
 
         if (tally.failed != 0) {
             log::error("irqrcu.test: FAILED -- {} of {} checks", tally.failed,
                        tally.passed + tally.failed);
             return 1;
+        }
+        if (tally.skipped != 0) {
+            log::info("irqrcu.test: ok -- {} checks, {} case(s) skipped", tally.passed,
+                      tally.skipped);
+            return 0;
         }
         log::info("irqrcu.test: ok -- {} checks", tally.passed);
         return 0;
