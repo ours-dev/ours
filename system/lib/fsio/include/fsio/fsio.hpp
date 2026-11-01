@@ -79,6 +79,16 @@ auto open(std::string_view path, ours_io::Flags flags, ours::Uandle object) -> o
 [[nodiscard]]
 auto open(std::string_view path, ours_io::Flags flags) -> ustl::Result<ours::Uandle, ours::Status>;
 
+/// Opens |path| relative to the directory connection |dir| -- the |dir|
+/// handle's own "." as the starting directory, the path never touching this
+/// process's namespace. A path with a leading '/' or a ".." is BadPath: a
+/// directory connection has no above, the namespace's mount points not
+/// being reachable from here. The flags, the checks and the answer are the
+/// namespace open's.
+[[nodiscard]]
+auto open(ours::Uandle dir, std::string_view path, ours_io::Flags flags)
+    -> ustl::Result<ours::Uandle, ours::Status>;
+
 /// Connects |server| to the protocol at |path|, such as
 /// "/svc/ours.process.Launcher": open() with PROTOCOL_SERVICE alone, which
 /// asks for the protocol itself rather than a node. |server| is consumed

@@ -1902,6 +1902,57 @@ auto check_disk() -> void {
         fail("/disk inner listing: the file is not named");
     }
 
+    // An open relative to a directory handle: a bare name, no namespace
+    // hop. The listing handle above is read-only, and creating under it is
+    // refused with the epitaph surfacing at the first write -- the rights
+    // model working end to end -- so this holds a writable handle of its
+    // own. Create, write, read back, unlink; and a ".." path is refused
+    // before any message is sent.
+    auto const at_dir =
+        fsio::open(DIR, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::PermTraverse |
+                            Flags::PermModifyDirectory | Flags::PermConnect);
+    if (!expect("/disk openat dir", status_of(at_dir), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    constexpr auto OPENAT_FILE = std::string_view{"/disk/openat-check.txt"};
+    auto const at =
+        fsio::open(at_dir.unwrap(), std::string_view{"openat-check.txt"},
+                   Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("/disk openat", status_of(at), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    if (!expect("/disk openat write", status_of(fsio::write(at.unwrap(), pattern)), Status::Ok)) {
+        auto _ = fsio::close(at.unwrap());
+        auto _ = fsio::close(at_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk openat close", fsio::close(at.unwrap()), Status::Ok);
+
+    // The write moved the connection's cursor; a fresh open reads from the
+    // start, and sees what the commit made durable.
+    auto const reopened_at =
+        fsio::open(at_dir.unwrap(), std::string_view{"openat-check.txt"}, Flags::PermReadBytes);
+    if (!expect("/disk openat reopen", status_of(reopened_at), Status::Ok)) {
+        auto _ = fsio::close(at_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto at_back = std::array<u8, pattern.size()>{};
+    auto const at_read = fsio::read(reopened_at.unwrap(), at_back);
+    if (expect("/disk openat read", status_of(at_read), Status::Ok) &&
+        (at_read.unwrap() != pattern.size() || at_back != pattern)) {
+        fail("/disk openat read: the bytes are not the pattern");
+    }
+    expect("/disk openat read close", fsio::close(reopened_at.unwrap()), Status::Ok);
+    expect("/disk openat unlink", fsio::unlink(OPENAT_FILE), Status::Ok);
+    expect("/disk openat dotdot",
+           status_of(fsio::open(at_dir.unwrap(), std::string_view{"../x"}, Flags::PermReadBytes)),
+           Status::BadPath);
+    auto _ = fsio::close(at_dir.unwrap());
+
     // Truncate the flat file: a fresh open with the flag reads zero bytes.
     auto const truncated =
         fsio::open(FILE, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FileTruncate);

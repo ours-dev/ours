@@ -335,6 +335,29 @@ extern "C" auto ort_extensions_init() -> void {
     }
 }
 
+/// The Open message itself, sent on |directory| with |object| as the
+/// server end: what both the namespace open and the open relative to a
+/// directory handle do after their fronts agree on the directory and the
+/// path.
+auto send_open(Uandle const directory, std::string_view const path, Flags const flags,
+               Uandle const object) -> Status {
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    std::array<Uandle, 1> handles{};
+    auto const encoded = ours_io::encode_open(bytes, handles,
+                                              ours_io::OpenRequest{
+                                                  .flags = flags,
+                                                  .path = path,
+                                                  .object = object,
+                                              });
+    if (encoded.is_err()) {
+        return encoded.unwrap_err();
+    }
+    auto const message = encoded.unwrap();
+    return ours::channel_write(directory, ours::ChannelWriteOptions::None, message.bytes.data(),
+                               static_cast<u32>(message.bytes.size()), message.handles.data(),
+                               static_cast<u32>(message.handles.size()));
+}
+
 auto open(std::string_view const path, Flags const flags, Uandle const object) -> Status {
     // Consumed on every path, as the write below consumes it: a caller never
     // has to work out whether it still owns |object|.
@@ -352,22 +375,7 @@ auto open(std::string_view const path, Flags const flags, Uandle const object) -
         return refuse(resolved.unwrap_err());
     }
 
-    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    std::array<Uandle, 1> handles{};
-    auto const encoded = ours_io::encode_open(bytes, handles,
-                                              ours_io::OpenRequest{
-                                                  .flags = flags,
-                                                  .path = resolved->rest,
-                                                  .object = object,
-                                              });
-    if (encoded.is_err()) {
-        return refuse(encoded.unwrap_err());
-    }
-    auto const message = encoded.unwrap();
-    auto const written =
-        ours::channel_write(resolved->directory, ours::ChannelWriteOptions::None,
-                            message.bytes.data(), static_cast<u32>(message.bytes.size()),
-                            message.handles.data(), static_cast<u32>(message.handles.size()));
+    auto const written = send_open(resolved->directory, resolved->rest, flags, object);
     if (written != Status::PeerClosed) {
         return written;
     }
@@ -395,6 +403,40 @@ auto open(std::string_view const path, Flags const flags) -> ustl::Result<Uandle
     if (auto const status = open(path, flags, server); status != Status::Ok) {
         auto _ = ours::handle_close(client);
         return ustl::err(status);
+    }
+    return ustl::ok(client);
+}
+
+auto open(Uandle const dir, std::string_view const path, Flags const flags)
+    -> ustl::Result<Uandle, Status> {
+    // The path is relative to |dir|, and a directory connection has no
+    // above: the namespace's mount points are not reachable from here, so
+    // an absolute path or a ".." past the cleaning names nothing this call
+    // can promise -- refused here, where the answer is a status and not a
+    // walk that half-worked.
+    PathBuffer clean;
+    if (auto const status = clean_path(path, clean); status != Status::Ok) {
+        return ustl::err(status);
+    }
+    auto const view = clean.view();
+    if (view.starts_with('/') || view.starts_with('.')) {
+        return ustl::err(Status::BadPath);
+    }
+
+    auto client = Uandle::Invalid;
+    auto server = Uandle::Invalid;
+    if (auto const status =
+            ours::channel_create(ours::ChannelCreateOptions::None, &client, &server);
+        status != Status::Ok) {
+        return ustl::err(status);
+    }
+    auto const written = send_open(dir, view, flags, server);
+    if (written != Status::Ok) {
+        // The directory handle itself is gone; nobody will ever serve the
+        // client end this call made, so it closes here rather than coming
+        // back as a handle to nothing.
+        auto _ = ours::handle_close(client);
+        return ustl::err(written);
     }
     return ustl::ok(client);
 }
