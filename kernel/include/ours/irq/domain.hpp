@@ -28,10 +28,11 @@ namespace ours::irq {
 /// the caller gives the first virq not yet taken by another domain, and a
 /// virq of one domain may equal a hardware number of another.
 ///
-/// Built once, by init(), before any line is unmasked, and only read after:
-/// the lookups take no lock and are safe from interrupt context. The arrays
-/// live for as long as the kernel does; reset() is for a build that failed
-/// part-way.
+/// Built once, by init(), by one writer before the domain is published, and
+/// only read after: the lookups take no lock and are safe from interrupt
+/// context. The arrays live until reset(), which a build that failed part-way
+/// calls and so does the removal of a domain, after the grace period that
+/// waits for its readers.
 class Domain {
   public:
     /// The first virq is a multiple of this, so that on a machine with one

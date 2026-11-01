@@ -379,6 +379,7 @@ None, this project's own design: D12 (the registrant chooses the id), D13, D14 (
 - clang-tidy on the new and changed sources and the test: no finding; the formats are clean.
 - Six mutations, each restored byte for byte, each killed: no grace period (1 of 41 checks fail: the stress); the registry's pointer not retracted and the slot not retracted (killed, but the run did not finish: the table was freed while still published, so no count); the floor not passed (4 of 41); Root removable (3 of 41); the mark of virqs given out not moved (4 of 41).
 - Not verified: the rollback of `begin_removal()`; a registration racing another (the retry); the Dying marks left by a removal refused after the first pass; more than four CPUs; weak-memory machines; the use of the registry from an interrupt handler (nothing does yet).
+
 **Deliberately not done**
 - Nothing registers a domain but the test: the facade is on the one table of the machine until step 11, and `interrupt_map` still takes one number until step 12.
 - The precondition against a boot on which an application processor gave up is not tested for: after the second review of `irq_rcu_synchronize()` the fence and the sequentially consistent join are what carry that argument, and the call reads the online mask again.
@@ -395,3 +396,53 @@ None.
 - Why does a registration build its table outside the lock and then check the floor again, and what happens to the table if the floor moved?
 - Why does `unregister_domain()` retract the registry's pointer and the slot before the grace period, and free after, and what would a reader that began in between find?
 - Why is the block of a removed domain never given out again, when its id may be?
+
+## The registry's writers never read an entry, and the tests of the registry catch what the first ones missed (2026-11-01)
+
+**Files**
+- `kernel/kernel/irq/domain_registry.cpp`, `kernel/include/ours/irq/domain_registry.hpp` — the writers' scans, the asserts, the slot check, the lock annotations.
+- `kernel/kernel/irq/desc_table.cpp`, `kernel/include/ours/irq/{desc_table,desc,domain}.hpp`, `kernel/kernel/irq/desc.cpp` — `destroy()`, `has_actions()`, and comments.
+- `kernel/commands/irq_registry_test.cpp` — more cases.
+- `.agents/tasks/irq-multi-arch/{DESIGN,PLAN}.md`.
+
+**Symptom**
+A use after free on the heap, reachable by two threads, found by the independent review of the previous entry. `unregister_domain()` freed the removed domain's `Entry` while its place was still Removing and still pointed at it, and gave the place back in a second hold of the lock, with the thread preemptible in between. Every other writer scans the places and read `m_entry[i]->id` of each taken place. A registration of another id could take the freed block for its own new entry and then find its own id on the stale place (AlreadyExists for an id nobody holds, its fresh table thrown away); a removal of an id registered at a later place could meet the stale place first and answer BadState for a domain that was there. Nothing in the tests had two writers.
+
+**Cause**
+The ids were read through the entries, which only the remover and the readers may touch: the entry is freed at the end of a removal, while the place that points at it is still taken. The id of a place is the writers' own fact and belongs with their state, under their lock.
+
+**Change**
+- `m_id[CAPACITY]` is kept beside `m_state[]`, under the lock, and the writers compare ids there. `m_entry[]` is read by the remover that claimed the place and nobody else. A place is given back with its entry cleared first, and the entry freed after.
+- The context asserts of a removal (interrupts on, preemption on, the hotplug lock not held) are at the top of `unregister_domain()`, before the lines are revoked, and in the release image: after the revoke the removal cannot be undone, and a call from where it may not wait would have been trapped by `irq_rcu_synchronize()` only then.
+- A slot that already holds a table is refused (BadState) under the lock in every build; it was a debug assertion after the table was built, and a second domain on the slot would have lost the first one's table at its removal.
+- `DescTable::destroy()` asserts every line is empty, and writes the poison through a volatile pointer, which the compiler may not drop as a store to memory about to be freed; the comments no longer say a reader finds a canary gone, which nothing checks. `abort_removal()` is gone (no caller); `begin_removal()` says it takes no line to be marked already. The lock-guarded members are annotated (`TA_GUARDED`, `TA_REQUIRES`).
+
+The tests grew from 41 to 66 checks: a sparse domain removed and others registered after it; an action on each of four lines, the last without a hook, which refuses all four, and without it every other action told once; one id registered and removed three times as often as the registry has places, each time in a higher block; a slot that holds a table refused; a domain being removed, held in the grace period by a reader on another CPU, is no longer found, cannot be registered again (AlreadyExists) or removed again (BadState), and its id returns when the reader leaves; two writers registering and removing ids of their own at once, none refused for an id nobody holds and no two blocks given out overlapping (the case that would have found the use after free, and that exercises the retry of a raced floor); and the stress readers now also read the slot a root handler holds, and count the looks the removal came under: 598 of 604.
+
+Corrections to the previous entry: its Change said a re-check may find the id taken *or* the floor moved, and then the table is built again; only a moved floor retries, a taken id is refused. Its Reference named a "shape of Linux's RCU-protected lookup tables" without a function: there is none claimed now, and the Reference stays "None, this project's own design". Its Files line should have listed `DESIGN.md` as edited for the test lists only; the design documents did not say the directory is an array of eight published pointers, the code's name for it, or that two things the design asked for were not built (see below). The blank line before its "Deliberately not done" is added.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+- `boot_check.py`: dbg PASS, 45 passed and 4 skipped; rel PASS, 42 passed and 8 skipped, 6 of 6 required; host tests 154 passed. The same numbers as before.
+- `irqregistry.test` 66 checks (41 before), all ok on four CPUs: 200 domains registered and removed with three readers, 600 looks, the removal came under 598 of them, none broken; the other tests of the layer unchanged and ok: `irqrevoke.test` 37, `irqrcu.test` 34, `irqdomain.test` 87, `irqchip.test` 18, `irq.test` 72, `interruptline.test` 78, `pinlines.test` 28, `interrupt.test` 67.
+- clang-tidy on the registry, the table, the line and the test: no finding; the formats are clean.
+- Five mutations, each restored byte for byte, each killed: a place being removed counted as free; the raced floor not retried (1 of 66, the two writers); a slot that holds a table accepted; `finish_removal()` stopping after the first line (the empty-line assertion of `destroy()` traps); no grace period (4 of 66). Three of them (the first, the slot, the first line) ended the run in an assertion rather than with a count of failed checks, so there is no count for them.
+- Not verified: the use after free of the first version itself is no longer in the code, so it has no mutant (two writers at once passes either way unless the heap reuses the block in the window, which is what the review reasoned from); the rollback of `begin_removal()` after a mark that refuses (only an action attaching between the two passes reaches it); the registry on fewer than three CPUs (the cases that need them are skipped and say so); more than four CPUs; weak-memory machines.
+
+**Deliberately not done**
+- The design asked for a fake chip whose operations assert the table is alive, and for a CPU taken offline and brought back while a domain is removed. Neither is built: the stress readers check the table's block and its destroyed flag instead, which a freed table fails whether or not a chip is called, and the registry has no use of the hotplug state that `irq_rcu_synchronize()` does not already have.
+- The precondition that a removal is refused on a boot on which an application processor gave up was dropped at step 8, not left undone: after the review of `irq_rcu_synchronize()` the fence and the sequentially consistent join carry that argument, and the call reads the online mask again. `DESIGN.md` D19 now says so.
+- The capacity of eight domains, and a scan of the places on every control call, are put to the user with step 11, which wires them to the control calls.
+
+**How it was found**
+By the independent review of `515af6b6` (three reviewers, 2026-11-01): the concurrency reviewer found the use after free by reading the writers' scans against the end of a removal; the test reviewer that no test had two writers or saw a domain being removed; the conventions reviewer the design and record drift.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why may a writer not read an `Entry`, when a reader may, and who else may?
+- Why can the case with a reader holding the grace period tell a place being removed from one that is gone, and what would a registration of the same id do if it could not?
+- Why are the blocks the two writers are given never overlapping, and which part of `register_domain()` does that rest on?

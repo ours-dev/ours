@@ -678,6 +678,11 @@ auto Desc::mark_dying() -> Status {
     return Status::Ok;
 }
 
+auto Desc::has_actions() -> bool {
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    return !m_actions.empty();
+}
+
 auto Desc::unmark_dying() -> void {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     m_flags.store(m_flags.load(std::memory_order_relaxed) & ~LineFlags::Dying,

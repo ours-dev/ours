@@ -25,10 +25,12 @@ struct Chip;
 class DescTable {
   public:
     /// Makes a line for each hardware number in `hirqnums` and gives it a
-    /// virq (Domain::init()). Refuses, with nothing kept: InvArgs for an
-    /// empty list, a number that is no hardware number, or a chip with no
-    /// eoi or no mask; AlreadyExists for a number given twice; BadState if
-    /// the table is built; OutOfMem.
+    /// virq (Domain::init()), the virqs from `min_first` up: 0 for none, the
+    /// first table of a machine; the end of the last block given out for a
+    /// table that is not the first. Refuses, with nothing kept: InvArgs for an
+    /// empty list, a number that is no hardware number, a chip with no eoi or
+    /// no mask, or a block that does not fit the virq space; AlreadyExists for
+    /// a number given twice; BadState if the table is built; OutOfMem.
     [[nodiscard]]
     auto init(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip, VIrqNum min_first = 0)
         -> Status;
@@ -46,25 +48,26 @@ class DescTable {
     }
 
     /// The removal of the table's domain, over every line, in the steps
-    /// Desc documents: begin_removal() refuses before anything is marked
+    /// Desc documents. begin_removal() refuses before anything is marked
     /// (check_revocable() over every line) and then marks every line
     /// (mark_dying()), undoing the marks it made if one refuses; it answers
     /// the first refusal, AlreadyBound, with nothing changed but a short
     /// window in which attach(), unmask() and configure() on the lines marked
-    /// answered NoResource. finish_removal() then takes every action off
-    /// every line (revoke()), and abort_removal() undoes the marks of a begun
-    /// removal that is given up. All thread context, and a table is removed
-    /// by one caller at a time.
+    /// answered NoResource. It takes no line to be marked already, as
+    /// revoke_line() leaves its line. finish_removal(), only after
+    /// begin_removal() answered Ok, then takes every action off every line
+    /// (revoke()). All thread context, and a table is removed by one caller at
+    /// a time.
     [[nodiscard]]
     auto begin_removal() -> Status;
-    auto abort_removal() -> void;
     auto finish_removal() -> void;
 
     /// Frees the lines and the domain's arrays of a table whose removal is
-    /// finished and whose readers are gone (irq_rcu_synchronize() has
-    /// returned since it was unpublished). The lines are poisoned first, so
-    /// a reader that is still on one finds the canary gone. The table is
-    /// empty afterwards and may be freed.
+    /// finished (no line has an action: asserted) and whose readers are gone
+    /// (irq_rcu_synchronize() has returned since it was unpublished). The
+    /// lines are poisoned, so a reader that is still on one finds its lock and
+    /// its list nonsense rather than a line that looks fine. The table is empty
+    /// afterwards and may be freed.
     auto destroy() -> void;
 
     /// Whether destroy() has begun. A debug sentinel for tests and asserts: a

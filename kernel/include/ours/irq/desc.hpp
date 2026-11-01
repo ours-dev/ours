@@ -111,13 +111,16 @@ class Desc final {
     ///   2. revoke(): takes every action off the line, tells each through its
     ///      cancel hook, masks the line.
     ///
-    /// The loops over the domain's lines are the directory's, not this
-    /// class's.
+    /// The loops over all of a domain's lines are DescTable's
+    /// (begin_removal(), finish_removal()).
     [[nodiscard]]
     auto check_revocable() -> Status;
     [[nodiscard]]
     auto mark_dying() -> Status;
     auto unmark_dying() -> void;
+    /// Whether any action is on the line. Takes L1.
+    [[nodiscard]]
+    auto has_actions() -> bool;
     /// Under L1, so it is a barrier as detach() is: it returns with no
     /// handler of the line in flight, and none reaches an action again.
     /// Each action is unlinked, then told (IrqCancel), and its line is cleared

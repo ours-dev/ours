@@ -122,6 +122,12 @@ namespace {
         return ustl::views::Span<HIrqNum const>(numbers);
     }
 
+    auto join_within(Thread *const thread) -> bool {
+        return thread != nullptr &&
+               thread->join(nullptr, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
+                   Status::Ok;
+    }
+
     /// The virq of (id, hirqnum) and the owner of a virq, each in a read of
     /// its own.
     auto virq_in(DomainRegistry const &registry, DomainId const id, HIrqNum const hirqnum)
@@ -216,6 +222,10 @@ namespace {
 
         answered(tally, registry.register_domain(DomainId{1}, span(TWO), CHIP, slot), Status::Ok,
                  "so the id takes a good list after them");
+        answered(tally, registry.register_domain(DomainId{2}, span(ONE), CHIP, slot),
+                 Status::BadState, "a slot that holds a table is refused, in every build");
+        verdict(tally, find_in(registry, DomainId{2}) == nullptr,
+                "and the refusal registered nothing");
         answered(tally, registry.register_domain(DomainId{1}, span(ONE), CHIP, other),
                  Status::AlreadyExists, "an id in use is refused");
 
@@ -274,10 +284,68 @@ namespace {
         answered(tally, registry.register_domain(DomainId{2}, span(FOUR), CHIP, slot_b), Status::Ok,
                  "its id is registered again");
         auto const after = virq_in(registry, DomainId{2}, 0);
-        verdict(tally, after != before && after >= 96 && owner_of(registry, before) == nullptr,
+        verdict(tally,
+                after != before && after >= before + FOUR.size() &&
+                    owner_of(registry, before) == nullptr,
                 "in a block above everything given out; the dead block stays dead");
         drop(registry, DomainId{1});
         drop(registry, DomainId{2});
+
+        // Over and over: the place and the id come back every time, and the
+        // blocks only go up.
+        DomainSlot slot_c;
+        auto rose = true;
+        auto each_ok = true;
+        auto last = VIrqNum{0};
+        for (u32 round = 0; round < 3 * DomainRegistry::CAPACITY; ++round) {
+            each_ok &= registry.register_domain(DomainId{5}, span(TWO), CHIP, slot_c) == Status::Ok;
+            auto const first = virq_in(registry, DomainId{5}, 0);
+            rose &= first != irq::INVALID_V_IRQ_NUM && first > last;
+            last = first;
+            each_ok &= registry.unregister_domain(DomainId{5}) == Status::Ok;
+        }
+        verdict(tally, each_ok && rose,
+                "one id registered and removed more often than the registry has places, each "
+                "time in a higher block");
+    }
+
+    /// Hardware numbers with holes, as a controller with pins missing has.
+    auto check_sparse(Tally &tally) -> void {
+        constexpr std::array<HIrqNum, 3> SPARSE{0, 5, 9};
+        constexpr std::array<HIrqNum, 2> FAR{0, 40};
+        DomainRegistry registry;
+        DomainSlot slot_a;
+        DomainSlot slot_b;
+        DomainSlot slot_c;
+        auto const ready =
+            registry.register_domain(DomainId{1}, span(SPARSE), CHIP, slot_a) == Status::Ok;
+        verdict(tally, ready, "a domain over hardware numbers 0, 5 and 9");
+        if (!ready) {
+            return;
+        }
+        auto const first = virq_in(registry, DomainId{1}, 0);
+        verdict(
+            tally,
+            virq_in(registry, DomainId{1}, 5) == first + 1 &&
+                virq_in(registry, DomainId{1}, 9) == first + 2 &&
+                virq_in(registry, DomainId{1}, 3) == irq::INVALID_V_IRQ_NUM &&
+                owner_of(registry, first + 3) == nullptr,
+            "has consecutive virqs for its pins, none for the pins it lacks, and none past them");
+
+        answered(tally, registry.unregister_domain(DomainId{1}), Status::Ok, "and is removed");
+        answered(tally, registry.register_domain(DomainId{2}, span(FAR), CHIP, slot_b), Status::Ok,
+                 "another domain with a far pin is registered after it");
+        auto const second = virq_in(registry, DomainId{2}, 0);
+        verdict(tally,
+                second >= first + SPARSE.size() && owner_of(registry, first) == nullptr &&
+                    owner_of(registry, second) != nullptr,
+                "in a block above the dead one, which still finds no table");
+        answered(tally, registry.register_domain(DomainId{3}, span(SPARSE), CHIP, slot_c),
+                 Status::Ok, "and a third like the first");
+        verdict(tally, virq_in(registry, DomainId{3}, 0) >= second + 2,
+                "above the second's block again");
+        drop(registry, DomainId{2});
+        drop(registry, DomainId{3});
     }
 
     auto check_removal_refused(Tally &tally) -> void {
@@ -340,15 +408,228 @@ namespace {
                 "and the hooked action is told, once, and is off its line");
     }
 
+    /// A removal tells every action, on every line, and one that refuses on
+    /// the last line refuses all.
+    auto check_removal_tells_every_line(Tally &tally) -> void {
+        DomainRegistry registry;
+        DomainSlot slot;
+        Hooked one(irq::IrqFlags::None, &hooked_cancel);
+        Hooked two(irq::IrqFlags::None, &hooked_cancel);
+        Hooked three(irq::IrqFlags::None, &hooked_cancel);
+        Hooked four(irq::IrqFlags::None, nullptr);
+        Hooked *const all[] = {&one, &two, &three, &four};
+
+        auto ready = registry.register_domain(DomainId{1}, span(FOUR), CHIP, slot) == Status::Ok;
+        auto *const table = find_in(registry, DomainId{1});
+        ready &= table != nullptr;
+        for (usize pin = 0; ready && pin < FOUR.size(); ++pin) {
+            ready &= table->attach(virq_in(registry, DomainId{1}, static_cast<HIrqNum>(pin)),
+                                   all[pin]->action) == Status::Ok;
+        }
+        verdict(tally, ready, "an action on each of four lines, the last without a hook");
+        if (!ready) {
+            return;
+        }
+        answered(tally, registry.unregister_domain(DomainId{1}), Status::AlreadyBound,
+                 "the one without refuses the removal of all four lines");
+        verdict(tally,
+                one.told.load() + two.told.load() + three.told.load() == 0 &&
+                    one.action.is_attached() && two.action.is_attached() &&
+                    three.action.is_attached() && four.action.is_attached(),
+                "and nothing was told or taken off");
+        auto const dropped = table->detach(four.action);
+        answered(tally, registry.unregister_domain(DomainId{1}), Status::Ok,
+                 "without it the domain is removed");
+        verdict(tally,
+                dropped == Status::Ok && one.told.load() == 1 && two.told.load() == 1 &&
+                    three.told.load() == 1 && !one.action.is_attached() &&
+                    !two.action.is_attached() && !three.action.is_attached(),
+                "every action on every other line is told once and taken off");
+    }
+
+    /// A domain being removed, its readers' grace period still running: its id
+    /// is taken, the registry shows it no more, and a second remover is
+    /// turned away. A reader on one CPU holds the removal in the grace period,
+    /// the remover is a thread of its own, and the command thread looks.
+    struct Hold {
+        std::atomic<bool> in_section{false};
+        std::atomic<bool> release{false};
+        std::atomic<bool> removed{false};
+        std::atomic<Status> status{Status::BadState};
+        DomainRegistry *registry = nullptr;
+    };
+    Hold HOLD;
+
+    auto hold_reader(void *) -> i32 {
+        IrqRcuReadGuard const guard;
+        HOLD.in_section.store(true, std::memory_order_release);
+        auto const give_up = time::SteadyClock::now() + Seconds(2);
+        while (!HOLD.release.load(std::memory_order_acquire) &&
+               time::SteadyClock::now() < give_up) {
+            arch::spin_hint();
+        }
+        return 0;
+    }
+
+    auto hold_remover(void *) -> i32 {
+        HOLD.status.store(HOLD.registry->unregister_domain(DomainId{1}), std::memory_order_relaxed);
+        HOLD.removed.store(true, std::memory_order_release);
+        return 0;
+    }
+
+    auto spawn_on(char const *const name, Thread::StartRoutine const routine, CpuNum const cpu)
+        -> Thread * {
+        auto *const thread = Thread::spawn(name, routine, nullptr, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            return nullptr;
+        }
+        thread->set_cpu_affinity_hard(CpuMask::of(cpu));
+        auto _ = thread->resume();
+        return thread;
+    }
+
+    auto check_removing(Tally &tally, CpuNum const reader_cpu, CpuNum const remover_cpu) -> void {
+        auto *const registry = new (mm::GAF_KERNEL) DomainRegistry();
+        auto *const slot = new (mm::GAF_KERNEL) DomainSlot();
+        auto *const spare = new (mm::GAF_KERNEL) DomainSlot();
+        if (registry == nullptr || slot == nullptr || spare == nullptr ||
+            registry->register_domain(DomainId{1}, span(TWO), CHIP, *slot) != Status::Ok) {
+            verdict(tally, false, "make the domain being removed");
+            return;
+        }
+        HOLD.in_section.store(false, std::memory_order_relaxed);
+        HOLD.release.store(false, std::memory_order_relaxed);
+        HOLD.removed.store(false, std::memory_order_relaxed);
+        HOLD.status.store(Status::BadState, std::memory_order_relaxed);
+        HOLD.registry = registry;
+
+        auto *const reader = spawn_on("irqregistry.test/hold", hold_reader, reader_cpu);
+        auto const give_up = time::SteadyClock::now() + LOST_AFTER;
+        while (!HOLD.in_section.load(std::memory_order_acquire) &&
+               time::SteadyClock::now() < give_up) {
+            auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
+        }
+        auto *const remover = spawn_on("irqregistry.test/remove", hold_remover, remover_cpu);
+
+        // The registry shows the domain no more once the remover has
+        // unpublished it, and it then waits for the reader.
+        auto gone = false;
+        while (time::SteadyClock::now() < give_up) {
+            if (find_in(*registry, DomainId{1}) == nullptr) {
+                gone = true;
+                break;
+            }
+            auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
+        }
+        auto const waiting = gone && !HOLD.removed.load(std::memory_order_acquire);
+        verdict(tally, waiting,
+                "a domain whose readers are being waited for is no longer found, and its "
+                "removal has not returned");
+        answered(tally, registry->register_domain(DomainId{1}, span(TWO), CHIP, *spare),
+                 Status::AlreadyExists, "its id cannot be registered meanwhile");
+        answered(tally, registry->unregister_domain(DomainId{1}), Status::BadState,
+                 "nor removed a second time");
+
+        HOLD.release.store(true, std::memory_order_release);
+        auto const joined = join_within(reader) && join_within(remover);
+        verdict(tally, joined && HOLD.status.load() == Status::Ok,
+                "the removal ends Ok once the reader has left");
+        answered(tally, registry->register_domain(DomainId{1}, span(TWO), CHIP, *spare), Status::Ok,
+                 "and then the id is registered again");
+        drop(*registry, DomainId{1});
+    }
+
+    /// Two writers at once, each registering and removing an id of its own:
+    /// no registration is refused for an id nobody holds, and no two blocks of
+    /// virqs ever given out overlap.
+    constexpr u32 WRITER_ROUNDS = 150;
+    struct Writer {
+        DomainRegistry *registry = nullptr;
+        DomainId id = DomainId::Invalid;
+        DomainSlot slot;
+        std::atomic<u32> failures{0};
+        VIrqNum firsts[WRITER_ROUNDS]{};
+    };
+    Writer WRITERS[2];
+
+    auto writer_routine(void *const arg) -> i32 {
+        auto &writer = *static_cast<Writer *>(arg);
+        for (u32 round = 0; round < WRITER_ROUNDS; ++round) {
+            if (writer.registry->register_domain(writer.id, span(TWO), CHIP, writer.slot) !=
+                Status::Ok) {
+                writer.failures.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            writer.firsts[round] = virq_in(*writer.registry, writer.id, 0);
+            if (writer.registry->unregister_domain(writer.id) != Status::Ok) {
+                writer.failures.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        return 0;
+    }
+
+    auto check_two_writers(Tally &tally, CpuNum const first_cpu, CpuNum const second_cpu) -> void {
+        auto *const registry = new (mm::GAF_KERNEL) DomainRegistry();
+        if (registry == nullptr) {
+            verdict(tally, false, "make the registry of the two writers");
+            return;
+        }
+        for (usize i = 0; i < 2; ++i) {
+            WRITERS[i].registry = registry;
+            WRITERS[i].id = DomainId{static_cast<u32>(20 + i)};
+            WRITERS[i].failures.store(0, std::memory_order_relaxed);
+        }
+        auto *const a = Thread::spawn("irqregistry.test/a", writer_routine, &WRITERS[0],
+                                      task::DEFAULT_PRIORITY);
+        auto *const b = Thread::spawn("irqregistry.test/b", writer_routine, &WRITERS[1],
+                                      task::DEFAULT_PRIORITY);
+        if (a == nullptr || b == nullptr) {
+            verdict(tally, false, "start the two writers");
+            return;
+        }
+        a->set_cpu_affinity_hard(CpuMask::of(first_cpu));
+        b->set_cpu_affinity_hard(CpuMask::of(second_cpu));
+        auto _ = a->resume();
+        auto _ = b->resume();
+        auto const joined = join_within(a) && join_within(b);
+
+        // Every block ever given out, of both writers: no two overlap, a block
+        // being two virqs.
+        auto overlaps = u32{0};
+        for (u32 i = 0; i < 2 * WRITER_ROUNDS; ++i) {
+            for (u32 j = i + 1; j < 2 * WRITER_ROUNDS; ++j) {
+                auto const x = WRITERS[i / WRITER_ROUNDS].firsts[i % WRITER_ROUNDS];
+                auto const y = WRITERS[j / WRITER_ROUNDS].firsts[j % WRITER_ROUNDS];
+                if (x == 0 || y == 0) {
+                    continue;
+                }
+                if (x < y + 2 && y < x + 2) {
+                    overlaps += 1;
+                }
+            }
+        }
+        verdict(tally, joined, "the two writers end");
+        verdict(tally, WRITERS[0].failures.load() + WRITERS[1].failures.load() == 0,
+                "each registered and removed its id every round, none refused for an id nobody "
+                "held");
+        verdict(tally, overlaps == 0, "and no two blocks given out overlap");
+        verdict(tally, !find_in(*registry, WRITERS[0].id) && !find_in(*registry, WRITERS[1].id),
+                "nothing is left registered");
+    }
+
     /// The stress case: what the readers look at is whichever domain is
     /// registered, found by its virq. A reader notes the table's block as it
     /// finds it and looks at it again at the end; a table freed under it, or
     /// freed and made again, has another.
     struct Stress {
         DomainRegistry registry;
+        DomainSlot slot;
         std::atomic<VIrqNum> probe{irq::INVALID_V_IRQ_NUM};
         std::atomic<bool> stop{false};
         std::atomic<u64> seen[MAX_CPU]{};
+        /// Looks that began with the table registered and ended with it
+        /// unpublished: the removal happened under the reader.
+        std::atomic<u64> overlapped[MAX_CPU]{};
         std::atomic<u64> broken[MAX_CPU]{};
     };
     Stress *STRESS = nullptr;
@@ -363,12 +644,20 @@ namespace {
         auto const first = table->first_virq();
         STRESS->seen[cpu].fetch_add(1, std::memory_order_relaxed);
         for (u32 i = 0; i < LOOK_FOR; ++i) {
+            // The slot a root handler reads, when it holds a table, holds this
+            // one: the removal retracts it before the grace period, never
+            // after, and a new domain's cannot be published under this guard.
+            auto *const from_slot = STRESS->slot.table_with_irqs_off();
             if (table->is_destroyed() || table->first_virq() != first ||
-                table->hwirq_of(virq) == irq::INVALID_H_IRQ_NUM) {
+                table->hwirq_of(virq) == irq::INVALID_H_IRQ_NUM ||
+                (from_slot != nullptr && from_slot != table)) {
                 STRESS->broken[cpu].fetch_add(1, std::memory_order_relaxed);
                 break;
             }
             arch::spin_hint();
+        }
+        if (STRESS->registry.find(DomainId{3}, guard) == nullptr) {
+            STRESS->overlapped[cpu].fetch_add(1, std::memory_order_relaxed);
         }
         return true;
     }
@@ -385,12 +674,6 @@ namespace {
             }
         }
         return 0;
-    }
-
-    auto join_within(Thread *const thread) -> bool {
-        return thread != nullptr &&
-               thread->join(nullptr, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
-                   Status::Ok;
     }
 
     auto check_stress(Tally &tally, CpuMask const &reader_cpus) -> void {
@@ -413,7 +696,7 @@ namespace {
             readers[cpu] = thread;
         });
 
-        DomainSlot slot;
+        auto &slot = STRESS->slot;
         auto registered = u32{0};
         auto removed = u32{0};
         for (u32 round = 0; round < STRESS_ROUNDS; ++round) {
@@ -435,27 +718,33 @@ namespace {
         auto joined = true;
         auto every_reader_saw = true;
         auto seen = u64{0};
+        auto overlapped = u64{0};
         auto broken = u64{0};
         reader_cpus.for_each([&](CpuNum const cpu) {
             joined &= join_within(readers[cpu]);
             auto const saw = STRESS->seen[cpu].load(std::memory_order_relaxed);
             every_reader_saw &= saw > 0;
             seen += saw;
+            overlapped += STRESS->overlapped[cpu].load(std::memory_order_relaxed);
             broken += STRESS->broken[cpu].load(std::memory_order_relaxed);
         });
         log::info("irqregistry.test: {} domains registered and removed, {} readers saw a table "
-                  "{} times, {} of them broken",
-                  removed, reader_cpus.count(), seen, broken);
+                  "{} times, the removal came under {} of them, {} broken",
+                  removed, reader_cpus.count(), seen, overlapped, broken);
         verdict(tally, registered == STRESS_ROUNDS && removed == STRESS_ROUNDS,
                 "every round registered and removed the domain");
         verdict(tally, joined, "the readers start and end");
         verdict(tally, every_reader_saw && seen >= STRESS_ROUNDS / 4,
-                "every reader looked at a table, in at least a quarter of the rounds in all");
+                "every reader looked at a table, a quarter as many times as there were rounds, "
+                "in all");
+        verdict(tally, overlapped >= STRESS_ROUNDS / 10,
+                "and the removal came under readers in at least a tenth as many looks");
         verdict(tally, broken == 0, "and none found its table gone or replaced before it ended");
+        // Readers that did not end keep the object they read: it is leaked.
         if (joined && registered == removed) {
             delete STRESS;
+            STRESS = nullptr;
         }
-        STRESS = nullptr;
     }
 
     auto irq_registry_test_command(int, char **) -> int {
@@ -464,7 +753,9 @@ namespace {
         check_registration(tally);
         check_registration_refused(tally);
         check_unregistration(tally);
+        check_sparse(tally);
         check_removal_refused(tally);
+        check_removal_tells_every_line(tally);
 
         auto const online = Cpu::online_mask();
         if (online.count() < 2) {
@@ -492,6 +783,22 @@ namespace {
                 return 1;
             }
             check_stress(tally, readers);
+            if (online.count() >= 3) {
+                CpuNum others[2]{};
+                auto found = usize{0};
+                readers.for_each([&](CpuNum const cpu) {
+                    if (found < 2) {
+                        others[found] = cpu;
+                        found += 1;
+                    }
+                });
+                check_removing(tally, others[0], others[1]);
+                check_two_writers(tally, others[0], others[1]);
+            } else {
+                log::info("irqregistry.test: fewer than three CPUs, the removal held in its grace "
+                          "period and the two writers are skipped");
+                tally.skipped += 2;
+            }
             self->set_cpu_affinity_hard(cpu_possible_mask());
         }
 

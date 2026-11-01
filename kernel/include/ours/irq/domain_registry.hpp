@@ -55,7 +55,7 @@ class DomainSlot final {
 /// a hardware number and asks which virq that is (virq_of()). The interrupt
 /// path does not ask: a root handler holds its domain's DomainSlot.
 ///
-/// Domains are registered, and removed, after boot. The readers are
+/// Domains may be registered and removed after boot (Root stays). The readers are
 /// task::IrqRcuReadGuard sections, with no lock, and the answer is good only
 /// inside the section; a writer unpublishes first and frees only after
 /// task::irq_rcu_synchronize() ("Reclaiming a removed domain" in the design).
@@ -79,10 +79,11 @@ class DomainRegistry final {
     /// Thread context, and may allocate. InvArgs for Invalid, for an empty list
     /// or a number that is no hardware number or a chip that cannot end an
     /// interrupt or mask (DescTable::init()); AlreadyExists for an id in use,
-    /// also while it is being removed, or a number given twice; NoSpace when
-    /// CAPACITY domains are registered; NoMemory. Nothing is kept from a
-    /// refusal. The slot must be empty, and not be freed while the domain is
-    /// registered or any handler holds it.
+    /// also while it is being removed, or a number given twice; BadState for
+    /// a slot that holds a table; NoSpace when CAPACITY domains are registered;
+    /// NoMemory. Nothing is kept from a refusal. The slot must not be freed
+    /// while the domain is registered or any handler holds it, and the chip
+    /// must outlive the domain.
     [[nodiscard]]
     auto register_domain(DomainId id, ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip,
                          DomainSlot &slot) -> Status;
@@ -99,7 +100,10 @@ class DomainRegistry final {
     ///
     /// NotFound for an id not registered, NotSupported for Root (the root
     /// handler is installed once and cannot be taken out), BadState while the
-    /// domain is being removed by another caller.
+    /// domain is being removed by another caller (which may then be refused
+    /// and leave it registered: look again with find()). The contexts above are
+    /// asserted at the top, before anything is changed, in the release image
+    /// too.
     ///
     /// Before it is called the registrant has stopped whatever delivers into the
     /// slot (detached its action on the parent line, masked the parent), and
@@ -134,15 +138,19 @@ class DomainRegistry final {
     };
 
     /// With the lock held: whether `id` can be registered now, and the index of
-    /// a free place for it if so. AlreadyExists, NoSpace, or Ok.
-    auto claim_check_locked(DomainId id, usize *index) const -> Status;
+    /// a free place for it if so. AlreadyExists, NoSpace, or Ok. It reads the
+    /// ids kept here and never an entry: an entry is freed by the remover while
+    /// its place is still taken.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto claim_check_locked(DomainId id, usize *index) const -> Status;
 
     sync::SpinLock m_lock;
-    /// Under m_lock: the writers' view of each place, and the end of the last
-    /// block of virqs given out.
-    State m_state[CAPACITY]{};
-    Entry *m_entry[CAPACITY]{};
-    VIrqNum m_next_virq = 0;
+    /// The writers' view of each place, and the end of the last block of virqs
+    /// given out.
+    State m_state[CAPACITY] TA_GUARDED(m_lock){};
+    DomainId m_id[CAPACITY] TA_GUARDED(m_lock){};
+    Entry *m_entry[CAPACITY] TA_GUARDED(m_lock){};
+    VIrqNum m_next_virq TA_GUARDED(m_lock) = 0;
     /// What the readers see: an entry, once it is complete, until the domain is
     /// being freed.
     task::IrqRcuPointer<Entry> m_published[CAPACITY];

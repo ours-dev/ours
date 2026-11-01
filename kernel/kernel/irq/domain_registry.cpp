@@ -2,6 +2,7 @@
 #include <ours/irq/domain_registry.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
+#include <ours/task/cpu_hotplug.hpp>
 #include <ours/task/thread.hpp>
 
 #include <arch/interrupt.hpp>
@@ -21,7 +22,10 @@ struct DomainRegistry::Entry {
 
 /// A place is taken from the moment the domain is claimed until it is freed,
 /// a removal in progress included, so that the id cannot be registered a
-/// second time while the first is on its way out.
+/// second time while the first is on its way out. The ids are kept beside the
+/// places, in the writers' own state: an entry is freed by its remover while
+/// the place is still Removing, so a writer that looked at one would read freed
+/// memory (the review of the first version found exactly that).
 auto DomainRegistry::claim_check_locked(DomainId const id, usize *const index) const -> Status {
     auto place = CAPACITY;
     for (usize i = 0; i < CAPACITY; ++i) {
@@ -31,7 +35,7 @@ auto DomainRegistry::claim_check_locked(DomainId const id, usize *const index) c
             }
             continue;
         }
-        if (m_entry[i]->id == id) {
+        if (m_id[i] == id) {
             return Status::AlreadyExists;
         }
     }
@@ -93,10 +97,17 @@ auto DomainRegistry::register_domain(DomainId const id,
             Guard<sync::SpinLock, IrqSave> const guard{m_lock};
             auto index = usize{0};
             status = claim_check_locked(id, &index);
+            if (status == Status::Ok && slot.table_with_irqs_off() != nullptr) {
+                // Checked in every build: a slot that holds a table would
+                // lose it, and its handler would find the new one's lines gone
+                // with the first domain.
+                status = Status::BadState;
+            }
             if (status == Status::Ok && m_next_virq != floor) {
                 raced = true;
             } else if (status == Status::Ok) {
                 m_state[index] = State::Live;
+                m_id[index] = id;
                 m_entry[index] = entry;
                 m_next_virq = entry->end;
                 // Complete before it is published: the release is what lets a
@@ -124,7 +135,12 @@ auto DomainRegistry::register_domain(DomainId const id,
 /// no reader that begins from now on can find; then the grace period, and
 /// only after it is anything freed. The block of virqs is not given back.
 auto DomainRegistry::unregister_domain(DomainId const id) -> Status {
+    // Before anything is changed, and in the release image too: the removal
+    // cannot be undone once the lines are revoked, and a call from where it
+    // may not wait would return with the readers not waited for, or never.
     ASSERT(!arch::irqs_disabled());
+    ASSERT(task::Thread::Current::preemption_state().is_preemption_enabled());
+    ASSERT(task::cpu_hotplug_lock().holder() != task::Thread::Current::get());
     if (id == DomainId::Root) {
         return Status::NotSupported;
     }
@@ -134,7 +150,7 @@ auto DomainRegistry::unregister_domain(DomainId const id) -> Status {
     {
         Guard<sync::SpinLock, IrqSave> const guard{m_lock};
         for (usize i = 0; i < CAPACITY; ++i) {
-            if (m_state[i] != State::Free && m_entry[i]->id == id) {
+            if (m_state[i] != State::Free && m_id[i] == id) {
                 if (m_state[i] == State::Removing) {
                     return Status::BadState;
                 }
@@ -168,11 +184,15 @@ auto DomainRegistry::unregister_domain(DomainId const id) -> Status {
 
     entry->table->destroy();
     delete entry->table;
+    {
+        // The place is given back with nothing in it that points at the
+        // entry, and only then is the entry freed.
+        Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+        m_state[index] = State::Free;
+        m_id[index] = DomainId::Invalid;
+        m_entry[index] = nullptr;
+    }
     delete entry;
-
-    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-    m_state[index] = State::Free;
-    m_entry[index] = nullptr;
     return Status::Ok;
 }
 

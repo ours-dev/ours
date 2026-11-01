@@ -123,14 +123,6 @@ auto DescTable::begin_removal() -> Status {
     return Status::Ok;
 }
 
-auto DescTable::abort_removal() -> void {
-    for (auto *const desc: m_descs) {
-        if (desc != nullptr) {
-            desc->unmark_dying();
-        }
-    }
-}
-
 auto DescTable::finish_removal() -> void {
     for (auto *const desc: m_descs) {
         if (desc != nullptr) {
@@ -141,17 +133,25 @@ auto DescTable::finish_removal() -> void {
 
 /// The lines are poisoned between their destructor and the heap: a reader that
 /// is still on one, which the grace period before this call is there to rule
-/// out, then finds its canary gone and its list head nonsense rather than a
-/// line that looks fine. The table is marked destroyed first, which is what a
-/// test reads to tell that a reader was not waited for.
+/// out, then finds its lock and its list nonsense rather than a line that
+/// looks fine. The poison is written through a volatile pointer, which the
+/// compiler may not drop as a store to memory about to be freed. The table is
+/// marked destroyed first, which is what a test reads to tell that a reader
+/// was not waited for. A line with an action still on it is a removal that was
+/// not finished, and freeing it would leave the action's owner a line that is
+/// gone: checked in the release image too, the path being cold.
 auto DescTable::destroy() -> void {
     m_destroyed.store(true, std::memory_order_release);
     for (auto *const desc: m_descs) {
         if (desc == nullptr) {
             continue;
         }
+        ASSERT(!desc->has_actions(), "a line is destroyed with an action on it");
         desc->~Desc();
-        __builtin_memset(static_cast<void *>(desc), 0xDD, sizeof(Desc));
+        auto *const bytes = reinterpret_cast<volatile u8 *>(desc);
+        for (usize i = 0; i < sizeof(Desc); ++i) {
+            bytes[i] = 0xDD;
+        }
         ::operator delete(desc);
     }
     delete[] m_descs.data();
