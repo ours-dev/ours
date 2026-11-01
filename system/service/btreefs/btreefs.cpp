@@ -66,6 +66,7 @@
 #include <wire/wire.hpp>
 
 namespace {
+
 using ours::Signals;
 using ours::Status;
 using ours::Uandle;
@@ -271,8 +272,18 @@ class Filesystem final {
         return *m_adapter;
     }
 
+    /// The operation's transaction, begun on the storage this object holds.
+    auto tx_begin() -> ours_btreefs::Transaction<BlockAdapter> & {
+        auto &tx = *m_tx;
+        tx.begin();
+        return tx;
+    }
+
     ours_block::Client &m_client;
     ustl::LazyInit<BlockAdapter> m_adapter;
+    /// The transaction's own storage, outside the stack: its cache of
+    /// copied blocks is ~200 KiB, far past this thread's stack to carry.
+    ustl::LazyInit<ours_btreefs::Transaction<BlockAdapter>> m_tx;
     ours_btreefs::Volume m_volume{};
     /// One 4 KiB node or data block, patched and written back: the tree's
     /// operations run one at a time on the Loop's thread.
@@ -416,7 +427,10 @@ auto Filesystem::resolve(u64 const directory, std::string_view const path)
 /// the name is taken.
 auto Filesystem::create_object(u64 const directory, std::string_view const name,
                                ObjectKind const kind) -> ustl::Result<u64, Status> {
-    auto object = ours_btreefs::alloc_object(device(), m_volume);
+    // One transaction: the DIRENT item and the INODE item land together or
+    // not at all, the commit swapping the root once.
+    auto &tx = tx_begin();
+    auto object = tx.alloc_object();
     auto value = ours_btreefs::Value{};
     if (auto const status = ours_btreefs::encode_dirent_value(value, object, kind, name);
         status != Status::Ok) {
@@ -424,7 +438,7 @@ auto Filesystem::create_object(u64 const directory, std::string_view const name,
     }
     // The dirent first: a name taken answers AlreadyExists here, before any
     // object id was made to matter.
-    auto const inserted = ours_btreefs::insert(device(), m_volume,
+    auto const inserted = ours_btreefs::insert(tx,
                                                {.object = directory,
                                                 .type = ItemType::Dirent,
                                                 .offset = ours_btreefs::dirent_offset(name)},
@@ -432,12 +446,15 @@ auto Filesystem::create_object(u64 const directory, std::string_view const name,
     if (inserted != Status::Ok) {
         return ustl::err(inserted);
     }
-    // An object whose INODE never landed is a dirent to nothing; v1 accepts
-    // the window, the copy-on-write phase closes it.
+    // An object whose INODE never landed is a dirent to nothing; the
+    // transaction closes that window -- both items commit or neither does.
     ours_btreefs::encode_inode_value(value, 0, kind);
     if (auto const status = ours_btreefs::insert(
-            device(), m_volume, {.object = object, .type = ItemType::Inode, .offset = 0}, value);
+            tx, {.object = object, .type = ItemType::Inode, .offset = 0}, value);
         status != Status::Ok) {
+        return ustl::err(status);
+    }
+    if (auto const status = tx.commit(); status != Status::Ok) {
         return ustl::err(status);
     }
     return ustl::ok(object);
@@ -497,6 +514,7 @@ auto Filesystem::read_file(Connection &connection, ours_io::ReadRequest const &r
 auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const &request,
                             std::span<u8> reply_bytes) -> void {
     auto const metadata = inode_of(connection.object);
+    auto &tx = tx_begin();
     if (metadata.is_err()) {
         answer_status(connection.channel, ours_io::WRITE, request.txid, metadata.unwrap_err());
         return;
@@ -517,15 +535,14 @@ auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const 
             return;
         }
         if (looked == Status::NotFound) {
-            auto const block = ours_btreefs::alloc_block(device(), m_volume);
+            auto const block = tx.alloc_block();
             if (block.is_err()) {
                 answer_status(connection.channel, ours_io::WRITE, request.txid, block.unwrap_err());
                 return;
             }
             ours_btreefs::encode_data_value(m_item, block.unwrap());
             auto const inserted = ours_btreefs::insert(
-                device(), m_volume,
-                {.object = connection.object, .type = ItemType::Data, .offset = index}, m_item);
+                tx, {.object = connection.object, .type = ItemType::Data, .offset = index}, m_item);
             if (inserted != Status::Ok) {
                 answer_status(connection.channel, ours_io::WRITE, request.txid, inserted);
                 return;
@@ -558,12 +575,15 @@ auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const 
         auto value = ours_btreefs::Value{};
         ours_btreefs::encode_inode_value(value, end, ObjectKind::File);
         if (auto const status = ours_btreefs::update(
-                device(), m_volume,
-                {.object = connection.object, .type = ItemType::Inode, .offset = 0}, value);
+                tx, {.object = connection.object, .type = ItemType::Inode, .offset = 0}, value);
             status != Status::Ok) {
             answer_status(connection.channel, ours_io::WRITE, request.txid, status);
             return;
         }
+    }
+    if (auto const status = tx.commit(); status != Status::Ok) {
+        answer_status(connection.channel, ours_io::WRITE, request.txid, status);
+        return;
     }
     connection.seek = end;
     auto const encoded = ours_io::encode_write_reply(
@@ -595,13 +615,16 @@ auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsReques
         connection.listed_dot = true;
     }
     auto const from = ours_btreefs::Key{
-        .object = ROOT_OBJECT, .type = ItemType::Dirent, .offset = connection.next_offset};
+        .object = connection.object, .type = ItemType::Dirent, .offset = connection.next_offset};
     auto const walked = ours_btreefs::scan(
         device(), m_volume, from,
         [&](ours_btreefs::Key const &key, ours_btreefs::Value const &value) -> bool {
-            // The listing resumes after what it named; the entry it stopped
-            // on is in the cursor already.
-            if (key.offset <= connection.next_offset) {
+            // The listing resumes after what it named -- the entry it stopped
+            // on is in the cursor already -- and names this directory's
+            // children only: the scan walks the one tree past this
+            // directory's key range, and other objects' items are not
+            // entries here.
+            if (key.object != connection.object || key.offset <= connection.next_offset) {
                 return true;
             }
             auto const decoded = ours_btreefs::decode_dirent_value(value);
@@ -697,8 +720,10 @@ auto open_below_dir(Connection &connection, ours_io::OpenRequest const &open) ->
         }
         parent = walked->first;
     }
-    if (at_self || name == "." || name.empty()) {
-        // The walk's own end: this directory, as "." always was.
+    if (at_self || at_root || name == "." || name.empty()) {
+        // The walk's own end: this directory, as "." always was -- and a
+        // root connection's open of the exposed name is the root itself,
+        // the name its mount point answers to, not a child's.
         if ((flags & Flags::FlagMustCreate) != Flags::None) {
             refuse(open.object, Status::AlreadyExists);
             return;
@@ -743,12 +768,13 @@ auto Filesystem::unlink_at(u64 const directory, std::string_view const name) -> 
         return found.unwrap_err();
     }
     auto const object = found->child;
+    auto &tx = tx_begin();
     if (found->kind == ObjectKind::Directory) {
         // An empty directory: no DIRENT item of its own, whatever its INODE
         // says. The walk stops at the next object's items.
         auto empty = true;
         auto const walked = ours_btreefs::scan(
-            device(), m_volume, {.object = object, .type = ItemType::Dirent, .offset = 0},
+            tx, tx.volume(), {.object = object, .type = ItemType::Dirent, .offset = 0},
             [&](ours_btreefs::Key const &key, ours_btreefs::Value const &) -> bool {
                 if (key.object != object) {
                     return false;
@@ -772,7 +798,7 @@ auto Filesystem::unlink_at(u64 const directory, std::string_view const name) -> 
         auto block_key = ours_btreefs::Key{};
         auto seen = false;
         auto const walked = ours_btreefs::scan(
-            device(), m_volume, {.object = object, .type = ItemType::Data, .offset = 0},
+            tx, tx.volume(), {.object = object, .type = ItemType::Data, .offset = 0},
             [&](ours_btreefs::Key const &key, ours_btreefs::Value const &) -> bool {
                 if (key.object != object) {
                     return false;
@@ -791,31 +817,32 @@ auto Filesystem::unlink_at(u64 const directory, std::string_view const name) -> 
             break;
         }
         auto item = ours_btreefs::Value{};
-        if (auto const status = ours_btreefs::lookup(device(), m_volume, block_key, item);
+        if (auto const status = ours_btreefs::lookup(tx, tx.volume(), block_key, item);
             status != Status::Ok) {
             return status;
         }
-        if (auto const status = ours_btreefs::remove(device(), m_volume, block_key);
-            status != Status::Ok) {
+        if (auto const status = ours_btreefs::remove(tx, block_key); status != Status::Ok) {
             return status;
         }
-        if (auto const status =
-                ours_btreefs::free_block(device(), m_volume, ours_btreefs::decode_data_value(item));
+        if (auto const status = tx.free_block(ours_btreefs::decode_data_value(item));
             status != Status::Ok) {
             return status;
         }
     }
     // The INODE goes next, the DIRENT last: the name survives until nothing
     // is left under it.
-    if (auto const status = ours_btreefs::remove(
-            device(), m_volume, {.object = object, .type = ItemType::Inode, .offset = 0});
+    if (auto const status =
+            ours_btreefs::remove(tx, {.object = object, .type = ItemType::Inode, .offset = 0});
         status != Status::Ok) {
         return status;
     }
-    return ours_btreefs::remove(device(), m_volume,
-                                {.object = directory,
-                                 .type = ItemType::Dirent,
-                                 .offset = ours_btreefs::dirent_offset(name)});
+    if (auto const status = ours_btreefs::remove(tx, {.object = directory,
+                                                      .type = ItemType::Dirent,
+                                                      .offset = ours_btreefs::dirent_offset(name)});
+        status != Status::Ok) {
+        return status;
+    }
+    return tx.commit();
 }
 
 /// Serves one message that arrived on the connection |index|'s channel: the
@@ -1012,8 +1039,10 @@ auto Filesystem::mount() -> bool {
         return false;
     }
     auto const first_lba = partition->first_lba;
-    // The device the volume's operations run through, from here on.
+    // The device the volume's operations run through, from here on, and
+    // the transaction storage beside it.
     m_adapter.init(m_client, first_lba);
+    m_tx.init(*m_adapter, m_volume);
     auto const blocks =
         (partition->last_lba - partition->first_lba + 1) * 512 / ours_btreefs::BLOCK_BYTES;
     auto const bitmap_blocks = static_cast<u32>((blocks + 8 * ours_btreefs::BLOCK_BYTES - 1) /
@@ -1037,12 +1066,17 @@ auto Filesystem::mount() -> bool {
     }
     m_volume = opened.unwrap();
     if (m_volume.height == 0) {
-        auto const root = ours_btreefs::alloc_object(device(), m_volume);
+        auto &tx = tx_begin();
+        auto const root = tx.alloc_object();
         auto value = ours_btreefs::Value{};
         ours_btreefs::encode_inode_value(value, 0, ObjectKind::Directory);
         if (auto const status = ours_btreefs::insert(
-                device(), m_volume, {.object = root, .type = ItemType::Inode, .offset = 0}, value);
+                tx, {.object = root, .type = ItemType::Inode, .offset = 0}, value);
             status != Status::Ok) {
+            auto _ = ort::debug_line({"btreefs: cannot make the root: ", ours::to_string(status)});
+            return false;
+        }
+        if (auto const status = tx.commit(); status != Status::Ok) {
             auto _ = ort::debug_line({"btreefs: cannot make the root: ", ours::to_string(status)});
             return false;
         }

@@ -1878,15 +1878,17 @@ auto check_disk() -> void {
 
     // The directory's listing names the file as a file.
     auto dir_listing = std::array<u8, 512>{};
-    if (!expect("/disk inner listing",
-                status_of(fsio::read_dirents(made_dir.unwrap(), dir_listing)), Status::Ok)) {
+    // One call: the directory is small, so the one reply carries the
+    // listing whole, and a second call would answer the continuation --
+    // nothing.
+    auto const listed = fsio::read_dirents(made_dir.unwrap(), dir_listing);
+    if (!expect("/disk inner listing", status_of(listed), Status::Ok)) {
         auto _ = fsio::close(made_dir.unwrap());
         auto _ = fsio::close(root.unwrap());
         return;
     }
     auto inner_named = false;
-    auto reader = ours_io::DirentReader(
-        std::span{dir_listing}.first(fsio::read_dirents(made_dir.unwrap(), dir_listing).unwrap()));
+    auto reader = ours_io::DirentReader(std::span{dir_listing}.first(listed.unwrap()));
     while (true) {
         auto const entry = reader.next();
         if (entry.is_err() || entry->is_none()) {

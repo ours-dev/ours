@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include <ours_btreefs/ours_btreefs.hpp>
+#include <ours_gpt/ours_gpt.hpp>
 
 namespace ours_btreefs {
 namespace {
@@ -32,13 +33,18 @@ namespace detail {
 
         constexpr auto LEAF_FLAG = u8{1};
 
-        /// The superblock's fields, after the magic.
-        constexpr auto SUPER_BLOCKS_OFFSET = usize{8};
-        constexpr auto SUPER_ROOT_OFFSET = usize{16};
-        constexpr auto SUPER_HEIGHT_OFFSET = usize{24};
-        constexpr auto SUPER_BITMAP_FIRST_OFFSET = usize{32};
-        constexpr auto SUPER_BITMAP_BLOCKS_OFFSET = usize{40};
-        constexpr auto SUPER_NEXT_OBJECT_OFFSET = usize{48};
+        /// A superblock slot's fields, after the magic: the generation, the
+        /// CRC32 over the slot's first bytes with the CRC field zeroed, then
+        /// the volume's state.
+        constexpr auto SUPER_GENERATION_OFFSET = usize{8};
+        constexpr auto SUPER_CRC_OFFSET = usize{16};
+        constexpr auto SUPER_CRC_BYTES = usize{128};
+        constexpr auto SUPER_BLOCKS_OFFSET = usize{24};
+        constexpr auto SUPER_ROOT_OFFSET = usize{32};
+        constexpr auto SUPER_HEIGHT_OFFSET = usize{40};
+        constexpr auto SUPER_BITMAP_FIRST_OFFSET = usize{48};
+        constexpr auto SUPER_BITMAP_BLOCKS_OFFSET = usize{56};
+        constexpr auto SUPER_NEXT_OBJECT_OFFSET = usize{64};
 
     } // namespace
 
@@ -71,12 +77,18 @@ namespace detail {
     }
 
     auto store_superblock(std::span<u8> block, Volume const &volume) -> void {
+        store_le64(block, SUPER_GENERATION_OFFSET, volume.generation);
         store_le64(block, SUPER_BLOCKS_OFFSET, volume.blocks);
         store_le64(block, SUPER_ROOT_OFFSET, volume.root);
         block[SUPER_HEIGHT_OFFSET] = volume.height;
         store_le64(block, SUPER_BITMAP_FIRST_OFFSET, volume.bitmap_first);
         store_le32(block, SUPER_BITMAP_BLOCKS_OFFSET, volume.bitmap_blocks);
         store_le64(block, SUPER_NEXT_OBJECT_OFFSET, volume.next_object);
+        // The CRC vouches for the slot's first bytes, its own field zeroed
+        // while it is computed -- the GPT header's own rule.
+        store_le32(block, SUPER_CRC_OFFSET, 0);
+        auto const crc = ours_gpt::crc32(block.first(SUPER_CRC_BYTES));
+        store_le32(block, SUPER_CRC_OFFSET, crc);
     }
 
     auto load_superblock(std::span<u8 const> block) -> ustl::Result<Volume, ours::Status> {
@@ -84,12 +96,20 @@ namespace detail {
             return ustl::err(ours::Status::NotFound);
         }
         auto volume = Volume{};
+        volume.generation = load_le64(block, SUPER_GENERATION_OFFSET);
         volume.blocks = load_le64(block, SUPER_BLOCKS_OFFSET);
         volume.root = load_le64(block, SUPER_ROOT_OFFSET);
         volume.height = block[SUPER_HEIGHT_OFFSET];
         volume.bitmap_first = load_le64(block, SUPER_BITMAP_FIRST_OFFSET);
         volume.bitmap_blocks = load_le32(block, SUPER_BITMAP_BLOCKS_OFFSET);
         volume.next_object = load_le64(block, SUPER_NEXT_OBJECT_OFFSET);
+        auto const recorded = load_le32(block, SUPER_CRC_OFFSET);
+        auto checking = std::array<u8, BLOCK_BYTES>{};
+        std::memcpy(checking.data(), block.data(), BLOCK_BYTES);
+        store_le32(checking, SUPER_CRC_OFFSET, 0);
+        if (ours_gpt::crc32(std::span{checking}.first(SUPER_CRC_BYTES)) != recorded) {
+            return ustl::err(ours::Status::BadState);
+        }
         if (volume.root != 0 && volume.height == 0) {
             return ustl::err(ours::Status::BadState);
         }

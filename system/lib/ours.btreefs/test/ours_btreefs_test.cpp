@@ -1,17 +1,21 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// The B+tree over blocks: keys and their order, the values' codecs, the
-// allocator, lookups and inserts through splits that climb to height 3,
-// scans along the leaves' chain, and the refusals each answers.
+// The copy-on-write B+tree: keys and their order, the values' codecs, the
+// allocator's bits, lookups and inserts through splits that climb to
+// height 3, removals through borrows and merges, scans along the leaves'
+// chain -- every mutation inside a transaction, with the tests for what a
+// transaction owes: the committed tree untouched until commit(), the crash
+// rehearsal costing nothing, and the two superblock slots taking turns.
 #include <ours/status.hpp>
 
 #include <array>
 #include <map>
 #include <span>
 #include <string_view>
-#include <utility>
 #include <vector>
+
+#include <cstring>
 
 #include <gtest/gtest.h>
 #include <ours_btreefs/ours_btreefs.hpp>
@@ -28,7 +32,6 @@ using ours_btreefs::Volume;
 class FakeDevice final {
   public:
     explicit FakeDevice(u64 const blocks) {
-        blocks_[0] = {};
         for (u64 block = 0; block < blocks; ++block) {
             blocks_[block] = {};
         }
@@ -76,6 +79,19 @@ struct Mounted {
     }
 };
 
+/// Runs |body| as one transaction over |fs|, committing what it did. The
+/// shape every mutation test takes, and the shape the component's dispatch
+/// takes on the booted system.
+template <typename Body>
+auto apply(Mounted &fs, Body &&body) -> Status {
+    auto tx = ours_btreefs::Transaction(fs.device, fs.volume);
+    auto const status = body(tx);
+    if (status != Status::Ok) {
+        return status;
+    }
+    return tx.commit();
+}
+
 /// The key for object |object|'s |type| item at |offset|.
 auto key_of(u64 const object, ours_btreefs::ItemType const type, u64 const offset) -> Key {
     return Key{.object = object, .type = type, .offset = offset};
@@ -93,12 +109,16 @@ auto marker_of(Value const &value) -> u64 {
     return ours_btreefs::decode_data_value(value);
 }
 
-/// Inserts every (object, offset) of |keys| as Data items, expecting Ok.
+/// Inserts every (object, offset) of |keys| as Data items, one transaction
+/// each, expecting Ok.
 auto insert_all(Mounted &fs, u64 const object, std::vector<u64> const &offsets) -> void {
     for (auto const offset: offsets) {
-        EXPECT_EQ(ours_btreefs::insert(fs.device, fs.volume,
-                                       key_of(object, ours_btreefs::ItemType::Data, offset),
-                                       value_of(offset * 10)),
+        EXPECT_EQ(apply(fs,
+                        [&](auto &tx) {
+                            return ours_btreefs::insert(
+                                tx, key_of(object, ours_btreefs::ItemType::Data, offset),
+                                value_of(offset * 10));
+                        }),
                   Status::Ok);
     }
 }
@@ -120,13 +140,18 @@ TEST(BtreefsKey, TypeAndOffsetShareTheDiskWord) {
     // The type in the top 8 bits and a 56-bit offset below: one past the
     // 56-bit range is refused, the boundary itself survives the round trip.
     Mounted fs(256, 1);
-    EXPECT_EQ(ours_btreefs::insert(fs.device, fs.volume,
-                                   key_of(1, ours_btreefs::ItemType::Data, u64{1} << 56),
-                                   value_of(1)),
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::insert(
+                            tx, key_of(1, ours_btreefs::ItemType::Data, u64{1} << 56), value_of(1));
+                    }),
               Status::InvArgs);
     auto const edge = u64{1} << 56;
-    EXPECT_EQ(ours_btreefs::insert(fs.device, fs.volume,
-                                   key_of(1, ours_btreefs::ItemType::Data, edge - 1), value_of(1)),
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::insert(
+                            tx, key_of(1, ours_btreefs::ItemType::Data, edge - 1), value_of(1));
+                    }),
               Status::Ok);
 }
 
@@ -172,41 +197,93 @@ TEST(BtreefsValues, DirentRefusesALongName) {
         Status::InvArgs);
 }
 
-// --- The allocator. ---
+// --- The allocator, whose bits a transaction's commit writes. ---
 
 TEST(BtreefsAlloc, HandsOutDistinctBlocksPastTheMetadata) {
     Mounted fs(256, 1);
-    auto const first = ours_btreefs::alloc_block(fs.device, fs.volume);
-    auto const second = ours_btreefs::alloc_block(fs.device, fs.volume);
-    ASSERT_TRUE(first.is_ok());
-    ASSERT_TRUE(second.is_ok());
-    EXPECT_EQ(first.unwrap(), u64{2});
-    EXPECT_EQ(second.unwrap(), u64{3});
+    auto first = u64{0};
+    auto second = u64{0};
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        auto const one = tx.alloc_block();
+                        auto const two = tx.alloc_block();
+                        first = one.unwrap();
+                        second = two.unwrap();
+                        return Status::Ok;
+                    }),
+              Status::Ok);
+    EXPECT_EQ(first, u64{3});
+    EXPECT_EQ(second, u64{4});
 }
 
 TEST(BtreefsAlloc, FreesAndHandsTheSameBlockBack) {
     Mounted fs(256, 1);
-    auto const block = ours_btreefs::alloc_block(fs.device, fs.volume);
-    ASSERT_TRUE(block.is_ok());
-    EXPECT_EQ(ours_btreefs::free_block(fs.device, fs.volume, block.unwrap()), Status::Ok);
-    auto const again = ours_btreefs::alloc_block(fs.device, fs.volume);
-    ASSERT_TRUE(again.is_ok());
-    EXPECT_EQ(again.unwrap(), block.unwrap());
+    auto block = u64{0};
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        auto const taken = tx.alloc_block();
+                        block = taken.unwrap();
+                        return Status::Ok;
+                    }),
+              Status::Ok);
+    EXPECT_EQ(apply(fs, [&](auto &tx) { return tx.free_block(block); }), Status::Ok);
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        auto const again = tx.alloc_block();
+                        EXPECT_EQ(again.unwrap(), block);
+                        return Status::Ok;
+                    }),
+              Status::Ok);
 }
 
 TEST(BtreefsAlloc, RefusesDoubleFreeAndStrayBlocks) {
     Mounted fs(256, 1);
-    EXPECT_EQ(ours_btreefs::free_block(fs.device, fs.volume, 2), Status::BadState);
-    EXPECT_EQ(ours_btreefs::free_block(fs.device, fs.volume, 256), Status::InvArgs);
-    EXPECT_EQ(ours_btreefs::free_block(fs.device, fs.volume, 0), Status::InvArgs);
+    auto block = u64{0};
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        block = tx.alloc_block().unwrap();
+                        return Status::Ok;
+                    }),
+              Status::Ok);
+    EXPECT_EQ(apply(fs, [&](auto &tx) { return tx.free_block(block); }), Status::Ok);
+    EXPECT_EQ(apply(fs, [&](auto &tx) { return tx.free_block(block); }), Status::BadState);
+    EXPECT_EQ(apply(fs, [&](auto &tx) { return tx.free_block(256); }), Status::InvArgs);
+    EXPECT_EQ(apply(fs, [&](auto &tx) { return tx.free_block(0); }), Status::InvArgs);
+    EXPECT_EQ(apply(fs, [&](auto &tx) { return tx.free_block(1); }), Status::InvArgs);
 }
 
 TEST(BtreefsAlloc, AnswersNoSpaceWhenExhausted) {
-    // Three blocks: the superblock and the bitmap are reserved, so exactly
-    // one block is there to hand out.
-    Mounted fs(3, 1);
-    EXPECT_TRUE(ours_btreefs::alloc_block(fs.device, fs.volume).is_ok());
-    EXPECT_EQ(ours_btreefs::alloc_block(fs.device, fs.volume).unwrap_err(), Status::NoSpace);
+    // Four blocks: the two superblock slots and the bitmap are reserved, so
+    // exactly one block is there to hand out.
+    Mounted fs(4, 1);
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        auto const first = tx.alloc_block();
+                        EXPECT_TRUE(first.is_ok());
+                        auto const second = tx.alloc_block();
+                        EXPECT_EQ(second.unwrap_err(), Status::NoSpace);
+                        return Status::Ok;
+                    }),
+              Status::Ok);
+}
+
+TEST(BtreefsAlloc, AnAbandonedTakeIsFreeAgain) {
+    // The transaction's own rule: bits are written at commit, so blocks a
+    // dropped transaction took never left the free set.
+    Mounted fs(256, 1);
+    auto const taken = [&] {
+        auto tx = ours_btreefs::Transaction(fs.device, fs.volume);
+        auto const block = tx.alloc_block();
+        EXPECT_TRUE(block.is_ok());
+        return block.unwrap();
+    }();
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        auto const again = tx.alloc_block();
+                        EXPECT_EQ(again.unwrap(), taken);
+                        return Status::Ok;
+                    }),
+              Status::Ok);
 }
 
 // --- Lookup and insert. ---
@@ -232,8 +309,11 @@ TEST(BtreefsTree, FindsWhatItInserted) {
 TEST(BtreefsTree, RefusesADuplicateKey) {
     Mounted fs(256, 1);
     insert_all(fs, 1, {0, 1, 2});
-    EXPECT_EQ(ours_btreefs::insert(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1),
-                                   value_of(99)),
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::insert(tx, key_of(1, ours_btreefs::ItemType::Data, 1),
+                                                    value_of(99));
+                    }),
               Status::AlreadyExists);
     auto value = Value{};
     ASSERT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1),
@@ -307,8 +387,11 @@ TEST(BtreefsTree, KeepsObjectsApart) {
 TEST(BtreefsTree, UpdatesAValueInPlace) {
     Mounted fs(256, 1);
     insert_all(fs, 1, {0, 1, 2});
-    EXPECT_EQ(ours_btreefs::update(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1),
-                                   value_of(99)),
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::update(tx, key_of(1, ours_btreefs::ItemType::Data, 1),
+                                                    value_of(99));
+                    }),
               Status::Ok);
     auto value = Value{};
     ASSERT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1),
@@ -323,8 +406,11 @@ TEST(BtreefsTree, UpdatesAValueInPlace) {
 
 TEST(BtreefsTree, UpdateMissesWhatIsNotThere) {
     Mounted fs(256, 1);
-    EXPECT_EQ(ours_btreefs::update(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 0),
-                                   value_of(1)),
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::update(tx, key_of(1, ours_btreefs::ItemType::Data, 0),
+                                                    value_of(1));
+                    }),
               Status::NotFound);
 }
 
@@ -379,20 +465,26 @@ TEST(BtreefsScan, StartsWhereItIsToldAndStopsWhenVisited) {
 TEST(BtreefsRemove, MissesWhatIsNotThere) {
     Mounted fs(256, 1);
     insert_all(fs, 1, {0, 1});
-    EXPECT_EQ(
-        ours_btreefs::remove(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 5)),
-        Status::NotFound);
-    EXPECT_EQ(
-        ours_btreefs::remove(fs.device, fs.volume, key_of(9, ours_btreefs::ItemType::Data, 0)),
-        Status::NotFound);
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::remove(tx, key_of(1, ours_btreefs::ItemType::Data, 5));
+                    }),
+              Status::NotFound);
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::remove(tx, key_of(9, ours_btreefs::ItemType::Data, 0));
+                    }),
+              Status::NotFound);
 }
 
 TEST(BtreefsRemove, TakesTheOneItNames) {
     Mounted fs(256, 1);
     insert_all(fs, 1, {0, 1, 2});
-    EXPECT_EQ(
-        ours_btreefs::remove(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1)),
-        Status::Ok);
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::remove(tx, key_of(1, ours_btreefs::ItemType::Data, 1));
+                    }),
+              Status::Ok);
     auto value = Value{};
     EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1),
                                    value),
@@ -418,8 +510,11 @@ TEST(BtreefsRemove, BorrowKeepsTheParentTrue) {
     // neither the first nor the last leaf, so both borrows get exercised.
     auto const mid_start = ours_btreefs::LEAF_MIN + 1;
     for (auto offset = mid_start; offset < mid_start + ours_btreefs::LEAF_MIN; ++offset) {
-        EXPECT_EQ(ours_btreefs::remove(fs.device, fs.volume,
-                                       key_of(1, ours_btreefs::ItemType::Data, offset)),
+        EXPECT_EQ(apply(fs,
+                        [&](auto &tx) {
+                            return ours_btreefs::remove(
+                                tx, key_of(1, ours_btreefs::ItemType::Data, offset));
+                        }),
                   Status::Ok);
         auto value = Value{};
         for (auto const kept: offsets) {
@@ -439,7 +534,7 @@ TEST(BtreefsRemove, BorrowKeepsTheParentTrue) {
 
 TEST(BtreefsRemove, MergeCascadeShrinksTheTree) {
     // Height 3 by mass, then every item out: the tree must come back to a
-    // single leaf, and the allocator must have everything it started with.
+    // single leaf, and the allocator must have everything but that leaf.
     Mounted fs(8192, 1);
     auto offsets = std::vector<u64>{};
     for (auto offset = u64{0}; offset < 10'000; ++offset) {
@@ -448,28 +543,11 @@ TEST(BtreefsRemove, MergeCascadeShrinksTheTree) {
     insert_all(fs, 1, offsets);
     ASSERT_EQ(fs.volume.height, 3);
 
-    auto taken = usize{0};
     for (auto const offset: offsets) {
-        auto const removed = ours_btreefs::remove(fs.device, fs.volume,
-                                                  key_of(1, ours_btreefs::ItemType::Data, offset));
+        auto const removed = apply(fs, [&](auto &tx) {
+            return ours_btreefs::remove(tx, key_of(1, ours_btreefs::ItemType::Data, offset));
+        });
         ASSERT_EQ(removed, Status::Ok);
-        taken += 1;
-        if (taken % 2'500 == 0) {
-            auto value = Value{};
-            for (auto const kept: offsets) {
-                if (kept < taken) {
-                    EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume,
-                                                   key_of(1, ours_btreefs::ItemType::Data, kept),
-                                                   value),
-                              Status::NotFound);
-                } else {
-                    EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume,
-                                                   key_of(1, ours_btreefs::ItemType::Data, kept),
-                                                   value),
-                              Status::Ok);
-                }
-            }
-        }
     }
     EXPECT_EQ(fs.volume.height, 1);
     auto value = Value{};
@@ -478,16 +556,24 @@ TEST(BtreefsRemove, MergeCascadeShrinksTheTree) {
               Status::NotFound);
 
     // Every node's block went back but the root leaf's, which the tree
-    // still lives in: the volume hands out the rest.
+    // still lives in: the volume hands out the rest, one block per
+    // transaction (a transaction's taken list is finite).
     auto free_seen = usize{0};
     while (true) {
-        auto const block = ours_btreefs::alloc_block(fs.device, fs.volume);
-        if (block.is_err()) {
+        auto const taken = apply(fs, [&](auto &tx) {
+            auto const block = tx.alloc_block();
+            if (block.is_err()) {
+                return block.unwrap_err();
+            }
+            return Status::Ok;
+        });
+        if (taken != Status::Ok) {
+            EXPECT_EQ(taken, Status::NoSpace);
             break;
         }
         free_seen += 1;
     }
-    EXPECT_EQ(free_seen, usize{8192 - 2 - 1});
+    EXPECT_EQ(free_seen, usize{8192 - 4});
 }
 
 TEST(BtreefsRemove, ScanStaysOrderedPastRemovals) {
@@ -498,8 +584,11 @@ TEST(BtreefsRemove, ScanStaysOrderedPastRemovals) {
     }
     insert_all(fs, 1, offsets);
     for (auto offset = u64{0}; offset < 500; offset += 2) {
-        ASSERT_EQ(ours_btreefs::remove(fs.device, fs.volume,
-                                       key_of(1, ours_btreefs::ItemType::Data, offset)),
+        ASSERT_EQ(apply(fs,
+                        [&](auto &tx) {
+                            return ours_btreefs::remove(
+                                tx, key_of(1, ours_btreefs::ItemType::Data, offset));
+                        }),
                   Status::Ok);
     }
     auto seen = std::vector<u64>{};
@@ -519,51 +608,150 @@ TEST(BtreefsRemove, KeepsTheRootLeafBlock) {
     // Removing the last item of a root leaf leaves the tree one empty leaf:
     // its block is still the tree's, and the allocator hands out the next.
     Mounted fs(8, 1);
-    ASSERT_EQ(ours_btreefs::insert(fs.device, fs.volume,
-                                   key_of(1, ours_btreefs::ItemType::Inode, 0), value_of(1)),
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::insert(tx, key_of(1, ours_btreefs::ItemType::Inode, 0),
+                                                    value_of(1));
+                    }),
               Status::Ok);
-    ASSERT_EQ(
-        ours_btreefs::remove(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Inode, 0)),
-        Status::Ok);
-    EXPECT_EQ(ours_btreefs::alloc_block(fs.device, fs.volume).unwrap(), u64{3});
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::remove(tx,
+                                                    key_of(1, ours_btreefs::ItemType::Inode, 0));
+                    }),
+              Status::Ok);
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        auto const block = tx.alloc_block();
+                        EXPECT_EQ(block.unwrap(), u64{4});
+                        return Status::Ok;
+                    }),
+              Status::Ok);
+}
+
+// --- The transaction's own promises. ---
+
+TEST(BtreefsTransaction, AnAbandonedInsertChangedNothing) {
+    // The rehearsal rule: insert, never commit, and the tree, its size and
+    // the superblock's generation are what they were.
+    Mounted fs(256, 1);
+    insert_all(fs, 1, {0, 1, 2});
+    auto const generation = fs.volume.generation;
+    auto const root = fs.volume.root;
+    {
+        auto tx = ours_btreefs::Transaction(fs.device, fs.volume);
+        EXPECT_EQ(
+            ours_btreefs::insert(tx, key_of(1, ours_btreefs::ItemType::Data, 3), value_of(30)),
+            Status::Ok);
+        // dropped, not committed
+    }
+    auto value = Value{};
+    EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 3),
+                                   value),
+              Status::NotFound);
+    EXPECT_EQ(fs.volume.generation, generation);
+    EXPECT_EQ(fs.volume.root, root);
+    for (auto const kept: {u64{0}, u64{1}, u64{2}}) {
+        ASSERT_EQ(ours_btreefs::lookup(fs.device, fs.volume,
+                                       key_of(1, ours_btreefs::ItemType::Data, kept), value),
+                  Status::Ok);
+    }
+}
+
+TEST(BtreefsTransaction, CommitCountsTheGenerationsAndSwapsTheSlots) {
+    // A generation-N commit writes slot N % 2: the two commits here land on
+    // different slots, and the slot one commit behind still reads the state
+    // it carried then.
+    Mounted fs(256, 1);
+    insert_all(fs, 1, {0});
+    auto const after_one = fs.volume.generation;
+    auto slot = std::array<u8, BLOCK_BYTES>{};
+    EXPECT_EQ(fs.device.read_block(0, slot), Status::Ok);
+    auto const at_slot_zero = ours_btreefs::detail::load_superblock(slot);
+    ASSERT_TRUE(at_slot_zero.is_ok());
+    EXPECT_EQ(at_slot_zero->generation, after_one);
+    insert_all(fs, 1, {1});
+    EXPECT_EQ(fs.volume.generation, after_one + 1);
+    // The second commit took the other slot; this one still reads the first
+    // commit's state, one generation behind.
+    EXPECT_EQ(fs.device.read_block(0, slot), Status::Ok);
+    auto const stale = ours_btreefs::detail::load_superblock(slot);
+    ASSERT_TRUE(stale.is_ok());
+    EXPECT_EQ(stale->generation, after_one);
+}
+
+TEST(BtreefsTransaction, OpensTheSurvivorOfATornSlot) {
+    // The crash's last stand: one superblock slot torn to garbage, the
+    // other carrying the live state. open() answers the survivor.
+    Mounted fs(256, 1);
+    insert_all(fs, 1, {0, 1, 2});
+    // The live slot carries generation 2, so the stale one is block 1.
+    auto trash = std::array<u8, BLOCK_BYTES>{};
+    std::memset(trash.data(), 0xEE, trash.size());
+    EXPECT_EQ(fs.device.write_block(1, trash), Status::Ok);
+    auto const reopened = ours_btreefs::open(fs.device);
+    ASSERT_TRUE(reopened.is_ok());
+    EXPECT_EQ(reopened->root, fs.volume.root);
+    auto value = Value{};
+    ASSERT_EQ(ours_btreefs::lookup(fs.device, reopened.unwrap(),
+                                   key_of(1, ours_btreefs::ItemType::Data, 2), value),
+              Status::Ok);
+    EXPECT_EQ(marker_of(value), u64{20});
 }
 
 // --- The superblock. ---
 
-TEST(BtreefsVolume, KeepsTheRootAcrossOpen) {
-    auto device = FakeDevice(256);
-    ASSERT_EQ(ours_btreefs::format(device, 256, 1), Status::Ok);
-    auto volume = ours_btreefs::open(device);
-    ASSERT_TRUE(volume.is_ok());
-    ASSERT_EQ(ours_btreefs::insert(device, volume.unwrap(),
-                                   key_of(1, ours_btreefs::ItemType::Inode, 0), value_of(7)),
+TEST(BtreefsVolume, HandsOutObjectIdsInOrderAndKeepsThem) {
+    Mounted fs(256, 1);
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        EXPECT_EQ(tx.alloc_object(), u64{1});
+                        EXPECT_EQ(tx.alloc_object(), u64{2});
+                        return Status::Ok;
+                    }),
               Status::Ok);
-    auto const reopened = ours_btreefs::open(device);
+    auto const reopened = ours_btreefs::open(fs.device);
     ASSERT_TRUE(reopened.is_ok());
-    EXPECT_EQ(reopened->root, volume->root);
-    EXPECT_EQ(reopened->height, volume->height);
+    EXPECT_EQ(reopened->next_object, u64{3});
+}
 
+TEST(BtreefsVolume, KeepsTheRootAcrossOpen) {
+    Mounted fs(256, 1);
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::insert(tx, key_of(1, ours_btreefs::ItemType::Inode, 0),
+                                                    value_of(7));
+                    }),
+              Status::Ok);
+    auto const reopened = ours_btreefs::open(fs.device);
+    ASSERT_TRUE(reopened.is_ok());
+    EXPECT_EQ(reopened->root, fs.volume.root);
+    EXPECT_EQ(reopened->height, fs.volume.height);
     auto value = Value{};
-    EXPECT_EQ(ours_btreefs::lookup(device, reopened.unwrap(),
+    EXPECT_EQ(ours_btreefs::lookup(fs.device, reopened.unwrap(),
                                    key_of(1, ours_btreefs::ItemType::Inode, 0), value),
               Status::Ok);
     EXPECT_EQ(marker_of(value), u64{7});
 }
 
-TEST(BtreefsVolume, HandsOutObjectIdsInOrderAndKeepsThem) {
-    auto device = FakeDevice(256);
-    ASSERT_EQ(ours_btreefs::format(device, 256, 1), Status::Ok);
-    auto volume = ours_btreefs::open(device);
-    ASSERT_TRUE(volume.is_ok());
-    EXPECT_EQ(ours_btreefs::alloc_object(device, volume.unwrap()), u64{1});
-    EXPECT_EQ(ours_btreefs::alloc_object(device, volume.unwrap()), u64{2});
-    auto const reopened = ours_btreefs::open(device);
-    ASSERT_TRUE(reopened.is_ok());
-    EXPECT_EQ(reopened->next_object, u64{3});
-}
-
 TEST(BtreefsVolume, RefusesUnformattedBlocks) {
     auto device = FakeDevice(256);
     EXPECT_EQ(ours_btreefs::open(device).unwrap_err(), Status::NotFound);
+}
+
+TEST(BtreefsVolume, RefusesASlotWhoseCrcLies) {
+    // The magic present but the bytes not what the CRC vouched for: the
+    // slot is rejected, and open() answers the other one.
+    Mounted fs(256, 1);
+    insert_all(fs, 1, {0});
+    // The live slot carries generation 2; the stale one is block 1, whose
+    // bytes are tampered with.
+    auto slot = std::array<u8, BLOCK_BYTES>{};
+    EXPECT_EQ(fs.device.read_block(1, slot), Status::Ok);
+    slot[100] = static_cast<u8>(slot[100] ^ 0xFF);
+    EXPECT_EQ(fs.device.write_block(1, slot), Status::Ok);
+    auto const reopened = ours_btreefs::open(fs.device);
+    ASSERT_TRUE(reopened.is_ok());
+    EXPECT_EQ(reopened->root, fs.volume.root);
 }
 } // namespace

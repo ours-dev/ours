@@ -14,7 +14,10 @@ import("//build/cpp/cpp_interface.gni")
 # Device's two methods.
 source_set("ours.btreefs") {
   sources = [ "src/ours_btreefs.cpp" ]
-  public_deps = [ ":headers" ]
+  public_deps = [
+    ":headers",
+    "//system/lib/ours.gpt",
+  ]
   visibility = [ "*" ]
 }
 
@@ -26,6 +29,7 @@ source_set("ours.btreefs") {
 cpp_interface("headers") {
   public = [ "include/ours_btreefs/ours_btreefs.hpp" ]
   public_deps = [
+    "//system/lib/ours.gpt:headers",
     "//system/lib/ustl:headers",
     "//system/public",
   ]

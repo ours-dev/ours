@@ -13,6 +13,7 @@ The partition starts at LBA 2048, which keeps the write check's scratch LBA
 the volume's metadata lives outside the partition's first blocks.
 """
 
+import zlib
 import argparse
 import uuid
 
@@ -114,27 +115,32 @@ def main() -> None:
     entries = entry_array()
     image[LBA : 2 * LBA] = gpt_header(entries, disk_blocks)
     image[2 * LBA : 2 * LBA + NUM_ENTRIES * ENTRY_BYTES] = entries
-    # The partition carries a formatted btreefs volume from the first block:
-    # the superblock btreefs opens, then its free bitmap. The bytes follow
-    # ours_btreefs's format (system/lib/ours.btreefs) -- superblock fields
-    # little-endian at their offsets, the metadata's blocks marked used in
-    # the bitmap -- so a boot finds the volume made and serves it.
+    # The partition carries a formatted copy-on-write btreefs volume: two
+    # superblock slots (blocks 0 and 1, the generation and the CRC32 over
+    # the slot's first 128 bytes with the CRC field zeroed), then the free
+    # bitmap from block 2. The bytes follow ours_btreefs's format
+    # (system/lib/ours.btreefs), so a boot finds the volume made and serves
+    # it; zlib.crc32 is the IEEE CRC-32 the library's own codec computes.
     start = PARTITION_FIRST_LBA * LBA
     BLOCK = 4096
     volume_blocks = PARTITION_BLOCKS * LBA // BLOCK
     bitmap_blocks = (volume_blocks + BLOCK * 8 - 1) // (BLOCK * 8)
     super = bytearray(BLOCK)
     super[0 : len(MAGIC)] = MAGIC
-    super[8:16] = volume_blocks.to_bytes(8, "little")
-    super[32:40] = (1).to_bytes(8, "little")  # the bitmap, from block 1
-    super[40:44] = bitmap_blocks.to_bytes(4, "little")
-    super[48:56] = (1).to_bytes(8, "little")  # the next object id
+    super[8:16] = (1).to_bytes(8, "little")  # the generation
+    super[24:32] = volume_blocks.to_bytes(8, "little")
+    super[48:56] = (2).to_bytes(8, "little")  # the bitmap, from block 2
+    super[56:60] = bitmap_blocks.to_bytes(4, "little")
+    super[64:72] = (1).to_bytes(8, "little")  # the next object id
+    crc = zlib.crc32(bytes(super[:128])) & 0xFFFFFFFF
+    super[16:20] = crc.to_bytes(4, "little")
     image[start : start + BLOCK] = super
+    image[start + BLOCK : start + 2 * BLOCK] = super
     bits = bytearray(BLOCK)
-    for block in range(1 + bitmap_blocks):
+    for block in range(2 + bitmap_blocks):
         bits[block // 8] |= 1 << (block % 8)
     for index in range(bitmap_blocks):
-        at = start + (1 + index) * BLOCK
+        at = start + (2 + index) * BLOCK
         image[at : at + BLOCK] = bits if index == 0 else bytearray(BLOCK)
 
     with open(args.image, "wb") as f:
