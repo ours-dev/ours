@@ -36,38 +36,52 @@ struct Data final {
 ///   - Where the operations run. mask(), unmask() and configure() are called
 ///     under the line's lock, L1, from interrupt context or from a thread
 ///     with interrupts off; issue_eoi() in interrupt context, under L1 unless
-///     the line is Permanent; trigger_mode() and is_masked() without L1. None
-///     sleeps, and none waits for another CPU; a bounded poll of a register is
-///     fine.
+///     the line is Permanent; trigger_mode() with L1 (the bind and the attach
+///     that reads the mode call it so) or without it (irq::trigger_mode());
+///     is_masked() without. So no operation takes a line lock, and the chip's
+///     own lock is a leaf that is safe with interrupts off. None sleeps, and
+///     none waits for another CPU to act: taking the chip's own lock, held
+///     across a few register accesses, is not that, and a bounded poll of a
+///     register is fine.
 ///   - Each line has a lock of its own, so two lines of one controller are
 ///     written from two CPUs at once. The chip keeps nothing in the line's
 ///     data, and whatever its registers need is serialised by a lock of the
-///     chip's own, taken inside L1 (on x86, LI in `io_apic.cpp`). A chip may
-///     keep a table of its own, an entry for each source, for a fact the
-///     controller has no register for (below); trigger_mode() reads it
-///     without L1, so its entries are atomic.
+///     chip's own, taken inside L1 (on x86, LI in `io_apic.cpp`).
 ///   - issue_eoi() ends the interrupt on the CPU that took it, inside the
 ///     dispatch. It is never deferred to finalize_oneshot() or to a thread: a
 ///     controller whose end of interrupt belongs to the CPU that took the
 ///     interrupt (a claim and its complete, an acknowledge and its end) takes
 ///     it from there.
-///   - configure() refuses with NotSupported a mode the controller cannot do,
-///     and leaves the source masked. A controller with no register for the
-///     mode records the mode it was told, and answers it from trigger_mode().
+///   - issue_eoi() is called on a source that mask() has masked: for an
+///     interrupt on a line nobody is on, and for a Oneshot interrupt held for
+///     its owner. A controller that ignores the end of interrupt of a masked
+///     source masks some other way.
+///   - configure() refuses with NotSupported a mode the controller cannot do.
+///     On success it leaves the source masked; on a refusal it leaves it as it
+///     was. A controller with no register for the mode, whose trigger form is
+///     the wiring's, accepts the mode it is told (the firmware's, which it
+///     cannot check) and leaves trigger_mode() null: the line takes the flow
+///     of the mode it is told, and an owner that gives none is refused, a
+///     Oneshot one included (see trigger_mode()).
 ///   - A chip with several instances finds the one that drives a source from
-///     the line's hardware number, as the IO-APIC's does. `platform_data` is
-///     for a fact that number does not give; nothing needs it yet.
+///     the line's hardware number, as the IO-APIC's does. That works because
+///     the hardware numbers of all the controllers of a machine are one
+///     numbering, disjoint for each instance, served by one table and one chip.
+///   - startup(), issue_ack() and dump() are not called; leave them null.
+///     `platform_data` is null, and nothing sets it yet.
 ///   - A controller whose mask takes effect on another CPU, later, cannot hold
 ///     a Oneshot line, which stays masked from its interrupt until the owner's
 ///     ack. The layer cannot tell (check_oneshot() only asks that mask() and
-///     unmask() exist), so such a chip leaves unmask() null: a Oneshot action
-///     is refused, and so is irq::unmask(). A flag for it is MSI's to add.
+///     unmask() exist), so for now such a chip leaves unmask() null: a Oneshot
+///     action is refused, and so is irq::unmask(), which every owner calls to
+///     start its line, so the chip serves no owner until a flag for it exists.
+///     That flag is MSI's to add.
 struct Chip final {
     auto (*startup)(Data const &) -> Status = nullptr;
     /// Masks the line at the controller. kernel/irq calls it under L1, and
     /// only there: irq::mask(); the line's flow, for an interrupt on a line
-    /// nobody is on and before a Oneshot line's action; attach() with no
-    /// mode; and detach(), as the last action goes. Every chip a line of the
+    /// nobody is on and before a Oneshot line's action; the attach that reads
+    /// the mode; and detach(), as the last action goes. Every chip a line of the
     /// table is bound to has one: init_lines() refuses a chip without.
     auto (*mask)(Data const &) -> void = nullptr;
     /// Unmasks the line at the controller. kernel/irq calls it under L1, and
@@ -79,9 +93,12 @@ struct Chip final {
     auto (*configure)(Data const &, TriggerMode, Polarity) -> Status = nullptr;
     /// The line's trigger mode now, read from the controller, which keeps it:
     /// what configure() last set, or what the platform programmed at boot.
-    /// Read when the line is bound to the chip, to choose its flow; a line
-    /// whose chip cannot say gets the edge flow, and refuses a Oneshot action
-    /// that comes without a mode, since that flow does not hold a line.
+    /// Read when the line is bound to the chip, to choose its flow, and by the
+    /// attach that reads the mode. Null on a controller that cannot read its
+    /// mode: its lines get the edge flow until an owner gives them a mode
+    /// (configure(), or an attach with a mode), the attach that reads the mode
+    /// answers NotSupported, and so does the attach with no mode for a Oneshot
+    /// action, since the edge flow does not hold a line.
     auto (*trigger_mode)(Data const &) -> TriggerMode = nullptr;
     /// Whether the line is masked at the controller now, read from the
     /// controller, which keeps the one record of it. For kernel tests only,

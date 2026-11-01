@@ -156,3 +156,40 @@ None. The user approved the step, both the stubs and the refusal, on 2026-11-01 
 - Why does a Oneshot action on the edge flow not hold its line, and why is that right for an edge pin and wrong for a pin the chip cannot read?
 - Why does attaching with a mode make the same action safe on a chip that cannot say its mode?
 - Why is `issue_eoi()` never deferred to `finalize_oneshot()`, and what would a PLIC do if it were?
+
+## A controller with no mode register leaves `trigger_mode()` null, and the contract's other loose ends (2026-11-01)
+
+**Files**
+- `kernel/include/ours/irq/chip.hpp` — the contract rewritten in four places; `kernel/include/ours/irq/mod.hpp`, `kernel/include/ours/irq/desc.hpp`, `kernel/kernel/irq/desc.cpp` — the comments of the refusal.
+- `kernel/commands/irq_chip_test.cpp` — the header and a comment say what the chip stands for; the naming suppression, which suppressed nothing, is gone.
+- `.agents/tasks/irq-multi-arch/{DESIGN,PLAN}.md` — the future tenses and cited lines the previous entry left behind.
+
+**Symptom**
+Latent. The previous entry's contract told a controller with no mode register to record the mode it was told and answer it from `trigger_mode()`. A chip that does so has a `trigger_mode()`, and the refusal it added to the attach with no mode fires only for a chip that has none. The record called the PLIC the case the refusal matters for, and the test stood a chip with no `trigger_mode()` in for it, which is the shape the contract told a PLIC author not to write. A PLIC chip following the text would never meet the refusal.
+
+**Cause**
+Two halves of one change written from two directions. The refusal came from the review of the design (the two-argument attach keeps whatever flow the line has, and a chip that cannot say its mode gave it the edge flow); the contract's sentence about recording came from the earlier worry that `trigger_mode()` "must answer something". Neither needed the other: the layer already chooses the flow from the mode an owner tells it (`configure()`, or an attach with a mode), so the chip need not remember the mode, and a chip that answers a mode it was never given (a zeroed table answers Edge) would give a level source the wrong flow. The independent review of step 3 found that the two disagreed.
+
+**Change**
+The contract now says a controller with no register for the mode accepts the mode it is told, which is the firmware's and which it cannot check, and leaves `trigger_mode()` null: its lines get the edge flow until an owner gives them a mode; the attach that reads the mode and the attach with no mode for a Oneshot action answer NotSupported. No code changed in the layer: the refusal and the test were already right. The other loose ends of the review, all in comments and documents: `trigger_mode()` is called with L1 as well (the bind and the attach that reads the mode) and without it, so no operation takes a line lock; "none waits for another CPU" means for another CPU to act, since the chip's own lock is taken; `issue_eoi()` is called on a source `mask()` has masked, which the flows do for a line nobody is on and for a Oneshot interrupt held for its owner, so a controller that ignores the end of interrupt of a masked source masks another way (a PLIC: the priority register); a refused `configure()` leaves the source as it was; `startup()`, `issue_ack()` and `dump()` are not called and `platform_data` is null; the hardware numbers of a machine are one numbering, disjoint for each instance, because one table and one chip serve them all; a null `unmask()` also refuses `irq::unmask()`, which every owner calls, so such a chip serves no owner until the flag exists; the refusal looks at what the chip can say and not at the flow the line has now; `irq::attach()` documents the new NotSupported and that it comes before AlreadyBound; and `Chip::mask`'s "attach() with no mode" now says "the attach that reads the mode", since the word meant two overloads.
+
+**Reference**
+The step 3 entry says "None, this project's own design", which is not quite so: the contract's clauses come from how the line layer is modelled on Linux's genirq (`handle_fasteoi_irq`, `irq_chip`'s `irq_mask`, `irq_unmask`, `irq_eoi`, `irq_set_type`), unchecked here, and from the claim and complete of the PLIC and the acknowledge and end of the GIC read by a review agent on 2026-11-01. In Linux a chip whose `irq_set_type` accepts without effect is the PLIC's case (`irq-sifive-plic.c`, from the same reading).
+
+**Verification**
+- `boot_check.py`: dbg PASS, 44 passed and 4 skipped; rel PASS, 41 passed and 8 skipped, 6 of 6 required; host tests 154 passed. `irqchip.test` 18 checks and the other five kernel-shell tests unchanged and ok after the comment changes.
+- Not verified: a PLIC chip written to the new text, which does not exist; that is the riscv branch's.
+
+**Deliberately not done**
+No per-source table in the chip, and no flag for the deferred mask. The PLIC-specific advice (mask with the priority register, keep the enable bits set) stays in `.agents/tasks/irq-multi-arch/DESIGN.md` for the PLIC chip's author and is not in `chip.hpp`, whose clause is the generic one.
+
+**How it was found**
+By the independent review of d964e083 (three reviewers, 2026-11-01): one of them read the contract's sentence about recording against the refusal and saw that a chip following the text never reaches it.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a chip that answers `trigger_mode()` from a table nobody filled give a level source the wrong flow?
+- Where does a line with a null `trigger_mode()` get its flow when an owner attaches with a mode?
+- Why is `issue_eoi()` called on a masked source, and what does a PLIC do with the completion of a source whose enable bit is clear?

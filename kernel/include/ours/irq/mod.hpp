@@ -66,7 +66,9 @@ auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> 
 /// BadState if the action is on a line already, NoResource if there is no
 /// such line, InvArgs for INVALID_V_IRQ_NUM, a null handler, or an action
 /// that says Oneshot together with Permanent or Shared; NotSupported for a
-/// Oneshot action on a line whose controller cannot mask and unmask.
+/// Oneshot action on a line whose controller cannot mask and unmask, or
+/// cannot say how its pins signal (give a mode: the attach with a mode),
+/// which is answered before AlreadyBound.
 [[nodiscard]]
 auto attach(VIrqNum virqnum, Action &action) -> Status;
 

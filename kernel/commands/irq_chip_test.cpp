@@ -2,7 +2,8 @@
 /// Copyright (c) 2026 ours Developers
 //
 // `irqchip.test`: what a line does with a chip that cannot say how its pins
-// signal, the case of a controller with no register for the trigger mode
+// signal, which is what the contract asks of a controller with no register for
+// the trigger mode: it leaves trigger_mode() null
 // (.agents/tasks/irq-multi-arch/PLAN.md, step 3). dbg image only: it is the
 // one with a kernel shell.
 //
@@ -66,12 +67,9 @@ namespace {
 
     // What the chips below were told. Atomic because a chip's operations run in
     // whatever context the line's flow does; the test reads them where it
-    // alone drives the line. Namespace-scope objects are UPPER_CASE throughout
-    // this tree.
-    // NOLINTBEGIN(readability-identifier-naming)
+    // alone drives the line.
     constinit std::atomic<usize> CONFIGURES{0};
     constinit std::atomic<irq::TriggerMode> TOLD_TRIGGER{irq::TriggerMode::Edge};
-    // NOLINTEND(readability-identifier-naming)
 
     auto mask_pin(irq::Data const &) -> void {}
 
@@ -91,8 +89,8 @@ namespace {
         return irq::TriggerMode::Level;
     }
 
-    /// A chip that can mask, unmask and end an interrupt and set a mode, but
-    /// cannot say what the mode is.
+    /// A chip that can mask, unmask and end an interrupt and accept a mode, but
+    /// cannot say what the mode is: a controller with no mode register.
     constexpr irq::Chip BLIND_CHIP = {
         .mask = mask_pin,
         .unmask = unmask_pin,

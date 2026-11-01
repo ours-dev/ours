@@ -71,7 +71,7 @@ class Desc final {
     /// empty line, and makes the line Permanent; one that says Oneshot makes
     /// it Oneshot, and needs a chip that can say how its pins signal
     /// (NotSupported otherwise): without a mode the line keeps the flow it
-    /// took from the chip.
+    /// has, and only a mode, or a chip that reads one, sets the level flow.
     [[nodiscard]]
     auto attach(Action &action) -> Status;
 
