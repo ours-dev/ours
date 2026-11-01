@@ -244,11 +244,26 @@ inline constexpr auto READ_DIRENTS = wire::Method{
     .kind = wire::MethodKind::TwoWay,
 };
 
+/// Removes the entry |path| names from the directory (Directory.Unlink):
+/// the name goes, and with it what it named. Refusing is the status form
+/// (NotFound the usual); answering Ok means gone.
+inline constexpr auto UNLINK = wire::Method{
+    .selector = "ours.io/Directory.Unlink",
+    .ordinal = 0x2d57'15bc'1a78'ebb4,
+    .kind = wire::MethodKind::TwoWay,
+};
+
 /// Directory.Open. |path| points into the message it was decoded from.
 struct OpenRequest {
     Flags flags;
     std::string_view path;
     ours::Uandle object;
+};
+
+/// Directory.Unlink's: the entry's name, relative to the directory.
+struct UnlinkRequest {
+    u32 txid;
+    std::string_view path;
 };
 
 struct CloseRequest {
@@ -415,6 +430,16 @@ auto encode_read_dirents_reply(std::span<u8> bytes, u32 txid, ReadDirentsReply c
 [[nodiscard]]
 auto decode_read_dirents_reply(wire::Message message, u32 txid)
     -> ustl::Result<ReadDirentsReply, ours::Status>;
+
+auto encode_unlink(std::span<u8> bytes, UnlinkRequest const &request)
+    -> ustl::Result<wire::Message, ours::Status>;
+
+[[nodiscard]]
+auto decode_unlink(wire::Message message) -> ustl::Result<UnlinkRequest, ours::Status>;
+
+/// The reply is the status form, whatever the status.
+auto encode_unlink_reply(std::span<u8> bytes, u32 txid, ours::Status status)
+    -> ustl::Result<wire::Message, ours::Status>;
 
 /// Where a Read or ReadDirents reply in |bytes| puts its data: the bytes from
 /// 24 on, at most MAX_TRANSFER_SIZE of them. A server that writes the data

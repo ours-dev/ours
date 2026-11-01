@@ -20,6 +20,8 @@ namespace {
     constexpr auto OPEN_OBJECT_OFFSET = usize{24};
     constexpr auto OPEN_PATH_SIZE_OFFSET = usize{28};
     constexpr auto OPEN_PATH_OFFSET = usize{32};
+    constexpr auto UNLINK_PATH_SIZE_OFFSET = usize{20};
+    constexpr auto UNLINK_PATH_OFFSET = usize{24};
 
     // File.Write: the data's size, then the data, which ends the message.
     constexpr auto WRITE_DATA_OFFSET = usize{20};
@@ -485,5 +487,43 @@ auto DirentReader::next() -> ustl::Result<ustl::Option<Dirent>, Status> {
     };
     m_rest = m_rest.subspan(DIRENT_HEADER_SIZE + name_size);
     return ustl::ok(ustl::some(dirent));
+}
+auto encode_unlink(std::span<u8> bytes, UnlinkRequest const &request) -> Encoded {
+    if (request.path.size() > MAX_PATH_LENGTH) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto started =
+        wire::start_request(bytes, UNLINK_PATH_OFFSET + request.path.size(), UNLINK, request.txid);
+    if (started.is_err()) {
+        return ustl::err(started.unwrap_err());
+    }
+    auto const message = started.unwrap();
+    wire::store(message, UNLINK_PATH_SIZE_OFFSET, static_cast<u32>(request.path.size()));
+    if (!request.path.empty()) {
+        std::memcpy(message.data() + UNLINK_PATH_OFFSET, request.path.data(), request.path.size());
+    }
+    return ustl::ok(Message{.bytes = message, .handles = {}});
+}
+
+auto decode_unlink(Message const message) -> ustl::Result<UnlinkRequest, Status> {
+    auto header = wire::decode_request_header(message, UNLINK);
+    if (header.is_err()) {
+        return ustl::err(header.unwrap_err());
+    }
+    if (message.bytes.size() < UNLINK_PATH_OFFSET || !message.handles.empty()) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto const path_size = wire::load<u32>(message.bytes, UNLINK_PATH_SIZE_OFFSET);
+    if (path_size > MAX_PATH_LENGTH || message.bytes.size() != UNLINK_PATH_OFFSET + path_size) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto const path = std::string_view{
+        reinterpret_cast<char const *>(message.bytes.data()) + UNLINK_PATH_OFFSET, path_size};
+    return ustl::ok(UnlinkRequest{.txid = header->txid, .path = path});
+}
+
+auto encode_unlink_reply(std::span<u8> const bytes, u32 const txid, Status const status)
+    -> Encoded {
+    return wire::encode_status_reply(bytes, UNLINK, txid, status);
 }
 } // namespace ours_io

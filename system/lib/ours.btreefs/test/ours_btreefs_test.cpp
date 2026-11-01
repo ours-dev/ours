@@ -374,6 +374,160 @@ TEST(BtreefsScan, StartsWhereItIsToldAndStopsWhenVisited) {
     EXPECT_EQ(seen[2], u64{2520});
 }
 
+// --- Removal. ---
+
+TEST(BtreefsRemove, MissesWhatIsNotThere) {
+    Mounted fs(256, 1);
+    insert_all(fs, 1, {0, 1});
+    EXPECT_EQ(
+        ours_btreefs::remove(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 5)),
+        Status::NotFound);
+    EXPECT_EQ(
+        ours_btreefs::remove(fs.device, fs.volume, key_of(9, ours_btreefs::ItemType::Data, 0)),
+        Status::NotFound);
+}
+
+TEST(BtreefsRemove, TakesTheOneItNames) {
+    Mounted fs(256, 1);
+    insert_all(fs, 1, {0, 1, 2});
+    EXPECT_EQ(
+        ours_btreefs::remove(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1)),
+        Status::Ok);
+    auto value = Value{};
+    EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1),
+                                   value),
+              Status::NotFound);
+    ASSERT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 0),
+                                   value),
+              Status::Ok);
+    EXPECT_EQ(marker_of(value), u64{0});
+}
+
+TEST(BtreefsRemove, BorrowKeepsTheParentTrue) {
+    // Three leaves: fill one past two minimums, then remove from the middle
+    // until it must borrow, left and right both. Every lookup after each
+    // step is the check that the parent's separators still route.
+    Mounted fs(512, 1);
+    auto offsets = std::vector<u64>{};
+    for (auto offset = u64{0}; offset < 3 * ours_btreefs::LEAF_MIN + 6; ++offset) {
+        offsets.push_back(offset);
+    }
+    insert_all(fs, 1, offsets);
+    ASSERT_EQ(fs.volume.height, 2);
+    // Remove the middle leaf's items down past its minimum: the middle is
+    // neither the first nor the last leaf, so both borrows get exercised.
+    auto const mid_start = ours_btreefs::LEAF_MIN + 1;
+    for (auto offset = mid_start; offset < mid_start + ours_btreefs::LEAF_MIN; ++offset) {
+        EXPECT_EQ(ours_btreefs::remove(fs.device, fs.volume,
+                                       key_of(1, ours_btreefs::ItemType::Data, offset)),
+                  Status::Ok);
+        auto value = Value{};
+        for (auto const kept: offsets) {
+            if (mid_start <= kept && kept <= offset) {
+                continue;
+            }
+            auto const seen = ours_btreefs::lookup(
+                fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, kept), value);
+            ASSERT_EQ(seen, Status::Ok);
+        }
+    }
+    auto value = Value{};
+    EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume,
+                                   key_of(1, ours_btreefs::ItemType::Data, mid_start), value),
+              Status::NotFound);
+}
+
+TEST(BtreefsRemove, MergeCascadeShrinksTheTree) {
+    // Height 3 by mass, then every item out: the tree must come back to a
+    // single leaf, and the allocator must have everything it started with.
+    Mounted fs(8192, 1);
+    auto offsets = std::vector<u64>{};
+    for (auto offset = u64{0}; offset < 10'000; ++offset) {
+        offsets.push_back(offset);
+    }
+    insert_all(fs, 1, offsets);
+    ASSERT_EQ(fs.volume.height, 3);
+
+    auto taken = usize{0};
+    for (auto const offset: offsets) {
+        auto const removed = ours_btreefs::remove(fs.device, fs.volume,
+                                                  key_of(1, ours_btreefs::ItemType::Data, offset));
+        ASSERT_EQ(removed, Status::Ok);
+        taken += 1;
+        if (taken % 2'500 == 0) {
+            auto value = Value{};
+            for (auto const kept: offsets) {
+                if (kept < taken) {
+                    EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume,
+                                                   key_of(1, ours_btreefs::ItemType::Data, kept),
+                                                   value),
+                              Status::NotFound);
+                } else {
+                    EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume,
+                                                   key_of(1, ours_btreefs::ItemType::Data, kept),
+                                                   value),
+                              Status::Ok);
+                }
+            }
+        }
+    }
+    EXPECT_EQ(fs.volume.height, 1);
+    auto value = Value{};
+    EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 0),
+                                   value),
+              Status::NotFound);
+
+    // Every node's block went back but the root leaf's, which the tree
+    // still lives in: the volume hands out the rest.
+    auto free_seen = usize{0};
+    while (true) {
+        auto const block = ours_btreefs::alloc_block(fs.device, fs.volume);
+        if (block.is_err()) {
+            break;
+        }
+        free_seen += 1;
+    }
+    EXPECT_EQ(free_seen, usize{8192 - 2 - 1});
+}
+
+TEST(BtreefsRemove, ScanStaysOrderedPastRemovals) {
+    Mounted fs(1024, 1);
+    auto offsets = std::vector<u64>{};
+    for (auto offset = u64{0}; offset < 500; ++offset) {
+        offsets.push_back(offset);
+    }
+    insert_all(fs, 1, offsets);
+    for (auto offset = u64{0}; offset < 500; offset += 2) {
+        ASSERT_EQ(ours_btreefs::remove(fs.device, fs.volume,
+                                       key_of(1, ours_btreefs::ItemType::Data, offset)),
+                  Status::Ok);
+    }
+    auto seen = std::vector<u64>{};
+    EXPECT_EQ(ours_btreefs::scan(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 0),
+                                 [&](Key const &, Value const &value) -> bool {
+                                     seen.push_back(marker_of(value));
+                                     return true;
+                                 }),
+              Status::Ok);
+    ASSERT_EQ(seen.size(), offsets.size() / 2);
+    for (auto index = usize{0}; index < seen.size(); ++index) {
+        EXPECT_EQ(seen[index], u64{index} * 20 + 10);
+    }
+}
+
+TEST(BtreefsRemove, KeepsTheRootLeafBlock) {
+    // Removing the last item of a root leaf leaves the tree one empty leaf:
+    // its block is still the tree's, and the allocator hands out the next.
+    Mounted fs(8, 1);
+    ASSERT_EQ(ours_btreefs::insert(fs.device, fs.volume,
+                                   key_of(1, ours_btreefs::ItemType::Inode, 0), value_of(1)),
+              Status::Ok);
+    ASSERT_EQ(
+        ours_btreefs::remove(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Inode, 0)),
+        Status::Ok);
+    EXPECT_EQ(ours_btreefs::alloc_block(fs.device, fs.volume).unwrap(), u64{3});
+}
+
 // --- The superblock. ---
 
 TEST(BtreefsVolume, KeepsTheRootAcrossOpen) {

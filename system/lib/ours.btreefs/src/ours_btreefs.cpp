@@ -145,6 +145,128 @@ namespace detail {
         return internal_key(left, mid);
     }
 
+    auto leaf_erase(std::span<u8> node, usize &count, usize at) -> void {
+        auto const slot = leaf_slot_offset(at);
+        auto const slot_bytes = KEY_BYTES + VALUE_BYTES;
+        auto const tail = (count - at - 1) * slot_bytes;
+        std::memmove(node.data() + slot, node.data() + slot + slot_bytes, tail);
+        count -= 1;
+        store_le16(node, COUNT_OFFSET, static_cast<u16>(count));
+    }
+
+    auto leaf_borrow_left(std::span<u8> dst, usize &dst_count, std::span<u8> left,
+                          usize &left_count) -> Key {
+        // The left sibling's last item moves to the front: the destination's
+        // slots shift right one to open the slot, and the moved key is what the
+        // parent now routes the pair by.
+        dst_count += 1;
+        store_le16(dst, COUNT_OFFSET, static_cast<u16>(dst_count));
+        auto const slot_bytes = KEY_BYTES + VALUE_BYTES;
+        std::memmove(dst.data() + leaf_slot_offset(1), dst.data() + leaf_slot_offset(0),
+                     (dst_count - 1) * slot_bytes);
+        auto const from = leaf_slot_offset(left_count - 1);
+        std::memcpy(dst.data() + leaf_slot_offset(0), left.data() + from, slot_bytes);
+        auto const moved = leaf_key(left, left_count - 1);
+        left_count -= 1;
+        store_le16(left, COUNT_OFFSET, static_cast<u16>(left_count));
+        return moved;
+    }
+
+    auto leaf_borrow_right(std::span<u8> dst, usize &dst_count, std::span<u8> right,
+                           usize &right_count) -> Key {
+        // The right sibling's first item moves to the back, and the right's new
+        // first key is what the parent routes the pair by.
+        auto const slot_bytes = KEY_BYTES + VALUE_BYTES;
+        std::memcpy(dst.data() + leaf_slot_offset(dst_count), right.data() + leaf_slot_offset(0),
+                    slot_bytes);
+        dst_count += 1;
+        store_le16(dst, COUNT_OFFSET, static_cast<u16>(dst_count));
+        std::memmove(right.data() + leaf_slot_offset(0), right.data() + leaf_slot_offset(1),
+                     (right_count - 1) * slot_bytes);
+        right_count -= 1;
+        store_le16(right, COUNT_OFFSET, static_cast<u16>(right_count));
+        return leaf_key(right, 0);
+    }
+
+    auto leaf_merge(std::span<u8> dst, usize &dst_count, std::span<u8> right, usize &right_count)
+        -> void {
+        auto const slot_bytes = KEY_BYTES + VALUE_BYTES;
+        std::memcpy(dst.data() + leaf_slot_offset(dst_count), right.data() + leaf_slot_offset(0),
+                    right_count * slot_bytes);
+        dst_count += right_count;
+        store_le16(dst, COUNT_OFFSET, static_cast<u16>(dst_count));
+        // The chain: what followed |right| follows |dst| now.
+        store_le64(dst, NEXT_LEAF_OFFSET, load_le64(right, NEXT_LEAF_OFFSET));
+        right_count = 0;
+        store_le16(right, COUNT_OFFSET, 0);
+    }
+
+    auto internal_borrow_left(std::span<u8> dst, usize &dst_count, std::span<u8> left,
+                              usize &left_count, Key const &separator) -> Key {
+        // The left sibling's last child and last key move over: the child in
+        // front, the parent's separator as the destination's first key, and the
+        // left's old last key up to the parent.
+        dst_count += 1;
+        store_le16(dst, COUNT_OFFSET, static_cast<u16>(dst_count));
+        auto const slot_bytes = KEY_BYTES + 8;
+        std::memmove(dst.data() + internal_slot_offset(1), dst.data() + internal_slot_offset(0),
+                     (dst_count - 1) * slot_bytes + 8);
+        store_internal_child(dst, 0, internal_child(left, left_count));
+        store_key(dst, internal_slot_offset(0) + 8, separator);
+        auto const moved = internal_key(left, left_count - 1);
+        left_count -= 1;
+        store_le16(left, COUNT_OFFSET, static_cast<u16>(left_count));
+        return moved;
+    }
+
+    auto internal_borrow_right(std::span<u8> dst, usize &dst_count, std::span<u8> right,
+                               usize &right_count, Key const &separator) -> Key {
+        // The right sibling's first child and first key move over: the parent's
+        // separator as the destination's last key, the right's old first key up
+        // to the parent, and the right's second child becomes its first.
+        store_internal_child(dst, dst_count + 1, internal_child(right, 0));
+        store_key(dst, internal_slot_offset(dst_count) + 8, separator);
+        dst_count += 1;
+        store_le16(dst, COUNT_OFFSET, static_cast<u16>(dst_count));
+        auto const moved = internal_key(right, 0);
+        auto const slot_bytes = KEY_BYTES + 8;
+        std::memmove(right.data() + internal_slot_offset(0), right.data() + internal_slot_offset(1),
+                     (right_count - 1) * slot_bytes + 8);
+        right_count -= 1;
+        store_le16(right, COUNT_OFFSET, static_cast<u16>(right_count));
+        return moved;
+    }
+
+    auto internal_merge(std::span<u8> dst, usize &dst_count, std::span<u8> right,
+                        usize &right_count, Key const &separator) -> void {
+        // The parent's separator descends as the pair's key, and the
+        // right's slots follow whole -- slot for slot, the right's first
+        // child among them, its last child as the destination's new last.
+        store_key(dst, internal_slot_offset(dst_count) + 8, separator);
+        auto const slot_bytes = KEY_BYTES + 8;
+        std::memcpy(dst.data() + internal_slot_offset(dst_count + 1),
+                    right.data() + internal_slot_offset(0), right_count * slot_bytes);
+        store_internal_child(dst, dst_count + 1 + right_count, internal_child(right, right_count));
+        dst_count += right_count + 1;
+        store_le16(dst, COUNT_OFFSET, static_cast<u16>(dst_count));
+        right_count = 0;
+        store_le16(right, COUNT_OFFSET, 0);
+    }
+
+    auto internal_erase(std::span<u8> node, usize &count, usize at) -> void {
+        // The key at |at| and the child at |at| + 1 go: everything from the
+        // key's position shifts one slot left, the last child with it.
+        auto const slot_bytes = KEY_BYTES + 8;
+        auto const from = internal_slot_offset(at) + 8;
+        // From the key through the last child: the child at |at| + 1 dies
+        // with the key, the ones after it and the node's last child shift
+        // one slot.
+        auto const tail = (count - at) * slot_bytes;
+        std::memmove(node.data() + from, node.data() + from + slot_bytes, tail);
+        count -= 1;
+        store_le16(node, COUNT_OFFSET, static_cast<u16>(count));
+    }
+
     auto fill_root(std::span<u8> node, u64 left, Key const &key, u64 right) -> void {
         store_internal_child(node, 0, left);
         store_key(node, internal_slot_offset(0) + 8, key);

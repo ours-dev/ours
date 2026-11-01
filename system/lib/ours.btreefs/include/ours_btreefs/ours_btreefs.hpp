@@ -69,6 +69,12 @@ inline constexpr auto VALUE_BYTES = usize{64};
 inline constexpr auto LEAF_CAPACITY = usize{(BLOCK_BYTES - 16) / (KEY_BYTES + VALUE_BYTES)};
 inline constexpr auto INTERNAL_CAPACITY = usize{(BLOCK_BYTES - 16) / (KEY_BYTES + 8) - 1};
 
+/// How few slots a node may carry before it must borrow or merge: half its
+/// capacity, a leaf's 25 items, an internal node's 84 keys. The root is
+/// exempt -- it carries whatever the tree needs, one key included.
+inline constexpr auto LEAF_MIN = usize{LEAF_CAPACITY / 2};
+inline constexpr auto INTERNAL_MIN = usize{INTERNAL_CAPACITY / 2};
+
 /// The most bytes of a DIRENT's name: the 64-byte value holds the child's
 /// object id, the kind, the length, and then the name's bytes.
 inline constexpr auto MAX_NAME_BYTES = usize{VALUE_BYTES - 8 - 1 - 1};
@@ -287,6 +293,51 @@ namespace detail {
     /// Writes a fresh root over |left| and |right| split at |key|, and answers
     /// the block the caller has just written it to -- the caller allocates.
     auto fill_root(std::span<u8> node, u64 left, Key const &key, u64 right) -> void;
+
+    /// Shifts a leaf's slots from |at| one left; |count| is the count before
+    /// and answers after.
+    auto leaf_erase(std::span<u8> node, usize &count, usize at) -> void;
+
+    /// Moves |left|'s last item in front of |dst|'s: the borrow from the
+    /// left, whose answer is the moved key -- the parent's new separator.
+    [[nodiscard]]
+    auto leaf_borrow_left(std::span<u8> dst, usize &dst_count, std::span<u8> left,
+                          usize &left_count) -> Key;
+
+    /// Moves |right|'s first item behind |dst|'s: the borrow from the right,
+    /// whose answer is |right|'s new first key.
+    [[nodiscard]]
+    auto leaf_borrow_right(std::span<u8> dst, usize &dst_count, std::span<u8> right,
+                           usize &right_count) -> Key;
+
+    /// Moves every item of |right| behind |dst|'s and hands the chain link
+    /// on: the merge, after which |right| is an empty leaf the caller frees.
+    auto leaf_merge(std::span<u8> dst, usize &dst_count, std::span<u8> right, usize &right_count)
+        -> void;
+
+    /// Moves |left|'s last routing pair in front of |dst|'s: the internal
+    /// borrow from the left. The parent's |separator| between the two is
+    /// taken into |dst|, and |left|'s old last key is the parent's new one.
+    [[nodiscard]]
+    auto internal_borrow_left(std::span<u8> dst, usize &dst_count, std::span<u8> left,
+                              usize &left_count, Key const &separator) -> Key;
+
+    /// Moves |right|'s first routing pair behind |dst|'s: the internal
+    /// borrow from the right, the parent's separator replaced by |right|'s
+    /// old first key.
+    [[nodiscard]]
+    auto internal_borrow_right(std::span<u8> dst, usize &dst_count, std::span<u8> right,
+                               usize &right_count, Key const &separator) -> Key;
+
+    /// Absorbs |right| whole into |dst|, the parent's |separator| descending
+    /// between the two: the internal merge, after which |right| is an empty
+    /// node the caller frees.
+    auto internal_merge(std::span<u8> dst, usize &dst_count, std::span<u8> right,
+                        usize &right_count, Key const &separator) -> void;
+
+    /// Shifts an internal node's keys and children from |at| one left: the
+    /// key at |at| and the child at |at| + 1 go, the merge's leftover.
+    auto internal_erase(std::span<u8> node, usize &count, usize at) -> void;
 } // namespace detail
 
 /// Lays a fresh volume on |device|: the superblock at block 0, the free
@@ -476,6 +527,15 @@ auto update(Device &device, Volume const &volume, Key const &key, Value const &v
     }
     return ours::Status::NotFound;
 }
+
+/// Removes the item |key| names, rebalancing what the removal leaves past
+/// its minimum: a leaf borrows from a sibling, or merges with one -- the
+/// merge taking the routing pair out of the parent, which may underflow in
+/// its turn -- and a root left with one child is replaced by that child,
+/// the tree a level shorter. The blocks of merged-away nodes go back to the
+/// volume's bitmap. NotFound when no item carries the key.
+template <typename Device>
+auto remove(Device &device, Volume &volume, Key const &key) -> ours::Status;
 
 /// Calls |visit| on every item from |from| onward, in key order, along the
 /// leaves' chain, until |visit| answers false or the chain ends. |visit|
@@ -671,6 +731,218 @@ auto insert(Device &device, Volume &volume, Key const &key, Value const &value) 
     volume.root = new_root.unwrap();
     volume.height = static_cast<u8>(volume.height + 1);
     return persist_super(device, volume);
+}
+
+namespace detail {
+    /// Fixes the underflowed child at |index| of the internal node |parent|:
+    /// a borrow from a sibling that can spare, otherwise a merge whose
+    /// routing pair leaves |parent|. |child_is_leaf| says what kind the
+    /// children are, and |underflow| answers whether |parent| itself now
+    /// carries fewer than its minimum.
+    template <typename Device>
+    auto fix_child(Device &device, Volume &volume, std::span<u8> parent, usize &count,
+                   usize const index, bool const child_is_leaf, bool &underflow) -> ours::Status {
+        auto const min = child_is_leaf ? LEAF_MIN : INTERNAL_MIN;
+        auto cur = std::array<u8, BLOCK_BYTES>{};
+        auto left = std::array<u8, BLOCK_BYTES>{};
+        auto right = std::array<u8, BLOCK_BYTES>{};
+        auto left_count = usize{0};
+        auto right_count = usize{0};
+        if (auto const status = device.read_block(internal_child(parent, index), std::span{cur});
+            status != ours::Status::Ok) {
+            return status;
+        }
+        auto cur_count = usize{load_le16(cur, COUNT_OFFSET)};
+
+        // The left sibling first: it lends its last, and the separator
+        // between it and the child becomes what the child now starts with.
+        if (index > 0) {
+            if (auto const status =
+                    device.read_block(internal_child(parent, index - 1), std::span{left});
+                status != ours::Status::Ok) {
+                return status;
+            }
+            left_count = usize{load_le16(left, COUNT_OFFSET)};
+            if (left_count > min) {
+                auto separator = Key{};
+                if (child_is_leaf) {
+                    separator = leaf_borrow_left(cur, cur_count, left, left_count);
+                } else {
+                    separator = internal_borrow_left(cur, cur_count, left, left_count,
+                                                     internal_key(parent, index - 1));
+                }
+                store_key(parent, internal_slot_offset(index - 1) + 8, separator);
+                if (auto const status =
+                        device.write_block(internal_child(parent, index - 1), std::span{left});
+                    status != ours::Status::Ok) {
+                    return status;
+                }
+                if (auto const status =
+                        device.write_block(internal_child(parent, index), std::span{cur});
+                    status != ours::Status::Ok) {
+                    return status;
+                }
+                underflow = count < INTERNAL_MIN;
+                return ours::Status::Ok;
+            }
+        }
+
+        // The right sibling next, the same the other way.
+        if (index < count) {
+            if (auto const status =
+                    device.read_block(internal_child(parent, index + 1), std::span{right});
+                status != ours::Status::Ok) {
+                return status;
+            }
+            right_count = usize{load_le16(right, COUNT_OFFSET)};
+            if (right_count > min) {
+                auto separator = Key{};
+                if (child_is_leaf) {
+                    separator = leaf_borrow_right(cur, cur_count, right, right_count);
+                } else {
+                    separator = internal_borrow_right(cur, cur_count, right, right_count,
+                                                      internal_key(parent, index));
+                }
+                store_key(parent, internal_slot_offset(index) + 8, separator);
+                if (auto const status =
+                        device.write_block(internal_child(parent, index + 1), std::span{right});
+                    status != ours::Status::Ok) {
+                    return status;
+                }
+                if (auto const status =
+                        device.write_block(internal_child(parent, index), std::span{cur});
+                    status != ours::Status::Ok) {
+                    return status;
+                }
+                underflow = count < INTERNAL_MIN;
+                return ours::Status::Ok;
+            }
+        }
+
+        // No sibling can spare: the merge. The left one is preferred, so the
+        // child slides into what precedes it and dies; with no left, the
+        // right slides into the child.
+        if (index > 0) {
+            if (child_is_leaf) {
+                leaf_merge(left, left_count, cur, cur_count);
+            } else {
+                internal_merge(left, left_count, cur, cur_count, internal_key(parent, index - 1));
+            }
+            if (auto const status =
+                    device.write_block(internal_child(parent, index - 1), std::span{left});
+                status != ours::Status::Ok) {
+                return status;
+            }
+            if (auto const status = free_block(device, volume, internal_child(parent, index));
+                status != ours::Status::Ok) {
+                return status;
+            }
+            internal_erase(parent, count, index - 1);
+        } else {
+            if (auto const status = device.read_block(internal_child(parent, 1), std::span{right});
+                status != ours::Status::Ok) {
+                return status;
+            }
+            right_count = usize{load_le16(right, COUNT_OFFSET)};
+            if (child_is_leaf) {
+                leaf_merge(cur, cur_count, right, right_count);
+            } else {
+                internal_merge(cur, cur_count, right, right_count, internal_key(parent, 0));
+            }
+            if (auto const status = device.write_block(internal_child(parent, 0), std::span{cur});
+                status != ours::Status::Ok) {
+                return status;
+            }
+            if (auto const status = free_block(device, volume, internal_child(parent, 1));
+                status != ours::Status::Ok) {
+                return status;
+            }
+            internal_erase(parent, count, 0);
+        }
+        underflow = count < INTERNAL_MIN;
+        return ours::Status::Ok;
+    }
+
+    /// Removes the key from the subtree |block| roots at |height| levels,
+    /// answering |underflow| -- whether the node now carries fewer than its
+    /// minimum and its parent must rebalance. The parent's turn happens one
+    /// frame up, which is what makes the cascade: a merge inside fix_child()
+    /// removes a routing pair there, and the same rule applies again.
+    template <typename Device>
+    auto remove_from(Device &device, Volume &volume, u64 block, u8 height, Key const &key,
+                     bool &underflow) -> ours::Status {
+        auto node = std::array<u8, BLOCK_BYTES>{};
+        if (auto const status = device.read_block(block, std::span{node});
+            status != ours::Status::Ok) {
+            return status;
+        }
+        auto count = usize{load_le16(node, COUNT_OFFSET)};
+        if (height == 1) {
+            auto const at = leaf_upper_bound(node, count, key);
+            if (at == 0 || leaf_key(node, at - 1) != key) {
+                return ours::Status::NotFound;
+            }
+            leaf_erase(node, count, at - 1);
+            underflow = count < LEAF_MIN;
+            return device.write_block(block, std::span{node});
+        }
+        auto const index = internal_upper_bound(node, count, key);
+        auto child_under = false;
+        if (auto const status = remove_from(device, volume, internal_child(node, index),
+                                            static_cast<u8>(height - 1), key, child_under);
+            status != ours::Status::Ok) {
+            return status;
+        }
+        if (!child_under) {
+            underflow = false;
+            return ours::Status::Ok;
+        }
+        underflow = false;
+        if (auto const status = fix_child(device, volume, node, count, index,
+                                          static_cast<u8>(height - 1) == 1, underflow);
+            status != ours::Status::Ok) {
+            return status;
+        }
+        return device.write_block(block, std::span{node});
+    }
+} // namespace detail
+
+template <typename Device>
+auto remove(Device &device, Volume &volume, Key const &key) -> ours::Status {
+    if (volume.height == 0) {
+        return ours::Status::NotFound;
+    }
+    auto underflow = false;
+    if (auto const status =
+            detail::remove_from(device, volume, volume.root, volume.height, key, underflow);
+        status != ours::Status::Ok) {
+        return status;
+    }
+    // The root never borrows -- it carries what the tree needs -- but an
+    // internal root left with a single child is a level for nothing: the
+    // child rises, the old root's block goes back.
+    while (volume.height > 1) {
+        auto node = std::array<u8, BLOCK_BYTES>{};
+        if (auto const status = device.read_block(volume.root, std::span{node});
+            status != ours::Status::Ok) {
+            return status;
+        }
+        auto const count = usize{detail::load_le16(node, detail::COUNT_OFFSET)};
+        if (count != 0) {
+            break;
+        }
+        auto const child = detail::internal_child(node, 0);
+        if (auto const status = free_block(device, volume, volume.root);
+            status != ours::Status::Ok) {
+            return status;
+        }
+        volume.root = child;
+        volume.height = static_cast<u8>(volume.height - 1);
+        if (auto const status = persist_super(device, volume); status != ours::Status::Ok) {
+            return status;
+        }
+    }
+    return ours::Status::Ok;
 }
 
 namespace detail {
