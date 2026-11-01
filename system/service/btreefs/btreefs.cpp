@@ -360,9 +360,6 @@ auto answer_status(Uandle const channel, wire::Method const &method, u32 const t
     std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
     auto const encoded = wire::encode_status_reply(bytes, method, txid, status);
     if (encoded.is_ok()) {
-        char t[10];
-        auto _ = ort::debug_line({"btreefs: answer ", ours::to_string(status), " txid ",
-                                  ort::decimal(static_cast<u32>(txid), t)});
         auto _ = write(channel, encoded.unwrap());
     }
 }
@@ -675,7 +672,6 @@ auto open_below_dir_bind(ours_io::OpenRequest const &open, Operations const requ
     made_connection.target = directory ? Target::Directory : Target::File;
     made_connection.object = object;
     if (watch(open.object, made) != Status::Ok) {
-        auto _ = ort::debug_line("btreefs: bind watch FAILED");
         refuse(open.object, Status::NoResource);
     }
 }
