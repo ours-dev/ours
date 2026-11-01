@@ -6,6 +6,7 @@ source_set("task") {
     "idle_thread.cpp",
     "init.cpp",
     "ipi_service.cpp",
+    "irq_rcu.cpp",
     "owned_wait_queue.cpp",
     "preemption_state.cpp",
     "thread.cpp",
