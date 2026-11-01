@@ -2215,8 +2215,9 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 ///
 ///   - the lines used are asked for with interrupt_map, GSI 2 and GSI 3, as a
 ///     driver would: a line is named by the kernel's number for it;
-///   - the timer's line, GSI 2 on q35, is the kernel's for good:
-///     AlreadyBound, with a mode or without;
+///   - the timer's line, GSI 2 on q35, is the kernel's for good: interrupt_map
+///     refuses its pin and interrupt_create its line, AccessDenied, with a
+///     mode or without;
 ///   - GSI 3, COM2's line, is free, since QEMU has no COM2 with one -serial.
 ///     A create that cannot write its handle out fails (InvArgs) with the
 ///     line already taken, and the handle it drops destroys the object, which
@@ -2247,22 +2248,27 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
     auto ok = true;
     // A line is named by the kernel's number for it, which no program
     // computes: ask for the two lines this check uses, as a driver would.
-    auto timer_line = u32{0};
+    auto refused = u32{0xA5A5'A5A5};
     auto free_line = u32{0};
-    if (!expect("shell: interrupt_map(GSI 2) = ", ours::interrupt_map(irq, GSI_TIMER, &timer_line),
-                Status::Ok) ||
+    if (!expect("shell: interrupt_map(GSI 2, the kernel's timer) = ",
+                ours::interrupt_map(irq, GSI_TIMER, &refused), Status::AccessDenied) ||
+        refused != 0xA5A5'A5A5 ||
         !expect("shell: interrupt_map(GSI 3) = ", ours::interrupt_map(irq, GSI_FREE, &free_line),
                 Status::Ok)) {
         return false;
     }
+    // GSI 2 is refused, so its line is found from its neighbour's: the kernel
+    // numbers lines consecutively in the order of their pins, and GSI 2 and
+    // GSI 3 are both pins on this machine.
+    auto const timer_line = free_line - 1;
     auto first = Uandle::Invalid;
     auto second = Uandle::Invalid;
     ok &= expect("shell: interrupt_create(GSI 2, the timer's) = ",
                  ours::interrupt_create(irq, timer_line, InterruptOptions::None, &first),
-                 Status::AlreadyBound);
+                 Status::AccessDenied);
     ok &= expect("shell: interrupt_create(GSI 2, ModeLevelHigh) = ",
                  ours::interrupt_create(irq, timer_line, InterruptOptions::ModeLevelHigh, &first),
-                 Status::AlreadyBound);
+                 Status::AccessDenied);
 
     // The handle's value is written out last, once the line is taken and
     // unmasked, so an |out| that faults fails the create after the line is

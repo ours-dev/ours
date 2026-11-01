@@ -264,6 +264,17 @@ auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn;
 [[nodiscard]]
 auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
 
+/// Whether the kernel itself holds line `virqnum`: an action that says
+/// Permanent is on it, as the legacy timer's is. False for a line nobody is on,
+/// a line a user program's interrupt object holds, and a number that is no
+/// line. A line is Permanent for good once it is, and no user program can make
+/// one, so the answer cannot turn from false to true under a caller that has
+/// just asked. A kernel driver that takes a line for its own uses a Permanent
+/// action, and so keeps programs off it: interrupt_map and interrupt_create
+/// answer AccessDenied for it.
+[[nodiscard]]
+auto is_kernel_owned(VIrqNum virqnum) -> bool;
+
 /// The bookkeeping on entry to a trap, which arch calls once, before it
 /// dispatches: records the frame and raises the counts that keep this CPU from
 /// switching threads until the exit. Exceptions take it too, a page fault

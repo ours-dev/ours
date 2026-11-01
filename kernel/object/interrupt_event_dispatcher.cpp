@@ -74,6 +74,13 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     // step below, and the object, use.
     auto const virqnum = static_cast<VIrqNum>(line);
 
+    // A line the kernel holds for its own use is refused as such, not as one
+    // another program holds (AlreadyBound, below): a program can never have
+    // it. The kernel's hold is for good, so asking first cannot race it.
+    if (irq::is_kernel_owned(virqnum)) {
+        return Status::AccessDenied;
+    }
+
     auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(virqnum));
     if (!self) {
         return Status::NoMemory;

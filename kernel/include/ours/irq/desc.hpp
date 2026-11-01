@@ -153,6 +153,15 @@ class Desc final {
     [[nodiscard]]
     auto flow() -> Flow;
 
+    /// Whether an action that says Permanent holds the line, which is how the
+    /// kernel's own code holds one. Takes no lock: a line is Permanent for
+    /// good once it is, so a false can only be out of date by a line the kernel
+    /// takes at boot.
+    [[nodiscard]]
+    auto is_kernel_owned() const -> bool {
+        return is_permanent();
+    }
+
   private:
     /// What the line is, as one word: the first three bits are what its
     /// actions asked for, kept as the line's own facts, and Held is the

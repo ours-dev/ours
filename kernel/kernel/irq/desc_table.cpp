@@ -224,6 +224,11 @@ auto DescTable::is_masked(VIrqNum const virqnum) -> ktl::Result<bool> {
     return (*line)->is_masked();
 }
 
+auto DescTable::is_kernel_owned(VIrqNum const virqnum) -> bool {
+    auto const *const desc = irqnum_to_desc(virqnum);
+    return desc != nullptr && desc->is_kernel_owned();
+}
+
 auto DescTable::spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
     auto const *const desc = irqnum_to_desc(virqnum);
     if (!desc) {

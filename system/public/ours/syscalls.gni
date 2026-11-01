@@ -1391,7 +1391,9 @@ ours_syscalls = [
       "or ModeDefault leaves it as it is (NotSupported where the kernel",
       "cannot tell how it signals); a level-triggered line stays masked from",
       "each interrupt until its ack. The line is taken whole: AlreadyBound",
-      "while anything else is on it, the kernel's own lines included.",
+      "while another program's interrupt is on it. A line the kernel holds",
+      "for its own use (the timer's) is AccessDenied, checked before the",
+      "line is touched: no program can ever take it.",
       "NoResource if no line has that number, but InvArgs for 0xFFFFFFFF,",
       "which the kernel keeps as no line at all; an option this kernel does",
       "not know, or a mode that names none, is InvArgs. The handle has",
@@ -1455,9 +1457,13 @@ ours_syscalls = [
       "|source| must not be 0xFFFFFFFF, which the kernel keeps as no source",
       "at all (InvArgs, checked before the resource). NoResource if no line",
       "was made for |source|: no pin has that number, or its pin is past",
-      "the interrupt vectors the platform has. |out| is written only when the",
-      "call succeeds; one that cannot be written answers InvArgs, and nothing",
-      "is taken then either.",
+      "the interrupt vectors the platform has. AccessDenied, once the",
+      "resource has been accepted, if the line made for |source| is one the",
+      "kernel holds for its own use (the timer's): no program can take it, so",
+      "its number is not given, and the caller learns that here and not from",
+      "a later interrupt_create. |out| is written only when the call",
+      "succeeds; one that cannot be written answers InvArgs, and nothing is",
+      "taken then either.",
     ]
     args = [
       {

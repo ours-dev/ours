@@ -80,6 +80,12 @@ action says Oneshot and a level line's flow masks it, and every write of a
 line's mask, `irq::mask()` and `irq::unmask()` included, is made under the
 line's lock L1.
 
+- A line the kernel holds for its own use is one an action that says
+  Permanent is on (the legacy timer's; `irq::is_kernel_owned()`). A kernel
+  driver that takes a line for its own uses a Permanent action, and so keeps
+  programs off it: `interrupt_map` and `interrupt_create` answer AccessDenied
+  for it, where a line another program holds is AlreadyBound (the assistant's
+  choice, left to it by the user, 2026-11-01, irq-multi-arch D4b).
 - Three words, kept apart (the user kept the `interrupt_*` names, "保留吧",
   2026-11-01, irq-multi-arch D11; the other two are the line layer's own):
   `interrupt` is the object a thread waits on and acks, and its calls

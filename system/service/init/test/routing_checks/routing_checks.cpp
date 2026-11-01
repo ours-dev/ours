@@ -516,8 +516,11 @@ auto check_sampling_resource() -> void {
 /// What is checked:
 ///   - a line's number is not the pin's, and four pins have four numbers (GSI
 ///     0 is the pin the timer was moved off, a line of its own);
-///   - GSI 2 is the kernel's timer line, which is taken for good
-///     (AlreadyBound), so the number is the line's;
+///   - GSI 2 is the kernel's timer line, which no program can take:
+///     interrupt_map refuses it (AccessDenied) and writes nothing. Its line
+///     is the one before GSI 3's, since the kernel numbers lines
+///     consecutively in the order of their pins, and interrupt_create
+///     refuses that number too (AccessDenied);
 ///   - GSI 3 is one free line, taken with the number as given; and a PCI pin,
 ///     GSI 16, has a line of its own, which an interrupt object takes
 ///     level-triggered, as a PCI function's INTx is;
@@ -534,13 +537,16 @@ auto check_interrupt_map(Uandle const irq) -> void {
     constexpr auto NO_PIN = u32{200};
     constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
 
-    auto timer = UNTOUCHED;
+    auto timer_refused = UNTOUCHED;
     auto free_line = UNTOUCHED;
     auto pci = UNTOUCHED;
     auto moved_off = UNTOUCHED;
     auto ok = true;
-    ok &= expect("interrupt_map(Irq root, 2)", ours::interrupt_map(irq, GSI_TIMER, &timer),
-                 Status::Ok);
+    ok &= expect("interrupt_map(Irq root, 2, the kernel's timer)",
+                 ours::interrupt_map(irq, GSI_TIMER, &timer_refused), Status::AccessDenied);
+    if (timer_refused != UNTOUCHED) {
+        fail("interrupt_map: a refused call wrote its output");
+    }
     ok &= expect("interrupt_map(Irq root, 3)", ours::interrupt_map(irq, GSI_FREE, &free_line),
                  Status::Ok);
     ok &=
@@ -551,6 +557,10 @@ auto check_interrupt_map(Uandle const irq) -> void {
         return;
     }
 
+    // GSI 2 is refused, so its line is found from its neighbour's: the kernel
+    // numbers lines consecutively in the order of their pins (irq::Domain),
+    // and GSI 2 and GSI 3 are both pins on this machine.
+    auto const timer = free_line - 1;
     if (timer == GSI_TIMER || free_line == GSI_FREE || pci == GSI_PCI ||
         moved_off == GSI_MOVED_OFF) {
         fail("interrupt_map: a line's number is the pin's number");
@@ -561,9 +571,9 @@ auto check_interrupt_map(Uandle const irq) -> void {
     }
 
     auto interrupt = Uandle::Invalid;
-    expect("interrupt_create(the number interrupt_map gave for GSI 2, the timer's line)",
+    expect("interrupt_create(the line before GSI 3's, the timer's)",
            ours::interrupt_create(irq, timer, ours::InterruptOptions::None, &interrupt),
-           Status::AlreadyBound);
+           Status::AccessDenied);
     if (expect("interrupt_create(the number interrupt_map gave for GSI 3)",
                ours::interrupt_create(irq, free_line, ours::InterruptOptions::None, &interrupt),
                Status::Ok)) {
@@ -1758,9 +1768,9 @@ auto check_acpi_tables() -> void {
 ///     kernel has a line for (interrupt_map does not answer NoResource). The
 ///     table is machine-specific, as ISA 0 on GSI 2 is for the checks of
 ///     interrupt_map, and a different machine needs a different table;
-///   - the line of the service's GSI for ISA 0 is the kernel's timer, taken
-///     for good (AlreadyBound): the one place the kernel's own binding shows
-///     it, and no independent check, for it restates GSI 2;
+///   - the service's GSI for ISA 0 is the kernel's timer line, which
+///     interrupt_map refuses (AccessDenied): the one place the kernel's own
+///     binding shows it, and no independent check, for it restates GSI 2;
 ///   - the cascade, ISA 2, a number past the ISA lines and 0xFFFFFFFF are no
 ///     ISA line: NotFound;
 ///   - the service's ECAM window for segment 0 begins at the address this
@@ -1803,18 +1813,15 @@ auto check_acpi_route() -> void {
             fail("Route.IsaIrq: an ISA number does not signal as QEMU's q35 says (polarity)");
         }
 
+        // A pin the kernel has a line for answers Ok, or AccessDenied if the
+        // kernel holds that line itself, as it does the timer's.
         auto line = UNTOUCHED;
-        if (!expect("interrupt_map(the service's GSI for an ISA number)",
-                    ours::interrupt_map(irq, route->gsi, &line), Status::Ok) ||
-            !moved) {
-            continue;
+        auto wanted = Status::Ok;
+        if (moved) {
+            wanted = Status::AccessDenied;
         }
-        auto interrupt = Uandle::Invalid;
-        if (!expect("interrupt_create(the line of the service's GSI for ISA 0, the timer's)",
-                    ours::interrupt_create(irq, line, ours::InterruptOptions::None, &interrupt),
-                    Status::AlreadyBound)) {
-            auto _ = ours::handle_close(interrupt);
-        }
+        expect("interrupt_map(the service's GSI for an ISA number)",
+               ours::interrupt_map(irq, route->gsi, &line), wanted);
     }
 
     // Not ISA lines: no route. 0xffffffff is the number interrupt_map keeps for

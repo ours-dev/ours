@@ -22,8 +22,9 @@
 // irq::trigger_mode().
 //
 // The checks:
-//   - the timer's line refuses an object, with a mode or without, and keeps
-//     its own mode;
+//   - the timer's line refuses an object, with a mode or without
+//     (AccessDenied: the kernel holds it), and keeps its own mode; it is the
+//     only line the kernel holds, and irq::is_kernel_owned() says so;
 //   - an object takes the free line: an interrupt reaches it, and a second
 //     create on the line answers AlreadyBound;
 //   - an interrupt, dispatched or raised, wakes a parked waiter, whose wait
@@ -289,9 +290,14 @@ namespace {
                                                             InterruptOptions::ModeLevelHigh);
         auto const after = irq::trigger_mode(timer_line());
 
-        answered(tally, plain, Status::AlreadyBound, "the timer's line refuses an object");
-        answered(tally, level, Status::AlreadyBound,
+        answered(tally, plain, Status::AccessDenied, "the timer's line refuses an object");
+        answered(tally, level, Status::AccessDenied,
                  "and one that would set its mode, before setting it");
+        verdict(tally, irq::is_kernel_owned(timer_line()),
+                "the timer's line is the kernel's own: Permanent");
+        verdict(tally, !irq::is_kernel_owned(free_line()), "the free line is not");
+        verdict(tally, !irq::is_kernel_owned(irq::INVALID_V_IRQ_NUM),
+                "and INVALID_V_IRQ_NUM, which is no line, is not");
         verdict(tally,
                 before.is_ok() && after.is_ok() && *before == irq::TriggerMode::Edge &&
                     *after == irq::TriggerMode::Edge,

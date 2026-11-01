@@ -124,6 +124,10 @@ auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
     return get_desc_table()->spurious_count(virqnum);
 }
 
+auto is_kernel_owned(VIrqNum const virqnum) -> bool {
+    return get_desc_table()->is_kernel_owned(virqnum);
+}
+
 /// The bookkeeping on entry to an interrupt: record the frame, and raise the
 /// counts that keep this CPU from switching threads until the exit. Runs for
 /// every vector that takes the bookkeeping -- device interrupts, IPIs and

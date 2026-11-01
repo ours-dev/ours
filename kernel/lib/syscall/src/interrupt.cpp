@@ -96,6 +96,12 @@ auto interrupt_map(ours::Uandle const resource, u32 const source,
     if (virq == irq::INVALID_V_IRQ_NUM) {
         return Status::NoResource;
     }
+    // A line the kernel holds for its own use is not one a program can take,
+    // and a program that reads the firmware's tables (the route service) is
+    // told so here, not by the interrupt_create that would fail later.
+    if (irq::is_kernel_owned(virq)) {
+        return Status::AccessDenied;
+    }
     return out.copy_to_user(virq);
 }
 

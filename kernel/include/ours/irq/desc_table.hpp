@@ -63,6 +63,11 @@ class DescTable {
     auto is_masked(VIrqNum virqnum) -> ktl::Result<bool>;
     [[nodiscard]]
     auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
+    /// Whether line `virqnum` is held by an action that says Permanent, which
+    /// is how the kernel's own code holds a line; false if there is no such
+    /// line.
+    [[nodiscard]]
+    auto is_kernel_owned(VIrqNum virqnum) -> bool;
 
   private:
     /// The line named by a virq, null if there is none: the control path.
