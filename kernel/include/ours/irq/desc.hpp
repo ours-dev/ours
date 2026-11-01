@@ -69,7 +69,9 @@ class Desc final {
 
     /// See irq::attach(). An action that says Permanent may only take an
     /// empty line, and makes the line Permanent; one that says Oneshot makes
-    /// it Oneshot.
+    /// it Oneshot, and needs a chip that can say how its pins signal
+    /// (NotSupported otherwise): without a mode the line keeps the flow it
+    /// took from the chip.
     [[nodiscard]]
     auto attach(Action &action) -> Status;
 

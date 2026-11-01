@@ -215,6 +215,10 @@ auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
 [[nodiscard]]
 auto is_masked_for_test(VIrqNum virqnum) -> ktl::Result<bool>;
 
+/// Aims line `virqnum` at the CPUs in `targets`. NotSupported for every line:
+/// no controller moves a line yet, and each line stays on the CPU the platform
+/// aimed it at. The call, including what it returns, is settled by the work of
+/// interrupt-system P4.
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 
 /// The virq of the line made for hardware number `hirqnum`, the number the

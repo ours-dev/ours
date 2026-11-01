@@ -78,6 +78,14 @@ auto Desc::attach(Action &action) -> Status {
     if (auto const status = check_oneshot(action); status != Status::Ok) {
         return status;
     }
+    // With no mode the line keeps the flow it took from the chip when it was
+    // bound, and a chip that cannot say how its pins signal gave it the edge
+    // flow, which does not hold a Oneshot line masked. Such an action needs a
+    // mode (the other attach). The chip is fixed before the line is
+    // published, so it is read without the lock.
+    if (action.is_oneshot() && (m_data.chip == nullptr || !m_data.chip->trigger_mode)) {
+        return Status::NotSupported;
+    }
 
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     // An action hangs on one line at a time: its hook has room for one

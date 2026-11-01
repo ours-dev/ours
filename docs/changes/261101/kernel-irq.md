@@ -91,3 +91,68 @@ None. The user chose option (c) for D3 on 2026-11-01; the recommendation was (a)
 - Why can arch not send the EOI for an interrupt that no line has on a PLIC, when it can on x86?
 - What happens to a PLIC source that is claimed and never completed, and to an x86 vector that is never ended?
 - Why is the root handler installed after `irq::init_lines()` and before `arch::local_irq_enable()`, and what stops a second CPU from reading the pointer before it is written?
+
+## The chip contract is written down, a Oneshot action needs a mode or a chip that can say one, and `set_affinity` stops saying yes (2026-11-01)
+
+**Files**
+- `kernel/include/ours/irq/chip.hpp` — the contract every controller's chip keeps to, in the comment of `Chip`; `trigger_mode` and `set_affinity` documented.
+- `kernel/kernel/irq/desc.cpp`, `kernel/include/ours/irq/desc.hpp` — `Desc::attach(Action &)`, the attach with no mode, refuses a Oneshot action when the chip has no `trigger_mode`.
+- `kernel/kernel/irq/mod.cpp`, `kernel/include/ours/irq/mod.hpp`, `kernel/arch/x86/apic/io_apic.cpp`, `kernel/kernel/time/tick_device.cpp` — `irq::set_affinity()` and the IO-APIC chip's `set_affinity` answer NotSupported; two comments that called the stub a yes.
+- `kernel/commands/irq_chip_test.cpp`, `kernel/commands/BUILD.gn` — new kernel-shell test `irqchip.test`, with no x86 type in it.
+- `.agents/tasks/irq-multi-arch/{DESIGN,PLAN}.md` — step 3 done, D8 decided.
+
+**Symptom**
+Latent, cannot be triggered today. A Oneshot action attached with no mode to a line whose chip cannot say how its pins signal would be taken, and the line would run the edge flow: a level source that the owner expects to stay masked until its ack would be ended and unmasked at once, and raise the same interrupt again, for good. No caller does it. And `irq::set_affinity()` answered Ok for every line while moving none, so a caller that believed it would have thought a line aimed at a CPU it was not on.
+
+**Cause**
+Two small lies, and a contract that was one paragraph of x86.
+
+- **The edge flow does not hold a line.** A line takes its first flow when it is bound to its chip, from `trigger_mode()`, and an edge flow when the chip has none (`Desc::init()`). Attaching with a mode calls `configure()` and chooses the flow again from the mode just set, and attaching with no mode and no way to read one answers NotSupported (`desc.cpp`, the attach with `ustl::none()`). The attach with no mode at all, `attach(Action &)`, did neither: it linked the action on whatever flow the line already had. For a Oneshot action that is the wrong flow, since only the level flow holds a line masked until the ack (the edge flow of a Oneshot line is "no hold" by design, and right for an edge pin). The first reading of this, that a PLIC would storm through the three-argument attach too, was refuted by the review of the design: only this path was open. A controller with no mode register (the PLIC) is the case it matters for; the IO-APIC reads its pins, so nothing on x86 meets it.
+- **A stub that says yes.** `irq::set_affinity()` returned Ok and did nothing, and so did the IO-APIC chip's operation, which the layer never calls. The only caller, the tick device, discards the answer, which is why nobody noticed; its comment even leaned on the lie ("a stub that says yes to everything, so the clause would be vacuous"). A real caller that acts on Ok has been told something false.
+- **The contract was x86's.** The paragraph on `Chip` said where `mask`, `unmask` and `configure` run, in the terms of one controller. A porter writing a chip for a PLIC or a GIC could not tell from it where `issue_eoi` may run, what `configure` does on a controller with no mode register, how a chip with several instances finds its own, or that a controller whose mask takes effect on another CPU later cannot hold a Oneshot line.
+
+**Change**
+The attach with no mode refuses what it cannot serve:
+
+```cpp
+// after the check_oneshot() call in Desc::attach(Action &)
+if (action.is_oneshot() && (m_data.chip == nullptr || !m_data.chip->trigger_mode)) {
+    return Status::NotSupported;
+}
+```
+
+The chip is fixed before the line is published, so it is read without the lock, as `mask()` reads it. The stubs:
+
+```cpp
+// before
+auto set_affinity(VIrqNum, const CpuMask &targets) -> Status { return Status::Ok; }
+// after
+auto set_affinity(VIrqNum, CpuMask const &) -> Status { return Status::NotSupported; }
+```
+
+and the IO-APIC chip's own operation the same. The contract in `chip.hpp` says: where each operation runs (`mask`, `unmask`, `configure` under L1 from interrupt context or a thread with interrupts off; `issue_eoi` in interrupt context, under L1 unless the line is Permanent; none sleeps or waits for another CPU); that a chip keeps nothing in the line's data but may keep a table of its own, atomic because `trigger_mode()` reads it without L1; that `issue_eoi()` runs on the CPU that took the interrupt and is never deferred; that `configure()` refuses a mode the controller cannot do and leaves the source masked, and that a controller with no register for the mode records it; that a chip with several instances finds its own from the hardware number; and that a controller whose mask is deferred to another CPU leaves `unmask()` null, which refuses a Oneshot action. Rejected: a chip flag for the deferred mask (MSI is a non-goal, and the flag is MSI's to add); the line owning its mode instead of the controller (not needed, the refutation above); a refusal inside `check_oneshot()` itself, which the attach with a mode shares and which must accept a chip that cannot say its mode when a mode comes with the action.
+
+**Reference**
+None, this project's own design: it follows from how the flow is chosen (irq-genirq D8, `.claude/skills/ours-kernel-design/references/task.md`) and from what the Oneshot hold needs.
+
+**Verification**
+- `boot_check.py`: dbg PASS, 44 passed and 4 skipped; rel PASS, 41 passed and 8 skipped, 6 of 6 required lines; host tests 154 passed. The same numbers as before the change.
+- `irqchip.test`, new, 18 checks, all ok: a Oneshot action with no mode is refused by a chip that cannot say its mode and not left on the line; a plain one is taken; after the refusal the same line takes a Oneshot action that brings a mode, the chip is told the mode once and the line runs the flow of that mode; a chip that can say its mode takes a Oneshot action with no mode, on the flow it says; no mode to give and none to read is refused; `set_affinity` answers NotSupported. The other five kernel-shell tests of the layer unchanged and ok: `irq.test` 72 checks, `interruptline.test` 59, `pinlines.test` 28, `irqdomain.test` 39, `interrupt.test` 32.
+- clang-tidy on the five changed sources: no finding in the changed files.
+- Four mutations, each restored byte for byte, each killed by `irqchip.test`: the refusal removed (fails 5 of 18 checks); every Oneshot attach with no mode refused (fails 2); the refusal inverted (fails 7); `set_affinity` answering Ok (fails 1).
+- Not verified: a chip with no `trigger_mode` that is bound in the real line table, since none exists (the PLIC chip is the riscv branch's), so the refusal's real customer is not exercised; the IO-APIC chip's `set_affinity`, which nothing calls, so changing it is covered by no test; the rule that a deferred-mask chip leaves `unmask()` null, which is a sentence and not a check.
+
+**Deliberately not done**
+- No PLIC or GIC chip, no chip flag for a deferred mask, no `platform_data` user, no line-owned mode: `.agents/tasks/irq-multi-arch/DESIGN.md`, "The chip contract".
+- The tick device still cannot refuse a global device whose interrupt cannot be aimed at the CPU: the clause its comment describes waits for a real `set_affinity` (interrupt-system P4).
+
+**How it was found**
+By the independent review of the design (`.agents/tasks/irq-multi-arch/DESIGN.md`, 2026-11-01): its reader of this tree noticed that the refutation of the PLIC storm held for the attach with a mode and not for the two-argument attach, which still let a Oneshot action onto a chip with no `trigger_mode`.
+
+**The user's prediction**
+None. The user approved the step, both the stubs and the refusal, on 2026-11-01 ("可以"), which decides D8.
+
+**Three questions you should be able to answer**
+- Why does a Oneshot action on the edge flow not hold its line, and why is that right for an edge pin and wrong for a pin the chip cannot read?
+- Why does attaching with a mode make the same action safe on a chip that cannot say its mode?
+- Why is `issue_eoi()` never deferred to `finalize_oneshot()`, and what would a PLIC do if it were?

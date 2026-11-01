@@ -91,8 +91,8 @@ auto is_masked_for_test(VIrqNum const virqnum) -> ktl::Result<bool> {
     return get_desc_table()->is_masked(virqnum);
 }
 
-auto set_affinity(VIrqNum, const CpuMask &targets) -> Status {
-    return Status::Ok;
+auto set_affinity(VIrqNum, CpuMask const &) -> Status {
+    return Status::NotSupported;
 }
 
 auto virq_of_hwirq(HIrqNum const hirqnum) -> VIrqNum {

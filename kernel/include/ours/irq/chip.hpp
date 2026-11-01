@@ -28,16 +28,40 @@ struct Data final {
     void *platform_data;
 };
 
-/// Architecture-controller operations used by the generic IRQ domain.
-/// Missing optional operations are represented by null pointers.
+/// Operations of one interrupt controller, as the line layer uses them. A
+/// missing optional operation is a null pointer. Every operation takes the
+/// line's data read-only.
 ///
-/// Every operation takes the line's data read-only. kernel/irq calls mask(),
-/// unmask() and configure() only under the line's lock, L1, but each line
-/// has a lock of its own, so two lines of one controller are written from
-/// two CPUs at once, one of them in interrupt context; trigger_mode() and
-/// is_masked() are called without taking L1. So the chip keeps nothing in the
-/// line's data, and whatever the controller's registers need is serialised
-/// by the chip's own lock (on x86, LI in `io_apic.cpp`), taken inside L1.
+/// What the chip of every controller keeps to, whatever the architecture:
+///   - Where the operations run. mask(), unmask() and configure() are called
+///     under the line's lock, L1, from interrupt context or from a thread
+///     with interrupts off; issue_eoi() in interrupt context, under L1 unless
+///     the line is Permanent; trigger_mode() and is_masked() without L1. None
+///     sleeps, and none waits for another CPU; a bounded poll of a register is
+///     fine.
+///   - Each line has a lock of its own, so two lines of one controller are
+///     written from two CPUs at once. The chip keeps nothing in the line's
+///     data, and whatever its registers need is serialised by a lock of the
+///     chip's own, taken inside L1 (on x86, LI in `io_apic.cpp`). A chip may
+///     keep a table of its own, an entry for each source, for a fact the
+///     controller has no register for (below); trigger_mode() reads it
+///     without L1, so its entries are atomic.
+///   - issue_eoi() ends the interrupt on the CPU that took it, inside the
+///     dispatch. It is never deferred to finalize_oneshot() or to a thread: a
+///     controller whose end of interrupt belongs to the CPU that took the
+///     interrupt (a claim and its complete, an acknowledge and its end) takes
+///     it from there.
+///   - configure() refuses with NotSupported a mode the controller cannot do,
+///     and leaves the source masked. A controller with no register for the
+///     mode records the mode it was told, and answers it from trigger_mode().
+///   - A chip with several instances finds the one that drives a source from
+///     the line's hardware number, as the IO-APIC's does. `platform_data` is
+///     for a fact that number does not give; nothing needs it yet.
+///   - A controller whose mask takes effect on another CPU, later, cannot hold
+///     a Oneshot line, which stays masked from its interrupt until the owner's
+///     ack. The layer cannot tell (check_oneshot() only asks that mask() and
+///     unmask() exist), so such a chip leaves unmask() null: a Oneshot action
+///     is refused, and so is irq::unmask(). A flag for it is MSI's to add.
 struct Chip final {
     auto (*startup)(Data const &) -> Status = nullptr;
     /// Masks the line at the controller. kernel/irq calls it under L1, and
@@ -56,7 +80,8 @@ struct Chip final {
     /// The line's trigger mode now, read from the controller, which keeps it:
     /// what configure() last set, or what the platform programmed at boot.
     /// Read when the line is bound to the chip, to choose its flow; a line
-    /// whose chip cannot say gets the edge flow.
+    /// whose chip cannot say gets the edge flow, and refuses a Oneshot action
+    /// that comes without a mode, since that flow does not hold a line.
     auto (*trigger_mode)(Data const &) -> TriggerMode = nullptr;
     /// Whether the line is masked at the controller now, read from the
     /// controller, which keeps the one record of it. For kernel tests only,
@@ -71,6 +96,9 @@ struct Chip final {
     /// init_lines() refuses a chip without.
     auto (*issue_eoi)(Data const &) -> void = nullptr;
     auto (*issue_ack)(Data const &) -> void = nullptr;
+    /// Aims the source at one of the CPUs in the set. Not called yet:
+    /// irq::set_affinity() answers NotSupported without asking the chip, until
+    /// the work of interrupt-system P4 settles the call.
     auto (*set_affinity)(Data const &, CpuMask const *) -> Status = nullptr;
     auto (*dump)() -> void = nullptr;
     char const *name = nullptr;
