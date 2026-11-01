@@ -372,6 +372,18 @@ TEST(BtreefsVolume, KeepsTheRootAcrossOpen) {
     EXPECT_EQ(marker_of(value), u64{7});
 }
 
+TEST(BtreefsVolume, HandsOutObjectIdsInOrderAndKeepsThem) {
+    auto device = FakeDevice(256);
+    ASSERT_EQ(ours_btreefs::format(device, 256, 1), Status::Ok);
+    auto volume = ours_btreefs::open(device);
+    ASSERT_TRUE(volume.is_ok());
+    EXPECT_EQ(ours_btreefs::alloc_object(device, volume.unwrap()), u64{1});
+    EXPECT_EQ(ours_btreefs::alloc_object(device, volume.unwrap()), u64{2});
+    auto const reopened = ours_btreefs::open(device);
+    ASSERT_TRUE(reopened.is_ok());
+    EXPECT_EQ(reopened->next_object, u64{3});
+}
+
 TEST(BtreefsVolume, RefusesUnformattedBlocks) {
     auto device = FakeDevice(256);
     EXPECT_EQ(ours_btreefs::open(device).unwrap_err(), Status::NotFound);

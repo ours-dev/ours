@@ -129,14 +129,27 @@ struct DirentValue {
 
 /// Where the tree and the allocator stand: what the superblock carries and
 /// what the operations keep current. |height| counts levels, 1 a root that
-/// is a leaf and 0 a volume with no tree yet.
+/// is a leaf and 0 a volume with no tree yet. |next_object| is the next
+/// object id alloc_object() hands out; 0 is no object's id, so a fresh
+/// volume starts at 1.
 struct Volume {
     u64 blocks = 0;
     u64 root = 0;
     u8 height = 0;
     u64 bitmap_first = 0;
     u32 bitmap_blocks = 0;
+    u64 next_object = 0;
 };
+
+/// Answers the next unused object id and keeps it taken: the superblock is
+/// written before the id is used, so a crash can only waste one.
+template <typename Device>
+auto alloc_object(Device &device, Volume &volume) -> u64 {
+    auto const object = volume.next_object;
+    volume.next_object += 1;
+    auto _ = persist_super(device, volume);
+    return object;
+}
 
 /// The hash a DIRENT's offset carries: FNV-1a over the name's bytes.
 [[nodiscard]]
@@ -290,6 +303,7 @@ auto format(Device &device, u64 blocks, u32 bitmap_blocks) -> ours::Status {
     detail::store_le64(super, 16, 0);
     detail::store_le64(super, 32, 1);
     detail::store_le32(super, 40, bitmap_blocks);
+    detail::store_le64(super, 48, 1);
     if (auto const status = device.write_block(0, std::span{super}); status != ours::Status::Ok) {
         return status;
     }
@@ -322,6 +336,7 @@ auto persist_super(Device &device, Volume const &volume) -> ours::Status {
     }
     detail::store_le64(super, 16, volume.root);
     super[24] = volume.height;
+    detail::store_le64(super, 48, volume.next_object);
     return device.write_block(0, std::span{super});
 }
 
@@ -342,6 +357,7 @@ auto open(Device &device) -> ustl::Result<Volume, ours::Status> {
     volume.height = super[24];
     volume.bitmap_first = detail::load_le64(super, 32);
     volume.bitmap_blocks = detail::load_le32(super, 40);
+    volume.next_object = detail::load_le64(super, 48);
     if (volume.root != 0 && volume.height == 0) {
         return ustl::err(ours::Status::BadState);
     }
