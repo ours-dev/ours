@@ -3,6 +3,7 @@ source_set("irq") {
     "init.cpp",
     "desc_table.cpp",
     "domain.cpp",
+    "domain_registry.cpp",
     "desc.cpp",
     "mod.cpp",
   ]

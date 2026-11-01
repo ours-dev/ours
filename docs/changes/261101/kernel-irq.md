@@ -344,3 +344,54 @@ None.
 - Why does a finalize on a marked line have to work, when attach, unmask and configure on it refuse?
 - Why can the earlier race test not fail for the property it names, and what did making the hook slow and the detach go through the table change?
 - Why must the command thread of the barrier case not share a CPU with the handler, and what does the handler wait for?
+
+## `irq::DomainRegistry`: a machine's interrupt domains, each with its table and a block of virqs, registered and removed after boot (2026-11-01)
+
+**Files**
+- `kernel/include/ours/irq/domain_registry.hpp`, `kernel/kernel/irq/domain_registry.cpp` — new: `DomainId`, `DomainSlot`, `DomainRegistry` with `register_domain()`, `unregister_domain()`, `table_of()`, `find()` and `virq_of()`; `kernel/kernel/irq/BUILD.gn` lists the source.
+- `kernel/include/ours/irq/desc_table.hpp`, `kernel/kernel/irq/desc_table.cpp` — `init()` takes the floor for the virqs, the table reports its block, and it has `begin_removal()`, `abort_removal()`, `finish_removal()` and `destroy()`.
+- `kernel/include/ours/irq/domain.hpp` — `first_virq()` and `num_virqs()`.
+- `kernel/commands/irq_registry_test.cpp` (new, `irqregistry.test`), `kernel/commands/BUILD.gn`.
+- `.agents/tasks/irq-multi-arch/{DESIGN,PLAN}.md` — step 10 marked done.
+
+**Symptom**
+None, nothing uses it yet: the line layer still has the one table of the machine. D10 (b) of `.agents/tasks/irq-multi-arch/DESIGN.md` gives every interrupt controller a table of its own, so a control call, which has only a virq, has to find the table it belongs to, and interrupt_map, which will have a domain and a hardware number, the virq; and D16 lets a domain be removed after boot.
+
+**Cause**
+A missing piece (D10 (b), D12 to D17), built unwired on purpose: the facade, the root handler and interrupt_map are steps 11 and 12.
+
+**Change**
+The registry holds at most `CAPACITY` (8) domains. Each has an id, a table (`DescTable`), a block of virqs [first, end), and the registrant's `DomainSlot`. The readers (`table_of()`, `find()`, `virq_of()`) take no lock: they are `task::IrqRcuReadGuard` sections over an array of `IrqRcuPointer<Entry>`, one place per domain, and what they return is good inside the section. The writers take one leaf spin lock for a few words, never while allocating.
+
+- `register_domain()` reads the end of the last block given out under the lock (the floor), builds the table outside it with that floor (`DescTable::init(..., floor)`, which passes it to `Domain::init()`, step 6), then takes the lock again, re-checks the id and the floor (another registration may have moved either; then the table is thrown away and built again) and publishes the entry and the slot with release stores. A table that was never published is freed at once.
+- `unregister_domain()` claims the domain as Removing (a second remover gets BadState, and the id stays taken), `begin_removal()` marks every line or none (a read-only `check_revocable()` over every line first; `mark_dying()` over every line, undoing the marks if one refuses), `finish_removal()` revokes every line, then the slot and the registry's pointer are retracted, `irq_rcu_synchronize()` waits for the readers, and only then are the table (`destroy()`: lines poisoned 0xDD, then freed), the entry and the place freed.
+- Root is not removable (NotSupported). The mark of virqs given out is never lowered, so a removed domain's block stays dead and its id, if registered again, gets a block above it.
+
+The design said a linked list of entries; this is an array of pointers, one per place. A refused or raced registration then has nothing a reader could be passing through, and frees at once.
+
+**Reference**
+None, this project's own design: D12 (the registrant chooses the id), D13, D14 (blocks from a global mark), D16 and the "Reclaiming a removed domain" section of `DESIGN.md`. The array of published pointers, scanned by a reader, is the shape of Linux's RCU-protected lookup tables (from memory, not re-read).
+
+**Verification**
+- `boot_check.py`: dbg PASS, 45 passed and 4 skipped; rel PASS, 42 passed and 8 skipped, 6 of 6 required; host tests 154 passed. The same numbers as before.
+- `irqregistry.test` (new) on four CPUs, 41 checks, all ok: two domains over the same hardware numbers hold the blocks [32, 36) and [64, 68), the first the numbers a lone domain gets; a virq finds its domain's table at both ends of its block, and the hole between the blocks, past them, 0 and the invalid number find none; the lookup by domain and pin; the slot holds the table; registration refuses the Invalid id, an empty list, a number that is no hardware number, a chip that cannot end an interrupt, a number given twice, an id in use and a ninth domain, keeping nothing; removal answers NotFound for an unknown id and NotSupported for Root, a removed domain's lookups and slot find nothing and its id is registered again in a block above everything given out; a domain with a Permanent action, and one with an action with no hook, are not removed (AlreadyBound), keep working and tell nothing, and the second is removed once the hookless action is gone, its hooked action told once; and 200 domains registered and removed with three readers on other CPUs looking at the table (594 to 597 sightings, none broken).
+- The other tests of the layer unchanged and ok: `irqrevoke.test` 37, `irqrcu.test` 34, `irqdomain.test` 87, `irqchip.test` 18, `irq.test` 72, `interruptline.test` 78, `pinlines.test` 28, `interrupt.test` 67.
+- clang-tidy on the new and changed sources and the test: no finding; the formats are clean.
+- Six mutations, each restored byte for byte, each killed: no grace period (1 of 41 checks fail: the stress); the registry's pointer not retracted and the slot not retracted (killed, but the run did not finish: the table was freed while still published, so no count); the floor not passed (4 of 41); Root removable (3 of 41); the mark of virqs given out not moved (4 of 41).
+- Not verified: the rollback of `begin_removal()`; a registration racing another (the retry); the Dying marks left by a removal refused after the first pass; more than four CPUs; weak-memory machines; the use of the registry from an interrupt handler (nothing does yet).
+**Deliberately not done**
+- Nothing registers a domain but the test: the facade is on the one table of the machine until step 11, and `interrupt_map` still takes one number until step 12.
+- The precondition against a boot on which an application processor gave up is not tested for: after the second review of `irq_rcu_synchronize()` the fence and the sequentially consistent join are what carry that argument, and the call reads the online mask again.
+- Domains are named `DomainRegistry` and not the "directory" of the design documents; the documents keep the older word (the user left the naming for later).
+- The rollback of `begin_removal()` (a mark that refuses after the read-only pass accepted the line) is argued, not tested: only a hookless action attaching between the two passes reaches it.
+
+**How it was found**
+By the plan, `.agents/tasks/irq-multi-arch/PLAN.md` step 10, after the design of step 7.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a registration build its table outside the lock and then check the floor again, and what happens to the table if the floor moved?
+- Why does `unregister_domain()` retract the registry's pointer and the slot before the grace period, and free after, and what would a reader that began in between find?
+- Why is the block of a removed domain never given out again, when its id may be?

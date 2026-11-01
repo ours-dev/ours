@@ -65,6 +65,17 @@ class Domain {
     [[nodiscard]]
     auto hwirq_limit() const -> usize;
 
+    /// The block of virqs the domain holds: the first, and how many. 0 and 0
+    /// until init().
+    [[nodiscard]]
+    auto first_virq() const -> VIrqNum {
+        return m_first;
+    }
+    [[nodiscard]]
+    auto num_virqs() const -> usize {
+        return m_hwirqs.size();
+    }
+
   private:
     /// The first virq; the virq of the lowest hardware number.
     VIrqNum m_first = 0;

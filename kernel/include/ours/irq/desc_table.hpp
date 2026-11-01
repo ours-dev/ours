@@ -7,6 +7,8 @@
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
 
+#include <atomic>
+
 #include <ktl/result.hpp>
 #include <ustl/option.hpp>
 #include <ustl/views/span.hpp>
@@ -28,7 +30,49 @@ class DescTable {
     /// eoi or no mask; AlreadyExists for a number given twice; BadState if
     /// the table is built; OutOfMem.
     [[nodiscard]]
-    auto init(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> Status;
+    auto init(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip, VIrqNum min_first = 0)
+        -> Status;
+
+    /// The block of virqs the table's lines hold, [first_virq(), first_virq() +
+    /// num_lines()). The floor `init()` was given is where the block starts
+    /// or lies above, so that two tables of a machine hold disjoint blocks.
+    [[nodiscard]]
+    auto first_virq() const -> VIrqNum {
+        return m_domain.first_virq();
+    }
+    [[nodiscard]]
+    auto num_lines() const -> usize {
+        return m_domain.num_virqs();
+    }
+
+    /// The removal of the table's domain, over every line, in the steps
+    /// Desc documents: begin_removal() refuses before anything is marked
+    /// (check_revocable() over every line) and then marks every line
+    /// (mark_dying()), undoing the marks it made if one refuses; it answers
+    /// the first refusal, AlreadyBound, with nothing changed but a short
+    /// window in which attach(), unmask() and configure() on the lines marked
+    /// answered NoResource. finish_removal() then takes every action off
+    /// every line (revoke()), and abort_removal() undoes the marks of a begun
+    /// removal that is given up. All thread context, and a table is removed
+    /// by one caller at a time.
+    [[nodiscard]]
+    auto begin_removal() -> Status;
+    auto abort_removal() -> void;
+    auto finish_removal() -> void;
+
+    /// Frees the lines and the domain's arrays of a table whose removal is
+    /// finished and whose readers are gone (irq_rcu_synchronize() has
+    /// returned since it was unpublished). The lines are poisoned first, so
+    /// a reader that is still on one finds the canary gone. The table is
+    /// empty afterwards and may be freed.
+    auto destroy() -> void;
+
+    /// Whether destroy() has begun. A debug sentinel for tests and asserts: a
+    /// reader that can read it true was not waited for.
+    [[nodiscard]]
+    auto is_destroyed() const -> bool {
+        return m_destroyed.load(std::memory_order_acquire);
+    }
     /// The virq of the line made for hardware number `hirqnum`;
     /// INVALID_V_IRQ_NUM if there is none.
     [[nodiscard]]
@@ -98,6 +142,7 @@ class DescTable {
     Domain m_domain;
     /// The lines, indexed by hardware number.
     ustl::views::Span<Desc *> m_descs;
+    std::atomic<bool> m_destroyed{false};
 };
 } // namespace ours::irq
 

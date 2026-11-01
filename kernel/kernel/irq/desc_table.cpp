@@ -37,7 +37,8 @@ namespace ours::irq {
 /// interrupt finds nobody on it, so that a level pin nobody services does not
 /// raise the same interrupt again the moment it is ended, for good. Each line
 /// takes its first flow from the chip as it is bound (Desc::init()).
-auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip) -> Status {
+auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip,
+                     VIrqNum const min_first) -> Status {
     if (!m_descs.empty()) {
         return Status::BadState;
     }
@@ -53,7 +54,7 @@ auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const
     // The domain numbers the lines. It is also what refuses a number given
     // twice and one that is no hardware number, before anything is made here.
     Domain domain;
-    if (auto const status = domain.init(hirqnums); status != Status::Ok) {
+    if (auto const status = domain.init(hirqnums, min_first); status != Status::Ok) {
         return status;
     }
 
@@ -90,6 +91,72 @@ auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const
     m_domain = domain;
     m_descs = descs;
     return Status::Ok;
+}
+
+/// Two passes, so that a line that cannot be emptied refuses before any other
+/// is marked, and then the marks, which undo themselves if a line refuses
+/// anyway: an action with no cancel hook can land between the first pass and
+/// the mark of its line, and the mark looks again under the line's lock.
+auto DescTable::begin_removal() -> Status {
+    for (auto *const desc: m_descs) {
+        if (desc == nullptr) {
+            continue;
+        }
+        if (auto const status = desc->check_revocable(); status != Status::Ok) {
+            return status;
+        }
+    }
+    for (usize i = 0; i < m_descs.size(); ++i) {
+        auto *const desc = m_descs[i];
+        if (desc == nullptr) {
+            continue;
+        }
+        if (auto const status = desc->mark_dying(); status != Status::Ok) {
+            for (usize earlier = 0; earlier < i; ++earlier) {
+                if (m_descs[earlier] != nullptr) {
+                    m_descs[earlier]->unmark_dying();
+                }
+            }
+            return status;
+        }
+    }
+    return Status::Ok;
+}
+
+auto DescTable::abort_removal() -> void {
+    for (auto *const desc: m_descs) {
+        if (desc != nullptr) {
+            desc->unmark_dying();
+        }
+    }
+}
+
+auto DescTable::finish_removal() -> void {
+    for (auto *const desc: m_descs) {
+        if (desc != nullptr) {
+            desc->revoke();
+        }
+    }
+}
+
+/// The lines are poisoned between their destructor and the heap: a reader that
+/// is still on one, which the grace period before this call is there to rule
+/// out, then finds its canary gone and its list head nonsense rather than a
+/// line that looks fine. The table is marked destroyed first, which is what a
+/// test reads to tell that a reader was not waited for.
+auto DescTable::destroy() -> void {
+    m_destroyed.store(true, std::memory_order_release);
+    for (auto *const desc: m_descs) {
+        if (desc == nullptr) {
+            continue;
+        }
+        desc->~Desc();
+        __builtin_memset(static_cast<void *>(desc), 0xDD, sizeof(Desc));
+        ::operator delete(desc);
+    }
+    delete[] m_descs.data();
+    m_descs = {};
+    m_domain.reset();
 }
 
 auto DescTable::virq_of(HIrqNum const hirqnum) const -> VIrqNum {
