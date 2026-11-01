@@ -1,0 +1,13 @@
+# Host-side tests. These link googletest and run on the build machine, so
+# they exercise the library's own logic -- lookups, inserts, splits that
+# climb, scans and the allocator -- over a fake device in memory.
+executable("ours.btreefs") {
+  testonly = true
+  sources = [ "ours_btreefs_test.cpp" ]
+  deps = [
+    "//system/lib/ours.btreefs",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

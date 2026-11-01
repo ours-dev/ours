@@ -87,6 +87,10 @@ group("default") {
     # parses and their refusals, and whole tables read through a fake reader.
     "//system/lib/ours.gpt:tests($host_toolchain)",
 
+    # ours.btreefs's tree: keys and values, the allocator, inserts through
+    # splits that climb to height 3, and scans along the leaves' chain.
+    "//system/lib/ours.btreefs:tests($host_toolchain)",
+
     # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
     # decision over two token values and its state is one std::atomic, so the
     # whole protocol runs on the host; the concurrent half it cannot reach is
