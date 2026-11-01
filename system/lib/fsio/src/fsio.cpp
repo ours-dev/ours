@@ -725,6 +725,13 @@ auto unlink(std::string_view const path) -> ours::Status {
     if (name.empty() || name == "." || name == "..") {
         return Status::BadPath;
     }
+    // A root-level entry ("/x") has no parent this library can name: the
+    // namespace binds subtrees, not a root, and letting the parent fall to
+    // "." would delete a name under the working directory that the path
+    // never meant.
+    if (slash == 0) {
+        return Status::BadPath;
+    }
     // The parent's own cleaned path, through the same cleaning the full
     // path went through.
     PathBuffer parent_buffer;

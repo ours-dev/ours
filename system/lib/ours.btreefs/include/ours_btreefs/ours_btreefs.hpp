@@ -544,9 +544,15 @@ class Transaction final {
     }
 
     /// The commit point, in a fixed order: the cached blocks, then the
-    /// bitmap -- taken bits set, dead bits cleared -- then the other
-    /// superblock slot with the next generation. Until the last write the
-    /// disk holds the committed tree, whole and consistent.
+    /// taken bits set, then the other superblock slot with the next
+    /// generation -- and only then the dead bits cleared. The order is the
+    /// safety: until the superblock lands, the committed tree is the one
+    /// the old generation names, and it still references the dead blocks --
+    /// clearing their bits ahead of the swap would mark the live tree's own
+    /// nodes free, and the next allocation would write over them. After the
+    /// swap the dead blocks are unreferenced, so a crash before their bits
+    /// clear only leaks them, and a failed clear here is answered the same
+    /// way: the block stays allocated and nothing points at it.
     auto commit() -> ours::Status {
         for (auto index = usize{0}; index < m_cache_count; ++index) {
             if (auto const status =
@@ -557,11 +563,6 @@ class Transaction final {
         }
         for (auto index = usize{0}; index < m_taken_count; ++index) {
             if (auto const status = bitmap_bit(m_taken[index], true); status != ours::Status::Ok) {
-                return status;
-            }
-        }
-        for (auto index = usize{0}; index < m_dead_count; ++index) {
-            if (auto const status = bitmap_bit(m_dead[index], false); status != ours::Status::Ok) {
                 return status;
             }
         }
@@ -577,6 +578,15 @@ class Transaction final {
             return status;
         }
         m_committed = m_shadow;
+        // The swap is done: the dead blocks are unreferenced now. Their
+        // bits clear here; a failure leaks the block (bit set, nothing
+        // naming it) and never corrupts -- leak over corruption, always.
+        for (auto index = usize{0}; index < m_dead_count; ++index) {
+            auto const cleared = bitmap_bit(m_dead[index], false);
+            if (cleared != ours::Status::Ok) {
+                return cleared;
+            }
+        }
         return ours::Status::Ok;
     }
 

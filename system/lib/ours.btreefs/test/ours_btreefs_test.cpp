@@ -699,6 +699,90 @@ TEST(BtreefsTruncate, OfWhatIsNotThereIsQuiet) {
 
 // --- The transaction's own promises. ---
 
+/// A device that refuses writes to the superblock slots while armed: the
+/// injectable "crash right at the commit point".
+class GateDevice final {
+  public:
+    explicit GateDevice(FakeDevice &inner) : inner_(inner) {}
+
+    auto read_block(u64 const index, std::span<u8> bytes) -> Status {
+        return inner_.read_block(index, bytes);
+    }
+
+    auto write_block(u64 const index, std::span<u8 const> bytes) -> Status {
+        if (armed_ && (index == 0 || index == 1)) {
+            return Status::InternalError;
+        }
+        return inner_.write_block(index, bytes);
+    }
+
+    auto arm() -> void {
+        armed_ = true;
+    }
+    auto disarm() -> void {
+        armed_ = false;
+    }
+
+  private:
+    FakeDevice &inner_;
+    bool armed_ = false;
+};
+
+TEST(BtreefsTransaction, ASuperblockFailureLeavesTheOldTreeWhole) {
+    // The commit's last write is the superblock; everything before it --
+    // the new blocks, the taken bits, AND the dead bits -- must leave the
+    // old generation's state readable when that write fails. The dead
+    // blocks' bits clear only after the swap, so a failure here costs a
+    // leak (the copies stay allocated) and never the live tree.
+    auto device = FakeDevice(256);
+    GateDevice gate(device);
+    ASSERT_EQ(ours_btreefs::format(gate, 256, 1), Status::Ok);
+    auto volume = ours_btreefs::open(gate);
+    ASSERT_TRUE(volume.is_ok());
+
+    {
+        auto tx = ours_btreefs::Transaction(gate, *volume);
+        for (auto offset = u64{0}; offset < 3; ++offset) {
+            EXPECT_EQ(ours_btreefs::insert(tx, key_of(1, ours_btreefs::ItemType::Data, offset),
+                                           value_of(offset * 10)),
+                      Status::Ok);
+        }
+        EXPECT_EQ(tx.commit(), Status::Ok);
+    }
+    auto const generation = volume->generation;
+
+    // Arm, then commit a change whose superblock write cannot land.
+    gate.arm();
+    {
+        auto tx = ours_btreefs::Transaction(gate, *volume);
+        EXPECT_EQ(
+            ours_btreefs::insert(tx, key_of(1, ours_btreefs::ItemType::Data, 3), value_of(30)),
+            Status::Ok);
+        EXPECT_NE(tx.commit(), Status::Ok);
+    }
+    gate.disarm();
+
+    // The old generation stands: same generation, same data, and the
+    // original leaf's block is still allocated (the copy's bit is set too
+    // -- a leak, never a corruption).
+    auto const reopened = ours_btreefs::open(gate);
+    ASSERT_TRUE(reopened.is_ok());
+    EXPECT_EQ(reopened->generation, generation);
+    for (auto const offset: {u64{0}, u64{1}, u64{2}}) {
+        auto value = Value{};
+        ASSERT_EQ(ours_btreefs::lookup(gate, *reopened,
+                                       key_of(1, ours_btreefs::ItemType::Data, offset), value),
+                  Status::Ok);
+        EXPECT_EQ(marker_of(value), offset * 10);
+    }
+    auto value = Value{};
+    EXPECT_EQ(
+        ours_btreefs::lookup(gate, *reopened, key_of(1, ours_btreefs::ItemType::Data, 3), value),
+        Status::NotFound);
+}
+
+// --- The transaction's own promises. ---
+
 TEST(BtreefsTransaction, AnAbandonedInsertChangedNothing) {
     // The rehearsal rule: insert, never commit, and the tree, its size and
     // the superblock's generation are what they were.
