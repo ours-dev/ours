@@ -204,6 +204,28 @@ component_manifest("root.cm") {
         rights = [ "rw*" ]
       },
 
+      # fshost's admin protocol, to routing_checks: the mount check hands it
+      # the disk's directory and asks for it at another name in the tree.
+      {
+        protocol = "ours.fshost.Admin"
+        from = "#fshost"
+        to = [ "#routing_checks" ]
+      },
+
+      # The writable view, to routing_checks under its own name: the mount
+      # check must see a mount appear at run time, and its `/vfs` is the
+      # read-only view on purpose.
+      {
+        directory = "all"
+        from = "#fshost"
+        to = [ "#routing_checks" ]
+        as = "vfs-all"
+        rights = [
+          "rx*",
+          "w*",
+        ]
+      },
+
       # The same directory under another name, with fewer rights.
       {
         directory = "boot"

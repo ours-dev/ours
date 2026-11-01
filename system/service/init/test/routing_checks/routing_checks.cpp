@@ -80,6 +80,7 @@
 #include <ours_block/client.hpp>
 #include <ours_block/ours_block.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
+#include <ours_fshost/ours_fshost.hpp>
 #include <ours_gpt/ours_gpt.hpp>
 #include <ours_io/ours_io.hpp>
 #include <ours_process/ours_process.hpp>
@@ -1953,6 +1954,125 @@ auto check_disk() -> void {
            Status::BadPath);
     auto _ = fsio::close(at_dir.unwrap());
 
+    constexpr auto ADMIN = std::string_view{"/svc/ours.fshost.Admin"};
+    constexpr auto NAME = std::string_view{"extra"};
+
+    // The mount check proper: the disk's directory, mounted at run time
+    // under a new name in the writable view, serving files through the
+    // mounted path -- and the same bytes through the disk's own name.
+    auto const admin = connect_or_fail(ADMIN);
+    if (admin == Uandle::Invalid) {
+        return;
+    }
+    auto const disk_dir =
+        fsio::open("/disk", Flags::PermReadBytes | Flags::PermWriteBytes | Flags::PermTraverse |
+                                Flags::PermModifyDirectory | Flags::PermConnect);
+    if (disk_dir.is_err()) {
+        // No disk, or the filesystem on it having found none: any refusal
+        // here is the skip case, as /disk is simply not there.
+        auto _ = ort::debug_line({"routing_checks: no disk to mount (",
+                                  ours::to_string(status_of(disk_dir)), "), skipped"});
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto mount_txid = next_txid();
+    auto mount_bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+    auto mount_handles = std::array<Uandle, 1>{disk_dir.unwrap()};
+    auto const mount_request =
+        ours_fshost::encode_mount(mount_bytes, mount_handles,
+                                  {.txid = mount_txid, .handle = disk_dir.unwrap(), .name = NAME});
+    if (!expect("Admin.Mount encode", status_of(mount_request), Status::Ok)) {
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto mount_reply = Incoming{};
+    if (!expect("Admin.Mount", call(admin, mount_request.unwrap(), mount_reply), Status::Ok)) {
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    if (auto const epitaph = mount_reply.epitaph(); epitaph.is_some()) {
+        expect("Admin.Mount", *epitaph, Status::Ok);
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto const mount_status =
+        wire::decode_reply_status(mount_reply.message(), ours_fshost::MOUNT, mount_txid);
+    if (!expect("Admin.Mount reply", status_of(mount_status), Status::Ok)) {
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    // Ok on a fresh tree; AlreadyExists when this process's earlier run
+    // mounted it -- fshost is resident, its tree outlives the check.
+    if (mount_status.unwrap() != Status::Ok && mount_status.unwrap() != Status::AlreadyExists) {
+        expect("Admin.Mount reply", mount_status.unwrap(), Status::Ok);
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    // The handle moved with the message; the tree holds the mount now.
+
+    // Files through the mounted path: create, write, and read back through
+    // a fresh open -- and the same bytes through the disk's own name, one
+    // filesystem under two namespace names.
+    auto const mounted_file =
+        fsio::open("/vfs-all/extra/mounted-check.txt",
+                   Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("mounted file", status_of(mounted_file), Status::Ok)) {
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto mount_mark = std::array<u8, 32>{};
+    auto const mount_text = std::string_view{"runtime mount check"};
+    std::memcpy(mount_mark.data(), mount_text.data(), mount_text.size());
+    if (!expect("mounted write", status_of(fsio::write(mounted_file.unwrap(), mount_mark)),
+                Status::Ok)) {
+        auto _ = fsio::close(mounted_file.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    expect("mounted close", fsio::close(mounted_file.unwrap()), Status::Ok);
+    auto const mounted_reopen =
+        fsio::open("/vfs-all/extra/mounted-check.txt", Flags::PermReadBytes);
+    if (expect("mounted reopen", status_of(mounted_reopen), Status::Ok)) {
+        auto back = std::array<u8, mount_mark.size()>{};
+        auto const read = fsio::read(mounted_reopen.unwrap(), back);
+        if (expect("mounted read", status_of(read), Status::Ok) &&
+            (read.unwrap() != mount_mark.size() || back != mount_mark)) {
+            fail("mounted read: the bytes are not the mark");
+        }
+        auto _ = fsio::close(mounted_reopen.unwrap());
+    }
+    auto const twin = fsio::open("/disk/mounted-check.txt", Flags::PermReadBytes);
+    if (expect("mounted twin", status_of(twin), Status::Ok)) {
+        auto back = std::array<u8, mount_mark.size()>{};
+        auto const read = fsio::read(twin.unwrap(), back);
+        if (expect("mounted twin read", status_of(read), Status::Ok) &&
+            (read.unwrap() != mount_mark.size() || back != mount_mark)) {
+            fail("mounted twin read: the bytes are not the mark");
+        }
+        auto _ = fsio::close(twin.unwrap());
+    }
+
+    // Unlink through the mount point is deferred (the tree server does not
+    // forward Unlink yet): the file goes through the disk's own name.
+    expect("mounted unlink", fsio::unlink("/disk/mounted-check.txt"), Status::Ok);
+
+    // The isolation half: the read-only view does not carry the mount. An
+    // open's refusal surfaces at the handle's first use, so the probe
+    // reads.
+    auto const leaked = fsio::open("/vfs/extra", Flags::PermReadBytes);
+    if (expect("mount stays out of ro", status_of(leaked), Status::Ok)) {
+        auto probe = std::array<u8, 1>{};
+        expect("mount stays out of ro", status_of(fsio::read(leaked.unwrap(), probe)),
+               Status::NotFound);
+        auto _ = fsio::close(leaked.unwrap());
+    }
+    auto _ = ours::handle_close(admin);
+
     // Truncate the flat file: a fresh open with the flag reads zero bytes.
     auto const truncated =
         fsio::open(FILE, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FileTruncate);
@@ -2296,8 +2416,8 @@ auto main(int argc, char **argv) -> int {
         auto _ = ort::debug_line("routing_checks: FAILED");
         return 1;
     }
-    if (auto const bound = fsio::installed_namespace().size(); bound != 7) {
-        fail("the namespace does not hold the manifest's six directory uses and /svc");
+    if (auto const bound = fsio::installed_namespace().size(); bound != 8) {
+        fail("the namespace does not hold the manifest's seven directory uses and /svc");
     }
     check_process_self("object_get_info(process_self())");
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);

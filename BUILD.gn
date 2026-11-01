@@ -91,6 +91,10 @@ group("default") {
     # splits that climb to height 3, and scans along the leaves' chain.
     "//system/lib/ours.btreefs:tests($host_toolchain)",
 
+    # ours.fshost's admin codec: the Mount request written, read back and
+    # refused on purpose, from bytes alone.
+    "//system/lib/ours.fshost:tests($host_toolchain)",
+
     # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
     # decision over two token values and its state is one std::atomic, so the
     # whole protocol runs on the host; the concurrent half it cannot reach is

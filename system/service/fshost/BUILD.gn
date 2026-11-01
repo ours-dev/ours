@@ -29,6 +29,8 @@ user_executable("fshost") {
   deps = [
     "//system/lib/ioservice:loop_server",
     "//system/lib/loop",
+    "//system/lib/ours.fshost",
+    "//system/lib/wire",
   ]
 }
 
@@ -60,6 +62,9 @@ component_manifest("fshost.cm") {
       {
         directory = "ro"
       },
+      {
+        protocol = "ours.fshost.Admin"
+      },
     ]
     expose = [
       {
@@ -68,6 +73,10 @@ component_manifest("fshost.cm") {
       },
       {
         directory = "ro"
+        from = "self"
+      },
+      {
+        protocol = "ours.fshost.Admin"
         from = "self"
       },
     ]

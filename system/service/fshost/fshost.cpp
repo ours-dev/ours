@@ -47,6 +47,7 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
+#include <ours_fshost/ours_fshost.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
 
@@ -77,6 +78,10 @@ constexpr auto BOOT_NAME = std::string_view{"boot"};
 constexpr auto TMP_NAME = std::string_view{"tmp"};
 constexpr auto DISK_NAME = std::string_view{"disk"};
 
+/// The tree's own svc directory, where the admin protocol's node lives for
+/// the outgoing directory to expose.
+constexpr auto SVC_NAME = std::string_view{"svc"};
+
 /// What the tree is served with: the ceiling of what an Open of either view
 /// may ask, the rights root.cm offers them with -- rx* for the BootFS mount,
 /// w* for the writable one. A wider offer needs a wider ceiling here first,
@@ -86,7 +91,7 @@ constexpr auto SERVED_RIGHTS = ours_io::RX_STAR_DIR | ours_io::W_STAR_DIR;
 /// How many nodes the tree has room for: the root, the two views, the two
 /// mount points of `all`, `ro`'s boot, the disk's mount when it exists, and
 /// room for the mounts to come.
-constexpr auto NODES = usize{9};
+constexpr auto NODES = usize{16};
 
 /// How many connections may be live at once: the outgoing directory itself,
 /// plus every view connection and every connection made through them.
@@ -94,7 +99,10 @@ constexpr auto CONNECTIONS = usize{8};
 
 /// The Loop's slots: one per connection, and one spare for the port's own
 /// bookkeeping.
-constexpr auto SLOTS = CONNECTIONS + 1;
+/// The admin connection's own slot, beside the tree connections'.
+constexpr auto ADMIN_SLOTS = usize{1};
+
+constexpr auto SLOTS = CONNECTIONS + ADMIN_SLOTS + 1;
 
 static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
 
@@ -108,6 +116,11 @@ struct Storage {
     std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
     std::array<Uandle, wire::MAX_MESSAGE_HANDLES> request_handles;
     ioservice::ReplyBuffer reply;
+    /// The mounted-at names, owned here: the tree keeps names as views, and
+    /// the Mount request's name points at the shared message buffer, which
+    /// the next read overwrites.
+    std::array<std::array<char, 256>, 8> mount_names{};
+    usize mount_names_used = 0;
 };
 
 constinit ustl::LazyInit<Storage> STORAGE;
@@ -116,9 +129,56 @@ constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 /// Says what the tree could not deliver: a reply, or a forwarded Open. The
 /// tree holds no service node, so an Open of one has nowhere to go and its
 /// channel closes.
+/// The service-node id the admin protocol's node was added with.
+constexpr auto ADMIN_SERVICE = u64{1};
+
+/// The admin connection's channel while it is served, Invalid otherwise:
+/// a second connect while one is served is closed, one admin client being
+/// all a composing server needs.
+Uandle ADMIN_CHANNEL = Uandle::Invalid;
+loop::Loop *ADMIN_LOOP = nullptr;
+ioservice::Tree *ADMIN_TREE = nullptr;
+ioservice::NodeId ALL_NODE_FOR_ADMIN = ioservice::NodeId{0};
+
+auto serve_admin() -> loop::Action;
+
+/// The admin connection's Loop slot: one connection at a time, whose
+/// messages are Mount requests.
+class AdminBinding final: public loop::Waiter {
+  public:
+    auto on_signals(ours::Signals const observed) -> loop::Action override {
+        if (!(observed & ours::Signals::Readable)) {
+            ADMIN_CHANNEL = Uandle::Invalid;
+            return loop::Action::Close;
+        }
+        return serve_admin();
+    }
+};
+
+AdminBinding ADMIN_BINDING;
+
+/// Arms the admin |channel| on its binding.
+auto arm_admin(Uandle const channel) -> void {
+    if (ADMIN_CHANNEL != Uandle::Invalid) {
+        auto _ = ours::handle_close(channel);
+        return;
+    }
+    auto const armed = ADMIN_LOOP->add(channel, ours::Signals::Readable | ours::Signals::PeerClosed,
+                                       ADMIN_BINDING);
+    if (armed.is_err()) {
+        auto _ = ours::handle_close(channel);
+        return;
+    }
+    ADMIN_CHANNEL = channel;
+}
+
 class Report final: public ioservice::LoopServer::Delegate {
   public:
-    auto connect(u64, Uandle const channel) -> void override {
+    auto connect(u64 const service, Uandle const channel) -> void override {
+        if (service == ADMIN_SERVICE) {
+            arm_admin(channel);
+            return;
+        }
         auto _ = ours::handle_close(channel);
     }
 
@@ -128,6 +188,82 @@ class Report final: public ioservice::LoopServer::Delegate {
 };
 
 constinit Report REPORT;
+
+/// Answers |status| for |txid| on the admin channel, the status form.
+auto answer_admin(u32 const txid, Status const status) -> void {
+    std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
+    auto const encoded = ours_fshost::encode_mount_reply(bytes, txid, status);
+    if (encoded.is_ok()) {
+        auto _ = ours::channel_write(ADMIN_CHANNEL, ours::ChannelWriteOptions::None,
+                                     encoded->bytes.data(), static_cast<u32>(encoded->bytes.size()),
+                                     nullptr, 0);
+    }
+}
+
+/// Serves one message on the admin connection: a Mount, whose directory
+/// handle joins the tree under the writable view at the asked name.
+auto serve_admin() -> loop::Action {
+    auto &storage = *STORAGE;
+    auto num_bytes = u32{0};
+    auto num_handles = u32{0};
+    if (auto const read = ours::channel_read(
+            ADMIN_CHANNEL, ours::ChannelReadOptions::None, storage.request_bytes.data(),
+            storage.request_handles.data(), static_cast<u32>(storage.request_bytes.size()),
+            static_cast<u32>(storage.request_handles.size()), &num_bytes, &num_handles);
+        read != Status::Ok) {
+        ADMIN_CHANNEL = Uandle::Invalid;
+        return loop::Action::Close;
+    }
+    auto const message = wire::Message{
+        .bytes = std::span{storage.request_bytes}.first(num_bytes),
+        .handles = std::span{storage.request_handles}.first(num_handles),
+    };
+    auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
+    if (header.is_err()) {
+        // Not speaking the protocol: the connection ends, nothing to answer.
+        ADMIN_CHANNEL = Uandle::Invalid;
+        return loop::Action::Close;
+    }
+    auto const request = ours_fshost::decode_mount(message);
+    if (request.is_err()) {
+        answer_admin(header->txid, request.unwrap_err());
+        return loop::Action::Rearm;
+    }
+    auto const &asked = request.unwrap();
+
+    // A mount point is one name directly under the writable view: no
+    // separators, and nothing the tree would answer by shape rather than
+    // by name.
+    if (asked.name.empty() || asked.name.find('/') != std::string_view::npos || asked.name == "." ||
+        asked.name == "..") {
+        answer_admin(asked.txid, Status::InvArgs);
+        return loop::Action::Rearm;
+    }
+    if (auto const taken = ADMIN_TREE->lookup(ALL_NODE_FOR_ADMIN, asked.name); taken.is_ok()) {
+        answer_admin(asked.txid, Status::AlreadyExists);
+        return loop::Action::Rearm;
+    }
+    if (storage.mount_names_used == storage.mount_names.size()) {
+        answer_admin(asked.txid, Status::NoResource);
+        return loop::Action::Rearm;
+    }
+    // The name moves into this program's own storage: the tree keeps names
+    // as views, and the request's bytes are the shared buffer the next read
+    // overwrites.
+    auto &owned = storage.mount_names[storage.mount_names_used];
+    asked.name.copy(owned.data(), asked.name.size());
+    auto const owned_name = std::string_view{owned.data(), asked.name.size()};
+    storage.mount_names_used += 1;
+    // The handle rides the message; the tree owns it from here.
+    auto const mounted =
+        ADMIN_TREE->add_remote(ALL_NODE_FOR_ADMIN, owned_name, message.handles.front());
+    if (mounted.is_err()) {
+        answer_admin(asked.txid, mounted.unwrap_err());
+        return loop::Action::Rearm;
+    }
+    answer_admin(asked.txid, Status::Ok);
+    return loop::Action::Rearm;
+}
 
 /// The routed directories, taken the way fsio binds its namespace (an NsDir
 /// handle's arg is its name's index): |boot| from /boot, |tmp| from /tmp.
@@ -179,6 +315,17 @@ auto main(int, char **) -> int {
     ioservice::Tree tree(storage.nodes);
     auto const root = tree.add_root().unwrap();
 
+    // The admin protocol lives in the tree's own svc directory, a service
+    // node whose Opens come to the delegate with ADMIN_SERVICE.
+    auto const svc = tree.add_directory(root, SVC_NAME).unwrap();
+    auto const admin_node = tree.add_service(svc, ours_fshost::ADMIN_NAME, ADMIN_SERVICE);
+    if (admin_node.is_err()) {
+        auto _ = ort::debug_line(
+            {"fshost: cannot add the admin node: ", ours::to_string(admin_node.unwrap_err())});
+        auto _ = ours::handle_close(directory_request);
+        return 1;
+    }
+
     // Two views of the same mounts, exposed as two directory capabilities:
     // `all` carries every mount point, `ro` carries only the read-only one.
     // Routing hands each component the view it should see, renamed to the
@@ -220,6 +367,9 @@ auto main(int, char **) -> int {
         return 1;
     }
     loop::Loop loop(port, SLOT_STORAGE);
+    ADMIN_LOOP = &loop;
+    ADMIN_TREE = &tree;
+    ALL_NODE_FOR_ADMIN = all;
     ioservice::LoopServer server(tree, loop, {.handle_duplicate = ours::handle_duplicate},
                                  {.connections = storage.connections,
                                   .bindings = storage.bindings,
