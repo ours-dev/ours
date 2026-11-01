@@ -9,6 +9,7 @@
 
 #include <acpi/structures/madt.hpp>
 #include <acpi/table_set.hpp>
+#include <arch/interrupt.hpp>
 #include <arch/x86/apic/ioapic.hpp>
 #include <arch/x86/apic/xapic.hpp>
 #include <arch/x86/pic.hpp>
@@ -53,6 +54,26 @@ namespace {
         object.remapped = true;
         object.isa_irq = entry.source;
         return object;
+    }
+
+    /// The root handler of a PC, installed by platform_init_apic(). Every pin
+    /// of every IO-APIC was programmed with vector PlatformIrqMin + GSI, so
+    /// the GSI is the vector less that base. The irq layer looks the line up by
+    /// the GSI; every other part names the line by its virq.
+    ///
+    /// A line's flow ends its own interrupt, through the line's chip, once the
+    /// actions have run; that holds for an IPI sent to a line's vector too. A
+    /// vector no line has, a pin the platform did not program or an IPI sent
+    /// to such a vector, is ended here instead: left in service, it would hold
+    /// back every interrupt of its priority class and below on this CPU for
+    /// good.
+    auto handle_root_interrupt(arch::IrqFrame *const frame) -> void {
+        DEBUG_ASSERT(frame->vector >= arch::IrqVec::PlatformIrqMin);
+        auto const gsi = static_cast<HIrqNum>(frame->vector) -
+                         static_cast<HIrqNum>(arch::IrqVec::PlatformIrqMin);
+        if (!irq::handle_irq_generic(gsi)) {
+            apic_issue_eoi();
+        }
     }
 
     INIT_CODE
@@ -103,10 +124,10 @@ namespace {
 
         // Every pin of every IO-APIC is programmed, masked, at its GSI with
         // vector PlatformIrqMin + GSI: first the pins the ISA lines reach, as
-        // the MADT's overrides send them, then all the others. faults.cpp
+        // the MADT's overrides send them, then all the others. The root handler
         // turns a vector back into a number by subtracting the same base, so
-        // what reaches platform_handle_irq() is the GSI. The irq layer looks
-        // the line up by it; every other part names the line by its virq.
+        // what it hands the irq layer is the GSI, by which the layer looks the
+        // line up; every other part names the line by its virq.
         //
         // The vector is fixed by the GSI, not taken from a pool of free
         // vectors when the first handler registers on a line. One IO-APIC's
@@ -189,6 +210,11 @@ namespace {
         auto const status = irq::init_lines(ustl::views::Span(gsis), io_apic_chip());
         ASSERT(Status::Ok == status, "Failed to build the interrupt lines: {}", to_string(status));
 
+        // The root controller's driver gives arch its handler now, with the
+        // lines built and the pins still masked, and before the instruction
+        // below that lets an interrupt in.
+        irq::set_root_handler(handle_root_interrupt);
+
         arch::local_irq_enable();
     }
     // Before every kernel driver that uses a line: the PIT, which attaches to
@@ -197,22 +223,6 @@ namespace {
     // interrupt_create comes long after.
     GKTL_INIT_HOOK(ApicInit, platform_init_apic, gktl::InitLevel::Irq);
 } // namespace
-
-/// `irqnum` is the GSI: the vector less PlatformIrqMin, and platform_init_apic()
-/// programmed every GSI with vector PlatformIrqMin + GSI. The irq layer looks
-/// the line up by that hardware number, so it passes through unchanged; the
-/// line's virq is the irq layer's own.
-auto platform_handle_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> bool {
-    return irq::handle_irq_generic(irqnum);
-}
-
-auto platform_start_handling_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
-    irq::handle_irq_preamble(irqnum, frame);
-}
-
-auto platform_finish_handling_irq(HIrqNum irqnum, arch::IrqFrame *) -> bool {
-    return irq::handle_irq_postamble();
-}
 
 /// The same mapping platform_init_apic() programmed each ISA line at, so the
 /// line a driver names this way is the one its device's interrupts reach: the

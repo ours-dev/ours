@@ -103,8 +103,8 @@ class Desc final {
     ///
     /// The end of interrupt is the flow's last step, inside the same hold of
     /// L1 as the actions: the code that knows the line and its chip sends
-    /// it, once per interrupt, rather than arch, which knows only the
-    /// vector. A dispatch that sends it needs a chip with an eoi, and one on
+    /// it, once per interrupt, rather than the root handler, which knows only
+    /// the hardware number. A dispatch that sends it needs a chip with an eoi, and one on
     /// a line nobody is on a chip that masks, which every line of the table
     /// has.
     [[nodiscard]]

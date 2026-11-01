@@ -30,7 +30,7 @@
 //     returns a time taken while the interrupt came in;
 //   - bound to a port, an interrupt sends one packet, and those before the
 //     ack fold into the next, which the ack sends; raised, the same;
-//   - a vector no line has, raised by IPI, is ended by the interrupt entry,
+//   - a vector no line has, raised by IPI, is ended by the root handler,
 //     since no line's flow can end it: the free line's interrupt, raised
 //     after it and in a lower priority class, still comes in;
 //   - a destroy wakes a parked waiter with Cancelled and lets the line go: a
@@ -419,7 +419,7 @@ namespace {
                   static_cast<usize>(arch::IrqVec::PlatformIrqMax));
 
     /// A vector no line has, raised by IPI on this CPU, then the free line's.
-    /// No line's flow ends the first, so the interrupt entry has to; left in
+    /// No line's flow ends the first, so the root handler has to; left in
     /// service it would hold back on this CPU every vector of its priority
     /// class and below, the free line's among them, and the second would
     /// never come in. Preemption stays off across the two sends, so both
@@ -451,7 +451,7 @@ namespace {
         verdict(tally, irq::spurious_count(NO_SUCH_LINE).is_none(),
                 "a vector past every line has no line");
         verdict(tally, read && is_packet(packet, from, to),
-                "raised before the line's own, it is ended by the interrupt entry: the line's "
+                "raised before the line's own, it is ended by the root handler: the line's "
                 "interrupt still comes in");
     }
 

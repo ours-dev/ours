@@ -100,8 +100,11 @@ line's lock L1.
 - Each line runs a flow handler, `handle_fasteoi` for a level line or
   `handle_edge`, chosen from the trigger mode when the table is built and
   re-chosen under L1 by `configure()` and attach. The flow sends the one EOI
-  per vector, through the chip, after the actions; arch sends it only for a
-  vector with no line.
+  per vector, through the chip, after the actions; the root controller's
+  handler, which its driver installs with `irq::set_root_handler()` and arch
+  calls for every interrupt that comes through the root controller, sends it
+  for an interrupt no line has (the user's decision of 2026-11-01,
+  irq-multi-arch D3 (c); until then arch sent it).
 - ONESHOT belongs to the line: `handle_fasteoi` masks a Oneshot line before
   its actions and leaves it masked while held is set; `finalize_oneshot`
   clears held and unmasks. A Oneshot action never shares, as well as never

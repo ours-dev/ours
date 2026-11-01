@@ -4,6 +4,8 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/task/thread.hpp>
 
+#include <atomic>
+
 #include <heap/new.hpp>
 
 namespace ours::irq {
@@ -13,7 +15,28 @@ namespace {
     // profiler's tick hook) reads it to reach the interrupted context.
     CPU_LOCAL
     arch::IrqFrame *CURRENT_FRAME;
+
+    // The root controller's handler. Written once by set_root_handler(), before
+    // the first interrupt of the root controller can be taken, and read in
+    // interrupt context on every CPU with no lock. The release store and the
+    // acquire load are what let a CPU that starts later see it.
+    std::atomic<RootHandler> ROOT_HANDLER{nullptr};
 } // namespace
+
+auto set_root_handler(RootHandler const handler) -> void {
+    ASSERT(handler != nullptr, "The root interrupt handler is null");
+    auto expected = RootHandler{nullptr};
+    [[maybe_unused]]
+    auto const installed = ROOT_HANDLER.compare_exchange_strong(
+        expected, handler, std::memory_order_release, std::memory_order_relaxed);
+    ASSERT(installed, "A root interrupt handler is already installed");
+}
+
+auto handle_root_irq(::arch::IrqFrame *const frame) -> void {
+    auto *const handler = ROOT_HANDLER.load(std::memory_order_acquire);
+    ASSERT(handler != nullptr, "An interrupt reached the root handler before one was installed");
+    handler(frame);
+}
 
 auto current_frame() -> arch::IrqFrame * {
     return mm::CpuLocal::read(CURRENT_FRAME);
@@ -109,7 +132,7 @@ auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
 /// There is deliberately no hard-IRQ count beside them, and PreemptionState's
 /// Tag says why. CURRENT_FRAME is this CPU's "handling an interrupt" signal
 /// instead.
-auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
+auto handle_irq_preamble(arch::IrqFrame *frame) -> void {
     mm::CpuLocal::write(CURRENT_FRAME, frame);
 
     auto &preemption_state = task::Thread::Current::preemption_state();

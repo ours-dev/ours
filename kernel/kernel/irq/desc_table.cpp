@@ -29,8 +29,9 @@ namespace ours::irq {
 ///
 /// The chip must be able to end an interrupt. A line's flow ends each of its
 /// interrupts through the chip, and handle_irq() answering for a line tells
-/// arch that the interrupt has been ended, so arch sends no end of its own:
-/// a line whose chip had no eoi would leave every interrupt on it in service.
+/// the root handler that the interrupt has been ended, so the handler sends
+/// no end of its own: a line whose chip had no eoi would leave every interrupt
+/// on it in service.
 ///
 /// It must be able to mask a line, too. A line's flow masks the line when an
 /// interrupt finds nobody on it, so that a level pin nobody services does not
