@@ -2057,9 +2057,10 @@ auto check_disk() -> void {
         auto _ = fsio::close(twin.unwrap());
     }
 
-    // Unlink through the mount point is deferred (the tree server does not
-    // forward Unlink yet): the file goes through the disk's own name.
-    expect("mounted unlink", fsio::unlink("/disk/mounted-check.txt"), Status::Ok);
+    // Unlink through the mount point: fsio unlinks via the parent
+    // directory, whose Open forwards through the mount, so the mounted
+    // path works exactly like the disk's own.
+    expect("mounted unlink", fsio::unlink("/vfs-all/extra/mounted-check.txt"), Status::Ok);
 
     // The isolation half: the read-only view does not carry the mount. An
     // open's refusal surfaces at the handle's first use, so the probe

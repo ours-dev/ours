@@ -67,9 +67,12 @@ clang-tidy quiet.
 **Deliberately not done**
 - Unmount: wants a rule for active connections; the mount point dies with
   fshost for now.
-- Unlink/ReadDirents *through* a mount point: the tree server forwards
-  Open only; a removal or listing aimed at a mounted path must go via the
-  mounted filesystem's own name. Exposed by this check and deferred.
+- Unlink *through* a mount point: answered the same day in fsio -- unlink
+  now splits the path, opens the parent through the namespace (whose Open
+  forwards through the mount), and asks the parent to drop the name; the
+  mounted path unlinks exactly like the disk's own. ReadDirents through a
+  mount point still wants the caller to hold the mounted directory's own
+  handle, which the open-forward covers.
 - Persistence: mounts live in fshost's memory; a boot re-mounts from the
   config, and a runtime-mount config file is future work.
 

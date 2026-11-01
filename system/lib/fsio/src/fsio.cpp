@@ -689,29 +689,52 @@ auto unlink(std::string_view const path) -> ours::Status {
     if (auto const status = clean_path(path, clean); status != Status::Ok) {
         return status;
     }
-    auto const resolved = INSTALLED.resolve(clean);
-    if (resolved.is_err()) {
-        return resolved.unwrap_err();
+    // Unlink works on the parent directory: split the path, open the
+    // parent through the namespace (an Open forwards through mount points
+    // the way an Unlink message alone does not -- the composing server's
+    // tree serves Open, not Unlink), and ask the parent to drop the name.
+    auto const slash = clean.view().rfind('/');
+    auto const parent_path =
+        slash == std::string_view::npos ? std::string_view{"/"} : clean.view().substr(0, slash);
+    auto const name =
+        slash == std::string_view::npos ? clean.view() : clean.view().substr(slash + 1);
+    if (name.empty() || name == "." || name == "..") {
+        return Status::BadPath;
+    }
+    // The parent's own cleaned path, through the same cleaning the full
+    // path went through.
+    PathBuffer parent_buffer;
+    if (auto const status = clean_path(parent_path, parent_buffer); status != Status::Ok) {
+        return status;
+    }
+    auto const parent = open(parent_buffer.view(),
+                             Flags::PermConnect | Flags::PermTraverse | Flags::PermModifyDirectory);
+    if (parent.is_err()) {
+        return parent.unwrap_err();
     }
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     auto const txid = next_txid();
     auto const request =
-        ours_io::encode_unlink(bytes, ours_io::UnlinkRequest{.txid = txid, .path = resolved->rest});
+        ours_io::encode_unlink(bytes, ours_io::UnlinkRequest{.txid = txid, .path = name});
     if (request.is_err()) {
+        auto _ = ours::handle_close(parent.unwrap());
         return request.unwrap_err();
     }
     Incoming reply;
-    if (auto const status = call(resolved->directory, request.unwrap(), reply);
-        status != Status::Ok) {
+    if (auto const status = call(parent.unwrap(), request.unwrap(), reply); status != Status::Ok) {
+        auto _ = ours::handle_close(parent.unwrap());
         return status;
     }
     if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+        auto _ = ours::handle_close(parent.unwrap());
         return *closed;
     }
     auto const decoded = wire::decode_reply_status(reply.message(), ours_io::UNLINK, txid);
     if (decoded.is_err()) {
+        auto _ = ours::handle_close(parent.unwrap());
         return Status::InvArgs;
     }
+    auto _ = ours::handle_close(parent.unwrap());
     return decoded.unwrap();
 }
 
