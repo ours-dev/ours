@@ -225,31 +225,59 @@ struct Storage {
     std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
     std::array<Uandle, wire::MAX_MESSAGE_HANDLES> request_handles;
     std::array<u8, wire::MAX_MESSAGE_BYTES> reply_bytes;
-    /// One 4 KiB node or data block, patched and written back: the tree's
-    /// operations run one at a time on the Loop's thread.
-    std::array<u8, ours_btreefs::BLOCK_BYTES> block{};
-    /// Scratch for one item's value, a lookup's out and an update's in.
-    ours_btreefs::Value item{};
-    ours_block::Client *client = nullptr;
-    ours_btreefs::Volume volume{};
-    u64 first_lba = 0;
 };
 
 constinit ustl::LazyInit<Storage> STORAGE;
 constinit ustl::LazyInit<ours_block::Client> CLIENT;
-constinit ustl::LazyInit<BlockAdapter> ADAPTER;
 constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 
 /// The Loop the connections are armed on, set before any message can
 /// arrive.
 loop::Loop *LOOP = nullptr;
 
-/// The device the tree operations run through, made once at mount: the
-/// templates take it by reference, and a fresh temporary per call would
-/// not bind.
-auto device() -> BlockAdapter & {
-    return *ADAPTER;
-}
+/// The filesystem over the volume: the tree and the allocator's state, the
+/// device they run through, and the one scratch block the operations share.
+/// What a client's channel does is this object's; what watches the channel
+/// is Storage's, the Loop's own plumbing.
+class Filesystem final {
+  public:
+    explicit Filesystem(ours_block::Client &client) : m_client(client) {}
+
+    /// Opens the volume on the disk's ours-fs partition -- found through the
+    /// GPT, formatted when it carries none -- and makes the root directory.
+    /// False when there is no volume to serve, an answer and not a failure.
+    auto mount() -> bool;
+
+    auto inode_of(u64 object) -> ustl::Result<ours_btreefs::InodeValue, Status>;
+    auto find_file(std::string_view name) -> ustl::Result<u64, Status>;
+    auto create_file(std::string_view name) -> ustl::Result<u64, Status>;
+    auto read_file(Connection &connection, ours_io::ReadRequest const &request,
+                   std::span<u8> reply_bytes) -> void;
+    auto write_file(Connection &connection, ours_io::WriteRequest const &request,
+                    std::span<u8> reply_bytes) -> void;
+    auto read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &request,
+                      std::span<u8> reply_bytes) -> void;
+    auto unlink_file(std::string_view name) -> Status;
+
+  private:
+    /// The device the tree operations run through, made once at mount: the
+    /// templates take it by reference, and a fresh temporary per call would
+    /// not bind.
+    auto device() -> BlockAdapter & {
+        return *m_adapter;
+    }
+
+    ours_block::Client &m_client;
+    ustl::LazyInit<BlockAdapter> m_adapter;
+    ours_btreefs::Volume m_volume{};
+    /// One 4 KiB node or data block, patched and written back: the tree's
+    /// operations run one at a time on the Loop's thread.
+    std::array<u8, ours_btreefs::BLOCK_BYTES> m_block{};
+    /// Scratch for one item's value, a lookup's out and an update's in.
+    ours_btreefs::Value m_item{};
+};
+
+constinit ustl::LazyInit<Filesystem> FILESYSTEM;
 
 /// A free row, filled in as far as |channel| and |rights|; MAX_CONNECTIONS
 /// when every row is in use. The caller sets the target and the cursors.
@@ -320,34 +348,31 @@ auto answer_status(Uandle const channel, wire::Method const &method, u32 const t
 // --- The filesystem over the tree. ---
 
 /// The object's INODE item, or the failure of the tree.
-auto inode_of(u64 const object) -> ustl::Result<ours_btreefs::InodeValue, Status> {
-    auto &storage = *STORAGE;
+auto Filesystem::inode_of(u64 const object) -> ustl::Result<ours_btreefs::InodeValue, Status> {
     auto const looked = ours_btreefs::lookup(
-        device(), storage.volume, {.object = object, .type = ItemType::Inode, .offset = 0},
-        storage.item);
+        device(), m_volume, {.object = object, .type = ItemType::Inode, .offset = 0}, m_item);
     if (looked != Status::Ok) {
         return ustl::err(looked == Status::NotFound ? Status::BadState : looked);
     }
-    return ours_btreefs::decode_inode_value(storage.item);
+    return ours_btreefs::decode_inode_value(m_item);
 }
 
 /// The file |name| is at, or NotFound. The DIRENT's offset is the name's
 /// hash and its value carries the name, so a match is checked against the
 /// name itself -- a hash the tree keeps unique says where to look, the
 /// decoded name says what was found.
-auto find_file(std::string_view const name) -> ustl::Result<u64, Status> {
-    auto &storage = *STORAGE;
+auto Filesystem::find_file(std::string_view const name) -> ustl::Result<u64, Status> {
     auto const key = ours_btreefs::Key{.object = ROOT_OBJECT,
                                        .type = ItemType::Dirent,
                                        .offset = ours_btreefs::dirent_offset(name)};
-    auto const looked = ours_btreefs::lookup(device(), storage.volume, key, storage.item);
+    auto const looked = ours_btreefs::lookup(device(), m_volume, key, m_item);
     if (looked == Status::NotFound) {
         return ustl::err(Status::NotFound);
     }
     if (looked != Status::Ok) {
         return ustl::err(looked);
     }
-    auto const decoded = ours_btreefs::decode_dirent_value(storage.item);
+    auto const decoded = ours_btreefs::decode_dirent_value(m_item);
     if (decoded.is_err() || decoded->name != name) {
         // A hash collision refused at insert time keeps this a dead end, not
         // a wrong file.
@@ -358,9 +383,8 @@ auto find_file(std::string_view const name) -> ustl::Result<u64, Status> {
 
 /// Makes the file |name|: a DIRENT item for it under the root, an INODE
 /// item of size 0 for the object. AlreadyExists when the name is taken.
-auto create_file(std::string_view const name) -> ustl::Result<u64, Status> {
-    auto &storage = *STORAGE;
-    auto object = ours_btreefs::alloc_object(device(), storage.volume);
+auto Filesystem::create_file(std::string_view const name) -> ustl::Result<u64, Status> {
+    auto object = ours_btreefs::alloc_object(device(), m_volume);
     auto value = ours_btreefs::Value{};
     if (auto const status =
             ours_btreefs::encode_dirent_value(value, object, ObjectKind::File, name);
@@ -369,7 +393,7 @@ auto create_file(std::string_view const name) -> ustl::Result<u64, Status> {
     }
     // The dirent first: a name taken answers AlreadyExists here, before any
     // object id was made to matter.
-    auto const inserted = ours_btreefs::insert(device(), storage.volume,
+    auto const inserted = ours_btreefs::insert(device(), m_volume,
                                                {.object = ROOT_OBJECT,
                                                 .type = ItemType::Dirent,
                                                 .offset = ours_btreefs::dirent_offset(name)},
@@ -380,9 +404,8 @@ auto create_file(std::string_view const name) -> ustl::Result<u64, Status> {
     // An object whose INODE never landed is a dirent to nothing; v1 accepts
     // the window, the copy-on-write phase closes it.
     ours_btreefs::encode_inode_value(value, 0, ObjectKind::File);
-    if (auto const status =
-            ours_btreefs::insert(device(), storage.volume,
-                                 {.object = object, .type = ItemType::Inode, .offset = 0}, value);
+    if (auto const status = ours_btreefs::insert(
+            device(), m_volume, {.object = object, .type = ItemType::Inode, .offset = 0}, value);
         status != Status::Ok) {
         return ustl::err(status);
     }
@@ -391,9 +414,8 @@ auto create_file(std::string_view const name) -> ustl::Result<u64, Status> {
 
 /// Read on the file connection |index|: the file's DATA items name its
 /// blocks, a block with no item yet reading as zeros.
-auto read_file(Connection &connection, ours_io::ReadRequest const &request,
-               std::span<u8> reply_bytes) -> void {
-    auto &storage = *STORAGE;
+auto Filesystem::read_file(Connection &connection, ours_io::ReadRequest const &request,
+                           std::span<u8> reply_bytes) -> void {
     auto const metadata = inode_of(connection.object);
     if (metadata.is_err()) {
         answer_status(connection.channel, ours_io::READ, request.txid, metadata.unwrap_err());
@@ -410,8 +432,8 @@ auto read_file(Connection &connection, ours_io::ReadRequest const &request,
         auto const within = usize{at % ours_btreefs::BLOCK_BYTES};
         auto const chunk = std::min<usize>(ours_btreefs::BLOCK_BYTES - within, size - done);
         auto const looked = ours_btreefs::lookup(
-            device(), storage.volume,
-            {.object = connection.object, .type = ItemType::Data, .offset = index}, storage.item);
+            device(), m_volume,
+            {.object = connection.object, .type = ItemType::Data, .offset = index}, m_item);
         if (looked != Status::Ok && looked != Status::NotFound) {
             answer_status(connection.channel, ours_io::READ, request.txid, looked);
             return;
@@ -420,13 +442,13 @@ auto read_file(Connection &connection, ours_io::ReadRequest const &request,
             // A hole: the bytes were never written.
             std::memset(payload.data() + done, 0, chunk);
         } else {
-            if (auto const status = device().read_block(
-                    ours_btreefs::decode_data_value(storage.item), std::span{storage.block});
+            if (auto const status = device().read_block(ours_btreefs::decode_data_value(m_item),
+                                                        std::span{m_block});
                 status != Status::Ok) {
                 answer_status(connection.channel, ours_io::READ, request.txid, status);
                 return;
             }
-            std::memcpy(payload.data() + done, storage.block.data() + within, chunk);
+            std::memcpy(payload.data() + done, m_block.data() + within, chunk);
         }
         done += chunk;
     }
@@ -441,9 +463,8 @@ auto read_file(Connection &connection, ours_io::ReadRequest const &request,
 /// Write on the file connection |index|: each 4 KiB of the file the write
 /// touches gets its DATA item -- made, with a fresh block, when it is the
 /// first -- and its block patched and written back whole.
-auto write_file(Connection &connection, ours_io::WriteRequest const &request,
-                std::span<u8> reply_bytes) -> void {
-    auto &storage = *STORAGE;
+auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const &request,
+                            std::span<u8> reply_bytes) -> void {
     auto const metadata = inode_of(connection.object);
     if (metadata.is_err()) {
         answer_status(connection.channel, ours_io::WRITE, request.txid, metadata.unwrap_err());
@@ -458,23 +479,22 @@ auto write_file(Connection &connection, ours_io::WriteRequest const &request,
         auto const within = usize{at % ours_btreefs::BLOCK_BYTES};
         auto const chunk = std::min<usize>(ours_btreefs::BLOCK_BYTES - within, size - done);
         auto looked = ours_btreefs::lookup(
-            device(), storage.volume,
-            {.object = connection.object, .type = ItemType::Data, .offset = index}, storage.item);
+            device(), m_volume,
+            {.object = connection.object, .type = ItemType::Data, .offset = index}, m_item);
         if (looked != Status::Ok && looked != Status::NotFound) {
             answer_status(connection.channel, ours_io::WRITE, request.txid, looked);
             return;
         }
         if (looked == Status::NotFound) {
-            auto const block = ours_btreefs::alloc_block(device(), storage.volume);
+            auto const block = ours_btreefs::alloc_block(device(), m_volume);
             if (block.is_err()) {
                 answer_status(connection.channel, ours_io::WRITE, request.txid, block.unwrap_err());
                 return;
             }
-            ours_btreefs::encode_data_value(storage.item, block.unwrap());
+            ours_btreefs::encode_data_value(m_item, block.unwrap());
             auto const inserted = ours_btreefs::insert(
-                device(), storage.volume,
-                {.object = connection.object, .type = ItemType::Data, .offset = index},
-                storage.item);
+                device(), m_volume,
+                {.object = connection.object, .type = ItemType::Data, .offset = index}, m_item);
             if (inserted != Status::Ok) {
                 answer_status(connection.channel, ours_io::WRITE, request.txid, inserted);
                 return;
@@ -483,16 +503,16 @@ auto write_file(Connection &connection, ours_io::WriteRequest const &request,
         // A block written whole skips the read; a patch reads what is there
         // first, so the bytes outside the write stay the file's.
         if (within != 0 || chunk != ours_btreefs::BLOCK_BYTES) {
-            if (auto const status = device().read_block(
-                    ours_btreefs::decode_data_value(storage.item), std::span{storage.block});
+            if (auto const status = device().read_block(ours_btreefs::decode_data_value(m_item),
+                                                        std::span{m_block});
                 status != Status::Ok) {
                 answer_status(connection.channel, ours_io::WRITE, request.txid, status);
                 return;
             }
         }
-        std::memcpy(storage.block.data() + within, request.data.data() + done, chunk);
-        if (auto const status = device().write_block(ours_btreefs::decode_data_value(storage.item),
-                                                     std::span{storage.block});
+        std::memcpy(m_block.data() + within, request.data.data() + done, chunk);
+        if (auto const status =
+                device().write_block(ours_btreefs::decode_data_value(m_item), std::span{m_block});
             status != Status::Ok) {
             answer_status(connection.channel, ours_io::WRITE, request.txid, status);
             return;
@@ -507,7 +527,7 @@ auto write_file(Connection &connection, ours_io::WriteRequest const &request,
         auto value = ours_btreefs::Value{};
         ours_btreefs::encode_inode_value(value, end, ObjectKind::File);
         if (auto const status = ours_btreefs::update(
-                device(), storage.volume,
+                device(), m_volume,
                 {.object = connection.object, .type = ItemType::Inode, .offset = 0}, value);
             status != Status::Ok) {
             answer_status(connection.channel, ours_io::WRITE, request.txid, status);
@@ -525,9 +545,8 @@ auto write_file(Connection &connection, ours_io::WriteRequest const &request,
 /// ReadDirents on the root connection: "." first, then the root's DIRENT
 /// items along the leaves' chain, in name-hash order, the listing resuming
 /// after the last entry that fit.
-auto read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &request,
-                  std::span<u8> reply_bytes) -> void {
-    auto &storage = *STORAGE;
+auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &request,
+                              std::span<u8> reply_bytes) -> void {
     if (!holds(connection.rights, Operations::Enumerate)) {
         answer_status(connection.channel, ours_io::READ_DIRENTS, request.txid,
                       Status::AccessDenied);
@@ -547,7 +566,7 @@ auto read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &req
     auto const from = ours_btreefs::Key{
         .object = ROOT_OBJECT, .type = ItemType::Dirent, .offset = connection.next_offset};
     auto const walked = ours_btreefs::scan(
-        device(), storage.volume, from,
+        device(), m_volume, from,
         [&](ours_btreefs::Key const &key, ours_btreefs::Value const &value) -> bool {
             // The listing resumes after what it named; the entry it stopped
             // on is in the cursor already.
@@ -635,7 +654,7 @@ auto open_below_root(Connection &connection, ours_io::OpenRequest const &open) -
     auto const at_root = open.path == "." || open.path == EXPOSED_NAME || open.path.empty();
     auto object = u64{0};
     if (!at_root) {
-        auto const found = find_file(open.path);
+        auto const found = FILESYSTEM->find_file(open.path);
         if (found.is_err() && found.unwrap_err() != Status::NotFound) {
             refuse(open.object, found.unwrap_err());
             return;
@@ -646,7 +665,7 @@ auto open_below_root(Connection &connection, ours_io::OpenRequest const &open) -
                 refuse(open.object, Status::NotFound);
                 return;
             }
-            auto const made = create_file(open.path);
+            auto const made = FILESYSTEM->create_file(open.path);
             if (made.is_err()) {
                 refuse(open.object, made.unwrap_err());
                 return;
@@ -665,8 +684,7 @@ auto open_below_root(Connection &connection, ours_io::OpenRequest const &open) -
 /// back to the bitmap as its item leaves, a crash in the middle leaking a
 /// block but never dangling a name -- then the INODE item, and the DIRENT
 /// last, the name gone only when everything under it is.
-auto unlink_file(std::string_view const name) -> Status {
-    auto &storage = *STORAGE;
+auto Filesystem::unlink_file(std::string_view const name) -> Status {
     auto const found = find_file(name);
     if (found.is_err()) {
         return found.unwrap_err();
@@ -679,7 +697,7 @@ auto unlink_file(std::string_view const name) -> Status {
         auto block_key = ours_btreefs::Key{};
         auto seen = false;
         auto const walked = ours_btreefs::scan(
-            device(), storage.volume, {.object = object, .type = ItemType::Data, .offset = 0},
+            device(), m_volume, {.object = object, .type = ItemType::Data, .offset = 0},
             [&](ours_btreefs::Key const &key, ours_btreefs::Value const &) -> bool {
                 if (key.object != object) {
                     return false;
@@ -698,16 +716,16 @@ auto unlink_file(std::string_view const name) -> Status {
             break;
         }
         auto item = ours_btreefs::Value{};
-        if (auto const status = ours_btreefs::lookup(device(), storage.volume, block_key, item);
+        if (auto const status = ours_btreefs::lookup(device(), m_volume, block_key, item);
             status != Status::Ok) {
             return status;
         }
-        if (auto const status = ours_btreefs::remove(device(), storage.volume, block_key);
+        if (auto const status = ours_btreefs::remove(device(), m_volume, block_key);
             status != Status::Ok) {
             return status;
         }
-        if (auto const status = ours_btreefs::free_block(device(), storage.volume,
-                                                         ours_btreefs::decode_data_value(item));
+        if (auto const status =
+                ours_btreefs::free_block(device(), m_volume, ours_btreefs::decode_data_value(item));
             status != Status::Ok) {
             return status;
         }
@@ -715,11 +733,11 @@ auto unlink_file(std::string_view const name) -> Status {
     // The INODE goes next, the DIRENT last: the name survives until nothing
     // is left under it.
     if (auto const status = ours_btreefs::remove(
-            device(), storage.volume, {.object = object, .type = ItemType::Inode, .offset = 0});
+            device(), m_volume, {.object = object, .type = ItemType::Inode, .offset = 0});
         status != Status::Ok) {
         return status;
     }
-    return ours_btreefs::remove(device(), storage.volume,
+    return ours_btreefs::remove(device(), m_volume,
                                 {.object = ROOT_OBJECT,
                                  .type = ItemType::Dirent,
                                  .offset = ours_btreefs::dirent_offset(name)});
@@ -814,7 +832,7 @@ auto handle(usize const index) -> loop::Action {
             forget(index);
             return loop::Action::Close;
         }
-        read_dirents(connection, request.unwrap(), storage.reply_bytes);
+        FILESYSTEM->read_dirents(connection, request.unwrap(), storage.reply_bytes);
         return loop::Action::Rearm;
     }
 
@@ -825,7 +843,7 @@ auto handle(usize const index) -> loop::Action {
             forget(index);
             return loop::Action::Close;
         }
-        auto const status = unlink_file(request->path);
+        auto const status = FILESYSTEM->unlink_file(request->path);
         answer_status(connection.channel, ours_io::UNLINK, request->txid, status);
         return loop::Action::Rearm;
     }
@@ -851,14 +869,14 @@ auto handle(usize const index) -> loop::Action {
                 forget(index);
                 return loop::Action::Close;
             }
-            read_file(connection, request.unwrap(), storage.reply_bytes);
+            FILESYSTEM->read_file(connection, request.unwrap(), storage.reply_bytes);
         } else {
             auto const request = ours_io::decode_write(message);
             if (request.is_err()) {
                 forget(index);
                 return loop::Action::Close;
             }
-            write_file(connection, request.unwrap(), storage.reply_bytes);
+            FILESYSTEM->write_file(connection, request.unwrap(), storage.reply_bytes);
         }
         return loop::Action::Rearm;
     }
@@ -885,7 +903,7 @@ auto handle(usize const index) -> loop::Action {
 /// fresh, and the root directory is made when the volume is empty. Answers
 /// false when there is no disk to serve, which is an answer and not a
 /// failure.
-auto mount_volume() -> bool {
+auto Filesystem::mount() -> bool {
     // The block service through the one route the manifest states.
     auto client_end = Uandle::Invalid;
     auto server_end = Uandle::Invalid;
@@ -905,11 +923,10 @@ auto mount_volume() -> bool {
     // The client owns the channel from here on, and the buffers live in
     // static storage: a Client's two message buffers are too big for this
     // thread's stack to share with the rest of main.
-    STORAGE->client = CLIENT.init(client_end);
 
     // The partition table, through the client itself: a Client is a Reader.
     auto partitions = std::array<ours_gpt::Partition, 16>{};
-    auto const table = ours_gpt::read(*STORAGE->client, 512, std::span{partitions});
+    auto const table = ours_gpt::read(m_client, 512, std::span{partitions});
     if (table.is_err()) {
         auto _ =
             ort::debug_line({"btreefs: no partition table: ", ours::to_string(table.unwrap_err())});
@@ -927,8 +944,6 @@ auto mount_volume() -> bool {
         (partition->last_lba - partition->first_lba + 1) * 512 / ours_btreefs::BLOCK_BYTES;
     auto const bitmap_blocks = static_cast<u32>((blocks + 8 * ours_btreefs::BLOCK_BYTES - 1) /
                                                 (8 * ours_btreefs::BLOCK_BYTES));
-    STORAGE->first_lba = first_lba;
-    ADAPTER.init(*STORAGE->client, first_lba);
 
     auto opened = ours_btreefs::open(device());
     if (opened.is_err() && opened.unwrap_err() == Status::NotFound) {
@@ -946,14 +961,14 @@ auto mount_volume() -> bool {
             {"btreefs: cannot open the volume: ", ours::to_string(opened.unwrap_err())});
         return false;
     }
-    STORAGE->volume = opened.unwrap();
-    if (STORAGE->volume.height == 0) {
-        auto const root = ours_btreefs::alloc_object(device(), STORAGE->volume);
+    m_adapter.init(m_client, first_lba);
+    m_volume = opened.unwrap();
+    if (m_volume.height == 0) {
+        auto const root = ours_btreefs::alloc_object(device(), m_volume);
         auto value = ours_btreefs::Value{};
         ours_btreefs::encode_inode_value(value, 0, ObjectKind::Directory);
-        if (auto const status =
-                ours_btreefs::insert(device(), STORAGE->volume,
-                                     {.object = root, .type = ItemType::Inode, .offset = 0}, value);
+        if (auto const status = ours_btreefs::insert(
+                device(), m_volume, {.object = root, .type = ItemType::Inode, .offset = 0}, value);
             status != Status::Ok) {
             auto _ = ort::debug_line({"btreefs: cannot make the root: ", ours::to_string(status)});
             return false;
@@ -971,7 +986,27 @@ auto main(int, char **) -> int {
     }
 
     STORAGE.init();
-    if (!mount_volume()) {
+
+    // The block service through the one route the manifest states; the
+    // client owns the channel from here on.
+    auto client_end = Uandle::Invalid;
+    auto server_end = Uandle::Invalid;
+    if (auto const status =
+            ours::channel_create(ours::ChannelCreateOptions::None, &client_end, &server_end);
+        status != Status::Ok) {
+        auto _ = ort::debug_line({"btreefs: cannot make its channel: ", ours::to_string(status)});
+        auto _ = ours::handle_close(directory_request);
+        return 1;
+    }
+    if (auto const status = fsio::connect("/svc/ours.block.Block", server_end);
+        status != Status::Ok) {
+        auto _ = ort::debug_line({"btreefs: no block service: ", ours::to_string(status)});
+        auto _ = ours::handle_close(client_end);
+        auto _ = ours::handle_close(directory_request);
+        return 0;
+    }
+    auto &filesystem = *FILESYSTEM.init(*CLIENT.init(client_end));
+    if (!filesystem.mount()) {
         // No disk, or no partition on it: an answer, not a failure. The
         // routes to this directory answer NotFound while it is gone.
         auto _ = ort::debug_line("btreefs: no volume to serve");
