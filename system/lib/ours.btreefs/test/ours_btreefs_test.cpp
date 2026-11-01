@@ -629,6 +629,74 @@ TEST(BtreefsRemove, KeepsTheRootLeafBlock) {
               Status::Ok);
 }
 
+TEST(BtreefsTruncate, TakesTheBlocksFromTheCutOnward) {
+    Mounted fs(256, 1);
+    // The DATA items' values are physical blocks, the allocator's: truncate
+    // hands them back, so they are real here.
+    auto physical = std::vector<u64>{};
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        for (auto offset = u64{0}; offset < 6; ++offset) {
+                            auto const block = tx.alloc_block();
+                            EXPECT_TRUE(block.is_ok());
+                            physical.push_back(block.unwrap());
+                            EXPECT_EQ(ours_btreefs::insert(
+                                          tx, key_of(1, ours_btreefs::ItemType::Data, offset),
+                                          value_of(block.unwrap())),
+                                      Status::Ok);
+                        }
+                        return Status::Ok;
+                    }),
+              Status::Ok);
+    EXPECT_EQ(apply(fs, [&](auto &tx) { return ours_btreefs::truncate(tx, 1, 2); }), Status::Ok);
+    auto value = Value{};
+    EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 0),
+                                   value),
+              Status::Ok);
+    EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 1),
+                                   value),
+              Status::Ok);
+    for (auto const offset: {u64{2}, u64{3}, u64{4}, u64{5}}) {
+        EXPECT_EQ(ours_btreefs::lookup(fs.device, fs.volume,
+                                       key_of(1, ours_btreefs::ItemType::Data, offset), value),
+                  Status::NotFound);
+    }
+    // The four blocks of the cut items are back: the next four allocations
+    // are distinct and none is a kept item's block -- the freed ones are
+    // the only four to hand out.
+    auto handed = std::vector<u64>{};
+    EXPECT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        for (usize left = 4; left > 0; --left) {
+                            auto const block = tx.alloc_block();
+                            EXPECT_TRUE(block.is_ok());
+                            handed.push_back(block.unwrap());
+                        }
+                        auto const one_more = tx.alloc_block();
+                        EXPECT_TRUE(one_more.is_ok());
+                        handed.push_back(one_more.unwrap());
+                        return Status::Ok;
+                    }),
+              Status::Ok);
+    EXPECT_EQ(handed.size(), usize{5});
+    for (auto const block: handed) {
+        EXPECT_NE(block, physical[0]);
+        EXPECT_NE(block, physical[1]);
+    }
+    for (auto index = usize{0}; index < handed.size(); ++index) {
+        for (auto other = usize{0}; other < index; ++other) {
+            EXPECT_NE(handed[index], handed[other]);
+        }
+    }
+}
+
+TEST(BtreefsTruncate, OfWhatIsNotThereIsQuiet) {
+    Mounted fs(256, 1);
+    insert_all(fs, 1, {0, 1});
+    EXPECT_EQ(apply(fs, [&](auto &tx) { return ours_btreefs::truncate(tx, 1, 9); }), Status::Ok);
+    EXPECT_EQ(apply(fs, [&](auto &tx) { return ours_btreefs::truncate(tx, 9, 0); }), Status::Ok);
+}
+
 // --- The transaction's own promises. ---
 
 TEST(BtreefsTransaction, AnAbandonedInsertChangedNothing) {

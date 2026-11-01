@@ -264,6 +264,10 @@ class Filesystem final {
                       std::span<u8> reply_bytes) -> void;
     auto unlink_at(u64 directory, std::string_view name) -> Status;
 
+    /// Empties the file |object|: every DATA item's block back, the INODE's
+    /// size to zero, one transaction.
+    auto truncate_file(u64 object) -> Status;
+
   private:
     /// The device the tree operations run through, made once at mount: the
     /// templates take it by reference, and a fresh temporary per call would
@@ -737,6 +741,15 @@ auto open_below_dir(Connection &connection, ours_io::OpenRequest const &open) ->
             return;
         }
         auto const is_dir = found->kind == ObjectKind::Directory;
+        if (!is_dir && (flags & Flags::FileTruncate) != Flags::None) {
+            // O_TRUNC: the file opens empty. The blocks go back inside one
+            // transaction with the size change, so a crash leaves the file
+            // either whole or empty, never half.
+            if (auto const status = FILESYSTEM->truncate_file(found->child); status != Status::Ok) {
+                refuse(open.object, status);
+                return;
+            }
+        }
         return open_below_dir_bind(open, requested, found->child, is_dir);
     }
     if (found.unwrap_err() != Status::NotFound) {
@@ -849,6 +862,23 @@ auto Filesystem::unlink_at(u64 const directory, std::string_view const name) -> 
 /// dispatch, one message per wait, as ioservice's Server::dispatch is. The
 /// replies go through the shared reply buffer, which one callback at a time
 /// fills and drains.
+/// Empties the file |object|: every DATA item's block back, the INODE's
+/// size to zero, one transaction -- a crash leaves the file whole or empty.
+auto Filesystem::truncate_file(u64 const object) -> Status {
+    auto &tx = tx_begin();
+    if (auto const status = ours_btreefs::truncate(tx, object, 0); status != Status::Ok) {
+        return status;
+    }
+    auto value = ours_btreefs::Value{};
+    ours_btreefs::encode_inode_value(value, 0, ObjectKind::File);
+    if (auto const status = ours_btreefs::update(
+            tx, {.object = object, .type = ItemType::Inode, .offset = 0}, value);
+        status != Status::Ok) {
+        return status;
+    }
+    return tx.commit();
+}
+
 auto handle(usize const index) -> loop::Action {
     auto &storage = *STORAGE;
     auto &connection = storage.connections[index];

@@ -1902,6 +1902,20 @@ auto check_disk() -> void {
         fail("/disk inner listing: the file is not named");
     }
 
+    // Truncate the flat file: a fresh open with the flag reads zero bytes.
+    auto const truncated =
+        fsio::open(FILE, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FileTruncate);
+    if (!expect("/disk truncate open", status_of(truncated), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto zero = std::array<u8, 4>{};
+    auto const after = fsio::read(truncated.unwrap(), zero);
+    if (expect("/disk truncate read", status_of(after), Status::Ok) && after.unwrap() != 0) {
+        fail("/disk truncate read: the file is not empty");
+    }
+    expect("/disk truncate close", fsio::close(truncated.unwrap()), Status::Ok);
+
     // The unlinks: the file out of the directory, then the directory out of
     // the root -- empty by then, which a non-empty one refuses to be.
     expect("/disk inner unlink", fsio::unlink(IN_DIR), Status::Ok);

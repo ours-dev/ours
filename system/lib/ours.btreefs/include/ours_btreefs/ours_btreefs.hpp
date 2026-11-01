@@ -1123,6 +1123,53 @@ namespace detail {
     }
 } // namespace detail
 
+/// Removes every DATA item of |object| at |from_block| and beyond, each
+/// item's block back to the transaction as it goes; the object's INODE is
+/// untouched -- the caller sizes it. The items leave one at a time, a
+/// crash dropping the whole transaction. NotFound answers Ok: a file with
+/// no blocks past |from_block| is already as short as asked.
+template <typename Device>
+auto truncate(Transaction<Device> &tx, u64 object, u64 from_block) -> ours::Status {
+    while (true) {
+        // The first DATA item at |from_block| or past: the walk starts
+        // there, skips the INODE item sorting before the DATA ones, and
+        // stops at the next object's items.
+        auto block_key = Key{};
+        auto seen = false;
+        auto const walked =
+            scan(tx, tx.volume(), {.object = object, .type = ItemType::Data, .offset = from_block},
+                 [&](Key const &key, Value const &) -> bool {
+                     if (key.object != object) {
+                         return false;
+                     }
+                     if (key.type != ItemType::Data) {
+                         return key.offset < from_block;
+                     }
+                     block_key = key;
+                     seen = true;
+                     return false;
+                 });
+        if (walked != ours::Status::Ok) {
+            return walked;
+        }
+        if (!seen) {
+            return ours::Status::Ok;
+        }
+        auto item = Value{};
+        if (auto const status = lookup(tx, tx.volume(), block_key, item);
+            status != ours::Status::Ok) {
+            return status;
+        }
+        if (auto const status = remove(tx, block_key); status != ours::Status::Ok) {
+            return status;
+        }
+        if (auto const status = tx.free_block(decode_data_value(item));
+            status != ours::Status::Ok) {
+            return status;
+        }
+    }
+}
+
 /// Removes the item |key| names, rebalancing what the removal leaves past
 /// its minimum: a leaf borrows from a sibling, or merges with one -- the
 /// merge taking the routing pair out of the parent, which may underflow in
