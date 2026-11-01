@@ -80,6 +80,11 @@ action says Oneshot and a level line's flow masks it, and every write of a
 line's mask, `irq::mask()` and `irq::unmask()` included, is made under the
 line's lock L1.
 
+- Three words, kept apart (the user's decision of 2026-11-01, irq-multi-arch
+  D11): `interrupt` is the object a thread waits on and acks, and its calls
+  (`interrupt_create`, `interrupt_wait`, ...), which a virtual one has with no
+  line; `Irq` is the kind of resource that grants lines; `irq`, `virq` and
+  `hwirq` are the line layer and its numbers.
 - A line is an `irq::Desc` (lock L1, its flow, its actions, the Oneshot flag
   and one held bit) in a flat table built once. A requester is an
   `irq::Action`; the controller is a stateless `irq::Chip`, seen through

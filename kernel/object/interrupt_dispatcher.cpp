@@ -183,17 +183,30 @@ auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
         return Status::BadState;
     }
 
-    // Preemption off: the signal may wake a thread, and the reschedule that
-    // asks for has to wait until the lock is dropped.
-    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
-    if (m_state == State::Destroyed) {
-        return Status::Cancelled;
+    // Before the interrupt can be taken, and so before the ack of it can
+    // raise the signal again: dropped after, the drop could undo that raise.
+    on_trigger();
+
+    auto status = Status::Ok;
+    {
+        // Preemption off: the signal may wake a thread, and the reschedule that
+        // asks for has to wait until the lock is dropped.
+        Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
+        if (m_state == State::Destroyed) {
+            status = Status::Cancelled;
+        } else {
+            if (m_timestamp.is_none()) {
+                m_timestamp = timestamp;
+            }
+            deliver_locked();
+        }
     }
-    if (m_timestamp.is_none()) {
-        m_timestamp = timestamp;
+    // A destroyed object owes nothing, and the drop above may have followed
+    // the destroy's raise.
+    if (status == Status::Cancelled) {
+        on_destroy();
     }
-    deliver_locked();
-    return Status::Ok;
+    return status;
 }
 
 /// A line's interrupt brings no time of its own, so it is taken here, on the
@@ -279,6 +292,9 @@ auto InterruptDispatcher::destroy() -> Status {
     if (old_state == State::Destroyed) {
         return Status::Ok;
     }
+
+    // After the state, so that a thread this wakes finds the object destroyed.
+    on_destroy();
 
     mask_interrupt();
     deactivate_interrupt();

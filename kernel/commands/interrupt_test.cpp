@@ -37,6 +37,15 @@
 //     signal left standing would make a later wait answer BadState, and a
 //     lost one would leave a waiter parked for good.
 //
+//   - a virtual interrupt's Idle signal, up while the object is owed no ack
+//     (.agents/tasks/irq-multi-arch/PLAN.md, step 4): up from the creation,
+//     dropped by a trigger, a trigger that folds into a pending interrupt or
+//     into one not yet acked leaves it down; raised by the ack of the last
+//     interrupt, whether that ack is a wait that finds nothing pending, parked
+//     on a second thread, or an interrupt_ack on a port, and by a destroy,
+//     which keeps it up through a trigger that is then refused; an observer
+//     attached while it is down is told when it goes up;
+//
 // A lost wakeup is told from a slow one by progress, not by a deadline for
 // the whole run: the turns fail only once no round has finished for
 // LOST_AFTER. A round on dev.dbg_1 took about 8 ms on 2026-10-04 (1000 in
@@ -52,6 +61,7 @@
 #include <ours/mm/gaf.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
+#include <ours/object/observer.hpp>
 #include <ours/object/port_dispatcher.hpp>
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
 #include <ours/port.hpp>
@@ -626,6 +636,118 @@ namespace {
         return true;
     }
 
+    /// Whether |interrupt| has Idle up.
+    auto idle(InterruptDispatcher &interrupt) -> bool {
+        return !!(interrupt.signals() & Signals::Idle);
+    }
+
+    /// Counts the times its object tells it Idle is up.
+    class IdleObserver final: public object::SignalObserver {
+      public:
+        std::atomic<usize> matched{0};
+
+        auto on_match(Signals) -> void override {
+            matched.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        auto on_cancel(Signals) -> void override {}
+    };
+
+    /// Whether |port| holds an Interrupt packet for |interrupt|'s bind.
+    auto read_packet(PortDispatcher &port) -> bool {
+        auto packet = PortPacket{};
+        return port.dequeue(Instant{0}, &packet) == Status::Ok &&
+               packet.type == PacketType::Interrupt && packet.key == PACKET_KEY;
+    }
+
+    /// The Idle signal at each step of an interrupt's life that one thread can
+    /// reach, then the wait that is the ack, which takes a second.
+    auto check_idle_signal(Tally &tally, CpuNum const cpu) -> void {
+        KernelHandle<InterruptDispatcher> handle;
+        if (!make_interrupt(&handle)) {
+            verdict(tally, false, "make a virtual interrupt");
+            return;
+        }
+        auto &interrupt = *handle.dispatcher();
+        auto ignored = Instant{0};
+
+        verdict(tally, idle(interrupt), "a new interrupt owes no ack: Idle is up");
+        verdict(tally, interrupt.trigger(TRIGGERED_AT) == Status::Ok && !idle(interrupt),
+                "a trigger drops Idle");
+        verdict(tally, interrupt.trigger(TRIGGERED_AT + 1) == Status::Ok && !idle(interrupt),
+                "a trigger that folds into the pending one leaves it down");
+        verdict(tally, interrupt.wait(&ignored) == Status::Ok && !idle(interrupt),
+                "a wait that takes the interrupt leaves it down: its ack is owed");
+        verdict(tally, interrupt.trigger(TRIGGERED_AT + 2) == Status::Ok && !idle(interrupt),
+                "a trigger while the last is not acked leaves it down");
+        verdict(tally, interrupt.wait(&ignored) == Status::Ok && !idle(interrupt),
+                "a wait that acks the last and takes the pending one leaves it down");
+        verdict(tally, interrupt.destroy() == Status::Ok && idle(interrupt),
+                "a destroy raises Idle");
+        verdict(tally, interrupt.trigger(TRIGGERED_AT) == Status::Cancelled && idle(interrupt),
+                "and a trigger it refuses leaves it up");
+
+        // The wait that is the ack: the interrupt is taken on this thread, so
+        // the waiter's wait finds NeedAck with nothing pending, clears the
+        // debt, and parks.
+        Waiter *waiter = nullptr;
+        auto *const thread = park_waiter(tally, cpu, &waiter, [](InterruptDispatcher &fresh) {
+            auto taken = Instant{0};
+            return fresh.trigger(TRIGGERED_AT) == Status::Ok && fresh.wait(&taken) == Status::Ok &&
+                   !idle(fresh);
+        });
+        if (thread == nullptr) {
+            return;
+        }
+        auto &second = *waiter->interrupt.dispatcher();
+        verdict(tally, idle(second), "a wait that acks the last and parks raises Idle");
+        verdict(tally, second.trigger(TRIGGERED_AT + 3) == Status::Ok,
+                "trigger the parked waiter's interrupt");
+        if (finish_waiter(tally, thread, waiter, "and it wakes the waiter")) {
+            verdict(tally, waiter->status == Status::Ok && !idle(second),
+                    "the woken wait takes the interrupt, and Idle is down");
+            delete waiter;
+        }
+    }
+
+    /// The same on a port, with an observer told when Idle goes up.
+    auto check_idle_signal_on_a_port(Tally &tally) -> void {
+        KernelHandle<InterruptDispatcher> handle;
+        KernelHandle<PortDispatcher> port;
+        auto rights = Rights::None;
+        if (!make_interrupt(&handle) || PortDispatcher::create(PortCreateOptions::BindToInterrupt,
+                                                               &port, &rights) != Status::Ok) {
+            verdict(tally, false, "make a virtual interrupt and a port to bind it to");
+            return;
+        }
+        auto &interrupt = *handle.dispatcher();
+        verdict(tally,
+                interrupt.bind(port.dispatcher(), PACKET_KEY) == Status::Ok && idle(interrupt),
+                "bind: nothing is owed yet, Idle is up");
+
+        IdleObserver observer;
+        verdict(tally, interrupt.trigger(TRIGGERED_AT) == Status::Ok && !idle(interrupt),
+                "a trigger sends the packet and drops Idle");
+        verdict(tally,
+                interrupt.attach_observer(&observer, &observer, Signals::Idle) == Status::Ok &&
+                    observer.matched.load() == 0,
+                "an observer for Idle attached while it is down is not told");
+        verdict(tally, interrupt.trigger(TRIGGERED_AT + 1) == Status::Ok && !idle(interrupt),
+                "a trigger while the packet is not acked folds, and Idle stays down");
+        verdict(tally, read_packet(*port.dispatcher()) && !idle(interrupt),
+                "reading the packet does not raise Idle");
+        verdict(tally,
+                interrupt.ack() == Status::Ok && !idle(interrupt) && observer.matched.load() == 0,
+                "an ack that sends the folded interrupt as the next packet leaves it down");
+        verdict(tally, read_packet(*port.dispatcher()), "read the next packet");
+        verdict(tally, interrupt.ack() == Status::Ok && idle(interrupt),
+                "the ack that leaves nothing more to deliver raises Idle");
+        verdict(tally, observer.matched.load() == 1, "and the observer is told, once");
+        auto remaining = Signals::None;
+        auto _ = interrupt.detach_observer(&observer, &remaining);
+        verdict(tally, interrupt.destroy() == Status::Ok && idle(interrupt), "destroy");
+    }
+
     auto check_turns(Tally &tally, usize const rounds, CpuNum const pinger_cpu,
                      CpuNum const ponger_cpu) -> void {
         auto *const turns = new (mm::GAF_KERNEL) Turns{};
@@ -719,6 +841,8 @@ namespace {
         check_held_waiter(tally, second_cpu);
         check_packet_wakes_port_waiter(tally, second_cpu);
         check_bind_takes_the_latch(tally, second_cpu);
+        check_idle_signal(tally, second_cpu);
+        check_idle_signal_on_a_port(tally);
         check_turns(tally, rounds, first_cpu, second_cpu);
 
         if (tally.failed != 0) {

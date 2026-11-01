@@ -303,7 +303,9 @@ ours_syscalls = [
       "NotSupported until a program can read a clock. |handle| needs Wait",
       "(AccessDenied). What was asserted when the wait ended is written to",
       "|observed|, with HandleClosed added on Cancelled; |observed| may be",
-      "null, and one that cannot be written answers InvArgs.",
+      "null, and one that cannot be written answers InvArgs. A signal the",
+      "object never raises is never asserted: Idle is a virtual interrupt's",
+      "(interrupt_create).",
     ]
     args = [
       {
@@ -1395,6 +1397,17 @@ ours_syscalls = [
       "not know, or a mode that names none, is InvArgs. The handle has",
       "Transfer, Duplicate, Wait, Inspect, Read, Write and Signal. Closing",
       "its last handle destroys the object, which lets its line go.",
+      "A virtual interrupt asserts Idle (object_wait_one, object_wait_async)",
+      "while it is owed no ack: from its creation, again after the ack of",
+      "the last interrupt triggered, and for good once destroyed;",
+      "interrupt_trigger drops it. The driver of a controller behind a root",
+      "line makes one for each pin and waits for Idle to unmask the pin it",
+      "masked. The client of such an interrupt gets a handle made with",
+      "handle_duplicate from the driver's: Wait, Read, Write and Transfer, no",
+      "Signal (it cannot raise its own interrupts) and no Duplicate. Closing",
+      "its handle without an ack raises nothing: the driver keeps the pin",
+      "masked until it hands out a new interrupt. A physical interrupt never",
+      "asserts Idle.",
     ]
     args = [
       {
@@ -1469,7 +1482,9 @@ ours_syscalls = [
       "Returns at once if one is pending. Taking one is also the ack of the",
       "one taken before it (and unmasks a line masked until then), which is",
       "why later interrupts only fold into the pending one until a wait",
-      "takes it: the time written is the first's.",
+      "takes it: the time written is the first's. A wait that is the ack of",
+      "the last interrupt and finds nothing more pending raises Idle on a",
+      "virtual interrupt before it parks.",
       "Cancelled when the object is destroyed, before the wait or during",
       "it. BadState while another thread is waiting on the same object: from",
       "the moment that thread's wait finds nothing to take until it wakes,",
@@ -1505,7 +1520,9 @@ ours_syscalls = [
       "instead, or, while the last packet waits for its interrupt_ack, is",
       "sent by that ack. If an interrupt is already pending, it keeps its",
       "own time. Only a virtual interrupt can be raised (BadState), and not",
-      "once destroyed (Cancelled). |options| must be None (InvArgs).",
+      "once destroyed (Cancelled, with Idle up). |options| must be None",
+      "(InvArgs). Drops Idle before the interrupt can be taken, so that the",
+      "ack of it, which raises Idle, is the later of the two.",
       "|handle| must name an interrupt (BadType) with Signal (AccessDenied).",
     ]
     args = [
@@ -1535,7 +1552,7 @@ ours_syscalls = [
       "(BadType); no right is needed. Bound to a port, a packet still queued",
       "is taken back off it; NotFound when a packet was already taken by",
       "port_wait and not yet acked, with the interrupt destroyed all the",
-      "same.",
+      "same. A virtual interrupt raises Idle, and keeps it up.",
     ]
     args = [
       {
@@ -1590,7 +1607,8 @@ ours_syscalls = [
       "For an interrupt bound to a port: once its packet is handled, the ack",
       "re-arms it (and unmasks a line masked until then). If interrupts",
       "arrived since that packet, the next packet is sent at once, with the",
-      "time of the first of them. Ok, and nothing to do, when no packet is",
+      "time of the first of them; with none, a virtual interrupt raises Idle.",
+      "Ok, and nothing to do, when no packet is",
       "outstanding. BadState if it is not bound to a port, or if the ack",
       "would send the next packet while the last is still queued unread.",
       "Cancelled once destroyed. |handle| must name an interrupt (BadType)",

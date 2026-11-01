@@ -2526,6 +2526,194 @@ auto check_interrupt(ours::Uandle const irq, ours::Uandle const ioport, bool con
     }
 }
 
+/// A virtual interrupt's Idle signal (<ours/signals.hpp>), seen through
+/// object_wait_one and object_wait_async, then the loop of a driver for a
+/// controller behind a root line, one port for all of it:
+///   - Idle is up on a new interrupt, down after a trigger and after the wait
+///     that takes the interrupt, and up for good after a destroy, which a
+///     refused trigger leaves up;
+///   - the parent is bound to the port and its Interrupt packet is read; the
+///     child is triggered, Idle is waited for with object_wait_async on the
+///     same port, and no packet comes while the client has not acked;
+///   - the client's handle (Wait, Read, Write and Transfer) is bound to a
+///     second port; its packet is read and acked, and the ack brings the
+///     SignalOne packet for Idle with the driver's key, observed Idle;
+///   - the client's handle cannot trigger (AccessDenied) or be duplicated
+///     (AccessDenied);
+///   - a destroy by the client brings the SignalOne packet again, and the
+///     driver's next trigger answers Cancelled.
+auto check_interrupt_idle() -> void {
+    using ours::InterruptBindOptions;
+    using ours::InterruptOptions;
+    using ours::InterruptTriggerOptions;
+    using ours::PacketType;
+    using ours::PortCreateOptions;
+    using ours::PortPacket;
+    using ours::Signals;
+    using ours::Status;
+    using ours::Uandle;
+    using ours::WaitAsyncOptions;
+
+    constexpr auto PARENT_KEY = u64{0x1A7E'0000'0000'0011};
+    constexpr auto CHILD_KEY = u64{0x1A7E'0000'0000'0012};
+    constexpr auto CLIENT_KEY = u64{0x1A7E'0000'0000'0013};
+
+    auto ok = true;
+    Uandle parent = Uandle::Invalid;
+    Uandle child = Uandle::Invalid;
+    Uandle driver_port = Uandle::Invalid;
+    Uandle client_port = Uandle::Invalid;
+    if (!expect("shell: interrupt idle interrupt_create(parent) = ",
+                ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &parent),
+                Status::Ok) ||
+        !expect("shell: interrupt idle interrupt_create(child) = ",
+                ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &child),
+                Status::Ok) ||
+        !expect("shell: interrupt idle port_create(driver) = ",
+                ours::port_create(PortCreateOptions::BindToInterrupt, &driver_port), Status::Ok) ||
+        !expect("shell: interrupt idle port_create(client) = ",
+                ours::port_create(PortCreateOptions::BindToInterrupt, &client_port), Status::Ok)) {
+        auto _ = ort::debug_line("shell: interrupt idle checks FAILED");
+        return;
+    }
+
+    // Whether a poll for Idle on |handle| finds it up (Ok, and the signal in
+    // what was observed) or down (TimeOut).
+    auto const idle = [](std::string_view const what, Uandle const handle, bool const up) {
+        auto seen = Signals::None;
+        auto const status = ours::object_wait_one(handle, Signals::Idle, 0, &seen);
+        if (!expect(what, status, up ? Status::Ok : Status::TimeOut)) {
+            return false;
+        }
+        if (up && !(seen & Signals::Idle)) {
+            auto _ = ort::debug_line("shell: object_wait_one did not report Idle");
+            return false;
+        }
+        return true;
+    };
+    auto const trigger = [](Uandle const handle, ours::Instant const at) {
+        return ours::interrupt_trigger(handle, InterruptTriggerOptions::None, at);
+    };
+    // The next packet of |port|, of |type| and |key|, with |signals| observed
+    // if it is a SignalOne. Filled with 0xFF first.
+    auto const reads = [](std::string_view const what, Uandle const port, PacketType const type,
+                          u64 const key, Signals const observed) {
+        PortPacket got;
+        std::memset(&got, 0xFF, sizeof(got));
+        if (!expect(what, ours::port_wait(port, 0, &got), Status::Ok)) {
+            return false;
+        }
+        auto right = got.type == type && got.key == key && got.status == Status::Ok;
+        if (type == PacketType::SignalOne) {
+            right = right && !!(got.signal.observed & observed);
+        }
+        if (!right) {
+            auto _ = ort::debug_line("shell: port_wait read another packet");
+        }
+        return right;
+    };
+    auto const empty = [](std::string_view const what, Uandle const port) {
+        PortPacket got;
+        return expect(what, ours::port_wait(port, 0, &got), Status::TimeOut);
+    };
+
+    // The signal on its own, through the one interrupt an unbound wait takes.
+    ok &= idle("shell: object_wait_one(Idle, a new interrupt) = ", child, true);
+    ok &= expect("shell: interrupt_trigger(idle, 1) = ", trigger(child, 1), Status::Ok);
+    ok &= idle("shell: object_wait_one(Idle, triggered) = ", child, false);
+    ok &= expect("shell: interrupt_trigger(idle, 2) = ", trigger(child, 2), Status::Ok);
+    ok &= idle("shell: object_wait_one(Idle, triggered again) = ", child, false);
+    ok &= expect("shell: interrupt_wait(idle, takes) = ", ours::interrupt_wait(child, nullptr),
+                 Status::Ok);
+    ok &= idle("shell: object_wait_one(Idle, taken, not acked) = ", child, false);
+    ok &= expect("shell: interrupt_destroy(idle) = ", ours::interrupt_destroy(child), Status::Ok);
+    ok &= idle("shell: object_wait_one(Idle, destroyed) = ", child, true);
+    ok &= expect("shell: interrupt_trigger(idle, destroyed) = ", trigger(child, 3),
+                 Status::Cancelled);
+    ok &= idle("shell: object_wait_one(Idle, destroyed, refused trigger) = ", child, true);
+    ok &= ours::handle_close(child) == Status::Ok;
+    child = Uandle::Invalid;
+
+    // The driver's loop. The parent stands for a root line.
+    if (!expect("shell: interrupt idle interrupt_create(child, again) = ",
+                ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &child),
+                Status::Ok)) {
+        auto _ = ort::debug_line("shell: interrupt idle checks FAILED");
+        return;
+    }
+    ok &= expect("shell: interrupt_bind(parent) = ",
+                 ours::interrupt_bind(parent, driver_port, PARENT_KEY, InterruptBindOptions::Bind),
+                 Status::Ok);
+    ok &= expect("shell: interrupt_trigger(parent) = ", trigger(parent, 10), Status::Ok);
+    ok &= reads("shell: port_wait(the parent's packet) = ", driver_port, PacketType::Interrupt,
+                PARENT_KEY, Signals::None);
+
+    // The pin fires: the driver triggers the child and waits for Idle on the
+    // port it already has.
+    ok &= expect("shell: interrupt_trigger(child) = ", trigger(child, 20), Status::Ok);
+    ok &= expect("shell: object_wait_async(child, Idle) = ",
+                 ours::object_wait_async(child, driver_port, CHILD_KEY, Signals::Idle,
+                                         WaitAsyncOptions::None),
+                 Status::Ok);
+    ok &= empty("shell: port_wait(the client has not acked) = ", driver_port);
+
+    // The client's handle: Wait, Read, Write and Transfer.
+    constexpr auto CLIENT_RIGHTS =
+        ours::Rights::Wait | ours::Rights::Read | ours::Rights::Write | ours::Rights::Transfer;
+    Uandle client = Uandle::Invalid;
+    if (expect("shell: handle_duplicate(child, the client's rights) = ",
+               ours::handle_duplicate(child, CLIENT_RIGHTS, &client), Status::Ok)) {
+        Uandle again = Uandle::Invalid;
+        ok &= expect("shell: interrupt_trigger(client's handle) = ", trigger(client, 30),
+                     Status::AccessDenied);
+        ok &= expect("shell: handle_duplicate(client's handle) = ",
+                     ours::handle_duplicate(client, ours::Rights::SameRights, &again),
+                     Status::AccessDenied);
+        ok &= expect(
+            "shell: interrupt_bind(client's handle) = ",
+            ours::interrupt_bind(client, client_port, CLIENT_KEY, InterruptBindOptions::Bind),
+            Status::Ok);
+        ok &= reads("shell: port_wait(the client's packet) = ", client_port, PacketType::Interrupt,
+                    CLIENT_KEY, Signals::None);
+        ok &= empty("shell: port_wait(still not acked) = ", driver_port);
+        ok &= expect("shell: interrupt_ack(client's handle) = ", ours::interrupt_ack(client),
+                     Status::Ok);
+        ok &= reads("shell: port_wait(Idle, after the client's ack) = ", driver_port,
+                    PacketType::SignalOne, CHILD_KEY, Signals::Idle);
+        ok &= idle("shell: object_wait_one(Idle, acked) = ", child, true);
+
+        // The pin fires again, and the client leaves without an ack.
+        ok &= expect("shell: interrupt_trigger(child, again) = ", trigger(child, 40), Status::Ok);
+        ok &= idle("shell: object_wait_one(Idle, triggered, again) = ", child, false);
+        ok &= expect("shell: object_wait_async(child, Idle, again) = ",
+                     ours::object_wait_async(child, driver_port, CHILD_KEY, Signals::Idle,
+                                             WaitAsyncOptions::None),
+                     Status::Ok);
+        ok &= empty("shell: port_wait(owed again) = ", driver_port);
+        ok &=
+            expect("shell: interrupt_destroy(client's handle) = ", ours::interrupt_destroy(client),
+                   Status::Ok);
+        ok &= reads("shell: port_wait(Idle, after the client's destroy) = ", driver_port,
+                    PacketType::SignalOne, CHILD_KEY, Signals::Idle);
+        ok &= expect("shell: interrupt_trigger(child, destroyed by the client) = ",
+                     trigger(child, 50), Status::Cancelled);
+        ok &= ours::handle_close(client) == Status::Ok;
+    } else {
+        ok = false;
+    }
+
+    ok &= expect("shell: interrupt_ack(parent) = ", ours::interrupt_ack(parent), Status::Ok);
+    for (auto const handle: {parent, child, driver_port, client_port}) {
+        ok &= ours::handle_close(handle) == Status::Ok;
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: interrupt idle checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: interrupt idle checks FAILED");
+    }
+}
+
 /// Interrupts bound to a port (interrupt_bind, interrupt_ack), on virtual
 /// interrupts and from this one thread: every port_wait below is a poll.
 ///
@@ -8211,6 +8399,7 @@ auto run(Inputs const &inputs) -> void {
     check_bad_pointers(ort::vdso_base());
     check_interrupt(inputs.irq, inputs.ioport, inputs.component);
     check_interrupt_port();
+    check_interrupt_idle();
     check_sampler(inputs.sampling, inputs.vmex);
     check_vmo_read();
     check_vmo_write(inputs.bootfs);
