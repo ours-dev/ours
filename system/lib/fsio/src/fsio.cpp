@@ -765,6 +765,52 @@ auto read_dirents(Uandle const directory, std::span<u8> const buffer)
     return copy_payload(decoded->dirents, max_bytes, buffer);
 }
 
+auto list(std::string_view const path, std::span<u8> const out) -> ustl::Result<usize, Status> {
+    auto const dir = open(path, ours_io::PERM_READABLE);
+    if (dir.is_err()) {
+        return ustl::err(dir.unwrap_err());
+    }
+    // Small pages on the stack: one dirent entry is at most ~265 bytes, so
+    // a 512-byte page always makes progress, and the message buffer's full
+    // size is far past what this thread's stack carries.
+    auto page = std::array<u8, 512>{};
+    auto writer = ours_io::DirentWriter(out);
+    auto done = false;
+    while (!done) {
+        auto const read = read_dirents(dir.unwrap(), page);
+        if (read.is_err()) {
+            auto _ = ours::handle_close(dir.unwrap());
+            return ustl::err(read.unwrap_err());
+        }
+        if (read.unwrap() == 0) {
+            done = true;
+        }
+        auto reader = ours_io::DirentReader(std::span{page}.first(read.unwrap()));
+        while (!done) {
+            auto const entry = reader.next();
+            if (entry.is_err()) {
+                auto _ = ours::handle_close(dir.unwrap());
+                return ustl::err(entry.unwrap_err());
+            }
+            if (entry->is_none()) {
+                done = true;
+                break;
+            }
+            if ((*entry)->name == ".") {
+                continue;
+            }
+            if (writer.append(
+                    {.ino = (*entry)->ino, .type = (*entry)->type, .name = (*entry)->name}) !=
+                Status::Ok) {
+                auto _ = ours::handle_close(dir.unwrap());
+                return ustl::err(Status::BufferTooSmall);
+            }
+        }
+    }
+    auto _ = ours::handle_close(dir.unwrap());
+    return ustl::ok(writer.written().size());
+}
+
 auto get_backing_memory(Uandle const file, ours_io::VmoFlags const flags)
     -> ustl::Result<Uandle, Status> {
     auto const txid = next_txid();

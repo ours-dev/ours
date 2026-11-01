@@ -1964,9 +1964,13 @@ auto check_disk() -> void {
     if (admin == Uandle::Invalid) {
         return;
     }
+    // The mounted capability is THIS handle's rights: everything the
+    // mounted path will ever ask must be asked here too, so the listing's
+    // Enumerate and GetAttributes ride along.
     auto const disk_dir =
-        fsio::open("/disk", Flags::PermReadBytes | Flags::PermWriteBytes | Flags::PermTraverse |
-                                Flags::PermModifyDirectory | Flags::PermConnect);
+        fsio::open("/disk", Flags::PermConnect | Flags::PermReadBytes | Flags::PermWriteBytes |
+                                Flags::PermTraverse | Flags::PermModifyDirectory |
+                                Flags::PermEnumerate | Flags::PermGetAttributes);
     if (disk_dir.is_err()) {
         // No disk, or the filesystem on it having found none: any refusal
         // here is the skip case, as /disk is simply not there.
@@ -2055,6 +2059,30 @@ auto check_disk() -> void {
             fail("mounted twin read: the bytes are not the mark");
         }
         auto _ = fsio::close(twin.unwrap());
+    }
+
+    // A path-based listing through the mount point: fsio::list composes
+    // open + read_dirents, so the mounted path lists exactly like the
+    // disk's own -- and names the file this check just wrote.
+    auto mount_listing = std::array<u8, 512>{};
+    auto const mount_listed = fsio::list("/vfs-all/extra", mount_listing);
+    if (!expect("mounted list", status_of(mount_listed), Status::Ok)) {
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto listed_named = false;
+    auto list_reader = ours_io::DirentReader(std::span{mount_listing}.first(mount_listed.unwrap()));
+    while (true) {
+        auto const entry = list_reader.next();
+        if (entry.is_err() || entry->is_none()) {
+            break;
+        }
+        if ((*entry)->name == "mounted-check.txt") {
+            listed_named = true;
+        }
+    }
+    if (!listed_named) {
+        fail("mounted list: the file is not named");
     }
 
     // Unlink through the mount point: fsio unlinks via the parent

@@ -59,10 +59,13 @@ Host: 4 ours.fshost codec tests (round trip, empty/oversized names, the
 PASS 158 -- diskless, where the mount check skips. With the GPT disk:
 `routing_checks: passed` -- the mount lands, a file created through
 `/vfs-all/extra/` reads back through a fresh open AND through `/disk/`
-(one filesystem, two namespace names), the unlink goes through `/disk`
-(the tree server does not forward Unlink yet), and `/vfs/extra` opens Ok
-but reads NotFound -- the read-only view's epitaph surfacing at first use.
-clang-tidy quiet.
+(one filesystem, two namespace names), a `fsio::list` through the mounted
+path names the file (the mounted capability is the passed handle's rights:
+the check's first /disk handle lacked Enumerate and the forwarded open was
+correctly refused -- the rights model working end to end), the unlink goes
+through the mounted path (fsio unlinks via the parent directory), and
+`/vfs/extra` opens Ok but reads NotFound -- the read-only view's epitaph
+surfacing at first use. clang-tidy quiet.
 
 **Deliberately not done**
 - Unmount: wants a rule for active connections; the mount point dies with
@@ -70,9 +73,9 @@ clang-tidy quiet.
 - Unlink *through* a mount point: answered the same day in fsio -- unlink
   now splits the path, opens the parent through the namespace (whose Open
   forwards through the mount), and asks the parent to drop the name; the
-  mounted path unlinks exactly like the disk's own. ReadDirents through a
-  mount point still wants the caller to hold the mounted directory's own
-  handle, which the open-forward covers.
+  mounted path unlinks exactly like the disk's own. Path-based listing is
+  answered beside it: `fsio::list(path)` composes open + read_dirents on
+  the forwarded handle.
 - Persistence: mounts live in fshost's memory; a boot re-mounts from the
   config, and a runtime-mount config file is future work.
 

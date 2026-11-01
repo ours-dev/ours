@@ -195,6 +195,14 @@ auto read_dirents(ours::Uandle directory, std::span<u8> buffer)
 /// what it named. NotFound when nothing carries the name.
 auto unlink(std::string_view path) -> ours::Status;
 
+/// Lists the directory |path| into |out| as packed ours.io dirents -- the
+/// whole listing in one call: opens |path|, reads entries until the
+/// directory runs out, closes. The "." entry is left out; walk |out| with
+/// ours_io::DirentReader. BufferTooSmall when |out| cannot hold the
+/// listing; other errors as open() and read_dirents() answer them.
+[[nodiscard]]
+auto list(std::string_view path, std::span<u8> out) -> ustl::Result<usize, ours::Status>;
+
 /// File.GetBackingMemory on |file|: a VMO of the file's contents with the
 /// rights |flags| ask for, which the caller owns. To run a program, ask for
 /// READ, EXECUTE and PRIVATE_CLONE, as spawn() does; the server refuses EXECUTE
