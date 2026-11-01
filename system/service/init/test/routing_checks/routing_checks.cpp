@@ -514,8 +514,10 @@ auto check_sampling_resource() -> void {
 /// machine this image runs on, the timer is on GSI 2 (the firmware moves ISA 0
 /// off GSI 0), COM2's pin is GSI 3, and the pins from GSI 16 up are PCI's.
 /// What is checked:
-///   - a line's number is not the pin's, and four pins have four numbers (GSI
-///     0 is the pin the timer was moved off, a line of its own);
+///   - a line's number is not the pin's, and the pins that can be asked for
+///     (GSI 0, 3 and 16) have numbers of their own, GSI 0 being the pin the
+///     timer was moved off, a line of its own; the timer's number is derived
+///     from GSI 3's and so cannot be compared with them;
 ///   - GSI 2 is the kernel's timer line, which no program can take:
 ///     interrupt_map refuses it (AccessDenied) and writes nothing. Its line
 ///     is the one before GSI 3's, since the kernel numbers lines
@@ -565,8 +567,7 @@ auto check_interrupt_map(Uandle const irq) -> void {
         moved_off == GSI_MOVED_OFF) {
         fail("interrupt_map: a line's number is the pin's number");
     }
-    if (timer == free_line || timer == pci || timer == moved_off || free_line == pci ||
-        free_line == moved_off || pci == moved_off) {
+    if (free_line == pci || free_line == moved_off || pci == moved_off) {
         fail("interrupt_map: two pins have one number");
     }
 

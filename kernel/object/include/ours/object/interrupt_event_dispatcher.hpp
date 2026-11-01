@@ -24,8 +24,9 @@ namespace ours::object {
 ///
 /// The line is the object's alone: the action does not share, so a line
 /// another action is on -- a kernel driver's, or another interrupt
-/// object's -- refuses it with AlreadyBound, as a line the kernel holds for
-/// good does (Permanent: the timer's).
+/// object's -- refuses it with AlreadyBound. A line the kernel holds for
+/// its own use (Permanent: the timer's) is refused first, and as such:
+/// AccessDenied, since no program can ever have it.
 ///
 /// A level-triggered line is masked from the moment an interrupt is
 /// delivered until it is acked: the device holds the level until its driver
@@ -65,8 +66,9 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     /// go of a line the object is on: before the attach it is on none, and
     /// the detach would answer NotFound for an action no line has.
     ///
-    /// AlreadyBound when the line has an owner; NoResource when no line has
-    /// that number, and InvArgs for the one number no line can have, as
+    /// AccessDenied when the kernel holds the line for its own use, before
+    /// anything is allocated or touched; AlreadyBound when another action has
+    /// it; NoResource when no line has that number, and InvArgs for the one number no line can have, as
     /// irq::attach() answers; NotSupported when ModeDefault asks a controller
     /// that cannot say how its line signals; NoMemory.
     [[nodiscard]]

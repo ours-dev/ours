@@ -268,10 +268,15 @@ auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
 /// Permanent is on it, as the legacy timer's is. False for a line nobody is on,
 /// a line a user program's interrupt object holds, and a number that is no
 /// line. A line is Permanent for good once it is, and no user program can make
-/// one, so the answer cannot turn from false to true under a caller that has
-/// just asked. A kernel driver that takes a line for its own uses a Permanent
+/// one; the kernel makes them as it starts, and an answer asked for before it
+/// has taken its own line can be out of date. So the answer chooses which
+/// refusal a program gets and never what it is granted: attach() is the
+/// authority, and refuses a Permanent line with AlreadyBound whatever was asked
+/// first. A kernel driver that takes a line for its own uses a Permanent
 /// action, and so keeps programs off it: interrupt_map and interrupt_create
-/// answer AccessDenied for it.
+/// answer AccessDenied for it. A Permanent action cannot be Oneshot or Shared
+/// and is never detached, so a kernel holder that needs any of that is not
+/// reported.
 [[nodiscard]]
 auto is_kernel_owned(VIrqNum virqnum) -> bool;
 

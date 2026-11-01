@@ -84,8 +84,12 @@ line's lock L1.
   Permanent is on (the legacy timer's; `irq::is_kernel_owned()`). A kernel
   driver that takes a line for its own uses a Permanent action, and so keeps
   programs off it: `interrupt_map` and `interrupt_create` answer AccessDenied
-  for it, where a line another program holds is AlreadyBound (the assistant's
-  choice, left to it by the user, 2026-11-01, irq-multi-arch D4b).
+  for it, where a line an interrupt object holds is AlreadyBound until the
+  object goes. A Permanent action cannot be Oneshot or Shared and is never
+  detached, so it fits a line the kernel keeps for good and no other. The
+  answer is the assistant's choice, left to it by the user (2026-11-01,
+  irq-multi-arch D4b), and covers the answer only; the marker is the
+  project's own earlier design.
 - Three words, kept apart (the user kept the `interrupt_*` names, "保留吧",
   2026-11-01, irq-multi-arch D11; the other two are the line layer's own):
   `interrupt` is the object a thread waits on and acks, and its calls

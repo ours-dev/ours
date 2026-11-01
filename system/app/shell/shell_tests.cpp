@@ -2248,12 +2248,18 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
     auto ok = true;
     // A line is named by the kernel's number for it, which no program
     // computes: ask for the two lines this check uses, as a driver would.
-    auto refused = u32{0xA5A5'A5A5};
+    constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
+    auto refused = UNTOUCHED;
     auto free_line = u32{0};
     if (!expect("shell: interrupt_map(GSI 2, the kernel's timer) = ",
-                ours::interrupt_map(irq, GSI_TIMER, &refused), Status::AccessDenied) ||
-        refused != 0xA5A5'A5A5 ||
-        !expect("shell: interrupt_map(GSI 3) = ", ours::interrupt_map(irq, GSI_FREE, &free_line),
+                ours::interrupt_map(irq, GSI_TIMER, &refused), Status::AccessDenied)) {
+        return false;
+    }
+    if (refused != UNTOUCHED) {
+        auto _ = ort::debug_line("shell: interrupt_map wrote its output though it refused");
+        return false;
+    }
+    if (!expect("shell: interrupt_map(GSI 3) = ", ours::interrupt_map(irq, GSI_FREE, &free_line),
                 Status::Ok)) {
         return false;
     }
@@ -2340,6 +2346,24 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
                  ours::interrupt_map(irq, NO_PIN, &number), Status::NoResource);
     ok &= expect("shell: interrupt_map(0xFFFFFFFF) = ",
                  ours::interrupt_map(irq, 0xFFFF'FFFF, &number), Status::InvArgs);
+    // The kernel's line is refused after the other checks, not before: a
+    // caller with no handle, or the wrong root, or a mode that names none,
+    // is told that, and learns nothing about the line.
+    ok &= expect("shell: interrupt_map(GSI 2, no handle) = ",
+                 ours::interrupt_map(Uandle::Invalid, GSI_TIMER, &number), Status::BadHandle);
+    ok &= expect("shell: interrupt_map(GSI 2, the I/O port root) = ",
+                 ours::interrupt_map(ioport, GSI_TIMER, &number), Status::BadType);
+    ok &=
+        expect("shell: interrupt_create(the timer's line, no handle) = ",
+               ours::interrupt_create(Uandle::Invalid, timer_line, InterruptOptions::None, &unused),
+               Status::BadHandle);
+    ok &= expect("shell: interrupt_create(the timer's line, the I/O port root) = ",
+                 ours::interrupt_create(ioport, timer_line, InterruptOptions::None, &unused),
+                 Status::BadType);
+    ok &= expect(
+        "shell: interrupt_create(the timer's line, a mode that names none) = ",
+        ours::interrupt_create(irq, timer_line, static_cast<InterruptOptions>(5U << 1), &unused),
+        Status::InvArgs);
     // interrupt_map writes its answer last: an |out| that faults fails a call
     // that found the line, and takes nothing.
     ok &= expect("shell: interrupt_map(out = unmapped) = ",

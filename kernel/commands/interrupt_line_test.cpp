@@ -298,6 +298,15 @@ namespace {
         verdict(tally, !irq::is_kernel_owned(free_line()), "the free line is not");
         verdict(tally, !irq::is_kernel_owned(irq::INVALID_V_IRQ_NUM),
                 "and INVALID_V_IRQ_NUM, which is no line, is not");
+        // Every line the machine has: the timer's is the only one.
+        auto owned = usize{0};
+        for (auto hwirq = HIrqNum{0}; hwirq < 256; ++hwirq) {
+            auto const virq = irq::virq_of_hwirq(hwirq);
+            if (virq != irq::INVALID_V_IRQ_NUM && irq::is_kernel_owned(virq)) {
+                owned += 1;
+            }
+        }
+        verdict(tally, owned == 1, "and it is the only line of the machine that is");
         verdict(tally,
                 before.is_ok() && after.is_ok() && *before == irq::TriggerMode::Edge &&
                     *after == irq::TriggerMode::Edge,
