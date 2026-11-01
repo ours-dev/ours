@@ -1850,7 +1850,62 @@ auto check_disk() -> void {
     }
     auto _ = fsio::close(file.unwrap());
 
-    // Unlink it: the name goes, a second unlink misses, a reopen misses.
+    // A directory under the root, made by an Open that says which kind it
+    // wants; a file in the directory, written and read back from its root.
+    constexpr auto DIR_ENTRY = std::string_view{"/disk/checked"};
+    constexpr auto IN_DIR = std::string_view{"/disk/checked/inner.txt"};
+    auto const made_dir =
+        fsio::open(DIR_ENTRY, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::PermEnumerate |
+                                  Flags::FlagMaybeCreate | Flags::ProtocolDirectory);
+    if (!expect("/disk mkdir", status_of(made_dir), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto inner =
+        fsio::open(IN_DIR, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("/disk inner", status_of(inner), Status::Ok)) {
+        auto _ = fsio::close(made_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    if (!expect("/disk inner write", status_of(fsio::write(inner.unwrap(), pattern)), Status::Ok)) {
+        auto _ = fsio::close(inner.unwrap());
+        auto _ = fsio::close(made_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk inner close", fsio::close(inner.unwrap()), Status::Ok);
+
+    // The directory's listing names the file as a file.
+    auto dir_listing = std::array<u8, 512>{};
+    if (!expect("/disk inner listing",
+                status_of(fsio::read_dirents(made_dir.unwrap(), dir_listing)), Status::Ok)) {
+        auto _ = fsio::close(made_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto inner_named = false;
+    auto reader = ours_io::DirentReader(
+        std::span{dir_listing}.first(fsio::read_dirents(made_dir.unwrap(), dir_listing).unwrap()));
+    while (true) {
+        auto const entry = reader.next();
+        if (entry.is_err() || entry->is_none()) {
+            break;
+        }
+        if ((*entry)->name == "inner.txt") {
+            inner_named = true;
+        }
+    }
+    if (!inner_named) {
+        fail("/disk inner listing: the file is not named");
+    }
+
+    // The unlinks: the file out of the directory, then the directory out of
+    // the root -- empty by then, which a non-empty one refuses to be.
+    expect("/disk inner unlink", fsio::unlink(IN_DIR), Status::Ok);
+    expect("/disk rmdir", fsio::unlink(DIR_ENTRY), Status::Ok);
+
+    // Unlink the flat file and check the root's listing no longer names it.
     if (!expect("/disk unlink", fsio::unlink(FILE), Status::Ok)) {
         auto _ = fsio::close(root.unwrap());
         return;
@@ -1870,19 +1925,19 @@ auto check_disk() -> void {
     auto listing = std::array<u8, 512>{};
     auto const dirents = fsio::read_dirents(root.unwrap(), listing);
     if (expect("/disk listing", status_of(dirents), Status::Ok)) {
-        auto reader = ours_io::DirentReader(std::span{listing}.first(dirents.unwrap()));
+        auto root_reader = ours_io::DirentReader(std::span{listing}.first(dirents.unwrap()));
         auto named = false;
         while (true) {
-            auto const entry = reader.next();
+            auto const entry = root_reader.next();
             if (entry.is_err() || entry->is_none()) {
                 break;
             }
-            if ((*entry)->name == "btreefs-check.txt") {
+            if ((*entry)->name == "btreefs-check.txt" || (*entry)->name == "checked") {
                 named = true;
             }
         }
         if (named) {
-            fail("/disk listing: the unlinked file is still named");
+            fail("/disk listing: an unlinked entry is still named");
         }
     }
     auto _ = fsio::close(root.unwrap());

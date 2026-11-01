@@ -169,17 +169,17 @@ class BlockAdapter final {
     u64 m_first_lba = 0;
 };
 
-/// What a connection is to: the root directory, or the file at an object id
-/// (|object|).
+/// What a connection is to: a directory at an object id (the volume's root
+/// among them), or a file at one.
 enum class Target : u8 {
-    Root,
+    Directory,
     File,
 };
 
 /// One client channel and its state. |channel| Invalid marks a free row.
 struct Connection {
     Uandle channel = Uandle::Invalid;
-    Target target = Target::Root;
+    Target target = Target::Directory;
     u64 object = 0;
     Operations rights = Operations::None;
     /// A file's: where Read and Write go on from.
@@ -249,15 +249,19 @@ class Filesystem final {
     auto mount() -> bool;
 
     auto inode_of(u64 object) -> ustl::Result<ours_btreefs::InodeValue, Status>;
-    auto find_file(std::string_view name) -> ustl::Result<u64, Status>;
-    auto create_file(std::string_view name) -> ustl::Result<u64, Status>;
+    auto find_child(u64 directory, std::string_view name)
+        -> ustl::Result<ours_btreefs::DirentValue, Status>;
+    auto resolve(u64 directory, std::string_view path)
+        -> ustl::Result<std::pair<u64, ObjectKind>, Status>;
+    auto create_object(u64 directory, std::string_view name, ObjectKind kind)
+        -> ustl::Result<u64, Status>;
     auto read_file(Connection &connection, ours_io::ReadRequest const &request,
                    std::span<u8> reply_bytes) -> void;
     auto write_file(Connection &connection, ours_io::WriteRequest const &request,
                     std::span<u8> reply_bytes) -> void;
     auto read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &request,
                       std::span<u8> reply_bytes) -> void;
-    auto unlink_file(std::string_view name) -> Status;
+    auto unlink_at(u64 directory, std::string_view name) -> Status;
 
   private:
     /// The device the tree operations run through, made once at mount: the
@@ -357,44 +361,71 @@ auto Filesystem::inode_of(u64 const object) -> ustl::Result<ours_btreefs::InodeV
     return ours_btreefs::decode_inode_value(m_item);
 }
 
-/// The file |name| is at, or NotFound. The DIRENT's offset is the name's
-/// hash and its value carries the name, so a match is checked against the
-/// name itself -- a hash the tree keeps unique says where to look, the
-/// decoded name says what was found.
-auto Filesystem::find_file(std::string_view const name) -> ustl::Result<u64, Status> {
-    auto const key = ours_btreefs::Key{.object = ROOT_OBJECT,
-                                       .type = ItemType::Dirent,
-                                       .offset = ours_btreefs::dirent_offset(name)};
+/// What one name under |directory| answers: the child's object and kind, or
+/// NotFound. The DIRENT's offset is the name's hash and its value carries
+/// the name, so a match is checked against the name itself -- a hash the
+/// tree keeps unique says where to look, the decoded name says what was
+/// found.
+auto Filesystem::find_child(u64 const directory, std::string_view const name)
+    -> ustl::Result<ours_btreefs::DirentValue, Status> {
+    auto const key = ours_btreefs::Key{
+        .object = directory, .type = ItemType::Dirent, .offset = ours_btreefs::dirent_offset(name)};
     auto const looked = ours_btreefs::lookup(device(), m_volume, key, m_item);
-    if (looked == Status::NotFound) {
-        return ustl::err(Status::NotFound);
-    }
     if (looked != Status::Ok) {
         return ustl::err(looked);
     }
     auto const decoded = ours_btreefs::decode_dirent_value(m_item);
     if (decoded.is_err() || decoded->name != name) {
         // A hash collision refused at insert time keeps this a dead end, not
-        // a wrong file.
+        // a wrong entry.
         return ustl::err(Status::NotFound);
     }
-    return ustl::ok(decoded->child);
+    return decoded;
 }
 
-/// Makes the file |name|: a DIRENT item for it under the root, an INODE
-/// item of size 0 for the object. AlreadyExists when the name is taken.
-auto Filesystem::create_file(std::string_view const name) -> ustl::Result<u64, Status> {
+/// Walks |path| from |directory|, one component at a time: each name's
+/// DIRENT must name a directory but the path's last, whose object and kind
+/// are the answer. NotFound names what stopped the walk.
+auto Filesystem::resolve(u64 const directory, std::string_view const path)
+    -> ustl::Result<std::pair<u64, ObjectKind>, Status> {
+    auto object = directory;
+    auto rest = path;
+    while (!rest.empty()) {
+        auto const slash = rest.find('/');
+        auto const component =
+            rest.substr(0, slash == std::string_view::npos ? rest.size() : slash);
+        rest = slash == std::string_view::npos ? std::string_view{} : rest.substr(slash + 1);
+        auto const last = rest.empty();
+        auto const found = find_child(object, component);
+        if (found.is_err()) {
+            return ustl::err(found.unwrap_err());
+        }
+        if (!last && found->kind != ObjectKind::Directory) {
+            return ustl::err(Status::NotDir);
+        }
+        object = found->child;
+        if (last) {
+            return ustl::ok(std::pair{object, found->kind});
+        }
+    }
+    return ustl::ok(std::pair{object, ObjectKind::Directory});
+}
+
+/// Makes an object of |kind| named |name| under |directory|: a DIRENT item
+/// for it there, an INODE item of size 0 for the object. AlreadyExists when
+/// the name is taken.
+auto Filesystem::create_object(u64 const directory, std::string_view const name,
+                               ObjectKind const kind) -> ustl::Result<u64, Status> {
     auto object = ours_btreefs::alloc_object(device(), m_volume);
     auto value = ours_btreefs::Value{};
-    if (auto const status =
-            ours_btreefs::encode_dirent_value(value, object, ObjectKind::File, name);
+    if (auto const status = ours_btreefs::encode_dirent_value(value, object, kind, name);
         status != Status::Ok) {
         return ustl::err(status);
     }
     // The dirent first: a name taken answers AlreadyExists here, before any
     // object id was made to matter.
     auto const inserted = ours_btreefs::insert(device(), m_volume,
-                                               {.object = ROOT_OBJECT,
+                                               {.object = directory,
                                                 .type = ItemType::Dirent,
                                                 .offset = ours_btreefs::dirent_offset(name)},
                                                value);
@@ -403,7 +434,7 @@ auto Filesystem::create_file(std::string_view const name) -> ustl::Result<u64, S
     }
     // An object whose INODE never landed is a dirent to nothing; v1 accepts
     // the window, the copy-on-write phase closes it.
-    ours_btreefs::encode_inode_value(value, 0, ObjectKind::File);
+    ours_btreefs::encode_inode_value(value, 0, kind);
     if (auto const status = ours_btreefs::insert(
             device(), m_volume, {.object = object, .type = ItemType::Inode, .offset = 0}, value);
         status != Status::Ok) {
@@ -577,9 +608,11 @@ auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsReques
             if (decoded.is_err()) {
                 return true;
             }
-            if (writer.append({.ino = ours_io::INO_UNKNOWN,
-                               .type = ours_io::DirentType::File,
-                               .name = decoded->name}) != Status::Ok) {
+            auto const type = decoded->kind == ObjectKind::Directory
+                                  ? ours_io::DirentType::Directory
+                                  : ours_io::DirentType::File;
+            if (writer.append({.ino = ours_io::INO_UNKNOWN, .type = type, .name = decoded->name}) !=
+                Status::Ok) {
                 // It did not fit: it comes again on the next call, the
                 // cursor not having moved.
                 return false;
@@ -600,8 +633,8 @@ auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsReques
 
 /// Binds |open|'s server end to a connection of its own: the root when
 /// |object| is 0, the file at that object otherwise.
-auto open_below_root_bind(ours_io::OpenRequest const &open, Operations const requested,
-                          u64 const object) -> void {
+auto open_below_dir_bind(ours_io::OpenRequest const &open, Operations const requested,
+                         u64 const object, bool const directory) -> void {
     auto &storage = *STORAGE;
     auto const made = allocate(open.object, requested);
     if (made == MAX_CONNECTIONS) {
@@ -609,24 +642,25 @@ auto open_below_root_bind(ours_io::OpenRequest const &open, Operations const req
         return;
     }
     auto &made_connection = storage.connections[made];
-    made_connection.target = object == 0 ? Target::Root : Target::File;
+    made_connection.target = directory ? Target::Directory : Target::File;
     made_connection.object = object;
     if (watch(open.object, made) != Status::Ok) {
         refuse(open.object, Status::NoResource);
     }
 }
 
-/// Open on the root connection: find what |open| names, or make it, and
-/// bind its server end to a connection of its own. The checks are
+/// Open on a directory connection: walk what |open| names from it, or make
+/// it, and bind its server end to a connection of its own. The checks are
 /// ioservice's, in its order.
-auto open_below_root(Connection &connection, ours_io::OpenRequest const &open) -> void {
+auto open_below_dir(Connection &connection, ours_io::OpenRequest const &open) -> void {
     auto const flags = open.flags;
     if (!ioservice::is_valid_path(open.path)) {
         refuse(open.object, Status::BadPath);
         return;
     }
-    if (open.path != "." && open.path != EXPOSED_NAME &&
-        !holds(connection.rights, Operations::Traverse)) {
+    auto const at_self = open.path == "." || open.path.empty();
+    auto const at_root = connection.object == ROOT_OBJECT && (at_self || open.path == EXPOSED_NAME);
+    if (!at_self && !at_root && !holds(connection.rights, Operations::Traverse)) {
         refuse(open.object, Status::AccessDenied);
         return;
     }
@@ -641,56 +675,97 @@ auto open_below_root(Connection &connection, ours_io::OpenRequest const &open) -
         return;
     }
 
-    // The root is the only directory, and a file is one name: a path with a
-    // '/' in it asks below the flat root, where nothing is.
-    if (open.path != "." && open.path != EXPOSED_NAME &&
-        open.path.find('/') != std::string_view::npos) {
+    // "." is this directory and the exposed name the volume's root; the
+    // rest of the path walks from where it lands -- the components before
+    // the last must be directories (NotFound or NotDir for what isn't),
+    // and the last is the one a creation may make, ProtocolDirectory
+    // saying which kind.
+    auto start = connection.object;
+    if (open.path == EXPOSED_NAME) {
+        start = ROOT_OBJECT;
+    }
+    auto const slash = open.path.rfind('/');
+    auto const parent_path =
+        slash == std::string_view::npos ? std::string_view{} : open.path.substr(0, slash);
+    auto const name = slash == std::string_view::npos ? open.path : open.path.substr(slash + 1);
+    auto parent = start;
+    if (!parent_path.empty()) {
+        auto const walked = FILESYSTEM->resolve(start, parent_path);
+        if (walked.is_err()) {
+            refuse(open.object, walked.unwrap_err());
+            return;
+        }
+        parent = walked->first;
+    }
+    if (at_self || name == "." || name.empty()) {
+        // The walk's own end: this directory, as "." always was.
+        if ((flags & Flags::FlagMustCreate) != Flags::None) {
+            refuse(open.object, Status::AlreadyExists);
+            return;
+        }
+        return open_below_dir_bind(open, requested, parent, true);
+    }
+    auto const found = FILESYSTEM->find_child(parent, name);
+    if (found.is_ok()) {
+        if ((flags & Flags::FlagMustCreate) != Flags::None) {
+            refuse(open.object, Status::AlreadyExists);
+            return;
+        }
+        auto const is_dir = found->kind == ObjectKind::Directory;
+        return open_below_dir_bind(open, requested, found->child, is_dir);
+    }
+    if (found.unwrap_err() != Status::NotFound) {
+        refuse(open.object, found.unwrap_err());
+        return;
+    }
+    if ((flags & CREATION_FLAGS) == Flags::None) {
         refuse(open.object, Status::NotFound);
         return;
     }
-
-    // ".", the exposed name and an empty path are all the volume's root;
-    // everything else names a file.
-    auto const at_root = open.path == "." || open.path == EXPOSED_NAME || open.path.empty();
-    auto object = u64{0};
-    if (!at_root) {
-        auto const found = FILESYSTEM->find_file(open.path);
-        if (found.is_err() && found.unwrap_err() != Status::NotFound) {
-            refuse(open.object, found.unwrap_err());
-            return;
-        }
-        object = found.is_ok() ? found.unwrap() : 0;
-        if (object == 0) {
-            if ((flags & CREATION_FLAGS) == Flags::None) {
-                refuse(open.object, Status::NotFound);
-                return;
-            }
-            auto const made = FILESYSTEM->create_file(open.path);
-            if (made.is_err()) {
-                refuse(open.object, made.unwrap_err());
-                return;
-            }
-            object = made.unwrap();
-        }
-    }
-    if (object == 0 && (flags & Flags::FlagMustCreate) != Flags::None) {
-        refuse(open.object, Status::AlreadyExists);
+    auto const kind = (flags & Flags::ProtocolDirectory) != Flags::None ? ObjectKind::Directory
+                                                                        : ObjectKind::File;
+    auto const made = FILESYSTEM->create_object(parent, name, kind);
+    if (made.is_err()) {
+        refuse(open.object, made.unwrap_err());
         return;
     }
-    return open_below_root_bind(open, requested, object);
+    return open_below_dir_bind(open, requested, made.unwrap(), kind == ObjectKind::Directory);
 }
 
-/// Unlinks the file |name|: the file's DATA items go first -- each block
-/// back to the bitmap as its item leaves, a crash in the middle leaking a
-/// block but never dangling a name -- then the INODE item, and the DIRENT
-/// last, the name gone only when everything under it is.
-auto Filesystem::unlink_file(std::string_view const name) -> Status {
-    auto const found = find_file(name);
+/// Unlinks the entry |name| under |directory|: a file's DATA items go
+/// first -- each block back to the bitmap as its item leaves, a crash in
+/// the middle leaking a block but never dangling a name -- then the INODE,
+/// and the DIRENT last, the name gone only when everything under it is. A
+/// directory must be empty (NotEmpty), carrying nothing but its INODE.
+auto Filesystem::unlink_at(u64 const directory, std::string_view const name) -> Status {
+    auto const found = find_child(directory, name);
     if (found.is_err()) {
         return found.unwrap_err();
     }
-    auto const object = found.unwrap();
-    while (true) {
+    auto const object = found->child;
+    if (found->kind == ObjectKind::Directory) {
+        // An empty directory: no DIRENT item of its own, whatever its INODE
+        // says. The walk stops at the next object's items.
+        auto empty = true;
+        auto const walked = ours_btreefs::scan(
+            device(), m_volume, {.object = object, .type = ItemType::Dirent, .offset = 0},
+            [&](ours_btreefs::Key const &key, ours_btreefs::Value const &) -> bool {
+                if (key.object != object) {
+                    return false;
+                }
+                if (key.type == ItemType::Dirent) {
+                    empty = false;
+                }
+                return key.type == ItemType::Inode;
+            });
+        if (walked != Status::Ok) {
+            return walked;
+        }
+        if (!empty) {
+            return Status::NotEmpty;
+        }
+    }
+    while (found->kind == ObjectKind::File) {
         // The file's first DATA item, one per turn: the walk starts at the
         // file's first block, skips the INODE item that sorts before the
         // DATA ones, and stops at the next object's items.
@@ -738,7 +813,7 @@ auto Filesystem::unlink_file(std::string_view const name) -> Status {
         return status;
     }
     return ours_btreefs::remove(device(), m_volume,
-                                {.object = ROOT_OBJECT,
+                                {.object = directory,
                                  .type = ItemType::Dirent,
                                  .offset = ours_btreefs::dirent_offset(name)});
 }
@@ -812,7 +887,7 @@ auto handle(usize const index) -> loop::Action {
 
     // Directory.Open, on the root only.
     if (ordinal == ours_io::OPEN.ordinal) {
-        if (connection.target != Target::Root) {
+        if (connection.target != Target::Directory) {
             forget(index);
             return loop::Action::Close;
         }
@@ -821,14 +896,14 @@ auto handle(usize const index) -> loop::Action {
             forget(index);
             return loop::Action::Close;
         }
-        open_below_root(connection, request.unwrap());
+        open_below_dir(connection, request.unwrap());
         return loop::Action::Rearm;
     }
 
     // Directory.ReadDirents, on the root only.
     if (ordinal == ours_io::READ_DIRENTS.ordinal) {
         auto const request = ours_io::decode_read_dirents(message);
-        if (request.is_err() || connection.target != Target::Root) {
+        if (request.is_err() || connection.target != Target::Directory) {
             forget(index);
             return loop::Action::Close;
         }
@@ -839,11 +914,28 @@ auto handle(usize const index) -> loop::Action {
     // Directory.Unlink, on the root only: the file leaves the volume.
     if (ordinal == ours_io::UNLINK.ordinal) {
         auto const request = ours_io::decode_unlink(message);
-        if (request.is_err() || connection.target != Target::Root) {
+        if (request.is_err() || connection.target != Target::Directory) {
             forget(index);
             return loop::Action::Close;
         }
-        auto const status = FILESYSTEM->unlink_file(request->path);
+        // The path is relative to this directory: its components walk, the
+        // last names what goes.
+        auto const slash = request->path.rfind('/');
+        auto const parent_path =
+            slash == std::string_view::npos ? std::string_view{} : request->path.substr(0, slash);
+        auto const name =
+            slash == std::string_view::npos ? request->path : request->path.substr(slash + 1);
+        auto parent = connection.object;
+        if (!parent_path.empty()) {
+            auto const walked = FILESYSTEM->resolve(parent, parent_path);
+            if (walked.is_err()) {
+                answer_status(connection.channel, ours_io::UNLINK, request->txid,
+                              walked.unwrap_err());
+                return loop::Action::Rearm;
+            }
+            parent = walked->first;
+        }
+        auto const status = FILESYSTEM->unlink_at(parent, name);
         answer_status(connection.channel, ours_io::UNLINK, request->txid, status);
         return loop::Action::Rearm;
     }
@@ -904,27 +996,7 @@ auto handle(usize const index) -> loop::Action {
 /// false when there is no disk to serve, which is an answer and not a
 /// failure.
 auto Filesystem::mount() -> bool {
-    // The block service through the one route the manifest states.
-    auto client_end = Uandle::Invalid;
-    auto server_end = Uandle::Invalid;
-    if (auto const status =
-            ours::channel_create(ours::ChannelCreateOptions::None, &client_end, &server_end);
-        status != Status::Ok) {
-        auto _ = ort::debug_line({"btreefs: cannot make its channel: ", ours::to_string(status)});
-        return false;
-    }
-    if (auto const status = fsio::connect("/svc/ours.block.Block", server_end);
-        status != Status::Ok) {
-        auto _ = ort::debug_line({"btreefs: no block service: ", ours::to_string(status)});
-        auto _ = ours::handle_close(client_end);
-        return false;
-    }
-
-    // The client owns the channel from here on, and the buffers live in
-    // static storage: a Client's two message buffers are too big for this
-    // thread's stack to share with the rest of main.
-
-    // The partition table, through the client itself: a Client is a Reader.
+    // The partition table, through the client: a Client is a Reader.
     auto partitions = std::array<ours_gpt::Partition, 16>{};
     auto const table = ours_gpt::read(m_client, 512, std::span{partitions});
     if (table.is_err()) {
@@ -940,6 +1012,8 @@ auto Filesystem::mount() -> bool {
         return false;
     }
     auto const first_lba = partition->first_lba;
+    // The device the volume's operations run through, from here on.
+    m_adapter.init(m_client, first_lba);
     auto const blocks =
         (partition->last_lba - partition->first_lba + 1) * 512 / ours_btreefs::BLOCK_BYTES;
     auto const bitmap_blocks = static_cast<u32>((blocks + 8 * ours_btreefs::BLOCK_BYTES - 1) /
@@ -961,7 +1035,6 @@ auto Filesystem::mount() -> bool {
             {"btreefs: cannot open the volume: ", ours::to_string(opened.unwrap_err())});
         return false;
     }
-    m_adapter.init(m_client, first_lba);
     m_volume = opened.unwrap();
     if (m_volume.height == 0) {
         auto const root = ours_btreefs::alloc_object(device(), m_volume);
@@ -1032,6 +1105,8 @@ auto main(int, char **) -> int {
         auto _ = ours::handle_close(directory_request);
         return 1;
     }
+    STORAGE->connections[root].target = Target::Directory;
+    STORAGE->connections[root].object = ROOT_OBJECT;
     if (auto const armed = watch(directory_request, root); armed != Status::Ok) {
         auto _ = ort::debug_line(
             {"btreefs: cannot wait on its outgoing directory: ", ours::to_string(armed)});
