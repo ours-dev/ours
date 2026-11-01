@@ -383,11 +383,15 @@ class Device final {
         put16(2, 14, 0);
 
         // The available ring: one offered chain, the device's cursor moving
-        // past it. x86 orders stores strongly; no barrier is asked for here.
+        // past it. The entry lands at |m_offered| modulo the queue's size;
+        // the ring's index is a free-running counter, wrapping at 16 bits
+        // and never at the queue's size -- the device reads it with its own
+        // free-running cursor, and an index that resets at the queue size
+        // reads as the ring moving backward, its chains walked again past
+        // the end. x86 orders stores strongly; no barrier is asked for.
         auto *const avail = bytes + AVAIL_OFFSET;
-        auto const offered = static_cast<u16>((m_offered + 1) % LEGACY_QUEUE_NUM);
         *reinterpret_cast<volatile u16 *>(avail + 4 + 2 * (m_offered % LEGACY_QUEUE_NUM)) = 0;
-        *reinterpret_cast<volatile u16 *>(avail + 2) = offered;
+        *reinterpret_cast<volatile u16 *>(avail + 2) = static_cast<u16>(m_offered + 1);
         m_offered += 1;
         m_regs.notify(0);
 
