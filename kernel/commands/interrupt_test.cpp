@@ -44,7 +44,9 @@
 //     interrupt, whether that ack is a wait that finds nothing pending, parked
 //     on a second thread, or an interrupt_ack on a port, and by a destroy,
 //     which keeps it up through a trigger that is then refused; an observer
-//     attached while it is down is told when it goes up;
+//     attached while it is down is told when it goes up; and with triggers on
+//     one CPU racing a taker's waits and acks on another, ROUNDS times, it is
+//     up again once the taker has parked, as many times as it is asked;
 //
 // A lost wakeup is told from a slow one by progress, not by a deadline for
 // the whole run: the turns fail only once no round has finished for
@@ -748,6 +750,81 @@ namespace {
         verdict(tally, interrupt.destroy() == Status::Ok && idle(interrupt), "destroy");
     }
 
+    /// A thread that waits on |interrupt| over and over, which takes each
+    /// interrupt and acks it with the wait after, until the wait answers
+    /// Cancelled.
+    struct Taker {
+        KernelHandle<InterruptDispatcher> interrupt;
+        std::atomic<usize> taken{0};
+    };
+
+    auto taker_routine(void *const arg) -> i32 {
+        auto &taker = *static_cast<Taker *>(arg);
+        auto at = Instant{0};
+        while (taker.interrupt.dispatcher()->wait(&at) == Status::Ok) {
+            taker.taken.fetch_add(1, std::memory_order_relaxed);
+        }
+        return 0;
+    }
+
+    /// Idle follows the state when triggers and acks race. A driver that does
+    /// not wait for Idle between its triggers (an edge pin) fires at one CPU
+    /// while a taker on another takes the interrupts and acks them, ROUNDS
+    /// times. Whatever the interleaving, once the driver has stopped and the
+    /// taker has acked the last interrupt and parked, nothing is owed, and
+    /// Idle must be up; and a trigger then has to bring it down and the ack
+    /// after it back up, each time. A signal that was dropped by a trigger and
+    /// then raised by an ack that landed before the drop would stay down here
+    /// for ever.
+    auto check_idle_follows_the_state(Tally &tally, usize const rounds, CpuNum const taker_cpu)
+        -> void {
+        auto *const taker = new (mm::GAF_KERNEL) Taker{};
+        if (taker == nullptr || !make_interrupt(&taker->interrupt)) {
+            verdict(tally, false, "make a virtual interrupt");
+            delete taker;
+            return;
+        }
+        auto &interrupt = *taker->interrupt.dispatcher();
+        auto *const thread = spawn_on("interrupt-test-taker", taker_routine, taker, taker_cpu);
+        if (thread == nullptr) {
+            verdict(tally, false, "spawn the taker");
+            delete taker;
+            return;
+        }
+
+        for (auto round = usize{0}; round < rounds; ++round) {
+            if (interrupt.trigger(TRIGGERED_AT + static_cast<Instant>(round)) != Status::Ok) {
+                verdict(tally, false, "trigger while the taker takes and acks");
+                break;
+            }
+            // Sometimes let the taker run ahead, sometimes not.
+            for (auto spin = usize{0}; spin < (round % 7) * 40; ++spin) {
+                arch::spin_hint();
+            }
+        }
+        auto const settled =
+            poll_until([thread, &interrupt] { return is_parked(thread) && idle(interrupt); });
+        verdict(tally, settled,
+                "after racing triggers and acks, once the taker has parked, Idle is up");
+
+        auto again = true;
+        for (auto round = usize{0}; round < 3 && again; ++round) {
+            again =
+                interrupt.trigger(TRIGGERED_AT) == Status::Ok &&
+                poll_until([thread, &interrupt] { return is_parked(thread) && idle(interrupt); });
+        }
+        verdict(tally, again, "and a trigger and the ack after it take it down and up again");
+
+        verdict(tally, interrupt.destroy() == Status::Ok && idle(interrupt),
+                "destroy the interrupt");
+        if (joined(thread)) {
+            delete taker;
+        } else {
+            verdict(tally, false, "the taker ends once the interrupt is destroyed");
+            log::error("interrupt.test:   leaking the taker; its thread may still use it");
+        }
+    }
+
     auto check_turns(Tally &tally, usize const rounds, CpuNum const pinger_cpu,
                      CpuNum const ponger_cpu) -> void {
         auto *const turns = new (mm::GAF_KERNEL) Turns{};
@@ -843,6 +920,7 @@ namespace {
         check_bind_takes_the_latch(tally, second_cpu);
         check_idle_signal(tally, second_cpu);
         check_idle_signal_on_a_port(tally);
+        check_idle_follows_the_state(tally, rounds, second_cpu);
         check_turns(tally, rounds, first_cpu, second_cpu);
 
         if (tally.failed != 0) {

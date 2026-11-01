@@ -20,12 +20,11 @@ namespace ours::object {
 /// The signal is Idle: up while the object is owed no ack, so that the
 /// driver that raised it can wait for the client to have taken and acked the
 /// interrupt, and then unmask the pin it masked. It is up from the creation,
-/// and raised for good by a destroy. interrupt_trigger drops it before the
-/// interrupt can be taken; the seam that unmasks a physical line raises it
-/// (unmask_interrupt()), since it is called exactly when the object is owed
-/// nothing more. A client that leaves without acking raises nothing: the
-/// driver keeps the pin masked, which is the safe state, until it is handed a
-/// new interrupt for it.
+/// and raised for good by a destroy. It always says what the state says
+/// (InterruptDispatcher::sync_signals()): down while an interrupt is pending or
+/// not yet acked, up otherwise. A client that leaves without acking raises
+/// nothing: the driver keeps the pin masked, which is the safe state, until it
+/// replaces the interrupt for that pin.
 class VirtualInterruptDispatcher final: public InterruptDispatcher {
     using Base = InterruptDispatcher;
     using Self = VirtualInterruptDispatcher;
@@ -42,12 +41,10 @@ class VirtualInterruptDispatcher final: public InterruptDispatcher {
     VirtualInterruptDispatcher();
 
     auto mask_interrupt() -> void override {}
-    /// The ack of the last interrupt delivered: Idle goes up.
+    /// The ack of the last interrupt delivered: Idle goes up (sync_signals()).
     auto unmask_interrupt() -> void override;
     auto deactivate_interrupt() -> void override {}
     auto unregister_interrupt_handler() -> void override {}
-    auto on_trigger() -> void override;
-    auto on_destroy() -> void override;
 };
 } // namespace ours::object
 

@@ -79,9 +79,11 @@ using InterruptDispatcherBase = SoloDispatcher<InterruptDispatcher, RIGHTS_DEFAU
 ///
 /// A virtual interrupt has no line to tell, and tells whoever waits on it
 /// through a signal instead: Idle (<ours/signals.hpp>), up while the object is
-/// owed no ack. It is raised at the same moments unmask_interrupt() is called,
-/// dropped by trigger() before the interrupt it delivers can be taken, and
-/// raised for good by destroy().
+/// owed no ack, which sync_signals() keeps equal to the state after every
+/// change that moves the debt (trigger(), destroy(), and the moments
+/// unmask_interrupt() is called). Setting a signal takes a Mutex, so
+/// trigger(), destroy(), ack() and wait() are thread-context calls with no
+/// lock held and preemption on.
 ///
 /// The interrupt is delivered in one of two ways, never both:
 ///   - Unbound, a thread takes it with interrupt_wait. Taking it is also the
@@ -118,8 +120,7 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// it sends a packet there instead, or, while the last one is owed its
     /// ack, leaves the time for the ack to send. Only a virtual interrupt
     /// can be raised this way (BadState otherwise). Cancelled once
-    /// destroyed. Drops the Idle signal before anything can take the
-    /// interrupt.
+    /// destroyed. Drops the Idle signal, before it returns.
     [[nodiscard]]
     auto trigger(Instant timestamp) -> Status;
 
@@ -239,19 +240,21 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     TA_EXCLUDES(m_spinlock)
     virtual auto unregister_interrupt_handler() -> void = 0;
 
-    /// The signal a kind keeps for "the object is owed no ack" (Idle, on a
-    /// virtual interrupt), dropped and raised by the kind, which has nothing
-    /// to do by default. Raising a signal takes the dispatcher's Mutex, so
-    /// both are called in thread context with no lock held.
-    ///   - on_trigger(): a trigger is about to deliver an interrupt, before
-    ///     anything else can take it, so that the ack that follows is the
-    ///     later of the two.
-    ///   - on_destroy(): the object has been destroyed, or a trigger found it
-    ///     so: it owes nothing, for good.
+    /// Makes the Idle signal of a virtual interrupt say what the state says:
+    /// up unless the object is owed an ack (Triggered, NeedAck). Nothing for a
+    /// physical one. Called after every change that moves the debt: the
+    /// creation, a trigger, an ack or a wait that clears it, a destroy.
+    ///
+    /// It reads the state under m_spinlock, sets the signal, which takes the
+    /// dispatcher's Mutex and so needs thread context and no lock held, and
+    /// reads the state again; if the debt moved meanwhile it sets the signal
+    /// again. So two calls on two CPUs cannot leave the signal behind the
+    /// state: the last change to the state is followed by a call that reads
+    /// it, and an older call that writes after that one reads the state again
+    /// and corrects itself. The signal can lag the state only while a call is
+    /// inside the object.
     TA_EXCLUDES(m_spinlock)
-    virtual auto on_trigger() -> void {}
-    TA_EXCLUDES(m_spinlock)
-    virtual auto on_destroy() -> void {}
+    auto sync_signals() -> void;
 
   private:
     /// Where the interrupt is in its life:

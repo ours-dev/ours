@@ -183,10 +183,6 @@ auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
         return Status::BadState;
     }
 
-    // Before the interrupt can be taken, and so before the ack of it can
-    // raise the signal again: dropped after, the drop could undo that raise.
-    on_trigger();
-
     auto status = Status::Ok;
     {
         // Preemption off: the signal may wake a thread, and the reschedule that
@@ -201,12 +197,38 @@ auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
             deliver_locked();
         }
     }
-    // A destroyed object owes nothing, and the drop above may have followed
-    // the destroy's raise.
-    if (status == Status::Cancelled) {
-        on_destroy();
-    }
+    // The debt moved (or, for a destroyed object, the signal says it owes
+    // nothing again): after the state, with the lock dropped.
+    sync_signals();
     return status;
+}
+
+auto InterruptDispatcher::sync_signals() -> void {
+    if (!(m_flags & Flags::Virtual)) {
+        return;
+    }
+
+    auto const owed = [this]() -> bool {
+        Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
+        return m_state == State::Triggered || m_state == State::NeedAck;
+    };
+
+    auto now = owed();
+    for (;;) {
+        if (now) {
+            update_state(Signals::Idle, Signals::None);
+        } else {
+            update_state(Signals::None, Signals::Idle);
+        }
+        // The debt moved while the signal was being set: set it again, from
+        // the newer state. A change that happens after this read has its own
+        // call after it.
+        auto const again = owed();
+        if (again == now) {
+            return;
+        }
+        now = again;
+    }
 }
 
 /// A line's interrupt brings no time of its own, so it is taken here, on the
@@ -294,7 +316,7 @@ auto InterruptDispatcher::destroy() -> Status {
     }
 
     // After the state, so that a thread this wakes finds the object destroyed.
-    on_destroy();
+    sync_signals();
 
     mask_interrupt();
     deactivate_interrupt();

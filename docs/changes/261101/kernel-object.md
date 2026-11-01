@@ -79,3 +79,72 @@ None. The user approved the interface list that named `Signals::Idle` at bit 6 (
 - Why must G keep a level pin masked in its own register until K has acked, when the kernel already holds the parent line masked until G acks it?
 - Why is Idle a level and not an event, and what would G do if it were an event and K acked first?
 - Why does `trigger()` drop Idle before it delivers the interrupt, and what would the order after cost?
+
+## `Idle` follows the state: it is set again after every change that moves the debt, and the ordering argument of the first version is gone (2026-11-01)
+
+**Files**
+- `kernel/object/include/ours/object/interrupt_dispatcher.hpp`, `kernel/object/interrupt_dispatcher.cpp` — `sync_signals()` replaces the two hooks `on_trigger()` and `on_destroy()`; `trigger()` and `destroy()` call it after the state change.
+- `kernel/object/include/ours/object/virtual_interrupt_dispatcher.hpp`, `kernel/object/virtual_interrupt_dispatcher.cpp` — `unmask_interrupt()` and `create()` call it; the two hook overrides are gone.
+- `system/public/ours/signals.hpp`, `system/public/ours/syscalls.gni` — the wording of Idle: which wait raises it, that it follows the state, that the client can still destroy.
+- `kernel/commands/interrupt_test.cpp`, `system/app/shell/shell_tests.cpp` — a check with triggers racing a taker's waits and acks; a handle closed without an ack; every handle closed on every path.
+- `.agents/tasks/irq-multi-arch/{DESIGN,PLAN}.md`, `.agents/skills/ours-kernel-design/references/task.md`, `docs/guide/01-concepts.md` — the corrections the review asked for.
+
+**Symptom**
+Latent, cannot be triggered by a driver that follows its protocol. Found by the independent review of the previous entry. With the first version, a trigger that landed between an ack's change of state and the ack's raise of Idle left Idle up while an ack was owed: K parks in a wait that is the ack, the driver triggers again before K's wait has set the signal, K's wait then takes the new interrupt, and Idle goes up behind it. A driver that then waits for Idle unmasks a level pin while K is still servicing it. A driver that triggers once for each unmask cannot reach it, because it triggers again only after it has seen Idle; one that triggers an edge pin freely, or that gives up its wait for Idle and triggers again, can.
+
+**Cause**
+The signal was a toggle, not a function of the state. The state of the interrupt changes under a spin lock, in one step; the signal is set afterwards, under a Mutex, in another; and two CPUs doing the two steps for two different events can interleave them. The first version arranged one order, the drop before the delivery, so that a client's ack could not be undone by a drop that came after it. That fixed the interleaving it was written for and none of the others: an ack's raise can still land after a later trigger's drop and delivery, because between the ack's state change and its raise nothing orders it against a trigger on another CPU. The argument ("the ack of it is the later of the two") was true of one trigger and one ack and said nothing of a trigger that comes while an earlier ack is still on its way to the signal.
+
+**Change**
+The signal is set from the state, after every change that moves the debt, and set again if the debt moved while it was being set:
+
+```cpp
+auto InterruptDispatcher::sync_signals() -> void {
+    if (!(m_flags & Flags::Virtual)) { return; }
+    auto const owed = [this]() -> bool {
+        Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
+        return m_state == State::Triggered || m_state == State::NeedAck;
+    };
+    auto now = owed();
+    for (;;) {
+        if (now) { update_state(Signals::Idle, Signals::None); }
+        else     { update_state(Signals::None, Signals::Idle); }
+        auto const again = owed();
+        if (again == now) { return; }
+        now = again;
+    }
+}
+```
+
+Why it settles: the last change to the state is followed by a call that reads the state after it, so the last write of that call is the right one; an older call that writes after it read an older state and so reads the state again, finds it changed, and writes again. It is called at the creation, at the end of `trigger()` (whether it delivered or found the object destroyed), in `destroy()` after the state is set, and at the seam `unmask_interrupt()` is called from, which is where the debt is cleared. The two hooks are gone, and so is the question of which comes first. The signal can lag the state only while a call on the same interrupt is in progress on another CPU, which `signals.hpp` now says.
+
+Corrections to the previous entry, which stays as history:
+- Its Cause, third bullet, said the signal was raised and dropped after the state change. The drop was before it, as the second bullet said; both are now after.
+- Its table said a trigger the destroyed object refuses leaves Idle up "within the refused trigger"; it simply leaves it up now, since the state is read.
+- Its Reference named no Linux function. The counterpart of the unmask at the end of a level child's flow is `unmask_irq()` called from `cond_unmask_irq()` in `handle_level_irq()` (from memory, unchecked).
+- It cited `.agents/tasks/driver-manager/DESIGN.md` for handing the driver a new interrupt for a pin whose client left. That document does not design it; who does is an open question in `.agents/tasks/irq-multi-arch/DESIGN.md`.
+- The client's handle has no Duplicate and no Signal, but `interrupt_destroy` asks for no right, so it can raise Idle without an ack; `syscalls.gni` says so now.
+
+**Reference**
+None new: Zircon's signal and Linux's `handle_level_irq()` are cited above and in the previous entry, both from memory.
+
+**Verification**
+- `interrupt.test`: 58 checks all ok (55 before). New: with triggers on one CPU racing a taker's waits and acks on another, once the taker has parked, Idle is up, and three more triggers each bring it down and the ack after it back up. The user shell's `interrupt idle checks` adds a client handle closed without an ack, which raises nothing and sends no packet.
+- `boot_check.py`: dbg PASS, 45 passed and 4 skipped; rel PASS, 42 passed and 8 skipped, 6 of 6 required; host tests 154 passed. clang-tidy on the changed sources: no finding.
+- Six mutations, each restored byte for byte. Five killed by `interrupt.test`: `trigger()` not calling `sync_signals()` (12 failures); the ack seam not calling it (6); `destroy()` not calling it (2); a taken interrupt not counted as owed (8); a parked waiter counted as owed (4). One survived: removing the second read of the state, so that the signal is set once. It was run again with 3 runs of 3000 rounds each and still survived. The window it closes is a few instructions wide, and the test of this tree cannot aim at it; the loop is argued above and not tested.
+- Not verified: the loop, as said; the cost of the Mutex and the extra spin-lock reads on each trigger and ack of a virtual interrupt, not measured; a real driver.
+
+**Deliberately not done**
+- The Driver Manager side (replacing the interrupt for a pin whose client left) is not designed, and so not built.
+- Raising the signal on a physical interrupt, a new system call, a right for `interrupt_destroy`: as in the previous entry, and the right is a decision for the user (`Rights::Destroy` exists and is not in the default rights of an interrupt).
+
+**How it was found**
+By the independent review of the previous entry (three reviewers, 2026-11-01): the one who listed every transition of the state found that after an ack's state change and before its raise, a trigger on another CPU leaves the two disagreeing for as long as the object stays owed.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does reading the state a second time make two racing calls end with the right signal, and what would happen with one read?
+- Why can a driver that triggers once for each unmask never see the stale Idle that an edge driver could?
+- Why is a signal that is a function of the state easier to reason about than one dropped and raised at the moments of the changes?

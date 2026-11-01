@@ -2563,6 +2563,15 @@ auto check_interrupt_idle() -> void {
     Uandle child = Uandle::Invalid;
     Uandle driver_port = Uandle::Invalid;
     Uandle client_port = Uandle::Invalid;
+    // Closes what has been made so far, on any way out.
+    auto const close_all = [&]() {
+        for (auto *const handle: {&parent, &child, &driver_port, &client_port}) {
+            if (*handle != Uandle::Invalid) {
+                auto _ = ours::handle_close(*handle);
+                *handle = Uandle::Invalid;
+            }
+        }
+    };
     if (!expect("shell: interrupt idle interrupt_create(parent) = ",
                 ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &parent),
                 Status::Ok) ||
@@ -2573,6 +2582,7 @@ auto check_interrupt_idle() -> void {
                 ours::port_create(PortCreateOptions::BindToInterrupt, &driver_port), Status::Ok) ||
         !expect("shell: interrupt idle port_create(client) = ",
                 ours::port_create(PortCreateOptions::BindToInterrupt, &client_port), Status::Ok)) {
+        close_all();
         auto _ = ort::debug_line("shell: interrupt idle checks FAILED");
         return;
     }
@@ -2638,6 +2648,7 @@ auto check_interrupt_idle() -> void {
     if (!expect("shell: interrupt idle interrupt_create(child, again) = ",
                 ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &child),
                 Status::Ok)) {
+        close_all();
         auto _ = ort::debug_line("shell: interrupt idle checks FAILED");
         return;
     }
@@ -2669,6 +2680,10 @@ auto check_interrupt_idle() -> void {
         ok &= expect("shell: handle_duplicate(client's handle) = ",
                      ours::handle_duplicate(client, ours::Rights::SameRights, &again),
                      Status::AccessDenied);
+        if (again != Uandle::Invalid) {
+            // Only if the refusal failed: do not leave the handle behind.
+            ok &= ours::handle_close(again) == Status::Ok;
+        }
         ok &= expect(
             "shell: interrupt_bind(client's handle) = ",
             ours::interrupt_bind(client, client_port, CLIENT_KEY, InterruptBindOptions::Bind),
@@ -2690,6 +2705,17 @@ auto check_interrupt_idle() -> void {
                                              WaitAsyncOptions::None),
                      Status::Ok);
         ok &= empty("shell: port_wait(owed again) = ", driver_port);
+        // The client's other handle closes without an ack: nothing is raised.
+        Uandle leaver = Uandle::Invalid;
+        if (expect("shell: handle_duplicate(child, a second client handle, to leave) = ",
+                   ours::handle_duplicate(child, CLIENT_RIGHTS, &leaver), Status::Ok)) {
+            ok &= ours::handle_close(leaver) == Status::Ok;
+            ok &= idle("shell: object_wait_one(Idle, a handle closed without an ack) = ", child,
+                       false);
+            ok &= empty("shell: port_wait(a handle closed without an ack) = ", driver_port);
+        } else {
+            ok = false;
+        }
         ok &=
             expect("shell: interrupt_destroy(client's handle) = ", ours::interrupt_destroy(client),
                    Status::Ok);

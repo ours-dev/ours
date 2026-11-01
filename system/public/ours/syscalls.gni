@@ -1404,9 +1404,11 @@ ours_syscalls = [
       "line makes one for each pin and waits for Idle to unmask the pin it",
       "masked. The client of such an interrupt gets a handle made with",
       "handle_duplicate from the driver's: Wait, Read, Write and Transfer, no",
-      "Signal (it cannot raise its own interrupts) and no Duplicate. Closing",
-      "its handle without an ack raises nothing: the driver keeps the pin",
-      "masked until it hands out a new interrupt. A physical interrupt never",
+      "Signal (it cannot raise its own interrupts) and no Duplicate. It can",
+      "still interrupt_destroy, which needs no right, and so raise Idle",
+      "without an ack: the driver's next interrupt_trigger answers Cancelled,",
+      "and it keeps the pin masked and replaces the interrupt. Closing the",
+      "handle without an ack raises nothing. A physical interrupt never",
       "asserts Idle.",
     ]
     args = [
@@ -1608,9 +1610,9 @@ ours_syscalls = [
       "re-arms it (and unmasks a line masked until then). If interrupts",
       "arrived since that packet, the next packet is sent at once, with the",
       "time of the first of them; with none, a virtual interrupt raises Idle.",
-      "Ok, and nothing to do, when no packet is",
-      "outstanding. BadState if it is not bound to a port, or if the ack",
-      "would send the next packet while the last is still queued unread.",
+      "Ok, and nothing to do, when no packet is outstanding. BadState if it",
+      "is not bound to a port, or if the ack would send the next packet",
+      "while the last is still queued unread.",
       "Cancelled once destroyed. |handle| must name an interrupt (BadType)",
       "with Write (AccessDenied).",
     ]

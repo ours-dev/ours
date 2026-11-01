@@ -45,14 +45,20 @@ enum class Signals : u32 {
     ThreadRunning = 4_bit,
     ThreadSuspended = 5_bit,
 
-    /// Bit 6, a virtual interrupt's: IDLE, up while the object is owed no ack.
-    /// It is up from the object's creation; interrupt_trigger drops it, and the
+    /// Bit 6, a virtual interrupt's: IDLE, up while the object is owed no ack,
+    /// that is, while no interrupt is pending or taken and not yet acked. It
+    /// is up from the object's creation; interrupt_trigger drops it, and the
     /// ack of the last interrupt that leaves nothing more to deliver raises it
-    /// again (the interrupt_wait that takes the next interrupt after the one it
-    /// took, or interrupt_ack on a port); a destroy raises it for good. A
-    /// level-triggered line's controller driver waits for it to unmask the pin
-    /// it masked when it triggered. It is a level, not an event: a waiter that
-    /// comes after the ack finds it up. A physical interrupt never raises it.
+    /// again: an interrupt_wait that finds the last interrupt taken and none
+    /// pending raises it as it begins to wait (that wait is the ack), and so
+    /// does interrupt_ack on a port that has nothing more to send. A wait or
+    /// an ack that takes or sends a pending interrupt leaves it down. A
+    /// destroy raises it for good. A level-triggered line's controller driver
+    /// waits for it to unmask the pin it masked when it triggered. It is a
+    /// level, not an event: a waiter that comes after the ack finds it up. It
+    /// always follows the object's state, and lags it only while a call on
+    /// the same interrupt is in progress on another CPU. A physical interrupt
+    /// never raises it.
     Idle = 6_bit,
 
     /// Not a state of the object at all. object_wait_one reports it in its
