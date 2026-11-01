@@ -527,6 +527,23 @@ auto handle(usize const index) -> loop::Action {
         return loop::Action::Rearm;
     }
 
+    // Directory.Unlink, on the root only: the file leaves the pool.
+    if (ordinal == ours_io::UNLINK.ordinal) {
+        auto const request = ours_io::decode_unlink(message);
+        if (request.is_err() || connection.target != Target::Root) {
+            forget(index);
+            return loop::Action::Close;
+        }
+        auto const found = find_file(request->path);
+        if (found == MAX_FILES) {
+            answer_status(connection.channel, ours_io::UNLINK, request->txid, Status::NotFound);
+            return loop::Action::Rearm;
+        }
+        storage.files[found] = {};
+        answer_status(connection.channel, ours_io::UNLINK, request->txid, Status::Ok);
+        return loop::Action::Rearm;
+    }
+
     // File.Read and File.Write, on a file connection.
     if (ordinal == ours_io::READ.ordinal || ordinal == ours_io::WRITE.ordinal) {
         auto const is_read = ordinal == ours_io::READ.ordinal;

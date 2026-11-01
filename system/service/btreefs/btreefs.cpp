@@ -661,6 +661,70 @@ auto open_below_root(Connection &connection, ours_io::OpenRequest const &open) -
     return open_below_root_bind(open, requested, object);
 }
 
+/// Unlinks the file |name|: the file's DATA items go first -- each block
+/// back to the bitmap as its item leaves, a crash in the middle leaking a
+/// block but never dangling a name -- then the INODE item, and the DIRENT
+/// last, the name gone only when everything under it is.
+auto unlink_file(std::string_view const name) -> Status {
+    auto &storage = *STORAGE;
+    auto const found = find_file(name);
+    if (found.is_err()) {
+        return found.unwrap_err();
+    }
+    auto const object = found.unwrap();
+    while (true) {
+        // The file's first DATA item, one per turn: the walk starts at the
+        // file's first block, skips the INODE item that sorts before the
+        // DATA ones, and stops at the next object's items.
+        auto block_key = ours_btreefs::Key{};
+        auto seen = false;
+        auto const walked = ours_btreefs::scan(
+            device(), storage.volume, {.object = object, .type = ItemType::Data, .offset = 0},
+            [&](ours_btreefs::Key const &key, ours_btreefs::Value const &) -> bool {
+                if (key.object != object) {
+                    return false;
+                }
+                if (key.type != ItemType::Data) {
+                    return true;
+                }
+                block_key = key;
+                seen = true;
+                return false;
+            });
+        if (walked != Status::Ok) {
+            return walked;
+        }
+        if (!seen) {
+            break;
+        }
+        auto item = ours_btreefs::Value{};
+        if (auto const status = ours_btreefs::lookup(device(), storage.volume, block_key, item);
+            status != Status::Ok) {
+            return status;
+        }
+        if (auto const status = ours_btreefs::remove(device(), storage.volume, block_key);
+            status != Status::Ok) {
+            return status;
+        }
+        if (auto const status = ours_btreefs::free_block(device(), storage.volume,
+                                                         ours_btreefs::decode_data_value(item));
+            status != Status::Ok) {
+            return status;
+        }
+    }
+    // The INODE goes next, the DIRENT last: the name survives until nothing
+    // is left under it.
+    if (auto const status = ours_btreefs::remove(
+            device(), storage.volume, {.object = object, .type = ItemType::Inode, .offset = 0});
+        status != Status::Ok) {
+        return status;
+    }
+    return ours_btreefs::remove(device(), storage.volume,
+                                {.object = ROOT_OBJECT,
+                                 .type = ItemType::Dirent,
+                                 .offset = ours_btreefs::dirent_offset(name)});
+}
+
 /// Serves one message that arrived on the connection |index|'s channel: the
 /// dispatch, one message per wait, as ioservice's Server::dispatch is. The
 /// replies go through the shared reply buffer, which one callback at a time
@@ -751,6 +815,18 @@ auto handle(usize const index) -> loop::Action {
             return loop::Action::Close;
         }
         read_dirents(connection, request.unwrap(), storage.reply_bytes);
+        return loop::Action::Rearm;
+    }
+
+    // Directory.Unlink, on the root only: the file leaves the volume.
+    if (ordinal == ours_io::UNLINK.ordinal) {
+        auto const request = ours_io::decode_unlink(message);
+        if (request.is_err() || connection.target != Target::Root) {
+            forget(index);
+            return loop::Action::Close;
+        }
+        auto const status = unlink_file(request->path);
+        answer_status(connection.channel, ours_io::UNLINK, request->txid, status);
         return loop::Action::Rearm;
     }
 

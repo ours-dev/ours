@@ -1850,7 +1850,23 @@ auto check_disk() -> void {
     }
     auto _ = fsio::close(file.unwrap());
 
-    // The listing names it.
+    // Unlink it: the name goes, a second unlink misses, a reopen misses.
+    if (!expect("/disk unlink", fsio::unlink(FILE), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk unlink twice", fsio::unlink(FILE), Status::NotFound);
+    // The reopen is a one-way Open: the refusal is the epitaph its first
+    // read answers.
+    auto const reopened = fsio::open(FILE, Flags::PermReadBytes);
+    if (status_of(reopened) == Status::Ok) {
+        auto byte = std::array<u8, 1>{};
+        expect("/disk read unlinked", status_of(fsio::read(reopened.unwrap(), byte)),
+               Status::NotFound);
+        auto _ = fsio::close(reopened.unwrap());
+    }
+
+    // The listing no longer names it.
     auto listing = std::array<u8, 512>{};
     auto const dirents = fsio::read_dirents(root.unwrap(), listing);
     if (expect("/disk listing", status_of(dirents), Status::Ok)) {
@@ -1865,8 +1881,8 @@ auto check_disk() -> void {
                 named = true;
             }
         }
-        if (!named) {
-            fail("/disk listing: the file is not named");
+        if (named) {
+            fail("/disk listing: the unlinked file is still named");
         }
     }
     auto _ = fsio::close(root.unwrap());

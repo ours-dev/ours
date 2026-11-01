@@ -181,6 +181,10 @@ auto write(ours::Uandle file, std::span<u8 const> data) -> ustl::Result<usize, o
 auto read_dirents(ours::Uandle directory, std::span<u8> buffer)
     -> ustl::Result<usize, ours::Status>;
 
+/// Directory.Unlink on the entry |path| names: the name goes, and with it
+/// what it named. NotFound when nothing carries the name.
+auto unlink(std::string_view path) -> ours::Status;
+
 /// File.GetBackingMemory on |file|: a VMO of the file's contents with the
 /// rights |flags| ask for, which the caller owns. To run a program, ask for
 /// READ, EXECUTE and PRIVATE_CLONE, as spawn() does; the server refuses EXECUTE
