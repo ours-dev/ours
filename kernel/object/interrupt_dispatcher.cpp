@@ -312,6 +312,12 @@ auto InterruptDispatcher::destroy() -> Status {
         old_state = std::exchange(m_state, State::Destroyed);
     }
     if (old_state == State::Destroyed) {
+        // Destroyed already: by an earlier destroy(), or by the kernel taking
+        // the line away. In the second case the removal may be using the
+        // object -- the action embedded in it -- until it lets the line go,
+        // and this caller is about to free the object. The detach waits for
+        // the removal, or finds it done.
+        unregister_interrupt_handler();
         return Status::Ok;
     }
 
@@ -343,6 +349,26 @@ auto InterruptDispatcher::destroy() -> Status {
     // park.
     m_event.signal();
     return Status::Ok;
+}
+
+auto InterruptDispatcher::line_revoked() -> void {
+    m_canary.verify<Self>();
+
+    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
+    auto const old_state = std::exchange(m_state, State::Destroyed);
+    if (old_state == State::Destroyed) {
+        return;
+    }
+
+    // destroy()'s tail: a bound port loses the packet it holds, whose time is
+    // lost with the object; otherwise the parked waiter wakes and finds
+    // Destroyed, and with none parked the signal is latched for the next wait.
+    // Only a physical interrupt has a line to lose, so no signal to keep up.
+    if (m_port) {
+        auto _ = m_port->remove_interrupt_packet(&m_port_packet);
+        return;
+    }
+    m_event.signal();
 }
 
 auto InterruptDispatcher::bind(ustl::Arc<PortDispatcher> port, u64 const key) -> Status {

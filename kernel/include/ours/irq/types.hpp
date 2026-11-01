@@ -103,6 +103,18 @@ struct LineMode {
 /// handler was constructed with (Action), so the handler finds its
 /// device's state there rather than in a global.
 using IrqHandler = auto (*)(VIrqNum virqnum, void *context) -> IrqReturn;
+
+/// What an action may ask to be told when the kernel takes its line away
+/// from it (Desc::revoke()), instead of its owner letting the line go: the
+/// line's virq and the action's context, as the handler gets them.
+///
+/// Called with the line's lock (L1) held, interrupts off and preemption off,
+/// once the action is off the line and before the action's line is cleared.
+/// So it runs where a handler runs: it may wake a thread and take the locks a
+/// handler takes after L1, and must not call into the irq layer, which would
+/// take L1 again. Its owner may free the action and its context only after
+/// irq::detach() has returned, which waits for this call to finish.
+using IrqCancel = auto (*)(VIrqNum virqnum, void *context) -> void;
 } // namespace ours::irq
 
 #endif // OURS_IRQ_TYPES_HPP

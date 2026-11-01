@@ -120,6 +120,14 @@ auto handle_irq_for_test(VIrqNum const virqnum) -> IrqReturn {
     return *result;
 }
 
+auto revoke_line_for_test(VIrqNum const virqnum) -> Status {
+    return get_desc_table()->revoke_line(virqnum);
+}
+
+auto unmark_dying_for_test(VIrqNum const virqnum) -> void {
+    get_desc_table()->unmark_dying(virqnum);
+}
+
 auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
     return get_desc_table()->spurious_count(virqnum);
 }

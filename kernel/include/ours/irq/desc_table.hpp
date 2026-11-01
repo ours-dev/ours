@@ -63,6 +63,19 @@ class DescTable {
     auto is_masked(VIrqNum virqnum) -> ktl::Result<bool>;
     [[nodiscard]]
     auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
+    /// Takes every action off line `virqnum`, as the removal of the domain it
+    /// belongs to would (Desc::mark_dying(), then Desc::revoke()): the line
+    /// is left marked, and its actions told. NoResource if there is no such
+    /// line; AlreadyBound, with nothing changed, if the line is Permanent or
+    /// an action on it gave no cancel hook.
+    [[nodiscard]]
+    auto revoke_line(VIrqNum virqnum) -> Status;
+
+    /// Takes the mark off line `virqnum`, so that it takes actions again. For
+    /// a removal that was refused further on, and for tests: a domain that is
+    /// gone has no line to mark. Nothing if there is no such line.
+    auto unmark_dying(VIrqNum virqnum) -> void;
+
     /// Whether line `virqnum` is held by an action that says Permanent, which
     /// is how the kernel's own code holds a line; false if there is no such
     /// line.

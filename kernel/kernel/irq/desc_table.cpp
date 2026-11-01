@@ -157,6 +157,24 @@ auto DescTable::detach(Action &action) -> Status {
     return desc->detach(action);
 }
 
+auto DescTable::revoke_line(VIrqNum const virqnum) -> Status {
+    auto const line = find_line(virqnum);
+    if (line.is_err()) {
+        return line.unwrap_err();
+    }
+    if (auto const status = (*line)->mark_dying(); status != Status::Ok) {
+        return status;
+    }
+    (*line)->revoke();
+    return Status::Ok;
+}
+
+auto DescTable::unmark_dying(VIrqNum const virqnum) -> void {
+    if (auto *const desc = irqnum_to_desc(virqnum)) {
+        desc->unmark_dying();
+    }
+}
+
 /// Answers nothing: a line that is not there holds nothing to finalize, and
 /// the line checks under its own lock whether the action is still on it.
 auto DescTable::finalize_oneshot(VIrqNum const virqnum, Action const &action) -> void {

@@ -241,3 +241,53 @@ None.
 - Why is the floor widened to `usize` before it is rounded up, and what would a floor of `INVALID_V_IRQ_NUM - 30` do if it were not?
 - Why may a virq of one domain equal a hardware number of another, when none may equal a hardware number of its own?
 - Why does the default of 0 keep the machine's numbers exactly, and which test shows it?
+
+## The kernel can take a line away from its actions: a cancel hook, a Dying mark, `revoke()`, and a destroy that always waits for the line (2026-11-01)
+
+**Files**
+- `kernel/include/ours/irq/{types,action,desc,desc_table,mod}.hpp`, `kernel/kernel/irq/{desc,desc_table,mod}.cpp` — `IrqCancel`, the action's optional hook and atomic line number, `Desc::check_revocable()`, `mark_dying()`, `unmark_dying()`, `revoke()`, the table's `revoke_line()` and `unmark_dying()`, and two test hooks in the facade.
+- `kernel/object/interrupt_dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_dispatcher.hpp` — `line_revoked()`, and `destroy()` waiting for the line also when the object is destroyed already.
+- `kernel/object/interrupt_event_dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_event_dispatcher.hpp` — the object's cancel hook, and the assertion that allows NotFound.
+- `kernel/commands/irq_revoke_test.cpp` (new, `irqrevoke.test`), `kernel/commands/interrupt_line_test.cpp`, `kernel/commands/interrupt_test.cpp`, `kernel/commands/BUILD.gn` — the tests.
+- `system/public/ours/syscalls.gni` — `interrupt_create` says NoResource also for a line being taken away.
+- `.agents/tasks/irq-multi-arch/PLAN.md` — step 9 marked done.
+
+**Symptom**
+None yet, nothing calls it. D16 lets a domain be removed after boot, and the removal has to take the actions off every line of the domain from the kernel's side. Today an action leaves its line only when its owner detaches it, and an interrupt object is freed on the strength of that: `destroy()` runs `irq::detach()`, which is a barrier, and only then may the object go. The kernel taking the action off instead breaks that chain, and the review of the design found a use after free in it.
+
+**Cause**
+Two parties could now end an action's life, and the first to finish had nothing that made the second wait. The removal unlinks the action under the line's lock, tells the owner, and has one thing left to do to it, clearing its line number. The owner's `destroy()` of an object already destroyed (as the removal's hook leaves it) returned at once, before the line, so the last handle closing on another CPU could free the object, with the action embedded in it, while the removal was about to write into it.
+
+**Change**
+- An `Action` may carry a cancel hook (`IrqCancel`). Its line number is atomic: written under the line's lock, read by `detach()` without it, with acquire.
+- `Desc::mark_dying()` refuses a Permanent line and a line with an action that gave no hook (AlreadyBound) and otherwise marks the line; from then on `attach()` (both forms), `unmask()` and `configure()` answer NoResource, the check before the chip is touched, and a finalize does nothing. `check_revocable()` is the same refusal without the mark, and `unmark_dying()` undoes the mark.
+- `Desc::revoke()`, under the line's lock with preemption off (a hook may wake a thread): for each action, unlink it, run its hook, and only then store INVALID into its line number with release, which is the removal's last touch of the action. An owner's `detach()` either reads the line valid and queues on the lock behind the removal, and then finds the action gone (NotFound), or reads INVALID, and so knows the removal is done with the action and with the object it is embedded in. Held goes with the actions, and the line is masked last.
+- `InterruptDispatcher::destroy()` runs `unregister_interrupt_handler()` also when the object is destroyed already, so every destroy waits for the line. The object's hook, `line_revoked()`, is `destroy()` without that detach: the state becomes Destroyed, a parked waiter wakes (Cancelled), a bound port loses the queued packet. The assertion in the object's detach allows NotFound.
+
+The order inside `revoke()` (hook first, line number last) is what a mutant that swaps the two fails on, deterministically: the hook asks whether the action is still on its line as its owner reads it.
+
+**Reference**
+None, this project's own design (D19 of `.agents/tasks/irq-multi-arch/DESIGN.md`). The refusal of a line with an action that did not agree to be taken off is the opt-in the design review asked for.
+
+**Verification**
+- `boot_check.py`: dbg PASS, 45 passed and 4 skipped; rel PASS, 42 passed and 8 skipped, 6 of 6 required; host tests 154 passed. The same numbers as before.
+- `irqrevoke.test` (new) on four CPUs, 29 checks, all ok: `revoke()` tells two shared actions once each with the line's number, while each is still on that line as its owner reads it, takes them off (`detach()` then answers NotFound), masks the line once, and nothing handles an interrupt on it; a marked line refuses `attach()` with a mode or without, `unmask()` and `configure()` with NoResource without the chip being asked, still masks, and takes actions again once unmarked; a Permanent line and a line with an action without a hook refuse the mark and are left as they were, with no mark left behind; with a handler in flight for 20 ms on another CPU, `revoke()` returns after it and the hook is told after it; and 400 rounds of an owner's `detach()` against the removal, each side held back by turns (the detach won 199, the removal 201), where no detach that answered NotFound did so before the hook was done.
+- `interruptline.test` 78 checks (63 before): a parked waiter wakes with Cancelled, a later wait answers Cancelled, the marked line refuses an object (NoResource), the object's own destroy answers Ok twice, the line takes an object again once unmarked and closing the revoked object's handle leaves the new owner the line; bound to a port, the queued packet is taken back, an ack answers Cancelled, and the line is free after. `interrupt.test` 64 checks (58 before): a test-local object that counts its detaches shows every destroy detaches, also one that finds the object destroyed already, and that a revoke detaches nothing. The other tests of the layer unchanged and ok: `irqrcu.test` 34, `irqdomain.test` 87, `irqchip.test` 18, `irq.test` 72, `pinlines.test` 28.
+- clang-tidy on the changed sources and the three tests: no finding; the formats are clean.
+- Ten mutations, each restored byte for byte, each killed (failed checks in brackets): the line cleared before the hook (1 of 29); a second destroy not waiting (2 of 64); unmask ignoring the mark (2 of 29); attach ignoring it (2 of 29); a hookless action counted revocable (1 of 29; the first form did not compile, an unused variable, and was rerun as `&& false`); revoke not masking the line (1 of 29); a Permanent line revocable (1 of 29); revoke leaving the action on its line (2 of 29); the revoke not waking the waiter (13 of 54, the test then waiting out its time limits); the revoke leaving the packet queued (1 of 78).
+- Not verified: the use after free itself with the destroy's wait removed, other than by counting the waits and by the race above, whose window the test cannot widen; `revoke()` on a Oneshot level line that is held (the held bit is cleared, argued, not tested); weak-memory machines; more than four CPUs; the release image's behaviour of the new DEBUG_ASSERTs.
+**Deliberately not done**
+- Nothing calls `revoke_line()` but the tests, through `irq::revoke_line_for_test()`: the directory and `unregister_domain` are step 10, and the facade step 11.
+- No notice to a driver whose interrupt object is bound to a port: it gets none (D20), only an Ack or bind that answers Cancelled.
+- No test of the use after free itself when the destroy's wait is removed, other than by counting the waits (`RecordingInterrupt`): the interleaving needs the removal paused between its hook and its last store, which nothing in the test can do.
+
+**How it was found**
+By the independent review of the design of D16, 2026-11-01: two reviewers found the use after free between the hook and the owner's destroy.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does `revoke()` store INVALID after the hook and not before, and what can the owner's `detach()` conclude from reading INVALID?
+- Why must a `destroy()` of an object already destroyed still wait for the line?
+- Why does `mark_dying()` look at the actions' hooks under the line's lock, and what would `check_revocable()` followed by `mark_dying()` without that do?

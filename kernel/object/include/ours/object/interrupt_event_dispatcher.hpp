@@ -68,7 +68,8 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     ///
     /// AccessDenied when the kernel holds the line for its own use, before
     /// anything is allocated or touched; AlreadyBound when another action has
-    /// it; NoResource when no line has that number, and InvArgs for the one number no line can have, as
+    /// it; NoResource when no line has that number or the kernel is taking the
+    /// line away (the removal of its domain), and InvArgs for the one number no line can have, as
     /// irq::attach() answers; NotSupported when ModeDefault asks a controller
     /// that cannot say how its line signals; NoMemory.
     [[nodiscard]]
@@ -80,6 +81,9 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
 
     /// The action's handler: |context| is the object.
     static auto on_interrupt(VIrqNum line, void *context) -> irq::IrqReturn;
+    /// The action's cancel hook: the kernel is taking the line away from the
+    /// object (line_revoked()).
+    static auto on_revoked(VIrqNum line, void *context) -> void;
 
     /// Empty: the object writes no mask of its own. The line's flow masks a
     /// level line from each interrupt until the ack, and destroy()'s detach

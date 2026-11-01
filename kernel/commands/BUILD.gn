@@ -28,6 +28,7 @@ source_set("commands") {
     "irq_chip_test.cpp",
     "irq_domain_test.cpp",
     "irq_rcu_test.cpp",
+    "irq_revoke_test.cpp",
     "irq_test.cpp",
     "large_page_test.cpp",
     "lockup.cpp",

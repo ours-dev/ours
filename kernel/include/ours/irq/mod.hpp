@@ -259,6 +259,16 @@ auto handle_irq_generic(HIrqNum hirqnum) -> bool;
 [[nodiscard]]
 auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn;
 
+/// What the removal of a domain does to one of its lines (DescTable::
+/// revoke_line()): marks the line and takes its actions off it, telling
+/// each through its cancel hook; AlreadyBound with nothing changed for a
+/// Permanent line or an action with no hook, NoResource for no such line.
+/// Nothing calls it but tests yet: the table is one for the machine's life.
+/// unmark_dying_for_test() makes the line take actions again.
+[[nodiscard]]
+auto revoke_line_for_test(VIrqNum virqnum) -> Status;
+auto unmark_dying_for_test(VIrqNum virqnum) -> void;
+
 /// How many interrupts on line `virqnum` no action handled since boot;
 /// none if there is no such line.
 [[nodiscard]]

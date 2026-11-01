@@ -38,6 +38,12 @@
 //     dispatch then finds nobody on it, and a create takes it again; the
 //     last handle going does the same, and closing a handle to an object
 //     destroyed already leaves the line's new owner alone;
+//   - the kernel taking the line away (irq::revoke_line_for_test(), what the
+//     removal of the line's domain does): a parked waiter wakes with Cancelled,
+//     a bound port loses the packet it holds, and an ack answers Cancelled;
+//     the marked line refuses a new object (NoResource), the object's own
+//     destroy() that follows answers Ok, and once the mark is taken off the
+//     line is free again;
 //   - a mode sets how the line signals, and the default mode leaves it so;
 //   - a level object's line is unmasked once created, masked by an interrupt
 //     until it is acked -- by the next wait when unbound, by ack() when bound
@@ -512,6 +518,89 @@ namespace {
         // The last handle going destroys the object, which lets the line go.
         next = KernelHandle<InterruptDispatcher>();
         answered(tally, make(&third), Status::Ok, "the last handle going lets the line go");
+    }
+
+    /// The kernel taking the line away from the object, as the removal of
+    /// the line's domain does (irq::revoke_line_for_test()): the object is
+    /// destroyed from the line's side, with the line's lock held, and its own
+    /// destroy() that follows still has to be safe.
+    auto check_revoked(Tally &tally) -> void {
+        KernelHandle<InterruptDispatcher> interrupt;
+        if (make(&interrupt) != Status::Ok) {
+            verdict(tally, false, "take the line for the revoke");
+            return;
+        }
+        Waiter *waiter = nullptr;
+        auto *const thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
+        if (thread == nullptr) {
+            return;
+        }
+        answered(tally, irq::revoke_line_for_test(free_line()), Status::Ok,
+                 "the kernel takes the line away");
+        if (!joined(thread)) {
+            log::error("interruptline.test:   leaking a waiter; its thread may still use it");
+            verdict(tally, false, "wakes the parked waiter");
+            return;
+        }
+        verdict(tally, waiter->status == Status::Cancelled, "a parked waiter wakes with Cancelled");
+        delete waiter;
+
+        Instant timestamp = 0;
+        answered(tally, interrupt.dispatcher()->wait(&timestamp), Status::Cancelled,
+                 "a later wait answers Cancelled");
+        KernelHandle<InterruptDispatcher> other;
+        answered(tally, make(&other), Status::NoResource,
+                 "a line marked for removal refuses an object");
+        verdict(tally, irq::spurious_count(free_line()).is_some(),
+                "though the line is still there");
+
+        // The object's own destroy, which the last handle going makes, finds
+        // the line gone from it already and waits for the removal to be done.
+        answered(tally, interrupt.dispatcher()->destroy(), Status::Ok,
+                 "a destroy after the revoke answers Ok");
+        answered(tally, interrupt.dispatcher()->destroy(), Status::Ok, "and a second one");
+
+        irq::unmark_dying_for_test(free_line());
+        answered(tally, make(&other), Status::Ok, "once unmarked the line takes an object again");
+        // Closing the revoked object's handle leaves the new owner the line.
+        interrupt = KernelHandle<InterruptDispatcher>();
+        KernelHandle<InterruptDispatcher> third;
+        answered(tally, make(&third), Status::AlreadyBound,
+                 "and closing the revoked object's handle leaves the new owner the line");
+        other = KernelHandle<InterruptDispatcher>();
+        answered(tally, make(&third), Status::Ok, "which goes when its last handle does");
+        third = KernelHandle<InterruptDispatcher>();
+    }
+
+    /// Bound to a port, the object has a packet queued that the revoke takes
+    /// back, as destroy() does, and says nothing more.
+    auto check_revoked_bound(Tally &tally) -> void {
+        KernelHandle<InterruptDispatcher> interrupt;
+        KernelHandle<PortDispatcher> port;
+        auto rights = Rights::None;
+        if (make(&interrupt) != Status::Ok ||
+            PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
+                Status::Ok ||
+            interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
+            verdict(tally, false, "take the line and bind it to a port for the revoke");
+            return;
+        }
+        auto &object = *interrupt.dispatcher();
+        auto &queue = *port.dispatcher();
+
+        auto _ = fire();
+        answered(tally, irq::revoke_line_for_test(free_line()), Status::Ok,
+                 "the kernel takes the line away from a bound object with a packet queued");
+        auto packet = PortPacket{};
+        verdict(tally, queue.dequeue(0, &packet) == Status::TimeOut,
+                "the queued packet is taken back from the port");
+        answered(tally, object.ack(), Status::Cancelled, "and an ack answers Cancelled");
+        answered(tally, object.destroy(), Status::Ok, "a destroy after the revoke answers Ok");
+
+        irq::unmark_dying_for_test(free_line());
+        interrupt = KernelHandle<InterruptDispatcher>();
+        KernelHandle<InterruptDispatcher> next;
+        answered(tally, make(&next), Status::Ok, "the line is free once it is unmarked");
     }
 
     auto check_modes(Tally &tally) -> void {
@@ -1029,6 +1118,8 @@ namespace {
         check_port(tally);
         check_vector_without_line(tally);
         check_destroy(tally);
+        check_revoked(tally);
+        check_revoked_bound(tally);
         check_modes(tally);
         check_level_mask_unbound(tally);
         check_level_mask_bound(tally);

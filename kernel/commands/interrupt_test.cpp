@@ -896,6 +896,63 @@ namespace {
         return rounds;
     }
 
+    /// A physical kind of interrupt with no line behind it: it counts how many
+    /// times a destroy asked it to let its line go, and lets the test play the
+    /// kernel taking the line away (line_revoked()).
+    class RecordingInterrupt final: public InterruptDispatcher {
+      public:
+        RecordingInterrupt() : InterruptDispatcher(Flags::None) {}
+
+        using InterruptDispatcher::line_revoked;
+
+        std::atomic<u32> detaches{0};
+
+      private:
+        auto mask_interrupt() -> void override {}
+        auto unmask_interrupt() -> void override {}
+        auto deactivate_interrupt() -> void override {}
+        auto unregister_interrupt_handler() -> void override {
+            detaches.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    /// The rule the kernel taking a line away rests on: every destroy() waits
+    /// for the line, also one that finds the object destroyed already. The
+    /// removal destroys the object from the line's side and is still using it
+    /// until it has let the line go, so a destroy that returned at once could
+    /// let the caller free the object under it. The wait is the object's
+    /// detach (unregister_interrupt_handler()), which this counts.
+    auto check_destroy_waits_for_the_line(Tally &tally) -> void {
+        auto revoked =
+            ustl::Arc<RecordingInterrupt>::adopt(new (mm::GAF_KERNEL) RecordingInterrupt());
+        auto plain =
+            ustl::Arc<RecordingInterrupt>::adopt(new (mm::GAF_KERNEL) RecordingInterrupt());
+        if (!revoked || !plain) {
+            verdict(tally, false, "allocate the objects");
+            return;
+        }
+
+        auto const first = plain->destroy();
+        verdict(tally, first == Status::Ok && plain->detaches.load() == 1,
+                "a destroy detaches once");
+        auto const again = plain->destroy();
+        verdict(tally, again == Status::Ok && plain->detaches.load() == 2,
+                "and a second destroy waits for the line again, though the object is destroyed");
+
+        Instant timestamp = 0;
+        revoked->line_revoked();
+        verdict(tally, revoked->wait(&timestamp) == Status::Cancelled,
+                "an object whose line was taken away is destroyed: a wait answers Cancelled");
+        verdict(tally, revoked->detaches.load() == 0,
+                "and the revoke detached nothing: the removal has unlinked the action itself");
+        auto const destroyed = revoked->destroy();
+        verdict(tally, destroyed == Status::Ok && revoked->detaches.load() == 1,
+                "its own destroy answers Ok and still waits for the line");
+        revoked->line_revoked();
+        verdict(tally, revoked->wait(&timestamp) == Status::Cancelled,
+                "a second revoke changes nothing");
+    }
+
     auto interrupt_test_command(int argc, char **argv) -> int {
         auto const rounds = parse_rounds(argc, argv);
         if (rounds == 0) {
@@ -922,6 +979,7 @@ namespace {
         check_idle_signal_on_a_port(tally);
         check_idle_follows_the_state(tally, rounds, second_cpu);
         check_turns(tally, rounds, first_cpu, second_cpu);
+        check_destroy_waits_for_the_line(tally);
 
         if (tally.failed != 0) {
             log::error("interrupt.test: FAILED -- {} of {} checks", tally.failed,

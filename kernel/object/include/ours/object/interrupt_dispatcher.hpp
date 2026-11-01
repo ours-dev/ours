@@ -126,7 +126,11 @@ class InterruptDispatcher: public InterruptDispatcherBase {
 
     /// Ends the interrupt: the line is masked and let go of, and a thread
     /// waiting on it wakes with Cancelled, as does every later wait and
-    /// trigger. A second destroy does nothing. A virtual interrupt raises
+    /// trigger. A second destroy does not end it again, but it still waits for
+    /// the line, as the first does: the kernel taking the line away
+    /// (line_revoked()) destroys the object too, and the removal is using it
+    /// until it has let the line go, so every destroy has to wait for that
+    /// before its caller may free the object. A virtual interrupt raises
     /// Idle, and keeps it up.
     ///
     /// Bound to a port, a packet still queued there is taken back, so that
@@ -211,6 +215,17 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// says so (unmask_interrupt()). Once the object is destroyed it does
     /// nothing: the line is about to be let go of.
     auto handle_interrupt() -> void;
+
+    /// The kernel took the line away from this object (irq::Desc::revoke()):
+    /// the object is destroyed as destroy() would, except that the line is
+    /// let go of already, so nothing here detaches. Called with the line's
+    /// lock held, in the context of the removal, so it takes only the locks a
+    /// handler takes after it, and it wakes the parked waiter with Cancelled,
+    /// or takes a queued packet off the bound port; a bound port is told
+    /// nothing more. Nothing happens if the object is destroyed already. The
+    /// object must not be freed until destroy() has returned, which waits
+    /// for the removal to be done with it.
+    auto line_revoked() -> void;
 
     /// The four operations on what stands behind the interrupt, each kind's
     /// own. A virtual interrupt has nothing to do in any of them.
