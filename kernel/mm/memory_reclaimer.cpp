@@ -1,6 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/init.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_node.hpp>
@@ -43,6 +44,16 @@ auto MemoryReclaimer::request(usize const frames) -> void {
 }
 
 auto MemoryReclaimer::reclaim(usize const frames) -> usize {
+    // A pause, or nothing asked, does not wait out a walk already running.
+    // The tests that pause the reclaimer must not block behind one.
+    if (paused() || frames == 0) {
+        return 0;
+    }
+    // One walk at a time. The page a walk chooses stays on its queue until
+    // that walk frees it, and the only name it has meanwhile is its frame
+    // pointer. A second walk can be given that pointer again after the frame
+    // has been handed out once more, and then free the new page.
+    Guard guard{m_reclaim_lock};
     if (paused()) {
         return 0;
     }

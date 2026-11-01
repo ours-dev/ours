@@ -5,6 +5,7 @@
 
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
+#include <ours/sync/mutex.hpp>
 #include <ours/types.hpp>
 
 #include <atomic>
@@ -23,7 +24,8 @@ namespace ours::mm {
 /// Called two ways, both by the watchdog (D3 of .agents/tasks/page-reclaim):
 /// request() at Warning and Critical, which wakes a thread of its own and
 /// returns, and reclaim() at OutOfMemory, which the watchdog's thread calls
-/// and waits for before it refuses the allocations that could wait. Nothing
+/// and waits for before it refuses the allocations that could wait. One
+/// reclaim() walks at a time: a second caller waits, then walks. Nothing
 /// reclaims in the background, or when the watchdog has not asked.
 class MemoryReclaimer {
     using Self = MemoryReclaimer;
@@ -46,7 +48,8 @@ class MemoryReclaimer {
 
     /// Gives back up to |frames| frames now, on the calling thread: zero
     /// pages on every node first, then pager pages on every node. How many
-    /// frames it gave back, 0 while a Pause lives. Takes locks that sleep.
+    /// frames it gave back, 0 while a Pause lives or |frames| is 0. A walk
+    /// already running is waited out first. Takes locks that sleep.
     auto reclaim(usize frames) -> usize;
 
     /// While one is alive nothing is reclaimed, request() or reclaim(): for a
@@ -54,15 +57,18 @@ class MemoryReclaimer {
     /// wants to see it decide and not what reclaiming does to the answer.
     class Pause {
       public:
-        Pause() {
-            get().m_pauses.fetch_add(1, std::memory_order_acq_rel);
+        explicit Pause(MemoryReclaimer &reclaimer) : m_reclaimer(reclaimer) {
+            m_reclaimer.m_pauses.fetch_add(1, std::memory_order_acq_rel);
         }
         ~Pause() {
-            get().m_pauses.fetch_sub(1, std::memory_order_acq_rel);
+            m_reclaimer.m_pauses.fetch_sub(1, std::memory_order_acq_rel);
         }
 
         Pause(Pause const &) = delete;
         auto operator=(Pause const &) -> Pause & = delete;
+
+      private:
+        MemoryReclaimer &m_reclaimer;
     };
 
   private:
@@ -83,6 +89,12 @@ class MemoryReclaimer {
     std::atomic<usize> m_wanted{0};
 
     std::atomic<usize> m_pauses{0};
+
+    /// Held for one reclaim() and nothing else. request() does not take it:
+    /// the watchdog calls request() while holding its own mutex, and a walk
+    /// sleeps in the locks it takes, so taking this there would make every
+    /// look wait the walk out.
+    sync::Mutex m_reclaim_lock;
 };
 
 } // namespace ours::mm
