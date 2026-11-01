@@ -111,3 +111,37 @@ milestone.
   the next transaction do with those blocks?
 - `scan` stopped trusting the leaves' chain -- what exact act of a split
   breaks the chain, and why does the in-order walk never notice?
+
+## Title: the dead bits clear after the superblock, not before (2026-11-01)
+
+**Files**
+- `system/lib/ours.btreefs/include/ours_btreefs/ours_btreefs.hpp` — `Transaction::commit` reordered: cached blocks, taken bits set, superblock swap, and the dead bits cleared last; the gate-device test `ASuperblockFailureLeavesTheOldTreeWhole` beside the others.
+
+**Symptom**
+Latent, cannot be triggered today by the component's callers: the corruption window opens only when a commit fails or crashes between clearing a dead block's bit and writing the superblock.
+
+**Cause**
+The commit order had the dead-bit clear on the wrong side of the swap. Until the superblock lands, the committed tree is the one the OLD generation names, and it still references the dead blocks: clearing their bits ahead of the swap marked the live tree's own nodes free, and one allocation later the live tree read overwritten data -- a silent corruption window. The fix costs nothing: the swap is the moment the dead blocks become truly unreferenced, so their bits clear after it. A failure in that clear leaks the block (bit set, nothing naming it) and never corrupts.
+
+**Change**
+`commit()`: cached blocks, taken bits set, superblock slot written with the next generation, `m_committed` updated, and only then the dead-bit clears. The review found it by walking the crash timeline against the commit order; the gate-device test pins it.
+
+**Reference**
+The deferred free: btrfs clears freed extents only after the transaction's superblock is committed, for the same reason -- the old generation must stay whole until the new one is named.
+
+**Verification**
+The host test arms a gate device that refuses the superblock write: the failed commit leaves the old generation's three items reading back whole, its leaf's bit still set, and the generation unchanged. `boot_check.py`: dbg PASS (44), rel PASS (42, 6/6 required), host-tests PASS 158. Disked: `routing_checks: passed`. clang-tidy quiet.
+
+**Deliberately not done**
+- Reclaiming leaked blocks (crash between swap and clear): a scan of the bitmap against the live tree is a future maintenance pass; the leak is bounded by one operation's dead list.
+
+**How it was found**
+The code review this session: walking the commit's crash timeline against the write order.
+
+**The user's prediction**
+None. The user asked for the review with a priority order; this was its first finding.
+
+**Three questions you should be able to answer**
+- Why is "taken bits set before the swap" safe while "dead bits cleared before the swap" is not, when both precede the commit point?
+- What does a crash between the swap and a dead-bit clear cost, and why is that the acceptable side of the trade?
+- Why must a dead-clear failure after the swap NOT fail the commit, and what does the caller observe instead?
