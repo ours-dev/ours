@@ -154,7 +154,10 @@ namespace detail {
 } // namespace detail
 
 auto dirent_offset(std::string_view name) -> u64 {
-    // FNV-1a, 64 bits: the offset basis, then prime and XOR per byte.
+    // FNV-1a, 64 bits: the offset basis, then prime and XOR per byte. The
+    // offset a DIRENT carries is the key's 56 bits wide, so the hash's top
+    // 8 bits fold into the bottom -- no name refused for being hashed high,
+    // and no two of the folded values lost.
     auto constexpr BASIS = u64{14695981039346656037ULL};
     auto constexpr PRIME = u64{1099511628211ULL};
     auto hash = BASIS;
@@ -162,7 +165,7 @@ auto dirent_offset(std::string_view name) -> u64 {
         hash ^= byte;
         hash *= PRIME;
     }
-    return hash;
+    return (hash >> detail::OFFSET_BITS) ^ (hash & detail::OFFSET_MASK);
 }
 
 auto encode_inode_value(Value &out, u64 size, ObjectKind kind) -> void {

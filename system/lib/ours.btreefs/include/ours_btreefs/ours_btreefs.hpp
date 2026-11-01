@@ -151,7 +151,8 @@ auto alloc_object(Device &device, Volume &volume) -> u64 {
     return object;
 }
 
-/// The hash a DIRENT's offset carries: FNV-1a over the name's bytes.
+/// The hash a DIRENT's offset carries: FNV-1a over the name's bytes, folded
+/// to the key's 56-bit offset.
 [[nodiscard]]
 auto dirent_offset(std::string_view name) -> u64;
 
@@ -558,24 +559,26 @@ auto insert(Device &device, Volume &volume, Key const &key, Value const &value) 
         }
     }
 
-    // The path down, each level's block and buffer kept for the walk back up
-    // that a split's separator push is.
-    auto path = std::array<std::pair<u64, std::array<u8, BLOCK_BYTES>>, 16>{};
+    // The path down, block numbers only: the nodes are read again on the
+    // walk back up that a split's separator push is, no one else having
+    // written them meanwhile (one thread serves the volume). Buffers on the
+    // path would cost 4 KiB each per level; this thread's stack is small.
+    auto path = std::array<u64, 16>{};
     if (u64{volume.height} > path.size()) {
         return ours::Status::BadState;
     }
-    path[0].first = volume.root;
+    path[0] = volume.root;
+    auto node = std::array<u8, BLOCK_BYTES>{};
     for (u8 level = 0; level + 1 < volume.height; ++level) {
-        auto &node = path[level].second;
-        if (auto const status = device.read_block(path[level].first, std::span{node});
+        if (auto const status = device.read_block(path[level], std::span{node});
             status != ours::Status::Ok) {
             return status;
         }
-        path[level + 1].first =
+        path[level + 1] =
             detail::child_for(node, detail::load_le16(node, detail::COUNT_OFFSET), key);
     }
-    auto &leaf_node = path[volume.height - 1].second;
-    if (auto const status = device.read_block(path[volume.height - 1].first, std::span{leaf_node});
+    auto leaf_node = std::array<u8, BLOCK_BYTES>{};
+    if (auto const status = device.read_block(path[volume.height - 1], std::span{leaf_node});
         status != ours::Status::Ok) {
         return status;
     }
@@ -587,7 +590,7 @@ auto insert(Device &device, Volume &volume, Key const &key, Value const &value) 
 
     if (leaf_count < LEAF_CAPACITY) {
         detail::leaf_insert(leaf_node, leaf_count, at, key, value);
-        return device.write_block(path[volume.height - 1].first, std::span{leaf_node});
+        return device.write_block(path[volume.height - 1], std::span{leaf_node});
     }
 
     // The leaf is full: split it, put the item into whichever half its key
@@ -606,7 +609,7 @@ auto insert(Device &device, Volume &volume, Key const &key, Value const &value) 
     // The chain: the right leaf took |left|'s old link in the split; the
     // left one now points at the right.
     detail::store_le64(leaf_node, detail::NEXT_LEAF_OFFSET, right_block.unwrap());
-    if (auto const status = device.write_block(path[volume.height - 1].first, std::span{leaf_node});
+    if (auto const status = device.write_block(path[volume.height - 1], std::span{leaf_node});
         status != ours::Status::Ok) {
         return status;
     }
@@ -623,12 +626,15 @@ auto insert(Device &device, Volume &volume, Key const &key, Value const &value) 
     auto level = u8{static_cast<u8>(volume.height - 1)};
     while (level > 0) {
         --level;
-        auto &node = path[level].second;
+        if (auto const status = device.read_block(path[level], std::span{node});
+            status != ours::Status::Ok) {
+            return status;
+        }
         auto count = usize{detail::load_le16(node, detail::COUNT_OFFSET)};
         auto const at = detail::internal_upper_bound(node, count, up_key);
         if (count < INTERNAL_CAPACITY) {
             detail::internal_insert(node, count, at, up_key, up_child);
-            return device.write_block(path[level].first, std::span{node});
+            return device.write_block(path[level], std::span{node});
         }
         auto right_node = std::array<u8, BLOCK_BYTES>{};
         auto const mid = detail::split_internal(node, right_node);
@@ -640,7 +646,7 @@ auto insert(Device &device, Volume &volume, Key const &key, Value const &value) 
         if (right.is_err()) {
             return right.unwrap_err();
         }
-        if (auto const status = device.write_block(path[level].first, std::span{node});
+        if (auto const status = device.write_block(path[level], std::span{node});
             status != ours::Status::Ok) {
             return status;
         }
