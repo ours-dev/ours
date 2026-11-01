@@ -193,3 +193,51 @@ None.
 - Why does a chip that answers `trigger_mode()` from a table nobody filled give a level source the wrong flow?
 - Where does a line with a null `trigger_mode()` get its flow when an owner attaches with a mode?
 - Why is `issue_eoi()` called on a masked source, and what does a PLIC do with the completion of a source whose enable bit is clear?
+
+## `Domain::init` takes a floor for the first virq, so two domains can be given disjoint numbers (2026-11-01)
+
+**Files**
+- `kernel/include/ours/irq/domain.hpp`, `kernel/kernel/irq/domain.cpp` — `init(hirqnums, min_first = 0)`, and the paragraph of the header that says where a domain's virqs start.
+- `kernel/commands/irq_domain_test.cpp` — `irqdomain.test` gains the floor cases and the refusals at the end of the number space (87 checks, 39 before).
+- `.agents/tasks/irq-multi-arch/PLAN.md` — step 6 marked done.
+
+**Symptom**
+Latent. Nothing on x86 changes: the machine has one domain. `Domain::init` started each domain at the first multiple of 32 past its own highest hardware number, so a second domain built the same way would start at the same virq as the first and give two lines one number. An action records its line by virq alone, so the two lines could not be told apart.
+
+**Cause**
+Not a mistake: the rule was written for one domain per machine ("every virq is past all of them", `domain.hpp`), and D10 (b) (a table per controller, decided 2026-11-01 against the recommendation) makes a second domain possible. The start of a domain was a function of its own list only, with no way for the caller to say which numbers were already taken.
+
+**Change**
+One defaulted parameter, the lowest virq the domain may start at, and the start is the higher of the two bounds, rounded up to a multiple of 32:
+
+```cpp
+auto const first =
+    ustl::round_up(std::max(nr_hwirqs, static_cast<usize>(min_first)), VIRQ_ALIGN);
+```
+
+The floor is widened to `usize` before it is rounded, so a floor near the end of the 32-bit space rounds up to 2^32 and is refused by the check that was already there (`first + count >= INVALID_V_IRQ_NUM`, InvArgs), and does not wrap to a low number. A floor of 0, the default, is no floor, and `DescTable::init` still passes none, so the machine's numbers are the numbers it had. The header says what the floor is for: the caller gives the first virq not yet taken by another domain, and a virq of one domain may equal a hardware number of another, which the old text ruled out only because there was one domain. The allocator that works out the floor is the directory, a later step; this step is the piece of `Domain` it needs.
+
+**Reference**
+None, this project's own design: D14 of `.agents/tasks/irq-multi-arch/DESIGN.md` (a global allocator, one contiguous block per domain, blocks not reused) chose the allocator, and this is the half of it that lives in `Domain`.
+
+**Verification**
+- `boot_check.py`: dbg PASS, 45 passed and 4 skipped; rel PASS, 42 passed and 8 skipped, 6 of 6 required; host tests 154 passed. The same numbers as before the change.
+- `irqdomain.test`: 87 checks, all ok. A floor above the domain's own start, between two multiples of 32, one past a multiple of 32, at the start, below it, 0, and above a start a high hardware number already raised; refused: a floor at `INVALID_V_IRQ_NUM`, one that rounds out of the space, a list of 32 lines from the last multiple of 32 with room; the last multiple of 32 with room for one line is taken, and a refusal keeps nothing. The other five kernel-shell tests unchanged and ok: `irqchip.test` 18, `irq.test` 72, `interruptline.test` 63, `pinlines.test` 28, `interrupt.test` 58 (`pinlines.test` and `interruptline.test` unchanged is what shows the machine's numbers did not move).
+- clang-tidy on the two sources and the test: no finding on a changed line (one on the test, a local named in capitals, fixed).
+- Four mutations, each restored byte for byte and rebuilt, each killed by `irqdomain.test`: the floor ignored; the floor not rounded; `min` for `max`; the floor cut to 8 bits.
+- Not verified: a second domain on a real machine, or any caller that passes a floor; there is none yet.
+
+**Deliberately not done**
+- No accessor for the end of a domain's virqs and no allocator: the directory is step 8.
+- `DescTable::init` does not take a floor; it passes none, and the facade takes one when the directory exists.
+
+**How it was found**
+By the independent read of the tree for D10 (b), 2026-11-01 (`.agents/tasks/irq-multi-arch/PLAN.md`, steps 6 to 10): `domain.cpp:26` starts each domain from its own list, so two would overlap.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the floor widened to `usize` before it is rounded up, and what would a floor of `INVALID_V_IRQ_NUM - 30` do if it were not?
+- Why may a virq of one domain equal a hardware number of another, when none may equal a hardware number of its own?
+- Why does the default of 0 keep the machine's numbers exactly, and which test shows it?

@@ -7,7 +7,8 @@
 #include <ustl/mem/align.hpp>
 
 namespace ours::irq {
-auto Domain::init(ustl::views::Span<HIrqNum const> const hirqnums) -> Status {
+auto Domain::init(ustl::views::Span<HIrqNum const> const hirqnums, VIrqNum const min_first)
+    -> Status {
     if (!m_virqs.empty()) {
         return Status::BadState;
     }
@@ -24,7 +25,11 @@ auto Domain::init(ustl::views::Span<HIrqNum const> const hirqnums) -> Status {
     }
 
     auto const nr_hwirqs = static_cast<usize>(highest) + 1;
-    auto const first = ustl::round_up(nr_hwirqs, VIRQ_ALIGN);
+    // Past every hardware number of the domain and not below the floor, and
+    // a multiple of VIRQ_ALIGN either way. The floor is in usize, so
+    // rounding it up cannot wrap.
+    auto const first =
+        ustl::round_up(std::max(nr_hwirqs, static_cast<usize>(min_first)), VIRQ_ALIGN);
     // The last virq, and INVALID_V_IRQ_NUM past it, have to fit the number.
     if (first + hirqnums.size() >= static_cast<usize>(INVALID_V_IRQ_NUM)) {
         return Status::InvArgs;

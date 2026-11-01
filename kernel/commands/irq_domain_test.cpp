@@ -14,11 +14,15 @@
 //   - the highest hardware number at 32, which moves the first virq to 64;
 //     two runs of pins, as two IO-APICs would give, listed last run first;
 //     the layout of this machine, as the baseline;
+//   - a floor under the first virq (the first free one once another domain
+//     has taken the numbers below it): above the domain's own start, below
+//     it, at a multiple of 32 and between two, and at the end of the number
+//     space;
 //   - in every one, a number the domain does not hold answers INVALID both
 //     ways, around each end and far away;
 //   - refused: an empty list and INVALID_H_IRQ_NUM (InvArgs), a number given
-//     twice (AlreadyExists), a list the virq space cannot hold (InvArgs). A
-//     refusal keeps nothing: the same domain takes a good list after it. A
+//     twice (AlreadyExists), a list the virq space cannot hold (InvArgs), also
+//     from a floor too high for it. A refusal keeps nothing: the same domain takes a good list after it. A
 //     built domain refuses a second build (BadState) and keeps its map.
 //
 // A console command rather than a unit test: Domain allocates from the
@@ -63,11 +67,12 @@ namespace {
     /// Builds a domain from |list| and checks it against the rule written in
     /// domain.hpp: consecutive virqs from |first_virq|, in the order of the
     /// hardware numbers, and INVALID for every number the list does not hold.
+    /// |min_first| is the floor given to init().
     auto check_layout(Tally &tally, char const *const name,
-                      ustl::views::Span<HIrqNum const> const list, VIrqNum const first_virq)
-        -> void {
+                      ustl::views::Span<HIrqNum const> const list, VIrqNum const first_virq,
+                      VIrqNum const min_first = 0) -> void {
         Domain domain;
-        auto const built = domain.init(list);
+        auto const built = domain.init(list, min_first);
         if (built != Status::Ok) {
             log::error("irqdomain.test:   {}: init answered {}", name, to_string(built));
             verdict(tally, false, name);
@@ -155,6 +160,19 @@ namespace {
         }
         check_layout(tally, "pins 0 to 23, this machine's layout",
                      ustl::views::Span<HIrqNum const>(machine), 32);
+
+        // The floor: the first virq is the higher of the domain's own start
+        // (32 for these pins) and the floor rounded up to a multiple of 32.
+        auto const pins = ustl::views::Span<HIrqNum const>(machine);
+        check_layout(tally, "a floor above the domain's own start moves the first virq to it", pins,
+                     128, 128);
+        check_layout(tally, "a floor between two multiples of 32 is rounded up", pins, 96, 65);
+        check_layout(tally, "a floor one past a multiple of 32 is rounded up", pins, 64, 33);
+        check_layout(tally, "a floor at the domain's own start changes nothing", pins, 32, 32);
+        check_layout(tally, "a floor below the domain's own start changes nothing", pins, 32, 10);
+        check_layout(tally, "a floor of 0 is no floor", pins, 32, 0);
+        check_layout(tally, "a floor above a start that a high number already raised",
+                     ustl::views::Span<HIrqNum const>(AT_32), 96, 70);
     }
 
     auto check_refusals(Tally &tally) -> void {
@@ -164,6 +182,13 @@ namespace {
         constexpr auto TOO_BIG = std::array<HIrqNum, 1>{0xFFFF'FFFE};
         constexpr auto GOOD = std::array<HIrqNum, 1>{3};
         constexpr auto OTHER = std::array<HIrqNum, 1>{9};
+        auto const many = []() -> std::array<HIrqNum, 32> {
+            auto list = std::array<HIrqNum, 32>{};
+            for (auto i = usize{0}; i < list.size(); ++i) {
+                list[i] = static_cast<HIrqNum>(i);
+            }
+            return list;
+        }();
 
         {
             Domain domain;
@@ -173,6 +198,30 @@ namespace {
                      Status::InvArgs, "INVALID_H_IRQ_NUM in the list is refused");
             answered(tally, domain.init(ustl::views::Span<HIrqNum const>(TOO_BIG)), Status::InvArgs,
                      "a list the virq space cannot hold is refused");
+            // INVALID_V_IRQ_NUM is the last number of the space and no virq.
+            // The last multiple of 32 below it is INVALID_V_IRQ_NUM - 31, and
+            // the one line fits there; a floor past it rounds up out of the
+            // space, and so does a list of 32 lines from it.
+            answered(tally,
+                     domain.init(ustl::views::Span<HIrqNum const>(GOOD), irq::INVALID_V_IRQ_NUM),
+                     Status::InvArgs, "a floor at INVALID_V_IRQ_NUM leaves no room and is refused");
+            answered(
+                tally,
+                domain.init(ustl::views::Span<HIrqNum const>(GOOD), irq::INVALID_V_IRQ_NUM - 30),
+                Status::InvArgs, "a floor that rounds up out of the space is refused");
+            answered(
+                tally,
+                domain.init(ustl::views::Span<HIrqNum const>(many), irq::INVALID_V_IRQ_NUM - 31),
+                Status::InvArgs, "a floor that leaves room for fewer virqs than lines is refused");
+            verdict(tally, domain.virq_of(3) == irq::INVALID_V_IRQ_NUM && domain.hwirq_limit() == 0,
+                    "and none of the three keeps anything");
+            answered(
+                tally,
+                domain.init(ustl::views::Span<HIrqNum const>(GOOD), irq::INVALID_V_IRQ_NUM - 31),
+                Status::Ok, "the last multiple of 32 with room for the line is taken");
+            verdict(tally, domain.virq_of(3) == irq::INVALID_V_IRQ_NUM - 31,
+                    "and is the line's virq");
+            domain.reset();
         }
         {
             Domain domain;
