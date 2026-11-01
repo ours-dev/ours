@@ -1562,7 +1562,11 @@ ours_syscalls = [
       "(BadType); no right is needed. Bound to a port, a packet still queued",
       "is taken back off it; NotFound when a packet was already taken by",
       "port_wait and not yet acked, with the interrupt destroyed all the",
-      "same. A virtual interrupt raises Idle, and keeps it up.",
+      "same. A virtual interrupt raises Idle, and keeps it up. The kernel",
+      "taking a line away destroys its object too, and a thread waiting on",
+      "it wakes with Cancelled, with no destroy of the program's own; the",
+      "NoResource that interrupt_create answers meanwhile clears if that is",
+      "refused.",
     ]
     args = [
       {

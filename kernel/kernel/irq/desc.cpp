@@ -321,9 +321,15 @@ auto Desc::detach(Action &action) -> Status {
 /// a thread, not whether it is masked, which only the controller records. A
 /// finalize that comes when nothing was owed unmasks a line its flow left
 /// unmasked already, and the controller's unmask is idempotent.
+///
+/// A line marked for removal is finalized all the same. Skipping it would
+/// leave the line held and masked if the removal is then refused and the mark
+/// taken off again, with its object idle and nothing to raise the next
+/// interrupt; and if the removal goes through, revoke() clears held and masks
+/// the line last, under this same lock.
 auto Desc::finalize_oneshot(Action const &action) -> void {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-    if (action.virqnum() != m_data.virqnum || !is_oneshot() || is_dying_locked()) {
+    if (action.virqnum() != m_data.virqnum || !is_oneshot()) {
         return;
     }
     set_held_locked(false);
@@ -699,17 +705,20 @@ auto Desc::unmark_dying() -> void {
 auto Desc::revoke() -> void {
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_lock};
     auto flags = m_flags.load(std::memory_order_relaxed);
-    DEBUG_ASSERT(!!(flags & LineFlags::Dying), "line {} revoked before it was marked",
-                 m_data.virqnum);
-    DEBUG_ASSERT(!(flags & LineFlags::Permanent), "line {} is Permanent and revoked",
-                 m_data.virqnum);
+    // Checked in the release image too: a line not marked may have an action
+    // that never agreed to be taken off, and a Permanent line's list is walked
+    // without this lock.
+    ASSERT(!!(flags & LineFlags::Dying), "line {} revoked before it was marked", m_data.virqnum);
+    ASSERT(!(flags & LineFlags::Permanent), "line {} is Permanent and revoked", m_data.virqnum);
 
     for (;;) {
-        auto first = m_actions.front();
+        auto const first = m_actions.front();
         if (first.is_none()) {
             break;
         }
         auto &action = *first;
+        ASSERT(action.is_revocable(), "line {} revokes an action with no cancel hook",
+               m_data.virqnum);
         m_actions.erase(action);
         action.cancel();
         action.m_virqnum.store(INVALID_V_IRQ_NUM, std::memory_order_release);

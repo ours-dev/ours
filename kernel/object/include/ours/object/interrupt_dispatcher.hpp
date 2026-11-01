@@ -136,7 +136,8 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// Bound to a port, a packet still queued there is taken back, so that
     /// the port never holds a packet of a destroyed interrupt. NotFound when
     /// the interrupt needed an ack and had no packet queued -- port_wait
-    /// already took it -- with the interrupt destroyed all the same.
+    /// already took it -- with the interrupt destroyed all the same; but not
+    /// if the kernel took the line away first, whose destroy answers Ok.
     [[nodiscard]]
     auto destroy() -> Status;
 
@@ -224,7 +225,9 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// or takes a queued packet off the bound port; a bound port is told
     /// nothing more. Nothing happens if the object is destroyed already. The
     /// object must not be freed until destroy() has returned, which waits
-    /// for the removal to be done with it.
+    /// for the removal to be done with it. For a physical kind only, whose
+    /// mask and deactivate work (empty for the kinds that exist) must not
+    /// need more than the context of a handler.
     auto line_revoked() -> void;
 
     /// The four operations on what stands behind the interrupt, each kind's

@@ -64,7 +64,9 @@ auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> 
 /// AlreadyBound if the line is Permanent, or holds an action and the two do
 /// not both say Shared, or holds one and this action says Permanent;
 /// BadState if the action is on a line already, NoResource if there is no
-/// such line, InvArgs for INVALID_V_IRQ_NUM, a null handler, or an action
+/// such line or the kernel is taking it away (a removal of its domain has
+/// marked it, and the answer clears if the removal is refused), InvArgs for
+/// INVALID_V_IRQ_NUM, a null handler, or an action
 /// that says Oneshot together with Permanent or Shared; NotSupported for a
 /// Oneshot action on a line whose controller cannot mask and unmask, or
 /// cannot say how its pins signal (give a mode: the attach with a mode),
@@ -101,7 +103,10 @@ auto attach(VIrqNum virqnum, Action &action, ustl::Option<LineMode> mode)
     -> ktl::Result<TriggerMode>;
 
 /// Takes `action` off the line it hangs on; NotFound if it hangs on none,
-/// AlreadyBound if the line is Permanent.
+/// AlreadyBound if the line is Permanent. NotFound also answers an action the
+/// kernel took off (Desc::revoke()), and then means the removal is done with
+/// the action and what it is embedded in, so the owner may free it as it may
+/// after Ok.
 ///
 /// A barrier: it returns only once no handler of the line is running on any
 /// CPU, so the owner may free the action and its context right after. It
@@ -121,8 +126,9 @@ auto detach(Action &action) -> Status;
 /// interrupt again at once.
 ///
 /// Does nothing if `action` is no longer on that line -- a detach that ran
-/// first has cleared held and masked the line for it -- or if the line is
-/// not Oneshot, or if there is no such line. The owner names the line
+/// first, or a removal, has cleared held and masked the line for it -- or if
+/// the line is not Oneshot, or if there is no such line. A line marked for
+/// removal is finalized as any other. The owner names the line
 /// because the action's own record of it is written under that line's lock,
 /// and a finalize may race a detach of the same action.
 ///
@@ -157,14 +163,16 @@ auto finalize_oneshot(VIrqNum virqnum, Action const &action) -> void;
 /// itself.
 ///
 /// NoResource if there is no such line, InvArgs for INVALID_V_IRQ_NUM,
-/// NotSupported if the line's controller cannot mask.
+/// NotSupported if the line's controller cannot mask. A line the kernel is
+/// taking away is masked as any other.
 [[nodiscard]]
 auto mask(VIrqNum virqnum) -> Status;
 
 /// Unmasks line `virqnum` at its controller, unless the line is held: a
 /// Oneshot line whose thread still owes its device a service stays masked,
 /// and finalize_oneshot() unmasks it once the thread is done. Answers Ok
-/// either way, since the line runs again as soon as nothing is owed.
+/// either way, since the line runs again as soon as nothing is owed. A line
+/// the kernel is taking away is not started: NoResource.
 ///
 /// Held is read under the line's lock, in the same hold as the unmask, so a
 /// dispatch on another CPU cannot hold the line between the two. The owner
@@ -187,7 +195,8 @@ auto unmask(VIrqNum virqnum) -> Status;
 /// the mode again.
 ///
 /// Thread context only: it takes the line's lock. AlreadyBound if the line
-/// has an action, the same answers as mask() otherwise.
+/// has an action, NoResource also if the kernel is taking the line away, the
+/// same answers as mask() otherwise.
 [[nodiscard]]
 auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Status;
 

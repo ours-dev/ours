@@ -540,6 +540,9 @@ namespace {
         if (!joined(thread)) {
             log::error("interruptline.test:   leaking a waiter; its thread may still use it");
             verdict(tally, false, "wakes the parked waiter");
+            // The line stays marked for the rest of the boot otherwise, and
+            // every later check on it would fail for it.
+            irq::unmark_dying_for_test(free_line());
             return;
         }
         verdict(tally, waiter->status == Status::Cancelled, "a parked waiter wakes with Cancelled");

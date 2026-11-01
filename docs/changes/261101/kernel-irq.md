@@ -276,6 +276,7 @@ None, this project's own design (D19 of `.agents/tasks/irq-multi-arch/DESIGN.md`
 - clang-tidy on the changed sources and the three tests: no finding; the formats are clean.
 - Ten mutations, each restored byte for byte, each killed (failed checks in brackets): the line cleared before the hook (1 of 29); a second destroy not waiting (2 of 64); unmask ignoring the mark (2 of 29); attach ignoring it (2 of 29); a hookless action counted revocable (1 of 29; the first form did not compile, an unused variable, and was rerun as `&& false`); revoke not masking the line (1 of 29); a Permanent line revocable (1 of 29); revoke leaving the action on its line (2 of 29); the revoke not waking the waiter (13 of 54, the test then waiting out its time limits); the revoke leaving the packet queued (1 of 78).
 - Not verified: the use after free itself with the destroy's wait removed, other than by counting the waits and by the race above, whose window the test cannot widen; `revoke()` on a Oneshot level line that is held (the held bit is cleared, argued, not tested); weak-memory machines; more than four CPUs; the release image's behaviour of the new DEBUG_ASSERTs.
+
 **Deliberately not done**
 - Nothing calls `revoke_line()` but the tests, through `irq::revoke_line_for_test()`: the directory and `unregister_domain` are step 10, and the facade step 11.
 - No notice to a driver whose interrupt object is bound to a port: it gets none (D20), only an Ack or bind that answers Cancelled.
@@ -291,3 +292,55 @@ None.
 - Why does `revoke()` store INVALID after the hook and not before, and what can the owner's `detach()` conclude from reading INVALID?
 - Why must a `destroy()` of an object already destroyed still wait for the line?
 - Why does `mark_dying()` look at the actions' hooks under the line's lock, and what would `check_revocable()` followed by `mark_dying()` without that do?
+
+## A finalize on a marked line is not lost, and the tests of the removal catch what the first ones missed (2026-11-01)
+
+**Files**
+- `kernel/kernel/irq/desc.cpp`, `kernel/include/ours/irq/{desc,mod}.hpp` — `finalize_oneshot()`, `revoke()`'s checks, and the docs of the answers.
+- `kernel/object/interrupt_dispatcher.cpp`, `kernel/object/include/ours/object/interrupt_dispatcher.hpp`, `kernel/object/interrupt_event_dispatcher.cpp` — a DEBUG_ASSERT and comments.
+- `kernel/commands/irq_revoke_test.cpp` (rewritten), `kernel/commands/interrupt_test.cpp`, `kernel/commands/interrupt_line_test.cpp`.
+- `system/public/ours/syscalls.gni`, `.agents/skills/ours-kernel-design/references/task.md`, `.agents/tasks/irq-multi-arch/{DESIGN,PLAN}.md`.
+
+**Symptom**
+Latent, found by the independent review of the previous entry. A removal that marked a Oneshot level line and was then refused, because a later line of the domain would not be marked, left the line held and masked: while the mark stood, the owner's ack ran `finalize_oneshot()`, which returned at once on a marked line, and the mark was then taken off without touching the hold. The interrupt object was already idle, so nothing would raise another interrupt, and every later wait parked for good. The previous entry's claim that a refused removal "changes nothing but a short window" was false for this call.
+
+**Cause**
+`finalize_oneshot()` returned early on a marked line (`|| is_dying_locked()`), copied from the three calls that start or reconfigure a line, which should refuse one. A finalize starts nothing: it ends a debt the owner has paid, and a removal that goes through clears the debt itself and masks the line last, under the same lock, so skipping it protected nothing and could lose the ack.
+
+**Change**
+- The clause is gone: a finalize on a marked line unmasks it, as on any other. `revoke()` checks its two preconditions (the line is marked, not Permanent) and that each action has a hook with `ASSERT`, which holds in the release image, the path being cold.
+- `line_revoked()` asserts the object is not virtual. Comments say what became false or incomplete: the object's failed-unmask path (a mark can land between its attach and its unmask), the finalize that a removal also skips, `destroy()` answering Ok after a revoke where it would have answered NotFound, the facade's lists of answers (NoResource also for a line being taken away; detach's NotFound also for an action the kernel took off, which means the removal is done with it), and `desc.hpp`'s steps, now numbered 0 to 2.
+- `syscalls.gni`: `interrupt_destroy` says the kernel taking a line away destroys the object too. `task.md` has one bullet for the cancel hook, the mark and the destroy that always waits.
+
+The tests were weaker than the record said, and now are not:
+- The race goes through a line table of the test's own, so a detach that finds the line number cleared answers without the line's lock, which is the path the design leans on, and the hook is slow (600 spins) so the detach lands during it; one side is held back by up to 400 spins by turns. The earlier version detached through a line that took the lock first, so a detach that answered NotFound found the hook done by the lock's hand-off alone.
+- A hook is told the line's virq, not the pin's number (the test's lines have two different numbers), and runs with interrupts and preemption off, as it is promised.
+- A line that was Shared takes an exclusive action again and then refuses a shared one; a held Oneshot level line is not held by the next owner; a finalize on a marked line unmasks, and the line is not held once unmarked.
+- The barrier case no longer depends on the command thread: the handler holds its CPU until the revoke is announced and then for 20 ms, the command thread is on another CPU, and the check is that the handler was still running when `revoke()` was called and had returned when it came back.
+- In `interrupt.test`, a destroy on an object whose line is being taken away, with the removal held in the object's hook, does not return until the removal lets go (three CPUs). That is the use after free itself, held still, where the previous entry counted waits.
+- `interruptline.test` unmarks the real table's free line on the one failure path that returned without it.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+- `boot_check.py`: dbg PASS, 45 passed and 4 skipped; rel PASS, 42 passed and 8 skipped, 6 of 6 required; host tests 154 passed. The same numbers as before.
+- `irqrevoke.test` 37 checks (29 before), `interrupt.test` 67 (64), `interruptline.test` 78 unchanged in count; the other tests of the layer unchanged and ok: `irqrcu.test` 34, `irqdomain.test` 87, `irqchip.test` 18, `irq.test` 72, `pinlines.test` 28. The race ran 400 rounds on four CPUs and the detach won 201 and the removal 199, with the hook slow enough that the detach lands during it.
+- clang-tidy on the changed sources and the three tests: no finding after two constexpr locals were renamed; the formats are clean.
+- Six mutations, each restored byte for byte, each killed (failed checks in brackets): a finalize skipping a marked line (2 of 37); revoke leaving Held, Shared and Oneshot (2 of 37); revoke without preemption disabled (1 of 37); the line cleared before the hook (3 of 37 and 2 of 67: the hook's own check, the race through the table, and the held removal all see it); a second destroy not waiting (5 of 67); configure ignoring the mark (2 of 37). The first four of these and the destroy one are the mutants the review said survived or were not listed.
+- Not verified: the Dying checks in `finalize_oneshot()` are gone, so no mutant there is left to run; the hook told the pin's number instead of the virq (a mutation in `Action::cancel()` would rebuild the whole tree; the test checks it by value); weak-memory machines; more than four CPUs; the chain case with fewer than three CPUs (it is skipped and says so).
+
+**Deliberately not done**
+- `DescTable::revoke_line()` marks and revokes in one call, for the tests and a domain of one line; the loops over a domain's lines (the read-only pass over every line, the marks with their rollback, then the revokes) are the directory's, step 10, which will call `check_revocable()`, `mark_dying()`, `unmark_dying()` and `revoke()` on its own lines. The poisoning of the action's memory after a detach, which the plan names, was replaced by the checks of the hook's last act, and by holding the removal still in the hook.
+- Unrelated Dying checks stay as argued: `mask()` works on a marked line on purpose.
+
+**How it was found**
+By the independent review of `a216cbcf` (three reviewers, 2026-11-01): the concurrency reviewer found the lost finalize; the test reviewer that the race could not fail, that the barrier could pass by luck of placement, and which mutants survived; the conventions reviewer the false and missing comments.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a finalize on a marked line have to work, when attach, unmask and configure on it refuse?
+- Why can the earlier race test not fail for the property it names, and what did making the hook slow and the detach go through the table change?
+- Why must the command thread of the barrier case not share a CPU with the handler, and what does the handler wait for?

@@ -135,6 +135,14 @@ line's lock L1.
   keeps its four virtuals, with `mask_interrupt()` empty, and keeps NEEDACK,
   coalescing, port delivery and timestamps: a user-visible protocol, and
   kernel/irq knows no ports.
+- The kernel may take a line away from the object (the removal of its
+  domain, irq-multi-arch D19): the action carries a cancel hook, which runs
+  under L1 with preemption off after the action is unlinked and destroys the
+  object from the line's side (`line_revoked()`); the line number in the
+  action is cleared last, with a release store, and that store is what lets
+  the owner's detach answer NotFound and the object be freed. So every
+  `destroy()` runs the detach, also one on an object destroyed already, and
+  a line marked dying answers NoResource to attach, unmask and configure.
 - L1 stays held across the handlers, as Zircon runs its handler under the
   entry lock, and detach taking L1 is the barrier: no INPROGRESS flag, no
   synchronize spin. Finalize, `mask()` and `unmask()` take L1 then LI and

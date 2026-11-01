@@ -93,22 +93,26 @@ class Desc final {
     auto finalize_oneshot(Action const &action) -> void;
 
     /// The kernel taking the line away from its actions, for the removal of
-    /// the domain it belongs to, in three steps that the caller runs over all
-    /// the domain's lines, one step at a time over every line:
+    /// the domain it belongs to. The caller runs two steps over all the
+    /// domain's lines, the first over every line before the second over any,
+    /// and may run a read-only check before them:
     ///
+    ///   0. check_revocable(): mark_dying() without the mark, for a caller
+    ///      that wants to refuse before it marks anything.
     ///   1. mark_dying(): refuses a line a removal could not empty (AlreadyBound
     ///      for a Permanent line, which dispatches without L1 so nothing can
     ///      wait for it, and for a line with an action that has no cancel
     ///      hook), and otherwise marks it. From then on attach(), unmask() and
-    ///      configure() answer NoResource, before they touch the chip. The
-    ///      caller undoes the marks it made with unmark_dying() if a later line
-    ///      refuses, so a refused removal changes nothing but a short window in
-    ///      which those calls may have answered NoResource.
+    ///      configure() answer NoResource, before they touch the chip; mask()
+    ///      and finalize_oneshot() work as before. The caller undoes the marks
+    ///      it made with unmark_dying() if a later line refuses, so a refused
+    ///      removal changes nothing but a short window in which those calls
+    ///      may have answered NoResource.
     ///   2. revoke(): takes every action off the line, tells each through its
     ///      cancel hook, masks the line.
     ///
-    /// check_revocable() is mark_dying() without the mark, for a caller that
-    /// wants to refuse before it marks anything.
+    /// The loops over the domain's lines are the directory's, not this
+    /// class's.
     [[nodiscard]]
     auto check_revocable() -> Status;
     [[nodiscard]]

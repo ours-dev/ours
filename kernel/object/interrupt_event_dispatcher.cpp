@@ -99,9 +99,12 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     // has held the line, and irq::unmask() leaves a held line masked: the
     // object owes an ack for that interrupt, and the ack's finalize opens it.
     if (auto const status = irq::unmask(virqnum); status != Status::Ok) {
-        // A line attach() just took always has its controller's unmask; this
-        // keeps the object from being freed with its action on the line
-        // should one ever lack it.
+        // A line attach() just took has its controller's unmask, so this is
+        // a removal that marked the line between the attach and here
+        // (NoResource), after which the hook may have run on this half-made
+        // object already; or a controller that lacks the unmask. Either way
+        // the detach keeps the object from being freed with its action on the
+        // line, and waits for a removal that has the object still.
         auto _ = irq::detach(self->m_action);
         return status;
     }
@@ -138,9 +141,10 @@ auto InterruptEventDispatcher::on_revoked(VIrqNum, void *const context) -> void 
 
 /// The finalize takes the line's lock, which is why the state machine calls
 /// this with its own lock dropped. It names the line by m_line rather than
-/// asking the action, and does nothing once destroy()'s detach has taken the
-/// action off: the detach cleared held and masked the line for it, and a
-/// late finalize must not unmask a line the next owner has not started.
+/// asking the action, and does nothing once destroy()'s detach, or a removal
+/// of the line, has taken the action off: either cleared held and masked the
+/// line for it, and a late finalize must not unmask a line the next owner has
+/// not started.
 auto InterruptEventDispatcher::unmask_interrupt() -> void {
     irq::finalize_oneshot(m_line, m_action);
 }

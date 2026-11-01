@@ -37,6 +37,12 @@
 //     signal left standing would make a later wait answer BadState, and a
 //     lost one would leave a waiter parked for good.
 //
+//   - every destroy waits for the line, also one that finds the object
+//     destroyed already (.agents/tasks/irq-multi-arch/PLAN.md, step 9),
+//     counted on an object of the test's own; and, on three CPUs, with the
+//     kernel's removal of the line held in its cancel hook, a destroy does not
+//     return until the removal has let the object go: the interleaving whose
+//     use after free the rule is there for;
 //   - a virtual interrupt's Idle signal, up while the object is owed no ack
 //     (.agents/tasks/irq-multi-arch/PLAN.md, step 4): up from the creation,
 //     dropped by a trigger, a trigger that folds into a pending interrupt or
@@ -58,7 +64,11 @@
 // A console command rather than a unit test for the reason mutex.stress
 // gives: a wait's slow path is the scheduler.
 #include <ours/cpu.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/interrupt.hpp>
+#include <ours/irq/action.hpp>
+#include <ours/irq/chip.hpp>
+#include <ours/irq/desc_table.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/object/handle.hpp>
@@ -68,9 +78,11 @@
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
 #include <ours/port.hpp>
 #include <ours/syscall.hpp>
+#include <ours/task/sched/common.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
+#include <array>
 #include <atomic>
 #include <initializer_list>
 #include <string_view>
@@ -79,6 +91,7 @@
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
+#include <ustl/views/span.hpp>
 
 namespace ours {
 namespace {
@@ -899,20 +912,54 @@ namespace {
     /// A physical kind of interrupt with no line behind it: it counts how many
     /// times a destroy asked it to let its line go, and lets the test play the
     /// kernel taking the line away (line_revoked()).
+    ///
+    /// With a |table| of the test's own and its |action| on a line of it, the
+    /// detach goes to that line, and the action's cancel hook is the object's
+    /// line_revoked() followed by a wait for |gate|: the removal held in the
+    /// middle of telling the object, which is what the chain case needs.
     class RecordingInterrupt final: public InterruptDispatcher {
       public:
-        RecordingInterrupt() : InterruptDispatcher(Flags::None) {}
+        RecordingInterrupt()
+            : InterruptDispatcher(Flags::None)
+            , action(&RecordingInterrupt::on_event, this, irq::IrqFlags::None, "interrupt.test",
+                     &RecordingInterrupt::on_cancel) {}
 
         using InterruptDispatcher::line_revoked;
 
+        irq::DescTable *table = nullptr;
+        irq::Action action;
         std::atomic<u32> detaches{0};
+        /// The hook has told the object, and waits for the gate.
+        std::atomic<bool> hooked{false};
+        std::atomic<bool> gate{false};
+        /// The hook's last act, with release.
+        std::atomic<bool> hook_done{false};
 
       private:
+        static auto on_event(VIrqNum, void *) -> irq::IrqReturn {
+            return irq::IrqReturn::Handled;
+        }
+
+        static auto on_cancel(VIrqNum, void *const context) -> void {
+            auto &self = *static_cast<RecordingInterrupt *>(context);
+            self.line_revoked();
+            self.hooked.store(true, std::memory_order_release);
+            auto const give_up = time::SteadyClock::now() + Seconds(5);
+            while (!self.gate.load(std::memory_order_acquire) &&
+                   time::SteadyClock::now() < give_up) {
+                arch::spin_hint();
+            }
+            self.hook_done.store(true, std::memory_order_release);
+        }
+
         auto mask_interrupt() -> void override {}
         auto unmask_interrupt() -> void override {}
         auto deactivate_interrupt() -> void override {}
         auto unregister_interrupt_handler() -> void override {
             detaches.fetch_add(1, std::memory_order_relaxed);
+            if (table != nullptr) {
+                auto _ = table->detach(action); // NotFound once the removal has the action off.
+            }
         }
     };
 
@@ -949,8 +996,132 @@ namespace {
         verdict(tally, destroyed == Status::Ok && revoked->detaches.load() == 1,
                 "its own destroy answers Ok and still waits for the line");
         revoked->line_revoked();
-        verdict(tally, revoked->wait(&timestamp) == Status::Cancelled,
+        verdict(tally,
+                revoked->wait(&timestamp) == Status::Cancelled && revoked->detaches.load() == 1,
                 "a second revoke changes nothing");
+    }
+
+    /// What the chain case's two threads need.
+    struct Chain {
+        irq::DescTable *table = nullptr;
+        VIrqNum virq = irq::INVALID_V_IRQ_NUM;
+        RecordingInterrupt *object = nullptr;
+        std::atomic<bool> destroy_returned{false};
+        std::atomic<bool> hook_done_at_return{false};
+        std::atomic<Status> destroy_status{Status::BadState};
+    };
+    Chain CHAIN;
+
+    auto chain_remover(void *) -> i32 {
+        auto _ = CHAIN.table->revoke_line(CHAIN.virq);
+        return 0;
+    }
+
+    auto chain_destroyer(void *) -> i32 {
+        auto const status = CHAIN.object->destroy();
+        CHAIN.hook_done_at_return.store(CHAIN.object->hook_done.load(std::memory_order_acquire),
+                                        std::memory_order_relaxed);
+        CHAIN.destroy_status.store(status, std::memory_order_relaxed);
+        CHAIN.destroy_returned.store(true, std::memory_order_release);
+        return 0;
+    }
+
+    /// The use after free this is all for, held still: the removal has told
+    /// the object (Destroyed) and is stuck in its hook with the line's lock
+    /// held, still to touch the action embedded in the object. The owner
+    /// destroys the object meanwhile, on another CPU, and must not get back
+    /// until the removal is done: if it did, it could free the object under
+    /// the removal. Three CPUs are used: the removal, the destroy, and the
+    /// command thread that opens the gate; the first two spin with interrupts
+    /// off, so the third cannot share a CPU with either.
+    auto check_destroy_waits_for_the_removal(Tally &tally) -> void {
+        auto const online = Cpu::online_mask();
+        if (online.count() < 3) {
+            log::info("interrupt.test: fewer than three CPUs, the destroy against a removal "
+                      "held in its hook is skipped");
+            return;
+        }
+        CpuNum cpus[3]{};
+        auto found = usize{0};
+        online.for_each([&cpus, &found](CpuNum const cpu) {
+            if (found < 3) {
+                cpus[found] = cpu;
+                found += 1;
+            }
+        });
+
+        auto *const self = Thread::Current::get();
+        self->set_cpu_affinity_hard(CpuMask::of(cpus[0]));
+        auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
+
+        auto *const table = new (mm::GAF_KERNEL) irq::DescTable();
+        auto *const object = new (mm::GAF_KERNEL) RecordingInterrupt();
+        std::array<HIrqNum, 1> const numbers{HIrqNum{9}};
+        constexpr irq::Chip NO_OP_CHIP = {.mask = [](irq::Data const &) -> void {},
+                                          .issue_eoi = [](irq::Data const &) -> void {},
+                                          .name = "interrupt-test"};
+        if (table == nullptr || object == nullptr ||
+            table->init(ustl::views::Span<HIrqNum const>(numbers), NO_OP_CHIP) != Status::Ok) {
+            verdict(tally, false, "make the chain case's line table and object");
+            self->set_cpu_affinity_hard(cpu_possible_mask());
+            return;
+        }
+        object->table = table;
+        CHAIN.table = table;
+        CHAIN.virq = table->virq_of(HIrqNum{9});
+        CHAIN.object = object;
+        CHAIN.destroy_returned.store(false, std::memory_order_relaxed);
+        CHAIN.hook_done_at_return.store(false, std::memory_order_relaxed);
+        CHAIN.destroy_status.store(Status::BadState, std::memory_order_relaxed);
+
+        auto const attached = table->attach(CHAIN.virq, object->action) == Status::Ok;
+        auto *const remover =
+            Thread::spawn("interrupt.test/revoke", chain_remover, nullptr, task::DEFAULT_PRIORITY);
+        if (!attached || remover == nullptr) {
+            verdict(tally, false, "attach the object and start the removal");
+            self->set_cpu_affinity_hard(cpu_possible_mask());
+            return;
+        }
+        remover->set_cpu_affinity_hard(CpuMask::of(cpus[1]));
+        auto _ = remover->resume();
+        auto const hooked =
+            poll_until([object] { return object->hooked.load(std::memory_order_acquire); });
+
+        auto *const destroyer = Thread::spawn("interrupt.test/destroy", chain_destroyer, nullptr,
+                                              task::DEFAULT_PRIORITY);
+        if (!hooked || destroyer == nullptr) {
+            verdict(tally, false, "the removal reaches the object's hook");
+            object->gate.store(true, std::memory_order_release);
+            self->set_cpu_affinity_hard(cpu_possible_mask());
+            return;
+        }
+        destroyer->set_cpu_affinity_hard(CpuMask::of(cpus[2]));
+        auto _ = destroyer->resume();
+
+        // The gate is closed: a destroy that waits for the line cannot have
+        // come back, however long it has had.
+        auto _ = Thread::Current::sleep_for(Milliseconds(50), task::Interruptible::No);
+        auto const returned_early = CHAIN.destroy_returned.load(std::memory_order_acquire);
+        object->gate.store(true, std::memory_order_release);
+
+        auto const ended =
+            poll_until([] { return CHAIN.destroy_returned.load(std::memory_order_acquire); });
+        auto const remover_ended =
+            remover->join(nullptr, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
+            Status::Ok;
+        auto const destroyer_ended =
+            destroyer->join(nullptr, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
+            Status::Ok;
+
+        verdict(tally, !returned_early,
+                "a destroy of an object whose line is being taken away does not return while the "
+                "removal is in its hook");
+        verdict(tally,
+                ended && CHAIN.destroy_status.load() == Status::Ok &&
+                    CHAIN.hook_done_at_return.load(),
+                "and returns Ok once the removal is done with the object");
+        verdict(tally, remover_ended && destroyer_ended, "both threads end");
+        self->set_cpu_affinity_hard(cpu_possible_mask());
     }
 
     auto interrupt_test_command(int argc, char **argv) -> int {
@@ -980,6 +1151,7 @@ namespace {
         check_idle_follows_the_state(tally, rounds, second_cpu);
         check_turns(tally, rounds, first_cpu, second_cpu);
         check_destroy_waits_for_the_line(tally);
+        check_destroy_waits_for_the_removal(tally);
 
         if (tally.failed != 0) {
             log::error("interrupt.test: FAILED -- {} of {} checks", tally.failed,

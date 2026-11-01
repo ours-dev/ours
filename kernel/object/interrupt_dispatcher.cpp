@@ -353,6 +353,9 @@ auto InterruptDispatcher::destroy() -> Status {
 
 auto InterruptDispatcher::line_revoked() -> void {
     m_canary.verify<Self>();
+    // A virtual interrupt has no line to lose, and its destroy raises Idle
+    // through a mutex that cannot be taken under L2.
+    DEBUG_ASSERT(!(m_flags & Flags::Virtual), "a virtual interrupt's line was taken away");
 
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
     auto const old_state = std::exchange(m_state, State::Destroyed);
@@ -365,6 +368,8 @@ auto InterruptDispatcher::line_revoked() -> void {
     // Destroyed, and with none parked the signal is latched for the next wait.
     // Only a physical interrupt has a line to lose, so no signal to keep up.
     if (m_port) {
+        // Nothing to report: the object is destroyed, and a packet already
+        // read by the port's reader is not this removal's to give back.
         auto _ = m_port->remove_interrupt_packet(&m_port_packet);
         return;
     }
