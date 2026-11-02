@@ -14,6 +14,7 @@
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
+#include <ours/version.hpp>
 #include <user_copy/user_copy.hpp>
 
 namespace ours::syscall {

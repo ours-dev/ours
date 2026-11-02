@@ -278,6 +278,11 @@ group("default") {
     # that is torn, flipped or from another version.
     "//kernel/lib/crashlog/test:crashlog($host_toolchain)",
 
+    # The vDSO published-offset table. A Python action, so host_tests.py
+    # does not see it; naming it here is what runs it. Not via
+    # //kernel/lib/userabi: that BUILD.gn is kernel-toolchain only.
+    "//kernel/lib/userabi/vdso/test:gen_published_offsets_test($host_toolchain)",
+
     # Fixed-point arithmetic, which the scheduler's weighting needs and which
     # the kernel cannot get from floating point. Almost all of its checking is
     # static_assert inside the test translation unit, so building this target

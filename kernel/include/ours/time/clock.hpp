@@ -97,6 +97,11 @@ class SystemClock {
 
     static auto ticks() -> Ticks;
 
+    /// Nanoseconds added to the monotonic clock to get the boot clock.
+    /// Zero: nothing sets the epoch, and there is no suspend.
+    [[nodiscard]]
+    static auto boot_offset() -> i64;
+
     // For changes on ClockSource is able to notify system clock.
     static auto notify(ClockSource *source) -> Status;
 

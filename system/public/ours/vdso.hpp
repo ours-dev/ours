@@ -34,6 +34,7 @@
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
+#include <ours/version.hpp>
 
 /// The vDSO's exported entry points: the system-call API a program calls.
 ///

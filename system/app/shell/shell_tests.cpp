@@ -9,6 +9,8 @@
 #include <ours/syscall.hpp>
 #include <ours/syscall/resource.hpp>
 #include <ours/vdso.hpp>
+#include <ours/version.hpp>
+#include <ours/version_build.hpp>
 
 #include <algorithm>
 #include <array>
@@ -56,15 +58,27 @@ auto check_clock() -> void {
             break;
         }
     }
-    if (first > 0 && second > first) {
+    auto const hz = ours::ticks_per_second();
+    auto const boot = ours::boot_offset();
+    auto const version = ours::published_version();
+    auto const kernel = ours::kernel_version();
+    auto const kernel_ok =
+        kernel != nullptr && std::string_view{kernel} == OURS_KERNEL_VERSION_STRING;
+    if (first > 0 && second > first && hz > 0 && boot == 0 && version == 1 && kernel_ok) {
         auto _ = ort::debug_line("shell: clock checks passed");
         return;
     }
     char first_text[21];
     char second_text[21];
+    char hz_text[21];
+    char boot_text[21];
+    char version_text[21];
     auto _ = ort::debug_line(
         {"shell: clock checks FAILED first=", ort::signed_decimal(first, first_text),
-         " second=", ort::signed_decimal(second, second_text)});
+         " second=", ort::signed_decimal(second, second_text),
+         " hz=", ort::signed_decimal(static_cast<i64>(hz), hz_text),
+         " boot=", ort::signed_decimal(boot, boot_text),
+         " version=", ort::signed_decimal(static_cast<i64>(version), version_text)});
 }
 
 /// Gives up a handle this program was started with, and checks that the

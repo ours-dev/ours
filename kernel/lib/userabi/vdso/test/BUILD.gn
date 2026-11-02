@@ -1,0 +1,26 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/compiler/clang.gni")
+
+# Host-only. This file must not depend on //kernel/lib/userabi/vdso or
+# //kernel/lib/userabi: those BUILD.gn files are not valid in the host
+# toolchain. //:default names this target directly.
+action("gen_published_offsets_test") {
+  testonly = true
+  script = "gen_published_offsets_test.py"
+  sources = [
+    "gen_published_offsets_test.py",
+    "../gen_published_table.py",
+  ]
+  outputs = [ "$target_gen_dir/gen_published_offsets_test.stamp" ]
+  args = [
+    rebase_path("$clang_tool_dir/llvm-readelf", root_build_dir),
+    rebase_path("$clang_tool_dir/clang", root_build_dir),
+    rebase_path("$clang_tool_dir/ld.lld", root_build_dir),
+    rebase_path("../gen_published_table.py", root_build_dir),
+    rebase_path(outputs[0], root_build_dir),
+  ]
+  visibility = [ "*" ]
+}
