@@ -9,6 +9,7 @@
 #include <ours/object/suspend_token_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/status.hpp>
+#include <ours/task.hpp>
 #include <ours/types.hpp>
 
 namespace ours::syscall {

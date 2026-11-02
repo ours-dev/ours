@@ -10,6 +10,7 @@
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
+#include <ours/vma.hpp>
 
 namespace ours::syscall {
 namespace {

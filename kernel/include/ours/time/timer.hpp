@@ -3,10 +3,10 @@
 #ifndef OURS_TIME_TIMER_HPP
 #define OURS_TIME_TIMER_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/platform/timer.hpp>
 #include <ours/sync/spin_lock.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/time/mod.hpp>
 #include <ours/time/types.hpp>
 

@@ -4,6 +4,7 @@
 #ifndef OURS_EXCEPTION_HPP
 #define OURS_EXCEPTION_HPP 1
 
+#include <ours/status.hpp>
 #include <ours/types.hpp>
 
 #include <cstddef>
@@ -97,6 +98,11 @@ enum class ExceptionState : u32 {
     /// returns BadSyscall.
     Handled = 1,
 };
+
+// The exception calls, as a program calls them: generated from
+// //system/public/ours/syscalls/exception.gni (design 4.7), included inside
+// namespace ours like the rest of the generated declarations.
+#include <ours/vdso_decls/exception.inc>
 } // namespace ours
 
 #endif // #ifndef OURS_EXCEPTION_HPP

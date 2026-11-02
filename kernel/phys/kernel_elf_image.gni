@@ -201,6 +201,13 @@ template("kernel_elf_image") {
           label = get_label_info(":$_main_target", "label_with_toolchain")
         },
       ]
+
+      # Extra files that travel with this image. The vDSO's published-offset
+      # table is one: it is generated from the unstripped ELF and has to be
+      # in the same package as the stripped file the kernel loads.
+      if (defined(invoker.package_entries)) {
+        distribution_entries += invoker.package_entries
+      }
     }
   }
 }

@@ -156,11 +156,11 @@
 
 #include <syscall_abi/vdso_stubs.inc>
 
-// The monotonic anchor. Read-only in the image so the vDSO has no writable
-// segment; the kernel writes the same bytes through the VMO. The compiler
-// never sees an initializer, so a read is a read. ours_time_values is hidden:
-// a program does not bind to it, and the kernel finds it by the magic.
-.section .rodata, "a", @progbits
+// The monotonic anchor, in the same read-only section as every VDSO_EXPORT.
+// The compiler never sees an initializer, so a read is a read.
+// ours_time_values is hidden: a program does not bind to it. The kernel
+// finds it from vdso.published, which lists this whole section.
+.section .vdso_data, "a", @progbits
 .balign 64
 .global ours_time_values
 .hidden ours_time_values

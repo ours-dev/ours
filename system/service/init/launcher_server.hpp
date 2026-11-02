@@ -3,6 +3,7 @@
 #ifndef INIT_LAUNCHER_SERVER_HPP
 #define INIT_LAUNCHER_SERVER_HPP 1
 
+#include <ours/channel.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>

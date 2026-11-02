@@ -4,7 +4,7 @@
 #define USERABI_SRC_RESOURCE_HPP 1
 
 #include <ours/object/handle.hpp>
-#include <ours/syscall/resource.hpp>
+#include <ours/resource.hpp>
 #include <ours/types.hpp>
 #include <ustl/box.hpp>
 

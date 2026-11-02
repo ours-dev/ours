@@ -8,6 +8,7 @@
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/vma.hpp>
 
 #include <algorithm>
 #include <utility>

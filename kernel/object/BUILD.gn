@@ -39,6 +39,7 @@ if (toolchain_environment == "kernel") {
     deps = [
       "//kernel/lib/sampler",
       "//kernel/platform:headers",
+      "//system/public:kernel_version($default_toolchain)",
     ]
   }
 }

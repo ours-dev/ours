@@ -1,0 +1,71 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The clock calls the vDSO answers directly. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/time.cpp.
+ours_syscalls_time = [
+  {
+    name = "clock_get_monotonic"
+    brief = "Reads the monotonic clock, in nanoseconds since boot."
+    doc = [
+      "It does not go backwards, and it is the clock the kernel's timers",
+      "read. It is not the time of day: nothing sets it from a wall clock.",
+      "Zero until the kernel has a clock source.",
+    ]
+    args = []
+    attrs = [ "vdso" ]
+    ret = "Instant"
+    category = "time"
+  },
+  {
+    name = "ticks_per_second"
+    brief = "Reads how many ticks of the published counter are one second."
+    doc = [
+      "The counter ours_clock_get_monotonic samples. Zero until the kernel",
+      "has a clock source. It changes when that source changes.",
+    ]
+    args = []
+    attrs = [ "vdso" ]
+    ret = "u64"
+    category = "time"
+  },
+  {
+    name = "boot_offset"
+    brief = "Nanoseconds to add to the monotonic clock to get the boot clock."
+    doc = [
+      "Zero while the boot clock and the monotonic clock are the same",
+      "reading. Nothing here moves it: there is no suspend.",
+    ]
+    args = []
+    attrs = [ "vdso" ]
+    ret = "i64"
+    category = "time"
+  },
+  {
+    name = "published_version"
+    brief = "The version of the records the vDSO publishes."
+    doc = [ "1 for this layout. It does not change at run time." ]
+    args = []
+    attrs = [ "vdso" ]
+    ret = "u64"
+    category = "time"
+  },
+  {
+    name = "kernel_version"
+    brief = "The kernel version string."
+    doc = [
+      "NUL-terminated, in the vDSO. It does not change at run time.",
+      "The same text is OURS_KERNEL_VERSION_STRING in <ours/version.hpp>.",
+      "It is ours-0.1.0, a plus, and the 12-digit commit the build used.",
+    ]
+    args = []
+    attrs = [ "vdso" ]
+    ret = "KernelVersion"
+    category = "time"
+  },
+]

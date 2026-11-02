@@ -3,10 +3,10 @@
 #ifndef OURS_TIME_TICK_BROADCAST_HPP
 #define OURS_TIME_TICK_BROADCAST_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/sync/spin_lock.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/time/clock_event_device.hpp>
 
 namespace ours::time {

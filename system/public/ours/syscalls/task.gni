@@ -1,0 +1,159 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The thread and task calls (threads are made and started here; task.cpp holds
+# them). One file per category; the import order in ../syscalls.gni, not this
+# file, assigns the call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category declaration headers
+# it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/task.cpp.
+ours_syscalls_task = [
+  {
+    name = "thread_create"
+    brief = "Makes a thread of |process| that is not running yet."
+    doc = [
+      "|process| needs ManageThread. The thread is Initial: it has no kernel",
+      "thread and is not counted among the process's threads until it is",
+      "started, so closing its handle first leaves nothing behind. The first",
+      "thread of a process not yet started is started by process_start, and",
+      "a thread of a running process by thread_start.",
+      "|name| is |name_size| bytes, cut to MAX_NAME_LEN - 1 (31). The",
+      "options must be None (InvArgs). The handle's value is written to |out|",
+      "before the handle is installed.",
+    ]
+    args = [
+      {
+        name = "process"
+        type = "Uandle"
+      },
+      {
+        name = "name"
+        type = "char"
+        dir = "in"
+        count = "name_size"
+      },
+      {
+        name = "name_size"
+        type = "usize"
+      },
+      {
+        name = "options"
+        type = "ThreadCreateOptions"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "task"
+  },
+  {
+    name = "thread_start"
+    brief = "Starts |thread|, a thread of a running process, at |entry|."
+    doc = [
+      "|thread| needs ManageThread. It runs at |entry| with |stack| as its",
+      "stack pointer, |arg1| in %rdi, |arg2| in %rsi and every other register",
+      "zero, and has nothing to return to: its code must end in thread_exit.",
+      "The first thread of a process is started by process_start instead.",
+      "BadState unless the thread is Initial (a thread starts once) and its",
+      "process Running; InvArgs for an entry that is not a user address. A",
+      "start that is refused leaves the thread as it was.",
+    ]
+    args = [
+      {
+        name = "thread"
+        type = "Uandle"
+      },
+      {
+        name = "entry"
+        type = "VirtAddr"
+      },
+      {
+        name = "stack"
+        type = "VirtAddr"
+      },
+      {
+        name = "arg1"
+        type = "usize"
+      },
+      {
+        name = "arg2"
+        type = "usize"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "task"
+  },
+  {
+    name = "thread_exit"
+    brief = "Ends the calling thread; never returns."
+    doc = [
+      "The thread leaves its process, and its handles read Terminated. The",
+      "last thread of a process to leave ends the process.",
+    ]
+    args = []
+    attrs = [ "noreturn" ]
+    ret = "void"
+    category = "task"
+  },
+  {
+    name = "task_suspend"
+    brief = "Suspends the thread |task| for as long as the token written to |token| lives."
+    doc = [
+      "|task| needs Write. The thread stops at its next way back to user",
+      "mode, or before its first instruction if it has not started, and then",
+      "reads ThreadSuspended. Closing the token's last handle lets it run on;",
+      "a call it was blocked in is made again, so the thread's program never",
+      "sees the stop. Suspends nest: a thread several tokens hold runs once",
+      "the last of them is closed. The token's handle can be transferred and",
+      "inspected, not duplicated. NotSupported for the calling thread itself",
+      "and for a process; BadType for any other object; BadState for a thread",
+      "that is dying or dead. The token's value is written before its handle",
+      "is installed.",
+    ]
+    args = [
+      {
+        name = "task"
+        type = "Uandle"
+      },
+      {
+        name = "token"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "task"
+  },
+  {
+    name = "task_kill"
+    brief = "Ends the process |task|, asynchronously."
+    doc = [
+      "|task| needs Destroy. Every thread of the process is told to die, and",
+      "each does at its next way back to user mode, a thread blocked in a",
+      "call or held by a suspend included; the process reads Terminated once",
+      "the last has gone, with TASK_RETCODE_SYSCALL_KILL as its code. A",
+      "process not started is Dead at once. A process already dying keeps the",
+      "code it had, and one already dead is left as it is; both answer Ok. A",
+      "process that kills itself does not return from the call: the calling",
+      "thread dies on its way out of it. NotSupported for a thread, which ends",
+      "only by thread_exit or with its process, and for a job; BadType for any",
+      "other object.",
+    ]
+    args = [
+      {
+        name = "task"
+        type = "Uandle"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "task"
+  },
+]

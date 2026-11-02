@@ -27,6 +27,7 @@
 // process -- the kernel for the first one, the launcher for the rest --
 // writes the message with the former (design 3.3).
 
+#include <ours/channel.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>

@@ -18,6 +18,7 @@
 #include <cstring>
 
 #include <gtest/gtest.h>
+#include <ours/channel.hpp>
 
 namespace {
 using ours::HandleType;

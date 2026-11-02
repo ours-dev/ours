@@ -1,0 +1,17 @@
+# Host-side tests. These link googletest and run on the build machine, so
+# they exercise the library's own logic rather than anything that needs a
+# booted kernel: a BlockServer over the fake kernel, driven one encoded
+# message at a time, its parked requests completed by the test.
+executable("block_server") {
+  testonly = true
+  sources = [ "block_server_test.cpp" ]
+  deps = [
+    "//system/lib/block-server",
+    "//system/lib/ioservice:outgoing",
+    "//system/lib/ours.io",
+    "//system/lib/testing/fake_kernel",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

@@ -41,8 +41,20 @@
 ///
 /// One thread, as the Loop it runs on: an on_message() runs to completion
 /// before the next one starts, so a server may run its method's work inline.
+///
+/// A reply does not have to go out inside the on_message() that received the
+/// request. A server may park it: copy what it still needs -- the channel,
+/// the txid, the request's payload -- out of the shared buffers into storage
+/// of its own, and build the reply later, in a later callback on the same
+/// Loop, writing it with reply() as usual. The shared buffers are transient
+/// within one callback: the next channel_read overwrites them, so anything a
+/// parked request still needs has been copied out by then. A reply that
+/// fails because the client went away while its request was parked is
+/// dropped silently; the client is gone either way. ioservice's LoopServer
+/// states the same rule for a parked Open; the block-server library is the
+/// first server built on it.
 namespace server {
-template <typename Derived, usize MAX_CLIENTS>
+template <typename Derived, usize MaxClients>
 class ProtocolServer: public ioservice::Handler {
   public:
     /// One connected client, and the Loop's Waiter for its channel's slot.
@@ -64,6 +76,12 @@ class ProtocolServer: public ioservice::Handler {
         ProtocolServer *server = nullptr;
         /// Its channel, the slot's; Invalid while the entry is free.
         ours::Uandle channel = ours::Uandle::Invalid;
+        /// Bumped every time the entry is taken, so a deferred reply can
+        /// check that the channel it parked on still names the connection it
+        /// parked on: the kernel reissues handle values, and (channel,
+        /// generation) together name the connection, the value alone does
+        /// not.
+        u32 generation = 0;
 
       private:
         auto on_signals(ours::Signals const observed) -> loop::Action override {
@@ -80,7 +98,7 @@ class ProtocolServer: public ioservice::Handler {
     /// and where it builds the reply. One of each serves every client, since
     /// one on_message() runs at a time.
     struct Storage {
-        std::array<Client, MAX_CLIENTS> clients;
+        std::array<Client, MaxClients> clients;
         std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
         std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> request_handles;
         std::array<u8, wire::MAX_MESSAGE_BYTES> reply_bytes;
@@ -160,6 +178,7 @@ class ProtocolServer: public ioservice::Handler {
             // entry is filled field by field. It is in use once channel is
             // set, so the server goes first.
             client.server = this;
+            client.generation += 1;
             client.channel = channel;
             if (auto const added = m_loop->add(
                     channel, ours::Signals::Readable | ours::Signals::PeerClosed, client);

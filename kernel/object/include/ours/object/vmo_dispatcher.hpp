@@ -8,6 +8,7 @@
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/syscall.hpp>
+#include <ours/vmo.hpp>
 
 #include <user_copy/user_copy.hpp>
 

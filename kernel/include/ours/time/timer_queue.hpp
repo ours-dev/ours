@@ -3,11 +3,11 @@
 #ifndef OURS_TIME_TIMER_QUEUE_HPP
 #define OURS_TIME_TIMER_QUEUE_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sync/spin_lock.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/time/timer.hpp>
 
 #include <atomic>

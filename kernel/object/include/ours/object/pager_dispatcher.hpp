@@ -9,6 +9,7 @@
 #include <ours/object/port_dispatcher.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/syscall.hpp>
+#include <ours/vmo.hpp>
 
 namespace ours::object {
 class PagerDispatcher;

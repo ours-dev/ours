@@ -3,8 +3,8 @@
 #ifndef OURS_TASK_SCHED_TYPES_HPP
 #define OURS_TASK_SCHED_TYPES_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/compiler.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/task/types.hpp>
 
 #include <ffl/fixed.hpp>

@@ -1,0 +1,36 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# The block-driver library: what a block device driver subclasses so that its
+# author writes the hardware and nothing else. The server parks each request
+# in a slot -- the parked channel, txid and extent -- and answers it when the
+# driver's completion path calls complete(); a driver implements its geometry
+# and its hardware start, and nothing of the protocol.
+source_set("block-server") {
+  sources = [ "src/block_server.cpp" ]
+  public_deps = [ ":headers" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/block_server/block_server.hpp" ]
+  public_deps = [
+    "//system/lib/loop:headers",
+    "//system/lib/ours.block",
+    "//system/lib/server",
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [ "test:block_server($host_toolchain)" ]
+}

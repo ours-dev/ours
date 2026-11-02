@@ -8,6 +8,7 @@ cpp_interface("headers") {
   public = [ "include/syscall/handlers.hpp" ]
   public_deps = [
     "//kernel/lib/user_copy:headers",
+    "//system/public:kernel_version($default_toolchain)",
     "//system/public:syscalls.private",
   ]
 

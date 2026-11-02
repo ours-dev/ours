@@ -1,0 +1,272 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The IOMMU, BTI, pin and contiguous-memory calls. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/bti.cpp.
+ours_syscalls_bti = [
+  {
+    name = "iommu_create"
+    brief = "Makes an IOMMU of |type|, described by |desc|, and puts a handle to it in |out|."
+    doc = [
+      "The IOMMU is what a BTI is made on (bti_create); a program that is to",
+      "let a device reach memory starts here. |resource| must be the System",
+      "resource of the IOMMU slot (BadHandle, BadType, OutOfRange).",
+      "|type| is an IommuType: only Stub exists, an IOMMU the",
+      "kernel does not drive, which translates nothing and isolates nothing",
+      "(NotSupported for any other value). |desc| describes the hardware of a",
+      "type that has some, and is at most 4096 bytes (InvArgs); the stub has",
+      "none, so its |desc_size| is 0 and |desc| is not read (InvArgs",
+      "otherwise). The handle has the default IOMMU",
+      "rights, which are enough to make BTIs. Its value goes to |out|, and it",
+      "is in this process's table only once that write has worked: InvArgs,",
+      "and no new handle, when |out| cannot be written. It counts against",
+      "this process's handle quota: NoResource past it, or when the handle",
+      "arena is full.",
+    ]
+    args = [
+      {
+        name = "resource"
+        type = "Uandle"
+      },
+      {
+        name = "type"
+        type = "IommuType"
+      },
+      {
+        name = "desc"
+        type = "void"
+        dir = "in"
+        count = "desc_size"
+      },
+      {
+        name = "desc_size"
+        type = "usize"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "bti"
+  },
+  {
+    name = "bti_create"
+    brief = "Makes a bus transaction initiator for the device |bti_id| on |iommu| and puts a handle to it in |out|."
+    doc = [
+      "The BTI is one device's way to memory: bti_pin puts a VMO's pages",
+      "within the device's reach through it, and keeps account of them.",
+      "|iommu| needs no rights (BadHandle, BadType). |options| must be 0, which",
+      "leaves room for options later (InvArgs). What |bti_id| means is the",
+      "IOMMU's; the stub has no devices to tell apart and takes any. The",
+      "handle has the default BTI rights: Map, to pin, and Write, to release",
+      "the quarantine. Its value goes to |out|, as iommu_create's does, with",
+      "the same InvArgs and NoResource.",
+      "",
+      "Whoever holds the last handle to a BTI decides what becomes of the",
+      "memory pinned through it when they go: see bti_pin.",
+    ]
+    args = [
+      {
+        name = "iommu"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "u32"
+      },
+      {
+        name = "bti_id"
+        type = "u64"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "bti"
+  },
+  {
+    name = "bti_pin"
+    brief = "Pins [|offset|, |offset| + |size|) of |vmo| for the device |bti| is for, puts the addresses to give the device in |addrs| and a handle to the pin in |out|."
+    doc = [
+      "The pages are committed and held where they are, out of the reclaimer's",
+      "and every copy's reach, until the pin ends. |bti| is looked up first,",
+      "then |vmo|, each for BadHandle, BadType and AccessDenied: |bti| needs",
+      "Map, and |vmo| needs Map and, for what |options| lets the device do,",
+      "Read for PermRead and for PermExecute (the device's, which is not the",
+      "CPU's, so Execute is not asked) and Write for PermWrite. At least one",
+      "Perm bit is needed. |offset| and |size| must be whole pages, |size| not 0",
+      "and at most BTI_PIN_MAX_PAGES pages (InvArgs), and inside the VMO",
+      "(OutOfRange). A VMO that is a window onto a device is NotSupported.",
+      "",
+      "|addrs| receives one address for each piece the memory is cut into, and",
+      "|addrs_count| must be exactly that many (InvArgs, and nothing pinned):",
+      "one for each page by default, one for each run of the BTI's minimum",
+      "contiguity with Compress, and exactly one with Contiguous, which is",
+      "BadState for memory that is not one run. Compress and Contiguous do",
+      "not go together. After any failure the contents of |addrs| are",
+      "unspecified: some may have been written for a pin that was then undone.",
+      "",
+      "The handle in |out| is the pin. It has Inspect only. A pin ends in one",
+      "of two ways. pmt_unpin, after the program has made sure its device is",
+      "no longer using the memory, lets the pages go. Closing the last handle",
+      "to the pin without that, as when the program dies, is read as the",
+      "device possibly still writing: the pages stay pinned in the BTI's",
+      "quarantine and are not given to anyone, and the BTI answers BadState to",
+      "every further bti_pin until bti_release_quarantine says the device has",
+      "been stopped. A BTI whose last handle is closed while it holds a",
+      "quarantine can never be released, and its memory is lost for good.",
+      "",
+      "Nothing is pinned, and no handle made, unless the call is Ok. A page",
+      "can be pinned 255 times (NoResource); NoMemory when the kernel cannot",
+      "allocate the pin. The call may wait, for a page a pager has not supplied",
+      "or for memory, and a suspend that ends the wait makes it again. The",
+      "handle counts against this process's handle quota (NoResource), and",
+      "|out| is written as iommu_create's is, and so is |addrs|, with the same",
+      "InvArgs when either cannot be written.",
+    ]
+    args = [
+      {
+        name = "bti"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "BtiPinOptions"
+      },
+      {
+        name = "vmo"
+        type = "Uandle"
+      },
+      {
+        name = "offset"
+        type = "u64"
+      },
+      {
+        name = "size"
+        type = "u64"
+      },
+      {
+        name = "addrs"
+        type = "PhysAddr"
+        dir = "out"
+        count = "addrs_count"
+      },
+      {
+        name = "addrs_count"
+        type = "usize"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = [ "blocking" ]
+    ret = "Status"
+    category = "bti"
+  },
+  {
+    name = "pmt_unpin"
+    brief = "Ends the pin |pmt| names, and closes the handle."
+    doc = [
+      "The program says its device no longer touches the memory, and the",
+      "pages are let go, and the handle is closed. A handle that names nothing",
+      "is BadHandle and one that is not a pin is BadType, and neither is",
+      "closed.",
+    ]
+    args = [
+      {
+        name = "pmt"
+        type = "Uandle"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "bti"
+  },
+  {
+    name = "bti_release_quarantine"
+    brief = "Lets go of the pins |bti| holds in its quarantine."
+    doc = [
+      "For a program that has stopped its device and so knows the memory is",
+      "no longer being written. The pages of every pin in the quarantine may",
+      "move and be freed again, and the BTI pins again. A pin that has a",
+      "handle is not touched. |bti| needs Write (BadHandle, BadType,",
+      "AccessDenied). Releasing an empty quarantine is Ok.",
+    ]
+    args = [
+      {
+        name = "bti"
+        type = "Uandle"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "bti"
+  },
+  {
+    name = "vmo_create_contiguous"
+    brief = "Makes a VMO of |size| bytes of physically contiguous memory and puts a handle to it in |out|."
+    doc = [
+      "The memory a device reads and writes as one buffer and is given one",
+      "address of, such as a ring: every page of it follows the one before in",
+      "physical memory, it starts on a multiple of 2^|alignment_log2| bytes (0",
+      "is a page), and it is zero. |bti| needs Map, which is the capability for",
+      "memory of this kind (BadHandle, BadType, AccessDenied); the VMO is not",
+      "tied to that BTI, and can be pinned through any. The checks come in this",
+      "order: the handle; then InvArgs for a |size| of 0 and for an",
+      "|alignment_log2| below a page's own or too big to be a shift; then",
+      "OutOfRange for a |size| no VMO can be; then NoMemory.",
+      "",
+      "|size| is rounded up to whole pages. All of it is there from the start",
+      "and none of it is ever reclaimed, and a snapshot of it is refused",
+      "(BadState). It is one block of the page allocator, so at most 4 MiB in",
+      "this build, and what the alignment needs counts toward that: a bigger",
+      "size or alignment is NoMemory, and so is a block of the size that is not",
+      "free now, which the call does not tell apart. Nothing limits where in",
+      "memory the run is, so a device that can reach only 32-bit addresses may",
+      "not reach it.",
+      "",
+      "The handle has the default VMO rights, and the VMO is pinned for the",
+      "device in the usual way, with bti_pin, whose Contiguous option is then",
+      "Ok. Its value goes to |out|, and it is in this process's table only once",
+      "that write has worked: InvArgs, and no new handle, when |out| cannot be",
+      "written. It counts against this process's handle quota: NoResource past",
+      "it, or when the handle arena is full.",
+    ]
+    args = [
+      {
+        name = "bti"
+        type = "Uandle"
+      },
+      {
+        name = "size"
+        type = "u64"
+      },
+      {
+        name = "alignment_log2"
+        type = "u32"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "bti"
+  },
+]

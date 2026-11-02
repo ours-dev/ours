@@ -19,6 +19,7 @@ source_set("public") {
   # ours_object_wait_one(). Exported rather than hand-copied, so that the
   # operators on an ABI enum are the same ones the kernel compiles against.
   public_deps = [
+    ":kernel_version($default_toolchain)",
     ":vdso_decls",
     "//system/lib/ustl:headers",
   ]
@@ -40,6 +41,27 @@ config("public.config") {
 import("ours/syscalls.gni")
 _syscalls_gen_dir =
     get_label_info(":syscalls.gen($default_toolchain)", "target_gen_dir")
+_syscalls_gen_public = "$_syscalls_gen_dir/public"
+_syscalls_gen_private = "$_syscalls_gen_dir/private/syscall_abi"
+
+# The ABI's generated files: one declaration file per category, and the four
+# private outputs that stay whole. The generator groups the declarations by
+# the entries' category key.
+_numbers = "$_syscalls_gen_private/numbers.hpp"
+_vdso_stubs = "$_syscalls_gen_private/vdso_stubs.inc"
+_kernel_decls = "$_syscalls_gen_private/kernel_decls.inc"
+_kernel_shims = "$_syscalls_gen_private/kernel_shims.inc"
+_vdso_decls_dir = "$_syscalls_gen_public/ours"
+_gen_outputs = []
+foreach(cat, ours_syscall_categories) {
+  _gen_outputs += [ "$_vdso_decls_dir/vdso_decls/${cat}.inc" ]
+}
+_gen_outputs += [
+  _numbers,
+  _vdso_stubs,
+  _kernel_decls,
+  _kernel_shims,
+]
 
 if (current_toolchain == default_toolchain) {
   # The description as JSON: GN parses the .gni, so the generator never has to.
@@ -56,16 +78,9 @@ if (current_toolchain == default_toolchain) {
     _numbers = "$target_gen_dir/private/syscall_abi/numbers.hpp"
     _vdso_stubs = "$target_gen_dir/private/syscall_abi/vdso_stubs.inc"
     _kernel_decls = "$target_gen_dir/private/syscall_abi/kernel_decls.inc"
-    _kernel_shims = "$target_gen_dir/private/syscall_abi/kernel_shims.inc"
-    _vdso_decls = "$target_gen_dir/public/ours/vdso_decls.inc"
+    _description = "$target_gen_dir/syscalls.json"
     sources = [ _description ]
-    outputs = [
-      _numbers,
-      _vdso_stubs,
-      _kernel_decls,
-      _kernel_shims,
-      _vdso_decls,
-    ]
+    outputs = _gen_outputs
     args = [
       rebase_path(_description, root_build_dir),
       "--numbers",
@@ -76,8 +91,8 @@ if (current_toolchain == default_toolchain) {
       rebase_path(_kernel_decls, root_build_dir),
       "--kernel-shims",
       rebase_path(_kernel_shims, root_build_dir),
-      "--vdso-decls",
-      rebase_path(_vdso_decls, root_build_dir),
+      "--vdso-decls-dir",
+      rebase_path(_vdso_decls_dir, root_build_dir),
     ]
     deps = [ ":syscalls.json" ]
     visibility = [
@@ -88,6 +103,21 @@ if (current_toolchain == default_toolchain) {
 }
 
 if (current_toolchain == default_toolchain) {
+  # ours-0.1.0 plus the 12-digit HEAD this build started from. Written next
+  # to the generated vDSO declarations, which every user program already
+  # includes, so the vDSO and the shell see one string.
+  action("kernel_version") {
+    script = "//build/version/gen_kernel_version.py"
+    outputs = [ "$_syscalls_gen_dir/public/ours/version_build.hpp" ]
+    depfile = "$_syscalls_gen_dir/public/ours/version_build.hpp.d"
+    args = [
+      rebase_path("//", root_build_dir),
+      "ours-0.1.0",
+      rebase_path(outputs[0], root_build_dir),
+      rebase_path(depfile, root_build_dir),
+    ]
+  }
+
   # The vDSO's ABI as a text stub: its SONAME and one Func per call. What the
   # linked vDSO actually exports is checked against this
   # (//kernel/lib/userabi/vdso:vdso.abi_check).
@@ -138,7 +168,10 @@ config("vdso_decls.config") {
 # -- as every user program does, through //system:user.headers -- has no such
 # edge, and user_executable() adds one for it.
 group("vdso_decls") {
-  public_deps = [ ":syscalls.gen($default_toolchain)" ]
+  public_deps = [
+    ":kernel_version($default_toolchain)",
+    ":syscalls.gen($default_toolchain)",
+  ]
   public_configs = [ ":vdso_decls.config" ]
   visibility = [ ":public" ]
 }

@@ -7,8 +7,8 @@
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/resource_dispatcher.hpp>
 #include <ours/object/sampler_dispatcher.hpp>
+#include <ours/resource.hpp>
 #include <ours/status.hpp>
-#include <ours/syscall/resource.hpp>
 
 namespace ours::syscall {
 using object::KernelHandle;

@@ -1,0 +1,91 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The port calls. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/port.cpp.
+ours_syscalls_port = [
+  {
+    name = "port_create"
+    brief = "Makes a port and writes a handle to it into |out|."
+    doc = [
+      "A port is a queue of packets (<ours/port.hpp>) that threads wait on.",
+      "|options| is None, or BindToInterrupt for a port that interrupts can",
+      "be bound to (interrupt_bind); anything else is InvArgs. The handle",
+      "has Transfer, Duplicate, Inspect, Read and Write: no Wait, because a",
+      "port asserts no signals.",
+    ]
+    args = [
+      {
+        name = "options"
+        type = "PortCreateOptions"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "port"
+  },
+  {
+    name = "port_queue"
+    brief = "Queues a copy of |packet| on |port| as a User packet."
+    doc = [
+      "The type is always User; the key, status and payload are kept as",
+      "written. |port| must name a port (BadType) with Write (AccessDenied).",
+      "A packet that cannot be read is InvArgs. ShouldWait when",
+      "PORT_MAX_USER_PACKETS are already queued.",
+    ]
+    args = [
+      {
+        name = "port"
+        type = "Uandle"
+      },
+      {
+        name = "packet"
+        type = "PortPacket"
+        dir = "in"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "port"
+  },
+  {
+    name = "port_wait"
+    brief = "Takes the first packet queued on |port| into |packet|."
+    doc = [
+      "|deadline| is 0 to poll, which answers TimeOut when the queue is",
+      "empty, or INSTANT_INFINITE to wait for a packet; any other value is",
+      "NotSupported until a program can read a clock. |port| must name a",
+      "port (BadType) with Read (AccessDenied), and those answers come",
+      "before the deadline's. The packet leaves the queue before it is",
+      "written out, so a |packet| that cannot be written (InvArgs) loses it.",
+    ]
+    args = [
+      {
+        name = "port"
+        type = "Uandle"
+      },
+      {
+        name = "deadline"
+        type = "Instant"
+      },
+      {
+        name = "packet"
+        type = "PortPacket"
+        dir = "out"
+      },
+    ]
+    attrs = [ "blocking" ]
+    ret = "Status"
+    category = "port"
+  },
+]

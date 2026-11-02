@@ -7,6 +7,7 @@
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/syscall.hpp>
+#include <ours/vma.hpp>
 
 #include <ktl/result.hpp>
 

@@ -3,9 +3,9 @@
 #ifndef OURS_TIME_CLOCK_HPP
 #define OURS_TIME_CLOCK_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/seqlock.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/time/anchor_page.hpp>
 #include <ours/time/clock_type.hpp>
 #include <ours/time/types.hpp>
@@ -96,6 +96,11 @@ class SystemClock {
     static auto now() -> TimePoint;
 
     static auto ticks() -> Ticks;
+
+    /// Nanoseconds added to the monotonic clock to get the boot clock.
+    /// Zero: nothing sets the epoch, and there is no suspend.
+    [[nodiscard]]
+    static auto boot_offset() -> i64;
 
     // For changes on ClockSource is able to notify system clock.
     static auto notify(ClockSource *source) -> Status;

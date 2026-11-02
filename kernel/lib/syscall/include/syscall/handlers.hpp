@@ -4,16 +4,26 @@
 #define SYSCALL_HANDLERS_HPP 1
 
 #include <ours/bti.hpp>
+#include <ours/channel.hpp>
 #include <ours/exception.hpp>
+#include <ours/handle.hpp>
 #include <ours/interrupt.hpp>
+#include <ours/object.hpp>
 #include <ours/object_info.hpp>
 #include <ours/object_property.hpp>
+#include <ours/pager.hpp>
 #include <ours/port.hpp>
+#include <ours/process.hpp>
+#include <ours/rights.hpp>
 #include <ours/sampler.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
+#include <ours/task.hpp>
 #include <ours/types.hpp>
+#include <ours/version.hpp>
+#include <ours/vma.hpp>
+#include <ours/vmo.hpp>
 #include <user_copy/user_copy.hpp>
 
 namespace ours::syscall {

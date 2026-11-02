@@ -7,6 +7,7 @@
 #include <map>
 #include <vector>
 
+#include <ours/object.hpp>
 #include <ours/port.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>

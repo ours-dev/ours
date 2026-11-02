@@ -4,6 +4,7 @@
 #ifndef OURS_BTI_HPP
 #define OURS_BTI_HPP 1
 
+#include <ours/status.hpp>
 #include <ours/types.hpp>
 
 #include <ustl/util/enum_bits.hpp>
@@ -49,6 +50,12 @@ enum class BtiPinOptions : u32 {
     Contiguous = 1U << 4,
 };
 USTL_ENABLE_ENUM_BITMASK(BtiPinOptions);
+
+// The IOMMU, BTI, pin and contiguous-memory calls, as a program calls them:
+// generated from //system/public/ours/syscalls/bti.gni (design 4.7),
+// included inside namespace ours like the rest of the generated
+// declarations.
+#include <ours/vdso_decls/bti.inc>
 } // namespace ours
 
 #endif // #ifndef OURS_BTI_HPP

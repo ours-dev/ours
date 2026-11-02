@@ -11,6 +11,7 @@
 #include <logz4/log.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
+#include <ours/vma.hpp>
 #include <ustl/mem/align.hpp>
 
 namespace kelfload {

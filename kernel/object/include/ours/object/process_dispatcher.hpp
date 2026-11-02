@@ -3,6 +3,7 @@
 #ifndef OURS_OBJECT_PROCESS_DISPATCHER_HPP
 #define OURS_OBJECT_PROCESS_DISPATCHER_HPP 1
 
+#include <ours/handle.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/object/dispatcher.hpp>

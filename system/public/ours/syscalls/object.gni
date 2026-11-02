@@ -1,0 +1,230 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The object calls (wait, info, child, property). One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/object.cpp.
+ours_syscalls_object = [
+  {
+    name = "object_wait_one"
+    brief = "Waits until the object asserts any of |signals|."
+    doc = [
+      "Returns Ok when the object asserts any of |signals| (at once if one",
+      "already is), TimeOut when a poll finds none, and Cancelled when",
+      "|handle| leaves this process's table under the wait -- closed, or",
+      "consumed by another call. |deadline| is 0 to poll or INSTANT_INFINITE",
+      "to wait for ever; any other value, a negative one included, is",
+      "NotSupported until a program can read a clock. |handle| needs Wait",
+      "(AccessDenied). What was asserted when the wait ended is written to",
+      "|observed|, with HandleClosed added on Cancelled; |observed| may be",
+      "null, and one that cannot be written answers InvArgs. A signal the",
+      "object never raises is never asserted: Idle is a virtual interrupt's",
+      "(interrupt_create).",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "signals"
+        type = "Signals"
+      },
+      {
+        name = "deadline"
+        type = "Instant"
+      },
+      {
+        name = "observed"
+        type = "Signals"
+        dir = "out"
+      },
+    ]
+    attrs = [ "blocking" ]
+    ret = "Status"
+
+    category = "object"
+  },
+  {
+    name = "object_wait_async"
+    brief = "Starts a one-shot wait on |handle| that delivers to |port|."
+    doc = [
+      "When the object |handle| names asserts any of |signals| -- at once if",
+      "one already is: the wait is level-triggered -- a SignalOne packet with",
+      "|key| is queued on |port|, with the signals asked for (trigger) and",
+      "the signals asserted (observed). One packet per call: to wait again,",
+      "call again. The wait ends without a packet if |handle| leaves this",
+      "process's table first, closed or consumed by another call, or if the",
+      "port loses its last handle first.",
+      "",
+      "|port| is resolved first: BadHandle, BadType if it is not a port,",
+      "AccessDenied without Write. Then |handle|: BadHandle, AccessDenied",
+      "without Wait. Then |options|, which must be None (InvArgs). Then",
+      "NoResource if |port| already has PORT_MAX_OBSERVERS live waits, armed",
+      "or with their packet still queued: reading a packet or ending a wait",
+      "makes room. Nothing is attached unless every check passes.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "port"
+        type = "Uandle"
+      },
+      {
+        name = "key"
+        type = "u64"
+      },
+      {
+        name = "signals"
+        type = "Signals"
+      },
+      {
+        name = "options"
+        type = "WaitAsyncOptions"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "object"
+  },
+  {
+    name = "object_get_info"
+    brief = "Writes what the object |handle| names reports for |topic|."
+    doc = [
+      "Each topic has its own record layout (<ours/object_info.hpp>).",
+      "InfoTopic::HandleBasic is answered with one InfoHandleBasic, for a",
+      "handle of any type and with no right, since it describes the",
+      "caller's own handle. InfoTopic::Process is answered with one",
+      "InfoProcess, and InfoTopic::Resource with one InfoResource.",
+      "InfoTopic::ProcessMaps is answered with an array of InfoMaps, the",
+      "process's address space and every region and mapping in it; BadState",
+      "once its address space is gone. For these |handle| must name an",
+      "object of the topic's type, a process or a resource (BadType), and",
+      "grant Inspect (AccessDenied). InfoTopic::JobProcesses is answered",
+      "with an array of the koids of a job's processes, and needs a job",
+      "(BadType) with Enumerate (AccessDenied). Any other topic is",
+      "NotSupported, whatever |handle| is.",
+      "",
+      "|actual| and |avail| count records, not bytes: how many were written,",
+      "and how many there are. For a single-record topic, a |buffer_size|",
+      "too small for its record is BufferTooSmall, and |avail| is still",
+      "written, so the caller learns what to ask for. For an array topic",
+      "(JobProcesses, ProcessMaps), as many records as fit are written and a short buffer",
+      "is not an error: |actual| is less than |avail|. Both may be null. Any",
+      "of the three that cannot be written is InvArgs.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "topic"
+        type = "InfoTopic"
+      },
+      {
+        name = "buffer"
+        type = "void"
+        dir = "out"
+        count = "buffer_size"
+      },
+      {
+        name = "buffer_size"
+        type = "usize"
+      },
+      {
+        name = "actual"
+        type = "usize"
+        dir = "out"
+      },
+      {
+        name = "avail"
+        type = "usize"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "object"
+  },
+  {
+    name = "object_get_child"
+    brief = "Writes to |out| a new handle to the child of |handle| whose koid is |koid|."
+    doc = [
+      "A job's child is one of its processes, a process's one of its",
+      "threads; any other object is BadType, and no such child NotFound.",
+      "|handle| needs Enumerate (AccessDenied). The new handle has |rights|,",
+      "which must be a subset of |handle|'s own (AccessDenied), or",
+      "Rights::SameRights for exactly |handle|'s. A process its creator has",
+      "not handed out yet, or one that has died, is not a child to find.",
+      "The value goes to |out| before the handle exists: InvArgs, and no",
+      "handle made, when |out| cannot be written; NoResource when the",
+      "calling process is at its handle quota.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "koid"
+        type = "KoId"
+      },
+      {
+        name = "rights"
+        type = "Rights"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "object"
+  },
+  {
+    name = "object_set_property"
+    brief = "Sets |property| of the object |handle| names to the |size| bytes at |value|."
+    doc = [
+      "Each property has its own value layout and the objects that have it",
+      "(<ours/object_property.hpp>). ExceptionState is the only one: on an",
+      "exception handle, an ExceptionState, TryNext or Handled (InvArgs",
+      "otherwise), to take effect when the handle is closed. |handle| needs",
+      "SetProperty (AccessDenied) and must name an object with |property|",
+      "(BadType). A |size| below the value's is BufferTooSmall, a |value|",
+      "the kernel cannot read InvArgs, an unknown |property| InvArgs.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "property"
+        type = "Property"
+      },
+      {
+        name = "value"
+        type = "void"
+        dir = "in"
+        count = "size"
+      },
+      {
+        name = "size"
+        type = "usize"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "object"
+  },
+]

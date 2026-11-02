@@ -1,0 +1,154 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The pager calls. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/pager.cpp.
+ours_syscalls_pager = [
+  {
+    name = "pager_create"
+    brief = "Makes a pager and writes a handle to it into |out|."
+    doc = [
+      "A pager is a program that supplies the pages of the VMOs it makes",
+      "(pager_create_vmo), as a file system supplies a file's. |options| must",
+      "be 0, InvArgs otherwise. The handle has Inspect, Transfer, AttachVmo and",
+      "ManageVmo. Its value goes to |out|, and it is in this process's table",
+      "only once that write has worked. NoResource past this process's handle",
+      "quota.",
+    ]
+    args = [
+      {
+        name = "options"
+        type = "u32"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "pager"
+  },
+  {
+    name = "pager_create_vmo"
+    brief = "Makes a VMO whose pages |pager| supplies, and writes a handle to it into |out|."
+    doc = [
+      "|pager| needs AttachVmo and |port| Write. |size| is rounded up to a",
+      "page; OutOfRange past the largest size a VMO can have. |options| must",
+      "be None: Resizable is NotSupported, any other bit InvArgs. A thread that",
+      "touches a page nobody has supplied waits, and |port| gets a PageRequest",
+      "packet with |key|, the Read command and the range wanted",
+      "(<ours/port.hpp>); the pager answers with pager_supply_pages. One such",
+      "packet is out at a time for each VMO; the next goes out once the pager",
+      "has read it. When the VMO is detached or destroyed, |port| gets a last",
+      "packet, Complete. A wait no supply ends gives up after five minutes,",
+      "and the access fails. BadState once |pager| has lost its last handle.",
+      "The VMO handle has the default VMO rights.",
+    ]
+    args = [
+      {
+        name = "pager"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "VmoOptions"
+      },
+      {
+        name = "port"
+        type = "Uandle"
+      },
+      {
+        name = "key"
+        type = "u64"
+      },
+      {
+        name = "size"
+        type = "u64"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "pager"
+  },
+  {
+    name = "pager_supply_pages"
+    brief = "Moves pages of |aux_vmo| into the pager VMO |pager_vmo|."
+    doc = [
+      "|pager| needs ManageVmo, |pager_vmo| Write, and |aux_vmo| Read and",
+      "Write. |pager_vmo| must be one |pager| made (InvArgs). The pages of",
+      "[|aux_offset|, |aux_offset| + |length|) of |aux_vmo| move, not copied,",
+      "to [|offset|, |offset| + |length|) of |pager_vmo|, and |aux_vmo| reads",
+      "zero there afterwards; a page of |aux_vmo| nobody wrote arrives as",
+      "zero. A page |pager_vmo| already has is kept, and the one sent for it is",
+      "freed. The threads waiting on the pages wake. All three offsets and",
+      "lengths page aligned, InvArgs otherwise; a length of 0 does nothing.",
+      "OutOfRange past either VMO's end. NotSupported when |aux_vmo| is itself",
+      "a pager VMO. BadState once |pager_vmo| is detached.",
+    ]
+    args = [
+      {
+        name = "pager"
+        type = "Uandle"
+      },
+      {
+        name = "pager_vmo"
+        type = "Uandle"
+      },
+      {
+        name = "offset"
+        type = "u64"
+      },
+      {
+        name = "length"
+        type = "u64"
+      },
+      {
+        name = "aux_vmo"
+        type = "Uandle"
+      },
+      {
+        name = "aux_offset"
+        type = "u64"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "pager"
+  },
+  {
+    name = "pager_detach_vmo"
+    brief = "Cuts the pager VMO |vmo| off from |pager|."
+    doc = [
+      "|pager| needs AttachVmo and ManageVmo, |vmo| Write; |vmo| must be one",
+      "|pager| made (InvArgs). The threads waiting on its pages fail their",
+      "access, and so does every later access to a page not supplied; the",
+      "pages supplied before stay. The VMO's port gets Complete, its last",
+      "packet. Detaching twice is Ok.",
+    ]
+    args = [
+      {
+        name = "pager"
+        type = "Uandle"
+      },
+      {
+        name = "vmo"
+        type = "Uandle"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "pager"
+  },
+]

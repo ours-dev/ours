@@ -7,8 +7,8 @@
 #include <ours/object/handle.hpp>
 #include <ours/object/types.hpp>
 #include <ours/object_info.hpp>
+#include <ours/resource.hpp>
 #include <ours/syscall.hpp>
-#include <ours/syscall/resource.hpp>
 
 #include <ustl/collections/intrusive/list.hpp>
 
