@@ -43,6 +43,30 @@ auto report(std::string_view const what, ours::Status const status) -> void {
     auto _ = ort::debug_line({what, std::string_view{ours::to_string(status)}});
 }
 
+/// Two readings of the monotonic clock, with calls between them until it
+/// moves or a bound runs out. The shell runs after the kernel has a clock
+/// source, so the first reading is past the epoch, and the second is later:
+/// a clock that answers 0, or the same value every time, is not wired up.
+auto check_clock() -> void {
+    auto const first = ours::clock_get_monotonic();
+    auto second = first;
+    for (auto i = 0; i < 1000; i = i + 1) {
+        second = ours::clock_get_monotonic();
+        if (second != first) {
+            break;
+        }
+    }
+    if (first > 0 && second > first) {
+        auto _ = ort::debug_line("shell: clock checks passed");
+        return;
+    }
+    char first_text[21];
+    char second_text[21];
+    auto _ = ort::debug_line(
+        {"shell: clock checks FAILED first=", ort::signed_decimal(first, first_text),
+         " second=", ort::signed_decimal(second, second_text)});
+}
+
 /// Gives up a handle this program was started with, and checks that the
 /// kernel then refuses it.
 ///
@@ -8276,6 +8300,7 @@ auto check_root_job(bool const component, ours::Uandle const job) -> void {
 }
 
 auto run(Inputs const &inputs) -> void {
+    check_clock();
     check_process_self();
     check_process_maps();
     check_process_read_memory();

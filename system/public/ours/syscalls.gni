@@ -2216,4 +2216,16 @@ ours_syscalls = [
     attrs = []
     ret = "Status"
   },
+  {
+    name = "clock_get_monotonic"
+    brief = "Reads the monotonic clock, in nanoseconds since boot."
+    doc = [
+      "It does not go backwards, and it is the clock the kernel's timers",
+      "read. It is not the time of day: nothing sets it from a wall clock.",
+      "Zero until the kernel has a clock source.",
+    ]
+    args = []
+    attrs = []
+    ret = "Instant"
+  },
 ]

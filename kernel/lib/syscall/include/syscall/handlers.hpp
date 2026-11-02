@@ -20,10 +20,11 @@ namespace ours::syscall {
 /// The typed system-call entry points: syscall::<name> for the call
 /// ours_<name>.
 ///
-/// These take arguments and return a Status like ordinary functions. Nothing
-/// about a register frame reaches them: a generated shim per call
+/// These take arguments and return a result like ordinary functions. A call
+/// that can fail returns Status; one that only reads returns the value.
+/// Nothing about a register frame reaches them: a generated shim per call
 /// (syscall_abi/kernel_shims.inc, included by table.cpp) pulls the arguments
-/// out of arch::SyscallFrame and puts the Status back into it. That shim is
+/// out of arch::SyscallFrame and puts the result back into it. That shim is
 /// the dispatch layer, and keeping it separate is what lets these be read,
 /// reviewed and eventually tested as plain functions. The names carry no
 /// prefix: the namespace already says these are system calls, so each name

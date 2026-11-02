@@ -43,6 +43,7 @@ source_set("syscall") {
     "src/sampler.cpp",
     "src/table.cpp",
     "src/task.cpp",
+    "src/time.cpp",
     "src/vma.cpp",
     "src/vmo.cpp",
   ]

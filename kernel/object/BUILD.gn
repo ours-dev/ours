@@ -5,6 +5,7 @@ if (toolchain_environment == "kernel") {
     sources = [
       "bti_dispatcher.cpp",
       "channel_dispatcher.cpp",
+      "clock.cpp",
       "dispatcher.cpp",
       "exception_dispatcher.cpp",
       "exceptionate.cpp",
@@ -46,6 +47,7 @@ cpp_interface("headers") {
   public = [
     "include/ours/object/bti_dispatcher.hpp",
     "include/ours/object/channel_dispatcher.hpp",
+    "include/ours/object/clock.hpp",
     "include/ours/object/dispatcher.hpp",
     "include/ours/object/exception_dispatcher.hpp",
     "include/ours/object/exceptionate.hpp",
