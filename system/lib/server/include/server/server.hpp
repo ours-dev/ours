@@ -41,6 +41,18 @@
 ///
 /// One thread, as the Loop it runs on: an on_message() runs to completion
 /// before the next one starts, so a server may run its method's work inline.
+///
+/// A reply does not have to go out inside the on_message() that received the
+/// request. A server may park it: copy what it still needs -- the channel,
+/// the txid, the request's payload -- out of the shared buffers into storage
+/// of its own, and build the reply later, in a later callback on the same
+/// Loop, writing it with reply() as usual. The shared buffers are transient
+/// within one callback: the next channel_read overwrites them, so anything a
+/// parked request still needs has been copied out by then. A reply that
+/// fails because the client went away while its request was parked is
+/// dropped silently; the client is gone either way. ioservice's LoopServer
+/// states the same rule for a parked Open; the block-server library is the
+/// first server built on it.
 namespace server {
 template <typename Derived, usize MAX_CLIENTS>
 class ProtocolServer: public ioservice::Handler {
