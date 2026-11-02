@@ -93,6 +93,12 @@
 #     label of the child's component_manifest() target, and `startup` must
 #     be written out as "eager" (D4).
 #
+#     The children are compiled in dependency order: an offer from #a to #b
+#     writes a before b, since #b opens its uses when it starts and the
+#     provider has to be serving by then. That order is the order the root
+#     starts eager children in (D30); children the offers leave unrelated
+#     keep the order this list has them in.
+#
 #   manifest (optional)
 #     Scope with the manifest's keys: program (args only), capabilities,
 #     use, offer, expose. The subset and its rules are D3 and the design's

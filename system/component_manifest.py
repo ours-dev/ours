@@ -26,6 +26,10 @@ the root answers that use AccessDenied when its component starts, and a
 deliberate failure must still build. A route that does not resolve is left to
 run time by both. "The type check" and "The rights walk" below have the rules.
 
+A manifest with children is written out with its children in dependency order
+(_order_children): the root starts eager children one after another in manifest
+order, so the compiled children table is the order the root starts them in.
+
 Standard library only: the host's python3 is 3.9, with nothing installed
 beside it.
 """
@@ -39,7 +43,7 @@ import re
 import struct
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # The compiled format. //system/lib/component/include/component/format.hpp is
 # the other half of this contract: every constant and every layout below has
@@ -806,6 +810,43 @@ def _check_cycles(offers: List[Offer], children: List[Child], where: str) -> Non
             visit(child.name)
 
 
+def _order_children(children: List[Child], offers: List[Offer], where: str) -> List[Child]:
+    """|children| in dependency order, the order the root starts them in.
+
+    The root starts eager children one after another in manifest order, and
+    the compiled children table is that manifest order, so the table is
+    written in the order the offers between the children make: an offer from
+    #a to #b puts a first, since b opens its uses when it starts and the
+    provider has to be serving by then. A use that routes to the parent's own
+    capability or a built-in makes no edge: the parent is resolved before any
+    of its children starts, so only a sibling can still be waiting to start.
+    Among the children whose dependencies are placed, the walk takes the one
+    the manifest listed first, so children the offers leave unrelated keep
+    their manifest order and an unrelated edit does not shuffle the table.
+
+    _check_cycles has refused a cycle before this runs; if the walk still
+    stalls, the edges it accepted were not acyclic, which is a bug here.
+    """
+    predecessors: Dict[str, Set[str]] = {child.name: set() for child in children}
+    for offer in offers:
+        if offer.source.kind == REF_CHILD:
+            predecessors[offer.target.child].add(offer.source.child)
+
+    ordered: List[Child] = []
+    placed: Set[str] = set()
+    waiting = list(children)
+    while waiting:
+        for at, child in enumerate(waiting):
+            if predecessors[child.name] <= placed:
+                break
+        else:
+            raise ManifestError(f"{where}: offers leave no order to start the children in")
+        ordered.append(child)
+        placed.add(child.name)
+        waiting.pop(at)
+    return ordered
+
+
 def _check_source(source: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     """The rules a target's scope must keep before anything in it is read:
     only the keys GN writes, only the manifest keys the language has, and a
@@ -849,12 +890,15 @@ def compile_manifest(
     the `user_program_names` metadata of the program's install name target
     (empty without a program), |children_meta| the `component_manifest`
     metadata of the children. Raises ManifestError on the first rule broken.
+    The children of a manifest with children come back in dependency order
+    (_order_children), the order the root starts them in.
     """
     where, manifest = _check_source(source)
     decl = Decl()
     decl.program = _program(source, program_names, where)
     decl.children = _children(source, children_meta, where)
     _declare(decl, manifest, where)
+    decl.children = _order_children(decl.children, decl.offers, where)
     return decl
 
 

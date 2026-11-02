@@ -114,11 +114,14 @@ TEST(Decl, Realm) {
 
     auto const children = decl.children();
     ASSERT_EQ(children.size(), 3U);
-    constexpr std::array<std::string_view, 3> NAMES{"provider", "consumer", "hollow"};
+    // The children table is the start order (D30): consumer uses what
+    // provider and hollow offer, so it comes last, and the two it depends
+    // on keep the order realm.cm lists them in.
+    constexpr std::array<std::string_view, 3> NAMES{"provider", "hollow", "consumer"};
     constexpr std::array<std::string_view, 3> URLS{
         "fuchsia-boot:///#meta/provider.cm",
-        "fuchsia-boot:///#meta/consumer.cm",
         "fuchsia-boot:///#meta/hollow.cm",
+        "fuchsia-boot:///#meta/consumer.cm",
     };
     for (u32 index = 0; index < children.size(); ++index) {
         EXPECT_EQ(children[index].name, NAMES[index]);
@@ -614,8 +617,10 @@ TEST(Decl, TheHopsOfADirectoryRouteStateTheirRightsAndSubdirs) {
     auto const children = shelf.children();
     ASSERT_EQ(children.size(), 3U);
     EXPECT_EQ(children[0].name, "store");
-    EXPECT_EQ(children[1].name, "reader");
-    EXPECT_EQ(children[2].name, "bare");
+    // The children table is the start order (D30): reader uses what store
+    // and bare offer, so both come before it.
+    EXPECT_EQ(children[1].name, "bare");
+    EXPECT_EQ(children[2].name, "reader");
     ASSERT_EQ(shelf.offers().size(), 8U);
     auto const notes = shelf.offers()[0];
     EXPECT_EQ(notes.kind, Kind::Directory);

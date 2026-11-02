@@ -557,6 +557,50 @@ class CompileTest(unittest.TestCase):
         decl = compile_with_children(manifest, "a", "b", "c", "d")
         self.assertEqual(len(decl.offers), 4)
 
+    def test_children_are_written_in_dependency_order(self) -> None:
+        # The root starts eager children in manifest order, and the compiled
+        # children table is that order: the compiler writes b's provider
+        # first, whatever order the manifest listed them in.
+        manifest = {"offer": [{"protocol": "p", "from": "#a", "to": "#b"}]}
+        decl = compile_with_children(manifest, "b", "a")
+        self.assertEqual([child.name for child in decl.children], ["a", "b"])
+
+    def test_the_start_order_follows_the_whole_chain(self) -> None:
+        manifest = {
+            "offer": [
+                {"protocol": "p", "from": "#a", "to": "#b"},
+                {"protocol": "q", "from": "#b", "to": "#c"},
+            ]
+        }
+        decl = compile_with_children(manifest, "c", "b", "a")
+        self.assertEqual([child.name for child in decl.children], ["a", "b", "c"])
+
+    def test_children_the_offers_leave_unrelated_keep_their_order(self) -> None:
+        # The diamond of test_a_diamond_is_not_a_cycle: a, then its two
+        # children in the order the manifest lists them, then d.
+        manifest = {
+            "offer": [
+                {"protocol": "p", "from": "#a", "to": ["#b", "#c"]},
+                {"protocol": "q", "from": "#b", "to": "#d"},
+                {"protocol": "r", "from": "#c", "to": "#d"},
+            ]
+        }
+        decl = compile_with_children(manifest, "d", "c", "b", "a")
+        self.assertEqual([child.name for child in decl.children], ["a", "c", "b", "d"])
+
+    def test_an_offer_from_the_parent_or_self_makes_no_start_order(self) -> None:
+        # The parent is resolved before any of its children starts, so only
+        # an offer between children orders them.
+        manifest = {
+            "capabilities": [{"protocol": "p"}],
+            "offer": [
+                {"protocol": "p", "from": "self", "to": "#b"},
+                {"protocol": "q", "from": "parent", "to": "#a"},
+            ],
+        }
+        decl = compile_with_children(manifest, "b", "a")
+        self.assertEqual([child.name for child in decl.children], ["b", "a"])
+
     def test_expose(self) -> None:
         manifest = {
             "capabilities": [{"protocol": "p"}],
@@ -1058,10 +1102,12 @@ class EncodeTest(unittest.TestCase):
             ],
         }
         decl = compile_with_children(manifest, "a", "b")
+        # #a uses what #b offers, so the compiled children are b, a (the
+        # start order, D30): b is 0 and a is 1 in the refs below.
         offers = Reader(cm.encode(decl)).tables["offer"]
         self.assertEqual(offers[0][:4], (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED, cm.REF_SELF, 0))
-        self.assertEqual(offers[1][:4], (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED, cm.REF_CHILD, 1))
-        self.assertEqual(offers[1][6:8], (cm.REF_CHILD, 0))
+        self.assertEqual(offers[1][:4], (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED, cm.REF_CHILD, 0))
+        self.assertEqual(offers[1][6:8], (cm.REF_CHILD, 1))
 
     def compiled_with_types(self, capability: Dict[str, Any], use: Dict[str, Any]) -> Reader:
         manifest = {"capabilities": [capability], "use": [use]}
