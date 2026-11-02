@@ -1,0 +1,30 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The fake kernel the servers-on-a-Loop test suites share: a model of ports
+# and channels, small enough to read in one sitting, that answers the system
+# calls a Loop and the servers on it make (channel_*, port_*, handle_close,
+# object_wait_async, debug_write) under the vDSO's own symbol names, so a
+# library's source is compiled unchanged and links against the model instead
+# of the vDSO. See fake_kernel.hpp for the rules the model keeps and the
+# calls it refuses to define.
+source_set("fake_kernel") {
+  testonly = true
+  sources = [
+    "fake_kernel.cpp",
+    "fake_kernel.hpp",
+  ]
+  public_configs = [ ":fake_kernel_includes" ]
+
+  # Its declarations are the vDSO's and the Loop's own.
+  public_deps = [
+    "//system/lib/loop:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+config("fake_kernel_includes") {
+  include_dirs = [ "." ]
+}
