@@ -220,6 +220,11 @@ group("default") {
     # name it does not serve.
     "//system/lib/ioservice:tests",
 
+    # The block-driver library: a BlockServer on the fake kernel, its slot
+    # table filled by encoded Reads and Writes and drained by the test
+    # playing the hardware's completion interrupt.
+    "//system/lib/block-server:tests",
+
     # The client side of a namespace: path cleaning, and the rules for what
     # may be bound where and which binding a path lies under.
     "//system/lib/fsio:tests",
