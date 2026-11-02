@@ -4,7 +4,7 @@
 
 ## Delivered
 
-- `//system/lib/driver-kit` — `Resources` (injectable getter, `take`/`drop`, destructor unwind), `startup_handle`, `MappedMmio`, `Bti`, `DmaRegion`, `irq::take`. 27c1c241.
+- `//system/lib/ddk` — `Resources` (injectable getter, `take`/`drop`, destructor unwind), `startup_handle`, `MappedMmio`, `Bti`, `DmaRegion`, `irq::take`. 27c1c241.
 - The five-case host ladder suite on the fake kernel, wired into `//:default`. 27c1c241.
 - virtio-blk on the kit, ECAM base from the route service (root.cm offers `ours.acpi.Route` to it), the `fail` lambda and `map_mmio` deleted — 114 lines out, and the file's own long-promised migration done. 69e0cddb.
 - acpi-route's startup guards on `startup_handle`. e5248c03.

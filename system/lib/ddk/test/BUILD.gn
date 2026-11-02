@@ -1,11 +1,11 @@
 # Host-side tests. These link googletest and run on the build machine, so
 # they exercise the library's own logic rather than anything that needs a
 # booted kernel: the resource ladder, on a fake getter over the fake kernel.
-executable("driver_kit") {
+executable("ddk") {
   testonly = true
-  sources = [ "driver_kit_test.cpp" ]
+  sources = [ "ddk_test.cpp" ]
   deps = [
-    "//system/lib/driver-kit",
+    "//system/lib/ddk",
     "//system/lib/testing/fake_kernel",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",

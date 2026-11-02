@@ -39,7 +39,7 @@
 
 #include <acpi_route/routes.hpp>
 #include <acpi_route/table_directory.hpp>
-#include <driver_kit/driver_kit.hpp>
+#include <ddk/ddk.hpp>
 #include <ioservice/outgoing.hpp>
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
@@ -336,11 +336,11 @@ auto main(int, char **) -> int {
     // The server end of the outgoing directory, which the root made when it
     // resolved this component and hands every component with a program.
     auto const directory_request =
-        driver_kit::startup_handle(ours::HandleType::DirectoryRequest, "a DirectoryRequest handle");
+        ddk::startup_handle(ours::HandleType::DirectoryRequest, "a DirectoryRequest handle");
     if (directory_request.is_err()) {
         return 1;
     }
-    auto const vma = driver_kit::startup_handle(ours::HandleType::VmaRoot, "VmaRoot");
+    auto const vma = ddk::startup_handle(ours::HandleType::VmaRoot, "VmaRoot");
     if (vma.is_err()) {
         return 1;
     }

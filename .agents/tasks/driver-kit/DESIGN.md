@@ -19,7 +19,7 @@ A fourth driver author would copy all of it, with the teardown orders — the pa
 ## Goals and non-goals
 
 Goals:
-- `//system/lib/driver-kit`: the ladder as an object (`Resources`), one-line startup handles, and the map/DMA/interrupt idioms as RAII objects whose destructors run the teardown orders once, correctly.
+- `//system/lib/ddk`: the ladder as an object (`Resources`), one-line startup handles, and the map/DMA/interrupt idioms as RAII objects whose destructors run the teardown orders once, correctly.
 - The three drivers migrate onto it; the keyboard check on rel (`sendkey` → `pc-ps2: key a/A`) and the disked block stack prove nothing broke.
 - virtio-blk takes its ECAM base from the ACPI route service, deleting its hardcoded constant.
 
@@ -31,7 +31,7 @@ Non-goals:
 
 ## Design
 
-One header, `driver_kit/driver_kit.hpp`, namespace `driver_kit`, CRTP-free plain objects. The alignment rule throughout: helpers consume handles; only `Resources` acquires, and only through an injectable getter (default `ours_resource::get`), which makes the ladder host-testable.
+One header, `driver_kit/ddk.hpp`, namespace `driver_kit`, CRTP-free plain objects. The alignment rule throughout: helpers consume handles; only `Resources` acquires, and only through an injectable getter (default `ours_resource::get`), which makes the ladder host-testable.
 
 - **`Resources`** — constructed with a getter (defaulting to the real one); `take(kind) -> Result<Uandle, Status>` records what it holds; `drop(handle)` closes one held root early, the discipline both drivers already document (a root is a connection from a finite pool; the driver's line and mappings outlive it); the destructor closes everything still recorded, newest first — the quadratic ladder becomes stack unwinding. `Kind` enumerates the five resource protocols a driver asks for.
 - **`startup_handle(type, name)`** — `ort::take_startup_handle` plus the "started without X" line, `Invalid` mapped to an error status.

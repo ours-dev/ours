@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// driver_kit::Resources on the fake kernel: the ladder. A fake getter hands
+// ddk::Resources on the fake kernel: the ladder. A fake getter hands
 // out real fake-kernel handles (so every handle_close is recorded and can be
 // sequenced) and fails on the take a test names. What the cases pin: the
 // destructor closing newest first, a mid-ladder failure leaving the prefix
@@ -11,7 +11,7 @@
 // ort::take_startup_handle is the user runtime's, defined in start.cpp,
 // which does not build on the host: the test defines the symbol, answering
 // Invalid, which is the one behavior startup_handle's guard adds value to.
-#include <driver_kit/driver_kit.hpp>
+#include <ddk/ddk.hpp>
 
 #include <algorithm>
 #include <array>
@@ -89,9 +89,9 @@ TEST_F(DriverKitTest, TheDestructorClosesWhatItHoldsNewestFirst) {
     auto const before = marker();
     auto held = std::vector<Uandle>{};
     {
-        auto resources = driver_kit::Resources(&fake_get);
-        for (auto const kind: {driver_kit::Kind::Mmio, driver_kit::Kind::Ioport,
-                               driver_kit::Kind::Iommu, driver_kit::Kind::Irq}) {
+        auto resources = ddk::Resources(&fake_get);
+        for (auto const kind:
+             {ddk::Kind::Mmio, ddk::Kind::Ioport, ddk::Kind::Iommu, ddk::Kind::Irq}) {
             auto const taken = resources.take(kind);
             ASSERT_TRUE(taken.is_ok());
             held.push_back(taken.unwrap());
@@ -115,10 +115,10 @@ TEST_F(DriverKitTest, AMidLadderFailureLeavesThePrefixToTheDestructor) {
     FAIL_AT = 3;
     auto taken = std::vector<Uandle>{};
     {
-        auto resources = driver_kit::Resources(&fake_get);
-        auto const first = resources.take(driver_kit::Kind::Mmio);
-        auto const second = resources.take(driver_kit::Kind::Ioport);
-        auto const refused = resources.take(driver_kit::Kind::Iommu);
+        auto resources = ddk::Resources(&fake_get);
+        auto const first = resources.take(ddk::Kind::Mmio);
+        auto const second = resources.take(ddk::Kind::Ioport);
+        auto const refused = resources.take(ddk::Kind::Iommu);
         ASSERT_TRUE(first.is_ok());
         ASSERT_TRUE(second.is_ok());
         ASSERT_TRUE(refused.is_err());
@@ -142,9 +142,8 @@ TEST_F(DriverKitTest, DropReleasesOneRootEarlyWithoutDisturbingTheRest) {
     auto const before = marker();
     auto held = std::vector<Uandle>{};
     {
-        auto resources = driver_kit::Resources(&fake_get);
-        for (auto const kind:
-             {driver_kit::Kind::Mmio, driver_kit::Kind::Ioport, driver_kit::Kind::Irq}) {
+        auto resources = ddk::Resources(&fake_get);
+        for (auto const kind: {ddk::Kind::Mmio, ddk::Kind::Ioport, ddk::Kind::Irq}) {
             held.push_back(resources.take(kind).unwrap());
         }
         auto const after_takes = marker();
@@ -169,13 +168,13 @@ TEST_F(DriverKitTest, DropReleasesOneRootEarlyWithoutDisturbingTheRest) {
 }
 
 TEST_F(DriverKitTest, TheLadderRunsOut) {
-    auto resources = driver_kit::Resources(&fake_get);
+    auto resources = ddk::Resources(&fake_get);
     auto const before = marker();
     for (auto index = usize{0}; index < 5; ++index) {
-        auto const kind = index == 4 ? driver_kit::Kind::Irq : driver_kit::Kind::Mmio;
+        auto const kind = index == 4 ? ddk::Kind::Irq : ddk::Kind::Mmio;
         ASSERT_TRUE(resources.take(kind).is_ok());
     }
-    auto const refused = resources.take(driver_kit::Kind::Ioport);
+    auto const refused = resources.take(ddk::Kind::Ioport);
     ASSERT_TRUE(refused.is_err());
     EXPECT_EQ(refused.unwrap_err(), Status::NoResource);
     // The refusal held nothing and closed nothing.
@@ -185,12 +184,12 @@ TEST_F(DriverKitTest, TheLadderRunsOut) {
 TEST_F(DriverKitTest, AStartupHandleMissingSaysSoAndErrors) {
     // The host stand-in above answers Invalid, which is the guard's case:
     // the line on the console, and the status to return.
-    auto const missing = driver_kit::startup_handle(ours::HandleType::VmaRoot, "VmaRoot");
+    auto const missing = ddk::startup_handle(ours::HandleType::VmaRoot, "VmaRoot");
     ASSERT_TRUE(missing.is_err());
     EXPECT_EQ(missing.unwrap_err(), Status::NotFound);
     auto const &lines = fake::kernel().debug_writes();
     ASSERT_FALSE(lines.empty());
-    EXPECT_EQ(lines.back(), "driver-kit: started without VmaRoot\n");
+    EXPECT_EQ(lines.back(), "ddk: started without VmaRoot\n");
 }
 
 } // namespace

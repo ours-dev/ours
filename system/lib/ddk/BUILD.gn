@@ -11,8 +11,8 @@ import("//build/cpp/cpp_interface.gni")
 # pinned, and the interrupt idiom map -> create -> close-the-root. The
 # alignment rule: helpers consume handles their caller holds; only Resources
 # acquires, through a getter a host test can replace.
-source_set("driver-kit") {
-  sources = [ "src/driver_kit.cpp" ]
+source_set("ddk") {
+  sources = [ "src/ddk.cpp" ]
   public_deps = [ ":headers" ]
 }
 
@@ -20,7 +20,7 @@ source_set("driver-kit") {
 # declarations does not pull in the sources -- see
 # //build/cpp/cpp_interface.gni.
 cpp_interface("headers") {
-  public = [ "include/driver_kit/driver_kit.hpp" ]
+  public = [ "include/ddk/ddk.hpp" ]
   public_deps = [
     "//system/lib/loop:headers",
     "//system/lib/ort:headers",
@@ -34,5 +34,5 @@ cpp_interface("headers") {
 
 group("tests") {
   testonly = true
-  public_deps = [ "test:driver_kit($host_toolchain)" ]
+  public_deps = [ "test:ddk($host_toolchain)" ]
 }

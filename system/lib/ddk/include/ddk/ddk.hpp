@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef DRIVER_KIT_DRIVER_KIT_HPP
-#define DRIVER_KIT_DRIVER_KIT_HPP 1
+#ifndef DDK_DDK_HPP
+#define DDK_DDK_HPP 1
 
 #include <algorithm>
 #include <array>
@@ -45,7 +45,7 @@
 /// One thread, as the drivers run: nothing here locks. Every object here
 /// must outlive the work that borrows its handles, the way the drivers'
 /// `LazyInit` storages outlive their `main()`.
-namespace driver_kit {
+namespace ddk {
 
 /// Which resource protocol `Resources::take` asks for.
 enum class Kind : u8 {
@@ -84,7 +84,7 @@ class Resources final {
     [[nodiscard]]
     auto take(Kind const kind) -> ustl::Result<ours::Uandle, ours::Status> {
         if (m_held == m_handles.size()) {
-            constexpr auto LINE = std::string_view{"driver-kit: too many resources held\n"};
+            constexpr auto LINE = std::string_view{"ddk: too many resources held\n"};
             auto _ = ours::debug_write(LINE.data(), static_cast<u32>(LINE.size()));
             return ustl::err(ours::Status::NoResource);
         }
@@ -151,7 +151,7 @@ inline auto startup_handle(ours::HandleType const type, std::string_view const n
     if (handle == ours::Uandle::Invalid) {
         // The one way a user-space library says anything: the debug console,
         // the line composed in a fixed buffer, one write.
-        constexpr auto PREFIX = std::string_view{"driver-kit: started without "};
+        constexpr auto PREFIX = std::string_view{"ddk: started without "};
         auto line = std::array<char, PREFIX.size() + 32>{};
         auto *cursor = line.data();
         std::memcpy(cursor, PREFIX.data(), PREFIX.size());
@@ -399,6 +399,6 @@ namespace irq {
         return ustl::ok(interrupt);
     }
 } // namespace irq
-} // namespace driver_kit
+} // namespace ddk
 
-#endif // #ifndef DRIVER_KIT_DRIVER_KIT_HPP
+#endif // #ifndef DDK_DDK_HPP

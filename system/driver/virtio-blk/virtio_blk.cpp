@@ -65,7 +65,7 @@
 #include <cstdint>
 
 #include <block_server/block_server.hpp>
-#include <driver_kit/driver_kit.hpp>
+#include <ddk/ddk.hpp>
 #include <fsio/fsio.hpp>
 #include <ioservice/outgoing.hpp>
 #include <loop/loop.hpp>
@@ -506,37 +506,37 @@ auto main(int, char **) -> int {
 
     // Every root this driver asks for, with the ladder's destructor closing
     // whatever is still held on any early return below.
-    driver_kit::Resources resources;
+    ddk::Resources resources;
 
-    auto const vma = driver_kit::startup_handle(ours::HandleType::VmaRoot, "VmaRoot");
+    auto const vma = ddk::startup_handle(ours::HandleType::VmaRoot, "VmaRoot");
     if (vma.is_err()) {
         return 1;
     }
     auto const directory_request =
-        driver_kit::startup_handle(ours::HandleType::DirectoryRequest, "a DirectoryRequest handle");
+        ddk::startup_handle(ours::HandleType::DirectoryRequest, "a DirectoryRequest handle");
     if (directory_request.is_err()) {
         return 1;
     }
 
-    auto const mmio_resource = resources.take(driver_kit::Kind::Mmio);
+    auto const mmio_resource = resources.take(ddk::Kind::Mmio);
     if (mmio_resource.is_err()) {
         auto _ = ort::debug_line(
             {"virtio-blk: no MmIo resource: ", ours::to_string(mmio_resource.unwrap_err())});
         return 1;
     }
-    auto const ioport_resource = resources.take(driver_kit::Kind::Ioport);
+    auto const ioport_resource = resources.take(ddk::Kind::Ioport);
     if (ioport_resource.is_err()) {
         auto _ = ort::debug_line(
             {"virtio-blk: no Ioport resource: ", ours::to_string(ioport_resource.unwrap_err())});
         return 1;
     }
-    auto const iommu_resource = resources.take(driver_kit::Kind::Iommu);
+    auto const iommu_resource = resources.take(ddk::Kind::Iommu);
     if (iommu_resource.is_err()) {
         auto _ = ort::debug_line(
             {"virtio-blk: no Iommu resource: ", ours::to_string(iommu_resource.unwrap_err())});
         return 1;
     }
-    auto const irq_resource = resources.take(driver_kit::Kind::Irq);
+    auto const irq_resource = resources.take(ddk::Kind::Irq);
     if (irq_resource.is_err()) {
         auto _ = ort::debug_line(
             {"virtio-blk: no Irq resource: ", ours::to_string(irq_resource.unwrap_err())});
@@ -554,8 +554,8 @@ auto main(int, char **) -> int {
     }
 
     // Bus 0 of the ECAM, one window for the whole enumeration.
-    auto ecam_window = driver_kit::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(),
-                                                   ecam->address, usize{ecam->size});
+    auto ecam_window = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(), ecam->address,
+                                            usize{ecam->size});
     if (ecam_window.is_err()) {
         auto _ = ort::debug_line({"virtio-blk: cannot map the ECAM window: ",
                                   ours::to_string(ecam_window.unwrap_err())});
@@ -628,8 +628,8 @@ auto main(int, char **) -> int {
     // take() maps, creates, and closes the root on success -- the line is
     // held by the interrupt object from here, and the root goes back to the
     // pool for the next driver.
-    auto interrupt = driver_kit::irq::take(irq_resource.unwrap(), ours::ROOT_INTERRUPT_DOMAIN,
-                                           GSI_DISK, ours::InterruptOptions::ModeLevelLow);
+    auto interrupt = ddk::irq::take(irq_resource.unwrap(), ours::ROOT_INTERRUPT_DOMAIN, GSI_DISK,
+                                    ours::InterruptOptions::ModeLevelLow);
     if (interrupt.is_err()) {
         auto _ = ort::debug_line({"virtio-blk: cannot take its interrupt line: ",
                                   ours::to_string(interrupt.unwrap_err())});
@@ -666,14 +666,14 @@ auto main(int, char **) -> int {
     // pinned, mapped region. The kit objects' destructors undo each step in
     // the order that answers the kernel's pin discipline on any early return
     // below.
-    auto bti = driver_kit::Bti::create(iommu_resource.unwrap());
+    auto bti = ddk::Bti::create(iommu_resource.unwrap());
     if (bti.is_err()) {
         auto _ = ort::debug_line(
             {"virtio-blk: cannot make its BTI: ", ours::to_string(bti.unwrap_err())});
         return 1;
     }
     resources.drop(iommu_resource.unwrap());
-    auto region = driver_kit::DmaRegion::allocate(vma.unwrap(), bti->handle(), REGION_BYTES);
+    auto region = ddk::DmaRegion::allocate(vma.unwrap(), bti->handle(), REGION_BYTES);
     if (region.is_err()) {
         auto _ = ort::debug_line(
             {"virtio-blk: cannot make its DMA region: ", ours::to_string(region.unwrap_err())});

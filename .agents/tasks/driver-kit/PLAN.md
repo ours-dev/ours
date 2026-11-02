@@ -5,7 +5,7 @@
 
 ## Request
 
-The user's driver-library direction, scoped with the user to the kit library first: `//system/lib/driver-kit` plus the three drivers migrated onto it. The copier driver template and the guide's driver chapter are the next round.
+The user's driver-library direction, scoped with the user to the kit library first: `//system/lib/ddk` plus the three drivers migrated onto it. The copier driver template and the guide's driver chapter are the next round.
 
 ## Decisions
 
@@ -22,7 +22,7 @@ See DESIGN.md's table; the scope decision was made there on 2026-11-03.
 
 ## Files
 
-- Created: `.agents/tasks/driver-kit/{DESIGN,PLAN,RESULT}.md`; `system/lib/driver-kit/**`; `docs/changes/261103/driver-kit.md`.
+- Created: `.agents/tasks/driver-kit/{DESIGN,PLAN,RESULT}.md`; `system/lib/ddk/**`; `docs/changes/261103/driver-kit.md`.
 - Changed: `system/driver/virtio-blk/{virtio_blk.cpp,BUILD.gn}`; `system/driver/pc-ps2/pc_ps2.cpp`; `system/service/acpi-route/src/acpi_route.cpp`; `BUILD.gn` (tests group).
 
 ## Test plan
