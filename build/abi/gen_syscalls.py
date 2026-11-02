@@ -358,10 +358,11 @@ def user_param(arg: Arg) -> str:
 
 
 def render_vdso_decls(calls: List[Call]) -> str:
-    """The vDSO's entry points as a program calls them, included by
-    <ours/vdso.hpp> inside namespace ours: `ours::<name>`, with an asm label
-    that names the vDSO's symbol, `ours_<name>`, so that the call binds to
-    that symbol and not to a mangled C++ name (see <ours/vdso.hpp>).
+    """One category's vDSO entries as a program calls them, included by that
+    category's public header (and by <ours/vdso.hpp>, through all.inc) inside
+    namespace ours: `ours::<name>`, with an asm label that names the vDSO's
+    symbol, `ours_<name>`, so that the call binds to that symbol and not to a
+    mangled C++ name (see <ours/vdso.hpp>).
 
     The documentation is the description's, written for the caller, and this
     is the one place a program reads it: there is no wrapper library that
@@ -388,6 +389,23 @@ def render_vdso_decls(calls: List[Call]) -> str:
     return "\n".join(lines)
 
 
+def render_vdso_decls_all(calls: List[Call]) -> str:
+    """The umbrella include <ours/vdso_decls/all.inc>: one include per
+    category, in the number order ours/syscalls.gni's concatenation spells.
+    <ours/vdso.hpp> includes this file; a domain's own header includes its
+    category's file directly.
+    """
+    categories = []
+    for call in calls:
+        if call.category not in categories:
+            categories.append(call.category)
+    lines = [HEADER_BANNER]
+    lines.append("// One file per category; the order here is the call-number order.")
+    for cat in categories:
+        lines.append(f"#include <ours/vdso_decls/{cat}.inc>")
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("description", type=pathlib.Path,
@@ -400,8 +418,10 @@ def main() -> int:
                         help="write the kernel's handler declarations here")
     parser.add_argument("--kernel-shims", type=pathlib.Path,
                         help="write the kernel's frame-unpacking shims here")
-    parser.add_argument("--vdso-decls", type=pathlib.Path,
-                        help="write the declarations of the vDSO's entries here")
+    parser.add_argument("--vdso-decls-dir", type=pathlib.Path,
+                        help="write the per-category declarations of the vDSO's"
+                             " entries under here, as vdso_decls/<category>.inc"
+                             " plus the all.inc umbrella")
     args = parser.parse_args()
 
     try:
@@ -418,8 +438,19 @@ def main() -> int:
         write_if_changed(args.kernel_decls, render_kernel_decls(calls))
     if args.kernel_shims:
         write_if_changed(args.kernel_shims, render_kernel_shims(calls))
-    if args.vdso_decls:
-        write_if_changed(args.vdso_decls, render_vdso_decls(calls))
+    if args.vdso_decls_dir:
+        args.vdso_decls_dir.mkdir(parents=True, exist_ok=True)
+        categories = []
+        for call in calls:
+            if call.category not in categories:
+                categories.append(call.category)
+        for cat in categories:
+            write_if_changed(
+                args.vdso_decls_dir / "vdso_decls" / f"{cat}.inc",
+                render_vdso_decls([c for c in calls if c.category == cat]))
+        write_if_changed(
+            args.vdso_decls_dir / "vdso_decls" / "all.inc",
+            render_vdso_decls_all(calls))
     return 0
 
 

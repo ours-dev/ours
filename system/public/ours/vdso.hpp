@@ -56,10 +56,12 @@
 /// the symbol instead (`debug_write`). The label is a GNU extension, which
 /// clang and GCC both honour; the header is C++ only already.
 namespace ours {
-// One declaration per entry of //system/public/ours/syscalls.gni, with that
-// entry's documentation: generated, like the stubs they bind to, so that the
-// two cannot disagree about a call's arguments (design 4.7).
-#include <ours/vdso_decls.inc>
+// One declaration per entry of the files under
+// //system/public/ours/syscalls/, with that entry's documentation: one file
+// per category, included here in the number order; generated, like the stubs
+// they bind to, so that the two cannot disagree about a call's arguments
+// (design 4.7). A domain's own header includes its category's file alone.
+#include <ours/vdso_decls/all.inc>
 } // namespace ours
 
 #endif // __cplusplus

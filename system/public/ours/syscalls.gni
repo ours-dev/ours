@@ -51,3 +51,26 @@ ours_syscalls =
     ours_syscalls_vma + ours_syscalls_exception + ours_syscalls_interrupt +
     ours_syscalls_sampler + ours_syscalls_ioport + ours_syscalls_pager +
     ours_syscalls_bti + ours_syscalls_time
+
+# The categories in number order, for the build steps that lay outputs out
+# from the list: system/public/BUILD.gn's action declares one generated
+# declaration file per category.
+ours_syscall_categories = [
+  "debug",
+  "command",
+  "handle",
+  "channel",
+  "object",
+  "port",
+  "process",
+  "task",
+  "vmo",
+  "vma",
+  "exception",
+  "interrupt",
+  "sampler",
+  "ioport",
+  "pager",
+  "bti",
+  "time",
+]
