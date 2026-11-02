@@ -39,6 +39,7 @@
 
 #include <acpi_route/routes.hpp>
 #include <acpi_route/table_directory.hpp>
+#include <driver_kit/driver_kit.hpp>
 #include <ioservice/outgoing.hpp>
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
@@ -334,19 +335,18 @@ auto map_tables(Uandle const vma) -> ustl::Result<acpi_route::TableDirectory, St
 auto main(int, char **) -> int {
     // The server end of the outgoing directory, which the root made when it
     // resolved this component and hands every component with a program.
-    auto const directory_request = ort::take_startup_handle(ours::HandleType::DirectoryRequest, 0);
-    if (directory_request == Uandle::Invalid) {
-        auto _ = ort::debug_line("acpi-route: started without a DirectoryRequest handle");
+    auto const directory_request =
+        driver_kit::startup_handle(ours::HandleType::DirectoryRequest, "a DirectoryRequest handle");
+    if (directory_request.is_err()) {
         return 1;
     }
-    auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
-    if (vma == Uandle::Invalid) {
-        auto _ = ort::debug_line("acpi-route: started without VmaRoot");
+    auto const vma = driver_kit::startup_handle(ours::HandleType::VmaRoot, "VmaRoot");
+    if (vma.is_err()) {
         return 1;
     }
 
     // Without tables there is nothing to answer from.
-    auto const tables = map_tables(vma);
+    auto const tables = map_tables(vma.unwrap());
     if (tables.is_err()) {
         report("no usable ACPI tables", tables.unwrap_err());
         return 1;
@@ -370,9 +370,9 @@ auto main(int, char **) -> int {
         report("cannot add its protocol", status);
         return 1;
     }
-    if (auto const status = outgoing.serve(directory_request); status != Status::Ok) {
+    if (auto const status = outgoing.serve(directory_request.unwrap()); status != Status::Ok) {
         report("cannot serve its outgoing directory", status);
-        auto _ = ours::handle_close(directory_request);
+        auto _ = ours::handle_close(directory_request.unwrap());
         return 1;
     }
 
