@@ -117,3 +117,50 @@ None — the user approved each move (Zircon-shape assert/panic split; MIT relic
 - What does `<ours/assert.hpp>` end in, and who defines it in each environment?
 - Why is the kernel's time vocabulary `kernel/include/ours/chrono.hpp` and not `kernel/include/ours/time.hpp`?
 - Why do `compiler.hpp` and `assert.hpp` stay public while `panic.hpp` does not?
+
+## WaitAsyncOptions moves beside object_wait_async (2026-11-03)
+
+**Files**
+
+- `system/public/ours/port.hpp` — the enum removed; the packet types and port limits stay.
+- `system/public/ours/object.hpp` — the enum added beside the generated object declarations; the `port.hpp` include dropped.
+- `kernel/object/include/ours/object/handle_table.hpp` — included port.hpp only for this enum; now includes `<ours/object.hpp>`, the ABI header of the call it implements.
+- `system/lib/{ioservice,loop}/test/fake_kernel.hpp` — gain the explicit `<ours/object.hpp>` they were getting transitively.
+
+**Symptom**
+
+Latent, organisational: `<ours/object.hpp>` depended on `<ours/port.hpp>` for one option word, an edge Zircon does not have — `zircon/syscalls/object.h` includes nothing of `syscalls/port.h`.
+
+**Cause**
+
+`WaitAsyncOptions` was filed with the packet types because a wait-async packet eventually queues on a port. But the option word belongs to the call that takes it, and nothing on the port side ever reads it: the kernel's port observer is handed the already-resolved value. The dependency was the file layout's, not the domain's.
+
+**Change**
+
+The enum moved to `object.hpp` with its comment, and the header's port include went with it. `PortPacket` stays in `port.hpp`: the packet is the port's business, the option is not. `handle_table.hpp` — whose port include existed only for this enum — now names the header of the call it serves. The test fake kernels that emulate `object_wait_async` name `<ours/object.hpp>` explicitly instead of getting the enum by accident of include order.
+
+**Reference**
+
+`zircon/system/public/zircon/syscalls/object.h` — carries `zx_object_wait_async` with no port include; its option word is a plain `uint32_t`, so the question does not arise there. Ours keeps the typed enum and puts it where the type's caller lives.
+
+**Verification**
+
+`boot_check.py`: build ok; dbg 45 passed / rel 43 passed (7/7 required), both `reached: end`; host tests 159 passed — the ioservice and loop suites compile for the host against the moved enum.
+
+**Deliberately not done**
+
+`PORT_MAX_OBSERVERS` stays in `port.hpp`: it bounds a resource the port owns, whatever call arms it.
+
+**How it was found**
+
+REVIEW.md M1 of this task, written during the refactor's self-review.
+
+**The user's prediction**
+
+None — a mechanical follow-up the user asked to have resolved.
+
+**Three questions you should be able to answer**
+
+- Why does the option word live with the call rather than with the packet its call eventually queues?
+- Which kernel header changed include because it held the enum for no domain reason, and what does it include now?
+- What stays in `port.hpp` after the move, and why?

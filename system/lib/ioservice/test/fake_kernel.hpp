@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <ours/debug.hpp>
+#include <ours/object.hpp>
 #include <ours/port.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>

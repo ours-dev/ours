@@ -151,14 +151,6 @@ enum class PortCreateOptions : u32 {
     BindToInterrupt = 0x1,
 };
 
-/// object_wait_async's options. None is the only one for now: a wait is
-/// one-shot and level-triggered, and its packet carries no timestamp.
-/// Bits 0 and 1 are kept for a timestamped packet and an edge-triggered
-/// wait, which come in P2.
-enum class WaitAsyncOptions : u32 {
-    None = 0,
-};
-
 /// The most object_wait_async observers one port has live: armed, or matched
 /// with their packet still queued. A wait past it answers NoResource.
 ///

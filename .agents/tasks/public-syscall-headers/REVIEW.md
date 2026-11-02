@@ -21,6 +21,10 @@ None.
 
 ### M1. `object.hpp` depends on `port.hpp` for one option word
 
+**Resolved** after review: `WaitAsyncOptions` moved into `object.hpp` beside
+`object_wait_async`, the port include and `handle_table.hpp`'s follow it;
+see the change record's entry of the same name (2026-11-03).
+
 `system/public/ours/object.hpp:11`. `object_wait_async`'s signature names `WaitAsyncOptions`, which lives in `port.hpp`, so the object header pulls the port header. Zircon does not have this edge (`syscalls/object.h` does not include `syscalls/port.h`; its `zx_object_wait_async` takes a plain `uint32_t`). If the object domain grows more wait-async options, consider moving `WaitAsyncOptions` beside `object_wait_async` (its only caller) and leaving `port.hpp` with the packet types. Not done now: moving it would touch the port header's internal logic comments for no functional gain today.
 
 ## Minor and style
