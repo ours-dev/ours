@@ -1,0 +1,25 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The clock calls the vDSO answers directly. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/time.cpp.
+ours_syscalls_time = [
+  {
+    name = "clock_get_monotonic"
+    brief = "Reads the monotonic clock, in nanoseconds since boot."
+    doc = [
+      "It does not go backwards, and it is the clock the kernel's timers",
+      "read. It is not the time of day: nothing sets it from a wall clock.",
+      "Zero until the kernel has a clock source.",
+    ]
+    args = []
+    attrs = [ "vdso" ]
+    ret = "Instant"
+    category = "time"
+  },
+]
