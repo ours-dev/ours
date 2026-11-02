@@ -25,6 +25,7 @@ user_executable("virtio-blk") {
   ]
   sources = [ "virtio_blk.cpp" ]
   deps = [
+    "//system/lib/block-server",
     "//system/lib/fsio",
     "//system/lib/ioservice:outgoing",
     "//system/lib/server",

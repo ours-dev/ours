@@ -34,17 +34,22 @@
 ///     behind it;
 ///   - the Loop, on which the outgoing directory and every client
 ///     connection wait;
-///   - the BlockServer, the connections an Open of the protocol brings,
-///     each answered one message at a time. A Read runs the device
-///     synchronously -- the poll is on the same thread as everything else,
-///     so requests serialize, which one device queue makes true anyway.
+///   - the server, block_server::BlockServer over this device: the
+///     library owns the connections, the decode and the reply, and the
+///     driver's start() runs one request to completion -- the poll is on
+///     the same thread as everything else, so requests serialize, which
+///     one device queue makes true anyway. The library's async path, an
+///     interrupt-driven completion, waits on the kernel to deliver an
+///     interrupt into a Loop (docs/repairs/261103/kernel-interrupts.md);
+///     this driver's single-request region keeps it synchronous either way.
 ///
 /// The events: the root routes a client's Open into the outgoing directory
-/// (design D11); the BlockServer takes the channel, and each Read on it
-/// writes the request header, offers the descriptor chain through the
-/// available ring, rings the queue, and polls the used ring until the
-/// device answers. Before the driver leaves, the device is stopped and
-/// observed stopped, so the kernel never has to quarantine what it pinned.
+/// (design D11); the server takes the channel, and each Read on it parks in
+/// the slot, writes the request header, offers the descriptor chain through
+/// the available ring, rings the queue, and polls the used ring until the
+/// device answers, whose answer complete() turns into the reply. Before the
+/// driver leaves, the device is stopped and observed stopped, so the kernel
+/// never has to quarantine what it pinned.
 #include <ours/bti.hpp>
 #include <ours/interrupt.hpp>
 #include <ours/port.hpp>
@@ -59,6 +64,7 @@
 
 #include <cstdint>
 
+#include <block_server/block_server.hpp>
 #include <ioservice/outgoing.hpp>
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
@@ -139,6 +145,10 @@ constexpr auto DATA_OFFSET = REQUEST_OFFSET + HEADER;
 /// How many clients may be connected at once. One is all dev's routing
 /// checks use; a client past them is refused with NoResource.
 constexpr auto MAX_CLIENTS = usize{2};
+
+/// How many requests the hardware works on at once: one, the region's
+/// single request layout being why. See VirtioBlockServer.
+constexpr auto MAX_INFLIGHT = usize{1};
 
 /// The Loop's slots: one per connection to the outgoing directory, one per
 /// client.
@@ -436,116 +446,62 @@ class Device final {
     u64 m_seen = 0;
 };
 
-/// The Block server: the connections ioservice::Outgoing hands it, each
-/// served on a Loop slot of its own, one message per on_signals(). The
-/// shape is the echo server's; the methods are ours.block's.
-class BlockServer final: public server::ProtocolServer<BlockServer, MAX_CLIENTS> {
+/// The server: the block-driver library's BlockServer over this device. The
+/// library owns the connections, the decode, the slot table and the reply;
+/// this class is the hardware, the two hooks the library calls.
+///
+/// MAX_INFLIGHT is 1, and the work runs to completion inside start(): the
+/// region holds one request's layout, so the poll of the used ring -- the
+/// same one the private server did -- sits in the driver's hook, and the
+/// slot is free again by the time start() returns. The library's async path
+/// waits on the kernel to deliver an interrupt into a loop::Loop, which no
+/// path does yet (docs/repairs/261103/kernel-interrupts.md); this driver's
+/// single-request region keeps it synchronous either way, and the host
+/// suite pins the async path the library provides.
+class VirtioBlockServer final
+    : public block_server::BlockServer<VirtioBlockServer, MAX_CLIENTS, MAX_INFLIGHT> {
   public:
-    using Storage = typename server::ProtocolServer<BlockServer, MAX_CLIENTS>::Storage;
+    using Base = block_server::BlockServer<VirtioBlockServer, MAX_CLIENTS, MAX_INFLIGHT>;
+    using Storage = typename Base::Storage;
 
-    BlockServer(Storage &storage, loop::Loop &loop, Device &device, ours::VirtAddr region_map)
-        : server::ProtocolServer<BlockServer, MAX_CLIENTS>(storage, loop)
-        , m_device(&device)
-        , m_region_map(region_map) {}
+    VirtioBlockServer(Storage &storage, loop::Loop &loop, Device &device, ours::VirtAddr region_map)
+        : Base(storage, loop), m_device(&device), m_region_map(region_map) {}
 
-    static constexpr auto MAX_CLIENTS = usize{2};
+    /// GetInfo's answer: the legacy device's block is a 512-byte sector, and
+    /// the geometry is what setup read from the device.
+    auto geometry() const -> block_server::Geometry {
+        return {.block_size = ours_block::BLOCK_SIZE, .blocks = m_device->blocks()};
+    }
 
-    /// The pump has decoded the header; dispatch on the ordinal. Node.Close
-    /// first: the client's fsio::close sends it, and the answer must come
-    /// before the connection ends. A closed protocol: an ordinal it does not
-    /// know, or a message its decoder refuses, closes the connection without
-    /// an epitaph.
-    auto on_message(Uandle const channel, wire::Header const header, wire::Message &&message)
-        -> loop::Action {
-        if (header.ordinal == ours_block::CLOSE.ordinal) {
-            auto const request = ours_block::decode_close(message);
-            if (request.is_err()) {
-                close_handles(message);
-                return close_client(channel);
+    /// The library's hand-off: run the parked request against the device,
+    /// and complete it before returning. |data| is a Write's blocks, placed
+    /// where the device reads them from -- the one copy of a Write.
+    auto start(usize const index, std::span<u8 const> const data) -> Status {
+        auto const &parked = slot(index);
+        if (data.empty()) {
+            // A Read: the device writes the blocks into the region's data
+            // area, where the completion's encoder reads them from -- no
+            // copy but the one into the reply.
+            auto const status = m_device->read_blocks(parked.lba, parked.count);
+            if (status != Status::Ok) {
+                return status;
             }
-            auto const answer = ours_block::encode_close_reply(reply_buffer(), request->txid,
-                                                               {.status = Status::Ok});
-            if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
-                return close_client(channel);
-            }
-            return close_client(channel);
+            complete(index, Status::Ok,
+                     std::span{reinterpret_cast<u8 const *>(m_region_map + REQUEST_OFFSET + HEADER),
+                               usize{parked.count} * SECTOR});
+            return Status::Ok;
         }
-        if (header.ordinal == ours_block::GET_INFO.ordinal) {
-            auto const request = ours_block::decode_get_info(message);
-            if (request.is_err()) {
-                close_handles(message);
-                return close_client(channel);
-            }
-            auto const answer =
-                ours_block::encode_get_info_reply(reply_buffer(), request->txid,
-                                                  {.status = Status::Ok,
-                                                   .block_size = ours_block::BLOCK_SIZE,
-                                                   .blocks = m_device->blocks()});
-            if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
-                return close_client(channel);
-            }
-            return loop::Action::Rearm;
+        std::memcpy(reinterpret_cast<void *>(m_region_map + REQUEST_OFFSET + HEADER), data.data(),
+                    data.size());
+        auto const status = m_device->write_blocks(parked.lba, parked.count);
+        if (status != Status::Ok) {
+            return status;
         }
-        if (header.ordinal == ours_block::READ.ordinal) {
-            auto const request = ours_block::decode_read(message);
-            if (request.is_err()) {
-                close_handles(message);
-                return close_client(channel);
-            }
-            return read_block(channel, *request);
-        }
-        if (header.ordinal == ours_block::WRITE.ordinal) {
-            auto const request = ours_block::decode_write(message);
-            if (request.is_err()) {
-                close_handles(message);
-                return close_client(channel);
-            }
-            return write_block(channel, *request, message);
-        }
-        close_handles(message);
-        return close_client(channel);
+        complete(index, Status::Ok);
+        return Status::Ok;
     }
 
   private:
-    auto read_block(Uandle const channel, ours_block::ReadRequest const &request) -> loop::Action {
-        // The device writes the blocks into the region's data area, where
-        // this reply's encoder reads them from: no copy but the one into the
-        // reply.
-        auto const status = m_device->read_blocks(request.lba, request.count);
-        if (status != Status::Ok) {
-            auto const answer =
-                ours_block::encode_read_reply(reply_buffer(), request.txid, {.status = status});
-            if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
-                return close_client(channel);
-            }
-            return loop::Action::Rearm;
-        }
-        auto const answer = ours_block::encode_read_reply(
-            reply_buffer(), request.txid,
-            {.status = Status::Ok,
-             .data = std::span{reinterpret_cast<u8 const *>(m_region_map + REQUEST_OFFSET + HEADER),
-                               request.count * SECTOR}});
-        if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
-            return close_client(channel);
-        }
-        return loop::Action::Rearm;
-    }
-
-    auto write_block(Uandle const channel, ours_block::WriteRequest const &request,
-                     wire::Message const &message) -> loop::Action {
-        // The client's blocks arrive in the request body; the one copy of a
-        // Write puts them where the device reads them from.
-        std::memcpy(reinterpret_cast<void *>(m_region_map + REQUEST_OFFSET + HEADER),
-                    message.bytes.data() + 28, request.data.size());
-        auto const status = m_device->write_blocks(request.lba, request.count);
-        auto const answer =
-            ours_block::encode_write_reply(reply_buffer(), request.txid, {.status = status});
-        if (answer.is_err() || reply(channel, answer.unwrap()) != Status::Ok) {
-            return close_client(channel);
-        }
-        return loop::Action::Rearm;
-    }
-
     Device *m_device;
     /// The region's CPU mapping, where the device leaves the data a Read
     /// answers with.
@@ -555,7 +511,7 @@ class BlockServer final: public server::ProtocolServer<BlockServer, MAX_CLIENTS>
 
 namespace {
 constinit ustl::LazyInit<ioservice::Outgoing::Storage> OUTGOING_STORAGE;
-constinit ustl::LazyInit<BlockServer::Storage> SERVER_STORAGE;
+constinit ustl::LazyInit<VirtioBlockServer::Storage> SERVER_STORAGE;
 constinit ustl::LazyInit<Device> DEVICE_STORAGE;
 constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 } // namespace
@@ -799,7 +755,7 @@ auto main(int, char **) -> int {
     auto &storage = *SERVER_STORAGE.init();
     auto &device = *DEVICE_STORAGE.init();
     device.init(io_base, region_map, region_phys, interrupt);
-    BlockServer server(storage, loop, device, region_map);
+    VirtioBlockServer server(storage, loop, device, region_map);
 
     auto &outgoing_storage = *OUTGOING_STORAGE.init();
     ioservice::Outgoing outgoing(outgoing_storage, loop);
