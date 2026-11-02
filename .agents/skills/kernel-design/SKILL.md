@@ -1,5 +1,5 @@
 ---
-name: ours-kernel-design
+name: kernel-design
 description: Settled design decisions for the ours kernel that the code alone does not reveal. Load it first, before reading any code, for every question or task about how something in kernel/ or system/ should be designed, structured, placed or reviewed -- "which layer should X go in", "how should X work", "review X", "X 该放哪一层", "X 怎么设计", "帮我 review 一下" -- including new syscalls and kernel objects, userabi, mm, CpuLocal, scheduler and locking, timers, phys and boot, userboot/init and filesystems, and whenever choosing between the Zircon and the Linux approach.
 ---
 

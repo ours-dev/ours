@@ -1,5 +1,5 @@
 ---
-name: ours-verify
+name: verify
 description: Build the ours kernel and boot both dev images in QEMU to prove a change works, and debug a boot that fails (breakpoints and backtraces through the lldb MCP server). Use after any change to kernel, phys, userboot, init, shell or build files, before every commit, whenever the user says verify, build and boot, "验证一下", "跑一下", "启动看看", or asks whether something still boots, and when a boot panics, asserts or hangs ("panic 了", "卡住了", "看下调用栈"). A clean compile is not verification in this repo.
 ---
 
@@ -14,7 +14,7 @@ booting one image.
 From the repo root:
 
 ```bash
-python3 .agents/skills/ours-verify/scripts/boot_check.py
+python3 .agents/skills/verify/scripts/boot_check.py
 ```
 
 It builds `out/bringup.x86` with `prebuilt/ninja`, boots `kernel.dev.dbg_1.obi`
@@ -63,7 +63,7 @@ passes the environment through rather than inferring it.
 
 ```bash
 python3 tools/set.py bringup.x86 --out out/numa.x86 --args 'mm_numa=true'
-NUMA=1 python3 .agents/skills/ours-verify/scripts/boot_check.py \
+NUMA=1 python3 .agents/skills/verify/scripts/boot_check.py \
   --out out/numa.x86
 NUMA=1 python3 scripts/kshell_run.py --out out/numa.x86 pmnode.test
 ```

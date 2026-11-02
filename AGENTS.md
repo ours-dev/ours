@@ -8,7 +8,7 @@ standing rules are mirrored there; keep the two in sync when you change one.
 ## Repository Overview
 
 A microkernel modeled primarily on Zircon (Fuchsia's kernel), with a few
-deliberate exceptions modeled on Linux instead (see `ours-kernel-design`),
+deliberate exceptions modeled on Linux instead (see `kernel-design`),
 built to explore the next generation of OS design. It embraces a
 bleeding-edge stack — modern C++ (C++20/23), current LLVM, no legacy
 compatibility constraints.
@@ -21,12 +21,16 @@ than partially applying them or reimplementing what it already covers.
 Skills live in `.agents/skills/<skill-name>/SKILL.md`. The ones nearly every
 task needs:
 
-- `ours-verify`: done means it builds and **both** images boot. Run it before
+- `verify`: done means it builds and **both** images boot. Run it before
   every commit.
-- `ours-kernel-design`: settled design decisions. Load it before reading code
+- `kernel-design`: settled design decisions. Load it before reading code
   for any design, placement or review question about `kernel/` or `system/`.
 - `cpp-write-and-verify`: every C++ edit, with `modern-cpp-development` for
   style.
+- `merge`: integrating a branch with the baseline, both directions. Load it
+  before any `git merge` that involves `baseline/20260824` -- the order
+  (baseline into the branch first), the shared-checkout dance and the
+  verification rule live there.
 
 ## Repo conventions
 
@@ -78,7 +82,7 @@ let several fixes pile up in the working tree: once they blur together the
 commit messages stop being writable, which is how this tree reached ~280
 uncommitted paths.
 
-The rhythm is: diagnose -> fix -> build and boot it (`ours-verify`) -> commit
+The rhythm is: diagnose -> fix -> build and boot it (`verify`) -> commit
 -> next thing.
 An update to the running repair document belongs in the same commit as the
 change it describes.
@@ -110,7 +114,7 @@ system, so weigh a decision's teaching value alongside getting the task done
 — never only the latter.
 
 - **Ship features at "basically usable," not more.** Stop once it works and
-  passes `ours-verify` — don't chase completeness, and don't add scope beyond
+  passes `verify` — don't chase completeness, and don't add scope beyond
   what was asked.
 - **Performance work comes after a feature is basically complete, and goes
   through the user in depth, item by item.** This is what the user values
