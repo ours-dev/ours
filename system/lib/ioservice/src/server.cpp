@@ -88,6 +88,13 @@ namespace {
                 return ours_io::DirentType::File;
             case NodeKind::Service:
                 return ours_io::DirentType::Service;
+            case NodeKind::Remote:
+                // A mount point stands in for the directory the remote
+                // serves.
+            case NodeKind::Subtree:
+                // A client lists the program's own tree as a directory: it
+                // is what an Open of the node makes.
+                return ours_io::DirentType::Directory;
         }
         return ours_io::DirentType::Unknown;
     }
@@ -232,8 +239,8 @@ auto Server::open_connection(Uandle const channel, NodeId const node, Operations
     return ustl::ok(Outcome{.action = Action::Bind, .handle = channel, .connection = *id});
 }
 
-auto Server::open(Connection const &connection, ours_io::OpenRequest const &request)
-    -> ustl::Result<Outcome, Status> {
+auto Server::open(Connection const &connection, ours_io::OpenRequest const &request,
+                  ReplyBuffer &out) -> ustl::Result<Outcome, Status> {
     auto const flags = request.flags;
     auto const requested = rights_of(flags);
 
@@ -265,6 +272,35 @@ auto Server::open(Connection const &connection, ours_io::OpenRequest const &requ
     //    options table, which the subset cuts (design non-goals), so there
     //    is nothing to check.
 
+    // The walk runs before 6 and 7, because whether the target is this
+    // tree's decides whether they are this server's to judge at all: an Open
+    // that reaches a remote entry is served by the server that owns it,
+    // creation flags and cut flags included. A local target never sees the
+    // difference: below, 6 and 7 still refuse before the walk's own answer,
+    // so the order a client observes for everything this tree serves is the
+    // order the design fixed. The walk stops at a remote entry or a Subtree
+    // node, whichever it meets first.
+    auto const found = m_tree->resolve(connection.m_node, request.path);
+    if (found.is_ok() && *m_tree->kind(found->node) == NodeKind::Remote) {
+        // A mount point: what is left of the path, "." when the path named
+        // the entry itself, is the remote server's to walk. The flags pass
+        // through unchanged -- the rights among them already held to a
+        // subset of this connection's by check 3 -- and the remote judges
+        // the rest its own way.
+        auto const forwarded =
+            ours_io::encode_open(out.bytes, out.handles,
+                                 {.flags = flags, .path = found->rest, .object = request.object});
+        if (forwarded.is_err()) {
+            // Neither refusal reason can arise -- the path passed check 1 and
+            // the buffer holds a whole message -- but a failed encoding
+            // reaches the client as a refused Open rather than as nonsense.
+            return ustl::err(forwarded.unwrap_err());
+        }
+        return ustl::ok(Outcome{.action = Action::Forward,
+                                .message = forwarded.unwrap(),
+                                .forward_channel = *m_tree->remote(found->node)});
+    }
+
     // 6. Creating needs MODIFY_DIRECTORY; with it, the answer is still no,
     //    since a client creates nothing here.
     if (any_of(flags, CREATION_FLAGS)) {
@@ -278,15 +314,30 @@ auto Server::open(Connection const &connection, ours_io::OpenRequest const &requ
         return ustl::err(Status::NotSupported);
     }
 
-    // 8. The node, walked down from the connection's own.
-    auto const found = m_tree->lookup(connection.m_node, request.path);
+    // 8. The walk's own answer, which 6 and 7 have had their turn ahead of.
     if (found.is_err()) {
         return ustl::err(found.unwrap_err());
     }
-    auto const node = found.unwrap();
+    auto const node = found->node;
+
+    // What is below a Subtree node is the program's tree, so the Open goes to
+    // the program, whole. Checks 1 to 8 were the connection's and passed,
+    // and are all this server holds the Open to. The flags go on unchanged:
+    // they ask for no more than the connection holds (check 3), which is what
+    // keeps rights shrinking below the node. No connection is made for the
+    // channel, which the program owns from here.
+    auto const kind = *m_tree->kind(node);
+    if (kind == NodeKind::Subtree) {
+        return ustl::ok(Outcome{
+            .action = Action::Subtree,
+            .handle = request.object,
+            .service = *m_tree->subtree(node),
+            .rest = found->rest,
+            .flags = flags,
+        });
+    }
 
     // 9. The node's own rules.
-    auto const kind = *m_tree->kind(node);
     if (kind == NodeKind::Directory) {
         // A directory keeps every right it was asked for: READ_BYTES and
         // EXECUTE on a directory are the ceilings of the files opened
@@ -535,7 +586,7 @@ auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyB
             if (request.is_err()) {
                 return drop(id);
             }
-            auto opened = open(*connection, request.unwrap());
+            auto opened = open(*connection, request.unwrap(), out);
             if (opened.is_err()) {
                 return refuse_open(request->object, opened.unwrap_err(), request->path, out);
             }

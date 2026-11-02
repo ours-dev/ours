@@ -1,0 +1,12 @@
+# Host-side tests: the codec against bytes alone, as the other ours.*
+# codecs' are.
+executable("ours.fshost") {
+  testonly = true
+  sources = [ "ours_fshost_test.cpp" ]
+  deps = [
+    "//system/lib/ours.fshost",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

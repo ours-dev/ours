@@ -72,7 +72,7 @@ The *dev image* is `kernel.dev.obi`, a boot image: a single `.obi` file that hol
 One command builds the kernel and the user programs, runs the host tests and boots both images. It is the verify script; run it from the root of the checkout:
 
 ```bash
-python3 .agents/skills/ours-verify/scripts/boot_check.py
+python3 .agents/skills/verify/scripts/boot_check.py
 ```
 
 What it does:
@@ -99,7 +99,7 @@ Read it like this:
 - `6/6 required` is only on `rel`: the lines the image must print, all seen. They include `routing_checks: passed` and `init: echo exited with 0`, which is the evidence that `echo` ran, answered a client and was stopped. The other four come from the root and from the keyboard driver.
 - `host-tests` runs the tests that need no kernel.
 
-A `FAIL` in place of `PASS` comes with the reason. The script's documentation, `.agents/skills/ours-verify/SKILL.md`, has a table "Reading a failure" that says what each message means and what to do next.
+A `FAIL` in place of `PASS` comes with the reason. The script's documentation, `.agents/skills/verify/SKILL.md`, has a table "Reading a failure" that says what each message means and what to do next.
 
 The options you are likely to want:
 
@@ -146,11 +146,11 @@ If `prebuilt/` is empty, start with [00-setup.md](00-setup.md). Then follow [The
 
 ## Sources
 
-- `.agents/skills/ours-verify/scripts/boot_check.py` and the documentation named above: the command, its options, the images, the lines the dev image must print, and the form of its output.
+- `.agents/skills/verify/scripts/boot_check.py` and the documentation named above: the command, its options, the images, the lines the dev image must print, and the form of its output.
 - `scripts/qemu_boot.py`: how QEMU and GRUB boot an image.
 - `examples/echo/echo_server.cpp`, `examples/echo/BUILD.gn`, `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp`: the running example.
 - `kernel/products/image/dev/BUILD.gn`, `kernel/products/image/dev.dbg_1/BUILD.gn`: which program each image starts, and the dev image's root manifest.
 - `system/service/init/test/routing_checks/routing_checks.cpp`: what the client of `echo` checks.
 - `docs/architecture/component-framework/glossary.md`: the words.
 
-Checked against commit `561571b7` on 2026-10-30.
+Checked against commit `10dd8149` on 2026-10-30.

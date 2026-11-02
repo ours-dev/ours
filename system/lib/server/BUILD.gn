@@ -1,0 +1,25 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# The plumbing every protocol server shares, as a base for the server's own
+# class: the client set, the message pump, and the reply and epitaph
+# helpers, on a Loop. A server that uses it writes its codec, its methods,
+# and nothing else -- see system/driver/virtio-blk's BlockServer, the first
+# server on it.
+#
+# Header-only: the base is a template over the derived server (build-time
+# polymorphism, as everywhere here), and every method is inline in it.
+cpp_interface("server") {
+  public = [ "include/server/server.hpp" ]
+  public_deps = [
+    "//system/lib/ioservice:outgoing.headers",
+    "//system/lib/loop:headers",
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}

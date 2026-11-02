@@ -98,11 +98,26 @@ enum class Action : u8 {
     /// calls nothing itself here: the choice goes back to the program, which
     /// routes it (design D10, D11).
     Connect,
+    /// The Open walked to a Subtree node, a place the program serves itself:
+    /// hand |handle|, the request's channel, to the program that added it
+    /// with |service|, which now owns the channel, together with |rest|, the
+    /// part of the path after the node, and |flags|, the Open's flags
+    /// exactly as the client sent them. The Open's own checks have run on the
+    /// connection it came on and passed, so the rights |flags| ask for are
+    /// within that connection's: rights only shrink from here on, and the
+    /// program must not widen them. No connection is made, and the server
+    /// calls nothing itself, as for Connect.
+    Subtree,
     /// Open or Clone failed: write |message|, an epitaph, on |handle|, the
     /// request's channel, then close |handle|. The connection the request
     /// came on stays. |status| and, for an Open, |path| say what was refused
     /// and why, for a program that reports it.
     Refuse,
+    /// Open reached a remote entry: |message| is the Open to serve there,
+    /// with |handle|, the request's server end, among its handles, to be
+    /// written on |forward_channel|. The connection the request came on
+    /// stays.
+    Forward,
 };
 
 /// What dispatch() decided. Only the fields its Action names mean anything.
@@ -114,8 +129,11 @@ struct Outcome {
     ours::Uandle handle = ours::Uandle::Invalid;
     /// Bind: the connection |handle| now serves.
     ConnectionId connection = {};
-    /// Connect: the value the service was added with.
+    /// Connect, Subtree: the value the service or the Subtree node was added
+    /// with.
     u64 service = 0;
+    /// Forward: the remote entry's channel, where |message| goes.
+    ours::Uandle forward_channel = ours::Uandle::Invalid;
     /// Refuse: the status |message|'s epitaph carries, so that the program
     /// need not decode its own answer to report it.
     ours::Status status = ours::Status::Ok;
@@ -124,6 +142,12 @@ struct Outcome {
     /// of the request's bytes, so it holds until the program reads its next
     /// message.
     ustl::Option<std::string_view> path = ustl::NONE;
+    /// Subtree: what is left of the Open's path after the Subtree node, "."
+    /// when the Open names the node itself. A view of the request's bytes,
+    /// so it holds until the program reads its next message.
+    std::string_view rest = {};
+    /// Subtree: the Open's flags, unchanged.
+    ours_io::Flags flags = ours_io::Flags::None;
 };
 
 /// One connection, as a Server's table holds it (design "ioservice connection").
@@ -235,9 +259,13 @@ class Server final {
     auto open_connection(ours::Uandle channel, NodeId node, ours_io::Operations rights)
         -> ustl::Result<Outcome, ours::Status>;
 
-    /// Open's checks, in their fixed order, then the node's own.
+    /// Open's checks, in their fixed order, then the node's own. A target
+    /// behind a remote entry is forwarded instead: the Open re-encoded, with
+    /// the path left for the remote to walk, into |out|. A Subtree node
+    /// answers Action::Subtree, once the checks that come before the node
+    /// have passed.
     [[nodiscard]]
-    auto open(Connection const &connection, ours_io::OpenRequest const &request)
+    auto open(Connection const &connection, ours_io::OpenRequest const &request, ReplyBuffer &out)
         -> ustl::Result<Outcome, ours::Status>;
 
     [[nodiscard]]

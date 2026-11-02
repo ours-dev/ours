@@ -1,0 +1,91 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/component_manifest.gni")
+import("//system/user_executable.gni")
+
+# Read only in a user toolchain, as every program under //examples: dev's
+# root.cm names the manifest below, and component_manifest() moves its
+# program there.
+assert(
+    toolchain_environment == "user",
+    "examples/files must be built in a //build/toolchain/ours:user-* toolchain")
+
+# A component that provides directories, the first one: it serves a small
+# tree of files from its outgoing directory, ioservice::Outgoing on a Loop
+# (files_server.cpp), through a Subtree node, so that the tree behind the
+# declared path is the program's own: a second ioservice::Tree and
+# ioservice::LoopServer. It provides no protocol; it runs until the system
+# goes or a consumer connects to the service node `stop` inside the tree it
+# serves, which makes the program exit with 0.
+user_executable("files_server") {
+  visibility = [ "//examples/*" ]
+  sources = [ "files_server.cpp" ]
+  deps = [
+    "//system/lib/ioservice:loop_server",
+    "//system/lib/ioservice:outgoing",
+    "//system/lib/loop",
+  ]
+}
+
+# Declares two directories and exposes them to its parent, which decides who
+# reaches them and under which names. It uses nothing: no namespace, no /svc.
+#
+#   docs   at /export/docs, r*, which the program serves (files_server.cpp);
+#   ghost  at /export/ghost, r*, which the program does not serve, on
+#          purpose: a path the manifest declares and the program never
+#          adds, so that a consumer's Open of it answers NotFound.
+#
+# And exposes four things to dev's root.cm, which offers each to
+# routing_checks (kernel/products/image/dev/BUILD.gn):
+#
+#   docs       r*, as declared;
+#   docs-sub   r*, only the subdirectory `sub` of it;
+#   docs-wide  rx*, which is wider than the declaration allows (r*), so a
+#              use of it routes nowhere: AccessDenied at this declaration;
+#   ghost      r*, as declared.
+component_manifest("files.cm") {
+  visibility = [ "//kernel/products/image/*" ]
+  program = ":files_server"
+  manifest = {
+    capabilities = [
+      {
+        directory = "docs"
+        path = "/export/docs"
+        rights = [ "r*" ]
+      },
+      {
+        directory = "ghost"
+        path = "/export/ghost"
+        rights = [ "r*" ]
+      },
+    ]
+    expose = [
+      {
+        directory = "docs"
+        from = "self"
+        rights = [ "r*" ]
+      },
+      {
+        directory = "docs"
+        from = "self"
+        as = "docs-sub"
+        rights = [ "r*" ]
+        subdir = "sub"
+      },
+      {
+        directory = "docs"
+        from = "self"
+        as = "docs-wide"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "ghost"
+        from = "self"
+        rights = [ "r*" ]
+      },
+    ]
+  }
+}

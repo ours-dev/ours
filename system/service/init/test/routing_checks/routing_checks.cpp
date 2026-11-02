@@ -21,11 +21,38 @@
 /// the EXECUTE gate on a file that is not a program, and the AccessDenied
 /// entry, whose status every open() under it answers.
 ///
-/// Its manifest also uses protocols, which live in its /svc: the root's
-/// built-ins ours.process.Launcher, ours.resource.Debug, Sampling, Irq, Ioport,
-/// Mmio and Iommu, and ours.boot.Acpi, which root.cm offers, ours.acpi.Route
-/// and ours.test.Echo, which root.cm offers from its siblings, and
-/// ours.test.Unoffered, which nobody offers. It checks that each ours.resource Get hands out a
+/// Its manifest uses six more directories, which the sibling files
+/// (//examples/files) provides and root.cm offers from it: the routes that
+/// end at a provider, whose entry the root does not serve but forwards to the
+/// provider with one Open when this component starts.
+///
+///   /files         r*, the tree files serves;
+///   /files-sub     r*, through files' expose with the subdir `sub`;
+///   /files-denied  rx*, through an offer wider than files' expose: the root
+///                  answers AccessDenied and closes the entry, as /denied;
+///   /files-wide    rx*, through an expose wider than files' declaration: the
+///                  same;
+///   /ghost         r*, declared and exposed by files, never served by its
+///                  program: files' server answers NotFound on the entry;
+///   /files-file    r*, through an offer with the subdir hello.txt, so the
+///                  path the root opens ends at a file: the Open asks for a
+///                  directory, and files' server answers NotDir.
+///
+/// It reads the files through /files and checks their bytes, lists the
+/// directory and checks the names in order, asks for write and for more rights
+/// than the use has and expects AccessDenied from files' server, and checks
+/// that /files-sub shows only nested.txt. Last of all it connects to the
+/// service node /files/stop, which makes files exit, and checks what a
+/// consumer that held the entry sees of a provider that has gone: a
+/// connection it held and the entry both read PEER_CLOSED.
+///
+/// Its manifest also uses eleven protocols, which live in its /svc: the root's
+/// built-ins ours.process.Launcher, ours.resource.Debug,
+/// ours.resource.Sampling, ours.resource.Irq, ours.resource.Ioport,
+/// ours.resource.Mmio, ours.resource.Iommu and ours.boot.Acpi, which root.cm
+/// offers, and ours.acpi.Route and ours.test.Echo, which root.cm offers from
+/// its siblings, and ours.test.Unoffered, which nobody offers. It checks that
+/// each ours.resource Get hands out a
 /// resource that does what it is for -- debug_read takes the Debug resource,
 /// interrupt_create takes the root of the interrupt lines for a free line,
 /// ioports_request takes the root of the I/O ports for a port the kernel
@@ -38,7 +65,7 @@
 /// with the argument `child` through fsio::spawn(), and expects that copy,
 /// which only reads one file through the namespace it was handed, to exit 0.
 ///
-/// ours.boot.Acpi, which root.cm offers too, hands out the machine's ACPI tables
+/// ours.boot.Acpi hands out the machine's ACPI tables
 /// as a read-only VMO. It checks that the handle cannot write, that the
 /// directory in the VMO is well formed, and that every table in it has the
 /// signature and length of its own header and adds up to zero.
@@ -51,8 +78,8 @@
 /// where QEMU's is. The kernel's own translation of an ISA number is not
 /// compared with the service's any more (see check_acpi_route()).
 ///
-/// The use of ours.test.Echo is the one route here that ends
-/// in another component: root.cm offers it from the sibling echo
+/// Its eleventh protocol use, ours.test.Echo, is the one protocol route here
+/// that ends in another component: root.cm offers it from the sibling echo
 /// (//examples/echo), renamed from ours.examples.echo.Echo, which echo
 /// exposes from itself. Last, it checks that EchoString comes back from echo
 /// through that route, asks echo to stop, and expects the next connect to
@@ -86,7 +113,11 @@
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
 #include <ours_acpi/client.hpp>
+#include <ours_block/client.hpp>
+#include <ours_block/ours_block.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
+#include <ours_fshost/ours_fshost.hpp>
+#include <ours_gpt/ours_gpt.hpp>
 #include <ours_io/ours_io.hpp>
 #include <ours_process/ours_process.hpp>
 #include <ours_resource/client.hpp>
@@ -106,6 +137,9 @@ constexpr auto PAGE = usize{4096};
 constexpr auto SELF_IN_BOOT = std::string_view{"/boot/bin/routing_checks"};
 constexpr auto SELF_IN_BOOT_R = std::string_view{"/boot-r/bin/routing_checks"};
 constexpr auto SELF_IN_BIN = std::string_view{"/bin/routing_checks"};
+/// The same file, through fshost's tree: /vfs's `boot` entry is the root's
+/// built-in BootFS directory, so this walk crosses two servers.
+constexpr auto SELF_IN_VFS = std::string_view{"/vfs/boot/bin/routing_checks"};
 /// A file of /boot that is not under bin/, so not executable.
 constexpr auto MANIFEST = std::string_view{"/boot/meta/routing_checks.cm"};
 /// A program /boot does not have.
@@ -118,6 +152,31 @@ constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
 constexpr auto UNDECLARED = std::string_view{"/svc/ours.test.Undeclared"};
 /// echo's protocol, under the name root.cm's offer gives it.
 constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
+constexpr auto BLOCK = std::string_view{"/svc/ours.block.Block"};
+
+/// The directories the sibling files provides that open, each at the path its
+/// use in routing_checks.cm gives it. /files-denied and /files-wide are the
+/// two whose entry the root closed, and check_files_closed() names them.
+constexpr auto FILES = std::string_view{"/files"};
+constexpr auto FILES_SUB = std::string_view{"/files-sub"};
+constexpr auto GHOST = std::string_view{"/ghost"};
+constexpr auto FILES_FILE = std::string_view{"/files-file"};
+/// The service node inside /files that makes files exit when it is connected
+/// to (examples/files/files_server.cpp): a connect() through the entry, whose
+/// r* holds CONNECT.
+constexpr auto FILES_STOP = std::string_view{"/files/stop"};
+
+/// What files serves under /files (examples/files/files_server.cpp), which
+/// this program spells again as its own: a file's path, its bytes, and the
+/// names of a directory in the order a listing gives them.
+constexpr auto HELLO_PATH = std::string_view{"/files/hello.txt"};
+constexpr auto HELLO_TEXT = std::string_view{"hello from files\n"};
+constexpr auto NUMBERS_PATH = std::string_view{"/files/numbers.txt"};
+constexpr auto NUMBERS_TEXT = std::string_view{"one\ntwo\nthree\nfour\n"};
+constexpr auto NESTED_PATH = std::string_view{"/files/sub/nested.txt"};
+constexpr auto NESTED_TEXT = std::string_view{"nested in sub\n"};
+constexpr auto FILES_NAMES = std::string_view{".,hello.txt,numbers.txt,stop,sub"};
+constexpr auto SUB_NAMES = std::string_view{".,nested.txt"};
 
 /// The pin whose line check_irq_resource() takes: GSI 3, COM2's, which is
 /// free, since QEMU has no COM2 with one serial port and the kernel keeps only
@@ -144,6 +203,14 @@ constinit u32 FAILURES = 0;
 
 /// The txid of the next two-way request this program writes by hand.
 constinit u32 TXID_COUNTER = 1;
+
+/// Whether the block device answered GetInfo, and whether the checks through
+/// the mounted filesystem ran to one of their own. The verdict names what
+/// did not run, so a pass with the disk suite skipped reads as one: before
+/// these, a boot without a disk printed the same `passed` as a full one, and
+/// the disk stack could die without the verdict changing.
+constinit bool BLOCK_DEVICE_SEEN = false;
+constinit bool DISK_CHECKS_RAN = false;
 
 auto next_txid() -> u32 {
     auto const txid = TXID_COUNTER;
@@ -262,6 +329,35 @@ auto check_read_dirents(std::string_view const path, std::string_view const name
     expect("close", fsio::close(directory), Status::Ok);
 }
 
+/// Directory.ReadDirents on |path|, asserting the opposite of
+/// check_read_dirents(): |name| is not there. This is the multi-view check:
+/// this component is offered fshost's `ro` view, whose whole point is that
+/// the writable `tmp` mount does not exist in it.
+auto check_read_dirents_absent(std::string_view const path, std::string_view const name) -> void {
+    auto const directory =
+        open_or_fail(path, Flags::ProtocolDirectory | Flags::PermEnumerate | Flags::PermReadBytes);
+    if (directory == Uandle::Invalid) {
+        return;
+    }
+    auto present = false;
+    std::array<u8, ours_io::MAX_BUF> buffer{};
+    for (;;) {
+        auto const read = fsio::read_dirents(directory, buffer);
+        if (!expect("read_dirents", status_of(read), Status::Ok) || read.unwrap() == 0) {
+            break;
+        }
+        auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+        for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
+            present = present || next.unwrap().value().name == name;
+        }
+    }
+    if (present) {
+        auto _ = ort::debug_line({"routing_checks: in ", path, ": ", name});
+        fail("read_dirents: the entry above exists, and this view must not hold it");
+    }
+    expect("close", fsio::close(directory), Status::Ok);
+}
+
 /// Maps one page of |vmo| into |vma| with |options|, unmaps it again, and
 /// says what the map answered: whether the VMO holds the rights the options
 /// need, Execute among them.
@@ -341,6 +437,190 @@ auto check_denied() -> void {
     for (auto const path: {"/denied/bin/routing_checks", "/denied", "/denied/bin"}) {
         expect(path, status_of(fsio::open(path, Flags::PermReadBytes)), Status::AccessDenied);
     }
+}
+
+/// File.Read to the end: the bytes of the file at |path| are |expected|.
+auto check_contents(std::string_view const path, std::string_view const expected) -> void {
+    auto const file = open_or_fail(path, Flags::PermReadBytes);
+    if (file == Uandle::Invalid) {
+        return;
+    }
+    // Room for a few reads more than the file holds, so that a file longer
+    // than |expected| shows as a mismatch and not as a short buffer.
+    std::array<u8, 128> bytes{};
+    auto length = usize{0};
+    while (length < bytes.size()) {
+        auto const read = fsio::read(file, std::span{bytes}.subspan(length));
+        if (!expect(path, status_of(read), Status::Ok) || read.unwrap() == 0) {
+            break;
+        }
+        length += read.unwrap();
+    }
+    auto const same = std::ranges::equal(
+        std::span{bytes}.first(length), expected,
+        [](u8 const actual, char const wanted) { return actual == static_cast<u8>(wanted); });
+    if (!same) {
+        auto _ = ort::debug_line({"routing_checks: ", path, " does not hold \"", expected, "\""});
+        fail("read: the bytes of a file files serves are not what it holds");
+    }
+    expect("close", fsio::close(file), Status::Ok);
+}
+
+/// Directory.ReadDirents on |path| lists exactly |expected|, joined with ',':
+/// "." first, then the names in byte order, as ioservice::Server lists a
+/// directory.
+auto check_names(std::string_view const path, std::string_view const expected) -> void {
+    auto const directory =
+        open_or_fail(path, Flags::ProtocolDirectory | Flags::PermEnumerate | Flags::PermReadBytes);
+    if (directory == Uandle::Invalid) {
+        return;
+    }
+    std::array<char, 128> joined{};
+    auto length = usize{0};
+    std::array<u8, ours_io::MAX_BUF> buffer{};
+    for (;;) {
+        auto const read = fsio::read_dirents(directory, buffer);
+        if (!expect("read_dirents", status_of(read), Status::Ok) || read.unwrap() == 0) {
+            break;
+        }
+        auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+        for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
+            auto const name = next.unwrap().value().name;
+            if (length != 0 && length < joined.size()) {
+                joined[length] = ',';
+                length += 1;
+            }
+            auto const room = std::min(joined.size() - length, name.size());
+            std::copy_n(name.data(), room, joined.data() + length);
+            length += room;
+        }
+    }
+    if (std::string_view{joined.data(), length} != expected) {
+        auto _ = ort::debug_line({"routing_checks: ", path, " lists \"",
+                                  std::string_view{joined.data(), length}, "\", not \"", expected,
+                                  "\""});
+        fail("read_dirents: the names of a directory files serves are not what it holds");
+    }
+    expect("close", fsio::close(directory), Status::Ok);
+}
+
+/// File.GetBackingMemory of a file files serves: the VMO the program made
+/// holds the bytes, a file connection that cannot write cannot get it
+/// writable, and the connection is still good afterwards.
+auto check_files_vmo() -> void {
+    auto const file = open_or_fail(HELLO_PATH, Flags::PermReadBytes);
+    if (file == Uandle::Invalid) {
+        return;
+    }
+    auto const vmo = fsio::get_backing_memory(file, VmoFlags::Read);
+    if (expect("get_backing_memory(READ) of a file files serves", status_of(vmo), Status::Ok)) {
+        std::array<u8, HELLO_TEXT.size()> bytes{};
+        if (expect("vmo_read of that file's VMO",
+                   ours::vmo_read(vmo.unwrap(), bytes.data(), 0, bytes.size()), Status::Ok) &&
+            !std::ranges::equal(bytes, HELLO_TEXT, [](u8 const actual, char const wanted) {
+                return actual == static_cast<u8>(wanted);
+            })) {
+            fail("get_backing_memory: the VMO of a file files serves does not hold its bytes");
+        }
+        auto _ = ours::handle_close(vmo.unwrap());
+    }
+    expect("get_backing_memory(READ|WRITE) of a file files serves",
+           status_of(fsio::get_backing_memory(file, VmoFlags::Read | VmoFlags::Write)),
+           Status::AccessDenied);
+    expect("close", fsio::close(file), Status::Ok);
+}
+
+/// Rights the entry does not hold are refused by files' own server, on the
+/// connection it made for the entry: write, run, and a directory modified,
+/// each wider than the r* of /files.
+auto check_files_refused() -> void {
+    expect("open(WRITE) of a file under /files", refused(HELLO_PATH, Flags::PermWriteBytes),
+           Status::AccessDenied);
+    expect("open(EXECUTE) of a file under /files",
+           refused(HELLO_PATH, Flags::PermReadBytes | Flags::PermExecute), Status::AccessDenied);
+    expect("open(MODIFY_DIRECTORY) of /files",
+           refused(FILES, Flags::ProtocolDirectory | Flags::PermModifyDirectory),
+           Status::AccessDenied);
+    // A name the tree does not have is NotFound, not a refusal of rights.
+    expect("open of a name /files does not have",
+           refused("/files/absent.txt", Flags::PermReadBytes), Status::NotFound);
+}
+
+/// The entry that routes through an expose with the subdir `sub`: the
+/// directory it opens is files' sub/, so only nested.txt is there.
+auto check_files_sub() -> void {
+    check_names(FILES_SUB, SUB_NAMES);
+    check_contents("/files-sub/nested.txt", NESTED_TEXT);
+    expect("open of a file outside the subdir of /files-sub",
+           refused("/files-sub/hello.txt", Flags::PermReadBytes), Status::NotFound);
+    expect("open of the subdir's own name under /files-sub",
+           refused("/files-sub/sub", Flags::PermReadBytes), Status::NotFound);
+}
+
+/// The two entries whose route the root refused at files: the status, read
+/// once from the epitaph, then answered by every later open() from the
+/// binding, as for /denied. The root closed them before this program ran, so
+/// no wait is involved.
+auto check_files_closed() -> void {
+    for (auto const path: {"/files-denied", "/files-denied/hello.txt", "/files-denied/sub",
+                           "/files-wide", "/files-wide/hello.txt", "/files-wide/sub"}) {
+        expect(path, status_of(fsio::open(path, Flags::PermReadBytes)), Status::AccessDenied);
+    }
+}
+
+/// What a new connection through the entry at |path| answers when files'
+/// server refuses the Open the root forwarded for it: the status of the
+/// epitaph on the entry.
+///
+/// The answer comes in its own time. A first open() written before files has
+/// handled the root's Open is not refused at the write: it is queued on the
+/// entry, and is lost with the entry when files' server closes it, so the new
+/// connection reads PeerClosed with nothing on it. The epitaph is on the entry
+/// by then, and the next open() finds the write refused and reads it. So
+/// PeerClosed is allowed once, as check_echo() allows one loss, and the answer
+/// after it is the status. Neither open() waits on anything but files' server
+/// closing the entry, which it does as soon as it takes the root's Open: for
+/// a path below docs, the Open files forwards from the Subtree node that
+/// serves docs to the server of its own tree, a Loop turn after it took the
+/// root's.
+auto refused_by_provider(std::string_view const path) -> Status {
+    constexpr auto FLAGS = Flags::ProtocolDirectory | Flags::PermEnumerate;
+    auto answered = refused(path, FLAGS);
+    if (answered == Status::PeerClosed) {
+        answered = refused(path, FLAGS);
+    }
+    return answered;
+}
+
+/// Directories whose Open files' server refuses, each a route that works: a
+/// directory files declares and exposes and its program does not serve, and
+/// one whose joined path ends at a file. The status is written by files'
+/// server on the entry, and every later open() under the entry answers it
+/// from the binding, as for the entries the root closed.
+auto check_files_refusing() -> void {
+    expect("a directory files declares and does not serve", refused_by_provider(GHOST),
+           Status::NotFound);
+    expect("a path under a directory files does not serve",
+           status_of(fsio::open("/ghost/x", Flags::PermReadBytes)), Status::NotFound);
+    expect("a directory whose path ends at a file", refused_by_provider(FILES_FILE),
+           Status::NotDir);
+    expect("a path under a directory whose path ends at a file",
+           status_of(fsio::open("/files-file/x", Flags::PermReadBytes)), Status::NotDir);
+}
+
+/// What the entries that end at the sibling files give: a working entry and
+/// the four ways a directory route fails.
+auto check_files() -> void {
+    check_contents(HELLO_PATH, HELLO_TEXT);
+    check_contents(NUMBERS_PATH, NUMBERS_TEXT);
+    check_contents(NESTED_PATH, NESTED_TEXT);
+    check_names(FILES, FILES_NAMES);
+    check_names("/files/sub", SUB_NAMES);
+    check_files_vmo();
+    check_files_refused();
+    check_files_sub();
+    check_files_closed();
+    check_files_refusing();
 }
 
 /// One message read off a channel, owning the handles it carried until
@@ -1559,6 +1839,682 @@ auto check_undeclared() -> void {
 /// The sibling route, end to end: EchoString from echo through root.cm's
 /// renaming offer and echo's expose, then Stop, then a route to echo that
 /// answers NotFound, as one to a component that has exited does (D23).
+
+auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE_BYTES> &bytes,
+                       Incoming &reply) -> void;
+
+/// The block device through its protocol, when the image carries a disk:
+/// GetInfo names a 512-byte block size, and Read brings block 0 back, whose
+/// first bytes the image was written with. The route answers NotFound while
+/// there is no disk, which is the image boot_check boots, so the check skips
+/// rather than fails there.
+auto check_block() -> void {
+    auto const connection = connect_or_fail(BLOCK);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    // GetInfo is the probe: a route to a disk that is not there answers
+    // NotFound (an epitaph on this connection, or the connection closed
+    // outright), and the check skips -- the images boot_check boots carry no
+    // disk. Anything else is the disk's to answer.
+    auto const txid = next_txid();
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const info = ours_block::encode_get_info(bytes, {.txid = txid});
+    if (!expect("Block.GetInfo", status_of(info), Status::Ok)) {
+        return;
+    }
+    Incoming reply;
+    auto const answered = call(connection, info.unwrap(), reply);
+    if (answered == Status::PeerClosed || answered == Status::NotFound) {
+        auto _ = ort::debug_line("routing_checks: no block device, skipped");
+        return;
+    }
+    if (!expect("Block.GetInfo", answered, Status::Ok)) {
+        return;
+    }
+    if (auto const epitaph = wire::decode_epitaph(reply.message()); epitaph.is_ok()) {
+        if (epitaph.unwrap() == Status::NotFound) {
+            auto _ = ort::debug_line("routing_checks: no block device, skipped");
+            return;
+        }
+        fail("Block.GetInfo: the route answered with an epitaph");
+        return;
+    }
+    auto const geometry = ours_block::decode_get_info_reply(reply.message(), txid);
+    if (!expect("Block.GetInfo's reply", status_of(geometry), Status::Ok) ||
+        !expect("Block.GetInfo's status", geometry->status, Status::Ok)) {
+        return;
+    }
+    BLOCK_DEVICE_SEEN = true;
+    if (geometry->block_size != ours_block::BLOCK_SIZE) {
+        fail("Block.GetInfo: the block size is not 512");
+        return;
+    }
+
+    auto const read_txid = next_txid();
+    auto const read = ours_block::encode_read(bytes, {.txid = read_txid, .lba = 0, .count = 1});
+    if (!expect("Block.Read", status_of(read), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Read", call(connection, read.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const block = ours_block::decode_read_reply(reply.message(), read_txid);
+    if (!expect("Block.Read's reply", status_of(block), Status::Ok) ||
+        !expect("Block.Read's status", block->status, Status::Ok)) {
+        return;
+    }
+    if (block->data.size() != ours_block::BLOCK_SIZE) {
+        fail("Block.Read: the block is not 512 bytes");
+        return;
+    }
+    if (block->data[0] == 'O' && block->data[1] == 'U' && block->data[2] == 'R' &&
+        block->data[3] == 'S') {
+        check_block_write(connection, bytes, reply);
+        return;
+    }
+
+    // Not the plain disk's magic. A GPT disk's block 0 is its protective
+    // MBR, and check_gpt() takes that shape: one probe of LBA 1 says which
+    // disk this is. The plain checks stop here; the write check below runs
+    // on either shape.
+    auto const probe_txid = next_txid();
+    auto const probe = ours_block::encode_read(bytes, {.txid = probe_txid, .lba = 1, .count = 1});
+    if (!expect("Block.Read", status_of(probe), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Read", call(connection, probe.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const lba1 = ours_block::decode_read_reply(reply.message(), probe_txid);
+    if (!expect("Block.Read's reply", status_of(lba1), Status::Ok) ||
+        !expect("Block.Read's status", lba1->status, Status::Ok)) {
+        return;
+    }
+    constexpr auto GPT_SIGNATURE = std::string_view{"EFI PART"};
+    if (std::string_view{reinterpret_cast<char const *>(lba1->data.data()), GPT_SIGNATURE.size()} ==
+        GPT_SIGNATURE) {
+        auto _ = ort::debug_line("routing_checks: a GPT disk, plain checks skipped");
+        check_block_write(connection, bytes, reply);
+        return;
+    }
+    fail("Block.Read: block 0 does not start with the disk's magic");
+    expect("close", fsio::close(connection), Status::Ok);
+}
+
+/// The write path end to end, the part of the block check that runs on
+/// either disk shape: a pattern written to the scratch LBA 1000 and read
+/// back over its two blocks, the one before it untouched. LBA 1000 sits
+/// below the first partition a GPT image names and above the plain image's
+/// magic, so neither shape minds the traffic.
+auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE_BYTES> &bytes,
+                       Incoming &reply) -> void {
+    constexpr auto SCRATCH_LBA = u64{1000};
+    std::array<u8, ours_block::BLOCK_SIZE> pattern{};
+    pattern.fill(0xA5);
+    constexpr auto MARK = std::string_view{"virtio-blk write check"};
+    std::copy(MARK.begin(), MARK.end(), pattern.begin());
+
+    auto const write_txid = next_txid();
+    auto const write = ours_block::encode_write(
+        bytes, {.txid = write_txid, .lba = SCRATCH_LBA, .count = 1, .data = pattern});
+    if (!expect("Block.Write", status_of(write), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Write", call(connection, write.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const write_status =
+        wire::decode_reply_status(reply.message(), ours_block::WRITE, write_txid);
+    if (!expect("Block.Write's reply", status_of(write_status), Status::Ok) ||
+        !expect("Block.Write's status", write_status.unwrap(), Status::Ok)) {
+        return;
+    }
+
+    // Two blocks from one short of the scratch: block 999 is zeros (never
+    // written), block 1000 the pattern. Where the first differing byte falls
+    // -- at 512+496 (per-block) or 496 (per-buffer) -- says which.
+    auto const verify_txid = next_txid();
+    auto const verify =
+        ours_block::encode_read(bytes, {.txid = verify_txid, .lba = SCRATCH_LBA - 1, .count = 2});
+    if (!expect("Block.Read(scratch)", status_of(verify), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Read(scratch)", call(connection, verify.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const read_back = ours_block::decode_read_reply(reply.message(), verify_txid);
+    if (!expect("Block.Read(scratch)'s reply", status_of(read_back), Status::Ok) ||
+        !expect("Block.Read(scratch)'s status", read_back->status, Status::Ok)) {
+        return;
+    }
+    constexpr auto PATTERN_BYTES = usize{ours_block::BLOCK_SIZE};
+    auto const want = [&](usize const index) -> u8 {
+        // Block 999 was never written: zeros. Block 1000 the pattern.
+        return index >= PATTERN_BYTES ? pattern[index - PATTERN_BYTES] : u8{0};
+    };
+    ustl::Option<usize> first_bad = ustl::NONE;
+    for (auto index = usize{0}; index < read_back->data.size(); ++index) {
+        if (read_back->data[index] != want(index)) {
+            first_bad = ustl::some(index);
+            break;
+        }
+    }
+    if (first_bad.is_none()) {
+        expect("close", fsio::close(connection), Status::Ok);
+        return;
+    }
+    char at_text[10];
+    auto _ = ort::debug_line({"routing_checks: first differing byte at ",
+                              ort::decimal(static_cast<u32>(*first_bad), at_text)});
+    // The tail of the data, as the reply carries it: the last 16 bytes of
+    // the pattern block, and the four before them.
+    auto hex = std::array<char, 4 * 20 + 1>{};
+    auto at = usize{0};
+    for (auto index = usize{1004}; index < 1024; ++index) {
+        constexpr auto DIGITS = "0123456789ABCDEF";
+        hex[at] = DIGITS[read_back->data[index] >> 4];
+        hex[at + 1] = DIGITS[read_back->data[index] & 0xF];
+        at += 2;
+    }
+    hex[at] = 0;
+    auto _ = ort::debug_line({"virtio-blk: reply data [1004..1024): ", hex.data()});
+    fail("Block.Write: the scratch block does not read back the pattern");
+    expect("close", fsio::close(connection), Status::Ok);
+}
+
+/// The disk's partition table, when the disk carries one: ours.gpt reads the
+/// GPT through the block connection, and the ours-fs partition it names must
+/// carry the superblock scripts/make_gpt_disk.py lays at its first block. Skips
+/// on a disk with no GPT -- most disks the checks see are the plain image --
+/// and on no disk at all, as check_block does.
+/// The filesystem on the disk's ours-fs partition, through the directory
+/// this process's manifest uses at /disk: create a file, write a pattern
+/// into it, read it back through a fresh open, and find it in the root's
+/// listing. The images without a disk have no /disk at all -- the open of
+/// its root answers NotFound, and the check skips.
+auto check_disk() -> void {
+    constexpr auto DIR = std::string_view{"/disk"};
+    constexpr auto FILE = std::string_view{"/disk/btreefs-check.txt"};
+    constexpr auto MARK = std::string_view{"btreefs write check"};
+    auto pattern = std::array<u8, 64>{};
+    std::memcpy(pattern.data(), MARK.data(), MARK.size());
+    pattern[63] = 0x5A;
+
+    auto const root = fsio::open(DIR, Flags::PermReadBytes | Flags::PermEnumerate);
+    if (root.is_err()) {
+        // No disk, or the filesystem on it having found none: any refusal
+        // here is the check's skip case, as /disk is simply not there.
+        auto _ = ort::debug_line({"routing_checks: no disk directory (",
+                                  ours::to_string(status_of(root)), "), skipped"});
+        return;
+    }
+    // Past this line the disk suite is really running, and the verdict's
+    // not-run line stays quiet.
+    DISK_CHECKS_RAN = true;
+
+    // Create (or find, a past boot having made it) and write the pattern.
+    auto file =
+        fsio::open(FILE, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("/disk file", status_of(file), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto const wrote = fsio::write(file.unwrap(), pattern);
+    if (!expect("/disk file write", status_of(wrote), Status::Ok)) {
+        auto _ = fsio::close(file.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    if (wrote.unwrap() != pattern.size()) {
+        fail("/disk file write: a short write");
+        auto _ = fsio::close(file.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk file close", fsio::close(file.unwrap()), Status::Ok);
+
+    // Read it back through a fresh open: seek 0, every byte the pattern's.
+    file = fsio::open(FILE, Flags::PermReadBytes);
+    if (!expect("/disk file reopen", status_of(file), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto read_back = std::array<u8, pattern.size()>{};
+    auto const read = fsio::read(file.unwrap(), read_back);
+    if (expect("/disk file read", status_of(read), Status::Ok) && read.unwrap() == pattern.size() &&
+        read_back != pattern) {
+        fail("/disk file read: the bytes are not the pattern");
+    }
+    auto _ = fsio::close(file.unwrap());
+
+    // A directory under the root, made by an Open that says which kind it
+    // wants; a file in the directory, written and read back from its root.
+    constexpr auto DIR_ENTRY = std::string_view{"/disk/checked"};
+    constexpr auto IN_DIR = std::string_view{"/disk/checked/inner.txt"};
+    auto const made_dir =
+        fsio::open(DIR_ENTRY, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::PermEnumerate |
+                                  Flags::FlagMaybeCreate | Flags::ProtocolDirectory);
+    if (!expect("/disk mkdir", status_of(made_dir), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto inner =
+        fsio::open(IN_DIR, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("/disk inner", status_of(inner), Status::Ok)) {
+        auto _ = fsio::close(made_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    if (!expect("/disk inner write", status_of(fsio::write(inner.unwrap(), pattern)), Status::Ok)) {
+        auto _ = fsio::close(inner.unwrap());
+        auto _ = fsio::close(made_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk inner close", fsio::close(inner.unwrap()), Status::Ok);
+
+    // The directory's listing names the file as a file.
+    auto dir_listing = std::array<u8, 512>{};
+    // One call: the directory is small, so the one reply carries the
+    // listing whole, and a second call would answer the continuation --
+    // nothing.
+    auto const listed = fsio::read_dirents(made_dir.unwrap(), dir_listing);
+    if (!expect("/disk inner listing", status_of(listed), Status::Ok)) {
+        auto _ = fsio::close(made_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto inner_named = false;
+    auto reader = ours_io::DirentReader(std::span{dir_listing}.first(listed.unwrap()));
+    while (true) {
+        auto const entry = reader.next();
+        if (entry.is_err() || entry->is_none()) {
+            break;
+        }
+        if ((*entry)->name == "inner.txt") {
+            inner_named = true;
+        }
+    }
+    if (!inner_named) {
+        fail("/disk inner listing: the file is not named");
+    }
+
+    // An open relative to a directory handle: a bare name, no namespace
+    // hop. The listing handle above is read-only, and creating under it is
+    // refused with the epitaph surfacing at the first write -- the rights
+    // model working end to end -- so this holds a writable handle of its
+    // own. Create, write, read back, unlink; and a ".." path is refused
+    // before any message is sent.
+    auto const at_dir =
+        fsio::open(DIR, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::PermTraverse |
+                            Flags::PermModifyDirectory | Flags::PermConnect);
+    if (!expect("/disk openat dir", status_of(at_dir), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    constexpr auto OPENAT_FILE = std::string_view{"/disk/openat-check.txt"};
+    auto const at =
+        fsio::open(at_dir.unwrap(), std::string_view{"openat-check.txt"},
+                   Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("/disk openat", status_of(at), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    if (!expect("/disk openat write", status_of(fsio::write(at.unwrap(), pattern)), Status::Ok)) {
+        auto _ = fsio::close(at.unwrap());
+        auto _ = fsio::close(at_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk openat close", fsio::close(at.unwrap()), Status::Ok);
+
+    // The write moved the connection's cursor; a fresh open reads from the
+    // start, and sees what the commit made durable.
+    auto const reopened_at =
+        fsio::open(at_dir.unwrap(), std::string_view{"openat-check.txt"}, Flags::PermReadBytes);
+    if (!expect("/disk openat reopen", status_of(reopened_at), Status::Ok)) {
+        auto _ = fsio::close(at_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto at_back = std::array<u8, pattern.size()>{};
+    auto const at_read = fsio::read(reopened_at.unwrap(), at_back);
+    if (expect("/disk openat read", status_of(at_read), Status::Ok) &&
+        (at_read.unwrap() != pattern.size() || at_back != pattern)) {
+        fail("/disk openat read: the bytes are not the pattern");
+    }
+    expect("/disk openat read close", fsio::close(reopened_at.unwrap()), Status::Ok);
+    expect("/disk openat unlink", fsio::unlink(OPENAT_FILE), Status::Ok);
+    expect("/disk openat dotdot",
+           status_of(fsio::open(at_dir.unwrap(), std::string_view{"../x"}, Flags::PermReadBytes)),
+           Status::BadPath);
+    auto _ = fsio::close(at_dir.unwrap());
+
+    constexpr auto ADMIN = std::string_view{"/svc/ours.fshost.Admin"};
+    constexpr auto NAME = std::string_view{"extra"};
+
+    // The mount check proper: the disk's directory, mounted at run time
+    // under a new name in the writable view, serving files through the
+    // mounted path -- and the same bytes through the disk's own name.
+    auto const admin = connect_or_fail(ADMIN);
+    if (admin == Uandle::Invalid) {
+        return;
+    }
+    // The mounted capability is THIS handle's rights: everything the
+    // mounted path will ever ask must be asked here too, so the listing's
+    // Enumerate and GetAttributes ride along.
+    auto const disk_dir = fsio::open("/disk", ours_io::PERM_READABLE | ours_io::PERM_WRITABLE);
+    if (disk_dir.is_err()) {
+        // No disk, or the filesystem on it having found none: any refusal
+        // here is the skip case, as /disk is simply not there.
+        auto _ = ort::debug_line({"routing_checks: no disk to mount (",
+                                  ours::to_string(status_of(disk_dir)), "), skipped"});
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto mount_txid = next_txid();
+    auto mount_bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+    auto mount_handles = std::array<Uandle, 1>{disk_dir.unwrap()};
+    auto const mount_request =
+        ours_fshost::encode_mount(mount_bytes, mount_handles,
+                                  {.txid = mount_txid, .handle = disk_dir.unwrap(), .name = NAME});
+    if (!expect("Admin.Mount encode", status_of(mount_request), Status::Ok)) {
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto mount_reply = Incoming{};
+    if (!expect("Admin.Mount", call(admin, mount_request.unwrap(), mount_reply), Status::Ok)) {
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    if (auto const epitaph = mount_reply.epitaph(); epitaph.is_some()) {
+        expect("Admin.Mount", *epitaph, Status::Ok);
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto const mount_status =
+        wire::decode_reply_status(mount_reply.message(), ours_fshost::MOUNT, mount_txid);
+    if (!expect("Admin.Mount reply", status_of(mount_status), Status::Ok)) {
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    // Ok on a fresh tree; AlreadyExists when this process's earlier run
+    // mounted it -- fshost is resident, its tree outlives the check.
+    if (mount_status.unwrap() != Status::Ok && mount_status.unwrap() != Status::AlreadyExists) {
+        expect("Admin.Mount reply", mount_status.unwrap(), Status::Ok);
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    // The handle moved with the message; the tree holds the mount now.
+
+    // Files through the mounted path: create, write, and read back through
+    // a fresh open -- and the same bytes through the disk's own name, one
+    // filesystem under two namespace names.
+    auto const mounted_file =
+        fsio::open("/vfs-all/extra/mounted-check.txt",
+                   Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("mounted file", status_of(mounted_file), Status::Ok)) {
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto mount_mark = std::array<u8, 32>{};
+    auto const mount_text = std::string_view{"runtime mount check"};
+    std::memcpy(mount_mark.data(), mount_text.data(), mount_text.size());
+    if (!expect("mounted write", status_of(fsio::write(mounted_file.unwrap(), mount_mark)),
+                Status::Ok)) {
+        auto _ = fsio::close(mounted_file.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    expect("mounted close", fsio::close(mounted_file.unwrap()), Status::Ok);
+    auto const mounted_reopen =
+        fsio::open("/vfs-all/extra/mounted-check.txt", Flags::PermReadBytes);
+    if (expect("mounted reopen", status_of(mounted_reopen), Status::Ok)) {
+        auto back = std::array<u8, mount_mark.size()>{};
+        auto const read = fsio::read(mounted_reopen.unwrap(), back);
+        if (expect("mounted read", status_of(read), Status::Ok) &&
+            (read.unwrap() != mount_mark.size() || back != mount_mark)) {
+            fail("mounted read: the bytes are not the mark");
+        }
+        auto _ = fsio::close(mounted_reopen.unwrap());
+    }
+    auto const twin = fsio::open("/disk/mounted-check.txt", Flags::PermReadBytes);
+    if (expect("mounted twin", status_of(twin), Status::Ok)) {
+        auto back = std::array<u8, mount_mark.size()>{};
+        auto const read = fsio::read(twin.unwrap(), back);
+        if (expect("mounted twin read", status_of(read), Status::Ok) &&
+            (read.unwrap() != mount_mark.size() || back != mount_mark)) {
+            fail("mounted twin read: the bytes are not the mark");
+        }
+        auto _ = fsio::close(twin.unwrap());
+    }
+
+    // A path-based listing through the mount point: fsio::list composes
+    // open + read_dirents, so the mounted path lists exactly like the
+    // disk's own -- and names the file this check just wrote.
+    auto mount_listing = std::array<u8, 512>{};
+    auto const mount_listed = fsio::list("/vfs-all/extra", mount_listing);
+    if (!expect("mounted list", status_of(mount_listed), Status::Ok)) {
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto listed_named = false;
+    auto list_reader = ours_io::DirentReader(std::span{mount_listing}.first(mount_listed.unwrap()));
+    while (true) {
+        auto const entry = list_reader.next();
+        if (entry.is_err() || entry->is_none()) {
+            break;
+        }
+        if ((*entry)->name == "mounted-check.txt") {
+            listed_named = true;
+        }
+    }
+    if (!listed_named) {
+        fail("mounted list: the file is not named");
+    }
+
+    // Unlink through the mount point: fsio unlinks via the parent
+    // directory, whose Open forwards through the mount, so the mounted
+    // path works exactly like the disk's own.
+    expect("mounted unlink", fsio::unlink("/vfs-all/extra/mounted-check.txt"), Status::Ok);
+
+    // The working directory on the mounted filesystem: relative create,
+    // write, and read back -- the cwd handle is a direct line to this
+    // filesystem, so relative opens need no namespace and no forwarding.
+    auto const cwd_flags = ours_io::PERM_READABLE | ours_io::PERM_WRITABLE;
+    expect("chdir mounted", fsio::chdir("/vfs-all/extra", cwd_flags), Status::Ok);
+    auto const cwd_file = fsio::open("cwd-check.txt", Flags::PermReadBytes | Flags::PermWriteBytes |
+                                                          Flags::FlagMaybeCreate);
+    if (!expect("cwd create", status_of(cwd_file), Status::Ok)) {
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    if (!expect("cwd write", status_of(fsio::write(cwd_file.unwrap(), mount_mark)), Status::Ok)) {
+        auto _ = fsio::close(cwd_file.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    expect("cwd close", fsio::close(cwd_file.unwrap()), Status::Ok);
+    auto const cwd_reopen = fsio::open("cwd-check.txt", Flags::PermReadBytes);
+    if (expect("cwd reopen", status_of(cwd_reopen), Status::Ok)) {
+        auto back = std::array<u8, mount_mark.size()>{};
+        auto const read = fsio::read(cwd_reopen.unwrap(), back);
+        if (expect("cwd read back", status_of(read), Status::Ok) &&
+            (read.unwrap() != mount_mark.size() || back != mount_mark)) {
+            fail("cwd read back: the bytes are not the mark");
+        }
+        auto _ = fsio::close(cwd_reopen.unwrap());
+    }
+    expect("cwd unlink", fsio::unlink("/vfs-all/extra/cwd-check.txt"), Status::Ok);
+    auto _ = ours::handle_close(admin);
+
+    // The isolation half: the read-only view does not carry the mount. An
+    // open's refusal surfaces at the handle's first use, so the probe
+    // reads.
+    auto const leaked = fsio::open("/vfs/extra", Flags::PermReadBytes);
+    if (expect("mount stays out of ro", status_of(leaked), Status::Ok)) {
+        auto probe = std::array<u8, 1>{};
+        expect("mount stays out of ro", status_of(fsio::read(leaked.unwrap(), probe)),
+               Status::NotFound);
+        auto _ = fsio::close(leaked.unwrap());
+    }
+    auto _ = ours::handle_close(admin);
+
+    // Truncate the flat file: a fresh open with the flag reads zero bytes.
+    auto const truncated =
+        fsio::open(FILE, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FileTruncate);
+    if (!expect("/disk truncate open", status_of(truncated), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto zero = std::array<u8, 4>{};
+    auto const after = fsio::read(truncated.unwrap(), zero);
+    if (expect("/disk truncate read", status_of(after), Status::Ok) && after.unwrap() != 0) {
+        fail("/disk truncate read: the file is not empty");
+    }
+    expect("/disk truncate close", fsio::close(truncated.unwrap()), Status::Ok);
+
+    // The unlinks: the file out of the directory, then the directory out of
+    // the root -- empty by then, which a non-empty one refuses to be.
+    expect("/disk inner unlink", fsio::unlink(IN_DIR), Status::Ok);
+    expect("/disk rmdir", fsio::unlink(DIR_ENTRY), Status::Ok);
+
+    // Unlink the flat file and check the root's listing no longer names it.
+    if (!expect("/disk unlink", fsio::unlink(FILE), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk unlink twice", fsio::unlink(FILE), Status::NotFound);
+    // The reopen is a one-way Open: the refusal is the epitaph its first
+    // read answers.
+    auto const reopened = fsio::open(FILE, Flags::PermReadBytes);
+    if (status_of(reopened) == Status::Ok) {
+        auto byte = std::array<u8, 1>{};
+        expect("/disk read unlinked", status_of(fsio::read(reopened.unwrap(), byte)),
+               Status::NotFound);
+        auto _ = fsio::close(reopened.unwrap());
+    }
+
+    // The listing no longer names it.
+    auto listing = std::array<u8, 512>{};
+    auto const dirents = fsio::read_dirents(root.unwrap(), listing);
+    if (expect("/disk listing", status_of(dirents), Status::Ok)) {
+        auto root_reader = ours_io::DirentReader(std::span{listing}.first(dirents.unwrap()));
+        auto named = false;
+        while (true) {
+            auto const entry = root_reader.next();
+            if (entry.is_err() || entry->is_none()) {
+                break;
+            }
+            if ((*entry)->name == "btreefs-check.txt" || (*entry)->name == "checked") {
+                named = true;
+            }
+        }
+        if (named) {
+            fail("/disk listing: an unlinked entry is still named");
+        }
+    }
+    auto _ = fsio::close(root.unwrap());
+}
+
+auto check_gpt() -> void {
+    auto const connection = connect_or_fail(BLOCK);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    ours_block::Client block{connection};
+    auto geometry = block.get_info();
+    if (geometry.is_err() && geometry.unwrap_err() == Status::NotFound) {
+        auto _ = ort::debug_line("routing_checks: no block device, GPT skipped");
+        return;
+    }
+    if (!expect("Gpt.GetInfo", status_of(geometry), Status::Ok)) {
+        return;
+    }
+
+    auto partitions = std::array<ours_gpt::Partition, 8>{};
+    auto table = ours_gpt::read(block, geometry->block_size, partitions);
+    if (table.is_err() && table.unwrap_err() == Status::NotFound) {
+        auto _ = ort::debug_line("routing_checks: no GPT on the disk, skipped");
+        return;
+    }
+    if (!expect("Gpt.Read", status_of(table), Status::Ok)) {
+        return;
+    }
+
+    // The one partition the image was written with: ours-fs, at the LBA the
+    // script names, whose first block carries its marker.
+    auto found = ustl::Option<usize>{ustl::NONE};
+    for (auto index = usize{0}; index < *table; ++index) {
+        if (partitions[index].type == ours_gpt::Guid{ours_gpt::OURS_FS_TYPE_BYTES}) {
+            found = ustl::some(index);
+            break;
+        }
+    }
+    if (found.is_none()) {
+        fail("Gpt.Read: no partition of the ours-fs type");
+        return;
+    }
+    auto const &partition = partitions[*found];
+    if (std::string_view{partition.name.data()} != "ours-fs") {
+        fail("Gpt.Read: the ours-fs partition is not named ours-fs");
+        return;
+    }
+    if (partition.first_lba != 2048) {
+        fail("Gpt.Read: the ours-fs partition does not start at LBA 2048");
+        return;
+    }
+
+    auto super = std::array<u8, ours_block::BLOCK_SIZE>{};
+    if (!expect("Gpt partition read", block.read(partition.first_lba, 1, super), Status::Ok)) {
+        return;
+    }
+    // The script lays a formatted btreefs volume on the partition; its
+    // superblock's magic is what the first block starts with, and what
+    // btreefs opens the volume by.
+    constexpr auto MAGIC = std::string_view{"BTREEFS"};
+    if (std::string_view{reinterpret_cast<char const *>(super.data()), MAGIC.size()} != MAGIC) {
+        fail("Gpt.Read: the partition does not start with the volume's magic");
+        return;
+    }
+}
+
+/// The working directory: relative opens resolve against it, chdir accepts
+/// absolute and relative paths, and a ".." past it is refused. Probes on
+/// /boot, which every image carries -- read-only, but the cwd needs only
+/// read and traverse.
+auto check_cwd() -> void {
+    // Before any chdir, a relative open names nothing: BadPath.
+    expect("cwd before chdir", status_of(fsio::open("cwd-early.txt", Flags::PermReadBytes)),
+           Status::BadPath);
+
+    // chdir into the writable view, then a relative open walks from it:
+    // this program's own image, read through the working directory. (The
+    // chdir's flags include Modify -- a writable cwd -- so a read-only dir
+    // like /boot would refuse, its epitaph surfacing at the first relative
+    // use; the writable view is the honest probe.)
+    expect("chdir /vfs-all", fsio::chdir("/vfs-all", ours_io::PERM_READABLE), Status::Ok);
+    auto const self = fsio::open("boot/bin/routing_checks", Flags::PermReadBytes);
+    if (!expect("cwd open relative", status_of(self), Status::Ok)) {
+        return;
+    }
+    auto magic = std::array<u8, 4>{};
+    if (expect("cwd read", status_of(fsio::read(self.unwrap(), magic)), Status::Ok) &&
+        (magic[0] != 0x7f || magic[1] != 'E' || magic[2] != 'L' || magic[3] != 'F')) {
+        fail("cwd read: the bytes are not ELF");
+    }
+    auto _ = fsio::close(self.unwrap());
+
+    // Climbing past the working directory is refused client-side.
+    expect("cwd dotdot", status_of(fsio::open("../tmp", Flags::PermReadBytes)), Status::BadPath);
+}
+
 auto check_echo() -> void {
     auto const connection = connect_or_fail(ECHO);
     if (connection == Uandle::Invalid) {
@@ -1592,6 +2548,108 @@ auto check_echo() -> void {
         answered = connect_status(ECHO);
     }
     expect("a route to echo once it has exited", answered, Status::NotFound);
+}
+
+/// The provider asked to stop, after its entry has worked
+/// (.agents/tasks/directory-capability/DESIGN.md, decision 11 (c)): a
+/// consumer that connects to files' service node `stop` hands files a channel
+/// and files exits. What this program held of it then is gone, as it would be
+/// for a provider that died on its own: a connection opened before reads
+/// PEER_CLOSED, and so does the entry. The root is not involved, so there is
+/// no epitaph for a consumer that already had the entry to read: open() on it
+/// answers PeerClosed, where one started after the exit is answered NotFound
+/// by the root (D23, the route to echo in check_echo()).
+///
+/// It runs last, after every case that uses /files, /files-sub, /files-file,
+/// /ghost, /files-denied and /files-wide. The first two are the entries that
+/// stay connected to files and die with it; /ghost and /files-file were closed
+/// by files' server with a status, /files-denied and /files-wide by the root,
+/// and keep that status. A case that opened a file or listed a directory after
+/// the stop would read PeerClosed, not the bytes. check_spawn() is the one
+/// later check that touches them without using them: fsio::export_namespace()
+/// clones every live entry for the program it starts, and skips one whose
+/// server is gone (it marks it closed), so spawning after the stop would still
+/// pass today. That is a property of fsio and not of this case, so nothing is
+/// left to depend on it: nothing follows this case but the summary, and no
+/// later check can hang or fail on its account.
+///
+/// Its waits are Incoming::receive()'s, as check_echo()'s are: an infinite
+/// wait for a message or PEER_CLOSED, since object_wait_one takes no other
+/// deadline until a program can read a clock (repair item 2 of
+/// docs/repairs/261029/routing-checks.md). What they rely on is that files
+/// exits once the stop node has its channel, and that the kernel closes every
+/// handle of a process that exits. A wrong path does not hang: files' server
+/// answers an Open it refuses with an epitaph on the channel, the first wait
+/// reads it as a status that is not PeerClosed, a FAILED line says so, and the
+/// case ends before the wait that only an exit would end. A stop node that
+/// does not exit leaves that first wait for good, and the failure is then the
+/// missing `routing_checks: passed`, as for any wait in this file.
+///
+/// What it relies on for the entry to read PeerClosed at once, with no retry:
+/// the kernel closes a process's handles in the order the process received
+/// them (HandleTable::clean()), as check_echo() relies on too. files received
+/// the entries' server ends when the root forwarded the uses, at its start,
+/// then the connection held below, and the stop channel last. files drops the
+/// stop channel and does not close it (StopHandler), so the stop channel reads
+/// PEER_CLOSED only as the newest of them is closed, when the held connection
+/// and the entries already are. A close ahead of the rest would show as a
+/// first open() that is accepted and lost with the entry, which this check
+/// reports and does not allow for.
+auto check_files_stop() -> void {
+    // A connection opened through the entry before the stop, and known to
+    // work: a file, which has nothing to say until it is asked.
+    auto const held = open_or_fail(HELLO_PATH, Flags::PermReadBytes);
+    if (held == Uandle::Invalid) {
+        return;
+    }
+    std::array<u8, 1> byte{};
+    if (!expect("read of a connection held before files stopped", status_of(fsio::read(held, byte)),
+                Status::Ok)) {
+        auto _ = ours::handle_close(held);
+        return;
+    }
+
+    // The stop: files takes the channel and exits, so the channel closes with
+    // nothing on it. Any other answer is the route's or the server's: the
+    // path is wrong, or the node is not what it should be.
+    if (!expect("a connection to files' stop node", connect_status(FILES_STOP),
+                Status::PeerClosed)) {
+        // files may be running still, and a wait for the held connection would
+        // never end.
+        auto _ = ours::handle_close(held);
+        return;
+    }
+
+    // files is dead. The connection held before reads PEER_CLOSED, as a wait
+    // that ends only on the exit sees it.
+    Incoming closed;
+    expect("files' end of a connection held before it stopped", closed.receive(held),
+           Status::PeerClosed);
+    auto _ = ours::handle_close(held);
+
+    // The entry: its server end was closed with the process, with no
+    // epitaph, so the write of the Open is refused and open() answers
+    // PeerClosed. The binding keeps the answer, so a later open() under the
+    // entry gets it without touching the channel. Another entry of the same
+    // provider reads the same, and so does the stop node itself.
+    expect("open() on the entry of a provider that exited",
+           status_of(fsio::open(HELLO_PATH, Flags::PermReadBytes)), Status::PeerClosed);
+    expect("a later open() under that entry",
+           status_of(fsio::open("/files/sub/nested.txt", Flags::PermReadBytes)),
+           Status::PeerClosed);
+    expect("open() on another entry of that provider",
+           status_of(fsio::open("/files-sub/nested.txt", Flags::PermReadBytes)),
+           Status::PeerClosed);
+    auto client = Uandle::Invalid;
+    auto server = Uandle::Invalid;
+    if (expect("channel_create",
+               ours::channel_create(ours::ChannelCreateOptions::None, &client, &server),
+               Status::Ok)) {
+        // Consumes |server| whatever the answer.
+        expect("connect() to the stop node of a provider that exited",
+               fsio::connect(FILES_STOP, server), Status::PeerClosed);
+        auto _ = ours::handle_close(client);
+    }
 }
 
 /// The copy check_spawn() starts: the namespace it was handed is a clone of
@@ -1886,8 +2944,8 @@ auto main(int argc, char **argv) -> int {
         auto _ = ort::debug_line("routing_checks: FAILED");
         return 1;
     }
-    if (auto const bound = fsio::installed_namespace().size(); bound != 5) {
-        fail("the namespace does not hold the manifest's four directory uses and /svc");
+    if (auto const bound = fsio::installed_namespace().size(); bound != 14) {
+        fail("the namespace does not hold the manifest's thirteen directory uses and /svc");
     }
     check_process_self("object_get_info(process_self())");
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
@@ -1896,7 +2954,13 @@ auto main(int argc, char **argv) -> int {
     check_read(SELF_IN_BOOT);
     check_read(SELF_IN_BOOT_R);
     check_read(SELF_IN_BIN);
+    check_read(SELF_IN_VFS);
     check_read_dirents("/boot", "bin", ours_io::DirentType::Directory);
+    // This component holds fshost's `ro` view: boot is there, the writable
+    // tmp is not.
+    check_read_dirents("/vfs", "boot", ours_io::DirentType::Directory);
+    check_read_dirents_absent("/vfs", "tmp");
+    check_read_dirents("/vfs/boot", "bin", ours_io::DirentType::Directory);
     check_read_dirents("/boot", "meta", ours_io::DirentType::Directory);
     check_read_dirents("/bin", "routing_checks", ours_io::DirentType::File);
     check_read_dirents("/svc", "ours.process.Launcher", ours_io::DirentType::Service);
@@ -1907,6 +2971,7 @@ auto main(int argc, char **argv) -> int {
     }
     check_execute_refused();
     check_denied();
+    check_files();
     check_debug_resource();
     check_irq_resource();
     check_ioport_resource();
@@ -1923,7 +2988,14 @@ auto main(int argc, char **argv) -> int {
         check_launcher_refusals(job);
         check_spawn(job);
     }
+    check_cwd();
+    check_block();
+    check_gpt();
+    check_disk();
     check_echo();
+    // Last, whatever else is added above: it ends the provider that the
+    // entries of /files route to (check_files_stop()).
+    check_files_stop();
 
     if (FAILURES != 0) {
         char count[10];
@@ -1932,5 +3004,13 @@ auto main(int argc, char **argv) -> int {
         return 1;
     }
     auto _ = ort::debug_line("routing_checks: passed");
+    if (!DISK_CHECKS_RAN) {
+        // The pass stands, but it is not a disked pass, and nothing else in
+        // the log says so in one line: this is the signal a boot with a disk
+        // attached can demand absent.
+        auto _ =
+            ort::debug_line({"routing_checks: disk checks not run (",
+                             BLOCK_DEVICE_SEEN ? "no mounted volume" : "no block device", ")"});
+    }
     return 0;
 }

@@ -20,6 +20,10 @@ enum class CpuFeatureType : u8 {
     Umip,
     La57,
     Monitor,
+    /// CPUID 0x8000'0007:EDX[8]: the TSC ticks at a fixed rate regardless of
+    /// P-state, and reads from every CPU agree -- what makes it safe as a
+    /// time source sampled from arbitrary threads.
+    InvariantTsc,
     Count,
 };
 
@@ -44,6 +48,15 @@ class X86CpuFeature {
             set(CpuFeatureType::X2Apic, bit_is_set(ecx, 21));
             set(CpuFeatureType::TscDeadlineTimer, bit_is_set(ecx, 24));
             set(CpuFeatureType::Monitor, bit_is_set(ecx, 3));
+        }
+
+        if (max_leaf >= 0x80000007U) {
+            u32 eax = 0;
+            u32 ebx = 0;
+            u32 ecx = 0;
+            u32 edx = 0;
+            cpuid(0x80000007U, 0, eax, ebx, ecx, edx);
+            set(CpuFeatureType::InvariantTsc, bit_is_set(edx, 8));
         }
 
         if (max_leaf >= 7) {

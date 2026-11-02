@@ -35,6 +35,13 @@ namespace {
 
 auto LoopServer::Delegate::write_failed(Status) -> void {}
 
+auto LoopServer::Delegate::subtree(u64, std::string_view, ours_io::Flags, Uandle const channel)
+    -> void {
+    // Nobody else holds the channel now: it was the Open's, and the server
+    // gave it away. Nothing can be done about a close that fails.
+    auto _ = ours::handle_close(channel);
+}
+
 auto LoopServer::Delegate::open_refused(NodeId, std::string_view, Status) -> void {}
 
 LoopServer::LoopServer(Tree const &tree, loop::Loop &loop, Syscalls const syscalls,
@@ -176,6 +183,18 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
             }
             return loop::Action::Rearm;
         }
+        case Action::Subtree: {
+            // An Open that walked to a Subtree node: the delegate owns the
+            // channel from here, as for a service node, and no connection
+            // was made. Without one, the channel goes. The rest views the
+            // request buffer, which nothing touches before this returns.
+            if (m_delegate == nullptr) {
+                auto _ = ours::handle_close(outcome.handle);
+            } else {
+                m_delegate->subtree(outcome.service, outcome.rest, outcome.flags, outcome.handle);
+            }
+            return loop::Action::Rearm;
+        }
         case Action::Refuse: {
             // The epitaph says why the Open or Clone failed. The client may
             // be gone already; the handle closes either way.
@@ -190,6 +209,18 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
                 if (auto const directory = m_server.node(connection); directory.is_some()) {
                     m_delegate->open_refused(*directory, *outcome.path, outcome.status);
                 }
+            }
+            return loop::Action::Rearm;
+        }
+        case Action::Forward: {
+            // An Open that reached a remote entry: the message is the Open
+            // the remote is to serve, the handle it carries the request's
+            // server end. A write the remote's channel refuses consumed that
+            // handle, and the client sees its channel close with no epitaph,
+            // the way an Open routed into a dead provider already ends.
+            if (auto const written = write(outcome.forward_channel, outcome.message);
+                written != Status::Ok && m_delegate != nullptr) {
+                m_delegate->write_failed(written);
             }
             return loop::Action::Rearm;
         }

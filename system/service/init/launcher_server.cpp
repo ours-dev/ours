@@ -211,6 +211,7 @@ auto LauncherServer::start(launch::Startup const &startup) -> ustl::Result<Uandl
         .vma = m_environment.vma,
         .vdso = m_environment.vdso,
         .vdso_file = m_environment.vdso_file,
+        .clock_page = m_environment.clock_page,
         .bootstrap = there,
         .diagnostics = m_diagnostics,
     });

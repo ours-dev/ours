@@ -4,7 +4,9 @@
 // ioservice::LoopServer on a real Loop, against the fake kernel of
 // fake_kernel.hpp: what serve() refuses, and what each kind of message on a
 // served directory comes to -- an Open of a service node handed to the
-// connect function, an Open of a name that is not there answered NotFound
+// connect function, an Open that walks to a Subtree node handed to the
+// delegate's subtree function with the rest of its path, its flags and its
+// channel, an Open of a name that is not there answered NotFound
 // and reported to the delegate, a directory opened through it, a reply
 // written back, a Close answered, a malformed message, a reply that cannot
 // be written, a client gone, and a Loop that cannot arm a connection's wait
@@ -51,11 +53,25 @@ constexpr auto CONNECTIONS = usize{4};
 constexpr auto ECHO_SERVICE = u64{7};
 constexpr auto NESTED_SERVICE = u64{9};
 
+/// The value the Subtree node /mount is added with.
+constexpr auto MOUNT_VALUE = u64{11};
+
 /// The server's delegate, which keeps what it was called with, in order.
 class Calls final: public ioservice::LoopServer::Delegate {
   public:
     struct Connect {
         u64 service;
+        Uandle channel;
+    };
+
+    /// An Open that walked to a Subtree node, as the delegate was told it.
+    struct Subtree {
+        u64 value;
+        /// A copy of the rest, made in the call: the view is only good there.
+        std::string rest;
+        /// The view itself, kept to show that it does not last.
+        std::string_view viewed;
+        Flags flags;
         Uandle channel;
     };
 
@@ -70,6 +86,7 @@ class Calls final: public ioservice::LoopServer::Delegate {
     };
 
     std::vector<Connect> connects;
+    std::vector<Subtree> subtrees;
     std::vector<Status> write_failures;
     std::vector<Refusal> refusals;
     /// The client end of the channel the test expects an epitaph on.
@@ -77,6 +94,17 @@ class Calls final: public ioservice::LoopServer::Delegate {
 
     auto connect(u64 const service, Uandle const channel) -> void override {
         connects.push_back({.service = service, .channel = channel});
+    }
+
+    auto subtree(u64 const value, std::string_view const rest, Flags const flags,
+                 Uandle const channel) -> void override {
+        subtrees.push_back({
+            .value = value,
+            .rest = std::string{rest},
+            .viewed = rest,
+            .flags = flags,
+            .channel = channel,
+        });
     }
 
     auto write_failed(Status const status) -> void override {
@@ -213,6 +241,7 @@ struct Storage {
 ///   /echo      a service, ECHO_SERVICE
 ///   /sub       a directory
 ///   /sub/nested  a service, NESTED_SERVICE
+///   /mount     a Subtree node, MOUNT_VALUE
 class LoopServerTest: public testing::Test {
   protected:
     LoopServerTest() : m_storage(std::make_unique<Storage>()), m_tree(m_storage->nodes) {
@@ -225,6 +254,7 @@ class LoopServerTest: public testing::Test {
         m_sub = m_tree.add_directory(m_root, "sub").unwrap();
         // The tests find /sub/nested by its path, so its id is not kept.
         auto _ = m_tree.add_service(m_sub, "nested", NESTED_SERVICE).unwrap();
+        m_mount = m_tree.add_subtree(m_root, "mount", MOUNT_VALUE).unwrap();
 
         m_loop.emplace(port, m_slots);
         m_server.emplace(m_tree, *m_loop, syscalls(), memory(), &m_calls);
@@ -273,9 +303,15 @@ class LoopServerTest: public testing::Test {
         return ends;
     }
 
+    /// The buffer the server reads each request into.
+    auto request_bytes() -> std::span<u8> {
+        return m_storage->request_bytes;
+    }
+
     ioservice::NodeId m_root = {};
     ioservice::NodeId m_echo = {};
     ioservice::NodeId m_sub = {};
+    ioservice::NodeId m_mount = {};
 
   private:
     std::array<loop::Slot, 8> m_slots{};
@@ -330,6 +366,180 @@ TEST_F(LoopServerTest, OpenOfAServiceWithoutAConnectorClosesItsChannel) {
 
     EXPECT_FALSE(fake::kernel().is_open(service_end));
     EXPECT_TRUE(fake::kernel().is_open(directory_server));
+}
+
+/// A delegate that serves service nodes and nothing else: it does not
+/// override subtree().
+class ConnectOnly final: public ioservice::LoopServer::Delegate {
+  public:
+    auto connect(u64, Uandle) -> void override {}
+};
+
+TEST_F(LoopServerTest, OpenThatWalksToASubtreeNodeReachesTheDelegateWithWhatItWasAskedFor) {
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, object] = channel();
+    constexpr auto FLAGS = Flags::ProtocolDirectory | ours_io::PERM_READABLE;
+    open(directory, "mount/a/b", FLAGS, object);
+    run();
+
+    ASSERT_EQ(calls().subtrees.size(), 1u);
+    EXPECT_EQ(calls().subtrees[0].value, MOUNT_VALUE);
+    EXPECT_EQ(calls().subtrees[0].rest, "a/b");
+    EXPECT_EQ(calls().subtrees[0].flags, FLAGS);
+    EXPECT_EQ(calls().subtrees[0].channel, object);
+    // The delegate owns the channel: nothing was written on it or closed, and
+    // the directory's connection stays for the next Open. It is no service
+    // and no refusal.
+    EXPECT_TRUE(fake::kernel().is_open(object));
+    EXPECT_EQ(fake::kernel().queued_messages(client), 0u);
+    EXPECT_TRUE(fake::kernel().is_open(directory_server));
+    EXPECT_TRUE(calls().connects.empty());
+    EXPECT_TRUE(calls().refusals.empty());
+}
+
+TEST_F(LoopServerTest, TheRestIsDotWhenTheOpenNamesTheSubtreeNodeItself) {
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, object] = channel();
+    open(directory, "mount", Flags::ProtocolDirectory | ours_io::PERM_READABLE, object);
+    run();
+
+    ASSERT_EQ(calls().subtrees.size(), 1u);
+    EXPECT_EQ(calls().subtrees[0].rest, ".");
+}
+
+TEST_F(LoopServerTest, OpenOfASubtreeNodeMakesNoConnectionAndNoSlot) {
+    auto const [directory, directory_server] = serve_root();
+    // Many more Opens than there are connections: none takes one.
+    for (auto count = usize{0}; count < 2 * CONNECTIONS; ++count) {
+        auto const [client, object] = channel();
+        open(directory, "mount/x", ours_io::PERM_READABLE, object);
+        run();
+    }
+    EXPECT_EQ(calls().subtrees.size(), 2 * CONNECTIONS);
+
+    // The table has all its other entries: three more directories fit, and the
+    // next does not.
+    for (auto index = usize{1}; index < CONNECTIONS; ++index) {
+        serve_root();
+    }
+    auto const [client, server_end] = channel();
+    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
+}
+
+TEST_F(LoopServerTest, TheRestViewsTheRequestAndDoesNotLastPastTheCall) {
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, first] = channel();
+    open(directory, "mount/abc", ours_io::PERM_READABLE, first);
+    run();
+    ASSERT_EQ(calls().subtrees.size(), 1u);
+
+    // The view is inside the buffer the server reads each request into,
+    // which is why a handler that parks the Open copies it.
+    auto const buffer = request_bytes();
+    auto const viewed = calls().subtrees[0].viewed;
+    EXPECT_GE(viewed.data(), reinterpret_cast<char const *>(buffer.data()));
+    EXPECT_LE(viewed.data() + viewed.size(),
+              reinterpret_cast<char const *>(buffer.data() + buffer.size()));
+    EXPECT_EQ(viewed, "abc");
+
+    // The next request is read over it.
+    auto const [other_client, second] = channel();
+    open(directory, "mount/XYZ", ours_io::PERM_READABLE, second);
+    run();
+    EXPECT_EQ(viewed, "XYZ");
+    EXPECT_EQ(calls().subtrees[0].rest, "abc");
+    EXPECT_EQ(calls().subtrees[1].rest, "XYZ");
+}
+
+TEST_F(LoopServerTest, ADelegateThatParksAnOpenCanAnswerItLaterOnItsChannel) {
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, object] = channel();
+    open(directory, "mount/parked", ours_io::PERM_READABLE, object);
+    run();
+    ASSERT_EQ(calls().subtrees.size(), 1u);
+
+    // Other traffic goes by first, and rewrites the request buffer. The server
+    // takes nothing from the parked channel meanwhile.
+    auto const [echo_client, echo_end] = channel();
+    open(directory, "echo", Flags::ProtocolService, echo_end);
+    request_dirents(directory, 1);
+    run();
+    expect_dirents_reply(directory, 1);
+    EXPECT_EQ(fake::kernel().queued_messages(client), 0u);
+    EXPECT_TRUE(fake::kernel().is_open(object));
+
+    // The answer, much later: the parked channel and the copied rest are all
+    // it needs.
+    EXPECT_EQ(calls().subtrees[0].rest, "parked");
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const epitaph_message = wire::encode_epitaph(bytes, Status::NotSupported);
+    ASSERT_TRUE(epitaph_message.is_ok());
+    write(calls().subtrees[0].channel, epitaph_message.unwrap());
+    EXPECT_EQ(epitaph(client), Status::NotSupported);
+}
+
+TEST_F(LoopServerTest, ADelegateThatDoesNotOverrideSubtreeClosesTheChannel) {
+    ConnectOnly connect_only;
+    server().set_delegate(&connect_only);
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, object] = channel();
+    open(directory, "mount/x", ours_io::PERM_READABLE, object);
+    run();
+
+    // Nobody else would: the server gave the channel away, and the default
+    // takes it.
+    EXPECT_FALSE(fake::kernel().is_open(object));
+    EXPECT_EQ(epitaph(client), Status::PeerClosed);
+    EXPECT_TRUE(fake::kernel().is_open(directory_server));
+}
+
+TEST_F(LoopServerTest, OpenOfASubtreeNodeWithoutADelegateClosesItsChannel) {
+    server().set_delegate(nullptr);
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, object] = channel();
+    open(directory, "mount/x", ours_io::PERM_READABLE, object);
+    run();
+
+    EXPECT_FALSE(fake::kernel().is_open(object));
+    EXPECT_EQ(epitaph(client), Status::PeerClosed);
+    EXPECT_TRUE(calls().subtrees.empty());
+    EXPECT_TRUE(fake::kernel().is_open(directory_server));
+}
+
+TEST_F(LoopServerTest, AnOpenTheConnectionRefusesNeverReachesTheDelegate) {
+    auto const [directory, directory_server] = serve_root();
+    auto const [client, object] = channel();
+    calls().watched = client;
+    // The connection is r*: it holds no write, so the Open is refused before
+    // the walk reaches the node.
+    open(directory, "mount/x", Flags::PermWriteBytes, object);
+    run();
+
+    EXPECT_TRUE(calls().subtrees.empty());
+    EXPECT_EQ(epitaph(client), Status::AccessDenied);
+    EXPECT_FALSE(fake::kernel().is_open(object));
+    ASSERT_EQ(calls().refusals.size(), 1u);
+    EXPECT_EQ(calls().refusals[0].path, "mount/x");
+    EXPECT_EQ(calls().refusals[0].status, Status::AccessDenied);
+}
+
+TEST_F(LoopServerTest, SubtreeOpensAreHandedOverInTheOrderTheyArrived) {
+    auto const [directory, directory_server] = serve_root();
+    auto objects = std::vector<Uandle>{};
+    for (auto const rest: {"one", "two", "three"}) {
+        auto const [client, object] = channel();
+        objects.push_back(object);
+        open(directory, std::string{"mount/"} + rest, ours_io::PERM_READABLE, object);
+    }
+    run();
+
+    ASSERT_EQ(calls().subtrees.size(), 3u);
+    EXPECT_EQ(calls().subtrees[0].rest, "one");
+    EXPECT_EQ(calls().subtrees[1].rest, "two");
+    EXPECT_EQ(calls().subtrees[2].rest, "three");
+    for (auto index = usize{0}; index < 3; ++index) {
+        EXPECT_EQ(calls().subtrees[index].channel, objects[index]);
+    }
 }
 
 TEST_F(LoopServerTest, OpenOfAMissingNameAnswersNotFound) {
@@ -618,5 +828,60 @@ TEST_F(LoopServerTest, ConnectionsPastTheBindingsAreRefused) {
     EXPECT_EQ(small.serve(second[1], m_root, ours_io::R_STAR_DIR), Status::NoResource);
     // Refused, so still the caller's.
     EXPECT_TRUE(fake::kernel().is_open(second[1]));
+}
+
+// --- forwarding through a remote entry --------------------------------------------
+
+TEST_F(LoopServerTest, OpenThroughARemoteEntryIsForwardedOnItsChannel) {
+    // The pair the mount point sits on: the tree holds one end and the
+    // forwarded Open is written there; the server behind the mount reads the
+    // other.
+    auto const link = channel();
+    ASSERT_TRUE(tree().add_remote(m_root, "boot", link[0]).is_ok());
+
+    auto const ends = serve_root();
+    auto const object = channel();
+    open(ends[0], "boot/bin/x", ours_io::PERM_READABLE, object[1]);
+    run();
+
+    // The Open arrived on the remote's end of the link, the rest of its path
+    // and the client's server end carried with it, the flags unchanged.
+    auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+    auto handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
+    auto num_bytes = u32{0};
+    auto num_handles = u32{0};
+    ASSERT_EQ(ours::channel_read(link[1], ours::ChannelReadOptions::None, bytes.data(),
+                                 handles.data(), static_cast<u32>(bytes.size()),
+                                 static_cast<u32>(handles.size()), &num_bytes, &num_handles),
+              Status::Ok);
+    auto const forwarded = ours_io::decode_open(wire::Message{
+        .bytes = std::span{bytes}.first(num_bytes),
+        .handles = std::span{handles}.first(num_handles),
+    });
+    ASSERT_TRUE(forwarded.is_ok());
+    EXPECT_EQ(forwarded->path, "bin/x");
+    EXPECT_EQ(forwarded->flags, ours_io::PERM_READABLE);
+    EXPECT_EQ(forwarded->object, object[1]);
+    // Nothing came back on the client's connection: forwarding keeps no
+    // per-open state.
+    EXPECT_EQ(fake::kernel().queued_messages(ends[0]), 0U);
+}
+
+TEST_F(LoopServerTest, ForwardToADeadRemoteConsumesTheOpen) {
+    auto const link = channel();
+    ASSERT_TRUE(tree().add_remote(m_root, "boot", link[0]).is_ok());
+    // The server behind the mount is gone.
+    auto _ = ours::handle_close(link[1]);
+
+    auto const ends = serve_root();
+    auto const object = channel();
+    open(ends[0], "boot/x", ours_io::PERM_READABLE, object[1]);
+    run();
+
+    // The failed write consumed the client's server end, so the client sees
+    // its channel close with no epitaph on it, as an Open routed into a dead
+    // provider already does.
+    EXPECT_FALSE(fake::kernel().is_open(object[1]));
+    EXPECT_EQ(fake::kernel().queued_messages(ends[0]), 0U);
 }
 } // namespace

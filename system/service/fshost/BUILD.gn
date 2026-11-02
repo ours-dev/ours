@@ -1,0 +1,91 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/component_manifest.gni")
+import("//system/user_executable.gni")
+
+# Read only in a user toolchain, as every program under //system/service:
+# dev's root.cm names the manifest below, and component_manifest() moves its
+# program there.
+assert(
+    toolchain_environment == "user",
+    "system/service/fshost must be built in a //build/toolchain/ours:user-* toolchain")
+
+# The composing server (macro-fs design): one tree holding the same mounts as
+# two views, each its own directory capability. `all` carries `boot` (the
+# root's built-in BootFS directory) and `tmp` (memfs's writable pool); `ro`
+# carries `boot` only, and a component of that view cannot tell `tmp` exists.
+# It uses `boot` at /boot rx* and `tmp` at /tmp rw* -- the connections the
+# tree's remote entries hold -- and root.cm offers each component the view it
+# should see, renamed with `as` to the `vfs` path its manifest uses.
+user_executable("fshost") {
+  visibility = [
+    ":*",
+    "//kernel/products/image/*",
+  ]
+  sources = [ "fshost.cpp" ]
+  deps = [
+    "//system/lib/ioservice:loop_server",
+    "//system/lib/loop",
+    "//system/lib/ours.fshost",
+    "//system/lib/wire",
+  ]
+}
+
+component_manifest("fshost.cm") {
+  visibility = [ "//kernel/products/image/*" ]
+  program = ":fshost"
+  manifest = {
+    use = [
+      {
+        directory = "boot"
+        path = "/boot"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "tmp"
+        path = "/tmp"
+        rights = [ "rw*" ]
+      },
+      {
+        directory = "disk"
+        path = "/disk"
+        rights = [ "rw*" ]
+      },
+    ]
+    capabilities = [
+      {
+        directory = "all"
+        path = "/all"
+        rights = [
+          "rx*",
+          "w*",
+        ]
+      },
+      {
+        directory = "ro"
+        path = "/ro"
+        rights = [ "rx*" ]
+      },
+      {
+        protocol = "ours.fshost.Admin"
+      },
+    ]
+    expose = [
+      {
+        directory = "all"
+        from = "self"
+      },
+      {
+        directory = "ro"
+        from = "self"
+      },
+      {
+        protocol = "ours.fshost.Admin"
+        from = "self"
+      },
+    ]
+  }
+}

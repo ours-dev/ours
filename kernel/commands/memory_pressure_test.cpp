@@ -411,17 +411,14 @@ namespace {
         // These move the levels to where free memory is and look at what the
         // watchdog decides; what it has the reclaimer give back would move
         // free memory off them (pagereclaim.test checks that).
-        mm::MemoryReclaimer::Pause no_reclaim;
+        mm::MemoryReclaimer::Pause no_reclaim{mm::MemoryReclaimer::get()};
         constexpr usize K = NR_CROSSING;
         /// A debounce of a few frames, and no hysteresis, so that each move
         /// shows at once.
         constexpr usize DEBOUNCE = 8;
         auto const at = [](usize const out_of_memory, usize const critical, usize const warning) {
-            return mm::MemoryPressureLevels{.out_of_memory = out_of_memory,
-                                            .critical = critical,
-                                            .warning = warning,
-                                            .debounce = DEBOUNCE,
-                                            .hysteresis = Duration::zero()};
+            return mm::MemoryPressureLevels::make(out_of_memory, critical, warning, DEBOUNCE,
+                                                  Duration::zero());
         };
         auto &watchdog = MemoryWatchdog::get();
         auto const boot = mm::MemoryPressureLevels::from_boot_options();
@@ -429,8 +426,10 @@ namespace {
                 "with the boot levels, the watchdog finds Normal pressure");
 
         auto const free = mm::approx_free_frame_count();
-        auto const moved = watchdog.set_levels(at(free - 3 * K, free - K, free + K));
-        verdict(tally, moved == Status::Ok && settles_at(MemoryPressure::Warning),
+        auto const moved_levels = at(free - 3 * K, free - K, free + K);
+        auto const moved = moved_levels && watchdog.set_levels(*moved_levels) == Status::Ok &&
+                           settles_at(MemoryPressure::Warning);
+        verdict(tally, moved,
                 "with free memory moved under the Warning level, the pressure is Warning");
 
         std::array<mm::PmFrame *, 2 * K> frames{};
@@ -453,8 +452,9 @@ namespace {
                 "back to Warning");
 
         auto const now = mm::approx_free_frame_count();
-        auto const oom = watchdog.set_levels(at(now + K, now + 3 * K, now + 5 * K));
-        auto const declared = oom == Status::Ok && settles_at(MemoryPressure::OutOfMemory);
+        auto const oom_levels = at(now + K, now + 3 * K, now + 5 * K);
+        auto const declared = oom_levels && watchdog.set_levels(*oom_levels) == Status::Ok &&
+                              settles_at(MemoryPressure::OutOfMemory);
         auto refused = mm::try_alloc_frames(WAITABLE, 0);
         auto served = mm::try_alloc_frames(mm::GAF_USER, 0);
         verdict(tally, declared && !refused && refused.unwrap_err() == Status::OutOfMem && !!served,

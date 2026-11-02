@@ -28,6 +28,10 @@ namespace {
     /// dynamic initialisers (//system/lib/ort, src/start.cpp).
     constinit Namespace INSTALLED;
 
+    /// The working directory's handle, Invalid until the first chdir(): the
+    /// handle relative opens resolve against. Per process, not inherited.
+    Uandle CWD_DIRECTORY = Uandle::Invalid;
+
     /// install()'s first answer, which every later call gives again. Plain
     /// variables, constant-initialised: the runtime makes the first call
     /// before main, on the only thread there is.
@@ -335,6 +339,29 @@ extern "C" auto ort_extensions_init() -> void {
     }
 }
 
+/// The Open message itself, sent on |directory| with |object| as the
+/// server end: what both the namespace open and the open relative to a
+/// directory handle do after their fronts agree on the directory and the
+/// path.
+auto send_open(Uandle const directory, std::string_view const path, Flags const flags,
+               Uandle const object) -> Status {
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    std::array<Uandle, 1> handles{};
+    auto const encoded = ours_io::encode_open(bytes, handles,
+                                              ours_io::OpenRequest{
+                                                  .flags = flags,
+                                                  .path = path,
+                                                  .object = object,
+                                              });
+    if (encoded.is_err()) {
+        return encoded.unwrap_err();
+    }
+    auto const message = encoded.unwrap();
+    return ours::channel_write(directory, ours::ChannelWriteOptions::None, message.bytes.data(),
+                               static_cast<u32>(message.bytes.size()), message.handles.data(),
+                               static_cast<u32>(message.handles.size()));
+}
+
 auto open(std::string_view const path, Flags const flags, Uandle const object) -> Status {
     // Consumed on every path, as the write below consumes it: a caller never
     // has to work out whether it still owns |object|.
@@ -347,27 +374,32 @@ auto open(std::string_view const path, Flags const flags, Uandle const object) -
     if (auto const status = clean_path(path, clean); status != Status::Ok) {
         return refuse(status);
     }
+
+    // A relative path resolves against the working directory -- the same
+    // Open message the namespace open sends, on the working directory's
+    // handle. A ".." past the working directory is refused here: a
+    // directory handle has no above for the walk to climb to.
+    if (!clean.view().starts_with('/')) {
+        if (CWD_DIRECTORY == Uandle::Invalid || clean.view().starts_with("..")) {
+            return refuse(Status::BadPath);
+        }
+        auto const written = send_open(CWD_DIRECTORY, clean.view(), flags, object);
+        if (written != Status::PeerClosed) {
+            return written;
+        }
+        // The working directory's server is gone; the handle names nothing
+        // now, and the next chdir() sets a fresh one.
+        auto _ = ours::handle_close(CWD_DIRECTORY);
+        CWD_DIRECTORY = Uandle::Invalid;
+        return Status::PeerClosed;
+    }
+
     auto const resolved = INSTALLED.resolve(clean);
     if (resolved.is_err()) {
         return refuse(resolved.unwrap_err());
     }
 
-    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    std::array<Uandle, 1> handles{};
-    auto const encoded = ours_io::encode_open(bytes, handles,
-                                              ours_io::OpenRequest{
-                                                  .flags = flags,
-                                                  .path = resolved->rest,
-                                                  .object = object,
-                                              });
-    if (encoded.is_err()) {
-        return refuse(encoded.unwrap_err());
-    }
-    auto const message = encoded.unwrap();
-    auto const written =
-        ours::channel_write(resolved->directory, ours::ChannelWriteOptions::None,
-                            message.bytes.data(), static_cast<u32>(message.bytes.size()),
-                            message.handles.data(), static_cast<u32>(message.handles.size()));
+    auto const written = send_open(resolved->directory, resolved->rest, flags, object);
     if (written != Status::PeerClosed) {
         return written;
     }
@@ -395,6 +427,40 @@ auto open(std::string_view const path, Flags const flags) -> ustl::Result<Uandle
     if (auto const status = open(path, flags, server); status != Status::Ok) {
         auto _ = ours::handle_close(client);
         return ustl::err(status);
+    }
+    return ustl::ok(client);
+}
+
+auto open(Uandle const dir, std::string_view const path, Flags const flags)
+    -> ustl::Result<Uandle, Status> {
+    // The path is relative to |dir|, and a directory connection has no
+    // above: the namespace's mount points are not reachable from here, so
+    // an absolute path or a ".." past the cleaning names nothing this call
+    // can promise -- refused here, where the answer is a status and not a
+    // walk that half-worked.
+    PathBuffer clean;
+    if (auto const status = clean_path(path, clean); status != Status::Ok) {
+        return ustl::err(status);
+    }
+    auto const view = clean.view();
+    if (view.starts_with('/') || view.starts_with('.')) {
+        return ustl::err(Status::BadPath);
+    }
+
+    auto client = Uandle::Invalid;
+    auto server = Uandle::Invalid;
+    if (auto const status =
+            ours::channel_create(ours::ChannelCreateOptions::None, &client, &server);
+        status != Status::Ok) {
+        return ustl::err(status);
+    }
+    auto const written = send_open(dir, view, flags, server);
+    if (written != Status::Ok) {
+        // The directory handle itself is gone; nobody will ever serve the
+        // client end this call made, so it closes here rather than coming
+        // back as a handle to nothing.
+        auto _ = ours::handle_close(client);
+        return ustl::err(written);
     }
     return ustl::ok(client);
 }
@@ -615,6 +681,110 @@ auto read(Uandle const file, std::span<u8> const buffer) -> ustl::Result<usize, 
     return copy_payload(decoded->data, count, buffer);
 }
 
+auto write(Uandle const file, std::span<u8 const> const data) -> ustl::Result<usize, Status> {
+    // The request carries the data, so its buffer is a message, not the
+    // status-form-sized one the shorter requests use.
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const txid = next_txid();
+    auto const request =
+        ours_io::encode_write(bytes, ours_io::WriteRequest{.txid = txid, .data = data});
+    if (request.is_err()) {
+        return ustl::err(request.unwrap_err());
+    }
+    Incoming reply;
+    if (auto const status = call(file, request.unwrap(), reply); status != Status::Ok) {
+        return ustl::err(status);
+    }
+    if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+        return ustl::err(*closed);
+    }
+    auto const decoded = ours_io::decode_write_reply(reply.message(), txid);
+    if (decoded.is_err()) {
+        return ustl::err(Status::InvArgs);
+    }
+    if (decoded->status != Status::Ok) {
+        return ustl::err(decoded->status);
+    }
+    return ustl::ok(decoded->actual);
+}
+
+auto unlink(std::string_view const path) -> ours::Status {
+    PathBuffer clean;
+    if (auto const status = clean_path(path, clean); status != Status::Ok) {
+        return status;
+    }
+    // Unlink works on the parent directory: split the path, open the
+    // parent through the namespace (an Open forwards through mount points
+    // the way an Unlink message alone does not -- the composing server's
+    // tree serves Open, not Unlink), and ask the parent to drop the name.
+    auto const slash = clean.view().rfind('/');
+    auto const parent_path =
+        slash == std::string_view::npos ? std::string_view{"/"} : clean.view().substr(0, slash);
+    auto const name =
+        slash == std::string_view::npos ? clean.view() : clean.view().substr(slash + 1);
+    if (name.empty() || name == "." || name == "..") {
+        return Status::BadPath;
+    }
+    // A root-level entry ("/x") has no parent this library can name: the
+    // namespace binds subtrees, not a root, and letting the parent fall to
+    // "." would delete a name under the working directory that the path
+    // never meant.
+    if (slash == 0) {
+        return Status::BadPath;
+    }
+    // The parent's own cleaned path, through the same cleaning the full
+    // path went through.
+    PathBuffer parent_buffer;
+    if (auto const status = clean_path(parent_path, parent_buffer); status != Status::Ok) {
+        return status;
+    }
+    auto const parent = open(parent_buffer.view(),
+                             Flags::PermConnect | Flags::PermTraverse | Flags::PermModifyDirectory);
+    if (parent.is_err()) {
+        return parent.unwrap_err();
+    }
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const txid = next_txid();
+    auto const request =
+        ours_io::encode_unlink(bytes, ours_io::UnlinkRequest{.txid = txid, .path = name});
+    if (request.is_err()) {
+        auto _ = ours::handle_close(parent.unwrap());
+        return request.unwrap_err();
+    }
+    Incoming reply;
+    if (auto const status = call(parent.unwrap(), request.unwrap(), reply); status != Status::Ok) {
+        auto _ = ours::handle_close(parent.unwrap());
+        return status;
+    }
+    if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+        auto _ = ours::handle_close(parent.unwrap());
+        return *closed;
+    }
+    auto const decoded = wire::decode_reply_status(reply.message(), ours_io::UNLINK, txid);
+    if (decoded.is_err()) {
+        auto _ = ours::handle_close(parent.unwrap());
+        return Status::InvArgs;
+    }
+    auto _ = ours::handle_close(parent.unwrap());
+    return decoded.unwrap();
+}
+
+auto chdir(std::string_view const path, ours_io::Flags const flags) -> Status {
+    // The open itself resolves absolute paths through the namespace and
+    // relative ones against the working directory -- so a relative chdir
+    // naturally lands under the current one. |flags| become the working
+    // directory's rights: the capability the relative opens live within.
+    auto const opened = open(path, flags);
+    if (opened.is_err()) {
+        return opened.unwrap_err();
+    }
+    if (CWD_DIRECTORY != Uandle::Invalid) {
+        auto _ = ours::handle_close(CWD_DIRECTORY);
+    }
+    CWD_DIRECTORY = opened.unwrap();
+    return Status::Ok;
+}
+
 auto read_dirents(Uandle const directory, std::span<u8> const buffer)
     -> ustl::Result<usize, Status> {
     auto const max_bytes = std::min(buffer.size(), ours_io::MAX_BUF);
@@ -640,6 +810,52 @@ auto read_dirents(Uandle const directory, std::span<u8> const buffer)
         return ustl::err(decoded->status);
     }
     return copy_payload(decoded->dirents, max_bytes, buffer);
+}
+
+auto list(std::string_view const path, std::span<u8> const out) -> ustl::Result<usize, Status> {
+    auto const dir = open(path, ours_io::PERM_READABLE);
+    if (dir.is_err()) {
+        return ustl::err(dir.unwrap_err());
+    }
+    // Small pages on the stack: one dirent entry is at most ~265 bytes, so
+    // a 512-byte page always makes progress, and the message buffer's full
+    // size is far past what this thread's stack carries.
+    auto page = std::array<u8, 512>{};
+    auto writer = ours_io::DirentWriter(out);
+    auto done = false;
+    while (!done) {
+        auto const read = read_dirents(dir.unwrap(), page);
+        if (read.is_err()) {
+            auto _ = ours::handle_close(dir.unwrap());
+            return ustl::err(read.unwrap_err());
+        }
+        if (read.unwrap() == 0) {
+            done = true;
+        }
+        auto reader = ours_io::DirentReader(std::span{page}.first(read.unwrap()));
+        while (!done) {
+            auto const entry = reader.next();
+            if (entry.is_err()) {
+                auto _ = ours::handle_close(dir.unwrap());
+                return ustl::err(entry.unwrap_err());
+            }
+            if (entry->is_none()) {
+                done = true;
+                break;
+            }
+            if ((*entry)->name == ".") {
+                continue;
+            }
+            if (writer.append(
+                    {.ino = (*entry)->ino, .type = (*entry)->type, .name = (*entry)->name}) !=
+                Status::Ok) {
+                auto _ = ours::handle_close(dir.unwrap());
+                return ustl::err(Status::BufferTooSmall);
+            }
+        }
+    }
+    auto _ = ours::handle_close(dir.unwrap());
+    return ustl::ok(writer.written().size());
 }
 
 auto get_backing_memory(Uandle const file, ours_io::VmoFlags const flags)

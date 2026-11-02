@@ -32,7 +32,7 @@ from typing import Dict, List, Optional
 # eight: every argument arrives in a register.
 MAX_ARGS = 8
 
-KNOWN_ATTRS = {"blocking", "noreturn", "debug"}
+KNOWN_ATTRS = {"blocking", "noreturn", "debug", "vdso"}
 KNOWN_DIRS = {"in", "out"}
 KNOWN_ARG_KEYS = {"name", "type", "dir", "count", "release"}
 KNOWN_CALL_KEYS = {"name", "brief", "doc", "args", "attrs", "ret"}
@@ -238,9 +238,15 @@ def render_vdso_stubs(calls: List[Call]) -> str:
     for call in calls:
         noreturn = 1 if "noreturn" in call.attrs else 0
         blocking = 1 if "blocking" in call.attrs else 0
+        # A call whose body the vDSO supplies keeps the trap under a hidden
+        # name, so the public symbol can be the body and the body can fall
+        # back to the trap.
+        name = f"ours_{call.name}_via_kernel" if "vdso" in call.attrs else f"ours_{call.name}"
         lines.append(
-            f"ours_syscall ours_{call.name}, OURS_VDSO_SYSRET_{call.upper}, "
+            f"ours_syscall {name}, OURS_VDSO_SYSRET_{call.upper}, "
             f"{call.number}, {len(call.args)}, {noreturn}, {blocking}")
+        if "vdso" in call.attrs:
+            lines.append(f".hidden {name}")
     lines.append("")
     return "\n".join(lines)
 

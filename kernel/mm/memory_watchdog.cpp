@@ -1,5 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <ours/assert.hpp>
 #include <ours/boot/options.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/memory_reclaimer.hpp>
@@ -32,49 +33,65 @@ auto to_string(MemoryPressure const pressure) -> char const * {
 
 auto MemoryPressureLevels::from_boot_options() -> MemoryPressureLevels {
     auto const &options = boot::options();
-    return {
-        .out_of_memory = usize{options.oom_out_of_memory_mb()} * FRAMES_PER_MIB,
-        .critical = usize{options.oom_critical_mb()} * FRAMES_PER_MIB,
-        .warning = usize{options.oom_warning_mb()} * FRAMES_PER_MIB,
-        .debounce = usize{options.oom_debounce_mb()} * FRAMES_PER_MIB,
-        .hysteresis = duration_cast<Duration>(Seconds(options.oom_hysteresis_seconds())),
-    };
+    return {usize{options.oom_out_of_memory_mb()} * FRAMES_PER_MIB,
+            usize{options.oom_critical_mb()} * FRAMES_PER_MIB,
+            usize{options.oom_warning_mb()} * FRAMES_PER_MIB,
+            usize{options.oom_debounce_mb()} * FRAMES_PER_MIB,
+            duration_cast<Duration>(Seconds(options.oom_hysteresis_seconds()))};
+}
+
+auto MemoryPressureLevels::make(usize const out_of_memory, usize const critical,
+                                usize const warning, usize const debounce,
+                                Duration const hysteresis)
+    -> ustl::Result<MemoryPressureLevels, Status> {
+    MemoryPressureLevels levels{out_of_memory, critical, warning, debounce, hysteresis};
+    if (!levels.is_valid()) {
+        return ustl::err(Status::InvArgs);
+    }
+    return ustl::ok(levels);
 }
 
 auto MemoryPressureLevels::is_valid() const -> bool {
-    return out_of_memory > debounce && critical > out_of_memory + debounce &&
-           warning > critical + debounce;
+    return m_out_of_memory > m_debounce && m_critical > m_out_of_memory + m_debounce &&
+           m_warning > m_critical + m_debounce;
 }
 
 auto MemoryPressureLevels::pressure_at(usize const free) const -> MemoryPressure {
-    if (free < out_of_memory) {
+    if (free < m_out_of_memory) {
         return MemoryPressure::OutOfMemory;
     }
-    if (free < critical) {
+    if (free < m_critical) {
         return MemoryPressure::Critical;
     }
-    if (free < warning) {
+    if (free < m_warning) {
         return MemoryPressure::Warning;
     }
     return MemoryPressure::Normal;
 }
 
 auto MemoryPressureLevels::bounds_of(MemoryPressure const pressure) const -> Bounds {
+    // The subtractions below are unsigned. An invalid value wraps them.
+    DEBUG_ASSERT(is_valid(), "the levels do not nest");
     switch (pressure) {
         case MemoryPressure::Normal:
-            return {.lower = warning - debounce, .upper = NO_BOUND};
+            return {.lower = m_warning - m_debounce, .upper = NO_BOUND};
         case MemoryPressure::Warning:
-            return {.lower = critical - debounce, .upper = warning + debounce};
+            return {.lower = m_critical - m_debounce, .upper = m_warning + m_debounce};
         case MemoryPressure::Critical:
-            return {.lower = out_of_memory - debounce, .upper = critical + debounce};
+            return {.lower = m_out_of_memory - m_debounce, .upper = m_critical + m_debounce};
         case MemoryPressure::OutOfMemory:
-            return {.lower = 0, .upper = out_of_memory + debounce};
+            return {.lower = 0, .upper = m_out_of_memory + m_debounce};
     }
     return {.lower = 0, .upper = NO_BOUND};
 }
 
+auto MemoryPressureLevels::delay_level() const -> usize {
+    DEBUG_ASSERT(is_valid(), "the levels do not nest");
+    return m_out_of_memory - m_debounce;
+}
+
 auto MemoryWatchdog::get() -> Self & {
-    static Self WATCHDOG;
+    static Self WATCHDOG{MemoryReclaimer::get()};
     return WATCHDOG;
 }
 
@@ -127,36 +144,52 @@ auto MemoryWatchdog::run() -> i32 {
 }
 
 auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
+    // The count is taken under the lock. The walk sleeps in the page owner's
+    // lock, and m_lock guards only the levels and the declaration, so it is
+    // dropped for the walk. Hold and set_levels() can run then. What is
+    // declared below reads the levels and the free memory again.
+    usize frames = 0;
+    {
+        Guard guard{m_lock};
+        auto const free = approx_free_frame_count();
+        auto const found = m_levels.pressure_at(free);
+        if (found == MemoryPressure::OutOfMemory) {
+            // Nothing waits for a thread here: the allocations that could wait
+            // are about to be refused, so what can be given back is given back
+            // first, on this thread. The distance is to the upper edge of this
+            // pressure's bounds.
+            auto const goal = m_levels.bounds_of(found).upper;
+            if (goal > free) {
+                frames = goal - free;
+            }
+        }
+    }
+    if (frames != 0) {
+        // This walk has its own count. An ask the thread has not taken is an
+        // earlier distance, and reclaim() would spend it even after free
+        // memory is back.
+        auto _ = m_reclaimer.take();
+        auto const freed = m_reclaimer.reclaim(frames);
+        if (freed != 0) {
+            log::info("mm: out of memory: gave back {} frames before refusing anything", freed);
+        }
+    }
+
     Guard guard{m_lock};
     auto free = approx_free_frame_count();
     auto found = m_levels.pressure_at(free);
-
-    // What is asked of the reclaimer is the distance to where this pressure
-    // ends, the upper edge of its bounds: free memory there looks, to this,
-    // like the pressure above.
-    if (found == MemoryPressure::OutOfMemory) {
-        // Nothing waits for a thread here: the allocations that could wait are
-        // about to be refused, so what can be given back is given back first,
-        // on this thread, and what is found afterwards is what is declared.
-        auto const goal = m_levels.bounds_of(found).upper;
-        if (auto const freed = MemoryReclaimer::get().reclaim(goal - free); freed != 0) {
-            log::info("mm: out of memory: gave back {} frames before refusing anything", freed);
-            free = approx_free_frame_count();
-            found = m_levels.pressure_at(free);
-        }
-    }
     if (found == MemoryPressure::Warning || found == MemoryPressure::Critical) {
-        MemoryReclaimer::get().request(m_levels.bounds_of(found).upper - free);
+        m_reclaimer.request(m_levels.bounds_of(found).upper - free);
     }
     auto const now = time::SteadyClock::now();
 
     auto deadline = time::Deadline::infinite();
     auto declare = !m_declared_once || m_skip_hysteresis || found > m_declared;
     if (!declare && found < m_declared) {
-        if (now - m_declared_at >= m_levels.hysteresis) {
+        if (now - m_declared_at >= m_levels.hysteresis()) {
             declare = true;
         } else {
-            deadline = time::Deadline::at(m_declared_at + m_levels.hysteresis);
+            deadline = time::Deadline::at(m_declared_at + m_levels.hysteresis());
         }
     }
     m_skip_hysteresis = false;
@@ -186,15 +219,6 @@ auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
     return ustl::some(deadline);
 }
 
-MemoryWatchdog::Hold::Hold(MemoryWatchdog &watchdog) : m_watchdog(watchdog) {
-    m_watchdog.m_lock.acquire();
-}
-
-MemoryWatchdog::Hold::~Hold() {
-    m_watchdog.m_lock.release();
-    m_watchdog.m_signal.signal();
-}
-
 namespace {
     /// The init hook takes a plain function, as the thread does.
     INIT_CODE
@@ -204,8 +228,8 @@ namespace {
         if (Status::InvArgs == status) {
             log::error("mm: the kernel.oom levels {}/{}/{} MiB with a debounce of {} MiB do not "
                        "nest; no memory watchdog",
-                       levels.out_of_memory / FRAMES_PER_MIB, levels.critical / FRAMES_PER_MIB,
-                       levels.warning / FRAMES_PER_MIB, levels.debounce / FRAMES_PER_MIB);
+                       levels.out_of_memory() / FRAMES_PER_MIB, levels.critical() / FRAMES_PER_MIB,
+                       levels.warning() / FRAMES_PER_MIB, levels.debounce() / FRAMES_PER_MIB);
         } else if (Status::Ok != status) {
             log::error("mm: no thread for the memory watchdog: {}", to_string(status));
         }

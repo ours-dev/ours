@@ -8,6 +8,8 @@
 #include <array>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -151,6 +153,30 @@ TEST(IoserviceTree, AddRefusals) {
     EXPECT_EQ(children(tree, root), (std::vector<std::string_view>{"a", "readme"}));
 }
 
+TEST(IoserviceTree, AvailableCountsTheRoomLeft) {
+    auto nodes = std::array<ioservice::Node, 4>{};
+    auto tree = Tree(nodes);
+    EXPECT_EQ(tree.available(), 4u);
+
+    auto const root = tree.add_root().unwrap();
+    EXPECT_EQ(tree.available(), 3u);
+    ASSERT_TRUE(tree.add_directory(root, "a").is_ok());
+    ASSERT_TRUE(tree.add_file(root, "b", file()).is_ok());
+    EXPECT_EQ(tree.available(), 1u);
+
+    // A refused add takes nothing.
+    EXPECT_EQ(tree.add_directory(root, "a").unwrap_err(), Status::AlreadyExists);
+    EXPECT_EQ(tree.add_directory(root, "").unwrap_err(), Status::InvArgs);
+    EXPECT_EQ(tree.available(), 1u);
+
+    // The last node goes, and then an add is refused for room, which is what
+    // available() == 0 says beforehand.
+    ASSERT_TRUE(tree.add_service(root, "c", 1).is_ok());
+    EXPECT_EQ(tree.available(), 0u);
+    EXPECT_EQ(tree.add_directory(root, "d").unwrap_err(), Status::NoResource);
+    EXPECT_EQ(tree.available(), 0u);
+}
+
 TEST(IoserviceTree, Lookup) {
     auto nodes = std::array<ioservice::Node, 8>{};
     auto tree = Tree(nodes);
@@ -188,6 +214,268 @@ TEST(IoserviceTree, NodesBelongToTheirTree) {
     // Two roots, each with its own children: one tree per component's /svc.
     EXPECT_EQ(tree.lookup(second, "a").unwrap_err(), Status::NotFound);
     EXPECT_TRUE(tree.first_child(second).is_none());
+}
+
+TEST(IoserviceTree, ResolveStopsAtARemoteNodeWithTheRestOfThePath) {
+    auto nodes = std::array<ioservice::Node, 8>{};
+    auto tree = Tree(nodes);
+    auto const root = tree.add_root().unwrap();
+    auto const sub = tree.add_directory(root, "sub").unwrap();
+    auto const boot = tree.add_remote(sub, "boot", ours::Uandle{0x1001}).unwrap();
+
+    // The walk stops at the mount point, the rest of the path unconsumed.
+    auto const through = tree.resolve(root, "sub/boot/bin/x").unwrap();
+    EXPECT_EQ(through.node, boot);
+    EXPECT_EQ(through.rest, "bin/x");
+    // The path naming the entry itself ends on it: "." is what the server
+    // that owns it is opened as.
+    auto const on_it = tree.resolve(root, "sub/boot").unwrap();
+    EXPECT_EQ(on_it.node, boot);
+    EXPECT_EQ(on_it.rest, ".");
+    // A walk that meets no remote entry behaves as lookup() does.
+    auto const local = tree.resolve(root, "sub").unwrap();
+    EXPECT_EQ(local.node, sub);
+    EXPECT_TRUE(local.rest.empty());
+
+    // The walk's errors are lookup()'s.
+    EXPECT_EQ(tree.resolve(root, "nope").unwrap_err(), Status::NotFound);
+    EXPECT_EQ(tree.resolve(root, "sub/nope/boot").unwrap_err(), Status::NotFound);
+
+    // A remote entry is a leaf to lookup(): its subtree belongs to the
+    // server that owns it.
+    EXPECT_EQ(tree.lookup(root, "sub/boot/bin").unwrap_err(), Status::NotDir);
+    EXPECT_EQ(tree.lookup(root, "sub/boot").unwrap(), boot);
+
+    // The kind and the channel read back.
+    EXPECT_EQ(held(tree.kind(boot)), NodeKind::Remote);
+    EXPECT_EQ(held(tree.remote(boot)), ours::Uandle{0x1001});
+    EXPECT_TRUE(tree.remote(sub).is_none());
+}
+
+// --- Subtree nodes -------------------------------------------------------------------
+
+/// The tree the Subtree tests walk:
+///
+///   /                     root
+///     export/             a directory
+///       data              a Subtree node, DATA_VALUE
+///       docs/             a directory
+///         readme          a file
+///         mnt             a Subtree node, MNT_VALUE
+///       stop              a service
+///     other               a Subtree node, OTHER_VALUE
+class IoserviceSubtree: public testing::Test {
+  protected:
+    /// The status |result| was refused with, or Ok when it was not.
+    /// unwrap_err() would trap on a call that succeeded, which ends the whole
+    /// run in place of failing the one test that expected a refusal.
+    template <typename T>
+    static auto refusal(ustl::Result<T, Status> const &result) -> Status {
+        if (result.is_ok()) {
+            return Status::Ok;
+        }
+        return result.unwrap_err();
+    }
+
+    /// The node |result| holds; a test failure, and the root's id, when it
+    /// holds none.
+    template <typename T>
+    static auto node_of(ustl::Result<T, Status> const &result) -> NodeId {
+        EXPECT_TRUE(result.is_ok());
+        if (result.is_err()) {
+            return NodeId{};
+        }
+        if constexpr (std::is_same_v<T, NodeId>) {
+            return result.unwrap();
+        } else {
+            return result.unwrap().node;
+        }
+    }
+
+    static constexpr auto DATA_VALUE = u64{0};
+    static constexpr auto MNT_VALUE = u64{0x1'0000'0002};
+    static constexpr auto OTHER_VALUE = u64{9};
+
+    IoserviceSubtree() {
+        m_root = m_tree.add_root().unwrap();
+        m_export = m_tree.add_directory(m_root, "export").unwrap();
+        m_data = m_tree.add_subtree(m_export, "data", DATA_VALUE).unwrap();
+        m_docs = m_tree.add_directory(m_export, "docs").unwrap();
+        m_readme = m_tree.add_file(m_docs, "readme", file("hi")).unwrap();
+        m_mnt = m_tree.add_subtree(m_docs, "mnt", MNT_VALUE).unwrap();
+        m_stop = m_tree.add_service(m_export, "stop", 3).unwrap();
+        m_other = m_tree.add_subtree(m_root, "other", OTHER_VALUE).unwrap();
+    }
+
+    std::array<ioservice::Node, 12> m_nodes{};
+    Tree m_tree{m_nodes};
+    NodeId m_root{};
+    NodeId m_export{};
+    NodeId m_data{};
+    NodeId m_docs{};
+    NodeId m_readme{};
+    NodeId m_mnt{};
+    NodeId m_stop{};
+    NodeId m_other{};
+};
+
+TEST_F(IoserviceSubtree, ASubtreeNodeIsAKindOfItsOwnThatHoldsAValue) {
+    EXPECT_EQ(held(m_tree.kind(m_data)), NodeKind::Subtree);
+    EXPECT_EQ(m_tree.name(m_data), "data");
+    // The value is what the program chose, zero and a wide one included.
+    EXPECT_EQ(held(m_tree.subtree(m_data)), DATA_VALUE);
+    EXPECT_EQ(held(m_tree.subtree(m_mnt)), MNT_VALUE);
+    EXPECT_EQ(held(m_tree.subtree(m_other)), OTHER_VALUE);
+
+    // It is not a service, a file or a directory, and they are not it.
+    EXPECT_TRUE(m_tree.service(m_data).is_none());
+    EXPECT_TRUE(m_tree.file(m_data).is_none());
+    EXPECT_TRUE(m_tree.first_child(m_data).is_none());
+    EXPECT_TRUE(m_tree.subtree(m_stop).is_none());
+    EXPECT_TRUE(m_tree.subtree(m_readme).is_none());
+    EXPECT_TRUE(m_tree.subtree(m_export).is_none());
+    EXPECT_TRUE(m_tree.subtree(NodeId{11}).is_none());
+    EXPECT_EQ(held(m_tree.service(m_stop)), 3u);
+}
+
+TEST_F(IoserviceSubtree, ASubtreeNodeIsListedWithItsSiblingsInNameOrder) {
+    EXPECT_EQ(children(m_tree, m_export), (std::vector<std::string_view>{"data", "docs", "stop"}));
+    EXPECT_EQ(children(m_tree, m_root), (std::vector<std::string_view>{"export", "other"}));
+}
+
+TEST_F(IoserviceSubtree, NothingIsAddedBelowASubtreeNode) {
+    EXPECT_EQ(m_tree.add_directory(m_data, "x").unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_tree.add_file(m_data, "x", file()).unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_tree.add_service(m_data, "x", 1).unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_tree.add_subtree(m_data, "x", 1).unwrap_err(), Status::NotDir);
+}
+
+TEST_F(IoserviceSubtree, AddSubtreeIsRefusedAsTheOtherAddersAre) {
+    EXPECT_EQ(m_tree.add_subtree(m_export, "data", 1).unwrap_err(), Status::AlreadyExists);
+    EXPECT_EQ(m_tree.add_subtree(m_export, "docs", 1).unwrap_err(), Status::AlreadyExists);
+    EXPECT_EQ(m_tree.add_subtree(m_export, "stop", 1).unwrap_err(), Status::AlreadyExists);
+    EXPECT_EQ(m_tree.add_subtree(m_readme, "x", 1).unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_tree.add_subtree(NodeId{11}, "x", 1).unwrap_err(), Status::InvArgs);
+    for (auto const name: {"", ".", "..", "a/b"}) {
+        EXPECT_EQ(m_tree.add_subtree(m_export, name, 1).unwrap_err(), Status::InvArgs) << name;
+    }
+
+    // Refusals take no storage: the four nodes left are all there.
+    EXPECT_EQ(m_tree.available(), 4u);
+    for (auto const name: {"a", "b", "c", "d"}) {
+        EXPECT_TRUE(m_tree.add_subtree(m_export, name, 1).is_ok()) << name;
+    }
+    EXPECT_EQ(m_tree.add_subtree(m_export, "e", 1).unwrap_err(), Status::NoResource);
+}
+
+TEST_F(IoserviceSubtree, ResolveStopsAtASubtreeNodeAndReturnsTheRestOfThePath) {
+    // The path ends on the node: nothing is left, and "." says so, so that
+    // the program can hand the rest on as the path of an Open.
+    auto const itself = m_tree.resolve(m_root, "export/data");
+    ASSERT_TRUE(itself.is_ok());
+    EXPECT_EQ(itself->node, m_data);
+    EXPECT_EQ(itself->rest, ".");
+
+    // One segment after it, and several.
+    auto const one = m_tree.resolve(m_root, "export/data/x");
+    ASSERT_TRUE(one.is_ok());
+    EXPECT_EQ(one->node, m_data);
+    EXPECT_EQ(one->rest, "x");
+    auto const several = m_tree.resolve(m_root, "export/data/sub/dir/file.txt");
+    ASSERT_TRUE(several.is_ok());
+    EXPECT_EQ(several->node, m_data);
+    EXPECT_EQ(several->rest, "sub/dir/file.txt");
+
+    // From a directory further down, and the node at the first segment.
+    auto const below = m_tree.resolve(m_export, "docs/mnt/a/b");
+    ASSERT_TRUE(below.is_ok());
+    EXPECT_EQ(below->node, m_mnt);
+    EXPECT_EQ(below->rest, "a/b");
+    auto const first = m_tree.resolve(m_root, "other/q");
+    ASSERT_TRUE(first.is_ok());
+    EXPECT_EQ(first->node, m_other);
+    EXPECT_EQ(first->rest, "q");
+    auto const from_docs = m_tree.resolve(m_docs, "mnt");
+    ASSERT_TRUE(from_docs.is_ok());
+    EXPECT_EQ(from_docs->node, m_mnt);
+    EXPECT_EQ(from_docs->rest, ".");
+}
+
+TEST_F(IoserviceSubtree, TheRestIsAViewOfThePathItCameFrom) {
+    // Not a copy and not joined from segments: the tail of the same bytes, so
+    // that resolving costs no storage.
+    auto const path = std::string_view{"export/data/sub/dir"};
+    auto const resolved = m_tree.resolve(m_root, path);
+    ASSERT_TRUE(resolved.is_ok());
+    EXPECT_EQ(resolved->rest.data(), path.data() + std::string_view{"export/data/"}.size());
+    EXPECT_EQ(resolved->rest.size(), std::string_view{"sub/dir"}.size());
+}
+
+TEST_F(IoserviceSubtree, NoSegmentAfterASubtreeNodeIsLookedAt) {
+    // Names a tree of this size has no node for: they are the program's.
+    for (auto const path: {"export/data/nope", "export/data/a/b/c", "export/data/x/y/z/w"}) {
+        auto const resolved = m_tree.resolve(m_root, path);
+        ASSERT_TRUE(resolved.is_ok()) << path;
+        EXPECT_EQ(resolved->node, m_data) << path;
+    }
+    // The same names under a directory are not there.
+    EXPECT_EQ(m_tree.resolve(m_root, "export/docs/nope").unwrap_err(), Status::NotFound);
+}
+
+TEST_F(IoserviceSubtree, ResolveGivesEachSubtreeNodeItsOwnRest) {
+    // Two Subtree nodes side by side: each walk stops at its own.
+    EXPECT_EQ(node_of(m_tree.resolve(m_root, "export/data/a")), m_data);
+    EXPECT_EQ(node_of(m_tree.resolve(m_root, "other/b")), m_other);
+    EXPECT_EQ(node_of(m_tree.resolve(m_root, "export/docs/mnt/c")), m_mnt);
+    EXPECT_EQ(held(m_tree.subtree(node_of(m_tree.resolve(m_root, "other/b")))), OTHER_VALUE);
+}
+
+TEST_F(IoserviceSubtree, AWalkThatMeetsNoSubtreeNodeEndsWhereLookupDoesWithNothingLeft) {
+    for (auto const [directory, path, node]: {
+             std::tuple{m_root, ".", m_root},
+             std::tuple{m_root, "export", m_export},
+             std::tuple{m_root, "export/docs", m_docs},
+             std::tuple{m_root, "export/docs/readme", m_readme},
+             std::tuple{m_root, "export/stop", m_stop},
+             std::tuple{m_docs, "readme", m_readme},
+         }) {
+        auto const resolved = m_tree.resolve(directory, path);
+        ASSERT_TRUE(resolved.is_ok()) << path;
+        EXPECT_EQ(resolved->node, node) << path;
+        // Empty is "no Subtree node", where "." is "ended on one".
+        EXPECT_TRUE(resolved->rest.empty()) << path;
+        EXPECT_EQ(node_of(m_tree.lookup(directory, path)), node) << path;
+    }
+}
+
+TEST_F(IoserviceSubtree, ResolveRefusesAsLookupDoesUpToTheNode) {
+    EXPECT_EQ(m_tree.resolve(m_root, "nope").unwrap_err(), Status::NotFound);
+    EXPECT_EQ(m_tree.resolve(m_root, "export/nope/x").unwrap_err(), Status::NotFound);
+    EXPECT_EQ(m_tree.resolve(m_root, "export/docs/readme/x").unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_tree.resolve(m_root, "export/stop/x").unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_tree.resolve(m_readme, ".").unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_tree.resolve(NodeId{11}, ".").unwrap_err(), Status::InvArgs);
+    // The path is judged whole first, so a bad segment after the node is
+    // refused though the walk would have stopped before it.
+    for (auto const path: {"/export/data", "export/data/", "export/data//x", "export/data/../x",
+                           "export/data/./x", ""}) {
+        EXPECT_EQ(m_tree.resolve(m_root, path).unwrap_err(), Status::BadPath) << path;
+    }
+    // A Subtree node is no place to start a walk from.
+    EXPECT_EQ(m_tree.resolve(m_data, ".").unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_tree.resolve(m_data, "x").unwrap_err(), Status::NotDir);
+}
+
+TEST_F(IoserviceSubtree, LookupWalksToASubtreeNodeButNotThroughIt) {
+    EXPECT_EQ(node_of(m_tree.lookup(m_root, "export/data")), m_data);
+    EXPECT_EQ(node_of(m_tree.lookup(m_export, "docs/mnt")), m_mnt);
+    EXPECT_EQ(node_of(m_tree.lookup(m_root, "other")), m_other);
+    // Below it is the program's, and lookup() answers for this tree's nodes
+    // only: the node is not a directory.
+    EXPECT_EQ(refusal(m_tree.lookup(m_root, "export/data/x")), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.lookup(m_root, "export/data/x/y")), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.lookup(m_root, "other/x")), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.lookup(m_data, ".")), Status::NotDir);
 }
 
 // --- printable_path ---------------------------------------------------------------

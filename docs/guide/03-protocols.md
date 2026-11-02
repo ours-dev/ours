@@ -43,7 +43,7 @@ Words used throughout this chapter:
 
 In this repository a protocol is a library of its own, and it holds the protocol's name, its methods and a codec for each message. The server and every client link the same library, so they cannot disagree about a layout. The codecs are written by hand, on top of a framing library called `wire` that holds what every protocol shares: the header, the form of a failed reply, and the epitaph (`system/lib/wire/README.md:3`).
 
-A codec never touches a channel. It works on buffers of bytes that you give it, and the program hands what an encoder returned to `channel_write`. Because it makes no system call it builds on the host, and its tests run there (`system/lib/wire/include/wire/wire.hpp:41-43`).
+A codec never touches a channel. It works on buffers of bytes that you give it, and the program hands what an encoder returned to `channel_write`. Because it makes no system call it builds on the host, and its tests run there (`system/lib/wire/include/wire/wire.hpp:44-46`).
 
 A decoder is also the server's first line of defence. A server reads what programs it does not trust send it, so every decoder checks everything it reads. The decoders return the repository's result type, `ustl::Result<T, ours::Status>` (`ustl` is explained in [words used elsewhere](01-concepts.md#words-used-elsewhere)): `is_ok()` and `is_err()` ask which it is, `unwrap()` takes the value and `unwrap_err()` the status.
 
@@ -73,22 +73,18 @@ inline constexpr auto ECHO_NAME = std::string_view{"ours.examples.echo.Echo"};
 inline constexpr auto MAX_STRING_LENGTH = usize{64};
 ```
 
-It declares each method as a `wire::Method`, which holds the method's selector, its method number (the field `ordinal`) and its kind. "Methods and their numbers" below explains where the number comes from.
+It declares each method with `wire::method()`, from the method's selector and its kind. The result is a `wire::Method`, which also holds the method's number (the field `ordinal`); the compiler computes the number from the selector, so no one types it. "Methods and their numbers" below explains how.
 
-From `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:55-60`:
+From `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:55-56`:
 
 ```cpp
-/// Answers with the string it was given (Echo.EchoString).
-inline constexpr auto ECHO_STRING = wire::Method{
-    .selector = "ours.examples.echo/Echo.EchoString",
-    .ordinal = 0x6e80'6bd7'7638'6789,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto ECHO_STRING =
+    wire::method("ours.examples.echo/Echo.EchoString", wire::MethodKind::TwoWay);
 ```
 
 It declares a struct for what a message carries, in the form the program uses it.
 
-From `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:69-74`:
+From `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:65-70`:
 
 ```cpp
 struct EchoStringRequest {
@@ -101,7 +97,7 @@ struct EchoStringRequest {
 
 And it declares the functions that turn that struct into a message and back. The encoder writes into a buffer the caller supplies (`bytes`) and returns the `wire::Message` to write; the decoder reads a `wire::Message` and returns the struct, or an error status.
 
-From `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:93-98`:
+From `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:89-94`:
 
 ```cpp
 [[nodiscard]]
@@ -197,54 +193,63 @@ From `system/service/init/test/routing_checks/BUILD.gn:85-88`:
       },
 ```
 
-A route must end at a capability of the type its use states, and this is checked twice. The build checks every route in the whole component tree under a manifest (`system/component_manifest.gni:62-65`). `init`, the program that runs the root, checks again on every Open: it logs a line containing `reaches another protocol` and answers the Open with the epitaph `BadType` on the channel the client passed (`system/service/init/realm.cpp:188-199` and `:751-754`; `system/lib/component/include/component/route.hpp:291-305`).
+A route must end at a capability of the type its use states, and this is checked twice. The build checks every route in the whole component tree under a manifest (`system/component_manifest.gni:62-65`). `init`, the program that runs the root, checks again on every Open: it logs a line containing `reaches another protocol` and answers the Open with the epitaph `BadType` on the channel the client passed (`system/service/init/realm.cpp:204-215` and `:792-795`; `system/lib/component/include/component/route.hpp:291-305`).
 
 The type is only a name. It says nothing about a protocol's layout: two protocols that share a type string are not told apart (`system/lib/component/include/component/route.hpp:352-354`). So choose a name that is yours, and keep it for one layout.
 
 ## Methods and their numbers
 
-A method's number is computed from its selector, never picked by hand. Every request names the method it calls by that number, in bytes 8 to 15 of its header.
+A method's number follows from its selector: you write the selector, and the compiler computes the number. Every request names the method it calls by that number, in bytes 8 to 15 of its header.
 
-By the repository's convention a selector is the library name, a slash, the protocol's own name, a dot, and the method's name: `ours.examples.echo/Echo.EchoString`. Nothing checks that convention; the test below hashes whatever string the header gives.
+By the repository's convention a selector is the library name, a slash, the protocol's own name, a dot, and the method's name: `ours.examples.echo/Echo.EchoString`. Nothing checks that convention; the compiler hashes whatever string the header gives.
 
-The rule (`system/lib/wire/include/wire/wire.hpp:113-114`) is: take the SHA-256 of the selector, read its first 8 bytes as a little-endian 64-bit number, and clear the top bit.
+A codec header declares a method by its selector and its kind, and nothing else. This is `EchoString`, which shows the whole declaration (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:55-56`):
 
-From `system/lib/wire/test/ordinals_test.py:46-49`:
-
-```python
-def method_ordinal(selector: str) -> int:
-    """The ordinal of the method |selector| names."""
-    digest = hashlib.sha256(selector.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "little") & 0x7FFF_FFFF_FFFF_FFFF
+```cpp
+inline constexpr auto ECHO_STRING =
+    wire::method("ours.examples.echo/Echo.EchoString", wire::MethodKind::TwoWay);
 ```
 
-For `ours.examples.echo/Echo.EchoString` this gives `0x6e806bd776386789`, which is the number in `ECHO_STRING` above. On the wire the number is stored little-endian, so its bytes are the first eight bytes of the digest, with the top bit of the last one cleared: here the digest begins `89 67 38 76 d7 6b 80 ee`, and the number's bytes are `89 67 38 76 d7 6b 80 6e`.
+`wire::method()` is `consteval`: the compiler runs it where it is written, as the header is compiled, so a method costs the program no code and no start-up work, and a selector that is not a constant string does not compile (`system/lib/wire/include/wire/wire.hpp:149-154`). It writes the selector's number into the method with `wire::ordinal_of()`, which is the rule (`system/lib/wire/include/wire/wire.hpp:139-147`): take the SHA-256 of the selector, read its first 8 bytes as a little-endian 64-bit number, and clear the top bit.
+
+```cpp
+[[nodiscard]]
+consteval auto ordinal_of(std::string_view const selector) -> u64 {
+    auto const digest = sha256(selector);
+    auto ordinal = u64{0};
+    for (auto i = usize{0}; i < 8; ++i) {
+        ordinal |= u64{digest[i]} << (8 * i);
+    }
+    return ordinal & ORDINAL_MASK;
+}
+```
+
+You never run this yourself. It is here so that you can see what the number is. For `ours.examples.echo/Echo.EchoString` it gives `0x6e806bd776386789`. On the wire the number is stored little-endian, so its bytes are the first eight bytes of the digest, with the top bit of the last one cleared: here the digest begins `89 67 38 76 d7 6b 80 ee`, and the number's bytes are `89 67 38 76 d7 6b 80 6e`.
 
 Why a number computed from a name:
 
-- It cannot be mistyped or reused unnoticed: the test below recomputes every declared number from its selector and checks that no two methods share one (`system/lib/wire/test/ordinals_test.py:111-127`).
+- Nobody types it, so it cannot be mistyped, and it cannot be copied from another method without notice. Two methods of a protocol that end with the same number do not compile, because a header ends with a `static_assert` over its methods (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:61-63`):
+
+```cpp
+// A server tells the methods of Echo apart by ordinal, so no two may share
+// one.
+static_assert(wire::all_distinct(ECHO_STRING, STOP), "two Echo methods have the same ordinal");
+```
+
 - The selector is part of the interface. Renaming the library, the protocol or a method changes the number of every method concerned, all at once.
-- The top bit is cleared so that no method's number can equal the epitaph's, which has every bit set (`system/lib/wire/include/wire/wire.hpp:66-68`).
+- The top bit is cleared so that no method's number can equal the epitaph's, which has every bit set (`system/lib/wire/include/wire/wire.hpp:69-71`).
 
 Adding a method:
 
-1. Declare it as a `wire::Method`, as `ECHO_STRING` above is declared, with `.ordinal = 0x0` for now. Write it as one designated initializer, `.selector` first and `.ordinal` right after it: the test finds declarations by that shape and fails on one it cannot read (`system/lib/wire/include/wire/wire.hpp:117-119`; `system/lib/wire/test/ordinals_test.py:58-72`).
-2. Run `python3 system/lib/wire/test/ordinals_test.py`. The C++ code has no SHA-256, so the header carries both the selector and the number, and this Python test recomputes the number from the selector (`system/lib/wire/include/wire/wire.hpp:115-117`).
-3. It fails on the `0x0`. Its message has the form `<header>: <selector> is 0x…, not 0x…`, and the first number is the right one (`system/lib/wire/test/ordinals_test.py:114-118`).
-4. Paste that number into `.ordinal` and run the test again, until it says `OK`.
-5. Run it again every time you add or change a declaration. The default build and the verify script do not run it (`system/lib/wire/BUILD.gn:26-27` says it is run by hand), so a wrong number passes the boot check. The test also scans only `system/lib/*/include` and `examples/**/include` (`system/lib/wire/test/ordinals_test.py:37`): a protocol library placed anywhere else is not checked.
-
-The failure of step 3, for a library whose first method is `ours.examples.hello/Hello.Greet` (the example of the next section), ends with this line:
-
-```text
-AssertionError: 0 != 807535566986272384 : examples/hello/protocol/include/ours_examples_hello/ours_examples_hello.hpp: ours.examples.hello/Hello.Greet is 0x0b34f151d5b5de80, not 0x0000000000000000
-```
+1. Declare it with `wire::method(selector, kind)`, as `ECHO_STRING` above is declared, after the others. The kind is `wire::MethodKind::TwoWay` or `OneWay`.
+2. Name it in the header's `static_assert(wire::all_distinct(...))`, with the others.
+3. Build. There is no number to compute and nothing to run: the compiler hashes the selector, and the `static_assert` stops the build if two methods have the same number. With one selector written twice in a header of `hello`, the build stopped with ``static assertion failed due to requirement 'wire::all_distinct(GREET, STOP)': two Hello methods have the same ordinal``.
 
 The kind of a method decides its transaction id:
 
-- A *transaction id* (txid) is a number in the header. For a two-way request the client picks one from 1 to `MAX_TXID` (`0x7FFF'FFFF`), and the server copies it into the reply, so that the client can match the reply to its request. The top bit is reserved (`system/lib/wire/include/wire/wire.hpp:70-72`).
+- A *transaction id* (txid) is a number in the header. For a two-way request the client picks one from 1 to `MAX_TXID` (`0x7FFF'FFFF`), and the server copies it into the reply, so that the client can match the reply to its request. The top bit is reserved (`system/lib/wire/include/wire/wire.hpp:78-80`).
 - For a one-way request the txid is 0 (`system/lib/wire/src/wire.cpp:24-29`).
-- Echo's two methods are both two-way. `Directory.Open` of `ours.io`, the protocol of files and directories, is one-way (`system/lib/ours.io/include/ours_io/ours_io.hpp:26-27`), and so are the three `Add*` methods of `ours.process` (`system/lib/ours.process/include/ours_process/ours_process.hpp:74-94`).
+- Echo's two methods are both two-way. `Directory.Open` of `ours.io`, the protocol of files and directories, is one-way (`system/lib/ours.io/include/ours_io/ours_io.hpp:26-27`), and so are the three `Add*` methods of `ours.process` (`system/lib/ours.process/include/ours_process/ours_process.hpp:74-85`).
 
 ## How to add a new protocol library
 
@@ -366,15 +371,15 @@ Copy the pattern of `ours_examples_echo.hpp`, which this chapter has shown piece
 
 - a comment that says what each method is for, writes each message's layout as fields and offsets (`name size@16`, as in the table above), and states that the protocol is closed (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:14-40`);
 - the protocol name, as a `std::string_view` constant (`ECHO_NAME`), and your bounds;
-- each method as a `wire::Method`, `.selector` first and `.ordinal` right after it, with `.ordinal = 0x0` until step 8;
+- each method as `wire::method(selector, kind)`, as "Methods and their numbers" shows, and a `static_assert(wire::all_distinct(...))` over them;
 - a struct for each request and each reply;
 - an `encode_` and a `decode_` for each request, and for each two-way method an `encode_..._reply` and a `decode_..._reply`.
 
 Where your method differs from `EchoString`:
 
-- A method with no arguments still has a request struct, which holds the txid: `StopRequest` (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:85-87`).
-- A reply that can fail has a struct with a `status` and the method's fields, which are there only when the status is Ok: `EchoStringReply` (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:76-83`).
-- A method that returns nothing has no reply struct. Its encoder takes the status and its decoder returns it: `encode_stop_reply` and `decode_stop_reply` (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:120-125`).
+- A method with no arguments still has a request struct, which holds the txid: `StopRequest` (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:81-83`).
+- A reply that can fail has a struct with a `status` and the method's fields, which are there only when the status is Ok: `EchoStringReply` (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:72-79`).
+- A method that returns nothing has no reply struct. Its encoder takes the status and its decoder returns it: `encode_stop_reply` and `decode_stop_reply` (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:116-121`).
 
 ### 5. Write the source
 
@@ -460,11 +465,10 @@ The host tests that run are the `testonly` executables in the host toolchain tha
 
 Without that line nothing builds your test, and nothing runs it. [Adding a host test of your own](05-testing-and-debugging.md#adding-a-host-test-of-your-own) shows the line and how to check that your test is found.
 
-### 8. Compute the ordinals and run everything
+### 8. Run everything
 
-1. Compute the method numbers (the ordinals) as "Adding a method" says: run `python3 system/lib/wire/test/ordinals_test.py`, paste in each number it names for the `0x0`, and run it again until it says `OK`.
-2. Run the verify script, `python3 .agents/skills/ours-verify/scripts/boot_check.py`. It builds, runs the host tests (yours among them) and boots the images; [Build and boot the dev image](README.md#build-and-boot-the-dev-image) says what it prints.
-3. A failing host test can be run alone from the build directory. The binary lies under `host/obj/` at its target's path: for echo's codec, `cd out/bringup.x86 && ./host/obj/examples/echo/protocol/test/ours_examples_echo`.
+1. Run the verify script, `python3 .agents/skills/verify/scripts/boot_check.py`. It builds, runs the host tests (yours among them) and boots the images; [Build and boot the dev image](README.md#build-and-boot-the-dev-image) says what it prints.
+2. A failing host test can be run alone from the build directory. The binary lies under `host/obj/` at its target's path: for echo's codec, `cd out/bringup.x86 && ./host/obj/examples/echo/protocol/test/ours_examples_echo`.
 
 The server and its clients then list the library in their `deps`, as `examples/echo/BUILD.gn:24-28` does with `protocol`, and the provider's manifest declares and exposes the protocol name, spelled as `ECHO_NAME` is, as shown in "Names and the protocol type".
 
@@ -509,7 +513,7 @@ What a decoder refuses. Every refusal is `InvArgs`.
 - `wire::decode_request_header` also refuses a method number other than the method's, and a txid that breaks the method's rule.
 - Your decoder refuses the rest: a body of the wrong length, a field out of range, the wrong number of handles. Echo's decoders refuse any handle, a string longer than 64 bytes, and trailing bytes.
 
-Where this is stated: `system/lib/wire/include/wire/wire.hpp:22-26` (the body's shape), `:46-59` (the direction and magic bytes), `:78-89` (`wire::Header`), `:100-102` (little-endian), `:134-152` (`load` and `store`) and `:190-203` (the helpers of an encoder); `system/lib/wire/src/wire.cpp:49-73` (what `decode_header` and `decode_request_header` refuse) and `:104-132`; `system/lib/wire/test/wire_test.cpp:31-35` (the offsets, pinned by `static_assert`s); `examples/echo/protocol/test/ours_examples_echo_test.cpp:70` (the request's size); `examples/echo/protocol/src/ours_examples_echo.cpp:39-55` and `:95-104` (what echo's decoders refuse).
+Where this is stated: `system/lib/wire/include/wire/wire.hpp:25-29` (the body's shape), `:49-62` (the direction and magic bytes), `:86-97` (`wire::Header`), `:108-110` (little-endian), `:186-204` (`load` and `store`) and `:242-255` (the helpers of an encoder); `system/lib/wire/src/wire.cpp:49-73` (what `decode_header` and `decode_request_header` refuse) and `:104-132`; `system/lib/wire/test/wire_test.cpp:34-38` (the offsets, pinned by `static_assert`s); `examples/echo/protocol/test/ours_examples_echo_test.cpp:70` (the request's size); `examples/echo/protocol/src/ours_examples_echo.cpp:39-55` and `:95-104` (what echo's decoders refuse).
 
 ## Replies and statuses
 
@@ -553,13 +557,13 @@ Reply and body rules:
 
 A request that is well formed but that the server cannot or will not carry out is answered with a status, and the channel stays open. The protocol libraries say so: what is well formed but wrong is the server's to answer.
 
-Where this is stated: `system/lib/wire/include/wire/wire.hpp:31-39` (the two forms), `:183-185` (the two outcomes of a reply decoder) and `:205-210` (the server's encoder); `system/lib/wire/src/wire.cpp:15-21` (the refusal past the last status), `:93-100` and `:134-138`; `system/public/ours/status.hpp:10-15` (fixed status numbers); `system/lib/ours.io/include/ours_io/ours_io.hpp:45-50` and `system/lib/ours.process/include/ours_process/ours_process.hpp:55-57` (what is the server's to answer).
+Where this is stated: `system/lib/wire/include/wire/wire.hpp:34-42` (the two forms), `:235-237` (the two outcomes of a reply decoder) and `:257-262` (the server's encoder); `system/lib/wire/src/wire.cpp:15-21` (the refusal past the last status), `:93-100` and `:134-138`; `system/public/ours/status.hpp:10-15` (fixed status numbers); `system/lib/ours.io/include/ours_io/ours_io.hpp:45-50` and `system/lib/ours.process/include/ours_process/ours_process.hpp:55-57` (what is the server's to answer).
 
 ## Epitaphs
 
 An *epitaph* is the last message a server writes on a channel before it closes it, saying why; [chapter 1](01-concepts.md#epitaphs) explains what it is for and what it is not. This section is its bytes and its uses.
 
-It is the status form with txid 0 and the method number `EPITAPH_ORDINAL`, which has every bit set, and it travels `ToClient` (`system/lib/wire/include/wire/wire.hpp:35-36`, `:66-68`).
+It is the status form with txid 0 and the method number `EPITAPH_ORDINAL`, which has every bit set, and it travels `ToClient` (`system/lib/wire/include/wire/wire.hpp:38-39`, `:69-71`).
 
 ```text
 Epitaph NotFound, 24 bytes
@@ -575,12 +579,12 @@ Epitaph NotFound, 24 bytes
 An epitaph arrives instead of a reply, and it is used in three places:
 
 - A server that cannot take a client writes one and closes. Echo does this when it has no free client entry (its record of one client; see [Closed protocols](#closed-protocols)), with `NoResource` (`examples/echo/echo_server.cpp:168`; the helper is `close_with_epitaph`, `:77-84`, shown in [chapter 1](01-concepts.md#epitaphs)).
-- `init` answers a route that leads nowhere this way, with the status of the failed walk: `NotFound` when something on the route is missing, `BadType` when it ends at another protocol (`system/service/init/realm.cpp:751-755`).
+- `init` answers a route that leads nowhere this way, with the status of the failed walk: `NotFound` when something on the route is missing, `BadType` when it ends at another protocol (`system/service/init/realm.cpp:792-796`).
 - A failed `Open` in `ours.io` is reported as an epitaph on the new channel, because `Open` has no reply (`system/lib/ours.io/include/ours_io/ours_io.hpp:42-43`).
 
 A message written just before the writer closes is still delivered to the reader first (`kernel/object/include/ours/object/channel_dispatcher.hpp:67-70`), so the epitaph can be read after the channel closed.
 
-A client must test for an epitaph before it decodes a reply. Its txid is 0, which a reply decoder refuses as malformed, so without the test "the server said why it closed" would look like "the server sent a garbage reply" (`system/lib/wire/include/wire/wire.hpp:233-244`). A client reads the header with `wire::decode_header`, asks `wire::is_epitaph`, and only then decodes the reply.
+A client must test for an epitaph before it decodes a reply. Its txid is 0, which a reply decoder refuses as malformed, so without the test "the server said why it closed" would look like "the server sent a garbage reply" (`system/lib/wire/include/wire/wire.hpp:285-296`). A client reads the header with `wire::decode_header`, asks `wire::is_epitaph`, and only then decodes the reply.
 
 From `system/lib/ours.resource/src/client.cpp:68-81`:
 
@@ -601,7 +605,7 @@ From `system/lib/ours.resource/src/client.cpp:68-81`:
     }
 ```
 
-`wire::decode_epitaph` is strict: txid 0, the epitaph's method number, `ToClient`, exactly 24 bytes, a zero pad, no handles, and a status `ours::Status` names (`system/lib/wire/include/wire/wire.hpp:227-231`, `system/lib/wire/src/wire.cpp:157-173`).
+`wire::decode_epitaph` is strict: txid 0, the epitaph's method number, `ToClient`, exactly 24 bytes, a zero pad, no handles, and a status `ours::Status` names (`system/lib/wire/include/wire/wire.hpp:279-283`, `system/lib/wire/src/wire.cpp:157-173`).
 
 Not every close has an epitaph. When a protocol is closed, as the next section says, an unknown or undecodable message is not answered with one.
 
@@ -617,7 +621,7 @@ When a server gets a message its decoder refuses, or whose method number it does
 
 The client then reads `PeerClosed` from its channel, the same status it would read if the server had died.
 
-Why no answer? The code that decides it says: the header has no bit that would mark a call as one an older server may answer "unknown" to (byte 4 is the direction), so every unknown call closes the channel (`system/lib/ioservice/src/server.cpp:561-565`). The layouts show why the mark would be needed: a reply carries the request's method number and txid, so an "unknown method" answer would look exactly like that method's own reply with a failure status, and a client that does know the method could not tell the two apart. And a peer that sends what does not decode is not speaking the protocol, so no answer would help it (`system/lib/ours.io/include/ours_io/ours_io.hpp:45-50`).
+Why no answer? The code that decides it says: the header has no bit that would mark a call as one an older server may answer "unknown" to (byte 4 is the direction), so every unknown call closes the channel (`system/lib/ioservice/src/server.cpp:570-574`). The layouts show why the mark would be needed: a reply carries the request's method number and txid, so an "unknown method" answer would look exactly like that method's own reply with a failure status, and a client that does know the method could not tell the two apart. And a peer that sends what does not decode is not speaking the protocol, so no answer would help it (`system/lib/ours.io/include/ours_io/ours_io.hpp:45-50`).
 
 Echo's server shows the rule. It keeps one *client entry* for each connected client: an object of the class `Client` that holds the client's channel and is the `loop::Waiter` the Loop calls when that channel has something to read. Each such channel also holds one Loop *slot*, the table entry that holds the wait ([the Loop and its slots](01-concepts.md#the-loop-and-its-slots)). The Loop calls the entry's `on_signals`, which hands the call to `serve` (`examples/echo/echo_server.cpp:113-115`; [chapter 2](02-first-server.md) shows how a client's channel is given to the Loop). `serve` decodes the header, compares the method number with each method's, and calls that method's decoder. If the number is unknown or the decoder refuses, control falls to the lines that close the message's handles and release the client.
 
@@ -663,7 +667,7 @@ Which answer a server gives:
 | A new client it cannot take | Writes an epitaph with the status, then closes the channel (`examples/echo/echo_server.cpp:168`). |
 | The client's end closed | Frees the client entry; the Loop closes the channel (`examples/echo/echo_server.cpp:189-191`). |
 
-Where this is stated: the rule in each protocol's header, `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40`, `system/lib/ours.resource/include/ours_resource/ours_resource.hpp:45-47`, `system/lib/ours.process/include/ours_process/ours_process.hpp:50-54` and `system/lib/ours.io/include/ours_io/ours_io.hpp:45-50`; the server of `ours.io`, `system/lib/ioservice/include/ioservice/server.hpp:83-90`; the message that arrives before a close, `kernel/object/include/ours/object/channel_dispatcher.hpp:67-70`.
+Where this is stated: the rule in each protocol's header, `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40`, `system/lib/ours.resource/include/ours_resource/ours_resource.hpp:45-47`, `system/lib/ours.process/include/ours_process/ours_process.hpp:50-54` and `system/lib/ours.io/include/ours_io/ours_io.hpp:45-50`; the server of `ours.io`, `system/lib/ioservice/include/ioservice/server.hpp:84-91`; the message that arrives before a close, `kernel/object/include/ours/object/channel_dispatcher.hpp:67-70`.
 
 ## Handles in messages
 
@@ -714,7 +718,7 @@ Who owns a handle:
 - A handle that arrives in a message is put into the reader's table by `channel_read` (`kernel/lib/syscall/src/channel.cpp:183-193`). If the reader refuses the message, it must close the handles itself, as Echo's server does (`examples/echo/echo_server.cpp:223-225`) and as a client does (`system/lib/ours.resource/src/client.cpp:63-67`, `:82-86`). A process may have created at most 1024 live handles at a time, wherever they now are (`system/public/ours/syscall.hpp:48-59`), so a leak is not harmless.
 - A failed reply carries no handles.
 
-Where this is stated: `system/lib/wire/include/wire/wire.hpp:61-64` (the placeholder), `:126-132` (`wire::Message`) and `:249-261` (`encode_handle`, `decode_handle`); `system/lib/wire/src/wire.cpp:96-98` (a failed reply carries no handles).
+Where this is stated: `system/lib/wire/include/wire/wire.hpp:64-67` (the placeholder), `:178-184` (`wire::Message`) and `:301-313` (`encode_handle`, `decode_handle`); `system/lib/wire/src/wire.cpp:96-98` (a failed reply carries no handles).
 
 Handles appear in `ours.io`, the protocol of files and directories (the channel in `Open`, a VMO in `GetBackingMemory`; `system/lib/ours.io/include/ours_io/ours_io.hpp:26-38`), in `ours.process`, the Launcher (the executable and the job in `Launch`, the process in its reply; `system/lib/ours.process/include/ours_process/ours_process.hpp:33-38`), and in `ours.resource`, the protocols that hand out kernel resources (the resource in a `Get` reply; `system/lib/ours.resource/include/ours_resource/ours_resource.hpp:35-39`).
 
@@ -728,7 +732,7 @@ Handles appear in `ours.io`, the protocol of files and directories (the channel 
 | Handles in one message | 64 | `CHANNEL_MAX_MSG_HANDLES`, `system/public/ours/syscall.hpp:46`. `channel_write` answers `OutOfRange` past it (`kernel/lib/syscall/src/channel.cpp:72`). |
 | Messages waiting on one end | 64 | A write to a full queue answers `NoResource` and consumes the message (`kernel/object/include/ours/object/channel_dispatcher.hpp:20-28`, `:57-61`). |
 
-`wire` restates the first two as `MAX_MESSAGE_BYTES` and `MAX_MESSAGE_HANDLES` (`system/lib/wire/include/wire/wire.hpp:74-76`). A server keeps a buffer of that size for the message it reads and one for the reply it builds (`examples/echo/echo_server.cpp:130-135`).
+`wire` restates the first two as `MAX_MESSAGE_BYTES` and `MAX_MESSAGE_HANDLES` (`system/lib/wire/include/wire/wire.hpp:82-84`). A server keeps a buffer of that size for the message it reads and one for the reply it builds (`examples/echo/echo_server.cpp:130-135`).
 
 What this means when you design a protocol:
 
@@ -742,7 +746,7 @@ What this means when you design a protocol:
 
 *Reference.* Read this before you change a protocol that a program built elsewhere may speak.
 
-Versioned: the framing. The `magic` byte is the version of this framing, and a header with another value is refused (`system/lib/wire/include/wire/wire.hpp:57-59`). Status numbers are fixed, because they cross the system-call boundary (`system/public/ours/status.hpp:10-15`), and so are the kernel's size limits in the one direction the comment promises (`system/public/ours/syscall.hpp:37-42`).
+Versioned: the framing. The `magic` byte is the version of this framing, and a header with another value is refused (`system/lib/wire/include/wire/wire.hpp:60-62`). Status numbers are fixed, because they cross the system-call boundary (`system/public/ours/status.hpp:10-15`), and so are the kernel's size limits in the one direction the comment promises (`system/public/ours/syscall.hpp:37-42`).
 
 Not versioned: a protocol. No message and no manifest entry carries a version for a protocol, and the protocol type is only a name (`system/lib/component/include/component/route.hpp:352-354`). This guide found no written policy in the repository for changing a protocol.
 
@@ -758,7 +762,7 @@ Within one dev image the server and its clients are built together from one chec
 
 Once echo's two methods are clear, read these.
 
-`system/lib/ours.process` is the Launcher, the protocol through which a client has a process started. It has four methods: `AddArgs`, `AddHandles` and `AddNames` are one-way and stateful, each appending to the next process, and `Launch` is two-way and starts it (`system/lib/ours.process/include/ours_process/ours_process.hpp:17-21`, `:74-102`). Its strings travel packed, each ended by a NUL, back to back (`system/lib/ours.process/include/ours_process/ours_process.hpp:43-48`). `Launch` carries two handles in the request and one in the reply, and a failed `Launch` is the status form (`system/lib/ours.process/include/ours_process/ours_process.hpp:33-41`).
+`system/lib/ours.process` is the Launcher, the protocol through which a client has a process started. It has four methods: `AddArgs`, `AddHandles` and `AddNames` are one-way and stateful, each appending to the next process, and `Launch` is two-way and starts it (`system/lib/ours.process/include/ours_process/ours_process.hpp:17-21`, `:74-95`). Its strings travel packed, each ended by a NUL, back to back (`system/lib/ours.process/include/ours_process/ours_process.hpp:43-48`). `Launch` carries two handles in the request and one in the reply, and a failed `Launch` is the status form (`system/lib/ours.process/include/ours_process/ours_process.hpp:33-41`).
 
 `system/lib/ours.resource` holds several protocols that share one shape, `Get`, answered with a handle. Each is a `Protocol` value that pairs the name with its `Get` method (`system/lib/ours.resource/include/ours_resource/ours_resource.hpp:51-56`), and the functions take the `Protocol` as an argument. A decoder for one protocol refuses another's `Get`, because the method number differs (`system/lib/ours.resource/src/ours_resource.cpp:30-32`): method numbers are what keep protocols apart on a channel.
 
@@ -774,7 +778,7 @@ Once echo's two methods are clear, read these.
 ## Sources
 
 - `system/lib/wire/README.md`, `system/lib/wire/BUILD.gn`, `system/lib/wire/include/wire/wire.hpp`, `system/lib/wire/src/wire.cpp`
-- `system/lib/wire/test/wire_test.cpp`, `system/lib/wire/test/ordinals_test.py`
+- `system/lib/wire/test/wire_test.cpp`, `system/lib/wire/include/wire/sha256.hpp`
 - `examples/echo/protocol/` (`BUILD.gn`, the header, the source, `test/`), `examples/echo/echo_server.cpp`, `examples/echo/BUILD.gn`
 - `system/lib/ours.process/include/ours_process/ours_process.hpp`, `system/lib/ours.resource/` (header, `src/ours_resource.cpp`, `src/client.cpp`, `BUILD.gn`), `system/lib/ours.io/include/ours_io/ours_io.hpp`
 - `system/lib/ioservice/include/ioservice/server.hpp`, `system/lib/ioservice/src/server.cpp`
@@ -782,4 +786,4 @@ Once echo's two methods are clear, read these.
 - `system/public/ours/status.hpp`, `system/public/ours/syscall.hpp`, `system/public/ours/syscalls.gni`, `kernel/lib/syscall/src/channel.cpp`, `kernel/object/include/ours/object/channel_dispatcher.hpp`
 - `system/component_manifest.gni`, `kernel/products/image/dev/BUILD.gn`, `system/service/init/test/routing_checks/BUILD.gn`, `system/service/init/realm.cpp`, `system/lib/component/include/component/route.hpp`
 
-Checked against commit `561571b7` on 2026-10-30.
+Checked against commit `10dd8149` on 2026-10-30.

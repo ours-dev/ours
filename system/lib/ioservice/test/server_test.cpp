@@ -38,6 +38,7 @@ constexpr auto OTHER_OBJECT = Uandle{0x1102};
 constexpr auto VMO_X = Uandle{0x2001};
 constexpr auto VMO_README = Uandle{0x2002};
 constexpr auto DUPLICATE = Uandle{0x3001};
+constexpr auto REMOTE = Uandle{0x4001};
 constexpr auto ECHO = u64{7};
 
 constexpr auto README = std::string_view{"hello, world"};
@@ -111,6 +112,11 @@ class IoserviceServer: public testing::Test {
                 .unwrap();
         m_svc = m_tree.add_root().unwrap();
         m_echo = m_tree.add_service(m_svc, "echo", ECHO).unwrap();
+        // A second tree to mount through, kept apart from the first so that
+        // no listing of / changes with these tests.
+        m_mount = m_tree.add_root().unwrap();
+        m_mnt = m_tree.add_directory(m_mount, "mnt").unwrap();
+        m_boot = m_tree.add_remote(m_mnt, "boot", REMOTE).unwrap();
     }
 
     auto bind(NodeId const node, Operations const rights) -> ConnectionId {
@@ -254,6 +260,9 @@ class IoserviceServer: public testing::Test {
     NodeId m_readme{};
     NodeId m_svc{};
     NodeId m_echo{};
+    NodeId m_mount{};
+    NodeId m_mnt{};
+    NodeId m_boot{};
 };
 
 // --- Open: the checks, in their fixed order ----------------------------------
@@ -742,5 +751,257 @@ TEST_F(IoserviceServer, BindRefusals) {
               Status::InvArgs);
     EXPECT_EQ(m_server.bind(CHANNEL, m_readme, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
     EXPECT_EQ(m_server.bind(CHANNEL, m_echo, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
+    // A remote entry is not one of this server's directories either: what it
+    // stands for is another server's to bind.
+    EXPECT_EQ(m_server.bind(CHANNEL, m_boot, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
+}
+
+// --- Open: forwarding through a remote entry --------------------------------------
+
+TEST_F(IoserviceServer, OpenThroughARemoteEntryForwardsTheRestOfThePath) {
+    auto const mount = bind(m_mount, ours_io::RX_STAR_DIR);
+    auto const outcome =
+        open(mount, "mnt/boot/config/readme", Flags::PermReadBytes | Flags::PermGetAttributes);
+    EXPECT_EQ(outcome.action, Action::Forward);
+    EXPECT_EQ(outcome.forward_channel, REMOTE);
+    auto const forwarded = ours_io::decode_open(outcome.message);
+    ASSERT_TRUE(forwarded.is_ok());
+    EXPECT_EQ(forwarded->path, "config/readme");
+    EXPECT_EQ(forwarded->flags, Flags::PermReadBytes | Flags::PermGetAttributes);
+    EXPECT_EQ(forwarded->object, OBJECT);
+}
+
+TEST_F(IoserviceServer, OpenOfTheMountPointItselfForwardsDot) {
+    auto const mount = bind(m_mount, ours_io::RX_STAR_DIR);
+    auto const outcome = open(mount, "mnt/boot", Flags::PermReadBytes);
+    EXPECT_EQ(outcome.action, Action::Forward);
+    EXPECT_EQ(outcome.forward_channel, REMOTE);
+    auto const forwarded = ours_io::decode_open(outcome.message);
+    ASSERT_TRUE(forwarded.is_ok());
+    EXPECT_EQ(forwarded->path, ".");
+    EXPECT_EQ(forwarded->object, OBJECT);
+}
+
+TEST_F(IoserviceServer, OpenThroughARemoteEntryCarriesCreationFlags) {
+    // A local target refuses to create (OpenRefusesToCreate); a remote one
+    // is for the server that owns the subtree to judge, so the flags pass
+    // through unchanged.
+    auto const mount = bind(m_mount, ours_io::RW_STAR_DIR);
+    auto const flags = ours_io::PERM_WRITABLE | Flags::FlagMaybeCreate;
+    auto const outcome = open(mount, "mnt/boot/new", flags);
+    EXPECT_EQ(outcome.action, Action::Forward);
+    auto const forwarded = ours_io::decode_open(outcome.message);
+    ASSERT_TRUE(forwarded.is_ok());
+    EXPECT_EQ(forwarded->flags, flags);
+}
+
+TEST_F(IoserviceServer, OpenThroughARemoteEntryStillChecksRightsFirst) {
+    // Check 3 runs before anything is forwarded: a mount point is no way
+    // around a connection's ceiling.
+    auto const mount = bind(m_mount, ours_io::R_STAR_DIR);
+    EXPECT_EQ(refused(mount, "mnt/boot/new", Flags::PermWriteBytes), Status::AccessDenied);
+}
+
+TEST_F(IoserviceServer, LocalCreationIsStillRefusedBesideTheMount) {
+    auto const mount = bind(m_mount, ours_io::RW_STAR_DIR);
+    EXPECT_EQ(refused(mount, "mnt/new", ours_io::PERM_WRITABLE | Flags::FlagMaybeCreate),
+              Status::NotSupported);
+}
+
+TEST_F(IoserviceServer, AMountPointListsAsADirectory) {
+    auto const mount = bind(m_mount, ours_io::R_STAR_DIR);
+    auto const mnt = opened(mount, "mnt", Flags::PermEnumerate);
+    auto const listing = read_dirents(mnt, ours_io::MAX_BUF);
+    EXPECT_EQ(listing.status, Status::Ok);
+    // "." first, then the mount point standing in for the directory the
+    // remote serves.
+    ASSERT_EQ(listing.names.size(), 2U);
+    EXPECT_EQ(listing.names[0], ".");
+    EXPECT_EQ(listing.names[1], "boot");
+    EXPECT_EQ(listing.types[1], ours_io::DirentType::Directory);
+}
+// --- Subtree nodes -------------------------------------------------------------------
+
+/// The tree of IoserviceServer, with a place the program serves itself:
+///
+///   root/mnt/             a directory
+///     fs                  a Subtree node, FS
+///     note                a file
+class IoserviceServerSubtree: public IoserviceServer {
+  protected:
+    /// What the node was added with.
+    static constexpr auto FS = u64{21};
+
+    IoserviceServerSubtree() {
+        m_mnt = m_tree.add_directory(m_root, "mnt").unwrap();
+        m_fs = m_tree.add_subtree(m_mnt, "fs", FS).unwrap();
+        m_note = m_tree
+                     .add_file(m_mnt, "note",
+                               {.vmo = VMO_README, .bytes = bytes_of(README), .executable = false})
+                     .unwrap();
+    }
+
+    /// An Open that must reach the program: its Outcome, checked for the parts
+    /// every such Open shares.
+    auto handed_over(ConnectionId const connection, std::string_view const path, Flags const flags)
+        -> Outcome {
+        auto const outcome = open(connection, path, flags, OTHER_OBJECT);
+        EXPECT_EQ(outcome.action, Action::Subtree) << path;
+        // The Open's own channel, not the connection's.
+        EXPECT_EQ(outcome.handle, OTHER_OBJECT) << path;
+        EXPECT_EQ(outcome.service, FS) << path;
+        return outcome;
+    }
+
+    NodeId m_mnt{};
+    NodeId m_fs{};
+    NodeId m_note{};
+};
+
+TEST_F(IoserviceServerSubtree, AnOpenThatWalksToASubtreeNodeIsHandedToTheProgram) {
+    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+
+    // The value, the rest of the path after the node, and the channel; and
+    // the node itself is where the walk ended, so "." is its rest.
+    EXPECT_EQ(handed_over(root, "mnt/fs", ours_io::PERM_READABLE).rest, ".");
+    EXPECT_EQ(handed_over(root, "mnt/fs/a", ours_io::PERM_READABLE).rest, "a");
+    EXPECT_EQ(handed_over(root, "mnt/fs/a/b/c", ours_io::PERM_READABLE).rest, "a/b/c");
+
+    // From a connection further down, the path starts there.
+    auto const mnt = opened(root, "mnt", Flags::ProtocolDirectory | ours_io::PERM_READABLE);
+    EXPECT_EQ(handed_over(mnt, "fs/x/y", ours_io::PERM_READABLE).rest, "x/y");
+    EXPECT_EQ(handed_over(mnt, "fs", ours_io::PERM_READABLE).rest, ".");
+}
+
+TEST_F(IoserviceServerSubtree, TheProgramGetsTheFlagsAsTheClientSentThem) {
+    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    // Whatever the client asked for, within what the connection holds, is
+    // passed on whole: the protocol bits the node would not judge, the file
+    // flags that a directory refuses, a bit nobody defines. The flags are the
+    // program's tree's to judge, for what it is.
+    for (auto const flags: {
+             Flags::None,
+             ours_io::PERM_READABLE,
+             Flags::ProtocolDirectory | ours_io::PERM_READABLE,
+             Flags::ProtocolFile | Flags::PermReadBytes,
+             Flags::ProtocolSymlink,
+             Flags::ProtocolService,
+             Flags::PermReadBytes | Flags::PermInheritWrite | Flags::PermInheritExecute,
+             Flags::ProtocolDirectory | Flags::FileAppend | Flags::FileTruncate,
+             Flags::PermTraverse | static_cast<Flags>(u64{1} << 62),
+         }) {
+        EXPECT_EQ(handed_over(root, "mnt/fs/x", flags).flags, flags) << std::to_underlying(flags);
+    }
+}
+
+TEST_F(IoserviceServerSubtree, AnOpenOfASubtreeNodeMakesNoConnection) {
+    // Four slots, one taken by |root|. Were an Open to take one for the
+    // channel it hands over, the fourth would find the table full.
+    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    for (auto count = 0; count < 12; ++count) {
+        EXPECT_EQ(handed_over(root, "mnt/fs/x", ours_io::PERM_READABLE).action, Action::Subtree);
+    }
+    bind(m_root, ours_io::R_STAR_DIR);
+    bind(m_root, ours_io::R_STAR_DIR);
+    bind(m_root, ours_io::R_STAR_DIR);
+    // The table is now full of connections that were bound, and an Open of a
+    // directory finds it so; the Subtree Open still reaches the program,
+    // since it asks for no slot.
+    EXPECT_EQ(refused(root, "mnt", ours_io::PERM_READABLE), Status::NoResource);
+    EXPECT_EQ(handed_over(root, "mnt/fs/x", ours_io::PERM_READABLE).action, Action::Subtree);
+}
+
+TEST_F(IoserviceServerSubtree, TheConnectionsOwnChecksRunBeforeTheProgramIsAsked) {
+    // Each case is an Open the program must never see: the connection's
+    // checks of Open, in their order, which hold the Open whether it is for a
+    // node of this tree or for one below a Subtree node.
+    struct Case {
+        char const *what;
+        Operations held;
+        char const *path;
+        Flags flags;
+        Status expected;
+    };
+    constexpr auto SERVED = ours_io::PERM_READABLE;
+    for (auto const &c: {
+             // 1. The path's syntax, whatever the node would have been.
+             Case{"a leading slash", ours_io::R_STAR_DIR, "/mnt/fs/x", SERVED, Status::BadPath},
+             Case{"a dot-dot after the node", ours_io::R_STAR_DIR, "mnt/fs/../x", SERVED,
+                  Status::BadPath},
+             Case{"an empty segment after the node", ours_io::R_STAR_DIR, "mnt/fs//x", SERVED,
+                  Status::BadPath},
+             Case{"a trailing slash", ours_io::R_STAR_DIR, "mnt/fs/", SERVED, Status::BadPath},
+             Case{"an empty path", ours_io::R_STAR_DIR, "", SERVED, Status::BadPath},
+             // 2. Going below the directory needs TRAVERSE.
+             Case{"no traverse",
+                  Operations::Connect | Operations::Enumerate | Operations::ReadBytes, "mnt/fs/x",
+                  Flags::PermReadBytes, Status::AccessDenied},
+             // 3. Rights are a subset of the connection's.
+             Case{"write on a reader", ours_io::R_STAR_DIR, "mnt/fs/x",
+                  Flags::PermReadBytes | Flags::PermWriteBytes, Status::AccessDenied},
+             Case{"modify on a reader", ours_io::R_STAR_DIR, "mnt/fs/x", Flags::PermModifyDirectory,
+                  Status::AccessDenied},
+             Case{"execute on a reader", ours_io::R_STAR_DIR, "mnt/fs", Flags::PermExecute,
+                  Status::AccessDenied},
+             // 4. Connecting needs CONNECT.
+             Case{"service without connect",
+                  Operations::Enumerate | Operations::Traverse | Operations::ReadBytes, "mnt/fs/x",
+                  Flags::ProtocolService, Status::AccessDenied},
+             // 6. Creating, and what the design cut.
+             Case{"create without modify", ours_io::R_STAR_DIR, "mnt/fs/new",
+                  Flags::FlagMaybeCreate | Flags::ProtocolFile, Status::AccessDenied},
+             Case{"create with modify", ours_io::R_STAR_DIR | Operations::ModifyDirectory,
+                  "mnt/fs/new", Flags::FlagMustCreate | Flags::ProtocolFile | Flags::PermReadBytes,
+                  Status::NotSupported},
+             Case{"a node-only connection", ours_io::R_STAR_DIR, "mnt/fs/x", Flags::ProtocolNode,
+                  Status::NotSupported},
+             Case{"a representation event", ours_io::R_STAR_DIR, "mnt/fs",
+                  Flags::FlagSendRepresentation, Status::NotSupported},
+             // 8. The walk to the node.
+             Case{"a name missing before the node", ours_io::R_STAR_DIR, "nope/fs/x", SERVED,
+                  Status::NotFound},
+             Case{"a name missing next to the node", ours_io::R_STAR_DIR, "mnt/nope/x", SERVED,
+                  Status::NotFound},
+             Case{"a file before the node", ours_io::R_STAR_DIR, "mnt/note/fs/x", SERVED,
+                  Status::NotDir},
+         }) {
+        auto const connection = bind(m_root, c.held);
+        EXPECT_EQ(refused(connection, c.path, c.flags), c.expected) << c.what;
+        m_server.release(connection);
+    }
+}
+
+TEST_F(IoserviceServerSubtree, ARefusalIsReportedForTheWholePathAsAskedFor) {
+    // The Open that never reached the program says what it asked for, as any
+    // refused Open does.
+    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const outcome = open(root, "mnt/fs/x", Flags::PermWriteBytes);
+    ASSERT_EQ(outcome.action, Action::Refuse);
+    EXPECT_EQ(outcome.status, Status::AccessDenied);
+    ASSERT_TRUE(outcome.path.is_some());
+    EXPECT_EQ(*outcome.path, "mnt/fs/x");
+}
+
+TEST_F(IoserviceServerSubtree, ASubtreeNodeIsListedAsADirectory) {
+    auto const mnt = bind(m_mnt, ours_io::R_STAR_DIR);
+    auto const listing = read_dirents(mnt, ours_io::MAX_BUF);
+    EXPECT_EQ(listing.status, Status::Ok);
+    EXPECT_EQ(listing.names, (std::vector<std::string>{".", "fs", "note"}));
+    EXPECT_EQ(listing.types, (std::vector<ours_io::DirentType>{ours_io::DirentType::Directory,
+                                                               ours_io::DirentType::Directory,
+                                                               ours_io::DirentType::File}));
+}
+
+TEST_F(IoserviceServerSubtree, NoConnectionIsBoundToASubtreeNode) {
+    EXPECT_EQ(m_server.bind(CHANNEL, m_fs, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
+}
+
+TEST_F(IoserviceServerSubtree, ThePathOfAnOpenThatMissesTheNodeIsNotHandedOver) {
+    // A sibling of the node, and a file next to it, are this tree's own.
+    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const note = open(root, "mnt/note", Flags::ProtocolFile | Flags::PermReadBytes);
+    EXPECT_EQ(note.action, Action::Bind);
+    auto const mnt = open(root, "mnt", Flags::ProtocolDirectory | ours_io::PERM_READABLE);
+    EXPECT_EQ(mnt.action, Action::Bind);
 }
 } // namespace

@@ -20,9 +20,9 @@
 /// which is what fsio::spawn() sends. Creating a process without starting
 /// it, environment variables and launch options are cut (design non-goals).
 ///
-/// Each ordinal is hashed from its selector, such as
-/// "ours.process/Launcher.Launch" (wire::Method); the bodies are flat, at
-/// fixed offsets from the start of the message:
+/// Each ordinal is computed from its selector, such as
+/// "ours.process/Launcher.Launch", as this header is compiled (wire::method);
+/// the bodies are flat, at fixed offsets from the start of the message:
 ///
 ///   Launcher.AddArgs     one-way  u32 count@16, u32 size@20, u8 args[size]@24
 ///   Launcher.AddHandles  one-way  u32 count@16, u32 0@20,
@@ -68,38 +68,31 @@ inline constexpr auto MAX_NAME_LEN = usize{ours::MAX_NAME_LEN};
 /// ours.io path, so the bound is ours.io's.
 inline constexpr auto MAX_PATH_LENGTH = ours_io::MAX_PATH_LENGTH;
 
-// The methods, each declared beside the selector its ordinal is hashed from.
-// wire/test/ordinals_test.py recomputes every ordinal from its selector.
+// The methods, each declared by its selector and kind alone: wire::method()
+// computes the ordinal from the selector, so there is no number to type.
 
 /// Appends to the command line of the next process (Launcher.AddArgs).
-inline constexpr auto ADD_ARGS = wire::Method{
-    .selector = "ours.process/Launcher.AddArgs",
-    .ordinal = 0x6177'27c9'8e66'bde8,
-    .kind = wire::MethodKind::OneWay,
-};
+inline constexpr auto ADD_ARGS =
+    wire::method("ours.process/Launcher.AddArgs", wire::MethodKind::OneWay);
 
 /// Appends to the startup handles of the next process
 /// (Launcher.AddHandles).
-inline constexpr auto ADD_HANDLES = wire::Method{
-    .selector = "ours.process/Launcher.AddHandles",
-    .ordinal = 0x3292'5139'9bdc'bf52,
-    .kind = wire::MethodKind::OneWay,
-};
+inline constexpr auto ADD_HANDLES =
+    wire::method("ours.process/Launcher.AddHandles", wire::MethodKind::OneWay);
 
 /// Appends to the namespace of the next process (Launcher.AddNames).
-inline constexpr auto ADD_NAMES = wire::Method{
-    .selector = "ours.process/Launcher.AddNames",
-    .ordinal = 0x0987'826f'a969'0f15,
-    .kind = wire::MethodKind::OneWay,
-};
+inline constexpr auto ADD_NAMES =
+    wire::method("ours.process/Launcher.AddNames", wire::MethodKind::OneWay);
 
 /// Creates and starts the process, with what the Add* calls gave; the
 /// connection is then as new (Launcher.Launch).
-inline constexpr auto LAUNCH = wire::Method{
-    .selector = "ours.process/Launcher.Launch",
-    .ordinal = 0x4842'5238'011e'a49e,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto LAUNCH =
+    wire::method("ours.process/Launcher.Launch", wire::MethodKind::TwoWay);
+
+// A Launcher answers all four on its one channel, so no two may share an
+// ordinal.
+static_assert(wire::all_distinct(ADD_ARGS, ADD_HANDLES, ADD_NAMES, LAUNCH),
+              "two ours.process methods have the same ordinal");
 
 /// One startup handle and what it is for: |id| is a handle_info of
 /// <ours/process_args.hpp>, the type in bits 0-7 and its argument in bits

@@ -24,6 +24,7 @@ group("examples") {
   visibility = [ "//*" ]
   deps = [
     "echo:echo_server(//build/toolchain/ours:user-$current_cpu)",
+    "files:files_server(//build/toolchain/ours:user-$current_cpu)",
     "profile(//build/toolchain/ours:user-$current_cpu)",
     ":hello",
   ]

@@ -45,6 +45,11 @@ struct Request {
     /// BootFS's `vdso`): the program's imports are bound to its exports.
     std::span<u8 const> vdso_file;
 
+    /// The clock MMIO page (HandleType::VmoClockPage), mapped read-only and
+    /// sealed at CLOCK_PAGE_BASE so the vDSO can load the counter. Invalid
+    /// when the kernel did not make one; start() then skips the mapping.
+    ours::Uandle clock_page = ours::Uandle::Invalid;
+
     /// The one handle the program starts with, its value in %rdi; usually the
     /// far end of the channel its processargs will come on. Consumed whatever
     /// start() answers, as process_start consumes it.

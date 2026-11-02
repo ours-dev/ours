@@ -1,0 +1,13 @@
+# Host-side tests. These link googletest and run on the build machine:
+# GetInfo and Read and their replies are written, read back and broken on
+# purpose, from bytes alone.
+executable("ours_block") {
+  testonly = true
+  sources = [ "ours_block_test.cpp" ]
+  deps = [
+    "//system/lib/ours.block",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

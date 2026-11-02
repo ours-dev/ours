@@ -52,11 +52,18 @@ kernel_elf_binary("vdso") {
   # process maps. In the user BootFS (//kernel/user_bootfs.gni) a user-space
   # loader reads its .dynsym to bind a program's imports: there it is data.
 
-  sources = [ "vdso.S" ]
+  sources = [
+    "clock.cpp",
+    "vdso.S",
+  ]
 
   # The stubs are generated from //system/public/ours/syscalls.gni; vdso.S
-  # holds only the macro they instantiate.
-  deps = [ "//system/public:syscalls.private" ]
+  # holds only the macro they instantiate. clock.cpp scales a counter with
+  # the same ratio the kernel clock uses.
+  deps = [
+    "//kernel/lib/mtl:headers",
+    "//system/public:syscalls.private",
+  ]
 
   # A dependency of the packaged image, not a validation. A validation fails
   # the build but does not hold anything up: ninja may package a mismatched
@@ -84,6 +91,12 @@ kernel_elf_binary("vdso") {
     # linker and no relocations, and every process maps the same pages. With
     # it writable the ELF claimed a segment the kernel never maps writable.
     "-Wl,-z,rodynamic",
+
+    # A C++ body makes lld emit an empty .got and a RELRO pad, which is a
+    # writable segment. The image has no relocation, so the pad is only the
+    # default -z relro. Without it the vDSO stays two segments, read-only and
+    # executable, which is the shape lay_out_vdso() accepts.
+    "-Wl,-z,norelro",
   ]
 }
 

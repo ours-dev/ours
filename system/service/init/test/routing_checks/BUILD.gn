@@ -22,6 +22,10 @@ user_executable("routing_checks") {
     "//examples/echo/protocol",
     "//system/lib/fsio",
     "//system/lib/ours.acpi:client",
+    "//system/lib/ours.block",
+    "//system/lib/ours.block:client",
+    "//system/lib/ours.fshost",
+    "//system/lib/ours.gpt",
     "//system/lib/ours.io",
     "//system/lib/ours.resource:client",
     "//system/lib/ours.process",
@@ -29,13 +33,34 @@ user_executable("routing_checks") {
   ]
 }
 
-# Four uses of the root's built-in `boot`, which dev's root.cm offers in the
-# matching ways (kernel/products/image/dev/BUILD.gn):
+# Five uses of directories, which dev's root.cm offers in the matching ways
+# (kernel/products/image/dev/BUILD.gn):
 #   /boot    rx*, offered as is;
 #   /boot-r  r*, offered under another name with `as`;
 #   /bin     rx*, the bin subdirectory, joined from this use's subdir;
 #   /denied  rx*, through an offer of only r*, so the route answers
-#            AccessDenied at the root's offer and the entry arrives closed.
+#            AccessDenied at the root's offer and the entry arrives closed;
+#   /vfs     rx*, fshost's `ro` view of its tree -- the `boot` mount, and
+#            not the writable `tmp`, which the shell's `all` view holds: a
+#            read through it walks two servers, and the listing asserts the
+#            view really hides tmp.
+# Eight uses of directories that the sibling files (//examples/files)
+# provides, each offered from it by root.cm, and the first provider a
+# directory route ends at:
+#   /files         r*, the tree files serves at its declared /export/docs;
+#   /files-sub     r*, through files' expose of docs with the subdir `sub`:
+#                  only nested.txt is there;
+#   /files-denied  rx*, through an offer that asks more than files' expose
+#                  states (r*): AccessDenied at files' expose, and the entry
+#                  arrives closed;
+#   /files-wide    rx*, through files' expose of docs-wide, which states rx*
+#                  over a declaration of r*: AccessDenied at files'
+#                  declaration, and the entry arrives closed;
+#   /ghost         r*, a directory files declares and exposes and its program
+#                  does not serve: files' server answers NotFound;
+#   /files-file    r*, through an offer of docs with the subdir hello.txt: the
+#                  Open asks for a directory and the path ends at a file, so
+#                  files' server answers NotDir.
 # And eleven protocol uses, each at /svc/<name>:
 #   ours.process.Launcher, ours.resource.Debug, ours.resource.Sampling,
 #   ours.resource.Irq, ours.resource.Ioport, ours.resource.Mmio,
@@ -80,6 +105,46 @@ component_manifest("routing_checks.cm") {
         rights = [ "rx*" ]
       },
       {
+        directory = "vfs"
+        path = "/vfs"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "disk"
+        path = "/disk"
+        rights = [ "rw*" ]
+      },
+      {
+        directory = "files"
+        path = "/files"
+        rights = [ "r*" ]
+      },
+      {
+        directory = "files-sub"
+        path = "/files-sub"
+        rights = [ "r*" ]
+      },
+      {
+        directory = "files-denied"
+        path = "/files-denied"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "files-wide"
+        path = "/files-wide"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "ghost"
+        path = "/ghost"
+        rights = [ "r*" ]
+      },
+      {
+        directory = "files-file"
+        path = "/files-file"
+        rights = [ "r*" ]
+      },
+      {
         protocol = [
           "ours.process.Launcher",
           "ours.resource.Debug",
@@ -96,6 +161,20 @@ component_manifest("routing_checks.cm") {
       {
         protocol = "ours.test.Echo"
         type = "ours.examples.echo.Echo"
+      },
+      {
+        protocol = "ours.block.Block"
+      },
+      {
+        protocol = "ours.fshost.Admin"
+      },
+      {
+        directory = "vfs-all"
+        path = "/vfs-all"
+        rights = [
+          "rx*",
+          "w*",
+        ]
       },
     ]
   }

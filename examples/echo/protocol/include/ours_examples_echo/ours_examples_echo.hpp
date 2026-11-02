@@ -48,23 +48,19 @@ inline constexpr auto ECHO_NAME = std::string_view{"ours.examples.echo.Echo"};
 /// The longest string EchoString carries.
 inline constexpr auto MAX_STRING_LENGTH = usize{64};
 
-// The methods, each declared beside the selector its ordinal is hashed
-// from. wire/test/ordinals_test.py recomputes the ordinals from the
-// selectors.
+// The methods, each declared by its selector and kind alone: wire::method()
+// computes the ordinal from the selector, so there is no number to type.
 
 /// Answers with the string it was given (Echo.EchoString).
-inline constexpr auto ECHO_STRING = wire::Method{
-    .selector = "ours.examples.echo/Echo.EchoString",
-    .ordinal = 0x6e80'6bd7'7638'6789,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto ECHO_STRING =
+    wire::method("ours.examples.echo/Echo.EchoString", wire::MethodKind::TwoWay);
 
 /// Answers Ok, then the provider exits with code 0 (Echo.Stop).
-inline constexpr auto STOP = wire::Method{
-    .selector = "ours.examples.echo/Echo.Stop",
-    .ordinal = 0x1156'5ac0'dbe3'72a7,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto STOP = wire::method("ours.examples.echo/Echo.Stop", wire::MethodKind::TwoWay);
+
+// A server tells the methods of Echo apart by ordinal, so no two may share
+// one.
+static_assert(wire::all_distinct(ECHO_STRING, STOP), "two Echo methods have the same ordinal");
 
 struct EchoStringRequest {
     u32 txid;

@@ -18,9 +18,8 @@ namespace ours::object {
 /// as channel_write; HandleTable::unlink_locked() cancels either way -- and
 /// |observed| then includes HandleClosed. The handle must grant Wait.
 ///
-/// |deadline| is 0 for a poll or INSTANT_INFINITE; any other value, a negative
-/// one included, is NotSupported for now, because a user program cannot read
-/// the clock yet and so has no way to compute one.
+/// |deadline| is 0 for a poll or INSTANT_INFINITE. Any other value, a negative
+/// one included, is NotSupported: a finite deadline is not armed on a timer.
 ///
 /// This is the whole of the waiting machinery, so that lib/syscall only has
 /// to move arguments: attach an observer under the handle table's lock, sleep

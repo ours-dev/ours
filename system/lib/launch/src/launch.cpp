@@ -13,6 +13,7 @@
 #include <elfload/binder.hpp>
 #include <elfload/image.hpp>
 #include <elfload/program.hpp>
+#include <ours/clock_page.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
 #include <ustl/mem/align.hpp>
@@ -402,6 +403,21 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
                                               request.vdso, offset, usize(end - first), &at);
             status != Status::Ok) {
             return ustl::err(failed(request, "vma_map of a vDSO segment", status, offset));
+        }
+    }
+
+    // The clock page, at the address the vDSO loads. Same place in every
+    // process because TimeValues.counter is one published word. Missing
+    // when the kernel did not make the VMO; the vDSO then traps.
+    if (request.clock_page != Uandle::Invalid) {
+        constexpr auto OPTIONS =
+            VmOptions::PermRead | VmOptions::Specific | VmOptions::Sealed | VmOptions::MapRange;
+        auto const offset = usize(ours::CLOCK_PAGE_BASE - ours::PROCESS_ASPACE_BASE);
+        VirtAddr at = 0;
+        if (auto const status = ours::vma_map(root.get(), OPTIONS, offset, request.clock_page, 0,
+                                              usize(PAGE_SIZE), &at);
+            status != Status::Ok) {
+            return ustl::err(failed(request, "vma_map of the clock page", status));
         }
     }
     elfload::Image const vdso_image{
