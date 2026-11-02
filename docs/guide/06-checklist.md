@@ -415,13 +415,13 @@ That is `examples/echo/echo_server.cpp:258-267`, explained at `examples/echo/ech
 
 - Rule: Make your test an executable marked `testonly` in the host toolchain and reachable from `//:default`.
 - Why: The verify script ([T4](#t4-boot-both-images)) finds host tests by asking GN, so a test outside the default build is never run.
-- Where: Enforced once it is found: a failing test makes the script's `host-tests` line read FAIL (`.agents/skills/ours-verify/scripts/boot_check.py:275-284`). The rule is `scripts/host_tests.py:3-9`; [05-testing-and-debugging.md](05-testing-and-debugging.md#how-the-host-tests-are-found-built-and-run) shows how to wire a test in.
+- Where: Enforced once it is found: a failing test makes the script's `host-tests` line read FAIL (`.agents/skills/verify/scripts/boot_check.py:275-284`). The rule is `scripts/host_tests.py:3-9`; [05-testing-and-debugging.md](05-testing-and-debugging.md#how-the-host-tests-are-found-built-and-run) shows how to wire a test in.
 
 ### T4. Boot both images
 
-- Rule: Before you call a change done, run the verify script, which builds and boots both images: `python3 .agents/skills/ours-verify/scripts/boot_check.py`.
+- Rule: Before you call a change done, run the verify script, which builds and boots both images: `python3 .agents/skills/verify/scripts/boot_check.py`.
 - Why: The debug image (`kernel.dev.dbg_1.obi`, `dbg` to the script) stops at the first failed assertion and the dev image (`kernel.dev.obi`, `rel`) runs on past it, so only the two together show that no assertion is hiding a bug; a clean compile is not a working server.
-- Where: Enforced by the script's exit code; it says why there are two images at `.agents/skills/ours-verify/scripts/boot_check.py:66-73`. [README.md](README.md#build-and-boot-the-dev-image) describes the run and its output.
+- Where: Enforced by the script's exit code; it says why there are two images at `.agents/skills/verify/scripts/boot_check.py:66-73`. [README.md](README.md#build-and-boot-the-dev-image) describes the run and its output.
 
 ### T5. Make the boot prove your route
 
@@ -429,7 +429,7 @@ That is `examples/echo/echo_server.cpp:258-267`, explained at `examples/echo/ech
 
 - Rule: Add an on-target check that connects to your server through the real route, and have it print a line the verify script requires.
 - Why: Starting and being reached are different steps: a server that starts can still be unreachable because a route is wrong, and only a client in the booted image shows it.
-- Where: Enforced once the line is listed. The lines are `REQUIRED` in `.agents/skills/ours-verify/scripts/boot_check.py:90-100`, and the model is `routing_checks`' check of echo, `system/service/init/test/routing_checks/routing_checks.cpp:806-839`. [05-testing-and-debugging.md](05-testing-and-debugging.md#read-the-boot-log) says how to add a line.
+- Where: Enforced once the line is listed. The lines are `REQUIRED` in `.agents/skills/verify/scripts/boot_check.py:90-100`, and the model is `routing_checks`' check of echo, `system/service/init/test/routing_checks/routing_checks.cpp:806-839`. [05-testing-and-debugging.md](05-testing-and-debugging.md#read-the-boot-log) says how to add a line.
 
 ### T6. Test the routes that must fail
 
@@ -512,6 +512,6 @@ Review adds no rules. Each item is a walk over the diff that turns earlier items
 - `system/service/init/realm.cpp`, `system/service/init/test/routing_checks/routing_checks.cpp`
 - `kernel/products/image/dev/BUILD.gn`
 - `scripts/host_tests.py`
-- `.agents/skills/ours-verify/scripts/boot_check.py`
+- `.agents/skills/verify/scripts/boot_check.py`
 
 Checked against commit `10dd8149` on 2026-10-30.
