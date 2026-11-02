@@ -509,11 +509,13 @@ auto check_sampling_resource() -> void {
     auto _ = ours::handle_close(sampling);
 }
 
-/// interrupt_map gives the number interrupt_create takes for a pin the
-/// platform names, to the holder of the interrupt root. On QEMU's q35, the
-/// machine this image runs on, the timer is on GSI 2 (the firmware moves ISA 0
-/// off GSI 0), COM2's pin is GSI 3, and the pins from GSI 16 up are PCI's.
-/// What is checked:
+/// interrupt_map resolves the number interrupt_create takes for a pin the
+/// platform names, from the domain and the source that name it, to the holder
+/// of the interrupt root. On QEMU's q35, the machine this image runs on, the
+/// timer is on GSI 2 (the firmware moves ISA 0 off GSI 0), COM2's pin is GSI
+/// 3, and the pins from GSI 16 up are PCI's; ACPI's numbering is the root
+/// domain's (ours::ROOT_INTERRUPT_DOMAIN), which is what the direct calls here ask
+/// with, as the route service's answer would. What is checked:
 ///   - a line's number is not the pin's, and the pins that can be asked for
 ///     (GSI 0, 3 and 16) have numbers of their own, GSI 0 being the pin the
 ///     timer was moved off, a line of its own; the timer's number is derived
@@ -526,10 +528,11 @@ auto check_sampling_resource() -> void {
 ///   - GSI 3 is one free line, taken with the number as given; and a PCI pin,
 ///     GSI 16, has a line of its own, which an interrupt object takes
 ///     level-triggered, as a PCI function's INTx is;
-///   - the refusals: the invalid source is InvArgs, ahead of the handle; a
-///     source with no pin is NoResource, 0x100 and 0x103 included, which as 8
-///     bits would be GSI 0 and GSI 3; no handle is BadHandle. A refused call
-///     writes nothing.
+///   - the refusals: the invalid domain and the invalid source are InvArgs,
+///     ahead of the handle; a domain no controller registers (7) resolves
+///     nothing, NoResource; a source with no pin in the root domain is
+///     NoResource, 0x100 and 0x103 included, which as 8 bits would be GSI 0
+///     and GSI 3; no handle is BadHandle. A refused call writes nothing.
 auto check_interrupt_map(Uandle const irq) -> void {
     constexpr auto GSI_TIMER = u32{2};
     constexpr auto GSI_PCI = u32{16};
@@ -537,6 +540,7 @@ auto check_interrupt_map(Uandle const irq) -> void {
     constexpr auto GSI_WRAPS_TO_0 = u32{0x100};
     constexpr auto GSI_WRAPS_TO_3 = u32{0x103};
     constexpr auto NO_PIN = u32{200};
+    constexpr auto NO_DOMAIN = u32{7};
     constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
 
     auto timer_refused = UNTOUCHED;
@@ -544,16 +548,19 @@ auto check_interrupt_map(Uandle const irq) -> void {
     auto pci = UNTOUCHED;
     auto moved_off = UNTOUCHED;
     auto ok = true;
-    ok &= expect("interrupt_map(Irq root, 2, the kernel's timer)",
-                 ours::interrupt_map(irq, GSI_TIMER, &timer_refused), Status::AccessDenied);
+    ok &= expect("interrupt_map(Irq root, the root domain, 2, the kernel's timer)",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_TIMER, &timer_refused),
+                 Status::AccessDenied);
     if (timer_refused != UNTOUCHED) {
         fail("interrupt_map: a refused call wrote its output");
     }
-    ok &= expect("interrupt_map(Irq root, 3)", ours::interrupt_map(irq, GSI_FREE, &free_line),
+    ok &= expect("interrupt_map(Irq root, the root domain, 3)",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &free_line),
                  Status::Ok);
-    ok &=
-        expect("interrupt_map(Irq root, 16)", ours::interrupt_map(irq, GSI_PCI, &pci), Status::Ok);
-    ok &= expect("interrupt_map(Irq root, 0)", ours::interrupt_map(irq, GSI_MOVED_OFF, &moved_off),
+    ok &= expect("interrupt_map(Irq root, the root domain, 16)",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_PCI, &pci), Status::Ok);
+    ok &= expect("interrupt_map(Irq root, the root domain, 0)",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_MOVED_OFF, &moved_off),
                  Status::Ok);
     if (!ok) {
         return;
@@ -590,17 +597,30 @@ auto check_interrupt_map(Uandle const irq) -> void {
     }
 
     auto refused = UNTOUCHED;
-    expect("interrupt_map(0xFFFFFFFF)", ours::interrupt_map(irq, 0xFFFF'FFFF, &refused),
+    expect("interrupt_map(the root domain, 0xFFFFFFFF, no source)",
+           ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, 0xFFFF'FFFF, &refused),
            Status::InvArgs);
-    expect("interrupt_map(no handle, 0xFFFFFFFF): the source is checked before the handle",
-           ours::interrupt_map(Uandle::Invalid, 0xFFFF'FFFF, &refused), Status::InvArgs);
+    expect("interrupt_map(0xFFFFFFFF, the domain the kernel keeps as none)",
+           ours::interrupt_map(irq, 0xFFFF'FFFF, GSI_FREE, &refused), Status::InvArgs);
+    expect("interrupt_map(no handle, the root domain, 0xFFFFFFFF): the source is checked before "
+           "the handle",
+           ours::interrupt_map(Uandle::Invalid, ours::ROOT_INTERRUPT_DOMAIN, 0xFFFF'FFFF, &refused),
+           Status::InvArgs);
+    // A domain that names no controller resolves nothing, pins included.
+    expect("interrupt_map(domain 7, 3)", ours::interrupt_map(irq, NO_DOMAIN, GSI_FREE, &refused),
+           Status::NoResource);
     // The source is 32 bits; as 8 bits these would be GSI 0 and GSI 3.
-    expect("interrupt_map(0x100)", ours::interrupt_map(irq, GSI_WRAPS_TO_0, &refused),
+    expect("interrupt_map(the root domain, 0x100)",
+           ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_WRAPS_TO_0, &refused),
            Status::NoResource);
-    expect("interrupt_map(0x103)", ours::interrupt_map(irq, GSI_WRAPS_TO_3, &refused),
+    expect("interrupt_map(the root domain, 0x103)",
+           ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_WRAPS_TO_3, &refused),
            Status::NoResource);
-    expect("interrupt_map(200)", ours::interrupt_map(irq, NO_PIN, &refused), Status::NoResource);
-    expect("interrupt_map(no handle, 3)", ours::interrupt_map(Uandle::Invalid, GSI_FREE, &refused),
+    expect("interrupt_map(the root domain, 200)",
+           ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, NO_PIN, &refused),
+           Status::NoResource);
+    expect("interrupt_map(no handle, the root domain, 3)",
+           ours::interrupt_map(Uandle::Invalid, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &refused),
            Status::BadHandle);
     if (refused != UNTOUCHED) {
         fail("interrupt_map wrote its output though it refused");
@@ -620,8 +640,9 @@ auto check_irq_resource() -> void {
     }
     auto interrupt = Uandle::Invalid;
     auto line = u32{0};
-    if (!expect("interrupt_map(the resource Irq.Get gave, 3)",
-                ours::interrupt_map(irq, GSI_FREE, &line), Status::Ok)) {
+    if (!expect("interrupt_map(the resource Irq.Get gave, the root domain, 3)",
+                ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &line),
+                Status::Ok)) {
         auto _ = ours::handle_close(irq);
         return;
     }
@@ -649,10 +670,12 @@ auto check_ioport_resource() -> void {
     expect("ioports_release(the resource Ioport.Get gave, 0x70, 1)",
            ours::ioports_release(ioport, RTC_INDEX_PORT, 1), Status::Ok);
     auto line = u32{0};
-    expect("interrupt_map(the resource Ioport.Get gave, 200): the resource is checked first",
-           ours::interrupt_map(ioport, 200, &line), Status::BadType);
+    expect("interrupt_map(the resource Ioport.Get gave, the root domain, 200): the resource is "
+           "checked first",
+           ours::interrupt_map(ioport, ours::ROOT_INTERRUPT_DOMAIN, 200, &line), Status::BadType);
     expect("interrupt_map(the resource Ioport.Get gave)",
-           ours::interrupt_map(ioport, GSI_FREE, &line), Status::BadType);
+           ours::interrupt_map(ioport, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &line),
+           Status::BadType);
     auto _ = ours::handle_close(ioport);
 }
 
@@ -1765,10 +1788,11 @@ auto check_acpi_tables() -> void {
 /// their own GSIs; every other line is its own GSI, edge triggered and active
 /// high. What is checked:
 ///   - for each ISA number 0 to 15 but the cascade, the service answers the
-///     GSI, trigger and polarity of that table, and the GSI is a pin the
-///     kernel has a line for (interrupt_map does not answer NoResource). The
-///     table is machine-specific, as ISA 0 on GSI 2 is for the checks of
-///     interrupt_map, and a different machine needs a different table;
+///     root domain, the GSI, trigger and polarity of that table, and the GSI
+///     is a pin the kernel has a line for (interrupt_map does not answer
+///     NoResource). The table is machine-specific, as ISA 0 on GSI 2 is for
+///     the checks of interrupt_map, and a different machine needs a
+///     different table;
 ///   - the service's GSI for ISA 0 is the kernel's timer line, which
 ///     interrupt_map refuses (AccessDenied): the one place the kernel's own
 ///     binding shows it, and no independent check, for it restates GSI 2;
@@ -1813,6 +1837,9 @@ auto check_acpi_route() -> void {
         if (route->polarity != ours_acpi::Polarity::ActiveHigh) {
             fail("Route.IsaIrq: an ISA number does not signal as QEMU's q35 says (polarity)");
         }
+        if (route->domain != ours::ROOT_INTERRUPT_DOMAIN) {
+            fail("Route.IsaIrq: a GSI of ACPI's numbering is not of the root domain");
+        }
 
         // A pin the kernel has a line for answers Ok, or AccessDenied if the
         // kernel holds that line itself, as it does the timer's.
@@ -1821,8 +1848,8 @@ auto check_acpi_route() -> void {
         if (moved) {
             wanted = Status::AccessDenied;
         }
-        expect("interrupt_map(the service's GSI for an ISA number)",
-               ours::interrupt_map(irq, route->gsi, &line), wanted);
+        expect("interrupt_map(the service's domain and GSI for an ISA number)",
+               ours::interrupt_map(irq, route->domain, route->gsi, &line), wanted);
     }
 
     // Not ISA lines: no route. 0xffffffff is the number interrupt_map keeps for

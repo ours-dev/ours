@@ -28,11 +28,18 @@ namespace ours {
 /// until its driver has dealt with it; an edge-triggered line is not.
 ///
 /// A line is named by the kernel's number for it, assigned at boot: never the
-/// pin's GSI, and not the same on another machine or another kernel, so a
-/// program does not compute one. interrupt_map gives the number for a pin
-/// the platform names (by a GSI on an ACPI platform), to the holder of the
-/// interrupt root.
+/// pin's number in a controller's own numbering, and not the same on another
+/// machine or another kernel, so a program does not compute one.
+/// interrupt_map resolves the number for a pin from the pair that names it:
+/// the controller's interrupt domain and the pin's number in that domain's
+/// numbering (a GSI on an ACPI platform), both taken from the route service's
+/// answer, to the holder of the interrupt root.
 ///
+/// The root controller's domain is 0 on every platform, and no second domain
+/// exists yet; the rule a second domain's ids follow is written here when one
+/// is registered.
+inline constexpr auto ROOT_INTERRUPT_DOMAIN = u32{0};
+
 /// No option picks the clock a timestamp is taken on or makes the line a
 /// wake source: this kernel has one clock, and no suspend to wake from.
 enum class InterruptOptions : u32 {

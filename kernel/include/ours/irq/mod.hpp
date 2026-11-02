@@ -246,14 +246,21 @@ auto is_masked_for_test(VIrqNum virqnum) -> ktl::Result<bool>;
 /// interrupt-system P4.
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 
-/// The virq of the line made for hardware number `hirqnum`, the number the
-/// platform programmed its pin with (on x86, the GSI); INVALID_V_IRQ_NUM if
-/// it made none. Asked of the root controller's domain, whose numbers are the
-/// platform's single numbering: the lines of a second domain are asked for by
-/// domain and hardware number together, never by the number alone, since two
-/// domains may hold the same one. Never equal to `hirqnum`, and not the same
-/// on another machine or another kernel: a program asks, and does not compute
-/// it.
+/// The resolver of the user ABI: the virq of the line made for hardware
+/// number `hirqnum` in the domain named `id`; INVALID_V_IRQ_NUM if no such
+/// domain is registered or it holds no such line. interrupt_map asks it with
+/// the domain and the source the route service's answer named. The number is
+/// good for good: virqs are not reused, so it is safe to keep after the
+/// lookup, and never equal to `hirqnum`, and not the same on another machine
+/// or another kernel: a program asks, and does not compute it.
+[[nodiscard]]
+auto virq_of_domain(DomainId id, HIrqNum hirqnum) -> VIrqNum;
+
+/// The same question asked of the root controller's domain, whose numbers are
+/// the platform's single numbering (on x86, the GSI): what the kernel's own
+/// code names a root line by. The lines of a second domain are asked for by
+/// domain and hardware number together (virq_of_domain()), never by the
+/// number alone, since two domains may hold the same one.
 [[nodiscard]]
 auto virq_of_hwirq(HIrqNum hirqnum) -> VIrqNum;
 

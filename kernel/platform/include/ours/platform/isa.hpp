@@ -45,7 +45,8 @@ namespace platform {
     ///
     /// For the kernel's own code (the timer's lines, the tests): no system
     /// call takes an ISA number, since a program names a pin by the
-    /// platform's number for it (interrupt_map).
+    /// platform's number for it, which interrupt_map resolves (from the
+    /// domain and source the route service's answer names).
     [[nodiscard]]
     auto isa_irq_line(u32 isa_irq) -> VIrqNum;
 } // namespace platform

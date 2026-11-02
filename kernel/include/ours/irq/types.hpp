@@ -15,6 +15,19 @@ inline constexpr auto INVALID_V_IRQ_NUM = static_cast<VIrqNum>(-1);
 /// No hardware interrupt number, the same for a lookup that finds none.
 inline constexpr auto INVALID_H_IRQ_NUM = static_cast<HIrqNum>(-1);
 
+/// Names an interrupt domain: a controller's own table of lines. A number the
+/// domain's registrant chooses, by the rule of the platform that has more
+/// than one: the root controller is Root on every platform, and the kernel
+/// only refuses a duplicate. Not a name that outlives the domain: the id of a
+/// removed domain may be registered again, for a controller that is not the
+/// one it named, and only a virq is never reused. So a (domain, hardware
+/// number) pair is a scoped name, resolved to the virq that is the line's
+/// canonical one, and a program asks for the pair and does not cache it.
+enum class DomainId : u32 {
+    Root = 0,
+    Invalid = 0xFFFF'FFFF,
+};
+
 /// What a handler answers for one interrupt on its line.
 enum class IrqReturn : u8 {
     /// The interrupt was not this handler's device's. A line whose actions

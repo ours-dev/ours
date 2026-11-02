@@ -167,12 +167,15 @@ auto set_affinity(VIrqNum, CpuMask const &) -> Status {
     return Status::NotSupported;
 }
 
-auto virq_of_hwirq(HIrqNum const hirqnum) -> VIrqNum {
-    // The root controller's domain, whose numbers are the platform's single
-    // numbering; the lines of a second domain are asked for by domain and
-    // hardware number together, never by the number alone.
+auto virq_of_domain(DomainId const id, HIrqNum const hirqnum) -> VIrqNum {
+    // One read of the directory, and the answer is a plain number: good after
+    // the guard closes, because a virq is never reused.
     task::IrqRcuReadGuard const guard;
-    return get_domain_registry()->virq_of(DomainId::Root, hirqnum, guard);
+    return get_domain_registry()->virq_of(id, hirqnum, guard);
+}
+
+auto virq_of_hwirq(HIrqNum const hirqnum) -> VIrqNum {
+    return virq_of_domain(DomainId::Root, hirqnum);
 }
 
 auto hwirq_of_virq(VIrqNum const virqnum) -> HIrqNum {

@@ -14,17 +14,6 @@
 #include <ustl/views/span.hpp>
 
 namespace ours::irq {
-/// Names an interrupt domain: a controller's table of lines. A number the
-/// registrant of the domain chooses, by the rule of the platform that has more
-/// than one: the root controller is Root on every platform (D12 of
-/// `.agents/tasks/irq-multi-arch/DESIGN.md`). Not a name that outlives the
-/// domain: the id of a removed domain may be registered again, for a
-/// controller that is not the one it named, and only a virq is never reused.
-enum class DomainId : u32 {
-    Root = 0,
-    Invalid = 0xFFFF'FFFF,
-};
-
 /// Where a controller's root handler finds the table of its domain without
 /// asking the registry: the registrant owns the slot, which has static
 /// storage, and the registry publishes the table into it when the domain is

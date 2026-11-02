@@ -1442,35 +1442,45 @@ ours_syscalls = [
     brief = "Writes into |out| the number interrupt_create takes for the interrupt source the platform names."
     doc = [
       "An interrupt line is named by the kernel's own number for it, which no",
-      "program computes (interrupt_create). This gives the number of the line",
-      "made for |source|, the platform's own number for it: the number the",
-      "firmware gives a pin of the root interrupt controller, a global system",
-      "interrupt (GSI) on a platform that follows ACPI. It is not a legacy",
-      "device's ISA IRQ number: which pin such a device is on is for whoever",
-      "reads the firmware's tables to say (the ACPI route service,",
-      "ours.acpi.Route), and the kernel is given the pin. It is for that one",
-      "component, and so needs the root of the interrupt lines: |resource|",
-      "must be the root of them, an Irq resource made as the root and not one",
-      "cut to a range, even a range over every line (BadHandle, BadType for a",
+      "program computes (interrupt_create). This resolves that number for the",
+      "line made for |source| in interrupt domain |domain|: |source| is the",
+      "platform's own number for the pin in that domain's numbering, the",
+      "number the firmware gives it -- a global system interrupt (GSI) on a",
+      "platform that follows ACPI -- and |domain| names the controller whose",
+      "numbering it is, the root controller's (0) on every platform today.",
+      "Both come from the route service's answer (ours.acpi.Route), the one",
+      "party that reads the firmware's tables: the kernel does not read the",
+      "tables and does not name a pin itself. A source is not a legacy",
+      "device's ISA IRQ number: which pin such a device is on is for the route",
+      "service to say, and the kernel is given the pin. Resolving is the",
+      "root's power, and for the root alone: |resource| must be the root of",
+      "the interrupt lines, an Irq resource made as the root and not one cut",
+      "to a range, even a range over every line (BadHandle, BadType for a",
       "resource of another kind, AccessDenied for an Irq resource that is not",
       "the root). A device driver should be handed its interrupt object, and",
       "not a number. Nothing is taken: the line stays free until",
       "interrupt_create.",
-      "|source| must not be 0xFFFFFFFF, which the kernel keeps as no source",
-      "at all (InvArgs, checked before the resource). NoResource if no line",
-      "was made for |source|: no pin has that number, or its pin is past",
-      "the interrupt vectors the platform has. AccessDenied, once the",
-      "resource has been accepted, if the line made for |source| is one the",
-      "kernel holds for its own use (the timer's): no program can take it, so",
-      "its number is not given, and the caller learns that here and not from",
-      "a later interrupt_create. |out| is written only when the call",
-      "succeeds; one that cannot be written answers InvArgs, and nothing is",
-      "taken then either.",
+      "|domain| must not be 0xFFFFFFFF, which the kernel keeps as no domain",
+      "at all, and |source| must not be 0xFFFFFFFF, which it keeps as no",
+      "source (InvArgs, both checked before the resource, the domain first).",
+      "NoResource if the domain names none registered, or no line was made for",
+      "|source| in it: no pin has that number, or its pin is past the",
+      "interrupt vectors the platform has. AccessDenied, once the resource has",
+      "been accepted, if the line made for |source| is one the kernel holds",
+      "for its own use (the timer's): no program can take it, so its number is",
+      "not given, and the caller learns that here and not from a later",
+      "interrupt_create. |out| is written only when the call succeeds; one",
+      "that cannot be written answers InvArgs, and nothing is taken then",
+      "either.",
     ]
     args = [
       {
         name = "resource"
         type = "Uandle"
+      },
+      {
+        name = "domain"
+        type = "u32"
       },
       {
         name = "source"

@@ -149,15 +149,17 @@ auto keyboard_route() -> ustl::Result<ours_acpi::IsaIrqReply, Status> {
     return ustl::ok(route.unwrap());
 }
 
-/// An interrupt object on the keyboard's line, which is the pin |gsi|, made
-/// with |irq|, the root of the interrupt lines, after the check of what hands
-/// the line back that the file's comment describes. The check's failures are
-/// FAILED lines; the line is taken all the same where it can be.
-auto take_line(Uandle const irq, u32 const gsi) -> ustl::Result<Uandle, Status> {
-    // The line is named by the kernel's number for it, and the platform's own
-    // number for the pin, the GSI, is what interrupt_map turns into it.
+/// An interrupt object on the keyboard's line, which is the pin |gsi| in
+/// interrupt domain |domain|, made with |irq|, the root of the interrupt
+/// lines, after the check of what hands the line back that the file's comment
+/// describes. The check's failures are FAILED lines; the line is taken all
+/// the same where it can be.
+auto take_line(Uandle const irq, u32 const domain, u32 const gsi) -> ustl::Result<Uandle, Status> {
+    // The line is named by the kernel's number for it, and the pair the route
+    // service answered -- the domain the GSI is a number of, and the GSI --
+    // is what interrupt_map resolves it from.
     auto number = u32{0};
-    if (auto const status = ours::interrupt_map(irq, gsi, &number); status != Status::Ok) {
+    if (auto const status = ours::interrupt_map(irq, domain, gsi, &number); status != Status::Ok) {
         report("interrupt_map(the keyboard's GSI)", status);
         return ustl::err(status);
     }
@@ -265,7 +267,7 @@ auto main(int, char **) -> int {
         report("getting the IRQ resource", irq.unwrap_err());
         return 1;
     }
-    auto const interrupt = take_line(irq.unwrap(), route->gsi);
+    auto const interrupt = take_line(irq.unwrap(), route->domain, route->gsi);
     // The interrupt object holds the line for as long as it lives, without
     // the resource.
     auto _ = ours::handle_close(irq.unwrap());

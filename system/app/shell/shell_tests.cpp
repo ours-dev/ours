@@ -2213,8 +2213,9 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 /// device raises the line used, so no interrupt arrives here; the kernel's
 /// interruptline.test raises one, and wakes a parked waiter with it.
 ///
-///   - the lines used are asked for with interrupt_map, GSI 2 and GSI 3, as a
-///     driver would: a line is named by the kernel's number for it;
+///   - the lines used are asked for with interrupt_map, the root domain and
+///     GSI 2, then GSI 3, as a driver would: a line is named by the kernel's
+///     number for it, resolved from the domain and the source that name it;
 ///   - the timer's line, GSI 2 on q35, is the kernel's for good: interrupt_map
 ///     refuses its pin and interrupt_create its line, AccessDenied, with a
 ///     mode or without;
@@ -2233,8 +2234,9 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 ///     is NoResource, a pin's GSI taken for a line included, since a line is
 ///     named by the kernel's own number for it; except 0xFFFFFFFF, which the
 ///     kernel keeps as no line at all: InvArgs, for interrupt_map as well. A
-///     source no pin has is NoResource to interrupt_map, and an |out| that
-///     faults fails it (InvArgs).
+///     source no pin has is NoResource to interrupt_map, a domain no
+///     controller registers too, the domain the kernel keeps as none is
+///     InvArgs, and an |out| that faults fails it (InvArgs).
 auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) -> bool {
     using ours::InterruptOptions;
     using ours::InterruptTriggerOptions;
@@ -2244,6 +2246,7 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
     constexpr auto GSI_TIMER = u32{2};
     constexpr auto GSI_FREE = u32{3};
     constexpr auto NO_PIN = u32{200};
+    constexpr auto NO_DOMAIN = u32{7};
 
     auto ok = true;
     // A line is named by the kernel's number for it, which no program
@@ -2251,15 +2254,17 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
     constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
     auto refused = UNTOUCHED;
     auto free_line = u32{0};
-    if (!expect("shell: interrupt_map(GSI 2, the kernel's timer) = ",
-                ours::interrupt_map(irq, GSI_TIMER, &refused), Status::AccessDenied)) {
+    if (!expect("shell: interrupt_map(the root domain, GSI 2, the kernel's timer) = ",
+                ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_TIMER, &refused),
+                Status::AccessDenied)) {
         return false;
     }
     if (refused != UNTOUCHED) {
         auto _ = ort::debug_line("shell: interrupt_map wrote its output though it refused");
         return false;
     }
-    if (!expect("shell: interrupt_map(GSI 3) = ", ours::interrupt_map(irq, GSI_FREE, &free_line),
+    if (!expect("shell: interrupt_map(the root domain, GSI 3) = ",
+                ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &free_line),
                 Status::Ok)) {
         return false;
     }
@@ -2339,20 +2344,30 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
         expect("shell: interrupt_create(the retired RemapIrq bit) = ",
                ours::interrupt_create(irq, free_line, static_cast<InterruptOptions>(0x1), &unused),
                Status::InvArgs);
-    // A source no pin has names no line; and 0xFFFFFFFF, which the kernel
-    // keeps as no source at all, is refused.
+    // A source no pin has names no line, and a domain no controller registers
+    // resolves nothing; 0xFFFFFFFF, which the kernel keeps as no source (or no
+    // domain) at all, is refused.
     auto number = u32{0};
-    ok &= expect("shell: interrupt_map(a source no pin has) = ",
-                 ours::interrupt_map(irq, NO_PIN, &number), Status::NoResource);
-    ok &= expect("shell: interrupt_map(0xFFFFFFFF) = ",
-                 ours::interrupt_map(irq, 0xFFFF'FFFF, &number), Status::InvArgs);
+    ok &= expect("shell: interrupt_map(the root domain, a source no pin has) = ",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, NO_PIN, &number),
+                 Status::NoResource);
+    ok &= expect("shell: interrupt_map(a domain no controller registers) = ",
+                 ours::interrupt_map(irq, NO_DOMAIN, GSI_FREE, &number), Status::NoResource);
+    ok &= expect("shell: interrupt_map(the root domain, 0xFFFFFFFF) = ",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, 0xFFFF'FFFF, &number),
+                 Status::InvArgs);
+    ok &= expect("shell: interrupt_map(0xFFFFFFFF, GSI 3) = ",
+                 ours::interrupt_map(irq, 0xFFFF'FFFF, GSI_FREE, &number), Status::InvArgs);
     // The kernel's line is refused after the other checks, not before: a
     // caller with no handle, or the wrong root, or a mode that names none,
     // is told that, and learns nothing about the line.
-    ok &= expect("shell: interrupt_map(GSI 2, no handle) = ",
-                 ours::interrupt_map(Uandle::Invalid, GSI_TIMER, &number), Status::BadHandle);
-    ok &= expect("shell: interrupt_map(GSI 2, the I/O port root) = ",
-                 ours::interrupt_map(ioport, GSI_TIMER, &number), Status::BadType);
+    ok &= expect(
+        "shell: interrupt_map(the root domain, GSI 2, no handle) = ",
+        ours::interrupt_map(Uandle::Invalid, ours::ROOT_INTERRUPT_DOMAIN, GSI_TIMER, &number),
+        Status::BadHandle);
+    ok &= expect("shell: interrupt_map(the root domain, GSI 2, the I/O port root) = ",
+                 ours::interrupt_map(ioport, ours::ROOT_INTERRUPT_DOMAIN, GSI_TIMER, &number),
+                 Status::BadType);
     ok &=
         expect("shell: interrupt_create(the timer's line, no handle) = ",
                ours::interrupt_create(Uandle::Invalid, timer_line, InterruptOptions::None, &unused),
@@ -2366,10 +2381,12 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
         Status::InvArgs);
     // interrupt_map writes its answer last: an |out| that faults fails a call
     // that found the line, and takes nothing.
-    ok &= expect("shell: interrupt_map(out = unmapped) = ",
-                 ours::interrupt_map(irq, GSI_FREE, reinterpret_cast<u32 *>(UNMAPPED)),
+    ok &= expect("shell: interrupt_map(the root domain, GSI 3, out = unmapped) = ",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE,
+                                     reinterpret_cast<u32 *>(UNMAPPED)),
                  Status::InvArgs);
-    ok &= expect("shell: interrupt_map(GSI 3) = ", ours::interrupt_map(irq, GSI_FREE, &number),
+    ok &= expect("shell: interrupt_map(the root domain, GSI 3) = ",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &number),
                  Status::Ok);
     // A line is named by the kernel's number for it, never the pin's GSI.
     // COM2's pin is GSI 3 on q35; taken for a line, it names none: interrupt_map

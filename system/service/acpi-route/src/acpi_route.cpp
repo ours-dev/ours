@@ -25,6 +25,7 @@
 /// program holds no resource but the VMO, so a crafted table can make it lie,
 /// hang or die, and can reach no hardware. Without tables it has nothing to
 /// be, and exits; a route to it then answers NotFound.
+#include <ours/interrupt.hpp>
 #include <ours/port.hpp>
 #include <ours/process_args.hpp>
 #include <ours/signals.hpp>
@@ -238,12 +239,16 @@ class RouteServer final: public ioservice::Handler {
         return release(client);
     }
 
-    /// IsaIrq: the GSI of the ISA line and how it signals, from the MADT's
-    /// overrides, or why there is none.
+    /// IsaIrq: the GSI of the ISA line, the interrupt domain that GSI is a
+    /// number of, and how it signals, from the MADT's overrides, or why there
+    /// is none.
     auto isa_irq(Client &client, ours_acpi::IsaIrqRequest const &request) -> loop::Action {
         auto reply = ours_acpi::IsaIrqReply{.status = Status::Ok};
         if (auto const route = acpi_route::isa_irq_to_gsi(*m_tables, request.isa_irq);
             route.is_ok()) {
+            // ACPI's numbering is the root controller's: the GSI is a number
+            // of the root domain, whose name ours/interrupt.hpp keeps.
+            reply.domain = ours::ROOT_INTERRUPT_DOMAIN;
             reply.gsi = route->gsi;
             reply.trigger = wire_trigger(route->trigger);
             reply.polarity = wire_polarity(route->polarity);

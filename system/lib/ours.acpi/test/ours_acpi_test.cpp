@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <ours/interrupt.hpp>
 #include <wire/wire.hpp>
 
 namespace {
@@ -26,11 +27,13 @@ using wire::Message;
 
 constexpr auto FILL = u8{0xCC};
 constexpr auto TXID = u32{9};
+// The root domain the reply carries, by the kernel's name for it.
+constexpr auto ROOT_DOMAIN = ours::ROOT_INTERRUPT_DOMAIN;
 
 // Where the fields are, written out here and not taken from the codec, so that
 // a layout changed on one side only fails.
 constexpr auto REQUEST_SIZE = usize{20};
-constexpr auto ISA_REPLY_SIZE = usize{32};
+constexpr auto ISA_REPLY_SIZE = usize{36};
 constexpr auto ECAM_REPLY_SIZE = usize{40};
 
 /// Room for one message, starting dirty so that a byte the encoder forgot
@@ -241,17 +244,18 @@ TEST(RouteLayout, FieldsAreWhereTheHeaderSaysTheyAre) {
                                                .trigger = Trigger::Level,
                                                .polarity = Polarity::ActiveLow}));
     EXPECT_EQ(isa_reply.at<u32>(16), static_cast<u32>(Status::Ok));
-    EXPECT_EQ(isa_reply.at<u32>(20), 0x0a0b'0c0du);
-    EXPECT_EQ(isa_reply.at<u32>(24), 1u);
+    EXPECT_EQ(isa_reply.at<u32>(20), 0u);
+    EXPECT_EQ(isa_reply.at<u32>(24), 0x0a0b'0c0du);
     EXPECT_EQ(isa_reply.at<u32>(28), 1u);
+    EXPECT_EQ(isa_reply.at<u32>(32), 1u);
     auto const isa_other =
         owned(ours_acpi::encode_isa_irq_reply(buffer.bytes, TXID,
                                               {.status = Status::Ok,
                                                .gsi = 1,
                                                .trigger = Trigger::Edge,
                                                .polarity = Polarity::ActiveLow}));
-    EXPECT_EQ(isa_other.at<u32>(24), 0u);
-    EXPECT_EQ(isa_other.at<u32>(28), 1u);
+    EXPECT_EQ(isa_other.at<u32>(28), 0u);
+    EXPECT_EQ(isa_other.at<u32>(32), 1u);
 
     auto const ecam_reply =
         owned(ours_acpi::encode_ecam_base_reply(buffer.bytes, TXID,
@@ -275,14 +279,18 @@ TEST(RouteIsaIrqReply, RoundTrip) {
         for (auto const polarity: {Polarity::ActiveHigh, Polarity::ActiveLow}) {
             for (auto const gsi: {u32{0}, u32{2}, u32{0xffff'ffff}}) {
                 Buffer buffer;
-                auto const message = owned(ours_acpi::encode_isa_irq_reply(
-                    buffer.bytes, TXID,
-                    {.status = Status::Ok, .gsi = gsi, .trigger = trigger, .polarity = polarity}));
+                auto const message = owned(ours_acpi::encode_isa_irq_reply(buffer.bytes, TXID,
+                                                                           {.status = Status::Ok,
+                                                                            .domain = ROOT_DOMAIN,
+                                                                            .gsi = gsi,
+                                                                            .trigger = trigger,
+                                                                            .polarity = polarity}));
                 EXPECT_EQ(message.bytes.size(), ISA_REPLY_SIZE);
 
                 auto const decoded = ours_acpi::decode_isa_irq_reply(message.view(), TXID);
                 ASSERT_TRUE(decoded.is_ok());
                 EXPECT_EQ(decoded->status, Status::Ok);
+                EXPECT_EQ(decoded->domain, ROOT_DOMAIN);
                 EXPECT_EQ(decoded->gsi, gsi);
                 EXPECT_EQ(decoded->trigger, trigger);
                 EXPECT_EQ(decoded->polarity, polarity);
@@ -360,10 +368,10 @@ TEST(RouteIsaIrqReply, DecoderRefusals) {
     // fields are 32 bits wide and all of them count.
     for (auto const value: {u32{2}, u32{0x100}, u32{0x101}, u32{0x8000'0001}, u32{0xffff'ffff}}) {
         auto bad_trigger = make();
-        bad_trigger.set_u32(24, value);
+        bad_trigger.set_u32(28, value);
         EXPECT_TRUE(ours_acpi::decode_isa_irq_reply(bad_trigger.view(), TXID).is_err()) << value;
         auto bad_polarity = make();
-        bad_polarity.set_u32(28, value);
+        bad_polarity.set_u32(32, value);
         EXPECT_TRUE(ours_acpi::decode_isa_irq_reply(bad_polarity.view(), TXID).is_err()) << value;
     }
     // A failure with a body after it is not the status form.

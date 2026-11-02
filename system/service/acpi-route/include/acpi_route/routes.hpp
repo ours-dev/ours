@@ -22,8 +22,9 @@ enum class Polarity : u8 {
 };
 
 /// Where a device's interrupt arrives and how it signals: the GSI is what
-/// `interrupt_map` takes, and the trigger and polarity are what the mode of
-/// `interrupt_create` has to say.
+/// `interrupt_map` resolves, with the root domain the service's reply adds to
+/// it, and the trigger and polarity are what the mode of `interrupt_create`
+/// has to say.
 struct InterruptRoute {
     u32 gsi;
     Trigger trigger;
