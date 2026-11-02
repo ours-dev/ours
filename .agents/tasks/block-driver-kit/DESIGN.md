@@ -72,5 +72,4 @@ Where the fake kernel goes: the ioservice host tests keep a fake kernel (channel
 
 ## Open questions
 
-- The backpressure status name: the closest to ShouldWait the `ours::Status` table carries — picked when writing the library.
-- The interrupt-to-Loop wiring for virtio-blk: `loop::Loop::add` on the interrupt handle directly, or `interrupt_bind` onto the Loop's port with a reserved key — decided when migrating the driver, whichever the Loop supports.
+- None. Both questions the plan left open are settled: the backpressure status is `ShouldWait`, which the table carries (status.hpp:71); and the interrupt-to-Loop wiring is settled the other way — no path delivers an interrupt into a Loop, a kernel capability gap filed as `docs/repairs/261103/kernel-interrupts.md`, with virtio-blk completing in `start()` under the design's stated fallback.

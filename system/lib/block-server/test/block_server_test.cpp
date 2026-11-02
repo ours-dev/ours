@@ -76,6 +76,7 @@ class FakeDevice final: public block_server::BlockServer<FakeDevice, MAX_CLIENTS
 
     explicit FakeDevice(Storage &storage, loop::Loop &loop) : Base(storage, loop) {}
 
+    [[nodiscard]]
     auto geometry() const -> block_server::Geometry {
         return {.block_size = BLOCK_SIZE, .blocks = 64};
     }
@@ -159,8 +160,8 @@ class BlockServerTest: public testing::Test {
     /// Writes |encode|'s message on |client|.
     template <typename Encode>
     auto send(Uandle const client, Encode const encode) -> void {
-        static auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
-        auto const encoded = encode(std::span{bytes});
+        static auto BYTES = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+        auto const encoded = encode(std::span{BYTES});
         ASSERT_TRUE(encoded.is_ok());
         auto const message = encoded.unwrap();
         EXPECT_EQ(ours::channel_write(client, ours::ChannelWriteOptions::None, message.bytes.data(),
@@ -174,16 +175,16 @@ class BlockServerTest: public testing::Test {
     /// out: block replies carry no handles, so the bytes are the whole
     /// message, and each call's copy is its own.
     static auto read_message(Uandle const client) -> std::optional<std::vector<u8>> {
-        static auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+        static auto BYTES = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
         auto num_bytes = u32{0};
         auto num_handles = u32{0};
         auto const read =
-            ours::channel_read(client, ours::ChannelReadOptions::None, bytes.data(), nullptr,
-                               static_cast<u32>(bytes.size()), 0, &num_bytes, &num_handles);
+            ours::channel_read(client, ours::ChannelReadOptions::None, BYTES.data(), nullptr,
+                               static_cast<u32>(BYTES.size()), 0, &num_bytes, &num_handles);
         if (read != Status::Ok) {
             return std::nullopt;
         }
-        return std::vector<u8>(bytes.begin(), bytes.begin() + num_bytes);
+        return std::vector<u8>(BYTES.begin(), BYTES.begin() + num_bytes);
     }
 
     /// The decoded message: |bytes| as a wire::Message with no handles.

@@ -99,17 +99,17 @@ struct Slot {
 /// The block-driver library's server. |MAX_INFLIGHT| is how many requests
 /// the hardware may work on at once -- the tag depth -- and is the driver's
 /// to size to its device.
-template <typename Derived, usize MAX_CLIENTS, usize MAX_INFLIGHT>
+template <typename Derived, usize MaxClients, usize MaxInflight>
 class BlockServer
-    : public server::ProtocolServer<BlockServer<Derived, MAX_CLIENTS, MAX_INFLIGHT>, MAX_CLIENTS> {
+    : public server::ProtocolServer<BlockServer<Derived, MaxClients, MaxInflight>, MaxClients> {
   public:
-    using Self = BlockServer<Derived, MAX_CLIENTS, MAX_INFLIGHT>;
-    using Base = server::ProtocolServer<Self, MAX_CLIENTS>;
+    using Self = BlockServer<Derived, MaxClients, MaxInflight>;
+    using Base = server::ProtocolServer<Self, MaxClients>;
 
     /// The base's clients and buffers, and the slot table.
     struct Storage {
         typename Base::Storage base;
-        std::array<Slot, MAX_INFLIGHT> slots;
+        std::array<Slot, MaxInflight> slots;
     };
 
     explicit BlockServer(Storage &storage, loop::Loop &loop)
@@ -194,6 +194,7 @@ class BlockServer
 
     /// Whether the parked channel still names the connection it parked on:
     /// the client table holds the entry with this channel and generation.
+    [[nodiscard]]
     auto still_connected(Slot const &slot) const -> bool {
         for (auto const &client: m_storage->base.clients) {
             if (client.channel == slot.channel && client.generation == slot.generation) {
@@ -333,6 +334,7 @@ class BlockServer
         return nullptr;
     }
 
+    [[nodiscard]]
     auto index_of(Slot const &slot) const -> usize {
         return static_cast<usize>(&slot - m_storage->slots.data());
     }

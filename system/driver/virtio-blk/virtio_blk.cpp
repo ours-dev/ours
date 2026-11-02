@@ -469,6 +469,7 @@ class VirtioBlockServer final
 
     /// GetInfo's answer: the legacy device's block is a 512-byte sector, and
     /// the geometry is what setup read from the device.
+    [[nodiscard]]
     auto geometry() const -> block_server::Geometry {
         return {.block_size = ours_block::BLOCK_SIZE, .blocks = m_device->blocks()};
     }

@@ -54,7 +54,7 @@
 /// states the same rule for a parked Open; the block-server library is the
 /// first server built on it.
 namespace server {
-template <typename Derived, usize MAX_CLIENTS>
+template <typename Derived, usize MaxClients>
 class ProtocolServer: public ioservice::Handler {
   public:
     /// One connected client, and the Loop's Waiter for its channel's slot.
@@ -76,6 +76,12 @@ class ProtocolServer: public ioservice::Handler {
         ProtocolServer *server = nullptr;
         /// Its channel, the slot's; Invalid while the entry is free.
         ours::Uandle channel = ours::Uandle::Invalid;
+        /// Bumped every time the entry is taken, so a deferred reply can
+        /// check that the channel it parked on still names the connection it
+        /// parked on: the kernel reissues handle values, and (channel,
+        /// generation) together name the connection, the value alone does
+        /// not.
+        u32 generation = 0;
 
       private:
         auto on_signals(ours::Signals const observed) -> loop::Action override {
@@ -92,7 +98,7 @@ class ProtocolServer: public ioservice::Handler {
     /// and where it builds the reply. One of each serves every client, since
     /// one on_message() runs at a time.
     struct Storage {
-        std::array<Client, MAX_CLIENTS> clients;
+        std::array<Client, MaxClients> clients;
         std::array<u8, wire::MAX_MESSAGE_BYTES> request_bytes;
         std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> request_handles;
         std::array<u8, wire::MAX_MESSAGE_BYTES> reply_bytes;
@@ -172,6 +178,7 @@ class ProtocolServer: public ioservice::Handler {
             // entry is filled field by field. It is in use once channel is
             // set, so the server goes first.
             client.server = this;
+            client.generation += 1;
             client.channel = channel;
             if (auto const added = m_loop->add(
                     channel, ours::Signals::Readable | ours::Signals::PeerClosed, client);
