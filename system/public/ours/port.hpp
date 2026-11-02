@@ -4,6 +4,8 @@
 #ifndef OURS_PORT_HPP
 #define OURS_PORT_HPP 1
 
+#include <ours/signals.hpp>
+#include <ours/status.hpp>
 #include <ours/types.hpp>
 
 #include <cstddef>
@@ -174,6 +176,11 @@ inline constexpr u32 PORT_MAX_OBSERVERS = 1024;
 /// Only port_queue's packets count, none the kernel queues. A caller past
 /// the limit gets a status it can back off on, not an exception.
 inline constexpr u32 PORT_MAX_USER_PACKETS = 256;
+
+// The port calls, as a program calls them: generated from
+// //system/public/ours/syscalls/port.gni (design 4.7), included inside
+// namespace ours like the rest of the generated declarations.
+#include <ours/vdso_decls/port.inc>
 } // namespace ours
 
 #endif // #ifndef OURS_PORT_HPP

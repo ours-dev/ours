@@ -7,6 +7,7 @@
 #include <ours/syscall.hpp>
 #include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
+#include <ours/vma.hpp>
 
 #include <cstddef>
 

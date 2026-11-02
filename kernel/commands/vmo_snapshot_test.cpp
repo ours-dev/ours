@@ -54,6 +54,7 @@
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/vma.hpp>
 
 #include <atomic>
 

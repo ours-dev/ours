@@ -1,5 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <ours/channel.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/object/message_packet.hpp>
 #include <ours/syscall.hpp>

@@ -4,6 +4,7 @@
 #ifndef OURS_SAMPLER_HPP
 #define OURS_SAMPLER_HPP 1
 
+#include <ours/status.hpp>
 #include <ours/types.hpp>
 
 #include <cstddef>
@@ -174,6 +175,11 @@ struct SamplerDumpHeader {
 };
 static_assert(sizeof(SamplerDumpHeader) == 40);
 static_assert(alignof(SamplerDumpHeader) == 8);
+
+// The sampler calls, as a program calls them: generated from
+// //system/public/ours/syscalls/sampler.gni (design 4.7), included inside
+// namespace ours like the rest of the generated declarations.
+#include <ours/vdso_decls/sampler.inc>
 } // namespace ours
 
 #endif // #ifndef OURS_SAMPLER_HPP

@@ -3,27 +3,23 @@
 #ifndef OURS_SYSCALL_HPP
 #define OURS_SYSCALL_HPP 1
 
-// The constants a program and the kernel have to agree on about system calls:
-// limits, sentinels and option words, each named once so that both sides
-// compile against the same value.
+// The constants that cross domains: the sentinel a deadline argument takes,
+// and the name length every call that takes a name cuts to. Each is named
+// once so that both sides compile against the same value.
 //
-// What is not here is the call numbers. They used to be, as OURS_SYS_* macros
-// with a count beside them, on the grounds that "a user program puts one of
-// them in the syscall-number register". No user program needs to: the kernel
-// accepts a `syscall` only from the vDSO and kills a process that traps from
-// anywhere else (fault_probe's trap.S does it on purpose, to show this). A
-// program names a call by its vDSO symbol (<ours/vdso.hpp>), so the numbers
-// are a private agreement between the vDSO
-// and the kernel's dispatch table (design D8). Both are now generated from
-// //system/public/ours/syscalls.gni, into a header only those two can see
-// (//system/public:syscalls.private). Publishing the numbers would only have
-// invited the one thing the vDSO exists to prevent.
+// A domain's own option words and limits live with that domain's calls, in
+// its own header (<ours/port.hpp>, <ours/vma.hpp>, <ours/channel.hpp>, ...),
+// one file with the generated declarations a program calls -- not gathered
+// here. What is nowhere in system/public is the call numbers. A program names
+// a call by its vDSO symbol (<ours/vdso.hpp>), so the numbers are a private
+// agreement between the vDSO and the kernel's dispatch table (design D8).
+// Both are generated from //system/public/ours/syscalls/*.gni, into a header
+// only those two can see (//system/public:syscalls.private). Publishing the
+// numbers would only have invited the one thing the vDSO exists to prevent.
 
 #include <ours/types.hpp>
 
 #include <limits>
-
-#include <ustl/util/enum_bits.hpp>
 
 namespace ours {
 /// A deadline that never arrives: wait until the condition holds, however
@@ -34,46 +30,6 @@ namespace ours {
 /// number a program passes in a register.
 inline constexpr auto INSTANT_INFINITE = std::numeric_limits<Instant>::max();
 
-/// The most bytes one channel message may carry.
-///
-/// 4 KiB, which is the largest single kmalloc: a message is copied into one
-/// kernel allocation before the channel's lock is taken, and that allocation
-/// does not go through vmalloc, whose 256 regions are shared by the whole
-/// system. Raising this later is compatible, lowering it would not be.
-inline constexpr auto CHANNEL_MAX_MSG_BYTES = u32{4096};
-
-/// The most handles one channel message may carry.
-inline constexpr auto CHANNEL_MAX_MSG_HANDLES = u32{64};
-
-/// The most live handles one process may have created, wherever they are now:
-/// in its own table, in another process's, or queued in a message on the
-/// way. Creating one past it answers NoResource; closing one gives the room
-/// back.
-///
-/// Counted against the creator, not the holder, so that sending handles
-/// away does not make room for more: a process that makes channels and
-/// writes their ends into a channel nobody reads would otherwise fill the
-/// system-wide arena from a table that always looks empty. A quarter of
-/// today's arena, so that no one process can exhaust it alone; it grows when
-/// the arena does.
-inline constexpr auto HANDLE_MAX_PER_PROCESS = u32{1024};
-
-/// The most bytes one debug_write call will copy.
-///
-/// A ceiling on one call, so that a program cannot hold a CPU inside the
-/// kernel for as long as it likes by asking for a gigabyte of output. The
-/// number is arbitrary; what is not arbitrary is that there is one, and that
-/// both sides know the same one. It lives here rather than in the handler
-/// because the caller has to split its text to fit -- a limit only the kernel
-/// knows is a limit the caller discovers as Status::OutOfRange.
-inline constexpr auto MAX_DEBUG_WRITE = usize{256};
-
-/// The most bytes one debug_read call may return.
-inline constexpr auto MAX_DEBUG_READ = usize{256};
-
-/// The most bytes one process_read_memory call may ask for: 64 MiB.
-inline constexpr auto MAX_PROCESS_READ_MEMORY = usize{64} << 20;
-
 /// The size of an object's name, its terminator included: a process, thread,
 /// VMO or resource keeps at most the first 31 bytes of the name it is given,
 /// and process_create and thread_create cut a longer one rather than refuse
@@ -83,153 +39,6 @@ inline constexpr auto MAX_PROCESS_READ_MEMORY = usize{64} << 20;
 /// 255 in musl), and which would replace this name in any program that
 /// includes both.
 inline constexpr auto MAX_NAME_LEN = usize{32};
-
-/// Options for the channel calls. None is the only value any of them accepts
-/// today; anything else answers InvArgs rather than being ignored, so that a
-/// program cannot come to depend on a bit that does nothing. They are
-/// separate types, one per call, because the bits each will grow are
-/// unrelated (a write taking its bytes from a scatter list and a read allowed
-/// to discard what does not fit share no meaning), and a type per call makes
-/// passing one to the other a compile error.
-enum class ChannelCreateOptions : u32 {
-    None = 0,
-};
-
-enum class ChannelWriteOptions : u32 {
-    None = 0,
-};
-
-/// process_create's options. None is the only value it accepts today; anything
-/// else is InvArgs. There is no option for a process whose address space
-/// another process can share: this ABI has no shared address spaces.
-enum class ProcessCreateOptions : u32 {
-    None = 0,
-};
-
-/// thread_create's options: None only, anything else InvArgs.
-enum class ThreadCreateOptions : u32 {
-    None = 0,
-};
-
-enum class ChannelReadOptions : u32 {
-    None = 0,
-};
-
-/// vmo_create's options. Only None is accepted: Resizable is recognised and
-/// answered NotSupported (it is deferred past M1), and any other bit is
-/// InvArgs. Resizable already has its ABI value, so that a program asking for
-/// it now asks the same question once it is built.
-enum class VmoOptions : u32 {
-    None = 0,
-    Resizable = 1U << 1,
-};
-
-/// vma_map's and vma_allocate's options (and, later, vma_protect's): what
-/// a mapping or sub-region may do, where it goes, and how it is populated.
-/// The values are ABI and never change.
-///
-///   Perm*       The protection the pages get. vma_map only.
-///   Specific    At the offset from the region's start, not wherever fits;
-///               only into a region that has CanMapSpecific (AccessDenied
-///               otherwise, asked before whether the range lies inside the
-///               region). A process's root region has it.
-///   CanMap*     On vma_map, none may be passed (InvArgs): the kernel sets
-///               CanMapRead, CanMapWrite and CanMapExecute from the handles'
-///               rights, as the ceiling a later protect() is held to. On
-///               vma_allocate, CanMapRead, CanMapWrite and
-///               CanMapExecute say what mappings in the new sub-region may
-///               allow, each needing the matching right on the parent's
-///               handle, and none at all makes the sub-region a guard;
-///               CanMapSpecific lets the sub-region take Specific placements,
-///               whether or not the parent can.
-///   MapRange    Populate the whole range now rather than on first touch.
-///   Sealed      Make the mapping immutable from the moment it exists: no
-///               call can unmap it, change its protection, or destroy it with
-///               its region (AccessDenied, and nothing else in the range is
-///               touched). Irreversible. Only the address space's teardown,
-///               when the process dies, takes it down. It sits at bit 20,
-///               clear of the bits the other options use and are kept for.
-///               The vDSO's code can only be mapped executable this way.
-/// The rest are named so that a program asking for them gets NotSupported,
-/// not InvArgs: they are deferred here. Bit 15 (faulting past the end of a
-/// stream's size) and an alignment field in bits 24 to 31 are kept for later
-/// options and not named yet, so they are still InvArgs.
-enum class VmOptions : u32 {
-    None = 0,
-    PermRead = 1U << 0,
-    PermWrite = 1U << 1,
-    PermExecute = 1U << 2,
-    Compact = 1U << 3,
-    Specific = 1U << 4,
-    SpecificOverwrite = 1U << 5,
-    CanMapSpecific = 1U << 6,
-    CanMapRead = 1U << 7,
-    CanMapWrite = 1U << 8,
-    CanMapExecute = 1U << 9,
-    MapRange = 1U << 10,
-    RequireNonResizable = 1U << 11,
-    AllowFaults = 1U << 12,
-    OffsetIsUpperLimit = 1U << 13,
-    PermReadIfXomUnsupported = 1U << 14,
-    Sealed = 1U << 20,
-};
-USTL_ENABLE_ENUM_BITMASK(VmOptions);
-
-/// vmo_create_child's options: which kind of child, and how it may be used.
-/// Slice and the three snapshots are built, each alone; every other
-/// bit named here is recognised and answered NotSupported, and any bit not
-/// named here is InvArgs. The values are ABI and never change.
-///
-/// The three snapshots are named for how much of the parent they freeze.
-///
-/// Declared by what they are, not by value: first the kind of child, of which a
-/// request names one, then what may be added to it. The ABI handed the values
-/// out one at a time as options were added to it, so they do not run in
-/// order, and bit 1 belonged to an option it has retired: it is kept out of
-/// use, never given to a new one.
-enum class VmoChildOptions : u32 {
-    None = 0,
-
-    // The kind of child.
-
-    /// A copy-on-write copy of everything as it was at the clone: neither the
-    /// child nor the parent ever sees the other's later writes. Built:
-    /// mm::VmObjectPaged::create_clone().
-    SnapshotFull = 0_bit,
-
-    /// Only a page the child has written is certainly its own; a page it has
-    /// not written may still show the parent's later writes. What a loader asks
-    /// for a data segment. Built as SnapshotFull, which gives more than this
-    /// asks: the child never sees the parent's later writes.
-    SnapshotOnWrite = 1_bit,
-
-    /// The pages the parent has modified are frozen; the ones still as a pager
-    /// supplied them are not, and keep following the pager. For fork() of a
-    /// mapping of a pager-backed file. Built as SnapshotFull, which is what
-    /// this asks when there is no pager: then no page is a pager's, so every
-    /// page is frozen.
-    SnapshotModified = 2_bit,
-
-    /// A window onto the parent's own pages, no copy: a write through either is
-    /// seen through both. Its rights are the parent handle's, never more.
-    /// Built: mm::VmObjectPaged::create_slice().
-    Slice = 3_bit,
-
-    /// The whole parent again as another VMO: the same pages and the same size,
-    /// so offset and size must both be 0. NotSupported.
-    Reference = 4_bit,
-
-    // What may be added to it.
-
-    /// The child can be resized later. NotSupported: a child is made at its
-    /// final size.
-    Resizable = 5_bit,
-
-    /// The child's handle has no Write, which a snapshot otherwise gets.
-    /// NotSupported.
-    NoWrite = 6_bit,
-};
-USTL_ENABLE_ENUM_BITMASK(VmoChildOptions);
 
 } // namespace ours
 

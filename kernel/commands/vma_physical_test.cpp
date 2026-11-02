@@ -29,6 +29,7 @@
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/platform/mmio.hpp>
+#include <ours/vma.hpp>
 
 #include <algorithm>
 

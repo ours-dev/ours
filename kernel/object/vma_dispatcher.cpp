@@ -8,6 +8,7 @@
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
+#include <ours/vma.hpp>
 
 #include <ustl/mem/align.hpp>
 

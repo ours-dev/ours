@@ -14,6 +14,7 @@
 
 #include <cstring>
 
+#include <ours/channel.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>

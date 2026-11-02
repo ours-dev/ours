@@ -4,6 +4,7 @@
 #ifndef OURS_INTERRUPT_HPP
 #define OURS_INTERRUPT_HPP 1
 
+#include <ours/status.hpp>
 #include <ours/types.hpp>
 
 #include <ustl/util/enum_bits.hpp>
@@ -71,6 +72,11 @@ enum class InterruptBindOptions : u32 {
     Bind = 0,
     Unbind = 1,
 };
+
+// The interrupt calls, as a program calls them: generated from
+// //system/public/ours/syscalls/interrupt.gni (design 4.7), included inside
+// namespace ours like the rest of the generated declarations.
+#include <ours/vdso_decls/interrupt.inc>
 } // namespace ours
 
 #endif // #ifndef OURS_INTERRUPT_HPP

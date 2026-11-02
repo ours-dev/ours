@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 #include <ort/process_args.hpp>
+#include <ours/channel.hpp>
 
 namespace {
 using launch::LauncherOps;

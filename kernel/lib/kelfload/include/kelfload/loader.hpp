@@ -10,6 +10,7 @@
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+#include <ours/vma.hpp>
 #include <ustl/views/span.hpp>
 
 namespace kelfload {

@@ -24,16 +24,26 @@
 #ifdef __cplusplus
 
 #include <ours/bti.hpp>
+#include <ours/channel.hpp>
+#include <ours/command.hpp>
+#include <ours/debug.hpp>
 #include <ours/exception.hpp>
+#include <ours/handle.hpp>
 #include <ours/interrupt.hpp>
-#include <ours/object_info.hpp>
-#include <ours/object_property.hpp>
+#include <ours/ioport.hpp>
+#include <ours/object.hpp>
+#include <ours/pager.hpp>
 #include <ours/port.hpp>
+#include <ours/process.hpp>
 #include <ours/sampler.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
+#include <ours/task.hpp>
+#include <ours/time.hpp>
 #include <ours/types.hpp>
+#include <ours/vma.hpp>
+#include <ours/vmo.hpp>
 
 /// The vDSO's exported entry points: the system-call API a program calls.
 ///
@@ -57,11 +67,12 @@
 /// clang and GCC both honour; the header is C++ only already.
 namespace ours {
 // One declaration per entry of the files under
-// //system/public/ours/syscalls/, with that entry's documentation: one file
-// per category, included here in the number order; generated, like the stubs
-// they bind to, so that the two cannot disagree about a call's arguments
-// (design 4.7). A domain's own header includes its category's file alone.
-#include <ours/vdso_decls/all.inc>
+// //system/public/ours/syscalls/, with that entry's documentation: each
+// domain header above includes its category's generated file inside this
+// namespace, so a program that needs one domain includes its header alone
+// (<ours/port.hpp>) and one that wants the whole surface includes this
+// umbrella. Generated, like the stubs they bind to, so that the two cannot
+// disagree about a call's arguments (design 4.7).
 } // namespace ours
 
 #endif // __cplusplus

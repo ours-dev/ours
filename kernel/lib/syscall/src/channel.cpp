@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
 
+#include <ours/channel.hpp>
 #include <ours/object/channel_dispatcher.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>

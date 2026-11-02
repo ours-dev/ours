@@ -6,6 +6,7 @@
 #include <initializer_list>
 #include <string_view>
 
+#include <ours/debug.hpp>
 #include <ours/status.hpp>
 
 /// A program's way to say what it is doing while the system is brought up:

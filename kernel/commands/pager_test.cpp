@@ -45,6 +45,7 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
+#include <ours/vmo.hpp>
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
