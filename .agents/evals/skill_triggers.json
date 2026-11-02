@@ -1,24 +1,29 @@
 [
- {"id": "verify-after-edit",    "expect": ["ours-verify"], "query": "我刚改完 kernel/mm/vm_area.cpp，帮我验证一下还能不能正常启动"},
- {"id": "verify-both-images",   "expect": ["ours-verify"], "query": "跑一下，看看两个镜像都能起来吗"},
- {"id": "verify-english",       "expect": ["ours-verify"], "query": "Build and boot the kernel and tell me whether the shell self-checks pass."},
- {"id": "verify-before-commit", "expect": ["ours-verify"], "query": "准备提交了，提交前帮我确认一下没把启动搞坏"},
- {"id": "verify-userboot",      "expect": ["ours-verify"], "query": "启动看看 userboot 现在能不能拉起 init"},
- {"id": "verify-debug-panic",   "expect": ["ours-verify"], "query": "dbg 镜像启动到一半 panic 了，帮我拿到 panic 时的调用栈"},
+ {"id": "verify-after-edit",    "expect": ["verify"], "query": "我刚改完 kernel/mm/vm_area.cpp，帮我验证一下还能不能正常启动"},
+ {"id": "verify-both-images",   "expect": ["verify"], "query": "跑一下，看看两个镜像都能起来吗"},
+ {"id": "verify-english",       "expect": ["verify"], "query": "Build and boot the kernel and tell me whether the shell self-checks pass."},
+ {"id": "verify-before-commit", "expect": ["verify"], "query": "准备提交了，提交前帮我确认一下没把启动搞坏"},
+ {"id": "verify-userboot",      "expect": ["verify"], "query": "启动看看 userboot 现在能不能拉起 init"},
+ {"id": "verify-debug-panic",   "expect": ["verify"], "query": "dbg 镜像启动到一半 panic 了，帮我拿到 panic 时的调用栈"},
 
- {"id": "design-vma-map",      "expect": ["ours-kernel-design"], "query": "我想加一个 vma_map 系统调用，让 init 能直接映射 BootFS 的 VMO，先出个方案"},
- {"id": "design-cpulocal",      "expect": ["ours-kernel-design"], "query": "CpuLocal 的动态分配该怎么设计？参考 Linux 还是 Zircon？"},
- {"id": "design-pi-chain",      "expect": ["ours-kernel-design"], "query": "OwnedWaitQueue 里 PI 链加锁那几个 stub 该怎么补？给个思路"},
- {"id": "design-vmalloc-layer", "expect": ["ours-kernel-design"], "query": "vmalloc 应该在哪一层实现？"},
- {"id": "design-review-vmo",    "expect": ["ours-kernel-design", "cpp-code-review"], "query": "Review the design of VmoDispatcher::read_user and tell me what is wrong with it."},
+ {"id": "design-vma-map",      "expect": ["kernel-design"], "query": "我想加一个 vma_map 系统调用，让 init 能直接映射 BootFS 的 VMO，先出个方案"},
+ {"id": "design-cpulocal",      "expect": ["kernel-design"], "query": "CpuLocal 的动态分配该怎么设计？参考 Linux 还是 Zircon？"},
+ {"id": "design-pi-chain",      "expect": ["kernel-design"], "query": "OwnedWaitQueue 里 PI 链加锁那几个 stub 该怎么补？给个思路"},
+ {"id": "design-vmalloc-layer", "expect": ["kernel-design"], "query": "vmalloc 应该在哪一层实现？"},
+ {"id": "design-review-vmo",    "expect": ["kernel-design", "cpp-code-review"], "query": "Review the design of VmoDispatcher::read_user and tell me what is wrong with it."},
 
- {"id": "review-cpp-file",      "expect": ["cpp-code-review", "ours-kernel-design"], "query": "review 一下 system/lib/ustl/include/ustl/rc.hpp，看看有什么问题"},
- {"id": "review-mm-file",       "expect": ["cpp-code-review", "ours-kernel-design"], "query": "帮我 review 一下 kernel/mm/vm_object_paged.cpp，有没有 bug"},
+ {"id": "review-cpp-file",      "expect": ["cpp-code-review", "kernel-design"], "query": "review 一下 system/lib/ustl/include/ustl/rc.hpp，看看有什么问题"},
+ {"id": "review-mm-file",       "expect": ["cpp-code-review", "kernel-design"], "query": "帮我 review 一下 kernel/mm/vm_object_paged.cpp，有没有 bug"},
 
  {"id": "cpp-extract-const",    "expect": ["cpp-write-and-verify", "modern-cpp-development"], "allow_defer": true, "query": "把 kernel/time 里 TimerQueue 用到的魔数抽成常量"},
  {"id": "cpp-option-map",       "expect": ["cpp-write-and-verify", "modern-cpp-development"], "allow_defer": true, "query": "给 ustl::Option 加一个 map 方法"},
 
  {"id": "vendor-xxhash",        "expect": ["vendor-import"], "query": "引入 xxhash 库，给 host 端的镜像打包工具算校验和"},
+
+ {"id": "merge-into-baseline",  "expect": ["merge"], "query": "fs-service 这个专项已经成熟了，合并到基线上去吧"},
+ {"id": "merge-from-baseline",  "expect": ["merge"], "query": "基线上有新的时钟栈提交，先把它合并到我的分支里再继续"},
+ {"id": "merge-shared-checkout","expect": ["merge"], "query": "把 exp/irq-cost 合到 baseline，注意主检出里还有别的会话没提交的改动"},
+ {"id": "merge-generic-explain","expect": ["none", "git-workflow-and-versioning"], "query": "merge --no-ff 和 fast-forward 有什么区别？"},
 
  {"id": "none-git",             "expect": ["none", "git-workflow-and-versioning"], "query": "解释一下 git rebase 和 merge 的区别"},
  {"id": "none-python-stats",    "expect": ["none"], "query": "用 Python 写个脚本，统计 docs/changes 下每天有多少条改动记录"},

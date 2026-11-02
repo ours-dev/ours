@@ -37,7 +37,7 @@ Each rejected option and the reason. A design without rejected options has not b
 Decisions that belong to the user: strategy, trade-offs, departures from a design doc or Zircon. "Decided" holds the user's choice and the date, and stays empty while the decision is open. Write "None" if there are no decisions.
 
 ## Testing and verification
-How we will know it works: host tests, boot checks with `ours-verify`, measurements. Say what cannot be verified yet.
+How we will know it works: host tests, boot checks with `verify`, measurements. Say what cannot be verified yet.
 
 ## Open questions
 What is still unknown, one per bullet. Write "None" if nothing is open.
@@ -99,7 +99,7 @@ What was deferred, and where it is recorded.
 **Date**: YYYY-MM-DD
 
 ## Scope and method
-What was reviewed (files, directory, diff), which authorities and tools were used (`modern-cpp-development`, `ours-kernel-design`, clang-format, clang-tidy), and which findings were verified rather than read-only judgement.
+What was reviewed (files, directory, diff), which authorities and tools were used (`modern-cpp-development`, `kernel-design`, clang-format, clang-tidy), and which findings were verified rather than read-only judgement.
 
 ## What is done well
 Specific things worth keeping, each with `file:line`.

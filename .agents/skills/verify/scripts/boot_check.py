@@ -4,9 +4,9 @@ and judge each.
 
 Run from the repo root:
 
-    python3 .agents/skills/ours-verify/scripts/boot_check.py
-    python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/mine
-    python3 .agents/skills/ours-verify/scripts/boot_check.py --only dbg --no-build
+    python3 .agents/skills/verify/scripts/boot_check.py
+    python3 .agents/skills/verify/scripts/boot_check.py --out out/mine
+    python3 .agents/skills/verify/scripts/boot_check.py --only dbg --no-build
 
 The host tests are every executable the default build compiles in the host
 toolchain with testonly = true, asked of GN on each run (HostTests). They run
@@ -58,7 +58,7 @@ import time
 from pathlib import Path
 
 # The rule that finds the host tests is shared with scripts/cov_host.py.
-# .agents/skills/ours-verify/scripts/boot_check.py -> repo root
+# .agents/skills/verify/scripts/boot_check.py -> repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
 import host_tests  # noqa: E402
 from boot_logdir import log_directory  # noqa: E402
@@ -187,7 +187,7 @@ def repo_root() -> Path:
                              check=True, capture_output=True, text=True)
         return Path(top.stdout.strip())
     except (OSError, subprocess.CalledProcessError):
-        # .agents/skills/ours-verify/scripts/boot_check.py -> repo root
+        # .agents/skills/verify/scripts/boot_check.py -> repo root
         return Path(__file__).resolve().parents[4]
 
 
