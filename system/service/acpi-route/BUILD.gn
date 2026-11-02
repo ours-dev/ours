@@ -71,6 +71,7 @@ if (!is_host_toolchain) {
     sources = [ "src/acpi_route.cpp" ]
     deps = [
       ":logic",
+      "//system/lib/ddk",
       "//system/lib/ioservice:outgoing",
       "//system/lib/loop",
       "//system/lib/ours.acpi",
