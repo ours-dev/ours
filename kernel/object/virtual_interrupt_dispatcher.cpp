@@ -19,8 +19,14 @@ auto VirtualInterruptDispatcher::create(KernelHandle<InterruptDispatcher> *const
     if (!self) {
         return Status::NoMemory;
     }
+    // Nothing is owed yet. No handle exists, so no one can be told.
+    self->sync_signals();
     *out = KernelHandle<InterruptDispatcher>(ustl::move(self));
     *rights = default_right();
     return Status::Ok;
+}
+
+auto VirtualInterruptDispatcher::unmask_interrupt() -> void {
+    sync_signals();
 }
 } // namespace ours::object

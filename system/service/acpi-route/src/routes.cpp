@@ -11,9 +11,6 @@ namespace acpi_route {
 namespace {
     using ours::Status;
 
-    /// The MADT names the ISA bus as bus 0 in an interrupt source override.
-    constexpr auto ISA_BUS = u8{0};
-
     /// One MiB of configuration space to a bus.
     constexpr auto BUS_SHIFT = 20;
 } // namespace
@@ -28,15 +25,29 @@ auto isa_irq_to_gsi(TableDirectory const &tables, u32 const isa_irq)
         return ustl::err(Status::NotFound);
     }
 
-    auto const entries = acpi::entries<acpi::madt::InterruptSourceOverrideEntry>(*madt);
-    for (auto const &entry: entries) {
-        if (entry.bus != ISA_BUS || entry.source != isa_irq) {
+    // What the tables say nothing against: the line is its own number as a GSI,
+    // wired as an ISA line is, edge triggered and active high.
+    auto route = InterruptRoute{
+        .gsi = isa_irq,
+        .trigger = Trigger::Edge,
+        .polarity = Polarity::ActiveHigh,
+    };
+
+    // The rules are the kernel's, so that the line named here is the pin the
+    // kernel programmed for the ISA number: the kernel keeps one override per
+    // ISA number, a later entry replacing an earlier, so the LAST override of
+    // the number wins; it does not read the bus field of an entry, which the
+    // MADT fixes at 0, so neither does this; and its walk ends at the first
+    // entry that is malformed and does not look at what is left, so this one
+    // ends there too, and what was seen stands.
+    for (auto const &entry: acpi::entries<acpi::madt::InterruptSourceOverrideEntry>(*madt)) {
+        if (entry.source != isa_irq) {
             continue;
         }
 
         // "Conforms" is the bus's own: an ISA line is edge triggered and
         // active high.
-        auto route = InterruptRoute{
+        route = InterruptRoute{
             .gsi = entry.global_irq,
             .trigger = Trigger::Edge,
             .polarity = Polarity::ActiveHigh,
@@ -61,17 +72,8 @@ auto isa_irq_to_gsi(TableDirectory const &tables, u32 const isa_irq)
             default:
                 return ustl::err(Status::InvArgs);
         }
-        return ustl::ok(route);
     }
-
-    if (entries.malformed()) {
-        return ustl::err(Status::InvArgs);
-    }
-    return ustl::ok(InterruptRoute{
-        .gsi = isa_irq,
-        .trigger = Trigger::Edge,
-        .polarity = Polarity::ActiveHigh,
-    });
+    return ustl::ok(route);
 }
 
 auto ecam_window(TableDirectory const &tables, u16 const segment)

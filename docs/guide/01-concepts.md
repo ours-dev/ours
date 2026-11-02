@@ -116,8 +116,8 @@ auto Loop::run(ours::Instant const deadline) -> ours::Status {
 
 Where this is stated:
 
-- The signals a channel end and a process raise: `system/public/ours/signals.hpp:26`.
-- The deadlines, and the one-shot, level-triggered wait: `system/public/ours/syscalls.gni:295` (`object_wait_one`), `:331` (`object_wait_async`) and `:517` (`port_wait`).
+- The signals a channel end and a process raise: `system/public/ours/signals.hpp:27`.
+- The deadlines, and the one-shot, level-triggered wait: `system/public/ours/syscalls.gni:295` (`object_wait_one`), `:333` (`object_wait_async`) and `:519` (`port_wait`).
 - The port's limit of 1024 waits: `system/public/ours/port.hpp:167`.
 
 ## The Loop and its slots

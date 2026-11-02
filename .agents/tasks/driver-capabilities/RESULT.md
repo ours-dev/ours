@@ -16,6 +16,7 @@ A component touches only what it is routed. The driver's manifest uses these pro
 | `ours.resource.Iommu` | the System IOMMU resource | R3: `iommu_create` |
 | `ours.resource.Irq` | the root of the interrupt lines | R4: `interrupt_map`, `interrupt_create` |
 | `ours.resource.Ioport` | the root of the I/O ports | only for a legacy virtio, whose BAR 0 is I/O ports |
+| `ours.acpi.Route` | which GSI an ISA IRQ arrives on, and where a PCI segment's ECAM window is, from the firmware's tables | R4 for a legacy (ISA) device only; a PCI function's GSI is not answered yet (see "Where the GSI comes from") |
 
 In code: `ours_resource::get(ours_resource::MMIO_PROTOCOL)` and the like (`//system/lib/ours.resource:client`; `system/driver/pc-ps2/pc_ps2.cpp` is a complete example). Each is a duplicate of the root, so the grant is all or nothing: a driver that holds `Mmio` may map any device, not only its own (`docs/repairs/261030/kernel-object.md`, item 2).
 
@@ -30,7 +31,7 @@ vma_map(vma, options, offset, vmo, 0, size, &va)  always populated, always uncac
 
 - The kernel refuses (`AccessDenied`) a window over RAM or over a device it drives itself (the local APIC, the IO-APICs, the HPET). Anything else the root covers is granted.
 - The VMO cannot be resized, cloned or read with `vmo_read`; read and write it through the mapping, with accesses of the device's register width.
-- Configuration space is ECAM: function `bus:dev.fn`, register `off`, is at `ecam_base + (bus << 20 | dev << 15 | fn << 12 | off)`. **The base is not discovered**: it is 0xE0000000 on QEMU's q35 under the edk2 firmware the images boot with (SeaBIOS uses 0xB0000000), and the driver has to hard-code or be told it until a component reads ACPI's MCFG. `routing_checks` (`check_physical_vmo`) maps the host bridge's page and reads vendor 0x8086.
+- Configuration space is ECAM: function `bus:dev.fn`, register `off`, is at `ecam_base + (bus << 20 | dev << 15 | fn << 12 | off)`. **The base is not discovered**: it is 0xE0000000 on QEMU's q35 under the edk2 firmware the images boot with (SeaBIOS uses 0xB0000000), and the driver can ask the route service for it, `ours_acpi::ecam_base(0)` (`system/lib/ours.acpi:client`), which reads ACPI's MCFG, or hard-code it as `routing_checks` does. `routing_checks` (`check_physical_vmo`) maps the host bridge's page and reads vendor 0x8086.
 - BARs are assigned by the firmware: read them from configuration space (sizing a BAR is the driver's job), do not copy the addresses below.
 
 ### 2. DMA memory (R3)
@@ -64,16 +65,15 @@ The calls, in order:
 ```text
 (config space)  interrupt pin = byte at offset 0x3D, 1 = A ... 4 = D;   slot = the device number
 gsi = 20 + ((slot + pin) & 3)             for a function on bus 0, slot 0 to 24, pin A = 0   (see "Where the GSI comes from")
-interrupt_map(irq_root, InterruptSourceKind::Gsi, gsi, &line)
+interrupt_map(irq_root, gsi, &line)                                                 the platform's number for the pin: a GSI
 interrupt_create(irq_root, line, InterruptOptions::ModeLevelLow, &interrupt)       PCI INTx is level, active low
 port_create(...) + interrupt_bind(interrupt, port, key, Bind) + port_wait(...)     or interrupt_wait(interrupt, &timestamp)
   ... read the device's ISR (clears the cause) ...
 interrupt_ack(interrupt)
 ```
 
-- `interrupt_map` kinds: `Gsi` (the firmware's number for a pin) and `Isa` (0 to 15; the cascade, ISA 2, has no line). `NoResource` for a source with no line; `InvArgs` for an unknown kind or `0xFFFFFFFF`; `AccessDenied` unless the resource is the interrupt root. Nothing is taken until `interrupt_create`.
-- `interrupt_map` is going to lose its `kind` argument (interrupt-system D11): with P2's route service, `Isa` goes and the call becomes `interrupt_map(irq_root, gsi, &line)`. A driver that passes `Gsi` then changes one argument.
-- `interrupt_create` answers `AlreadyBound` if anything holds the line; the kernel's own lines (the timer) are held for good. The line is unmasked once the object has it, and masked again when the object is destroyed or its last handle closed: a driver that dies hands the line back, masked.
+- `interrupt_map(resource, source, out)`: `source` is the platform's own number for the pin, which is a GSI on this (ACPI) platform. There is no `kind` and no ISA number (interrupt-system D11): a legacy device's ISA IRQ is turned into a GSI by whoever reads the firmware's tables, the ACPI route service `ours.acpi.Route` (`ours_acpi::isa_irq(n)`, which gives the GSI with its trigger and polarity; pc-ps2 is the example), and the GSI is what the kernel is given. `NoResource` for a source with no line; `InvArgs` for `0xFFFFFFFF`; `BadHandle`, `BadType`, or `AccessDenied` unless the resource is the interrupt root; and `AccessDenied` again, with the root accepted, for a pin whose line the kernel holds for its own use (the timer's), which no program can take. Nothing is taken until `interrupt_create`.
+- `interrupt_create` answers `AlreadyBound` while an interrupt object (any, your own included) or another non-Permanent action is on the line, and `AccessDenied` for a line the kernel holds for its own use (the timer's), which no program can take; `interrupt_map` answers `AccessDenied` for such a pin too, after it has accepted the root (changed 2026-11-01, `.agents/tasks/irq-multi-arch/`, step 5). With the root held, `AccessDenied` from either call means the kernel owns the pin for good: do not retry, unlike `AlreadyBound`. The line is unmasked once the object has it, and masked again when the object is destroyed or its last handle closed: a driver that dies hands the line back, masked.
 - Bound to a port, an interrupt sends one packet, and interrupts before the ack fold into the next packet, which the ack sends.
 - The interrupt is delivered to the boot CPU, on a fixed vector. There is no MSI or MSI-X yet (P3).
 
@@ -96,13 +96,13 @@ DISK=/path/to/raw.img python3 scripts/qemu_boot.py
 
 - R2, R1: `de530be` the MmIo resource kind, `07d770e` `ours.resource.Mmio`, `1d9a7b4` `vmo_create_physical`, `128771c` uncached user mappings of a physical VMO.
 - R3: `3d45ee4` pinning a range, `4dce652` the IOMMU, BTI and PMT objects, `da288c3` the calls, `9db96e3` a fix to `pmt_unpin`, `06200f0` `ours.resource.Iommu` to a component, `589f7f2` `vmo_create_contiguous`.
-- R4 (the plan: `0fe1a8b`, decisions: `86311d2`): `2f6c129` `DISK=`, `1a0e04b` every IO-APIC pin is a line, `b55a682` a linear domain and lines named by virq, `4a7a90d` `interrupt_map`, `d2624a1` its review, `b5ed141` `RemapIrq` retired, `bba33f7` the checks' PCI pin.
+- R4 (the plan: `0fe1a8b`, decisions: `86311d2`): `2f6c129` `DISK=`, `1a0e04b` every IO-APIC pin is a line, `b55a682` a linear domain and lines named by virq, `4a7a90d` `interrupt_map`, `d2624a1` its review, `b5ed141` `RemapIrq` retired, `bba33f7` the checks' PCI pin. After the hand-over: the ACPI tables to user space and the route service (`89ce1ea`, `0ff14b3`, `6318f27`, `7daba6b`, `6e53d9c`), pc-ps2 on the service, and `interrupt_map` without `kind` (`git log` after `6e53d9c`).
 
 ## Verification
 
 Run in a cloud container with substituted tools (QEMU 8.2.2 and Ubuntu's OVMF 2024.02, not the project's QEMU 11.1.1; GRUB 2.12-1ubuntu7; gn `1000 (1a7c151)`; LLVM 23.1.0-rc3, ninja 1.13.2 and Rust 1.96.0 as the project's; no KVM). The details are in the change records of `docs/changes/261031/` and in the earlier ones of `261030`.
 
-- `boot_check.py` on the head: dbg PASS, 44 passed, 4 skipped, 0 failed; rel PASS, 41 passed, 8 skipped, 0 failed, 6/6 required; host tests 151 passed, 0 failed. The same with `DISK=` set. `routing_checks` runs the calls above from a component on the rel image.
+- `boot_check.py` on the head: dbg PASS, 44 passed, 4 skipped, 0 failed; rel PASS, 41 passed, 8 skipped, 0 failed, 6/6 required; host tests 151 passed, 0 failed at the time of the hand-over (154 and more since; see the later records). The same with `DISK=` set. `routing_checks` runs the calls above from a component on the rel image.
 - Kernel tests, all ok: `resource.test` 72 checks, `physvmo.test` 6, `vmaphys.test` 8, `vmopin.test` 28, `bti.test` 79, `vmocontig.test` 16, `pinlines.test` 28, `irqdomain.test` 39, `interrupt.test` 32, `interruptline.test` 59, `irq.test` 72.
 - Mutations: every new check of the interrupt work was shown to fail under a deliberate fault in the code it covers (identity virq map, interrupt path looked up by virq, root test off, resource not checked, ISA bound on 8 bits, `RemapIrq` honoured when not asked for, and others), and the files restored byte for byte.
 - Independent reads: two rounds of read-only reviewers with a skeptic for each finding (`b55a682`: 11 findings, `4a7a90d`: 9, all low), whose findings are fixed or recorded.
@@ -130,4 +130,4 @@ Run in a cloud container with substituted tools (QEMU 8.2.2 and Ubuntu's OVMF 20
 - A real IOMMU: the stub translates nothing and isolates nothing (item 3). Reclaiming memory a dead driver left pinned (item 4), and a limit on pinned memory (item 5).
 - A cap on a physical VMO and large page-table entries for it (item 1); pinned ranges refusing decommit and resize (`docs/repairs/261030/mm-pin.md`, item 2).
 - MSI and MSI-X, dynamic vectors, a target CPU per interrupt (`interrupt-system`, P3 and P4).
-- Reading ACPI's MCFG for the ECAM base, so that it is not hard-coded.
+- A driver that takes the ECAM base from the route service (`ours_acpi::ecam_base`) instead of a constant: the service answers it since `6e53d9c`, and no driver asks yet.

@@ -91,9 +91,15 @@ if (defined(ours.with)) {
 #     ours.resource.Sampling for the profiler it starts
 #     (//system/app/shell's shell.cm);
 #   - pc-ps2, the PS/2 keyboard driver (//system/driver/pc-ps2), with
-#     ours.resource.Irq and ours.resource.Ioport alone: it takes the
-#     keyboard's interrupt line and the i8042's ports with them, and logs
-#     each key.
+#     ours.resource.Irq and ours.resource.Ioport, and ours.acpi.Route from
+#     acpi-route: it asks the route service which GSI the keyboard's ISA IRQ
+#     is on, takes that interrupt line and the i8042's ports, and logs each
+#     key;
+#   - acpi-route, the ACPI route service (//system/service/acpi-route), which
+#     holds the machine's ACPI tables (the built-in ours.boot.Acpi, a
+#     read-only VMO) and nothing else, and provides ours.acpi.Route: which GSI
+#     an ISA interrupt arrives on, and where a PCI segment's configuration
+#     space is. routing_checks and pc-ps2 ask it.
 component_manifest("root.cm") {
   visibility = [ ":*" ]
 
@@ -140,6 +146,11 @@ component_manifest("root.cm") {
     {
       name = "pc-ps2"
       manifest = "//system/driver/pc-ps2:pc-ps2.cm"
+      startup = "eager"
+    },
+    {
+      name = "acpi-route"
+      manifest = "//system/service/acpi-route:acpi-route.cm"
       startup = "eager"
     },
     {
@@ -332,13 +343,29 @@ component_manifest("root.cm") {
         to = [ "#routing_checks" ]
       },
 
-      # The machine's ACPI tables, to routing_checks alone: it reads the
-      # directory and checks every table's checksum, as the route service
-      # will, which does not exist yet.
+      # The machine's ACPI tables, to the route service, which answers from
+      # them, and to routing_checks, which reads the directory and checks every
+      # table's checksum. Nothing else is offered them.
       {
         protocol = [ "ours.boot.Acpi" ]
         from = "parent"
-        to = [ "#routing_checks" ]
+        to = [
+          "#routing_checks",
+          "#acpi-route",
+        ]
+      },
+
+      # The route service's protocol, from the child that exposes it, to
+      # routing_checks, which asks it every ISA number and the ECAM window and
+      # checks the answers against what QEMU's tables say, and to pc-ps2, which
+      # asks it which GSI the keyboard's ISA IRQ arrives on.
+      {
+        protocol = [ "ours.acpi.Route" ]
+        from = "#acpi-route"
+        to = [
+          "#routing_checks",
+          "#pc-ps2",
+        ]
       },
 
       # echo's protocol, from the sibling that exposes it, renamed on the

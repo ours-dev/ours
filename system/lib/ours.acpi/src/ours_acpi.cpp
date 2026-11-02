@@ -13,11 +13,12 @@ namespace {
     constexpr auto REQUEST_FIELD_OFFSET = usize{16};
     constexpr auto REQUEST_SIZE = usize{20};
 
-    // IsaIrq's Ok reply: the status, then three u32.
-    constexpr auto ISA_GSI_OFFSET = usize{20};
-    constexpr auto ISA_TRIGGER_OFFSET = usize{24};
-    constexpr auto ISA_POLARITY_OFFSET = usize{28};
-    constexpr auto ISA_REPLY_SIZE = usize{32};
+    // IsaIrq's Ok reply: the status, then four u32.
+    constexpr auto ISA_DOMAIN_OFFSET = usize{20};
+    constexpr auto ISA_GSI_OFFSET = usize{24};
+    constexpr auto ISA_TRIGGER_OFFSET = usize{28};
+    constexpr auto ISA_POLARITY_OFFSET = usize{32};
+    constexpr auto ISA_REPLY_SIZE = usize{36};
 
     // EcamBase's Ok reply: the status, the buses and a zero word, then two u64.
     constexpr auto ECAM_FIRST_BUS_OFFSET = usize{20};
@@ -28,7 +29,7 @@ namespace {
     constexpr auto ECAM_REPLY_SIZE = usize{40};
 
     static_assert(wire::HEADER_SIZE == REQUEST_FIELD_OFFSET);
-    static_assert(wire::STATUS_OFFSET + sizeof(u32) == ISA_GSI_OFFSET);
+    static_assert(wire::STATUS_OFFSET + sizeof(u32) == ISA_DOMAIN_OFFSET);
     static_assert(ISA_POLARITY_OFFSET + sizeof(u32) == ISA_REPLY_SIZE);
     static_assert(ECAM_SIZE_OFFSET + sizeof(u64) == ECAM_REPLY_SIZE);
     static_assert(ISA_REPLY_SIZE <= wire::MAX_MESSAGE_BYTES);
@@ -134,8 +135,8 @@ auto decode_ecam_base(Message const message) -> ustl::Result<EcamBaseRequest, St
 
 auto encode_isa_irq_reply(std::span<u8> const bytes, u32 const txid, IsaIrqReply const &reply)
     -> Encoded {
-    auto const has_body =
-        reply.gsi != 0 || reply.trigger != Trigger::Edge || reply.polarity != Polarity::ActiveHigh;
+    auto const has_body = reply.domain != 0 || reply.gsi != 0 || reply.trigger != Trigger::Edge ||
+                          reply.polarity != Polarity::ActiveHigh;
     if (reply.status != Status::Ok) {
         if (has_body) {
             return ustl::err(Status::InvArgs);
@@ -150,6 +151,7 @@ auto encode_isa_irq_reply(std::span<u8> const bytes, u32 const txid, IsaIrqReply
         return ustl::err(started.unwrap_err());
     }
     auto const message = started.unwrap();
+    wire::store(message, ISA_DOMAIN_OFFSET, reply.domain);
     wire::store(message, ISA_GSI_OFFSET, reply.gsi);
     wire::store(message, ISA_TRIGGER_OFFSET, static_cast<u32>(reply.trigger));
     wire::store(message, ISA_POLARITY_OFFSET, static_cast<u32>(reply.polarity));
@@ -173,6 +175,7 @@ auto decode_isa_irq_reply(Message const message, u32 const txid)
     }
     return ustl::ok(IsaIrqReply{
         .status = Status::Ok,
+        .domain = wire::load<u32>(message.bytes, ISA_DOMAIN_OFFSET),
         .gsi = wire::load<u32>(message.bytes, ISA_GSI_OFFSET),
         .trigger = static_cast<Trigger>(trigger),
         .polarity = static_cast<Polarity>(polarity),

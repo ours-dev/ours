@@ -21,8 +21,8 @@
 namespace init {
 /// Component instances, the root's own among them (D27: 8 components; dev
 /// has outgrown the design's count with the filesystem component, and the
-/// next component bumps this with its own).
-inline constexpr auto MAX_INSTANCES = usize{10};
+/// next component bumps this with its own: the ACPI route service did).
+inline constexpr auto MAX_INSTANCES = usize{11};
 
 /// /boot connections: namespace entries the root binds, and every Open and
 /// Clone through them (D27: 128).
@@ -35,9 +35,9 @@ inline constexpr auto MAX_LAUNCHER_CONNECTIONS = usize{4};
 
 /// The protocols the root serves with a ResourceServer each
 /// (resource_server.hpp): ours.resource's Debug, Irq, Ioport, Mmio, Iommu and
-/// Sampling, and ours.kernel.RootJob (init.cpp builds one per protocol). A server
-/// added there is a server counted here, or LOOP_SLOTS falls short by its
-/// connections.
+/// Sampling, ours.boot.Acpi, and ours.kernel.RootJob (init.cpp builds one per
+/// protocol). A server added there is a server counted here, or LOOP_SLOTS
+/// falls short by its connections.
 inline constexpr auto RESOURCE_SERVERS = usize{8};
 
 /// Connections of one ResourceServer. D27 does not size them; a connection

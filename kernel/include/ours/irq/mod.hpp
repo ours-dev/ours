@@ -19,33 +19,47 @@ struct IrqFrame;
 namespace ours::irq {
 class Action;
 struct Chip;
+class DescTable;
+class DomainSlot;
 
-/// Builds the table of interrupt lines: one line for each hardware number in
-/// `hirqnums`. On x86 that number is the GSI, which is also what dispatch
-/// delivers, since the platform programs each GSI with the vector
-/// PlatformIrqMin + GSI. A line is named by its virq, which the table's
-/// domain assigns (Domain) and which is never the hardware number:
-/// virq_of_hwirq() and hwirq_of_virq() go between the two. Dispatch, which
-/// has the hardware number, looks the line up by it.
+/// The machine's directory of interrupt domains (DomainRegistry), what every
+/// function below resolves its numbers through. A control call opens a short
+/// read of the directory (a task::IrqRcuReadGuard, interrupts off) and holds
+/// it to the last use of the line, so a domain being taken away is never half
+/// seen; nothing in the section sleeps, allocates or copies from user memory.
+/// The interrupt path does not read the directory: the root handler loads its
+/// domain's table from the DomainSlot the directory published it into, and
+/// hands it to handle_irq_generic().
+///
+/// Registers the root controller's lines as the machine's first domain: one
+/// line for each hardware number in `hirqnums`, in a table of its own, held
+/// by the directory under DomainId::Root and published into `slot`, which the
+/// root handler reads for every interrupt. On x86 that number is the GSI,
+/// which is also what dispatch delivers, since the platform programs each GSI
+/// with the vector PlatformIrqMin + GSI. A line is named by its virq, which
+/// the domain assigns (Domain) and which is never the hardware number:
+/// virq_of_hwirq() and hwirq_of_virq() go between the two.
 ///
 /// Every line is bound to `chip`, the controller that drives its pin, which
 /// mask(), unmask() and configure() go through, and which ends each of the
-/// line's interrupts. The chip outlives the table. Each line takes the flow
+/// line's interrupts. The chip outlives the domain. Each line takes the flow
 /// that suits how the chip says its pin signals: the level flow for a level
 /// pin, the edge flow otherwise.
 ///
 /// The platform calls it once, after it has read its interrupt controllers
 /// from the firmware and programmed the lines it found, and before it unmasks
-/// any of them. Until then there are no lines: attach() answers NoResource,
-/// and an interrupt finds no line and is ended by its caller
-/// (handle_irq_generic() answers false).
+/// any of them, and before it installs the handler that reads `slot`. Until
+/// then there are no lines: attach() answers NoResource, and an interrupt
+/// finds no line and is ended by its caller (handle_irq_generic() answers
+/// false on a null table).
 ///
-/// BadState if the table is built already, InvArgs for INVALID_V_IRQ_NUM,
-/// an empty list or a chip with no eoi or no mask, AlreadyExists if a number
-/// is given twice, NoMemory.
+/// AlreadyExists if the root domain is registered already, BadState if `slot`
+/// holds a table, InvArgs for an invalid hardware number, an empty list or a
+/// chip with no eoi or no mask, NoMemory.
 /// Nothing is kept from a call that fails.
 [[nodiscard]]
-auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> Status;
+auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip, DomainSlot &slot)
+    -> Status;
 
 /// Hangs `action` on line `virqnum`; from then on every interrupt on the
 /// line calls the action's handler with the action's context. The caller
@@ -64,9 +78,13 @@ auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> 
 /// AlreadyBound if the line is Permanent, or holds an action and the two do
 /// not both say Shared, or holds one and this action says Permanent;
 /// BadState if the action is on a line already, NoResource if there is no
-/// such line, InvArgs for INVALID_V_IRQ_NUM, a null handler, or an action
+/// such line or the kernel is taking it away (a removal of its domain has
+/// marked it, and the answer clears if the removal is refused), InvArgs for
+/// INVALID_V_IRQ_NUM, a null handler, or an action
 /// that says Oneshot together with Permanent or Shared; NotSupported for a
-/// Oneshot action on a line whose controller cannot mask and unmask.
+/// Oneshot action on a line whose controller cannot mask and unmask, or
+/// cannot say how its pins signal (give a mode: the attach with a mode),
+/// which is answered before AlreadyBound.
 [[nodiscard]]
 auto attach(VIrqNum virqnum, Action &action) -> Status;
 
@@ -99,7 +117,10 @@ auto attach(VIrqNum virqnum, Action &action, ustl::Option<LineMode> mode)
     -> ktl::Result<TriggerMode>;
 
 /// Takes `action` off the line it hangs on; NotFound if it hangs on none,
-/// AlreadyBound if the line is Permanent.
+/// AlreadyBound if the line is Permanent. NotFound also answers an action the
+/// kernel took off (Desc::revoke()), and then means the removal is done with
+/// the action and what it is embedded in, so the owner may free it as it may
+/// after Ok.
 ///
 /// A barrier: it returns only once no handler of the line is running on any
 /// CPU, so the owner may free the action and its context right after. It
@@ -119,8 +140,9 @@ auto detach(Action &action) -> Status;
 /// interrupt again at once.
 ///
 /// Does nothing if `action` is no longer on that line -- a detach that ran
-/// first has cleared held and masked the line for it -- or if the line is
-/// not Oneshot, or if there is no such line. The owner names the line
+/// first, or a removal, has cleared held and masked the line for it -- or if
+/// the line is not Oneshot, or if there is no such line. A line marked for
+/// removal is finalized as any other. The owner names the line
 /// because the action's own record of it is written under that line's lock,
 /// and a finalize may race a detach of the same action.
 ///
@@ -155,14 +177,16 @@ auto finalize_oneshot(VIrqNum virqnum, Action const &action) -> void;
 /// itself.
 ///
 /// NoResource if there is no such line, InvArgs for INVALID_V_IRQ_NUM,
-/// NotSupported if the line's controller cannot mask.
+/// NotSupported if the line's controller cannot mask. A line the kernel is
+/// taking away is masked as any other.
 [[nodiscard]]
 auto mask(VIrqNum virqnum) -> Status;
 
 /// Unmasks line `virqnum` at its controller, unless the line is held: a
 /// Oneshot line whose thread still owes its device a service stays masked,
 /// and finalize_oneshot() unmasks it once the thread is done. Answers Ok
-/// either way, since the line runs again as soon as nothing is owed.
+/// either way, since the line runs again as soon as nothing is owed. A line
+/// the kernel is taking away is not started: NoResource.
 ///
 /// Held is read under the line's lock, in the same hold as the unmask, so a
 /// dispatch on another CPU cannot hold the line between the two. The owner
@@ -185,7 +209,8 @@ auto unmask(VIrqNum virqnum) -> Status;
 /// the mode again.
 ///
 /// Thread context only: it takes the line's lock. AlreadyBound if the line
-/// has an action, the same answers as mask() otherwise.
+/// has an action, NoResource also if the kernel is taking the line away, the
+/// same answers as mask() otherwise.
 [[nodiscard]]
 auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Status;
 
@@ -215,12 +240,27 @@ auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
 [[nodiscard]]
 auto is_masked_for_test(VIrqNum virqnum) -> ktl::Result<bool>;
 
+/// Aims line `virqnum` at the CPUs in `targets`. NotSupported for every line:
+/// no controller moves a line yet, and each line stays on the CPU the platform
+/// aimed it at. The call, including what it returns, is settled by the work of
+/// interrupt-system P4.
 auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 
-/// The virq of the line made for hardware number `hirqnum`, the number the
-/// platform programmed its pin with (on x86, the GSI); INVALID_V_IRQ_NUM if
-/// it made none. Never equal to `hirqnum`, and not the same on another
-/// machine or another kernel: a program asks, and does not compute it.
+/// The resolver of the user ABI: the virq of the line made for hardware
+/// number `hirqnum` in the domain named `id`; INVALID_V_IRQ_NUM if no such
+/// domain is registered or it holds no such line. interrupt_map asks it with
+/// the domain and the source the route service's answer named. The number is
+/// good for good: virqs are not reused, so it is safe to keep after the
+/// lookup, and never equal to `hirqnum`, and not the same on another machine
+/// or another kernel: a program asks, and does not compute it.
+[[nodiscard]]
+auto virq_of_domain(DomainId id, HIrqNum hirqnum) -> VIrqNum;
+
+/// The same question asked of the root controller's domain, whose numbers are
+/// the platform's single numbering (on x86, the GSI): what the kernel's own
+/// code names a root line by. The lines of a second domain are asked for by
+/// domain and hardware number together (virq_of_domain()), never by the
+/// number alone, since two domains may hold the same one.
 [[nodiscard]]
 auto virq_of_hwirq(HIrqNum hirqnum) -> VIrqNum;
 
@@ -237,10 +277,25 @@ auto hwirq_of_virq(VIrqNum virqnum) -> HIrqNum;
 /// knows how the interrupt arrived, ends it itself. Either way it is ended
 /// exactly once.
 ///
+/// The lines are those of `table`, the handler's own domain, which the
+/// handler loads from the DomainSlot the directory published its table into:
+/// one acquire load, and no read of the directory on the interrupt path. A
+/// null table answers false, the shape of a domain that is gone, whose
+/// handler ends what it receives itself.
+///
 /// By hardware number, not virq: it is what the interrupt entry has, and it
-/// indexes the line table directly, with no lookup between.
+/// indexes the table directly, with no lookup between.
 [[nodiscard]]
-auto handle_irq_generic(HIrqNum hirqnum) -> bool;
+auto handle_irq_generic(DescTable *table, HIrqNum hirqnum) -> bool;
+
+/// The table of the root controller's domain, what a root handler holds its
+/// DomainSlot for and what handle_irq_generic() dispatches through. Null
+/// before init_lines(). For a kernel test that plays an interrupt by hardware
+/// number, as pinlines.test does for a number no pin has; everything else
+/// names a line by its virq. The root domain is never removed, so the
+/// pointer, once it is not null, is good for good.
+[[nodiscard]]
+auto root_table_for_test() -> DescTable *;
 
 /// The flow of line `virqnum` for a kernel test that plays an interrupt from
 /// thread context: the same actions under the same locks as
@@ -253,13 +308,69 @@ auto handle_irq_generic(HIrqNum hirqnum) -> bool;
 [[nodiscard]]
 auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn;
 
+/// What the removal of a domain does to one of its lines (DescTable::
+/// revoke_line()): marks the line and takes its actions off it, telling
+/// each through its cancel hook; AlreadyBound with nothing changed for a
+/// Permanent line or an action with no hook, NoResource for no such line.
+/// Nothing calls it but tests yet: no tree code removes a domain.
+/// unmark_dying_for_test() makes the line take actions again.
+[[nodiscard]]
+auto revoke_line_for_test(VIrqNum virqnum) -> Status;
+auto unmark_dying_for_test(VIrqNum virqnum) -> void;
+
 /// How many interrupts on line `virqnum` no action handled since boot;
 /// none if there is no such line.
 [[nodiscard]]
-auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
+auto spurious_count(VIrqNum const virqnum) -> ustl::Option<u64>;
 
-auto handle_irq_preamble(HIrqNum irqnum, ::arch::IrqFrame *frame) -> void;
+/// Whether the kernel itself holds line `virqnum`: an action that says
+/// Permanent is on it, as the legacy timer's is. False for a line nobody is on,
+/// a line a user program's interrupt object holds, and a number that is no
+/// line. A line is Permanent for good once it is, and no user program can make
+/// one; the kernel makes them as it starts, and an answer asked for before it
+/// has taken its own line can be out of date. So the answer chooses which
+/// refusal a program gets and never what it is granted: attach() is the
+/// authority, and refuses a Permanent line with AlreadyBound whatever was asked
+/// first. A kernel driver that takes a line for its own uses a Permanent
+/// action, and so keeps programs off it: interrupt_map and interrupt_create
+/// answer AccessDenied for it. A Permanent action cannot be Oneshot or Shared
+/// and is never detached, so a kernel holder that needs any of that is not
+/// reported.
+[[nodiscard]]
+auto is_kernel_owned(VIrqNum virqnum) -> bool;
+
+/// The bookkeeping on entry to a trap, which arch calls once, before it
+/// dispatches: records the frame and raises the counts that keep this CPU from
+/// switching threads until the exit. Exceptions take it too, a page fault
+/// among them.
+auto handle_irq_preamble(::arch::IrqFrame *frame) -> void;
+
+/// The bookkeeping on exit from a trap, which arch calls once, after the
+/// dispatch. Answers whether the CPU should switch threads before returning
+/// to the interrupted context; the switch is arch's.
 auto handle_irq_postamble() -> bool;
+
+/// The function the root interrupt controller's driver gives arch. Arch calls
+/// it for an interrupt that comes through the root controller, after it has
+/// separated the causes it can tell apart without the controller (x86's
+/// vector, a RISC-V trap cause: the local timer and the inter-processor
+/// interrupts) and before the postamble. Where only the controller's own read
+/// tells them apart (an acknowledge read returns the processor-local
+/// interrupts too), the handler hands those back to arch. The handler finds
+/// out which interrupt it is in the way its controller allows (a vector, an
+/// acknowledge read, a claim), hands it to handle_irq_generic(), and ends the
+/// interrupt itself if no line had it, since nothing else knows how.
+using RootHandler = auto (*)(::arch::IrqFrame *frame) -> void;
+
+/// Installs `handler` as the root handler. There is one for the kernel, and it
+/// is installed once, before the first interrupt of the root controller can be
+/// taken: the controller's driver does it when it starts, ahead of the
+/// instruction that enables interrupts. A second call is a kernel bug.
+auto set_root_handler(RootHandler handler) -> void;
+
+/// Calls the root handler, in interrupt context. An interrupt that arrives
+/// before one is installed is a kernel bug.
+auto handle_root_irq(::arch::IrqFrame *frame) -> void;
 
 /// Trap frame of the interrupt currently handled on this CPU, or nullptr
 /// outside interrupt context.

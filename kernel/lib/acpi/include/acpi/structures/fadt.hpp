@@ -13,8 +13,8 @@ namespace acpi {
 /// Reference: ACPI v6.5 Section 5.2.9.
 ///
 /// The root table does not list the DSDT: this table points to it, by `dsdt`
-/// and, from revision 2 on, by the 64 bit `x_dsdt`. A firmware's table may be
-/// shorter than this structure (revision 1 ends before `x_dsdt`), so a reader
+/// and, from ACPI 2.0 on, by the 64 bit `x_dsdt`. A firmware's table may be
+/// shorter than this structure (a 1.0 table ends before `x_dsdt`), so a reader
 /// checks `header.length` against the field it is about to use. The fields
 /// after `x_dsdt` (the extended register blocks, the sleep control registers,
 /// the hypervisor id) are not declared: nothing reads them.

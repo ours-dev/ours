@@ -22,7 +22,7 @@
 //     included;
 //   - each ISA IRQ names the line made for the pin the MADT sends it to,
 //     asked of the firmware's tables and not of the irq layer, and the
-//     cascade names none (interrupt_map's Isa kind asks the same function);
+//     cascade names none (the timer code asks the same function);
 //   - a pin from the ISA range up is idle: its entry is masked, and it
 //     signals as PCI does, level-triggered;
 //   - a GSI used as a virq names no line, and neither does the number past
@@ -192,7 +192,7 @@ namespace {
                 "the number past the last virq has no hardware number");
         verdict(tally, irq::hwirq_of_virq(first_virq - 1) == irq::INVALID_H_IRQ_NUM,
                 "the number before the first virq has none");
-        verdict(tally, !irq::handle_irq_generic(highest_gsi + 1),
+        verdict(tally, !irq::handle_irq_generic(irq::root_table_for_test(), highest_gsi + 1),
                 "an interrupt on the hardware number past the last pin finds no line");
         verdict(tally, irq::virq_of_hwirq(irq::INVALID_H_IRQ_NUM) == irq::INVALID_V_IRQ_NUM,
                 "the invalid hardware number has no virq");

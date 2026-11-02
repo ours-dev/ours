@@ -675,9 +675,11 @@ auto main(int, char **) -> int {
     // GSI 23. The firmware's tables name the same wiring, and the route
     // service planned for them will name the line from those instead of this
     // constant. PCI INTx is level and active low, which ModeLevelLow says.
+    // ACPI's numbering is the root domain's, which interrupt_map resolves
+    // from.
     auto line_number = u32{0};
-    if (auto const status = ours::interrupt_map(
-            irq_resource.unwrap(), ours::InterruptSourceKind::Gsi, GSI_DISK, &line_number);
+    if (auto const status = ours::interrupt_map(irq_resource.unwrap(), ours::ROOT_INTERRUPT_DOMAIN,
+                                                GSI_DISK, &line_number);
         status != Status::Ok) {
         return fail(status);
     }

@@ -395,11 +395,9 @@ namespace {
             return {};
         }
 
-        // num_tables() counts the root table's entries; the DSDT is the one
-        // more, from the FADT. Fewer exported than that means the firmware had
-        // a table that could not be mapped or whose checksum did not hold.
-        log::info("userabi: {} of {} ACPI tables, {} bytes, handed to userboot", layout.count,
-                  tables->num_tables() + 1, used.unwrap());
+        log::info("userabi: {} ACPI tables, {} bytes, handed to userboot; DSDT {}, {} left out",
+                  layout.count, used.unwrap(), layout.has_dsdt ? "found" : "not found",
+                  layout.skipped);
         auto handle = object::Handle::make(
             object::KernelHandle<object::Dispatcher>(ustl::move(vmo)), rights & ACPI_TABLES_RIGHTS);
         if (!handle) {

@@ -183,17 +183,52 @@ auto InterruptDispatcher::trigger(Instant const timestamp) -> Status {
         return Status::BadState;
     }
 
-    // Preemption off: the signal may wake a thread, and the reschedule that
-    // asks for has to wait until the lock is dropped.
-    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
-    if (m_state == State::Destroyed) {
-        return Status::Cancelled;
+    auto status = Status::Ok;
+    {
+        // Preemption off: the signal may wake a thread, and the reschedule that
+        // asks for has to wait until the lock is dropped.
+        Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
+        if (m_state == State::Destroyed) {
+            status = Status::Cancelled;
+        } else {
+            if (m_timestamp.is_none()) {
+                m_timestamp = timestamp;
+            }
+            deliver_locked();
+        }
     }
-    if (m_timestamp.is_none()) {
-        m_timestamp = timestamp;
+    // The debt moved (or, for a destroyed object, the signal says it owes
+    // nothing again): after the state, with the lock dropped.
+    sync_signals();
+    return status;
+}
+
+auto InterruptDispatcher::sync_signals() -> void {
+    if (!(m_flags & Flags::Virtual)) {
+        return;
     }
-    deliver_locked();
-    return Status::Ok;
+
+    auto const owed = [this]() -> bool {
+        Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
+        return m_state == State::Triggered || m_state == State::NeedAck;
+    };
+
+    auto now = owed();
+    for (;;) {
+        if (now) {
+            update_state(Signals::Idle, Signals::None);
+        } else {
+            update_state(Signals::None, Signals::Idle);
+        }
+        // The debt moved while the signal was being set: set it again, from
+        // the newer state. A change that happens after this read has its own
+        // call after it.
+        auto const again = owed();
+        if (again == now) {
+            return;
+        }
+        now = again;
+    }
 }
 
 /// A line's interrupt brings no time of its own, so it is taken here, on the
@@ -277,8 +312,17 @@ auto InterruptDispatcher::destroy() -> Status {
         old_state = std::exchange(m_state, State::Destroyed);
     }
     if (old_state == State::Destroyed) {
+        // Destroyed already: by an earlier destroy(), or by the kernel taking
+        // the line away. In the second case the removal may be using the
+        // object -- the action embedded in it -- until it lets the line go,
+        // and this caller is about to free the object. The detach waits for
+        // the removal, or finds it done.
+        unregister_interrupt_handler();
         return Status::Ok;
     }
+
+    // After the state, so that a thread this wakes finds the object destroyed.
+    sync_signals();
 
     mask_interrupt();
     deactivate_interrupt();
@@ -305,6 +349,31 @@ auto InterruptDispatcher::destroy() -> Status {
     // park.
     m_event.signal();
     return Status::Ok;
+}
+
+auto InterruptDispatcher::line_revoked() -> void {
+    m_canary.verify<Self>();
+    // A virtual interrupt has no line to lose, and its destroy raises Idle
+    // through a mutex that cannot be taken under L2.
+    DEBUG_ASSERT(!(m_flags & Flags::Virtual), "a virtual interrupt's line was taken away");
+
+    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_spinlock};
+    auto const old_state = std::exchange(m_state, State::Destroyed);
+    if (old_state == State::Destroyed) {
+        return;
+    }
+
+    // destroy()'s tail: a bound port loses the packet it holds, whose time is
+    // lost with the object; otherwise the parked waiter wakes and finds
+    // Destroyed, and with none parked the signal is latched for the next wait.
+    // Only a physical interrupt has a line to lose, so no signal to keep up.
+    if (m_port) {
+        // Nothing to report: the object is destroyed, and a packet already
+        // read by the port's reader is not this removal's to give back.
+        auto _ = m_port->remove_interrupt_packet(&m_port_packet);
+        return;
+    }
+    m_event.signal();
 }
 
 auto InterruptDispatcher::bind(ustl::Arc<PortDispatcher> port, u64 const key) -> Status {

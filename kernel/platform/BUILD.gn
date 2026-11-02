@@ -26,7 +26,6 @@ cpp_interface("headers") {
     "include/ours/platform/acpi.hpp",
     "include/ours/platform/debug_console.hpp",
     "include/ours/platform/init.hpp",
-    "include/ours/platform/interrupt.hpp",
     "include/ours/platform/ioport.hpp",
     "include/ours/platform/isa.hpp",
     "include/ours/platform/mmio.hpp",

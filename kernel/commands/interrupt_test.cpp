@@ -37,6 +37,23 @@
 //     signal left standing would make a later wait answer BadState, and a
 //     lost one would leave a waiter parked for good.
 //
+//   - every destroy waits for the line, also one that finds the object
+//     destroyed already (.agents/tasks/irq-multi-arch/PLAN.md, step 9),
+//     counted on an object of the test's own; and, on three CPUs, with the
+//     kernel's removal of the line held in its cancel hook, a destroy does not
+//     return until the removal has let the object go: the interleaving whose
+//     use after free the rule is there for;
+//   - a virtual interrupt's Idle signal, up while the object is owed no ack
+//     (.agents/tasks/irq-multi-arch/PLAN.md, step 4): up from the creation,
+//     dropped by a trigger, a trigger that folds into a pending interrupt or
+//     into one not yet acked leaves it down; raised by the ack of the last
+//     interrupt, whether that ack is a wait that finds nothing pending, parked
+//     on a second thread, or an interrupt_ack on a port, and by a destroy,
+//     which keeps it up through a trigger that is then refused; an observer
+//     attached while it is down is told when it goes up; and with triggers on
+//     one CPU racing a taker's waits and acks on another, ROUNDS times, it is
+//     up again once the taker has parked, as many times as it is asked;
+//
 // A lost wakeup is told from a slow one by progress, not by a deadline for
 // the whole run: the turns fail only once no round has finished for
 // LOST_AFTER. A round on dev.dbg_1 took about 8 ms on 2026-10-04 (1000 in
@@ -47,18 +64,25 @@
 // A console command rather than a unit test for the reason mutex.stress
 // gives: a wait's slow path is the scheduler.
 #include <ours/cpu.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/interrupt.hpp>
+#include <ours/irq/action.hpp>
+#include <ours/irq/chip.hpp>
+#include <ours/irq/desc_table.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
+#include <ours/object/observer.hpp>
 #include <ours/object/port_dispatcher.hpp>
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
 #include <ours/port.hpp>
 #include <ours/syscall.hpp>
+#include <ours/task/sched/common.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
+#include <array>
 #include <atomic>
 #include <initializer_list>
 #include <string_view>
@@ -67,6 +91,7 @@
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
+#include <ustl/views/span.hpp>
 
 namespace ours {
 namespace {
@@ -626,6 +651,193 @@ namespace {
         return true;
     }
 
+    /// Whether |interrupt| has Idle up.
+    auto idle(InterruptDispatcher &interrupt) -> bool {
+        return !!(interrupt.signals() & Signals::Idle);
+    }
+
+    /// Counts the times its object tells it Idle is up.
+    class IdleObserver final: public object::SignalObserver {
+      public:
+        std::atomic<usize> matched{0};
+
+        auto on_match(Signals) -> void override {
+            matched.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        auto on_cancel(Signals) -> void override {}
+    };
+
+    /// Whether |port| holds an Interrupt packet for |interrupt|'s bind.
+    auto read_packet(PortDispatcher &port) -> bool {
+        auto packet = PortPacket{};
+        return port.dequeue(Instant{0}, &packet) == Status::Ok &&
+               packet.type == PacketType::Interrupt && packet.key == PACKET_KEY;
+    }
+
+    /// The Idle signal at each step of an interrupt's life that one thread can
+    /// reach, then the wait that is the ack, which takes a second.
+    auto check_idle_signal(Tally &tally, CpuNum const cpu) -> void {
+        KernelHandle<InterruptDispatcher> handle;
+        if (!make_interrupt(&handle)) {
+            verdict(tally, false, "make a virtual interrupt");
+            return;
+        }
+        auto &interrupt = *handle.dispatcher();
+        auto ignored = Instant{0};
+
+        verdict(tally, idle(interrupt), "a new interrupt owes no ack: Idle is up");
+        verdict(tally, interrupt.trigger(TRIGGERED_AT) == Status::Ok && !idle(interrupt),
+                "a trigger drops Idle");
+        verdict(tally, interrupt.trigger(TRIGGERED_AT + 1) == Status::Ok && !idle(interrupt),
+                "a trigger that folds into the pending one leaves it down");
+        verdict(tally, interrupt.wait(&ignored) == Status::Ok && !idle(interrupt),
+                "a wait that takes the interrupt leaves it down: its ack is owed");
+        verdict(tally, interrupt.trigger(TRIGGERED_AT + 2) == Status::Ok && !idle(interrupt),
+                "a trigger while the last is not acked leaves it down");
+        verdict(tally, interrupt.wait(&ignored) == Status::Ok && !idle(interrupt),
+                "a wait that acks the last and takes the pending one leaves it down");
+        verdict(tally, interrupt.destroy() == Status::Ok && idle(interrupt),
+                "a destroy raises Idle");
+        verdict(tally, interrupt.trigger(TRIGGERED_AT) == Status::Cancelled && idle(interrupt),
+                "and a trigger it refuses leaves it up");
+
+        // The wait that is the ack: the interrupt is taken on this thread, so
+        // the waiter's wait finds NeedAck with nothing pending, clears the
+        // debt, and parks.
+        Waiter *waiter = nullptr;
+        auto *const thread = park_waiter(tally, cpu, &waiter, [](InterruptDispatcher &fresh) {
+            auto taken = Instant{0};
+            return fresh.trigger(TRIGGERED_AT) == Status::Ok && fresh.wait(&taken) == Status::Ok &&
+                   !idle(fresh);
+        });
+        if (thread == nullptr) {
+            return;
+        }
+        auto &second = *waiter->interrupt.dispatcher();
+        verdict(tally, idle(second), "a wait that acks the last and parks raises Idle");
+        verdict(tally, second.trigger(TRIGGERED_AT + 3) == Status::Ok,
+                "trigger the parked waiter's interrupt");
+        if (finish_waiter(tally, thread, waiter, "and it wakes the waiter")) {
+            verdict(tally, waiter->status == Status::Ok && !idle(second),
+                    "the woken wait takes the interrupt, and Idle is down");
+            delete waiter;
+        }
+    }
+
+    /// The same on a port, with an observer told when Idle goes up.
+    auto check_idle_signal_on_a_port(Tally &tally) -> void {
+        KernelHandle<InterruptDispatcher> handle;
+        KernelHandle<PortDispatcher> port;
+        auto rights = Rights::None;
+        if (!make_interrupt(&handle) || PortDispatcher::create(PortCreateOptions::BindToInterrupt,
+                                                               &port, &rights) != Status::Ok) {
+            verdict(tally, false, "make a virtual interrupt and a port to bind it to");
+            return;
+        }
+        auto &interrupt = *handle.dispatcher();
+        verdict(tally,
+                interrupt.bind(port.dispatcher(), PACKET_KEY) == Status::Ok && idle(interrupt),
+                "bind: nothing is owed yet, Idle is up");
+
+        IdleObserver observer;
+        verdict(tally, interrupt.trigger(TRIGGERED_AT) == Status::Ok && !idle(interrupt),
+                "a trigger sends the packet and drops Idle");
+        verdict(tally,
+                interrupt.attach_observer(&observer, &observer, Signals::Idle) == Status::Ok &&
+                    observer.matched.load() == 0,
+                "an observer for Idle attached while it is down is not told");
+        verdict(tally, interrupt.trigger(TRIGGERED_AT + 1) == Status::Ok && !idle(interrupt),
+                "a trigger while the packet is not acked folds, and Idle stays down");
+        verdict(tally, read_packet(*port.dispatcher()) && !idle(interrupt),
+                "reading the packet does not raise Idle");
+        verdict(tally,
+                interrupt.ack() == Status::Ok && !idle(interrupt) && observer.matched.load() == 0,
+                "an ack that sends the folded interrupt as the next packet leaves it down");
+        verdict(tally, read_packet(*port.dispatcher()), "read the next packet");
+        verdict(tally, interrupt.ack() == Status::Ok && idle(interrupt),
+                "the ack that leaves nothing more to deliver raises Idle");
+        verdict(tally, observer.matched.load() == 1, "and the observer is told, once");
+        auto remaining = Signals::None;
+        auto _ = interrupt.detach_observer(&observer, &remaining);
+        verdict(tally, interrupt.destroy() == Status::Ok && idle(interrupt), "destroy");
+    }
+
+    /// A thread that waits on |interrupt| over and over, which takes each
+    /// interrupt and acks it with the wait after, until the wait answers
+    /// Cancelled.
+    struct Taker {
+        KernelHandle<InterruptDispatcher> interrupt;
+        std::atomic<usize> taken{0};
+    };
+
+    auto taker_routine(void *const arg) -> i32 {
+        auto &taker = *static_cast<Taker *>(arg);
+        auto at = Instant{0};
+        while (taker.interrupt.dispatcher()->wait(&at) == Status::Ok) {
+            taker.taken.fetch_add(1, std::memory_order_relaxed);
+        }
+        return 0;
+    }
+
+    /// Idle follows the state when triggers and acks race. A driver that does
+    /// not wait for Idle between its triggers (an edge pin) fires at one CPU
+    /// while a taker on another takes the interrupts and acks them, ROUNDS
+    /// times. Whatever the interleaving, once the driver has stopped and the
+    /// taker has acked the last interrupt and parked, nothing is owed, and
+    /// Idle must be up; and a trigger then has to bring it down and the ack
+    /// after it back up, each time. A signal that was dropped by a trigger and
+    /// then raised by an ack that landed before the drop would stay down here
+    /// for ever.
+    auto check_idle_follows_the_state(Tally &tally, usize const rounds, CpuNum const taker_cpu)
+        -> void {
+        auto *const taker = new (mm::GAF_KERNEL) Taker{};
+        if (taker == nullptr || !make_interrupt(&taker->interrupt)) {
+            verdict(tally, false, "make a virtual interrupt");
+            delete taker;
+            return;
+        }
+        auto &interrupt = *taker->interrupt.dispatcher();
+        auto *const thread = spawn_on("interrupt-test-taker", taker_routine, taker, taker_cpu);
+        if (thread == nullptr) {
+            verdict(tally, false, "spawn the taker");
+            delete taker;
+            return;
+        }
+
+        for (auto round = usize{0}; round < rounds; ++round) {
+            if (interrupt.trigger(TRIGGERED_AT + static_cast<Instant>(round)) != Status::Ok) {
+                verdict(tally, false, "trigger while the taker takes and acks");
+                break;
+            }
+            // Sometimes let the taker run ahead, sometimes not.
+            for (auto spin = usize{0}; spin < (round % 7) * 40; ++spin) {
+                arch::spin_hint();
+            }
+        }
+        auto const settled =
+            poll_until([thread, &interrupt] { return is_parked(thread) && idle(interrupt); });
+        verdict(tally, settled,
+                "after racing triggers and acks, once the taker has parked, Idle is up");
+
+        auto again = true;
+        for (auto round = usize{0}; round < 3 && again; ++round) {
+            again =
+                interrupt.trigger(TRIGGERED_AT) == Status::Ok &&
+                poll_until([thread, &interrupt] { return is_parked(thread) && idle(interrupt); });
+        }
+        verdict(tally, again, "and a trigger and the ack after it take it down and up again");
+
+        verdict(tally, interrupt.destroy() == Status::Ok && idle(interrupt),
+                "destroy the interrupt");
+        if (joined(thread)) {
+            delete taker;
+        } else {
+            verdict(tally, false, "the taker ends once the interrupt is destroyed");
+            log::error("interrupt.test:   leaking the taker; its thread may still use it");
+        }
+    }
+
     auto check_turns(Tally &tally, usize const rounds, CpuNum const pinger_cpu,
                      CpuNum const ponger_cpu) -> void {
         auto *const turns = new (mm::GAF_KERNEL) Turns{};
@@ -697,6 +909,221 @@ namespace {
         return rounds;
     }
 
+    /// A physical kind of interrupt with no line behind it: it counts how many
+    /// times a destroy asked it to let its line go, and lets the test play the
+    /// kernel taking the line away (line_revoked()).
+    ///
+    /// With a |table| of the test's own and its |action| on a line of it, the
+    /// detach goes to that line, and the action's cancel hook is the object's
+    /// line_revoked() followed by a wait for |gate|: the removal held in the
+    /// middle of telling the object, which is what the chain case needs.
+    class RecordingInterrupt final: public InterruptDispatcher {
+      public:
+        RecordingInterrupt()
+            : InterruptDispatcher(Flags::None)
+            , action(&RecordingInterrupt::on_event, this, irq::IrqFlags::None, "interrupt.test",
+                     &RecordingInterrupt::on_cancel) {}
+
+        using InterruptDispatcher::line_revoked;
+
+        irq::DescTable *table = nullptr;
+        irq::Action action;
+        std::atomic<u32> detaches{0};
+        /// The hook has told the object, and waits for the gate.
+        std::atomic<bool> hooked{false};
+        std::atomic<bool> gate{false};
+        /// The hook's last act, with release.
+        std::atomic<bool> hook_done{false};
+
+      private:
+        static auto on_event(VIrqNum, void *) -> irq::IrqReturn {
+            return irq::IrqReturn::Handled;
+        }
+
+        static auto on_cancel(VIrqNum, void *const context) -> void {
+            auto &self = *static_cast<RecordingInterrupt *>(context);
+            self.line_revoked();
+            self.hooked.store(true, std::memory_order_release);
+            auto const give_up = time::SteadyClock::now() + Seconds(5);
+            while (!self.gate.load(std::memory_order_acquire) &&
+                   time::SteadyClock::now() < give_up) {
+                arch::spin_hint();
+            }
+            self.hook_done.store(true, std::memory_order_release);
+        }
+
+        auto mask_interrupt() -> void override {}
+        auto unmask_interrupt() -> void override {}
+        auto deactivate_interrupt() -> void override {}
+        auto unregister_interrupt_handler() -> void override {
+            detaches.fetch_add(1, std::memory_order_relaxed);
+            if (table != nullptr) {
+                auto _ = table->detach(action); // NotFound once the removal has the action off.
+            }
+        }
+    };
+
+    /// The rule the kernel taking a line away rests on: every destroy() waits
+    /// for the line, also one that finds the object destroyed already. The
+    /// removal destroys the object from the line's side and is still using it
+    /// until it has let the line go, so a destroy that returned at once could
+    /// let the caller free the object under it. The wait is the object's
+    /// detach (unregister_interrupt_handler()), which this counts.
+    auto check_destroy_waits_for_the_line(Tally &tally) -> void {
+        auto revoked =
+            ustl::Arc<RecordingInterrupt>::adopt(new (mm::GAF_KERNEL) RecordingInterrupt());
+        auto plain =
+            ustl::Arc<RecordingInterrupt>::adopt(new (mm::GAF_KERNEL) RecordingInterrupt());
+        if (!revoked || !plain) {
+            verdict(tally, false, "allocate the objects");
+            return;
+        }
+
+        auto const first = plain->destroy();
+        verdict(tally, first == Status::Ok && plain->detaches.load() == 1,
+                "a destroy detaches once");
+        auto const again = plain->destroy();
+        verdict(tally, again == Status::Ok && plain->detaches.load() == 2,
+                "and a second destroy waits for the line again, though the object is destroyed");
+
+        Instant timestamp = 0;
+        revoked->line_revoked();
+        verdict(tally, revoked->wait(&timestamp) == Status::Cancelled,
+                "an object whose line was taken away is destroyed: a wait answers Cancelled");
+        verdict(tally, revoked->detaches.load() == 0,
+                "and the revoke detached nothing: the removal has unlinked the action itself");
+        auto const destroyed = revoked->destroy();
+        verdict(tally, destroyed == Status::Ok && revoked->detaches.load() == 1,
+                "its own destroy answers Ok and still waits for the line");
+        revoked->line_revoked();
+        verdict(tally,
+                revoked->wait(&timestamp) == Status::Cancelled && revoked->detaches.load() == 1,
+                "a second revoke changes nothing");
+    }
+
+    /// What the chain case's two threads need.
+    struct Chain {
+        irq::DescTable *table = nullptr;
+        VIrqNum virq = irq::INVALID_V_IRQ_NUM;
+        RecordingInterrupt *object = nullptr;
+        std::atomic<bool> destroy_returned{false};
+        std::atomic<bool> hook_done_at_return{false};
+        std::atomic<Status> destroy_status{Status::BadState};
+    };
+    Chain CHAIN;
+
+    auto chain_remover(void *) -> i32 {
+        auto _ = CHAIN.table->revoke_line(CHAIN.virq);
+        return 0;
+    }
+
+    auto chain_destroyer(void *) -> i32 {
+        auto const status = CHAIN.object->destroy();
+        CHAIN.hook_done_at_return.store(CHAIN.object->hook_done.load(std::memory_order_acquire),
+                                        std::memory_order_relaxed);
+        CHAIN.destroy_status.store(status, std::memory_order_relaxed);
+        CHAIN.destroy_returned.store(true, std::memory_order_release);
+        return 0;
+    }
+
+    /// The use after free this is all for, held still: the removal has told
+    /// the object (Destroyed) and is stuck in its hook with the line's lock
+    /// held, still to touch the action embedded in the object. The owner
+    /// destroys the object meanwhile, on another CPU, and must not get back
+    /// until the removal is done: if it did, it could free the object under
+    /// the removal. Three CPUs are used: the removal, the destroy, and the
+    /// command thread that opens the gate; the first two spin with interrupts
+    /// off, so the third cannot share a CPU with either.
+    auto check_destroy_waits_for_the_removal(Tally &tally) -> void {
+        auto const online = Cpu::online_mask();
+        if (online.count() < 3) {
+            log::info("interrupt.test: fewer than three CPUs, the destroy against a removal "
+                      "held in its hook is skipped");
+            return;
+        }
+        CpuNum cpus[3]{};
+        auto found = usize{0};
+        online.for_each([&cpus, &found](CpuNum const cpu) {
+            if (found < 3) {
+                cpus[found] = cpu;
+                found += 1;
+            }
+        });
+
+        auto *const self = Thread::Current::get();
+        self->set_cpu_affinity_hard(CpuMask::of(cpus[0]));
+        auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
+
+        auto *const table = new (mm::GAF_KERNEL) irq::DescTable();
+        auto *const object = new (mm::GAF_KERNEL) RecordingInterrupt();
+        std::array<HIrqNum, 1> const numbers{HIrqNum{9}};
+        constexpr irq::Chip NO_OP_CHIP = {.mask = [](irq::Data const &) -> void {},
+                                          .issue_eoi = [](irq::Data const &) -> void {},
+                                          .name = "interrupt-test"};
+        if (table == nullptr || object == nullptr ||
+            table->init(ustl::views::Span<HIrqNum const>(numbers), NO_OP_CHIP) != Status::Ok) {
+            verdict(tally, false, "make the chain case's line table and object");
+            self->set_cpu_affinity_hard(cpu_possible_mask());
+            return;
+        }
+        object->table = table;
+        CHAIN.table = table;
+        CHAIN.virq = table->virq_of(HIrqNum{9});
+        CHAIN.object = object;
+        CHAIN.destroy_returned.store(false, std::memory_order_relaxed);
+        CHAIN.hook_done_at_return.store(false, std::memory_order_relaxed);
+        CHAIN.destroy_status.store(Status::BadState, std::memory_order_relaxed);
+
+        auto const attached = table->attach(CHAIN.virq, object->action) == Status::Ok;
+        auto *const remover =
+            Thread::spawn("interrupt.test/revoke", chain_remover, nullptr, task::DEFAULT_PRIORITY);
+        if (!attached || remover == nullptr) {
+            verdict(tally, false, "attach the object and start the removal");
+            self->set_cpu_affinity_hard(cpu_possible_mask());
+            return;
+        }
+        remover->set_cpu_affinity_hard(CpuMask::of(cpus[1]));
+        auto _ = remover->resume();
+        auto const hooked =
+            poll_until([object] { return object->hooked.load(std::memory_order_acquire); });
+
+        auto *const destroyer = Thread::spawn("interrupt.test/destroy", chain_destroyer, nullptr,
+                                              task::DEFAULT_PRIORITY);
+        if (!hooked || destroyer == nullptr) {
+            verdict(tally, false, "the removal reaches the object's hook");
+            object->gate.store(true, std::memory_order_release);
+            self->set_cpu_affinity_hard(cpu_possible_mask());
+            return;
+        }
+        destroyer->set_cpu_affinity_hard(CpuMask::of(cpus[2]));
+        auto _ = destroyer->resume();
+
+        // The gate is closed: a destroy that waits for the line cannot have
+        // come back, however long it has had.
+        auto _ = Thread::Current::sleep_for(Milliseconds(50), task::Interruptible::No);
+        auto const returned_early = CHAIN.destroy_returned.load(std::memory_order_acquire);
+        object->gate.store(true, std::memory_order_release);
+
+        auto const ended =
+            poll_until([] { return CHAIN.destroy_returned.load(std::memory_order_acquire); });
+        auto const remover_ended =
+            remover->join(nullptr, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
+            Status::Ok;
+        auto const destroyer_ended =
+            destroyer->join(nullptr, time::Deadline::at(time::SteadyClock::now() + LOST_AFTER)) ==
+            Status::Ok;
+
+        verdict(tally, !returned_early,
+                "a destroy of an object whose line is being taken away does not return while the "
+                "removal is in its hook");
+        verdict(tally,
+                ended && CHAIN.destroy_status.load() == Status::Ok &&
+                    CHAIN.hook_done_at_return.load(),
+                "and returns Ok once the removal is done with the object");
+        verdict(tally, remover_ended && destroyer_ended, "both threads end");
+        self->set_cpu_affinity_hard(cpu_possible_mask());
+    }
+
     auto interrupt_test_command(int argc, char **argv) -> int {
         auto const rounds = parse_rounds(argc, argv);
         if (rounds == 0) {
@@ -719,7 +1146,12 @@ namespace {
         check_held_waiter(tally, second_cpu);
         check_packet_wakes_port_waiter(tally, second_cpu);
         check_bind_takes_the_latch(tally, second_cpu);
+        check_idle_signal(tally, second_cpu);
+        check_idle_signal_on_a_port(tally);
+        check_idle_follows_the_state(tally, rounds, second_cpu);
         check_turns(tally, rounds, first_cpu, second_cpu);
+        check_destroy_waits_for_the_line(tally);
+        check_destroy_waits_for_the_removal(tally);
 
         if (tally.failed != 0) {
             log::error("interrupt.test: FAILED -- {} of {} checks", tally.failed,
