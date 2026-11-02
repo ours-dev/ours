@@ -114,7 +114,19 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   request at Warning and Critical, served on its own thread, and a synchronous
   `reclaim()` on the watchdog's thread at OutOfMemory, before anything is
   refused. Zero pages go before pager pages. The target is the distance to the
-  upper edge of the pressure's bounds.
+  upper edge of the pressure's bounds. One walk at a time, on
+  `m_reclaim_lock`, which `request()` does not take (2026-11-01): OutOfMemory
+  waits out a walk already running, then walks itself, because the walk it
+  waited for was asked the Warning or Critical distance. That walk calls
+  `take()` first and drops the result, so an ask the thread has not taken
+  is not walked afterwards (2026-11-01). Two asks still waiting keep the
+  larger. The watchdog is built holding that reclaimer; `look()` does not
+  call `get()`. A test's
+  `Hold` is a `Guard` on the watchdog mutex, dropped before the wake, so
+  lockdep sees the hold. `look()` drops `m_lock` for the OutOfMemory walk
+  and reads the levels again before it declares (2026-11-02): the walk
+  sleeps, and the mutex guards the levels and the declaration.
+  `MemoryPressureLevels::make()` is the only builder of a nested value.
 
 ## CpuLocal (Linux, not Zircon)
 

@@ -33,9 +33,9 @@
 /// what keeps a resource from a component is that no manifest offers it the
 /// protocol.
 ///
-/// Each ordinal is hashed from its selector, such as "ours.resource/Irq.Get"
-/// (wire::Method). The Gets have one shape, flat, at fixed offsets from
-/// the start of the message:
+/// Each ordinal is computed from its selector, such as "ours.resource/Irq.Get",
+/// as this header is compiled (wire::method). The Gets have one shape,
+/// flat, at fixed offsets from the start of the message:
 ///
 ///   Get   two-way  (nothing)
 ///
@@ -60,31 +60,21 @@ struct Protocol {
     wire::Method get;
 };
 
-// The protocols, each Get declared beside the selector its ordinal is hashed
-// from. wire/test/ordinals_test.py recomputes every ordinal from its
-// selector.
+// The protocols, each Get declared by its selector and kind alone:
+// wire::method() computes the ordinal from the selector, so there is no
+// number to type.
 
 /// ours.resource.Debug, which hands out the System Debug resource.
 inline constexpr auto DEBUG_PROTOCOL = Protocol{
     .name = "ours.resource.Debug",
-    .get =
-        wire::Method{
-            .selector = "ours.resource/Debug.Get",
-            .ordinal = 0x226c'd5bb'1821'8fda,
-            .kind = wire::MethodKind::TwoWay,
-        },
+    .get = wire::method("ours.resource/Debug.Get", wire::MethodKind::TwoWay),
 };
 
 /// ours.resource.Irq, which hands out the root of the interrupt lines: an
 /// Irq resource of base 0 and size 0, which covers every line.
 inline constexpr auto IRQ_PROTOCOL = Protocol{
     .name = "ours.resource.Irq",
-    .get =
-        wire::Method{
-            .selector = "ours.resource/Irq.Get",
-            .ordinal = 0x273c'3e02'af63'50e0,
-            .kind = wire::MethodKind::TwoWay,
-        },
+    .get = wire::method("ours.resource/Irq.Get", wire::MethodKind::TwoWay),
 };
 
 /// ours.resource.Ioport, which hands out the root of the I/O ports: an IoPort
@@ -92,12 +82,7 @@ inline constexpr auto IRQ_PROTOCOL = Protocol{
 /// grants the ports the kernel drives itself.
 inline constexpr auto IOPORT_PROTOCOL = Protocol{
     .name = "ours.resource.Ioport",
-    .get =
-        wire::Method{
-            .selector = "ours.resource/Ioport.Get",
-            .ordinal = 0x231b'c3b7'4044'47b5,
-            .kind = wire::MethodKind::TwoWay,
-        },
+    .get = wire::method("ours.resource/Ioport.Get", wire::MethodKind::TwoWay),
 };
 
 /// ours.resource.Mmio, which hands out the root of the physical address space:
@@ -105,12 +90,7 @@ inline constexpr auto IOPORT_PROTOCOL = Protocol{
 /// resource grants the RAM or the devices the kernel owns.
 inline constexpr auto MMIO_PROTOCOL = Protocol{
     .name = "ours.resource.Mmio",
-    .get =
-        wire::Method{
-            .selector = "ours.resource/Mmio.Get",
-            .ordinal = 0x1f6f'1386'9360'0a40,
-            .kind = wire::MethodKind::TwoWay,
-        },
+    .get = wire::method("ours.resource/Mmio.Get", wire::MethodKind::TwoWay),
 };
 
 /// ours.resource.Iommu, which hands out the System IOMMU resource, the
@@ -118,24 +98,14 @@ inline constexpr auto MMIO_PROTOCOL = Protocol{
 /// memory.
 inline constexpr auto IOMMU_PROTOCOL = Protocol{
     .name = "ours.resource.Iommu",
-    .get =
-        wire::Method{
-            .selector = "ours.resource/Iommu.Get",
-            .ordinal = 0x4b24'8818'1716'da78,
-            .kind = wire::MethodKind::TwoWay,
-        },
+    .get = wire::method("ours.resource/Iommu.Get", wire::MethodKind::TwoWay),
 };
 
 /// ours.resource.Sampling, which hands out the System Sampling resource, the
 /// capability sampler_create asks for.
 inline constexpr auto SAMPLING_PROTOCOL = Protocol{
     .name = "ours.resource.Sampling",
-    .get =
-        wire::Method{
-            .selector = "ours.resource/Sampling.Get",
-            .ordinal = 0x62a8'8580'9507'5fb4,
-            .kind = wire::MethodKind::TwoWay,
-        },
+    .get = wire::method("ours.resource/Sampling.Get", wire::MethodKind::TwoWay),
 };
 
 /// ours.kernel.RootJob, which hands out the root job with every right its
@@ -146,12 +116,7 @@ inline constexpr auto SAMPLING_PROTOCOL = Protocol{
 /// so it is declared and coded here.
 inline constexpr auto ROOT_JOB_PROTOCOL = Protocol{
     .name = "ours.kernel.RootJob",
-    .get =
-        wire::Method{
-            .selector = "ours.kernel/RootJob.Get",
-            .ordinal = 0x765b'31d7'e30c'32b5,
-            .kind = wire::MethodKind::TwoWay,
-        },
+    .get = wire::method("ours.kernel/RootJob.Get", wire::MethodKind::TwoWay),
 };
 
 /// ours.boot.Acpi: the machine's ACPI tables, as a read-only VMO in the
@@ -161,13 +126,15 @@ inline constexpr auto ROOT_JOB_PROTOCOL = Protocol{
 /// declared and coded here, as RootJob is.
 inline constexpr auto ACPI_PROTOCOL = Protocol{
     .name = "ours.boot.Acpi",
-    .get =
-        wire::Method{
-            .selector = "ours.boot/Acpi.Get",
-            .ordinal = 0x216a'e0bb'65a2'83f7,
-            .kind = wire::MethodKind::TwoWay,
-        },
+    .get = wire::method("ours.boot/Acpi.Get", wire::MethodKind::TwoWay),
 };
+
+// Each protocol is closed, so the Get of another protocol must not be mistaken
+// for this one's: no two Gets may share an ordinal.
+static_assert(wire::all_distinct(DEBUG_PROTOCOL.get, IRQ_PROTOCOL.get, IOPORT_PROTOCOL.get,
+                                 MMIO_PROTOCOL.get, IOMMU_PROTOCOL.get, SAMPLING_PROTOCOL.get,
+                                 ROOT_JOB_PROTOCOL.get, ACPI_PROTOCOL.get),
+              "two ours.resource Gets have the same ordinal");
 
 struct GetRequest {
     u32 txid;

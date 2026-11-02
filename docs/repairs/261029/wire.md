@@ -19,23 +19,3 @@ None, this project's own design.
 
 **Acceptance**
 `grep -n "epitaph" docs/design/260924/userspace-filesystem.md` shows a banner at section 2.5 and at the table near line 858 pointing at the 261004 design.
-
-## 2. `ordinals_test.py` is run by nothing, so a wrong or copied method number passes the boot check
-
-**Severity**
-Low: no ordinal in the tree is wrong today (the test passes), and a server and its clients in one build share one header, so a wrong number is wrong on both sides alike. It would show only when a peer built from the selector alone meets the library, or when a copy-pasted number makes two methods of one protocol the same.
-
-**Symptom**
-`python3 system/lib/wire/test/ordinals_test.py` is "run by hand" (`system/lib/wire/BUILD.gn:26-27`). No script, skill, hook or GN target runs it: it is not in `//:default`, `.agents/skills/ours-verify/scripts/boot_check.py` does not call it, and neither does `.githooks/pre-commit`. A new protocol library whose `.ordinal` is typed wrong, or copied from another method, builds, passes its own host tests and boots.
-
-**Cause**
-The test is Python and the host-test finder (`scripts/host_tests.py`) runs only the testonly GN executables of the host toolchain, so a Python test has no way in. `system/test_component_manifest.py` is a Python test of the same kind; whether it is run by anything was not checked here.
-
-**Change**
-Run it from `boot_check.py` beside the host tests, with its output in `host-tests.log` and a failure that fails the check, or from the pre-commit hook when a `wire::Method` line changed. The first is the smaller change and reaches every worktree. Ruled out: a GN action, which would put Python in the build graph for one check.
-
-**Reference**
-None, this project's own tooling.
-
-**Acceptance**
-Changing one digit of `ECHO_STRING`'s ordinal makes `boot_check.py` print a failure that names the selector and the right value, and putting it back makes it pass.

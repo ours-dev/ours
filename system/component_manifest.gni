@@ -59,10 +59,13 @@
 # Depending on the target packages the manifest, the program and every child,
 # recursively: a BootFS that lists root.cm gets the whole tree.
 #
-# The compiler also checks the manifest's whole tree: that every protocol use
-# in it, however deep, routes to a capability of the type the use asks for
-# (`type` below). It reads the declaration of every descendant, so the action
-# reruns when any of them changes, not only the manifest's own.
+# The compiler also checks the manifest's whole tree, twice, however deep it
+# goes: that every protocol use routes to a capability of the type the use asks
+# for (`type` below), which is an error, and that every directory use routes
+# through hops that each state at least the rights of the hop before them
+# (`rights` below), which is a warning. It reads the declaration of every
+# descendant, so the action reruns when any of them changes, not only the
+# manifest's own.
 #
 # Six targets, for a target named <name>:
 #   <name>.source    the target's scope, as JSON (generated_file, the pattern
@@ -93,7 +96,61 @@
 #   manifest (optional)
 #     Scope with the manifest's keys: program (args only), capabilities,
 #     use, offer, expose. The subset and its rules are D3 and the design's
-#     "The manifest".
+#     "The manifest"; the directories a component provides are the design's
+#     .agents/tasks/directory-capability/DESIGN.md, "The language".
+#
+#     A capability is a protocol or a directory, and a clause names one of
+#     the two in each key:
+#
+#       capabilities    protocol = "name" (with an optional `type`), or
+#                       directory = "name" with `path` and `rights`, both
+#                       required
+#       use             protocol = "name", or directory = "name" with `path`
+#                       and `rights`, and an optional `subdir`
+#       offer           protocol or directory, `from` = "parent", "self" or
+#                       "#child", `to`, and an optional `as`; a directory
+#                       also takes `rights` and `subdir`
+#       expose          protocol or directory, `from` = "self" or "#child",
+#                       and an optional `as`; a directory also takes `rights`
+#                       and `subdir`
+#
+#     A directory is declared where the program serves it:
+#
+#       capabilities = [
+#         {
+#           directory = "data"
+#           path = "/export/data"
+#           rights = [ "rw*" ]
+#         },
+#       ]
+#       expose = [
+#         {
+#           directory = "data"
+#           from = "self"
+#           rights = [ "r*" ]
+#           subdir = "shared"
+#         },
+#       ]
+#
+#     `path` is a place in the provider's outgoing directory: absolute, below
+#     "/", with no trailing "/" and no empty, "." or ".." segment. It is not
+#     "/svc", under it or above it, where the protocols are served at
+#     svc/<name>; and no two directories of one component are at one path, or
+#     one under the other, by segments ("/export/data" and "/export/data2"
+#     are two). `rights` is the most the directory allows, from the words
+#     "r*", "rx*", "rw*", "w*", "x*" and the single rights ("read_bytes",
+#     "traverse", ...). A directory has no `type`, and only a directory has
+#     `path`, `rights` and `subdir` in `capabilities`, and `rights` and `subdir`
+#     in an `expose`; a protocol clause that carries one is refused. `subdir`
+#     is relative, with the same segments as a path.
+#
+#     Every hop of a route may state rights, and states at least the rights
+#     of the hop before it: walking from the use toward the provider, the
+#     rights only grow. The hops are the use, each offer, each expose, the
+#     provider's declaration, and the root's built-in `boot` at the top. A hop
+#     that states none narrows nothing. Each hop's `subdir` goes in front of
+#     the one before it, and the provider opens its declared `path` joined
+#     with the result.
 #
 #     A protocol in `capabilities` or in `use` may carry a `type`, the name
 #     of the protocol it speaks:
@@ -116,23 +173,38 @@
 #     and every offer and expose on the way. A route that does not resolve is
 #     not checked here: the root answers it when the component asks.
 #
+#     A directory use is checked for its rights instead, and only warned
+#     about. A hop that states fewer rights than the hop before it makes the
+#     root answer AccessDenied when it starts the component, and the build
+#     prints a `warning:` naming the use, each hop with the rights it states,
+#     the hop that holds less and the fix, and goes on: the exit status is 0
+#     and the manifest is written, because a deliberate failure (routing_checks'
+#     `/denied`) has to build. A route that does not resolve is not warned
+#     about either. Ninja shows an action's output when the action runs, so a
+#     root.cm that is up to date prints nothing; the root's own log line at the
+#     component's start is the signal that matters.
+#
 #   type_check (optional)
-#     Whether the compiler checks that every route in this manifest's tree
-#     ends at a capability of the type the use asks for. True by default.
-#     False is for a fixture that exercises the run-time check on a mismatch
-#     and for nothing else; it passes `--no-type-check` to the compiler. Every
-#     manifest checks its own tree, and a manifest that sits under another
-#     root is checked again there, with that root's offers. So a tree escapes
-#     the check only when its root says so, and a child's `type_check = false`
-#     does not hide its routes from the root above it.
+#     Whether the compiler checks the tree: that every protocol route in this
+#     manifest's tree ends at a capability of the type the use asks for, and
+#     that every directory route holds the rights its use asks for (a warning).
+#     True by default. False is for a fixture that exercises the run-time
+#     answer to a mismatch or a denied route and for nothing else; it passes
+#     `--no-type-check` to the compiler, which then reads no descendant and
+#     prints no warning. Every manifest checks its own tree, and a manifest
+#     that sits under another root is checked again there, with that root's
+#     offers. So a tree escapes the check only when its root says so, and a
+#     child's `type_check = false` does not hide its routes from the root above
+#     it.
 #
 #   builtins (optional)
 #     Source-absolute path of the data file that lists the root's built-in
 #     capabilities (//system/component_builtins.py reads it). With it, a route
 #     that goes above the top of the tree and ends at a built-in is checked
-#     against the built-in's type; without it such a route is not checked,
-#     since nothing says what it reaches. Only the image's root gives it. The
-#     file is an input of the action, so editing it reruns the check.
+#     against the built-in's type, or for a directory against its rights;
+#     without it such a route is not checked, since nothing says what it
+#     reaches. Only the image's root gives it. The file is an input of the
+#     action, so editing it reruns the check.
 #
 #   testonly, visibility
 #     Standard GN meanings.

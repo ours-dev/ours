@@ -118,13 +118,12 @@ namespace {
 
     [[nodiscard]]
     auto check(format::Capability const &raw, Bounds const &bounds) -> Status {
-        if (raw.reserved != 0) {
-            return Status::InvArgs;
-        }
         return first_error({
             check_kind(raw.kind),
+            check_rights(raw.flags, raw.rights),
             check_string(raw.name, bounds),
             check_string(raw.type, bounds),
+            check_string(raw.path, bounds),
         });
     }
 
@@ -156,15 +155,14 @@ namespace {
 
     [[nodiscard]]
     auto check(format::Expose const &raw, Bounds const &bounds) -> Status {
-        if (raw.reserved != 0) {
-            return Status::InvArgs;
-        }
         return first_error({
             check_kind(raw.kind),
+            check_rights(raw.flags, raw.rights),
             check_ref(raw.source, bounds),
             check_string(raw.source_name, bounds),
             check_ref(raw.target, bounds),
             check_string(raw.target_name, bounds),
+            check_string(raw.subdir, bounds),
         });
     }
 
@@ -309,7 +307,13 @@ namespace detail {
 
     auto view(format::Capability const &raw, Strings const &strings) -> Capability {
         auto const name = strings.text(raw.name);
-        return {.kind = raw.kind, .name = name, .type = type_or_name(strings.text(raw.type), name)};
+        return {
+            .kind = raw.kind,
+            .name = name,
+            .type = type_or_name(strings.text(raw.type), name),
+            .path = strings.text(raw.path),
+            .rights = rights_of(raw.flags, raw.rights),
+        };
     }
 
     auto view(format::Use const &raw, Strings const &strings) -> Use {
@@ -344,6 +348,8 @@ namespace detail {
             .source_name = strings.text(raw.source_name),
             .target = raw.target,
             .target_name = strings.text(raw.target_name),
+            .subdir = strings.text(raw.subdir),
+            .rights = rights_of(raw.flags, raw.rights),
         };
     }
 } // namespace detail

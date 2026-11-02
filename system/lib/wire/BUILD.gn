@@ -15,7 +15,10 @@ source_set("wire") {
 # declarations does not pull in the sources -- see
 # //build/cpp/cpp_interface.gni.
 cpp_interface("headers") {
-  public = [ "include/wire/wire.hpp" ]
+  public = [
+    "include/wire/sha256.hpp",
+    "include/wire/wire.hpp",
+  ]
   public_deps = [
     "//system/lib/ustl:headers",
     "//system/public",
@@ -23,8 +26,7 @@ cpp_interface("headers") {
   visibility = [ "*" ]
 }
 
-# Host unit tests; wired into //:default. test/ordinals_test.py is run by
-# hand: python3 system/lib/wire/test/ordinals_test.py.
+# Host unit tests; wired into //:default.
 group("tests") {
   testonly = true
   public_deps = [ "test:wire($host_toolchain)" ]

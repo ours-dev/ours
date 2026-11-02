@@ -14,7 +14,7 @@ A tree server of your own cannot be reached by another component. A manifest can
 - Say what an Open of a service node hands your code, and what your code then owns.
 - Build a tree and drive a `Server` from a host test, with no kernel.
 
-A citation such as `system/lib/ioservice/src/server.cpp:231` is a file of the repository and a line of the commit named at the end. Every code block is copied from the file it names; the text diagrams are drawn for this chapter.
+A citation such as `system/lib/ioservice/src/server.cpp:240` is a file of the repository and a line of the commit named at the end. Every code block is copied from the file it names; the text diagrams are drawn for this chapter.
 
 ## Choosing: a tree server or a protocol server
 
@@ -57,7 +57,7 @@ client --ours.io--> channel --> Loop slot --> LoopServer --> Server --> Tree
 
 You can use the `Server` without a `LoopServer` if your program has its own way to wait on channels. This chapter assumes the `LoopServer`, which is what the root and every outgoing directory use. The build targets are `//system/lib/ioservice` for the `Tree` and `Server`, `//system/lib/ioservice:loop_server` and `//system/lib/ioservice:outgoing`. The core is a target of its own so that it makes no system call and its tests run on the host.
 
-Where this is stated: the three node kinds are `system/lib/ioservice/include/ioservice/tree.hpp:35` and the `Tree` is `system/lib/ioservice/include/ioservice/tree.hpp:96`; the `Server` is `system/lib/ioservice/include/ioservice/server.hpp:157` and the six actions are `system/lib/ioservice/include/ioservice/server.hpp:77`; the `LoopServer` is `system/lib/ioservice/include/ioservice/loop_server.hpp:44`; `Handler` and `Outgoing` are `system/lib/ioservice/include/ioservice/outgoing.hpp:50` and `system/lib/ioservice/include/ioservice/outgoing.hpp:66`; the targets are `system/lib/ioservice/BUILD.gn:9`, `system/lib/ioservice/BUILD.gn:49` and `system/lib/ioservice/BUILD.gn:73`.
+Where this is stated: the three node kinds are `system/lib/ioservice/include/ioservice/tree.hpp:35` and the `Tree` is `system/lib/ioservice/include/ioservice/tree.hpp:96`; the `Server` is `system/lib/ioservice/include/ioservice/server.hpp:167` and the six actions are `system/lib/ioservice/include/ioservice/server.hpp:78`; the `LoopServer` is `system/lib/ioservice/include/ioservice/loop_server.hpp:48`; `Handler` and `Outgoing` are `system/lib/ioservice/include/ioservice/outgoing.hpp:59` and `system/lib/ioservice/include/ioservice/outgoing.hpp:75`; the targets are `system/lib/ioservice/BUILD.gn:9`, `system/lib/ioservice/BUILD.gn:49` and `system/lib/ioservice/BUILD.gn:74`.
 
 ## Building a tree
 
@@ -131,16 +131,16 @@ And this is how the root adds one file of the boot image to `/boot` (`system/ser
 
 Where this is stated:
 
-- Nothing is removed and a client never changes the tree: `system/lib/ioservice/include/ioservice/tree.hpp:18`. The tree may grow while served: `system/lib/ioservice/include/ioservice/server.hpp:160`.
+- Nothing is removed and a client never changes the tree: `system/lib/ioservice/include/ioservice/tree.hpp:18`. The tree may grow while served: `system/lib/ioservice/include/ioservice/server.hpp:170`.
 - The four calls and their refusals: `system/lib/ioservice/include/ioservice/tree.hpp:105`, `system/lib/ioservice/include/ioservice/tree.hpp:111`. A `NodeId` belongs to its tree: `system/lib/ioservice/include/ioservice/tree.hpp:24`.
 - No heap and `NoResource`: `system/lib/ort/src/cpp_dependencies.cpp:16`, `system/lib/ioservice/include/ioservice/tree.hpp:88`.
 - Names are views: `system/lib/ioservice/include/ioservice/tree.hpp:115`. What a file lends and the rights of its VMO: `system/lib/ioservice/include/ioservice/tree.hpp:47`.
-- The root's tree of top directories: `system/service/init/boot_server.hpp:33`. Where `unwrap()` is used for calls that cannot fail: `system/lib/ioservice/src/outgoing.cpp:28`.
-- Name and path rules: `system/lib/ioservice/include/ioservice/tree.hpp:200`, `system/lib/ioservice/src/tree.cpp:48`, `system/lib/ours.io/include/ours_io/ours_io.hpp:54`, `system/lib/ours.io/include/ours_io/ours_io.hpp:59`. A walk only goes down: `system/lib/ioservice/src/tree.cpp:191`.
+- The root's tree of top directories: `system/service/init/boot_server.hpp:34`. Where `unwrap()` is used for calls that cannot fail: `system/lib/ioservice/src/outgoing.cpp:63`.
+- Name and path rules: `system/lib/ioservice/include/ioservice/tree.hpp:200`, `system/lib/ioservice/src/tree.cpp:49`, `system/lib/ours.io/include/ours_io/ours_io.hpp:54`, `system/lib/ours.io/include/ours_io/ours_io.hpp:59`. A walk only goes down: `system/lib/ioservice/src/tree.cpp:192`.
 
 ## Storage you lend, and why it is `constinit`
 
-A tree server holds a lot of fixed-size state: the nodes, the connection table, one `Binding` for each entry of that table (the object the Loop calls when a connection's channel has something), and the buffers a message is read into and an answer is built in. A user program has no heap, so you provide all of it, sized by how many connections and nodes you allow. `Outgoing` and `BootServer` each group theirs in a `Storage` struct. This is `Outgoing`'s (`system/lib/ioservice/include/ioservice/outgoing.hpp:96`):
+A tree server holds a lot of fixed-size state: the nodes, the connection table, one `Binding` for each entry of that table (the object the Loop calls when a connection's channel has something), and the buffers a message is read into and an answer is built in. A user program has no heap, so you provide all of it, sized by how many connections and nodes you allow. `Outgoing` and `BootServer` each group theirs in a `Storage` struct. This is `Outgoing`'s (`system/lib/ioservice/include/ioservice/outgoing.hpp:105`):
 
 ```cpp
     struct Storage {
@@ -167,13 +167,13 @@ Three rules decide the sizes.
 
 An `Outgoing` costs about 9 KiB and the root's `BootServer` about 42 KiB, both quoted from their headers. That is too much for the stack, so the storage is a global of the program's. A global in a user program is `constinit`, and one whose type has a destructor is built in a `ustl::LazyInit`; [Where a server's memory comes from](01-concepts.md#where-a-servers-memory-comes-from) explains why, with `echo`'s declarations. The storage here has a destructor because `Connection` holds a `ustl::Option`, so it goes in a `ustl::LazyInit` too, which `main()` builds once with `init()`. `echo` does that for `Outgoing::Storage`, and the root does it for `/boot`.
 
-Where this is stated: the sizes are `system/lib/ioservice/include/ioservice/outgoing.hpp:92` and `system/service/init/boot_server.hpp:54`; `Option`'s destructor is `system/lib/ustl/include/ustl/option.hpp:66`; the message limits are `system/public/ours/syscall.hpp:43` (bytes) and `system/public/ours/syscall.hpp:46` (handles); the declarations are `examples/echo/echo_server.cpp:300`, `system/service/init/init.cpp:122` and `system/service/init/init.cpp:279`.
+Where this is stated: the sizes are `system/lib/ioservice/include/ioservice/outgoing.hpp:101` and `system/service/init/boot_server.hpp:55`; `Option`'s destructor is `system/lib/ustl/include/ustl/option.hpp:66`; the message limits are `system/public/ours/syscall.hpp:43` (bytes) and `system/public/ours/syscall.hpp:46` (handles); the declarations are `examples/echo/echo_server.cpp:300`, `system/service/init/init.cpp:122` and `system/service/init/init.cpp:279`.
 
 ## Putting a tree on a Loop
 
 ### LoopServer
 
-A `LoopServer` takes the tree, the Loop, a `Syscalls`, the storage as a `Memory`, and a delegate. This is how `Outgoing` builds one over its `Storage` (`system/lib/ioservice/src/outgoing.cpp:17`):
+A `LoopServer` takes the tree, the Loop, a `Syscalls`, the storage as a `Memory`, and a delegate. This is how `Outgoing` builds one over its `Storage` (`system/lib/ioservice/src/outgoing.cpp:52`):
 
 ```cpp
     , m_server(m_tree, loop, Syscalls{.handle_duplicate = ours::handle_duplicate},
@@ -191,7 +191,7 @@ A `LoopServer` takes the tree, the Loop, a `Syscalls`, the storage as a `Memory`
 
 Then `serve(channel, directory, rights)` binds a directory to a channel and waits on it; `rights` are the ours.io rights of that first connection (see "Answering an Open"), and every connection opened through it holds a subset. On success the channel is the Loop's. On failure nothing changed and the channel is still yours. The refusals are `InvArgs`, `NotDir`, and `NoResource` when every connection is used, a connection has no `Binding`, or the Loop is full.
 
-Serving a channel, and every Open that makes a new connection, end in `watch()`, which takes the `Binding` at the connection's index, fills it in and registers it with the Loop (`system/lib/ioservice/src/loop_server.cpp:61`):
+Serving a channel, and every Open that makes a new connection, end in `watch()`, which takes the `Binding` at the connection's index, fills it in and registers it with the Loop (`system/lib/ioservice/src/loop_server.cpp:63`):
 
 ```cpp
     auto &binding = m_memory.bindings[connection.index];
@@ -207,7 +207,7 @@ Serving a channel, and every Open that makes a new connection, end in `watch()`,
     return Status::Ok;
 ```
 
-A `Binding` is a `loop::Waiter`, the object that a slot waits on ([The Loop and its slots](01-concepts.md#the-loop-and-its-slots) explains it). The Loop keeps its address, which stays valid because the array of `Binding`s is the program's storage. The slot waits for `Readable` or `PeerClosed`, and when it fires the Loop calls the `Binding`'s `on_signals(observed)`, which is the one line `return m_server->handle(m_connection, observed);`. The answer it gives the Loop is `Rearm` (wait again) or `Close` (close the handle and free the slot). If the Loop answers `Rearm` and then cannot arm the wait again, it frees the slot and calls the `Binding`'s `on_rearm_failed`, which releases the connection, so that its entry is handed out again (`system/lib/ioservice/src/loop_server.cpp:78-88`). Writing a `Waiter` of your own for a protocol server's clients is the subject of the first-server chapter, [02-first-server.md](02-first-server.md).
+A `Binding` is a `loop::Waiter`, the object that a slot waits on ([The Loop and its slots](01-concepts.md#the-loop-and-its-slots) explains it). The Loop keeps its address, which stays valid because the array of `Binding`s is the program's storage. The slot waits for `Readable` or `PeerClosed`, and when it fires the Loop calls the `Binding`'s `on_signals(observed)`, which is the one line `return m_server->handle(m_connection, observed);`. The answer it gives the Loop is `Rearm` (wait again) or `Close` (close the handle and free the slot). If the Loop answers `Rearm` and then cannot arm the wait again, it frees the slot and calls the `Binding`'s `on_rearm_failed`, which releases the connection, so that its entry is handed out again (`system/lib/ioservice/src/loop_server.cpp:80-90`). Writing a `Waiter` of your own for a protocol server's clients is the subject of the first-server chapter, [02-first-server.md](02-first-server.md).
 
 What `handle()` does:
 
@@ -222,15 +222,15 @@ What `handle()` does:
 | `Drop` | the message was malformed or not served: closes every handle the message carried | `Close` |
 | `Bind` | an Open or Clone made a connection: waits on the request's channel as a new connection; if it cannot, writes an epitaph with the reason on it and closes it | `Rearm` |
 | `Connect` | an Open reached a service node: calls `Delegate::connect()`, or closes the channel if there is no delegate | `Rearm` |
-| `Refuse` | an Open or Clone failed: writes the epitaph on the request's channel, then closes it | `Rearm` |
+| `Refuse` | an Open or Clone failed: writes the epitaph on the request's channel, then closes it; for an Open, then tells the delegate with `open_refused()` | `Rearm` |
 
 A reply that cannot be written ends its connection, because the client would otherwise wait for good.
 
-Where this is stated: `Syscalls` is `system/lib/ioservice/include/ioservice/server.hpp:52`; the signals a connection waits for are `system/lib/ioservice/src/loop_server.cpp:15` and the `Binding`'s callback is `system/lib/ioservice/src/loop_server.cpp:75`; the steps above are `system/lib/ioservice/src/loop_server.cpp:90-126` and the table is `system/lib/ioservice/src/loop_server.cpp:127-184`.
+Where this is stated: `Syscalls` is `system/lib/ioservice/include/ioservice/server.hpp:53`; the signals a connection waits for are `system/lib/ioservice/src/loop_server.cpp:15` and the `Binding`'s callback is `system/lib/ioservice/src/loop_server.cpp:77`; the steps above are `system/lib/ioservice/src/loop_server.cpp:92-128` and the table is `system/lib/ioservice/src/loop_server.cpp:127-196`.
 
 ### Outgoing
 
-If what you serve is protocols, `Outgoing` is the whole of this for you. It builds the tree (the outgoing directory, its `svc/` directory and a service node per protocol), serves it, and calls your `Handler` when a client's Open of `svc/<name>` arrives. A `Handler` is the abstract class that your protocol's server derives from, with one function that receives the client's channel (`system/lib/ioservice/include/ioservice/outgoing.hpp:50`):
+If what you serve is protocols, `Outgoing` is the whole of this for you. It builds the tree (the outgoing directory, its `svc/` directory and a service node per protocol), serves it, and calls your `Handler` when a client's Open of `svc/<name>` arrives. A `Handler` is the abstract class that your protocol's server derives from, with one function that receives the client's channel (`system/lib/ioservice/include/ioservice/outgoing.hpp:59`):
 
 ```cpp
 class Handler {
@@ -252,7 +252,7 @@ You own the channel from the call: serve it, usually by giving it a Loop slot, o
 
 `add_protocol(name, handler)` is refused with `InvArgs` for an invalid name, `AlreadyExists` for a name already added, and `NoResource` once 8 protocols are served. At most 4 connections to the outgoing directory may be open at once. The name and the handler are kept by address, so they must outlive the directory. `serve()` takes the `DirectoryRequest` handle that you took at the start of `main`.
 
-Where this is stated: `EchoServer` is `examples/echo/echo_server.cpp:88`; the limits and refusals are in `system/lib/ioservice/include/ioservice/outgoing.hpp:69`, `system/lib/ioservice/include/ioservice/outgoing.hpp:76`, `system/lib/ioservice/include/ioservice/outgoing.hpp:120` and `system/lib/ioservice/include/ioservice/outgoing.hpp:132`.
+Where this is stated: `EchoServer` is `examples/echo/echo_server.cpp:88`; the limits and refusals are in `system/lib/ioservice/include/ioservice/outgoing.hpp:78`, `system/lib/ioservice/include/ioservice/outgoing.hpp:85`, `system/lib/ioservice/include/ioservice/outgoing.hpp:129` and `system/lib/ioservice/include/ioservice/outgoing.hpp:141`.
 
 ## Answering an Open
 
@@ -280,7 +280,7 @@ A manifest writes the rights of a directory as a short string: `r*` is read only
       },
 ```
 
-The `Server` receives the request and checks it. The refusals are `ours::Status` values, and [05-testing-and-debugging.md](05-testing-and-debugging.md) says what a client sees for each. **The order of the checks is part of the protocol**: it decides which error a request that is wrong in several ways gets, and so what a client can learn. A connection without Traverse answers AccessDenied to every name, whether or not it exists, before the tree is looked at (`system/lib/ioservice/src/server.cpp:231`).
+The `Server` receives the request and checks it. The refusals are `ours::Status` values, and [05-testing-and-debugging.md](05-testing-and-debugging.md) says what a client sees for each. **The order of the checks is part of the protocol**: it decides which error a request that is wrong in several ways gets, and so what a client can learn. A connection without Traverse answers AccessDenied to every name, whether or not it exists, before the tree is looked at (`system/lib/ioservice/src/server.cpp:240`).
 
 | Step | Check | Refused with |
 |---|---|---|
@@ -294,7 +294,7 @@ The `Server` receives the request and checks it. The refusals are `ours::Status`
 | 8 | the walk from the connection's node along the path | `NotFound`, or `NotDir` if a segment on the way is not a directory |
 | 9 | the node's own rules, in the table below | see below |
 
-Take the test tree, and a connection to its first top directory that holds `rx*`. An Open of `config/readme` with `PERM_READABLE` passes steps 1 to 4 (the path is valid, the connection holds Traverse and every right asked for, and no flag names a service), has no creation flag, finds the file, and the file takes the flags. The connection that results holds ReadBytes and GetAttributes: the other rights of `PERM_READABLE` mean nothing for a file and are dropped. Step 3 is why a connection can never grow its rights (`system/lib/ioservice/src/server.cpp:245`):
+Take the test tree, and a connection to its first top directory that holds `rx*`. An Open of `config/readme` with `PERM_READABLE` passes steps 1 to 4 (the path is valid, the connection holds Traverse and every right asked for, and no flag names a service), has no creation flag, finds the file, and the file takes the flags. The connection that results holds ReadBytes and GetAttributes: the other rights of `PERM_READABLE` mean nothing for a file and are dropped. Step 3 is why a connection can never grow its rights (`system/lib/ioservice/src/server.cpp:254`):
 
 ```cpp
     // 3. A connection never grows: what it opens holds a subset of its
@@ -313,7 +313,7 @@ Step 9 depends on the kind of node found:
 | File | `NotDir` if the flags name a directory and neither a file nor a symlink, `BadType` for any other mismatch; `InvArgs` for truncate without WriteBytes; `AccessDenied` for WriteBytes, since a file is never writable, and for Execute on a file added without `executable` | a new connection that keeps only the rights that mean something for a file; the rest are dropped without an error |
 | Service | `NotDir`, `NotFile` or `BadType` if the flags name another kind; `InvArgs` for any other flag; `AccessDenied` without Connect, however the request is spelled | no connection: the `Connect` outcome, described under "Service nodes" |
 
-If the checks pass for a directory or a file, the `Server` makes a connection for the request's channel and answers `Bind`. If they fail, it answers `Refuse`: an epitaph, written on the request's `object` channel, which is then closed. The connection the request came on stays. The caller learns of a failure only from the epitaph. Success is silent: the caller goes on using the channel. The tests pin each line of the tables; for example (`system/lib/ioservice/test/server_test.cpp:282`, where `root` is a connection to the first top directory):
+If the checks pass for a directory or a file, the `Server` makes a connection for the request's channel and answers `Bind`. If they fail, it answers `Refuse`: an epitaph, written on the request's `object` channel, which is then closed. The connection the request came on stays. The caller learns of a failure only from the epitaph. The program can learn of it too: once the epitaph is written, the `LoopServer` calls the delegate's `open_refused(directory, path, status)` for a refused Open (not for a Clone, which asks for no path), so that the program can say why in its log (`system/lib/ioservice/include/ioservice/loop_server.hpp:84-85`, called at `system/lib/ioservice/src/loop_server.cpp:191`). Success is silent: the caller goes on using the channel. The tests pin each line of the tables; for example (`system/lib/ioservice/test/server_test.cpp:282`, where `root` is a connection to the first top directory):
 
 ```cpp
 TEST_F(IoserviceServer, OpenChecksRightsBeforeTheTree) {
@@ -338,15 +338,15 @@ Anything else is not served on that connection: a File method on a directory, a 
 
 Where this is stated:
 
-- The nine steps are `system/lib/ioservice/src/server.cpp:237-277` and step 9 is `system/lib/ioservice/src/server.cpp:279-349`. The request's parts and the failed Open's epitaph: `system/lib/ours.io/include/ours_io/ours_io.hpp:26`, `system/lib/ours.io/include/ours_io/ours_io.hpp:42`. The nine rights: `system/lib/ours.io/include/ours_io/ours_io.hpp:127`; the rights of a request come from its flags at `system/lib/ioservice/src/server.cpp:47`; the manifest strings are `system/lib/ours.io/include/ours_io/ours_io.hpp:141`.
+- The nine steps are `system/lib/ioservice/src/server.cpp:246-286` and step 9 is `system/lib/ioservice/src/server.cpp:288-358`. The request's parts and the failed Open's epitaph: `system/lib/ours.io/include/ours_io/ours_io.hpp:26`, `system/lib/ours.io/include/ours_io/ours_io.hpp:42`. The nine rights: `system/lib/ours.io/include/ours_io/ours_io.hpp:127`; the rights of a request come from its flags at `system/lib/ioservice/src/server.cpp:47`; the manifest strings are `system/lib/ours.io/include/ours_io/ours_io.hpp:141`.
 - The rights a file keeps are `system/lib/ioservice/src/server.cpp:30`; a file connection after `PERM_READABLE` is pinned by `system/lib/ioservice/test/server_test.cpp:357-370`.
-- Which methods each connection serves: `system/lib/ioservice/include/ioservice/server.hpp:182`. ReadDirents: `system/lib/ioservice/src/server.cpp:352` and `system/lib/ioservice/test/server_test.cpp:394`. Read and its limit: `system/lib/ioservice/src/server.cpp:400`, `system/lib/ours.io/include/ours_io/ours_io.hpp:64`. GetBackingMemory: `system/lib/ioservice/src/server.cpp:421`. Clone: `system/lib/ioservice/src/server.cpp:510`. Close: `system/lib/ioservice/src/server.cpp:497`. Drop and the closed protocol: `system/lib/ioservice/src/server.cpp:561`.
+- Which methods each connection serves: `system/lib/ioservice/include/ioservice/server.hpp:192`. ReadDirents: `system/lib/ioservice/src/server.cpp:361` and `system/lib/ioservice/test/server_test.cpp:394`. Read and its limit: `system/lib/ioservice/src/server.cpp:409`, `system/lib/ours.io/include/ours_io/ours_io.hpp:64`. GetBackingMemory: `system/lib/ioservice/src/server.cpp:430`. Clone: `system/lib/ioservice/src/server.cpp:519`. Close: `system/lib/ioservice/src/server.cpp:506`. Drop and the closed protocol: `system/lib/ioservice/src/server.cpp:570`.
 
 ## Service nodes: when an Open reaches your code
 
 A service node is where the file protocol ends. Three things are involved: the service node, added with a name and a `u64` value of your choosing; the request's channel, the server end of a channel that the client made and kept the other end of; and the delegate, the object you gave the `LoopServer`.
 
-When an Open of a service node passes steps 1 to 4 and the service rules above, the `Server` answers `Connect` instead of `Bind`. The `LoopServer` calls `Delegate::connect(service, channel)` with the node's value and the request's channel (`system/lib/ioservice/include/ioservice/loop_server.hpp:56`):
+When an Open of a service node passes steps 1 to 4 and the service rules above, the `Server` answers `Connect` instead of `Bind`. The `LoopServer` calls `Delegate::connect(service, channel)` with the node's value and the request's channel (`system/lib/ioservice/include/ioservice/loop_server.hpp:60`):
 
 ```cpp
         /// Where an Open of a service node goes: |service| is the value the
@@ -356,17 +356,17 @@ When an Open of a service node passes steps 1 to 4 and the service rules above, 
         virtual auto connect(u64 service, ours::Uandle channel) -> void = 0;
 ```
 
-A `Delegate` has one more function, `write_failed(status)`, called just before a connection ends because its reply could not be written; it does nothing unless overridden. Like `Handler`, it is an abstract class with a protected, non-virtual destructor.
+A `Delegate` has two more functions, and each does nothing unless overridden. `write_failed(status)` is called just before a connection ends because its reply could not be written. `open_refused(directory, path, status)` is called after a refused Open has its epitaph, with the directory the Open was made on and the path it asked for; it runs for every refused Open of every directory the server serves, so a program that serves a tree where a refusal is ordinary, a file that is not there, tells the directories apart by `directory`. `Outgoing` overrides it to print one `ioservice:` line, and the root's `Realm` to print a line when the refusal was on a component's `/svc`; [chapter 5](05-testing-and-debugging.md#the-table) shows both lines (causes 2 and 5). Like `Handler`, it is an abstract class with a protected, non-virtual destructor.
 
 From the call to `connect` on, the channel is yours, and it no longer speaks `ours.io`: it carries the protocol's own messages. What you may do with it:
 
 - *Serve it*, by adding it to your Loop, as `echo` does for each client (`examples/echo/echo_server.cpp:149`).
-- *Forward it*, by writing it into another channel as the server end of a new Open. The root does this for a protocol a sibling provides (`system/service/init/realm.cpp:789`).
+- *Forward it*, by writing it into another channel as the server end of a new Open. The root does this for a protocol a sibling provides (`system/service/init/realm.cpp:830`).
 - *Close it*, with an epitaph first if you want the client to learn why (`examples/echo/echo_server.cpp:77`).
 
 Never keep it and do nothing: the client would wait for an answer that never comes. You give the delegate to the `LoopServer`'s constructor, or later with `set_delegate()` when the delegate can only exist after the server does. The function runs inside a Loop callback, so it may add slots to the Loop but must not wait. If no delegate has been set, the `LoopServer` closes the channel itself.
 
-The value is how the delegate tells which service was opened. `Outgoing` adds each protocol with the index of its handler and looks the handler up by that index (`system/lib/ioservice/src/outgoing.cpp:38`). The root's `Realm` is its delegate: the object that keeps the root's table of components (each entry an *instance*, the root's record of one component), starts them, and routes their `/svc`. It packs two numbers into the value, which instance and which of that instance's uses (`system/service/init/realm.cpp:97`):
+The value is how the delegate tells which service was opened. `Outgoing` adds each protocol with the index of its handler and looks the handler up by that index (`system/lib/ioservice/src/outgoing.cpp:73`). The root's `Realm` is its delegate: the object that keeps the root's table of components (each entry an *instance*, the root's record of one component), starts them, and routes their `/svc`. It packs two numbers into the value, which instance and which of that instance's uses (`system/service/init/realm.cpp:97`):
 
 ```cpp
     constexpr auto service_key(usize const instance, u32 const use) -> u64 {
@@ -387,11 +387,11 @@ echo:    Outgoing's tree walks svc -> the node, answers Connect
 
 Each hop writes and does not wait. From then on the client and `echo` speak directly on `S`.
 
-Where this is stated: the request's channel is described in `system/lib/fsio/include/fsio/fsio.hpp:52` and `ProtocolService` in `system/lib/fsio/include/fsio/fsio.hpp:82`; the hops do not wait at `system/service/init/realm.cpp:820`.
+Where this is stated: the request's channel is described in `system/lib/fsio/include/fsio/fsio.hpp:52` and `ProtocolService` in `system/lib/fsio/include/fsio/fsio.hpp:82`; the hops do not wait at `system/service/init/realm.cpp:872`.
 
 ## Connections and their ids
 
-The `Server` keeps its connections in a table you provide, and it never hands out a pointer into it. It hands out a `ConnectionId` (`system/lib/ioservice/include/ioservice/server.hpp:42`):
+The `Server` keeps its connections in a table you provide, and it never hands out a pointer into it. It hands out a `ConnectionId` (`system/lib/ioservice/include/ioservice/server.hpp:43`):
 
 ```cpp
 struct ConnectionId {
@@ -421,7 +421,7 @@ The `Server` never writes or closes a channel. It only records the channel of ea
 
 The first connection to a tree has no Open to make it. `Server::bind(channel, directory, rights)` serves a directory on a channel "as if a client had opened it": no message is sent. The root uses it to give a component a namespace entry, and `Outgoing::serve()` uses it for the outgoing directory.
 
-Side note, generation 0 and the wrap-around. Generation 0 never names a live connection: every entry starts at generation 1, and a release that would wrap to 0 skips it. So `ConnectionId{}`, or a table of ids zeroed at start, is stale by construction and cannot name whichever connection sits in entry 0. The release looks like this (`system/lib/ioservice/src/server.cpp:159`):
+Side note, generation 0 and the wrap-around. Generation 0 never names a live connection: every entry starts at generation 1, and a release that would wrap to 0 skips it. So `ConnectionId{}`, or a table of ids zeroed at start, is stale by construction and cannot name whichever connection sits in entry 0. The release looks like this (`system/lib/ioservice/src/server.cpp:168`):
 
 ```cpp
     // A new generation, so that |id| and every copy of it go stale. It wraps
@@ -436,7 +436,7 @@ Side note, generation 0 and the wrap-around. Generation 0 never names a live con
     slot->m_generation = next;
 ```
 
-Where this is stated: a release bumps the generation at `system/lib/ioservice/src/server.cpp:154`; generation 0 is explained at `system/lib/ioservice/include/ioservice/server.hpp:37`; the Loop's key is `system/lib/loop/include/loop/loop.hpp:119`; the `Server` records the channel but never closes it at `system/lib/ioservice/include/ioservice/server.hpp:136`; `bind` is `system/lib/ioservice/include/ioservice/server.hpp:166`.
+Where this is stated: a release bumps the generation at `system/lib/ioservice/src/server.cpp:163`; generation 0 is explained at `system/lib/ioservice/include/ioservice/server.hpp:38`; the Loop's key is `system/lib/loop/include/loop/loop.hpp:119`; the `Server` records the channel but never closes it at `system/lib/ioservice/include/ioservice/server.hpp:146`; `bind` is `system/lib/ioservice/include/ioservice/server.hpp:176`.
 
 ## Rights only shrink
 
@@ -450,7 +450,7 @@ Four places decide what a connection may do, and each can only keep or shrink wh
 | `/boot-r` | `r*` | `r*`, through an offer that renames `boot` with `as` | succeeds |
 | `/denied` | `rx*` | `r*` | `AccessDenied`: the root closes that entry with an `AccessDenied` epitaph, and every open under it answers `AccessDenied` |
 
-**The binding.** When the root binds a directory to a component, it passes the route's rights to the tree server. This is the ceiling for everything opened through that connection (`system/service/init/realm.cpp:524`):
+**The binding.** When the root binds a directory to a component, it passes the route's rights to the tree server. This is the ceiling for everything opened through that connection (`system/service/init/realm.cpp:540`):
 
 ```cpp
             served = m_boot->serve(server, routed->subdir.view(), to_operations(*routed->rights));
@@ -465,8 +465,8 @@ Clone keeps the same rights, so cloning is not a way around any of this. A compo
 Where this is stated:
 
 - The rule for hops is `system/lib/component/src/route.cpp:95`. The root serves a component's `/svc` with `r*` at `system/service/init/realm.cpp:93`. The dev image's offers are `kernel/products/image/dev/BUILD.gn:114`, `kernel/products/image/dev/BUILD.gn:125` and `kernel/products/image/dev/BUILD.gn:134`; the uses are `system/service/init/test/routing_checks/BUILD.gn:54`, `system/service/init/test/routing_checks/BUILD.gn:59` and `system/service/init/test/routing_checks/BUILD.gn:70`.
-- The denied entry is closed with the epitaph at `system/service/init/realm.cpp:535` and answers `AccessDenied` at `system/service/init/test/routing_checks/routing_checks.cpp:317`.
-- GetBackingMemory follows the connection at `system/lib/ioservice/src/server.cpp:429`; the Execute gate is `system/lib/ioservice/src/server.cpp:309`; Clone keeps the rights at `system/lib/ioservice/src/server.cpp:516`.
+- The denied entry is closed with the epitaph at `system/service/init/realm.cpp:551` and answers `AccessDenied` at `system/service/init/test/routing_checks/routing_checks.cpp:320`.
+- GetBackingMemory follows the connection at `system/lib/ioservice/src/server.cpp:438`; the Execute gate is `system/lib/ioservice/src/server.cpp:318`; Clone keeps the rights at `system/lib/ioservice/src/server.cpp:525`.
 
 ## Testing without a kernel
 
@@ -493,7 +493,7 @@ A test encodes a request with the `ours.io` codec, calls `dispatch()` and reads 
 
 Handles are plain numbers there, and `fake_duplicate` records what it was asked. The `LoopServer` and `Outgoing` need a Loop, so their tests run on a model of ports and channels, `fake::Kernel`. It defines the vDSO's channel and port functions on the host under their real names (the vDSO is the library of system-call entry points that the kernel maps into each process; [Words used elsewhere](01-concepts.md#words-used-elsewhere)), so the library's source is compiled unchanged. The three test programs are `//system/lib/ioservice/test:ioservice`, `:loop_server` and `:outgoing`. How to run them, and how to boot the image, is in [05-testing-and-debugging.md](05-testing-and-debugging.md).
 
-Where this is stated: the fake kernel is described in `system/lib/ioservice/test/fake_kernel.hpp:15` and the test targets are in `system/lib/ioservice/test/BUILD.gn:1`.
+Where this is stated: the fake kernel is described in `system/lib/ioservice/test/fake_kernel.hpp:16` and the test targets are in `system/lib/ioservice/test/BUILD.gn:1`.
 
 ## Worked example: the root's `/boot`
 
@@ -523,9 +523,9 @@ What to take from it for your own tree server:
 
 Where this is stated:
 
-- The pools: `system/service/init/pools.hpp:27` (connections), `system/service/init/pools.hpp:51` and `system/service/init/pools.hpp:62` (nodes); the `Storage` is `system/service/init/boot_server.hpp:58`; the delegate is `system/service/init/realm.hpp:218`.
-- The steps: `system/service/init/init.cpp:279` (`main`), `system/service/init/boot_server.cpp:45` (`ingest()`), `system/service/init/realm.cpp:524` and `system/service/init/realm.cpp:538` (a namespace entry), `system/service/init/realm.cpp:703`, `system/service/init/realm.cpp:724` and `system/service/init/realm.cpp:730` (`/svc`).
-- The advice: shares are `system/service/init/boot_server.hpp:143`; direct calls are `system/service/init/boot_server.hpp:49` and `system/service/init/boot_server.cpp:149`; the delegate is set at `system/service/init/realm.cpp:317`; the mapping stays mapped, `system/service/init/boot_server.hpp:78`.
+- The pools: `system/service/init/pools.hpp:27` (connections), `system/service/init/pools.hpp:51` and `system/service/init/pools.hpp:62` (nodes); the `Storage` is `system/service/init/boot_server.hpp:59`; the delegate is `system/service/init/realm.hpp:218`.
+- The steps: `system/service/init/init.cpp:279` (`main`), `system/service/init/boot_server.cpp:45` (`ingest()`), `system/service/init/realm.cpp:540` and `system/service/init/realm.cpp:554` (a namespace entry), `system/service/init/realm.cpp:719`, `system/service/init/realm.cpp:740` and `system/service/init/realm.cpp:746` (`/svc`).
+- The advice: shares are `system/service/init/boot_server.hpp:152`; direct calls are `system/service/init/boot_server.hpp:50` and `system/service/init/boot_server.cpp:149`; the delegate is set at `system/service/init/realm.cpp:333`; the mapping stays mapped, `system/service/init/boot_server.hpp:79`.
 
 ## What a tree server does not do
 
@@ -535,7 +535,7 @@ Where this is stated:
 - **Lookups and new connections scan.** Finding a child walks its directory's list, and finding a free connection walks the table. Both are known limits.
 - **No manifest routes a directory a component serves**, as the start of the chapter said.
 
-Where this is stated: `system/lib/ioservice/README.md:5`, `system/lib/ioservice/src/server.cpp:40` and `system/lib/ioservice/include/ioservice/server.hpp:155`.
+Where this is stated: `system/lib/ioservice/README.md:5`, `system/lib/ioservice/src/server.cpp:40` and `system/lib/ioservice/include/ioservice/server.hpp:165`.
 
 ## Where to look next
 
@@ -561,4 +561,4 @@ Where this is stated: `system/lib/ioservice/README.md:5`, `system/lib/ioservice/
 - `system/lib/component/src/route.cpp`, `system/component_manifest.py`: the rights a route may state, and what a manifest may declare.
 - `docs/architecture/component-framework/glossary.md`: the words *component*, *manifest*, *offer*, *use* and *route*.
 
-Checked against commit `561571b7` on 2026-10-30.
+Checked against commit `10dd8149` on 2026-10-30.

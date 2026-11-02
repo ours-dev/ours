@@ -35,6 +35,13 @@ namespace {
 
 auto LoopServer::Delegate::write_failed(Status) -> void {}
 
+auto LoopServer::Delegate::subtree(u64, std::string_view, ours_io::Flags, Uandle const channel)
+    -> void {
+    // Nobody else holds the channel now: it was the Open's, and the server
+    // gave it away. Nothing can be done about a close that fails.
+    auto _ = ours::handle_close(channel);
+}
+
 auto LoopServer::Delegate::open_refused(NodeId, std::string_view, Status) -> void {}
 
 LoopServer::LoopServer(Tree const &tree, loop::Loop &loop, Syscalls const syscalls,
@@ -173,6 +180,18 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
                 auto _ = ours::handle_close(outcome.handle);
             } else {
                 m_delegate->connect(outcome.service, outcome.handle);
+            }
+            return loop::Action::Rearm;
+        }
+        case Action::Subtree: {
+            // An Open that walked to a Subtree node: the delegate owns the
+            // channel from here, as for a service node, and no connection
+            // was made. Without one, the channel goes. The rest views the
+            // request buffer, which nothing touches before this returns.
+            if (m_delegate == nullptr) {
+                auto _ = ours::handle_close(outcome.handle);
+            } else {
+                m_delegate->subtree(outcome.service, outcome.rest, outcome.flags, outcome.handle);
             }
             return loop::Action::Rearm;
         }

@@ -153,4 +153,4 @@ If `prebuilt/` is empty, start with [00-setup.md](00-setup.md). Then follow [The
 - `system/service/init/test/routing_checks/routing_checks.cpp`: what the client of `echo` checks.
 - `docs/architecture/component-framework/glossary.md`: the words.
 
-Checked against commit `561571b7` on 2026-10-30.
+Checked against commit `10dd8149` on 2026-10-30.

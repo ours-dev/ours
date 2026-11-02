@@ -106,10 +106,12 @@ namespace component::format {
 /// "OSCM" as the file's first four bytes.
 inline constexpr u32 MAGIC = 0x4D43'534F;
 
-/// 2 since a protocol capability and a protocol use carry a type string.
-/// The writer and the reader are built together and no manifest outlives
-/// its build, so an older version is refused (NotSupported), not read.
-inline constexpr u16 VERSION = 2;
+/// 3 since a directory capability carries a path and rights and an expose
+/// carries a subdir and rights, the fields an offer and a use already have.
+/// (2 gave a protocol capability and a protocol use a type string.) The
+/// writer and the reader are built together and no manifest outlives its
+/// build, so an older version is refused (NotSupported), not read.
+inline constexpr u16 VERSION = 3;
 
 struct Header final {
     u32 magic;
@@ -162,15 +164,24 @@ struct Child final {
     u32 reserved; // zero
 };
 
-/// A capability this component provides from its outgoing directory, at
-/// svc/<name>. |type| names the protocol it speaks, which a name alone does
-/// not say once an offer renames the capability. Empty means the capability's
-/// own name.
+/// A capability this component provides from its outgoing directory: a
+/// protocol at svc/<name>, a directory at |path|.
+///
+/// - |type| names the protocol a protocol capability speaks, which a name
+///   alone does not say once an offer renames the capability. Empty means the
+///   capability's own name. A directory has none.
+/// - |path| is where a directory capability sits in the outgoing directory,
+///   such as /export/data, written in the manifest and written again in the
+///   program that serves it. Empty for a protocol.
+/// - |rights| are the most a directory capability allows, the last hop of a
+///   route: stated when |flags| has RightsStated, and a protocol states none.
 struct Capability final {
     Kind kind;
-    u32 reserved; // zero
+    RecordFlags flags;
     String name;
     String type;
+    String path;
+    Rights rights;
 };
 
 /// What the component asks for, always from its parent (D3): a protocol at
@@ -201,14 +212,19 @@ struct Offer final {
     Rights rights;
 };
 
-/// A capability handed up to the parent as |target_name|.
+/// A capability handed up to the parent as |target_name|. A directory expose
+/// may narrow what it passes on: |rights| (stated when |flags| has
+/// RightsStated) and |subdir| are hops like an offer's, and a protocol expose
+/// states neither, so the layout is an Offer's.
 struct Expose final {
     Kind kind;
-    u32 reserved; // zero
+    RecordFlags flags;
     Ref source;
     String source_name;
     Ref target;
     String target_name;
+    String subdir;
+    Rights rights;
 };
 
 template <typename T>
@@ -224,8 +240,12 @@ static_assert(IS_RECORD<Program> && sizeof(Program) == 16);
 static_assert(IS_RECORD<Arg> && sizeof(Arg) == 8);
 static_assert(IS_RECORD<Child> && sizeof(Child) == 24);
 static_assert(offsetof(Child, startup) == 16);
-static_assert(IS_RECORD<Capability> && sizeof(Capability) == 24);
+static_assert(IS_RECORD<Capability> && sizeof(Capability) == 40);
+static_assert(offsetof(Capability, flags) == 4);
+static_assert(offsetof(Capability, name) == 8);
 static_assert(offsetof(Capability, type) == 16);
+static_assert(offsetof(Capability, path) == 24);
+static_assert(offsetof(Capability, rights) == 32);
 static_assert(IS_RECORD<Use> && sizeof(Use) == 56);
 static_assert(offsetof(Use, source_name) == 16);
 static_assert(offsetof(Use, type) == 40);
@@ -233,8 +253,11 @@ static_assert(offsetof(Use, rights) == 48);
 static_assert(IS_RECORD<Offer> && sizeof(Offer) == 56);
 static_assert(offsetof(Offer, target) == 24);
 static_assert(offsetof(Offer, rights) == 48);
-static_assert(IS_RECORD<Expose> && sizeof(Expose) == 40);
+static_assert(IS_RECORD<Expose> && sizeof(Expose) == 56);
+static_assert(offsetof(Expose, flags) == 4);
 static_assert(offsetof(Expose, target) == 24);
+static_assert(offsetof(Expose, subdir) == 40);
+static_assert(offsetof(Expose, rights) == 48);
 } // namespace component::format
 
 #endif // #ifndef COMPONENT_FORMAT_HPP

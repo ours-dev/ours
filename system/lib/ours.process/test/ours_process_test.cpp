@@ -632,8 +632,9 @@ TEST(OursProcessLaunchReply, Refusals) {
 // --- The protocol -----------------------------------------------------------
 
 TEST(OursProcess, Methods) {
-    // The kinds, which no hash checks; the ordinals are checked by
-    // wire/test/ordinals_test.py.
+    // The kinds, which no hash checks: the ordinals follow from the selectors
+    // (wire::method), and wire/test/wire_test.cpp holds the numbers they must
+    // equal.
     EXPECT_EQ(ours_process::ADD_ARGS.kind, wire::MethodKind::OneWay);
     EXPECT_EQ(ours_process::ADD_HANDLES.kind, wire::MethodKind::OneWay);
     EXPECT_EQ(ours_process::ADD_NAMES.kind, wire::MethodKind::OneWay);

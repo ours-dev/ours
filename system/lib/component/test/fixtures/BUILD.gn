@@ -3,21 +3,31 @@
 # default one for realm.cm and top.cm, which the tests name there, and in the
 # user one for the children and their program, where the template moves them.
 #
-# Between them they hold every record the format has: a program with
-# arguments, children, a declared capability, directory and protocol uses,
-# offers from the parent, from self and from a child, with `as`, rights and
-# a subdir, and exposes from self and from a child. A protocol states its
-# `type` where its name is not its protocol: provider.cm's capability, and the
-# uses of the protocol that realm.cm and top.cm rename (consumer.cm's `echo`,
-# user.cm's `ours.example.RealmEcho`, leaf.cm's `echo`); every other protocol
-# leaves it out, and is its own name. Every route that resolves in the first
-# two trees below ends at a capability of the type its use asks for.
+# Between them they hold every record the format has: a program with arguments,
+# children, declared capabilities (protocols, and directories with a path and
+# rights), directory and protocol uses, offers from the parent, from self and
+# from a child, with `as`, rights and a subdir, and exposes from self and from a
+# child, a directory's with rights and a subdir. A protocol states its `type`
+# where its name is not its protocol: provider.cm's capability, and the uses of
+# the protocol that realm.cm and top.cm rename (consumer.cm's `echo`, user.cm's
+# `ours.example.RealmEcho`, leaf.cm's `echo`); every other protocol leaves it
+# out, and is its own name. Every route that resolves in the first two trees
+# below ends at a capability of the type its use asks for.
 #
 # Two trees for the router: realm.cm as the root, and top.cm as the root with
 # realm.cm one level down beside user.cm, whose child is leaf.cm. Each route
 # the router's test checks is named in a comment on the declaration that
 # decides it. A third, mismatch.cm, has two routes that end at the wrong
 # protocol on purpose.
+#
+# And one for the directories a component provides: shelf.cm as the root, with
+# store.cm, which declares and exposes a directory, reader.cm, which uses what
+# the root offers of it, and bare.cm, whose directory has no program to serve
+# it. Three of reader's uses are denied on purpose (an offer that asks more
+# than the expose states, an offer or an expose that asks more than the
+# declaration allows). The build walks every tree for directory rights and
+# only warns, so shelf.cm builds, and prints three warnings each time it is
+# compiled; that is expected.
 
 import("//build/toolchain/toolchain_environment.gni")
 import("//system/component_manifest.gni")
@@ -479,10 +489,235 @@ component_manifest("leaf.cm") {
   }
 }
 
-# The program provider.cm, consumer.cm, user.cm and leaf.cm name. Built, so that
-# the template's install-name lookup runs against a real user_executable(), and
-# never packaged or run. User toolchain only, like the runtime; the host
-# toolchain reads "user" too, hence the second test (see //system/lib/ort/test).
+# The directory router's root. Everything below is offered to reader.cm, whose
+# uses are named in the comment on each offer; the route of each is checked by
+# route_test.cpp (RouteShelf) and by test_component_manifest.py, which must
+# agree.
+component_manifest("shelf.cm") {
+  testonly = true
+  visibility = [ "//system/lib/component/test:*" ]
+  children = [
+    {
+      name = "store"
+      manifest = ":store.cm"
+      startup = "eager"
+    },
+    {
+      name = "reader"
+      manifest = ":reader.cm"
+      startup = "eager"
+    },
+    {
+      name = "bare"
+      manifest = ":bare.cm"
+      startup = "eager"
+    },
+  ]
+  manifest = {
+    offer = [
+      # The route that works, every hop narrowing: store declares rw* and
+      # exposes r* with the subdir `shared`, this offer states r* and `public`,
+      # reader asks r* and `docs`. The Open is for
+      # export/data/shared/public/docs.
+      {
+        directory = "data"
+        from = "#store"
+        to = "#reader"
+        as = "notes"
+        rights = [ "r*" ]
+        subdir = "public"
+      },
+
+      # rx* where store's expose of `data` states r*: AccessDenied at store,
+      # Expose. The offer is as wide as the use; it is the expose that holds
+      # less.
+      {
+        directory = "data"
+        from = "#store"
+        to = "#reader"
+        as = "wide-offer"
+        rights = [ "rx*" ]
+      },
+
+      # store exposes `data-wide` as rx* over a declaration of rw*: the
+      # expose is as wide as the offer and the use, and the declaration holds
+      # less. AccessDenied at store, Declare.
+      {
+        directory = "data-wide"
+        from = "#store"
+        to = "#reader"
+        as = "wide-expose"
+        rights = [ "rx*" ]
+      },
+
+      # An expose that states neither rights nor subdir narrows nothing: r*
+      # of the declaration's rw*, no subdir, the declared path alone.
+      {
+        directory = "data-plain"
+        from = "#store"
+        to = "#reader"
+        as = "plain"
+        rights = [ "r*" ]
+      },
+
+      # The same expose, offered as rx*: the declaration is the hop that holds
+      # less. AccessDenied at store, Declare.
+      {
+        directory = "data-plain"
+        from = "#store"
+        to = "#reader"
+        as = "plain-wide"
+        rights = [ "rx*" ]
+      },
+
+      # store exposes a protocol called `status`, not a directory: a directory
+      # use never reaches it. NotFound at store, Expose.
+      {
+        directory = "status"
+        from = "#store"
+        to = "#reader"
+        as = "wrong-kind"
+        rights = [ "r*" ]
+      },
+
+      # And the reverse: store exposes a directory called `data`, and reader
+      # uses a protocol. NotFound at store, Expose.
+      {
+        protocol = "data"
+        from = "#store"
+        to = "#reader"
+        as = "not-a-protocol"
+      },
+
+      # bare declares and exposes `data` and has no program to serve it:
+      # NotFound at bare, Declare.
+      {
+        directory = "data"
+        from = "#bare"
+        to = "#reader"
+        as = "bare-data"
+        rights = [ "r*" ]
+      },
+    ]
+  }
+}
+
+# Declares directories at /export/data and exposes the one three ways, with
+# the narrowing each route above needs; and a protocol, so that the kinds
+# can be told apart.
+component_manifest("store.cm") {
+  testonly = true
+  program = ":fixture_program"
+  manifest = {
+    capabilities = [
+      {
+        directory = "data"
+        path = "/export/data"
+        rights = [ "rw*" ]
+      },
+      {
+        protocol = "status"
+      },
+    ]
+    expose = [
+      {
+        directory = "data"
+        from = "self"
+        rights = [ "r*" ]
+        subdir = "shared"
+      },
+      {
+        directory = "data"
+        from = "self"
+        as = "data-wide"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "data"
+        from = "self"
+        as = "data-plain"
+      },
+      {
+        protocol = "status"
+        from = "self"
+      },
+    ]
+  }
+}
+
+component_manifest("reader.cm") {
+  testonly = true
+  program = ":fixture_program"
+  manifest = {
+    use = [
+      {
+        directory = "notes"
+        path = "/notes"
+        rights = [ "r*" ]
+        subdir = "docs"
+      },
+      {
+        directory = "wide-offer"
+        path = "/wide-offer"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "wide-expose"
+        path = "/wide-expose"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "plain"
+        path = "/plain"
+        rights = [ "r*" ]
+      },
+      {
+        directory = "plain-wide"
+        path = "/plain-wide"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "wrong-kind"
+        path = "/wrong-kind"
+        rights = [ "r*" ]
+      },
+      {
+        directory = "bare-data"
+        path = "/bare-data"
+        rights = [ "r*" ]
+      },
+      {
+        protocol = "not-a-protocol"
+      },
+    ]
+  }
+}
+
+# Declares and exposes a directory with no program to serve it.
+component_manifest("bare.cm") {
+  testonly = true
+  manifest = {
+    capabilities = [
+      {
+        directory = "data"
+        path = "/export/data"
+        rights = [ "rw*" ]
+      },
+    ]
+    expose = [
+      {
+        directory = "data"
+        from = "self"
+      },
+    ]
+  }
+}
+
+# The program provider.cm, consumer.cm, user.cm, leaf.cm, store.cm and
+# reader.cm name. Built, so that the template's install-name lookup runs
+# against a real user_executable(), and never packaged or run. User toolchain
+# only, like the runtime; the host toolchain reads "user" too, hence the second
+# test (see //system/lib/ort/test).
 if (!is_host_toolchain && toolchain_environment == "user") {
   import("//system/user_executable.gni")
 

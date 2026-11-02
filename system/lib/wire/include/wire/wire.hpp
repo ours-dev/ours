@@ -3,8 +3,11 @@
 #ifndef WIRE_WIRE_HPP
 #define WIRE_WIRE_HPP 1
 
+#include <wire/sha256.hpp>
+
 #include <array>
 #include <bit>
+#include <concepts>
 #include <span>
 #include <string_view>
 #include <type_traits>
@@ -67,6 +70,11 @@ inline constexpr auto HANDLE_PRESENT = u32{0xFFFF'FFFF};
 /// none can be mistaken for it.
 inline constexpr auto EPITAPH_ORDINAL = u64{0xFFFF'FFFF'FFFF'FFFF};
 
+/// What a method's ordinal keeps of its selector's hash: everything but the top
+/// bit (ordinal_of).
+inline constexpr auto ORDINAL_MASK = u64{0x7FFF'FFFF'FFFF'FFFF};
+static_assert(ORDINAL_MASK < EPITAPH_ORDINAL);
+
 /// The largest txid a client may give a two-way request. The top bit is
 /// reserved: no client sets it.
 inline constexpr auto MAX_TXID = u32{0x7FFF'FFFF};
@@ -110,18 +118,62 @@ enum class MethodKind : u8 {
 /// One method of a protocol, as its codec declares it: the selector its
 /// ordinal is hashed from, the ordinal, and its kind.
 ///
-/// The ordinal is the first 8 bytes of SHA-256(selector), read little-endian,
-/// top bit cleared (design D20), so a method's number follows from its name and
-/// is never picked by hand. The tree has no SHA-256 in C++, so
-/// test/ordinals_test.py reads every selector and ordinal declared with this
-/// type out of the codec headers and recomputes each with Python's hashlib.
-/// Write a declaration as one designated initializer, .selector first and
-/// .ordinal right after it, for that test to find it.
+/// A codec declares each method with method(), which computes the ordinal from
+/// the selector as the header is compiled (ordinal_of()), so a method's number
+/// follows from its name and is never typed. A test that wants a made-up
+/// ordinal may still write a Method out whole.
 struct Method {
     std::string_view selector;
     u64 ordinal;
     MethodKind kind;
 };
+
+/// The ordinal of the method |selector| names: the first 8 bytes of
+/// SHA-256(selector), read little-endian, with the top bit cleared (design
+/// D20). The top bit is the one EPITAPH_ORDINAL has set, so no method's
+/// ordinal can be an epitaph's.
+///
+/// `consteval`: the compiler computes it wherever it is written, so a method
+/// costs the program neither code nor a start-up initialisation, and a
+/// selector that is not a constant does not compile.
+[[nodiscard]]
+consteval auto ordinal_of(std::string_view const selector) -> u64 {
+    auto const digest = sha256(selector);
+    auto ordinal = u64{0};
+    for (auto i = usize{0}; i < 8; ++i) {
+        ordinal |= u64{digest[i]} << (8 * i);
+    }
+    return ordinal & ORDINAL_MASK;
+}
+
+/// The method |selector| names, of |kind|: ordinal_of() written into a Method,
+/// which is how a codec header declares each of its methods.
+[[nodiscard]]
+consteval auto method(std::string_view const selector, MethodKind const kind) -> Method {
+    return Method{.selector = selector, .ordinal = ordinal_of(selector), .kind = kind};
+}
+
+/// Whether no two of |methods| share an ordinal. A codec header checks its
+/// methods with this in a static_assert, so that a selector declared twice
+/// fails to compile instead of being served as one method.
+///
+/// Ordinals have to be distinct only within a protocol, the methods that one
+/// server tells apart on one channel; protocols on channels of their own
+/// could repeat each other's. A header passes the methods of the protocols
+/// that one channel can carry together.
+template <std::same_as<Method>... Methods>
+[[nodiscard]]
+constexpr auto all_distinct(Methods const &...methods) -> bool {
+    auto const ordinals = std::array<u64, sizeof...(Methods)>{methods.ordinal...};
+    for (auto i = usize{0}; i < ordinals.size(); ++i) {
+        for (auto j = i + 1; j < ordinals.size(); ++j) {
+            if (ordinals[i] == ordinals[j]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 /// A message as it arrived from a channel, or as an encoder left it: its bytes
 /// and its handles, the handles in the order of the handle fields. Neither is

@@ -24,6 +24,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import struct
 import sys
 import tempfile
@@ -161,20 +162,155 @@ class CompileTest(unittest.TestCase):
         manifest = {"capabilities": [{"protocol": "p"}, {"protocol": ["q", "p"]}]}
         self.refuses("duplicate capability name", source(manifest), [], [])
 
-    def test_a_declared_directory(self) -> None:
-        manifest = {"capabilities": [{"directory": "data"}, {"protocol": "p"}]}
+    def test_a_directory_capability_states_a_path_and_rights(self) -> None:
+        manifest = {
+            "capabilities": [
+                {"directory": "data", "path": "/export/data", "rights": ["rw*"]},
+                {"protocol": "p"},
+                {"directory": "docs", "path": "/export/docs", "rights": ["read_bytes", "traverse"]},
+            ]
+        }
         decl = cm.compile_manifest(source(manifest), [], [])
         self.assertEqual(
             decl.capabilities,
             [
-                cm.Capability(cm.KIND_DIRECTORY, "data", ""),
-                cm.Capability(cm.KIND_PROTOCOL, "p", ""),
+                cm.Capability(cm.KIND_DIRECTORY, "data", "", "/export/data", cm.RIGHTS["rw*"]),
+                cm.Capability(cm.KIND_PROTOCOL, "p"),
+                cm.Capability(cm.KIND_DIRECTORY, "docs", "", "/export/docs", 0x02 | 0x80),
             ],
         )
 
-    def test_a_directory_capability_has_no_type(self) -> None:
-        manifest = {"capabilities": [{"directory": "data", "type": "p"}]}
-        self.refuses("a directory capability has no `type`", source(manifest), [], [])
+    def test_a_directory_declaration_needs_a_path_and_rights(self) -> None:
+        self.refuses(
+            r"capabilities\[0\]: a directory declaration needs `path`",
+            source({"capabilities": [{"directory": "data", "rights": ["r*"]}]}),
+            [],
+            [],
+        )
+        self.refuses(
+            r"capabilities\[0\]: a directory declaration needs `rights`",
+            source({"capabilities": [{"directory": "data", "path": "/export/data"}]}),
+            [],
+            [],
+        )
+
+    def test_a_directory_declaration_has_no_subdir_and_no_type(self) -> None:
+        clause = {"directory": "data", "path": "/export/data", "rights": ["r*"]}
+        self.refuses(
+            r"capabilities\[0\]\.subdir: a declaration has no `subdir`",
+            source({"capabilities": [dict(clause, subdir="shared")]}),
+            [],
+            [],
+        )
+        self.refuses(
+            r"capabilities\[0\]\.type: a directory has no `type`",
+            source({"capabilities": [dict(clause, type="t")]}),
+            [],
+            [],
+        )
+        # A protocol declaration has no subdir either.
+        self.refuses(
+            r"capabilities\[0\]\.subdir: a declaration has no `subdir`",
+            source({"capabilities": [{"protocol": "p", "subdir": "shared"}]}),
+            [],
+            [],
+        )
+
+    def test_a_protocol_declaration_has_no_path_and_no_rights(self) -> None:
+        for key, value in [("path", "/export/p"), ("rights", ["r*"])]:
+            self.refuses(
+                rf"capabilities\[0\]\.{key}: a protocol declaration has no `{key}`",
+                source({"capabilities": [{"protocol": "p", key: value}]}),
+                [],
+                [],
+            )
+
+    def test_a_directory_declaration_names_one_directory(self) -> None:
+        clause = {"directory": ["a", "b"], "path": "/export/data", "rights": ["r*"]}
+        self.refuses(
+            r"capabilities\[0\]\.directory: a declaration names one directory",
+            source({"capabilities": [clause]}),
+            [],
+            [],
+        )
+
+    def test_a_declared_path_is_absolute_and_clean(self) -> None:
+        for path in ["export/data", "/", "/export/", "/export//data", "/export/./data", "/export/../x"]:
+            manifest = {"capabilities": [{"directory": "data", "path": path, "rights": ["r*"]}]}
+            self.refuses(r"capabilities\[0\]\.path: ", source(manifest), [], [])
+        longest = "/" + "a" * cm.MAX_SEGMENT_LENGTH
+        manifest = {"capabilities": [{"directory": "data", "path": longest, "rights": ["r*"]}]}
+        self.assertEqual(cm.compile_manifest(source(manifest), [], []).capabilities[0].path, longest)
+        manifest = {"capabilities": [{"directory": "data", "path": longest + "a", "rights": ["r*"]}]}
+        self.refuses("segment longer than 255 bytes", source(manifest), [], [])
+
+    def test_a_declared_path_is_not_svc_or_under_it(self) -> None:
+        for path in ["/svc", "/svc/x", "/svc/x/y"]:
+            manifest = {"capabilities": [{"directory": "data", "path": path, "rights": ["r*"]}]}
+            self.refuses(
+                rf"capabilities\[0\]\.path: '{path}' is /svc or lies under or above it",
+                source(manifest),
+                [],
+                [],
+            )
+        # By segments: /svcx and /svc2 are other directories.
+        for path in ["/svcx", "/svc2/x", "/x/svc"]:
+            manifest = {"capabilities": [{"directory": "data", "path": path, "rights": ["r*"]}]}
+            self.assertEqual(cm.compile_manifest(source(manifest), [], []).capabilities[0].path, path)
+
+    def test_declared_paths_do_not_overlap(self) -> None:
+        def declare(*paths: str) -> Dict[str, Any]:
+            return {
+                "capabilities": [
+                    {"directory": f"d{index}", "path": path, "rights": ["r*"]}
+                    for index, path in enumerate(paths)
+                ]
+            }
+
+        for paths in [
+            ("/export/data", "/export/data"),
+            ("/export/data", "/export/data/x"),
+            ("/export/data/x", "/export/data"),
+            ("/export", "/export/data"),
+        ]:
+            self.refuses(
+                r"capabilities\[1\]\.path: '.*' overlaps '.*' \(.*capabilities\[0\]\.path\)",
+                source(declare(*paths)),
+                [],
+                [],
+            )
+        # By segments: data2 is not under data, and two directories may share
+        # the directory above them.
+        decl = cm.compile_manifest(
+            source(declare("/export/data", "/export/data2", "/export/a", "/other")), [], []
+        )
+        self.assertEqual(len(decl.capabilities), 4)
+
+    def test_declared_rights_follow_the_rules_of_every_other_rights_clause(self) -> None:
+        for rights, error in [
+            (["read"], "unknown right 'read'"),
+            (["r*", "r*"], "duplicated in the rights clause"),
+            ([], "non-empty list"),
+            ("r*", "non-empty list"),
+        ]:
+            manifest = {"capabilities": [{"directory": "d", "path": "/d", "rights": rights}]}
+            self.refuses(rf"capabilities\[0\]\.rights: .*{error}", source(manifest), [], [])
+
+    def test_a_directory_and_a_protocol_share_the_names_of_capabilities(self) -> None:
+        manifest = {
+            "capabilities": [
+                {"protocol": "data"},
+                {"directory": "data", "path": "/export/data", "rights": ["r*"]},
+            ]
+        }
+        self.refuses("'data' is a duplicate capability name", source(manifest), [], [])
+        manifest = {
+            "capabilities": [
+                {"directory": "data", "path": "/export/data", "rights": ["r*"]},
+                {"directory": "data", "path": "/export/other", "rights": ["r*"]},
+            ]
+        }
+        self.refuses("'data' is a duplicate capability name", source(manifest), [], [])
 
     def test_unknown_keys_are_refused(self) -> None:
         self.refuses("unknown key 'environments'", source({"environments": []}), [], [])
@@ -324,20 +460,40 @@ class CompileTest(unittest.TestCase):
         manifest = {"offer": [{"protocol": ["p", "q"], "from": "parent", "to": "#a", "as": "r"}]}
         self.refuses("renames one capability", source(manifest, children=[child("a")]), [], child_meta("a"))
 
-    def test_directory_offers_from_parent_self_and_child(self) -> None:
+    def test_a_directory_offer_comes_from_the_parent_self_or_a_child(self) -> None:
         manifest = {
-            "capabilities": [{"directory": "data"}],
+            "capabilities": [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}],
             "offer": [
-                {"directory": "boot", "from": "parent", "to": "#a", "rights": ["r*"]},
-                {"directory": "data", "from": "self", "to": "#a"},
-                {"directory": "boot", "from": "#b", "to": "#a", "as": "boot-again"},
+                {"directory": "boot", "from": "parent", "to": "#a", "rights": ["rx*"]},
+                {"directory": "data", "from": "self", "to": "#a", "rights": ["r*"], "subdir": "pub"},
+                {"directory": "docs", "from": "#b", "to": "#a", "as": "notes", "rights": ["r*"]},
             ],
         }
         decl = compile_with_children(manifest, "a", "b")
-        self.assertEqual(len(decl.offers), 3)
+        self.assertEqual(
+            decl.offers,
+            [
+                cm.Offer(cm.KIND_DIRECTORY, cm.Ref(cm.REF_PARENT), "boot", cm.Ref(cm.REF_CHILD, "a"), "boot", "", cm.RIGHTS["rx*"]),
+                cm.Offer(cm.KIND_DIRECTORY, cm.Ref(cm.REF_SELF), "data", cm.Ref(cm.REF_CHILD, "a"), "data", "pub", cm.RIGHTS["r*"]),
+                cm.Offer(cm.KIND_DIRECTORY, cm.Ref(cm.REF_CHILD, "b"), "docs", cm.Ref(cm.REF_CHILD, "a"), "notes", "", cm.RIGHTS["r*"]),
+            ],
+        )
 
-    def test_a_directory_offer_from_self_names_a_declared_capability(self) -> None:
-        manifest = {"offer": [{"directory": "data", "from": "self", "to": "#a"}]}
+    def test_a_directory_offer_from_self_names_a_declared_directory(self) -> None:
+        offer = {"directory": "data", "from": "self", "to": "#a", "rights": ["r*"]}
+        # Declared nowhere, and declared as a protocol: neither is a directory.
+        for capabilities in [[], [{"protocol": "data"}]]:
+            self.refuses(
+                r"offer\[0\]\.from: 'self' offers 'data', which `capabilities` does not declare",
+                source({"capabilities": capabilities, "offer": [offer]}, children=[child("a")]),
+                [],
+                child_meta("a"),
+            )
+        # And the reverse: a protocol offer from self of a declared directory.
+        manifest = {
+            "capabilities": [{"directory": "data", "path": "/export/data", "rights": ["r*"]}],
+            "offer": [{"protocol": "data", "from": "self", "to": "#a"}],
+        }
         self.refuses(
             "does not declare", source(manifest, children=[child("a")]), [], child_meta("a")
         )
@@ -359,6 +515,35 @@ class CompileTest(unittest.TestCase):
             source(manifest, children=[child("a"), child("b"), child("c")]),
             [],
             child_meta("a", "b", "c"),
+        )
+
+    def test_the_cycle_check_covers_a_directory_offer_from_a_child(self) -> None:
+        manifest = {
+            "offer": [
+                {"directory": "d", "from": "#a", "to": "#b", "rights": ["r*"]},
+                {"protocol": "q", "from": "#b", "to": "#c"},
+                {"directory": "r", "from": "#c", "to": "#a", "rights": ["r*"]},
+            ]
+        }
+        self.refuses(
+            r"cycle: #a -> #b -> #c -> #a",
+            source(manifest, children=[child("a"), child("b"), child("c")]),
+            [],
+            child_meta("a", "b", "c"),
+        )
+        # Only the directory offers make this one, and a protocol offer cannot
+        # hide it.
+        manifest = {
+            "offer": [
+                {"directory": "d", "from": "#a", "to": "#b", "rights": ["r*"]},
+                {"directory": "e", "from": "#b", "to": "#a", "rights": ["r*"]},
+            ]
+        }
+        self.refuses(
+            r"cycle: #a -> #b -> #a",
+            source(manifest, children=[child("a"), child("b")]),
+            [],
+            child_meta("a", "b"),
         )
 
     def test_a_diamond_is_not_a_cycle(self) -> None:
@@ -389,20 +574,113 @@ class CompileTest(unittest.TestCase):
             ],
         )
 
-    def test_an_exposed_directory(self) -> None:
+    def test_a_directory_expose_from_self_or_a_child(self) -> None:
         manifest = {
-            "capabilities": [{"directory": "data"}],
-            "expose": [{"directory": "data", "from": "self"}],
+            "capabilities": [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}],
+            "expose": [
+                {"directory": "data", "from": "self", "rights": ["r*"], "subdir": "shared"},
+                {"directory": "data", "from": "self", "as": "plain"},
+                {"directory": "docs", "from": "#a", "as": "notes", "rights": ["rx*"], "to": "parent"},
+            ],
         }
-        decl = cm.compile_manifest(source(manifest), [], [])
+        decl = cm.compile_manifest(source(manifest, children=[child("a")]), [], child_meta("a"))
         self.assertEqual(
             decl.exposes,
-            [cm.Expose(cm.KIND_DIRECTORY, cm.Ref(cm.REF_SELF), "data", "data")],
+            [
+                cm.Expose(cm.KIND_DIRECTORY, cm.Ref(cm.REF_SELF), "data", "data", "shared", cm.RIGHTS["r*"]),
+                cm.Expose(cm.KIND_DIRECTORY, cm.Ref(cm.REF_SELF), "data", "plain", "", None),
+                cm.Expose(cm.KIND_DIRECTORY, cm.Ref(cm.REF_CHILD, "a"), "docs", "notes", "", cm.RIGHTS["rx*"]),
+            ],
         )
 
-    def test_an_expose_from_self_names_a_declared_directory(self) -> None:
-        manifest = {"expose": [{"directory": "data", "from": "self"}]}
+    def test_a_directory_expose_from_self_names_a_declared_directory(self) -> None:
+        for capabilities in [[], [{"protocol": "data"}]]:
+            manifest = {"capabilities": capabilities, "expose": [{"directory": "data", "from": "self"}]}
+            self.refuses(
+                r"expose\[0\]\.from: 'self' exposes 'data', which `capabilities` does not declare",
+                source(manifest),
+                [],
+                [],
+            )
+        manifest = {
+            "capabilities": [{"directory": "data", "path": "/export/data", "rights": ["r*"]}],
+            "expose": [{"protocol": "data", "from": "self"}],
+        }
         self.refuses("does not declare", source(manifest), [], [])
+
+    def test_one_declaration_may_be_exposed_twice(self) -> None:
+        # Two exposes of one declaration under two names, each narrowing in
+        # its own way: the only way to give a parent two views of one tree.
+        manifest = {
+            "capabilities": [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}],
+            "expose": [
+                {"directory": "data", "from": "self", "rights": ["r*"], "subdir": "pub", "as": "view"},
+                {"directory": "data", "from": "self"},
+            ],
+        }
+        self.assertEqual(len(cm.compile_manifest(source(manifest), [], []).exposes), 2)
+
+    def test_rights_and_subdir_are_for_directory_exposes(self) -> None:
+        for key, value in [("rights", ["r*"]), ("subdir", "shared")]:
+            manifest = {
+                "capabilities": [{"protocol": "p"}],
+                "expose": [{"protocol": "p", "from": "self", key: value}],
+            }
+            self.refuses(
+                rf"expose\[0\]\.{key}: only a directory expose has `{key}`", source(manifest), [], []
+            )
+            # Nor does a protocol expose of a child's capability.
+            manifest = {"expose": [{"protocol": "p", "from": "#a", key: value}]}
+            self.refuses(
+                rf"expose\[0\]\.{key}: only a directory expose has `{key}`",
+                source(manifest, children=[child("a")]),
+                [],
+                child_meta("a"),
+            )
+
+    def test_the_rights_and_subdir_of_an_expose_follow_the_rules_of_an_offers(self) -> None:
+        clause = {"directory": "data", "from": "#a"}
+        for key, value, error in [
+            ("rights", ["read"], "unknown right 'read'"),
+            ("rights", ["r*", "r*"], "duplicated in the rights clause"),
+            ("rights", [], "non-empty list"),
+            ("subdir", "/shared", "must be relative"),
+            ("subdir", "shared/", "empty, '.' or '..' segment"),
+            ("subdir", "a/../b", "empty, '.' or '..' segment"),
+            ("subdir", "", "empty, '.' or '..' segment"),
+        ]:
+            self.refuses(
+                rf"expose\[0\]\.{key}: .*{error}",
+                source({"expose": [dict(clause, **{key: value})]}, children=[child("a")]),
+                [],
+                child_meta("a"),
+            )
+
+    def test_the_language_is_opened_for_directories(self) -> None:
+        # What step 1 left refused (format 3 had the room, the compiler did
+        # not write it) is the language now: a declared directory with a path
+        # and rights, an exposed directory with a subdir and rights, and a
+        # directory offer from self and from a child, each in the full
+        # spelling the design uses.
+        decl = cm.compile_manifest(
+            source({"capabilities": [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}]}),
+            [],
+            [],
+        )
+        self.assertEqual(decl.capabilities[0].path, "/export/data")
+        manifest = {
+            "capabilities": [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}],
+            "expose": [{"directory": "data", "from": "self", "rights": ["r*"], "subdir": "shared"}],
+        }
+        decl = cm.compile_manifest(source(manifest), [], [])
+        self.assertEqual((decl.exposes[0].subdir, decl.exposes[0].rights), ("shared", cm.RIGHTS["r*"]))
+        for origin in ["self", "#b"]:
+            manifest = {
+                "capabilities": [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}],
+                "offer": [{"directory": "data", "from": origin, "to": "#a", "rights": ["r*"]}],
+            }
+            decl = compile_with_children(manifest, "a", "b")
+            self.assertEqual(decl.offers[0].kind, cm.KIND_DIRECTORY)
 
     def test_expose_from_self_names_a_declared_capability(self) -> None:
         self.refuses("does not declare", source({"expose": [{"protocol": "p", "from": "self"}]}), [], [])
@@ -466,13 +744,22 @@ class CompileTest(unittest.TestCase):
         for offer in [
             {"protocol": "p", "from": "parent", "to": "#a", "type": "t"},
             {"protocol": "p", "from": "parent", "to": "#a", "as": "q", "type": "t"},
-            {"directory": "boot", "from": "parent", "to": "#a", "type": "t"},
         ]:
             self.refuses(
                 r"offer\[0\]\.type: an offer has no `type`: `as` renames the capability, not the protocol",
                 source({"offer": [offer]}, children=[child("a")]),
                 [],
                 child_meta("a"),
+            )
+        # A directory has no type to state anywhere: the message says so,
+        # and does not send the author to declare one.
+        for origin in ["parent", "self", "#b"]:
+            offer = {"directory": "boot", "from": origin, "to": "#a", "type": "t"}
+            self.refuses(
+                r"offer\[0\]\.type: a directory offer has no `type`; only a protocol has one",
+                source({"offer": [offer]}, children=[child("a"), child("b")]),
+                [],
+                child_meta("a", "b"),
             )
 
     def test_an_expose_has_no_type(self) -> None:
@@ -486,6 +773,18 @@ class CompileTest(unittest.TestCase):
             [],
             [],
         )
+        # And a directory expose has none to state, from self or a child.
+        for origin in ["self", "#a"]:
+            manifest = {
+                "capabilities": [{"directory": "d", "path": "/d", "rights": ["r*"]}],
+                "expose": [{"directory": "d", "from": origin, "type": "t"}],
+            }
+            self.refuses(
+                r"expose\[0\]\.type: a directory expose has no `type`; only a protocol has one",
+                source(manifest, children=[child("a")]),
+                [],
+                child_meta("a"),
+            )
 
     def test_a_type_follows_the_rules_of_a_name(self) -> None:
         for key in ["capabilities", "use"]:
@@ -537,10 +836,10 @@ class EncodeTest(unittest.TestCase):
             (cm.PROGRAM, 16),
             (cm.ARG, 8),
             (cm.CHILD, 24),
-            (cm.CAPABILITY, 24),
+            (cm.CAPABILITY, 40),
             (cm.USE, 56),
             (cm.OFFER, 56),
-            (cm.EXPOSE, 40),
+            (cm.EXPOSE, 56),
         ]
         for layout, size in sizes:
             self.assertEqual(layout.size, size)
@@ -587,18 +886,182 @@ class EncodeTest(unittest.TestCase):
         self.assertEqual(expose[2:4], (cm.REF_SELF, 0))
         self.assertEqual(expose[6:8], (cm.REF_PARENT, 0))
 
-    def test_the_format_is_version_two(self) -> None:
-        self.assertEqual(cm.VERSION, 2)
-        self.assertEqual(Reader(self.compiled()).version, 2)
+    def test_the_format_is_version_three(self) -> None:
+        self.assertEqual(cm.VERSION, 3)
+        data = self.compiled()
+        self.assertEqual(Reader(data).version, 3)
+        # The header's version is a u16 at offset 4, read here without the
+        # struct that wrote it.
+        self.assertEqual(struct.unpack_from("<H", data, 4), (3,))
 
-    def test_the_type_strings_sit_where_format_hpp_puts_them(self) -> None:
-        # offsetof(Capability, type) == 16, offsetof(Use, type) == 40 and
-        # offsetof(Use, rights) == 48 in format.hpp.
-        capability = cm.CAPABILITY.pack(*range(1, 7))
+    def test_the_fields_sit_where_format_hpp_puts_them(self) -> None:
+        # offsetof(Capability, flags) == 4, name == 8, type == 16, path == 24
+        # and rights == 32; offsetof(Use, type) == 40 and rights == 48;
+        # offsetof(Expose, target) == 24, subdir == 40 and rights == 48.
+        capability = cm.CAPABILITY.pack(*range(1, 9), 99)
+        self.assertEqual(struct.unpack_from("<I", capability, 4), (2,))
+        self.assertEqual(struct.unpack_from("<II", capability, 8), (3, 4))
         self.assertEqual(struct.unpack_from("<II", capability, 16), (5, 6))
+        self.assertEqual(struct.unpack_from("<II", capability, 24), (7, 8))
+        self.assertEqual(struct.unpack_from("<Q", capability, 32), (99,))
         use = cm.USE.pack(*range(1, 13), 99)
         self.assertEqual(struct.unpack_from("<II", use, 40), (11, 12))
         self.assertEqual(struct.unpack_from("<Q", use, 48), (99,))
+        expose = cm.EXPOSE.pack(*range(1, 13), 99)
+        self.assertEqual(struct.unpack_from("<I", expose, 4), (2,))
+        self.assertEqual(struct.unpack_from("<II", expose, 24), (7, 8))
+        self.assertEqual(struct.unpack_from("<II", expose, 40), (11, 12))
+        self.assertEqual(struct.unpack_from("<Q", expose, 48), (99,))
+        # An Expose has an Offer's layout, so a reader that handles one
+        # handles the other.
+        self.assertEqual(cm.EXPOSE.format, cm.OFFER.format)
+
+    def test_existing_capabilities_and_exposes_encode_the_new_fields_empty(self) -> None:
+        # Every capability and expose the language can write today: a
+        # protocol states no path, no subdir and no rights.
+        reader = Reader(self.compiled())
+        (capability,) = reader.tables["capability"]
+        kind, flags, *strings, rights = capability
+        self.assertEqual((kind, flags, rights), (cm.KIND_PROTOCOL, 0, 0))
+        self.assertEqual(strings[4:6][1], 0)  # the path, empty
+        self.assertEqual(reader.text(*strings[0:2]), "ours.example.Echo")
+        (expose,) = reader.tables["expose"]
+        self.assertEqual((expose[0], expose[1], expose[12]), (cm.KIND_PROTOCOL, 0, 0))
+        self.assertEqual(expose[10:12][1], 0)  # the subdir, empty
+        self.assertEqual(reader.text(*expose[4:6]), "ours.example.Echo")
+        # An empty string adds no byte to the table.
+        self.assertEqual(reader.strings.count(b"ours.example.Echo"), 1)
+
+    def test_a_directory_capability_and_expose_encode_at_the_offsets_format_hpp_gives(self) -> None:
+        # Records built by hand, since the language cannot write them yet,
+        # read back at the offsets format.hpp's static_asserts fix and without
+        # the structs that wrote them: header 48, Capability 40, Expose 56.
+        decl = cm.Decl(
+            capabilities=[
+                cm.Capability(cm.KIND_DIRECTORY, "data", "", "/export/data", cm.RIGHTS["rw*"]),
+                cm.Capability(cm.KIND_DIRECTORY, "stated-empty", "", "/export/none", 0),
+            ],
+            exposes=[
+                cm.Expose(
+                    cm.KIND_DIRECTORY, cm.Ref(cm.REF_SELF), "data", "docs", "shared/x", cm.RIGHTS["r*"]
+                ),
+                cm.Expose(cm.KIND_DIRECTORY, cm.Ref(cm.REF_SELF), "data", "plain"),
+            ],
+        )
+        data = cm.encode(decl)
+        header = 48
+        capabilities = header
+        exposes = capabilities + 2 * 40
+        strings = exposes + 2 * 56
+        self.assertEqual(struct.unpack_from("<I", data, 8), (len(data),))
+        self.assertEqual(struct.unpack_from("<I", data, 12), (len(data) - strings,))
+        self.assertEqual(struct.unpack_from("<II", data, 28), (2, 0))  # capabilities, uses
+        self.assertEqual(struct.unpack_from("<II", data, 36), (0, 2))  # offers, exposes
+
+        def text(offset: int) -> str:
+            start, size = struct.unpack_from("<II", data, offset)
+            return data[strings + start : strings + start + size].decode()
+
+        # data: kind, flags, name, type, path, rights.
+        self.assertEqual(struct.unpack_from("<II", data, capabilities), (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED))
+        self.assertEqual(text(capabilities + 8), "data")
+        self.assertEqual(text(capabilities + 16), "")
+        self.assertEqual(text(capabilities + 24), "/export/data")
+        self.assertEqual(struct.unpack_from("<Q", data, capabilities + 32), (cm.RIGHTS["rw*"],))
+        # A stated empty set is the flag and a zero word, not an unstated one.
+        second = capabilities + 40
+        self.assertEqual(struct.unpack_from("<II", data, second), (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED))
+        self.assertEqual(text(second + 24), "/export/none")
+        self.assertEqual(struct.unpack_from("<Q", data, second + 32), (0,))
+
+        # docs: kind, flags, source, source_name, target, target_name, subdir, rights.
+        self.assertEqual(struct.unpack_from("<II", data, exposes), (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED))
+        self.assertEqual(struct.unpack_from("<II", data, exposes + 8), (cm.REF_SELF, 0))
+        self.assertEqual(text(exposes + 16), "data")
+        self.assertEqual(struct.unpack_from("<II", data, exposes + 24), (cm.REF_PARENT, 0))
+        self.assertEqual(text(exposes + 32), "docs")
+        self.assertEqual(text(exposes + 40), "shared/x")
+        self.assertEqual(struct.unpack_from("<Q", data, exposes + 48), (cm.RIGHTS["r*"],))
+        # The second expose states neither.
+        plain = exposes + 56
+        self.assertEqual(struct.unpack_from("<II", data, plain), (cm.KIND_DIRECTORY, 0))
+        self.assertEqual(text(plain + 32), "plain")
+        self.assertEqual(text(plain + 40), "")
+        self.assertEqual(struct.unpack_from("<Q", data, plain + 48), (0,))
+
+        # The file reads back through the second reading of the format, too.
+        reader = Reader(data)
+        self.assertEqual(reader.tables["capability"][0][8], cm.RIGHTS["rw*"])
+        self.assertEqual(reader.tables["expose"][0][12], cm.RIGHTS["r*"])
+
+    def test_a_compiled_directory_writes_its_path_rights_subdir_and_flags(self) -> None:
+        # The same records as the hand-built test above, but from a manifest:
+        # what the parser fills in is what encode() writes, at the offsets
+        # format.hpp fixes. Read without the structs that wrote them.
+        manifest = {
+            "capabilities": [
+                {"directory": "data", "path": "/export/data", "rights": ["rw*"]},
+                {"protocol": "p"},
+            ],
+            "expose": [
+                {"directory": "data", "from": "self", "rights": ["r*"], "subdir": "shared"},
+                {"directory": "data", "from": "self", "as": "plain"},
+                {"protocol": "p", "from": "self"},
+            ],
+        }
+        data = cm.encode(cm.compile_manifest(source(manifest), [], []))
+        capabilities = 48
+        exposes = capabilities + 2 * 40
+        strings = exposes + 3 * 56
+
+        def text(offset: int) -> str:
+            start, size = struct.unpack_from("<II", data, offset)
+            return data[strings + start : strings + start + size].decode()
+
+        self.assertEqual(struct.unpack_from("<II", data, capabilities), (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED))
+        self.assertEqual(text(capabilities + 8), "data")
+        self.assertEqual(text(capabilities + 16), "")
+        self.assertEqual(text(capabilities + 24), "/export/data")
+        self.assertEqual(struct.unpack_from("<Q", data, capabilities + 32), (cm.RIGHTS["rw*"],))
+        # The protocol states no path and no rights, and no flag says it does.
+        protocol = capabilities + 40
+        self.assertEqual(struct.unpack_from("<II", data, protocol), (cm.KIND_PROTOCOL, 0))
+        self.assertEqual(text(protocol + 24), "")
+        self.assertEqual(struct.unpack_from("<Q", data, protocol + 32), (0,))
+
+        self.assertEqual(struct.unpack_from("<II", data, exposes), (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED))
+        self.assertEqual(text(exposes + 32), "data")
+        self.assertEqual(text(exposes + 40), "shared")
+        self.assertEqual(struct.unpack_from("<Q", data, exposes + 48), (cm.RIGHTS["r*"],))
+        plain = exposes + 56
+        self.assertEqual(struct.unpack_from("<II", data, plain), (cm.KIND_DIRECTORY, 0))
+        self.assertEqual(text(plain + 32), "plain")
+        self.assertEqual(text(plain + 40), "")
+        self.assertEqual(struct.unpack_from("<Q", data, plain + 48), (0,))
+        protocol_expose = exposes + 2 * 56
+        self.assertEqual(struct.unpack_from("<II", data, protocol_expose), (cm.KIND_PROTOCOL, 0))
+        self.assertEqual(text(protocol_expose + 40), "")
+        self.assertEqual(struct.unpack_from("<Q", data, protocol_expose + 48), (0,))
+
+        # The second reading of the format agrees, and the file is whole.
+        reader = Reader(data)
+        self.assertEqual(reader.total_size, len(data))
+        self.assertEqual(reader.text(*reader.tables["capability"][0][6:8]), "/export/data")
+        self.assertEqual(reader.text(*reader.tables["expose"][0][10:12]), "shared")
+
+    def test_an_offer_from_self_or_a_child_writes_its_source(self) -> None:
+        manifest = {
+            "capabilities": [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}],
+            "offer": [
+                {"directory": "data", "from": "self", "to": "#a", "rights": ["r*"], "subdir": "pub"},
+                {"directory": "docs", "from": "#b", "to": "#a", "rights": ["r*"]},
+            ],
+        }
+        decl = compile_with_children(manifest, "a", "b")
+        offers = Reader(cm.encode(decl)).tables["offer"]
+        self.assertEqual(offers[0][:4], (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED, cm.REF_SELF, 0))
+        self.assertEqual(offers[1][:4], (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED, cm.REF_CHILD, 1))
+        self.assertEqual(offers[1][6:8], (cm.REF_CHILD, 0))
 
     def compiled_with_types(self, capability: Dict[str, Any], use: Dict[str, Any]) -> Reader:
         manifest = {"capabilities": [capability], "use": [use]}
@@ -654,7 +1117,7 @@ class EncodeTest(unittest.TestCase):
         # The rights words fall on multiples of 8 in each record, and every
         # record size is one, so a reader that maps the file sees them
         # naturally aligned.
-        self.assertEqual(struct.calcsize("<IIIIIIIIII"), 40)
+        self.assertEqual(struct.calcsize("<IIIIIIII"), 32)
         self.assertEqual(struct.calcsize("<IIIIIIIIIIII"), 48)
         for layout in [cm.HEADER, cm.PROGRAM, cm.ARG, cm.CHILD, cm.CAPABILITY, cm.USE, cm.OFFER, cm.EXPOSE]:
             self.assertEqual(layout.size % 8, 0)
@@ -1116,54 +1579,60 @@ error: //test:root.cm: root.cm uses protocol "ours.process.Launcher" (type ours.
                 cm.load_tree([dict(entry, path="x")])
 
 
+def run_compile(
+    scopes: List[Dict[str, Any]],
+    builtins: Optional[Dict[str, Any]] = None,
+    extra: tuple = (),
+    depfile: bool = False,
+) -> tuple:
+    """cm.main() over |scopes|, the first the manifest being compiled and the rest its
+    descendants, as GN would hand them over: the exit status, the file it wrote
+    (None when it wrote none), what it printed to stderr, the depfile (None when
+    none), the output path and the paths of the descendants' scopes."""
+    root, *rest = scopes
+    with tempfile.TemporaryDirectory() as directory:
+        base = pathlib.Path(directory)
+        tree = []
+        for entry in rest:
+            path = base / (entry["label"].split(":")[-1] + ".source.json")
+            path.write_text(json.dumps(entry))
+            tree.append({"label": entry["label"], "source": str(path)})
+        labels = [entry["manifest"] for entry in root.get("children", [])]
+        meta = [{"label": label, "path": "meta/" + label.split(":")[-1]} for label in labels]
+        names = PROGRAM_NAMES if "program" in root else []
+        arguments = [*extra]
+        if builtins is not None:
+            (base / "builtins.json").write_text(json.dumps(builtins))
+            arguments += ["--builtins", str(base / "builtins.json")]
+        depfile_path = base / "test.cm.d"
+        if depfile:
+            arguments += ["--depfile", str(depfile_path)]
+        output = base / "out" / "test.cm"
+        files = {}
+        for key, value in [("source", root), ("program", names), ("children", meta), ("tree", tree)]:
+            files[key] = base / f"{key}.json"
+            files[key].write_text(json.dumps(value))
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            status = cm.main(
+                [
+                    "--source", str(files["source"]),
+                    "--program", str(files["program"]),
+                    "--children", str(files["children"]),
+                    "--tree", str(files["tree"]),
+                    "--output", str(output),
+                    *arguments,
+                ]
+            )
+        data = output.read_bytes() if output.exists() else None
+        deps = depfile_path.read_text() if depfile_path.exists() else None
+        return status, data, errors.getvalue(), deps, str(output), [str(base / (e["label"].split(":")[-1] + ".source.json")) for e in rest]
+
+
 class TypeCheckMainTest(unittest.TestCase):
     """The compiler's command line: what it prints, writes and exits with."""
 
-    def run_compile(
-        self,
-        scopes: List[Dict[str, Any]],
-        builtins: Optional[Dict[str, Any]] = None,
-        extra: tuple = (),
-        depfile: bool = False,
-    ) -> tuple:
-        root, *rest = scopes
-        with tempfile.TemporaryDirectory() as directory:
-            base = pathlib.Path(directory)
-            tree = []
-            for entry in rest:
-                path = base / (entry["label"].split(":")[-1] + ".source.json")
-                path.write_text(json.dumps(entry))
-                tree.append({"label": entry["label"], "source": str(path)})
-            labels = [entry["manifest"] for entry in root.get("children", [])]
-            meta = [{"label": label, "path": "meta/" + label.split(":")[-1]} for label in labels]
-            names = PROGRAM_NAMES if "program" in root else []
-            arguments = [*extra]
-            if builtins is not None:
-                (base / "builtins.json").write_text(json.dumps(builtins))
-                arguments += ["--builtins", str(base / "builtins.json")]
-            depfile_path = base / "test.cm.d"
-            if depfile:
-                arguments += ["--depfile", str(depfile_path)]
-            output = base / "out" / "test.cm"
-            files = {}
-            for key, value in [("source", root), ("program", names), ("children", meta), ("tree", tree)]:
-                files[key] = base / f"{key}.json"
-                files[key].write_text(json.dumps(value))
-            errors = io.StringIO()
-            with contextlib.redirect_stderr(errors):
-                status = cm.main(
-                    [
-                        "--source", str(files["source"]),
-                        "--program", str(files["program"]),
-                        "--children", str(files["children"]),
-                        "--tree", str(files["tree"]),
-                        "--output", str(output),
-                        *arguments,
-                    ]
-                )
-            data = output.read_bytes() if output.exists() else None
-            deps = depfile_path.read_text() if depfile_path.exists() else None
-            return status, data, errors.getvalue(), deps, str(output), [str(base / (e["label"].split(":")[-1] + ".source.json")) for e in rest]
+    run_compile = staticmethod(run_compile)
 
     LAUNCHER = {"builtins": [{"name": "ours.process.Launcher", "kind": "protocol"}]}
 
@@ -1260,17 +1729,600 @@ class TypeCheckMainTest(unittest.TestCase):
             self.assertEqual(path.read_text(), "out\\ dir/x.cm: a\\ b/c.json d.json\n")
 
 
+# --- The rights walk ----------------------------------------------------------
+
+
+def boot_builtin(rights: Optional[str] = "rx*") -> cb.Builtin:
+    """The root's built-in `boot`, stating |rights| as builtins.json does."""
+    return cb.Builtin("boot", cm.KIND_DIRECTORY, "boot", cm.RIGHTS[rights] if rights else None)
+
+
+def directory_offer(
+    name: str,
+    source: str,
+    target: str,
+    rights: Optional[str] = None,
+    subdir: str = "",
+    rename: str = "",
+) -> Dict[str, Any]:
+    clause: Dict[str, Any] = {"directory": name, "from": source, "to": target}
+    if rights:
+        clause["rights"] = [rights]
+    if subdir:
+        clause["subdir"] = subdir
+    if rename:
+        clause["as"] = rename
+    return clause
+
+
+def directory_use(name: str, path: str, rights: str, subdir: str = "") -> Dict[str, Any]:
+    clause: Dict[str, Any] = {"directory": name, "path": path, "rights": [rights]}
+    if subdir:
+        clause["subdir"] = subdir
+    return clause
+
+
+def directory_tree(
+    offered: Optional[str],
+    used: str = "r*",
+    declared: str = "rw*",
+    exposed: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """root.cm, a provider `store` and a consumer `reader`: store declares
+    `data` at /export/data allowing |declared|, exposes it as |exposed| says
+    (rights and subdir, none by default), root offers it to reader stating
+    |offered|, and reader uses it asking |used|."""
+    root = scope_of(
+        "root",
+        children=("store", "reader"),
+        offer=[directory_offer("data", "#store", "#reader", offered)],
+    )
+    store = scope_of(
+        "store",
+        program=True,
+        capabilities=[{"directory": "data", "path": "/export/data", "rights": [declared]}],
+        expose=[dict({"directory": "data", "from": "self"}, **(exposed or {}))],
+    )
+    reader = scope_of("reader", program=True, use=[directory_use("data", "/data", used)])
+    return [root, store, reader]
+
+
+def check_rights_of(
+    scopes: List[Dict[str, Any]], builtins: Optional[List[cb.Builtin]] = None
+) -> List[cm.RightsWarning]:
+    """check_directory_rights() for the first of |scopes| as the manifest being
+    compiled and the rest as its descendants, as check() does for the types."""
+    root, *rest = scopes
+    labels = [entry["manifest"] for entry in root.get("children", [])]
+    meta = [{"label": label, "path": "meta/" + label.split(":")[-1]} for label in labels]
+    decl = cm.compile_manifest(root, PROGRAM_NAMES if "program" in root else [], meta)
+    return cm.check_directory_rights(root, decl, {entry["label"]: entry for entry in rest}, builtins)
+
+
+def warning_texts(warnings: List[cm.RightsWarning]) -> List[str]:
+    return [cm.format_rights_warning(warning) for warning in warnings]
+
+
+# routing_checks' `/denied`, as dev's root.cm writes it: the built-in `boot`
+# offered with r* where the use asks rx*. The warning on every compile of that
+# root.
+DENIED_WARNING = """\
+warning: //kernel/products/image/dev:root.cm: #routing_checks uses directory "denied" with rights rx*,
+         but the route holds less at an offer:
+           use    #routing_checks "denied"                                    rx*
+           offer  root.cm "boot" from parent to #routing_checks as "denied"   r*   <- holds less
+         The root will answer AccessDenied for this use. Offer rights that contain rx*, or ask the use for fewer.
+"""
+
+
+def denied_scopes() -> List[Dict[str, Any]]:
+    root = scope_of(
+        "root",
+        children=("routing_checks",),
+        offer=[directory_offer("boot", "parent", "#routing_checks", "r*", rename="denied")],
+    )
+    root["label"] = "//kernel/products/image/dev:root.cm"
+    routing_checks = scope_of(
+        "routing_checks", program=True, use=[directory_use("denied", "/denied", "rx*")]
+    )
+    return [root, routing_checks]
+
+
+class RightsWalkTest(unittest.TestCase):
+    """Each rule of the walk and of the warning, on trees of a few manifests."""
+
+    def test_a_widened_offer_warns_with_the_designed_text(self) -> None:
+        self.assertEqual(warning_texts(check_rights_of(denied_scopes(), [boot_builtin()])), [DENIED_WARNING])
+
+    def test_a_use_that_asks_more_than_the_offer_states_warns_at_the_offer(self) -> None:
+        (warning,) = check_rights_of(directory_tree("r*", used="rx*"))
+        self.assertEqual(warning.instance.path, ("reader",))
+        self.assertEqual((warning.walk.hops[-1].word, warning.walk.hops[-1].verb), ("offer", "Offer"))
+        self.assertEqual(
+            cm.format_rights_warning(warning),
+            """\
+warning: //test:root.cm: #reader uses directory "data" with rights rx*,
+         but the route holds less at an offer:
+           use    #reader "data"                          rx*
+           offer  root.cm "data" from #store to #reader   r*   <- holds less
+         The root will answer AccessDenied for this use. Offer rights that contain rx*, or ask the use for fewer.
+""",
+        )
+
+    def test_an_exposed_narrowing_then_an_offer_asking_more_warns_at_the_expose(self) -> None:
+        # store exposes r* what it declares rw*; root offers rx*, which reader
+        # asks: the offer is as wide as the use, and it is the expose that
+        # holds less than the offer in front of it.
+        (warning,) = check_rights_of(directory_tree("rx*", used="rx*", exposed={"rights": ["r*"]}))
+        self.assertEqual((warning.walk.hops[-1].word, warning.walk.hops[-1].verb), ("expose", "Expose"))
+        self.assertEqual(
+            cm.format_rights_warning(warning),
+            """\
+warning: //test:root.cm: #reader uses directory "data" with rights rx*,
+         but the route holds less at an expose:
+           use    #reader "data"                          rx*
+           offer  root.cm "data" from #store to #reader   rx*
+           expose #store "data" from self to parent       r*   <- holds less
+         The root will answer AccessDenied for this use. Expose rights that contain rx*, or ask the offer for fewer.
+""",
+        )
+
+    def test_an_expose_wider_than_the_declaration_warns_at_the_declaration(self) -> None:
+        # rx* adds execute to what rw* allows, so the declaration is the hop
+        # that holds less, though both are "more than read".
+        (warning,) = check_rights_of(
+            directory_tree("rx*", used="rx*", declared="rw*", exposed={"rights": ["rx*"]})
+        )
+        self.assertEqual((warning.walk.hops[-1].word, warning.walk.hops[-1].verb), ("declare", "Declare"))
+        self.assertEqual(
+            cm.format_rights_warning(warning),
+            """\
+warning: //test:root.cm: #reader uses directory "data" with rights rx*,
+         but the route holds less at the declaration:
+           use     #reader "data"                          rx*
+           offer   root.cm "data" from #store to #reader   rx*
+           expose  #store "data" from self to parent       rx*
+           declare #store "data" at /export/data           rw*   <- holds less
+         The root will answer AccessDenied for this use. Declare rights that contain rx*, or ask the expose for fewer.
+""",
+        )
+
+    def test_a_declaration_narrower_than_an_offer_that_exposes_nothing_warns_at_the_declaration(self) -> None:
+        (warning,) = check_rights_of(directory_tree("rx*", used="r*", declared="r*"))
+        self.assertEqual((warning.walk.hops[-1].word, warning.walk.hops[-1].rights), ("declare", cm.RIGHTS["r*"]))
+        self.assertIn("ask the offer for fewer.", cm.format_rights_warning(warning))
+
+    def test_a_use_wider_than_the_builtin_warns_at_the_builtin(self) -> None:
+        root = scope_of(
+            "root", children=("reader",), offer=[directory_offer("boot", "parent", "#reader")]
+        )
+        reader = scope_of("reader", program=True, use=[directory_use("boot", "/boot", "rw*")])
+        (warning,) = check_rights_of([root, reader], [boot_builtin("rx*")])
+        self.assertEqual(
+            cm.format_rights_warning(warning),
+            """\
+warning: //test:root.cm: #reader uses directory "boot" with rights rw*,
+         but the route holds less at the root's built-in:
+           use      #reader "boot"                          rw*
+           offer    root.cm "boot" from parent to #reader   none
+           built-in "boot"                                  rx*   <- holds less
+         The root will answer AccessDenied for this use. The root's built-in allows only rx*; ask the use for no more than that.
+""",
+        )
+
+    def test_a_chain_that_only_narrows_warns_nothing(self) -> None:
+        for name, scopes, builtins in [
+            ("every hop as wide as the one before", directory_tree("r*"), None),
+            ("a declaration wider than everything", directory_tree("r*", declared="rw*"), None),
+            ("an expose that widens", directory_tree("r*", exposed={"rights": ["rx*"]}, declared="rx*"), None),
+            ("a hop that states nothing", directory_tree(None), None),
+            ("no offer rights, no expose rights", directory_tree(None, used="rw*"), None),
+        ]:
+            with self.subTest(name):
+                self.assertEqual(check_rights_of(scopes, builtins), [])
+        # The built-in: r* of rx*, and rx* of rx*.
+        for used in ["r*", "rx*"]:
+            root = scope_of("root", children=("reader",), offer=[directory_offer("boot", "parent", "#reader", "rx*")])
+            reader = scope_of("reader", program=True, use=[directory_use("boot", "/boot", used)])
+            self.assertEqual(check_rights_of([root, reader], [boot_builtin("rx*")]), [])
+
+    def test_a_hop_that_states_no_rights_narrows_nothing(self) -> None:
+        # The offer states none, so the expose is held against the use, and
+        # r* of r* is fine; the declaration then allows rw*.
+        self.assertEqual(check_rights_of(directory_tree(None, used="r*", exposed={"rights": ["r*"]})), [])
+        # And one that states none does not hide the hop before it: the use
+        # asks rx*, the offer states none, the expose states r*.
+        (warning,) = check_rights_of(directory_tree(None, used="rx*", exposed={"rights": ["r*"]}))
+        self.assertEqual(warning.walk.hops[-1].word, "expose")
+        self.assertIn("ask the use for fewer.", cm.format_rights_warning(warning))
+
+    def test_a_hop_is_held_against_the_hop_before_it_not_the_use(self) -> None:
+        # reader asks r*. mid offers it rx* from its own `thin`, which root
+        # offered with r*: r* would do for reader, but mid offered more than
+        # it had, and it is root's offer that holds less than the offer in
+        # front of it.
+        root = scope_of(
+            "root",
+            children=("store", "mid"),
+            offer=[directory_offer("data", "#store", "#mid", "r*", rename="thin")],
+        )
+        mid = scope_of(
+            "mid",
+            children=("reader",),
+            offer=[directory_offer("thin", "parent", "#reader", "rx*", rename="wide")],
+        )
+        store = directory_tree(None)[1]
+        reader = scope_of("reader", program=True, use=[directory_use("wide", "/wide", "r*")])
+        (warning,) = check_rights_of([root, store, mid, reader])
+        self.assertEqual(warning.instance.path, ("mid", "reader"))
+        self.assertEqual(
+            cm.format_rights_warning(warning),
+            """\
+warning: //test:root.cm: #mid/#reader uses directory "wide" with rights r*,
+         but the route holds less at an offer:
+           use    #mid/#reader "wide"                            r*
+           offer  #mid "thin" from parent to #reader as "wide"   rx*
+           offer  root.cm "data" from #store to #mid as "thin"   r*   <- holds less
+         The root will answer AccessDenied for this use. Offer rights that contain rx*, or ask the offer for fewer.
+""",
+        )
+
+    def test_a_route_that_does_not_resolve_warns_nothing(self) -> None:
+        # Each use asks rx* of offers that state rx*, and the hop where the
+        # route stops would have held less (a declaration of rw*, a built-in
+        # of r*), so a route that got there would be denied. None does.
+        use = [directory_use("data", "/data", "rx*")]
+        client = scope_of("client", program=True, use=use)
+        declared = [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}]
+        hollow = scope_of(
+            "store", capabilities=declared, expose=[{"directory": "data", "from": "self"}]
+        )
+        silent = scope_of("store", program=True)
+        from_store = directory_offer("data", "#store", "#client", "rx*")
+        from_parent = directory_offer("data", "parent", "#client", "rx*")
+        above = scope_of("root", children=("client",), offer=[from_parent])
+        cases = {
+            "offered by nobody": ([scope_of("root", children=("client",)), client], None),
+            "the child exposes nothing": (
+                [scope_of("root", children=("client", "store"), offer=[from_store]), client, silent],
+                None,
+            ),
+            "the provider has no program": (
+                [scope_of("root", children=("client", "store"), offer=[from_store]), client, hollow],
+                None,
+            ),
+            "offered from self, which has no program": (
+                [
+                    scope_of(
+                        "root",
+                        children=("client",),
+                        capabilities=declared,
+                        offer=[directory_offer("data", "self", "#client", "rx*")],
+                    ),
+                    client,
+                ],
+                None,
+            ),
+            "above the top, with no built-ins given": ([above, client], None),
+            "above the top, built-ins that lack it": ([above, client], [boot_builtin()]),
+            "above the top, a built-in of another kind": (
+                [above, client],
+                [cb.Builtin("data", cm.KIND_PROTOCOL, "data", None)],
+            ),
+        }
+        for name, (scopes, builtins) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(check_rights_of(scopes, builtins), [])
+
+        # The same last route is denied, and warns, once the list has a
+        # built-in of that name that allows less than the use asks.
+        narrow = cb.Builtin("data", cm.KIND_DIRECTORY, "data", cm.RIGHTS["r*"])
+        (warning,) = check_rights_of([above, client], [narrow])
+        self.assertEqual(warning.walk.hops[-1].word, "built-in")
+
+    def test_a_directory_use_never_reaches_a_protocol_nor_the_reverse(self) -> None:
+        root = scope_of(
+            "root",
+            children=("store", "client"),
+            offer=[
+                directory_offer("status", "#store", "#client", "rx*"),
+                directory_offer("data", "#store", "#client", "rx*", rename="as-protocol"),
+            ],
+        )
+        # store exposes a protocol under the directory's name and a directory
+        # under the protocol's. Each route would be denied at the declaration
+        # (rw* does not contain rx*) if it got there.
+        store = scope_of(
+            "store",
+            program=True,
+            capabilities=[protocol("status"), {"directory": "data", "path": "/export/data", "rights": ["rw*"]}],
+            expose=[{"protocol": "status", "from": "self"}, {"directory": "data", "from": "self"}],
+        )
+        client = scope_of(
+            "client",
+            program=True,
+            use=[directory_use("status", "/status", "rx*"), protocol("as-protocol")],
+        )
+        self.assertEqual(check_rights_of([root, store, client]), [])
+
+    def test_the_first_failure_on_the_walk_is_the_answer(self) -> None:
+        # The offer is denied before the walk could find that the provider has
+        # no program, which route() would answer NotFound for.
+        root = scope_of(
+            "root",
+            children=("store", "client"),
+            offer=[directory_offer("data", "#store", "#client", "r*")],
+        )
+        hollow = scope_of(
+            "store",
+            capabilities=[{"directory": "data", "path": "/export/data", "rights": ["rw*"]}],
+            expose=[{"directory": "data", "from": "self"}],
+        )
+        client = scope_of("client", program=True, use=[directory_use("data", "/data", "rx*")])
+        (warning,) = check_rights_of([root, hollow, client])
+        self.assertEqual(warning.walk.hops[-1].word, "offer")
+
+    def test_protocol_uses_are_not_walked(self) -> None:
+        # The experiment of 2026-10-29: a type mismatch and no directory.
+        self.assertEqual(check_rights_of(experiment_scopes(), [builtin("ours.process.Launcher")]), [])
+        # A protocol use that states a type nothing could have, over offers
+        # that would be denied if they were directories.
+        root = scope_of("root", children=("server", "client"), offer=[offer("ours.example.Echo", "#server", "#client")])
+        self.assertEqual(check_rights_of([root, server_scope(), client_scope(protocol("ours.example.Echo"))]), [])
+
+    def test_the_walk_is_run_for_directory_uses_only(self) -> None:
+        # No protocol hop states rights, so a walk of a protocol use could not
+        # warn: the filter is seen in what is walked.
+        scopes = directory_tree("r*", used="rx*")
+        scopes[2]["manifest"]["use"].append(protocol("ours.process.Launcher"))
+        walked = []
+        original = cm.route_directory_use
+
+        def spy(target, use, builtins, root_name):  # type: ignore[no-untyped-def]
+            walked.append((target.path, use.source_name, use.kind))
+            return original(target, use, builtins, root_name)
+
+        cm.route_directory_use = spy
+        try:
+            self.assertEqual(len(check_rights_of(scopes)), 1)
+        finally:
+            cm.route_directory_use = original
+        self.assertEqual(walked, [(("reader",), "data", cm.KIND_DIRECTORY)])
+
+    def test_the_warnings_are_ordered_by_instance_path_then_use(self) -> None:
+        root = scope_of(
+            "root",
+            children=("b", "a", "store"),
+            offer=[
+                directory_offer("data", "#store", "#a", "r*", rename="one"),
+                directory_offer("data", "#store", "#a", "r*", rename="two"),
+                directory_offer("data", "#store", "#b", "r*", rename="three"),
+            ],
+        )
+        store = directory_tree(None)[1]
+        a = scope_of("a", program=True, use=[directory_use("two", "/two", "rx*"), directory_use("one", "/one", "rx*")])
+        b = scope_of("b", program=True, use=[directory_use("three", "/three", "rx*")])
+        warnings = check_rights_of([root, b, a, store])
+        self.assertEqual(
+            [(w.instance.path, w.use.source_name) for w in warnings],
+            [(("a",), "two"), (("a",), "one"), (("b",), "three")],
+        )
+
+    def test_a_manifest_under_two_parents_is_two_instances(self) -> None:
+        # x.cm is both #a and #b: root offers it r* as `data` in one place
+        # and rx* in the other.
+        root = scope_of(
+            "root",
+            children=(("a", "x"), ("b", "x"), "store"),
+            offer=[
+                directory_offer("data", "#store", "#a", "r*"),
+                directory_offer("data", "#store", "#b", "rx*"),
+            ],
+        )
+        x = scope_of("x", program=True, use=[directory_use("data", "/data", "rx*")])
+        store = directory_tree(None, declared="rx*")[1]
+        warnings = check_rights_of([root, x, store])
+        self.assertEqual([w.instance.path for w in warnings], [("a",)])
+
+    def test_a_root_that_uses_a_directory_itself_is_walked(self) -> None:
+        root = scope_of("root", use=[directory_use("boot", "/boot", "rw*")])
+        (warning,) = check_rights_of([root], [boot_builtin("rx*")])
+        self.assertEqual(
+            cm.format_rights_warning(warning),
+            """\
+warning: //test:root.cm: root.cm uses directory "boot" with rights rw*,
+         but the route holds less at the root's built-in:
+           use      root.cm "boot"   rw*
+           built-in "boot"           rx*   <- holds less
+         The root will answer AccessDenied for this use. The root's built-in allows only rx*; ask the use for no more than that.
+""",
+        )
+
+    def test_what_the_compiler_never_writes_is_walked_as_route_walks_it(self) -> None:
+        # No manifest the compiler accepts states no rights on a directory
+        # declaration or exposes from the parent, so the walk is given the
+        # instances by hand, as TypeCheckTest does.
+        use = cm.Use(cm.KIND_DIRECTORY, "d", "/d", "", cm.RIGHTS["rx*"])
+        offer_d = cm.Offer(cm.KIND_DIRECTORY, cm.Ref(cm.REF_CHILD, "store"), "d", cm.Ref(cm.REF_CHILD, "client"), "d", "", cm.RIGHTS["rx*"])
+
+        # root would answer it, if the walk turned back up at store: it
+        # declares `d` too, and offers it to store.
+        turned_back = cm.Offer(cm.KIND_DIRECTORY, cm.Ref(cm.REF_SELF), "d", cm.Ref(cm.REF_CHILD, "store"), "d", "", None)
+        root_declares = cm.Capability(cm.KIND_DIRECTORY, "d", "", "/export/root", cm.RIGHTS["rw*"])
+
+        def walk(
+            expose_source: cm.Ref, capability: cm.Capability, program: bool = True
+        ) -> Optional[cm.RightsWalk]:
+            root_decl = cm.Decl(capabilities=[root_declares], offers=[offer_d, turned_back])
+            root = cm.Instance("//test:root.cm", (), root_decl, True)
+            store_decl = cm.Decl(
+                capabilities=[capability],
+                exposes=[cm.Expose(cm.KIND_DIRECTORY, expose_source, "d", "d")],
+            )
+            store = cm.Instance("//test:store.cm", ("store",), store_decl, program, root)
+            client = cm.Instance("//test:client.cm", ("client",), cm.Decl(uses=[use]), True, root)
+            root.children = {"store": store, "client": client}
+            return cm.route_directory_use(client, use, None, "root.cm")
+
+        declared = cm.Capability(cm.KIND_DIRECTORY, "d", "", "/export/d", cm.RIGHTS["r*"])
+        self.assertTrue(walk(cm.Ref(cm.REF_SELF), declared).denied)
+        # A declaration that states no rights narrows nothing.
+        unbounded = cm.Capability(cm.KIND_DIRECTORY, "d", "", "/export/d", None)
+        self.assertFalse(walk(cm.Ref(cm.REF_SELF), unbounded).denied)
+        # An expose from the parent would turn the walk back up: not followed.
+        self.assertIsNone(walk(cm.Ref(cm.REF_PARENT), declared))
+        # A protocol capability of that name is not a directory.
+        protocol_capability = cm.Capability(cm.KIND_PROTOCOL, "d", "")
+        self.assertIsNone(walk(cm.Ref(cm.REF_SELF), protocol_capability))
+        self.assertIsNone(walk(cm.Ref(cm.REF_SELF), unbounded, program=False))
+
+    def test_rights_are_printed_as_a_manifest_writes_them(self) -> None:
+        for rights, text in [
+            (cm.RIGHTS["r*"], "r*"),
+            (cm.RIGHTS["rx*"], "rx*"),
+            (cm.RIGHTS["rw*"], "rw*"),
+            (cm.RIGHTS["w*"], "w*"),
+            (cm.RIGHTS["x*"], "x*"),
+            (cm.RIGHTS["read_bytes"] | cm.RIGHTS["traverse"], "read_bytes,traverse"),
+            (cm.RIGHTS["r*"] | cm.RIGHTS["execute"] | cm.RIGHTS["write_bytes"], "connect,enumerate,execute,get_attributes,read_bytes,traverse,write_bytes"),
+            (0, "(empty)"),
+            (None, "none"),
+        ]:
+            self.assertEqual(cm.rights_text(rights), text)
+
+    def test_the_rights_of_a_warning_line_up(self) -> None:
+        (warning,) = check_rights_of(directory_tree("rx*", used="rx*", declared="rw*", exposed={"rights": ["rx*"]}))
+        rows = cm.format_rights_warning(warning).splitlines()[2:-1]
+        self.assertEqual(len(rows), 4)
+        columns = {row.rindex(" ", 0, row.index("*") - 1) for row in rows}
+        self.assertEqual(len(columns), 1, rows)
+
+
+class RightsWalkMainTest(unittest.TestCase):
+    """The compiler's command line: a warning does not stop the build."""
+
+    BOOT = {"builtins": [{"name": "boot", "kind": "directory", "rights": ["rx*"]}]}
+
+    def test_a_denied_route_warns_and_the_build_goes_on(self) -> None:
+        status, data, errors, deps, *_ = run_compile(denied_scopes(), self.BOOT, depfile=True)
+        self.assertEqual(status, 0)
+        self.assertEqual(errors, DENIED_WARNING)
+        # The file is there, whole, and the depfile too.
+        self.assertIsNotNone(data)
+        self.assertEqual(Reader(data).total_size, len(data))
+        self.assertIsNotNone(deps)
+
+    def test_the_file_is_the_one_an_unwalked_build_writes(self) -> None:
+        _, walked, *_ = run_compile(denied_scopes(), self.BOOT)
+        status, unwalked, errors, *_ = run_compile(denied_scopes(), self.BOOT, ("--no-type-check",))
+        self.assertEqual((status, errors), (0, ""))
+        self.assertEqual(walked, unwalked)
+
+    def test_no_type_check_turns_the_rights_walk_off_too(self) -> None:
+        status, data, errors, *_ = run_compile(denied_scopes(), self.BOOT, ("--no-type-check",))
+        self.assertEqual((status, errors), (0, ""))
+        self.assertIsNotNone(data)
+
+    def test_every_denied_use_has_a_block_of_its_own(self) -> None:
+        root = scope_of(
+            "root",
+            children=("store", "reader"),
+            offer=[
+                directory_offer("data", "#store", "#reader", "r*", rename="one"),
+                directory_offer("data", "#store", "#reader", "r*", rename="two"),
+                directory_offer("data", "#store", "#reader", "rw*", rename="fine"),
+            ],
+        )
+        store = directory_tree(None)[1]
+        reader = scope_of(
+            "reader",
+            program=True,
+            use=[
+                directory_use("one", "/one", "rx*"),
+                directory_use("two", "/two", "rx*"),
+                directory_use("fine", "/fine", "r*"),
+            ],
+        )
+        status, data, errors, *_ = run_compile([root, store, reader])
+        self.assertEqual(status, 0)
+        self.assertIsNotNone(data)
+        self.assertEqual(errors.count("warning: //test:root.cm: "), 2)
+        self.assertEqual(errors.count("The root will answer AccessDenied for this use."), 2)
+        self.assertLess(errors.index('directory "one"'), errors.index('directory "two"'))
+        self.assertNotIn('directory "fine"', errors)
+        # Blocks are told apart by a blank line.
+        self.assertIn("fewer.\n\nwarning: ", errors)
+
+    def test_a_clean_tree_prints_nothing(self) -> None:
+        status, data, errors, *_ = run_compile(directory_tree("r*"))
+        self.assertEqual((status, errors), (0, ""))
+        self.assertIsNotNone(data)
+
+    def test_without_a_builtins_file_a_route_above_the_tree_is_not_walked(self) -> None:
+        # The offer states nothing, so only the built-in can hold less than the
+        # use, and nothing says what the built-in allows. (An offer that holds
+        # less is in the tree and warns either way.)
+        root = scope_of("root", children=("reader",), offer=[directory_offer("boot", "parent", "#reader")])
+        reader = scope_of("reader", program=True, use=[directory_use("boot", "/boot", "rw*")])
+        status, data, errors, *_ = run_compile([root, reader])
+        self.assertEqual((status, errors), (0, ""))
+        self.assertIsNotNone(data)
+        status, _, errors, *_ = run_compile([root, reader], self.BOOT)
+        self.assertEqual(status, 0)
+        self.assertIn("holds less at the root's built-in", errors)
+        # And the denied offer of dev's root.cm warns with no list at all.
+        status, _, errors, *_ = run_compile(denied_scopes())
+        self.assertEqual((status, errors), (0, DENIED_WARNING))
+
+    def test_the_warnings_come_before_the_errors(self) -> None:
+        # A tree with a denied directory route and a protocol mismatch: the
+        # build fails for the mismatch, and says everything it knows.
+        scopes = denied_scopes()
+        scopes[0]["manifest"]["offer"].append(offer("ours.process.Launcher", "parent", "#routing_checks", "ours.resource.Irq"))
+        scopes[1]["manifest"]["use"].append(protocol("ours.resource.Irq"))
+        builtins = {"builtins": self.BOOT["builtins"] + [{"name": "ours.process.Launcher", "kind": "protocol"}]}
+        status, data, errors, *_ = run_compile(scopes, builtins)
+        self.assertEqual(status, 1)
+        self.assertIsNone(data)
+        self.assertTrue(errors.startswith("warning: "), errors)
+        self.assertLess(errors.index("warning: "), errors.index("error: "))
+        self.assertEqual(errors.count("warning: "), 1)
+        self.assertEqual(errors.count("error: "), 1)
+
+    def test_a_protocol_only_tree_prints_what_it_printed_before(self) -> None:
+        status, data, errors, *_ = run_compile(experiment_scopes(), TypeCheckMainTest.LAUNCHER)
+        self.assertEqual(status, 1)
+        self.assertEqual(errors, EXPERIMENT_ERROR)
+
+
 # The fixtures route_test.cpp routes through, as GN wrote their scopes. Named,
 # not found by a glob: mismatch.cm is built to fail the check and must not be
 # taken for a tree that resolves.
 FIXTURES = "//system/lib/component/test/fixtures"
 RESOLVING_TREES = ["realm", "top"]
 MISMATCHED_TREES = ["mismatch"]
-FIXTURE_NAMES = ["realm", "provider", "consumer", "hollow", "top", "user", "leaf", "mismatch"]
+# The trees with directory uses. shelf.cm's are denied on purpose in part, which
+# the build warns about and goes on.
+DIRECTORY_TREES = ["realm", "top", "shelf"]
+FIXTURE_NAMES = [
+    "realm",
+    "provider",
+    "consumer",
+    "hollow",
+    "top",
+    "user",
+    "leaf",
+    "mismatch",
+    "shelf",
+    "store",
+    "reader",
+    "bare",
+]
 
-# route_test.cpp's BUILTINS: boot, ours.process.Launcher and ours.resource.Debug.
+# route_test.cpp's BUILTINS: boot (rx*), ours.process.Launcher and
+# ours.resource.Debug.
 ROUTE_TEST_BUILTINS = [
-    builtin("boot", kind=cm.KIND_DIRECTORY),
+    boot_builtin("rx*"),
     builtin("ours.process.Launcher"),
     builtin("ours.resource.Debug"),
 ]
@@ -1317,6 +2369,51 @@ EXPECTED_ROUTES: Dict[str, Dict[tuple, Optional[str]]] = {
         (("user",), "ours.example.ForRealm"): None,
         # Route.NotFoundInTheParentsOffers
         (("user",), "ours.example.Missing"): None,
+    },
+}
+
+
+# What route() answers for every DIRECTORY use in each tree, as above: "<moniker>
+# serves <name>" or "built-in <name>" for a route that resolves, the status,
+# the place and the verb for one that route() denies ("." is the root), and None
+# for one that does not resolve, whatever status and place route() reports. The
+# walk reports an AccessDenied exactly as route() does and a NotFound as None.
+EXPECTED_DIRECTORY_ROUTES: Dict[str, Dict[tuple, Optional[str]]] = {
+    "realm": {
+        # Route.ABuiltinDirectoryCarriesTheUsesRights
+        (("consumer",), "boot"): "built-in boot",
+        # Route.AnOffersSubdirGoesInFrontOfTheUses
+        (("consumer",), "config"): "built-in boot",
+    },
+    "top": {
+        # realm.cm's own, one level down.
+        (("realm", "consumer"), "boot"): "built-in boot",
+        (("realm", "consumer"), "config"): "built-in boot",
+        # Route.SubdirsJoinFromTheSourceSide
+        (("user",), "boot"): "built-in boot",
+        (("user", "leaf"), "config"): "built-in boot",
+        # Route.AnOfferNarrowerThanTheUseIsAccessDenied
+        (("user",), "narrow"): "AccessDenied at .: Offer narrow",
+        # Route.ABuiltinNarrowerThanTheUseIsAccessDenied
+        (("user",), "writable"): "AccessDenied at the built-ins: Declare boot",
+        # Route.RightsAreHeldAgainstTheHopBeforeNotTheUse
+        (("user", "leaf"), "wide"): "AccessDenied at .: Offer thin",
+    },
+    "shelf": {
+        # RouteShelf.ADirectoryUseEndsAtTheProviderWithTheDeclaredPath
+        (("reader",), "notes"): "store serves data",
+        # RouteShelf.AnOfferThatAsksMoreThanTheExposeStatesIsAccessDeniedAtTheChild
+        (("reader",), "wide-offer"): "AccessDenied at store: Expose data",
+        # RouteShelf.AnExposeThatAsksMoreThanTheDeclarationAllowsIsAccessDeniedAtTheProvider
+        (("reader",), "wide-expose"): "AccessDenied at store: Declare data",
+        # RouteShelf.AnExposeThatStatesNothingNarrowsNothing
+        (("reader",), "plain"): "store serves data",
+        # RouteShelf.ADeclarationNarrowerThanTheOfferIsAccessDeniedAtTheProvider
+        (("reader",), "plain-wide"): "AccessDenied at store: Declare data",
+        # RouteShelf.ADirectoryUseNeverReachesAProtocolCapability
+        (("reader",), "wrong-kind"): None,
+        # RouteShelf.AProviderWithoutAProgramIsNotFound
+        (("reader",), "bare-data"): None,
     },
 }
 
@@ -1409,6 +2506,79 @@ class FixtureRoutesTest(unittest.TestCase):
             self.assertEqual(texts(cm.check_types(scope, decl, sources, ROUTE_TEST_BUILTINS)), [], name)
             # And without the built-ins: the same routes, fewer of them walked.
             self.assertEqual(texts(cm.check_types(scope, decl, sources, None)), [], name)
+
+    def answer(self, walk: Optional[cm.RightsWalk]) -> Optional[str]:
+        """The walk's result as the table above spells route()'s answer."""
+        if walk is None:
+            return None
+        if walk.denied:
+            hop = walk.hops[-1]
+            where = "the built-ins"
+            if hop.at is not None:
+                where = "/".join(hop.at.path) or "."
+            return f"AccessDenied at {where}: {hop.verb} {hop.name}"
+        return self.moniker(cm.Resolved([], walk.end))
+
+    def directory_routes(self, name: str, builtins: Optional[List[cb.Builtin]]) -> Dict[tuple, Optional[str]]:
+        found: Dict[tuple, Optional[str]] = {}
+        for instance in cm.instances(self.tree(name)):
+            for use in instance.decl.uses:
+                if use.kind != cm.KIND_DIRECTORY:
+                    continue
+                walk = cm.route_directory_use(instance, use, builtins, "root.cm")
+                found[(instance.path, use.source_name)] = self.answer(walk)
+        return found
+
+    def test_every_directory_use_is_held_to_its_rights_as_route_does(self) -> None:
+        for name in DIRECTORY_TREES:
+            self.assertEqual(self.directory_routes(name, ROUTE_TEST_BUILTINS), EXPECTED_DIRECTORY_ROUTES[name], name)
+
+    def test_the_expected_directory_routes_are_not_all_one_answer(self) -> None:
+        # A walk that denied everything, or resolved everything, would agree
+        # with a table of one answer.
+        every = [answer for routes in EXPECTED_DIRECTORY_ROUTES.values() for answer in routes.values()]
+        self.assertTrue(any(a and a.startswith("AccessDenied") for a in every))
+        self.assertTrue(any(a and not a.startswith("AccessDenied") for a in every))
+        self.assertTrue(any(a is None for a in every))
+
+    def test_a_warning_is_exactly_an_access_denied(self) -> None:
+        for name in DIRECTORY_TREES:
+            scope = self.scopes[name]
+            meta = [{"label": e["manifest"], "path": "meta/x"} for e in scope.get("children", [])]
+            decl = cm.compile_manifest(scope, PROGRAM_NAMES if "program" in scope else [], meta)
+            sources = {entry["label"]: entry for entry in self.scopes.values()}
+            warned = {
+                (w.instance.path, w.use.source_name)
+                for w in cm.check_directory_rights(scope, decl, sources, ROUTE_TEST_BUILTINS)
+            }
+            denied = {
+                key
+                for key, answer in EXPECTED_DIRECTORY_ROUTES[name].items()
+                if answer and answer.startswith("AccessDenied")
+            }
+            self.assertEqual(warned, denied, name)
+
+    def test_without_the_builtins_a_denial_at_them_is_not_seen(self) -> None:
+        # top.cm's `writable` is denied by the built-in boot's rx*; the other
+        # two denials are in the tree. The real build of top.cm names no
+        # built-ins, so it warns twice.
+        expected = dict(EXPECTED_DIRECTORY_ROUTES["top"])
+        expected[(("user",), "writable")] = None
+        for key in [(("user",), "boot"), (("user", "leaf"), "config"), (("realm", "consumer"), "boot"), (("realm", "consumer"), "config")]:
+            expected[key] = None
+        self.assertEqual(self.directory_routes("top", None), expected)
+
+    def test_the_denied_fixtures_build_with_warnings_and_without_failing(self) -> None:
+        shelf = [self.scopes[name] for name in ["shelf", "store", "reader", "bare"]]
+        status, data, errors, *_ = run_compile(shelf)
+        self.assertEqual(status, 0)
+        self.assertIsNotNone(data)
+        warned = re.findall(r'uses directory "([^"]*)"', errors)
+        self.assertEqual(sorted(warned), ["plain-wide", "wide-expose", "wide-offer"])
+        # The file is the one a build without the walk writes.
+        _, unwalked, errors, *_ = run_compile(shelf, extra=("--no-type-check",))
+        self.assertEqual(errors, "")
+        self.assertEqual(data, unwalked)
 
     def test_the_mismatched_tree_fails_on_both_sides(self) -> None:
         scope = self.scopes["mismatch"]

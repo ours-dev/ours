@@ -78,6 +78,13 @@ if (defined(ours.with)) {
 #     which routing_checks reaches under another name through an offer from
 #     its sibling: the route through echo's expose and into its outgoing
 #     directory;
+#   - files (//examples/files), which provides two directories, docs and
+#     ghost, and routing_checks reaches six ways through offers from its
+#     sibling: whole, through a subdirectory, through an offer that asks more
+#     than files' expose states, through an expose that asks more than the
+#     declaration allows, a directory the program does not serve, and a
+#     subdirectory that is a file; and, last, through files' service node
+#     `stop`, which makes files exit, so that the provider-exit case runs;
 #   - shell, the serial console's shell, with /boot rx* and the same three
 #     protocols: it runs its commands through the Launcher, reads the
 #     console with the resource ours.resource.Debug gives it, and holds
@@ -118,6 +125,11 @@ component_manifest("root.cm") {
     {
       name = "btreefs"
       manifest = "//system/service/btreefs:btreefs.cm"
+      startup = "eager"
+    },
+    {
+      name = "files"
+      manifest = "//examples/files:files.cm"
       startup = "eager"
     },
     {
@@ -337,6 +349,76 @@ component_manifest("root.cm") {
         from = "#echo"
         to = "#routing_checks"
         as = "ours.test.Echo"
+      },
+
+      # files' directories, from the sibling that exposes them, each under
+      # the name routing_checks uses it by. Two of these routes work and
+      # three fail on purpose; the build warns for the two that fail by
+      # rights (system/component_manifest.py), and each use is explained
+      # where routing_checks declares it
+      # (//system/service/init/test/routing_checks).
+      #
+      # docs, r*: the whole tree.
+      {
+        directory = "docs"
+        from = "#files"
+        to = "#routing_checks"
+        as = "files"
+        rights = [ "r*" ]
+      },
+
+      # docs-sub, r*: files exposes it with the subdirectory `sub`, so only
+      # nested.txt is there.
+      {
+        directory = "docs-sub"
+        from = "#files"
+        to = "#routing_checks"
+        as = "files-sub"
+        rights = [ "r*" ]
+      },
+
+      # rx* where files' expose of `docs` states r*: the route answers
+      # AccessDenied at files, at its expose, and the entry arrives closed.
+      {
+        directory = "docs"
+        from = "#files"
+        to = "#routing_checks"
+        as = "files-denied"
+        rights = [ "rx*" ]
+      },
+
+      # docs-wide, rx*, exposed over a declaration of r*: the expose is as
+      # wide as this offer and the use, and the declaration holds less. The
+      # route answers AccessDenied at files, at its declaration.
+      {
+        directory = "docs-wide"
+        from = "#files"
+        to = "#routing_checks"
+        as = "files-wide"
+        rights = [ "rx*" ]
+      },
+
+      # ghost, r*: declared by files and exposed, but its program serves
+      # nothing at the declared path, so the root's Open reaches files and
+      # files' server answers NotFound.
+      {
+        directory = "ghost"
+        from = "#files"
+        to = "#routing_checks"
+        rights = [ "r*" ]
+      },
+
+      # docs again, r*, with the subdir `hello.txt`: a route that works, and
+      # whose joined path ends at a file. The root's Open says it wants a
+      # directory (PROTOCOL_DIRECTORY), so files' server answers NotDir
+      # instead of opening the file for the entry.
+      {
+        directory = "docs"
+        from = "#files"
+        to = "#routing_checks"
+        as = "files-file"
+        rights = [ "r*" ]
+        subdir = "hello.txt"
       },
     ]
   }

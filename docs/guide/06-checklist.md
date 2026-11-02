@@ -78,7 +78,7 @@ Decide these before you write code. They are cheap to decide and costly to chang
 
 - Rule: Break the work into steps that each finish quickly and never wait for anything, because one thread runs every step for every client.
 - Why: The Loop has no tasks, no timers and no extra threads, so steps run one at a time to completion; a slow step delays every client, and a step that waits for an answer from its own program waits for ever, because the thread that would read the answer is the one waiting.
-- Where: Convention (nothing stops a program from calling something slow). Stated at `system/lib/loop/include/loop/loop.hpp:13-19` and `system/lib/ioservice/include/ioservice/outgoing.hpp:42-43`.
+- Where: Convention (nothing stops a program from calling something slow). Stated at `system/lib/loop/include/loop/loop.hpp:13-19` and `system/lib/ioservice/include/ioservice/outgoing.hpp:51-52`.
 
 ### D3. Write down every limit and what it answers
 
@@ -88,13 +88,13 @@ Decide these before you write code. They are cheap to decide and costly to chang
 
 | Limit | Value | What you meet | Where |
 |---|---|---|---|
-| Bytes in one channel message | 4096 | `wire` refuses to build a bigger message (`InvArgs`) | `system/public/ours/syscall.hpp:43`, `system/lib/wire/include/wire/wire.hpp:190-194` |
+| Bytes in one channel message | 4096 | `wire` refuses to build a bigger message (`InvArgs`) | `system/public/ours/syscall.hpp:43`, `system/lib/wire/include/wire/wire.hpp:242-246` |
 | Handles in one channel message | 64 | the size your request-handle buffer needs | `system/public/ours/syscall.hpp:46` |
 | Messages waiting on one end of a channel | 64 | a write answers `NoResource` and the message is consumed | `kernel/object/include/ours/object/channel_dispatcher.hpp:20-28`, `kernel/object/include/ours/object/channel_dispatcher.hpp:57-61` |
 | Waits one port holds at once | 1024 | `Loop::add` can answer `NoResource` | `system/public/ours/port.hpp:167`, `system/lib/loop/include/loop/loop.hpp:192-197` |
 | Handles one process has created | 1024 | creating one more answers `NoResource`; closing one gives the room back | `system/public/ours/syscall.hpp:59` |
-| Protocols in one outgoing directory | 8 | `add_protocol` answers `NoResource` | `system/lib/ioservice/include/ioservice/outgoing.hpp:69`, `system/lib/ioservice/include/ioservice/outgoing.hpp:128` |
-| Open connections to the outgoing directory | 4 | an Open past them is refused with the epitaph `NoResource` | `system/lib/ioservice/include/ioservice/outgoing.hpp:71-76`, `system/lib/ioservice/src/server.cpp:217-222`, `system/lib/ioservice/src/server.cpp:529-531` |
+| Protocols in one outgoing directory | 8 | `add_protocol` answers `NoResource` | `system/lib/ioservice/include/ioservice/outgoing.hpp:78`, `system/lib/ioservice/include/ioservice/outgoing.hpp:137` |
+| Open connections to the outgoing directory | 4 | an Open past them is refused with the epitaph `NoResource` | `system/lib/ioservice/include/ioservice/outgoing.hpp:80-85`, `system/lib/ioservice/src/server.cpp:226-231`, `system/lib/ioservice/src/server.cpp:538-540` |
 | Nodes in one `ioservice::Tree` | the storage you give | an add answers `NoResource` | `system/lib/ioservice/include/ioservice/tree.hpp:88-90` |
 | Bytes in one debug write | 256 | a longer line goes out in several writes and can interleave with another program's | `system/public/ours/syscall.hpp:69`, `system/lib/ort/include/ort/debug.hpp:32-39` |
 
@@ -108,21 +108,21 @@ Decide these before you write code. They are cheap to decide and costly to chang
 |---|---|---|---|
 | The handle you give `Loop::add` | the Loop's if `add` answers Ok, yours if it fails | the Loop, when the slot's callback answers Close | `system/lib/loop/include/loop/loop.hpp:221-226` |
 | The port you give `Loop` | the Loop's from then on | the Loop's destructor | `system/lib/loop/include/loop/loop.hpp:199`, `system/lib/loop/include/loop/loop.hpp:207-209` |
-| The DirectoryRequest handle you give `Outgoing::serve` | the Loop's on Ok, yours on failure | the Loop, as above | `system/lib/ioservice/include/ioservice/outgoing.hpp:138-141` |
-| A client's channel handed to `Handler::connect` | yours from the call | you, or the Loop once you `add` it | `system/lib/ioservice/include/ioservice/outgoing.hpp:52-54` |
+| The DirectoryRequest handle you give `Outgoing::serve` | the Loop's on Ok, yours on failure | the Loop, as above | `system/lib/ioservice/include/ioservice/outgoing.hpp:147-150` |
+| A client's channel handed to `Handler::connect` | yours from the call | you, or the Loop once you `add` it | `system/lib/ioservice/include/ioservice/outgoing.hpp:61-63` |
 | Handles that arrive in a message | yours | you | `examples/echo/echo_server.cpp:223-225` |
 
 ### D5. Decide that your protocol is closed
 
 - Rule: Decide that a message with a method you do not know, or one your decoder refuses, closes the client's channel and is not answered.
 - Why: A peer that sends such a message is not speaking your protocol, no answer would help it, and the header has no bit that marks a call as one an unknown method may be answered for; the peer learns by seeing the channel close.
-- Where: Convention for your own server; `ioservice` does it for the file protocol (`system/lib/ioservice/include/ioservice/server.hpp:83-90`), and `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40` states it for Echo. [03-protocols.md](03-protocols.md#closed-protocols) explains the rule.
+- Where: Convention for your own server; `ioservice` does it for the file protocol (`system/lib/ioservice/include/ioservice/server.hpp:84-91`), and `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40` states it for Echo. [03-protocols.md](03-protocols.md#closed-protocols) explains the rule.
 
 ### D6. Decide how the server ends
 
 - Rule: Decide how your server stops (never, when a client asks, or on an error it cannot recover from), and expect that nothing will start it again.
 - Why: The root marks a component that has exited and never starts it again; a later route to it answers NotFound, and channels already open to it see PeerClosed.
-- Where: Enforced by the root: `system/service/init/realm.cpp:790-794` answers NotFound for an exited provider, and `system/service/init/realm.cpp:861-866` marks the exit. How a program stops is Convention (W20).
+- Where: Enforced by the root: `system/service/init/realm.cpp:838-848` answers NotFound for an exited provider, and `system/service/init/realm.cpp:913-918` marks the exit. How a program stops is Convention (W20).
 
 ## Writing
 
@@ -144,7 +144,7 @@ The items run in this order: storage (W1 to W3), the callback (W4 to W9), messag
 
 - Rule: This rule is unusual, because nothing is ever deleted here: give a class you derive handlers from a protected, non-virtual destructor, as `ioservice::Handler` does.
 - Why: Nothing is ever deleted, since there is no heap, so a virtual destructor only adds a deleting destructor that calls `operator delete`, which traps on a real pointer.
-- Where: Convention. `system/lib/ioservice/include/ioservice/outgoing.hpp:46-49` and `system/lib/ioservice/include/ioservice/outgoing.hpp:57-61` do it for `Handler`, and `system/lib/loop/include/loop/loop.hpp:101-105` for `loop::Waiter`; `system/lib/ort/src/cpp_dependencies.cpp:27-35` says why `operator delete` exists at all.
+- Where: Convention. `system/lib/ioservice/include/ioservice/outgoing.hpp:55-58` and `system/lib/ioservice/include/ioservice/outgoing.hpp:66-70` do it for `Handler`, and `system/lib/loop/include/loop/loop.hpp:101-105` for `loop::Waiter`; `system/lib/ort/src/cpp_dependencies.cpp:27-35` says why `operator delete` exists at all.
 
 ### The callback that W4 to W9 bind
 
@@ -176,13 +176,13 @@ The answer of `on_signals()` is `loop::Action::Rearm` (wait again for the same s
 
 - Rule: Never wait inside a callback or inside a function it calls: write replies and move on.
 - Why: A callback that waits for a reply from its own program blocks the very thread that must read it, and one that waits for anyone else holds every other client back; a write to a full channel fails at once, so nothing needs to wait for room.
-- Where: Convention. `system/lib/ioservice/include/ioservice/outgoing.hpp:52-54` and `system/lib/ioservice/include/ioservice/loop_server.hpp:46-49` say a function called from a callback "must not wait"; the write that does not wait is at `kernel/object/include/ours/object/channel_dispatcher.hpp:57-61`.
+- Where: Convention. `system/lib/ioservice/include/ioservice/outgoing.hpp:61-63` and `system/lib/ioservice/include/ioservice/loop_server.hpp:50-53` say a function called from a callback "must not wait"; the write that does not wait is at `kernel/object/include/ours/object/channel_dispatcher.hpp:57-61`.
 
 ### W8. Wait for Readable and PeerClosed together
 
 - Rule: Wait for Readable and PeerClosed together, read whenever Readable is raised, and treat a callback without Readable as the client gone.
 - Why: A client that leaves with nothing left to read raises only PeerClosed, so a server that asked only for Readable never learns it left and its slot, handle and table entry stay for good; but a closed channel still delivers its last messages first, so a callback with both signals must still read.
-- Where: Convention. `examples/echo/echo_server.cpp:159-160` asks for both and `examples/echo/echo_server.cpp:189-191` takes the missing Readable as the end; `system/lib/ioservice/src/loop_server.cpp:15` and `system/lib/ioservice/src/loop_server.cpp:101-104` do the same, and the channel's rules are at `kernel/object/include/ours/object/channel_dispatcher.hpp:40` and `kernel/object/include/ours/object/channel_dispatcher.hpp:67-69`.
+- Where: Convention. `examples/echo/echo_server.cpp:159-160` asks for both and `examples/echo/echo_server.cpp:189-191` takes the missing Readable as the end; `system/lib/ioservice/src/loop_server.cpp:15` and `system/lib/ioservice/src/loop_server.cpp:103-106` do the same, and the channel's rules are at `kernel/object/include/ours/object/channel_dispatcher.hpp:40` and `kernel/object/include/ours/object/channel_dispatcher.hpp:67-69`.
 
 ```cpp
         if (!(observed & Signals::Readable)) {
@@ -225,19 +225,19 @@ That is `examples/echo/echo_server.cpp:171-176`; `examples/echo/echo_server.cpp:
 
 - Rule: Read exactly one message per callback, into request buffers that hold the largest message a channel carries, in bytes and in handles.
 - Why: A message that does not fit stays at the head of the queue and the read answers BufferTooSmall, so the same message fails every time and the client can never be served again.
-- Where: Convention; the echo server sizes its arrays with the wire constants. Stated at `system/lib/ioservice/include/ioservice/loop_server.hpp:121-126`, `examples/echo/echo_server.cpp:133-134` and `kernel/object/include/ours/object/channel_dispatcher.hpp:69-72`.
+- Where: Convention; the echo server sizes its arrays with the wire constants. Stated at `system/lib/ioservice/include/ioservice/loop_server.hpp:141-146`, `examples/echo/echo_server.cpp:133-134` and `kernel/object/include/ours/object/channel_dispatcher.hpp:69-72`.
 
 ### W11. Finish with a decoded request before the callback returns
 
 - Rule: Use a decoded request before the callback returns, and build the reply in a different buffer from the one you decoded from.
 - Why: A decoded string or byte span is a view into the request buffer, not a copy; one buffer serves every callback, so the next message overwrites it, and a reply built in the same buffer would overwrite the bytes it is copying from.
-- Where: Convention. `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:69-73` says the decoded value views the message's bytes, and `examples/echo/echo_server.cpp:232-236` keeps the two buffers apart.
+- Where: Convention. `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:65-69` says the decoded value views the message's bytes, and `examples/echo/echo_server.cpp:232-236` keeps the two buffers apart.
 
 ### W12. Close the handles of a message you do not use
 
 - Rule: Close every handle a message carried that you do not use, including those in a message you reject.
 - Why: A handle that arrives in a message is in your handle table; if you never close it the object it names stays alive, and the sender's other end never sees PeerClosed.
-- Where: Convention (the `ioservice` code does it for you at `system/lib/ioservice/src/loop_server.cpp:148-151`). The echo server:
+- Where: Convention (the `ioservice` code does it for you at `system/lib/ioservice/src/loop_server.cpp:150-153`). The echo server:
 
 ```cpp
         for (auto const handle: message.handles) {
@@ -252,13 +252,13 @@ That is `examples/echo/echo_server.cpp:223-226`.
 
 - Rule: When a message has a method you do not know, or your decoder refuses it, close the client's channel and send nothing.
 - Why: The peer is not speaking your protocol, so no answer would help it; it learns from the close.
-- Where: Convention for your own server. [03-protocols.md](03-protocols.md#closed-protocols) shows the echo server's branch and the rule; the code is `examples/echo/echo_server.cpp:207-226`, where an unknown or refused message falls to the lines of W12 that close its handles and release the client. The protocol states it at `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40`, and the file protocol's server does the same (`system/lib/ioservice/src/server.cpp:561-565`).
+- Where: Convention for your own server. [03-protocols.md](03-protocols.md#closed-protocols) shows the echo server's branch and the rule; the code is `examples/echo/echo_server.cpp:207-226`, where an unknown or refused message falls to the lines of W12 that close its handles and release the client. The protocol states it at `examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:39-40`, and the file protocol's server does the same (`system/lib/ioservice/src/server.cpp:570-574`).
 
 ### W14. End the connection when a reply cannot be written
 
 - Rule: When a reply cannot be written, end that client: answer Close and free its record.
 - Why: A write fails when the client is gone (PeerClosed) or its queue is full (NoResource), and nothing waits for room, so a reply that was not written will never be written and the client would wait for it for good.
-- Where: Convention. The echo server, and `system/lib/ioservice/src/loop_server.cpp:129-139` for the file protocol:
+- Where: Convention. The echo server, and `system/lib/ioservice/src/loop_server.cpp:131-141` for the file protocol:
 
 ```cpp
         if (auto const written = write(client.channel, reply.unwrap()); written != Status::Ok) {
@@ -272,7 +272,7 @@ That is `examples/echo/echo_server.cpp:243-245`. The one reply that may be dropp
 
 - Rule: When you cannot take a new client, write an epitaph with the reason on its channel, then close the channel.
 - Why: The client has already sent its Open and expects an answer on the channel; the epitaph tells it why it was refused (NoResource, say) instead of leaving it to guess from a bare PeerClosed.
-- Where: Convention. The echo server uses it for a full client table (`examples/echo/echo_server.cpp:168`) and for a failed `add` (`examples/echo/echo_server.cpp:164`); its `close_with_epitaph` (`examples/echo/echo_server.cpp:77-84`) is shown in [01-concepts.md](01-concepts.md#epitaphs), and the epitaph's form is `system/lib/wire/include/wire/wire.hpp:35-36`.
+- Where: Convention. The echo server uses it for a full client table (`examples/echo/echo_server.cpp:168`) and for a failed `add` (`examples/echo/echo_server.cpp:164`); its `close_with_epitaph` (`examples/echo/echo_server.cpp:77-84`) is shown in [01-concepts.md](01-concepts.md#epitaphs), and the epitaph's form is `system/lib/wire/include/wire/wire.hpp:38-39`.
 
 ### W16. After a failed add the handle is still yours
 
@@ -284,7 +284,7 @@ That is `examples/echo/echo_server.cpp:243-245`. The one reply that may be dropp
 
 - Rule: A channel handed to `Handler::connect` is yours from the call: serve it, usually by adding it to the Loop, or close it.
 - Why: The library has given the channel up and nobody else will close it, so a handler that returns without doing either leaks it and its client waits.
-- Where: Convention. Stated in the declaration of `Handler::connect`, and, for the lower-level hook, at `system/lib/ioservice/include/ioservice/loop_server.hpp:56-59`:
+- Where: Convention. Stated in the declaration of `Handler::connect`, and, for the lower-level hook, at `system/lib/ioservice/include/ioservice/loop_server.hpp:60-63`:
 
 ```cpp
     /// |channel| is the request's, and the function owns it from the call on:
@@ -293,7 +293,7 @@ That is `examples/echo/echo_server.cpp:243-245`. The one reply that may be dropp
     virtual auto connect(ours::Uandle channel) -> void = 0;
 ```
 
-That is `system/lib/ioservice/include/ioservice/outgoing.hpp:52-55`.
+That is `system/lib/ioservice/include/ioservice/outgoing.hpp:61-64`.
 
 ### W18. Size the table of slots and check it at build time
 
@@ -315,16 +315,16 @@ That is `examples/echo/echo_server.cpp:60-61`.
 - Where: Convention, except that copying and moving the library objects is Enforced: they have deleted copy constructors. What must outlive what:
   - the table of slots outlives the Loop (`system/lib/loop/include/loop/loop.hpp:190-191`);
   - the `Waiter` a slot calls stays where it is from `add()` until the slot is freed (`system/lib/loop/include/loop/loop.hpp:91-99`), and, after a re-arm that failed, until its `on_rearm_failed()` returns;
-  - the `Outgoing` storage and the Loop outlive the `Outgoing`, and the protocol name (kept as a view) and the handler (kept by address) outlive the directory (`system/lib/ioservice/include/ioservice/outgoing.hpp:113`, `system/lib/ioservice/include/ioservice/outgoing.hpp:122-124`);
+  - the `Outgoing` storage and the Loop outlive the `Outgoing`, and the protocol name (kept as a view) and the handler (kept by address) outlive the directory (`system/lib/ioservice/include/ioservice/outgoing.hpp:122`, `system/lib/ioservice/include/ioservice/outgoing.hpp:131-133`);
   - a directory tree's node names, and a file node's VMO ([words used elsewhere](01-concepts.md#words-used-elsewhere)) and bytes, outlive the `Tree` (`system/lib/ioservice/include/ioservice/tree.hpp:47-48`, `system/lib/ioservice/include/ioservice/tree.hpp:115-116`).
 
-The deleted copies are at `system/lib/loop/include/loop/loop.hpp:211-214`, `system/lib/ioservice/include/ioservice/outgoing.hpp:116-118` and `system/lib/ioservice/include/ioservice/tree.hpp:101-103`. In the echo server the long-lived objects are statics (`examples/echo/echo_server.cpp:279-281`) or locals of `main` that never return, because `run()` does not (`examples/echo/echo_server.cpp:299-301`, `examples/echo/echo_server.cpp:314-316`), and its clients lie in storage that never moves (`examples/echo/echo_server.cpp:90-102`).
+The deleted copies are at `system/lib/loop/include/loop/loop.hpp:211-214`, `system/lib/ioservice/include/ioservice/outgoing.hpp:125-127` and `system/lib/ioservice/include/ioservice/tree.hpp:101-103`. In the echo server the long-lived objects are statics (`examples/echo/echo_server.cpp:279-281`) or locals of `main` that never return, because `run()` does not (`examples/echo/echo_server.cpp:299-301`, `examples/echo/echo_server.cpp:314-316`), and its clients lie in storage that never moves (`examples/echo/echo_server.cpp:90-102`).
 
 ### W20. Leave by exiting, and say why
 
 - Rule: To stop, end the process from inside the callback with `ours::process_exit`, answering the client first; when you stop because something failed, log why and return a non-zero code from `main`.
 - Why: The Loop has no quit and `run()` returns only when the port itself fails, so a server that should stop must end its process; everything the process holds closes as it dies, and the root logs the exit code, which is how a failed start is found.
-- Where: Convention for what you choose; Enforced that the root logs an exit, for echo `init: echo exited with 0` (`system/service/init/realm.cpp:858-859`). `system/lib/loop/include/loop/loop.hpp:256` says `run()` never returns Ok. The echo server's Stop:
+- Where: Convention for what you choose; Enforced that the root logs an exit, for echo `init: echo exited with 0` (`system/service/init/realm.cpp:910-911`). `system/lib/loop/include/loop/loop.hpp:256` says `run()` never returns Ok. The echo server's Stop:
 
 ```cpp
     [[noreturn]]
@@ -339,7 +339,7 @@ The deleted copies are at `system/lib/loop/include/loop/loop.hpp:211-214`, `syst
     }
 ```
 
-That is `examples/echo/echo_server.cpp:258-267`, explained at `examples/echo/echo_server.cpp:249-257`. After the exit, later routes to the server answer NotFound (`system/service/init/realm.cpp:790-794`) and channels already open to it see PeerClosed.
+That is `examples/echo/echo_server.cpp:258-267`, explained at `examples/echo/echo_server.cpp:249-257`. After the exit, later routes to the server answer NotFound (`system/service/init/realm.cpp:838-848`) and channels already open to it see PeerClosed.
 
 ### W21. Keep each log line short
 
@@ -353,25 +353,25 @@ That is `examples/echo/echo_server.cpp:258-267`, explained at `examples/echo/ech
 
 - Rule: List the protocol under `capabilities` and `expose` it from `self`, or no client can be routed to it.
 - Why: The root finds a provider by walking from the client's use up through offers and down through exposes to a declared capability; a missing declaration or expose ends the walk in NotFound.
-- Where: Enforced: the build refuses an expose of an undeclared capability (`system/component_manifest.py:664-671`), and a route that ends early is logged by the root (`system/service/init/realm.cpp:195-203`). The echo server's manifest is `examples/echo/BUILD.gn:33-49`, and [01-concepts.md](01-concepts.md#components-and-manifests) shows it with the offer and the use that go with it.
+- Where: Enforced: the build refuses an expose of an undeclared capability (`system/component_manifest.py:664-671`), and a route that ends early is logged by the root (`system/service/init/realm.cpp:211-219`). The echo server's manifest is `examples/echo/BUILD.gn:33-49`, and [01-concepts.md](01-concepts.md#components-and-manifests) shows it with the offer and the use that go with it.
 
 ### W23. Spell the protocol's name the same everywhere
 
 - Rule: Spell the protocol's name the same in the manifest's `capabilities`, in the code that passes it to `add_protocol`, and in every client's `use`, using only the characters a name allows.
 - Why: The root forwards an Open under the capability's declared name, and the program's outgoing directory has an entry only for the name it added; if they differ, a good route ends at "no such entry" and the client reads the epitaph NotFound.
-- Where: Enforced for the characters and the length, at build time: a letter, digit or underscore, then those or `-` or `.`, at most 100 bytes (`system/component_manifest.py:227-238`). Convention for the match: the code keeps its name in one constant (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:42-46`) but a GN file cannot read it, so the manifest repeats it (`examples/echo/BUILD.gn:39`). The symptom is pinned by the host test at `system/lib/ioservice/test/outgoing_test.cpp:204-216`.
+- Where: Enforced for the characters and the length, at build time: a letter, digit or underscore, then those or `-` or `.`, at most 100 bytes (`system/component_manifest.py:227-238`). Convention for the match: the code keeps its name in one constant (`examples/echo/protocol/include/ours_examples_echo/ours_examples_echo.hpp:42-46`) but a GN file cannot read it, so the manifest repeats it (`examples/echo/BUILD.gn:39`). The symptom is pinned by the host test at `system/lib/ioservice/test/outgoing_test.cpp:206-218`.
 
 ### W24. State the type where a rename sits between
 
 - Rule: When an `offer` renames the protocol with `as`, state the protocol's `type` on the client's `use`, naming the protocol the provider declared.
 - Why: A rename changes the name and not the protocol, so the name alone no longer says which protocol a route ends at; without the type, a client could be routed to a different protocol under the same name, and would learn it only as a bare PeerClosed when the server closes on an unknown method.
-- Where: Enforced three times, in this order: the build, which stops with an error naming the use, where the route ends and the two ways to fix it (`system/component_manifest.py:1214-1233`); the root on the first Open, which logs a line that says `reaches another protocol` (`system/service/init/realm.cpp:188-198`) and answers the epitaph BadType (`system/service/init/realm.cpp:751-755`); and, last, the closed protocol itself. A `type` goes with one protocol, not a list (`system/component_manifest.py:343-349`), and an `offer` or `expose` takes none (`system/component_manifest.py:563-568`, `system/component_manifest.py:655-660`). [01-concepts.md](01-concepts.md#components-and-manifests) shows echo's renaming offer and the use that states the type.
+- Where: Enforced three times, in this order: the build, which stops with an error naming the use, where the route ends and the two ways to fix it (`system/component_manifest.py:1214-1233`); the root on the first Open, which logs a line that says `reaches another protocol` (`system/service/init/realm.cpp:204-214`) and answers the epitaph BadType (`system/service/init/realm.cpp:792-796`); and, last, the closed protocol itself. A `type` goes with one protocol, not a list (`system/component_manifest.py:343-349`), and an `offer` or `expose` takes none (`system/component_manifest.py:563-568`, `system/component_manifest.py:655-660`). [01-concepts.md](01-concepts.md#components-and-manifests) shows echo's renaming offer and the use that states the type.
 
 ### W25. Put the component in the image and offer it
 
 - Rule: Add the component as a child of the image's root manifest with `startup = "eager"` written out, and have the root manifest offer the protocol to each component that uses it.
 - Why: A component exists only if the root manifest names it, and a client reaches it only through an offer; a use that nobody offers answers NotFound at the root.
-- Where: Enforced: `startup` must be written out as eager (`system/component_manifest.py:450-452`), and an unoffered use answers NotFound, which the on-target test `routing_checks` checks (`system/service/init/test/routing_checks/routing_checks.cpp:525-541`). [02-first-server.md](02-first-server.md) shows the edit to the root manifest; the dev image's children are `kernel/products/image/dev/BUILD.gn:88-109`.
+- Where: Enforced: `startup` must be written out as eager (`system/component_manifest.py:450-452`), and an unoffered use answers NotFound, which the on-target test `routing_checks` checks (`system/service/init/test/routing_checks/routing_checks.cpp:528-544`). [02-first-server.md](02-first-server.md) shows the edit to the root manifest; the dev image's children are `kernel/products/image/dev/BUILD.gn:88-109`.
 
 ### W26. Build the program under bin in a user toolchain
 
@@ -383,19 +383,19 @@ That is `examples/echo/echo_server.cpp:258-267`, explained at `examples/echo/ech
 
 - Rule: Serve the outgoing directory before you do anything slow, and keep serving it for as long as you run.
 - Why: The root forwards each client's Open into your outgoing directory and does not wait; Opens queue in the channel, which holds 64 messages, and past that a forward fails and the client sees PeerClosed with no reason.
-- Where: Convention. `system/service/init/realm.cpp:797-799` and `system/service/init/realm.cpp:820-824` show the forward, `kernel/object/include/ours/object/channel_dispatcher.hpp:20-28` the limit, and `examples/echo/echo_server.cpp:308-312` serves the directory straight after setup.
+- Where: Convention. `system/service/init/realm.cpp:849-851` and `system/service/init/realm.cpp:872-876` show the forward, `kernel/object/include/ours/object/channel_dispatcher.hpp:20-28` the limit, and `examples/echo/echo_server.cpp:308-312` serves the directory straight after setup.
 
 ### W28. Give a file node a VMO nobody can write
 
 - Rule: When a tree server adds a file node, give it a VMO that nobody holds a writable handle to.
 - Why: GetBackingMemory hands the client a duplicate of that VMO, even for a private-clone request, which is only a private copy when the contents never change.
-- Where: Convention. Stated at `system/lib/ioservice/include/ioservice/tree.hpp:50-55`; the server's side is `system/lib/ioservice/src/server.cpp:440-443`.
+- Where: Convention. Stated at `system/lib/ioservice/include/ioservice/tree.hpp:50-55`; the server's side is `system/lib/ioservice/src/server.cpp:449-452`.
 
 ### W29. Act on every outcome if you drive Server yourself
 
 - Rule: If you call `ioservice::Server::dispatch()` yourself instead of using `LoopServer`, do what every outcome says: write, close and wait as it tells you.
 - Why: The core touches no channel; it only says what to do, so skipping an outcome leaks a handle or leaves a client waiting.
-- Where: Convention. `system/lib/ioservice/include/ioservice/server.hpp:23-27` and `system/lib/ioservice/include/ioservice/server.hpp:74-104` list the outcomes, and `system/lib/ioservice/src/loop_server.cpp:126-185` is the complete example.
+- Where: Convention. `system/lib/ioservice/include/ioservice/server.hpp:24-28` and `system/lib/ioservice/include/ioservice/server.hpp:75-106` list the outcomes, and `system/lib/ioservice/src/loop_server.cpp:126-197` is the complete example.
 
 ## Testing
 
@@ -409,7 +409,7 @@ That is `examples/echo/echo_server.cpp:258-267`, explained at `examples/echo/ech
 
 - Rule: Write a test for each way a request can fail: a malformed message, an unknown method, a full table, a reply that cannot be written, and a client that leaves.
 - Why: A run that takes only the happy path never reaches these, and each is a place where a handle leaks or a client is left waiting.
-- Where: Convention. Models: the decoder's refusals at `examples/echo/protocol/test/ours_examples_echo_test.cpp:79-125`, and the server's at `system/lib/ioservice/test/loop_server_test.cpp:383-422` and `system/lib/ioservice/test/outgoing_test.cpp:239-277`.
+- Where: Convention. Models: the decoder's refusals at `examples/echo/protocol/test/ours_examples_echo_test.cpp:79-125`, and the server's at `system/lib/ioservice/test/loop_server_test.cpp:514-553` and `system/lib/ioservice/test/outgoing_test.cpp:322-360`.
 
 ### T3. Put host tests where the build finds them
 
@@ -429,13 +429,13 @@ That is `examples/echo/echo_server.cpp:258-267`, explained at `examples/echo/ech
 
 - Rule: Add an on-target check that connects to your server through the real route, and have it print a line the verify script requires.
 - Why: Starting and being reached are different steps: a server that starts can still be unreachable because a route is wrong, and only a client in the booted image shows it.
-- Where: Enforced once the line is listed. The lines are `REQUIRED` in `.agents/skills/ours-verify/scripts/boot_check.py:90-100`, and the model is `routing_checks`' check of echo, `system/service/init/test/routing_checks/routing_checks.cpp:793-826`. [05-testing-and-debugging.md](05-testing-and-debugging.md#read-the-boot-log) says how to add a line.
+- Where: Enforced once the line is listed. The lines are `REQUIRED` in `.agents/skills/ours-verify/scripts/boot_check.py:90-100`, and the model is `routing_checks`' check of echo, `system/service/init/test/routing_checks/routing_checks.cpp:806-839`. [05-testing-and-debugging.md](05-testing-and-debugging.md#read-the-boot-log) says how to add a line.
 
 ### T6. Test the routes that must fail
 
 - Rule: Check that a use nobody offers answers NotFound, and that a route to a server that has exited answers NotFound; for a directory use, check that an offer which gives less than the use asks for answers AccessDenied.
 - Why: These are the answers a client gets when its manifest is wrong, and each leaves one line in the root's log naming the client's use, the hop where the walk stopped and the capability, so a failing route can be found from the log alone.
-- Where: Enforced by `routing_checks` for the dev image (`system/service/init/test/routing_checks/routing_checks.cpp:525-541`, and `system/service/init/test/routing_checks/routing_checks.cpp:317-319` for the directory); one Open that races the exit may read PeerClosed once, which the check allows (`system/service/init/test/routing_checks/routing_checks.cpp:805-825`). The root's lines are built at `system/service/init/realm.cpp:195-203`, and [05-testing-and-debugging.md](05-testing-and-debugging.md#how-routing_checks-makes-a-negative-case) shows them and how to read them.
+- Where: Enforced by `routing_checks` for the dev image (`system/service/init/test/routing_checks/routing_checks.cpp:528-544`, and `system/service/init/test/routing_checks/routing_checks.cpp:320-322` for the directory); one Open that races the exit may read PeerClosed once, which the check allows (`system/service/init/test/routing_checks/routing_checks.cpp:818-838`). The root's lines are built at `system/service/init/realm.cpp:211-219`, and [05-testing-and-debugging.md](05-testing-and-debugging.md#how-routing_checks-makes-a-negative-case) shows them and how to read them.
 
 ## Review
 
@@ -514,4 +514,4 @@ Review adds no rules. Each item is a walk over the diff that turns earlier items
 - `scripts/host_tests.py`
 - `.agents/skills/ours-verify/scripts/boot_check.py`
 
-Checked against commit `561571b7` on 2026-10-30.
+Checked against commit `10dd8149` on 2026-10-30.

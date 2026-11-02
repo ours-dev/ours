@@ -568,12 +568,9 @@ namespace {
     constexpr usize DEBOUNCE = 8;
 
     auto levels_at(usize const out_of_memory, usize const critical, usize const warning)
-        -> mm::MemoryPressureLevels {
-        return {.out_of_memory = out_of_memory,
-                .critical = critical,
-                .warning = warning,
-                .debounce = DEBOUNCE,
-                .hysteresis = Duration::zero()};
+        -> ustl::Result<mm::MemoryPressureLevels, Status> {
+        return mm::MemoryPressureLevels::make(out_of_memory, critical, warning, DEBOUNCE,
+                                              Duration::zero());
     }
 
     /// An anonymous VMO of zero pages and a page source's VMO of supplied
@@ -620,8 +617,16 @@ namespace {
             verdict(tally, false, "zero pages and pager pages are made for the reclaimer");
             return;
         }
+        auto const use_levels = [&](usize const out_of_memory, usize const critical,
+                                    usize const warning) -> Status {
+            auto const levels = levels_at(out_of_memory, critical, warning);
+            if (!levels) {
+                return Status::InvArgs;
+            }
+            return watchdog.set_levels(*levels);
+        };
         auto free = mm::approx_free_frame_count();
-        auto set = watchdog.set_levels(levels_at(free - 40, free + 8, free + 17));
+        auto set = use_levels(free - 40, free + 8, free + 17);
         auto const started = set == Status::Ok && settle([&] { return giveable.nr_zero() < 64; });
         // Time for the reclaimer to finish what it was asked.
         auto _ = task::Thread::Current::sleep_for(Milliseconds(300), task::Interruptible::No);
@@ -637,7 +642,7 @@ namespace {
 
         // Asked for more than there is: the zero pages go, and then the pager's.
         free = mm::approx_free_frame_count();
-        set = watchdog.set_levels(levels_at(free - 40, free + 200, free + 209));
+        set = use_levels(free - 40, free + 200, free + 209);
         auto const drained = set == Status::Ok &&
                              settle([&] { return giveable.nr_zero() + giveable.nr_pager() == 0; });
         verdict(tally, drained,
@@ -652,7 +657,7 @@ namespace {
             return;
         }
         free = mm::approx_free_frame_count();
-        set = watchdog.set_levels(levels_at(free + 40, free + 80, free + 100));
+        set = use_levels(free + 40, free + 80, free + 100);
         auto const gave = set == Status::Ok && settle([&] { return more.nr_zero() < 64; });
         auto const served = mm::try_alloc_frames(mm::GAF_USER_VMO, 0);
         auto const pressure = watchdog.pressure();

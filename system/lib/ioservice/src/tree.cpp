@@ -38,6 +38,16 @@ namespace {
             return ustl::some(segment);
         }
 
+        /// What follows the segment next() returned last: the segments still
+        /// to come, joined by '/', and empty after the last.
+        [[nodiscard]]
+        auto rest() const -> std::string_view {
+            if (m_rest.is_none()) {
+                return {};
+            }
+            return m_rest.value();
+        }
+
       private:
         /// What is left to split, or none once the last segment has gone.
         /// Not an empty view: "a/" ends in an empty segment, which next()
@@ -97,8 +107,15 @@ auto Tree::find_child(Node const &directory, std::string_view const name) const
     return ustl::NONE;
 }
 
+auto Tree::available() const -> usize {
+    // The storage's size, and the index no node may have (NO_NODE ends a list
+    // of siblings), whichever comes first.
+    auto const limit = std::min<usize>(m_nodes.size(), index_of(detail::NO_NODE));
+    return limit - m_size;
+}
+
 auto Tree::allocate(Node const &node) -> ustl::Result<NodeId, Status> {
-    if (m_size >= m_nodes.size() || m_size >= index_of(detail::NO_NODE)) {
+    if (available() == 0) {
         return ustl::err(Status::NoResource);
     }
     auto const id = NodeId{static_cast<u32>(m_size)};
@@ -169,7 +186,16 @@ auto Tree::add_service(NodeId const parent, std::string_view const name, u64 con
     auto node = Node{};
     node.m_kind = NodeKind::Service;
     node.m_name = name;
-    node.m_service = service;
+    node.m_value = service;
+    return add_child(parent, node);
+}
+
+auto Tree::add_subtree(NodeId const parent, std::string_view const name, u64 const value)
+    -> ustl::Result<NodeId, Status> {
+    auto node = Node{};
+    node.m_kind = NodeKind::Subtree;
+    node.m_name = name;
+    node.m_value = value;
     return add_child(parent, node);
 }
 
@@ -184,20 +210,23 @@ auto Tree::add_remote(NodeId const parent, std::string_view const name, ours::Ua
 
 auto Tree::lookup(NodeId const directory, std::string_view const path) const
     -> ustl::Result<NodeId, Status> {
-    auto const stopped = walk(directory, path);
-    if (stopped.is_err()) {
-        return ustl::err(stopped.unwrap_err());
+    auto const resolved = resolve(directory, path);
+    if (resolved.is_err()) {
+        return ustl::err(resolved.unwrap_err());
     }
-    // A remote node's subtree belongs to the server that owns it: no path
-    // through it resolves here.
-    if (!stopped->remainder.empty()) {
+    // resolve() stops at a Subtree node or a remote entry, with the path's
+    // rest. This walk is over the nodes of this tree, and neither has any
+    // below it that are: a path that goes on past one goes through a node
+    // that is not a directory. One that ends on it, rest ".", names the
+    // node.
+    if (!resolved->rest.empty() && resolved->rest != ".") {
         return ustl::err(Status::NotDir);
     }
-    return ustl::ok(stopped->node);
+    return ustl::ok(resolved->node);
 }
 
-auto Tree::walk(NodeId const directory, std::string_view const path) const
-    -> ustl::Result<Walk, Status> {
+auto Tree::resolve(NodeId const directory, std::string_view const path) const
+    -> ustl::Result<Resolved, Status> {
     if (!is_valid_path(path)) {
         return ustl::err(Status::BadPath);
     }
@@ -209,20 +238,21 @@ auto Tree::walk(NodeId const directory, std::string_view const path) const
         return ustl::err(Status::NotDir);
     }
     if (path == ".") {
-        return ustl::ok(Walk{.node = directory, .remainder = {}});
+        return ustl::ok(Resolved{.node = directory, .rest = {}});
     }
 
     // One segment at a time from |directory|: with no ".." in a valid path,
     // the walk can only go down, so it never leaves the subtree it started
-    // in, which is what makes a connection's node its ceiling. A remote node
-    // ends the walk where it stands, the rest of the path left for the
-    // server that owns its subtree.
+    // in, which is what makes a connection's node its ceiling. A Subtree
+    // node or a remote entry ends the walk where it stands, the rest of the
+    // path left for the program or for the server that owns the remote's
+    // subtree.
     auto current = directory;
     auto rest = path;
     while (!rest.empty()) {
         auto const &node = m_nodes[index_of(current)];
-        if (node.m_kind == NodeKind::Remote) {
-            return ustl::ok(Walk{.node = current, .remainder = rest});
+        if (node.m_kind == NodeKind::Subtree || node.m_kind == NodeKind::Remote) {
+            return ustl::ok(Resolved{.node = current, .rest = rest});
         }
         if (node.m_kind != NodeKind::Directory) {
             return ustl::err(Status::NotDir);
@@ -240,9 +270,15 @@ auto Tree::walk(NodeId const directory, std::string_view const path) const
             rest.remove_prefix(slash + 1);
         }
     }
-    return ustl::ok(Walk{.node = current, .remainder = {}});
+    // A path that ends on a Subtree node or a remote entry names the node
+    // itself: "." says so, so the program's or the remote's own server opens
+    // it as its root.
+    auto const &last = m_nodes[index_of(current)];
+    if (last.m_kind == NodeKind::Subtree || last.m_kind == NodeKind::Remote) {
+        return ustl::ok(Resolved{.node = current, .rest = "."});
+    }
+    return ustl::ok(Resolved{.node = current, .rest = {}});
 }
-
 auto Tree::kind(NodeId const node) const -> ustl::Option<NodeKind> {
     auto const *const found = get(node);
     if (found == nullptr) {
@@ -272,7 +308,15 @@ auto Tree::service(NodeId const node) const -> ustl::Option<u64> {
     if (found == nullptr || found->m_kind != NodeKind::Service) {
         return ustl::NONE;
     }
-    return ustl::some(found->m_service);
+    return ustl::some(found->m_value);
+}
+
+auto Tree::subtree(NodeId const node) const -> ustl::Option<u64> {
+    auto const *const found = get(node);
+    if (found == nullptr || found->m_kind != NodeKind::Subtree) {
+        return ustl::NONE;
+    }
+    return ustl::some(found->m_value);
 }
 
 auto Tree::remote(NodeId const node) const -> ustl::Option<ours::Uandle> {

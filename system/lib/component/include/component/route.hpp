@@ -112,14 +112,21 @@ class Subdir final {
 /// Where a use leads, as route() found it.
 template <typename C>
 struct Route final {
-    /// The instance whose outgoing directory serves the capability, at
-    /// `svc/<name>` for a protocol and at `<name>` for a directory; nullptr
-    /// when the source is the built-in named |name| of the use's kind.
+    /// The instance whose outgoing directory serves the capability, a
+    /// protocol at `svc/<name>` and a directory at |path|; nullptr when the
+    /// source is the built-in named |name| of the use's kind.
     C *provider;
     /// The capability's name at its source: the name the provider declared,
     /// or the built-in's. A view of that manifest's bytes or of the built-in's
     /// name.
     std::string_view name;
+    /// Where the provider's outgoing directory holds a directory capability:
+    /// the path its declaration states, such as `/export/data`, a view of the
+    /// provider's manifest bytes. The connection is opened at it joined with
+    /// |subdir|. Empty for a protocol and for a built-in. route() has checked
+    /// that the two fit one Open, but not that the path is absolute: the
+    /// compiler checked that, and the decoder does not.
+    std::string_view path;
     /// The subdirectory of the source the connection is opened at: every
     /// hop's subdir, the source's side first.
     Subdir subdir;
@@ -182,6 +189,14 @@ namespace detail {
     auto find_capability(Decl const &decl, Kind kind, std::string_view name)
         -> ustl::Option<Capability>;
 
+    /// Whether an Open at the declared directory |path| joined with |subdir|
+    /// fits MAX_PATH_LENGTH. The Open carries the path without its leading
+    /// '/', then '/' and the subdir when there is one, so that is what is
+    /// counted. A longer one is a route that leads nowhere, since no Open
+    /// could carry it.
+    [[nodiscard]]
+    auto open_path_fits(std::string_view path, std::string_view subdir) -> bool;
+
     /// What the walk carries from one hop to the next, and the two rules every
     /// hop obeys ("Applying a hop" in route()'s spec). It carries the rights
     /// of the last hop that stated any, and the subdir joined so far.
@@ -226,7 +241,8 @@ namespace detail {
 ///
 /// Output
 /// - A Route: the provider instance and the name it declared, or nullptr and
-///   the built-in's name; the joined subdir; the use's rights.
+///   the built-in's name; the declared path of a directory, empty for a
+///   protocol and a built-in; the joined subdir; the use's rights.
 /// - Or a RouteError: the status, the instance whose declaration the walk
 ///   stopped at (nullptr for the built-ins), the verb and the name it was
 ///   looking for there; and for BadType, the type the use wanted and the
@@ -256,19 +272,26 @@ namespace detail {
 ///   leads nowhere. In C's exposes, find the one whose target is the parent and
 ///   whose target_name is |name|. None: NotFound at C, Expose. If its source is
 ///   the parent, also NotFound at C, Expose: the compiler never writes one, and
-///   refusing it is what keeps the walk from turning back up. Otherwise go on
-///   at C, from the expose's source, with its source_name. An expose states no
-///   rights and no subdir, so it is no hop for the rules below.
+///   refusing it is what keeps the walk from turning back up. Otherwise apply
+///   the hop with the expose's rights and subdir, and go on at C, from the
+///   expose's source, with its source_name. An expose may state both, as an
+///   offer does, and is a hop for the rules below. One that states neither
+///   narrows nothing, which is every protocol expose.
 /// - **from is self:** if |at| has no program, or declares no capability named
 ///   |name|: NotFound at |at|, Declare. A capability with no program to serve
-///   it leads nowhere. Otherwise check the protocol type ("The type check",
-///   below), and the route ends at |at|, under the declared name. A
-///   declaration states no rights and no subdir.
+///   it leads nowhere. Otherwise the route ends at |at|, under the declared
+///   name, after one of two checks. For a protocol, the protocol type ("The
+///   type check", below). For a directory, the declaration is the last hop:
+///   apply it with the rights it states and no subdir, and then check that
+///   the declared path and the joined subdir fit one Open
+///   (detail::open_path_fits()). The route carries the declared path.
 ///
-/// Applying a hop. A hop is the use itself, an offer, or a built-in; each may
-/// state rights and a subdir. Its instance and verb, which an error names, are
-/// |target| and Use for the use, the parent and Offer for an offer, and
-/// nullptr and Declare for a built-in. Rights first, then the subdir:
+/// Applying a hop. A hop is the use itself, an offer, an expose, the
+/// declaration of a directory, or a built-in; each may state rights, and all
+/// but the declaration a subdir. Its instance and verb, which an error names,
+/// are |target| and Use for the use, the parent and Offer for an offer, the
+/// child and Expose for an expose, the provider and Declare for a declaration,
+/// and nullptr and Declare for a built-in. Rights first, then the subdir:
 /// - Rights. A hop that states none narrows nothing and is skipped. One that
 ///   does must contain every right stated by the last hop before it that
 ///   stated any, the first being the use: walking from the use toward the
@@ -287,7 +310,11 @@ namespace detail {
 ///   the hop's instance, with its verb and |name|: no Open could carry the
 ///   path, so the route leads nowhere. The use's own subdir fails this way only
 ///   when it is longer than MAX_PATH_LENGTH by itself, which the compiler
-///   refuses and the decoder does not: NotFound at |target|, Use.
+///   refuses and the decoder does not: NotFound at |target|, Use. A
+///   declaration states a path, which is not a subdir: it is where the
+///   connection is opened, and the Open carries it joined with the subdir the
+///   hops built, so the declaration is the one hop whose length check is made
+///   on both together, after its rights: NotFound at the provider, Declare.
 ///
 /// The type check. A name does not say which protocol is behind it: an offer
 /// may rename a capability with `as`, so a route can end at a capability of
@@ -300,10 +327,11 @@ namespace detail {
 /// built-in and, for a built-in, after the hop's rights, so that a route that
 /// leads nowhere or is denied keeps that status however the types read. Only
 /// for a protocol: a directory is held to its rights at every hop and has no
-/// type, so a directory use ends without the comparison. Equal strings are the
-/// same protocol; otherwise BadType, at the providing instance or at nullptr
-/// for a built-in, with the verb Declare and the capability's name at its
-/// source, and `want` the use's type, `got` the capability's.
+/// type, so a directory use ends without the comparison, at a provider as at a
+/// built-in. Equal strings are the same protocol; otherwise BadType, at the
+/// providing instance or at nullptr for a built-in, with the verb Declare and
+/// the capability's name at its source, and `want` the use's type, `got` the
+/// capability's.
 ///
 /// Errors. The first failure on the walk is the answer:
 /// - NotFound, Offer, at the parent: the parent offers no capability of that
@@ -315,8 +343,16 @@ namespace detail {
 /// - NotFound, Declare, at nullptr: the root's parent offers it, and there is
 ///   no built-in of that kind and name.
 /// - NotFound, at the hop: the joined subdir would be longer than
-///   MAX_PATH_LENGTH; at |target|, Use, when the use's own subdir is.
+///   MAX_PATH_LENGTH; at |target|, Use, when the use's own subdir is; at a
+///   child, Expose, when its subdir is the one that overflows.
+/// - NotFound, Declare, at the provider: the declared path of a directory and
+///   the joined subdir together are longer than MAX_PATH_LENGTH.
 /// - AccessDenied, at the hop: its rights do not contain the previous hop's.
+///   Never at |target|, Use: the use is the first hop. At the parent, Offer.
+///   At a child, Expose: the expose passes on less than the hops before it
+///   asked. At an instance, Declare: the declaration of a directory allows
+///   less than the hops before it asked. At nullptr, Declare: the built-in
+///   does.
 /// - BadType, Declare, at the providing instance or at nullptr for a built-in:
 ///   the route ends at a protocol capability whose type differs from the
 ///   use's; `want` and `got` are the two types.
@@ -352,7 +388,10 @@ namespace detail {
 /// NotFound for one); connecting; and any security policy applied after
 /// routing, which ours does not have. Nor whether a program serves the
 /// protocol its manifest says it does: a type is what a manifest states, and
-/// two protocols that share a type string are not told apart.
+/// two protocols that share a type string are not told apart. Nor whether it
+/// serves a directory at the path its declaration states: the path is written
+/// in the manifest and written again in the program, and a typo between the
+/// two reads as NotFound from the provider's own server.
 template <Instance C>
 [[nodiscard]]
 auto route(C &target, Use const &use, std::span<Builtin const> builtins)
@@ -383,10 +422,12 @@ auto route(C &target, Use const &use, std::span<Builtin const> const builtins)
     auto hops = detail::Hops{};
     // The route carries the use's rights, never a hop's: the walk only proves
     // that every hop had at least that much.
-    auto const found = [&use, &hops](C *const provider, std::string_view const name) {
+    auto const found = [&use, &hops](C *const provider, std::string_view const name,
+                                     std::string_view const path) {
         return ustl::ok(Route<C>{
             .provider = provider,
             .name = name,
+            .path = path,
             .subdir = hops.subdir(),
             .rights = use.rights,
         });
@@ -422,7 +463,7 @@ auto route(C &target, Use const &use, std::span<Builtin const> const builtins)
                 if (use.kind == Kind::Protocol && type != use.type) {
                     return mismatch(nullptr, builtin->name, type);
                 }
-                return found(nullptr, builtin->name);
+                return found(nullptr, builtin->name, {});
             }
 
             auto const offer = detail::find_offer(parent->decl(), use.kind, at->index(), name);
@@ -450,6 +491,12 @@ auto route(C &target, Use const &use, std::span<Builtin const> const builtins)
         if (expose.is_none() || expose->source.kind == RefKind::Parent) {
             return fail(ours::Status::NotFound, &child, Verb::Expose, name);
         }
+        // An expose that narrows is a hop at the child, as an offer is at the
+        // parent; one that states neither rights nor subdir changes nothing.
+        if (auto const status = hops.apply(expose->rights, expose->subdir);
+            status != ours::Status::Ok) {
+            return fail(status, &child, Verb::Expose, name);
+        }
         at = &child;
         from = expose->source;
         name = expose->source_name;
@@ -463,10 +510,24 @@ auto route(C &target, Use const &use, std::span<Builtin const> const builtins)
     if (capability.is_none()) {
         return fail(ours::Status::NotFound, at, Verb::Declare, name);
     }
-    if (use.kind == Kind::Protocol && capability->type != use.type) {
-        return mismatch(at, capability->name, capability->type);
+    if (use.kind == Kind::Protocol) {
+        if (capability->type != use.type) {
+            return mismatch(at, capability->name, capability->type);
+        }
+        return found(at, capability->name, {});
     }
-    return found(at, capability->name);
+
+    // A directory: the declaration is the last hop, held against the hop
+    // before it like the others (a declaration that states no rights narrows
+    // nothing). The type check does not apply to a directory.
+    if (auto const status = hops.apply(capability->rights, {}); status != ours::Status::Ok) {
+        return fail(status, at, Verb::Declare, capability->name);
+    }
+    // The root opens the declared path joined with the subdir in one Open.
+    if (!detail::open_path_fits(capability->path, hops.subdir().view())) {
+        return fail(ours::Status::NotFound, at, Verb::Declare, capability->name);
+    }
+    return found(at, capability->name, capability->path);
 }
 } // namespace component
 

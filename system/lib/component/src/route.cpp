@@ -92,6 +92,20 @@ namespace detail {
         return ustl::NONE;
     }
 
+    auto open_path_fits(std::string_view const path, std::string_view const subdir) -> bool {
+        // The Open carries the path without its leading '/'. The joining '/'
+        // is counted whenever there is a subdir (for "/", which the compiler
+        // refuses, that is one byte more than the Open needs).
+        auto size = path.size();
+        if (path.starts_with('/')) {
+            size -= 1;
+        }
+        if (!subdir.empty()) {
+            size += 1 + subdir.size();
+        }
+        return size <= MAX_PATH_LENGTH;
+    }
+
     auto Hops::apply(ustl::Option<Rights> const &rights, std::string_view const subdir)
         -> ours::Status {
         // Held against the last hop that stated rights, not against the use:

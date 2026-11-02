@@ -3,6 +3,7 @@
 #ifndef OURS_MM_MEMORY_WATCHDOG_HPP
 #define OURS_MM_MEMORY_WATCHDOG_HPP 1
 
+#include <ours/lockdep.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
@@ -14,6 +15,7 @@
 #include <atomic>
 
 #include <ustl/option.hpp>
+#include <ustl/result.hpp>
 
 namespace ours::mm {
 
@@ -29,27 +31,31 @@ enum class MemoryPressure : u8 {
 [[nodiscard]]
 auto to_string(MemoryPressure pressure) -> char const *;
 
-/// Where each pressure begins, in frames of free memory: below |warning|
-/// it is Warning, below |critical| Critical, below |out_of_memory|
-/// OutOfMemory. The watchdog looks again only once free memory has gone
-/// |debounce| frames past a level, and declares a lower pressure only
-/// |hysteresis| after its last change.
-struct MemoryPressureLevels {
-    usize out_of_memory;
-    usize critical;
-    usize warning;
-    usize debounce;
-    Duration hysteresis;
-
+/// Where each pressure begins, in frames of free memory: below the warning
+/// level it is Warning, below the critical level Critical, below the
+/// out-of-memory level OutOfMemory. The watchdog looks again only once free
+/// memory has gone the debounce past a level, and declares a lower pressure
+/// only the hysteresis after its last change.
+///
+/// make() is the way to build one that nests. from_boot_options() can be
+/// otherwise, and start() then refuses it: a bad command line is reported,
+/// not subtracted.
+class MemoryPressureLevels {
+  public:
     /// The free memory the PMM keeps quiet about at one pressure, in frames.
     struct Bounds {
         usize lower;
         usize upper;
     };
 
-    /// The levels the `kernel.oom.*` boot options give.
+    /// The levels the `kernel.oom.*` boot options give. Not necessarily valid.
     [[nodiscard]]
     static auto from_boot_options() -> MemoryPressureLevels;
+
+    /// A value whose levels nest. InvArgs when they do not.
+    [[nodiscard]]
+    static auto make(usize out_of_memory, usize critical, usize warning, usize debounce,
+                     Duration hysteresis) -> ustl::Result<MemoryPressureLevels, Status>;
 
     /// Each level above the one before by more than the debounce, and the
     /// lowest above it too: then every pressure has a range of its own that
@@ -72,10 +78,51 @@ struct MemoryPressureLevels {
     /// bounds end. The one allocation that takes free memory past it shuts
     /// the gate and wakes the watchdog together.
     [[nodiscard]]
-    auto delay_level() const -> usize {
-        return out_of_memory - debounce;
+    auto delay_level() const -> usize;
+
+    [[nodiscard]]
+    auto out_of_memory() const -> usize {
+        return m_out_of_memory;
     }
+    [[nodiscard]]
+    auto critical() const -> usize {
+        return m_critical;
+    }
+    [[nodiscard]]
+    auto warning() const -> usize {
+        return m_warning;
+    }
+    [[nodiscard]]
+    auto debounce() const -> usize {
+        return m_debounce;
+    }
+    [[nodiscard]]
+    auto hysteresis() const -> Duration {
+        return m_hysteresis;
+    }
+
+  private:
+    friend class MemoryWatchdog;
+
+    /// Not started: the watchdog replaces this in start().
+    MemoryPressureLevels() = default;
+
+    MemoryPressureLevels(usize out_of_memory, usize critical, usize warning, usize debounce,
+                         Duration hysteresis)
+        : m_out_of_memory(out_of_memory)
+        , m_critical(critical)
+        , m_warning(warning)
+        , m_debounce(debounce)
+        , m_hysteresis(hysteresis) {}
+
+    usize m_out_of_memory = 0;
+    usize m_critical = 0;
+    usize m_warning = 0;
+    usize m_debounce = 0;
+    Duration m_hysteresis{};
 };
+
+class MemoryReclaimer;
 
 /// A kernel thread that watches how much memory is free, through the PMM's
 /// free-memory signal (set_free_memory_signal()), and turns it into a
@@ -116,23 +163,28 @@ class MemoryWatchdog {
     auto set_levels(MemoryPressureLevels const &levels) -> Status;
 
     /// While one is alive the watchdog arms nothing: for a test that drives
-    /// the PMM's gate and signal by hand. It holds the lock the watchdog
-    /// arms under, and when it goes it wakes the watchdog to arm them for
-    /// itself again.
+    /// the PMM's gate and signal by hand. The guard is what lockdep records.
+    /// It is dropped before the signal, so the woken thread can take the mutex.
     class TA_SCOPED_CAPABILITY Hold {
       public:
-        explicit Hold(MemoryWatchdog &watchdog) TA_ACQUIRE(watchdog.m_lock);
-        ~Hold() TA_RELEASE();
+        explicit Hold(MemoryWatchdog &watchdog) TA_ACQUIRE(watchdog.m_lock)
+            : m_watchdog(watchdog), m_guard(watchdog.m_lock) {}
+
+        ~Hold() TA_RELEASE() {
+            m_guard.unlock();
+            m_watchdog.m_signal.signal();
+        }
 
         Hold(Hold const &) = delete;
         auto operator=(Hold const &) -> Hold & = delete;
 
       private:
         MemoryWatchdog &m_watchdog;
+        Guard<sync::Mutex> m_guard;
     };
 
   private:
-    MemoryWatchdog() = default;
+    explicit MemoryWatchdog(MemoryReclaimer &reclaimer) : m_reclaimer(reclaimer) {}
 
     /// The thread: looks, then sleeps until the PMM's signal, set_levels(),
     /// a Hold that goes or the end of a hysteresis wakes it.
@@ -152,6 +204,10 @@ class MemoryWatchdog {
 
     /// What wakes the thread. Auto-unsignal, so each wakes it once.
     sync::Event m_signal{sync::Event::Options::AutoUnsignal};
+
+    /// The reclaimer look() asks. Bound when the watchdog is made, so a look
+    /// does not go and find the singleton.
+    MemoryReclaimer &m_reclaimer;
 
     /// Held while the thread looks and arms the PMM, and for as long as a
     /// Hold lives; not while the thread sleeps.

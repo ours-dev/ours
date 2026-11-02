@@ -81,7 +81,9 @@ END_MARKER = "--- end ---"  # the last line system/app/shell/shell.cpp prints
 # of the component tree and starts routing_checks, which checks the namespace
 # it was given and says so (.agents/tasks/component-framework/PLAN.md, step
 # 13), and echo, which routing_checks reaches through its sibling route and
-# asks to stop, and whose exit the root reports (step 17). The root also says
+# asks to stop, and whose exit the root reports (step 17), and files, whose
+# service node `stop` routing_checks connects to last, and whose exit the root
+# reports too (.agents/tasks/directory-capability, step 5). The root also says
 # it holds the roots of the interrupt lines and I/O ports that userboot hands
 # on (.agents/tasks/microkernel-interrupts/PLAN.md, step 9); dbg_1 has no
 # root, and its shell checks those resources itself. And the root starts the
@@ -92,6 +94,7 @@ REQUIRED = {
     "rel": [
         "routing_checks: passed",
         "init: echo exited with 0",
+        "init: files exited with 0",
         "init: holding the IRQ and I/O port resources",
         "pc-ps2: ready",
         "pc-ps2: key a",
