@@ -3,7 +3,7 @@
 ## Title: the driver kit: the ladder, the guards, and the hardware idioms as objects (2026-11-03)
 
 **Files**
-- `system/lib/driver-kit/` — new library: `driver_kit::Resources` (the resource ladder with an injectable getter, `take`/`drop`, destructor unwind), `startup_handle` (the take-plus-line guard pair), `MappedMmio` (physical window mapped and unmapped), `Bti` + `DmaRegion` (the DMA chain and its unmap→unpin→close teardown), `irq::take` (map→create→close-the-root). Scaffolded with copier.
+- `system/lib/ddk/` — new library (landed as `driver-kit`, renamed to `ddk` within the round at the user's naming): `driver_kit::Resources` (the resource ladder with an injectable getter, `take`/`drop`, destructor unwind), `startup_handle` (the take-plus-line guard pair), `MappedMmio` (physical window mapped and unmapped), `Bti` + `DmaRegion` (the DMA chain and its unmap→unpin→close teardown), `irq::take` (map→create→close-the-root). Scaffolded with copier.
 - `system/driver/virtio-blk/virtio_blk.cpp`, `BUILD.gn` — the four-resource ladder, both startup guards, the 28-line `fail` lambda, and the `map_mmio` helper deleted; the ECAM base now comes from `ours_acpi::ecam_base(0)` (`ours.acpi.Route` in the manifest's `use`, offered in root.cm) instead of the `0xE000'0000` chipset constant.
 - `system/service/acpi-route/src/acpi_route.cpp` — its two startup guard pairs on `startup_handle`.
 - `kernel/products/image/dev/BUILD.gn` — `ours.acpi.Route` offered to `virtio-blk`.
