@@ -225,6 +225,10 @@ group("default") {
     # playing the hardware's completion interrupt.
     "//system/lib/block-server:tests",
 
+    # The driver kit's resource ladder: take, drop, and the destructor's
+    # unwind, over a fake getter on the fake kernel.
+    "//system/lib/driver-kit:tests",
+
     # The client side of a namespace: path cleaning, and the rules for what
     # may be bound where and which binding a path lies under.
     "//system/lib/fsio:tests",
