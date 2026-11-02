@@ -4,10 +4,10 @@
 #define OURS_TASK_PREEMPTION_STATE_HPP 1
 
 #include <ours/assert.hpp>
+#include <ours/chrono.hpp>
 #include <ours/compiler.hpp>
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/types.hpp>
 
 #include <atomic>

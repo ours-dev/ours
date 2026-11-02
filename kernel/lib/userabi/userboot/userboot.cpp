@@ -44,9 +44,9 @@
 #include <ort/startup.hpp>
 #include <ours/object_info.hpp>
 #include <ours/process_args.hpp>
+#include <ours/resource.hpp>
 #include <ours/rights.hpp>
 #include <ours/status.hpp>
-#include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
 #include <ustl/mem/align.hpp>

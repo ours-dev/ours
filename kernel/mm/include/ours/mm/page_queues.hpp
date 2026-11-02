@@ -3,10 +3,10 @@
 #ifndef OURS_MM_PAGE_QUEUES_HPP
 #define OURS_MM_PAGE_QUEUES_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_page.hpp>
 #include <ours/sync/spin_lock.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/task/types.hpp>
 
 #include <array>

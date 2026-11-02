@@ -7,6 +7,7 @@
 #error "The header <ours/arch/thread.hpp> is required by [protocol.module.task]"
 #endif
 #include <ours/arch/thread.hpp>
+#include <ours/chrono.hpp>
 #include <ours/compiler.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -16,7 +17,6 @@
 #include <ours/mm/types.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/spin_lock.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/task/config.hpp>
 #include <ours/task/owned_wait_queue.hpp>
 #include <ours/task/preemption_state.hpp>

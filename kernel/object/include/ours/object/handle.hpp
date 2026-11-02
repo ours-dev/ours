@@ -3,6 +3,7 @@
 #ifndef OURS_OBJECT_HANDLE_HPP
 #define OURS_OBJECT_HANDLE_HPP 1
 
+#include <ours/handle.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/types.hpp>
 

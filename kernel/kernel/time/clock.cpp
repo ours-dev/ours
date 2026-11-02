@@ -62,6 +62,7 @@ auto Clock::reading() const -> AnchorReading {
         if (m_anchor.source != nullptr) {
             reading.numerator = m_anchor.source->ns_numerator();
             reading.denominator = m_anchor.source->ns_denominator();
+            reading.frequency_hz = m_anchor.source->freq_hz();
         }
         return reading;
     });
@@ -125,6 +126,10 @@ auto SystemClock::now() -> TimePoint {
 
 auto SystemClock::ticks() -> Ticks {
     return CLOCK.ticks();
+}
+
+auto SystemClock::boot_offset() -> i64 {
+    return REAL_BASE.time_since_epoch().count();
 }
 
 auto SystemClock::notify(ClockSource *source) -> Status {

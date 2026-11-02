@@ -1,0 +1,78 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The debug console calls. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/debug.cpp.
+ours_syscalls_debug = [
+  {
+    name = "debug_write"
+    brief = "Writes |length| bytes of |buffer| to the kernel's debug console."
+    doc = [
+      "A debug facility, not a console: it is how a program says what it is",
+      "doing while the system is brought up. One call takes at most",
+      "MAX_DEBUG_WRITE bytes (<ours/syscall.hpp>) and answers OutOfRange past",
+      "it rather than truncating, so that a program cannot hold a CPU in the",
+      "kernel for as long as it likes by asking for a gigabyte of output. A",
+      "|buffer| the kernel cannot read is InvArgs, and nothing is written; a",
+      "|length| of 0 is Ok without |buffer| being looked at.",
+    ]
+    args = [
+      {
+        name = "buffer"
+        type = "char"
+        dir = "in"
+        count = "length"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+    ]
+    attrs = [ "debug" ]
+    ret = "Status"
+    category = "debug"
+  },
+  {
+    name = "debug_read"
+    brief = "Reads bytes from the serial debug console."
+    doc = [
+      "Requires the System Debug resource and kernel.debug_read=true. Waits",
+      "for at least one byte, then reads up to |length| currently available",
+      "bytes. Carriage return is translated to newline. A |length| of 0 is",
+      "Ok without waiting. The debug console is not a general terminal or",
+      "standard-input service.",
+    ]
+    args = [
+      {
+        name = "resource"
+        type = "Uandle"
+      },
+      {
+        name = "buffer"
+        type = "char"
+        dir = "out"
+        count = "length"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+      {
+        name = "actual"
+        type = "usize"
+        dir = "out"
+      },
+    ]
+    attrs = [
+      "blocking",
+      "debug",
+    ]
+    ret = "Status"
+    category = "debug"
+  },
+]

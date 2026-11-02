@@ -3,8 +3,8 @@
 #ifndef OURS_TIME_TICK_SCHED_HPP
 #define OURS_TIME_TICK_SCHED_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <ours/syscall/time.hpp>
 
 #include <atomic>
 

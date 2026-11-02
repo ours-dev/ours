@@ -1,0 +1,101 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The exception calls. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/exception.cpp.
+ours_syscalls_exception = [
+  {
+    name = "task_create_exception_channel"
+    brief = "Binds a new exception channel to the task |handle| names, and writes its reading end to |out|."
+    doc = [
+      "From then on, every exception a thread of the task raises is sent on",
+      "the channel as one message: an ExceptionInfo (<ours/exception.hpp>)",
+      "and one handle, the exception's. The thread waits until that handle",
+      "is closed; Property::ExceptionState, set on it first with",
+      "object_set_property, says what happens then. The end written to |out|",
+      "can be read and waited on and nothing else (Transfer, Wait, Read).",
+      "A thread's channel is told before its process's, and hands out no",
+      "process (exception_get_process answers AccessDenied). A job answers",
+      "NotSupported, any other object BadType. |handle| needs Inspect,",
+      "Duplicate, Transfer and ManageThread, and Enumerate for a process",
+      "(AccessDenied). One channel per task: AlreadyBound while one is bound",
+      "and its reader is still there, BadState once the task is dead.",
+      "|options| must be None (InvArgs). The value goes to |out| before the",
+      "channel is bound: InvArgs, and nothing bound, when |out| cannot be",
+      "written.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "ExceptionChannelOptions"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "exception"
+  },
+  {
+    name = "exception_get_thread"
+    brief = "Writes to |out| a new handle to the thread that raised the exception |handle| names."
+    doc = [
+      "The handle's rights are those of the task handle the exception's",
+      "channel was bound with (task_create_exception_channel), so a handler",
+      "gets no more than whoever bound the channel had. |handle| needs no",
+      "right, and must name an exception (BadType). The new handle counts",
+      "against this process's handle quota: NoResource past it, or when the",
+      "arena is full. The value goes to |out| before the handle is",
+      "installed: InvArgs, and no handle, when |out| cannot be written.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "exception"
+  },
+  {
+    name = "exception_get_process"
+    brief = "Writes to |out| a new handle to the process of the thread that raised the exception |handle| names."
+    doc = [
+      "As exception_get_thread, for the faulting thread's process. A",
+      "channel bound to a thread hands out no process (AccessDenied): it",
+      "grants no way up the task chain.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "exception"
+  },
+]

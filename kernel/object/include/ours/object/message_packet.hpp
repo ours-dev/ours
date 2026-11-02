@@ -3,6 +3,7 @@
 #ifndef OURS_OBJECT_MESSAGE_PACKET_HPP
 #define OURS_OBJECT_MESSAGE_PACKET_HPP 1
 
+#include <ours/channel.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>

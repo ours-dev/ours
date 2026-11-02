@@ -57,12 +57,16 @@
   (`VmMapping::DestroyLocked()` refuses it); departed from on 2026-10-05
   (`docs/changes/261005/object.md`), because a failed call must not cost a
   process its only chance to map its vDSO.
-- Adding a syscall means: an entry in `system/public/ours/syscalls.gni` and
-  the body of `ours::syscall::<name>()` in `//kernel/lib/syscall`. The vDSO
-  stub, the declaration `<ours/vdso.hpp>` includes and the kernel shim are
-  generated from the entry; never write them by hand. Limits
-  callers must respect (such as `MAX_DEBUG_WRITE`) live in
-  `system/public/ours/syscall.hpp`.
+- Adding a syscall means: an entry in
+  `system/public/ours/syscalls/<category>.gni` -- the category named for the
+  kernel file that defines the call -- and the body of
+  `ours::syscall::<name>()` in that kernel file. The vDSO stub, the
+  declaration the domain's public header (`<ours/port.hpp>` and friends)
+  includes, and the kernel shim are generated from the entry; never write
+  them by hand. The call's option words and the limits its callers respect
+  live in that same domain header, beside the declarations
+  (`MAX_DEBUG_WRITE` in `<ours/debug.hpp>`); `ours/syscall.hpp` holds only
+  what crosses domains (`INSTANT_INFINITE`, `MAX_NAME_LEN`).
 - Ring-3 code calls the vDSO's entries directly, as `ours::<name>()` from
   `<ours/vdso.hpp>`; there is no wrapper library. Each declaration carries
   an asm label naming the vDSO's symbol, `ours_<name>`, so the C++ name is

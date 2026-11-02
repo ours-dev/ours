@@ -27,6 +27,7 @@
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
+#include <ours/vma.hpp>
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>

@@ -4,11 +4,12 @@
 
 #include <logz4/log.hpp>
 #include <ours/boot/options.hpp>
+#include <ours/debug.hpp>
 #include <ours/object/resource_dispatcher.hpp>
 #include <ours/platform/debug_console.hpp>
+#include <ours/resource.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
-#include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 
 namespace ours::syscall {

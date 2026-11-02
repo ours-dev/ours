@@ -248,7 +248,7 @@ When one page of `.rodata` is the wrong shape — a record that must be a child 
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| How the kernel finds the first record | A: generate offsets from the unstripped vDSO, check magic at that offset, drop the scan; B: keep `find_time_values()` for TimeValues, generate offsets when a second record appears | A | Not given | |
+| How the kernel finds the first record | A: generate offsets from the unstripped vDSO, check magic at that offset, drop the scan; B: keep `find_time_values()` for TimeValues, generate offsets when a second record appears; C: the same generated table, packaged beside the vDSO as `vdso.published` instead of compiled into the kernel | A | Not given | 2026-11-02: C. The table travels in the kernel package with the stripped file |
 | A second dedicated VMO (Linux vvar / Zircon time_values slice) | Now; later, when one page of `.rodata` is the wrong shape | Later | Not given | |
 | Additional records in the first cut | None (TimeValues becomes the named published object); ticks-per-second; boot time; a version word | None | Not given | 2026-11-02: may include ticks-per-second, a boot offset, and a version word |
 | Data symbols in `.dynsym` | Hidden, programs call vDSO functions; exported, programs bind the record | Hidden | Not given | Hidden is the present state of `ours_time_values`; reversing it is an ABI change |

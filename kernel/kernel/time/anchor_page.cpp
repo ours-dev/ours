@@ -15,6 +15,9 @@ namespace {
     u64 SEQ = 0;
     /// User VA of the counter, or 0 when ring 3 has no mapping of it.
     VirtAddr COUNTER_VA = 0;
+    /// ~0 until lay_out_vdso binds the single-word records.
+    u64 TICKS_OFFSET = ~u64{0};
+    u64 BOOT_OFFSET_AT = ~u64{0};
 
     struct Payload {
         u64 ticks;
@@ -42,6 +45,14 @@ auto bind_anchor_page(AnchorStore const store, void *const context, u64 const of
 auto bind_counter_va(VirtAddr const va) -> void {
     COUNTER_VA = va;
     publish_anchor(SteadyClock::reading());
+}
+
+auto bind_ticks_per_second(u64 const offset) -> void {
+    TICKS_OFFSET = offset;
+}
+
+auto bind_boot_offset(u64 const offset) -> void {
+    BOOT_OFFSET_AT = offset;
 }
 
 auto publish_anchor(AnchorReading const &reading) -> void {
@@ -77,6 +88,14 @@ auto publish_anchor(AnchorReading const &reading) -> void {
     auto _ = STORE(CONTEXT, OFFSET + offsetof(ours::TimeValues, seq), &even, sizeof(even));
     if (stored != Status::Ok) {
         return;
+    }
+    if (TICKS_OFFSET != ~u64{0}) {
+        auto const hz = reading.frequency_hz;
+        (void)STORE(CONTEXT, TICKS_OFFSET, &hz, sizeof(hz));
+    }
+    if (BOOT_OFFSET_AT != ~u64{0}) {
+        auto const boot = SystemClock::boot_offset();
+        (void)STORE(CONTEXT, BOOT_OFFSET_AT, &boot, sizeof(boot));
     }
 }
 } // namespace ours::time

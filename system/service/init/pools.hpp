@@ -3,6 +3,7 @@
 #ifndef INIT_POOLS_HPP
 #define INIT_POOLS_HPP 1
 
+#include <ours/handle.hpp>
 #include <ours/port.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>

@@ -1,0 +1,282 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The VMO calls. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/vmo.cpp.
+ours_syscalls_vmo = [
+  {
+    name = "vmo_read"
+    brief =
+        "Copies |length| bytes of the VMO, from byte |offset|, into |buffer|."
+    doc = [
+      "Needs Read on |vmo|. All or nothing: OutOfRange when the range does",
+      "not lie wholly inside the VMO, and nothing is copied then. A page",
+      "nobody has written reads as zero. InvArgs when |buffer| cannot take",
+      "|length| bytes -- outside the user half, or not writable all the way;",
+      "the kernel may have written some of it before finding out, so after a",
+      "failure its contents are unspecified. Reading 0 bytes checks the",
+      "handle and the offset and touches nothing. NotSupported on a VMO that",
+      "is a window onto physical memory rather than pages of its own.",
+    ]
+    args = [
+      {
+        name = "vmo"
+        type = "Uandle"
+      },
+      {
+        name = "buffer"
+        type = "void"
+        dir = "out"
+        count = "length"
+      },
+      {
+        name = "offset"
+        type = "u64"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+    ]
+    attrs = [ "blocking" ]
+    ret = "Status"
+    category = "vmo"
+  },
+  {
+    name = "vmo_create"
+    brief = "Makes a VMO of |size| bytes and puts a handle to it in |out|."
+    doc = [
+      "|size| is rounded up to a page; zero makes an empty VMO. The memory is",
+      "committed lazily: a page exists once something touches it, and a page",
+      "nobody has written reads as zero. |options| must be None: Resizable is",
+      "NotSupported, any other bit InvArgs. OutOfRange past the largest size",
+      "a VMO can have. The handle has the default VMO rights, never Execute.",
+      "Its value goes to |out|, and it is in this process's table only once",
+      "that write has worked: InvArgs, and no new handle, when |out| cannot be",
+      "written. It counts against this process's handle quota: NoResource",
+      "past it, or when the handle arena is full.",
+    ]
+    args = [
+      {
+        name = "size"
+        type = "u64"
+      },
+      {
+        name = "options"
+        type = "VmoOptions"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "vmo"
+  },
+  {
+    name = "vmo_create_child"
+    brief =
+        "Creates a slice or a copy-on-write snapshot of the VMO |vmo| names."
+    doc = [
+      "|options| is one of Slice, SnapshotFull, SnapshotOnWrite and",
+      "SnapshotModified, alone; any other combination of named bits, None",
+      "included, is NotSupported, an unknown bit InvArgs. A slice is the",
+      "window [offset, offset + size) of the parent, over the same pages, so",
+      "a write through either is seen through the other; |offset| must be",
+      "page-aligned and the range must lie inside the parent (InvArgs). A",
+      "snapshot is a copy-on-write copy of that range: neither side sees the",
+      "other's later writes (all three kinds are built as SnapshotFull). Its",
+      "|offset| must be page-aligned and no further than the parent's end",
+      "(InvArgs); the range may run past the end, and reads as zero there.",
+      "BadState for a snapshot of a VMO whose pages are pinned, such as the",
+      "vDSO's. |size| rounds up to a page; OutOfRange past the largest size a",
+      "VMO can have. NotSupported on a VMO that is a window onto physical",
+      "memory. The handle must grant Duplicate and Read (AccessDenied). A",
+      "slice's handle has the same rights; a snapshot's has them with Write",
+      "added and Execute taken away. Its value goes to |out|, and it is in",
+      "this process's table only once that write has worked: InvArgs, and no",
+      "new handle, when |out| cannot be written. It counts against this",
+      "process's handle quota: NoResource past it, or when the handle arena",
+      "is full.",
+    ]
+    args = [
+      {
+        name = "vmo"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "VmoChildOptions"
+      },
+      {
+        name = "offset"
+        type = "u64"
+      },
+      {
+        name = "size"
+        type = "u64"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "vmo"
+  },
+  {
+    name = "vmo_replace_as_executable"
+    brief = "Replaces |vmo| with a handle to the same VMO that may be executed."
+    doc = [
+      "|vmex| must name a System resource covering the VMEX slot",
+      "(AccessDenied for Uandle::Invalid, BadHandle for a value naming",
+      "nothing, BadType for anything but a System resource, OutOfRange for",
+      "one of another slot); no right is required of it. |vmo| is consumed",
+      "whatever the answer -- duplicate it first to keep a copy -- and",
+      "BadHandle when it names nothing or is not a VMO. The new handle has",
+      "|vmo|'s rights less Write, plus Execute. Its value goes to |out|, and",
+      "it is in this process's table only once that write has worked. It",
+      "counts against this process's handle quota: NoResource past it, or",
+      "when the handle arena is full.",
+    ]
+    args = [
+      {
+        name = "vmo"
+        type = "Uandle"
+        release = true
+      },
+      {
+        name = "vmex"
+        type = "Uandle"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "vmo"
+  },
+  {
+    name = "vmo_write"
+    brief =
+        "Copies |length| bytes from |buffer| into the VMO, from byte |offset|."
+    doc = [
+      "Needs Write on |vmo|. OutOfRange when the range does not lie wholly",
+      "inside the VMO, and nothing is written then. InvArgs when |buffer|",
+      "cannot give |length| bytes -- outside the user half, or not readable",
+      "all the way; the VMO may have been written in part before the kernel",
+      "found out, so after a failure the range's contents are unspecified.",
+      "Writing 0 bytes checks the handle and the offset and touches nothing.",
+      "NotSupported on a VMO that is a window onto physical memory rather",
+      "than pages of its own.",
+    ]
+    args = [
+      {
+        name = "vmo"
+        type = "Uandle"
+      },
+      {
+        name = "buffer"
+        type = "void"
+        dir = "in"
+        count = "length"
+      },
+      {
+        name = "offset"
+        type = "u64"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+    ]
+    attrs = [ "blocking" ]
+    ret = "Status"
+    category = "vmo"
+  },
+  {
+    name = "vmo_get_size"
+    brief = "Writes the size of the VMO |vmo| names, in bytes, to |size|."
+    doc = [
+      "No right is needed of |vmo|: whoever holds a handle to a VMO may ask",
+      "how big it is. BadHandle when |vmo| names nothing,",
+      "BadType when it names something that is not a VMO. The size is the",
+      "bound vmo_read, vmo_write and vma_map check a range against, and a",
+      "whole number of pages: vmo_create and vmo_create_child round the size",
+      "they are given up to a page, so a slice of a 5-byte file is a page",
+      "long, and its tail is whatever its parent holds there. A slice's size",
+      "is its window's, not its parent's. It never changes, since no VMO is",
+      "resizable yet. InvArgs when |size| cannot be written.",
+    ]
+    args = [
+      {
+        name = "vmo"
+        type = "Uandle"
+      },
+      {
+        name = "size"
+        type = "u64"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "vmo"
+  },
+  {
+    name = "vmo_create_physical"
+    brief = "Makes a VMO over the physical memory [|paddr|, |paddr| + |size|) and puts a handle to it in |out|."
+    doc = [
+      "The window onto a device's registers or memory, such as a PCI",
+      "function's BAR. |resource| must be an MmIo resource that covers the",
+      "whole range (BadHandle, BadType, OutOfRange, AccessDenied). No",
+      "resource covers RAM, or the registers of a device the kernel drives",
+      "itself: AccessDenied for those, the root's included. |paddr| and",
+      "|size| must be whole pages, |paddr| not 0 and |size| not 0 (InvArgs).",
+      "The VMO is the hardware's, not the kernel's: vmo_read and vmo_write on",
+      "it, and vmo_create_child of it, are NotSupported, and a mapping of it",
+      "is always populated in full by vma_map, with or without MapRange,",
+      "since no page of it can be supplied by a fault later, and it is",
+      "uncached, as device memory must be. The handle has the default VMO",
+      "rights, never Execute. Its value goes to |out|, and",
+      "it is in this process's table only once that write has worked:",
+      "InvArgs, and no new handle, when |out| cannot be written. It counts",
+      "against this process's handle quota: NoResource past it, or when the",
+      "handle arena is full.",
+    ]
+    args = [
+      {
+        name = "resource"
+        type = "Uandle"
+      },
+      {
+        name = "paddr"
+        type = "PhysAddr"
+      },
+      {
+        name = "size"
+        type = "usize"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "vmo"
+  },
+]

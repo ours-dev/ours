@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include <ours/channel.hpp>
+
 namespace launch {
 namespace {
     using ours::HandleType;

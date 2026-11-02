@@ -60,8 +60,15 @@ kernel_elf_binary("vdso") {
   # The stubs are generated from //system/public/ours/syscalls.gni; vdso.S
   # holds only the macro they instantiate. clock.cpp scales a counter with
   # the same ratio the kernel clock uses.
+  include_dirs = [
+    ".",
+    get_label_info("//system/public:kernel_version($default_toolchain)",
+                   "target_gen_dir") + "/public",
+  ]
+
   deps = [
     "//kernel/lib/mtl:headers",
+    "//system/public:kernel_version($default_toolchain)",
     "//system/public:syscalls.private",
   ]
 
@@ -71,7 +78,21 @@ kernel_elf_binary("vdso") {
   # disk. As a data_dep of the image target, everything that packages the
   # vDSO waits for the check to pass. The check reads the linker's output
   # (:vdso.binary), not the image target, so there is no cycle.
-  data_deps = [ ":vdso.abi_check" ]
+  data_deps = [
+    ":vdso.abi_check",
+    ":vdso.published",
+  ]
+
+  # Next to the stripped `vdso` in the kernel package. Generated from the
+  # unstripped link output, so the names strip removes are still here.
+  _published = "$target_gen_dir/vdso.published"
+  package_entries = [
+    {
+      destination = "vdso.published"
+      source = rebase_path(_published, root_build_dir)
+      label = get_label_info(":vdso.published", "label_with_toolchain")
+    },
+  ]
 
   # No -Wl,-e: nothing jumps to a vDSO, and nothing needs to find anything at
   # its entry point any more. It used to point at the export table, which was
@@ -100,10 +121,26 @@ kernel_elf_binary("vdso") {
   ]
 }
 
+# st_value and size of each published record, from the unstripped ELF.
+# The kernel package carries this beside the stripped vDSO.
+_vdso_file = "$target_out_dir/vdso"
+toolchain_utils_action("vdso.published") {
+  visibility = [ ":*" ]
+  utils = [ "llvm-readelf" ]
+  script = "gen_published_table.py"
+  deps = [ ":vdso.binary" ]
+  sources = [ _vdso_file ]
+  outputs = [ "$target_gen_dir/vdso.published" ]
+  args = [
+    "section:.vdso_data",
+    rebase_path(_vdso_file, root_build_dir),
+    rebase_path("$target_gen_dir/vdso.published", root_build_dir),
+  ]
+}
+
 # The exports the linked vDSO actually has, as llvm-ifs reads them out of the
 # linker's output -- the copy with section headers, which is what a linker, and
 # so a program, would see.
-_vdso_file = "$target_out_dir/vdso"
 _vdso_ifs = "$target_gen_dir/vdso.actual.ifs"
 
 toolchain_utils_action("vdso.ifs") {

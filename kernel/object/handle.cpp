@@ -1,6 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/arch/aspace_layout.hpp>
+#include <ours/handle.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/process_dispatcher.hpp>

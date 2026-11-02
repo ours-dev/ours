@@ -9,6 +9,7 @@
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+#include <ours/vmo.hpp>
 
 namespace ours::syscall {
 using object::KernelHandle;

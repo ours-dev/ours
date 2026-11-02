@@ -1,7 +1,17 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_SYSCALL_TIME_HPP
-#define OURS_SYSCALL_TIME_HPP 1
+#ifndef OURS_CHRONO_HPP
+#define OURS_CHRONO_HPP 1
+
+// The kernel's time vocabulary: durations and time points. It used to live
+// in system/public as <ours/syscall/time.hpp> -- misfiled: nothing user-side
+// includes it, its 18 includers are all kernel-side, and it sat on the
+// would-be sysroot path for the no reason. Here it is with the rest of the
+// kernel's own headers (kernel/include/ours/), named for what it is.
+//
+// It is NOT <ours/time.hpp>, which is the clock syscalls' public header
+// (system/public/ours/time.hpp): the two live on the kernel toolchain's
+// include path together, so the names must not collide.
 
 #include <ours/types.hpp>
 
@@ -41,4 +51,4 @@ constexpr auto operator""_s(unsigned long long seconds) -> Seconds {
 
 } // namespace ours
 
-#endif // OURS_SYSCALL_TIME_HPP
+#endif // OURS_CHRONO_HPP
