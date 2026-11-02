@@ -324,13 +324,9 @@ auto start_next(launch::BootfsLauncher const &launcher, HandedHandles const &han
     // the launcher has made the child and handed both back; their
     // handle_info is known already, so the message can be encoded before.
     // Room for them and every handle |handed| holds.
-<<<<<<< HEAD
-    ours::Uandle handles[13] = {ours::Uandle::Invalid, ours::Uandle::Invalid, handed.job};
-    u32 infos[13] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
-=======
-    ours::Uandle handles[11] = {ours::Uandle::Invalid, ours::Uandle::Invalid, handed.job};
-    u32 infos[11] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
->>>>>>> 782aedae (feat(userabi): publish the monotonic anchor and map the HPET page)
+    // Ours: 13 slots; theirs added the clock page: 14.
+    ours::Uandle handles[14] = {ours::Uandle::Invalid, ours::Uandle::Invalid, handed.job};
+    u32 infos[14] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
                      ours::handle_info(ours::HandleType::ProcSelf, 0),
                      ours::handle_info(ours::HandleType::JobDefault, 0)};
     u32 count = 3;
