@@ -137,7 +137,9 @@ class HpetChannel {
         m_canary.verify<Self>();
         id_ = id;
         regs_mmio_ = mmio;
-        m_clkevt.set_irqnum(static_cast<VIrqNum>(mmio->conf_caps.irq()));
+        // The comparator's routing is an IO-APIC pin, a hardware number; the
+        // device names its line by the kernel's number for it.
+        m_clkevt.set_irqnum(irq::virq_of_hwirq(static_cast<HIrqNum>(mmio->conf_caps.irq())));
     }
 
     /// Arms the comparator |delta| ticks ahead of the main counter, and
@@ -332,10 +334,10 @@ static auto hpet_init_internal() -> Status {
     // to the IO-APIC under its register lock; the PIT's line is in the line
     // table, made at InitLevel::Irq, before this runs at Irq + 2.
     if (mmio->general_caps.support_legacy()) {
-        auto const gsi = apic_io_isa_to_global(ISA_IRQ_PIT);
-        auto const masked = irq::mask(gsi);
+        auto const line = platform::isa_irq_line(ISA_IRQ_PIT);
+        auto const masked = irq::mask(line);
         if (Status::Ok != masked) {
-            log::error("HPET: masking the legacy timer's GSI {}: {}", gsi, to_string(masked));
+            log::error("HPET: masking the legacy timer's line {}: {}", line, to_string(masked));
             return masked;
         }
 
@@ -347,8 +349,8 @@ static auto hpet_init_internal() -> Status {
         HPET_LEGACY_IRQ_ENABLED = true;
         // The mask above found the line, so this one does too.
         [[maybe_unused]]
-        auto const unmasked = irq::unmask(gsi);
-        DEBUG_ASSERT(Status::Ok == unmasked, "HPET: unmasking GSI {}: {}", gsi,
+        auto const unmasked = irq::unmask(line);
+        DEBUG_ASSERT(Status::Ok == unmasked, "HPET: unmasking line {}: {}", line,
                      to_string(unmasked));
     }
 

@@ -148,6 +148,96 @@ auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const gaf, usi
     return Status::Ok;
 }
 
+auto VmObjectPaged::create_contiguous(Gaf const gaf, usize const size, usize alignment_log2,
+                                      Flags const vmof, ustl::Arc<VmObjectPaged> *const out)
+    -> Status {
+    // A block is taken in one go, with no lock held across a wait to give it up
+    // for: CanWait is for callers that sleep until a frame is free, and this
+    // one answers NoMemory instead.
+    DEBUG_ASSERT(!(gaf & Gaf::CanWait), "create_contiguous() does not wait for memory");
+    if (size == 0 || !!(vmof & (VmoFlags::Lazy | VmoFlags::LargePages))) {
+        return Status::InvArgs;
+    }
+    if (alignment_log2 == 0) {
+        alignment_log2 = PAGE_SHIFT;
+    }
+    // A shift of 64 or more is not an alignment, and one below the page's is
+    // less than a page: neither is asked for by a caller that meant it.
+    if (alignment_log2 < PAGE_SHIFT || alignment_log2 >= 64) {
+        return Status::InvArgs;
+    }
+    if (size > MAX_SIZE) {
+        return Status::OutOfRange;
+    }
+
+    auto const rounded = ustl::round_up(size, PAGE_SIZE);
+    auto const nr_pages = rounded / PAGE_SIZE;
+    // A block is aligned to its own size, so one big enough for the alignment
+    // is aligned as asked; the order is the larger of what the size and the
+    // alignment need. Compared before it is shifted by: an alignment that
+    // cannot be met by any block must not overflow a shift.
+    auto const align_order = alignment_log2 - PAGE_SHIFT;
+    auto const order = std::max(get_order(nr_pages), align_order);
+    if (order > MAX_FRAME_ORDER) {
+        return Status::NoMemory;
+    }
+
+    ustl::Arc<VmCowPages> cow_pages;
+    if (auto const status = VmCowPages::create(gaf, rounded, VmCowPages::Flags::Pinned, &cow_pages);
+        Status::Ok != status) {
+        return status;
+    }
+
+    // Zero, as every page a program can reach is: a device's buffer is not the
+    // place for what the last owner of the frames left in them.
+    auto *const block = alloc_frames(gaf | Gaf::Zero, order);
+    if (block == nullptr) {
+        return Status::NoMemory;
+    }
+
+    // Each frame is its own from here, as if it had been allocated alone (the
+    // way fill_block_locked() treats a large block): the tail goes back now,
+    // one page at a time, and the pages kept go into the node and are freed
+    // one at a time with it.
+    auto const nr_frames = usize{1} << order;
+    for (usize index = 0; index < nr_frames; ++index) {
+        block[index].set_order(0);
+    }
+    for (usize index = nr_pages; index < nr_frames; ++index) {
+        free_frames(&block[index], 0);
+    }
+
+    auto status = Status::Ok;
+    {
+        Guard guard{cow_pages->lock()};
+        cow_pages->lock().assert_held();
+        for (usize index = 0; index < nr_pages; ++index) {
+            status = cow_pages->add_new_page_locked(index, &block[index]);
+            if (Status::Ok != status) {
+                // What went in is the node's and goes with it; what did not, and
+                // this one, is given back here.
+                for (usize rest = index; rest < nr_pages; ++rest) {
+                    free_frames(&block[rest], 0);
+                }
+                break;
+            }
+        }
+    }
+    if (Status::Ok != status) {
+        return status;
+    }
+
+    // Constructed after the lock is released: the constructor takes the same
+    // mutex to attach, and it is not recursive.
+    auto *const vmo =
+        VmoPagedCache::get(GAF_KERNEL, vmof | VmoFlags::Pinned, ustl::move(cow_pages), 0, rounded);
+    if (!vmo) {
+        return Status::OutOfMem;
+    }
+    *out = ustl::Arc<Self>::adopt(vmo);
+    return Status::Ok;
+}
+
 auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, usize const size,
                                             ustl::Arc<VmObjectPaged> *const out) -> Status {
     if (size == 0 || !ustl::is_aligned(base, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
@@ -323,6 +413,112 @@ auto VmObjectPaged::decommit(VirtAddr offset, usize size) -> Status {
     m_canary.verify<Self>();
 
     return Status::Unimplemented;
+}
+
+auto VmObjectPaged::pin_range(VirtAddr const offset, usize const size) -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
+        return Status::InvArgs;
+    }
+
+    // One call pins as much as it can and stops early only with ShouldWait, as
+    // commit_range_internal() does: the request is waited on with the lock let
+    // go, and the next call starts at the first page not yet pinned. The pages
+    // pinned meanwhile stay pinned, which is what makes the wait safe.
+    MultiPageRequest request;
+    usize done = 0;
+    auto status = Status::Ok;
+    while (done < size) {
+        {
+            Guard guard{m_lock};
+            // Rechecked each time the lock is retaken, written so that it cannot
+            // wrap, as commit_range_internal() does.
+            if (size > m_size || offset > m_size - size) {
+                status = Status::OutOfRange;
+                break;
+            }
+
+            usize nr_pinned = 0;
+            assert_cow_pages_locked();
+            status = m_cow_pages->pin_range_locked(m_cow_offset + offset + done, size - done,
+                                                   &request, &nr_pinned);
+            done += nr_pinned * PAGE_SIZE;
+            if (Status::ShouldWait != status) {
+                break;
+            }
+        }
+
+        // Suspendable, as the commit's wait is.
+        status = request.wait(true);
+        if (Status::Ok != status) {
+            break;
+        }
+    }
+
+    if (Status::Ok != status && done != 0) {
+        // Whole or not at all: what was pinned before the failure is let go.
+        Guard guard{m_lock};
+        assert_cow_pages_locked();
+        [[maybe_unused]]
+        auto const undone = m_cow_pages->unpin_range_locked(m_cow_offset + offset, done);
+        DEBUG_ASSERT(Status::Ok == undone, "pages this call pinned were not pinned");
+    }
+    return status;
+}
+
+auto VmObjectPaged::unpin_range(VirtAddr const offset, usize const size) -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
+        return Status::InvArgs;
+    }
+
+    Guard guard{m_lock};
+    if (size > m_size || offset > m_size - size) {
+        return Status::OutOfRange;
+    }
+    assert_cow_pages_locked();
+    return m_cow_pages->unpin_range_locked(m_cow_offset + offset, size);
+}
+
+auto VmObjectPaged::lookup_contiguous(VirtAddr const offset, usize const size, PhysAddr *const out)
+    -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
+        return Status::InvArgs;
+    }
+
+    Guard guard{m_lock};
+    if (size > m_size || offset > m_size - size) {
+        return Status::OutOfRange;
+    }
+
+    assert_cow_pages_locked();
+    auto cursor = m_cow_pages->make_cursor(m_cow_offset + offset, size);
+    if (!cursor) {
+        return cursor.unwrap_err();
+    }
+    // Looking is not using: the answer is about where the pages are, and an
+    // access through the physmap that this is not.
+    cursor->disable_mark_accessed();
+
+    auto first = PhysAddr{0};
+    for (usize at = 0; at < size; at += PAGE_SIZE) {
+        auto const found = cursor->maybe_page();
+        if (found.is_none()) {
+            return Status::BadState;
+        }
+        auto const frame = frame_to_phys(found.value().page);
+        if (at == 0) {
+            first = frame;
+        } else if (frame != first + at) {
+            return Status::BadState;
+        }
+    }
+    *out = first;
+    return Status::Ok;
 }
 
 auto VmObjectPaged::take_pages(VirtAddr const offset, usize const size,

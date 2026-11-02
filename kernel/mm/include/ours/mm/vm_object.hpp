@@ -90,6 +90,35 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return Status::Unimplemented;
     }
 
+    /// The physical address of the first byte of [offset, offset + size), when
+    /// every page of the range is there and the pages follow one another in
+    /// physical memory: one run, which a device can be given as a single
+    /// address. Looking is not using: nothing is committed to make the answer.
+    /// Not empty (InvArgs), and page aligned for a paged object; within the
+    /// object (OutOfRange); a page that is not committed, or a gap between two
+    /// frames, BadState.
+    virtual auto lookup_contiguous(VirtAddr offset, usize size, PhysAddr *out) -> Status {
+        return Status::NotSupported;
+    }
+
+    /// Commits [offset, offset + size) and pins it: the pages stay in the frames
+    /// they are in, and in this object, until the pin is undone with
+    /// unpin_range(), whatever else happens to the object, so that a device
+    /// that was given their addresses finds its data where it left it. Page
+    /// aligned and not empty (InvArgs); within the object (OutOfRange).
+    /// Counted: a range pinned twice is unpinned twice.
+    ///
+    /// NotSupported for an object whose pages are not the kernel's to hold.
+    virtual auto pin_range(VirtAddr offset, usize size) -> Status {
+        return Status::NotSupported;
+    }
+
+    /// Undoes one pin_range() of exactly the pages of [offset, offset + size).
+    /// BadState, and nothing changed, if any page of it holds no pin.
+    virtual auto unpin_range(VirtAddr offset, usize size) -> Status {
+        return Status::NotSupported;
+    }
+
     /// Takes the slots of [offset, offset + size) out of this object into
     /// |pages|, in order -- its pages, its zero markers, and a gap for each
     /// page it has nothing at -- and unmaps them from every mapping first.

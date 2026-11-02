@@ -1,0 +1,34 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# ours.gpt -- the partition table a UEFI disk carries, parsed by hand here:
+# bytes alone, no system call, so it builds in every toolchain, the host one
+# included, where its tests run. The table comes in through whatever reads
+# blocks -- ours.block's Client on a booted system, a fake in the tests --
+# so the library depends on no protocol, only on the Reader's one method.
+source_set("ours.gpt") {
+  sources = [ "src/ours_gpt.cpp" ]
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/ours_gpt/ours_gpt.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:ours.gpt($host_toolchain)" ]
+}

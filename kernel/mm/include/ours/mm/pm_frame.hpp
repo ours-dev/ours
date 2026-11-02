@@ -9,6 +9,7 @@
 #include <ours/node_mask.hpp>
 
 #include <atomic>
+#include <limits>
 #include <type_traits>
 #include <utility>
 
@@ -150,6 +151,15 @@ namespace page {
         std::atomic<u32> vmo_index;    // Index in VMO's page list
         std::atomic<u16> num_mappings; // 65536 mappings
         std::atomic<u16> num_users;    // 65536 users
+
+        /// How many pins hold this page in place (VmCowPages::pin_range_locked()):
+        /// a page with any cannot be reclaimed, zero-deduplicated, taken out of
+        /// its node, or shared with a clone, because something other than the
+        /// CPU, a device that does DMA to it, knows where it is.
+        ///
+        /// Written only under the lock of the node that holds the page, so a
+        /// pin and an unpin never race each other; atomic only so that a reader
+        /// without the lock, a dump or a test, reads a whole value.
         std::atomic<u8> pinned_count;
 
         /// How many more than one of the copy-on-write tree's leaves can see
@@ -450,6 +460,35 @@ class PageFrame {
 
     auto num_mappings() const -> usize {
         return as<page::VmmBody>().num_mappings.load();
+    }
+
+    /// See VmmBody::pinned_count.
+    auto pinned_count() const -> usize {
+        return as<page::VmmBody>().pinned_count.load();
+    }
+
+    /// One more pin. False, and nothing changed, when the count is at its limit
+    /// (255): a pin has to be refused there, not wrapped to none. The caller
+    /// holds the lock of the node that holds this page, so the read and the
+    /// write are not one atomic step and do not need to be.
+    [[nodiscard]]
+    auto increase_pinned() -> bool {
+        auto &count = as<page::VmmBody>().pinned_count;
+        auto const now = count.load();
+        if (now == std::numeric_limits<u8>::max()) {
+            return false;
+        }
+        count.store(static_cast<u8>(now + 1));
+        return true;
+    }
+
+    /// One pin fewer. The count is unsigned, so an unpin of none would wrap to
+    /// 255 and hold the page for ever: an assertion, as drop_share() is.
+    auto decrease_pinned() -> void {
+        auto &count = as<page::VmmBody>().pinned_count;
+        auto const now = count.load();
+        DEBUG_ASSERT(now > 0, "a page with no pin lost one");
+        count.store(static_cast<u8>(now - 1));
     }
 
     /// See VmmBody::share_count. The caller holds the lock of the tree whose

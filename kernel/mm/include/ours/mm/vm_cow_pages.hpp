@@ -289,6 +289,36 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     auto commit_range_locked(VirtAddr offset, usize size, MultiPageRequest *request,
                              usize *nr_commited) -> Status;
 
+    /// Makes every page of [offset, offset + size) the node's own, as
+    /// commit_range_locked() does, and pins each one, from the start: a pinned
+    /// page stays where it is, in this node and in the same frame, until every
+    /// pin on it is undone. A page that is pinned is filed as pinned, and not
+    /// reclaimable.
+    ///
+    /// Counted: a page pinned twice needs two unpins. A page that already holds
+    /// 255 pins is NoResource. |nr_pinned| is how many pages from the start of
+    /// the range were pinned, whatever the answer: ShouldWait when a page source
+    /// has to supply a page first, the request raised in |request| as for
+    /// commit_range_locked(), and the caller calls again from the page it
+    /// stopped at; any other error leaves those pages pinned, for the caller
+    /// to undo with unpin_range_locked() or to go on from.
+    TA_REQUIRES(m_lock)
+    auto pin_range_locked(VirtAddr offset, usize size, MultiPageRequest *request, usize *nr_pinned)
+        -> Status;
+
+    /// Undoes one pin of each page of [offset, offset + size). BadState, and no
+    /// pin undone, if any page of the range holds none: unpinning what was not
+    /// pinned is the caller's bug, and a count that wrapped would hold a page
+    /// for ever. A page whose last pin goes is filed again as its kind says.
+    TA_REQUIRES(m_lock)
+    auto unpin_range_locked(VirtAddr offset, usize size) -> Status;
+
+    /// How many pages of this node are pinned.
+    TA_REQUIRES(m_lock)
+    auto nr_pinned_pages_locked() const -> usize {
+        return m_nr_pinned_pages;
+    }
+
     TA_REQUIRES(m_lock)
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor, Status>;
 
@@ -722,6 +752,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// The objects over these pages. Under the tree's lock. Empty for a hidden
     /// node, which is no object's.
     Attachment::List m_attachments TA_GUARDED(m_lock);
+
+    /// How many of this node's pages hold a pin (pinned_count above zero), kept
+    /// beside the pages so that the operations a pin forbids, a clone above all,
+    /// can ask in one read. Under the tree's lock, as the pins it counts are.
+    usize m_nr_pinned_pages TA_GUARDED(m_lock) = 0;
 };
 
 /// A walk over one contiguous byte range of a VmCowPages, handing out the page

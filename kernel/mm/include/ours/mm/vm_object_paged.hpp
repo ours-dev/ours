@@ -32,8 +32,33 @@ class VmObjectPaged: public VmObject {
 
     static auto create(Gaf gaf, usize size, Flags vmof, ustl::Arc<VmObjectPaged> *out) -> Status;
 
-    static auto create_contiguous(Gaf gaf, usize size, Flags vmof, ustl::Arc<VmObjectPaged> *out)
-        -> Status;
+    /// A VMO of |size| bytes, rounded up to whole pages, whose pages are one run
+    /// of physical memory starting on a multiple of 2^|alignment_log2| bytes,
+    /// for a device to read and write as one buffer: a ring, say, that the
+    /// device is given one address of. Every page is there from the start,
+    /// zero, and none is ever reclaimed, as a Pinned object's are not; they are
+    /// not pinned in the sense of pin_range(), which counts, so the VMO is
+    /// pinned for a device in the usual way (BtiDispatcher::pin()).
+    ///
+    /// One block of the buddy allocator, so the run is the size of a power of
+    /// two pages, aligned to itself, and what is asked for beyond |size| is
+    /// given back page by page. The block is as big as the size needs, or as
+    /// the alignment does if that is bigger: a 2-page buffer on 64 KiB is a
+    /// 16-page block with 14 pages returned. It cannot be bigger than the
+    /// allocator's largest block (MAX_FRAME_ORDER), 4 MiB: past it, and when
+    /// no block of the size is free, the answer is NoMemory.
+    ///
+    /// |alignment_log2| 0 means a page. A value below the page's own is InvArgs,
+    /// and so is one that does not fit a shift, and an empty |size|. OutOfRange
+    /// for a |size| past MAX_SIZE. They are asked in that order, InvArgs, then
+    /// OutOfRange, then NoMemory. |vmof| is for the future: Lazy and LargePages
+    /// say the opposite of what this is, and are InvArgs.
+    ///
+    /// |gaf| must not carry CanWait: the call answers NoMemory where a caller
+    /// that waits would sleep. The run can be anywhere in memory; nothing here
+    /// limits it to what a device with a 32-bit address can reach.
+    static auto create_contiguous(Gaf gaf, usize size, usize alignment_log2, Flags vmof,
+                                  ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// A VMO of |size| bytes whose pages come from |source| rather than being
     /// zero: a fault on a page nobody has supplied raises a request against the
@@ -110,6 +135,20 @@ class VmObjectPaged: public VmObject {
 
     ///
     auto decommit(VirtAddr offset, usize size) -> Status override;
+
+    /// See VmObject::pin_range(). Commits the range as commit_range() does, one
+    /// page source wait at a time, and pins what it committed; a failure part
+    /// way undoes the pins already made, so the range is pinned whole or not
+    /// at all. While any page of the object holds a pin, create_clone() and
+    /// take_pages() are BadState: both would move or share a pinned page.
+    auto pin_range(VirtAddr offset, usize size) -> Status override;
+
+    /// See VmObject::unpin_range().
+    auto unpin_range(VirtAddr offset, usize size) -> Status override;
+
+    /// See VmObject::lookup_contiguous(). A page this object only sees through
+    /// an ancestor counts as there, at the ancestor's frame.
+    auto lookup_contiguous(VirtAddr offset, usize size, PhysAddr *out) -> Status override;
 
     /// Takes [offset, offset + size) of this object's slots into |pages|, a
     /// fresh list of size / PAGE_SIZE slots (see VmCowPages::take_pages_locked()).

@@ -36,11 +36,20 @@ _user_programs = [
   # their own programs into the BootFS.
   "//system/service/init",
 
+  # The composing server (macro-fs design): its tree mounts the built-in
+  # `boot` at the entry `boot`, and exposes the tree as the directory `vfs`,
+  # which root.cm offers to routing_checks and the shell.
+  "//system/service/fshost",
+
   # The sampling profiler, which the shell starts in its checks
   # (check_profile()); it reaches the Sampling resource through the
   # namespace the shell hands on. Not a component, so root.cm does not bring
   # it.
   "//examples/profile",
+
+  # The userspace driver of QEMU's virtio block device (storage-layer plan),
+  # which the root starts with the MmIo resource offered below.
+  "//system/driver/virtio-blk",
 ]
 
 if (defined(ours.with)) {
@@ -104,6 +113,21 @@ component_manifest("root.cm") {
       startup = "eager"
     },
     {
+      name = "fshost"
+      manifest = "//system/service/fshost:fshost.cm"
+      startup = "eager"
+    },
+    {
+      name = "memfs"
+      manifest = "//system/service/memfs:memfs.cm"
+      startup = "eager"
+    },
+    {
+      name = "btreefs"
+      manifest = "//system/service/btreefs:btreefs.cm"
+      startup = "eager"
+    },
+    {
       name = "files"
       manifest = "//examples/files:files.cm"
       startup = "eager"
@@ -118,18 +142,100 @@ component_manifest("root.cm") {
       manifest = "//system/driver/pc-ps2:pc-ps2.cm"
       startup = "eager"
     },
+    {
+      name = "virtio-blk"
+      manifest = "//system/driver/virtio-blk:virtio-blk.cm"
+      startup = "eager"
+    },
   ]
   manifest = {
     offer = [
-      # /boot, and for routing_checks, through its own use's subdir, /bin.
+      # /boot, to fshost -- whose tree mounts it -- and, for routing_checks,
+      # through its own use's subdir, /bin.
       {
         directory = "boot"
         from = "parent"
         to = [
           "#routing_checks",
+          "#fshost",
           "#shell",
         ]
         rights = [ "rx*" ]
+      },
+
+      # fshost's tree, as two views of the same mounts, each offered under
+      # the name `vfs` so a component's manifest cannot tell which it holds:
+      # the shell gets `all`, with the writable `tmp` mount, and
+      # routing_checks gets `ro`, where `tmp` does not exist.
+      {
+        directory = "all"
+        from = "#fshost"
+        as = "vfs"
+        to = [ "#shell" ]
+        rights = [
+          "rx*",
+          "w*",
+        ]
+      },
+      {
+        directory = "ro"
+        from = "#fshost"
+        as = "vfs"
+        to = [ "#routing_checks" ]
+        rights = [ "rx*" ]
+      },
+
+      # memfs's tree, to fshost alone, which mounts it at `tmp`.
+      {
+        directory = "tmp"
+        from = "#memfs"
+        to = [ "#fshost" ]
+        rights = [ "rw*" ]
+      },
+
+      # The block device's protocol, to the filesystem that lays a volume on
+      # the ours-fs partition. routing_checks reaches the same device for
+      # its table and block checks; the two clients write nothing shared.
+      {
+        protocol = "ours.block.Block"
+        from = "#virtio-blk"
+        to = [ "#btreefs" ]
+      },
+
+      # The filesystem's tree, to fshost -- which mounts it at `disk` -- and
+      # to routing_checks, which creates, writes and reads back a file on it
+      # directly. Nothing offers it where there is no disk: btreefs exits
+      # having served nothing, and the routes answer NotFound.
+      {
+        directory = "disk"
+        from = "#btreefs"
+        to = [
+          "#fshost",
+          "#routing_checks",
+        ]
+        rights = [ "rw*" ]
+      },
+
+      # fshost's admin protocol, to routing_checks: the mount check hands it
+      # the disk's directory and asks for it at another name in the tree.
+      {
+        protocol = "ours.fshost.Admin"
+        from = "#fshost"
+        to = [ "#routing_checks" ]
+      },
+
+      # The writable view, to routing_checks under its own name: the mount
+      # check must see a mount appear at run time, and its `/vfs` is the
+      # read-only view on purpose.
+      {
+        directory = "all"
+        from = "#fshost"
+        to = [ "#routing_checks" ]
+        as = "vfs-all"
+        rights = [
+          "rx*",
+          "w*",
+        ]
       },
 
       # The same directory under another name, with fewer rights.
@@ -189,7 +295,50 @@ component_manifest("root.cm") {
         to = [
           "#routing_checks",
           "#pc-ps2",
+          "#virtio-blk",
         ]
+      },
+
+      # The root of the physical address space, to routing_checks -- it reads
+      # what the resource is and probes the host bridge -- and to the block
+      # device driver, whose windows onto its device come through it.
+      {
+        protocol = [ "ours.resource.Mmio" ]
+        from = "parent"
+        to = [
+          "#routing_checks",
+          "#virtio-blk",
+        ]
+      },
+
+      # The IOMMU resource, to routing_checks -- which makes an IOMMU, a BTI
+      # and pins with it, as a bus driver would -- and to the block device
+      # driver, whose rings and buffers the device reaches through its pins.
+      {
+        protocol = [ "ours.resource.Iommu" ]
+        from = "parent"
+        to = [
+          "#routing_checks",
+          "#virtio-blk",
+        ]
+      },
+
+      # The block device driver's protocol, from the sibling that exposes
+      # it: routing_checks reads a block through it when the image carries a
+      # disk, and finds the route answer NotFound when it does not.
+      {
+        protocol = "ours.block.Block"
+        from = "#virtio-blk"
+        to = [ "#routing_checks" ]
+      },
+
+      # The machine's ACPI tables, to routing_checks alone: it reads the
+      # directory and checks every table's checksum, as the route service
+      # will, which does not exist yet.
+      {
+        protocol = [ "ours.boot.Acpi" ]
+        from = "parent"
+        to = [ "#routing_checks" ]
       },
 
       # echo's protocol, from the sibling that exposes it, renamed on the

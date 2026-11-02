@@ -202,14 +202,13 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     // A physical VMO is a window onto existing memory the object does not
     // own, device MMIO among it. The kernel already maps those pages
     // Discache. A cached user mapping of the same page would return stale
-    // cache lines instead of the device. A writable mapping could stop a
-    // counter or rewrite comparators, so write is refused: device MMIO is
-    // not a store.
+    // cache lines instead of the device. Write stays available: a driver
+    // reaches its device's registers through a physical VMO, and whether a
+    // page may be written at all is the handle's rights to say -- the clock
+    // page, a running counter, is handed out without Write, so a writable
+    // mapping of it is AccessDenied at the syscall before this is reached.
     if (vmo.vmo()->type() == mm::VmObject::Type::Physical) {
         mmuf |= mm::MmuFlags::Discache;
-        if (!!(options & VmOptions::PermWrite)) {
-            return ktl::err(Status::InvArgs);
-        }
     }
     if (!!(options & VmOptions::CanMapRead)) {
         ceiling |= mm::VmaFlags::Read;
@@ -224,6 +223,24 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
         !!(options & VmOptions::MapRange) ? mm::VmMapOption::Populate : mm::VmMapOption::None;
     if (!!(options & VmOptions::Sealed)) {
         populate |= mm::VmMapOption::Sealed;
+    }
+    // A physical VMO's window is installed in full when the mapping is made,
+    // whether or not the caller asked: there is no later moment at which a page
+    // of it could arrive, so a fault on one is not a missing page, it is an
+    // access that should not have happened (VmMapping::page_fault()). Left to
+    // MapRange, a program that forgot it would map the window and then die on
+    // its first access.
+    //
+    // And uncached: what a program reaches through such a VMO is device memory,
+    // since no resource grants RAM, and a CPU that kept a register in its cache
+    // would read it stale and write it late. This is decided here, among the
+    // VMOs a program can hold, and not in mm for every physical object: the
+    // kernel maps frames of RAM as physical objects too (the IDT, the GDT), and
+    // a frame mapped uncached under one address and cached under another is
+    // a conflict the CPU does not define.
+    if (vmo.is_physical()) {
+        populate |= mm::VmMapOption::Populate;
+        mmuf |= mm::MmuFlags::Discache;
     }
 
     // map_with_vmo(), not create_mapping(). create_mapping() builds the

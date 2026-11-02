@@ -108,10 +108,17 @@ enum class HandleType : u8 {
     /// generic file type told apart by the VMO's name: VMOs have no names
     /// here.
     VmoCrashlog = 0xe0,
+
+    /// The machine's ACPI tables, as a read-only VMO in the layout of
+    /// <ours/acpi_tables.hpp>: a directory, then the firmware's own bytes.
+    /// Present only when the platform read ACPI tables. The root serves it on
+    /// as the built-in ours.boot.Acpi.
+    VmoAcpi = 0xe1,
+
     /// The clock page: a read-only physical VMO of the HPET MMIO page, so a
     /// process can map it and the vDSO can load the main counter without a
     /// trap. Present only when the HPET initialised.
-    VmoClockPage = 0xe1,
+    VmoClockPage = 0xe2,
     User0 = 0xf0,
     User1 = 0xf1,
     User2 = 0xf2,

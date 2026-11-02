@@ -46,15 +46,17 @@
 /// consumer that held the entry sees of a provider that has gone: a
 /// connection it held and the entry both read PEER_CLOSED.
 ///
-/// Its manifest also uses seven protocols, which live in its /svc: the root's
+/// Its manifest also uses ten protocols, which live in its /svc: the root's
 /// built-ins ours.process.Launcher, ours.resource.Debug,
-/// ours.resource.Sampling, ours.resource.Irq and ours.resource.Ioport, which
-/// root.cm offers, ours.test.Unoffered, which nobody offers, and ours.test.Echo
-/// (below). It checks that each ours.resource Get hands out a
+/// ours.resource.Sampling, ours.resource.Irq, ours.resource.Ioport,
+/// ours.resource.Mmio, ours.resource.Iommu and ours.boot.Acpi, which root.cm
+/// offers, and ours.test.Unoffered, which nobody offers. It checks that each
+/// ours.resource Get hands out a
 /// resource that does what it is for -- debug_read takes the Debug resource,
 /// interrupt_create takes the root of the interrupt lines for a free line,
 /// ioports_request takes the root of the I/O ports for a port the kernel
-/// does not drive -- that the unoffered protocol answers NotFound, that so
+/// does not drive, and object_get_info says the Mmio resource is the root of
+/// the physical address space -- that the unoffered protocol answers NotFound, that so
 /// does a name its manifest does not use at all, that the Launcher refuses
 /// what it cannot start -- a VMO without Execute, a reserved handle type,
 /// too many handles, a malformed message -- and that fsio::spawn() refuses a
@@ -62,7 +64,12 @@
 /// with the argument `child` through fsio::spawn(), and expects that copy,
 /// which only reads one file through the namespace it was handed, to exit 0.
 ///
-/// Its seventh protocol use, ours.test.Echo, is the one protocol route here
+/// ours.boot.Acpi hands out the machine's ACPI tables
+/// as a read-only VMO. It checks that the handle cannot write, that the
+/// directory in the VMO is well formed, and that every table in it has the
+/// signature and length of its own header and adds up to zero.
+///
+/// Its tenth protocol use, ours.test.Echo, is the one protocol route here
 /// that ends in another component: root.cm offers it from the sibling echo
 /// (//examples/echo), renamed from ours.examples.echo.Echo, which echo
 /// exposes from itself. Last, it checks that EchoString comes back from echo
@@ -73,6 +80,7 @@
 /// Each failure prints a line with FAILED in it, which fails ours-verify's
 /// boot check. All passing, it prints `routing_checks: passed` and exits 0,
 /// which the root logs as `init: routing_checks exited with 0`.
+#include <ours/acpi_tables.hpp>
 #include <ours/interrupt.hpp>
 #include <ours/object_info.hpp>
 #include <ours/process_args.hpp>
@@ -89,11 +97,17 @@
 #include <span>
 #include <string_view>
 
+#include <cstring>
+
 #include <fsio/fsio.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
+#include <ours_block/client.hpp>
+#include <ours_block/ours_block.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
+#include <ours_fshost/ours_fshost.hpp>
+#include <ours_gpt/ours_gpt.hpp>
 #include <ours_io/ours_io.hpp>
 #include <ours_process/ours_process.hpp>
 #include <ours_resource/client.hpp>
@@ -113,6 +127,9 @@ constexpr auto PAGE = usize{4096};
 constexpr auto SELF_IN_BOOT = std::string_view{"/boot/bin/routing_checks"};
 constexpr auto SELF_IN_BOOT_R = std::string_view{"/boot-r/bin/routing_checks"};
 constexpr auto SELF_IN_BIN = std::string_view{"/bin/routing_checks"};
+/// The same file, through fshost's tree: /vfs's `boot` entry is the root's
+/// built-in BootFS directory, so this walk crosses two servers.
+constexpr auto SELF_IN_VFS = std::string_view{"/vfs/boot/bin/routing_checks"};
 /// A file of /boot that is not under bin/, so not executable.
 constexpr auto MANIFEST = std::string_view{"/boot/meta/routing_checks.cm"};
 /// A program /boot does not have.
@@ -125,6 +142,7 @@ constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
 constexpr auto UNDECLARED = std::string_view{"/svc/ours.test.Undeclared"};
 /// echo's protocol, under the name root.cm's offer gives it.
 constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
+constexpr auto BLOCK = std::string_view{"/svc/ours.block.Block"};
 
 /// The directories the sibling files provides that open, each at the path its
 /// use in routing_checks.cm gives it. /files-denied and /files-wide are the
@@ -175,6 +193,14 @@ constinit u32 FAILURES = 0;
 
 /// The txid of the next two-way request this program writes by hand.
 constinit u32 TXID_COUNTER = 1;
+
+/// Whether the block device answered GetInfo, and whether the checks through
+/// the mounted filesystem ran to one of their own. The verdict names what
+/// did not run, so a pass with the disk suite skipped reads as one: before
+/// these, a boot without a disk printed the same `passed` as a full one, and
+/// the disk stack could die without the verdict changing.
+constinit bool BLOCK_DEVICE_SEEN = false;
+constinit bool DISK_CHECKS_RAN = false;
 
 auto next_txid() -> u32 {
     auto const txid = TXID_COUNTER;
@@ -289,6 +315,35 @@ auto check_read_dirents(std::string_view const path, std::string_view const name
     if (!listing.found || listing.type != type) {
         auto _ = ort::debug_line({"routing_checks: in ", path, ": ", name});
         fail("read_dirents: the entry above is missing or of the wrong type");
+    }
+    expect("close", fsio::close(directory), Status::Ok);
+}
+
+/// Directory.ReadDirents on |path|, asserting the opposite of
+/// check_read_dirents(): |name| is not there. This is the multi-view check:
+/// this component is offered fshost's `ro` view, whose whole point is that
+/// the writable `tmp` mount does not exist in it.
+auto check_read_dirents_absent(std::string_view const path, std::string_view const name) -> void {
+    auto const directory =
+        open_or_fail(path, Flags::ProtocolDirectory | Flags::PermEnumerate | Flags::PermReadBytes);
+    if (directory == Uandle::Invalid) {
+        return;
+    }
+    auto present = false;
+    std::array<u8, ours_io::MAX_BUF> buffer{};
+    for (;;) {
+        auto const read = fsio::read_dirents(directory, buffer);
+        if (!expect("read_dirents", status_of(read), Status::Ok) || read.unwrap() == 0) {
+            break;
+        }
+        auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+        for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
+            present = present || next.unwrap().value().name == name;
+        }
+    }
+    if (present) {
+        auto _ = ort::debug_line({"routing_checks: in ", path, ": ", name});
+        fail("read_dirents: the entry above exists, and this view must not hold it");
     }
     expect("close", fsio::close(directory), Status::Ok);
 }
@@ -724,22 +779,168 @@ auto check_sampling_resource() -> void {
     auto _ = ours::handle_close(sampling);
 }
 
+/// interrupt_map gives the number interrupt_create takes for a source the
+/// firmware names, to the holder of the interrupt root. On QEMU's q35, the
+/// machine this image runs on, ISA 0 (the timer) is on GSI 2, ISA 3 on GSI 3,
+/// and the pins from GSI 16 up are PCI's. What is checked:
+///   - a line's number is not the pin's: the number for ISA 0 is not 0;
+///   - ISA 0 and GSI 2 are one line, the kernel's timer, which is taken for
+///     good (AlreadyBound), so the number is the line's;
+///   - ISA 3 and GSI 3 are one free line, taken with the number as given;
+///     and a PCI pin, GSI 16, has a line of its own, which
+///     an interrupt object takes level-triggered, as a PCI function's INTx
+///     is;
+///   - the refusals: a kind the kernel does not know and the invalid source
+///     are InvArgs, ahead of the handle; a source with no line (an ISA IRQ
+///     past 15, the cascade, a number no pin has) is NoResource; no handle is
+///     BadHandle. A refused call writes nothing.
+auto check_interrupt_map(Uandle const irq) -> void {
+    using ours::InterruptSourceKind;
+    constexpr auto ISA_TIMER = u32{0};
+    constexpr auto GSI_TIMER = u32{2};
+    constexpr auto GSI_FREE = u32{3};
+    constexpr auto GSI_PCI = u32{16};
+    constexpr auto GSI_MOVED_OFF = u32{0};
+    constexpr auto ISA_WRAPS_TO_0 = u32{0x100};
+    constexpr auto ISA_WRAPS_TO_3 = u32{0x103};
+    constexpr auto ISA_CASCADE = u32{2};
+    constexpr auto NOT_ISA = u32{16};
+    constexpr auto NO_PIN = u32{200};
+    constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
+
+    auto isa_timer = UNTOUCHED;
+    auto gsi_timer = UNTOUCHED;
+    auto isa_free = UNTOUCHED;
+    auto gsi_free = UNTOUCHED;
+    auto gsi_pci = UNTOUCHED;
+    auto gsi_moved_off = UNTOUCHED;
+    auto ok = true;
+    ok &= expect("interrupt_map(Irq root, Isa, 0)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_TIMER, &isa_timer),
+                 Status::Ok);
+    ok &= expect("interrupt_map(Irq root, Gsi, 2)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_TIMER, &gsi_timer),
+                 Status::Ok);
+    ok &=
+        expect("interrupt_map(Irq root, Isa, 3)",
+               ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_FREE, &isa_free), Status::Ok);
+    ok &=
+        expect("interrupt_map(Irq root, Gsi, 3)",
+               ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_FREE, &gsi_free), Status::Ok);
+    ok &= expect("interrupt_map(Irq root, Gsi, 16)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_PCI, &gsi_pci), Status::Ok);
+    ok &= expect("interrupt_map(Irq root, Gsi, 0)",
+                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_MOVED_OFF, &gsi_moved_off),
+                 Status::Ok);
+    if (!ok) {
+        return;
+    }
+
+    if (isa_timer != gsi_timer) {
+        fail("interrupt_map: ISA 0 and GSI 2 are one line, and their numbers differ");
+    }
+    if (isa_free != gsi_free) {
+        fail("interrupt_map: ISA 3 and GSI 3 are one line, and their numbers differ");
+    }
+    if (isa_timer == ISA_TIMER || gsi_timer == GSI_TIMER || isa_free == ISA_FREE ||
+        gsi_pci == GSI_PCI) {
+        fail("interrupt_map: a line's number is the pin's number");
+    }
+    if (isa_timer == isa_free || isa_free == gsi_pci || isa_timer == gsi_pci) {
+        fail("interrupt_map: two sources have one number");
+    }
+    // GSI 0 is the pin ISA 0 was moved off, a line of its own: a Gsi that went
+    // through the ISA overrides would answer the timer's line here.
+    if (gsi_moved_off == isa_timer || gsi_moved_off == gsi_timer) {
+        fail("interrupt_map: GSI 0 is the line ISA 0 was moved to");
+    }
+
+    auto interrupt = Uandle::Invalid;
+    expect("interrupt_create(the number interrupt_map gave for ISA 0, the timer's line)",
+           ours::interrupt_create(irq, isa_timer, ours::InterruptOptions::None, &interrupt),
+           Status::AlreadyBound);
+    if (expect("interrupt_create(the number interrupt_map gave for ISA 3)",
+               ours::interrupt_create(irq, isa_free, ours::InterruptOptions::None, &interrupt),
+               Status::Ok)) {
+        expect("close(the interrupt on the number interrupt_map gave for ISA 3)",
+               ours::handle_close(interrupt), Status::Ok);
+    }
+    interrupt = Uandle::Invalid;
+    if (expect(
+            "interrupt_create(the number interrupt_map gave for GSI 16, ModeLevelLow)",
+            ours::interrupt_create(irq, gsi_pci, ours::InterruptOptions::ModeLevelLow, &interrupt),
+            Status::Ok)) {
+        expect("close(the interrupt on the number interrupt_map gave for GSI 16)",
+               ours::handle_close(interrupt), Status::Ok);
+    }
+
+    auto refused = UNTOUCHED;
+    auto const unknown = static_cast<InterruptSourceKind>(0);
+    auto const unknown_too = static_cast<InterruptSourceKind>(99);
+    expect("interrupt_map(kind 0)", ours::interrupt_map(irq, unknown, ISA_FREE, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(kind 99)", ours::interrupt_map(irq, unknown_too, ISA_FREE, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(Isa, 0xFFFFFFFF)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, 0xFFFF'FFFF, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(Gsi, 0xFFFFFFFF)",
+           ours::interrupt_map(irq, InterruptSourceKind::Gsi, 0xFFFF'FFFF, &refused),
+           Status::InvArgs);
+    expect("interrupt_map(no handle, kind 0): the kind is checked first",
+           ours::interrupt_map(Uandle::Invalid, unknown, ISA_FREE, &refused), Status::InvArgs);
+    expect("interrupt_map(no handle, Gsi, 0xFFFFFFFF): the source is checked before the handle",
+           ours::interrupt_map(Uandle::Invalid, InterruptSourceKind::Gsi, 0xFFFF'FFFF, &refused),
+           Status::InvArgs);
+    // The ISA number is 32 bits; as 8 bits these would be ISA 0 and ISA 3.
+    expect("interrupt_map(Isa, 0x100)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_WRAPS_TO_0, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Isa, 0x103)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_WRAPS_TO_3, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Isa, 16)",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, NOT_ISA, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Isa, 2), the cascade",
+           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_CASCADE, &refused),
+           Status::NoResource);
+    expect("interrupt_map(Gsi, 200)",
+           ours::interrupt_map(irq, InterruptSourceKind::Gsi, NO_PIN, &refused),
+           Status::NoResource);
+    expect("interrupt_map(no handle, Gsi, 3)",
+           ours::interrupt_map(Uandle::Invalid, InterruptSourceKind::Gsi, GSI_FREE, &refused),
+           Status::BadHandle);
+    if (refused != UNTOUCHED) {
+        fail("interrupt_map wrote its output though it refused");
+    }
+}
+
 /// Irq.Get answers with the root of the interrupt lines, which
 /// interrupt_create takes for a physical line: an interrupt on the free ISA 3
 /// is made with it, which takes the line, and closed, which lets the line go.
 /// The I/O port root, a resource of another kind, would be refused with
-/// BadType, so this also shows the root did not mix the two up.
+/// BadType, so this also shows the root did not mix the two up. The same root
+/// is what interrupt_map asks for.
 auto check_irq_resource() -> void {
     auto const irq = get_resource(ours_resource::IRQ_PROTOCOL);
     if (irq == Uandle::Invalid) {
         return;
     }
     auto interrupt = Uandle::Invalid;
+    auto line = u32{0};
+    if (!expect("interrupt_map(the resource Irq.Get gave, Isa, 3)",
+                ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_FREE, &line),
+                Status::Ok)) {
+        auto _ = ours::handle_close(irq);
+        return;
+    }
     if (expect("interrupt_create(the resource Irq.Get gave, ISA 3)",
-               ours::interrupt_create(irq, ISA_FREE, ours::InterruptOptions::RemapIrq, &interrupt),
+               ours::interrupt_create(irq, line, ours::InterruptOptions::ModeDefault, &interrupt),
                Status::Ok)) {
         expect("close(the interrupt on ISA 3)", ours::handle_close(interrupt), Status::Ok);
     }
+    check_interrupt_map(irq);
     auto _ = ours::handle_close(irq);
 }
 
@@ -757,7 +958,616 @@ auto check_ioport_resource() -> void {
            ours::ioports_request(ioport, RTC_INDEX_PORT, 1), Status::Ok);
     expect("ioports_release(the resource Ioport.Get gave, 0x70, 1)",
            ours::ioports_release(ioport, RTC_INDEX_PORT, 1), Status::Ok);
+    auto line = u32{0};
+    expect("interrupt_map(the resource Ioport.Get gave, Gsi, 200): the resource is checked first",
+           ours::interrupt_map(ioport, ours::InterruptSourceKind::Gsi, 200, &line),
+           Status::BadType);
+    expect("interrupt_map(the resource Ioport.Get gave)",
+           ours::interrupt_map(ioport, ours::InterruptSourceKind::Gsi, ISA_FREE, &line),
+           Status::BadType);
     auto _ = ours::handle_close(ioport);
+}
+
+/// The physical address of the PCI Express configuration window (ECAM) on
+/// QEMU's q35, the machine this image runs on: bus 0, device 0, function 0,
+/// the host bridge, is its first 4 KiB. A driver reads where the window is from
+/// ACPI's MCFG table; nothing here parses it, so this test knows the machine
+/// and its firmware: the window is where the firmware puts it, and the image
+/// boots under edk2, which puts it at 0xE0000000 (SeaBIOS uses 0xB0000000).
+constexpr auto ECAM_BASE = ours::PhysAddr{0xE000'0000};
+
+/// What the host bridge's vendor id register, the first 16 bits of its
+/// configuration space, holds on QEMU's q35: Intel's.
+constexpr auto INTEL_VENDOR_ID = u16{0x8086};
+
+/// A page inside the RAM of any machine this image boots (the smallest has
+/// 512 MiB), and the local APIC's registers, which the kernel drives itself.
+/// No MmIo resource grants either.
+constexpr auto SOME_RAM = ours::PhysAddr{0x1000'0000};
+constexpr auto LOCAL_APIC = ours::PhysAddr{0xFEE0'0000};
+
+/// vmo_create_physical with the resource Mmio.Get gave, the window it makes
+/// and what that window refuses.
+///
+/// What no resource grants is refused whoever asks: RAM and the local APIC
+/// come back AccessDenied from the root of the physical address space, where
+/// the arguments that make no window come back InvArgs and OutOfRange, a
+/// handle of another kind BadType and no handle BadHandle. Then the window onto
+/// the host bridge's configuration space is mapped and its vendor id read:
+/// the first time anything in user space has read a device's register. The
+/// window is the hardware's, so vmo_read and a slice of it say NotSupported.
+auto check_physical_vmo(Uandle const vma, Uandle const mmio) -> void {
+    auto none = Uandle::Invalid;
+    expect("vmo_create_physical(the MmIo root, RAM)",
+           ours::vmo_create_physical(mmio, SOME_RAM, PAGE, &none), Status::AccessDenied);
+    expect("vmo_create_physical(the MmIo root, the local APIC)",
+           ours::vmo_create_physical(mmio, LOCAL_APIC, PAGE, &none), Status::AccessDenied);
+    expect("vmo_create_physical(an unaligned base)",
+           ours::vmo_create_physical(mmio, ECAM_BASE + 1, PAGE, &none), Status::InvArgs);
+    expect("vmo_create_physical(a size of part of a page)",
+           ours::vmo_create_physical(mmio, ECAM_BASE, PAGE + 1, &none), Status::InvArgs);
+    expect("vmo_create_physical(a size of 0)", ours::vmo_create_physical(mmio, ECAM_BASE, 0, &none),
+           Status::InvArgs);
+    expect("vmo_create_physical(a window past the top of the space)",
+           ours::vmo_create_physical(mmio, ~ours::PhysAddr{0} & ~(PAGE - 1), 2 * PAGE, &none),
+           Status::OutOfRange);
+    expect("vmo_create_physical(no resource)",
+           ours::vmo_create_physical(Uandle::Invalid, ECAM_BASE, PAGE, &none), Status::BadHandle);
+    if (auto const irq = get_resource(ours_resource::IRQ_PROTOCOL); irq != Uandle::Invalid) {
+        expect("vmo_create_physical(the Irq root)",
+               ours::vmo_create_physical(irq, ECAM_BASE, PAGE, &none), Status::BadType);
+        auto _ = ours::handle_close(irq);
+    }
+
+    auto window = Uandle::Invalid;
+    if (!expect("vmo_create_physical(the MmIo root, the host bridge's configuration space)",
+                ours::vmo_create_physical(mmio, ECAM_BASE, PAGE, &window), Status::Ok)) {
+        return;
+    }
+
+    auto size = u64{0};
+    expect("vmo_get_size(the window)", ours::vmo_get_size(window, &size), Status::Ok);
+    if (size != PAGE) {
+        fail("the window onto one page is not one page");
+    }
+
+    // Mapped with no MapRange: a physical VMO is always populated, and a map
+    // that left the window unfilled would die on the read below.
+    auto address = ours::VirtAddr{0};
+    if (expect("vma_map(the window, PermRead)",
+               ours::vma_map(vma, ours::VmOptions::PermRead, 0, window, 0, PAGE, &address),
+               Status::Ok)) {
+        auto const vendor = *reinterpret_cast<volatile u16 const *>(address);
+        if (vendor != INTEL_VENDOR_ID) {
+            char text[18];
+            auto _ = ort::debug_line(
+                {"routing_checks: the host bridge's vendor id reads ", ort::hex(vendor, text)});
+            fail("the vendor id of the host bridge, read through the window, is not Intel's");
+        }
+        expect("vma_unmap(the window)", ours::vma_unmap(vma, address, PAGE), Status::Ok);
+    }
+
+    std::array<u8, 4> bytes{};
+    expect("vmo_read(the window)", ours::vmo_read(window, bytes.data(), 0, bytes.size()),
+           Status::NotSupported);
+    auto slice = Uandle::Invalid;
+    expect("vmo_create_child(a slice of the window)",
+           ours::vmo_create_child(window, ours::VmoChildOptions::Slice, 0, PAGE, &slice),
+           Status::NotSupported);
+    auto _ = ours::handle_close(window);
+}
+
+/// The calls that put memory within a device's reach, refused as far as they
+/// can be without the System resource of the IOMMU slot, which this program is
+/// not given yet: a handle that names nothing, a handle of another kind, and a
+/// resource of another kind (the MmIo root). What a real IOMMU, BTI and pin
+/// answer needs that slot, and is checked where it arrives.
+///
+/// pmt_unpin closes a handle that is a pin and nothing else, so the VMO it is
+/// given here is still there afterwards, and is closed by this check.
+auto check_device_dma_refusals(Uandle const mmio) -> void {
+    auto vmo = Uandle::Invalid;
+    if (!expect("vmo_create(a page)", ours::vmo_create(PAGE, ours::VmoOptions::None, &vmo),
+                Status::Ok)) {
+        return;
+    }
+    auto none = Uandle::Invalid;
+    std::array<ours::PhysAddr, 1> addresses{};
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+
+    expect("iommu_create(no resource)",
+           ours::iommu_create(Uandle::Invalid, ours::IommuType::Stub, nullptr, 0, &none),
+           Status::BadHandle);
+    expect("iommu_create(a VMO)", ours::iommu_create(vmo, ours::IommuType::Stub, nullptr, 0, &none),
+           Status::BadType);
+    expect("iommu_create(the MmIo root)",
+           ours::iommu_create(mmio, ours::IommuType::Stub, nullptr, 0, &none), Status::BadType);
+    expect("bti_create(no IOMMU)", ours::bti_create(Uandle::Invalid, 0, 0, &none),
+           Status::BadHandle);
+    expect("bti_create(a VMO)", ours::bti_create(vmo, 0, 0, &none), Status::BadType);
+    expect("bti_pin(no BTI)",
+           ours::bti_pin(Uandle::Invalid, RW, vmo, 0, PAGE, addresses.data(), 1, &none),
+           Status::BadHandle);
+    expect("bti_pin(a VMO as the BTI)",
+           ours::bti_pin(vmo, RW, vmo, 0, PAGE, addresses.data(), 1, &none), Status::BadType);
+    expect("bti_release_quarantine(no BTI)", ours::bti_release_quarantine(Uandle::Invalid),
+           Status::BadHandle);
+    expect("bti_release_quarantine(a VMO)", ours::bti_release_quarantine(vmo), Status::BadType);
+    expect("pmt_unpin(no handle)", ours::pmt_unpin(Uandle::Invalid), Status::BadHandle);
+    if (none != Uandle::Invalid) {
+        fail("a refused call wrote a handle");
+    }
+
+    expect("pmt_unpin(a VMO)", ours::pmt_unpin(vmo), Status::BadType);
+    auto size = u64{0};
+    expect("vmo_get_size(the VMO pmt_unpin was given)", ours::vmo_get_size(vmo, &size), Status::Ok);
+    auto _ = ours::handle_close(vmo);
+}
+
+/// Mmio.Get answers with the root of the physical address space: an MmIo
+/// resource of base 0 and size 0. The kernel is asked what the resource is,
+/// which shows the root did not hand out the root of another kind in its place,
+/// and then it is used: check_physical_vmo(), and as the wrong kind of resource
+/// for the calls that want a System one: check_device_dma_refusals().
+auto check_mmio_resource(Uandle const vma) -> void {
+    auto const mmio = get_resource(ours_resource::MMIO_PROTOCOL);
+    if (mmio == Uandle::Invalid) {
+        return;
+    }
+    ours::InfoResource info{};
+    auto actual = usize{0};
+    auto available = usize{0};
+    if (expect("object_get_info(the resource Mmio.Get gave)",
+               ours::object_get_info(mmio, ours::InfoTopic::Resource, &info, sizeof(info), &actual,
+                                     &available),
+               Status::Ok)) {
+        if (info.kind != ours::RsrcKind::MmIo || info.base != 0 || info.size != 0) {
+            fail("the resource Mmio.Get gave is not the root of the physical address space");
+        }
+    }
+    if (vma == Uandle::Invalid) {
+        fail("started without VmaRoot, so the MmIo root has nothing to map into");
+    } else {
+        check_physical_vmo(vma, mmio);
+    }
+    check_device_dma_refusals(mmio);
+    auto _ = ours::handle_close(mmio);
+}
+
+/// The pages the DMA checks pin, and what a physical address of one looks like.
+constexpr auto DMA_PAGES = usize{4};
+
+/// A second handle to |handle| with |rights|, or Invalid after saying why not.
+auto narrowed(Uandle const handle, ours::Rights const rights) -> Uandle {
+    auto copy = Uandle::Invalid;
+    if (!expect("handle_duplicate(narrowed)", ours::handle_duplicate(handle, rights, &copy),
+                Status::Ok)) {
+        return Uandle::Invalid;
+    }
+    return copy;
+}
+
+/// Whether anything of |vmo| is pinned: a snapshot of a VMO with a pinned page
+/// is refused (BadState), and made when nothing is. The child is closed.
+auto is_pinned(Uandle const vmo) -> bool {
+    auto child = Uandle::Invalid;
+    auto const status =
+        ours::vmo_create_child(vmo, ours::VmoChildOptions::SnapshotOnWrite, 0, PAGE, &child);
+    if (status == Status::Ok) {
+        auto _ = ours::handle_close(child);
+        return false;
+    }
+    if (status != Status::BadState) {
+        fail("vmo_create_child(a snapshot, to see whether it is pinned)", status, Status::BadState);
+    }
+    return true;
+}
+
+/// bti_pin with |bti|, and everything it refuses without pinning a page: the
+/// options, the arguments, the count of addresses, the rights on the BTI and
+/// on the VMO, and the order in which they are asked.
+auto check_pin_refusals(Uandle const bti, Uandle const vmo) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    std::array<ours::PhysAddr, 2 * DMA_PAGES> addresses{};
+    auto none = Uandle::Invalid;
+    auto const ask = [&](ours::BtiPinOptions const options, Uandle const from, u64 const offset,
+                         u64 const size, usize const count) {
+        return ours::bti_pin(bti, options, from, offset, size, addresses.data(), count, &none);
+    };
+
+    expect("bti_pin(no Perm bit)", ask(ours::BtiPinOptions::None, vmo, 0, PAGE, 1),
+           Status::InvArgs);
+    expect("bti_pin(Compress alone)", ask(ours::BtiPinOptions::Compress, vmo, 0, PAGE, 1),
+           Status::InvArgs);
+    expect("bti_pin(an option that means nothing)",
+           ask(RW | static_cast<ours::BtiPinOptions>(1U << 9), vmo, 0, PAGE, 1), Status::InvArgs);
+    expect(
+        "bti_pin(Compress with Contiguous)",
+        ask(RW | ours::BtiPinOptions::Compress | ours::BtiPinOptions::Contiguous, vmo, 0, PAGE, 1),
+        Status::InvArgs);
+    expect("bti_pin(an unaligned offset)", ask(RW, vmo, 1, PAGE, 1), Status::InvArgs);
+    expect("bti_pin(a size of 0)", ask(RW, vmo, 0, 0, 0), Status::InvArgs);
+    expect("bti_pin(a size of part of a page)", ask(RW, vmo, 0, PAGE + 1, 1), Status::InvArgs);
+    expect("bti_pin(one address too few)", ask(RW, vmo, 0, DMA_PAGES * PAGE, DMA_PAGES - 1),
+           Status::InvArgs);
+    expect("bti_pin(one address too many)", ask(RW, vmo, 0, DMA_PAGES * PAGE, DMA_PAGES + 1),
+           Status::InvArgs);
+    expect("bti_pin(a range past the end)", ask(RW, vmo, 0, (DMA_PAGES + 1) * PAGE, DMA_PAGES + 1),
+           Status::OutOfRange);
+    expect("bti_pin(a range that starts at the end)", ask(RW, vmo, DMA_PAGES * PAGE, PAGE, 1),
+           Status::OutOfRange);
+
+    // The size bounds the call, not only the count: Contiguous is one address
+    // for any size.
+    auto huge = Uandle::Invalid;
+    if (expect(
+            "vmo_create(one page more than a pin may be)",
+            ours::vmo_create((ours::BTI_PIN_MAX_PAGES + 1) * PAGE, ours::VmoOptions::None, &huge),
+            Status::Ok)) {
+        expect("bti_pin(Contiguous over more pages than a pin may be)",
+               ask(RW | ours::BtiPinOptions::Contiguous, huge, 0,
+                   (ours::BTI_PIN_MAX_PAGES + 1) * PAGE, 1),
+               Status::InvArgs);
+        auto _ = ours::handle_close(huge);
+    }
+
+    // Rights: what the device may do is limited by what this program may.
+    auto const read_only = narrowed(vmo, ours::Rights::Read | ours::Rights::Map);
+    auto const no_map = narrowed(vmo, ours::Rights::Read | ours::Rights::Write);
+    auto const bti_no_map = narrowed(bti, ours::Rights::Write);
+    if (read_only != Uandle::Invalid) {
+        expect("bti_pin(PermWrite over a VMO that cannot be written)",
+               ask(RW, read_only, 0, PAGE, 1), Status::AccessDenied);
+        expect("bti_pin(PermWrite alone over a VMO that cannot be written)",
+               ask(ours::BtiPinOptions::PermWrite, read_only, 0, PAGE, 1), Status::AccessDenied);
+        auto _ = ours::handle_close(read_only);
+    }
+    if (no_map != Uandle::Invalid) {
+        expect("bti_pin(a VMO without Map)", ask(RW, no_map, 0, PAGE, 1), Status::AccessDenied);
+        auto _ = ours::handle_close(no_map);
+    }
+    if (bti_no_map != Uandle::Invalid) {
+        expect("bti_pin(a BTI without Map)",
+               ours::bti_pin(bti_no_map, RW, vmo, 0, PAGE, addresses.data(), 1, &none),
+               Status::AccessDenied);
+        // The BTI is looked at first: its answer is the one given when the VMO
+        // handle is bad as well.
+        expect("bti_pin(a BTI without Map, and no VMO)",
+               ours::bti_pin(bti_no_map, RW, Uandle::Invalid, 0, PAGE, addresses.data(), 1, &none),
+               Status::AccessDenied);
+        auto _ = ours::handle_close(bti_no_map);
+    }
+    expect("bti_pin(no VMO)", ask(RW, Uandle::Invalid, 0, PAGE, 1), Status::BadHandle);
+    expect("bti_pin(a BTI where the VMO is wanted)", ask(RW, bti, 0, PAGE, 1), Status::BadType);
+
+    if (none != Uandle::Invalid) {
+        fail("a refused bti_pin wrote a handle");
+    }
+    if (is_pinned(vmo)) {
+        fail("a refused bti_pin left a page pinned");
+    }
+}
+
+/// The addresses a pin hands over are the pages' own: distinct, whole pages,
+/// and the same again for a second pin of the same pages, which do not move.
+/// Compress is the same here as no option; Contiguous is one address, and for
+/// four pages it is Ok exactly when the four are one run.
+auto check_pin_addresses(Uandle const bti, Uandle const vmo) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    std::array<ours::PhysAddr, DMA_PAGES> first{};
+    std::array<ours::PhysAddr, DMA_PAGES> again{};
+    std::array<ours::PhysAddr, DMA_PAGES> compressed{};
+    auto pin_a = Uandle::Invalid;
+    auto pin_b = Uandle::Invalid;
+    auto pin_c = Uandle::Invalid;
+    if (!expect("bti_pin(four pages)",
+                ours::bti_pin(bti, RW, vmo, 0, DMA_PAGES * PAGE, first.data(), DMA_PAGES, &pin_a),
+                Status::Ok)) {
+        return;
+    }
+
+    auto sound = true;
+    for (auto at = usize{0}; at < DMA_PAGES; ++at) {
+        sound = sound && first[at] != 0 && first[at] % PAGE == 0;
+        for (auto other = at + 1; other < DMA_PAGES; ++other) {
+            sound = sound && first[at] != first[other];
+        }
+    }
+    if (!sound) {
+        fail("the addresses of a pin are not four distinct whole pages");
+    }
+    if (!is_pinned(vmo)) {
+        fail("a pin left its pages unpinned");
+    }
+
+    if (expect("bti_pin(the same four pages again)",
+               ours::bti_pin(bti, RW, vmo, 0, DMA_PAGES * PAGE, again.data(), DMA_PAGES, &pin_b),
+               Status::Ok) &&
+        again != first) {
+        fail("a second pin of the same pages gave other addresses");
+    }
+    if (expect("bti_pin(Compress)",
+               ours::bti_pin(bti, RW | ours::BtiPinOptions::Compress, vmo, 0, DMA_PAGES * PAGE,
+                             compressed.data(), DMA_PAGES, &pin_c),
+               Status::Ok) &&
+        compressed != first) {
+        fail("Compress gave other addresses than none, though a page is the smallest run");
+    }
+
+    // Four pages as one address: the same as the first of the four when they
+    // are one run, and BadState when they are not.
+    auto one = std::array<ours::PhysAddr, 1>{};
+    auto contiguous_pin = Uandle::Invalid;
+    auto one_run = true;
+    for (auto at = usize{1}; at < DMA_PAGES; ++at) {
+        one_run = one_run && first[at] == first[0] + at * PAGE;
+    }
+    auto const contiguous = ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, vmo, 0,
+                                          DMA_PAGES * PAGE, one.data(), 1, &contiguous_pin);
+    if (one_run) {
+        if (expect("bti_pin(Contiguous, four pages that are one run)", contiguous, Status::Ok) &&
+            one[0] != first[0]) {
+            fail("Contiguous gave an address that is not the first page's");
+        }
+    } else {
+        expect("bti_pin(Contiguous, four pages that are not one run)", contiguous,
+               Status::BadState);
+    }
+    auto single = Uandle::Invalid;
+    if (expect("bti_pin(Contiguous, one page)",
+               ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, vmo, 0, PAGE, one.data(), 1,
+                             &single),
+               Status::Ok) &&
+        one[0] != first[0]) {
+        fail("Contiguous over one page gave an address that is not that page's");
+    }
+
+    // Each pin ends once. A handle is closed by its unpin, so a second unpin
+    // of it finds nothing.
+    for (auto const pin: {pin_a, pin_b, pin_c, contiguous_pin, single}) {
+        if (pin != Uandle::Invalid) {
+            expect("pmt_unpin", ours::pmt_unpin(pin), Status::Ok);
+        }
+    }
+    expect("pmt_unpin(a pin already unpinned)", ours::pmt_unpin(pin_a), Status::BadHandle);
+    if (is_pinned(vmo)) {
+        fail("every pin was unpinned and a page is still pinned");
+    }
+}
+
+/// A pin whose last handle is closed with no unpin is quarantined: its page
+/// stays pinned, the BTI answers BadState to every pin after it, and
+/// bti_release_quarantine, which needs Write, lets it go. This is what happens
+/// to a driver that dies with its device running, minus the dying.
+auto check_quarantine(Uandle const bti) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    auto vmo = Uandle::Invalid;
+    if (!expect("vmo_create(a page)", ours::vmo_create(PAGE, ours::VmoOptions::None, &vmo),
+                Status::Ok)) {
+        return;
+    }
+    std::array<ours::PhysAddr, 1> address{};
+    auto lost = Uandle::Invalid;
+    auto refused = Uandle::Invalid;
+    if (expect("bti_pin(a page, to lose)",
+               ours::bti_pin(bti, RW, vmo, 0, PAGE, address.data(), 1, &lost), Status::Ok)) {
+        expect("handle_close(a pin, with no unpin)", ours::handle_close(lost), Status::Ok);
+    }
+    if (!is_pinned(vmo)) {
+        fail("a pin whose last handle was closed let its page go");
+    }
+    expect("bti_pin(a BTI with a quarantine)",
+           ours::bti_pin(bti, RW, vmo, 0, PAGE, address.data(), 1, &refused), Status::BadState);
+
+    auto const bti_no_write = narrowed(bti, ours::Rights::Map);
+    if (bti_no_write != Uandle::Invalid) {
+        expect("bti_release_quarantine(a BTI without Write)",
+               ours::bti_release_quarantine(bti_no_write), Status::AccessDenied);
+        auto _ = ours::handle_close(bti_no_write);
+    }
+    if (!is_pinned(vmo)) {
+        fail("a refused bti_release_quarantine let the page go");
+    }
+
+    expect("bti_release_quarantine", ours::bti_release_quarantine(bti), Status::Ok);
+    expect("bti_release_quarantine(nothing left)", ours::bti_release_quarantine(bti), Status::Ok);
+    auto again = Uandle::Invalid;
+    if (expect("bti_pin(once the quarantine is released)",
+               ours::bti_pin(bti, RW, vmo, 0, PAGE, address.data(), 1, &again), Status::Ok)) {
+        expect("pmt_unpin", ours::pmt_unpin(again), Status::Ok);
+    }
+    if (is_pinned(vmo)) {
+        fail("the quarantine was released and the page is still pinned");
+    }
+    auto _ = ours::handle_close(vmo);
+}
+
+/// vmo_create_contiguous with what it refuses, then a VMO of three pages and
+/// one on 64 KiB: pinned page by page, their addresses follow one another; and
+/// pinned with Contiguous, which is Ok for this memory where it is BadState
+/// for a VMO that merely happens to be scattered, they are one address.
+auto check_contiguous_vmo(Uandle const bti) -> void {
+    constexpr auto RW = ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite;
+    auto none = Uandle::Invalid;
+    // The largest block of the build this image boots with, in pages; the call
+    // says 4 MiB.
+    constexpr auto MOST = usize{1} << 10;
+
+    expect("vmo_create_contiguous(no BTI)",
+           ours::vmo_create_contiguous(Uandle::Invalid, PAGE, 0, &none), Status::BadHandle);
+    auto plain = Uandle::Invalid;
+    if (expect("vmo_create(a page)", ours::vmo_create(PAGE, ours::VmoOptions::None, &plain),
+               Status::Ok)) {
+        expect("vmo_create_contiguous(a VMO as the BTI)",
+               ours::vmo_create_contiguous(plain, PAGE, 0, &none), Status::BadType);
+        auto _ = ours::handle_close(plain);
+    }
+    if (auto const bti_no_map = narrowed(bti, ours::Rights::Write); bti_no_map != Uandle::Invalid) {
+        expect("vmo_create_contiguous(a BTI without Map)",
+               ours::vmo_create_contiguous(bti_no_map, PAGE, 0, &none), Status::AccessDenied);
+        auto _ = ours::handle_close(bti_no_map);
+    }
+    expect("vmo_create_contiguous(a size of 0)", ours::vmo_create_contiguous(bti, 0, 0, &none),
+           Status::InvArgs);
+    expect("vmo_create_contiguous(an alignment below a page)",
+           ours::vmo_create_contiguous(bti, PAGE, 5, &none), Status::InvArgs);
+    expect("vmo_create_contiguous(an alignment that is not a shift)",
+           ours::vmo_create_contiguous(bti, PAGE, 64, &none), Status::InvArgs);
+    expect("vmo_create_contiguous(more than the largest block)",
+           ours::vmo_create_contiguous(bti, (2 * MOST) * PAGE, 0, &none), Status::NoMemory);
+    expect("vmo_create_contiguous(an alignment past the largest block)",
+           ours::vmo_create_contiguous(bti, PAGE, 12 + 11, &none), Status::NoMemory);
+    if (none != Uandle::Invalid) {
+        fail("a refused vmo_create_contiguous wrote a handle");
+    }
+
+    auto vmo = Uandle::Invalid;
+    if (expect("vmo_create_contiguous(three pages)",
+               ours::vmo_create_contiguous(bti, 3 * PAGE, 0, &vmo), Status::Ok)) {
+        auto size = u64{0};
+        expect("vmo_get_size(the contiguous VMO)", ours::vmo_get_size(vmo, &size), Status::Ok);
+        if (size != 3 * PAGE) {
+            fail("a contiguous VMO of three pages is not three pages");
+        }
+
+        std::array<u8, 64> bytes{};
+        bytes.fill(0xFF);
+        expect("vmo_read(the start of a contiguous VMO)",
+               ours::vmo_read(vmo, bytes.data(), 0, bytes.size()), Status::Ok);
+        auto zero = true;
+        for (auto const byte: bytes) {
+            zero = zero && byte == 0;
+        }
+        bytes.fill(0xFF);
+        expect("vmo_read(the end of a contiguous VMO)",
+               ours::vmo_read(vmo, bytes.data(), 3 * PAGE - bytes.size(), bytes.size()),
+               Status::Ok);
+        for (auto const byte: bytes) {
+            zero = zero && byte == 0;
+        }
+        if (!zero) {
+            fail("a contiguous VMO is not zero");
+        }
+
+        std::array<ours::PhysAddr, 3> pages{};
+        std::array<ours::PhysAddr, 1> one{};
+        auto by_page = Uandle::Invalid;
+        auto whole = Uandle::Invalid;
+        if (expect("bti_pin(the contiguous VMO, page by page)",
+                   ours::bti_pin(bti, RW, vmo, 0, 3 * PAGE, pages.data(), 3, &by_page),
+                   Status::Ok)) {
+            if (pages[1] != pages[0] + PAGE || pages[2] != pages[0] + 2 * PAGE) {
+                fail("the pages of a contiguous VMO do not follow one another");
+            }
+            expect("pmt_unpin(page by page)", ours::pmt_unpin(by_page), Status::Ok);
+        } else {
+            // Nothing to compare the next pin's address with.
+            pages[0] = ~ours::PhysAddr{0};
+        }
+        if (expect("bti_pin(the contiguous VMO, Contiguous)",
+                   ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, vmo, 0, 3 * PAGE,
+                                 one.data(), 1, &whole),
+                   Status::Ok)) {
+            if (one[0] != pages[0]) {
+                fail("the one address of a contiguous VMO is not its first page's");
+            }
+            expect("pmt_unpin(Contiguous)", ours::pmt_unpin(whole), Status::Ok);
+        }
+        auto _ = ours::handle_close(vmo);
+    }
+
+    constexpr auto SIXTY_FOUR_KIB = usize{1} << 16;
+    auto aligned = Uandle::Invalid;
+    if (expect("vmo_create_contiguous(two pages on 64 KiB)",
+               ours::vmo_create_contiguous(bti, 2 * PAGE, 16, &aligned), Status::Ok)) {
+        std::array<ours::PhysAddr, 1> one{};
+        auto pin = Uandle::Invalid;
+        if (expect("bti_pin(the aligned VMO, Contiguous)",
+                   ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, aligned, 0, 2 * PAGE,
+                                 one.data(), 1, &pin),
+                   Status::Ok)) {
+            if (one[0] % SIXTY_FOUR_KIB != 0) {
+                fail("a contiguous VMO asked to start on 64 KiB does not");
+            }
+            expect("pmt_unpin(the aligned VMO)", ours::pmt_unpin(pin), Status::Ok);
+        }
+        auto _ = ours::handle_close(aligned);
+    }
+}
+
+/// iommu_create and bti_create with what they refuse, then the checks of the
+/// pins on the BTI they make.
+auto check_iommu_and_bti(Uandle const resource) -> void {
+    auto none = Uandle::Invalid;
+    std::array<u8, 8> descriptor{};
+    expect("iommu_create(a type nothing implements)",
+           ours::iommu_create(resource, static_cast<ours::IommuType>(7), nullptr, 0, &none),
+           Status::NotSupported);
+    expect("iommu_create(a descriptor, for a stub that has no hardware)",
+           ours::iommu_create(resource, ours::IommuType::Stub, descriptor.data(), descriptor.size(),
+                              &none),
+           Status::InvArgs);
+    expect("iommu_create(a descriptor past the limit)",
+           ours::iommu_create(resource, ours::IommuType::Stub, nullptr,
+                              ours::IOMMU_DESC_MAX_SIZE + 1, &none),
+           Status::InvArgs);
+    if (auto const debug = get_resource(ours_resource::DEBUG_PROTOCOL); debug != Uandle::Invalid) {
+        expect("iommu_create(the System resource of another slot)",
+               ours::iommu_create(debug, ours::IommuType::Stub, nullptr, 0, &none),
+               Status::OutOfRange);
+        auto _ = ours::handle_close(debug);
+    }
+    if (none != Uandle::Invalid) {
+        fail("a refused iommu_create wrote a handle");
+    }
+
+    auto iommu = Uandle::Invalid;
+    if (!expect("iommu_create(Stub)",
+                ours::iommu_create(resource, ours::IommuType::Stub, nullptr, 0, &iommu),
+                Status::Ok)) {
+        return;
+    }
+    expect("bti_create(an option nothing defines)", ours::bti_create(iommu, 1, 0x1234, &none),
+           Status::InvArgs);
+    auto bti = Uandle::Invalid;
+    if (expect("bti_create", ours::bti_create(iommu, 0, 0x1234, &bti), Status::Ok)) {
+        auto vmo = Uandle::Invalid;
+        if (expect("vmo_create(four pages)",
+                   ours::vmo_create(DMA_PAGES * PAGE, ours::VmoOptions::None, &vmo), Status::Ok)) {
+            check_pin_refusals(bti, vmo);
+            check_pin_addresses(bti, vmo);
+            auto _ = ours::handle_close(vmo);
+        }
+        check_quarantine(bti);
+        check_contiguous_vmo(bti);
+        auto _ = ours::handle_close(bti);
+    }
+    auto _ = ours::handle_close(iommu);
+}
+
+/// Iommu.Get answers with the System resource of the IOMMU slot: a resource of
+/// that kind, at that base, of size 1. It is then used as a driver would: to
+/// make an IOMMU and a BTI, and pin memory through them.
+auto check_iommu_resource() -> void {
+    auto const resource = get_resource(ours_resource::IOMMU_PROTOCOL);
+    if (resource == Uandle::Invalid) {
+        return;
+    }
+    ours::InfoResource info{};
+    auto actual = usize{0};
+    auto available = usize{0};
+    if (expect("object_get_info(the resource Iommu.Get gave)",
+               ours::object_get_info(resource, ours::InfoTopic::Resource, &info, sizeof(info),
+                                     &actual, &available),
+               Status::Ok)) {
+        if (info.kind != ours::RsrcKind::System || info.base != ours::RSRC_SYSTEM_IOMMU_BASE ||
+            info.size != 1) {
+            fail("the resource Iommu.Get gave is not the System IOMMU slot");
+            return;
+        }
+    }
+    check_iommu_and_bti(resource);
+    auto _ = ours::handle_close(resource);
 }
 
 /// A protocol use that nobody offers: the connection arrives, since Open is
@@ -1038,6 +1848,682 @@ auto check_undeclared() -> void {
 /// The sibling route, end to end: EchoString from echo through root.cm's
 /// renaming offer and echo's expose, then Stop, then a route to echo that
 /// answers NotFound, as one to a component that has exited does (D23).
+
+auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE_BYTES> &bytes,
+                       Incoming &reply) -> void;
+
+/// The block device through its protocol, when the image carries a disk:
+/// GetInfo names a 512-byte block size, and Read brings block 0 back, whose
+/// first bytes the image was written with. The route answers NotFound while
+/// there is no disk, which is the image boot_check boots, so the check skips
+/// rather than fails there.
+auto check_block() -> void {
+    auto const connection = connect_or_fail(BLOCK);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    // GetInfo is the probe: a route to a disk that is not there answers
+    // NotFound (an epitaph on this connection, or the connection closed
+    // outright), and the check skips -- the images boot_check boots carry no
+    // disk. Anything else is the disk's to answer.
+    auto const txid = next_txid();
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const info = ours_block::encode_get_info(bytes, {.txid = txid});
+    if (!expect("Block.GetInfo", status_of(info), Status::Ok)) {
+        return;
+    }
+    Incoming reply;
+    auto const answered = call(connection, info.unwrap(), reply);
+    if (answered == Status::PeerClosed || answered == Status::NotFound) {
+        auto _ = ort::debug_line("routing_checks: no block device, skipped");
+        return;
+    }
+    if (!expect("Block.GetInfo", answered, Status::Ok)) {
+        return;
+    }
+    if (auto const epitaph = wire::decode_epitaph(reply.message()); epitaph.is_ok()) {
+        if (epitaph.unwrap() == Status::NotFound) {
+            auto _ = ort::debug_line("routing_checks: no block device, skipped");
+            return;
+        }
+        fail("Block.GetInfo: the route answered with an epitaph");
+        return;
+    }
+    auto const geometry = ours_block::decode_get_info_reply(reply.message(), txid);
+    if (!expect("Block.GetInfo's reply", status_of(geometry), Status::Ok) ||
+        !expect("Block.GetInfo's status", geometry->status, Status::Ok)) {
+        return;
+    }
+    BLOCK_DEVICE_SEEN = true;
+    if (geometry->block_size != ours_block::BLOCK_SIZE) {
+        fail("Block.GetInfo: the block size is not 512");
+        return;
+    }
+
+    auto const read_txid = next_txid();
+    auto const read = ours_block::encode_read(bytes, {.txid = read_txid, .lba = 0, .count = 1});
+    if (!expect("Block.Read", status_of(read), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Read", call(connection, read.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const block = ours_block::decode_read_reply(reply.message(), read_txid);
+    if (!expect("Block.Read's reply", status_of(block), Status::Ok) ||
+        !expect("Block.Read's status", block->status, Status::Ok)) {
+        return;
+    }
+    if (block->data.size() != ours_block::BLOCK_SIZE) {
+        fail("Block.Read: the block is not 512 bytes");
+        return;
+    }
+    if (block->data[0] == 'O' && block->data[1] == 'U' && block->data[2] == 'R' &&
+        block->data[3] == 'S') {
+        check_block_write(connection, bytes, reply);
+        return;
+    }
+
+    // Not the plain disk's magic. A GPT disk's block 0 is its protective
+    // MBR, and check_gpt() takes that shape: one probe of LBA 1 says which
+    // disk this is. The plain checks stop here; the write check below runs
+    // on either shape.
+    auto const probe_txid = next_txid();
+    auto const probe = ours_block::encode_read(bytes, {.txid = probe_txid, .lba = 1, .count = 1});
+    if (!expect("Block.Read", status_of(probe), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Read", call(connection, probe.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const lba1 = ours_block::decode_read_reply(reply.message(), probe_txid);
+    if (!expect("Block.Read's reply", status_of(lba1), Status::Ok) ||
+        !expect("Block.Read's status", lba1->status, Status::Ok)) {
+        return;
+    }
+    constexpr auto GPT_SIGNATURE = std::string_view{"EFI PART"};
+    if (std::string_view{reinterpret_cast<char const *>(lba1->data.data()), GPT_SIGNATURE.size()} ==
+        GPT_SIGNATURE) {
+        auto _ = ort::debug_line("routing_checks: a GPT disk, plain checks skipped");
+        check_block_write(connection, bytes, reply);
+        return;
+    }
+    fail("Block.Read: block 0 does not start with the disk's magic");
+    expect("close", fsio::close(connection), Status::Ok);
+}
+
+/// The write path end to end, the part of the block check that runs on
+/// either disk shape: a pattern written to the scratch LBA 1000 and read
+/// back over its two blocks, the one before it untouched. LBA 1000 sits
+/// below the first partition a GPT image names and above the plain image's
+/// magic, so neither shape minds the traffic.
+auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE_BYTES> &bytes,
+                       Incoming &reply) -> void {
+    constexpr auto SCRATCH_LBA = u64{1000};
+    std::array<u8, ours_block::BLOCK_SIZE> pattern{};
+    pattern.fill(0xA5);
+    constexpr auto MARK = std::string_view{"virtio-blk write check"};
+    std::copy(MARK.begin(), MARK.end(), pattern.begin());
+
+    auto const write_txid = next_txid();
+    auto const write = ours_block::encode_write(
+        bytes, {.txid = write_txid, .lba = SCRATCH_LBA, .count = 1, .data = pattern});
+    if (!expect("Block.Write", status_of(write), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Write", call(connection, write.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const write_status =
+        wire::decode_reply_status(reply.message(), ours_block::WRITE, write_txid);
+    if (!expect("Block.Write's reply", status_of(write_status), Status::Ok) ||
+        !expect("Block.Write's status", write_status.unwrap(), Status::Ok)) {
+        return;
+    }
+
+    // Two blocks from one short of the scratch: block 999 is zeros (never
+    // written), block 1000 the pattern. Where the first differing byte falls
+    // -- at 512+496 (per-block) or 496 (per-buffer) -- says which.
+    auto const verify_txid = next_txid();
+    auto const verify =
+        ours_block::encode_read(bytes, {.txid = verify_txid, .lba = SCRATCH_LBA - 1, .count = 2});
+    if (!expect("Block.Read(scratch)", status_of(verify), Status::Ok)) {
+        return;
+    }
+    if (!expect("Block.Read(scratch)", call(connection, verify.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const read_back = ours_block::decode_read_reply(reply.message(), verify_txid);
+    if (!expect("Block.Read(scratch)'s reply", status_of(read_back), Status::Ok) ||
+        !expect("Block.Read(scratch)'s status", read_back->status, Status::Ok)) {
+        return;
+    }
+    constexpr auto PATTERN_BYTES = usize{ours_block::BLOCK_SIZE};
+    auto const want = [&](usize const index) -> u8 {
+        // Block 999 was never written: zeros. Block 1000 the pattern.
+        return index >= PATTERN_BYTES ? pattern[index - PATTERN_BYTES] : u8{0};
+    };
+    ustl::Option<usize> first_bad = ustl::NONE;
+    for (auto index = usize{0}; index < read_back->data.size(); ++index) {
+        if (read_back->data[index] != want(index)) {
+            first_bad = ustl::some(index);
+            break;
+        }
+    }
+    if (first_bad.is_none()) {
+        expect("close", fsio::close(connection), Status::Ok);
+        return;
+    }
+    char at_text[10];
+    auto _ = ort::debug_line({"routing_checks: first differing byte at ",
+                              ort::decimal(static_cast<u32>(*first_bad), at_text)});
+    // The tail of the data, as the reply carries it: the last 16 bytes of
+    // the pattern block, and the four before them.
+    auto hex = std::array<char, 4 * 20 + 1>{};
+    auto at = usize{0};
+    for (auto index = usize{1004}; index < 1024; ++index) {
+        constexpr auto DIGITS = "0123456789ABCDEF";
+        hex[at] = DIGITS[read_back->data[index] >> 4];
+        hex[at + 1] = DIGITS[read_back->data[index] & 0xF];
+        at += 2;
+    }
+    hex[at] = 0;
+    auto _ = ort::debug_line({"virtio-blk: reply data [1004..1024): ", hex.data()});
+    fail("Block.Write: the scratch block does not read back the pattern");
+    expect("close", fsio::close(connection), Status::Ok);
+}
+
+/// The disk's partition table, when the disk carries one: ours.gpt reads the
+/// GPT through the block connection, and the ours-fs partition it names must
+/// carry the superblock scripts/make_gpt_disk.py lays at its first block. Skips
+/// on a disk with no GPT -- most disks the checks see are the plain image --
+/// and on no disk at all, as check_block does.
+/// The filesystem on the disk's ours-fs partition, through the directory
+/// this process's manifest uses at /disk: create a file, write a pattern
+/// into it, read it back through a fresh open, and find it in the root's
+/// listing. The images without a disk have no /disk at all -- the open of
+/// its root answers NotFound, and the check skips.
+auto check_disk() -> void {
+    constexpr auto DIR = std::string_view{"/disk"};
+    constexpr auto FILE = std::string_view{"/disk/btreefs-check.txt"};
+    constexpr auto MARK = std::string_view{"btreefs write check"};
+    auto pattern = std::array<u8, 64>{};
+    std::memcpy(pattern.data(), MARK.data(), MARK.size());
+    pattern[63] = 0x5A;
+
+    auto const root = fsio::open(DIR, Flags::PermReadBytes | Flags::PermEnumerate);
+    if (root.is_err()) {
+        // No disk, or the filesystem on it having found none: any refusal
+        // here is the check's skip case, as /disk is simply not there.
+        auto _ = ort::debug_line({"routing_checks: no disk directory (",
+                                  ours::to_string(status_of(root)), "), skipped"});
+        return;
+    }
+    // Past this line the disk suite is really running, and the verdict's
+    // not-run line stays quiet.
+    DISK_CHECKS_RAN = true;
+
+    // Create (or find, a past boot having made it) and write the pattern.
+    auto file =
+        fsio::open(FILE, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("/disk file", status_of(file), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto const wrote = fsio::write(file.unwrap(), pattern);
+    if (!expect("/disk file write", status_of(wrote), Status::Ok)) {
+        auto _ = fsio::close(file.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    if (wrote.unwrap() != pattern.size()) {
+        fail("/disk file write: a short write");
+        auto _ = fsio::close(file.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk file close", fsio::close(file.unwrap()), Status::Ok);
+
+    // Read it back through a fresh open: seek 0, every byte the pattern's.
+    file = fsio::open(FILE, Flags::PermReadBytes);
+    if (!expect("/disk file reopen", status_of(file), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto read_back = std::array<u8, pattern.size()>{};
+    auto const read = fsio::read(file.unwrap(), read_back);
+    if (expect("/disk file read", status_of(read), Status::Ok) && read.unwrap() == pattern.size() &&
+        read_back != pattern) {
+        fail("/disk file read: the bytes are not the pattern");
+    }
+    auto _ = fsio::close(file.unwrap());
+
+    // A directory under the root, made by an Open that says which kind it
+    // wants; a file in the directory, written and read back from its root.
+    constexpr auto DIR_ENTRY = std::string_view{"/disk/checked"};
+    constexpr auto IN_DIR = std::string_view{"/disk/checked/inner.txt"};
+    auto const made_dir =
+        fsio::open(DIR_ENTRY, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::PermEnumerate |
+                                  Flags::FlagMaybeCreate | Flags::ProtocolDirectory);
+    if (!expect("/disk mkdir", status_of(made_dir), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto inner =
+        fsio::open(IN_DIR, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("/disk inner", status_of(inner), Status::Ok)) {
+        auto _ = fsio::close(made_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    if (!expect("/disk inner write", status_of(fsio::write(inner.unwrap(), pattern)), Status::Ok)) {
+        auto _ = fsio::close(inner.unwrap());
+        auto _ = fsio::close(made_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk inner close", fsio::close(inner.unwrap()), Status::Ok);
+
+    // The directory's listing names the file as a file.
+    auto dir_listing = std::array<u8, 512>{};
+    // One call: the directory is small, so the one reply carries the
+    // listing whole, and a second call would answer the continuation --
+    // nothing.
+    auto const listed = fsio::read_dirents(made_dir.unwrap(), dir_listing);
+    if (!expect("/disk inner listing", status_of(listed), Status::Ok)) {
+        auto _ = fsio::close(made_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto inner_named = false;
+    auto reader = ours_io::DirentReader(std::span{dir_listing}.first(listed.unwrap()));
+    while (true) {
+        auto const entry = reader.next();
+        if (entry.is_err() || entry->is_none()) {
+            break;
+        }
+        if ((*entry)->name == "inner.txt") {
+            inner_named = true;
+        }
+    }
+    if (!inner_named) {
+        fail("/disk inner listing: the file is not named");
+    }
+
+    // An open relative to a directory handle: a bare name, no namespace
+    // hop. The listing handle above is read-only, and creating under it is
+    // refused with the epitaph surfacing at the first write -- the rights
+    // model working end to end -- so this holds a writable handle of its
+    // own. Create, write, read back, unlink; and a ".." path is refused
+    // before any message is sent.
+    auto const at_dir =
+        fsio::open(DIR, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::PermTraverse |
+                            Flags::PermModifyDirectory | Flags::PermConnect);
+    if (!expect("/disk openat dir", status_of(at_dir), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    constexpr auto OPENAT_FILE = std::string_view{"/disk/openat-check.txt"};
+    auto const at =
+        fsio::open(at_dir.unwrap(), std::string_view{"openat-check.txt"},
+                   Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("/disk openat", status_of(at), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    if (!expect("/disk openat write", status_of(fsio::write(at.unwrap(), pattern)), Status::Ok)) {
+        auto _ = fsio::close(at.unwrap());
+        auto _ = fsio::close(at_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk openat close", fsio::close(at.unwrap()), Status::Ok);
+
+    // The write moved the connection's cursor; a fresh open reads from the
+    // start, and sees what the commit made durable.
+    auto const reopened_at =
+        fsio::open(at_dir.unwrap(), std::string_view{"openat-check.txt"}, Flags::PermReadBytes);
+    if (!expect("/disk openat reopen", status_of(reopened_at), Status::Ok)) {
+        auto _ = fsio::close(at_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto at_back = std::array<u8, pattern.size()>{};
+    auto const at_read = fsio::read(reopened_at.unwrap(), at_back);
+    if (expect("/disk openat read", status_of(at_read), Status::Ok) &&
+        (at_read.unwrap() != pattern.size() || at_back != pattern)) {
+        fail("/disk openat read: the bytes are not the pattern");
+    }
+    expect("/disk openat read close", fsio::close(reopened_at.unwrap()), Status::Ok);
+    expect("/disk openat unlink", fsio::unlink(OPENAT_FILE), Status::Ok);
+    expect("/disk openat dotdot",
+           status_of(fsio::open(at_dir.unwrap(), std::string_view{"../x"}, Flags::PermReadBytes)),
+           Status::BadPath);
+    auto _ = fsio::close(at_dir.unwrap());
+
+    constexpr auto ADMIN = std::string_view{"/svc/ours.fshost.Admin"};
+    constexpr auto NAME = std::string_view{"extra"};
+
+    // The mount check proper: the disk's directory, mounted at run time
+    // under a new name in the writable view, serving files through the
+    // mounted path -- and the same bytes through the disk's own name.
+    auto const admin = connect_or_fail(ADMIN);
+    if (admin == Uandle::Invalid) {
+        return;
+    }
+    // The mounted capability is THIS handle's rights: everything the
+    // mounted path will ever ask must be asked here too, so the listing's
+    // Enumerate and GetAttributes ride along.
+    auto const disk_dir = fsio::open("/disk", ours_io::PERM_READABLE | ours_io::PERM_WRITABLE);
+    if (disk_dir.is_err()) {
+        // No disk, or the filesystem on it having found none: any refusal
+        // here is the skip case, as /disk is simply not there.
+        auto _ = ort::debug_line({"routing_checks: no disk to mount (",
+                                  ours::to_string(status_of(disk_dir)), "), skipped"});
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto mount_txid = next_txid();
+    auto mount_bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+    auto mount_handles = std::array<Uandle, 1>{disk_dir.unwrap()};
+    auto const mount_request =
+        ours_fshost::encode_mount(mount_bytes, mount_handles,
+                                  {.txid = mount_txid, .handle = disk_dir.unwrap(), .name = NAME});
+    if (!expect("Admin.Mount encode", status_of(mount_request), Status::Ok)) {
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto mount_reply = Incoming{};
+    if (!expect("Admin.Mount", call(admin, mount_request.unwrap(), mount_reply), Status::Ok)) {
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    if (auto const epitaph = mount_reply.epitaph(); epitaph.is_some()) {
+        expect("Admin.Mount", *epitaph, Status::Ok);
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto const mount_status =
+        wire::decode_reply_status(mount_reply.message(), ours_fshost::MOUNT, mount_txid);
+    if (!expect("Admin.Mount reply", status_of(mount_status), Status::Ok)) {
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    // Ok on a fresh tree; AlreadyExists when this process's earlier run
+    // mounted it -- fshost is resident, its tree outlives the check.
+    if (mount_status.unwrap() != Status::Ok && mount_status.unwrap() != Status::AlreadyExists) {
+        expect("Admin.Mount reply", mount_status.unwrap(), Status::Ok);
+        auto _ = ours::handle_close(disk_dir.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    // The handle moved with the message; the tree holds the mount now.
+
+    // Files through the mounted path: create, write, and read back through
+    // a fresh open -- and the same bytes through the disk's own name, one
+    // filesystem under two namespace names.
+    auto const mounted_file =
+        fsio::open("/vfs-all/extra/mounted-check.txt",
+                   Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("mounted file", status_of(mounted_file), Status::Ok)) {
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto mount_mark = std::array<u8, 32>{};
+    auto const mount_text = std::string_view{"runtime mount check"};
+    std::memcpy(mount_mark.data(), mount_text.data(), mount_text.size());
+    if (!expect("mounted write", status_of(fsio::write(mounted_file.unwrap(), mount_mark)),
+                Status::Ok)) {
+        auto _ = fsio::close(mounted_file.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    expect("mounted close", fsio::close(mounted_file.unwrap()), Status::Ok);
+    auto const mounted_reopen =
+        fsio::open("/vfs-all/extra/mounted-check.txt", Flags::PermReadBytes);
+    if (expect("mounted reopen", status_of(mounted_reopen), Status::Ok)) {
+        auto back = std::array<u8, mount_mark.size()>{};
+        auto const read = fsio::read(mounted_reopen.unwrap(), back);
+        if (expect("mounted read", status_of(read), Status::Ok) &&
+            (read.unwrap() != mount_mark.size() || back != mount_mark)) {
+            fail("mounted read: the bytes are not the mark");
+        }
+        auto _ = fsio::close(mounted_reopen.unwrap());
+    }
+    auto const twin = fsio::open("/disk/mounted-check.txt", Flags::PermReadBytes);
+    if (expect("mounted twin", status_of(twin), Status::Ok)) {
+        auto back = std::array<u8, mount_mark.size()>{};
+        auto const read = fsio::read(twin.unwrap(), back);
+        if (expect("mounted twin read", status_of(read), Status::Ok) &&
+            (read.unwrap() != mount_mark.size() || back != mount_mark)) {
+            fail("mounted twin read: the bytes are not the mark");
+        }
+        auto _ = fsio::close(twin.unwrap());
+    }
+
+    // A path-based listing through the mount point: fsio::list composes
+    // open + read_dirents, so the mounted path lists exactly like the
+    // disk's own -- and names the file this check just wrote.
+    auto mount_listing = std::array<u8, 512>{};
+    auto const mount_listed = fsio::list("/vfs-all/extra", mount_listing);
+    if (!expect("mounted list", status_of(mount_listed), Status::Ok)) {
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    auto listed_named = false;
+    auto list_reader = ours_io::DirentReader(std::span{mount_listing}.first(mount_listed.unwrap()));
+    while (true) {
+        auto const entry = list_reader.next();
+        if (entry.is_err() || entry->is_none()) {
+            break;
+        }
+        if ((*entry)->name == "mounted-check.txt") {
+            listed_named = true;
+        }
+    }
+    if (!listed_named) {
+        fail("mounted list: the file is not named");
+    }
+
+    // Unlink through the mount point: fsio unlinks via the parent
+    // directory, whose Open forwards through the mount, so the mounted
+    // path works exactly like the disk's own.
+    expect("mounted unlink", fsio::unlink("/vfs-all/extra/mounted-check.txt"), Status::Ok);
+
+    // The working directory on the mounted filesystem: relative create,
+    // write, and read back -- the cwd handle is a direct line to this
+    // filesystem, so relative opens need no namespace and no forwarding.
+    auto const cwd_flags = ours_io::PERM_READABLE | ours_io::PERM_WRITABLE;
+    expect("chdir mounted", fsio::chdir("/vfs-all/extra", cwd_flags), Status::Ok);
+    auto const cwd_file = fsio::open("cwd-check.txt", Flags::PermReadBytes | Flags::PermWriteBytes |
+                                                          Flags::FlagMaybeCreate);
+    if (!expect("cwd create", status_of(cwd_file), Status::Ok)) {
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    if (!expect("cwd write", status_of(fsio::write(cwd_file.unwrap(), mount_mark)), Status::Ok)) {
+        auto _ = fsio::close(cwd_file.unwrap());
+        auto _ = ours::handle_close(admin);
+        return;
+    }
+    expect("cwd close", fsio::close(cwd_file.unwrap()), Status::Ok);
+    auto const cwd_reopen = fsio::open("cwd-check.txt", Flags::PermReadBytes);
+    if (expect("cwd reopen", status_of(cwd_reopen), Status::Ok)) {
+        auto back = std::array<u8, mount_mark.size()>{};
+        auto const read = fsio::read(cwd_reopen.unwrap(), back);
+        if (expect("cwd read back", status_of(read), Status::Ok) &&
+            (read.unwrap() != mount_mark.size() || back != mount_mark)) {
+            fail("cwd read back: the bytes are not the mark");
+        }
+        auto _ = fsio::close(cwd_reopen.unwrap());
+    }
+    expect("cwd unlink", fsio::unlink("/vfs-all/extra/cwd-check.txt"), Status::Ok);
+    auto _ = ours::handle_close(admin);
+
+    // The isolation half: the read-only view does not carry the mount. An
+    // open's refusal surfaces at the handle's first use, so the probe
+    // reads.
+    auto const leaked = fsio::open("/vfs/extra", Flags::PermReadBytes);
+    if (expect("mount stays out of ro", status_of(leaked), Status::Ok)) {
+        auto probe = std::array<u8, 1>{};
+        expect("mount stays out of ro", status_of(fsio::read(leaked.unwrap(), probe)),
+               Status::NotFound);
+        auto _ = fsio::close(leaked.unwrap());
+    }
+    auto _ = ours::handle_close(admin);
+
+    // Truncate the flat file: a fresh open with the flag reads zero bytes.
+    auto const truncated =
+        fsio::open(FILE, Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FileTruncate);
+    if (!expect("/disk truncate open", status_of(truncated), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto zero = std::array<u8, 4>{};
+    auto const after = fsio::read(truncated.unwrap(), zero);
+    if (expect("/disk truncate read", status_of(after), Status::Ok) && after.unwrap() != 0) {
+        fail("/disk truncate read: the file is not empty");
+    }
+    expect("/disk truncate close", fsio::close(truncated.unwrap()), Status::Ok);
+
+    // The unlinks: the file out of the directory, then the directory out of
+    // the root -- empty by then, which a non-empty one refuses to be.
+    expect("/disk inner unlink", fsio::unlink(IN_DIR), Status::Ok);
+    expect("/disk rmdir", fsio::unlink(DIR_ENTRY), Status::Ok);
+
+    // Unlink the flat file and check the root's listing no longer names it.
+    if (!expect("/disk unlink", fsio::unlink(FILE), Status::Ok)) {
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk unlink twice", fsio::unlink(FILE), Status::NotFound);
+    // The reopen is a one-way Open: the refusal is the epitaph its first
+    // read answers.
+    auto const reopened = fsio::open(FILE, Flags::PermReadBytes);
+    if (status_of(reopened) == Status::Ok) {
+        auto byte = std::array<u8, 1>{};
+        expect("/disk read unlinked", status_of(fsio::read(reopened.unwrap(), byte)),
+               Status::NotFound);
+        auto _ = fsio::close(reopened.unwrap());
+    }
+
+    // The listing no longer names it.
+    auto listing = std::array<u8, 512>{};
+    auto const dirents = fsio::read_dirents(root.unwrap(), listing);
+    if (expect("/disk listing", status_of(dirents), Status::Ok)) {
+        auto root_reader = ours_io::DirentReader(std::span{listing}.first(dirents.unwrap()));
+        auto named = false;
+        while (true) {
+            auto const entry = root_reader.next();
+            if (entry.is_err() || entry->is_none()) {
+                break;
+            }
+            if ((*entry)->name == "btreefs-check.txt" || (*entry)->name == "checked") {
+                named = true;
+            }
+        }
+        if (named) {
+            fail("/disk listing: an unlinked entry is still named");
+        }
+    }
+    auto _ = fsio::close(root.unwrap());
+}
+
+auto check_gpt() -> void {
+    auto const connection = connect_or_fail(BLOCK);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    ours_block::Client block{connection};
+    auto geometry = block.get_info();
+    if (geometry.is_err() && geometry.unwrap_err() == Status::NotFound) {
+        auto _ = ort::debug_line("routing_checks: no block device, GPT skipped");
+        return;
+    }
+    if (!expect("Gpt.GetInfo", status_of(geometry), Status::Ok)) {
+        return;
+    }
+
+    auto partitions = std::array<ours_gpt::Partition, 8>{};
+    auto table = ours_gpt::read(block, geometry->block_size, partitions);
+    if (table.is_err() && table.unwrap_err() == Status::NotFound) {
+        auto _ = ort::debug_line("routing_checks: no GPT on the disk, skipped");
+        return;
+    }
+    if (!expect("Gpt.Read", status_of(table), Status::Ok)) {
+        return;
+    }
+
+    // The one partition the image was written with: ours-fs, at the LBA the
+    // script names, whose first block carries its marker.
+    auto found = ustl::Option<usize>{ustl::NONE};
+    for (auto index = usize{0}; index < *table; ++index) {
+        if (partitions[index].type == ours_gpt::Guid{ours_gpt::OURS_FS_TYPE_BYTES}) {
+            found = ustl::some(index);
+            break;
+        }
+    }
+    if (found.is_none()) {
+        fail("Gpt.Read: no partition of the ours-fs type");
+        return;
+    }
+    auto const &partition = partitions[*found];
+    if (std::string_view{partition.name.data()} != "ours-fs") {
+        fail("Gpt.Read: the ours-fs partition is not named ours-fs");
+        return;
+    }
+    if (partition.first_lba != 2048) {
+        fail("Gpt.Read: the ours-fs partition does not start at LBA 2048");
+        return;
+    }
+
+    auto super = std::array<u8, ours_block::BLOCK_SIZE>{};
+    if (!expect("Gpt partition read", block.read(partition.first_lba, 1, super), Status::Ok)) {
+        return;
+    }
+    // The script lays a formatted btreefs volume on the partition; its
+    // superblock's magic is what the first block starts with, and what
+    // btreefs opens the volume by.
+    constexpr auto MAGIC = std::string_view{"BTREEFS"};
+    if (std::string_view{reinterpret_cast<char const *>(super.data()), MAGIC.size()} != MAGIC) {
+        fail("Gpt.Read: the partition does not start with the volume's magic");
+        return;
+    }
+}
+
+/// The working directory: relative opens resolve against it, chdir accepts
+/// absolute and relative paths, and a ".." past it is refused. Probes on
+/// /boot, which every image carries -- read-only, but the cwd needs only
+/// read and traverse.
+auto check_cwd() -> void {
+    // Before any chdir, a relative open names nothing: BadPath.
+    expect("cwd before chdir", status_of(fsio::open("cwd-early.txt", Flags::PermReadBytes)),
+           Status::BadPath);
+
+    // chdir into the writable view, then a relative open walks from it:
+    // this program's own image, read through the working directory. (The
+    // chdir's flags include Modify -- a writable cwd -- so a read-only dir
+    // like /boot would refuse, its epitaph surfacing at the first relative
+    // use; the writable view is the honest probe.)
+    expect("chdir /vfs-all", fsio::chdir("/vfs-all", ours_io::PERM_READABLE), Status::Ok);
+    auto const self = fsio::open("boot/bin/routing_checks", Flags::PermReadBytes);
+    if (!expect("cwd open relative", status_of(self), Status::Ok)) {
+        return;
+    }
+    auto magic = std::array<u8, 4>{};
+    if (expect("cwd read", status_of(fsio::read(self.unwrap(), magic)), Status::Ok) &&
+        (magic[0] != 0x7f || magic[1] != 'E' || magic[2] != 'L' || magic[3] != 'F')) {
+        fail("cwd read: the bytes are not ELF");
+    }
+    auto _ = fsio::close(self.unwrap());
+
+    // Climbing past the working directory is refused client-side.
+    expect("cwd dotdot", status_of(fsio::open("../tmp", Flags::PermReadBytes)), Status::BadPath);
+}
+
 auto check_echo() -> void {
     auto const connection = connect_or_fail(ECHO);
     if (connection == Uandle::Invalid) {
@@ -1209,6 +2695,151 @@ auto run_child() -> int {
     }
     return 0;
 }
+
+/// The most entries the ACPI directory is checked for. A q35 machine has about
+/// ten tables.
+constexpr auto ACPI_MAX_ENTRIES = usize{64};
+
+/// An ACPI signature as the directory spells it: the first character in the
+/// low byte.
+constexpr auto acpi_signature(char const (&name)[5]) -> u32 {
+    return u32(u8(name[0])) | u32(u8(name[1])) << 8 | u32(u8(name[2])) << 16 |
+           u32(u8(name[3])) << 24;
+}
+
+/// Whether the |length| bytes of |vmo| at |offset| add up to zero modulo 256,
+/// which is how ACPI checksums a table. Read in pieces: a table can be larger
+/// than anything worth keeping on this stack. Says why and answers false if a
+/// read fails.
+auto acpi_bytes_sum_to_zero(Uandle const vmo, u64 const offset, u32 const length) -> bool {
+    auto sum = u8{0};
+    auto done = u32{0};
+    while (done < length) {
+        std::array<u8, 256> piece{};
+        auto const n = std::min<usize>(piece.size(), length - done);
+        if (!expect("vmo_read(an ACPI table)", ours::vmo_read(vmo, piece.data(), offset + done, n),
+                    Status::Ok)) {
+            return false;
+        }
+        for (auto i = usize{0}; i < n; ++i) {
+            sum = u8(sum + piece[i]);
+        }
+        done += u32(n);
+    }
+    return sum == 0;
+}
+
+/// Acpi.Get answers with the machine's ACPI tables: a VMO that is read and
+/// mapped and cannot be written, holding the directory of
+/// <ours/acpi_tables.hpp> and then the firmware's tables, the DSDT first. The
+/// directory is read as the route service will read it: every entry lies
+/// inside the VMO, on an 8 byte boundary and after the entry before it; its
+/// signature and length are those of the table's own header; and the table's
+/// bytes add up to zero, which is ACPI's checksum. QEMU's q35 has a FADT and a
+/// MADT, so those two are asked for by name.
+auto check_acpi_tables() -> void {
+    auto const vmo = get_resource(ours_resource::ACPI_PROTOCOL);
+    if (vmo == Uandle::Invalid) {
+        return;
+    }
+
+    ours::InfoHandleBasic basic{};
+    auto actual = usize{0};
+    auto available = usize{0};
+    if (expect("object_get_info(the VMO Acpi.Get gave)",
+               ours::object_get_info(vmo, ours::InfoTopic::HandleBasic, &basic, sizeof(basic),
+                                     &actual, &available),
+               Status::Ok)) {
+        if ((basic.rights & ours::Rights::Read) == ours::Rights::None ||
+            (basic.rights & ours::Rights::Map) == ours::Rights::None) {
+            fail("the VMO Acpi.Get gave cannot be read or mapped");
+        }
+        if ((basic.rights & ours::Rights::Write) != ours::Rights::None) {
+            fail("the VMO Acpi.Get gave can be written");
+        }
+    }
+    auto const byte = u8{0};
+    expect("vmo_write(the ACPI tables)", ours::vmo_write(vmo, &byte, 0, 1), Status::AccessDenied);
+
+    auto size = u64{0};
+    if (!expect("vmo_get_size(the ACPI tables)", ours::vmo_get_size(vmo, &size), Status::Ok)) {
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+    ours::AcpiDirectory directory{};
+    if (size < sizeof(directory) || size % PAGE != 0 ||
+        !expect("vmo_read(the ACPI directory)",
+                ours::vmo_read(vmo, &directory, 0, sizeof(directory)), Status::Ok)) {
+        fail("the ACPI tables' VMO is not a whole number of pages, or cannot be read");
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+    if (directory.magic != ours::ACPI_DIRECTORY_MAGIC ||
+        directory.version != ours::ACPI_DIRECTORY_VERSION) {
+        fail("the ACPI directory has the wrong magic or version");
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+    auto const entries_end =
+        sizeof(directory) + usize{directory.count} * sizeof(ours::AcpiDirectoryEntry);
+    if (directory.count == 0 || directory.count > ACPI_MAX_ENTRIES || directory.size > size ||
+        entries_end > directory.size) {
+        fail("the ACPI directory's count or size is out of range");
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+
+    std::array<ours::AcpiDirectoryEntry, ACPI_MAX_ENTRIES> entries{};
+    if (!expect("vmo_read(the ACPI entries)",
+                ours::vmo_read(vmo, entries.data(), sizeof(directory),
+                               usize{directory.count} * sizeof(ours::AcpiDirectoryEntry)),
+                Status::Ok)) {
+        auto _ = ours::handle_close(vmo);
+        return;
+    }
+
+    auto found_fadt = false;
+    auto found_madt = false;
+    auto previous_end =
+        (entries_end + ours::ACPI_TABLE_ALIGNMENT - 1) & ~(ours::ACPI_TABLE_ALIGNMENT - 1);
+    for (auto index = usize{0}; index < directory.count; ++index) {
+        auto const &entry = entries[index];
+        if (entry.reserved != 0 || entry.offset % ours::ACPI_TABLE_ALIGNMENT != 0 ||
+            entry.length < 36 || entry.offset < previous_end ||
+            u64{entry.offset} + entry.length > directory.size) {
+            fail("an entry of the ACPI directory is out of place");
+            break;
+        }
+        previous_end = usize{entry.offset} + entry.length;
+
+        // The table's own header says what the entry says: signature at 0,
+        // length at 4.
+        std::array<u8, 36> header{};
+        if (!expect("vmo_read(an ACPI table's header)",
+                    ours::vmo_read(vmo, header.data(), entry.offset, header.size()), Status::Ok)) {
+            break;
+        }
+        auto signature = u32{0};
+        auto length = u32{0};
+        std::memcpy(&signature, header.data(), sizeof(signature));
+        std::memcpy(&length, header.data() + 4, sizeof(length));
+        if (signature != entry.signature || length != entry.length) {
+            fail("an ACPI table's header disagrees with its directory entry");
+        }
+        if (!acpi_bytes_sum_to_zero(vmo, entry.offset, entry.length)) {
+            fail("an ACPI table in the directory does not add up to zero");
+        }
+        found_fadt = found_fadt || entry.signature == acpi_signature("FACP");
+        found_madt = found_madt || entry.signature == acpi_signature("APIC");
+    }
+    if (entries[0].signature != acpi_signature("DSDT")) {
+        fail("the first table in the ACPI directory is not the DSDT");
+    }
+    if (!found_fadt || !found_madt) {
+        fail("the ACPI directory has no FADT or no MADT");
+    }
+    auto _ = ours::handle_close(vmo);
+}
 } // namespace
 
 auto main(int argc, char **argv) -> int {
@@ -1219,8 +2850,8 @@ auto main(int argc, char **argv) -> int {
         auto _ = ort::debug_line("routing_checks: FAILED");
         return 1;
     }
-    if (auto const bound = fsio::installed_namespace().size(); bound != 11) {
-        fail("the namespace does not hold the manifest's ten directory uses and /svc");
+    if (auto const bound = fsio::installed_namespace().size(); bound != 14) {
+        fail("the namespace does not hold the manifest's thirteen directory uses and /svc");
     }
     check_process_self("object_get_info(process_self())");
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
@@ -1229,7 +2860,13 @@ auto main(int argc, char **argv) -> int {
     check_read(SELF_IN_BOOT);
     check_read(SELF_IN_BOOT_R);
     check_read(SELF_IN_BIN);
+    check_read(SELF_IN_VFS);
     check_read_dirents("/boot", "bin", ours_io::DirentType::Directory);
+    // This component holds fshost's `ro` view: boot is there, the writable
+    // tmp is not.
+    check_read_dirents("/vfs", "boot", ours_io::DirentType::Directory);
+    check_read_dirents_absent("/vfs", "tmp");
+    check_read_dirents("/vfs/boot", "bin", ours_io::DirentType::Directory);
     check_read_dirents("/boot", "meta", ours_io::DirentType::Directory);
     check_read_dirents("/bin", "routing_checks", ours_io::DirentType::File);
     check_read_dirents("/svc", "ours.process.Launcher", ours_io::DirentType::Service);
@@ -1244,6 +2881,9 @@ auto main(int argc, char **argv) -> int {
     check_debug_resource();
     check_irq_resource();
     check_ioport_resource();
+    check_mmio_resource(vma);
+    check_iommu_resource();
+    check_acpi_tables();
     check_sampling_resource();
     check_unoffered();
     check_undeclared();
@@ -1253,6 +2893,10 @@ auto main(int argc, char **argv) -> int {
         check_launcher_refusals(job);
         check_spawn(job);
     }
+    check_cwd();
+    check_block();
+    check_gpt();
+    check_disk();
     check_echo();
     // Last, whatever else is added above: it ends the provider that the
     // entries of /files route to (check_files_stop()).
@@ -1265,5 +2909,13 @@ auto main(int argc, char **argv) -> int {
         return 1;
     }
     auto _ = ort::debug_line("routing_checks: passed");
+    if (!DISK_CHECKS_RAN) {
+        // The pass stands, but it is not a disked pass, and nothing else in
+        // the log says so in one line: this is the signal a boot with a disk
+        // attached can demand absent.
+        auto _ =
+            ort::debug_line({"routing_checks: disk checks not run (",
+                             BLOCK_DEVICE_SEEN ? "no mounted volume" : "no block device", ")"});
+    }
     return 0;
 }

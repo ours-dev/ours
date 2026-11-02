@@ -5,7 +5,7 @@
 ///
 /// userboot starts it on the runtime (//system/lib/ort), when the image
 /// names it with `userboot.next=bin/init`, with the root job, the read-only
-/// BootFS, VMEX, the vDSO's VMO, the Debug and Sampling resources, the roots
+/// BootFS, VMEX, the vDSO's VMO, the Debug, Sampling and IOMMU resources, the roots
 /// of the interrupt lines and the I/O ports, and its root region. It runs the
 /// component framework (docs/design/261004/component-framework.md); since
 /// step 15 of that plan it starts nothing but components, and it:
@@ -23,7 +23,8 @@
 ///     of which hands out a duplicate of a resource the root keeps --
 ///     ours.resource.Debug the Debug resource the shell reads the console
 ///     with, ours.resource.Sampling the Sampling resource a profiler creates
-///     its session with, ours.resource.Irq and ours.resource.Ioport the
+///     its session with, ours.resource.Iommu the IOMMU resource a bus driver
+///     makes its BTIs from, ours.resource.Irq and ours.resource.Ioport the
 ///     roots of the interrupt lines and the I/O ports, for drivers;
 ///   - then waits for everything at once on one Loop: every /boot and /svc
 ///     connection, every Launcher and resource connection, and every
@@ -126,7 +127,10 @@ constinit ustl::LazyInit<init::LauncherServer::Storage> LAUNCHER_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> DEBUG_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> IRQ_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> IOPORT_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> MMIO_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> IOMMU_RESOURCE_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> SAMPLING_RESOURCE_STORAGE;
+constinit ustl::LazyInit<init::ResourceServer::Storage> ACPI_STORAGE;
 constinit ustl::LazyInit<init::ResourceServer::Storage> ROOT_JOB_STORAGE;
 
 /// launch::start()'s failures, for the Launcher and autorun, on the debug
@@ -243,16 +247,23 @@ auto main(int, char **) -> int {
     // only through ours.resource.Sampling, when the manifests route it one.
     auto const sampling = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_SAMPLING_BASE));
+    // The IOMMU resource, kept like Sampling: a component gets a duplicate
+    // only through ours.resource.Iommu, when the manifests route it one.
+    auto const iommu = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                                u16(ours::RSRC_SYSTEM_IOMMU_BASE));
+    if (iommu == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("init: started without the IOMMU resource");
+    }
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
         vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
         auto _ = ort::debug_line("init: cannot start (missing BootFS, vmex, vDSO or VmaRoot)");
         halt();
     }
-    // The roots of the interrupt lines and the I/O ports, which the root
-    // keeps, as it keeps VMEX: a component gets a duplicate only through
-    // ours.resource.Irq or ours.resource.Ioport, when the manifests route it
-    // one, as a driver's do. A root without them still starts the rest, as
+    // The roots of the interrupt lines, the I/O ports and the physical address
+    // space, which the root keeps, as it keeps VMEX: a component gets a
+    // duplicate only through ours.resource.Irq, ours.resource.Ioport or
+    // ours.resource.Mmio, when the manifests route it one, as a driver's do. A root without them still starts the rest, as
     // one without the Debug resource does: it says what it has, and a Get it
     // cannot answer says why in its reply.
     auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
@@ -261,6 +272,21 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line("init: holding the IRQ and I/O port resources");
     } else {
         auto _ = ort::debug_line("init: started without the IRQ or I/O port resource");
+    }
+    auto const mmio = ort::take_startup_handle(ours::HandleType::MmioResource, 0);
+    if (mmio != ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("init: holding the MMIO resource");
+    } else {
+        auto _ = ort::debug_line("init: started without the MMIO resource");
+    }
+    // The ACPI tables, kept like the roots: a component gets a duplicate only
+    // through ours.boot.Acpi, when the manifests route it one. A platform that
+    // read no tables hands none, which is not a fault: a Get says so.
+    auto const acpi = ort::take_startup_handle(ours::HandleType::VmoAcpi, 0);
+    if (acpi != ours::Uandle::Invalid) {
+        auto _ = ort::debug_line("init: holding the ACPI tables");
+    } else {
+        auto _ = ort::debug_line("init: started without ACPI tables");
     }
 
     // The BootFS, mapped read-only for good: /boot's Read copies from it,
@@ -314,8 +340,15 @@ auto main(int, char **) -> int {
                                              ours_resource::IRQ_PROTOCOL, irq);
     init::ResourceServer ioport_resource_server(*IOPORT_RESOURCE_STORAGE.init(), loop,
                                                 ours_resource::IOPORT_PROTOCOL, ioport);
+    init::ResourceServer mmio_resource_server(*MMIO_RESOURCE_STORAGE.init(), loop,
+                                              ours_resource::MMIO_PROTOCOL, mmio);
+    init::ResourceServer iommu_resource_server(*IOMMU_RESOURCE_STORAGE.init(), loop,
+                                               ours_resource::IOMMU_PROTOCOL, iommu);
     init::ResourceServer sampling_resource_server(*SAMPLING_RESOURCE_STORAGE.init(), loop,
                                                   ours_resource::SAMPLING_PROTOCOL, sampling);
+    // The ACPI tables' VMO, read only: each Get answers a duplicate of it.
+    init::ResourceServer acpi_server(*ACPI_STORAGE.init(), loop, ours_resource::ACPI_PROTOCOL,
+                                     acpi);
     // The root job the root was started with, which stays the root's: each
     // Get answers a duplicate with every right of it.
     init::ResourceServer root_job_server(*ROOT_JOB_STORAGE.init(), loop,
@@ -326,7 +359,10 @@ auto main(int, char **) -> int {
                           .debug_resource = &debug_resource_server,
                           .irq_resource = &irq_resource_server,
                           .ioport_resource = &ioport_resource_server,
+                          .mmio_resource = &mmio_resource_server,
+                          .iommu_resource = &iommu_resource_server,
                           .sampling_resource = &sampling_resource_server,
+                          .acpi = &acpi_server,
                           .root_job = &root_job_server,
                       });
     if (auto const status = realm.resolve_root(); status != Status::Ok) {

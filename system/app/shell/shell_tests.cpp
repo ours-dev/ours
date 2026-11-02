@@ -1955,6 +1955,117 @@ auto check_spawn(bool const component, ours::Uandle const job) -> void {
     }
 }
 
+/// The composed tree at /vfs (macro-fs design): fshost's directory, in which
+/// `boot` is the root's built-in BootFS directory mounted as a remote entry.
+/// Listing /vfs names the mount point; opening /vfs/boot binds to the
+/// root's /boot server through fshost's forwarded Open; reading behind it
+/// walks two servers. Only on dev, where the root offers /vfs.
+auto check_vfs(bool const component) -> void {
+    using ours::Status;
+    using ours::Uandle;
+
+    if (!component) {
+        auto _ = ort::debug_line("shell: vfs checks skipped (no namespace)");
+        return;
+    }
+
+    auto ok = true;
+
+    // The mount point stands in its parent's listing as a directory.
+    auto const vfs =
+        fsio::open("/vfs", ours_io::Flags::ProtocolDirectory | ours_io::Flags::PermEnumerate);
+    ok &= expect("shell: open(/vfs) = ", status_of(vfs), Status::Ok);
+    if (vfs.is_ok()) {
+        std::array<u8, ours_io::MAX_BUF> buffer{};
+        auto found = false;
+        for (;;) {
+            auto const read = fsio::read_dirents(vfs.unwrap(), buffer);
+            if (!expect("shell: read_dirents(/vfs) = ", status_of(read), Status::Ok) ||
+                read.unwrap() == 0) {
+                break;
+            }
+            auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+            for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
+                auto const &dirent = next.unwrap().value();
+                found = found ||
+                        (dirent.name == "boot" && dirent.type == ours_io::DirentType::Directory);
+            }
+        }
+        if (!found) {
+            ok = false;
+            auto _ = ort::debug_line("shell: no boot entry in /vfs FAILED");
+        }
+        ok &= expect("shell: close(/vfs) = ", fsio::close(vfs.unwrap()), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    // Through the mount point: this program's own file, two servers away.
+    auto const file = fsio::open("/vfs/boot/bin/shell", ours_io::Flags::PermReadBytes);
+    ok &= expect("shell: open(/vfs/boot/bin/shell) = ", status_of(file), Status::Ok);
+    if (file.is_ok()) {
+        std::array<u8, 4> magic{};
+        auto const read = fsio::read(file.unwrap(), magic);
+        if (expect("shell: read(/vfs/boot/bin/shell) = ", status_of(read), Status::Ok)) {
+            ok &= read.unwrap() == magic.size() && magic[0] == 0x7f && magic[1] == 'E' &&
+                  magic[2] == 'L' && magic[3] == 'F';
+            if (!(read.unwrap() == magic.size() && magic[0] == 0x7f && magic[1] == 'E' &&
+                  magic[2] == 'L' && magic[3] == 'F')) {
+                auto _ = ort::debug_line("shell: /vfs/boot/bin/shell is not an ELF FAILED");
+            }
+        } else {
+            ok = false;
+        }
+        ok &=
+            expect("shell: close(/vfs/boot/bin/shell) = ", fsio::close(file.unwrap()), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    // The writable mount: create a file in memfs's pool, write it, read it
+    // back through a second connection -- three servers away for the bytes,
+    // fshost forwarding every step.
+    constexpr std::string_view TEXT{"written through /vfs/tmp"};
+    auto const made =
+        fsio::open("/vfs/tmp/hello", ours_io::PERM_WRITABLE | ours_io::Flags::FlagMaybeCreate);
+    ok &= expect("shell: open(/vfs/tmp/hello, maybe_create) = ", status_of(made), Status::Ok);
+    if (made.is_ok()) {
+        auto const written =
+            fsio::write(made.unwrap(), {reinterpret_cast<u8 const *>(TEXT.data()), TEXT.size()});
+        ok &= expect("shell: write(/vfs/tmp/hello) = ", status_of(written), Status::Ok);
+        ok &= written.is_ok() && written.unwrap() == TEXT.size();
+        ok &= expect("shell: close(/vfs/tmp/hello) = ", fsio::close(made.unwrap()), Status::Ok);
+    } else {
+        ok = false;
+    }
+    auto const read_back = fsio::open("/vfs/tmp/hello", ours_io::Flags::PermReadBytes);
+    ok &= expect("shell: open(/vfs/tmp/hello, read) = ", status_of(read_back), Status::Ok);
+    if (read_back.is_ok()) {
+        std::array<u8, 32> buffer{};
+        auto const read = fsio::read(read_back.unwrap(), buffer);
+        if (expect("shell: read(/vfs/tmp/hello) = ", status_of(read), Status::Ok)) {
+            auto const got =
+                std::string_view{reinterpret_cast<char const *>(buffer.data()), read.unwrap()};
+            ok &= got == TEXT;
+            if (got != TEXT) {
+                auto _ = ort::debug_line("shell: /vfs/tmp/hello does not read back FAILED");
+            }
+        } else {
+            ok = false;
+        }
+        ok &= expect("shell: close(/vfs/tmp/hello again) = ", fsio::close(read_back.unwrap()),
+                     Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: vfs checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: vfs checks FAILED");
+    }
+}
+
 /// Handles that travel in messages: out of the writer's table, into the
 /// reader's, and consumed whatever the write answers.
 ///
@@ -2237,6 +2348,8 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 /// device raises the line used, so no interrupt arrives here; the kernel's
 /// interruptline.test raises one, and wakes a parked waiter with it.
 ///
+///   - the lines used are asked for with interrupt_map, ISA 0 and ISA 3, as a
+///     driver would: a line is named by the kernel's number for it;
 ///   - the timer's line, ISA 0, is the kernel's for good: AlreadyBound, with
 ///     a mode or without;
 ///   - ISA 3, COM2's line, is free, since QEMU has no COM2 with one -serial.
@@ -2250,8 +2363,12 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 ///     takes it again, and closing the destroyed object's handle leaves the
 ///     new owner the line; closing the owner's last handle lets it go;
 ///   - the I/O port root grants no line (BadType); a mode that names none is
-///     InvArgs, and a number no line has NoResource, except 0xFFFFFFFF,
-///     which the kernel keeps as no line at all: InvArgs.
+///     InvArgs, and so is the retired RemapIrq bit, 0x1; a number no line has
+///     is NoResource, a pin's GSI taken for a line included, since a line is
+///     named by the kernel's own number for it; except 0xFFFFFFFF, which the
+///     kernel keeps as no line at all: InvArgs. The cascade, ISA 2, has no line
+///     to map (NoResource), and an |out| that faults fails interrupt_map
+///     (InvArgs).
 auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) -> bool {
     using ours::InterruptOptions;
     using ours::InterruptTriggerOptions;
@@ -2260,30 +2377,44 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
 
     constexpr auto ISA_TIMER = u32{0};
     constexpr auto ISA_FREE = u32{3};
-    constexpr auto REMAP = InterruptOptions::RemapIrq;
 
     auto ok = true;
+    // A line is named by the kernel's number for it, which no program
+    // computes: ask for the two lines this check uses, as a driver would.
+    auto timer_line = u32{0};
+    auto free_line = u32{0};
+    if (!expect("shell: interrupt_map(ISA 0) = ",
+                ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_TIMER, &timer_line),
+                Status::Ok) ||
+        !expect("shell: interrupt_map(ISA 3) = ",
+                ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_FREE, &free_line),
+                Status::Ok)) {
+        return false;
+    }
     auto first = Uandle::Invalid;
     auto second = Uandle::Invalid;
     ok &= expect("shell: interrupt_create(ISA 0, the timer's) = ",
-                 ours::interrupt_create(irq, ISA_TIMER, REMAP, &first), Status::AlreadyBound);
-    ok &= expect(
-        "shell: interrupt_create(ISA 0, ModeLevelHigh) = ",
-        ours::interrupt_create(irq, ISA_TIMER, REMAP | InterruptOptions::ModeLevelHigh, &first),
-        Status::AlreadyBound);
+                 ours::interrupt_create(irq, timer_line, InterruptOptions::None, &first),
+                 Status::AlreadyBound);
+    ok &= expect("shell: interrupt_create(ISA 0, ModeLevelHigh) = ",
+                 ours::interrupt_create(irq, timer_line, InterruptOptions::ModeLevelHigh, &first),
+                 Status::AlreadyBound);
 
     // The handle's value is written out last, once the line is taken and
     // unmasked, so an |out| that faults fails the create after the line is
     // the object's. Only the handle dropped on that path can give it back.
     ok &= expect("shell: interrupt_create(ISA 3, out = unmapped) = ",
-                 ours::interrupt_create(irq, ISA_FREE, REMAP, reinterpret_cast<Uandle *>(UNMAPPED)),
+                 ours::interrupt_create(irq, free_line, InterruptOptions::None,
+                                        reinterpret_cast<Uandle *>(UNMAPPED)),
                  Status::InvArgs);
     if (!expect("shell: interrupt_create(ISA 3) = ",
-                ours::interrupt_create(irq, ISA_FREE, REMAP, &first), Status::Ok)) {
+                ours::interrupt_create(irq, free_line, InterruptOptions::None, &first),
+                Status::Ok)) {
         return false;
     }
     ok &= expect("shell: interrupt_create(ISA 3, taken) = ",
-                 ours::interrupt_create(irq, ISA_FREE, REMAP, &second), Status::AlreadyBound);
+                 ours::interrupt_create(irq, free_line, InterruptOptions::None, &second),
+                 Status::AlreadyBound);
     ok &=
         expect("shell: interrupt_trigger(on a line) = ",
                ours::interrupt_trigger(first, InterruptTriggerOptions::None, 1), Status::BadState);
@@ -2293,18 +2424,19 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
                  ours::interrupt_wait(first, nullptr), Status::Cancelled);
 
     // The destroyed object's handle is still open; its line is free.
-    if (expect(
-            "shell: interrupt_create(ISA 3, after the destroy) = ",
-            ours::interrupt_create(irq, ISA_FREE, REMAP | InterruptOptions::ModeEdgeHigh, &second),
-            Status::Ok)) {
+    if (expect("shell: interrupt_create(ISA 3, after the destroy) = ",
+               ours::interrupt_create(irq, free_line, InterruptOptions::ModeEdgeHigh, &second),
+               Status::Ok)) {
         ok &=
             expect("shell: close(the destroyed object) = ", ours::handle_close(first), Status::Ok);
         auto third = Uandle::Invalid;
         ok &= expect("shell: interrupt_create(ISA 3, the new owner's) = ",
-                     ours::interrupt_create(irq, ISA_FREE, REMAP, &third), Status::AlreadyBound);
+                     ours::interrupt_create(irq, free_line, InterruptOptions::None, &third),
+                     Status::AlreadyBound);
         ok &= expect("shell: close(the new owner) = ", ours::handle_close(second), Status::Ok);
         if (expect("shell: interrupt_create(ISA 3, after the close) = ",
-                   ours::interrupt_create(irq, ISA_FREE, REMAP, &third), Status::Ok)) {
+                   ours::interrupt_create(irq, free_line, InterruptOptions::None, &third),
+                   Status::Ok)) {
             ok &= ours::handle_close(third) == Status::Ok;
         } else {
             ok = false;
@@ -2316,13 +2448,41 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
 
     auto unused = Uandle::Invalid;
     ok &= expect("shell: interrupt_create(the I/O port root) = ",
-                 ours::interrupt_create(ioport, ISA_FREE, REMAP, &unused), Status::BadType);
-    ok &= expect("shell: interrupt_create(a mode that names none) = ",
-                 ours::interrupt_create(irq, ISA_FREE,
-                                        REMAP | static_cast<InterruptOptions>(5U << 1), &unused),
-                 Status::InvArgs);
+                 ours::interrupt_create(ioport, free_line, InterruptOptions::None, &unused),
+                 Status::BadType);
+    ok &= expect(
+        "shell: interrupt_create(a mode that names none) = ",
+        ours::interrupt_create(irq, free_line, static_cast<InterruptOptions>(5U << 1), &unused),
+        Status::InvArgs);
     ok &= expect("shell: interrupt_create(a line no pin is) = ",
                  ours::interrupt_create(irq, 200, InterruptOptions::None, &unused),
+                 Status::NoResource);
+    // 0x1 was RemapIrq, retired: the bit is reserved and not reused, so a
+    // create that sets it is refused (InvArgs), whatever else it asks.
+    ok &=
+        expect("shell: interrupt_create(the retired RemapIrq bit) = ",
+               ours::interrupt_create(irq, free_line, static_cast<InterruptOptions>(0x1), &unused),
+               Status::InvArgs);
+    // The cascade between the two legacy controllers carries no device and
+    // names no line.
+    auto number = u32{0};
+    ok &= expect("shell: interrupt_map(ISA 2, the cascade) = ",
+                 ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, 2, &number),
+                 Status::NoResource);
+    // interrupt_map writes its answer last: an |out| that faults fails a call
+    // that found the line, and takes nothing.
+    ok &= expect("shell: interrupt_map(out = unmapped) = ",
+                 ours::interrupt_map(irq, ours::InterruptSourceKind::Gsi, ISA_FREE,
+                                     reinterpret_cast<u32 *>(UNMAPPED)),
+                 Status::InvArgs);
+    ok &= expect("shell: interrupt_map(Gsi, 3) = ",
+                 ours::interrupt_map(irq, ours::InterruptSourceKind::Gsi, ISA_FREE, &number),
+                 Status::Ok);
+    // A line is named by the kernel's number for it, never the pin's GSI.
+    // COM2's pin is GSI 3 on q35; taken for a line, it names none: interrupt_map
+    // is what turns a source the firmware names into one.
+    ok &= expect("shell: interrupt_create(a GSI, not mapped) = ",
+                 ours::interrupt_create(irq, ISA_FREE, InterruptOptions::None, &unused),
                  Status::NoResource);
     ok &= expect("shell: interrupt_create(line 0xFFFFFFFF) = ",
                  ours::interrupt_create(irq, 0xFFFF'FFFF, InterruptOptions::None, &unused),
@@ -2371,13 +2531,13 @@ auto check_interrupt(ours::Uandle const irq, ours::Uandle const ioport, bool con
                  ours::interrupt_create(Uandle::Invalid, 0, static_cast<InterruptOptions>(0x8000),
                                         &interrupt),
                  Status::InvArgs);
-    ok &= expect("shell: interrupt_create(Virtual, RemapIrq) = ",
+    ok &= expect("shell: interrupt_create(Virtual, a mode) = ",
                  ours::interrupt_create(Uandle::Invalid, 0,
-                                        InterruptOptions::Virtual | InterruptOptions::RemapIrq,
+                                        InterruptOptions::Virtual | InterruptOptions::ModeEdgeHigh,
                                         &interrupt),
                  Status::InvArgs);
     ok &= expect("shell: interrupt_create(a physical line, no resource) = ",
-                 ours::interrupt_create(Uandle::Invalid, 3, InterruptOptions::RemapIrq, &interrupt),
+                 ours::interrupt_create(Uandle::Invalid, 3, InterruptOptions::None, &interrupt),
                  Status::BadHandle);
     if (component) {
         auto _ = ort::debug_line(
@@ -8178,6 +8338,7 @@ auto run(Inputs const &inputs) -> void {
     check_launcher_service(inputs.component, inputs.job, inputs.vmex);
     check_profile(inputs.component, inputs.job);
     check_spawn(inputs.component, inputs.job);
+    check_vfs(inputs.component);
     check_handle_close(inputs.job);
     check_channel_loopback();
     check_handle_transfer();

@@ -19,8 +19,10 @@
 /// connections on its server end, a resolve past the instances to whoever
 /// asked (the router among them, whose termination rests on exactly that).
 namespace init {
-/// Component instances, the root's own among them (D27: 8 components).
-inline constexpr auto MAX_INSTANCES = usize{8};
+/// Component instances, the root's own among them (D27: 8 components; dev
+/// has outgrown the design's count with the filesystem component, and the
+/// next component bumps this with its own).
+inline constexpr auto MAX_INSTANCES = usize{10};
 
 /// /boot connections: namespace entries the root binds, and every Open and
 /// Clone through them (D27: 128).
@@ -32,11 +34,11 @@ inline constexpr auto MAX_CONNECTIONS = usize{128};
 inline constexpr auto MAX_LAUNCHER_CONNECTIONS = usize{4};
 
 /// The protocols the root serves with a ResourceServer each
-/// (resource_server.hpp): ours.resource's Debug, Irq, Ioport and Sampling,
-/// and ours.kernel.RootJob (init.cpp builds one per protocol). A server
+/// (resource_server.hpp): ours.resource's Debug, Irq, Ioport, Mmio, Iommu and
+/// Sampling, and ours.kernel.RootJob (init.cpp builds one per protocol). A server
 /// added there is a server counted here, or LOOP_SLOTS falls short by its
 /// connections.
-inline constexpr auto RESOURCE_SERVERS = usize{5};
+inline constexpr auto RESOURCE_SERVERS = usize{8};
 
 /// Connections of one ResourceServer. D27 does not size them; a connection
 /// holds nothing but its channel, so this costs a Loop slot each, and as many

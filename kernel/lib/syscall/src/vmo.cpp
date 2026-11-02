@@ -43,6 +43,40 @@ auto vmo_create(u64 const size, VmoOptions const options,
     return Status::Ok;
 }
 
+/// A window onto physical memory, published as vmo_create does.
+///
+/// The resource first: BadHandle, BadType, OutOfRange and AccessDenied come
+/// ahead of every argument error (design 4.5), and AccessDenied is the answer
+/// for memory no resource grants, the root's included -- RAM, and the registers
+/// of a device the kernel drives. Whether |paddr| and |size| make a window at
+/// all is the object's to say (VmoDispatcher::create_physical()).
+auto vmo_create_physical(ours::Uandle const resource, PhysAddr const paddr, usize const size,
+                         user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
+    if (auto const status = object::validate_ranged_resource(resource, RsrcKind::MmIo, paddr, size);
+        status != Status::Ok) {
+        return status;
+    }
+
+    KernelHandle<VmoDispatcher> vmo;
+    Rights rights = Rights::None;
+    if (auto const status = VmoDispatcher::create_physical(paddr, size, vmo, rights);
+        status != Status::Ok) {
+        return status;
+    }
+
+    auto handle = object::Handle::make(KernelHandle<object::Dispatcher>(ustl::move(vmo)), rights);
+    if (!handle) {
+        return Status::NoResource;
+    }
+
+    auto &table = ProcessDispatcher::current()->handle_table();
+    if (auto const status = out.copy_to_user(table.value_of(*handle)); status != Status::Ok) {
+        return status;
+    }
+    auto _ = table.add(ustl::move(handle));
+    return Status::Ok;
+}
+
 /// The handle, then the VMO.
 ///
 /// Resolving the handle first is what puts BadHandle > BadType >

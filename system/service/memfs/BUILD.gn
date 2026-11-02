@@ -1,0 +1,53 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/component_manifest.gni")
+import("//system/user_executable.gni")
+
+# Read only in a user toolchain, as every program under //system/service:
+# dev's root.cm names the manifest below, and component_manifest() moves its
+# program there.
+assert(
+    toolchain_environment == "user",
+    "system/service/memfs must be built in a //build/toolchain/ours:user-* toolchain")
+
+# The first writable filesystem (macro-fs design): a flat directory of files
+# in this process's memory, served by speaking ours.io directly. It uses
+# nothing and exposes its tree as the directory `tmp`, which root.cm offers
+# to fshost; the tree's `tmp` entry mounts it, and clients of /vfs reach the
+# files at /vfs/tmp/...
+user_executable("memfs") {
+  visibility = [
+    ":*",
+    "//kernel/products/image/*",
+  ]
+  sources = [ "memfs.cpp" ]
+  deps = [
+    "//system/lib/ioservice",
+    "//system/lib/loop",
+    "//system/lib/ours.io",
+    "//system/lib/wire",
+  ]
+}
+
+component_manifest("memfs.cm") {
+  visibility = [ "//kernel/products/image/*" ]
+  program = ":memfs"
+  manifest = {
+    capabilities = [
+      {
+        directory = "tmp"
+        path = "/tmp"
+        rights = [ "rw*" ]
+      },
+    ]
+    expose = [
+      {
+        directory = "tmp"
+        from = "self"
+      },
+    ]
+  }
+}

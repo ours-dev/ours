@@ -1,0 +1,43 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# ours.btreefs -- the on-disk filesystem the ours-fs partition carries: one
+# B+tree over 4 KiB blocks, the format defined in
+# .agents/tasks/btreefs/DESIGN.md. Format logic only, bytes alone, no system
+# call, so it builds in every toolchain, the host one included, where its
+# tests run. The blocks come in through whatever reads and writes them --
+# ours.block's Client behind an adapter on a booted system, a fake over
+# memory in the tests -- so the library depends on no protocol, only on the
+# Device's two methods.
+source_set("ours.btreefs") {
+  sources = [ "src/ours_btreefs.cpp" ]
+  public_deps = [
+    ":headers",
+    "//system/lib/ours.gpt",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni. The operations are templates over the
+# device, so they live in the header beside the declarations; the source
+# carries the byte level.
+cpp_interface("headers") {
+  public = [ "include/ours_btreefs/ours_btreefs.hpp" ]
+  public_deps = [
+    "//system/lib/ours.gpt:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:ours.btreefs($host_toolchain)" ]
+}

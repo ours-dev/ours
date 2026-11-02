@@ -20,6 +20,11 @@ namespace {
     constexpr auto OPEN_OBJECT_OFFSET = usize{24};
     constexpr auto OPEN_PATH_SIZE_OFFSET = usize{28};
     constexpr auto OPEN_PATH_OFFSET = usize{32};
+    constexpr auto UNLINK_PATH_SIZE_OFFSET = usize{20};
+    constexpr auto UNLINK_PATH_OFFSET = usize{24};
+
+    // File.Write: the data's size, then the data, which ends the message.
+    constexpr auto WRITE_DATA_OFFSET = usize{20};
 
     // The requests with a body of one u64, or of one u32 and a zero u32:
     // Clone, Read, GetBackingMemory and ReadDirents.
@@ -238,6 +243,43 @@ auto decode_read(Message const message) -> ustl::Result<ReadRequest, Status> {
     return ustl::ok(ReadRequest{.txid = decoded->txid, .count = decoded->value});
 }
 
+auto encode_write(std::span<u8> const bytes, WriteRequest const &request) -> Encoded {
+    if (request.data.size() > MAX_TRANSFER_SIZE) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto started =
+        wire::start_request(bytes, WRITE_DATA_OFFSET + request.data.size(), WRITE, request.txid);
+    if (started.is_err()) {
+        return ustl::err(started.unwrap_err());
+    }
+    auto const message = started.unwrap();
+    wire::store(message, BODY_OFFSET, static_cast<u32>(request.data.size()));
+    if (!request.data.empty()) {
+        std::memcpy(message.data() + WRITE_DATA_OFFSET, request.data.data(), request.data.size());
+    }
+    return ustl::ok(Message{.bytes = message, .handles = {}});
+}
+
+auto decode_write(Message const message) -> ustl::Result<WriteRequest, Status> {
+    auto header = wire::decode_request_header(message, WRITE);
+    if (header.is_err()) {
+        return ustl::err(header.unwrap_err());
+    }
+    if (message.bytes.size() < WRITE_DATA_OFFSET || !message.handles.empty()) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto const size = wire::load<u32>(message.bytes, BODY_OFFSET);
+    // A message is exactly as long as its fields: the data ends it.
+    if (size > MAX_TRANSFER_SIZE || message.bytes.size() != WRITE_DATA_OFFSET + size) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto const data = message.bytes.subspan(WRITE_DATA_OFFSET, size);
+    return ustl::ok(WriteRequest{
+        .txid = header->txid,
+        .data = {data.data(), data.size()},
+    });
+}
+
 auto encode_get_backing_memory(std::span<u8> const bytes, GetBackingMemoryRequest const &request)
     -> Encoded {
     if ((request.flags & ~VMO_FLAGS_KNOWN) != VmoFlags::None) {
@@ -310,6 +352,42 @@ auto decode_read_reply(Message const message, u32 const txid) -> ustl::Result<Re
         return ustl::err(decoded.unwrap_err());
     }
     return ustl::ok(ReadReply{.status = decoded->status, .data = decoded->payload});
+}
+
+auto encode_write_reply(std::span<u8> const bytes, u32 const txid, WriteReply const &reply)
+    -> Encoded {
+    if (reply.status != Status::Ok) {
+        if (reply.actual != 0) {
+            return ustl::err(Status::InvArgs);
+        }
+        return wire::encode_status_reply(bytes, WRITE, txid, reply.status);
+    }
+    // The status and the count fill the status form exactly: nothing after
+    // the count.
+    auto started = wire::start_ok_reply(bytes, wire::STATUS_FORM_SIZE, WRITE, txid);
+    if (started.is_err()) {
+        return ustl::err(started.unwrap_err());
+    }
+    auto const message = started.unwrap();
+    wire::store(message, REPLY_FIELD_OFFSET, reply.actual);
+    return ustl::ok(Message{.bytes = message, .handles = {}});
+}
+
+auto decode_write_reply(Message const message, u32 const txid) -> ustl::Result<WriteReply, Status> {
+    auto status = wire::decode_reply_status(message, WRITE, txid);
+    if (status.is_err()) {
+        return ustl::err(status.unwrap_err());
+    }
+    // The count sits where the status form's zero goes, so a failure is the
+    // plain form: no handles, nothing past the count.
+    if (message.bytes.size() != wire::STATUS_FORM_SIZE || !message.handles.empty()) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto const actual = wire::load<u32>(message.bytes, REPLY_FIELD_OFFSET);
+    if (status.unwrap() != Status::Ok && actual != 0) {
+        return ustl::err(Status::InvArgs);
+    }
+    return ustl::ok(WriteReply{.status = status.unwrap(), .actual = actual});
 }
 
 auto encode_get_backing_memory_reply(std::span<u8> const bytes, std::span<Uandle> const handles,
@@ -409,5 +487,43 @@ auto DirentReader::next() -> ustl::Result<ustl::Option<Dirent>, Status> {
     };
     m_rest = m_rest.subspan(DIRENT_HEADER_SIZE + name_size);
     return ustl::ok(ustl::some(dirent));
+}
+auto encode_unlink(std::span<u8> bytes, UnlinkRequest const &request) -> Encoded {
+    if (request.path.size() > MAX_PATH_LENGTH) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto started =
+        wire::start_request(bytes, UNLINK_PATH_OFFSET + request.path.size(), UNLINK, request.txid);
+    if (started.is_err()) {
+        return ustl::err(started.unwrap_err());
+    }
+    auto const message = started.unwrap();
+    wire::store(message, UNLINK_PATH_SIZE_OFFSET, static_cast<u32>(request.path.size()));
+    if (!request.path.empty()) {
+        std::memcpy(message.data() + UNLINK_PATH_OFFSET, request.path.data(), request.path.size());
+    }
+    return ustl::ok(Message{.bytes = message, .handles = {}});
+}
+
+auto decode_unlink(Message const message) -> ustl::Result<UnlinkRequest, Status> {
+    auto header = wire::decode_request_header(message, UNLINK);
+    if (header.is_err()) {
+        return ustl::err(header.unwrap_err());
+    }
+    if (message.bytes.size() < UNLINK_PATH_OFFSET || !message.handles.empty()) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto const path_size = wire::load<u32>(message.bytes, UNLINK_PATH_SIZE_OFFSET);
+    if (path_size > MAX_PATH_LENGTH || message.bytes.size() != UNLINK_PATH_OFFSET + path_size) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto const path = std::string_view{
+        reinterpret_cast<char const *>(message.bytes.data()) + UNLINK_PATH_OFFSET, path_size};
+    return ustl::ok(UnlinkRequest{.txid = header->txid, .path = path});
+}
+
+auto encode_unlink_reply(std::span<u8> const bytes, u32 const txid, Status const status)
+    -> Encoded {
+    return wire::encode_status_reply(bytes, UNLINK, txid, status);
 }
 } // namespace ours_io

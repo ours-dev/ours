@@ -60,6 +60,14 @@ class VmoDispatcher final: public VmoDispatcherBase {
     static auto create_paged(usize size, KernelHandle<Self> &handle_out, Rights &rights_out)
         -> Status;
 
+    /// A VMO of |size| bytes (rounded up to whole pages) of physically
+    /// contiguous, zeroed memory that starts on a multiple of
+    /// 2^|alignment_log2| bytes (0 is a page): a buffer a device is given one
+    /// address of (mm::VmObjectPaged::create_contiguous(), which says what it
+    /// can and cannot be). The handle has the default VMO rights.
+    static auto create_contiguous(usize size, usize alignment_log2, KernelHandle<Self> &handle_out,
+                                  Rights &rights_out) -> Status;
+
     /// A paged VMO that takes over |size| bytes of frames at |base|, reserved
     /// since boot, as its own pages (mm::VmObjectPaged::create_from_wired_pages()):
     /// no copy, and the frames go to the page allocator when the VMO dies.
@@ -108,8 +116,21 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// does not own, such as MMIO. Nothing here frees it. (Loaded ELF images
     /// used to come through here too, which is how their frames leaked; they
     /// are paged VMOs now.)
+    ///
+    /// |base| and |size| are whole pages and neither is 0, or InvArgs; a
+    /// window that runs past the top of the address space is OutOfRange. Whether
+    /// the caller may have this memory at all is not asked here: that is
+    /// validate_ranged_resource()'s, and vmo_create_physical() asks it first.
     static auto create_physical(PhysAddr base, usize size, KernelHandle<Self> &handle_out,
                                 Rights &rights_out) -> Status;
+
+    /// Whether this is a window onto physical memory rather than pages of the
+    /// kernel's own. Such a window is installed whole when it is mapped, since
+    /// no fault could supply a page of it later (vma_map).
+    [[nodiscard]]
+    auto is_physical() const -> bool {
+        return m_vmo->type() == mm::VmObject::Type::Physical;
+    }
 
     FORCE_INLINE
     auto vmo() const -> ustl::Arc<mm::VmObject> const & {

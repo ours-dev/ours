@@ -1,6 +1,7 @@
 if (toolchain_environment == "kernel") {
   source_set("platform") {
     sources = [
+      "acpi.cpp",
       "debug_console.cpp",
       "ioport.cpp",
       "isa.cpp",

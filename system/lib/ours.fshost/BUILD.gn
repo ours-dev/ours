@@ -1,0 +1,33 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# ours.fshost -- the composing server's admin protocol (macro-fs design, the
+# dynamic-mount decision): bytes alone, no system call, so it builds in every
+# toolchain, the host one included, where its tests run. One verb for now,
+# Mount; Unmount waits for its own design.
+source_set("ours.fshost") {
+  sources = [ "src/ours_fshost.cpp" ]
+  public_deps = [
+    ":headers",
+    "//system/lib/wire",
+  ]
+  visibility = [ "*" ]
+}
+
+cpp_interface("headers") {
+  public = [ "include/ours_fshost/ours_fshost.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [ "test:ours.fshost($host_toolchain)" ]
+}

@@ -1,5 +1,7 @@
 #include <ours/arch/hpet.hpp>
+#include <ours/mm/cfg.hpp>
 #include <ours/platform/acpi.hpp>
+#include <ours/platform/mmio.hpp>
 
 #include <acpi/structures/hpet.hpp>
 #include <gktl/init_hook.hpp>
@@ -20,6 +22,10 @@ static auto platform_hpet_init() -> void {
         log::info("HPET: MMIO unsupported.");
         return;
     }
+
+    // The kernel maps the page the HPET's registers are in; no MmIo resource
+    // grants it.
+    platform::reserve_kernel_mmio(hpet->address.address, PAGE_SIZE);
 
     auto const status = hpet_init(hpet->address.address);
     if (Status::Ok != status) {

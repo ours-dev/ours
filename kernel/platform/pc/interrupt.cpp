@@ -3,9 +3,9 @@
 #include <ours/mm/mod.hpp>
 #include <ours/platform/acpi.hpp>
 #include <ours/platform/isa.hpp>
+#include <ours/platform/mmio.hpp>
 
 #include <algorithm>
-#include <array>
 
 #include <acpi/structures/madt.hpp>
 #include <acpi/table_set.hpp>
@@ -65,6 +65,10 @@ namespace {
         auto const *madt = tables->find<acpi::madt::Table>();
         DEBUG_ASSERT(madt, "No MADT");
 
+        // The kernel maps and drives the local APIC and every IO-APIC, a page
+        // each; no MmIo resource grants those pages.
+        platform::reserve_kernel_mmio(arch::APIC_PHYS_BASE, PAGE_SIZE);
+
         ktl::Vec<arch::IoApic> io_apics;
         for (auto const &entry: acpi::entries<acpi::madt::IoApicEntry>(*madt)) {
             auto slot = io_apics.emplace_back();
@@ -72,6 +76,7 @@ namespace {
             slot.unwrap()->init(entry.io_apic_address,
                                 mm::phys_to_pfn(PhysAddr(entry.io_apic_address)),
                                 entry.global_irq_base);
+            platform::reserve_kernel_mmio(entry.io_apic_address, PAGE_SIZE);
         }
 
         ktl::Vec<arch::IoApicIsaOverride> io_apic_isa_overrides;
@@ -96,19 +101,27 @@ namespace {
         using namespace arch;
         auto const bspid = current_apic_id();
 
-        // Every ISA line is programmed, masked, at its GSI -- the IO-APIC pin
-        // the MADT's overrides send it to -- with vector PlatformIrqMin + GSI.
-        // faults.cpp turns a vector back into a number by subtracting the same
-        // base, so what reaches platform_handle_irq() is the GSI, the same
-        // number the line is attached by and masked by. One line, one number.
+        // Every pin of every IO-APIC is programmed, masked, at its GSI with
+        // vector PlatformIrqMin + GSI: first the pins the ISA lines reach, as
+        // the MADT's overrides send them, then all the others. faults.cpp
+        // turns a vector back into a number by subtracting the same base, so
+        // what reaches platform_handle_irq() is the GSI. The irq layer looks
+        // the line up by it; every other part names the line by its virq.
         //
         // The vector is fixed by the GSI, not taken from a pool of free
         // vectors when the first handler registers on a line. One IO-APIC's
         // 24 pins fit the 208 platform vectors with room to spare; allocating
-        // them waits for PCI and MSI, which bring more.
+        // them waits for MSI, which brings more.
         constexpr auto MAX_GSI = usize(IrqVec::PlatformIrqMax) - usize(IrqVec::PlatformIrqMin);
-        std::array<HIrqNum, NUM_ISA_IRQS> gsis{};
-        auto nr_gsis = usize{0};
+        ktl::Vec<HIrqNum> gsis;
+        auto const is_programmed = [&gsis](HIrqNum const gsi) -> bool {
+            auto const taken = ustl::views::Span(gsis);
+            return std::ranges::find(taken, gsi) != taken.end();
+        };
+        auto const remember = [&gsis](HIrqNum const gsi) -> void {
+            auto slot = gsis.emplace_back(gsi);
+            ASSERT(slot, "Out of memory while collecting the GSIs of the IO-APIC pins");
+        };
         for (auto isa = IsaIrqNum{0}; isa < NUM_ISA_IRQS; ++isa) {
             // ISA 2 is the cascade between the two PICs and carries no device.
             // QEMU sends ISA 0 to GSI 2 without moving ISA 2 off it, so
@@ -124,8 +137,7 @@ namespace {
             // a pin beat the line whose own number it is; on QEMU the only
             // such pair is ISA 0 and 2, which the check above settles the
             // same way.
-            auto const taken = ustl::views::Span(gsis).first(nr_gsis);
-            if (std::ranges::find(taken, gsi) != taken.end()) {
+            if (is_programmed(gsi)) {
                 log::warn("ISA IRQ {} shares GSI {} with an earlier ISA line; not programmed",
                           u32(isa), gsi);
                 continue;
@@ -136,20 +148,45 @@ namespace {
             auto const vector = IrqVec(usize(IrqVec::PlatformIrqMin) + gsi);
             apic_configure_isa_irq(isa, ApicDeliveryMode::Fixed, true,
                                    ApicDestinationMode::Physical, static_cast<u8>(bspid), vector);
-            gsis[nr_gsis] = gsi;
-            ++nr_gsis;
+            remember(gsi);
+        }
+
+        // Then every pin no ISA line reached, which on a PC are the pins PCI
+        // wires its interrupts to. They are programmed the way PCI signals,
+        // level and active low; whoever takes a line says otherwise with a
+        // mode, which configures the pin as the line is taken. The entry is
+        // masked, so nothing arrives before a driver unmasks its line. A pin
+        // whose GSI is past the platform vectors gets no line and is left as
+        // the firmware left it.
+        for (auto const &ioapic: registered_io_apics()) {
+            for (auto pin = usize{0}; pin < ioapic.irq_count(); ++pin) {
+                auto const gsi = static_cast<HIrqNum>(ioapic.gsi_base() + pin);
+                if (is_programmed(gsi)) {
+                    continue;
+                }
+
+                if (gsi > MAX_GSI) {
+                    log::warn("IO-APIC[{}] pin {} is GSI {}, past the platform vectors; no line",
+                              ioapic.id(), pin, gsi);
+                    continue;
+                }
+
+                auto const vector = IrqVec(usize(IrqVec::PlatformIrqMin) + gsi);
+                apic_configure_irq(gsi, ApicTriggerMode::Level, ApicInterruptPolarity::ActiveLow,
+                                   ApicDeliveryMode::Fixed, true, ApicDestinationMode::Physical,
+                                   static_cast<u8>(bspid), vector);
+                remember(gsi);
+            }
         }
 
         // The irq layer's lines are the GSIs just programmed, and could not be
         // made before the MADT said which those are. They are made before the
-        // first unmask, which is a driver's, after this function. A line for
-        // every GSI of every IO-APIC waits for PCI, the first user of a GSI
-        // that no ISA line reaches.
+        // first unmask, which is a driver's, after this function.
         //
         // Each line is bound to the IO-APIC's chip as it is made, so a driver
         // masks and unmasks its line through the irq layer, and the chip
         // takes the IO-APIC register lock; no driver touches the IO-APIC.
-        auto const status = irq::init_lines(ustl::views::Span(gsis).first(nr_gsis), io_apic_chip());
+        auto const status = irq::init_lines(ustl::views::Span(gsis), io_apic_chip());
         ASSERT(Status::Ok == status, "Failed to build the interrupt lines: {}", to_string(status));
 
         arch::local_irq_enable();
@@ -162,8 +199,9 @@ namespace {
 } // namespace
 
 /// `irqnum` is the GSI: the vector less PlatformIrqMin, and platform_init_apic()
-/// programmed every GSI with vector PlatformIrqMin + GSI. The irq layer names
-/// its lines by the same number, so it passes through unchanged.
+/// programmed every GSI with vector PlatformIrqMin + GSI. The irq layer looks
+/// the line up by that hardware number, so it passes through unchanged; the
+/// line's virq is the irq layer's own.
 auto platform_handle_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> bool {
     return irq::handle_irq_generic(irqnum);
 }
@@ -177,13 +215,17 @@ auto platform_finish_handling_irq(HIrqNum irqnum, arch::IrqFrame *) -> bool {
 }
 
 /// The same mapping platform_init_apic() programmed each ISA line at, so the
-/// line a driver names this way is the one its device's interrupts reach.
-/// The bound comes first: apic_io_isa_to_global() takes a u8, and a number
-/// past the ISA lines would wrap into one of them rather than stay itself.
-auto platform::remap_isa_irq(u32 const irq) -> VIrqNum {
-    if (irq >= arch::NUM_ISA_IRQS) {
-        return irq;
+/// line a driver names this way is the one its device's interrupts reach: the
+/// ISA number gives a GSI, and the irq layer says which line was made for that
+/// GSI. The bound comes first: apic_io_isa_to_global() takes a u8, and a
+/// number past the ISA lines would wrap into one of them. The cascade is left
+/// out: platform_init_apic() does not program it, and its GSI is commonly the
+/// timer's (q35 sends ISA 0 to GSI 2 and leaves ISA 2 on it), so naming it
+/// would hand out the timer's line under a second name.
+auto platform::isa_irq_line(u32 const isa_irq) -> VIrqNum {
+    if (isa_irq >= arch::NUM_ISA_IRQS || isa_irq == ISA_IRQ_PIC2) {
+        return irq::INVALID_V_IRQ_NUM;
     }
-    return apic_io_isa_to_global(static_cast<u8>(irq));
+    return irq::virq_of_hwirq(apic_io_isa_to_global(static_cast<u8>(isa_irq)));
 }
 } // namespace ours

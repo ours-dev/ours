@@ -89,17 +89,19 @@
 
 namespace ours {
 namespace {
-    /// The PIT's line, by the number time.cpp attaches it with: its GSI, as
-    /// every line is named. On q35 the MADT sends ISA 0 to GSI 2.
+    /// The PIT's line, by the number time.cpp attaches it with: its virq, as
+    /// every line is named. On q35 the MADT sends ISA 0 to GSI 2, and the line
+    /// is the one made for that GSI.
     auto pit_line() -> VIrqNum {
-        return apic_io_isa_to_global(ISA_IRQ_PIT);
+        return platform::isa_irq_line(ISA_IRQ_PIT);
     }
 
     /// COM2's line, ISA 3. QEMU has no COM2 with a single -serial, the
     /// platform programs the line masked, and no kernel driver attaches to
-    /// it, so it is free. q35 has no override for it: it is GSI 3.
+    /// it, so it is free. q35 has no override for it: it is GSI 3, and the
+    /// line is the one made for that GSI.
     auto idle_line() -> VIrqNum {
-        return apic_io_isa_to_global(ISA_IRQ_SERIAL2);
+        return platform::isa_irq_line(ISA_IRQ_SERIAL2);
     }
 
     /// The number of the test's own Permanent line, which the line table

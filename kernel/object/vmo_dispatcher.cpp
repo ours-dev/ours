@@ -6,6 +6,7 @@
 #include <ours/mm/vm_object_physical.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 
+#include <limits>
 #include <utility>
 
 #include <gktl/counter.hpp>
@@ -66,6 +67,20 @@ auto VmoDispatcher::create_paged(usize const size, KernelHandle<Self> &handle_ou
     // policy.
     ustl::Arc<mm::VmObjectPaged> vmo;
     auto const status = mm::VmObjectPaged::create(mm::GAF_USER, size, mm::VmoFlags::Pinned, &vmo);
+    if (Status::Ok != status) {
+        return status;
+    }
+
+    return create(ustl::move(vmo), handle_out, rights_out);
+}
+
+auto VmoDispatcher::create_contiguous(usize const size, usize const alignment_log2,
+                                      KernelHandle<Self> &handle_out, Rights &rights_out)
+    -> Status {
+    ustl::Arc<mm::VmObjectPaged> vmo;
+    // The user class, as every VMO user space can reach.
+    auto const status = mm::VmObjectPaged::create_contiguous(mm::GAF_USER, size, alignment_log2,
+                                                             mm::VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
         return status;
     }
@@ -207,6 +222,15 @@ auto VmoDispatcher::create_child(VmoChildOptions const options, u64 const offset
 
 auto VmoDispatcher::create_physical(PhysAddr const base, usize const size,
                                     KernelHandle<Self> &handle_out, Rights &rights_out) -> Status {
+    // Whole pages, both: a mapping is made of pages, so a window that began or
+    // ended inside one would map more of the hardware than was asked for.
+    if (size == 0 || !ustl::is_aligned(base, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
+        return Status::InvArgs;
+    }
+    if (base > std::numeric_limits<PhysAddr>::max() - size) {
+        return Status::OutOfRange;
+    }
+
     ustl::Arc<mm::VmObjectPhysical> vmo;
     auto const status = mm::VmObjectPhysical::create(base, size, mm::VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
@@ -234,8 +258,7 @@ auto VmoDispatcher::create_physical(PhysAddr const base, usize const size,
 ///     user half, unmapped or read-only.
 ///   - A physical VMO is NotSupported, but only once the range and user-half
 ///     checks have passed: those come first and can answer OutOfRange or
-///     InvArgs instead. Latent: create_physical() has no caller, so no
-///     physical VMO reaches user space yet.
+///     InvArgs instead. vmo_create_physical() makes one.
 auto VmoDispatcher::read_user(user_copy::UserOutPtr<u8> const out, u64 const offset,
                               usize const length) -> Status {
     // Written so that nothing overflows: |length| is bounded by the size

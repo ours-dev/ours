@@ -166,6 +166,36 @@ auto TableSet::header_at(usize index) -> ktl::Result<TableHeader const *> {
     return map_structure<TableHeader>(*m_mapper, phys_addr);
 }
 
+auto TableSet::dsdt() -> TableHeader const * {
+    // Only as long as the 32 bit pointer: a revision 1 FADT ends before x_dsdt.
+    constexpr auto DSDT_SIGNATURE = Signature::from_chars("DSDT");
+    auto const *fadt = reinterpret_cast<Fadt const *>(
+        find_checked(Fadt::SIGNATURE, offsetof(Fadt, dsdt) + sizeof(Fadt::dsdt)));
+    if (!fadt) {
+        return nullptr;
+    }
+
+    auto phys_addr = PhysAddr(fadt->dsdt);
+    if (fadt->header.length >= sizeof(Fadt) && fadt->x_dsdt != 0) {
+        phys_addr = PhysAddr(fadt->x_dsdt);
+    }
+    if (!phys_addr) {
+        return nullptr;
+    }
+
+    auto maybe_header = map_structure<TableHeader>(*m_mapper, phys_addr);
+    if (!maybe_header) {
+        return nullptr;
+    }
+
+    auto const *header = maybe_header.unwrap();
+    if (header->sign != DSDT_SIGNATURE || !validate_checksum(header, header->length)) {
+        return nullptr;
+    }
+
+    return header;
+}
+
 auto TableSet::scan_for(Signature sign) -> TableHeader const * {
     for (auto i = usize(0); i < m_num_tables; ++i) {
         auto maybe_header = header_at(i);

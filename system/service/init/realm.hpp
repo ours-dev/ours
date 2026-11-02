@@ -205,7 +205,11 @@ struct BuiltinServers {
     ResourceServer *debug_resource;
     ResourceServer *irq_resource;
     ResourceServer *ioport_resource;
+    ResourceServer *mmio_resource;
+    ResourceServer *iommu_resource;
     ResourceServer *sampling_resource;
+    /// ours.boot.Acpi, which hands out the ACPI tables' VMO.
+    ResourceServer *acpi;
     /// ours.kernel.RootJob, which hands out the root job.
     ResourceServer *root_job;
 };
@@ -297,11 +301,11 @@ class Realm final: private ioservice::LoopServer::Delegate {
     auto open_refused(ioservice::NodeId directory, std::string_view path, ours::Status status)
         -> void override;
 
-    /// Writes Open("svc/<name>", PROTOCOL_SERVICE, |channel|) on
-    /// |provider|'s outgoing directory, and does not wait, as
-    /// OutgoingConnector::send does; a provider that has exited answers
-    /// NotFound (D23), and the root logs that, like any route that ends
-    /// nowhere, as |consumer|'s |use| routing nowhere. Consumes |channel|.
+    /// Forwards to |provider| the Open of a protocol use that routes to it:
+    /// the request's channel, opened at svc/<name> with PROTOCOL_SERVICE. A
+    /// provider that has exited answers NotFound (D23), and the root logs
+    /// that, like any route that ends nowhere, as |consumer|'s |use| routing
+    /// nowhere. Consumes |channel|.
     auto forward(Instance const &consumer, component::Use const &use, Instance &provider,
                  std::string_view name, ours::Uandle channel) -> void;
 

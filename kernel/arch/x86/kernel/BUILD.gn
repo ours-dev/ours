@@ -20,6 +20,7 @@ source_set("kernel") {
     "task/idle_thread.cpp",
     "task/thread.cpp",
     "time/hpet.cpp",
+    "time/tsc.cpp",
     "time/time.cpp",
     "user_copy.S",
     "user_copy.cpp",

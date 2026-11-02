@@ -32,8 +32,9 @@ namespace detail {
     inline constexpr auto NO_NODE = NodeId{0xFFFF'FFFF};
 } // namespace detail
 
-/// The four kinds of node: a pseudo-directory, a file backed by a VMO, a
-/// service, and a place the program serves itself.
+/// The five kinds of node: a pseudo-directory, a file backed by a VMO, a
+/// service, a directory whose subtree another server owns, and a place the
+/// program serves itself.
 enum class NodeKind : u8 {
     /// A pseudo-directory: named children, in name order.
     Directory,
@@ -42,6 +43,11 @@ enum class NodeKind : u8 {
     /// A protocol endpoint. Opening it hands the request's channel back to
     /// the program serving the tree, with the value given to add_service().
     Service,
+    /// A directory whose subtree another server owns, reached through the
+    /// channel add_remote() keeps. An Open that reaches one is forwarded
+    /// there with the rest of its path; the subtree behind it is not this
+    /// tree's to walk or list.
+    Remote,
     /// A place whose tree is the program's own, not this one's. An Open that
     /// walks to it goes back to the program, with the part of its path after
     /// the node and the value given to add_subtree() (Action::Subtree of
@@ -89,17 +95,21 @@ class Node final {
     VmoFile m_file = {};
     /// A Service's or a Subtree's: the value the program gave it.
     u64 m_value = 0;
+    /// A Remote node's: this process's end of the connection to the server
+    /// that owns the subtree.
+    ours::Uandle m_remote = ours::Uandle::Invalid;
 };
 
 /// Where Tree::resolve() ended a walk: the node it stopped at, and what was
 /// left of the path.
 struct Resolved {
     NodeId node;
-    /// What is left of the path when the walk stopped at a Subtree node: the
-    /// segments after the node, joined by '/', a valid ours.io path. "." when
-    /// the path ended on the node itself, so that it is always something an
-    /// Open can be handed on with. Empty when the walk ended on any other
-    /// node, so |rest| is empty exactly when |node| is not a Subtree node.
+    /// What is left of the path when the walk stopped at a Subtree node or a
+    /// remote entry: the segments after the node, joined by '/', a valid
+    /// ours.io path. "." when the path ended on the node itself, so that it
+    /// is always something an Open can be handed on with. Empty when the
+    /// walk ended on any other node, so |rest| is non-empty exactly when
+    /// |node| is a Subtree node or a remote entry.
     /// A view of the path that was resolved (or of a literal, for "."), valid
     /// for as long as that path is.
     std::string_view rest;
@@ -153,6 +163,15 @@ class Tree final {
     auto add_service(NodeId parent, std::string_view name, u64 service)
         -> ustl::Result<NodeId, ours::Status>;
 
+    /// Adds a child named |name| to the directory |parent| whose subtree is
+    /// another server's: |channel| is this process's end of a connection to
+    /// that server's directory, and an Open that reaches the child is
+    /// forwarded there with the rest of its path. The channel is kept for
+    /// the life of the tree. Refused as add_directory is.
+    [[nodiscard]]
+    auto add_remote(NodeId parent, std::string_view name, ours::Uandle channel)
+        -> ustl::Result<NodeId, ours::Status>;
+
     /// Adds a Subtree node named |name| to |parent|, refused as above. |value|
     /// is what the program chooses to tell its Subtree nodes apart by, and
     /// what an Open that reaches the node comes back with. Nothing can be
@@ -165,6 +184,8 @@ class Tree final {
     /// The node |path| names under the directory |directory|, walked one
     /// segment at a time from that node, never by joining strings, so that a
     /// path cannot leave the subtree it starts in. "." is |directory| itself.
+    /// A remote entry is a leaf here: a path that goes on below one is
+    /// refused with NotDir, its subtree belonging to the server that owns it.
     /// Refused with:
     ///   - BadPath when |path| is not a valid ours.io path
     ///     (is_valid_path);
@@ -177,12 +198,13 @@ class Tree final {
         -> ustl::Result<NodeId, ours::Status>;
 
     /// lookup() for a client's Open: the same walk, which stops at the first
-    /// Subtree node it meets, the last segment's included, because what lies
-    /// below that node is the program's and not this tree's. Then the answer
-    /// is the node and the rest of |path| (Resolved::rest), and no segment
-    /// after the node is looked at, so it may not exist. A walk that meets no
-    /// Subtree node ends where lookup() does, with an empty rest. Refused as
-    /// lookup() is, up to the point the walk stops.
+    /// Subtree node or remote entry it meets, the last segment's included,
+    /// because what lies below either is not this tree's -- the program's or
+    /// the remote server's. Then the answer is the node and the rest of
+    /// |path| (Resolved::rest), and no segment after the node is looked at,
+    /// so it may not exist. A walk that meets neither ends where lookup()
+    /// does, with an empty rest. Refused as lookup() is, up to the point the
+    /// walk stops.
     [[nodiscard]]
     auto resolve(NodeId directory, std::string_view path) const
         -> ustl::Result<Resolved, ours::Status>;
@@ -204,6 +226,11 @@ class Tree final {
     /// service.
     [[nodiscard]]
     auto service(NodeId node) const -> ustl::Option<u64>;
+
+    /// The channel the remote |node| forwards to; none when it is not a
+    /// remote entry.
+    [[nodiscard]]
+    auto remote(NodeId node) const -> ustl::Option<ours::Uandle>;
 
     /// The value the Subtree |node| was added with; none when it is not a
     /// Subtree node.

@@ -44,10 +44,13 @@ namespace {
     /// What `from: "parent"` means at the root (design "built-ins"): the
     /// directory `boot`, /boot itself with rx*, and the protocols the root
     /// serves itself: ours.process.Launcher (launcher_server.hpp), and
-    /// ours.resource.Debug, ours.resource.Sampling, ours.resource.Irq and
-    /// ours.resource.Ioport (resource_server.hpp), which hand out the Debug
-    /// and Sampling resources and the roots of the interrupt lines and the
-    /// I/O ports, and ours.kernel.RootJob, which hands out the root job.
+    /// ours.resource.Debug, ours.resource.Sampling, ours.resource.Irq,
+    /// ours.resource.Ioport, ours.resource.Mmio and ours.resource.Iommu
+    /// (resource_server.hpp), which hand out the Debug, Sampling and IOMMU
+    /// resources and the roots of the
+    /// interrupt lines, the I/O ports and the physical address space,
+    /// ours.boot.Acpi, which hands out the ACPI tables' VMO, and
+    /// ours.kernel.RootJob, which hands out the root job.
     ///
     /// The list is not written here: builtins.json is the one list of them,
     /// which the manifest compiler also reads, to check at build time that a
@@ -76,6 +79,9 @@ namespace {
     static_assert(has_protocol_builtin(ours_resource::SAMPLING_PROTOCOL.name));
     static_assert(has_protocol_builtin(ours_resource::IRQ_PROTOCOL.name));
     static_assert(has_protocol_builtin(ours_resource::IOPORT_PROTOCOL.name));
+    static_assert(has_protocol_builtin(ours_resource::MMIO_PROTOCOL.name));
+    static_assert(has_protocol_builtin(ours_resource::IOMMU_PROTOCOL.name));
+    static_assert(has_protocol_builtin(ours_resource::ACPI_PROTOCOL.name));
     static_assert(has_protocol_builtin(ours_resource::ROOT_JOB_PROTOCOL.name));
 
     /// Where every protocol use lives in the namespace (D3): a component's
@@ -849,6 +855,12 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
         status = m_builtins.irq_resource->bind(channel);
     } else if (routed->name == ours_resource::IOPORT_PROTOCOL.name) {
         status = m_builtins.ioport_resource->bind(channel);
+    } else if (routed->name == ours_resource::MMIO_PROTOCOL.name) {
+        status = m_builtins.mmio_resource->bind(channel);
+    } else if (routed->name == ours_resource::IOMMU_PROTOCOL.name) {
+        status = m_builtins.iommu_resource->bind(channel);
+    } else if (routed->name == ours_resource::ACPI_PROTOCOL.name) {
+        status = m_builtins.acpi->bind(channel);
     } else if (routed->name == ours_resource::ROOT_JOB_PROTOCOL.name) {
         status = m_builtins.root_job->bind(channel);
     }
@@ -906,7 +918,7 @@ auto Realm::write_open(Instance const &provider, std::string_view const name,
                                 message.bytes.data(), static_cast<u32>(message.bytes.size()),
                                 message.handles.data(), static_cast<u32>(message.handles.size()));
         written != Status::Ok) {
-        auto _ = ort::debug_line({"init: cannot forward ", name, " to ", Moniker(provider).view(),
+        auto _ = ort::debug_line({"init: cannot forward ", path, " to ", Moniker(provider).view(),
                                   ": ", ours::to_string(written)});
     }
 }

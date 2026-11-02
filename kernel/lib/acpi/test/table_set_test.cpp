@@ -307,6 +307,134 @@ auto test_mapper_failure_is_propagated() -> void {
     require(!acpi::TableSet::from_rsdp(mapper, machine.rsdp_phys()));
 }
 
+constexpr auto DSDT_SIGNATURE = acpi::Signature::from_chars("DSDT");
+
+/// A table of `body` bytes after its header, every one `fill`.  Not listed by
+/// the root table: the DSDT is not.
+auto add_dsdt(Machine &machine, usize const body, u8 const fill) -> void {
+    auto *dsdt = machine.add_unlisted_table<acpi::TableHeader>(DSDT_SIGNATURE,
+                                                               sizeof(acpi::TableHeader) + body);
+    std::memset(reinterpret_cast<u8 *>(dsdt) + sizeof(acpi::TableHeader), fill, body);
+}
+
+/// A FADT of `length` bytes whose pointers to the DSDT are the two given.
+/// x_dsdt is written only if the FADT is long enough to have one.
+auto add_fadt(Machine &machine, usize const length, u32 const dsdt, u64 const x_dsdt) -> void {
+    // The pointer is written into the allocation, so it has to be inside it.
+    require(length >= offsetof(acpi::Fadt, dsdt) + sizeof(u32));
+    auto *fadt = machine.add_table<acpi::Fadt>(acpi::Fadt::SIGNATURE, length);
+    fadt->dsdt = dsdt;
+    if (length >= sizeof(acpi::Fadt)) {
+        fadt->x_dsdt = x_dsdt;
+    }
+}
+
+auto dsdt_of(Machine &machine) -> acpi::TableHeader const * {
+    auto tables = acpi::TableSet::from_rsdp(machine.mapper(), machine.rsdp_phys());
+    require(bool(tables));
+    return tables->dsdt();
+}
+
+auto test_dsdt_is_found_through_the_fadt() -> void {
+    Machine machine;
+    add_dsdt(machine, 16, 0x5a);
+    add_fadt(machine, sizeof(acpi::Fadt), u32(machine.unlisted_phys(0)), 0);
+    machine.finish();
+
+    // The root table lists the FADT and nothing else: the DSDT is out of its
+    // reach, which is why find<> cannot be the way to it.
+    auto tables = acpi::TableSet::from_rsdp(machine.mapper(), machine.rsdp_phys());
+    require(bool(tables));
+    require(tables->num_tables() == 1);
+
+    auto const *dsdt = tables->dsdt();
+    require(dsdt != nullptr);
+    require(dsdt->sign == DSDT_SIGNATURE);
+    require(dsdt->length == sizeof(acpi::TableHeader) + 16);
+}
+
+auto test_x_dsdt_wins_over_dsdt() -> void {
+    // Two DSDTs of different lengths, the first behind the 32 bit pointer and
+    // the second behind the 64 bit one.
+    Machine both;
+    add_dsdt(both, 16, 0x11);
+    add_dsdt(both, 32, 0x22);
+    add_fadt(both, sizeof(acpi::Fadt), u32(both.unlisted_phys(0)), both.unlisted_phys(1));
+    both.finish();
+    auto const *dsdt = dsdt_of(both);
+    require(dsdt != nullptr);
+    require(dsdt->length == sizeof(acpi::TableHeader) + 32);
+
+    // x_dsdt of zero means there is none: the 32 bit pointer is used.
+    Machine zero;
+    add_dsdt(zero, 16, 0x11);
+    add_dsdt(zero, 32, 0x22);
+    add_fadt(zero, sizeof(acpi::Fadt), u32(zero.unlisted_phys(0)), 0);
+    zero.finish();
+    dsdt = dsdt_of(zero);
+    require(dsdt != nullptr);
+    require(dsdt->length == sizeof(acpi::TableHeader) + 16);
+}
+
+auto test_revision_one_fadt_uses_the_32_bit_pointer() -> void {
+    // A revision 1 FADT is 116 bytes: it ends before x_dsdt, and the bytes
+    // after it are not the table's.
+    Machine machine;
+    add_dsdt(machine, 16, 0x5a);
+    add_fadt(machine, 116, u32(machine.unlisted_phys(0)), 0);
+    machine.finish();
+    auto const *dsdt = dsdt_of(machine);
+    require(dsdt != nullptr);
+    require(dsdt->length == sizeof(acpi::TableHeader) + 16);
+}
+
+auto test_no_usable_dsdt() -> void {
+    // No FADT.
+    Machine no_fadt;
+    add_madt(no_fadt);
+    no_fadt.finish();
+    require(dsdt_of(no_fadt) == nullptr);
+
+    // A FADT that points nowhere.
+    Machine zero;
+    add_fadt(zero, sizeof(acpi::Fadt), 0, 0);
+    zero.finish();
+    require(dsdt_of(zero) == nullptr);
+
+    // A FADT whose declared length ends before the 32 bit pointer. The pointer
+    // is in memory, past the table, and it is not the table's to read.
+    Machine short_fadt;
+    add_dsdt(short_fadt, 16, 0x5a);
+    add_fadt(short_fadt, sizeof(acpi::Fadt), u32(short_fadt.unlisted_phys(0)), 0);
+    reinterpret_cast<acpi::TableHeader *>(short_fadt.table_bytes(0))->length = 40;
+    short_fadt.finish();
+    require(dsdt_of(short_fadt) == nullptr);
+
+    // The pointer leads to a table that is not a DSDT.
+    Machine wrong_table;
+    auto *ssdt = wrong_table.add_unlisted_table<acpi::TableHeader>(
+        acpi::Signature::from_chars("SSDT"), sizeof(acpi::TableHeader) + 16);
+    require(ssdt != nullptr);
+    add_fadt(wrong_table, sizeof(acpi::Fadt), u32(wrong_table.unlisted_phys(0)), 0);
+    wrong_table.finish();
+    require(dsdt_of(wrong_table) == nullptr);
+
+    // A DSDT whose checksum does not hold.
+    Machine bad_checksum;
+    add_dsdt(bad_checksum, 16, 0x5a);
+    add_fadt(bad_checksum, sizeof(acpi::Fadt), u32(bad_checksum.unlisted_phys(0)), 0);
+    bad_checksum.finish();
+    bad_checksum.unlisted_bytes(0)[9] = u8(bad_checksum.unlisted_bytes(0)[9] + 1);
+    require(dsdt_of(bad_checksum) == nullptr);
+
+    // A pointer the mapper cannot follow.
+    Machine unmapped;
+    add_dsdt(unmapped, 16, 0x5a);
+    add_fadt(unmapped, sizeof(acpi::Fadt), 0x7000'0000, 0);
+    unmapped.finish();
+    require(dsdt_of(unmapped) == nullptr);
+}
+
 } // namespace
 
 auto main() -> int {
@@ -321,5 +449,9 @@ auto main() -> int {
     test_bad_table_checksum_is_skipped();
     test_entry_walk_stops_on_lying_length();
     test_mapper_failure_is_propagated();
+    test_dsdt_is_found_through_the_fadt();
+    test_x_dsdt_wins_over_dsdt();
+    test_revision_one_fadt_uses_the_32_bit_pointer();
+    test_no_usable_dsdt();
     return 0;
 }

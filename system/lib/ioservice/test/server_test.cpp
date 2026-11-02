@@ -38,6 +38,7 @@ constexpr auto OTHER_OBJECT = Uandle{0x1102};
 constexpr auto VMO_X = Uandle{0x2001};
 constexpr auto VMO_README = Uandle{0x2002};
 constexpr auto DUPLICATE = Uandle{0x3001};
+constexpr auto REMOTE = Uandle{0x4001};
 constexpr auto ECHO = u64{7};
 
 constexpr auto README = std::string_view{"hello, world"};
@@ -111,6 +112,11 @@ class IoserviceServer: public testing::Test {
                 .unwrap();
         m_svc = m_tree.add_root().unwrap();
         m_echo = m_tree.add_service(m_svc, "echo", ECHO).unwrap();
+        // A second tree to mount through, kept apart from the first so that
+        // no listing of / changes with these tests.
+        m_mount = m_tree.add_root().unwrap();
+        m_mnt = m_tree.add_directory(m_mount, "mnt").unwrap();
+        m_boot = m_tree.add_remote(m_mnt, "boot", REMOTE).unwrap();
     }
 
     auto bind(NodeId const node, Operations const rights) -> ConnectionId {
@@ -254,6 +260,9 @@ class IoserviceServer: public testing::Test {
     NodeId m_readme{};
     NodeId m_svc{};
     NodeId m_echo{};
+    NodeId m_mount{};
+    NodeId m_mnt{};
+    NodeId m_boot{};
 };
 
 // --- Open: the checks, in their fixed order ----------------------------------
@@ -742,6 +751,74 @@ TEST_F(IoserviceServer, BindRefusals) {
               Status::InvArgs);
     EXPECT_EQ(m_server.bind(CHANNEL, m_readme, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
     EXPECT_EQ(m_server.bind(CHANNEL, m_echo, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
+    // A remote entry is not one of this server's directories either: what it
+    // stands for is another server's to bind.
+    EXPECT_EQ(m_server.bind(CHANNEL, m_boot, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
+}
+
+// --- Open: forwarding through a remote entry --------------------------------------
+
+TEST_F(IoserviceServer, OpenThroughARemoteEntryForwardsTheRestOfThePath) {
+    auto const mount = bind(m_mount, ours_io::RX_STAR_DIR);
+    auto const outcome =
+        open(mount, "mnt/boot/config/readme", Flags::PermReadBytes | Flags::PermGetAttributes);
+    EXPECT_EQ(outcome.action, Action::Forward);
+    EXPECT_EQ(outcome.forward_channel, REMOTE);
+    auto const forwarded = ours_io::decode_open(outcome.message);
+    ASSERT_TRUE(forwarded.is_ok());
+    EXPECT_EQ(forwarded->path, "config/readme");
+    EXPECT_EQ(forwarded->flags, Flags::PermReadBytes | Flags::PermGetAttributes);
+    EXPECT_EQ(forwarded->object, OBJECT);
+}
+
+TEST_F(IoserviceServer, OpenOfTheMountPointItselfForwardsDot) {
+    auto const mount = bind(m_mount, ours_io::RX_STAR_DIR);
+    auto const outcome = open(mount, "mnt/boot", Flags::PermReadBytes);
+    EXPECT_EQ(outcome.action, Action::Forward);
+    EXPECT_EQ(outcome.forward_channel, REMOTE);
+    auto const forwarded = ours_io::decode_open(outcome.message);
+    ASSERT_TRUE(forwarded.is_ok());
+    EXPECT_EQ(forwarded->path, ".");
+    EXPECT_EQ(forwarded->object, OBJECT);
+}
+
+TEST_F(IoserviceServer, OpenThroughARemoteEntryCarriesCreationFlags) {
+    // A local target refuses to create (OpenRefusesToCreate); a remote one
+    // is for the server that owns the subtree to judge, so the flags pass
+    // through unchanged.
+    auto const mount = bind(m_mount, ours_io::RW_STAR_DIR);
+    auto const flags = ours_io::PERM_WRITABLE | Flags::FlagMaybeCreate;
+    auto const outcome = open(mount, "mnt/boot/new", flags);
+    EXPECT_EQ(outcome.action, Action::Forward);
+    auto const forwarded = ours_io::decode_open(outcome.message);
+    ASSERT_TRUE(forwarded.is_ok());
+    EXPECT_EQ(forwarded->flags, flags);
+}
+
+TEST_F(IoserviceServer, OpenThroughARemoteEntryStillChecksRightsFirst) {
+    // Check 3 runs before anything is forwarded: a mount point is no way
+    // around a connection's ceiling.
+    auto const mount = bind(m_mount, ours_io::R_STAR_DIR);
+    EXPECT_EQ(refused(mount, "mnt/boot/new", Flags::PermWriteBytes), Status::AccessDenied);
+}
+
+TEST_F(IoserviceServer, LocalCreationIsStillRefusedBesideTheMount) {
+    auto const mount = bind(m_mount, ours_io::RW_STAR_DIR);
+    EXPECT_EQ(refused(mount, "mnt/new", ours_io::PERM_WRITABLE | Flags::FlagMaybeCreate),
+              Status::NotSupported);
+}
+
+TEST_F(IoserviceServer, AMountPointListsAsADirectory) {
+    auto const mount = bind(m_mount, ours_io::R_STAR_DIR);
+    auto const mnt = opened(mount, "mnt", Flags::PermEnumerate);
+    auto const listing = read_dirents(mnt, ours_io::MAX_BUF);
+    EXPECT_EQ(listing.status, Status::Ok);
+    // "." first, then the mount point standing in for the directory the
+    // remote serves.
+    ASSERT_EQ(listing.names.size(), 2U);
+    EXPECT_EQ(listing.names[0], ".");
+    EXPECT_EQ(listing.names[1], "boot");
+    EXPECT_EQ(listing.types[1], ours_io::DirentType::Directory);
 }
 // --- Subtree nodes -------------------------------------------------------------------
 

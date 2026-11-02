@@ -72,9 +72,11 @@ user_executable("shell") {
 
 # The shell as a component of dev's root (component-framework design, "The
 # manifest"): the root's built-in `boot` at /boot with rx*, where its
-# commands' programs are and which `ls` lists, and two built-in protocols in
-# its /svc: ours.process.Launcher, which runs those commands (fsio::spawn()),
-# and ours.resource.Debug, the only way the root hands out the Debug resource
+# commands' programs are and which `ls` lists; fshost's tree at /vfs with
+# rx*, whose `boot` entry is that same directory mounted, which check_vfs()
+# reads through; and two built-in protocols in its /svc:
+# ours.process.Launcher, which runs those commands (fsio::spawn()), and
+# ours.resource.Debug, the only way the root hands out the Debug resource
 # the shell reads serial input with (D19); and ours.resource.Sampling and
 # ours.kernel.RootJob, which the programs it starts reach through the
 # namespace it hands on: the profiler takes both.
@@ -87,6 +89,14 @@ component_manifest("shell.cm") {
         directory = "boot"
         path = "/boot"
         rights = [ "rx*" ]
+      },
+      {
+        directory = "vfs"
+        path = "/vfs"
+        rights = [
+          "rx*",
+          "w*",
+        ]
       },
       {
         protocol = [

@@ -79,6 +79,22 @@ group("default") {
     # hosted main()s, hence the host toolchain as for the tests above.
     "//system/lib/ustl:tests($host_toolchain)",
 
+    # ours.block's codec: the two methods and their replies, written, read
+    # back and broken on purpose, from bytes alone.
+    "//system/lib/ours.block:tests($host_toolchain)",
+
+    # ours.gpt's parser: the CRC-32's known answer, the header and entry
+    # parses and their refusals, and whole tables read through a fake reader.
+    "//system/lib/ours.gpt:tests($host_toolchain)",
+
+    # ours.btreefs's tree: keys and values, the allocator, inserts through
+    # splits that climb to height 3, and scans along the leaves' chain.
+    "//system/lib/ours.btreefs:tests($host_toolchain)",
+
+    # ours.fshost's admin codec: the Mount request written, read back and
+    # refused on purpose, from bytes alone.
+    "//system/lib/ours.fshost:tests($host_toolchain)",
+
     # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
     # decision over two token values and its state is one std::atomic, so the
     # whole protocol runs on the host; the concurrent half it cannot reach is
@@ -117,6 +133,10 @@ group("default") {
     # //kernel/lib/acpi is pure table decoding behind a single mapper seam, so
     # the whole library runs on the host against synthesised table images.
     "//kernel/lib/acpi:tests($host_toolchain)",
+
+    # The ACPI route service's logic: the reader of the tables the kernel hands
+    # user space, and the two answers it gives from the static tables.
+    "//system/service/acpi-route:tests($host_toolchain)",
 
     # The OBI container format: the parser, the builder, the CLI and the
     # command-line/memory-config views.  The group qualifies the host
@@ -189,6 +209,7 @@ group("default") {
     # Launcher's per-connection state is in //system/lib/launch:tests.
     "//system/lib/ours.process:tests",
     "//system/lib/ours.resource:tests",
+    "//system/lib/ours.acpi:tests",
 
     # The ours.io server: its tree, and its connections driven one encoded
     # message at a time -- the Open checks in order, rights, ReadDirents,

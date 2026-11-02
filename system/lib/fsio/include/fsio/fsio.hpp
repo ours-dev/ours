@@ -79,6 +79,16 @@ auto open(std::string_view path, ours_io::Flags flags, ours::Uandle object) -> o
 [[nodiscard]]
 auto open(std::string_view path, ours_io::Flags flags) -> ustl::Result<ours::Uandle, ours::Status>;
 
+/// Opens |path| relative to the directory connection |dir| -- the |dir|
+/// handle's own "." as the starting directory, the path never touching this
+/// process's namespace. A path with a leading '/' or a ".." is BadPath: a
+/// directory connection has no above, the namespace's mount points not
+/// being reachable from here. The flags, the checks and the answer are the
+/// namespace open's.
+[[nodiscard]]
+auto open(ours::Uandle dir, std::string_view path, ours_io::Flags flags)
+    -> ustl::Result<ours::Uandle, ours::Status>;
+
 /// Connects |server| to the protocol at |path|, such as
 /// "/svc/ours.process.Launcher": open() with PROTOCOL_SERVICE alone, which
 /// asks for the protocol itself rather than a node. |server| is consumed
@@ -164,6 +174,13 @@ auto spawn(ours::Uandle job, std::string_view path, std::span<std::string_view c
 [[nodiscard]]
 auto read(ours::Uandle file, std::span<u8> buffer) -> ustl::Result<usize, ours::Status>;
 
+/// One File.Write on |file|: |data| at the file's seek offset, which moves
+/// past what was written. Returns how many bytes were written, at most
+/// ours_io::MAX_TRANSFER_SIZE. Errors as read(); AccessDenied from a server
+/// the file was not opened writable on.
+[[nodiscard]]
+auto write(ours::Uandle file, std::span<u8 const> data) -> ustl::Result<usize, ours::Status>;
+
 /// One Directory.ReadDirents on |directory|: as many whole entries as fit in
 /// buffer.size() bytes, at most ours_io::MAX_BUF, from the directory's
 /// cursor, which moves past them. Returns how many bytes were filled, 0 once
@@ -173,6 +190,48 @@ auto read(ours::Uandle file, std::span<u8> buffer) -> ustl::Result<usize, ours::
 [[nodiscard]]
 auto read_dirents(ours::Uandle directory, std::span<u8> buffer)
     -> ustl::Result<usize, ours::Status>;
+
+/// Directory.Unlink on the entry |path| names: the name goes, and with it
+/// what it named. NotFound when nothing carries the name.
+auto unlink(std::string_view path) -> ours::Status;
+
+/// Sets this process's working directory to |path| -- absolute, or relative
+/// to the working directory already set -- with |flags| as the working
+/// directory's rights: a relative open later may ask no more than chdir
+/// did, so chdir a directory with PERM_READABLE for reading and with
+/// PERM_READABLE | PERM_WRITABLE for creating and writing. From a
+/// successful chdir() on, open() accepts relative paths: "a/b" names a/b
+/// under the working directory. A ".." that would climb above the working
+/// directory is BadPath -- a directory handle has no above. The working
+/// directory is per process and not inherited by spawned processes.
+auto chdir(std::string_view path, ours_io::Flags flags) -> ours::Status;
+
+/// Sets this process's working directory to |path| -- absolute, or relative
+/// to the working directory already set. From a successful chdir() on,
+/// open() accepts relative paths: "a/b" names a/b under the working
+/// directory. A ".." that would climb above the working directory is
+/// BadPath -- a directory handle has no above. The working directory is
+/// per process and not inherited by spawned processes.
+auto chdir(std::string_view path) -> ours::Status;
+
+/// Lists the directory |path| into |out| as packed ours.io dirents -- the
+/// whole listing in one call: opens |path|, reads entries until the
+/// directory runs out, closes. The "." entry is left out; walk |out| with
+/// ours_io::DirentReader. BufferTooSmall when |out| cannot hold the
+/// listing; other errors as open() and read_dirents() answer them.
+[[nodiscard]]
+auto list(std::string_view path, std::span<u8> out) -> ustl::Result<usize, ours::Status>;
+
+/// Sets this process's working directory to |path| -- absolute, or relative
+/// to the working directory already set -- with |flags| as the working
+/// directory's rights: a relative open later may ask no more than chdir
+/// did, so chdir a directory with PERM_READABLE for reading and with
+/// PERM_READABLE | PERM_WRITABLE for creating and writing. From a
+/// successful chdir() on, open() accepts relative paths: "a/b" names a/b
+/// under the working directory. A ".." that would climb above the working
+/// directory is BadPath -- a directory handle has no above. The working
+/// directory is per process and not inherited by spawned processes.
+auto chdir(std::string_view path, ours_io::Flags flags) -> ours::Status;
 
 /// File.GetBackingMemory on |file|: a VMO of the file's contents with the
 /// rights |flags| ask for, which the caller owns. To run a program, ask for

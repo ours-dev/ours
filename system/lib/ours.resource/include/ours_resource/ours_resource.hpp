@@ -21,6 +21,11 @@
 ///   Irq      the root of the interrupt lines, which interrupt_create takes
 ///            for a physical line
 ///   Ioport   the root of the I/O ports, which ioports_request takes
+///   Mmio     the root of the physical address space, the capability to
+///            map device registers; the kernel's own memory and devices are
+///            outside it
+///   Iommu    the System IOMMU resource, the capability to make an IOMMU and
+///            with it BTIs and pins of memory for a device to reach
 ///
 /// They are built-ins of the root, and the only way to these resources: no
 /// component gets one as a startup handle. Routing is the only gate: the
@@ -29,7 +34,7 @@
 /// protocol.
 ///
 /// Each ordinal is computed from its selector, such as "ours.resource/Irq.Get",
-/// as this header is compiled (wire::method). The three Gets have one shape,
+/// as this header is compiled (wire::method). The Gets have one shape,
 /// flat, at fixed offsets from the start of the message:
 ///
 ///   Get   two-way  (nothing)
@@ -80,6 +85,22 @@ inline constexpr auto IOPORT_PROTOCOL = Protocol{
     .get = wire::method("ours.resource/Ioport.Get", wire::MethodKind::TwoWay),
 };
 
+/// ours.resource.Mmio, which hands out the root of the physical address space:
+/// an MmIo resource of base 0 and size 0, which covers every address, though no
+/// resource grants the RAM or the devices the kernel owns.
+inline constexpr auto MMIO_PROTOCOL = Protocol{
+    .name = "ours.resource.Mmio",
+    .get = wire::method("ours.resource/Mmio.Get", wire::MethodKind::TwoWay),
+};
+
+/// ours.resource.Iommu, which hands out the System IOMMU resource, the
+/// capability iommu_create asks for: whoever holds it can point a device at
+/// memory.
+inline constexpr auto IOMMU_PROTOCOL = Protocol{
+    .name = "ours.resource.Iommu",
+    .get = wire::method("ours.resource/Iommu.Get", wire::MethodKind::TwoWay),
+};
+
 /// ours.resource.Sampling, which hands out the System Sampling resource, the
 /// capability sampler_create asks for.
 inline constexpr auto SAMPLING_PROTOCOL = Protocol{
@@ -98,10 +119,21 @@ inline constexpr auto ROOT_JOB_PROTOCOL = Protocol{
     .get = wire::method("ours.kernel/RootJob.Get", wire::MethodKind::TwoWay),
 };
 
+/// ours.boot.Acpi: the machine's ACPI tables, as a read-only VMO in the
+/// layout of <ours/acpi_tables.hpp>, which the route service reads AML from.
+/// It is not a resource and no right is needed to hold it, but it has the
+/// shape of this library's protocols, one Get answered with a handle, so it is
+/// declared and coded here, as RootJob is.
+inline constexpr auto ACPI_PROTOCOL = Protocol{
+    .name = "ours.boot.Acpi",
+    .get = wire::method("ours.boot/Acpi.Get", wire::MethodKind::TwoWay),
+};
+
 // Each protocol is closed, so the Get of another protocol must not be mistaken
 // for this one's: no two Gets may share an ordinal.
 static_assert(wire::all_distinct(DEBUG_PROTOCOL.get, IRQ_PROTOCOL.get, IOPORT_PROTOCOL.get,
-                                 SAMPLING_PROTOCOL.get, ROOT_JOB_PROTOCOL.get),
+                                 MMIO_PROTOCOL.get, IOMMU_PROTOCOL.get, SAMPLING_PROTOCOL.get,
+                                 ROOT_JOB_PROTOCOL.get, ACPI_PROTOCOL.get),
               "two ours.resource Gets have the same ordinal");
 
 struct GetRequest {

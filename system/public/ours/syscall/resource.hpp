@@ -52,8 +52,15 @@ inline constexpr u64 RSRC_SYSTEM_VMEX_BASE = 1;
 /// Reading bytes from the serial debug console.
 inline constexpr u64 RSRC_SYSTEM_DEBUG_BASE = 2;
 
-// Bases 3 to 14 belong to capabilities this kernel does not have yet, and are
+// Bases 3 to 7 belong to capabilities this kernel does not have yet, and are
 // left unused, as base 0 is.
+
+/// IOMMU: making an IOMMU (iommu_create), and with it BTIs and the pins of
+/// memory for a device to reach. Holding it is being trusted to point a
+/// device at memory.
+inline constexpr u64 RSRC_SYSTEM_IOMMU_BASE = 8;
+
+// Bases 9 to 14 are the same, left unused.
 
 /// SAMPLING: running the sampling profiler. Like VMEX, the kernel mints it
 /// for the first process only: a session samples every CPU and whatever

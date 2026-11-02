@@ -829,4 +829,59 @@ TEST_F(LoopServerTest, ConnectionsPastTheBindingsAreRefused) {
     // Refused, so still the caller's.
     EXPECT_TRUE(fake::kernel().is_open(second[1]));
 }
+
+// --- forwarding through a remote entry --------------------------------------------
+
+TEST_F(LoopServerTest, OpenThroughARemoteEntryIsForwardedOnItsChannel) {
+    // The pair the mount point sits on: the tree holds one end and the
+    // forwarded Open is written there; the server behind the mount reads the
+    // other.
+    auto const link = channel();
+    ASSERT_TRUE(tree().add_remote(m_root, "boot", link[0]).is_ok());
+
+    auto const ends = serve_root();
+    auto const object = channel();
+    open(ends[0], "boot/bin/x", ours_io::PERM_READABLE, object[1]);
+    run();
+
+    // The Open arrived on the remote's end of the link, the rest of its path
+    // and the client's server end carried with it, the flags unchanged.
+    auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+    auto handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
+    auto num_bytes = u32{0};
+    auto num_handles = u32{0};
+    ASSERT_EQ(ours::channel_read(link[1], ours::ChannelReadOptions::None, bytes.data(),
+                                 handles.data(), static_cast<u32>(bytes.size()),
+                                 static_cast<u32>(handles.size()), &num_bytes, &num_handles),
+              Status::Ok);
+    auto const forwarded = ours_io::decode_open(wire::Message{
+        .bytes = std::span{bytes}.first(num_bytes),
+        .handles = std::span{handles}.first(num_handles),
+    });
+    ASSERT_TRUE(forwarded.is_ok());
+    EXPECT_EQ(forwarded->path, "bin/x");
+    EXPECT_EQ(forwarded->flags, ours_io::PERM_READABLE);
+    EXPECT_EQ(forwarded->object, object[1]);
+    // Nothing came back on the client's connection: forwarding keeps no
+    // per-open state.
+    EXPECT_EQ(fake::kernel().queued_messages(ends[0]), 0U);
+}
+
+TEST_F(LoopServerTest, ForwardToADeadRemoteConsumesTheOpen) {
+    auto const link = channel();
+    ASSERT_TRUE(tree().add_remote(m_root, "boot", link[0]).is_ok());
+    // The server behind the mount is gone.
+    auto _ = ours::handle_close(link[1]);
+
+    auto const ends = serve_root();
+    auto const object = channel();
+    open(ends[0], "boot/x", ours_io::PERM_READABLE, object[1]);
+    run();
+
+    // The failed write consumed the client's server end, so the client sees
+    // its channel close with no epitaph on it, as an Open routed into a dead
+    // provider already does.
+    EXPECT_FALSE(fake::kernel().is_open(object[1]));
+    EXPECT_EQ(fake::kernel().queued_messages(ends[0]), 0U);
+}
 } // namespace
