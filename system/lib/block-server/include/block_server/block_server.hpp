@@ -8,7 +8,9 @@
 
 #include <loop/loop.hpp>
 #include <ours/status.hpp>
+#include <ours/syscall.hpp>
 #include <ours/types.hpp>
+#include <ours/vdso.hpp>
 #include <ours_block/ours_block.hpp>
 #include <server/server.hpp>
 #include <ustl/result.hpp>
@@ -138,6 +140,12 @@ class BlockServer
     /// parked channel. A parked channel that is gone (the client left, or
     /// the kernel reissued the handle value) drops the reply and frees the
     /// slot silently. Callable from any callback on the Loop thread.
+    ///
+    /// The driver's side of the contract: an Ok completion of a Read carries
+    /// exactly |count| blocks -- the codec refuses any other size, and a
+    /// reply that cannot be encoded is a driver bug, said on the console and
+    /// answered by ending the connection rather than by an answer that
+    /// promises bytes that do not exist.
     auto complete(usize const index, ours::Status const status, std::span<u8 const> const data = {})
         -> void {
         auto &slot = m_storage->slots[index];
@@ -145,11 +153,23 @@ class BlockServer
             free_slot(slot);
             return;
         }
+        if (slot.op == Op::Read && status == ours::Status::Ok &&
+            data.size() != usize{slot.count} * ours_block::BLOCK_SIZE) {
+            // The driver's bug, said the one way a user-space library says
+            // anything: the debug console.
+            constexpr auto LINE = std::string_view{
+                "block-server: the driver's completion of a Read does not carry the blocks "
+                "its request asked for\n"};
+            auto _ = ours::debug_write(LINE.data(), static_cast<u32>(LINE.size()));
+            auto _ = Base::close_client(slot.channel);
+            free_slot(slot);
+            return;
+        }
         auto const encoded = encode_reply(slot, status, data);
         if (encoded.is_err() || Base::reply(slot.channel, encoded.unwrap()) != ours::Status::Ok) {
             // A reply that cannot be written leaves its client waiting for
             // good, so the connection ends, as the base's reply() documents.
-            auto _ = close_client(slot.channel);
+            auto _ = Base::close_client(slot.channel);
         }
         free_slot(slot);
     }
@@ -165,7 +185,7 @@ class BlockServer
     /// empty for a Read. start() returns Ok once the work is offered; an
     /// error means the hardware refused before anything was in flight, and
     /// the library answers the status inline and frees the slot.
-    auto geometry() const -> Geometry {
+    auto geometry() -> Geometry {
         return derived()->geometry();
     }
     auto start(usize const index, std::span<u8 const> const data) -> ours::Status {
@@ -189,15 +209,25 @@ class BlockServer
 
     auto encode_reply(Slot &slot, ours::Status const status, std::span<u8 const> const data)
         -> ustl::Result<wire::Message, ours::Status> {
-        if (slot.op == Op::Read) {
-            return ours_block::encode_read_reply(slot.reply, slot.txid,
-                                                 {.status = status, .data = data});
-        }
-        return ours_block::encode_write_reply(slot.reply, slot.txid, {.status = status});
+        return encode_form(slot.reply, slot.op, slot.txid, status, data);
     }
 
-    /// The pump's dispatch. A decoder refusal or an unknown ordinal closes
-    /// the connection without an epitaph, as ours.block's contract states.
+    /// Encodes |status| in the request's own reply form: a Read's reply may
+    /// carry data, a Write's is the status only. The backpressure answer
+    /// uses it, having no slot to encode from.
+    static auto encode_form(std::span<u8> bytes, Op const op, u32 const txid,
+                            ours::Status const status, std::span<u8 const> const data)
+        -> ustl::Result<wire::Message, ours::Status> {
+        if (op == Op::Read) {
+            return ours_block::encode_read_reply(bytes, txid, {.status = status, .data = data});
+        }
+        return ours_block::encode_write_reply(bytes, txid, {.status = status});
+    }
+
+  public:
+    /// The pump's dispatch, which the base calls. A decoder refusal or an
+    /// unknown ordinal closes the connection without an epitaph, as
+    /// ours.block's contract states.
     auto on_message(ours::Uandle const channel, wire::Header const header, wire::Message &&message)
         -> loop::Action {
         if (header.ordinal == ours_block::CLOSE.ordinal) {
@@ -249,6 +279,7 @@ class BlockServer
         return Base::close_client(channel);
     }
 
+  private:
     /// Parks the request in a free slot and hands it to the driver; answers
     /// the backpressure status when the tag depth is exhausted, and answers
     /// start()'s own error inline -- the connection is kept in both cases,
@@ -257,8 +288,10 @@ class BlockServer
               u32 const count, std::span<u8 const> const data) -> loop::Action {
         auto *const free = take_slot(channel);
         if (free == nullptr) {
-            auto const answer = ours_block::encode_read_reply(Base::reply_buffer(), txid,
-                                                              {.status = ours::Status::ShouldWait});
+            // The tag depth is exhausted: the answer is the request's own
+            // reply form carrying ShouldWait, and the connection stays.
+            auto const answer =
+                encode_form(Base::reply_buffer(), op, txid, ours::Status::ShouldWait, {});
             if (answer.is_err() || Base::reply(channel, answer.unwrap()) != ours::Status::Ok) {
                 return Base::close_client(channel);
             }
