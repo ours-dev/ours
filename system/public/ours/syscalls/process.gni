@@ -1,0 +1,172 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The process calls. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/process.cpp.
+ours_syscalls_process = [
+  {
+    name = "process_exit"
+    brief = "Ends the calling process with |retcode|; never returns."
+    doc = [
+      "Every thread of the process is killed, the calling one exits here, and",
+      "the process is Dead once the last of them has left: its handles close",
+      "then, so the far end of each channel it held reads PEER_CLOSED.",
+      "",
+      "Only the first way out decides the code: a process already dying --",
+      "killed, or exiting on another thread -- keeps the code it had.",
+    ]
+    args = [
+      {
+        name = "retcode"
+        type = "i64"
+      },
+    ]
+    attrs = [ "noreturn" ]
+    ret = "void"
+    category = "process"
+  },
+  {
+    name = "process_create"
+    brief = "Makes a process under |job| that is not running yet."
+    doc = [
+      "The process is Initial: it has no thread, and gets one with",
+      "thread_create and process_start. |job| needs ManageProcess. |name| is",
+      "|name_size| bytes, cut to MAX_NAME_LEN - 1 (31). Two handles are",
+      "written, one to the process and one to its root VMA, the only way to",
+      "map anything into it, and both are installed only once both values",
+      "have been written. The options must be None (InvArgs). Closing the",
+      "last handle to a process that was never started destroys it.",
+    ]
+    args = [
+      {
+        name = "job"
+        type = "Uandle"
+      },
+      {
+        name = "name"
+        type = "char"
+        dir = "in"
+        count = "name_size"
+      },
+      {
+        name = "name_size"
+        type = "usize"
+      },
+      {
+        name = "options"
+        type = "ProcessCreateOptions"
+      },
+      {
+        name = "process_out"
+        type = "Uandle"
+        dir = "out"
+      },
+      {
+        name = "root_vma_out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "process"
+  },
+  {
+    name = "process_start"
+    brief = "Starts |process| with |thread| as its first thread."
+    doc = [
+      "|process| and |thread| each need Write, and |thread| must be one of",
+      "|process|'s own (AccessDenied). The thread runs at |entry| with |stack|",
+      "as its stack pointer, |arg1| in %rdi as the value of the one handle the",
+      "process starts with, and |arg2| in %rsi (by convention the vDSO's base).",
+      "|arg1| moves from the caller's table into the new process's, needs",
+      "Transfer (AccessDenied), and is gone from the caller's table whatever",
+      "the answer: a failed start closes it. Uandle::Invalid starts the process",
+      "with none. BadState unless the process is Initial and has the vDSO",
+      "mapped; InvArgs for an entry that is not a user address. A failed start",
+      "leaves the process as it was, so it may be started again with a new",
+      "|arg1|.",
+    ]
+    args = [
+      {
+        name = "process"
+        type = "Uandle"
+      },
+      {
+        name = "thread"
+        type = "Uandle"
+      },
+      {
+        name = "entry"
+        type = "VirtAddr"
+      },
+      {
+        name = "stack"
+        type = "VirtAddr"
+      },
+      {
+        name = "arg1"
+        type = "Uandle"
+        release = true
+      },
+      {
+        name = "arg2"
+        type = "usize"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "process"
+  },
+  {
+    name = "process_read_memory"
+    brief = "Copies the memory of the process |process| names, from |vaddr|, into |buffer|."
+    doc = [
+      "Needs Read and Write on |process|, the rights of a debugger. Reads at",
+      "most |buffer_size| bytes, and never past the end of the mapping that",
+      "holds |vaddr|, so |actual| may be less; it is written only on",
+      "success, and may be null. The bytes come from the object mapped, not",
+      "from the process's page tables: the mapping's protection does not",
+      "matter, and a page nobody has written reads as zero (and, unlike",
+      "Zircon's, is committed in the process by the read). NotFound when no",
+      "mapping holds |vaddr|; BadState once the process's address space is",
+      "gone; OutOfRange when the mapping runs past its object's end;",
+      "NotSupported for a mapping of physical memory. InvArgs when |buffer|",
+      "is null or cannot take the bytes, or |buffer_size| is 0 or more than",
+      "MAX_PROCESS_READ_MEMORY (64 MiB).",
+    ]
+    args = [
+      {
+        name = "process"
+        type = "Uandle"
+      },
+      {
+        name = "vaddr"
+        type = "VirtAddr"
+      },
+      {
+        name = "buffer"
+        type = "void"
+        dir = "out"
+        count = "buffer_size"
+      },
+      {
+        name = "buffer_size"
+        type = "usize"
+      },
+      {
+        name = "actual"
+        type = "usize"
+        dir = "out"
+      },
+    ]
+    attrs = [ "blocking" ]
+    ret = "Status"
+    category = "process"
+  },
+]

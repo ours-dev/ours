@@ -1,0 +1,173 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The address-region (Vma) calls. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/vma.cpp.
+ours_syscalls_vma = [
+  {
+    name = "vma_allocate"
+    brief = "Reserves part of the region |parent| as a sub-region."
+    doc = [
+      "Reserves |size| bytes of |parent|, rounded up to a page, and writes a",
+      "handle to the sub-region to |child| and its address to |child_addr|.",
+      "With Specific it is [offset, offset + size) of |parent|, which must",
+      "have CanMapSpecific (AccessDenied, asked before whether the range lies",
+      "inside |parent|); the range must lie inside |parent| (InvArgs) and",
+      "overlap nothing already there (AlreadyExists). Without it the kernel",
+      "finds room (NotFound when there is none) and |offset| must be 0",
+      "(InvArgs). CanMapRead, CanMapWrite and CanMapExecute say what mappings",
+      "in it may have, each needing the matching right on |parent|",
+      "(AccessDenied) and never more than |parent| allows; the new handle has",
+      "Read, Write and Execute to match. With none of them it allows no",
+      "mapping, which makes it a guard. CanMapSpecific lets it take Specific",
+      "placements itself, whether or not |parent| can. A Perm bit or an",
+      "unknown bit is InvArgs; the other named bits are NotSupported. A size",
+      "of 0 or an offset that is not page-aligned is InvArgs, a size too",
+      "large to round up OutOfRange. BadState once |parent|'s address space",
+      "has been torn down. Closing the handle does not release the range; it",
+      "goes with the address space, or with a vma_unmap of |parent| that",
+      "covers it whole. If the handle cannot be made (NoResource",
+      "past this process's handle quota, or when the handle arena is full) or",
+      "either value cannot be written (InvArgs), the range is released again",
+      "and no handle is made.",
+    ]
+    args = [
+      {
+        name = "parent"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "VmOptions"
+      },
+      {
+        name = "offset"
+        type = "usize"
+      },
+      {
+        name = "size"
+        type = "usize"
+      },
+      {
+        name = "child"
+        type = "Uandle"
+        dir = "out"
+      },
+      {
+        name = "child_addr"
+        type = "VirtAddr"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "vma"
+  },
+  {
+    name = "vma_map"
+    brief = "Maps part of the VMO |vmo| into the region |vma|."
+    doc = [
+      "Maps [vmo_offset, vmo_offset + length) of |vmo|, length rounded up to",
+      "a page, and writes the address to |mapped_addr|. |options| is",
+      "PermRead, optionally with PermWrite or PermExecute (never both, and",
+      "neither without PermRead: InvArgs), plus any of Specific, MapRange to",
+      "populate the range now (a physical VMO's is always populated), and",
+      "Sealed to make the mapping immutable (see",
+      "VmOptions). No CanMap bit may be passed (InvArgs): the kernel sets",
+      "CanMapRead/Write/Execute itself. |vmo| needs Map, and each Perm bit",
+      "needs the matching right on both handles (AccessDenied); the rights",
+      "both grant become the mapping's ceiling. Named options not acted on",
+      "yet are NotSupported. A length of 0 or a vmo_offset that is not",
+      "page-aligned is InvArgs, and the range must lie inside the VMO",
+      "(OutOfRange). An executable mapping of the vDSO's VMO must be exactly",
+      "its code segment, Sealed and PermRead | PermExecute (InvArgs), and",
+      "once per address space (AccessDenied); any other mapping of it is",
+      "read-only (InvArgs). With Specific, vma_offset counts from the region's",
+      "start and must be page-aligned (InvArgs); the region must have",
+      "CanMapSpecific (AccessDenied, asked before whether the range lies",
+      "inside it; a process's root region has it), the range must lie inside",
+      "it (InvArgs) and overlap nothing already there (AlreadyExists).",
+      "Without Specific, vma_offset must be 0 (InvArgs) and the kernel finds",
+      "room (NotFound when there is none). BadState once the region's address",
+      "space has been torn down. If |mapped_addr| cannot be written",
+      "(InvArgs), the mapping is taken down again, except a Sealed one, which",
+      "stays.",
+    ]
+    args = [
+      {
+        name = "vma"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "VmOptions"
+      },
+      {
+        name = "vma_offset"
+        type = "usize"
+      },
+      {
+        name = "vmo"
+        type = "Uandle"
+      },
+      {
+        name = "vmo_offset"
+        type = "u64"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+      {
+        name = "mapped_addr"
+        type = "VirtAddr"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "vma"
+  },
+  {
+    name = "vma_unmap"
+    brief = "Unmaps whatever lies in part of the region |vma|."
+    doc = [
+      "Tears down everything in [addr, addr + length) of |vma|, length rounded",
+      "up to a page. A mapping wholly inside the range goes; one partly inside",
+      "loses the pages inside it but keeps its range, which nothing else can",
+      "take until the whole mapping is unmapped. A sub-region wholly inside the",
+      "range is destroyed with everything in it, and its handles answer",
+      "BadState from then on; that needs OpChildren on |vma| (InvArgs without",
+      "it). A range that only partly covers a sub-region is InvArgs. A range",
+      "that overlaps a Sealed mapping, here or in any sub-region below, the",
+      "vDSO's code among them, is AccessDenied. Any refusal unmaps nothing. An",
+      "|addr| that is not page-aligned, a |length| of 0 or one too large to",
+      "round up, and a range not wholly inside |vma| are InvArgs. A range with",
+      "nothing in it is Ok. No right is needed on |vma|.",
+      "BadState once the region has been destroyed, with its address space or",
+      "by an unmap of its parent.",
+    ]
+    args = [
+      {
+        name = "vma"
+        type = "Uandle"
+      },
+      {
+        name = "addr"
+        type = "VirtAddr"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "vma"
+  },
+]

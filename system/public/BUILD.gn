@@ -41,6 +41,27 @@ config("public.config") {
 import("ours/syscalls.gni")
 _syscalls_gen_dir =
     get_label_info(":syscalls.gen($default_toolchain)", "target_gen_dir")
+_syscalls_gen_public = "$_syscalls_gen_dir/public"
+_syscalls_gen_private = "$_syscalls_gen_dir/private/syscall_abi"
+
+# The ABI's generated files: one declaration file per category, and the four
+# private outputs that stay whole. The generator groups the declarations by
+# the entries' category key.
+_numbers = "$_syscalls_gen_private/numbers.hpp"
+_vdso_stubs = "$_syscalls_gen_private/vdso_stubs.inc"
+_kernel_decls = "$_syscalls_gen_private/kernel_decls.inc"
+_kernel_shims = "$_syscalls_gen_private/kernel_shims.inc"
+_vdso_decls_dir = "$_syscalls_gen_public/ours"
+_gen_outputs = []
+foreach(cat, ours_syscall_categories) {
+  _gen_outputs += [ "$_vdso_decls_dir/vdso_decls/${cat}.inc" ]
+}
+_gen_outputs += [
+  _numbers,
+  _vdso_stubs,
+  _kernel_decls,
+  _kernel_shims,
+]
 
 if (current_toolchain == default_toolchain) {
   # The description as JSON: GN parses the .gni, so the generator never has to.
@@ -57,16 +78,9 @@ if (current_toolchain == default_toolchain) {
     _numbers = "$target_gen_dir/private/syscall_abi/numbers.hpp"
     _vdso_stubs = "$target_gen_dir/private/syscall_abi/vdso_stubs.inc"
     _kernel_decls = "$target_gen_dir/private/syscall_abi/kernel_decls.inc"
-    _kernel_shims = "$target_gen_dir/private/syscall_abi/kernel_shims.inc"
-    _vdso_decls = "$target_gen_dir/public/ours/vdso_decls.inc"
+    _description = "$target_gen_dir/syscalls.json"
     sources = [ _description ]
-    outputs = [
-      _numbers,
-      _vdso_stubs,
-      _kernel_decls,
-      _kernel_shims,
-      _vdso_decls,
-    ]
+    outputs = _gen_outputs
     args = [
       rebase_path(_description, root_build_dir),
       "--numbers",
@@ -77,8 +91,8 @@ if (current_toolchain == default_toolchain) {
       rebase_path(_kernel_decls, root_build_dir),
       "--kernel-shims",
       rebase_path(_kernel_shims, root_build_dir),
-      "--vdso-decls",
-      rebase_path(_vdso_decls, root_build_dir),
+      "--vdso-decls-dir",
+      rebase_path(_vdso_decls_dir, root_build_dir),
     ]
     deps = [ ":syscalls.json" ]
     visibility = [

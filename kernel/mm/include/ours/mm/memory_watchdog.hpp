@@ -3,11 +3,11 @@
 #ifndef OURS_MM_MEMORY_WATCHDOG_HPP
 #define OURS_MM_MEMORY_WATCHDOG_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
 #include <ours/types.hpp>

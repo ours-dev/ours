@@ -5,6 +5,7 @@
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_object_physical.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
+#include <ours/vmo.hpp>
 
 #include <limits>
 #include <utility>

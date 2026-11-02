@@ -12,12 +12,12 @@
 
 #include <arch/stack_root.hpp>
 #include <ktl/vec.hpp>
+#include <ours/chrono.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sampler.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/mutex.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/time/timer.hpp>
 #include <ustl/box.hpp>
 

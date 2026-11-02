@@ -4,9 +4,9 @@
 #define OURS_OBJECT_HANDLE_TABLE_HPP 1
 
 #include <ours/lockdep.hpp>
+#include <ours/object.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
-#include <ours/port.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/types.hpp>

@@ -3,7 +3,7 @@
 #ifndef OURS_TIME_MOD_HPP
 #define OURS_TIME_MOD_HPP 1
 
-#include <ours/syscall/time.hpp>
+#include <ours/chrono.hpp>
 
 namespace ours::time {
 auto current_mono_time() -> Time;

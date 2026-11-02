@@ -6,6 +6,7 @@
 #include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/object/pager_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
+#include <ours/vmo.hpp>
 
 #include <utility>
 

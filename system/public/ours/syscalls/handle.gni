@@ -1,0 +1,64 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The handle table calls. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/handle.cpp.
+ours_syscalls_handle = [
+  {
+    name = "handle_close"
+    brief = "Closes |handle|."
+    doc = [
+      "Uandle::Invalid is accepted and ignored; any other value that names",
+      "nothing in the caller's table answers BadHandle. No right is needed to",
+      "give a handle up. When it was the last handle to its object, the",
+      "object learns it has no holders left.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+        release = true
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "handle"
+  },
+  {
+    name = "handle_duplicate"
+    brief = "Makes a second handle to the object |handle| names, with |rights|."
+    doc = [
+      "|handle| needs Duplicate (AccessDenied). |rights| is SameRights for",
+      "the same rights as |handle|, or any subset of them -- none included,",
+      "more never (InvArgs); SameRights means that only as the whole word.",
+      "The new handle's value goes to |out|, and it is in this process's",
+      "table only once that write has worked: InvArgs, and no new handle,",
+      "when |out| cannot be written. It counts against this process's handle",
+      "quota: NoResource past it, or when the handle arena is full. |handle|",
+      "is left as it was, whatever the answer.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "rights"
+        type = "Rights"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "handle"
+  },
+]

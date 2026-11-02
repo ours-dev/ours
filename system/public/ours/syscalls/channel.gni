@@ -1,0 +1,140 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The channel calls. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/channel.cpp.
+ours_syscalls_channel = [
+  {
+    name = "channel_create"
+    brief = "Makes a channel and writes a handle to each end into |out0| and |out1|."
+    doc = [
+      "Both values are written out before either handle is installed, so a",
+      "bad out-pointer leaves no handle behind. If |out1| faults, |out0|",
+      "is already written, with a value that names no handle.",
+    ]
+    args = [
+      {
+        name = "options"
+        type = "ChannelCreateOptions"
+      },
+      {
+        name = "out0"
+        type = "Uandle"
+        dir = "out"
+      },
+      {
+        name = "out1"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "channel"
+  },
+  {
+    name = "channel_write"
+    brief = "Queues |bytes| and |handles| on the channel's other end."
+    doc = [
+      "At most CHANNEL_MAX_MSG_BYTES bytes and CHANNEL_MAX_MSG_HANDLES",
+      "handles (<ours/syscall.hpp>). A count past CHANNEL_MAX_MSG_HANDLES",
+      "(OutOfRange) or a |handles| the kernel cannot read (InvArgs) is",
+      "answered first and consumes nothing. Otherwise every handle in",
+      "|handles| leaves the caller's table whatever the outcome: on success",
+      "it is in the message, on failure it is closed. Each needs Transfer",
+      "(AccessDenied), none may be |channel| itself (NotSupported), and a",
+      "value named twice is gone the second time (BadHandle).",
+    ]
+    args = [
+      {
+        name = "channel"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "ChannelWriteOptions"
+      },
+      {
+        name = "bytes"
+        type = "void"
+        dir = "in"
+        count = "num_bytes"
+      },
+      {
+        name = "num_bytes"
+        type = "u32"
+      },
+      {
+        name = "handles"
+        type = "Uandle"
+        dir = "in"
+        count = "num_handles"
+        release = true
+      },
+      {
+        name = "num_handles"
+        type = "u32"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "channel"
+  },
+  {
+    name = "channel_read"
+    brief = "Takes the next message on the channel into |bytes|."
+    doc = [
+      "ShouldWait when there is none yet, PeerClosed when there is none and",
+      "never will be, BufferTooSmall (with the sizes in |actual_*|) when it",
+      "does not fit.",
+    ]
+    args = [
+      {
+        name = "channel"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "ChannelReadOptions"
+      },
+      {
+        name = "bytes"
+        type = "void"
+        dir = "out"
+        count = "num_bytes"
+      },
+      {
+        name = "handles"
+        type = "Uandle"
+        dir = "out"
+        count = "num_handles"
+      },
+      {
+        name = "num_bytes"
+        type = "u32"
+      },
+      {
+        name = "num_handles"
+        type = "u32"
+      },
+      {
+        name = "actual_bytes"
+        type = "u32"
+        dir = "out"
+      },
+      {
+        name = "actual_handles"
+        type = "u32"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+    category = "channel"
+  },
+]

@@ -3,7 +3,7 @@
 #ifndef OURS_TIME_CFG_HPP
 #define OURS_TIME_CFG_HPP 1
 
-#include <ours/syscall/time.hpp>
+#include <ours/chrono.hpp>
 #include <ours/types.hpp>
 
 /// The build may pin the tick rate; 100 Hz otherwise. This one stays a macro

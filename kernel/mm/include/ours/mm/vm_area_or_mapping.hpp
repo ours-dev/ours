@@ -7,6 +7,7 @@
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_fault.hpp>
 #include <ours/status.hpp>
+#include <ours/vma.hpp>
 
 #include <functional>
 #include <type_traits>

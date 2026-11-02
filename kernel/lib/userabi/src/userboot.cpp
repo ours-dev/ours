@@ -38,6 +38,7 @@
 #include <ours/status.hpp>
 #include <ours/time/anchor_page.hpp>
 #include <ours/time_values.hpp>
+#include <ours/vma.hpp>
 #include <ustl/mem/align.hpp>
 #include <ustl/option.hpp>
 

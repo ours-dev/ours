@@ -3,7 +3,7 @@
 #ifndef OURS_ARCH_IDLE_THREAD_HPP
 #define OURS_ARCH_IDLE_THREAD_HPP 1
 
-#include <ours/syscall/time.hpp>
+#include <ours/chrono.hpp>
 #include <ours/types.hpp>
 
 namespace ours {

@@ -1,0 +1,38 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The kernel command registry call. One file per category; the
+# import order in ../syscalls.gni, not this file, assigns the
+# call numbers. Each entry names its category, which
+# //build/abi/gen_syscalls.py uses to group the per-category
+# declaration headers it emits. The calls' handlers live in
+# //kernel/lib/syscall/src/command.cpp.
+ours_syscalls_command = [
+  {
+    name = "command_list"
+    brief = "Writes the kernel's command registry into |buffer| as text."
+    doc = [
+      "One command per line, NUL terminated when the answer is Ok or",
+      "NoSpace. NoSpace when the registry does not fit; what did fit is still",
+      "terminated, so a caller can show it and ask again with more room. A",
+      "null |buffer| or a |length| of 0 is InvArgs, and so is a buffer the",
+      "kernel cannot write, which may be left part-written and unterminated.",
+    ]
+    args = [
+      {
+        name = "buffer"
+        type = "char"
+        dir = "out"
+        count = "length"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+    ]
+    attrs = [ "debug" ]
+    ret = "Status"
+    category = "command"
+  },
+]

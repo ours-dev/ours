@@ -3,10 +3,10 @@
 #ifndef OURS_TIME_CLOCK_EVENT_DEVICE_HPP
 #define OURS_TIME_CLOCK_EVENT_DEVICE_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/mutex.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/time/types.hpp>
 #include <ours/types.hpp>
 
