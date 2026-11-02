@@ -80,6 +80,22 @@ action says Oneshot and a level line's flow masks it, and every write of a
 line's mask, `irq::mask()` and `irq::unmask()` included, is made under the
 line's lock L1.
 
+- A line the kernel holds for its own use is one an action that says
+  Permanent is on (the legacy timer's; `irq::is_kernel_owned()`). A kernel
+  driver that takes a line for its own uses a Permanent action, and so keeps
+  programs off it: `interrupt_map` and `interrupt_create` answer AccessDenied
+  for it, where a line an interrupt object holds is AlreadyBound until the
+  object goes. A Permanent action cannot be Oneshot or Shared and is never
+  detached, so it fits a line the kernel keeps for good and no other. The
+  answer is the assistant's choice, left to it by the user (2026-11-01,
+  irq-multi-arch D4b), and covers the answer only; the marker is the
+  project's own earlier design.
+- Three words, kept apart (the user kept the `interrupt_*` names, "保留吧",
+  2026-11-01, irq-multi-arch D11; the other two are the line layer's own):
+  `interrupt` is the object a thread waits on and acks, and its calls
+  (`interrupt_create`, `interrupt_wait`, ...), which a virtual one has with no
+  line; `Irq` is the kind of resource that grants lines; `irq`, `virq` and
+  `hwirq` are the line layer and its numbers.
 - A line is an `irq::Desc` (lock L1, its flow, its actions, the Oneshot flag
   and one held bit) in a flat table built once. A requester is an
   `irq::Action`; the controller is a stateless `irq::Chip`, seen through
@@ -93,15 +109,18 @@ line's lock L1.
   virqs are consecutive in the order of the hardware numbers, from the first
   multiple of 32 past the highest one, so no virq equals any hardware number.
   The table is indexed by hardware number, so the interrupt path, which has
-  that number from the vector, needs no lookup; a control call (`attach`,
+  that number from the root handler, needs no lookup; a control call (`attach`,
   `mask`, `configure`, ...) turns the virq into the hardware number first.
   Anything that needs the vector of a line (a test raising it by IPI) asks
   for the hardware number, never `PlatformIrqMin + virq`.
 - Each line runs a flow handler, `handle_fasteoi` for a level line or
   `handle_edge`, chosen from the trigger mode when the table is built and
   re-chosen under L1 by `configure()` and attach. The flow sends the one EOI
-  per vector, through the chip, after the actions; arch sends it only for a
-  vector with no line.
+  per vector, through the chip, after the actions; the root controller's
+  handler, which its driver installs with `irq::set_root_handler()` and arch
+  calls for every interrupt that comes through the root controller, sends it
+  for an interrupt no line has (the user's decision of 2026-11-01,
+  irq-multi-arch D3 (c); until then arch sent it).
 - ONESHOT belongs to the line: `handle_fasteoi` masks a Oneshot line before
   its actions and leaves it masked while held is set; `finalize_oneshot`
   clears held and unmasks. A Oneshot action never shares, as well as never
@@ -116,6 +135,14 @@ line's lock L1.
   keeps its four virtuals, with `mask_interrupt()` empty, and keeps NEEDACK,
   coalescing, port delivery and timestamps: a user-visible protocol, and
   kernel/irq knows no ports.
+- The kernel may take a line away from the object (the removal of its
+  domain, irq-multi-arch D19): the action carries a cancel hook, which runs
+  under L1 with preemption off after the action is unlinked and destroys the
+  object from the line's side (`line_revoked()`); the line number in the
+  action is cleared last, with a release store, and that store is what lets
+  the owner's detach answer NotFound and the object be freed. So every
+  `destroy()` runs the detach, also one on an object destroyed already, and
+  a line marked dying answers NoResource to attach, unmask and configure.
 - L1 stays held across the handlers, as Zircon runs its handler under the
   entry lock, and detach taking L1 is the barrier: no INPROGRESS flag, no
   synchronize spin. Finalize, `mask()` and `unmask()` take L1 then LI and
@@ -257,7 +284,10 @@ The user's call, 2026-10-12; the design is in
   (2026-10-30). Only the CPU's own steps
   (deactivate, the online mask) are named in the idle thread. A subsystem
   whose control path touches every online CPU takes `cpu_hotplug_lock()`
-  before its own lock (the sampler does), so task never depends on it (the
+  before its own lock (the sampler does, and so does `irq_rcu_synchronize()`,
+  whose wait lasts as long as the longest span with interrupts off on any
+  online CPU: nothing that can run under the lock may wait for it), so task
+  never depends on it (the
   user's call, 2026-10-13, after the first version called each subsystem by
   name).
 - The AP start-up path (`CPU_INIT_CODE`, the trampoline buffer) stays after

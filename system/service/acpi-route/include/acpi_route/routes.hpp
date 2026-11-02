@@ -22,8 +22,9 @@ enum class Polarity : u8 {
 };
 
 /// Where a device's interrupt arrives and how it signals: the GSI is what
-/// `interrupt_map` takes, and the trigger and polarity are what the mode of
-/// `interrupt_create` has to say.
+/// `interrupt_map` resolves, with the root domain the service's reply adds to
+/// it, and the trigger and polarity are what the mode of `interrupt_create`
+/// has to say.
 struct InterruptRoute {
     u32 gsi;
     Trigger trigger;
@@ -37,15 +38,18 @@ inline constexpr auto NUM_ISA_IRQS = u32{16};
 inline constexpr auto ISA_IRQ_CASCADE = u32{2};
 
 /// The GSI of ISA interrupt `isa_irq` and how it signals, from the MADT's
-/// interrupt source overrides: the first override of the ISA bus that names
-/// it, or, when there is none, the same number as a GSI, edge triggered and
-/// active high, which is what an ISA line is.
+/// interrupt source overrides: the last override that names it, or, when there
+/// is none, the same number as a GSI, edge triggered and active high, which is
+/// what an ISA line is.
+///
+/// The rules are the kernel's, so that the line named is the pin the kernel
+/// programmed for the number: a later override of a number replaces an
+/// earlier, the entry's bus field is not read, and the walk of the entries
+/// ends at the first one that is malformed, what was seen before it standing.
 ///
 /// NotFound for a number that is no ISA line (16 and up) or is the cascade, and
 /// for tables with no MADT. InvArgs when the override says something this
-/// cannot honour (a reserved polarity or trigger mode), and when the MADT's
-/// entries end in a malformed one before an override of `isa_irq` was found:
-/// a table that cannot be read to its end cannot say there is no override.
+/// cannot honour (a reserved polarity or trigger mode).
 [[nodiscard]]
 auto isa_irq_to_gsi(TableDirectory const &tables, u32 isa_irq)
     -> ustl::Result<InterruptRoute, ours::Status>;

@@ -9,6 +9,8 @@
 
 #include <ours/irq/types.hpp>
 
+#include <atomic>
+
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::irq {
@@ -39,16 +41,19 @@ class Action final {
 
   public:
     /// `context` is handed back to `handler` on every interrupt, untouched.
+    /// A `cancel` makes the action one that the kernel may take off its line
+    /// (see Desc::revoke()): it is told, in the way IrqCancel says, and an
+    /// action with none keeps its line against a removal of the domain.
     constexpr Action(IrqHandler const handler, void *const context, IrqFlags const flags,
-                     char const *const name) noexcept
-        : m_handler(handler), m_context(context), m_flags(flags), m_name(name) {}
+                     char const *const name, IrqCancel const cancel = nullptr) noexcept
+        : m_handler(handler), m_context(context), m_flags(flags), m_name(name), m_cancel(cancel) {}
 
     Action(Self const &) = delete;
     auto operator=(Self const &) -> Self & = delete;
 
     [[nodiscard]]
     auto on_event() const -> IrqReturn {
-        return m_handler(m_virqnum, m_context);
+        return m_handler(virqnum(), m_context);
     }
 
     [[nodiscard]]
@@ -70,16 +75,34 @@ class Action final {
         return !!(m_flags & IrqFlags::Oneshot);
     }
 
+    /// Whether the kernel may take this action off its line.
+    [[nodiscard]]
+    auto is_revocable() const -> bool {
+        return m_cancel != nullptr;
+    }
+
+    /// Tells the owner the kernel is taking the action off its line; the
+    /// line calls it, with its lock held, after unlinking the action.
+    auto cancel() const -> void {
+        if (m_cancel) {
+            m_cancel(virqnum(), m_context);
+        }
+    }
+
     /// The line this action is attached to, or INVALID_V_IRQ_NUM when it
-    /// is on none.
+    /// is on none. An acquire load: a reader that sees INVALID after a
+    /// removal also sees everything the removal did to the action and its
+    /// owner's state first, which is what lets irq::detach() answer NotFound
+    /// for an action a removal has finished with, without taking the line's
+    /// lock.
     [[nodiscard]]
     auto virqnum() const -> VIrqNum {
-        return m_virqnum;
+        return m_virqnum.load(std::memory_order_acquire);
     }
 
     [[nodiscard]]
     auto is_attached() const -> bool {
-        return m_virqnum != INVALID_V_IRQ_NUM;
+        return virqnum() != INVALID_V_IRQ_NUM;
     }
 
   private:
@@ -93,7 +116,11 @@ class Action final {
     IrqFlags m_flags;
     [[maybe_unused]]
     char const *m_name;
-    VIrqNum m_virqnum = INVALID_V_IRQ_NUM;
+    IrqCancel m_cancel;
+    /// Written under the lock of the line it names, and by a removal as the
+    /// last thing it does to the action (Desc::revoke()); read without that
+    /// lock by detach() to find the line.
+    std::atomic<VIrqNum> m_virqnum{INVALID_V_IRQ_NUM};
     ustl::collections::intrusive::ListMemberHook<> m_hook;
 
   public:

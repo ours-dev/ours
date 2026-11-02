@@ -28,7 +28,8 @@
 ///
 /// and their Ok replies, the status at 16 as in every reply:
 ///
-///   Route.IsaIrq    u32 gsi@20, u32 trigger@24, u32 polarity@28            32 bytes
+///   Route.IsaIrq    u32 domain@20, u32 gsi@24, u32 trigger@28,
+///                   u32 polarity@32                                        36 bytes
 ///   Route.EcamBase  u8 first_bus@20, u8 last_bus@21, zero u16@22,
 ///                   u64 address@24, u64 size@32                            40 bytes
 ///
@@ -77,9 +78,12 @@ struct IsaIrqRequest {
 };
 
 /// The reply. The rest is there only when |status| is Ok, so a failure is
-/// written {.status = ...}.
+/// written {.status = ...}. |domain| is the interrupt domain |gsi| is a
+/// number of, for interrupt_map's |domain| argument: the root controller's,
+/// 0 (ROOT_INTERRUPT_DOMAIN), on every platform that follows ACPI today.
 struct IsaIrqReply {
     ours::Status status;
+    u32 domain = 0;
     u32 gsi = 0;
     Trigger trigger = Trigger::Edge;
     Polarity polarity = Polarity::ActiveHigh;
@@ -92,7 +96,11 @@ struct EcamBaseRequest {
 
 /// The reply. The rest is there only when |status| is Ok. |address| is where
 /// the configuration space of |first_bus| begins and |size| the bytes of it up
-/// to the end of |last_bus|, one MiB to a bus.
+/// to the end of |last_bus|, one MiB to a bus. The codec guarantees the
+/// framing and not these relations: a reader that maps the window checks them
+/// first (|first_bus| not after |last_bus|, |size| the buses times one MiB,
+/// |address| plus |size| not past the end of the address space), as the route
+/// service does before it answers.
 struct EcamBaseReply {
     ours::Status status;
     u64 address = 0;

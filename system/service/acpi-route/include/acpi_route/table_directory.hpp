@@ -23,10 +23,6 @@ namespace acpi_route {
 /// reads outside `bytes`.
 class TableDirectory final {
   public:
-    /// The most tables a directory may claim. A machine has tens; this keeps a
-    /// corrupt count from making the walk long, not a real machine from fitting.
-    static constexpr auto MAX_TABLES = u32{256};
-
     /// Checks `bytes`, which must stay mapped and unchanged for as long as the
     /// result is used. InvArgs for anything that does not hold, with nothing
     /// kept.

@@ -1,10 +1,12 @@
 #include <ours/irq/action.hpp>
 #include <ours/irq/desc_table.hpp>
+#include <ours/irq/domain_registry.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/task/irq_rcu.hpp>
 #include <ours/task/thread.hpp>
 
-#include <heap/new.hpp>
+#include <atomic>
 
 namespace ours::irq {
 namespace {
@@ -13,81 +15,198 @@ namespace {
     // profiler's tick hook) reads it to reach the interrupted context.
     CPU_LOCAL
     arch::IrqFrame *CURRENT_FRAME;
+
+    // The root controller's handler. Written once by set_root_handler() on the
+    // boot CPU, in the controller's start-up hook, which runs before that CPU
+    // enables interrupts and before any other CPU starts; read in interrupt
+    // context on every CPU with no lock. That order is what keeps a CPU from
+    // reading it too early. The release store and the acquire load make the
+    // line table, built before the store, visible to whoever reads a handler.
+    std::atomic<RootHandler> ROOT_HANDLER{nullptr};
+
+    // The machine's directory of interrupt domains. The root controller's
+    // driver registers its domain in it (init_lines()); every control call
+    // resolves its number through it, inside a read guard.
+    FORCE_INLINE
+    auto get_domain_registry() -> DomainRegistry * {
+        static DomainRegistry REGISTRY;
+        return &REGISTRY;
+    }
+
+    /// The table that owns `virqnum`, `guard` held over it and over the caller's
+    /// whole use of the answer: DescTable::find_line()'s contract, one directory
+    /// up. InvArgs for INVALID_V_IRQ_NUM, NoResource for a number no registered
+    /// domain owns.
+    [[nodiscard]]
+    auto find_table(VIrqNum const virqnum, task::IrqRcuReadGuard const &guard)
+        -> ktl::Result<DescTable *> {
+        if (virqnum == INVALID_V_IRQ_NUM) {
+            return ustl::err(Status::InvArgs);
+        }
+        auto *const table = get_domain_registry()->table_of(virqnum, guard);
+        if (table == nullptr) {
+            return ustl::err(Status::NoResource);
+        }
+        return ustl::ok(table);
+    }
 } // namespace
+
+auto set_root_handler(RootHandler const handler) -> void {
+    ASSERT(handler != nullptr, "The root interrupt handler is null");
+    auto expected = RootHandler{nullptr};
+    [[maybe_unused]]
+    auto const installed = ROOT_HANDLER.compare_exchange_strong(
+        expected, handler, std::memory_order_release, std::memory_order_relaxed);
+    ASSERT(installed, "A root interrupt handler is already installed");
+}
+
+auto handle_root_irq(::arch::IrqFrame *const frame) -> void {
+    auto *const handler = ROOT_HANDLER.load(std::memory_order_acquire);
+    ASSERT(handler != nullptr, "An interrupt reached the root handler before one was installed");
+    handler(frame);
+}
 
 auto current_frame() -> arch::IrqFrame * {
     return mm::CpuLocal::read(CURRENT_FRAME);
 }
-FORCE_INLINE
-static auto get_desc_table() -> DescTable * {
-    static DescTable TABLE;
-    return &TABLE;
+
+auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip, DomainSlot &slot)
+    -> Status {
+    return get_domain_registry()->register_domain(DomainId::Root, hirqnums, chip, slot);
 }
 
-auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip) -> Status {
-    return get_desc_table()->init(hirqnums, chip);
-}
-
-auto attach(VIrqNum virqnum, Action &action) -> Status {
-    return get_desc_table()->attach(virqnum, action);
+auto attach(VIrqNum const virqnum, Action &action) -> Status {
+    task::IrqRcuReadGuard const guard;
+    auto const table = find_table(virqnum, guard);
+    if (table.is_err()) {
+        return table.unwrap_err();
+    }
+    return (*table)->attach(virqnum, action);
 }
 
 auto attach(VIrqNum const virqnum, Action &action, ustl::Option<LineMode> const mode)
     -> ktl::Result<TriggerMode> {
-    return get_desc_table()->attach(virqnum, action, mode);
+    task::IrqRcuReadGuard const guard;
+    auto const table = find_table(virqnum, guard);
+    if (table.is_err()) {
+        return ustl::err(table.unwrap_err());
+    }
+    return (*table)->attach(virqnum, action, mode);
 }
 
+/// The action knows its line, so the caller names only the action: on a
+/// shared line a number alone cannot say which of its actions to remove.
+/// INVALID_V_IRQ_NUM, which is what an action not on any line holds, is in no
+/// domain's block and answers NotFound, as it did when the machine had one
+/// table.
 auto detach(Action &action) -> Status {
-    return get_desc_table()->detach(action);
+    task::IrqRcuReadGuard const guard;
+    auto *const table = get_domain_registry()->table_of(action.virqnum(), guard);
+    if (table == nullptr) {
+        return Status::NotFound;
+    }
+    return table->detach(action);
 }
 
 auto finalize_oneshot(VIrqNum const virqnum, Action const &action) -> void {
-    get_desc_table()->finalize_oneshot(virqnum, action);
+    task::IrqRcuReadGuard const guard;
+    auto *const table = get_domain_registry()->table_of(virqnum, guard);
+    if (table == nullptr) {
+        return;
+    }
+    table->finalize_oneshot(virqnum, action);
 }
 
 auto mask(VIrqNum const virqnum) -> Status {
-    return get_desc_table()->mask(virqnum);
+    task::IrqRcuReadGuard const guard;
+    auto const table = find_table(virqnum, guard);
+    if (table.is_err()) {
+        return table.unwrap_err();
+    }
+    return (*table)->mask(virqnum);
 }
 
 auto unmask(VIrqNum const virqnum) -> Status {
-    return get_desc_table()->unmask(virqnum);
+    task::IrqRcuReadGuard const guard;
+    auto const table = find_table(virqnum, guard);
+    if (table.is_err()) {
+        return table.unwrap_err();
+    }
+    return (*table)->unmask(virqnum);
 }
 
 auto configure(VIrqNum const virqnum, TriggerMode const trigger, Polarity const polarity)
     -> Status {
-    return get_desc_table()->configure(virqnum, trigger, polarity);
+    task::IrqRcuReadGuard const guard;
+    auto const table = find_table(virqnum, guard);
+    if (table.is_err()) {
+        return table.unwrap_err();
+    }
+    return (*table)->configure(virqnum, trigger, polarity);
 }
 
 auto trigger_mode(VIrqNum const virqnum) -> ktl::Result<TriggerMode> {
-    return get_desc_table()->trigger_mode(virqnum);
+    task::IrqRcuReadGuard const guard;
+    auto const table = find_table(virqnum, guard);
+    if (table.is_err()) {
+        return ustl::err(table.unwrap_err());
+    }
+    return (*table)->trigger_mode(virqnum);
 }
 
 auto is_masked_for_test(VIrqNum const virqnum) -> ktl::Result<bool> {
-    return get_desc_table()->is_masked(virqnum);
+    task::IrqRcuReadGuard const guard;
+    auto const table = find_table(virqnum, guard);
+    if (table.is_err()) {
+        return ustl::err(table.unwrap_err());
+    }
+    return (*table)->is_masked(virqnum);
 }
 
-auto set_affinity(VIrqNum, const CpuMask &targets) -> Status {
-    return Status::Ok;
+auto set_affinity(VIrqNum, CpuMask const &) -> Status {
+    return Status::NotSupported;
+}
+
+auto virq_of_domain(DomainId const id, HIrqNum const hirqnum) -> VIrqNum {
+    // One read of the directory, and the answer is a plain number: good after
+    // the guard closes, because a virq is never reused.
+    task::IrqRcuReadGuard const guard;
+    return get_domain_registry()->virq_of(id, hirqnum, guard);
 }
 
 auto virq_of_hwirq(HIrqNum const hirqnum) -> VIrqNum {
-    return get_desc_table()->virq_of(hirqnum);
+    return virq_of_domain(DomainId::Root, hirqnum);
 }
 
 auto hwirq_of_virq(VIrqNum const virqnum) -> HIrqNum {
-    return get_desc_table()->hwirq_of(virqnum);
+    task::IrqRcuReadGuard const guard;
+    auto *const table = get_domain_registry()->table_of(virqnum, guard);
+    if (table == nullptr) {
+        return INVALID_H_IRQ_NUM;
+    }
+    return table->hwirq_of(virqnum);
 }
 
-auto handle_irq_generic(HIrqNum const hirqnum) -> bool {
+auto handle_irq_generic(DescTable *const table, HIrqNum const hirqnum) -> bool {
     ASSERT(hirqnum != INVALID_H_IRQ_NUM);
-    return get_desc_table()->handle_irq(hirqnum, Eoi::Send).is_some();
+    if (table == nullptr) {
+        return false;
+    }
+    return table->handle_irq(hirqnum, Eoi::Send).is_some();
 }
 
 /// A played interrupt names its line by virq, as every caller outside the
-/// interrupt entry does, so it is turned into the hardware number first; a
-/// number that is no line becomes INVALID_H_IRQ_NUM, which has no line.
+/// interrupt entry does, and a thread-context entrant into the interrupt path
+/// is a read of the directory like any control call: the guard covers the
+/// lookup and the flow both. The virq is turned into the hardware number
+/// inside the table; a number that is no line becomes INVALID_H_IRQ_NUM,
+/// which has no line.
 auto handle_irq_for_test(VIrqNum const virqnum) -> IrqReturn {
-    auto *const table = get_desc_table();
+    task::IrqRcuReadGuard const guard;
+    auto *const table = get_domain_registry()->table_of(virqnum, guard);
+    if (table == nullptr) {
+        return IrqReturn::None;
+    }
     auto const result = table->handle_irq(table->hwirq_of(virqnum), Eoi::Skip);
     if (result.is_none()) {
         return IrqReturn::None;
@@ -95,8 +214,45 @@ auto handle_irq_for_test(VIrqNum const virqnum) -> IrqReturn {
     return *result;
 }
 
-auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
-    return get_desc_table()->spurious_count(virqnum);
+auto revoke_line_for_test(VIrqNum const virqnum) -> Status {
+    task::IrqRcuReadGuard const guard;
+    auto const table = find_table(virqnum, guard);
+    if (table.is_err()) {
+        return table.unwrap_err();
+    }
+    return (*table)->revoke_line(virqnum);
+}
+
+auto unmark_dying_for_test(VIrqNum const virqnum) -> void {
+    task::IrqRcuReadGuard const guard;
+    auto *const table = get_domain_registry()->table_of(virqnum, guard);
+    if (table == nullptr) {
+        return;
+    }
+    table->unmark_dying(virqnum);
+}
+
+auto spurious_count(VIrqNum const virqnum) -> ustl::Option<u64> {
+    task::IrqRcuReadGuard const guard;
+    auto *const table = get_domain_registry()->table_of(virqnum, guard);
+    if (table == nullptr) {
+        return ustl::none();
+    }
+    return table->spurious_count(virqnum);
+}
+
+auto is_kernel_owned(VIrqNum const virqnum) -> bool {
+    task::IrqRcuReadGuard const guard;
+    auto *const table = get_domain_registry()->table_of(virqnum, guard);
+    if (table == nullptr) {
+        return false;
+    }
+    return table->is_kernel_owned(virqnum);
+}
+
+auto root_table_for_test() -> DescTable * {
+    task::IrqRcuReadGuard const guard;
+    return get_domain_registry()->find(DomainId::Root, guard);
 }
 
 /// The bookkeeping on entry to an interrupt: record the frame, and raise the
@@ -109,7 +265,7 @@ auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
 /// There is deliberately no hard-IRQ count beside them, and PreemptionState's
 /// Tag says why. CURRENT_FRAME is this CPU's "handling an interrupt" signal
 /// instead.
-auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
+auto handle_irq_preamble(arch::IrqFrame *frame) -> void {
     mm::CpuLocal::write(CURRENT_FRAME, frame);
 
     auto &preemption_state = task::Thread::Current::preemption_state();

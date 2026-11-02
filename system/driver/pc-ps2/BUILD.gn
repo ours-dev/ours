@@ -12,10 +12,10 @@ assert(toolchain_environment == "user",
        "pc-ps2 must be built in a //build/toolchain/ours:user-* toolchain")
 
 # The PS/2 keyboard driver (pc_ps2.cpp): it takes the i8042's two I/O ports
-# and its interrupt line, ISA 1, with the resources the root routes it, and
-# logs each key the keyboard sends. The kernel keeps nothing of the
-# keyboard but the one command through which it resets the machine
-# (kernel/platform/pc/power.cpp).
+# and its interrupt line with the resources the root routes it, asks the ACPI
+# route service which GSI the keyboard's ISA IRQ 1 is on, and logs each key
+# the keyboard sends. The kernel keeps nothing of the keyboard but the one
+# command through which it resets the machine (kernel/platform/pc/power.cpp).
 user_executable("pc-ps2") {
   visibility = [ ":*" ]
   sources = [
@@ -27,15 +27,18 @@ user_executable("pc-ps2") {
   ]
   deps = [
     "//system/lib/fsio",
+    "//system/lib/ours.acpi:client",
     "//system/lib/ours.resource:client",
     "//system/lib/wire",
   ]
 }
 
-# Two protocol uses, each at /svc/<name>: ours.resource.Irq and
+# Three protocol uses, each at /svc/<name>: ours.resource.Irq and
 # ours.resource.Ioport, the root's built-ins that hand out the roots of the
-# interrupt lines and of the I/O ports. Routing is the only gate on them, so
-# this component holds them because dev's root.cm offers them to it.
+# interrupt lines and of the I/O ports, and ours.acpi.Route, which the ACPI
+# route service (//system/service/acpi-route) provides: the GSI the keyboard's
+# ISA IRQ arrives on. Routing is the only gate on them, so this component
+# holds them because dev's root.cm offers them to it.
 component_manifest("pc-ps2.cm") {
   visibility = [ "//kernel/products/image/*" ]
   program = ":pc-ps2"
@@ -45,6 +48,7 @@ component_manifest("pc-ps2.cm") {
         protocol = [
           "ours.resource.Irq",
           "ours.resource.Ioport",
+          "ours.acpi.Route",
         ]
       },
     ]

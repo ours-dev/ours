@@ -68,3 +68,59 @@ None.
 - Why does a lookup of "DSDT" in the root table fail on a real machine, and where is the DSDT's address?
 - Why is the padding zeroed and why is the output not a copy of the XSDT with the tables behind it?
 - What does a reader do with a revision 1 FADT, and what does it do when `dsdt` and `x_dsdt` differ?
+
+## The export reads each length once and says what it left out; the physmap adapter bounds the whole range (2026-10-31)
+
+**Files**
+- `kernel/lib/acpi/src/table_export.cpp`, `include/acpi/table_export.hpp` — one read of each table's length; the write pass is held against the plan; `ExportedLayout` says how many tables were skipped and whether the DSDT is there.
+- `kernel/platform/pc/acpi.cpp` — `PhysMapMapper::map()` checks the last byte of the range, not only the first.
+- `kernel/lib/userabi/src/userboot.cpp` — the log line says what the layout says.
+- `kernel/lib/acpi/test/table_export_test.cpp` — the counts, and a mapper that changes the tables between the plan and the write.
+- `kernel/lib/acpi/include/acpi/table_set.hpp`, `structures/fadt.hpp`, `src/table_set.cpp` — two comments that were wrong.
+
+**Symptom**
+Latent, cannot be triggered on the machine tested. Found by the independent review of the ACPI work (`docs/changes/261031/acpi-route.md`).
+
+**Cause**
+Three small things in the kernel half, each of which assumed firmware memory to be well behaved.
+
+- **The adapter checked the start of a range.** The physmap is one linear window of 32 GiB. `PhysMapMapper::map(addr, size)` asked only whether `addr` was in the window and never used `size`, although the contract of `acpi::PhysMapper` is that the whole range is readable, and the length is the firmware's: a table's header says how long it is, and `TableSet` maps that many bytes. A table at the end of the window with a length that runs past it would have been "mapped", and the checksum would have run off the end into a page fault. The reviewer reproduced it with a mapper that checked only the start. It is now one more comparison on the last byte.
+- **A length was read four times.** In the write pass `header.length` is firmware memory read for the guard, the entry, the copy and the stride. If it were two values the guard would hold for one and the copy would use another. It is read once and every use takes that one.
+- **The directory could claim more than it held.** The header of the directory says how many tables there are and how long it all is, and it was written before the tables. If the second walk found a table fewer than the first (a checksum that stopped holding), the directory still said N and held N-1, the last entry zero. Firmware memory is not meant to change, but the cost of being wrong is a directory that lies to a program that trusts it, so the write pass is now held against the plan and `export_tables()` answers BadState, and the buffer is not a directory, if they differ.
+
+The log line was the fourth: it compared the exported count with `num_tables() + 1` and so said "3 of 4" for a machine with no FADT where nothing was lost. It now says how many tables, how long, whether the DSDT was found, and how many were left out.
+
+**Change**
+
+```cpp
+auto const length = usize(header.length);            // read once
+if (written == layout.count || next_table + length > layout.size) { overran = true; return; }
+...
+if (overran || written != layout.count || next_table != layout.size) {
+    return ktl::err(Status::BadState);
+}
+```
+
+and in the adapter: `size == 0 || addr + (size - 1) < addr || !is_valid_phys_addr(addr + (size - 1))` is an error.
+
+**Reference**
+None, this project's own design. The contract that the adapter did not keep is the comment on `acpi::PhysMapper` in `kernel/lib/acpi/include/acpi/table_set.hpp`.
+
+**Verification**
+- `table-export-test`: the plan counts the skipped tables and the DSDT; a mapper that changes a table's checksum, and one that makes a table longer, just before the first call of the write pass: both answer BadState, and nothing is written past the buffer. Three mutations caught (the final check removed, the skipped count removed, the DSDT flag removed), each restored.
+- `boot_check.py`: build ok, dbg PASS (44 passed, 4 skipped), rel PASS (41 passed, 8 skipped, 6/6 required), host tests 154 passed; the kernel logs `7 ACPI tables, 9384 bytes, handed to userboot; DSDT found, 0 left out`.
+- Not verified: the adapter's new check on a table at the end of the window: it is kernel code that no host test reaches, and the reasoning is the comparison itself. The lookup cache of `TableSet` is still not thread safe; the comment now names the second caller, which is one thread and before user space.
+
+**Deliberately not done**
+The startup-handle arrays of the kernel's and the user-mode userboot are exactly full (14 and 13), with nothing that stops the next handle from writing past them: `docs/repairs/261031/acpi-route.md`, item 2. The `ExportedLayout` still counts a DSDT the root table lists as ignored, not skipped.
+
+**How it was found**
+By the independent review, and reproduced under ASan and UBSan with the repository's own `table_set.cpp` and `table_export.cpp` and a mapper that checked only the start.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a contract that says "the whole range is readable" need the adapter to look at the size, when the physmap is a permanent linear mapping?
+- What can a program that trusts the directory do with a header that says five tables and holds four?
+- Why is a length read once better than a length read four times when nothing writes the tables?

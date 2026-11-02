@@ -69,7 +69,9 @@ class Desc final {
 
     /// See irq::attach(). An action that says Permanent may only take an
     /// empty line, and makes the line Permanent; one that says Oneshot makes
-    /// it Oneshot.
+    /// it Oneshot, and needs a chip that can say how its pins signal
+    /// (NotSupported otherwise): without a mode the line keeps the flow it
+    /// has, and only a mode, or a chip that reads one, sets the level flow.
     [[nodiscard]]
     auto attach(Action &action) -> Status;
 
@@ -90,6 +92,45 @@ class Desc final {
     /// See irq::finalize_oneshot(). Takes L1, then the chip takes LI.
     auto finalize_oneshot(Action const &action) -> void;
 
+    /// The kernel taking the line away from its actions, for the removal of
+    /// the domain it belongs to. The caller runs two steps over all the
+    /// domain's lines, the first over every line before the second over any,
+    /// and may run a read-only check before them:
+    ///
+    ///   0. check_revocable(): mark_dying() without the mark, for a caller
+    ///      that wants to refuse before it marks anything.
+    ///   1. mark_dying(): refuses a line a removal could not empty (AlreadyBound
+    ///      for a Permanent line, which dispatches without L1 so nothing can
+    ///      wait for it, and for a line with an action that has no cancel
+    ///      hook), and otherwise marks it. From then on attach(), unmask() and
+    ///      configure() answer NoResource, before they touch the chip; mask()
+    ///      and finalize_oneshot() work as before. The caller undoes the marks
+    ///      it made with unmark_dying() if a later line refuses, so a refused
+    ///      removal changes nothing but a short window in which those calls
+    ///      may have answered NoResource.
+    ///   2. revoke(): takes every action off the line, tells each through its
+    ///      cancel hook, masks the line.
+    ///
+    /// The loops over all of a domain's lines are DescTable's
+    /// (begin_removal(), finish_removal()).
+    [[nodiscard]]
+    auto check_revocable() -> Status;
+    [[nodiscard]]
+    auto mark_dying() -> Status;
+    auto unmark_dying() -> void;
+    /// Whether any action is on the line. Takes L1.
+    [[nodiscard]]
+    auto has_actions() -> bool;
+    /// Under L1, so it is a barrier as detach() is: it returns with no
+    /// handler of the line in flight, and none reaches an action again.
+    /// Each action is unlinked, then told (IrqCancel), and its line is cleared
+    /// last, with a release store: that store is the removal's last touch of
+    /// the action, and an owner whose irq::detach() reads INVALID (acquire) may
+    /// free the action. An owner that reads a valid line instead queues on L1
+    /// behind this and then finds the action gone (NotFound). The line must be
+    /// marked dying, and not Permanent.
+    auto revoke() -> void;
+
     /// Runs the line's flow, handle_edge() or handle_fasteoi(), once for
     /// each interrupt on the line, in interrupt context: every action's
     /// handler, then, if `eoi` says Send, the end of interrupt through the
@@ -103,8 +144,8 @@ class Desc final {
     ///
     /// The end of interrupt is the flow's last step, inside the same hold of
     /// L1 as the actions: the code that knows the line and its chip sends
-    /// it, once per interrupt, rather than arch, which knows only the
-    /// vector. A dispatch that sends it needs a chip with an eoi, and one on
+    /// it, once per interrupt, rather than the root handler, which knows only
+    /// the hardware number. A dispatch that sends it needs a chip with an eoi, and one on
     /// a line nobody is on a chip that masks, which every line of the table
     /// has.
     [[nodiscard]]
@@ -151,11 +192,20 @@ class Desc final {
     [[nodiscard]]
     auto flow() -> Flow;
 
+    /// Whether an action that says Permanent holds the line, which is how the
+    /// kernel's own code holds one. Takes no lock: a line is Permanent for
+    /// good once it is, so a false can only be out of date by a line the kernel
+    /// takes at boot.
+    [[nodiscard]]
+    auto is_kernel_owned() const -> bool {
+        return is_permanent();
+    }
+
   private:
     /// What the line is, as one word: the first three bits are what its
-    /// actions asked for, kept as the line's own facts, and Held is the
-    /// line's state. Separate from IrqFlags, which is what one action asks
-    /// for, so that a caller building an action never sees Held.
+    /// actions asked for, kept as the line's own facts, and Held and Dying
+    /// are the line's state. Separate from IrqFlags, which is what one
+    /// action asks for, so that a caller building an action never sees them.
     enum class LineFlags : u32 {
         None,
         Shared = 0_bit,
@@ -167,6 +217,10 @@ class Desc final {
         /// level flow and unmask(), which leave the line masked while it is
         /// set. Never set on a line that is not Oneshot.
         Held = 3_bit,
+        /// A removal of the line's domain has begun: set by mark_dying(),
+        /// cleared by unmark_dying(). The line takes no new action and is
+        /// not unmasked or reconfigured.
+        Dying = 4_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(LineFlags);
 
@@ -226,6 +280,16 @@ class Desc final {
     auto is_permanent() const -> bool {
         return !!(m_flags.load(std::memory_order_acquire) & LineFlags::Permanent);
     }
+
+    /// Whether a removal has marked the line. Under L1, like Held.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto is_dying_locked() const -> bool {
+        return !!(m_flags.load(std::memory_order_relaxed) & LineFlags::Dying);
+    }
+
+    /// The reason mark_dying() would refuse the line, Ok if it would not.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto revocable_locked() const -> Status;
 
     /// Whether the line's action said Oneshot. Read by the level flow, under
     /// L1, where a relaxed load sees the latest write, every write being

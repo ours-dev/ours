@@ -77,6 +77,14 @@ using InterruptDispatcherBase = SoloDispatcher<InterruptDispatcher, RIGHTS_DEFAU
 /// the next packet, or a wait that takes the next interrupt, leaves the
 /// object owed an ack again, and says nothing.
 ///
+/// A virtual interrupt has no line to tell, and tells whoever waits on it
+/// through a signal instead: Idle (<ours/signals.hpp>), up while the object is
+/// owed no ack, which sync_signals() keeps equal to the state after every
+/// change that moves the debt (trigger(), destroy(), and the moments
+/// unmask_interrupt() is called). Setting a signal takes a Mutex, so
+/// trigger(), destroy(), ack() and wait() are thread-context calls with no
+/// lock held and preemption on.
+///
 /// The interrupt is delivered in one of two ways, never both:
 ///   - Unbound, a thread takes it with interrupt_wait. Taking it is also the
 ///     acknowledgement of the one before: the next wait is the only ack
@@ -112,18 +120,24 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// it sends a packet there instead, or, while the last one is owed its
     /// ack, leaves the time for the ack to send. Only a virtual interrupt
     /// can be raised this way (BadState otherwise). Cancelled once
-    /// destroyed.
+    /// destroyed. Drops the Idle signal, before it returns.
     [[nodiscard]]
     auto trigger(Instant timestamp) -> Status;
 
     /// Ends the interrupt: the line is masked and let go of, and a thread
     /// waiting on it wakes with Cancelled, as does every later wait and
-    /// trigger. A second destroy does nothing.
+    /// trigger. A second destroy does not end it again, but it still waits for
+    /// the line, as the first does: the kernel taking the line away
+    /// (line_revoked()) destroys the object too, and the removal is using it
+    /// until it has let the line go, so every destroy has to wait for that
+    /// before its caller may free the object. A virtual interrupt raises
+    /// Idle, and keeps it up.
     ///
     /// Bound to a port, a packet still queued there is taken back, so that
     /// the port never holds a packet of a destroyed interrupt. NotFound when
     /// the interrupt needed an ack and had no packet queued -- port_wait
-    /// already took it -- with the interrupt destroyed all the same.
+    /// already took it -- with the interrupt destroyed all the same; but not
+    /// if the kernel took the line away first, whose destroy answers Ok.
     [[nodiscard]]
     auto destroy() -> Status;
 
@@ -203,6 +217,19 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// nothing: the line is about to be let go of.
     auto handle_interrupt() -> void;
 
+    /// The kernel took the line away from this object (irq::Desc::revoke()):
+    /// the object is destroyed as destroy() would, except that the line is
+    /// let go of already, so nothing here detaches. Called with the line's
+    /// lock held, in the context of the removal, so it takes only the locks a
+    /// handler takes after it, and it wakes the parked waiter with Cancelled,
+    /// or takes a queued packet off the bound port; a bound port is told
+    /// nothing more. Nothing happens if the object is destroyed already. The
+    /// object must not be freed until destroy() has returned, which waits
+    /// for the removal to be done with it. For a physical kind only, whose
+    /// mask and deactivate work (empty for the kinds that exist) must not
+    /// need more than the context of a handler.
+    auto line_revoked() -> void;
+
     /// The four operations on what stands behind the interrupt, each kind's
     /// own. A virtual interrupt has nothing to do in any of them.
     ///   - mask_interrupt(): stop what stands behind the interrupt from
@@ -211,7 +238,8 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     ///     interrupts it has delivered, so what stands behind it may raise
     ///     the next one. Called by ack() as it moves to Idle, and by a wait
     ///     in NeedAck that finds nothing pending, as that wait is the ack;
-    ///     never while the object is still owed an ack.
+    ///     never while the object is still owed an ack. A virtual interrupt
+    ///     raises Idle here.
     ///   - deactivate_interrupt() and unregister_interrupt_handler(): tear
     ///     down, from destroy().
     ///
@@ -229,6 +257,22 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     virtual auto deactivate_interrupt() -> void = 0;
     TA_EXCLUDES(m_spinlock)
     virtual auto unregister_interrupt_handler() -> void = 0;
+
+    /// Makes the Idle signal of a virtual interrupt say what the state says:
+    /// up unless the object is owed an ack (Triggered, NeedAck). Nothing for a
+    /// physical one. Called after every change that moves the debt: the
+    /// creation, a trigger, an ack or a wait that clears it, a destroy.
+    ///
+    /// It reads the state under m_spinlock, sets the signal, which takes the
+    /// dispatcher's Mutex and so needs thread context and no lock held, and
+    /// reads the state again; if the debt moved meanwhile it sets the signal
+    /// again. So two calls on two CPUs cannot leave the signal behind the
+    /// state: the last change to the state is followed by a call that reads
+    /// it, and an older call that writes after that one reads the state again
+    /// and corrects itself. The signal can lag the state only while a call is
+    /// inside the object.
+    TA_EXCLUDES(m_spinlock)
+    auto sync_signals() -> void;
 
   private:
     /// Where the interrupt is in its life:

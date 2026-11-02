@@ -129,4 +129,3 @@ None
 - Why must a user mapping of a physical VMO be Discache even if the caller did not ask for it?
 - Why is a writable mapping of a physical VMO InvArgs, rather than a store the device would see?
 - Why is this check in `VmaDispatcher::map()` rather than in `vma_map` or in `mm::VmArea`?
-

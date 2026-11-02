@@ -19,10 +19,18 @@ namespace {
     ustl::LazyInit<acpi::TableSet> ACPI_TABLES_STORAGE;
 
     /// The physmap covers all of usable physical memory with a permanent linear
-    /// mapping, so a successful translation is readable for its whole length
-    /// and never unmapped -- both halves of acpi::PhysMapper's contract.
+    /// mapping, so a translation is readable for its whole length and never
+    /// unmapped -- both halves of acpi::PhysMapper's contract -- provided the
+    /// whole range is inside the window. The firmware chooses the length (a
+    /// table's own header says how long it is), so the end is checked as well
+    /// as the start: the window is one linear range, and a range whose last
+    /// byte is in it is in it all.
     struct PhysMapMapper final: public acpi::PhysMapper {
         auto map(PhysAddr addr, usize size) -> ktl::Result<void const *> override {
+            if (size == 0 || addr + (size - 1) < addr ||
+                !mm::PhysMap::is_valid_phys_addr(addr + (size - 1))) {
+                return ktl::err(Status::InternalError);
+            }
             if (auto ptr = mm::PhysMap::phys_to_virt<void const>(addr)) {
                 return ktl::ok(ptr);
             }

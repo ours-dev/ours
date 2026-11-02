@@ -27,8 +27,10 @@ constexpr auto RESOURCE = Uandle{0x1003};
 
 /// Every protocol of the library: each test runs on all of them.
 constexpr auto PROTOCOLS = std::array{
-    ours_resource::DEBUG_PROTOCOL, ours_resource::IRQ_PROTOCOL,   ours_resource::IOPORT_PROTOCOL,
-    ours_resource::MMIO_PROTOCOL,  ours_resource::IOMMU_PROTOCOL,
+    ours_resource::DEBUG_PROTOCOL,    ours_resource::IRQ_PROTOCOL,
+    ours_resource::IOPORT_PROTOCOL,   ours_resource::MMIO_PROTOCOL,
+    ours_resource::IOMMU_PROTOCOL,    ours_resource::SAMPLING_PROTOCOL,
+    ours_resource::ROOT_JOB_PROTOCOL, ours_resource::ACPI_PROTOCOL,
 };
 
 /// Room for one message, starting dirty so that a byte the encoder forgot
@@ -239,6 +241,10 @@ TEST(OursResource, Protocols) {
         Expected{.name = "ours.resource.Ioport", .selector = "ours.resource/Ioport.Get"},
         Expected{.name = "ours.resource.Mmio", .selector = "ours.resource/Mmio.Get"},
         Expected{.name = "ours.resource.Iommu", .selector = "ours.resource/Iommu.Get"},
+        Expected{.name = "ours.resource.Sampling", .selector = "ours.resource/Sampling.Get"},
+        // Declared here with the others, in a library of their own by name.
+        Expected{.name = "ours.kernel.RootJob", .selector = "ours.kernel/RootJob.Get"},
+        Expected{.name = "ours.boot.Acpi", .selector = "ours.boot/Acpi.Get"},
     };
     static_assert(EXPECTED.size() == PROTOCOLS.size());
     for (auto index = usize{0}; index < PROTOCOLS.size(); ++index) {

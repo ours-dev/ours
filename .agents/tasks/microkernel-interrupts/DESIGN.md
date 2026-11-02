@@ -212,6 +212,7 @@ The order is L1 → L2 → {LI, L3}. LI and L3 are never held together.
   - `UnregisterInterruptHandler` calls `irq::detach`.
   - `DeactivateInterrupt` is empty on x86 (Zircon `:148-153`).
 - **The kernel's own lines** register with Permanent, so a user's attach answers AlreadyBound (Zircon `interrupt_manager.rs:294-296`).
+  - Changed 2026-11-01: `interrupt_map` and `interrupt_create` answer AccessDenied for such a line, a departure from the Zircon answer above, in `docs/changes/261101/syscall.md`.
 - **The ABI already has room.**
   - The comment on the port packet's union reserves the interrupt payload (`system/public/ours/port.hpp:49-52`).
   - The comment on `PortCreateOptions` reserves `BIND_TO_INTERRUPT` (`:79-83`).

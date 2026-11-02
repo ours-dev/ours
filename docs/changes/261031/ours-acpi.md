@@ -55,3 +55,74 @@ None.
 - A codec encodes the IsaIrq reply with the trigger at offset 28 and decodes it from 28. Why does a round-trip test not notice, and what does?
 - Why must the status-form reply of a failure have nothing after it, and what would two programs that disagree about that do?
 - Why does the wire have enums of its own when the service's library already has a `Trigger` and a `Polarity`?
+
+## The client: `isa_irq()` and `ecam_base()`, one request on a connection of its own (2026-10-31)
+
+**Files**
+- `system/lib/ours.acpi/include/ours_acpi/client.hpp`, `src/client.cpp` — new.
+- `system/lib/ours.acpi/BUILD.gn` — the `client` target, for user programs only.
+
+**Symptom**
+Latent, cannot be triggered today: the codec had nobody to speak it.
+
+**Cause**
+Not a mistake: a program that asks the route service needs the same few steps each time, and they are the ones `ours_resource::get()` has: build a path under `/svc`, connect through the namespace, write one request, wait for a reply or the peer closing, read it, and tell an answer from an epitaph. An epitaph is what a route that leads nowhere closes the connection with, and a component that has exited is one such route, so a client that took it for a malformed reply would hide NotFound as InvArgs.
+
+**Change**
+Two functions, each opening a connection, writing one request, reading one message, decoding it and closing the connection. A reply whose status is not Ok is the function's Err, so a caller asks "is there a line" with `is_ok()`; the codec's replies keep the status inside the reply for a server to write.
+
+**Reference**
+`ours_resource::get()` in `system/lib/ours.resource/src/client.cpp`, whose steps these follow; None else.
+
+**Verification**
+By the program that uses it: `check_acpi_route()` in routing_checks goes through it for every answer (`docs/changes/261031/acpi-route.md`). clang-tidy: no findings. Not tested alone: a client needs a channel and a namespace, which only a booted image has.
+
+**Deliberately not done**
+No connection kept between calls: each call costs a connection, and a driver asks once or twice. No timeout, as `ours_resource::get()` has none.
+
+**How it was found**
+None, a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is a reply with a failure status the function's Err, when the codec returns it as a reply?
+- What would a client that took an epitaph for a malformed reply tell its caller when the service has exited?
+- Why does the client read a message into a buffer that has room for a handle?
+
+## The codec's tests hold the txid rule and the width of an enum; the contract says what the codec does not check (2026-10-31)
+
+**Files**
+- `system/lib/ours.acpi/test/ours_acpi_test.cpp` — requests with a txid the rule refuses, the wrong direction for EcamBase, and enum fields whose low byte is a valid value.
+- `system/lib/ours.acpi/include/ours_acpi/ours_acpi.hpp`, `client.hpp` — what a reader of an EcamBase reply must check, and NoResource among the client's errors.
+- `system/lib/ours.resource/test/ours_resource_test.cpp` — `ACPI_PROTOCOL`, and the two protocols the list had left out, join the per-protocol tests.
+
+**Symptom**
+Found by the independent review: a mutant of the codec that dropped the txid rule passed all 14 tests, and so did one that cast an enum field to a byte before comparing it, so that a trigger of 0x100 decoded as Edge.
+
+**Cause**
+The txid rule lives in `wire::decode_request_header()`, which the wire library tests, so a codec that calls it is right, and a codec that stopped calling it was held by nothing. The test now sends the txids the rule refuses. The enum fields are 32 bits wide, and a decoder that looked at the low byte accepted a value no encoder writes; the test now sends values whose low byte is valid. The EcamBase reply carries a window whose parts have relations (the first bus is not after the last, the size is the buses times one MiB, the address and size do not wrap) that the codec does not check, deliberately, as it checks framing; the contract now says so, and that the reader maps the window only after it has checked them, as the service does before it answers.
+
+**Change**
+Tests, and comments. The library's own per-protocol list gains Sampling, `ours.kernel.RootJob` and `ours.boot.Acpi`, which share the shape of its other protocols and were not in it.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+`ours_acpi` (14 cases) and `ours_resource` (6) pass; two mutations of the codec caught (the txid rule dropped, an enum read as a byte), restored. A first run of the new request test failed on its own bug: the loop that set a bad txid left the last one in the message the later checks reused; it restores the txid after the loop. A binary that a failed build had left behind also let a stale run pass once, so the build's result is read before a test is.
+
+**Deliberately not done**
+The codec does not validate the window. A server that wanted to would put the checks in the encoder too.
+
+**How it was found**
+By the independent review, with mutants of the codec run by the skeptic.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- A test that sends only valid and obviously invalid values misses a decoder that compares one byte of a 32 bit field. Which values catch it?
+- Why is the txid rule tested in the wire library and still worth a case in the codec's tests?
+- What must a client do with an EcamBase reply before it maps the window?

@@ -12,7 +12,7 @@ namespace ours::object {
 InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line)
     : Base(Flags::None)
     , m_line(line)
-    , m_action(&Self::on_interrupt, this, irq::IrqFlags::Oneshot, "interrupt") {}
+    , m_action(&Self::on_interrupt, this, irq::IrqFlags::Oneshot, "interrupt", &Self::on_revoked) {}
 
 /// The order is what keeps a failure from touching a line that is not the
 /// object's. Nothing is made or programmed until the options are known to be
@@ -74,6 +74,13 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     // step below, and the object, use.
     auto const virqnum = static_cast<VIrqNum>(line);
 
+    // A line the kernel holds for its own use is refused as such, not as one
+    // another program holds (AlreadyBound, below): a program can never have
+    // it. The kernel's hold is for good, so asking first cannot race it.
+    if (irq::is_kernel_owned(virqnum)) {
+        return Status::AccessDenied;
+    }
+
     auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(virqnum));
     if (!self) {
         return Status::NoMemory;
@@ -92,9 +99,12 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     // has held the line, and irq::unmask() leaves a held line masked: the
     // object owes an ack for that interrupt, and the ack's finalize opens it.
     if (auto const status = irq::unmask(virqnum); status != Status::Ok) {
-        // A line attach() just took always has its controller's unmask; this
-        // keeps the object from being freed with its action on the line
-        // should one ever lack it.
+        // A line attach() just took has its controller's unmask, so this is
+        // a removal that marked the line between the attach and here
+        // (NoResource), after which the hook may have run on this half-made
+        // object already; or a controller that lacks the unmask. Either way
+        // the detach keeps the object from being freed with its action on the
+        // line, and waits for a removal that has the object still.
         auto _ = irq::detach(self->m_action);
         return status;
     }
@@ -121,11 +131,20 @@ auto InterruptEventDispatcher::on_interrupt(VIrqNum, void *const context) -> irq
     return irq::IrqReturn::WakeThread;
 }
 
+/// The kernel took the line away. This is the object's destroy() minus the
+/// detach, which the removal has done by unlinking the action; the owner's
+/// own destroy() still detaches, and that waits for the removal to be done
+/// with the object, which is why this is all it has to do.
+auto InterruptEventDispatcher::on_revoked(VIrqNum, void *const context) -> void {
+    static_cast<Self *>(context)->line_revoked();
+}
+
 /// The finalize takes the line's lock, which is why the state machine calls
 /// this with its own lock dropped. It names the line by m_line rather than
-/// asking the action, and does nothing once destroy()'s detach has taken the
-/// action off: the detach cleared held and masked the line for it, and a
-/// late finalize must not unmask a line the next owner has not started.
+/// asking the action, and does nothing once destroy()'s detach, or a removal
+/// of the line, has taken the action off: either cleared held and masked the
+/// line for it, and a late finalize must not unmask a line the next owner has
+/// not started.
 auto InterruptEventDispatcher::unmask_interrupt() -> void {
     irq::finalize_oneshot(m_line, m_action);
 }
@@ -133,11 +152,15 @@ auto InterruptEventDispatcher::unmask_interrupt() -> void {
 /// The barrier: irq::detach() returns once no handler of the line runs on
 /// any CPU, so after it nothing reaches this object through the line. Only a
 /// created object is destroyed, and create() attached it, so the action
-/// is on the line.
+/// is on the line -- unless it is not, because the line was taken away
+/// (on_revoked()), or this is a second destroy: NotFound is that, and is
+/// the answer once the removal has stored that the action is off the line,
+/// which is also when it is done with the object. A line that was taken away
+/// while this destroy is waiting on its lock answers NotFound too.
 auto InterruptEventDispatcher::unregister_interrupt_handler() -> void {
     [[maybe_unused]]
     auto const status = irq::detach(m_action);
-    DEBUG_ASSERT(Status::Ok == status, "detaching from line {} answered {}", m_line,
-                 to_string(status));
+    DEBUG_ASSERT(Status::Ok == status || Status::NotFound == status,
+                 "detaching from line {} answered {}", m_line, to_string(status));
 }
 } // namespace ours::object

@@ -46,12 +46,13 @@
 /// consumer that held the entry sees of a provider that has gone: a
 /// connection it held and the entry both read PEER_CLOSED.
 ///
-/// Its manifest also uses ten protocols, which live in its /svc: the root's
+/// Its manifest also uses eleven protocols, which live in its /svc: the root's
 /// built-ins ours.process.Launcher, ours.resource.Debug,
 /// ours.resource.Sampling, ours.resource.Irq, ours.resource.Ioport,
 /// ours.resource.Mmio, ours.resource.Iommu and ours.boot.Acpi, which root.cm
-/// offers, and ours.test.Unoffered, which nobody offers. It checks that each
-/// ours.resource Get hands out a
+/// offers, and ours.acpi.Route and ours.test.Echo, which root.cm offers from
+/// its siblings, and ours.test.Unoffered, which nobody offers. It checks that
+/// each ours.resource Get hands out a
 /// resource that does what it is for -- debug_read takes the Debug resource,
 /// interrupt_create takes the root of the interrupt lines for a free line,
 /// ioports_request takes the root of the I/O ports for a port the kernel
@@ -69,7 +70,15 @@
 /// directory in the VMO is well formed, and that every table in it has the
 /// signature and length of its own header and adds up to zero.
 ///
-/// Its tenth protocol use, ours.test.Echo, is the one protocol route here
+/// ours.acpi.Route, which root.cm offers from the sibling acpi-route, answers
+/// from the firmware's tables which GSI an ISA interrupt arrives on and where
+/// a PCI segment's configuration space is. It checks that each GSI it gives
+/// is a pin the kernel has a line for, that QEMU's q35 is wired as the
+/// service says, that what has no route is refused, and that the window is
+/// where QEMU's is. The kernel's own translation of an ISA number is not
+/// compared with the service's any more (see check_acpi_route()).
+///
+/// Its eleventh protocol use, ours.test.Echo, is the one protocol route here
 /// that ends in another component: root.cm offers it from the sibling echo
 /// (//examples/echo), renamed from ours.examples.echo.Echo, which echo
 /// exposes from itself. Last, it checks that EchoString comes back from echo
@@ -103,6 +112,7 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
+#include <ours_acpi/client.hpp>
 #include <ours_block/client.hpp>
 #include <ours_block/ours_block.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
@@ -168,10 +178,10 @@ constexpr auto NESTED_TEXT = std::string_view{"nested in sub\n"};
 constexpr auto FILES_NAMES = std::string_view{".,hello.txt,numbers.txt,stop,sub"};
 constexpr auto SUB_NAMES = std::string_view{".,nested.txt"};
 
-/// The line check_irq_resource() takes: ISA 3, COM2's, which is free, since
-/// QEMU has no COM2 with one serial port and the kernel keeps only its own
-/// lines.
-constexpr auto ISA_FREE = u32{3};
+/// The pin whose line check_irq_resource() takes: GSI 3, COM2's, which is
+/// free, since QEMU has no COM2 with one serial port and the kernel keeps only
+/// its own lines.
+constexpr auto GSI_FREE = u32{3};
 
 /// The port check_ioport_resource() opens: 0x70, the RTC's index port, which
 /// the kernel does not drive.
@@ -779,137 +789,118 @@ auto check_sampling_resource() -> void {
     auto _ = ours::handle_close(sampling);
 }
 
-/// interrupt_map gives the number interrupt_create takes for a source the
-/// firmware names, to the holder of the interrupt root. On QEMU's q35, the
-/// machine this image runs on, ISA 0 (the timer) is on GSI 2, ISA 3 on GSI 3,
-/// and the pins from GSI 16 up are PCI's. What is checked:
-///   - a line's number is not the pin's: the number for ISA 0 is not 0;
-///   - ISA 0 and GSI 2 are one line, the kernel's timer, which is taken for
-///     good (AlreadyBound), so the number is the line's;
-///   - ISA 3 and GSI 3 are one free line, taken with the number as given;
-///     and a PCI pin, GSI 16, has a line of its own, which
-///     an interrupt object takes level-triggered, as a PCI function's INTx
-///     is;
-///   - the refusals: a kind the kernel does not know and the invalid source
-///     are InvArgs, ahead of the handle; a source with no line (an ISA IRQ
-///     past 15, the cascade, a number no pin has) is NoResource; no handle is
-///     BadHandle. A refused call writes nothing.
+/// interrupt_map resolves the number interrupt_create takes for a pin the
+/// platform names, from the domain and the source that name it, to the holder
+/// of the interrupt root. On QEMU's q35, the machine this image runs on, the
+/// timer is on GSI 2 (the firmware moves ISA 0 off GSI 0), COM2's pin is GSI
+/// 3, and the pins from GSI 16 up are PCI's; ACPI's numbering is the root
+/// domain's (ours::ROOT_INTERRUPT_DOMAIN), which is what the direct calls here ask
+/// with, as the route service's answer would. What is checked:
+///   - a line's number is not the pin's, and the pins that can be asked for
+///     (GSI 0, 3 and 16) have numbers of their own, GSI 0 being the pin the
+///     timer was moved off, a line of its own; the timer's number is derived
+///     from GSI 3's and so cannot be compared with them;
+///   - GSI 2 is the kernel's timer line, which no program can take:
+///     interrupt_map refuses it (AccessDenied) and writes nothing. Its line
+///     is the one before GSI 3's, since the kernel numbers lines
+///     consecutively in the order of their pins, and interrupt_create
+///     refuses that number too (AccessDenied);
+///   - GSI 3 is one free line, taken with the number as given; and a PCI pin,
+///     GSI 16, has a line of its own, which an interrupt object takes
+///     level-triggered, as a PCI function's INTx is;
+///   - the refusals: the invalid domain and the invalid source are InvArgs,
+///     ahead of the handle; a domain no controller registers (7) resolves
+///     nothing, NoResource; a source with no pin in the root domain is
+///     NoResource, 0x100 and 0x103 included, which as 8 bits would be GSI 0
+///     and GSI 3; no handle is BadHandle. A refused call writes nothing.
 auto check_interrupt_map(Uandle const irq) -> void {
-    using ours::InterruptSourceKind;
-    constexpr auto ISA_TIMER = u32{0};
     constexpr auto GSI_TIMER = u32{2};
-    constexpr auto GSI_FREE = u32{3};
     constexpr auto GSI_PCI = u32{16};
     constexpr auto GSI_MOVED_OFF = u32{0};
-    constexpr auto ISA_WRAPS_TO_0 = u32{0x100};
-    constexpr auto ISA_WRAPS_TO_3 = u32{0x103};
-    constexpr auto ISA_CASCADE = u32{2};
-    constexpr auto NOT_ISA = u32{16};
+    constexpr auto GSI_WRAPS_TO_0 = u32{0x100};
+    constexpr auto GSI_WRAPS_TO_3 = u32{0x103};
     constexpr auto NO_PIN = u32{200};
+    constexpr auto NO_DOMAIN = u32{7};
     constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
 
-    auto isa_timer = UNTOUCHED;
-    auto gsi_timer = UNTOUCHED;
-    auto isa_free = UNTOUCHED;
-    auto gsi_free = UNTOUCHED;
-    auto gsi_pci = UNTOUCHED;
-    auto gsi_moved_off = UNTOUCHED;
+    auto timer_refused = UNTOUCHED;
+    auto free_line = UNTOUCHED;
+    auto pci = UNTOUCHED;
+    auto moved_off = UNTOUCHED;
     auto ok = true;
-    ok &= expect("interrupt_map(Irq root, Isa, 0)",
-                 ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_TIMER, &isa_timer),
+    ok &= expect("interrupt_map(Irq root, the root domain, 2, the kernel's timer)",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_TIMER, &timer_refused),
+                 Status::AccessDenied);
+    if (timer_refused != UNTOUCHED) {
+        fail("interrupt_map: a refused call wrote its output");
+    }
+    ok &= expect("interrupt_map(Irq root, the root domain, 3)",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &free_line),
                  Status::Ok);
-    ok &= expect("interrupt_map(Irq root, Gsi, 2)",
-                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_TIMER, &gsi_timer),
-                 Status::Ok);
-    ok &=
-        expect("interrupt_map(Irq root, Isa, 3)",
-               ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_FREE, &isa_free), Status::Ok);
-    ok &=
-        expect("interrupt_map(Irq root, Gsi, 3)",
-               ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_FREE, &gsi_free), Status::Ok);
-    ok &= expect("interrupt_map(Irq root, Gsi, 16)",
-                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_PCI, &gsi_pci), Status::Ok);
-    ok &= expect("interrupt_map(Irq root, Gsi, 0)",
-                 ours::interrupt_map(irq, InterruptSourceKind::Gsi, GSI_MOVED_OFF, &gsi_moved_off),
+    ok &= expect("interrupt_map(Irq root, the root domain, 16)",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_PCI, &pci), Status::Ok);
+    ok &= expect("interrupt_map(Irq root, the root domain, 0)",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_MOVED_OFF, &moved_off),
                  Status::Ok);
     if (!ok) {
         return;
     }
 
-    if (isa_timer != gsi_timer) {
-        fail("interrupt_map: ISA 0 and GSI 2 are one line, and their numbers differ");
-    }
-    if (isa_free != gsi_free) {
-        fail("interrupt_map: ISA 3 and GSI 3 are one line, and their numbers differ");
-    }
-    if (isa_timer == ISA_TIMER || gsi_timer == GSI_TIMER || isa_free == ISA_FREE ||
-        gsi_pci == GSI_PCI) {
+    // GSI 2 is refused, so its line is found from its neighbour's: the kernel
+    // numbers lines consecutively in the order of their pins (irq::Domain),
+    // and GSI 2 and GSI 3 are both pins on this machine.
+    auto const timer = free_line - 1;
+    if (timer == GSI_TIMER || free_line == GSI_FREE || pci == GSI_PCI ||
+        moved_off == GSI_MOVED_OFF) {
         fail("interrupt_map: a line's number is the pin's number");
     }
-    if (isa_timer == isa_free || isa_free == gsi_pci || isa_timer == gsi_pci) {
-        fail("interrupt_map: two sources have one number");
-    }
-    // GSI 0 is the pin ISA 0 was moved off, a line of its own: a Gsi that went
-    // through the ISA overrides would answer the timer's line here.
-    if (gsi_moved_off == isa_timer || gsi_moved_off == gsi_timer) {
-        fail("interrupt_map: GSI 0 is the line ISA 0 was moved to");
+    if (free_line == pci || free_line == moved_off || pci == moved_off) {
+        fail("interrupt_map: two pins have one number");
     }
 
     auto interrupt = Uandle::Invalid;
-    expect("interrupt_create(the number interrupt_map gave for ISA 0, the timer's line)",
-           ours::interrupt_create(irq, isa_timer, ours::InterruptOptions::None, &interrupt),
-           Status::AlreadyBound);
-    if (expect("interrupt_create(the number interrupt_map gave for ISA 3)",
-               ours::interrupt_create(irq, isa_free, ours::InterruptOptions::None, &interrupt),
+    expect("interrupt_create(the line before GSI 3's, the timer's)",
+           ours::interrupt_create(irq, timer, ours::InterruptOptions::None, &interrupt),
+           Status::AccessDenied);
+    if (expect("interrupt_create(the number interrupt_map gave for GSI 3)",
+               ours::interrupt_create(irq, free_line, ours::InterruptOptions::None, &interrupt),
                Status::Ok)) {
-        expect("close(the interrupt on the number interrupt_map gave for ISA 3)",
+        expect("close(the interrupt on the number interrupt_map gave for GSI 3)",
                ours::handle_close(interrupt), Status::Ok);
     }
     interrupt = Uandle::Invalid;
-    if (expect(
-            "interrupt_create(the number interrupt_map gave for GSI 16, ModeLevelLow)",
-            ours::interrupt_create(irq, gsi_pci, ours::InterruptOptions::ModeLevelLow, &interrupt),
-            Status::Ok)) {
+    if (expect("interrupt_create(the number interrupt_map gave for GSI 16, ModeLevelLow)",
+               ours::interrupt_create(irq, pci, ours::InterruptOptions::ModeLevelLow, &interrupt),
+               Status::Ok)) {
         expect("close(the interrupt on the number interrupt_map gave for GSI 16)",
                ours::handle_close(interrupt), Status::Ok);
     }
 
     auto refused = UNTOUCHED;
-    auto const unknown = static_cast<InterruptSourceKind>(0);
-    auto const unknown_too = static_cast<InterruptSourceKind>(99);
-    expect("interrupt_map(kind 0)", ours::interrupt_map(irq, unknown, ISA_FREE, &refused),
+    expect("interrupt_map(the root domain, 0xFFFFFFFF, no source)",
+           ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, 0xFFFF'FFFF, &refused),
            Status::InvArgs);
-    expect("interrupt_map(kind 99)", ours::interrupt_map(irq, unknown_too, ISA_FREE, &refused),
+    expect("interrupt_map(0xFFFFFFFF, the domain the kernel keeps as none)",
+           ours::interrupt_map(irq, 0xFFFF'FFFF, GSI_FREE, &refused), Status::InvArgs);
+    expect("interrupt_map(no handle, the root domain, 0xFFFFFFFF): the source is checked before "
+           "the handle",
+           ours::interrupt_map(Uandle::Invalid, ours::ROOT_INTERRUPT_DOMAIN, 0xFFFF'FFFF, &refused),
            Status::InvArgs);
-    expect("interrupt_map(Isa, 0xFFFFFFFF)",
-           ours::interrupt_map(irq, InterruptSourceKind::Isa, 0xFFFF'FFFF, &refused),
-           Status::InvArgs);
-    expect("interrupt_map(Gsi, 0xFFFFFFFF)",
-           ours::interrupt_map(irq, InterruptSourceKind::Gsi, 0xFFFF'FFFF, &refused),
-           Status::InvArgs);
-    expect("interrupt_map(no handle, kind 0): the kind is checked first",
-           ours::interrupt_map(Uandle::Invalid, unknown, ISA_FREE, &refused), Status::InvArgs);
-    expect("interrupt_map(no handle, Gsi, 0xFFFFFFFF): the source is checked before the handle",
-           ours::interrupt_map(Uandle::Invalid, InterruptSourceKind::Gsi, 0xFFFF'FFFF, &refused),
-           Status::InvArgs);
-    // The ISA number is 32 bits; as 8 bits these would be ISA 0 and ISA 3.
-    expect("interrupt_map(Isa, 0x100)",
-           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_WRAPS_TO_0, &refused),
+    // A domain that names no controller resolves nothing, pins included.
+    expect("interrupt_map(domain 7, 3)", ours::interrupt_map(irq, NO_DOMAIN, GSI_FREE, &refused),
            Status::NoResource);
-    expect("interrupt_map(Isa, 0x103)",
-           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_WRAPS_TO_3, &refused),
+    // The source is 32 bits; as 8 bits these would be GSI 0 and GSI 3.
+    expect("interrupt_map(the root domain, 0x100)",
+           ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_WRAPS_TO_0, &refused),
            Status::NoResource);
-    expect("interrupt_map(Isa, 16)",
-           ours::interrupt_map(irq, InterruptSourceKind::Isa, NOT_ISA, &refused),
+    expect("interrupt_map(the root domain, 0x103)",
+           ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_WRAPS_TO_3, &refused),
            Status::NoResource);
-    expect("interrupt_map(Isa, 2), the cascade",
-           ours::interrupt_map(irq, InterruptSourceKind::Isa, ISA_CASCADE, &refused),
+    expect("interrupt_map(the root domain, 200)",
+           ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, NO_PIN, &refused),
            Status::NoResource);
-    expect("interrupt_map(Gsi, 200)",
-           ours::interrupt_map(irq, InterruptSourceKind::Gsi, NO_PIN, &refused),
-           Status::NoResource);
-    expect("interrupt_map(no handle, Gsi, 3)",
-           ours::interrupt_map(Uandle::Invalid, InterruptSourceKind::Gsi, GSI_FREE, &refused),
+    expect("interrupt_map(no handle, the root domain, 3)",
+           ours::interrupt_map(Uandle::Invalid, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &refused),
            Status::BadHandle);
     if (refused != UNTOUCHED) {
         fail("interrupt_map wrote its output though it refused");
@@ -917,7 +908,7 @@ auto check_interrupt_map(Uandle const irq) -> void {
 }
 
 /// Irq.Get answers with the root of the interrupt lines, which
-/// interrupt_create takes for a physical line: an interrupt on the free ISA 3
+/// interrupt_create takes for a physical line: an interrupt on the free GSI 3
 /// is made with it, which takes the line, and closed, which lets the line go.
 /// The I/O port root, a resource of another kind, would be refused with
 /// BadType, so this also shows the root did not mix the two up. The same root
@@ -929,16 +920,16 @@ auto check_irq_resource() -> void {
     }
     auto interrupt = Uandle::Invalid;
     auto line = u32{0};
-    if (!expect("interrupt_map(the resource Irq.Get gave, Isa, 3)",
-                ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_FREE, &line),
+    if (!expect("interrupt_map(the resource Irq.Get gave, the root domain, 3)",
+                ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &line),
                 Status::Ok)) {
         auto _ = ours::handle_close(irq);
         return;
     }
-    if (expect("interrupt_create(the resource Irq.Get gave, ISA 3)",
+    if (expect("interrupt_create(the resource Irq.Get gave, GSI 3)",
                ours::interrupt_create(irq, line, ours::InterruptOptions::ModeDefault, &interrupt),
                Status::Ok)) {
-        expect("close(the interrupt on ISA 3)", ours::handle_close(interrupt), Status::Ok);
+        expect("close(the interrupt on GSI 3)", ours::handle_close(interrupt), Status::Ok);
     }
     check_interrupt_map(irq);
     auto _ = ours::handle_close(irq);
@@ -959,11 +950,11 @@ auto check_ioport_resource() -> void {
     expect("ioports_release(the resource Ioport.Get gave, 0x70, 1)",
            ours::ioports_release(ioport, RTC_INDEX_PORT, 1), Status::Ok);
     auto line = u32{0};
-    expect("interrupt_map(the resource Ioport.Get gave, Gsi, 200): the resource is checked first",
-           ours::interrupt_map(ioport, ours::InterruptSourceKind::Gsi, 200, &line),
-           Status::BadType);
+    expect("interrupt_map(the resource Ioport.Get gave, the root domain, 200): the resource is "
+           "checked first",
+           ours::interrupt_map(ioport, ours::ROOT_INTERRUPT_DOMAIN, 200, &line), Status::BadType);
     expect("interrupt_map(the resource Ioport.Get gave)",
-           ours::interrupt_map(ioport, ours::InterruptSourceKind::Gsi, ISA_FREE, &line),
+           ours::interrupt_map(ioport, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &line),
            Status::BadType);
     auto _ = ours::handle_close(ioport);
 }
@@ -2840,6 +2831,109 @@ auto check_acpi_tables() -> void {
     }
     auto _ = ours::handle_close(vmo);
 }
+
+/// Route.IsaIrq and Route.EcamBase answer from the firmware's tables in user
+/// space.
+///
+/// The kernel reads the same tables for its own translation of an ISA number
+/// (platform::isa_irq_line()), but no system call exposes it: interrupt_map
+/// takes the platform's number for a pin and not an ISA number. So the
+/// service is not compared with the kernel's translation here, but with what
+/// QEMU's q35 tables say, which the kernel prints when it programs the pins
+/// (the table "ISA Irq | Remapped | Trigger mode | Polarity | Global IRQ" of
+/// the boot log): the timer, ISA 0, is moved to GSI 2; the lines the PCI link
+/// devices use, ISA 5, 9, 10 and 11, are level triggered and active high on
+/// their own GSIs; every other line is its own GSI, edge triggered and active
+/// high. What is checked:
+///   - for each ISA number 0 to 15 but the cascade, the service answers the
+///     root domain, the GSI, trigger and polarity of that table, and the GSI
+///     is a pin the kernel has a line for (interrupt_map does not answer
+///     NoResource). The table is machine-specific, as ISA 0 on GSI 2 is for
+///     the checks of interrupt_map, and a different machine needs a
+///     different table;
+///   - the service's GSI for ISA 0 is the kernel's timer line, which
+///     interrupt_map refuses (AccessDenied): the one place the kernel's own
+///     binding shows it, and no independent check, for it restates GSI 2;
+///   - the cascade, ISA 2, a number past the ISA lines and 0xFFFFFFFF are no
+///     ISA line: NotFound;
+///   - the service's ECAM window for segment 0 begins at the address this
+///     program already maps QEMU's window at, and no other segment is listed.
+/// The kernel's own translation is checked against its own table by
+/// pinlines.test, which a person runs from the kernel shell and
+/// boot_check.py does not.
+auto check_acpi_route() -> void {
+    constexpr auto NUM_ISA_IRQS = u32{16};
+    constexpr auto CASCADE = u32{2};
+    constexpr auto ISA_TIMER = u32{0};
+    constexpr auto GSI_TIMER = u32{2};
+    constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
+
+    auto const irq = get_resource(ours_resource::IRQ_PROTOCOL);
+    if (irq == Uandle::Invalid) {
+        return;
+    }
+
+    for (auto isa = u32{0}; isa < NUM_ISA_IRQS; ++isa) {
+        auto const route = ours_acpi::isa_irq(isa);
+        if (isa == CASCADE) {
+            expect("Route.IsaIrq(2), the cascade", status_of(route), Status::NotFound);
+            continue;
+        }
+        if (!expect("Route.IsaIrq(an ISA number)", status_of(route), Status::Ok)) {
+            continue;
+        }
+
+        // QEMU's table, as the kernel logs it.
+        auto const moved = isa == ISA_TIMER;
+        auto const level = isa == 5 || isa == 9 || isa == 10 || isa == 11;
+        if (route->gsi != (moved ? GSI_TIMER : isa)) {
+            fail("Route.IsaIrq: an ISA number is not on the GSI QEMU's q35 puts it on");
+        }
+        if (route->trigger != (level ? ours_acpi::Trigger::Level : ours_acpi::Trigger::Edge)) {
+            fail("Route.IsaIrq: an ISA number does not signal as QEMU's q35 says (trigger)");
+        }
+        if (route->polarity != ours_acpi::Polarity::ActiveHigh) {
+            fail("Route.IsaIrq: an ISA number does not signal as QEMU's q35 says (polarity)");
+        }
+        if (route->domain != ours::ROOT_INTERRUPT_DOMAIN) {
+            fail("Route.IsaIrq: a GSI of ACPI's numbering is not of the root domain");
+        }
+
+        // A pin the kernel has a line for answers Ok, or AccessDenied if the
+        // kernel holds that line itself, as it does the timer's.
+        auto line = UNTOUCHED;
+        auto wanted = Status::Ok;
+        if (moved) {
+            wanted = Status::AccessDenied;
+        }
+        expect("interrupt_map(the service's domain and GSI for an ISA number)",
+               ours::interrupt_map(irq, route->domain, route->gsi, &line), wanted);
+    }
+
+    // Not ISA lines: no route. 0xffffffff is the number interrupt_map keeps for
+    // itself and answers InvArgs; to the service it is just a number that is no
+    // ISA line.
+    for (auto const isa: {NUM_ISA_IRQS, u32{0x100}, u32{0xffff'ffff}}) {
+        expect("Route.IsaIrq(past the ISA lines)", status_of(ours_acpi::isa_irq(isa)),
+               Status::NotFound);
+    }
+
+    auto const window = ours_acpi::ecam_base(0);
+    if (expect("Route.EcamBase(0)", window.is_ok() ? Status::Ok : window.unwrap_err(),
+               Status::Ok)) {
+        if (window->address != ECAM_BASE) {
+            fail("Route.EcamBase(0) is not where QEMU's configuration space is");
+        }
+        if (window->last_bus < window->first_bus ||
+            window->size != (u64{window->last_bus} - window->first_bus + 1) * (u64{1} << 20)) {
+            fail("Route.EcamBase(0): the size is not one MiB to a bus");
+        }
+    }
+    auto const none = ours_acpi::ecam_base(1);
+    expect("Route.EcamBase(1), a segment the MCFG does not list",
+           none.is_ok() ? Status::Ok : none.unwrap_err(), Status::NotFound);
+    auto _ = ours::handle_close(irq);
+}
 } // namespace
 
 auto main(int argc, char **argv) -> int {
@@ -2884,6 +2978,7 @@ auto main(int argc, char **argv) -> int {
     check_mmio_resource(vma);
     check_iommu_resource();
     check_acpi_tables();
+    check_acpi_route();
     check_sampling_resource();
     check_unoffered();
     check_undeclared();

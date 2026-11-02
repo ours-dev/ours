@@ -1,4 +1,5 @@
 import("//build/cpp/cpp_interface.gni")
+import("//build/toolchain/toolchain_environment.gni")
 
 # ours.acpi, the protocol of the ACPI route service -- Route, with IsaIrq and
 # EcamBase -- encoded and decoded by hand on //system/lib/wire, as ours.resource
@@ -37,4 +38,27 @@ cpp_interface("headers") {
 group("tests") {
   testonly = true
   public_deps = [ "test:ours_acpi($host_toolchain)" ]
+}
+
+# The client: a user program's question to the route service, through its
+# namespace (fsio), so user programs only, like fsio itself.
+if (!is_host_toolchain && toolchain_environment == "user") {
+  source_set("client") {
+    sources = [ "src/client.cpp" ]
+    public_deps = [
+      ":client.headers",
+      ":ours.acpi",
+    ]
+    deps = [
+      "//system/lib/fsio",
+      "//system/lib/wire",
+    ]
+    visibility = [ "*" ]
+  }
+
+  cpp_interface("client.headers") {
+    public = [ "include/ours_acpi/client.hpp" ]
+    public_deps = [ ":headers" ]
+    visibility = [ ":*" ]
+  }
 }

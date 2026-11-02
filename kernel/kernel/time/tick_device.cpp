@@ -95,9 +95,9 @@ auto TickDevice::is_percpu(ClockEventDevice const &dev, CpuNum cpu) -> bool {
 /// Whether |newdev| may serve as this CPU's tick device at all. One clause is
 /// missing: a global device whose interrupt cannot be re-targeted to this CPU
 /// should be refused too, but the IRQ layer here has no such query yet, and
-/// irq::set_affinity() is a stub that says yes to everything, so the clause
-/// would be vacuous. When affinity becomes real it belongs between the two
-/// checks below.
+/// irq::set_affinity() answers NotSupported for every line, so the clause
+/// would refuse every global device. When affinity becomes real it belongs
+/// between the two checks below.
 auto TickDevice::check_percpu(ClockEventDevice const &newdev, CpuNum cpu) const -> bool {
     // A device that cannot interrupt this CPU is of no use to it.
     if (!newdev.cpumask().test(cpu)) {
@@ -212,8 +212,10 @@ auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
     m_clkdev = new_clkdev;
     auto _ = new_clkdev->switch_mode(ClockEventDevice::Mode::Shutdown);
 
-    // A global device is steered at this CPU; the old code set the *old*
-    // device's affinity here, to its own mask, which changed nothing.
+    // A global device is to be steered at this CPU, which irq::set_affinity()
+    // cannot do yet: it answers NotSupported, and the device stays where the
+    // platform aimed it. The old code set the *old* device's affinity here, to
+    // its own mask, which changed nothing.
     if (new_clkdev->cpumask() != percpu_mask && new_clkdev->irqnum() != irq::INVALID_V_IRQ_NUM) {
         auto _ = irq::set_affinity(new_clkdev->irqnum(), percpu_mask);
     }

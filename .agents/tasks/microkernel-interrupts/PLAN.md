@@ -146,7 +146,7 @@ No step touches `kernel/arch/x86/kernel/faults.cpp` or `kernel/arch/x86/lib/arch
   - **Revised 2026-10-05:** REMAP goes through the platform, `platform::remap_isa_irq()` in `<ours/platform/isa.hpp>`, which calls `apic_io_isa_to_global` on the PC and returns the number unchanged on arm and riscv, since `kernel/object` is the same on every architecture. A create in the default mode reads the line's trigger mode back from the IO-APIC through a new `irq::trigger_mode()` and a chip operation, as Zircon's `get_interrupt_config()` does (`interrupt_event_dispatcher.cc:38-45`), so a line the firmware made level, as q35 makes ISA 5, 9, 10 and 11, gets MASK_POSTWAIT without the driver naming the mode.
 - Why now: every layer under it was fixed in steps 1 and 5 to 8, and step 9 made the resource.
 - Verified: new dev.dbg_1 shell checks, part of `shell: interrupt checks passed`, since the shell holds the IRQ root there:
-  - creating on the PIT's line answers AlreadyBound (Permanent);
+  - creating on the PIT's line answers AlreadyBound (Permanent; changed 2026-11-01 to AccessDenied, `docs/changes/261101/syscall.md`);
   - creating on ISA 3 with REMAP works (QEMU has no COM2 with one `-serial`, `scripts/qemu_boot.py:231`), and a second create on it answers AlreadyBound;
   - after the handle closes, creating on ISA 3 works again;
   - destroy wakes a waiter with Canceled;

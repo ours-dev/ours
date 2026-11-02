@@ -164,8 +164,8 @@ whenever code has to *ask* whether it may sleep.
   `irq::handle_irq_preamble()` (`kernel/kernel/irq/mod.cpp`) calls
   `disable_preemption()` and `disable_eager_reschedule()` once each on entry,
   as Zircon's `int_handler_start()` does. This includes the exception path:
-  `arch_handle_exception()` goes through `platform_start_handling_irq()` before
-  it dispatches. So **every** fault or interrupt already reads a preemption
+  `arch_handle_exception()` calls `irq::handle_irq_preamble()` before it
+  dispatches. So **every** fault or interrupt already reads a preemption
   count of one before its handler does anything.
 - **Interrupts disabled** is the CPU's IF flag. For code that was interrupted,
   the only record of whether it had interrupts on is the saved frame, because

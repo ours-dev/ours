@@ -20,18 +20,26 @@ namespace ours {
 ///
 /// The bit 0x1 was RemapIrq, which took the line as an ISA IRQ number. It is
 /// retired and reserved, and not given another meaning: a create that sets it
-/// is refused (InvArgs). A program asks interrupt_map for the number of an
-/// ISA device's line instead.
+/// is refused (InvArgs). A program learns which pin a legacy device is on
+/// from whoever reads the firmware's tables, and asks interrupt_map for the
+/// number of that pin's line.
 /// A level-triggered line is masked from the moment its interrupt is
 /// delivered until it is acknowledged, since the device holds the level
 /// until its driver has dealt with it; an edge-triggered line is not.
 ///
 /// A line is named by the kernel's number for it, assigned at boot: never the
-/// pin's GSI, and not the same on another machine or another kernel, so a
-/// program does not compute one. interrupt_map gives the number for any source
-/// the firmware names (an ISA IRQ, a GSI), to the holder of the interrupt
-/// root.
+/// pin's number in a controller's own numbering, and not the same on another
+/// machine or another kernel, so a program does not compute one.
+/// interrupt_map resolves the number for a pin from the pair that names it:
+/// the controller's interrupt domain and the pin's number in that domain's
+/// numbering (a GSI on an ACPI platform), both taken from the route service's
+/// answer, to the holder of the interrupt root.
 ///
+/// The root controller's domain is 0 on every platform, and no second domain
+/// exists yet; the rule a second domain's ids follow is written here when one
+/// is registered.
+inline constexpr auto ROOT_INTERRUPT_DOMAIN = u32{0};
+
 /// No option picks the clock a timestamp is taken on or makes the line a
 /// wake source: this kernel has one clock, and no suspend to wake from.
 enum class InterruptOptions : u32 {
@@ -45,19 +53,6 @@ enum class InterruptOptions : u32 {
     Virtual = 0x10,
 };
 USTL_ENABLE_ENUM_BITMASK(InterruptOptions);
-
-/// What the number given to interrupt_map is the number of. The values are
-/// ABI and never change; 0 is no kind, so an argument left zero is refused.
-enum class InterruptSourceKind : u32 {
-    /// An ISA IRQ, 0 to 15, on a platform that has them (a PC): the number a
-    /// legacy device is known by, routed to a pin as the firmware's tables
-    /// say. ISA 2, the cascade between the two legacy controllers, carries no
-    /// device and names no line.
-    Isa = 1,
-    /// A global system interrupt: the number the firmware gives a pin of an
-    /// interrupt controller (ACPI's GSI).
-    Gsi = 2,
-};
 
 /// interrupt_trigger's options. None is the only one; any other value is
 /// refused.

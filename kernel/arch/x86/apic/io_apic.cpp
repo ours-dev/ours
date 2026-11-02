@@ -175,8 +175,10 @@ namespace {
         ioapic_issue_eoi(data);
     }
 
+    // The platform aims every pin at the boot CPU when it programs it, and
+    // nothing moves one afterwards.
     auto ioapic_set_affinity(irq::Data const &, CpuMask const *) -> Status {
-        return Status::Ok;
+        return Status::NotSupported;
     }
 
     /// Reads only what reset_mmio() cached, no register: no lock.
