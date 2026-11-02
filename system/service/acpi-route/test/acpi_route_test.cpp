@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <cstring>
+#include <unistd.h>
 
 #include "kernel/lib/acpi/test/acpi_test_blob.hpp"
 #include <acpi/structures/madt.hpp>
@@ -275,16 +276,23 @@ auto hand_made_directory(u32 const count, usize const stride = 40, usize const l
 /// usually go unnoticed. The checks that only keep the reader inside its bytes
 /// can be seen failing no other way without a sanitizer.
 auto accepted_at_the_edge(std::vector<u8> const &bytes) -> bool {
-    constexpr auto PAGE = usize{4096};
+    // The host's page size, asked at run time: 4 KiB on an x86 Mac, 16 KiB on
+    // an arm64 one. mmap rounds the size it is given up to whole pages, so a
+    // hard-coded 4 KiB made the two-page mapping one 16 KiB page on an arm64
+    // host, and the protect of its second page a sub-page range, which
+    // mprotect refuses with EINVAL instead of faulting the read past the end.
+    auto const host_page_size = sysconf(_SC_PAGESIZE);
+    require(host_page_size > 0);
+    auto const page_size = static_cast<usize>(host_page_size);
     auto *const mapping =
-        mmap(nullptr, 2 * PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        mmap(nullptr, 2 * page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     require(mapping != MAP_FAILED);
     auto *const page = static_cast<u8 *>(mapping);
-    require(mprotect(page + PAGE, PAGE, PROT_NONE) == 0);
-    auto *const data = page + PAGE - bytes.size();
+    require(mprotect(page + page_size, page_size, PROT_NONE) == 0);
+    auto *const data = page + page_size - bytes.size();
     std::memcpy(data, bytes.data(), bytes.size());
     auto const accepted = TableDirectory::from_bytes({data, bytes.size()}).is_ok();
-    munmap(mapping, 2 * PAGE);
+    munmap(mapping, 2 * page_size);
     return accepted;
 }
 
