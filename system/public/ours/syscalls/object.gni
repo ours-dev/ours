@@ -21,7 +21,9 @@ ours_syscalls_object = [
       "NotSupported until a program can read a clock. |handle| needs Wait",
       "(AccessDenied). What was asserted when the wait ended is written to",
       "|observed|, with HandleClosed added on Cancelled; |observed| may be",
-      "null, and one that cannot be written answers InvArgs.",
+      "null, and one that cannot be written answers InvArgs. A signal the",
+      "object never raises is never asserted: Idle is a virtual interrupt's",
+      "(interrupt_create).",
     ]
     args = [
       {
@@ -44,6 +46,7 @@ ours_syscalls_object = [
     ]
     attrs = [ "blocking" ]
     ret = "Status"
+
     category = "object"
   },
   {

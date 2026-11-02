@@ -42,6 +42,7 @@
 #include <ours/task.hpp>
 #include <ours/time.hpp>
 #include <ours/types.hpp>
+#include <ours/version.hpp>
 #include <ours/vma.hpp>
 #include <ours/vmo.hpp>
 

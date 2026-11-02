@@ -21,6 +21,7 @@ user_executable("routing_checks") {
   deps = [
     "//examples/echo/protocol",
     "//system/lib/fsio",
+    "//system/lib/ours.acpi:client",
     "//system/lib/ours.block",
     "//system/lib/ours.block:client",
     "//system/lib/ours.fshost",
@@ -60,13 +61,17 @@ user_executable("routing_checks") {
 #   /files-file    r*, through an offer of docs with the subdir hello.txt: the
 #                  Open asks for a directory and the path ends at a file, so
 #                  files' server answers NotDir.
-# And nine protocol uses, each at /svc/<name>:
+# And eleven protocol uses, each at /svc/<name>:
 #   ours.process.Launcher, ours.resource.Debug, ours.resource.Sampling,
-#   ours.resource.Irq, ours.resource.Ioport, ours.resource.Mmio and
-#   ours.resource.Iommu, the root's built-ins, which root.cm offers from its
-#   parent: Irq and Ioport only to this component and to pc-ps2, the keyboard
-#   driver, which takes its line and ports with them as this one does, and
-#   Mmio and Iommu to this component alone;
+#   ours.resource.Irq, ours.resource.Ioport, ours.resource.Mmio,
+#   ours.resource.Iommu and ours.boot.Acpi, the root's built-ins, which
+#   root.cm offers from its parent: Irq and Ioport only to this component and
+#   to pc-ps2, the keyboard driver, which takes its line and ports with them
+#   as this one does, Mmio and Iommu to this component alone, and the ACPI
+#   tables, ours.boot.Acpi, to this component and to the route service;
+#   ours.acpi.Route, which root.cm offers from the sibling acpi-route, the
+#   route service (//system/service/acpi-route), that this component asks
+#   about every ISA number and the ECAM window;
 #   ours.test.Unoffered, which nobody offers, so its Open answers NotFound
 #   at the root's offer;
 #   ours.test.Echo, which root.cm offers from its sibling echo
@@ -149,6 +154,7 @@ component_manifest("routing_checks.cm") {
           "ours.resource.Mmio",
           "ours.resource.Iommu",
           "ours.boot.Acpi",
+          "ours.acpi.Route",
           "ours.test.Unoffered",
         ]
       },

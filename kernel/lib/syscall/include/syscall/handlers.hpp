@@ -21,6 +21,7 @@
 #include <ours/syscall.hpp>
 #include <ours/task.hpp>
 #include <ours/types.hpp>
+#include <ours/version.hpp>
 #include <ours/vma.hpp>
 #include <ours/vmo.hpp>
 #include <user_copy/user_copy.hpp>

@@ -1,6 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include "vdso_export.hpp"
 #include <ours/time_values.hpp>
+#include <ours/version.hpp>
+#include <ours/version_build.hpp>
 
 /// The trap, generated beside the other stubs and hidden: this file is the
 /// symbol a program binds to.
@@ -43,6 +46,34 @@ auto sample_counter(u64 const counter_va) -> u64 {
     return __atomic_load_n(reinterpret_cast<u64 const *>(counter_va), __ATOMIC_RELAXED);
 }
 } // namespace
+
+// Collected into .vdso_data. The spelling is the symbol a program does not
+// bind; the functions below are the names it calls.
+VDSO_EXPORT(u64, ours_published_ticks_hz, 0);     // NOLINT(readability-identifier-naming)
+VDSO_EXPORT(i64, ours_published_boot_offset, 0);  // NOLINT(readability-identifier-naming)
+VDSO_EXPORT(u64, ours_published_version_word, 1); // NOLINT(readability-identifier-naming)
+// NOLINTNEXTLINE(readability-identifier-naming)
+VDSO_EXPORT_STRING(ours_kernel_version_string, OURS_KERNEL_VERSION_STRING);
+
+extern "C" [[gnu::visibility("default")]]
+auto ours_ticks_per_second() -> u64 {
+    return __atomic_load_n(&ours_published_ticks_hz, __ATOMIC_RELAXED);
+}
+
+extern "C" [[gnu::visibility("default")]]
+auto ours_boot_offset() -> i64 {
+    return __atomic_load_n(&ours_published_boot_offset, __ATOMIC_RELAXED);
+}
+
+extern "C" [[gnu::visibility("default")]]
+auto ours_published_version() -> u64 {
+    return __atomic_load_n(&ours_published_version_word, __ATOMIC_RELAXED);
+}
+
+extern "C" [[gnu::visibility("default")]]
+auto ours_kernel_version() -> ours::KernelVersion {
+    return ours_kernel_version_string;
+}
 
 extern "C" [[gnu::visibility("default")]]
 auto ours_clock_get_monotonic() -> ours::Instant {

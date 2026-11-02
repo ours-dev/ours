@@ -111,3 +111,212 @@ The user asked for a timeline variable in the vDSO, loaded volatile. The page th
 - Why does the reader retry when the sequence is odd, or when the two loads differ?
 - Why would scaling `rdtsc` by an anchor pinned to the HPET not be a time?
 - Why is the sequence word stored with `store_u64` rather than `write()`?
+
+## The kernel finds TimeValues from vdso.published (2026-11-02)
+
+**Files**
+- `kernel/lib/userabi/vdso/gen_published_table.py` — reads the unstripped vDSO with `llvm-readelf` and writes `name st_value size`
+- `kernel/lib/userabi/vdso/BUILD.gn`, `kernel/phys/kernel_elf_image.gni`, `kernel/phys/kernel_elf_binary.gni` — the table is a `package_entries` file named `vdso.published`, next to the stripped `vdso`
+- `kernel/lib/userabi/src/userboot.cpp` — `lay_out_vdso` reads that file, subtracts `image_base`, checks the magic, and no longer scans
+- `kernel/lib/userabi/vdso/vdso.S` — the comment that said the kernel finds the record by the magic
+- `kernel/lib/userabi/vdso/test/gen_published_offsets_test.py` — a fixture whose `st_value` is not the file offset
+- `BUILD.gn` — `//:default` names the host test directly
+
+**Symptom**
+None, a new feature. `lay_out_vdso` scanned the stripped vDSO for `TIME_VALUES_MAGIC`. A second record would have needed its own magic, and a missing symbol failed at boot rather than at the build.
+
+**Cause**
+The packaged vDSO is `llvm-strip --strip-all`. `.symtab` is gone. `.dynsym` remains, and `ours_time_values` is `.hidden`, so it is not in it. The unstripped link output still has the symbol. Compiling the address into the kernel would let a kernel and a vDSO from different builds disagree. The number has to travel with the file it describes.
+
+**Change**
+`gen_published_table.py` looks the allow-list up in `.symtab` and refuses a symbol that is not in allocated, non-writable, non-executable data. The kernel package carries the result as `vdso.published`. `lay_out_vdso` parses `ours_time_values 0xf80 56`, computes `st_value - image.image_base`, and checks the magic at that offset:
+
+```text
+ours_time_values 0xf80 56
+offset = 0xf80 - image_base
+read 8 bytes at offset, require TIME_VALUES_MAGIC
+bind_anchor_page(..., offset)
+```
+
+`find_time_values` is gone. `TimeValues`, `publish_anchor` and the HPET page are unchanged.
+
+**Reference**
+Zircon `gen-rodso-code.sh` reads `nm` of the unstripped vDSO and emits `VDSO_CODE_END` style constants (`zircon/kernel/lib/userabi/BUILD.gn`). This tree puts the same fact in the kernel package instead of a compiled header, because the package is what `KernelPackage::file()` already hands `lay_out_vdso`. Linux does not do this: `update_vsyscall()` writes a vvar mapping the kernel already has an address for.
+
+**Verification**
+`vdso.published` for this vDSO is `ours_time_values 0xf80 56`. The host test `gen_published_offsets_test` passes: the fixture's `st_value - image_base` is not the file offset, a missing name fails, and a symbol in `.text` fails. `python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/clock-mono.x86` passed: dbg and rel both reached the end, and both logs contain `shell: clock checks passed`. Host tests 152 passed.
+
+**Deliberately not done**
+ticks-per-second, a boot offset, and a version word. The user allowed them in the same table; they are more lines once a call needs them. A second VMO is not built.
+
+**How it was found**
+None.
+
+**The user's prediction**
+The user asked why the kernel could not use the symbol table. The packaged file's `.symtab` is removed by strip, and the hidden symbol is not in `.dynsym`. They then chose to carry the address in the kernel package rather than compile it into the kernel.
+
+**Three questions you should be able to answer**
+- Why is `ours_time_values` absent from the `.dynsym` the stripped vDSO still has?
+- Why is the VMO offset `st_value - image_base` rather than `st_value` or the file offset?
+- Why does a magic check remain after the offset is known?
+
+## Three more published words (2026-11-02)
+
+**Files**
+- `kernel/lib/userabi/vdso/vdso.S` — `ours_published_ticks_hz`, `ours_published_boot_offset`, `ours_published_version_word`
+- `kernel/lib/userabi/vdso/BUILD.gn` — those names on the allow-list
+- `kernel/lib/userabi/vdso/clock.cpp` — `ours_ticks_per_second`, `ours_boot_offset`, `ours_published_version`, each one load
+- `system/public/ours/syscalls.gni` — the three calls, `vdso` so the body does not trap
+- `kernel/kernel/time/anchor_page.cpp`, `kernel/include/ours/time/anchor_page.hpp` — publish the frequency and the boot offset with the anchor
+- `kernel/kernel/time/clock.cpp`, `kernel/include/ours/time/clock.hpp` — `frequency_hz` on the reading, `SystemClock::boot_offset`
+- `kernel/object/clock.cpp`, `kernel/lib/syscall/src/time.cpp` — the trap bodies, which the vDSO does not call
+- `kernel/lib/userabi/src/userboot.cpp` — bind the two offsets, require the version word to be 1
+- `system/app/shell/shell_tests.cpp` — the clock check also requires a positive rate, a zero boot offset, and version 1
+
+**Symptom**
+None, a new feature. The published page had only the monotonic anchor.
+
+**Cause**
+None, a new feature. The user allowed these three records in the same table. Each is one aligned word, so a store does not need the anchor's sequence.
+
+**Change**
+`ours_published_ticks_hz` is the steady clock's source frequency, rewritten on the same publish as the anchor. `ours_published_boot_offset` is `SystemClock::boot_offset()`, which is `REAL_BASE` and is 0. `ours_published_version_word` is the constant 1 in the image; boot refuses any other value. The calls are:
+
+```text
+ours_ticks_per_second()   -> load ours_published_ticks_hz
+ours_boot_offset()        -> load ours_published_boot_offset
+ours_published_version()  -> load ours_published_version_word
+```
+
+**Reference**
+Zircon publishes `ticks_per_second` inside `fasttime::internal::TimeValues` (`zircon/kernel/lib/fasttime/include/lib/fasttime/internal/abi.h`). The boot offset is the amount added to the monotonic clock to get the boot clock (`zx_clock_get_boot`). A version word is this tree's, so a later layout can be told apart from this one.
+
+**Verification**
+`python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/clock-mono.x86` passed. dbg and rel both contain `shell: clock checks passed`, which now also requires the rate to be positive, the boot offset to be 0, and the version to be 1. Host tests 152 passed.
+
+**Deliberately not done**
+Nothing writes `REAL_BASE`, so the boot offset stays 0. A second VMO is not built.
+
+**How it was found**
+None.
+
+**The user's prediction**
+The user said the three records could be added. They are.
+
+**Three questions you should be able to answer**
+- Why can these three words be stored without the anchor's odd/even sequence?
+- Why is the version word's symbol not named `ours_published_version`?
+- What would a non-zero boot offset mean?
+
+## VDSO_EXPORT collects published words into one section (2026-11-02)
+
+**Files**
+- `kernel/lib/userabi/vdso/vdso_export.hpp` — `VDSO_EXPORT(type, name, initial)`
+- `kernel/lib/userabi/vdso/clock.cpp` — the three words use it
+- `kernel/lib/userabi/vdso/vdso.S` — `ours_time_values` moved into `.vdso_data`
+- `kernel/lib/userabi/vdso/gen_published_table.py`, `kernel/lib/userabi/vdso/BUILD.gn` — `section:.vdso_data` lists every object symbol in that section
+- `kernel/lib/userabi/vdso/test/gen_published_offsets_test.py` — the fixture is in `.vdso_data`; a `.text` symbol is not collected; an empty section fails
+
+**Symptom**
+None, a new feature. Each published word was a hand-written `.quad` in `vdso.S`, and the table's allow-list named them one by one.
+
+**Cause**
+None, a new feature. The user wanted a mark that the linker gathers into one read-only section, and that section is the page user programs already map.
+
+**Change**
+`VDSO_EXPORT` emits the symbol in `.vdso_data` with flags `a`: allocated, not writable, not executable. The vDSO's first `PT_LOAD` stays read-only and now contains `.vdso_data`. The generator takes `section:.vdso_data` and writes every object symbol there, sorted by name. Adding a word is the macro, a kernel store at the offset the table reports, and a function that loads it. The kernel still looks up the names it writes; a name it does not know stays at its image value.
+
+**Reference**
+None. The section is this tree's. Linux keeps time data in a vvar mapping rather than a section of the vDSO ELF.
+
+**Verification**
+The generated table lists `ours_published_boot_offset`, `ours_published_ticks_hz`, `ours_published_version_word`, and `ours_time_values`. `.vdso_data` is `PROGBITS` with flag `A` inside the read-only `PT_LOAD`. The host test passes. `python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/clock-mono.x86` passed: dbg and rel both contain `shell: clock checks passed`.
+
+**Deliberately not done**
+A record that is not one 8-byte word. `ours_time_values` is still the hand-written object in the same section, because the macro only emits `.quad`.
+
+**How it was found**
+None.
+
+**The user's prediction**
+The user asked for a `VDSO_EXPORT` mark that collects variables into one section and exposes that section read-only. That is the macro and `.vdso_data`.
+
+**Three questions you should be able to answer**
+- Why is the section flag `a` and not `aw`?
+- Why does the generator list every object in `.vdso_data` instead of an allow-list?
+- What still has to be written by hand for a new 8-byte word, after the macro?
+
+## The kernel version string is in the vDSO (2026-11-02)
+
+**Files**
+- `system/public/ours/version.hpp` — `OURS_KERNEL_VERSION_STRING`, currently `"ours-0.1.0"`
+- `kernel/lib/userabi/vdso/vdso_export.hpp` — `VDSO_EXPORT_STRING`
+- `kernel/lib/userabi/vdso/clock.cpp` — `ours_kernel_version()` returns that string
+- `system/public/ours/syscalls.gni`, `system/public/ours/vdso.hpp`, `build/abi/gen_syscalls.py` — the call, and a pointer result stored with `reinterpret_cast`
+- `system/app/shell/shell_tests.cpp` — the clock check requires the vDSO string to match the header
+
+**Symptom**
+None, a new feature. There was no kernel version string.
+
+**Cause**
+None, a new feature. `ours_published_version_word` is the layout number of the published records, not the kernel's version. The user asked for the version string as well.
+
+**Change**
+`VDSO_EXPORT_STRING` puts a NUL-terminated string in `.vdso_data`. `ours_kernel_version()` returns a pointer to it. The text is `OURS_KERNEL_VERSION_STRING` in `<ours/version.hpp>`, so the image and a program that includes the header name the same bytes. The trap stub returns null: the string a program reads is the one in the vDSO mapping.
+
+**Reference**
+None.
+
+**Verification**
+`python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/clock-mono.x86` passed. dbg and rel both contain `shell: clock checks passed`, which compares `ours_kernel_version()` to `"ours-0.1.0"`.
+
+**Deliberately not done**
+A version that tracks git. The string is the constant in the header.
+
+**How it was found**
+None.
+
+**The user's prediction**
+The user said the kernel version string should be exposed to user space. It is, through the vDSO.
+
+**Three questions you should be able to answer**
+- Why is `ours_published_version_word` not this string?
+- Why does the trap stub return null?
+- Why is the string defined in a header the vDSO and the shell both include?
+
+## The kernel version string includes the build's short commit (2026-11-02)
+
+**Files**
+- `build/version/gen_kernel_version.py` — reads `git rev-parse --short=12 HEAD` and writes the header
+- `system/public/BUILD.gn` — the action, output beside the generated vDSO declarations
+- `kernel/lib/userabi/vdso/clock.cpp`, `system/app/shell/shell_tests.cpp` — include the generated string
+- `system/public/ours/version.hpp` — no longer a fixed string; the pointer type stays
+
+**Symptom**
+None, a new feature. The published string was the constant `ours-0.1.0`.
+
+**Cause**
+None, a new feature. The user asked for the short commit of the tree that was built, recorded in the same string.
+
+**Change**
+`OURS_KERNEL_VERSION_STRING` is `ours-0.1.0+` and 12 hex digits. A dirty work tree appends `-dirty`, because that hash is then the commit the tree started from. The header is generated once, next to `vdso_decls.inc`, and the vDSO and the shell include the same file. A depfile lists git's `HEAD` and `index`, so the next build after a commit or an edit rewrites it.
+
+**Reference**
+None.
+
+**Verification**
+This build's header is `ours-0.1.0+782aedaed10e-dirty`. `python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/clock-mono.x86` passed. dbg and rel both contain `shell: clock checks passed`, which compares `ours_kernel_version()` to that string.
+
+**Deliberately not done**
+A version that changes without a rebuild when only the git index changes under a build that does not re-run the action. The depfile covers `HEAD` and `index`.
+
+**How it was found**
+None.
+
+**The user's prediction**
+The user asked for the short commit hash of the built version to be recorded. It is the suffix of the version string.
+
+**Three questions you should be able to answer**
+- Why does a dirty tree append `-dirty` instead of only the hash?
+- Why is the header generated in the default toolchain and included from `gen/system/public/public`?
+- What does the shell check compare the vDSO string against?

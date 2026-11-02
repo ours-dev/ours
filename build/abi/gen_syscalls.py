@@ -333,7 +333,13 @@ def render_kernel_shims(calls: List[Call]) -> str:
             lines.append(f"    {invocation};")
         else:
             lines.append(f"    auto const result = {invocation};")
-            lines.append("    frame->ax = static_cast<usize>(result);")
+            # A pointer does not convert to usize with static_cast. The trap
+            # for kernel_version returns null; the value a program uses is
+            # the one the vDSO returns in rax.
+            if call.ret == "KernelVersion":
+                lines.append("    frame->ax = reinterpret_cast<usize>(result);")
+            else:
+                lines.append("    frame->ax = static_cast<usize>(result);")
         lines.append("}")
         lines.append("")
     lines.append("constexpr SyscallHandler GENERATED_SHIMS[] = {")

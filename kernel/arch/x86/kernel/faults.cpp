@@ -1,10 +1,10 @@
 #include <ours/arch/apic.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/faults.hpp>
+#include <ours/irq/mod.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/platform/init.hpp>
-#include <ours/platform/interrupt.hpp>
 #include <ours/task/exception.hpp>
 #include <ours/task/thread.hpp>
 
@@ -18,13 +18,6 @@
 
 namespace ours {
 namespace {
-    FORCE_INLINE
-    auto irqvec_to_irqnum(arch::IrqVec vector) -> HIrqNum {
-        DEBUG_ASSERT(static_cast<HIrqNum>(vector) >=
-                     static_cast<HIrqNum>(arch::IrqVec::PlatformIrqMin));
-        return static_cast<HIrqNum>(vector) - static_cast<HIrqNum>(arch::IrqVec::PlatformIrqMin);
-    }
-
     /// The interrupted registers, at error level, five lines: rip as an
     /// image offset and cs and rsp beside it, then the fifteen general
     /// registers. A fault's report prints them, and so does each CPU's block
@@ -251,16 +244,10 @@ namespace {
                 panic_exception(frame, "#VC VMM communication exception");
 
             case IrqVec::PlatformIrqMin... IrqVec::PlatformIrqMax:
-                // A line's flow ends its own interrupt, through the line's
-                // chip, once the actions have run; that holds for an IPI
-                // sent to a line's vector too. A vector no line has -- a pin
-                // the platform did not program, or an IPI sent to such a
-                // vector -- is ended here instead: left in service, it would
-                // hold back every interrupt of its priority class and below
-                // on this CPU for good.
-                if (!platform_handle_irq(irqvec_to_irqnum(vector), frame)) {
-                    apic_issue_eoi();
-                }
+                // The root controller's driver ends the interrupt, one way or
+                // the other: a line's flow ends its own through the line's
+                // chip, and the handler ends one no line has.
+                irq::handle_root_irq(frame);
                 break;
 
             case IrqVec::ApicTimer:
@@ -431,13 +418,12 @@ extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
                      vector != arch::IrqVec::MachineCheck,
                  "vector {} belongs on the paranoid path", u32(vector));
 
-    auto const irqnum = HIrqNum(vector);
     auto const from_user = is_from_uspace(frame);
 
     task::ExceptionContext user_exception{};
-    platform_start_handling_irq(irqnum, frame);
+    irq::handle_irq_preamble(frame);
     auto const raised = x86_dispatch_exception(vector, frame, &user_exception);
-    auto const need_preempt = platform_finish_handling_irq(irqnum, frame);
+    auto const need_preempt = irq::handle_irq_postamble();
 
     // The order is: finish the interrupt, then preempt, then signals. Signals
     // come last because the next change to them lets a pending Kill exit the

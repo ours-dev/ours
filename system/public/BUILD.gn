@@ -19,6 +19,7 @@ source_set("public") {
   # ours_object_wait_one(). Exported rather than hand-copied, so that the
   # operators on an ABI enum are the same ones the kernel compiles against.
   public_deps = [
+    ":kernel_version($default_toolchain)",
     ":vdso_decls",
     "//system/lib/ustl:headers",
   ]
@@ -102,6 +103,21 @@ if (current_toolchain == default_toolchain) {
 }
 
 if (current_toolchain == default_toolchain) {
+  # ours-0.1.0 plus the 12-digit HEAD this build started from. Written next
+  # to the generated vDSO declarations, which every user program already
+  # includes, so the vDSO and the shell see one string.
+  action("kernel_version") {
+    script = "//build/version/gen_kernel_version.py"
+    outputs = [ "$_syscalls_gen_dir/public/ours/version_build.hpp" ]
+    depfile = "$_syscalls_gen_dir/public/ours/version_build.hpp.d"
+    args = [
+      rebase_path("//", root_build_dir),
+      "ours-0.1.0",
+      rebase_path(outputs[0], root_build_dir),
+      rebase_path(depfile, root_build_dir),
+    ]
+  }
+
   # The vDSO's ABI as a text stub: its SONAME and one Func per call. What the
   # linked vDSO actually exports is checked against this
   # (//kernel/lib/userabi/vdso:vdso.abi_check).
@@ -152,7 +168,10 @@ config("vdso_decls.config") {
 # -- as every user program does, through //system:user.headers -- has no such
 # edge, and user_executable() adds one for it.
 group("vdso_decls") {
-  public_deps = [ ":syscalls.gen($default_toolchain)" ]
+  public_deps = [
+    ":kernel_version($default_toolchain)",
+    ":syscalls.gen($default_toolchain)",
+  ]
   public_configs = [ ":vdso_decls.config" ]
   visibility = [ ":public" ]
 }

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <cstring>
+#include <unistd.h>
 
 #include "kernel/lib/acpi/test/acpi_test_blob.hpp"
 #include <acpi/structures/madt.hpp>
@@ -17,6 +18,7 @@
 #include <acpi/table_export.hpp>
 #include <acpi_route/routes.hpp>
 #include <acpi_route/table_directory.hpp>
+#include <sys/mman.h>
 
 namespace {
 
@@ -203,7 +205,7 @@ auto test_a_bad_directory_is_refused() -> void {
     expect_rejected(good, [](auto &b) { b.resize(8); });
     expect_rejected(good, [](auto &b) { put32(b, 0, 0); });
     expect_rejected(good, [](auto &b) { put32(b, 4, 2); });
-    expect_rejected(good, [](auto &b) { put32(b, 8, TableDirectory::MAX_TABLES + 1); });
+    expect_rejected(good, [](auto &b) { put32(b, 8, 0xffff'ffff); }); // a count no size can hold
     expect_rejected(good, [](auto &b) { put32(b, 8, 100); }); // the entries would not fit
     expect_rejected(good, [](auto &b) { put32(b, 12, u32(b.size()) + 1); });
     expect_rejected(good, [](auto &b) { b.pop_back(); }); // fewer bytes than the size says
@@ -230,42 +232,154 @@ auto test_a_bad_directory_is_refused() -> void {
     expect_rejected(good, [](auto &b) { b[get32(b, entry_field(1, 1)) + 40] ^= 1; });
 }
 
-/// A directory of `count` tables made by hand, each a bare 40 byte "TEST"
-/// table with a good checksum, for the one limit a real machine never gets
-/// near: how many tables a directory may list.
-auto hand_made_directory(u32 const count) -> std::vector<u8> {
-    constexpr auto TABLE = usize{40};
+/// A directory of `count` tables made by hand, each a "TEST" table of `length`
+/// bytes with a good checksum, the first at the first aligned offset after the
+/// entries and each next one `stride` bytes after the one before. For the
+/// limits a real machine never gets near, and for the checks that a directory
+/// made of real tables cannot isolate: a stride that is not a multiple of 8
+/// puts a table where only the alignment check refuses it.
+auto hand_made_directory(u32 const count, usize const stride = 40, usize const length = 40)
+    -> std::vector<u8> {
     auto const entries_end =
         sizeof(ours::AcpiDirectory) + usize{count} * sizeof(ours::AcpiDirectoryEntry);
     auto const tables_begin = (entries_end + 7) & ~usize{7};
-    std::vector<u8> bytes(tables_begin + usize{count} * TABLE, 0);
+    // Room for a table of the full header's size at the last offset, whatever
+    // the length: make_table_header() writes all 36 bytes of it.
+    std::vector<u8> bytes(tables_begin + usize{count} * stride + 40, 0);
 
     auto const directory = ours::AcpiDirectory{
         .magic = ours::ACPI_DIRECTORY_MAGIC,
         .version = ours::ACPI_DIRECTORY_VERSION,
         .count = count,
-        .size = u32(bytes.size()),
+        .size = u32(tables_begin + usize{count} * stride),
     };
     std::memcpy(bytes.data(), &directory, sizeof(directory));
     auto const sign = acpi::Signature::from_chars("TEST");
     for (auto index = u32{0}; index < count; ++index) {
-        auto const offset = tables_begin + usize{index} * TABLE;
+        auto const offset = tables_begin + usize{index} * stride;
         auto const entry = ours::AcpiDirectoryEntry{
             .signature = sign.value,
             .offset = u32(offset),
-            .length = u32(TABLE),
+            .length = u32(length),
             .reserved = 0,
         };
         std::memcpy(bytes.data() + sizeof(directory) + usize{index} * sizeof(entry), &entry,
                     sizeof(entry));
-        acpi::test::make_table_header(bytes.data() + offset, sign, u32(TABLE));
+        acpi::test::make_table_header(bytes.data() + offset, sign, u32(length));
     }
     return bytes;
 }
 
-auto test_a_directory_may_list_so_many_tables_and_no_more() -> void {
-    require(read(hand_made_directory(TableDirectory::MAX_TABLES)).is_ok());
-    require(read(hand_made_directory(TableDirectory::MAX_TABLES + 1)).is_err());
+/// Whether from_bytes() accepts a copy of `bytes` that ends at the last byte of
+/// a mapped page, the page after it being unmapped: a read past the end is a
+/// crash, where in an ordinary buffer it would read whatever follows and
+/// usually go unnoticed. The checks that only keep the reader inside its bytes
+/// can be seen failing no other way without a sanitizer.
+auto accepted_at_the_edge(std::vector<u8> const &bytes) -> bool {
+    // The host's page size, asked at run time: 4 KiB on an x86 Mac, 16 KiB on
+    // an arm64 one. mmap rounds the size it is given up to whole pages, so a
+    // hard-coded 4 KiB made the two-page mapping one 16 KiB page on an arm64
+    // host, and the protect of its second page a sub-page range, which
+    // mprotect refuses with EINVAL instead of faulting the read past the end.
+    auto const host_page_size = sysconf(_SC_PAGESIZE);
+    require(host_page_size > 0);
+    auto const page_size = static_cast<usize>(host_page_size);
+    auto *const mapping =
+        mmap(nullptr, 2 * page_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    require(mapping != MAP_FAILED);
+    auto *const page = static_cast<u8 *>(mapping);
+    require(mprotect(page + page_size, page_size, PROT_NONE) == 0);
+    auto *const data = page + page_size - bytes.size();
+    std::memcpy(data, bytes.data(), bytes.size());
+    auto const accepted = TableDirectory::from_bytes({data, bytes.size()}).is_ok();
+    munmap(mapping, 2 * page_size);
+    return accepted;
+}
+
+/// Re-seals the checksum of the table `length` bytes long at `offset`: the sum
+/// of the bytes is zero again after a test changed the table.
+auto reseal(std::vector<u8> &bytes, usize const offset, usize const length) -> void {
+    bytes[offset + 9] = 0;
+    auto sum = u8{0};
+    for (auto index = usize{0}; index < length; ++index) {
+        sum = u8(sum + bytes[offset + index]);
+    }
+    bytes[offset + 9] = u8(0u - sum);
+}
+
+auto test_a_directory_may_list_a_great_many_tables() -> void {
+    // No count of tables is refused for being large: the walk is bounded by the
+    // directory's size, which is checked against the bytes there are.
+    auto const many = hand_made_directory(2000);
+    auto const directory = read(many);
+    require(directory.is_ok());
+    require(directory.unwrap().count() == 2000);
+}
+
+/// The checks of from_bytes() that a directory made of real tables cannot
+/// isolate: each case breaks one thing and leaves every other check satisfied,
+/// the table's own header and checksum included, so that removing the one check
+/// that is meant to refuse it makes the case pass.
+auto test_each_check_of_the_reader_stands_alone() -> void {
+    auto const good = hand_made_directory(3);
+    require(read(good).is_ok());
+
+    // A table that reaches past the directory's size, inside the bytes there
+    // are (the buffer is longer than the size says), with a header and a sum
+    // that agree with the entry.
+    {
+        auto bytes = good;
+        auto const last = entry_field(2, 0);
+        auto const offset = get32(bytes, last + 4);
+        auto const size = get32(bytes, 12);
+        auto const length = size - offset + 24;
+        bytes.resize(size + 64, 0);
+        put32(bytes, last + 8, length);
+        put32(bytes, offset + 4, length);
+        reseal(bytes, offset, length);
+        require(read(bytes).is_err());
+    }
+    // A header whose length is not the entry's, the sum over the entry's length
+    // good.
+    {
+        auto bytes = good;
+        auto const offset = get32(bytes, entry_field(1, 0) + 4);
+        put32(bytes, offset + 4, get32(bytes, entry_field(1, 0) + 8) + 8);
+        reseal(bytes, offset, get32(bytes, entry_field(1, 0) + 8));
+        require(read(bytes).is_err());
+    }
+    // A table shorter than a table header.
+    {
+        auto bytes = good;
+        auto const first = entry_field(0, 0);
+        auto const offset = get32(bytes, first + 4);
+        put32(bytes, first + 8, 20);
+        put32(bytes, offset + 4, 20);
+        reseal(bytes, offset, 20);
+        require(read(bytes).is_err());
+    }
+    // Entries that do not fit in the directory's size: a directory of 20 bytes
+    // that claims one entry, and one that claims a count no size can hold. The
+    // check only keeps the reader from reading the entries past the bytes, so it
+    // is seen failing at the edge of a mapped page.
+    {
+        auto bytes = good;
+        bytes.resize(20);
+        put32(bytes, 8, 1);
+        put32(bytes, 12, 20);
+        require(!accepted_at_the_edge(bytes));
+        put32(bytes, 8, 0xffff'ffff);
+        require(!accepted_at_the_edge(bytes));
+    }
+    // A table at an offset that is not a multiple of 8, after a gap, so that
+    // the ordering is satisfied: a stride of 44 puts the second table 4 bytes
+    // past a multiple of 8.
+    {
+        auto const unaligned = hand_made_directory(2, 44, 36);
+        require(read(unaligned).is_err());
+        auto const aligned = hand_made_directory(2, 48, 36);
+        require(read(aligned).is_ok());
+    }
 }
 
 // ------------------------------------------------------------------- ISA IRQ
@@ -304,16 +418,21 @@ auto test_the_flags_are_two_bit_fields() -> void {
     expect_route(bytes, 5, 32, Trigger::Level, Polarity::ActiveHigh);
 }
 
-auto test_the_first_override_of_a_line_wins() -> void {
+auto test_the_last_override_of_a_line_wins() -> void {
+    // The kernel keeps one override for each ISA number, and a later entry
+    // replaces an earlier one, so the line it programs is the later entry's.
     Machine machine;
-    add_madt(machine, {{0, 4, 10, CONFORMS}, {0, 4, 11, CONFORMS}});
-    expect_route(directory_bytes(machine), 4, 10, Trigger::Edge, Polarity::ActiveHigh);
+    add_madt(machine, {{0, 4, 10, CONFORMS}, {0, 4, 11, LEVEL_LOW}});
+    expect_route(directory_bytes(machine), 4, 11, Trigger::Level, Polarity::ActiveLow);
 }
 
-auto test_only_the_isa_bus_has_isa_lines() -> void {
+auto test_the_bus_field_is_not_read() -> void {
+    // The MADT fixes the bus of an override at 0, and the kernel does not read
+    // it: an entry on another bus is honoured, because it is the pin the
+    // kernel programmed.
     Machine machine;
     add_madt(machine, {{1, 3, 20, LEVEL_LOW}});
-    expect_route(directory_bytes(machine), 3, 3, Trigger::Edge, Polarity::ActiveHigh);
+    expect_route(directory_bytes(machine), 3, 20, Trigger::Level, Polarity::ActiveLow);
 }
 
 auto test_no_line_for_the_cascade_or_past_the_isa_lines() -> void {
@@ -343,17 +462,25 @@ auto test_no_madt_is_not_found() -> void {
     expect_error(route_of(directory_bytes(machine), 1), Status::NotFound);
 }
 
-auto test_a_madt_that_cannot_be_read_to_its_end_cannot_say_there_is_no_override() -> void {
-    // An override of ISA 1, then an entry whose length is below the minimum:
-    // the walk stops there. ISA 1 is found before it; ISA 7 is not, and could
-    // have been named after it.
+auto test_a_madt_that_cannot_be_read_to_its_end_ends_the_walk_where_the_kernel_does() -> void {
+    // An override of ISA 1, then an entry whose length is below the minimum,
+    // then an override of ISA 7 that the walk never reaches. The kernel's walk
+    // stops at the bad entry and looks no further, so it programs ISA 7 on its
+    // own pin, and so does this.
     Machine machine;
-    auto *tail = add_madt(machine, {{0, 1, 1, CONFORMS}}, 2);
+    constexpr auto OVERRIDE = sizeof(acpi::madt::InterruptSourceOverrideEntry);
+    auto *tail = add_madt(machine, {{0, 1, 5, CONFORMS}}, 2 + OVERRIDE);
     tail[0] = u8(acpi::madt::Type::LocalApic);
     tail[1] = 0;
+    acpi::madt::InterruptSourceOverrideEntry unreached{};
+    unreached.header.type = u8(acpi::madt::Type::InterruptSourceOverride);
+    unreached.header.length = u8(OVERRIDE);
+    unreached.source = 7;
+    unreached.global_irq = 30;
+    std::memcpy(tail + 2, &unreached, OVERRIDE);
     auto const bytes = directory_bytes(machine);
-    expect_route(bytes, 1, 1, Trigger::Edge, Polarity::ActiveHigh);
-    expect_error(route_of(bytes, 7), Status::InvArgs);
+    expect_route(bytes, 1, 5, Trigger::Edge, Polarity::ActiveHigh);
+    expect_route(bytes, 7, 7, Trigger::Edge, Polarity::ActiveHigh);
 }
 
 // --------------------------------------------------------------------- ECAM
@@ -430,16 +557,17 @@ auto test_no_mcfg_is_not_found() -> void {
 auto main() -> int {
     test_a_directory_reads_back();
     test_a_bad_directory_is_refused();
-    test_a_directory_may_list_so_many_tables_and_no_more();
+    test_a_directory_may_list_a_great_many_tables();
+    test_each_check_of_the_reader_stands_alone();
     test_an_isa_line_with_no_override_is_its_own_gsi();
     test_overrides_name_the_gsi_and_the_signalling();
     test_the_flags_are_two_bit_fields();
-    test_the_first_override_of_a_line_wins();
-    test_only_the_isa_bus_has_isa_lines();
+    test_the_last_override_of_a_line_wins();
+    test_the_bus_field_is_not_read();
     test_no_line_for_the_cascade_or_past_the_isa_lines();
     test_a_flag_that_cannot_be_honoured_is_refused();
     test_no_madt_is_not_found();
-    test_a_madt_that_cannot_be_read_to_its_end_cannot_say_there_is_no_override();
+    test_a_madt_that_cannot_be_read_to_its_end_ends_the_walk_where_the_kernel_does();
     test_the_ecam_window_of_a_segment();
     test_a_half_written_allocation_is_not_one();
     test_a_bad_allocation_is_refused();

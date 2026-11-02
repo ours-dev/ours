@@ -14,6 +14,7 @@ struct AnchorReading {
     i64 nanoseconds = 0;
     u32 numerator = 0;
     u32 denominator = 1;
+    u64 frequency_hz = 0;
 };
 
 /// Copies |bytes| into the published page at |offset|. An 8-byte copy is one
@@ -29,6 +30,10 @@ auto bind_anchor_page(AnchorStore store, void *context, u64 offset) -> void;
 /// none: a publish then writes accessible 0 and counter 0. A later publish
 /// writes this address with accessible 1.
 auto bind_counter_va(VirtAddr va) -> void;
+
+/// Offsets of the single-word records in the vDSO VMO. Each is one store.
+auto bind_ticks_per_second(u64 offset) -> void;
+auto bind_boot_offset(u64 offset) -> void;
 
 /// Publishes |reading| into the bound page. No-op until bind_anchor_page().
 auto publish_anchor(AnchorReading const &reading) -> void;

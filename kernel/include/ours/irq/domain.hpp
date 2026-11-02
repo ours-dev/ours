@@ -20,27 +20,33 @@ namespace ours::irq {
 /// assigned, and a program that took a GSI for a virq finds no line.
 ///
 /// The virqs of a domain are consecutive, handed out in the order of the
-/// hardware numbers, from the first multiple of VIRQ_ALIGN past the highest
-/// hardware number. That start is why no virq equals any hwirq of the same
-/// domain, whatever the machine: every virq is past all of them.
+/// hardware numbers, from the first multiple of VIRQ_ALIGN that is past the
+/// highest hardware number and not below the floor the caller gives
+/// (`min_first`). Being past the highest hardware number is why no virq
+/// equals any hwirq of the same domain, whatever the machine: every virq is
+/// past all of them. The floor is what keeps the virqs of two domains apart:
+/// the caller gives the first virq not yet taken by another domain, and a
+/// virq of one domain may equal a hardware number of another.
 ///
-/// Built once, by init(), before any line is unmasked, and only read after:
-/// the lookups take no lock and are safe from interrupt context. The arrays
-/// live for as long as the kernel does; reset() is for a build that failed
-/// part-way.
+/// Built once, by init(), by one writer before the domain is published, and
+/// only read after: the lookups take no lock and are safe from interrupt
+/// context. The arrays live until reset(), which a build that failed part-way
+/// calls and so does the removal of a domain, after the grace period that
+/// waits for its readers.
 class Domain {
   public:
     /// The first virq is a multiple of this, so that on a machine with one
     /// IO-APIC (24 pins) it is 32.
     static constexpr auto VIRQ_ALIGN = u32{32};
 
-    /// Builds the domain of the hardware numbers in `hirqnums`. InvArgs for
-    /// an empty list, for INVALID_H_IRQ_NUM, or for a list the virq space
-    /// cannot hold; AlreadyExists if a number is given twice; BadState if
-    /// the domain is built already; NoMemory. Nothing is kept from a call
-    /// that fails.
+    /// Builds the domain of the hardware numbers in `hirqnums`, its virqs
+    /// starting at or past `min_first` (0 for none: the first domain of a
+    /// machine). InvArgs for an empty list, for INVALID_H_IRQ_NUM, or for a
+    /// list the virq space cannot hold from there; AlreadyExists if a number
+    /// is given twice; BadState if the domain is built already; NoMemory.
+    /// Nothing is kept from a call that fails.
     [[nodiscard]]
-    auto init(ustl::views::Span<HIrqNum const> hirqnums) -> Status;
+    auto init(ustl::views::Span<HIrqNum const> hirqnums, VIrqNum min_first = 0) -> Status;
 
     /// Gives back what init() allocated, so the domain is empty again.
     auto reset() -> void;
@@ -59,6 +65,17 @@ class Domain {
     /// table indexed by hwirq. 0 until init().
     [[nodiscard]]
     auto hwirq_limit() const -> usize;
+
+    /// The block of virqs the domain holds: the first, and how many. 0 and 0
+    /// until init().
+    [[nodiscard]]
+    auto first_virq() const -> VIrqNum {
+        return m_first;
+    }
+    [[nodiscard]]
+    auto num_virqs() const -> usize {
+        return m_hwirqs.size();
+    }
 
   private:
     /// The first virq; the virq of the lowest hardware number.

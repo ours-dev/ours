@@ -22,18 +22,35 @@ ours_syscalls_interrupt = [
       "covering [line, line + 1), checked on |line| as given (BadHandle,",
       "BadType, OutOfRange). |line| is the kernel's number for the line,",
       "assigned at boot and never the pin's GSI; a program does not compute",
-      "it: interrupt_map gives the number for a source the firmware names.",
+      "it: interrupt_map gives the number for a pin the platform names.",
       "The retired option bit 0x1 (it took |line| as an ISA IRQ) is refused",
       "(InvArgs). The mode sets how the line signals,",
       "or ModeDefault leaves it as it is (NotSupported where the kernel",
       "cannot tell how it signals); a level-triggered line stays masked from",
       "each interrupt until its ack. The line is taken whole: AlreadyBound",
-      "while anything else is on it, the kernel's own lines included.",
-      "NoResource if no line has that number, but InvArgs for 0xFFFFFFFF,",
+      "while an interrupt object is on it (any, the caller's own included)",
+      "or another action is. A line the kernel holds for its own use (the",
+      "timer's) is AccessDenied, checked before the line is touched, and",
+      "unlike AlreadyBound it never changes: no program can ever take it.",
+      "NoResource if no line has that number, or the kernel is taking the",
+      "line away, but InvArgs for 0xFFFFFFFF,",
       "which the kernel keeps as no line at all; an option this kernel does",
       "not know, or a mode that names none, is InvArgs. The handle has",
       "Transfer, Duplicate, Wait, Inspect, Read, Write and Signal. Closing",
       "its last handle destroys the object, which lets its line go.",
+      "A virtual interrupt asserts Idle (object_wait_one, object_wait_async)",
+      "while it is owed no ack: from its creation, again after the ack of",
+      "the last interrupt triggered, and for good once destroyed;",
+      "interrupt_trigger drops it. The driver of a controller behind a root",
+      "line makes one for each pin and waits for Idle to unmask the pin it",
+      "masked. The client of such an interrupt gets a handle made with",
+      "handle_duplicate from the driver's: Wait, Read, Write and Transfer, no",
+      "Signal (it cannot raise its own interrupts) and no Duplicate. It can",
+      "still interrupt_destroy, which needs no right, and so raise Idle",
+      "without an ack: the driver's next interrupt_trigger answers Cancelled,",
+      "and it keeps the pin masked and replaces the interrupt. Closing the",
+      "handle without an ack raises nothing. A physical interrupt never",
+      "asserts Idle.",
     ]
     args = [
       {
@@ -56,28 +73,44 @@ ours_syscalls_interrupt = [
     ]
     attrs = []
     ret = "Status"
+
     category = "interrupt"
   },
   {
     name = "interrupt_map"
-    brief = "Writes into |out| the number interrupt_create takes for the interrupt source the firmware names."
+    brief = "Writes into |out| the number interrupt_create takes for the interrupt source the platform names."
     doc = [
       "An interrupt line is named by the kernel's own number for it, which no",
-      "program computes (interrupt_create). This gives the number of the line",
-      "made for a source: an ISA IRQ (Isa, 0 to 15, the pin the firmware's",
-      "tables route that legacy device to) or a global system interrupt (Gsi,",
-      "the firmware's number for a pin of an interrupt controller). It is for",
-      "the one component that reads those tables, and so needs the root of",
-      "the interrupt lines: |resource| must be the root of them, an Irq",
-      "resource made as the root and not one cut to a range, even a range over",
-      "every line (BadHandle, BadType for a resource of another kind,",
-      "AccessDenied for an Irq resource that is not the root). A device",
-      "driver should be handed its interrupt object, and not a number.",
-      "Nothing is taken: the line stays free until interrupt_create.",
-      "|kind| must be a kind this kernel knows, and |source| not 0xFFFFFFFF",
-      "(InvArgs, both checked before the resource). NoResource if the source",
-      "has no line: an ISA IRQ past 15 or the cascade, ISA 2, any ISA IRQ on",
-      "a platform without them, or a number no pin has.",
+      "program computes (interrupt_create). This resolves that number for the",
+      "line made for |source| in interrupt domain |domain|: |source| is the",
+      "platform's own number for the pin in that domain's numbering, the",
+      "number the firmware gives it -- a global system interrupt (GSI) on a",
+      "platform that follows ACPI -- and |domain| names the controller whose",
+      "numbering it is, the root controller's (0) on every platform today.",
+      "Both come from the route service's answer (ours.acpi.Route), the one",
+      "party that reads the firmware's tables: the kernel does not read the",
+      "tables and does not name a pin itself. A source is not a legacy",
+      "device's ISA IRQ number: which pin such a device is on is for the route",
+      "service to say, and the kernel is given the pin. Resolving is the",
+      "root's power, and for the root alone: |resource| must be the root of",
+      "the interrupt lines, an Irq resource made as the root and not one cut",
+      "to a range, even a range over every line (BadHandle, BadType for a",
+      "resource of another kind, AccessDenied for an Irq resource that is not",
+      "the root). A device driver should be handed its interrupt object, and",
+      "not a number. Nothing is taken: the line stays free until",
+      "interrupt_create.",
+      "|domain| must not be 0xFFFFFFFF, which the kernel keeps as no domain",
+      "at all, and |source| must not be 0xFFFFFFFF, which it keeps as no",
+      "source (InvArgs, both checked before the resource, the domain first).",
+      "NoResource if the domain names none registered, or no line was made for",
+      "|source| in it: no pin has that number, or its pin is past the",
+      "interrupt vectors the platform has. AccessDenied, once the resource has",
+      "been accepted, if the line made for |source| is one the kernel holds",
+      "for its own use (the timer's): no program can take it, so its number is",
+      "not given, and the caller learns that here and not from a later",
+      "interrupt_create. |out| is written only when the call succeeds; one",
+      "that cannot be written answers InvArgs, and nothing is taken then",
+      "either.",
     ]
     args = [
       {
@@ -85,8 +118,8 @@ ours_syscalls_interrupt = [
         type = "Uandle"
       },
       {
-        name = "kind"
-        type = "InterruptSourceKind"
+        name = "domain"
+        type = "u32"
       },
       {
         name = "source"
@@ -100,6 +133,7 @@ ours_syscalls_interrupt = [
     ]
     attrs = []
     ret = "Status"
+
     category = "interrupt"
   },
   {
@@ -109,7 +143,9 @@ ours_syscalls_interrupt = [
       "Returns at once if one is pending. Taking one is also the ack of the",
       "one taken before it (and unmasks a line masked until then), which is",
       "why later interrupts only fold into the pending one until a wait",
-      "takes it: the time written is the first's.",
+      "takes it: the time written is the first's. A wait that is the ack of",
+      "the last interrupt and finds nothing more pending raises Idle on a",
+      "virtual interrupt before it parks.",
       "Cancelled when the object is destroyed, before the wait or during",
       "it. BadState while another thread is waiting on the same object: from",
       "the moment that thread's wait finds nothing to take until it wakes,",
@@ -135,6 +171,7 @@ ours_syscalls_interrupt = [
     ]
     attrs = [ "blocking" ]
     ret = "Status"
+
     category = "interrupt"
   },
   {
@@ -146,7 +183,9 @@ ours_syscalls_interrupt = [
       "instead, or, while the last packet waits for its interrupt_ack, is",
       "sent by that ack. If an interrupt is already pending, it keeps its",
       "own time. Only a virtual interrupt can be raised (BadState), and not",
-      "once destroyed (Cancelled). |options| must be None (InvArgs).",
+      "once destroyed (Cancelled, with Idle up). |options| must be None",
+      "(InvArgs). Drops Idle before the interrupt can be taken, so that the",
+      "ack of it, which raises Idle, is the later of the two.",
       "|handle| must name an interrupt (BadType) with Signal (AccessDenied).",
     ]
     args = [
@@ -165,6 +204,7 @@ ours_syscalls_interrupt = [
     ]
     attrs = []
     ret = "Status"
+
     category = "interrupt"
   },
   {
@@ -177,7 +217,11 @@ ours_syscalls_interrupt = [
       "(BadType); no right is needed. Bound to a port, a packet still queued",
       "is taken back off it; NotFound when a packet was already taken by",
       "port_wait and not yet acked, with the interrupt destroyed all the",
-      "same.",
+      "same. A virtual interrupt raises Idle, and keeps it up. The kernel",
+      "taking a line away destroys its object too, and a thread waiting on",
+      "it wakes with Cancelled, with no destroy of the program's own; the",
+      "NoResource that interrupt_create answers meanwhile clears if that is",
+      "refused.",
     ]
     args = [
       {
@@ -187,6 +231,7 @@ ours_syscalls_interrupt = [
     ]
     attrs = []
     ret = "Status"
+
     category = "interrupt"
   },
   {
@@ -234,9 +279,10 @@ ours_syscalls_interrupt = [
       "For an interrupt bound to a port: once its packet is handled, the ack",
       "re-arms it (and unmasks a line masked until then). If interrupts",
       "arrived since that packet, the next packet is sent at once, with the",
-      "time of the first of them. Ok, and nothing to do, when no packet is",
-      "outstanding. BadState if it is not bound to a port, or if the ack",
-      "would send the next packet while the last is still queued unread.",
+      "time of the first of them; with none, a virtual interrupt raises Idle.",
+      "Ok, and nothing to do, when no packet is outstanding. BadState if it",
+      "is not bound to a port, or if the ack would send the next packet",
+      "while the last is still queued unread.",
       "Cancelled once destroyed. |handle| must name an interrupt (BadType)",
       "with Write (AccessDenied).",
     ]
@@ -248,6 +294,7 @@ ours_syscalls_interrupt = [
     ]
     attrs = []
     ret = "Status"
+
     category = "interrupt"
   },
 ]

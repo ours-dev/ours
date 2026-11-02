@@ -48,6 +48,7 @@ ours_public_headers = [
   "ours/time_values.hpp",
   "ours/types.hpp",
   "ours/vdso.hpp",
+  "ours/version.hpp",
   "ours/vma.hpp",
   "ours/vmo.hpp",
 ]

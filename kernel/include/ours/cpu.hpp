@@ -65,11 +65,23 @@ class Cpu {
         //
         // Release: everything this CPU did before joining has to be visible to
         // whoever observes the bit. See is_online().
+        //
+        // Sequentially consistent, not only release, when the CPU joins: its
+        // store of the bit has to be ordered before whatever it reads next,
+        // which irq_rcu_synchronize() depends on to find a CPU that joins
+        // while it runs (a store, a full fence, and a read of this mask on its
+        // side; this store, then a read of the pointer it retracted, on the
+        // CPU's). The compare-exchange is a locked instruction on x86 and
+        // needs this to be one elsewhere. It runs once per CPU that joins.
+        auto success = std::memory_order_release;
+        if (enabled) {
+            success = std::memory_order_seq_cst;
+        }
         auto expected = ONLINE.load(std::memory_order_relaxed);
         for (;;) {
             auto desired = expected;
             desired.set(cpu, enabled);
-            if (ONLINE.compare_exchange_weak(expected, desired, std::memory_order_release,
+            if (ONLINE.compare_exchange_weak(expected, desired, success,
                                              std::memory_order_relaxed)) {
                 return;
             }

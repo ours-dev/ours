@@ -1,6 +1,7 @@
 #include <ours/assert.hpp>
 #include <ours/irq/desc.hpp>
 #include <ours/lockdep.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 
 #include <heap/new.hpp>
 #include <ustl/util/noncopyable.hpp>
@@ -78,8 +79,22 @@ auto Desc::attach(Action &action) -> Status {
     if (auto const status = check_oneshot(action); status != Status::Ok) {
         return status;
     }
+    // Only the level flow holds a Oneshot line masked. With no mode the line
+    // keeps the flow it has, chosen when it was bound or by the last configure
+    // or attach with a mode, and a chip that cannot say how its pins signal
+    // gave it the edge flow. So such a chip's Oneshot action is refused here:
+    // this looks at what the chip can say, not at the flow the line has now,
+    // and the action needs a mode (the other attach). The chip is fixed before
+    // the line is published, so it is read without the lock.
+    if (action.is_oneshot() && (m_data.chip == nullptr || !m_data.chip->trigger_mode)) {
+        return Status::NotSupported;
+    }
 
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    // A line the kernel is taking away takes nobody new.
+    if (is_dying_locked()) {
+        return Status::NoResource;
+    }
     // An action hangs on one line at a time: its hook has room for one
     // list, and pushing a linked hook again would corrupt both lists.
     if (action.is_attached()) {
@@ -143,6 +158,11 @@ auto Desc::attach(Action &action, ustl::Option<LineMode> const mode) -> ktl::Res
     }
 
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    // Before the chip is touched: the mode of a line being taken away is
+    // not ours to set.
+    if (is_dying_locked()) {
+        return ustl::err(Status::NoResource);
+    }
     if (action.is_attached()) {
         return ustl::err(Status::BadState);
     }
@@ -218,7 +238,7 @@ auto Desc::link_locked(Action &action, LineFlags flags) -> void {
     }
 
     m_actions.push_back(action);
-    action.m_virqnum = m_data.virqnum;
+    action.m_virqnum.store(m_data.virqnum, std::memory_order_release);
 
     if (action.is_permanent()) {
         flags |= LineFlags::Permanent;
@@ -253,7 +273,7 @@ auto Desc::detach(Action &action) -> Status {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     // erase() trusts that the action is in this very list; erasing one that
     // is not would unlink it from whichever list it is on, or from none.
-    if (action.m_virqnum != m_data.virqnum) {
+    if (action.virqnum() != m_data.virqnum) {
         return Status::NotFound;
     }
 
@@ -265,7 +285,7 @@ auto Desc::detach(Action &action) -> Status {
     }
 
     m_actions.erase(action);
-    action.m_virqnum = INVALID_V_IRQ_NUM;
+    action.m_virqnum.store(INVALID_V_IRQ_NUM, std::memory_order_release);
     // Held and, on a line left empty, the facts its last action brought go
     // out in one store.
     flags &= ~LineFlags::Held;
@@ -301,9 +321,15 @@ auto Desc::detach(Action &action) -> Status {
 /// a thread, not whether it is masked, which only the controller records. A
 /// finalize that comes when nothing was owed unmasks a line its flow left
 /// unmasked already, and the controller's unmask is idempotent.
+///
+/// A line marked for removal is finalized all the same. Skipping it would
+/// leave the line held and masked if the removal is then refused and the mark
+/// taken off again, with its object idle and nothing to raise the next
+/// interrupt; and if the removal goes through, revoke() clears held and masks
+/// the line last, under this same lock.
 auto Desc::finalize_oneshot(Action const &action) -> void {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-    if (action.m_virqnum != m_data.virqnum || !is_oneshot()) {
+    if (action.virqnum() != m_data.virqnum || !is_oneshot()) {
         return;
     }
     set_held_locked(false);
@@ -551,6 +577,10 @@ auto Desc::unmask() -> Status {
         return Status::NotSupported;
     }
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    // A line being taken away is not started, held or not.
+    if (is_dying_locked()) {
+        return Status::NoResource;
+    }
     if (is_held_locked()) {
         return Status::Ok;
     }
@@ -571,6 +601,9 @@ auto Desc::configure(TriggerMode const trigger, Polarity const polarity) -> Stat
     }
 
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    if (is_dying_locked()) {
+        return Status::NoResource;
+    }
     // A Permanent line always has its action; the flag is tested for what
     // it says, not as a stand-in for the list.
     auto const flags = m_flags.load(std::memory_order_relaxed);
@@ -608,6 +641,100 @@ auto Desc::is_masked() const -> ktl::Result<bool> {
         return ustl::err(Status::NotSupported);
     }
     return ustl::ok(chip->is_masked(m_data));
+}
+
+/// Why a removal could not empty this line: a Permanent line dispatches
+/// without L1, so nothing can wait for a handler of it, and its owner is the
+/// kernel's own code, which holds it for good; and an action that gave no
+/// cancel hook has not agreed to be taken off, so its owner would never be
+/// told. Both are AlreadyBound, as an attach on such a line answers.
+auto Desc::revocable_locked() const -> Status {
+    if (!!(m_flags.load(std::memory_order_relaxed) & LineFlags::Permanent)) {
+        return Status::AlreadyBound;
+    }
+    for (auto const &action: m_actions) {
+        if (!action.is_revocable()) {
+            return Status::AlreadyBound;
+        }
+    }
+    return Status::Ok;
+}
+
+auto Desc::check_revocable() -> Status {
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    return revocable_locked();
+}
+
+/// The check and the mark are one hold of L1, so an attach that lands
+/// between a check_revocable() and this cannot make the removal take an
+/// action that was not there to be asked.
+auto Desc::mark_dying() -> Status {
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    if (auto const status = revocable_locked(); status != Status::Ok) {
+        return status;
+    }
+    m_flags.store(m_flags.load(std::memory_order_relaxed) | LineFlags::Dying,
+                  std::memory_order_release);
+    return Status::Ok;
+}
+
+auto Desc::has_actions() -> bool {
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    return !m_actions.empty();
+}
+
+auto Desc::unmark_dying() -> void {
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    m_flags.store(m_flags.load(std::memory_order_relaxed) & ~LineFlags::Dying,
+                  std::memory_order_release);
+}
+
+/// IrqSaveAndPreemptDisable, not IrqSave as every dispatch of the line has
+/// it: a cancel hook may wake a thread, and the reschedule that asks for
+/// has to wait until L1 is dropped, as in a handler's context. A real
+/// interrupt has both off already; this is thread context.
+///
+/// The order within one action is the point. It is unlinked first, so no
+/// dispatch can reach it again, and the lock is held, so none is in flight;
+/// then told; and only then is its line cleared. An owner that destroys its
+/// object meanwhile reaches irq::detach(), which either reads the line still
+/// valid and queues on L1 behind this, or reads INVALID, which was stored
+/// after the hook returned and after the last touch of the action, so
+/// seeing it means this is done with the action and its owner. Clearing the
+/// line before telling would let the owner see INVALID, finish, and free
+/// the action under the hook.
+///
+/// Held goes with the actions, as in detach(): a Oneshot line's thread
+/// owes nothing to an owner that has been told it is gone. The line is
+/// masked last, through the chip, which the table's lines all have.
+auto Desc::revoke() -> void {
+    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_lock};
+    auto flags = m_flags.load(std::memory_order_relaxed);
+    // Checked in the release image too: a line not marked may have an action
+    // that never agreed to be taken off, and a Permanent line's list is walked
+    // without this lock.
+    ASSERT(!!(flags & LineFlags::Dying), "line {} revoked before it was marked", m_data.virqnum);
+    ASSERT(!(flags & LineFlags::Permanent), "line {} is Permanent and revoked", m_data.virqnum);
+
+    for (;;) {
+        auto const first = m_actions.front();
+        if (first.is_none()) {
+            break;
+        }
+        auto &action = *first;
+        ASSERT(action.is_revocable(), "line {} revokes an action with no cancel hook",
+               m_data.virqnum);
+        m_actions.erase(action);
+        action.cancel();
+        action.m_virqnum.store(INVALID_V_IRQ_NUM, std::memory_order_release);
+    }
+
+    flags &= ~(LineFlags::Held | LineFlags::Shared | LineFlags::Oneshot);
+    m_flags.store(flags, std::memory_order_release);
+    auto const *const chip = m_data.chip;
+    if (chip && chip->mask) {
+        chip->mask(m_data);
+    }
 }
 
 auto Desc::flow() -> Flow {

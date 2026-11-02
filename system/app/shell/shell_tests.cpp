@@ -9,6 +9,8 @@
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
+#include <ours/version.hpp>
+#include <ours/version_build.hpp>
 
 #include <algorithm>
 #include <array>
@@ -56,15 +58,27 @@ auto check_clock() -> void {
             break;
         }
     }
-    if (first > 0 && second > first) {
+    auto const hz = ours::ticks_per_second();
+    auto const boot = ours::boot_offset();
+    auto const version = ours::published_version();
+    auto const kernel = ours::kernel_version();
+    auto const kernel_ok =
+        kernel != nullptr && std::string_view{kernel} == OURS_KERNEL_VERSION_STRING;
+    if (first > 0 && second > first && hz > 0 && boot == 0 && version == 1 && kernel_ok) {
         auto _ = ort::debug_line("shell: clock checks passed");
         return;
     }
     char first_text[21];
     char second_text[21];
+    char hz_text[21];
+    char boot_text[21];
+    char version_text[21];
     auto _ = ort::debug_line(
         {"shell: clock checks FAILED first=", ort::signed_decimal(first, first_text),
-         " second=", ort::signed_decimal(second, second_text)});
+         " second=", ort::signed_decimal(second, second_text),
+         " hz=", ort::signed_decimal(static_cast<i64>(hz), hz_text),
+         " boot=", ort::signed_decimal(boot, boot_text),
+         " version=", ort::signed_decimal(static_cast<i64>(version), version_text)});
 }
 
 /// Gives up a handle this program was started with, and checks that the
@@ -2348,11 +2362,13 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 /// device raises the line used, so no interrupt arrives here; the kernel's
 /// interruptline.test raises one, and wakes a parked waiter with it.
 ///
-///   - the lines used are asked for with interrupt_map, ISA 0 and ISA 3, as a
-///     driver would: a line is named by the kernel's number for it;
-///   - the timer's line, ISA 0, is the kernel's for good: AlreadyBound, with
-///     a mode or without;
-///   - ISA 3, COM2's line, is free, since QEMU has no COM2 with one -serial.
+///   - the lines used are asked for with interrupt_map, the root domain and
+///     GSI 2, then GSI 3, as a driver would: a line is named by the kernel's
+///     number for it, resolved from the domain and the source that name it;
+///   - the timer's line, GSI 2 on q35, is the kernel's for good: interrupt_map
+///     refuses its pin and interrupt_create its line, AccessDenied, with a
+///     mode or without;
+///   - GSI 3, COM2's line, is free, since QEMU has no COM2 with one -serial.
 ///     A create that cannot write its handle out fails (InvArgs) with the
 ///     line already taken, and the handle it drops destroys the object, which
 ///     gives the line back: the next create takes it, and a second answers
@@ -2366,53 +2382,67 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 ///     InvArgs, and so is the retired RemapIrq bit, 0x1; a number no line has
 ///     is NoResource, a pin's GSI taken for a line included, since a line is
 ///     named by the kernel's own number for it; except 0xFFFFFFFF, which the
-///     kernel keeps as no line at all: InvArgs. The cascade, ISA 2, has no line
-///     to map (NoResource), and an |out| that faults fails interrupt_map
-///     (InvArgs).
+///     kernel keeps as no line at all: InvArgs, for interrupt_map as well. A
+///     source no pin has is NoResource to interrupt_map, a domain no
+///     controller registers too, the domain the kernel keeps as none is
+///     InvArgs, and an |out| that faults fails it (InvArgs).
 auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) -> bool {
     using ours::InterruptOptions;
     using ours::InterruptTriggerOptions;
     using ours::Status;
     using ours::Uandle;
 
-    constexpr auto ISA_TIMER = u32{0};
-    constexpr auto ISA_FREE = u32{3};
+    constexpr auto GSI_TIMER = u32{2};
+    constexpr auto GSI_FREE = u32{3};
+    constexpr auto NO_PIN = u32{200};
+    constexpr auto NO_DOMAIN = u32{7};
 
     auto ok = true;
     // A line is named by the kernel's number for it, which no program
     // computes: ask for the two lines this check uses, as a driver would.
-    auto timer_line = u32{0};
+    constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
+    auto refused = UNTOUCHED;
     auto free_line = u32{0};
-    if (!expect("shell: interrupt_map(ISA 0) = ",
-                ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_TIMER, &timer_line),
-                Status::Ok) ||
-        !expect("shell: interrupt_map(ISA 3) = ",
-                ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, ISA_FREE, &free_line),
+    if (!expect("shell: interrupt_map(the root domain, GSI 2, the kernel's timer) = ",
+                ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_TIMER, &refused),
+                Status::AccessDenied)) {
+        return false;
+    }
+    if (refused != UNTOUCHED) {
+        auto _ = ort::debug_line("shell: interrupt_map wrote its output though it refused");
+        return false;
+    }
+    if (!expect("shell: interrupt_map(the root domain, GSI 3) = ",
+                ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &free_line),
                 Status::Ok)) {
         return false;
     }
+    // GSI 2 is refused, so its line is found from its neighbour's: the kernel
+    // numbers lines consecutively in the order of their pins, and GSI 2 and
+    // GSI 3 are both pins on this machine.
+    auto const timer_line = free_line - 1;
     auto first = Uandle::Invalid;
     auto second = Uandle::Invalid;
-    ok &= expect("shell: interrupt_create(ISA 0, the timer's) = ",
+    ok &= expect("shell: interrupt_create(GSI 2, the timer's) = ",
                  ours::interrupt_create(irq, timer_line, InterruptOptions::None, &first),
-                 Status::AlreadyBound);
-    ok &= expect("shell: interrupt_create(ISA 0, ModeLevelHigh) = ",
+                 Status::AccessDenied);
+    ok &= expect("shell: interrupt_create(GSI 2, ModeLevelHigh) = ",
                  ours::interrupt_create(irq, timer_line, InterruptOptions::ModeLevelHigh, &first),
-                 Status::AlreadyBound);
+                 Status::AccessDenied);
 
     // The handle's value is written out last, once the line is taken and
     // unmasked, so an |out| that faults fails the create after the line is
     // the object's. Only the handle dropped on that path can give it back.
-    ok &= expect("shell: interrupt_create(ISA 3, out = unmapped) = ",
+    ok &= expect("shell: interrupt_create(GSI 3, out = unmapped) = ",
                  ours::interrupt_create(irq, free_line, InterruptOptions::None,
                                         reinterpret_cast<Uandle *>(UNMAPPED)),
                  Status::InvArgs);
-    if (!expect("shell: interrupt_create(ISA 3) = ",
+    if (!expect("shell: interrupt_create(GSI 3) = ",
                 ours::interrupt_create(irq, free_line, InterruptOptions::None, &first),
                 Status::Ok)) {
         return false;
     }
-    ok &= expect("shell: interrupt_create(ISA 3, taken) = ",
+    ok &= expect("shell: interrupt_create(GSI 3, taken) = ",
                  ours::interrupt_create(irq, free_line, InterruptOptions::None, &second),
                  Status::AlreadyBound);
     ok &=
@@ -2424,17 +2454,17 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
                  ours::interrupt_wait(first, nullptr), Status::Cancelled);
 
     // The destroyed object's handle is still open; its line is free.
-    if (expect("shell: interrupt_create(ISA 3, after the destroy) = ",
+    if (expect("shell: interrupt_create(GSI 3, after the destroy) = ",
                ours::interrupt_create(irq, free_line, InterruptOptions::ModeEdgeHigh, &second),
                Status::Ok)) {
         ok &=
             expect("shell: close(the destroyed object) = ", ours::handle_close(first), Status::Ok);
         auto third = Uandle::Invalid;
-        ok &= expect("shell: interrupt_create(ISA 3, the new owner's) = ",
+        ok &= expect("shell: interrupt_create(GSI 3, the new owner's) = ",
                      ours::interrupt_create(irq, free_line, InterruptOptions::None, &third),
                      Status::AlreadyBound);
         ok &= expect("shell: close(the new owner) = ", ours::handle_close(second), Status::Ok);
-        if (expect("shell: interrupt_create(ISA 3, after the close) = ",
+        if (expect("shell: interrupt_create(GSI 3, after the close) = ",
                    ours::interrupt_create(irq, free_line, InterruptOptions::None, &third),
                    Status::Ok)) {
             ok &= ours::handle_close(third) == Status::Ok;
@@ -2463,26 +2493,55 @@ auto check_interrupt_lines(ours::Uandle const irq, ours::Uandle const ioport) ->
         expect("shell: interrupt_create(the retired RemapIrq bit) = ",
                ours::interrupt_create(irq, free_line, static_cast<InterruptOptions>(0x1), &unused),
                Status::InvArgs);
-    // The cascade between the two legacy controllers carries no device and
-    // names no line.
+    // A source no pin has names no line, and a domain no controller registers
+    // resolves nothing; 0xFFFFFFFF, which the kernel keeps as no source (or no
+    // domain) at all, is refused.
     auto number = u32{0};
-    ok &= expect("shell: interrupt_map(ISA 2, the cascade) = ",
-                 ours::interrupt_map(irq, ours::InterruptSourceKind::Isa, 2, &number),
+    ok &= expect("shell: interrupt_map(the root domain, a source no pin has) = ",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, NO_PIN, &number),
                  Status::NoResource);
+    ok &= expect("shell: interrupt_map(a domain no controller registers) = ",
+                 ours::interrupt_map(irq, NO_DOMAIN, GSI_FREE, &number), Status::NoResource);
+    ok &= expect("shell: interrupt_map(the root domain, 0xFFFFFFFF) = ",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, 0xFFFF'FFFF, &number),
+                 Status::InvArgs);
+    ok &= expect("shell: interrupt_map(0xFFFFFFFF, GSI 3) = ",
+                 ours::interrupt_map(irq, 0xFFFF'FFFF, GSI_FREE, &number), Status::InvArgs);
+    // The kernel's line is refused after the other checks, not before: a
+    // caller with no handle, or the wrong root, or a mode that names none,
+    // is told that, and learns nothing about the line.
+    ok &= expect(
+        "shell: interrupt_map(the root domain, GSI 2, no handle) = ",
+        ours::interrupt_map(Uandle::Invalid, ours::ROOT_INTERRUPT_DOMAIN, GSI_TIMER, &number),
+        Status::BadHandle);
+    ok &= expect("shell: interrupt_map(the root domain, GSI 2, the I/O port root) = ",
+                 ours::interrupt_map(ioport, ours::ROOT_INTERRUPT_DOMAIN, GSI_TIMER, &number),
+                 Status::BadType);
+    ok &=
+        expect("shell: interrupt_create(the timer's line, no handle) = ",
+               ours::interrupt_create(Uandle::Invalid, timer_line, InterruptOptions::None, &unused),
+               Status::BadHandle);
+    ok &= expect("shell: interrupt_create(the timer's line, the I/O port root) = ",
+                 ours::interrupt_create(ioport, timer_line, InterruptOptions::None, &unused),
+                 Status::BadType);
+    ok &= expect(
+        "shell: interrupt_create(the timer's line, a mode that names none) = ",
+        ours::interrupt_create(irq, timer_line, static_cast<InterruptOptions>(5U << 1), &unused),
+        Status::InvArgs);
     // interrupt_map writes its answer last: an |out| that faults fails a call
     // that found the line, and takes nothing.
-    ok &= expect("shell: interrupt_map(out = unmapped) = ",
-                 ours::interrupt_map(irq, ours::InterruptSourceKind::Gsi, ISA_FREE,
+    ok &= expect("shell: interrupt_map(the root domain, GSI 3, out = unmapped) = ",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE,
                                      reinterpret_cast<u32 *>(UNMAPPED)),
                  Status::InvArgs);
-    ok &= expect("shell: interrupt_map(Gsi, 3) = ",
-                 ours::interrupt_map(irq, ours::InterruptSourceKind::Gsi, ISA_FREE, &number),
+    ok &= expect("shell: interrupt_map(the root domain, GSI 3) = ",
+                 ours::interrupt_map(irq, ours::ROOT_INTERRUPT_DOMAIN, GSI_FREE, &number),
                  Status::Ok);
     // A line is named by the kernel's number for it, never the pin's GSI.
     // COM2's pin is GSI 3 on q35; taken for a line, it names none: interrupt_map
-    // is what turns a source the firmware names into one.
+    // is what turns the platform's number for a pin into one.
     ok &= expect("shell: interrupt_create(a GSI, not mapped) = ",
-                 ours::interrupt_create(irq, ISA_FREE, InterruptOptions::None, &unused),
+                 ours::interrupt_create(irq, GSI_FREE, InterruptOptions::None, &unused),
                  Status::NoResource);
     ok &= expect("shell: interrupt_create(line 0xFFFFFFFF) = ",
                  ours::interrupt_create(irq, 0xFFFF'FFFF, InterruptOptions::None, &unused),
@@ -2660,6 +2719,220 @@ auto check_interrupt(ours::Uandle const irq, ours::Uandle const ioport, bool con
         auto _ = ort::debug_line("shell: interrupt checks passed");
     } else {
         auto _ = ort::debug_line("shell: interrupt checks FAILED");
+    }
+}
+
+/// A virtual interrupt's Idle signal (<ours/signals.hpp>), seen through
+/// object_wait_one and object_wait_async, then the loop of a driver for a
+/// controller behind a root line, one port for all of it:
+///   - Idle is up on a new interrupt, down after a trigger and after the wait
+///     that takes the interrupt, and up for good after a destroy, which a
+///     refused trigger leaves up;
+///   - the parent is bound to the port and its Interrupt packet is read; the
+///     child is triggered, Idle is waited for with object_wait_async on the
+///     same port, and no packet comes while the client has not acked;
+///   - the client's handle (Wait, Read, Write and Transfer) is bound to a
+///     second port; its packet is read and acked, and the ack brings the
+///     SignalOne packet for Idle with the driver's key, observed Idle;
+///   - the client's handle cannot trigger (AccessDenied) or be duplicated
+///     (AccessDenied);
+///   - a destroy by the client brings the SignalOne packet again, and the
+///     driver's next trigger answers Cancelled.
+auto check_interrupt_idle() -> void {
+    using ours::InterruptBindOptions;
+    using ours::InterruptOptions;
+    using ours::InterruptTriggerOptions;
+    using ours::PacketType;
+    using ours::PortCreateOptions;
+    using ours::PortPacket;
+    using ours::Signals;
+    using ours::Status;
+    using ours::Uandle;
+    using ours::WaitAsyncOptions;
+
+    constexpr auto PARENT_KEY = u64{0x1A7E'0000'0000'0011};
+    constexpr auto CHILD_KEY = u64{0x1A7E'0000'0000'0012};
+    constexpr auto CLIENT_KEY = u64{0x1A7E'0000'0000'0013};
+
+    auto ok = true;
+    Uandle parent = Uandle::Invalid;
+    Uandle child = Uandle::Invalid;
+    Uandle driver_port = Uandle::Invalid;
+    Uandle client_port = Uandle::Invalid;
+    // Closes what has been made so far, on any way out.
+    auto const close_all = [&]() {
+        for (auto *const handle: {&parent, &child, &driver_port, &client_port}) {
+            if (*handle != Uandle::Invalid) {
+                auto _ = ours::handle_close(*handle);
+                *handle = Uandle::Invalid;
+            }
+        }
+    };
+    if (!expect("shell: interrupt idle interrupt_create(parent) = ",
+                ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &parent),
+                Status::Ok) ||
+        !expect("shell: interrupt idle interrupt_create(child) = ",
+                ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &child),
+                Status::Ok) ||
+        !expect("shell: interrupt idle port_create(driver) = ",
+                ours::port_create(PortCreateOptions::BindToInterrupt, &driver_port), Status::Ok) ||
+        !expect("shell: interrupt idle port_create(client) = ",
+                ours::port_create(PortCreateOptions::BindToInterrupt, &client_port), Status::Ok)) {
+        close_all();
+        auto _ = ort::debug_line("shell: interrupt idle checks FAILED");
+        return;
+    }
+
+    // Whether a poll for Idle on |handle| finds it up (Ok, and the signal in
+    // what was observed) or down (TimeOut).
+    auto const idle = [](std::string_view const what, Uandle const handle, bool const up) {
+        auto seen = Signals::None;
+        auto const status = ours::object_wait_one(handle, Signals::Idle, 0, &seen);
+        if (!expect(what, status, up ? Status::Ok : Status::TimeOut)) {
+            return false;
+        }
+        if (up && !(seen & Signals::Idle)) {
+            auto _ = ort::debug_line("shell: object_wait_one did not report Idle");
+            return false;
+        }
+        return true;
+    };
+    auto const trigger = [](Uandle const handle, ours::Instant const at) {
+        return ours::interrupt_trigger(handle, InterruptTriggerOptions::None, at);
+    };
+    // The next packet of |port|, of |type| and |key|, with |signals| observed
+    // if it is a SignalOne. Filled with 0xFF first.
+    auto const reads = [](std::string_view const what, Uandle const port, PacketType const type,
+                          u64 const key, Signals const observed) {
+        PortPacket got;
+        std::memset(&got, 0xFF, sizeof(got));
+        if (!expect(what, ours::port_wait(port, 0, &got), Status::Ok)) {
+            return false;
+        }
+        auto right = got.type == type && got.key == key && got.status == Status::Ok;
+        if (type == PacketType::SignalOne) {
+            right = right && !!(got.signal.observed & observed);
+        }
+        if (!right) {
+            auto _ = ort::debug_line("shell: port_wait read another packet");
+        }
+        return right;
+    };
+    auto const empty = [](std::string_view const what, Uandle const port) {
+        PortPacket got;
+        return expect(what, ours::port_wait(port, 0, &got), Status::TimeOut);
+    };
+
+    // The signal on its own, through the one interrupt an unbound wait takes.
+    ok &= idle("shell: object_wait_one(Idle, a new interrupt) = ", child, true);
+    ok &= expect("shell: interrupt_trigger(idle, 1) = ", trigger(child, 1), Status::Ok);
+    ok &= idle("shell: object_wait_one(Idle, triggered) = ", child, false);
+    ok &= expect("shell: interrupt_trigger(idle, 2) = ", trigger(child, 2), Status::Ok);
+    ok &= idle("shell: object_wait_one(Idle, triggered again) = ", child, false);
+    ok &= expect("shell: interrupt_wait(idle, takes) = ", ours::interrupt_wait(child, nullptr),
+                 Status::Ok);
+    ok &= idle("shell: object_wait_one(Idle, taken, not acked) = ", child, false);
+    ok &= expect("shell: interrupt_destroy(idle) = ", ours::interrupt_destroy(child), Status::Ok);
+    ok &= idle("shell: object_wait_one(Idle, destroyed) = ", child, true);
+    ok &= expect("shell: interrupt_trigger(idle, destroyed) = ", trigger(child, 3),
+                 Status::Cancelled);
+    ok &= idle("shell: object_wait_one(Idle, destroyed, refused trigger) = ", child, true);
+    ok &= ours::handle_close(child) == Status::Ok;
+    child = Uandle::Invalid;
+
+    // The driver's loop. The parent stands for a root line.
+    if (!expect("shell: interrupt idle interrupt_create(child, again) = ",
+                ours::interrupt_create(Uandle::Invalid, 0, InterruptOptions::Virtual, &child),
+                Status::Ok)) {
+        close_all();
+        auto _ = ort::debug_line("shell: interrupt idle checks FAILED");
+        return;
+    }
+    ok &= expect("shell: interrupt_bind(parent) = ",
+                 ours::interrupt_bind(parent, driver_port, PARENT_KEY, InterruptBindOptions::Bind),
+                 Status::Ok);
+    ok &= expect("shell: interrupt_trigger(parent) = ", trigger(parent, 10), Status::Ok);
+    ok &= reads("shell: port_wait(the parent's packet) = ", driver_port, PacketType::Interrupt,
+                PARENT_KEY, Signals::None);
+
+    // The pin fires: the driver triggers the child and waits for Idle on the
+    // port it already has.
+    ok &= expect("shell: interrupt_trigger(child) = ", trigger(child, 20), Status::Ok);
+    ok &= expect("shell: object_wait_async(child, Idle) = ",
+                 ours::object_wait_async(child, driver_port, CHILD_KEY, Signals::Idle,
+                                         WaitAsyncOptions::None),
+                 Status::Ok);
+    ok &= empty("shell: port_wait(the client has not acked) = ", driver_port);
+
+    // The client's handle: Wait, Read, Write and Transfer.
+    constexpr auto CLIENT_RIGHTS =
+        ours::Rights::Wait | ours::Rights::Read | ours::Rights::Write | ours::Rights::Transfer;
+    Uandle client = Uandle::Invalid;
+    if (expect("shell: handle_duplicate(child, the client's rights) = ",
+               ours::handle_duplicate(child, CLIENT_RIGHTS, &client), Status::Ok)) {
+        Uandle again = Uandle::Invalid;
+        ok &= expect("shell: interrupt_trigger(client's handle) = ", trigger(client, 30),
+                     Status::AccessDenied);
+        ok &= expect("shell: handle_duplicate(client's handle) = ",
+                     ours::handle_duplicate(client, ours::Rights::SameRights, &again),
+                     Status::AccessDenied);
+        if (again != Uandle::Invalid) {
+            // Only if the refusal failed: do not leave the handle behind.
+            ok &= ours::handle_close(again) == Status::Ok;
+        }
+        ok &= expect(
+            "shell: interrupt_bind(client's handle) = ",
+            ours::interrupt_bind(client, client_port, CLIENT_KEY, InterruptBindOptions::Bind),
+            Status::Ok);
+        ok &= reads("shell: port_wait(the client's packet) = ", client_port, PacketType::Interrupt,
+                    CLIENT_KEY, Signals::None);
+        ok &= empty("shell: port_wait(still not acked) = ", driver_port);
+        ok &= expect("shell: interrupt_ack(client's handle) = ", ours::interrupt_ack(client),
+                     Status::Ok);
+        ok &= reads("shell: port_wait(Idle, after the client's ack) = ", driver_port,
+                    PacketType::SignalOne, CHILD_KEY, Signals::Idle);
+        ok &= idle("shell: object_wait_one(Idle, acked) = ", child, true);
+
+        // The pin fires again, and the client leaves without an ack.
+        ok &= expect("shell: interrupt_trigger(child, again) = ", trigger(child, 40), Status::Ok);
+        ok &= idle("shell: object_wait_one(Idle, triggered, again) = ", child, false);
+        ok &= expect("shell: object_wait_async(child, Idle, again) = ",
+                     ours::object_wait_async(child, driver_port, CHILD_KEY, Signals::Idle,
+                                             WaitAsyncOptions::None),
+                     Status::Ok);
+        ok &= empty("shell: port_wait(owed again) = ", driver_port);
+        // The client's other handle closes without an ack: nothing is raised.
+        Uandle leaver = Uandle::Invalid;
+        if (expect("shell: handle_duplicate(child, a second client handle, to leave) = ",
+                   ours::handle_duplicate(child, CLIENT_RIGHTS, &leaver), Status::Ok)) {
+            ok &= ours::handle_close(leaver) == Status::Ok;
+            ok &= idle("shell: object_wait_one(Idle, a handle closed without an ack) = ", child,
+                       false);
+            ok &= empty("shell: port_wait(a handle closed without an ack) = ", driver_port);
+        } else {
+            ok = false;
+        }
+        ok &=
+            expect("shell: interrupt_destroy(client's handle) = ", ours::interrupt_destroy(client),
+                   Status::Ok);
+        ok &= reads("shell: port_wait(Idle, after the client's destroy) = ", driver_port,
+                    PacketType::SignalOne, CHILD_KEY, Signals::Idle);
+        ok &= expect("shell: interrupt_trigger(child, destroyed by the client) = ",
+                     trigger(child, 50), Status::Cancelled);
+        ok &= ours::handle_close(client) == Status::Ok;
+    } else {
+        ok = false;
+    }
+
+    ok &= expect("shell: interrupt_ack(parent) = ", ours::interrupt_ack(parent), Status::Ok);
+    for (auto const handle: {parent, child, driver_port, client_port}) {
+        ok &= ours::handle_close(handle) == Status::Ok;
+    }
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: interrupt idle checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: interrupt idle checks FAILED");
     }
 }
 
@@ -8350,6 +8623,7 @@ auto run(Inputs const &inputs) -> void {
     check_bad_pointers(ort::vdso_base());
     check_interrupt(inputs.irq, inputs.ioport, inputs.component);
     check_interrupt_port();
+    check_interrupt_idle();
     check_sampler(inputs.sampling, inputs.vmex);
     check_vmo_read();
     check_vmo_write(inputs.bootfs);

@@ -52,7 +52,7 @@ auto TableDirectory::from_bytes(std::span<u8 const> const bytes)
 
     // The directory's own claim about its size is checked first, against the
     // bytes there really are, and everything after is checked against it.
-    if (directory.size > bytes.size() || directory.count > MAX_TABLES) {
+    if (directory.size > bytes.size()) {
         return ustl::err(Status::InvArgs);
     }
     auto const entries_end =

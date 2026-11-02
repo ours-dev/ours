@@ -50,6 +50,11 @@ namespace {
     /// //kernel/lib/userabi/vdso with the same has_patches = false convention.
     constexpr std::string_view VDSO_FILE{"vdso"};
 
+    /// Name, st_value and size of each published record, generated from the
+    /// unstripped vDSO and packaged beside it. The stripped file has no
+    /// symbol table.
+    constexpr std::string_view VDSO_PUBLISHED{"vdso.published"};
+
     /// elfload's reports as lines in the kernel log: the lines elfload used to
     /// write itself, before it took a Diagnostics so that a user program could
     /// link it without logz4. The Note is the one it wrote at info: where an
@@ -396,11 +401,9 @@ namespace {
             return {};
         }
 
-        // num_tables() counts the root table's entries; the DSDT is the one
-        // more, from the FADT. Fewer exported than that means the firmware had
-        // a table that could not be mapped or whose checksum did not hold.
-        log::info("userabi: {} of {} ACPI tables, {} bytes, handed to userboot", layout.count,
-                  tables->num_tables() + 1, used.unwrap());
+        log::info("userabi: {} ACPI tables, {} bytes, handed to userboot; DSDT {}, {} left out",
+                  layout.count, used.unwrap(), layout.has_dsdt ? "found" : "not found",
+                  layout.skipped);
         auto handle = object::Handle::make(
             object::KernelHandle<object::Dispatcher>(ustl::move(vmo)), rights & ACPI_TABLES_RIGHTS);
         if (!handle) {
@@ -807,27 +810,70 @@ namespace {
         return vmo.write(bytes, offset, size);
     }
 
-    /// The anchor's file offset in the laid-out VMO, or none when the magic
-    /// is not there. Scanned rather than looked up by name: the packaged
-    /// image is stripped.
-    auto find_time_values(object::VmoDispatcher &vmo) -> ustl::Option<u64> {
-        constexpr auto CHUNK = usize{4096};
-        u8 buffer[CHUNK];
-        auto const size = vmo.size();
-        for (u64 offset = 0; offset < size; offset += CHUNK) {
-            auto const n = static_cast<usize>(std::min<u64>(CHUNK, size - offset));
-            if (vmo.read(buffer, offset, n) != Status::Ok) {
-                return ustl::NONE;
+    /// st_value and size of |name| in the published-offset table, or an error.
+    /// One record is "name 0xvaddr size".
+    auto published_record(ustl::views::Span<u8 const> table, std::string_view const name,
+                          u64 &vaddr, u64 &size) -> Status {
+        auto cursor = std::string_view{reinterpret_cast<char const *>(table.data()), table.size()};
+        while (!cursor.empty()) {
+            auto const end = cursor.find('\n');
+            auto line = cursor.substr(0, end == std::string_view::npos ? cursor.size() : end);
+            cursor.remove_prefix(line.size() + (end == std::string_view::npos ? 0 : 1));
+            if (line.empty() || line.starts_with('#')) {
+                continue;
             }
-            for (usize index = 0; index + sizeof(TimeValues) <= n; index += alignof(u64)) {
-                u64 magic = 0;
-                std::memcpy(&magic, buffer + index, sizeof(magic));
-                if (magic == TIME_VALUES_MAGIC) {
-                    return ustl::some(offset + index);
+            auto const name_end = line.find(' ');
+            if (name_end == std::string_view::npos || line.substr(0, name_end) != name) {
+                continue;
+            }
+            line.remove_prefix(name_end + 1);
+            auto const value_end = line.find(' ');
+            if (value_end == std::string_view::npos || !line.starts_with("0x")) {
+                return Status::BadState;
+            }
+            auto const value_text = line.substr(2, value_end - 2);
+            auto const size_text = line.substr(value_end + 1);
+            vaddr = 0;
+            size = 0;
+            for (auto const digit: value_text) {
+                vaddr <<= 4;
+                if (digit >= '0' && digit <= '9') {
+                    vaddr += static_cast<u64>(digit - '0');
+                } else if (digit >= 'a' && digit <= 'f') {
+                    vaddr += static_cast<u64>(digit - 'a' + 10);
+                } else {
+                    return Status::BadState;
                 }
             }
+            for (auto const digit: size_text) {
+                if (digit < '0' || digit > '9') {
+                    return Status::BadState;
+                }
+                size = size * 10 + static_cast<u64>(digit - '0');
+            }
+            return Status::Ok;
         }
-        return ustl::NONE;
+        return Status::NotFound;
+    }
+
+    /// VMO offset of |name|, whose published size must be |expect_size|.
+    auto published_offset(ustl::views::Span<u8 const> table, std::string_view const name,
+                          u64 const expect_size, kelfload::ImageVmo const &image, u64 &offset)
+        -> Status {
+        u64 vaddr = 0;
+        u64 size = 0;
+        if (auto const status = published_record(table, name, vaddr, size); status != Status::Ok) {
+            log::error("userabi: vdso.published has no {}", name);
+            return status;
+        }
+        if (size != expect_size || vaddr < image.image_base ||
+            (vaddr - image.image_base) + size > image.span) {
+            log::error("userabi: {} is {:#x}+{}, image base {:#x}", name, vaddr, size,
+                       image.image_base);
+            return Status::InvArgs;
+        }
+        offset = vaddr - image.image_base;
+        return Status::Ok;
     }
 
     /// Lays the vDSO out once, for launch() to map into every process.
@@ -883,16 +929,56 @@ namespace {
         // range (VmaDispatcher::map()).
         image.vmo.dispatcher()->mark_vdso(code);
 
-        // The monotonic anchor lives in the read-only data, found by its
-        // magic because the packaged image is stripped. Missing, the boot
-        // stops: a read of the clock loads that page.
+        // The monotonic anchor's place in the VMO. The packaged ELF is
+        // stripped, so the address comes from vdso.published, generated from
+        // the unstripped link and stored beside this file. The magic is a
+        // check that this kernel and this file are a pair.
+        auto const table = package.file(VDSO_PUBLISHED);
+        if (table.is_err()) {
+            log::error("userabi: '{}' is not in the kernel package: {}", VDSO_PUBLISHED,
+                       to_string(table.unwrap_err()));
+            return table.unwrap_err();
+        }
+        u64 offset = 0;
+        if (auto const status = published_offset(table.unwrap(), "ours_time_values",
+                                                 sizeof(TimeValues), image, offset);
+            status != Status::Ok) {
+            return status;
+        }
         auto &vmo = image.vmo.dispatcher().as_ref_mut();
-        auto const found = find_time_values(vmo);
-        if (found.is_none()) {
-            log::error("userabi: the vDSO has no monotonic anchor");
+        u64 magic = 0;
+        if (vmo.read(&magic, offset, sizeof(magic)) != Status::Ok || magic != TIME_VALUES_MAGIC) {
+            log::error("userabi: the vDSO's monotonic anchor is not at the published offset "
+                       "({:#x}, word {:#x})",
+                       offset, magic);
             return Status::InvArgs;
         }
-        time::bind_anchor_page(store_anchor, &vmo, found.value());
+        u64 ticks_at = 0;
+        u64 boot_at = 0;
+        u64 version_at = 0;
+        if (auto const status = published_offset(table.unwrap(), "ours_published_ticks_hz",
+                                                 sizeof(u64), image, ticks_at);
+            status != Status::Ok) {
+            return status;
+        }
+        if (auto const status = published_offset(table.unwrap(), "ours_published_boot_offset",
+                                                 sizeof(u64), image, boot_at);
+            status != Status::Ok) {
+            return status;
+        }
+        if (auto const status = published_offset(table.unwrap(), "ours_published_version_word",
+                                                 sizeof(u64), image, version_at);
+            status != Status::Ok) {
+            return status;
+        }
+        u64 version = 0;
+        if (vmo.read(&version, version_at, sizeof(version)) != Status::Ok || version != 1) {
+            log::error("userabi: published version at +{:#x} is {}, not 1", version_at, version);
+            return Status::InvArgs;
+        }
+        time::bind_ticks_per_second(ticks_at);
+        time::bind_boot_offset(boot_at);
+        time::bind_anchor_page(store_anchor, &vmo, offset);
 
         SHARED_VDSO.image = ustl::move(image);
         SHARED_VDSO.file = file.unwrap();

@@ -22,4 +22,50 @@ ours_syscalls_time = [
     ret = "Instant"
     category = "time"
   },
+  {
+    name = "ticks_per_second"
+    brief = "Reads how many ticks of the published counter are one second."
+    doc = [
+      "The counter ours_clock_get_monotonic samples. Zero until the kernel",
+      "has a clock source. It changes when that source changes.",
+    ]
+    args = []
+    attrs = [ "vdso" ]
+    ret = "u64"
+    category = "time"
+  },
+  {
+    name = "boot_offset"
+    brief = "Nanoseconds to add to the monotonic clock to get the boot clock."
+    doc = [
+      "Zero while the boot clock and the monotonic clock are the same",
+      "reading. Nothing here moves it: there is no suspend.",
+    ]
+    args = []
+    attrs = [ "vdso" ]
+    ret = "i64"
+    category = "time"
+  },
+  {
+    name = "published_version"
+    brief = "The version of the records the vDSO publishes."
+    doc = [ "1 for this layout. It does not change at run time." ]
+    args = []
+    attrs = [ "vdso" ]
+    ret = "u64"
+    category = "time"
+  },
+  {
+    name = "kernel_version"
+    brief = "The kernel version string."
+    doc = [
+      "NUL-terminated, in the vDSO. It does not change at run time.",
+      "The same text is OURS_KERNEL_VERSION_STRING in <ours/version.hpp>.",
+      "It is ours-0.1.0, a plus, and the 12-digit commit the build used.",
+    ]
+    args = []
+    attrs = [ "vdso" ]
+    ret = "KernelVersion"
+    category = "time"
+  },
 ]

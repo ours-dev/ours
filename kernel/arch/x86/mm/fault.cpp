@@ -70,9 +70,9 @@ namespace {
     /// What the exception entry itself has already added to the running
     /// thread's disable counts by the time this handler runs.
     ///
-    /// arch_handle_exception() calls platform_start_handling_irq() ahead of the
-    /// dispatch, and that reaches irq::handle_irq_preamble(), which does one
-    /// disable_preemption() and one disable_eager_reschedule(). So every fault,
+    /// arch_handle_exception() calls irq::handle_irq_preamble() ahead of the
+    /// dispatch, which does one disable_preemption() and one
+    /// disable_eager_reschedule(). So every fault,
     /// including one taken by ring-3 code that had disabled nothing, arrives
     /// reading one. Anything above this came from the faulting context itself.
     constexpr u8 PREAMBLE_DISABLE_DEPTH = 1;

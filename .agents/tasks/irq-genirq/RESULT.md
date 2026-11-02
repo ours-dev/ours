@@ -7,7 +7,7 @@ All eight steps of DESIGN.md's Staging, one mechanism per step, each with its en
 
 - Step 1, the recorded exception: `ours-kernel-design`'s `references/task.md` says kernel/irq follows genirq, and DESIGN.md is Accepted. `7444a31e`, with the review's fixup `3d2a9ee9`.
 - Step 2, the renames per D6: `irq::Desc`, `irq::Action`, `irq::Chip`, `irq::Data`, `irq::DescTable`. `7bb24bb2`, fixup `46169ebd`.
-- Step 3, the EOI through the chip: the line's flow ends each interrupt through its chip, arch only a vector with no line, and `irq::handle_irq_for_test()` runs the flow without the EOI. `fa506351`, fixup `d41a9ae6`.
+- Step 3, the EOI through the chip: the line's flow ends each interrupt through its chip, arch only a vector with no line (since `13a1cc09`, irq-multi-arch D3 (c), the root handler), and `irq::handle_irq_for_test()` runs the flow without the EOI. `fa506351`, fixup `d41a9ae6`.
 - Step 4, a flow per line (D8): `handle_edge` or `handle_fasteoi`, chosen from the pin's trigger mode when the table is built and again by `configure()` and attach; a line nobody is on is masked. `d9175755`, fixup `099c82c1`.
 - Step 5, the test-only mask read-back (D10 (b)): `Chip::is_masked` and `irq::is_masked_for_test()`, and `interruptline.test`'s level and edge mask checks against the objects as they were. `96bdf026`, fixup `21ace3ff`.
 - Step 6, ONESHOT in kernel/irq: `WakeThread`, `IrqFlags::Oneshot`, the held bit under L1, the Oneshot level flow, `irq::finalize_oneshot()`, detach clearing held. `821960f9`, fixup `bf6efd74`.

@@ -2,6 +2,8 @@
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
 
+#include <utility>
+
 #include <ours/irq/mod.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
@@ -11,7 +13,6 @@
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/resource_dispatcher.hpp>
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
-#include <ours/platform/isa.hpp>
 #include <ours/status.hpp>
 
 namespace ours::syscall {
@@ -73,19 +74,27 @@ auto interrupt_create(ours::Uandle const resource, u32 const line, InterruptOpti
     return Status::Ok;
 }
 
-/// The number interrupt_create takes for a source the firmware names. Nothing
-/// is taken, only looked up, so it changes no state and has nothing to give
-/// back; the only thing it can fail after is writing |out|.
+/// Resolves the line's number: the kernel's own number (its virq) for the
+/// line made for hardware number |source| in interrupt domain |domain|, what
+/// interrupt_create takes. Nothing is taken, only resolved, so it changes no
+/// state and has nothing to give back; the only thing it can fail after is
+/// writing |out|.
 ///
-/// The kind and the source are checked before the resource, as
-/// interrupt_create checks its options before it looks at the resource: each
-/// check names the argument it is about. The resource must be the root of the
-/// interrupt lines, not a range of them: the firmware's numbers are not the
-/// numbers a range is made of, so a narrowed resource cannot say which of
-/// them it covers.
-auto interrupt_map(ours::Uandle const resource, InterruptSourceKind const kind, u32 const source,
+/// The resolver is the root's, and for the root alone (D17 of
+/// `.agents/tasks/irq-multi-arch/DESIGN.md`): to name a line from the
+/// platform's numbers is the root's power, and it is not cut into ranges,
+/// because the platform's numbers are not the numbers a range is made of --
+/// only the holder of the whole root may ask here. |domain| and |source| come
+/// from the route service's answer, the party that reads the firmware's
+/// tables; the kernel does not read the tables and does not name a pin
+/// itself.
+///
+/// Each check names the argument it is about: the domain and the source are
+/// checked before the resource, as interrupt_create checks its options before
+/// it looks at the resource.
+auto interrupt_map(ours::Uandle const resource, u32 const domain, u32 const source,
                    user_copy::UserOutPtr<u32> const out) -> Status {
-    if (kind != InterruptSourceKind::Isa && kind != InterruptSourceKind::Gsi) {
+    if (domain == std::to_underlying(irq::DomainId::Invalid)) {
         return Status::InvArgs;
     }
     if (source == irq::INVALID_H_IRQ_NUM) {
@@ -96,17 +105,15 @@ auto interrupt_map(ours::Uandle const resource, InterruptSourceKind const kind, 
         return status;
     }
 
-    auto virq = irq::INVALID_V_IRQ_NUM;
-    switch (kind) {
-        case InterruptSourceKind::Isa:
-            virq = platform::isa_irq_line(source);
-            break;
-        case InterruptSourceKind::Gsi:
-            virq = irq::virq_of_hwirq(source);
-            break;
-    }
+    auto const virq = irq::virq_of_domain(static_cast<irq::DomainId>(domain), source);
     if (virq == irq::INVALID_V_IRQ_NUM) {
         return Status::NoResource;
+    }
+    // A line the kernel holds for its own use is not one a program can take,
+    // and a program that reads the firmware's tables (the route service) is
+    // told so here, not by the interrupt_create that would fail later.
+    if (irq::is_kernel_owned(virq)) {
+        return Status::AccessDenied;
     }
     return out.copy_to_user(virq);
 }

@@ -29,14 +29,16 @@ namespace ours::irq {
 ///
 /// The chip must be able to end an interrupt. A line's flow ends each of its
 /// interrupts through the chip, and handle_irq() answering for a line tells
-/// arch that the interrupt has been ended, so arch sends no end of its own:
-/// a line whose chip had no eoi would leave every interrupt on it in service.
+/// the root handler that the interrupt has been ended, so the handler sends
+/// no end of its own: a line whose chip had no eoi would leave every interrupt
+/// on it in service.
 ///
 /// It must be able to mask a line, too. A line's flow masks the line when an
 /// interrupt finds nobody on it, so that a level pin nobody services does not
 /// raise the same interrupt again the moment it is ended, for good. Each line
 /// takes its first flow from the chip as it is bound (Desc::init()).
-auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip) -> Status {
+auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip,
+                     VIrqNum const min_first) -> Status {
     if (!m_descs.empty()) {
         return Status::BadState;
     }
@@ -52,7 +54,7 @@ auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const
     // The domain numbers the lines. It is also what refuses a number given
     // twice and one that is no hardware number, before anything is made here.
     Domain domain;
-    if (auto const status = domain.init(hirqnums); status != Status::Ok) {
+    if (auto const status = domain.init(hirqnums, min_first); status != Status::Ok) {
         return status;
     }
 
@@ -89,6 +91,72 @@ auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const
     m_domain = domain;
     m_descs = descs;
     return Status::Ok;
+}
+
+/// Two passes, so that a line that cannot be emptied refuses before any other
+/// is marked, and then the marks, which undo themselves if a line refuses
+/// anyway: an action with no cancel hook can land between the first pass and
+/// the mark of its line, and the mark looks again under the line's lock.
+auto DescTable::begin_removal() -> Status {
+    for (auto *const desc: m_descs) {
+        if (desc == nullptr) {
+            continue;
+        }
+        if (auto const status = desc->check_revocable(); status != Status::Ok) {
+            return status;
+        }
+    }
+    for (usize i = 0; i < m_descs.size(); ++i) {
+        auto *const desc = m_descs[i];
+        if (desc == nullptr) {
+            continue;
+        }
+        if (auto const status = desc->mark_dying(); status != Status::Ok) {
+            for (usize earlier = 0; earlier < i; ++earlier) {
+                if (m_descs[earlier] != nullptr) {
+                    m_descs[earlier]->unmark_dying();
+                }
+            }
+            return status;
+        }
+    }
+    return Status::Ok;
+}
+
+auto DescTable::finish_removal() -> void {
+    for (auto *const desc: m_descs) {
+        if (desc != nullptr) {
+            desc->revoke();
+        }
+    }
+}
+
+/// The lines are poisoned between their destructor and the heap: a reader that
+/// is still on one, which the grace period before this call is there to rule
+/// out, then finds its lock and its list nonsense rather than a line that
+/// looks fine. The poison is written through a volatile pointer, which the
+/// compiler may not drop as a store to memory about to be freed. The table is
+/// marked destroyed first, which is what a test reads to tell that a reader
+/// was not waited for. A line with an action still on it is a removal that was
+/// not finished, and freeing it would leave the action's owner a line that is
+/// gone: checked in the release image too, the path being cold.
+auto DescTable::destroy() -> void {
+    m_destroyed.store(true, std::memory_order_release);
+    for (auto *const desc: m_descs) {
+        if (desc == nullptr) {
+            continue;
+        }
+        ASSERT(!desc->has_actions(), "a line is destroyed with an action on it");
+        desc->~Desc();
+        auto *const bytes = reinterpret_cast<volatile u8 *>(desc);
+        for (usize i = 0; i < sizeof(Desc); ++i) {
+            bytes[i] = 0xDD;
+        }
+        ::operator delete(desc);
+    }
+    delete[] m_descs.data();
+    m_descs = {};
+    m_domain.reset();
 }
 
 auto DescTable::virq_of(HIrqNum const hirqnum) const -> VIrqNum {
@@ -156,6 +224,24 @@ auto DescTable::detach(Action &action) -> Status {
     return desc->detach(action);
 }
 
+auto DescTable::revoke_line(VIrqNum const virqnum) -> Status {
+    auto const line = find_line(virqnum);
+    if (line.is_err()) {
+        return line.unwrap_err();
+    }
+    if (auto const status = (*line)->mark_dying(); status != Status::Ok) {
+        return status;
+    }
+    (*line)->revoke();
+    return Status::Ok;
+}
+
+auto DescTable::unmark_dying(VIrqNum const virqnum) -> void {
+    if (auto *const desc = irqnum_to_desc(virqnum)) {
+        desc->unmark_dying();
+    }
+}
+
 /// Answers nothing: a line that is not there holds nothing to finalize, and
 /// the line checks under its own lock whether the action is still on it.
 auto DescTable::finalize_oneshot(VIrqNum const virqnum, Action const &action) -> void {
@@ -221,6 +307,11 @@ auto DescTable::is_masked(VIrqNum const virqnum) -> ktl::Result<bool> {
         return ustl::err(line.unwrap_err());
     }
     return (*line)->is_masked();
+}
+
+auto DescTable::is_kernel_owned(VIrqNum const virqnum) -> bool {
+    auto const *const desc = irqnum_to_desc(virqnum);
+    return desc != nullptr && desc->is_kernel_owned();
 }
 
 auto DescTable::spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {

@@ -49,6 +49,7 @@ template("kernel_elf_binary") {
                            [
                              "has_patches",
                              "metadata",
+                             "package_entries",
                              "testonly",
                              "validations",
                              "visibility",

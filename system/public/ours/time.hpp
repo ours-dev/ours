@@ -9,6 +9,7 @@
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+#include <ours/version.hpp>
 
 namespace ours {
 // The clock calls, as a program calls them: generated from
