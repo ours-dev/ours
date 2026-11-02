@@ -287,10 +287,9 @@ auto Server::open(Connection const &connection, ours_io::OpenRequest const &requ
         // through unchanged -- the rights among them already held to a
         // subset of this connection's by check 3 -- and the remote judges
         // the rest its own way.
-        auto const forwarded = ours_io::encode_open(out.bytes, out.handles,
-                                                    {.flags = flags,
-                                                     .path = found->rest,
-                                                     .object = request.object});
+        auto const forwarded =
+            ours_io::encode_open(out.bytes, out.handles,
+                                 {.flags = flags, .path = found->rest, .object = request.object});
         if (forwarded.is_err()) {
             // Neither refusal reason can arise -- the path passed check 1 and
             // the buffer holds a whole message -- but a failed encoding

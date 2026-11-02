@@ -39,6 +39,8 @@ component_manifest("memfs.cm") {
     capabilities = [
       {
         directory = "tmp"
+        path = "/tmp"
+        rights = [ "rw*" ]
       },
     ]
     expose = [

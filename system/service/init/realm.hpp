@@ -301,15 +301,13 @@ class Realm final: private ioservice::LoopServer::Delegate {
     auto open_refused(ioservice::NodeId directory, std::string_view path, ours::Status status)
         -> void override;
 
-    /// Writes Open(|path|, |flags|, |channel|) on |provider|'s outgoing
-    /// directory, and does not wait, as OutgoingConnector::send does. A
-    /// protocol's path is svc/<name> with PROTOCOL_SERVICE; a directory's is
-    /// its exposed name, the use's joined subdir under it, with the use's
-    /// rights as the flags. A provider that has exited answers NotFound
-    /// (D23), and the root logs that, like any route that ends nowhere, as
-    /// |consumer|'s |use| routing nowhere. Consumes |channel|.
+    /// Forwards to |provider| the Open of a protocol use that routes to it:
+    /// the request's channel, opened at svc/<name> with PROTOCOL_SERVICE. A
+    /// provider that has exited answers NotFound (D23), and the root logs
+    /// that, like any route that ends nowhere, as |consumer|'s |use| routing
+    /// nowhere. Consumes |channel|.
     auto forward(Instance const &consumer, component::Use const &use, Instance &provider,
-                 std::string_view path, ours_io::Flags flags, ours::Uandle channel) -> void;
+                 std::string_view name, ours::Uandle channel) -> void;
 
     /// Writes Open(<declared path>[/<subdir>], <the use's rights> |
     /// PROTOCOL_DIRECTORY, |server|) on the outgoing directory of the

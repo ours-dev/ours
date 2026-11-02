@@ -50,6 +50,8 @@ component_manifest("btreefs.cm") {
     capabilities = [
       {
         directory = "disk"
+        path = "/disk"
+        rights = [ "rw*" ]
       },
     ]
     expose = [

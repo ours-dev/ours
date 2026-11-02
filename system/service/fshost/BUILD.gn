@@ -58,9 +58,16 @@ component_manifest("fshost.cm") {
     capabilities = [
       {
         directory = "all"
+        path = "/all"
+        rights = [
+          "rx*",
+          "w*",
+        ]
       },
       {
         directory = "ro"
+        path = "/ro"
+        rights = [ "rx*" ]
       },
       {
         protocol = "ours.fshost.Admin"

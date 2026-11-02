@@ -145,7 +145,6 @@ namespace {
                   (ours_io::MASK_KNOWN_PERMISSIONS &
                    ~(ours_io::Flags::PermInheritWrite | ours_io::Flags::PermInheritExecute)));
 
-
     /// An instance's moniker for the log: its names from the root down,
     /// joined with '/', and "." for the root.
     class Moniker final {
