@@ -1615,24 +1615,6 @@ auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE
 /// first bytes the image was written with. The route answers NotFound while
 /// there is no disk, which is the image boot_check boots, so the check skips
 /// rather than fails there.
-/// The clock read: monotonic, alive, and two reads never go backwards --
-/// the whole contract, which everything that times anything stands on.
-auto check_clock() -> void {
-    auto first = ours::Instant{0};
-    auto second = ours::Instant{0};
-    if (!expect("clock read", ours::clock_get_monotonic(&first), Status::Ok) ||
-        !expect("clock read", ours::clock_get_monotonic(&second), Status::Ok)) {
-        return;
-    }
-    if (first <= 0) {
-        fail("clock read: the clock reads zero");
-        return;
-    }
-    if (second < first) {
-        fail("clock monotonic: the second read went backwards");
-    }
-}
-
 auto check_block() -> void {
     auto const connection = connect_or_fail(BLOCK);
     if (connection == Uandle::Invalid) {
@@ -2563,7 +2545,6 @@ auto main(int argc, char **argv) -> int {
         check_spawn(job);
     }
     check_cwd();
-    check_clock();
     check_block();
     check_gpt();
     check_disk();

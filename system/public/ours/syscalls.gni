@@ -300,7 +300,7 @@ ours_syscalls = [
       "|handle| leaves this process's table under the wait -- closed, or",
       "consumed by another call. |deadline| is 0 to poll or INSTANT_INFINITE",
       "to wait for ever; any other value, a negative one included, is",
-      "NotSupported: waits cannot time out yet. |handle| needs Wait",
+      "NotSupported until a program can read a clock. |handle| needs Wait",
       "(AccessDenied). What was asserted when the wait ended is written to",
       "|observed|, with HandleClosed added on Cancelled; |observed| may be",
       "null, and one that cannot be written answers InvArgs.",
@@ -519,7 +519,7 @@ ours_syscalls = [
     doc = [
       "|deadline| is 0 to poll, which answers TimeOut when the queue is",
       "empty, or INSTANT_INFINITE to wait for a packet; any other value is",
-      "NotSupported: waits cannot time out yet. |port| must name a",
+      "NotSupported until a program can read a clock. |port| must name a",
       "port (BadType) with Read (AccessDenied), and those answers come",
       "before the deadline's. The packet leaves the queue before it is",
       "written out, so a |packet| that cannot be written (InvArgs) loses it.",
@@ -2214,28 +2214,6 @@ ours_syscalls = [
       },
     ]
     attrs = []
-    ret = "Status"
-  },
-  {
-    name = "clock_get_monotonic"
-    brief = "Reads the monotonic clock: nanoseconds since the system started counting."
-    doc = [
-      "The kernel's steady clock: it never goes backwards, and it counts",
-      "from early boot. No resource and no arguments -- the value is the",
-      "answer, and the call cannot fail while a clock source is running.",
-      "Monotonic is the promise: for a wall-clock time or a time of day,",
-      "this is not the call.",
-      "Written for user-space measurement: timing a microsecond-scale",
-      "operation wants a clock the caller reads without a resource and",
-      "without paying for the reading.",
-    ]
-    args = [
-      {
-        name = "out_now"
-        type = "Instant"
-        dir = "out"
-      },
-    ]
     ret = "Status"
   },
 ]
