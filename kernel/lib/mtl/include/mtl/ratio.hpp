@@ -37,6 +37,16 @@ class Ratio {
         return Self(m_denominator, m_numerator);
     }
 
+    [[nodiscard]]
+    constexpr auto numerator() const -> Integer {
+        return m_numerator;
+    }
+
+    [[nodiscard]]
+    constexpr auto denominator() const -> Integer {
+        return m_denominator;
+    }
+
   private:
     Integer m_numerator = 0;
     Integer m_denominator = 1;

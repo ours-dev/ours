@@ -7,6 +7,7 @@ source_set("time") {
     "tick_sched.cpp",
     "timer.cpp",
     "timer_queue.cpp",
+    "anchor_page.cpp",
     "clock.cpp",
     "init.cpp",
   ]

@@ -1,0 +1,9 @@
+executable("read") {
+  testonly = true
+  sources = [ "read_test.cpp" ]
+  deps = [
+    "//kernel/lib/mtl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}

@@ -199,6 +199,18 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     if (!!(options & VmOptions::PermExecute)) {
         mmuf |= mm::MmuFlags::Executable;
     }
+    // A physical VMO is a window onto existing memory the object does not
+    // own, device MMIO among it. The kernel already maps those pages
+    // Discache. A cached user mapping of the same page would return stale
+    // cache lines instead of the device. A writable mapping could stop a
+    // counter or rewrite comparators, so write is refused: device MMIO is
+    // not a store.
+    if (vmo.vmo()->type() == mm::VmObject::Type::Physical) {
+        mmuf |= mm::MmuFlags::Discache;
+        if (!!(options & VmOptions::PermWrite)) {
+            return ktl::err(Status::InvArgs);
+        }
+    }
     if (!!(options & VmOptions::CanMapRead)) {
         ceiling |= mm::VmaFlags::Read;
     }

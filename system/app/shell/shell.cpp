@@ -634,6 +634,7 @@ auto main(int, char **) -> int {
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
     // The vDSO's VMO is what the launcher maps into each process it starts.
     auto const vdso_vmo = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
+    auto const clock_page = ort::take_startup_handle(ours::HandleType::VmoClockPage, 0);
     // The Debug resource, for serial input: a startup handle where userboot
     // started this shell, and through /svc where the root did, which hands
     // it to nobody at start (D19).
@@ -688,6 +689,7 @@ auto main(int, char **) -> int {
     // missing, since such a shell could start nothing.
     if (job != ours::Uandle::Invalid && !component) {
         starter.library = make_launcher(bootfs, vmex, vdso_vmo, vma);
+        starter.library.clock_page = clock_page;
     }
     auto &launcher = starter.library;
     shell::LaunchProgram test_launcher = nullptr;

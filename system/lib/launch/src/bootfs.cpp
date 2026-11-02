@@ -160,6 +160,7 @@ auto launch_from_bootfs(BootfsLauncher const &launcher, Uandle const job,
         .vma = launcher.vma,
         .vdso = launcher.vdso,
         .vdso_file = launcher.vdso_file,
+        .clock_page = launcher.clock_page,
         .bootstrap = bootstrap,
         .diagnostics = diagnostics,
     });

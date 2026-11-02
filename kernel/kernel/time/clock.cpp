@@ -1,3 +1,4 @@
+#include <ours/time/anchor_page.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/clock_source.hpp>
 
@@ -53,6 +54,19 @@ auto Clock::source() const -> ClockSource * {
     return m_seqlock.read([this] { return m_anchor.source; });
 }
 
+auto Clock::reading() const -> AnchorReading {
+    return m_seqlock.read([this] {
+        AnchorReading reading;
+        reading.nanoseconds = m_anchor.time.count();
+        reading.ticks = m_anchor.ticks;
+        if (m_anchor.source != nullptr) {
+            reading.numerator = m_anchor.source->ns_numerator();
+            reading.denominator = m_anchor.source->ns_denominator();
+        }
+        return reading;
+    });
+}
+
 auto Clock::change_source(ClockSource *source) -> Status {
     m_canary.verify<Self>();
 
@@ -81,13 +95,21 @@ auto SteadyClock::ticks() -> Ticks {
     return CLOCK.ticks();
 }
 
+auto SteadyClock::reading() -> AnchorReading {
+    return CLOCK.reading();
+}
+
 auto SteadyClock::now() -> TimePoint {
     auto const base_now = CLOCK.now();
     return TimePoint(base_now.time_since_epoch());
 }
 
 auto SteadyClock::notify(ClockSource *source) -> Status {
-    return CLOCK.change_source(source);
+    auto const status = CLOCK.change_source(source);
+    if (status == Status::Ok) {
+        publish_anchor(CLOCK.reading());
+    }
+    return status;
 }
 
 /// The wall clock: the same counter as the steady clock, shifted by whatever

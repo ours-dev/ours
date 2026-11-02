@@ -79,6 +79,16 @@ class ClockSource {
         return Duration(m_ticks_to_ns.scale(ticks));
     }
 
+    [[nodiscard]]
+    auto ns_numerator() const -> u32 {
+        return m_ticks_to_ns.numerator();
+    }
+
+    [[nodiscard]]
+    auto ns_denominator() const -> u32 {
+        return m_ticks_to_ns.denominator();
+    }
+
     /// The raw counter, in this source's own ticks.
     ///
     /// Unsigned, and deliberately so: these are hardware counters that wrap,

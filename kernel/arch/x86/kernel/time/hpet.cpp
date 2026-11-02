@@ -51,7 +51,9 @@ constexpr static auto HPET_CLKSRC_RATING = ClockSource::Rating(250);
 class HpetChannel;
 
 static arch::HpetRegs *HPET_MMIO;
+static PhysAddr HPET_MMIO_PHYS;
 static usize HPET_FREQUENCY;
+static_assert(offsetof(arch::HpetRegs, main_counter_value) == 0xf0);
 static ustl::views::Span<HpetChannel> HPET_CHANNELS;
 [[maybe_unused]]
 static bool HPET_LEGACY_IRQ_ENABLED;
@@ -375,6 +377,7 @@ static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
     }
 
     HPET_MMIO = reinterpret_cast<decltype(HPET_MMIO)>((*result)->base());
+    HPET_MMIO_PHYS = mmio;
     return Status::Ok;
 }
 
@@ -397,6 +400,7 @@ auto hpet_init(PhysAddr mmio) -> Status {
     status = hpet_init_internal();
     if (Status::Ok != status) {
         log::info("Failed to create HPET MMIO: {}.", static_cast<u32>(status));
+        HPET_MMIO_PHYS = 0;
         return status;
     }
 
@@ -410,6 +414,10 @@ auto hpet_init(PhysAddr mmio) -> Status {
 
     time::set_global_clock_event(device);
     return Status::Ok;
+}
+
+auto hpet_mmio_phys() -> PhysAddr {
+    return HPET_MMIO_PHYS;
 }
 
 } // namespace ours

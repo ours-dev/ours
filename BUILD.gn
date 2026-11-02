@@ -278,5 +278,6 @@ group("default") {
     # static_assert inside the test translation unit, so building this target
     # is most of what running it proves.
     "//system/lib/ffl:tests",
+    "//system/lib/time:tests",
   ]
 }

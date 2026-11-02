@@ -248,6 +248,11 @@ class VmoDispatcher final: public VmoDispatcherBase {
         return m_vmo->write(in, VirtAddr(offset), size);
     }
 
+    /// One aligned 8-byte store at |offset|. See VmObject::store_u64().
+    auto store_u64(u64 offset, u64 value) -> Status {
+        return m_vmo->store_u64(VirtAddr(offset), value);
+    }
+
     /// Copies |length| bytes from the user buffer |in| into the VMO at byte
     /// |offset|: the body of the vmo_write system call, read_user()'s mirror.
     ///

@@ -769,6 +769,20 @@ auto VmObjectPaged::write(void const *const in, VirtAddr const offset, usize con
                              });
 }
 
+auto VmObjectPaged::store_u64(VirtAddr const offset, u64 const value) -> Status {
+    if ((static_cast<u64>(offset) % alignof(u64)) != 0) {
+        return Status::InvArgs;
+    }
+    return copy_page_by_page(
+        offset, sizeof(value), true, [value](u8 *const page, usize const done, usize const chunk) {
+            if (chunk != sizeof(value) || done != 0) {
+                return UserCopyCaptureResult{.status = Status::InvArgs, .fault = {}};
+            }
+            __atomic_store_n(reinterpret_cast<u64 *>(page), value, __ATOMIC_RELEASE);
+            return UserCopyCaptureResult{.status = Status::Ok, .fault = {}};
+        });
+}
+
 /// The page walk with copy_array_to_user_capture_faults() as its copy: a
 /// fault in the user buffer is captured under the lock and resolved with it
 /// dropped.

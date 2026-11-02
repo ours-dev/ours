@@ -118,7 +118,8 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///   - InvArgs: length 0; vmo_offset not page-aligned; both PermWrite and
     ///     PermExecute (W^X, for every caller, the kernel's own included); an
     ///     executable mapping of the vDSO's VMO other than exactly its code
-    ///     segment, Sealed and PermRead | PermExecute, or a writable one;
+    ///     segment, Sealed and PermRead | PermExecute, or a writable one; a
+    ///     writable mapping of a physical VMO (device MMIO is not a store);
     ///     vma_offset without Specific, or not page-aligned; no Perm bit, or
     ///     one this region does not allow; a Specific range not wholly inside
     ///     this region;
