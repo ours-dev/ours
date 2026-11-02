@@ -43,11 +43,14 @@ centralised. Approved via DESIGN.md decisions, 2026-11-03.
    every domain header is self-contained (core vocabulary + the domain types
    its signatures name). ~60 include lines updated. Verify: build, boot.
 4. **Header cleanup.** `panic.hpp` to `kernel/include/ours/`, `assert.hpp`
-   declares its failure hook; `syscall/time.hpp` to
-   `kernel/include/ours/time.hpp` (18 includes); `config/annotates.hpp`
-   deleted; `syscall/resource.hpp` becomes `ours/resource.hpp`, relicensed
-   MIT, listed; `clock_page/time_values/version` added to the list. Verify:
-   build, boot, grep guards.
+   self-sufficient (the assertion front end moves in; the hook it ends in is
+   declared, not defined); `syscall/time.hpp` to
+   `kernel/include/ours/chrono.hpp` (not time.hpp -- step 3 already created
+   the public clock header <ours/time.hpp>, and the two include roots share
+   the kernel path, so the names must not collide; 17 includes);
+   `config/annotates.hpp` deleted; `syscall/resource.hpp` becomes
+   `ours/resource.hpp`, relicensed MIT, listed; `clock_page/time_values`
+   added to the list. Verify: build, boot, grep guards.
 5. **Records.** Change record `docs/changes/261103/public-syscalls.md`,
    kernel-design `layering.md` updated (the "adding a syscall" recipe now
    points at `ours/syscalls/<category>.gni`), RESULT.md, REVIEW.md.

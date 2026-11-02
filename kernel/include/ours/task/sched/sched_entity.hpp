@@ -3,10 +3,10 @@
 #ifndef OURS_TASK_SCHED_SCHED_ENTITY_HPP
 #define OURS_TASK_SCHED_SCHED_ENTITY_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/sync/types.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/task/sched/common.hpp>
 #include <ours/task/sched/profiles.hpp>
 #include <ours/task/sched/types.hpp>

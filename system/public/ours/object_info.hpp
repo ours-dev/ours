@@ -4,8 +4,8 @@
 #ifndef OURS_OBJECT_INFO_HPP
 #define OURS_OBJECT_INFO_HPP 1
 
+#include <ours/resource.hpp>
 #include <ours/syscall.hpp>
-#include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 #include <ours/vma.hpp>
 

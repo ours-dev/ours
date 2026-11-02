@@ -3,11 +3,11 @@
 #include "shell_tests.hpp"
 
 #include <ours/object_info.hpp>
+#include <ours/resource.hpp>
 #include <ours/rights.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
-#include <ours/syscall/resource.hpp>
 #include <ours/vdso.hpp>
 
 #include <algorithm>

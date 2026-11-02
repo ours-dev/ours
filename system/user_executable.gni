@@ -131,8 +131,9 @@ template("user_executable") {
     configs += [ "//system:user.program" ]
 
     # //system/public for two things the toolchain's //system:user.headers
-    # cannot give: <ours/vdso.hpp> includes a generated file,
-    # ours/vdso_decls.inc, and both the include path to it
+    # cannot give: the domain headers (<ours/vdso.hpp> and friends) include
+    # generated files, ours/vdso_decls/<category>.inc, and both the include
+    # path to them
     # (:vdso_decls.config) and the edge that orders a program's compiles after
     # its generator come only through a dependency. Without this, every
     # program including <ours/vdso.hpp> fails to find the file.

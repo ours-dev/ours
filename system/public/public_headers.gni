@@ -6,23 +6,48 @@
 # future operating systems built on Ours.  Paths are relative to
 # //system/public so the same list can drive both the source interface target
 # and the generated sysroot.
+#
+# Every header the directory ships is listed here; a header not on this list
+# is not part of the system interface and does not belong in the directory.
+# The list is the sysroot's source of truth, so it holds the system ABI
+# (types, status, rights, signals, the per-domain syscall headers, the
+# published-data layouts) and the two shared compile-time headers Zircon also
+# keeps public (compiler, assert -- whose failure hook each environment
+# defines). Kernel-only facilities are not here: panic lives in the kernel's
+# own headers (kernel/include/ours/panic.hpp), as Zircon keeps panic.h out of
+# its public tree.
+
 ours_public_headers = [
   "ours/acpi_tables.hpp",
   "ours/assert.hpp",
   "ours/bti.hpp",
+  "ours/channel.hpp",
+  "ours/clock_page.hpp",
+  "ours/command.hpp",
   "ours/compiler.hpp",
+  "ours/debug.hpp",
   "ours/exception.hpp",
+  "ours/handle.hpp",
   "ours/interrupt.hpp",
+  "ours/ioport.hpp",
+  "ours/object.hpp",
   "ours/object_info.hpp",
   "ours/object_property.hpp",
-  "ours/panic.hpp",
+  "ours/pager.hpp",
   "ours/port.hpp",
+  "ours/process.hpp",
   "ours/process_args.hpp",
+  "ours/resource.hpp",
   "ours/rights.hpp",
   "ours/sampler.hpp",
   "ours/signals.hpp",
   "ours/status.hpp",
   "ours/syscall.hpp",
+  "ours/task.hpp",
+  "ours/time.hpp",
+  "ours/time_values.hpp",
   "ours/types.hpp",
   "ours/vdso.hpp",
+  "ours/vma.hpp",
+  "ours/vmo.hpp",
 ]

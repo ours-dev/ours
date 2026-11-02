@@ -3,9 +3,9 @@
 #ifndef OURS_TIME_CLOCK_HPP
 #define OURS_TIME_CLOCK_HPP 1
 
+#include <ours/chrono.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/seqlock.hpp>
-#include <ours/syscall/time.hpp>
 #include <ours/time/anchor_page.hpp>
 #include <ours/time/clock_type.hpp>
 #include <ours/time/types.hpp>
