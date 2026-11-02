@@ -194,6 +194,14 @@ constinit u32 FAILURES = 0;
 /// The txid of the next two-way request this program writes by hand.
 constinit u32 TXID_COUNTER = 1;
 
+/// Whether the block device answered GetInfo, and whether the checks through
+/// the mounted filesystem ran to one of their own. The verdict names what
+/// did not run, so a pass with the disk suite skipped reads as one: before
+/// these, a boot without a disk printed the same `passed` as a full one, and
+/// the disk stack could die without the verdict changing.
+constinit bool BLOCK_DEVICE_SEEN = false;
+constinit bool DISK_CHECKS_RAN = false;
+
 auto next_txid() -> u32 {
     auto const txid = TXID_COUNTER;
     TXID_COUNTER += 1;
@@ -1886,6 +1894,7 @@ auto check_block() -> void {
         !expect("Block.GetInfo's status", geometry->status, Status::Ok)) {
         return;
     }
+    BLOCK_DEVICE_SEEN = true;
     if (geometry->block_size != ours_block::BLOCK_SIZE) {
         fail("Block.GetInfo: the block size is not 512");
         return;
@@ -2049,6 +2058,9 @@ auto check_disk() -> void {
                                   ours::to_string(status_of(root)), "), skipped"});
         return;
     }
+    // Past this line the disk suite is really running, and the verdict's
+    // not-run line stays quiet.
+    DISK_CHECKS_RAN = true;
 
     // Create (or find, a past boot having made it) and write the pattern.
     auto file =
@@ -2897,5 +2909,13 @@ auto main(int argc, char **argv) -> int {
         return 1;
     }
     auto _ = ort::debug_line("routing_checks: passed");
+    if (!DISK_CHECKS_RAN) {
+        // The pass stands, but it is not a disked pass, and nothing else in
+        // the log says so in one line: this is the signal a boot with a disk
+        // attached can demand absent.
+        auto _ =
+            ort::debug_line({"routing_checks: disk checks not run (",
+                             BLOCK_DEVICE_SEEN ? "no mounted volume" : "no block device", ")"});
+    }
     return 0;
 }
