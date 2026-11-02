@@ -357,14 +357,16 @@ component_manifest("root.cm") {
 
       # The route service's protocol, from the child that exposes it, to
       # routing_checks, which asks it every ISA number and the ECAM window and
-      # checks the answers against what QEMU's tables say, and to pc-ps2, which
-      # asks it which GSI the keyboard's ISA IRQ arrives on.
+      # checks the answers against what QEMU's tables say, to pc-ps2, which
+      # asks it which GSI the keyboard's ISA IRQ arrives on, and to
+      # virtio-blk, which asks it where the ECAM window is.
       {
         protocol = [ "ours.acpi.Route" ]
         from = "#acpi-route"
         to = [
           "#routing_checks",
           "#pc-ps2",
+          "#virtio-blk",
         ]
       },
 

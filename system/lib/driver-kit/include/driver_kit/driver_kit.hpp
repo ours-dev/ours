@@ -174,12 +174,14 @@ class MappedMmio final {
     MappedMmio(MappedMmio const &) = delete;
     auto operator=(MappedMmio const &) -> MappedMmio & = delete;
 
-    /// Maps [paddr, paddr + size) through the MmIo root |resource|. The
-    /// mapping is uncached whichever way the caller would have decided: a
-    /// physical VMO's pages are device memory, and the kernel maps them so.
+    /// Maps [paddr, paddr + size) through the MmIo root |resource|, into the
+    /// address space |vma| names -- the startup VMA handle, which every
+    /// driver takes first. The mapping is uncached whichever way the caller
+    /// would have decided: a physical VMO's pages are device memory, and the
+    /// kernel maps them so.
     [[nodiscard]]
-    static auto map(ours::Uandle const resource, ours::PhysAddr const paddr, usize const size)
-        -> ustl::Result<MappedMmio, ours::Status> {
+    static auto map(ours::Uandle const vma, ours::Uandle const resource, ours::PhysAddr const paddr,
+                    usize const size) -> ustl::Result<MappedMmio, ours::Status> {
         auto window = ours::Uandle::Invalid;
         if (auto const status = ours::vmo_create_physical(resource, paddr, size, &window);
             status != ours::Status::Ok) {
@@ -187,9 +189,8 @@ class MappedMmio final {
         }
         auto mapped = MappedMmio{};
         mapped.m_size = size;
-        auto const at =
-            ours::vma_map(mapped.m_vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite, 0,
-                          window, 0, size, &mapped.m_addr);
+        auto const at = ours::vma_map(vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite,
+                                      0, window, 0, size, &mapped.m_addr);
         // The mapping holds no reference to the VMO once made, so the window
         // handle goes either way.
         auto _ = ours::handle_close(window);
@@ -295,7 +296,7 @@ class DmaRegion final {
     auto operator=(DmaRegion const &) -> DmaRegion & = delete;
 
     [[nodiscard]]
-    static auto allocate(ours::Uandle const bti, usize const bytes)
+    static auto allocate(ours::Uandle const vma, ours::Uandle const bti, usize const bytes)
         -> ustl::Result<DmaRegion, ours::Status> {
         auto vmo = ours::Uandle::Invalid;
         if (auto const status = ours::vmo_create_contiguous(bti, bytes, 0, &vmo);
@@ -304,6 +305,7 @@ class DmaRegion final {
         }
         auto region = DmaRegion{};
         region.m_bytes = bytes;
+        region.m_vma = vma;
         auto const pinned =
             ours::bti_pin(bti,
                           ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite |
@@ -314,8 +316,8 @@ class DmaRegion final {
             return ustl::err(pinned);
         }
         auto const mapped =
-            ours::vma_map(region.m_vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite, 0,
-                          vmo, 0, bytes, &region.m_virt);
+            ours::vma_map(vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite, 0, vmo, 0,
+                          bytes, &region.m_virt);
         // The mapping holds the pages; the VMO handle's job is done either
         // way.
         auto _ = ours::handle_close(vmo);

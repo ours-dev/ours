@@ -26,10 +26,12 @@ user_executable("virtio-blk") {
   sources = [ "virtio_blk.cpp" ]
   deps = [
     "//system/lib/block-server",
+    "//system/lib/driver-kit",
     "//system/lib/fsio",
     "//system/lib/ioservice:outgoing",
     "//system/lib/server",
     "//system/lib/loop",
+    "//system/lib/ours.acpi:client",
     "//system/lib/ours.block",
     "//system/lib/ours.resource:client",
     "//system/lib/ustl",
@@ -53,6 +55,9 @@ component_manifest("virtio-blk.cm") {
       },
       {
         protocol = "ours.resource.Irq"
+      },
+      {
+        protocol = "ours.acpi.Route"
       },
     ]
     capabilities = [
