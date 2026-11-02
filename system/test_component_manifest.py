@@ -1169,6 +1169,82 @@ class EncodeTest(unittest.TestCase):
             self.assertEqual(layout.size % 8, 0)
 
 
+class NamesTest(unittest.TestCase):
+    """The names header: the C++ constants for the strings the program would
+    otherwise spell beside the manifest."""
+
+    def writes(self, manifest: Optional[Dict[str, Any]] = None) -> str:
+        return cm.names_header(source(manifest))
+
+    def test_a_protocol_use_becomes_a_constant(self) -> None:
+        text = self.writes({"use": [{"protocol": "ours.test.Echo"}]})
+        self.assertIn(
+            'inline constexpr std::string_view USE_SVC_OURS_TEST_ECHO{"/svc/ours.test.Echo"};',
+            text,
+        )
+
+    def test_a_directory_use_is_keyed_by_its_path(self) -> None:
+        text = self.writes({"use": [{"directory": "d", "path": "/notes", "rights": ["r*"]}]})
+        self.assertIn('inline constexpr std::string_view USE_NOTES{"/notes"};', text)
+
+    def test_a_directory_declaration_is_keyed_by_its_name(self) -> None:
+        manifest = {
+            "capabilities": [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}],
+            "use": [{"directory": "data", "path": "/data", "rights": ["r*"]}],
+        }
+        text = self.writes(manifest)
+        self.assertIn('inline constexpr std::string_view PATH_DATA{"/export/data"};', text)
+        self.assertIn('inline constexpr std::string_view USE_DATA{"/data"};', text)
+
+    def test_two_uses_of_one_capability_under_two_paths_are_two_constants(self) -> None:
+        manifest = {
+            "use": [
+                {"directory": "boot", "path": "/boot", "rights": ["r*"]},
+                {"directory": "boot", "path": "/bin", "rights": ["r*"], "subdir": "bin"},
+            ]
+        }
+        text = self.writes(manifest)
+        self.assertIn('inline constexpr std::string_view USE_BOOT{"/boot"};', text)
+        self.assertIn('inline constexpr std::string_view USE_BIN{"/bin"};', text)
+
+    def test_the_guard_and_namespace_follow_the_label(self) -> None:
+        text = self.writes({"use": [{"protocol": "p"}]})
+        self.assertIn("#ifndef COMPONENT_NAMES_TEST_HPP", text)
+        self.assertIn("#define COMPONENT_NAMES_TEST_HPP 1", text)
+        self.assertIn("namespace component::names::test {", text)
+
+    def test_an_empty_manifest_writes_no_constants(self) -> None:
+        text = self.writes()
+        self.assertNotIn("constexpr", text)
+        self.assertIn("namespace component::names::test {", text)
+
+    def test_a_leading_digit_is_escaped(self) -> None:
+        text = self.writes(
+            {"capabilities": [{"directory": "2d", "path": "/2d", "rights": ["r*"]}]}
+        )
+        self.assertIn('inline constexpr std::string_view PATH__2D{"/2d"};', text)
+
+    def test_two_uses_that_fold_to_one_identifier_are_refused(self) -> None:
+        manifest = {
+            "use": [
+                {"directory": "a", "path": "/notes", "rights": ["r*"]},
+                {"directory": "b", "path": "/NOTES", "rights": ["r*"]},
+            ]
+        }
+        with self.assertRaisesRegex(cm.ManifestError, "'NOTES' and 'notes' are both NOTES"):
+            cm.names_header(source(manifest))
+
+    def test_two_declarations_that_fold_to_one_identifier_are_refused(self) -> None:
+        manifest = {
+            "capabilities": [
+                {"directory": "data", "path": "/a", "rights": ["r*"]},
+                {"directory": "DATA", "path": "/b", "rights": ["r*"]},
+            ]
+        }
+        with self.assertRaisesRegex(cm.ManifestError, "'DATA' and 'data' are both DATA"):
+            cm.names_header(source(manifest))
+
+
 class MainTest(unittest.TestCase):
     def run_main(
         self,

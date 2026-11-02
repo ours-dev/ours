@@ -108,6 +108,7 @@
 
 #include <cstring>
 
+#include <component/names/routing_checks.hpp>
 #include <fsio/fsio.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
@@ -145,14 +146,18 @@ constexpr auto MANIFEST = std::string_view{"/boot/meta/routing_checks.cm"};
 /// A program /boot does not have.
 constexpr auto MISSING = std::string_view{"/boot/bin/no_such_program"};
 
-/// The protocols its manifest uses, each at /svc/<name> (design D3).
-constexpr auto LAUNCHER = std::string_view{"/svc/ours.process.Launcher"};
-constexpr auto UNOFFERED = std::string_view{"/svc/ours.test.Unoffered"};
+/// The protocols its manifest uses, each at /svc/<name> (design D3): the
+/// constants the manifest target writes (component/names/routing_checks.hpp),
+/// so that a name spelled differently here and in the manifest stops
+/// compiling instead of reading as NotFound at run time.
+constexpr auto LAUNCHER = component::names::routing_checks::USE_SVC_OURS_PROCESS_LAUNCHER;
+constexpr auto UNOFFERED = component::names::routing_checks::USE_SVC_OURS_TEST_UNOFFERED;
 /// A name its manifest does not use at all, so its /svc has no entry for it.
+/// The one literal left: a name the manifest does not name is the point.
 constexpr auto UNDECLARED = std::string_view{"/svc/ours.test.Undeclared"};
 /// echo's protocol, under the name root.cm's offer gives it.
-constexpr auto ECHO = std::string_view{"/svc/ours.test.Echo"};
-constexpr auto BLOCK = std::string_view{"/svc/ours.block.Block"};
+constexpr auto ECHO = component::names::routing_checks::USE_SVC_OURS_TEST_ECHO;
+constexpr auto BLOCK = component::names::routing_checks::USE_SVC_OURS_BLOCK_BLOCK;
 
 /// The directories the sibling files provides that open, each at the path its
 /// use in routing_checks.cm gives it. /files-denied and /files-wide are the
@@ -2191,7 +2196,7 @@ auto check_disk() -> void {
            Status::BadPath);
     auto _ = fsio::close(at_dir.unwrap());
 
-    constexpr auto ADMIN = std::string_view{"/svc/ours.fshost.Admin"};
+    constexpr auto ADMIN = component::names::routing_checks::USE_SVC_OURS_FSHOST_ADMIN;
     constexpr auto NAME = std::string_view{"extra"};
 
     // The mount check proper: the disk's directory, mounted at run time
