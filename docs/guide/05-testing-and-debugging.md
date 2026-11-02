@@ -207,7 +207,7 @@ To see whether your test is found, ask GN what the rule asks (`prebuilt/gn/gn ls
 Where this is stated:
 
 - How a test is found: `scripts/host_tests.py:4-13`, `:22`, `:24` and `:44-50`; `build/config/BUILDCONFIG.gn:159` (the host toolchain); `BUILD.gn:12` (`//:default`).
-- The boot check runs each test from the build directory and passes it on exit 0: `.agents/skills/ours-verify/scripts/boot_check.py:214-221`.
+- The boot check runs each test from the build directory and passes it on exit 0: `.agents/skills/verify/scripts/boot_check.py:214-221`.
 - `--gtest_filter` and `--gtest_list_tests`: googletest's own documentation, `vendor/googletest/docs/advanced.md`.
 
 ## Tests in a boot
@@ -217,12 +217,12 @@ Where this is stated:
 Build and boot as [README.md](README.md#build-and-boot-the-dev-image) says, from the root of the repository, once the tools of [00-setup.md](00-setup.md) are in place. The command is the verify script:
 
 ```bash
-python3 .agents/skills/ours-verify/scripts/boot_check.py
+python3 .agents/skills/verify/scripts/boot_check.py
 ```
 
-When you are checking a server, boot only the dev image with `--only rel`. The dev image is `kernel.dev.obi`, which the script calls `rel`: it runs `init`, the program of the root, and the root starts the example components. The other image, `kernel.dev.dbg_1.obi`, is the debug image, which the script calls `dbg`. It starts the shell with no root, so it has no routing and none of the example components (`.agents/skills/ours-verify/scripts/boot_check.py:86-87`).
+When you are checking a server, boot only the dev image with `--only rel`. The dev image is `kernel.dev.obi`, which the script calls `rel`: it runs `init`, the program of the root, and the root starts the example components. The other image, `kernel.dev.dbg_1.obi`, is the debug image, which the script calls `dbg`. It starts the shell with no root, so it has no routing and none of the example components (`.agents/skills/verify/scripts/boot_check.py:86-87`).
 
-A boot passes when all of these hold (`.agents/skills/ours-verify/scripts/boot_check.py:15-20`):
+A boot passes when all of these hold (`.agents/skills/verify/scripts/boot_check.py:15-20`):
 
 - the shell printed its closing `--- end ---` line;
 - every line the image requires appeared. For `rel` there are six, which the `rel` line of the output counts as `6/6 required`: the two that this guide's example produces, `routing_checks: passed` and `init: echo exited with 0`, and four that other components of the image print (the root's line that it holds the interrupt and I/O port resources, and three from the keyboard driver);
@@ -241,7 +241,7 @@ If the check fails, its summary says why. The summaries that concern a server ar
 
 ### Read the boot log
 
-The last line of the output names the directory of the logs, `<dir>/{dbg,rel}.log`. The directory is `ours-verify-<name of the build directory>-<ten hex digits>` under the temporary directory (`.agents/skills/ours-verify/scripts/boot_check.py:560` and `:588`; `scripts/boot_logdir.py:30-31`). The digits come from the whole path of the build directory, so two checkouts of the repository that both use `out/bringup.x86` have directories of their own. `host-tests.log` is beside them.
+The last line of the output names the directory of the logs, `<dir>/{dbg,rel}.log`. The directory is `ours-verify-<name of the build directory>-<ten hex digits>` under the temporary directory (`.agents/skills/verify/scripts/boot_check.py:560` and `:588`; `scripts/boot_logdir.py:30-31`). The digits come from the whole path of the build directory, so two checkouts of the repository that both use `out/bringup.x86` have directories of their own. `host-tests.log` is beside them.
 
 A log holds the kernel's lines and the shell's self-checks as well, and can hold a stray NUL byte that makes `grep` treat it as a binary file, so search it for markers with `grep -a`. The root's lines start with `init:`, and a server's start with whatever prefix it prints, as echo's start with `echo:`:
 
@@ -279,7 +279,7 @@ The root prints two lines about every component's life. It starts the children o
 
 If there is no `init: started <your component>` line, the component did not start; look for `init: cannot resolve`, `init: cannot start` and `init: launch failed` above its place in the log.
 
-To make a boot depend on your server, give a component the job of connecting to it and checking what it answers, the way `routing_checks` does; [02-first-server.md](02-first-server.md) shows a client's exchange with echo. Have that component print a line when all of its checks passed, and add the line to the `REQUIRED` list of the `rel` image (`.agents/skills/ours-verify/scripts/boot_check.py:90-100`). Then a server that does not start, or does not answer, fails the check.
+To make a boot depend on your server, give a component the job of connecting to it and checking what it answers, the way `routing_checks` does; [02-first-server.md](02-first-server.md) shows a client's exchange with echo. Have that component print a line when all of its checks passed, and add the line to the `REQUIRED` list of the `rel` image (`.agents/skills/verify/scripts/boot_check.py:90-100`). Then a server that does not start, or does not answer, fails the check.
 
 ### How `routing_checks` makes a negative case
 
@@ -467,7 +467,7 @@ The lines about a component's life (`started`, `exited with`) are described in "
 
 ## Debugging further
 
-- **A boot that hangs or goes silent.** `boot_check.py` sends QEMU an `nmi` after 15 seconds without a line, and the kernel prints a report of what every CPU was doing and panics (`.agents/skills/ours-verify/scripts/boot_check.py:27-39` and `:125`). The report is kept in the log and printed under the verdict. The verify script's documentation, named above, explains how to read it.
+- **A boot that hangs or goes silent.** `boot_check.py` sends QEMU an `nmi` after 15 seconds without a line, and the kernel prints a report of what every CPU was doing and panics (`.agents/skills/verify/scripts/boot_check.py:27-39` and `:125`). The report is kept in the log and printed under the verdict. The verify script's documentation, named above, explains how to read it.
 - **A debugger.** `docs/development/debugging.md` describes starting the machine under the debugger from the editor with F5. It is written in Chinese, and this guide does not copy it. The verify script's documentation links an English note on attaching `lldb` to a machine halted before its first instruction, setting breakpoints and inspecting the machine. The one-click session and the manual one both start the machine through `scripts/qemu_debug.py` (`scripts/qemu_debug.py:1-9`). Both are written for the kernel; this guide has not tried them on a server's own program.
 - **Your own lines.** The most direct debugging of a server is a line at each place it gives up, in the style above, and a boot of the dev image (`--only rel`).
 
@@ -482,7 +482,7 @@ The lines about a component's life (`started`, `exited with`) are described in "
 ## Sources
 
 - `scripts/host_tests.py`, `scripts/kshell_run.py`, `scripts/qemu_boot.py`, `scripts/qemu_debug.py`, `build/config/BUILDCONFIG.gn`, `BUILD.gn` (the root)
-- the verify script, `.agents/skills/ours-verify/scripts/boot_check.py`, and the documentation beside it
+- the verify script, `.agents/skills/verify/scripts/boot_check.py`, and the documentation beside it
 - `system/lib/ioservice/` (`README.md`, `BUILD.gn`, `src/server.cpp`, `src/tree.cpp`, `src/loop_server.cpp`, `src/outgoing.cpp`, `test/BUILD.gn`, `test/fake_kernel.hpp`, `test/fake_kernel.cpp`, `test/server_test.cpp`, `test/loop_server_test.cpp`, `test/outgoing_test.cpp`)
 - `system/lib/loop/` (`README.md`, `BUILD.gn`, `include/loop/loop.hpp`, `test/BUILD.gn`, `test/fake_kernel.hpp`, `test/loop_test.cpp`)
 - `system/service/init/` (`realm.cpp`, `init.cpp`, `pools.hpp`, `launcher_server.cpp`, `resource_server.cpp`, `BUILD.gn`, `test/routing_checks/BUILD.gn`, `test/routing_checks/routing_checks.cpp`)

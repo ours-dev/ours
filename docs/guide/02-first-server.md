@@ -14,7 +14,7 @@ This chapter is a tutorial. You copy `examples/echo`, the small server that ship
 You need a build that boots the untouched tree. [00-setup.md](00-setup.md) says what the build needs in `prebuilt/`, and [the README](README.md#build-and-boot-the-dev-image) says what the verify script does. From the root of your checkout:
 
 ```bash
-python3 .agents/skills/ours-verify/scripts/boot_check.py --only rel --out out/hello
+python3 .agents/skills/verify/scripts/boot_check.py --only rel --out out/hello
 ```
 
 `--only rel` boots the dev image (`kernel.dev.obi`; the script calls it `rel`), the one with a root. `--out out/hello` is a build directory of your own, which the script configures on first use. A pass looks like this, with paths shortened and numbers that will differ on your machine. The first build took 34 s on the machine used for this chapter; with the build done, a rebuild and a boot took about 7 s:
@@ -32,7 +32,7 @@ Chapter 1 is read in pieces. Each level that needs one says "Read now" and links
 
 The finished result of this chapter is in the tree, as `examples/hello`. The default build compiles it so that it stays true, and no image starts it. It is what to compare with when a build fails: after you set it aside, `git diff -- examples/hello` shows every line where your copy differs from it, and `git status examples/hello` prints nothing when the two are the same. To do the tutorial yourself, set the finished copy aside first, because the tutorial creates the same directory (with the copy still there, `cp -R` would nest yours inside it, and two protocols would have the same method numbers). Run `rm -r examples/hello`. In the root `BUILD.gn`, delete the block that starts with the comment `# The finished result of chapter 2 of the developer's guide` and ends with the line `"//examples/hello/protocol($host_toolchain)",`. `examples/BUILD.gn` names `hello` too and needs no edit: nothing reads that file once the root stops naming `//examples:hello`. If your checkout has no `examples/hello`, there is nothing to set aside, and nothing to compare with.
 
-The line numbers in this chapter were checked against commit `10dd8149`, the last commit that changed the files it quotes. `git log -1 --format=%h -- examples/echo system kernel/products .agents/skills/ours-verify/scripts` prints that commit for your checkout. If it prints another, a number may have moved: every edit below names the text it is about before it gives a number, so look for the text.
+The line numbers in this chapter were checked against commit `10dd8149`, the last commit that changed the files it quotes. `git log -1 --format=%h -- examples/echo system kernel/products .agents/skills/verify/scripts` prints that commit for your checkout. If it prints another, a number may have moved: every edit below names the text it is about before it gives a number, so look for the text.
 
 ## The places you will touch
 
@@ -46,7 +46,7 @@ A server is spread over seven places. The table lists them in the order you meet
 | 4 | The root's manifest: a child entry, then an offer | `kernel/products/image/dev/BUILD.gn` | add two entries modelled on echo's | 1 and 2b |
 | 5 | The client's manifest: a `use`, and a dependency on your library | `system/service/init/test/routing_checks/BUILD.gn` | add | 2b |
 | 6 | The client's check | `system/service/init/test/routing_checks/routing_checks.cpp` | write, by copying echo's | 2b to 4 |
-| 7 | The lines a boot must print | `REQUIRED` in `.agents/skills/ours-verify/scripts/boot_check.py` | add two lines | 5 |
+| 7 | The lines a boot must print | `REQUIRED` in `.agents/skills/verify/scripts/boot_check.py` | add two lines | 5 |
 
 The client is `routing_checks`, the dev image's test component, which already acts as echo's client. Every `file:line` in this chapter is a file of the tree as it stands, so you can open it, and code under a `file:line` is copied exactly from there. The code you write yourself is not in the tree. It is shown in blocks that carry no `file:line`, and it is what was built and booted for this chapter: the `main` of level 1, the stub class of level 2a, and the client's check in levels 2b, 3 and 4 (a few dozen lines in all). Everything else you paste is echo's, renamed.
 
@@ -609,7 +609,7 @@ This level makes a regression fail the boot. The checks of levels 2b to 4 fail l
 
 The boot check passes only if every line in `REQUIRED` appeared. This is its list for the dev image:
 
-`.agents/skills/ours-verify/scripts/boot_check.py:90-100`:
+`.agents/skills/verify/scripts/boot_check.py:90-100`:
 
 ```python
 REQUIRED = {
@@ -660,7 +660,7 @@ Then read your server once against [the checklist](06-checklist.md#what-a-first-
 - `examples/echo/echo_server.cpp`, `examples/echo/BUILD.gn`, `examples/echo/protocol/` (`BUILD.gn`, the header): the program, its targets and its protocol library, which `hello` copies.
 - `system/lib/loop/include/loop/loop.hpp`, `system/lib/ioservice/include/ioservice/outgoing.hpp`: `Waiter`, `Loop::add`, `Handler`.
 - `kernel/products/image/dev/BUILD.gn`, `system/service/init/test/routing_checks/BUILD.gn`, `system/service/init/test/routing_checks/routing_checks.cpp`: the root's manifest, the client's manifest and the client's checks.
-- `.agents/skills/ours-verify/scripts/boot_check.py`: the lines a boot requires.
+- `.agents/skills/verify/scripts/boot_check.py`: the lines a boot requires.
 - `system/lib/wire/include/wire/wire.hpp`: `wire::method()`, which computes a method's number from its selector.
 - `system/component_manifest.gni`, `system/component_manifest.py`, `system/user_executable.gni`: the manifest and program templates, the `.cm` name, `startup`, and where a program is installed.
 - `system/lib/ort/include/ort/main.hpp`, `system/lib/ort/include/ort/debug.hpp`, `system/lib/ort/src/start.cpp`, `system/lib/ustl/include/ustl/lazy_init.hpp`: the runtime's `main`, its debug line, and why storage is `constinit`.

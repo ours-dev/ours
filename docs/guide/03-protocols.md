@@ -467,7 +467,7 @@ Without that line nothing builds your test, and nothing runs it. [Adding a host 
 
 ### 8. Run everything
 
-1. Run the verify script, `python3 .agents/skills/ours-verify/scripts/boot_check.py`. It builds, runs the host tests (yours among them) and boots the images; [Build and boot the dev image](README.md#build-and-boot-the-dev-image) says what it prints.
+1. Run the verify script, `python3 .agents/skills/verify/scripts/boot_check.py`. It builds, runs the host tests (yours among them) and boots the images; [Build and boot the dev image](README.md#build-and-boot-the-dev-image) says what it prints.
 2. A failing host test can be run alone from the build directory. The binary lies under `host/obj/` at its target's path: for echo's codec, `cd out/bringup.x86 && ./host/obj/examples/echo/protocol/test/ours_examples_echo`.
 
 The server and its clients then list the library in their `deps`, as `examples/echo/BUILD.gn:24-28` does with `protocol`, and the provider's manifest declares and exposes the protocol name, spelled as `ECHO_NAME` is, as shown in "Names and the protocol type".
