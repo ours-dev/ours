@@ -6,6 +6,7 @@
 #include <ours/status.hpp>
 #include <ours/sync/seqlock.hpp>
 #include <ours/syscall/time.hpp>
+#include <ours/time/anchor_page.hpp>
 #include <ours/time/clock_type.hpp>
 #include <ours/time/types.hpp>
 
@@ -59,6 +60,9 @@ class Clock {
     [[nodiscard]]
     auto source() const -> ClockSource *;
 
+    [[nodiscard]]
+    auto reading() const -> AnchorReading;
+
   private:
     /// The point the affine map is pinned at: reading |ticks| on |source|
     /// meant |time| had elapsed since the epoch.
@@ -110,6 +114,9 @@ class SteadyClock {
     static auto now() -> TimePoint;
 
     static auto ticks() -> Ticks;
+
+    [[nodiscard]]
+    static auto reading() -> AnchorReading;
 
     /// Called by ClockSource::enroll() when the best available source
     /// changes. This is the clock everything in the kernel reads, so it is

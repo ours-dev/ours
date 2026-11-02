@@ -86,6 +86,7 @@ struct HandedHandles {
     ours::Uandle bootfs;
     ours::Uandle vmex;
     ours::Uandle vdso;
+    ours::Uandle clock_page;
     ours::Uandle debug;
     ours::Uandle sampling;
     ours::Uandle irq;
@@ -320,8 +321,8 @@ auto start_next(launch::BootfsLauncher const &launcher, HandedHandles const &han
     // the launcher has made the child and handed both back; their
     // handle_info is known already, so the message can be encoded before.
     // Room for them and every handle |handed| holds.
-    ours::Uandle handles[10] = {ours::Uandle::Invalid, ours::Uandle::Invalid, handed.job};
-    u32 infos[10] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
+    ours::Uandle handles[11] = {ours::Uandle::Invalid, ours::Uandle::Invalid, handed.job};
+    u32 infos[11] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
                      ours::handle_info(ours::HandleType::ProcSelf, 0),
                      ours::handle_info(ours::HandleType::JobDefault, 0)};
     u32 count = 3;
@@ -335,6 +336,9 @@ auto start_next(launch::BootfsLauncher const &launcher, HandedHandles const &han
     // The vDSO's VMO: the next program starts processes too, and maps the
     // vDSO into them (K23).
     add(handed.vdso, ours::handle_info(ours::HandleType::VmoVdso, 0));
+    // The clock page: the next program maps it for a trap-free monotonic
+    // read, as this one was given it.
+    add(handed.clock_page, ours::handle_info(ours::HandleType::VmoClockPage, 0));
     // Handed on after this program's own use of it, the BootFS's executable
     // copy: the next program makes its own (design D3).
     add(handed.vmex,
@@ -452,6 +456,7 @@ auto main(int, char **) -> int {
     auto const irq = ort::take_startup_handle(ours::HandleType::IrqResource, 0);
     auto const ioport = ort::take_startup_handle(ours::HandleType::IoportResource, 0);
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
+    auto const clock_page = ort::take_startup_handle(ours::HandleType::VmoClockPage, 0);
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     report_crashlog();
 
@@ -489,7 +494,8 @@ auto main(int, char **) -> int {
         report("userboot: setting the launcher up = ", made.unwrap_err());
         return 1;
     }
-    auto const &launcher = made.unwrap();
+    auto launcher = made.unwrap();
+    launcher.clock_page = clock_page;
 
     auto _ = ort::debug_line({"userboot: starting ", to_str(next)});
     auto const handed_on = collect_handed_on();
@@ -502,6 +508,7 @@ auto main(int, char **) -> int {
         .bootfs = bootfs,
         .vmex = vmex,
         .vdso = vdso,
+        .clock_page = clock_page,
         .debug = debug,
         .sampling = sampling,
         .irq = irq,

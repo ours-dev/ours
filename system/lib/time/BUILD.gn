@@ -1,0 +1,4 @@
+group("tests") {
+  testonly = true
+  public_deps = [ "test:read($host_toolchain)" ]
+}

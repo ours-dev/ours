@@ -108,6 +108,10 @@ enum class HandleType : u8 {
     /// generic file type told apart by the VMO's name: VMOs have no names
     /// here.
     VmoCrashlog = 0xe0,
+    /// The clock page: a read-only physical VMO of the HPET MMIO page, so a
+    /// process can map it and the vDSO can load the main counter without a
+    /// trap. Present only when the HPET initialised.
+    VmoClockPage = 0xe1,
     User0 = 0xf0,
     User1 = 0xf1,
     User2 = 0xf2,

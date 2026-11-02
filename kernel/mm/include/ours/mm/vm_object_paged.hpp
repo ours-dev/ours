@@ -143,6 +143,8 @@ class VmObjectPaged: public VmObject {
     /// holds for write(), read_user() and write_user().
     auto read(void *out, VirtAddr offset, usize size) -> Status override;
 
+    auto store_u64(VirtAddr offset, u64 value) -> Status override;
+
     /// The pages of [offset, offset + len) of this object, a slice's window
     /// included, that its own node of the page tree holds. A range past the
     /// end counts as far as the end.

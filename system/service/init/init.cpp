@@ -199,6 +199,7 @@ auto start_autorun(init::BootServer const &boot, init::Environment const &enviro
         .vma = environment.vma,
         .vdso = environment.vdso,
         .vdso_file = environment.vdso_file,
+        .clock_page = environment.clock_page,
         .bootstrap = there,
         .diagnostics = {.report = print_launch_error, .context = nullptr},
     });
@@ -235,6 +236,7 @@ auto main(int, char **) -> int {
     auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
+    auto const clock_page = ort::take_startup_handle(ours::HandleType::VmoClockPage, 0);
     auto const debug = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                 u16(ours::RSRC_SYSTEM_DEBUG_BASE));
     // The Sampling resource, kept like Debug: a component gets a duplicate
@@ -300,6 +302,7 @@ auto main(int, char **) -> int {
     auto const environment = init::Environment{
         .job = job,
         .vdso = vdso,
+        .clock_page = clock_page,
         .vdso_file = vdso_file->bytes,
         .vma = vma,
     };

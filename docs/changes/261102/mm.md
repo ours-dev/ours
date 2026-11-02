@@ -64,3 +64,69 @@ None
 - Why is the distance sampled before the walk, and the pressure recomputed after it?
 - Why does this `look()` not walk again when the new levels still say OutOfMemory?
 - Why are there two `Guard`s instead of one `unlock()` and a second `lock()`?
+
+## Title: a physical VMO maps uncached and refuses write (2026-11-02)
+
+**Files**
+- `kernel/object/vma_dispatcher.cpp` — `map()` sets `MmuFlags::Discache` on a physical VMO and returns InvArgs for `PermWrite`
+- `kernel/object/include/ours/object/vma_dispatcher.hpp` — the InvArgs list names a writable mapping of a physical VMO
+
+**Symptom**
+Latent until a physical VMO is mapped into a user address space. The HPET's MMIO page is one: the kernel already maps it Discache. A cached user mapping of that same physical page would return stale cache lines instead of the counter. A writable user mapping could clear `ENABLE_CNF` and stop the counter, or rewrite a comparator the kernel is using as its clock event.
+
+**Cause**
+`VmaDispatcher::map()` built `mmuf` as `User` plus `Readable`/`Writable`/`Executable` from `VmOptions`, and never asked what kind of VMO it was mapping. A paged VMO is RAM: cache it, and a store is how the program writes it. A physical VMO is a window onto memory the object does not own. Device MMIO is the case that matters. Those registers are not RAM. A cached load hits a cache line filled at some earlier read and misses the device's current value; two mappings of the same physical page, one cached and one not, is the aliasing problem, and the cached one never snoops the device. A store is worse than stale. The HPET's configuration register and comparators sit in the same page as the main counter, so a store from ring 3 can disable the counter or reprogram a comparator. `vmo_read` and `vmo_write` already answer NotSupported on a physical VMO, so a mapping is the only way a program sees those bytes, and the mapping's flags are the only thing standing between the program and the device. `map()` had no reason to refuse a write or to drop the cache, because it treated every VMO as anonymous RAM.
+
+The type is already on the `VmObject` (`Type::Physical`). `map()` just never asked.
+
+**Change**
+After the `Perm*` bits have been copied into `mmuf`, a physical VMO forces `Discache` and refuses `PermWrite`:
+
+```cpp
+auto mmuf = mm::MmuFlags::User;
+if (!!(options & VmOptions::PermRead)) {
+    mmuf |= mm::MmuFlags::Readable;
+}
+if (!!(options & VmOptions::PermWrite)) {
+    mmuf |= mm::MmuFlags::Writable;
+}
+if (!!(options & VmOptions::PermExecute)) {
+    mmuf |= mm::MmuFlags::Executable;
+}
+if (vmo.vmo()->type() == mm::VmObject::Type::Physical) {
+    mmuf |= mm::MmuFlags::Discache;
+    if (!!(options & VmOptions::PermWrite)) {
+        return ktl::err(Status::InvArgs);
+    }
+}
+```
+
+Ruled out: checking this in `vma_map`. A kernel caller mapping a physical VMO through the dispatcher would skip it, and the dispatcher is the one entry point. Ruled out: a cache-policy word on the VMO that mappings inherit. A physical VMO has no such word today, and every physical VMO mapped through a VMA handle is MMIO, so the type is enough. Ruled out: also refusing `CanMapWrite`, so a later `vma_protect` could not raise the mapping. `vma_protect` has not landed, and this change refuses the mapping that would be writable now.
+
+**Reference**
+Zircon `VmAspace::MapObjectInternal()` (`zircon/kernel/vm/vm_aspace.cc`) takes the VMO's cache policy (`VmObject::GetMappingCachePolicyLocked()`) into `ARCH_MMU_FLAG_UNCACHED` / `ARCH_MMU_FLAG_UNCACHED_DEVICE`. A physical VMO there can still be mapped writable; this kernel refuses write because the physical VMOs a VMA handle maps are device MMIO, and a store can stop the HPET counter or rewrite a comparator.
+Linux `ioremap()` (`arch/x86/mm/ioremap.c`) maps MMIO `pgprot_noncached`; a user mapping of the same pages goes through `remap_pfn_range()` with a noncached prot (`mmap_mem` in `drivers/char/mem.c`). Linux does not refuse write on that mapping either.
+
+**Verification**
+- `python3 scripts/format_cpp.py --check` was clean on `vma_dispatcher.cpp` and `vma_dispatcher.hpp`.
+- clang-tidy `-p out/clock-mono.x86` on `vma_dispatcher.cpp` reported nothing on the new lines.
+- `ninja -C out/clock-mono.x86 kernel_x86.dbg.1/obj/kernel/object/object.vma_dispatcher.cpp.o` compiled. QEMU boot is the parent's; not measured here.
+
+**Deliberately not done**
+- Refusing `CanMapWrite` on a physical VMO. `vma_protect` has not landed, so a ceiling that allows write cannot be raised yet.
+- Refusing `PermExecute`. Device MMIO is not a place to fetch from, but no caller asks, and this change is the cache and the store.
+- A cache-policy property on the VMO. The type is enough while every physical VMO mapped through a VMA handle is MMIO.
+- The kernel's own `map_phys` of the HPET. That path already passes `Discache` at the call site.
+- Booting QEMU. The parent does.
+
+**How it was found**
+Specified: a physical VMO of the HPET is being mapped into a user address space so a program can sample the counter. The kernel already maps that page Discache. `map()` did not.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why must a user mapping of a physical VMO be Discache even if the caller did not ask for it?
+- Why is a writable mapping of a physical VMO InvArgs, rather than a store the device would see?
+- Why is this check in `VmaDispatcher::map()` rather than in `vma_map` or in `mm::VmArea`?
+

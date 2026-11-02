@@ -18,6 +18,9 @@ inline ustl::views::Span<time::ClockEventDevice *> HPET_CLKEVT;
 INIT_CODE
 auto hpet_init(PhysAddr mmio) -> Status;
 
+/// Page-aligned MMIO base written by a successful hpet_init(), or 0.
+auto hpet_mmio_phys() -> PhysAddr;
+
 auto is_hpet_enabled() -> bool;
 
 auto hpet_enable() -> Status;

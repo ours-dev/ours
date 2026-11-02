@@ -53,7 +53,9 @@
 #           like a send followed by a wait for the reply, is not, and has to be
 #           split into a call and a finish), "noreturn" (never comes back; the
 #           stub ends in ud2), "debug" (a debug facility with no counterpart
-#           in a finished system). A blocking call returns Status.
+#           in a finished system), "vdso" (the vDSO supplies ours_<name>; the
+#           generated stub is the hidden ours_<name>_via_kernel the body
+#           traps through). A blocking call returns Status.
 #   ret     The return type, "Status" when left out: "Status" unless the call
 #           returns a plain value, and "void" exactly when it is noreturn.
 
@@ -1881,7 +1883,7 @@ ours_syscalls = [
       "Zero until the kernel has a clock source.",
     ]
     args = []
-    attrs = []
+    attrs = [ "vdso" ]
     ret = "Instant"
   },
 ]

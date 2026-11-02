@@ -37,6 +37,7 @@ source_set("userabi") {
     "//kernel/lib/kelfload",
     "//kernel/lib/logz4",
     "//kernel/mm",
+    "//kernel/kernel/time",
     "//kernel/object",
     "//kernel/phys:handoff",
   ]

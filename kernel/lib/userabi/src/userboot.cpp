@@ -17,6 +17,7 @@
 #include <kelfload/loader.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
+#include <ours/arch/hpet.hpp>
 #include <ours/assert.hpp>
 #include <ours/boot/handoff.hpp>
 #include <ours/boot/options.hpp>
@@ -33,7 +34,10 @@
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
+#include <ours/time/anchor_page.hpp>
+#include <ours/time_values.hpp>
 #include <ustl/mem/align.hpp>
+#include <ustl/option.hpp>
 
 namespace userabi {
 using namespace ours;
@@ -136,8 +140,9 @@ namespace {
     /// It used to be laid out again for each process -- launch() called
     /// Loader::map() on the vDSO's file, which copies it into a fresh VMO --
     /// so every process carried a private copy of the vDSO's pages. Written
-    /// once by lay_out_vdso(), before any user thread exists, and only read
-    /// after that.
+    /// once by lay_out_vdso(), before any user thread exists. The anchor page
+    /// in its read-only data is written after that, through this VMO; the
+    /// mappings stay read-only.
     struct SharedVdso {
         kelfload::ImageVmo image;
 
@@ -154,6 +159,17 @@ namespace {
         }
     };
     SharedVdso SHARED_VDSO;
+
+    /// The HPET MMIO page, one physical VMO mapped into every process the
+    /// kernel starts. Empty when hpet_init() did not succeed. The handle is
+    /// kept, like SHARED_VDSO: each process gets a new handle to the same
+    /// object.
+    object::KernelHandle<object::VmoDispatcher> CLOCK_PAGE_VMO;
+
+    /// Read, map, duplicate, transfer, inspect. No Write: the page is MMIO
+    /// of a running counter.
+    constexpr auto CLOCK_PAGE_RIGHTS =
+        Rights::Read | Rights::Map | Rights::Duplicate | Rights::Transfer | Rights::Inspect;
 
     /// The previous boot's crash record, copied into a VMO by stash_crashlog()
     /// for write_bootstrap(), or empty. Written and read on the laborer
@@ -351,8 +367,11 @@ namespace {
     ///   VmaRoot     |root_vma|, the process's own root region, which launch()
     ///               handed back;
     ///   ProcSelf    |process|, its handle to itself, also from launch();
-    ///   VmoVdso    the vDSO's VMO, to map it into the processes this one is
+    ///   VmoVdso     the vDSO's VMO, to map it into the processes this one is
     ///               to start;
+    ///   VmoClockPage
+    ///               the HPET MMIO page, when the HPET initialised, so the
+    ///               next program can map it for a trap-free monotonic read;
     ///   SystemResource
     ///               one per System slot minted here, the slot in the
     ///               handle_info's argument: VMEX and SAMPLING always, DEBUG
@@ -385,8 +404,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[11];
-        u32 infos[11] = {};
+        ustl::Box<object::Handle> handles[12];
+        u32 infos[12] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -429,6 +448,16 @@ namespace {
             return Status::NoResource;
         }
         infos[count++] = handle_info(HandleType::VmoVdso, 0);
+
+        if (CLOCK_PAGE_VMO.dispatcher()) {
+            handles[count] = object::Handle::make(
+                ustl::Arc<object::Dispatcher>(CLOCK_PAGE_VMO.dispatcher()), CLOCK_PAGE_RIGHTS);
+            if (!handles[count]) {
+                log::error("userabi: could not make a handle to the clock page");
+                return Status::NoResource;
+            }
+            infos[count++] = handle_info(HandleType::VmoClockPage, 0);
+        }
 
         if (boot::options().debug_read()) {
             handles[count] = make_system_resource_handle(RSRC_SYSTEM_DEBUG_BASE, "debug");
@@ -635,6 +664,65 @@ namespace {
         return Status::Ok;
     }
 
+    /// Maps the HPET MMIO page at CLOCK_PAGE_BASE, read-only and sealed. No-op
+    /// when the VMO was never made (the HPET did not initialise).
+    auto map_clock_page(object::VmaDispatcher &root_vma) -> Status {
+        if (!CLOCK_PAGE_VMO.dispatcher()) {
+            return Status::Ok;
+        }
+
+        constexpr auto OPTIONS = VmOptions::PermRead | VmOptions::CanMapRead | VmOptions::Specific |
+                                 VmOptions::Sealed | VmOptions::MapRange;
+        auto const offset = CLOCK_PAGE_BASE - root_vma.vma()->base();
+        auto const mapped =
+            root_vma.map(OPTIONS, offset, *CLOCK_PAGE_VMO.dispatcher(), 0, PAGE_SIZE, "hpet");
+        if (mapped.is_err()) {
+            log::error("userboot: could not map the clock page: {}",
+                       to_string(mapped.unwrap_err()));
+            return mapped.unwrap_err();
+        }
+
+        time::bind_counter_va(CLOCK_PAGE_BASE + CLOCK_COUNTER_OFFSET);
+        log::info("userboot: clock page mapped at {:X}", CLOCK_PAGE_BASE);
+        return Status::Ok;
+    }
+
+    /// Copies into the vDSO VMO. Eight bytes go through one store: that is
+    /// the sequence word, and a byte copy of it can tear.
+    auto store_anchor(void *const context, u64 const offset, void const *const bytes,
+                      usize const size) -> Status {
+        auto &vmo = *static_cast<object::VmoDispatcher *>(context);
+        if (size == sizeof(u64)) {
+            u64 value = 0;
+            std::memcpy(&value, bytes, sizeof(value));
+            return vmo.store_u64(offset, value);
+        }
+        return vmo.write(bytes, offset, size);
+    }
+
+    /// The anchor's file offset in the laid-out VMO, or none when the magic
+    /// is not there. Scanned rather than looked up by name: the packaged
+    /// image is stripped.
+    auto find_time_values(object::VmoDispatcher &vmo) -> ustl::Option<u64> {
+        constexpr auto CHUNK = usize{4096};
+        u8 buffer[CHUNK];
+        auto const size = vmo.size();
+        for (u64 offset = 0; offset < size; offset += CHUNK) {
+            auto const n = static_cast<usize>(std::min<u64>(CHUNK, size - offset));
+            if (vmo.read(buffer, offset, n) != Status::Ok) {
+                return ustl::NONE;
+            }
+            for (usize index = 0; index + sizeof(TimeValues) <= n; index += alignof(u64)) {
+                u64 magic = 0;
+                std::memcpy(&magic, buffer + index, sizeof(magic));
+                if (magic == TIME_VALUES_MAGIC) {
+                    return ustl::some(offset + index);
+                }
+            }
+        }
+        return ustl::NONE;
+    }
+
     /// Lays the vDSO out once, for launch() to map into every process.
     auto lay_out_vdso(phys::KernelPackage const &package) -> Status {
         auto const file = package.file(VDSO_FILE);
@@ -687,11 +775,38 @@ namespace {
         // of this VMO, of exactly |code|, registers an address space's vDSO
         // range (VmaDispatcher::map()).
         image.vmo.dispatcher()->mark_vdso(code);
+
+        // The monotonic anchor lives in the read-only data, found by its
+        // magic because the packaged image is stripped. Missing, the boot
+        // stops: a read of the clock loads that page.
+        auto &vmo = image.vmo.dispatcher().as_ref_mut();
+        auto const found = find_time_values(vmo);
+        if (found.is_none()) {
+            log::error("userabi: the vDSO has no monotonic anchor");
+            return Status::InvArgs;
+        }
+        time::bind_anchor_page(store_anchor, &vmo, found.value());
+
         SHARED_VDSO.image = ustl::move(image);
         SHARED_VDSO.file = file.unwrap();
         log::info("userabi: vdso laid out once, {} page(s), code at +{:#x} ({} page(s)), shared by "
                   "every process",
                   pages, code.offset, code.size / PAGE_SIZE);
+
+        // The clock page, after HPET init (this runs at userboot, well after
+        // Irq + 2). Missing, a monotonic read still traps; the vDSO is still
+        // the one that must exist.
+        auto const phys = hpet_mmio_phys();
+        if (phys != 0) {
+            Rights rights;
+            if (auto const status =
+                    object::VmoDispatcher::create_physical(phys, PAGE_SIZE, CLOCK_PAGE_VMO, rights);
+                Status::Ok != status) {
+                log::error("userabi: could not make the clock page VMO: {}", to_string(status));
+            } else {
+                log::info("userabi: clock page VMO over {:#x}", phys);
+            }
+        }
         return Status::Ok;
     }
     /// Starts the program |name| from |package| as a new process under |job|,
@@ -792,6 +907,11 @@ namespace {
 
         elfload::Image vdso;
         status = map_vdso(loader, vdso);
+        if (Status::Ok != status) {
+            return status;
+        }
+
+        status = map_clock_page(*root_vma.dispatcher());
         if (Status::Ok != status) {
             return status;
         }

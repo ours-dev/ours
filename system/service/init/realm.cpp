@@ -624,6 +624,19 @@ auto Realm::run(Instance &instance) -> Status {
         status != Status::Ok) {
         return status;
     }
+    if (m_environment.clock_page != Uandle::Invalid) {
+        auto clock_page = Uandle::Invalid;
+        if (auto const status = ours::handle_duplicate(m_environment.clock_page,
+                                                       ours::Rights::SameRights, &clock_page);
+            status != Status::Ok) {
+            return status;
+        }
+        if (auto const status =
+                handed.add(clock_page, ours::handle_info(HandleType::VmoClockPage, 0));
+            status != Status::Ok) {
+            return status;
+        }
+    }
 
     // The processargs, written before the process exists, so that a message
     // that cannot be encoded starts nothing. Only its root region and its
@@ -659,6 +672,7 @@ auto Realm::run(Instance &instance) -> Status {
         .vma = m_environment.vma,
         .vdso = m_environment.vdso,
         .vdso_file = m_environment.vdso_file,
+        .clock_page = m_environment.clock_page,
         .bootstrap = there,
         .diagnostics = {.report = print_launch_error, .context = nullptr},
     });

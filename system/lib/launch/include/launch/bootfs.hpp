@@ -41,6 +41,10 @@ struct BootfsLauncher {
     /// started. Not owned: the handle the caller passed in.
     ours::Uandle vdso = ours::Uandle::Invalid;
 
+    /// The clock MMIO page (HandleType::VmoClockPage), mapped into every
+    /// process started. Not owned. Invalid when the kernel did not make one.
+    ours::Uandle clock_page = ours::Uandle::Invalid;
+
     /// This process's root region (HandleType::VmaRoot), where start() maps
     /// each program's file while it reads it. Not owned: the handle the
     /// caller passed in, kept here because the runtime hands VmaRoot out

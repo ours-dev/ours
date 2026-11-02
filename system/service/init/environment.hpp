@@ -20,6 +20,9 @@ struct Environment {
     /// The vDSO's VMO, mapped into every process (launch::Request::vdso);
     /// each process also gets a duplicate as VmoVdso.
     ours::Uandle vdso;
+    /// The clock MMIO page (HandleType::VmoClockPage), mapped at
+    /// CLOCK_PAGE_BASE. Invalid when the kernel did not make one.
+    ours::Uandle clock_page;
     /// The vDSO's file in the BootFS mapping, which programs are bound
     /// against.
     std::span<u8 const> vdso_file;

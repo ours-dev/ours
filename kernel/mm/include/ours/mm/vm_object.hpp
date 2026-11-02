@@ -149,6 +149,16 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return Status::Unsupported;
     }
 
+    /// Stores |value| at |offset| as one aligned 8-byte store.
+    ///
+    /// write() copies a byte at a time, and a sequence word published for
+    /// another CPU to load has to change in one store: a torn word can look
+    /// even while the other words do not agree. |offset| not a multiple of 8
+    /// is InvArgs. Unsupported for an object that is not paged.
+    virtual auto store_u64(VirtAddr offset, u64 value) -> Status {
+        return Status::Unsupported;
+    }
+
     /// Copies |size| bytes starting at byte |offset| of this object straight
     /// into the user buffer |out|, with no kernel buffer in between.
     ///
