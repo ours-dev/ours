@@ -1,4 +1,5 @@
 #include <ours/arch/apic.hpp>
+#include <ours/irq/domain_registry.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/mod.hpp>
 #include <ours/platform/acpi.hpp>
@@ -56,6 +57,12 @@ namespace {
         return object;
     }
 
+    /// The slot the machine's directory publishes the root domain's table
+    /// into, and that the handler below reads it from. Static storage, as the
+    /// registry's contract for a slot asks: the handler reads it for every
+    /// interrupt, and the root domain is never taken away.
+    irq::DomainSlot ROOT_SLOT;
+
     /// The root handler of a PC, installed by platform_init_apic(). Every pin
     /// of every IO-APIC was programmed with vector PlatformIrqMin + GSI, so
     /// the GSI is the vector less that base. The irq layer looks the line up by
@@ -71,7 +78,13 @@ namespace {
         DEBUG_ASSERT(frame->vector >= arch::IrqVec::PlatformIrqMin);
         auto const gsi = static_cast<HIrqNum>(frame->vector) -
                          static_cast<HIrqNum>(arch::IrqVec::PlatformIrqMin);
-        if (!irq::handle_irq_generic(gsi)) {
+        // The table of the domain this handler serves, as init_lines()
+        // published it: one acquire load, and no read of the directory on the
+        // interrupt path. It is null only before the lines are built, which no
+        // interrupt can see -- interrupts are enabled below, after
+        // init_lines() -- and never after: the root domain is not removable.
+        auto *const table = ROOT_SLOT.table_with_irqs_off();
+        if (!irq::handle_irq_generic(table, gsi)) {
             apic_issue_eoi();
         }
     }
@@ -206,8 +219,10 @@ namespace {
         //
         // Each line is bound to the IO-APIC's chip as it is made, so a driver
         // masks and unmasks its line through the irq layer, and the chip
-        // takes the IO-APIC register lock; no driver touches the IO-APIC.
-        auto const status = irq::init_lines(ustl::views::Span(gsis), io_apic_chip());
+        // takes the IO-APIC register lock; no driver touches the IO-APIC. The
+        // lines are the machine's root domain, and their table is published
+        // into ROOT_SLOT, which the handler above reads for every interrupt.
+        auto const status = irq::init_lines(ustl::views::Span(gsis), io_apic_chip(), ROOT_SLOT);
         ASSERT(Status::Ok == status, "Failed to build the interrupt lines: {}", to_string(status));
 
         // The root controller's driver gives arch its handler now, with the

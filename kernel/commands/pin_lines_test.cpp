@@ -192,7 +192,7 @@ namespace {
                 "the number past the last virq has no hardware number");
         verdict(tally, irq::hwirq_of_virq(first_virq - 1) == irq::INVALID_H_IRQ_NUM,
                 "the number before the first virq has none");
-        verdict(tally, !irq::handle_irq_generic(highest_gsi + 1),
+        verdict(tally, !irq::handle_irq_generic(irq::root_table_for_test(), highest_gsi + 1),
                 "an interrupt on the hardware number past the last pin finds no line");
         verdict(tally, irq::virq_of_hwirq(irq::INVALID_H_IRQ_NUM) == irq::INVALID_V_IRQ_NUM,
                 "the invalid hardware number has no virq");

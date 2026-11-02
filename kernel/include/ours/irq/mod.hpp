@@ -19,33 +19,47 @@ struct IrqFrame;
 namespace ours::irq {
 class Action;
 struct Chip;
+class DescTable;
+class DomainSlot;
 
-/// Builds the table of interrupt lines: one line for each hardware number in
-/// `hirqnums`. On x86 that number is the GSI, which is also what dispatch
-/// delivers, since the platform programs each GSI with the vector
-/// PlatformIrqMin + GSI. A line is named by its virq, which the table's
-/// domain assigns (Domain) and which is never the hardware number:
-/// virq_of_hwirq() and hwirq_of_virq() go between the two. Dispatch, which
-/// has the hardware number, looks the line up by it.
+/// The machine's directory of interrupt domains (DomainRegistry), what every
+/// function below resolves its numbers through. A control call opens a short
+/// read of the directory (a task::IrqRcuReadGuard, interrupts off) and holds
+/// it to the last use of the line, so a domain being taken away is never half
+/// seen; nothing in the section sleeps, allocates or copies from user memory.
+/// The interrupt path does not read the directory: the root handler loads its
+/// domain's table from the DomainSlot the directory published it into, and
+/// hands it to handle_irq_generic().
+///
+/// Registers the root controller's lines as the machine's first domain: one
+/// line for each hardware number in `hirqnums`, in a table of its own, held
+/// by the directory under DomainId::Root and published into `slot`, which the
+/// root handler reads for every interrupt. On x86 that number is the GSI,
+/// which is also what dispatch delivers, since the platform programs each GSI
+/// with the vector PlatformIrqMin + GSI. A line is named by its virq, which
+/// the domain assigns (Domain) and which is never the hardware number:
+/// virq_of_hwirq() and hwirq_of_virq() go between the two.
 ///
 /// Every line is bound to `chip`, the controller that drives its pin, which
 /// mask(), unmask() and configure() go through, and which ends each of the
-/// line's interrupts. The chip outlives the table. Each line takes the flow
+/// line's interrupts. The chip outlives the domain. Each line takes the flow
 /// that suits how the chip says its pin signals: the level flow for a level
 /// pin, the edge flow otherwise.
 ///
 /// The platform calls it once, after it has read its interrupt controllers
 /// from the firmware and programmed the lines it found, and before it unmasks
-/// any of them. Until then there are no lines: attach() answers NoResource,
-/// and an interrupt finds no line and is ended by its caller
-/// (handle_irq_generic() answers false).
+/// any of them, and before it installs the handler that reads `slot`. Until
+/// then there are no lines: attach() answers NoResource, and an interrupt
+/// finds no line and is ended by its caller (handle_irq_generic() answers
+/// false on a null table).
 ///
-/// BadState if the table is built already, InvArgs for INVALID_V_IRQ_NUM,
-/// an empty list or a chip with no eoi or no mask, AlreadyExists if a number
-/// is given twice, NoMemory.
+/// AlreadyExists if the root domain is registered already, BadState if `slot`
+/// holds a table, InvArgs for an invalid hardware number, an empty list or a
+/// chip with no eoi or no mask, NoMemory.
 /// Nothing is kept from a call that fails.
 [[nodiscard]]
-auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip) -> Status;
+auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip, DomainSlot &slot)
+    -> Status;
 
 /// Hangs `action` on line `virqnum`; from then on every interrupt on the
 /// line calls the action's handler with the action's context. The caller
@@ -234,8 +248,12 @@ auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
 
 /// The virq of the line made for hardware number `hirqnum`, the number the
 /// platform programmed its pin with (on x86, the GSI); INVALID_V_IRQ_NUM if
-/// it made none. Never equal to `hirqnum`, and not the same on another
-/// machine or another kernel: a program asks, and does not compute it.
+/// it made none. Asked of the root controller's domain, whose numbers are the
+/// platform's single numbering: the lines of a second domain are asked for by
+/// domain and hardware number together, never by the number alone, since two
+/// domains may hold the same one. Never equal to `hirqnum`, and not the same
+/// on another machine or another kernel: a program asks, and does not compute
+/// it.
 [[nodiscard]]
 auto virq_of_hwirq(HIrqNum hirqnum) -> VIrqNum;
 
@@ -252,10 +270,25 @@ auto hwirq_of_virq(VIrqNum virqnum) -> HIrqNum;
 /// knows how the interrupt arrived, ends it itself. Either way it is ended
 /// exactly once.
 ///
+/// The lines are those of `table`, the handler's own domain, which the
+/// handler loads from the DomainSlot the directory published its table into:
+/// one acquire load, and no read of the directory on the interrupt path. A
+/// null table answers false, the shape of a domain that is gone, whose
+/// handler ends what it receives itself.
+///
 /// By hardware number, not virq: it is what the interrupt entry has, and it
-/// indexes the line table directly, with no lookup between.
+/// indexes the table directly, with no lookup between.
 [[nodiscard]]
-auto handle_irq_generic(HIrqNum hirqnum) -> bool;
+auto handle_irq_generic(DescTable *table, HIrqNum hirqnum) -> bool;
+
+/// The table of the root controller's domain, what a root handler holds its
+/// DomainSlot for and what handle_irq_generic() dispatches through. Null
+/// before init_lines(). For a kernel test that plays an interrupt by hardware
+/// number, as pinlines.test does for a number no pin has; everything else
+/// names a line by its virq. The root domain is never removed, so the
+/// pointer, once it is not null, is good for good.
+[[nodiscard]]
+auto root_table_for_test() -> DescTable *;
 
 /// The flow of line `virqnum` for a kernel test that plays an interrupt from
 /// thread context: the same actions under the same locks as
@@ -272,7 +305,7 @@ auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn;
 /// revoke_line()): marks the line and takes its actions off it, telling
 /// each through its cancel hook; AlreadyBound with nothing changed for a
 /// Permanent line or an action with no hook, NoResource for no such line.
-/// Nothing calls it but tests yet: the table is one for the machine's life.
+/// Nothing calls it but tests yet: no tree code removes a domain.
 /// unmark_dying_for_test() makes the line take actions again.
 [[nodiscard]]
 auto revoke_line_for_test(VIrqNum virqnum) -> Status;
@@ -281,7 +314,7 @@ auto unmark_dying_for_test(VIrqNum virqnum) -> void;
 /// How many interrupts on line `virqnum` no action handled since boot;
 /// none if there is no such line.
 [[nodiscard]]
-auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
+auto spurious_count(VIrqNum const virqnum) -> ustl::Option<u64>;
 
 /// Whether the kernel itself holds line `virqnum`: an action that says
 /// Permanent is on it, as the legacy timer's is. False for a line nobody is on,
