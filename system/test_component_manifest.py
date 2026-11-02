@@ -557,6 +557,50 @@ class CompileTest(unittest.TestCase):
         decl = compile_with_children(manifest, "a", "b", "c", "d")
         self.assertEqual(len(decl.offers), 4)
 
+    def test_children_are_written_in_dependency_order(self) -> None:
+        # The root starts eager children in manifest order, and the compiled
+        # children table is that order: the compiler writes b's provider
+        # first, whatever order the manifest listed them in.
+        manifest = {"offer": [{"protocol": "p", "from": "#a", "to": "#b"}]}
+        decl = compile_with_children(manifest, "b", "a")
+        self.assertEqual([child.name for child in decl.children], ["a", "b"])
+
+    def test_the_start_order_follows_the_whole_chain(self) -> None:
+        manifest = {
+            "offer": [
+                {"protocol": "p", "from": "#a", "to": "#b"},
+                {"protocol": "q", "from": "#b", "to": "#c"},
+            ]
+        }
+        decl = compile_with_children(manifest, "c", "b", "a")
+        self.assertEqual([child.name for child in decl.children], ["a", "b", "c"])
+
+    def test_children_the_offers_leave_unrelated_keep_their_order(self) -> None:
+        # The diamond of test_a_diamond_is_not_a_cycle: a, then its two
+        # children in the order the manifest lists them, then d.
+        manifest = {
+            "offer": [
+                {"protocol": "p", "from": "#a", "to": ["#b", "#c"]},
+                {"protocol": "q", "from": "#b", "to": "#d"},
+                {"protocol": "r", "from": "#c", "to": "#d"},
+            ]
+        }
+        decl = compile_with_children(manifest, "d", "c", "b", "a")
+        self.assertEqual([child.name for child in decl.children], ["a", "c", "b", "d"])
+
+    def test_an_offer_from_the_parent_or_self_makes_no_start_order(self) -> None:
+        # The parent is resolved before any of its children starts, so only
+        # an offer between children orders them.
+        manifest = {
+            "capabilities": [{"protocol": "p"}],
+            "offer": [
+                {"protocol": "p", "from": "self", "to": "#b"},
+                {"protocol": "q", "from": "parent", "to": "#a"},
+            ],
+        }
+        decl = compile_with_children(manifest, "b", "a")
+        self.assertEqual([child.name for child in decl.children], ["b", "a"])
+
     def test_expose(self) -> None:
         manifest = {
             "capabilities": [{"protocol": "p"}],
@@ -1058,10 +1102,12 @@ class EncodeTest(unittest.TestCase):
             ],
         }
         decl = compile_with_children(manifest, "a", "b")
+        # #a uses what #b offers, so the compiled children are b, a (the
+        # start order, D30): b is 0 and a is 1 in the refs below.
         offers = Reader(cm.encode(decl)).tables["offer"]
         self.assertEqual(offers[0][:4], (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED, cm.REF_SELF, 0))
-        self.assertEqual(offers[1][:4], (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED, cm.REF_CHILD, 1))
-        self.assertEqual(offers[1][6:8], (cm.REF_CHILD, 0))
+        self.assertEqual(offers[1][:4], (cm.KIND_DIRECTORY, cm.FLAG_RIGHTS_STATED, cm.REF_CHILD, 0))
+        self.assertEqual(offers[1][6:8], (cm.REF_CHILD, 1))
 
     def compiled_with_types(self, capability: Dict[str, Any], use: Dict[str, Any]) -> Reader:
         manifest = {"capabilities": [capability], "use": [use]}
@@ -1121,6 +1167,82 @@ class EncodeTest(unittest.TestCase):
         self.assertEqual(struct.calcsize("<IIIIIIIIIIII"), 48)
         for layout in [cm.HEADER, cm.PROGRAM, cm.ARG, cm.CHILD, cm.CAPABILITY, cm.USE, cm.OFFER, cm.EXPOSE]:
             self.assertEqual(layout.size % 8, 0)
+
+
+class NamesTest(unittest.TestCase):
+    """The names header: the C++ constants for the strings the program would
+    otherwise spell beside the manifest."""
+
+    def writes(self, manifest: Optional[Dict[str, Any]] = None) -> str:
+        return cm.names_header(source(manifest))
+
+    def test_a_protocol_use_becomes_a_constant(self) -> None:
+        text = self.writes({"use": [{"protocol": "ours.test.Echo"}]})
+        self.assertIn(
+            'inline constexpr std::string_view USE_SVC_OURS_TEST_ECHO{"/svc/ours.test.Echo"};',
+            text,
+        )
+
+    def test_a_directory_use_is_keyed_by_its_path(self) -> None:
+        text = self.writes({"use": [{"directory": "d", "path": "/notes", "rights": ["r*"]}]})
+        self.assertIn('inline constexpr std::string_view USE_NOTES{"/notes"};', text)
+
+    def test_a_directory_declaration_is_keyed_by_its_name(self) -> None:
+        manifest = {
+            "capabilities": [{"directory": "data", "path": "/export/data", "rights": ["rw*"]}],
+            "use": [{"directory": "data", "path": "/data", "rights": ["r*"]}],
+        }
+        text = self.writes(manifest)
+        self.assertIn('inline constexpr std::string_view PATH_DATA{"/export/data"};', text)
+        self.assertIn('inline constexpr std::string_view USE_DATA{"/data"};', text)
+
+    def test_two_uses_of_one_capability_under_two_paths_are_two_constants(self) -> None:
+        manifest = {
+            "use": [
+                {"directory": "boot", "path": "/boot", "rights": ["r*"]},
+                {"directory": "boot", "path": "/bin", "rights": ["r*"], "subdir": "bin"},
+            ]
+        }
+        text = self.writes(manifest)
+        self.assertIn('inline constexpr std::string_view USE_BOOT{"/boot"};', text)
+        self.assertIn('inline constexpr std::string_view USE_BIN{"/bin"};', text)
+
+    def test_the_guard_and_namespace_follow_the_label(self) -> None:
+        text = self.writes({"use": [{"protocol": "p"}]})
+        self.assertIn("#ifndef COMPONENT_NAMES_TEST_HPP", text)
+        self.assertIn("#define COMPONENT_NAMES_TEST_HPP 1", text)
+        self.assertIn("namespace component::names::test {", text)
+
+    def test_an_empty_manifest_writes_no_constants(self) -> None:
+        text = self.writes()
+        self.assertNotIn("constexpr", text)
+        self.assertIn("namespace component::names::test {", text)
+
+    def test_a_leading_digit_is_escaped(self) -> None:
+        text = self.writes(
+            {"capabilities": [{"directory": "2d", "path": "/2d", "rights": ["r*"]}]}
+        )
+        self.assertIn('inline constexpr std::string_view PATH__2D{"/2d"};', text)
+
+    def test_two_uses_that_fold_to_one_identifier_are_refused(self) -> None:
+        manifest = {
+            "use": [
+                {"directory": "a", "path": "/notes", "rights": ["r*"]},
+                {"directory": "b", "path": "/NOTES", "rights": ["r*"]},
+            ]
+        }
+        with self.assertRaisesRegex(cm.ManifestError, "'NOTES' and 'notes' are both NOTES"):
+            cm.names_header(source(manifest))
+
+    def test_two_declarations_that_fold_to_one_identifier_are_refused(self) -> None:
+        manifest = {
+            "capabilities": [
+                {"directory": "data", "path": "/a", "rights": ["r*"]},
+                {"directory": "DATA", "path": "/b", "rights": ["r*"]},
+            ]
+        }
+        with self.assertRaisesRegex(cm.ManifestError, "'DATA' and 'data' are both DATA"):
+            cm.names_header(source(manifest))
 
 
 class MainTest(unittest.TestCase):

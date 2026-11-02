@@ -26,6 +26,14 @@ the root answers that use AccessDenied when its component starts, and a
 deliberate failure must still build. A route that does not resolve is left to
 run time by both. "The type check" and "The rights walk" below have the rules.
 
+A manifest with children is written out with its children in dependency order
+(_order_children): the root starts eager children one after another in manifest
+order, so the compiled children table is the order the root starts them in.
+
+With --names the compiler instead writes the manifest's names header, the C++
+constants for the paths the program would otherwise spell beside the manifest
+("The names header" below), made from the scope alone.
+
 Standard library only: the host's python3 is 3.9, with nothing installed
 beside it.
 """
@@ -39,7 +47,7 @@ import re
 import struct
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # The compiled format. //system/lib/component/include/component/format.hpp is
 # the other half of this contract: every constant and every layout below has
@@ -806,6 +814,43 @@ def _check_cycles(offers: List[Offer], children: List[Child], where: str) -> Non
             visit(child.name)
 
 
+def _order_children(children: List[Child], offers: List[Offer], where: str) -> List[Child]:
+    """|children| in dependency order, the order the root starts them in.
+
+    The root starts eager children one after another in manifest order, and
+    the compiled children table is that manifest order, so the table is
+    written in the order the offers between the children make: an offer from
+    #a to #b puts a first, since b opens its uses when it starts and the
+    provider has to be serving by then. A use that routes to the parent's own
+    capability or a built-in makes no edge: the parent is resolved before any
+    of its children starts, so only a sibling can still be waiting to start.
+    Among the children whose dependencies are placed, the walk takes the one
+    the manifest listed first, so children the offers leave unrelated keep
+    their manifest order and an unrelated edit does not shuffle the table.
+
+    _check_cycles has refused a cycle before this runs; if the walk still
+    stalls, the edges it accepted were not acyclic, which is a bug here.
+    """
+    predecessors: Dict[str, Set[str]] = {child.name: set() for child in children}
+    for offer in offers:
+        if offer.source.kind == REF_CHILD:
+            predecessors[offer.target.child].add(offer.source.child)
+
+    ordered: List[Child] = []
+    placed: Set[str] = set()
+    waiting = list(children)
+    while waiting:
+        for at, child in enumerate(waiting):
+            if predecessors[child.name] <= placed:
+                break
+        else:
+            raise ManifestError(f"{where}: offers leave no order to start the children in")
+        ordered.append(child)
+        placed.add(child.name)
+        waiting.pop(at)
+    return ordered
+
+
 def _check_source(source: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     """The rules a target's scope must keep before anything in it is read:
     only the keys GN writes, only the manifest keys the language has, and a
@@ -849,12 +894,15 @@ def compile_manifest(
     the `user_program_names` metadata of the program's install name target
     (empty without a program), |children_meta| the `component_manifest`
     metadata of the children. Raises ManifestError on the first rule broken.
+    The children of a manifest with children come back in dependency order
+    (_order_children), the order the root starts them in.
     """
     where, manifest = _check_source(source)
     decl = Decl()
     decl.program = _program(source, program_names, where)
     decl.children = _children(source, children_meta, where)
     _declare(decl, manifest, where)
+    decl.children = _order_children(decl.children, decl.offers, where)
     return decl
 
 
@@ -1619,6 +1667,109 @@ def format_rights_warning(warning: RightsWarning) -> str:
     return "\n".join(text) + "\n"
 
 
+# --- The names header --------------------------------------------------------
+#
+# Beside every manifest the build can write a C++ header of the strings the
+# program would otherwise spell a second time: each use's namespace path, and
+# each directory declaration's place in the outgoing directory. The manifest is
+# the one place the strings live; the program includes the header, and a name
+# typed differently in the two places stops compiling instead of reading as
+# NotFound from the provider's own server.
+#
+# The header is not a second output of the compiled manifest: it is made from
+# the scope alone, with no program and no children, so that the program can
+# depend on it without a cycle through the manifest's own compile, which reads
+# the program's install name.
+
+
+def _identifier(text: str) -> str:
+    """|text| as a C identifier, uppercased: the mechanical mapping the names
+    header is built on, so that a manifest author never spells an identifier.
+    'ours.process.Launcher' is OURS_PROCESS_LAUNCHER."""
+    mapped = re.sub(r"[^A-Za-z0-9]", "_", text).upper()
+    if mapped[0].isdigit():
+        return "_" + mapped
+    return mapped
+
+
+def _unique_folding(texts: Dict[str, str], what: str, where: str) -> None:
+    """Refuses two of |texts|' keys that the mapping sends to one identifier:
+    the header could not spell both. The keys are unique as strings already;
+    only the fold can bring two together."""
+    seen: Dict[str, str] = {}
+    for text in texts:
+        mapped = _identifier(text)
+        if mapped in seen:
+            raise ManifestError(
+                f"{where}: '{text}' and '{seen[mapped]}' are both {mapped}: two {what} "
+                "that differ only in the characters the mapping folds"
+            )
+        seen[mapped] = text
+
+
+def names_header(source: Dict[str, Any]) -> str:
+    """The names header of one manifest, from its scope alone.
+
+    |source| is the target's scope as GN wrote it, as compile_manifest() takes
+    it, and the rules every manifest keeps run on it first, so that a manifest
+    the build refuses never gets a header. A use's constant is keyed by its
+    namespace path without the leading '/', since the path is what picks the
+    entry out: two uses of one capability under two paths are two constants,
+    and two uses at one path were refused long before this runs. A directory
+    declaration's constant is keyed by its name, since the name is what the
+    manifest's offers and exposes call it and the path is its value.
+    """
+    where, manifest = _check_source(source)
+    stem = where.rsplit(":", 1)[-1][: -len(".cm")]
+    namespace = re.sub(r"[^A-Za-z0-9]", "_", stem).lower()
+    guard = f"COMPONENT_NAMES_{_identifier(stem)}_HPP"
+
+    use_paths = [use.target_path for use in _uses(manifest, where)]
+    paths = {
+        capability.name: capability.path
+        for capability in _capabilities(manifest, where)
+        if capability.kind == KIND_DIRECTORY
+    }
+    _unique_folding({path[1:]: path for path in use_paths}, "uses", where)
+    _unique_folding(paths, "directory declarations", where)
+
+    lines = [
+        f"// Generated by //system/component_manifest.py from {where}. Do not edit.",
+        "",
+        f"#ifndef {guard}",
+        f"#define {guard} 1",
+        "",
+        "#include <string_view>",
+        "",
+        f"namespace component::names::{namespace} {{",
+        "",
+        "/// The namespace entries the manifest's use clauses put in place: one",
+        "/// constant per use, the path the program opens.",
+    ]
+    lines += [
+        f'inline constexpr std::string_view USE_{_identifier(path[1:])}{{"{path}"}};'
+        for path in use_paths
+    ]
+    lines += [
+        "",
+        "/// The directories the manifest declares: one constant per declaration,",
+        "/// the place in the outgoing directory the program serves it at, keyed",
+        "/// by the name its offers and exposes call it.",
+    ]
+    lines += [
+        f'inline constexpr std::string_view PATH_{_identifier(name)}{{"{path}"}};'
+        for name, path in paths.items()
+    ]
+    lines += [
+        "",
+        f"}} // namespace component::names::{namespace}",
+        "",
+        f"#endif // #ifndef {guard}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def load_tree(entries: Any) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
     """The scope of every descendant, by label, from the `--tree` file's
     entries `{label, source}`, and the paths that were read, for the depfile."""
@@ -1654,13 +1805,18 @@ def _load(path: str) -> Any:
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", required=True, help="the target's scope, as JSON")
-    parser.add_argument("--program", required=True, help="the program's install name, as JSON")
-    parser.add_argument("--children", required=True, help="the children's meta paths, as JSON")
+    parser.add_argument(
+        "--names",
+        help="write the manifest's names header -- the C++ constants for the paths the "
+        "program would otherwise spell beside the manifest -- to this path, and read "
+        "nothing else: no program, no children, no tree, no .cm",
+    )
+    parser.add_argument("--program", help="the program's install name, as JSON (compile mode)")
+    parser.add_argument("--children", help="the children's meta paths, as JSON (compile mode)")
     parser.add_argument(
         "--tree",
-        required=True,
         help="every descendant's label and the path of its scope, as JSON: what the type "
-        "check walks",
+        "check walks (compile mode)",
     )
     parser.add_argument(
         "--builtins",
@@ -1668,7 +1824,7 @@ def main(argv: List[str]) -> int:
         "it a use that routes above the top of the tree is not checked, since nothing says "
         "what it reaches",
     )
-    parser.add_argument("--output", required=True, help="the .cm file to write")
+    parser.add_argument("--output", help="the .cm file to write (compile mode)")
     parser.add_argument(
         "--depfile",
         help="where to write the list of every scope the type check read, so that a change "
@@ -1684,8 +1840,22 @@ def main(argv: List[str]) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.names is None:
+        missing = [
+            f"--{name}"
+            for name in ("children", "output", "program", "tree")
+            if getattr(args, name) is None
+        ]
+        if missing:
+            parser.error(f"{' and '.join(missing)} are required without --names")
+
     try:
         scope = _load(args.source)
+        if args.names is not None:
+            output = pathlib.Path(args.names)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(names_header(scope))
+            return 0
         decl = compile_manifest(scope, _load(args.program), _load(args.children))
         read: List[str] = []
         if not args.no_type_check:

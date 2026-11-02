@@ -48,6 +48,14 @@
 # //system/lib/component decodes (D2). The child's URL is written as
 # `fuchsia-boot:///#meta/<its target name>` (D26).
 #
+# The target also writes a names header,
+# $target_gen_dir/component/names/<name>.hpp, from the scope alone: the C++
+# constants for the paths the program would otherwise spell beside the
+# manifest, each use's namespace path and each directory declaration's place
+# in the outgoing directory. The program depends on `<name>.names` and
+# includes `<component/names/<name>.hpp>`; a name typed differently in the
+# two places stops compiling instead of reading as NotFound at run time (D31).
+#
 # Programs and child manifests are built in the user toolchain, whatever
 # toolchain this target is in: the template adds it to their labels, as
 # user_bootfs() adds it to programs (//kernel/products/image/dev/BUILD.gn).
@@ -67,9 +75,14 @@
 # descendant, so the action reruns when any of them changes, not only the
 # manifest's own.
 #
-# Six targets, for a target named <name>:
+# Eight targets, for a target named <name>:
 #   <name>.source    the target's scope, as JSON (generated_file, the pattern
 #                    //system/public:syscalls.json uses);
+#   <name>.names.gen the compiler, writing the names header,
+#                    $target_gen_dir/component/names/<stem>.hpp, from the
+#                    scope alone;
+#   <name>.names     the group a program depends on to include
+#                    <component/names/<stem>.hpp>;
 #   <name>.program   the program's install name, read from its
 #                    `<program>.install_name` metadata as user_program_names()
 #                    does, so no program name is spelled by hand;
@@ -92,6 +105,12 @@
 #     List of scopes { name, manifest, startup }: `manifest` is the plain
 #     label of the child's component_manifest() target, and `startup` must
 #     be written out as "eager" (D4).
+#
+#     The children are compiled in dependency order: an offer from #a to #b
+#     writes a before b, since #b opens its uses when it starts and the
+#     provider has to be serving by then. That order is the order the root
+#     starts eager children in (D30); children the offers leave unrelated
+#     keep the order this list has them in.
 #
 #   manifest (optional)
 #     Scope with the manifest's keys: program (args only), capabilities,
@@ -220,6 +239,11 @@ template("component_manifest") {
 
   _main_target = target_name
   _source_target = "$target_name.source"
+  _names_target = "$target_name.names"
+  _names_gen_target = "$target_name.names.gen"
+  _names_config = "$target_name.names.config"
+  _names_stem = get_path_info(target_name, "name")
+  _names_header = "$target_gen_dir/component/names/$_names_stem.hpp"
   _program_target = "$target_name.program"
   _children_target = "$target_name.children"
   _tree_target = "$target_name.tree"
@@ -275,7 +299,10 @@ template("component_manifest") {
 
   generated_file(_source_target) {
     forward_variables_from(invoker, [ "testonly" ])
-    visibility = [ ":$_compile_target" ]
+    visibility = [
+      ":$_compile_target",
+      ":$_names_gen_target",
+    ]
     outputs = [ _source_json ]
     output_conversion = "json"
     contents = {
@@ -290,6 +317,41 @@ template("component_manifest") {
         manifest = invoker.manifest
       }
     }
+  }
+
+  # The names header: the C++ constants for the paths the program would
+  # otherwise spell beside the manifest, so that a name typed differently in
+  # the two places stops compiling instead of reading as NotFound at run time.
+  # It is made from the scope alone -- no program, no children -- so that the
+  # program can depend on it without a cycle through this manifest's own
+  # compile, which reads the program's install name.
+  action("$_names_gen_target") {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":$_names_target" ]
+    script = "//system/component_manifest.py"
+    sources = [ _source_json ]
+    outputs = [ _names_header ]
+    args = [
+      "--source",
+      rebase_path(_source_json, root_build_dir),
+      "--names",
+      rebase_path(_names_header, root_build_dir),
+    ]
+    deps = [ ":$_source_target" ]
+  }
+
+  config("$_names_config") {
+    include_dirs = [ target_gen_dir ]
+  }
+
+  # What a program depends on to include <component/names/<stem>.hpp>. Public,
+  # since the program that consumes the header need not be among the
+  # manifest's own dependants: `visibility` on the manifest says who may
+  # package it, not who may read its names.
+  group("$_names_target") {
+    forward_variables_from(invoker, [ "testonly" ])
+    public_deps = [ ":$_names_gen_target" ]
+    public_configs = [ ":$_names_config" ]
   }
 
   generated_file(_program_target) {
