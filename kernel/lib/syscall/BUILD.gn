@@ -30,6 +30,7 @@ source_set("syscall") {
     "src/argument.hpp",
     "src/bti.cpp",
     "src/channel.cpp",
+    "src/clock.cpp",
     "src/command.cpp",
     "src/debug.cpp",
     "src/exception.cpp",
