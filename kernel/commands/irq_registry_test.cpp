@@ -25,8 +25,8 @@
 //     table it began with gone before it ends. This needs two CPUs.
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/irq/action.hpp>
 #include <ours/irq/domain_registry.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/status.hpp>
 #include <ours/task/irq_rcu.hpp>
@@ -81,9 +81,9 @@ namespace {
         verdict(tally, got == want, name);
     }
 
-    auto no_op(irq::Data const &) -> void {}
+    auto no_op(irq::ControllerSource const &) -> void {}
 
-    constexpr irq::Chip CHIP = {
+    constexpr irq::ControllerOps CHIP = {
         .mask = no_op,
         .unmask = no_op,
         .issue_eoi = no_op,
@@ -91,7 +91,7 @@ namespace {
     };
 
     /// A chip that cannot end an interrupt.
-    constexpr irq::Chip NO_EOI_CHIP = {
+    constexpr irq::ControllerOps NO_EOI_CHIP = {
         .mask = no_op,
         .name = "irq-registry-test",
     };
@@ -106,7 +106,7 @@ namespace {
         Hooked(irq::IrqFlags const flags, irq::IrqCancel const cancel)
             : action(&hooked_handler, this, flags, "irq-registry-test", cancel) {}
 
-        irq::Action action;
+        irq::Registration action;
         std::atomic<u32> told{0};
     };
 

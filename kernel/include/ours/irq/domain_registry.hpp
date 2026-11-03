@@ -3,7 +3,7 @@
 #ifndef OURS_IRQ_DOMAIN_REGISTRY_HPP
 #define OURS_IRQ_DOMAIN_REGISTRY_HPP 1
 
-#include <ours/irq/chip.hpp>
+#include <ours/irq/controller.hpp>
 #include <ours/irq/desc_table.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
@@ -74,8 +74,8 @@ class DomainRegistry final {
     /// while the domain is registered or any handler holds it, and the chip
     /// must outlive the domain.
     [[nodiscard]]
-    auto register_domain(DomainId id, ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip,
-                         DomainSlot &slot) -> Status;
+    auto register_domain(DomainId id, ustl::views::Span<HIrqNum const> hirqnums,
+                         ControllerOps const &chip, DomainSlot &slot) -> Status;
 
     /// Removes the domain: marks every line (a Permanent line, or an action
     /// with no cancel hook, refuses with AlreadyBound and nothing changes but

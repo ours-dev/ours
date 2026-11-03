@@ -4,7 +4,7 @@
 #define OURS_OBJECT_INTERRUPT_EVENT_DISPATCHER_HPP 1
 
 #include <ours/interrupt.hpp>
-#include <ours/irq/action.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
@@ -98,7 +98,7 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     auto unregister_interrupt_handler() -> void override;
 
     VIrqNum const m_line;
-    irq::Action m_action;
+    irq::Registration m_action;
 };
 } // namespace ours::object
 

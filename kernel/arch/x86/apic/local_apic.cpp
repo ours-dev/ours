@@ -1,7 +1,7 @@
 #include <ours/arch/apic.hpp>
 #include <ours/arch/x86/feature.hpp>
 #include <ours/cpu.hpp>
-#include <ours/irq/chip.hpp>
+#include <ours/irq/controller.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_mapping.hpp>
@@ -109,12 +109,14 @@ auto apic_issue_eoi() -> void {
 }
 
 [[maybe_unused]]
-irq::Chip XAPIC_CHIP{
-    .mask = [](irq::Data const &data) -> void { XAPIC_STORAGE.mask(arch::XApicRegType::LvtLint0); },
-    .unmask = [](irq::Data const &data) -> void {
+irq::ControllerOps XAPIC_CHIP{
+    .mask = [](irq::ControllerSource const &data) -> void {
+        XAPIC_STORAGE.mask(arch::XApicRegType::LvtLint0);
+    },
+    .unmask = [](irq::ControllerSource const &data) -> void {
         XAPIC_STORAGE.unmask(arch::XApicRegType::LvtLint0);
     },
-    .issue_ack = [](irq::Data const &data) -> void { XAPIC_STORAGE.issue_eoi(); },
+    .issue_ack = [](irq::ControllerSource const &data) -> void { XAPIC_STORAGE.issue_eoi(); },
     .name = "XApic",
 };
 

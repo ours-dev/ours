@@ -92,3 +92,46 @@ None — the step applied decisions already made (D10 (b), D13, D15); the user a
 - Why does the interrupt path take the table from a `DomainSlot` instead of the directory, and what exactly does that cost per interrupt?
 - Why is it safe for a control call to keep a virq after its read guard closes, but not the `Desc` pointer it found?
 - What keeps a stale virq of a removed domain from ever naming another domain's line?
+
+## Name the IRQ objects by their owned roles (2026-11-03)
+
+**Files**
+- `kernel/include/ours/irq/line.hpp`, `registration.hpp`, `controller.hpp` — replace Desc, Action, Chip and Data with Line, Registration, ControllerOps and ControllerSource.
+- `kernel/kernel/irq/line.cpp` and both IRQ and command GN targets — migrate filenames without retaining compatibility aliases.
+- IRQ callers, interrupt objects and controller adapters — use the new types; rename the controller contract suite to irqcontroller.test.
+
+**Symptom**
+The names exposed storage representation or unspecified data rather than the objects' responsibilities. A reader had to know external implementation vocabulary to identify a line, a callback registration and controller operations.
+
+**Cause**
+The old names concealed ownership: Desc contained the actual line state, Action represented a caller-owned registration, and Chip was an operations table rather than a controller instance. Data carried one source's binding information. This obscured the distinction between controller state, line state and callback lifetime and made the later ownership refactor harder to review.
+
+**Change**
+Migrate the four object identities and their filenames atomically across declarations, definitions, callers and tests. For example:
+
+```cpp
+// Before:
+irq::Action m_action;
+// After:
+irq::Registration m_action;
+```
+
+The implementation file is line.cpp, the callbacks are registrations, and the hardware hook parameter is ControllerSource. No aliases or forwarding headers preserve a second vocabulary. This increment changes names only; it is not completion of the subsystem redesign.
+
+**Reference**
+None, this project's own design: irq-redesign D1 (b), accepted on 2026-11-03. Names describe each object's role and ownership rather than inheriting another kernel's abbreviations.
+
+**Verification**
+Both dev images boot: dbg has 46 passed, 5 skipped and 0 failed; rel has 44 passed, 8 skipped and 0 failed, including 7/7 required markers. All 161 host tests pass. Nine kernel suites pass: irq.test (72 checks), irqcontroller.test (18), irqrevoke.test (37), irqregistry.test (66), irqdomain.test (87), irqrcu.test (34), interrupt.test (67), interruptline.test (78), and pinlines.test (28). All 22 touched C++ files ran through the repository formatter and clang-tidy against out/irq-design-review; no new diagnostics were found on changed lines. Existing naming diagnostics in untouched APIC headers remain. Performance was not measured.
+
+**Deliberately not done**
+Domain ownership, numeric identities, registration validation, guarded dispatch and the completion handshake remain separate increments. Their unresolved state is tracked in the task's STATUS.md.
+
+**How it was found**
+The design review traced facade-to-table-to-line operations and compared public names with the state and lifetime each type actually owns.
+
+**The user's prediction**
+None. D1 (b) was explicitly selected, and the user then suspended teaching exercises and asked for development to proceed.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task at the user's request.

@@ -217,7 +217,7 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// nothing: the line is about to be let go of.
     auto handle_interrupt() -> void;
 
-    /// The kernel took the line away from this object (irq::Desc::revoke()):
+    /// The kernel took the line away from this object (irq::Line::revoke()):
     /// the object is destroyed as destroy() would, except that the line is
     /// let go of already, so nothing here detaches. Called with the line's
     /// lock held, in the context of the removal, so it takes only the locks a

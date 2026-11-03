@@ -62,4 +62,4 @@ None. D1 was explicitly accepted by the user. The overall design remains Propose
 
 ## Not done
 
-D1 is decided. The user has not yet supplied the concurrency argument for D2. No implementation plan, rewrite, changed lock, new controller, or performance optimization has been started.
+The user has suspended learning-oriented arguments and authorized development toward the full active goal. The naming increment is verified; remaining ownership, guards, identities, controller protocol and completion work are tracked in STATUS.md. No performance improvement is claimed.

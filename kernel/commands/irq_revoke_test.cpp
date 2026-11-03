@@ -2,7 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 //
 // `irqrevoke.test`: the kernel taking a line away from its actions
-// (irq::Desc::mark_dying(), revoke(), unmark_dying(); .agents/tasks/
+// (irq::Line::mark_dying(), revoke(), unmark_dying(); .agents/tasks/
 // irq-multi-arch/PLAN.md, step 9). dbg image only: it is the one with a
 // kernel shell. The lines are descriptors of the test's own, outside the line
 // table, bound to a chip that only counts, except in the race, which uses a
@@ -33,8 +33,8 @@
 //     NotFound must find the hook done. This needs two CPUs.
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/irq/desc.hpp>
 #include <ours/irq/desc_table.hpp>
+#include <ours/irq/line.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/status.hpp>
 #include <ours/task/sched/common.hpp>
@@ -90,30 +90,30 @@ namespace {
     std::atomic<u64> CONFIGURES{0};
     // NOLINTEND(readability-identifier-naming)
 
-    auto count_mask(irq::Data const &) -> void {
+    auto count_mask(irq::ControllerSource const &) -> void {
         MASKS.fetch_add(1, std::memory_order_relaxed);
     }
 
-    auto count_unmask(irq::Data const &) -> void {
+    auto count_unmask(irq::ControllerSource const &) -> void {
         UNMASKS.fetch_add(1, std::memory_order_relaxed);
     }
 
-    auto count_configure(irq::Data const &, irq::TriggerMode, irq::Polarity) -> Status {
+    auto count_configure(irq::ControllerSource const &, irq::TriggerMode, irq::Polarity) -> Status {
         CONFIGURES.fetch_add(1, std::memory_order_relaxed);
         return Status::Ok;
     }
 
-    auto edge_mode(irq::Data const &) -> irq::TriggerMode {
+    auto edge_mode(irq::ControllerSource const &) -> irq::TriggerMode {
         return irq::TriggerMode::Edge;
     }
 
-    auto level_mode(irq::Data const &) -> irq::TriggerMode {
+    auto level_mode(irq::ControllerSource const &) -> irq::TriggerMode {
         return irq::TriggerMode::Level;
     }
 
-    auto no_eoi(irq::Data const &) -> void {}
+    auto no_eoi(irq::ControllerSource const &) -> void {}
 
-    constexpr irq::Chip CHIP = {
+    constexpr irq::ControllerOps CHIP = {
         .mask = count_mask,
         .unmask = count_unmask,
         .configure = count_configure,
@@ -124,7 +124,7 @@ namespace {
 
     /// The same over a pin that signals a level, so its lines run the level
     /// flow, which holds a Oneshot line masked.
-    constexpr irq::Chip LEVEL_CHIP = {
+    constexpr irq::ControllerOps LEVEL_CHIP = {
         .mask = count_mask,
         .unmask = count_unmask,
         .configure = count_configure,
@@ -149,7 +149,7 @@ namespace {
         Owner(irq::IrqFlags const flags, irq::IrqCancel const cancel)
             : action(&owner_handler, this, flags, "irq-revoke-test", cancel) {}
 
-        irq::Action action;
+        irq::Registration action;
         Hold *hold = nullptr;
         /// The handler answers WakeThread, so a Oneshot line is held.
         bool wake = false;
@@ -215,9 +215,9 @@ namespace {
 
     /// A line of the test's own; null if it cannot be made. The caller
     /// deletes it with nobody on it.
-    auto own_line(irq::Chip const &chip = CHIP) -> irq::Desc * {
+    auto own_line(irq::ControllerOps const &chip = CHIP) -> irq::Line * {
         auto *const line =
-            irq::Desc::create(OWN_HWIRQ, OWN_LINE, irq::IrqFlags::None, "irq-revoke-test");
+            irq::Line::create(OWN_HWIRQ, OWN_LINE, irq::IrqFlags::None, "irq-revoke-test");
         if (line == nullptr) {
             return nullptr;
         }
@@ -463,7 +463,7 @@ namespace {
     }
 
     struct Dispatch {
-        irq::Desc *line;
+        irq::Line *line;
     };
 
     auto dispatch_routine(void *const arg) -> i32 {

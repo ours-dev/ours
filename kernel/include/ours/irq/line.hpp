@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_IRQ_DESC_HPP
-#define OURS_IRQ_DESC_HPP 1
+#ifndef OURS_IRQ_LINE_HPP
+#define OURS_IRQ_LINE_HPP 1
 
-#include <ours/irq/action.hpp>
-#include <ours/irq/chip.hpp>
+#include <ours/irq/controller.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -51,8 +51,8 @@ namespace ours::irq {
 /// thread has serviced it, and unmask() leaves it masked too. One bit is
 /// enough: a Oneshot action takes its line alone, so the line owes at most
 /// one thread.
-class Desc final {
-    using Self = Desc;
+class Line final {
+    using Self = Line;
 
   public:
     static auto create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) -> Self *;
@@ -65,7 +65,7 @@ class Desc final {
     /// safe because it never changes afterwards. BadState if the line has a
     /// chip already.
     [[nodiscard]]
-    auto init(Chip const &chip) -> Status;
+    auto init(ControllerOps const &chip) -> Status;
 
     /// See irq::attach(). An action that says Permanent may only take an
     /// empty line, and makes the line Permanent; one that says Oneshot makes
@@ -73,7 +73,7 @@ class Desc final {
     /// (NotSupported otherwise): without a mode the line keeps the flow it
     /// has, and only a mode, or a chip that reads one, sets the level flow.
     [[nodiscard]]
-    auto attach(Action &action) -> Status;
+    auto attach(Registration &action) -> Status;
 
     /// See irq::attach() with a mode. Holds L1 from the check that the line
     /// is free to the link, and the chip takes LI inside it to set or read the
@@ -81,16 +81,16 @@ class Desc final {
     /// line's flow is chosen again, under the same hold, from the mode set
     /// or read.
     [[nodiscard]]
-    auto attach(Action &action, ustl::Option<LineMode> mode) -> ktl::Result<TriggerMode>;
+    auto attach(Registration &action, ustl::Option<LineMode> mode) -> ktl::Result<TriggerMode>;
 
     /// See irq::detach(). A barrier: returns only once no handler of the line
     /// is running anywhere. Under the same hold it clears held, and when the
     /// last action goes it masks the line.
     [[nodiscard]]
-    auto detach(Action &action) -> Status;
+    auto detach(Registration &action) -> Status;
 
     /// See irq::finalize_oneshot(). Takes L1, then the chip takes LI.
-    auto finalize_oneshot(Action const &action) -> void;
+    auto finalize_oneshot(Registration const &action) -> void;
 
     /// The kernel taking the line away from its actions, for the removal of
     /// the domain it belongs to. The caller runs two steps over all the
@@ -120,7 +120,7 @@ class Desc final {
     auto unmark_dying() -> void;
     /// Whether any action is on the line. Takes L1.
     [[nodiscard]]
-    auto has_actions() -> bool;
+    auto has_registrations() -> bool;
     /// Under L1, so it is a barrier as detach() is: it returns with no
     /// handler of the line in flight, and none reaches an action again.
     /// Each action is unlinked, then told (IrqCancel), and its line is cleared
@@ -227,7 +227,7 @@ class Desc final {
     /// The line's facts that `flags` asks for, for the constructor.
     static auto line_flags(IrqFlags flags) -> LineFlags;
 
-    Desc(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name);
+    Line(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name);
 
     /// Whether this line can keep the promise of `action`'s Oneshot, for the
     /// two attach() forms before they take L1: InvArgs for an action that
@@ -235,13 +235,13 @@ class Desc final {
     /// line whose chip cannot both mask and unmask; Ok otherwise, and for an
     /// action that does not say Oneshot.
     [[nodiscard]]
-    auto check_oneshot(Action const &action) const -> Status;
+    auto check_oneshot(Registration const &action) const -> Status;
 
     /// Links |action| into the list and publishes the line's flags, |flags|
     /// with what the action adds to them. For the two attach() forms, once
     /// each has checked that the action may join the line.
     TA_REQUIRES(m_lock)
-    auto link_locked(Action &action, LineFlags flags) -> void;
+    auto link_locked(Registration &action, LineFlags flags) -> void;
 
     /// The flow for a line that signals as `trigger` says. For init(),
     /// configure() and attach() with a mode, the three places a line's mode
@@ -252,21 +252,21 @@ class Desc final {
     /// Runs `flow` over `actions`, then ends the interrupt as `eoi` says,
     /// through a guard held across the flow. The caller holds L1, or the
     /// line is Permanent and neither the flow nor the list changes again.
-    auto run_flow(Flow flow, Action::List &actions, Eoi eoi) -> IrqReturn;
+    auto run_flow(Flow flow, Registration::List &actions, Eoi eoi) -> IrqReturn;
 
     /// The two flows, each one interrupt on the line, with the actions it
     /// runs passed in, so the Permanent line's dispatch, which holds no L1,
     /// runs the same code as every other. Neither ends the interrupt:
     /// run_flow() does, once either has returned.
-    auto handle_edge(Action::List &actions) -> IrqReturn;
-    auto handle_fasteoi(Action::List &actions) -> IrqReturn;
+    auto handle_edge(Registration::List &actions) -> IrqReturn;
+    auto handle_fasteoi(Registration::List &actions) -> IrqReturn;
 
     /// handle_fasteoi() on a Oneshot line: masks the line, runs the action,
     /// marks the line held if the action woke its thread, and unmasks it
     /// unless it is held. A Oneshot line is never Permanent, so its dispatch
     /// always holds L1.
     TA_REQUIRES(m_lock)
-    auto handle_oneshot_locked(Action::List &actions) -> IrqReturn;
+    auto handle_oneshot_locked(Registration::List &actions) -> IrqReturn;
 
     /// Masks the line through its chip, for an interrupt that came in while
     /// nobody was on it. For both flows, under L1.
@@ -324,8 +324,8 @@ class Desc final {
     /// The list of a Permanent line, which handle_irq() walks without L1. Hidden
     /// from the thread-safety analysis, which cannot know that a Permanent
     /// line's list never changes again.
-    TA_NO_THREAD_SAFETY_ANALYSIS auto permanent_actions() -> Action::List & {
-        return m_actions;
+    TA_NO_THREAD_SAFETY_ANALYSIS auto permanent_registrations() -> Registration::List & {
+        return m_registrations;
     }
 
     /// The flow of a Permanent line, which handle_irq() reads without L1, for
@@ -354,8 +354,8 @@ class Desc final {
 
     /// Written by the constructor and, for its chip, once by init() before
     /// the line is published; read-only from then on, so read without L1.
-    Data m_data;
-    Action::List m_actions TA_GUARDED(m_lock);
+    ControllerSource m_source;
+    Registration::List m_registrations TA_GUARDED(m_lock);
 
     /// Bumped by handle_irq(), with or without `m_lock` -- a Permanent line's
     /// dispatch holds none -- so it is atomic. A statistic: relaxed.
@@ -366,4 +366,4 @@ class Desc final {
 };
 } // namespace ours::irq
 
-#endif // OURS_IRQ_DESC_HPP
+#endif // OURS_IRQ_LINE_HPP

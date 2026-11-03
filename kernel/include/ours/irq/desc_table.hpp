@@ -14,9 +14,9 @@
 #include <ustl/views/span.hpp>
 
 namespace ours::irq {
-class Desc;
-class Action;
-struct Chip;
+class Line;
+class Registration;
+struct ControllerOps;
 
 /// The line table: a line's number to the line's descriptor. A line has two
 /// numbers, which the table's domain maps to each other: the hardware number
@@ -32,8 +32,8 @@ class DescTable {
     /// no mask, or a block that does not fit the virq space; AlreadyExists for
     /// a number given twice; BadState if the table is built; OutOfMem.
     [[nodiscard]]
-    auto init(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip, VIrqNum min_first = 0)
-        -> Status;
+    auto init(ustl::views::Span<HIrqNum const> hirqnums, ControllerOps const &chip,
+              VIrqNum min_first = 0) -> Status;
 
     /// The block of virqs the table's lines hold, [first_virq(), first_virq() +
     /// num_lines()). The floor `init()` was given is where the block starts
@@ -48,7 +48,7 @@ class DescTable {
     }
 
     /// The removal of the table's domain, over every line, in the steps
-    /// Desc documents. begin_removal() refuses before anything is marked
+    /// Line documents. begin_removal() refuses before anything is marked
     /// (check_revocable() over every line) and then marks every line
     /// (mark_dying()), undoing the marks it made if one refuses; it answers
     /// the first refusal, AlreadyBound, with nothing changed but a short
@@ -84,13 +84,13 @@ class DescTable {
     /// no such line.
     [[nodiscard]]
     auto hwirq_of(VIrqNum virqnum) const -> HIrqNum;
-    auto attach(VIrqNum virqnum, Action &action) -> Status;
+    auto attach(VIrqNum virqnum, Registration &action) -> Status;
     [[nodiscard]]
-    auto attach(VIrqNum virqnum, Action &action, ustl::Option<LineMode> mode)
+    auto attach(VIrqNum virqnum, Registration &action, ustl::Option<LineMode> mode)
         -> ktl::Result<TriggerMode>;
-    auto detach(Action &action) -> Status;
+    auto detach(Registration &action) -> Status;
     /// Finalizes `action` on line `virqnum`; nothing if there is no such line.
-    auto finalize_oneshot(VIrqNum virqnum, Action const &action) -> void;
+    auto finalize_oneshot(VIrqNum virqnum, Registration const &action) -> void;
     /// Runs the flow of the line made for hardware number `hirqnum`, ending
     /// the interrupt as `eoi` says, and answers what its actions answered;
     /// none if there is no such line, and so nothing ran and nothing was
@@ -111,7 +111,7 @@ class DescTable {
     [[nodiscard]]
     auto spurious_count(VIrqNum virqnum) -> ustl::Option<u64>;
     /// Takes every action off line `virqnum`, as the removal of the domain it
-    /// belongs to would (Desc::mark_dying(), then Desc::revoke()): the line
+    /// belongs to would (Line::mark_dying(), then Line::revoke()): the line
     /// is left marked, and its actions told. NoResource if there is no such
     /// line; AlreadyBound, with nothing changed, if the line is Permanent or
     /// an action on it gave no cancel hook.
@@ -131,20 +131,20 @@ class DescTable {
 
   private:
     /// The line named by a virq, null if there is none: the control path.
-    auto irqnum_to_desc(VIrqNum virqnum) -> Desc *;
+    auto irqnum_to_desc(VIrqNum virqnum) -> Line *;
 
     /// The line made for a hardware number, null if there is none: the
     /// interrupt path.
-    auto hwirq_to_desc(HIrqNum hirqnum) -> Desc *;
+    auto hwirq_to_desc(HIrqNum hirqnum) -> Line *;
 
     /// The line `virqnum` names: InvArgs for INVALID_V_IRQ_NUM, NoResource
     /// if there is no such line.
     [[nodiscard]]
-    auto find_line(VIrqNum virqnum) -> ktl::Result<Desc *>;
+    auto find_line(VIrqNum virqnum) -> ktl::Result<Line *>;
 
     Domain m_domain;
     /// The lines, indexed by hardware number.
-    ustl::views::Span<Desc *> m_descs;
+    ustl::views::Span<Line *> m_descs;
     std::atomic<bool> m_destroyed{false};
 };
 } // namespace ours::irq

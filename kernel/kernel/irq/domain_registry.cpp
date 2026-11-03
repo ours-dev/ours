@@ -55,7 +55,7 @@ auto DomainRegistry::claim_check_locked(DomainId const id, usize *const index) c
 /// rather than fast.
 auto DomainRegistry::register_domain(DomainId const id,
                                      ustl::views::Span<HIrqNum const> const hirqnums,
-                                     Chip const &chip, DomainSlot &slot) -> Status {
+                                     ControllerOps const &chip, DomainSlot &slot) -> Status {
     if (id == DomainId::Invalid) {
         return Status::InvArgs;
     }

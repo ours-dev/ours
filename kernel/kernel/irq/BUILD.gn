@@ -4,7 +4,7 @@ source_set("irq") {
     "desc_table.cpp",
     "domain.cpp",
     "domain_registry.cpp",
-    "desc.cpp",
+    "line.cpp",
     "mod.cpp",
   ]
   deps = [

@@ -4,8 +4,8 @@
 /// license that can be found in the LICENSE file or at
 /// https://opensource.org/licenses/MIT
 
-#ifndef OURS_IRQ_ACTION_HPP
-#define OURS_IRQ_ACTION_HPP
+#ifndef OURS_IRQ_REGISTRATION_HPP
+#define OURS_IRQ_REGISTRATION_HPP
 
 #include <ours/irq/types.hpp>
 
@@ -14,7 +14,7 @@
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::irq {
-class Desc;
+class Line;
 
 /// One handler hung on an interrupt line: the function to call and the
 /// context it is called with.
@@ -36,19 +36,19 @@ class Desc;
 /// reads `m_virqnum` to find the line before it holds that line's lock, and
 /// attach() reads it under the lock of the line it is about to join, which
 /// is not the lock of a line the action may be leaving.
-class Action final {
-    using Self = Action;
+class Registration final {
+    using Self = Registration;
 
   public:
     /// `context` is handed back to `handler` on every interrupt, untouched.
     /// A `cancel` makes the action one that the kernel may take off its line
-    /// (see Desc::revoke()): it is told, in the way IrqCancel says, and an
+    /// (see Line::revoke()): it is told, in the way IrqCancel says, and an
     /// action with none keeps its line against a removal of the domain.
-    constexpr Action(IrqHandler const handler, void *const context, IrqFlags const flags,
-                     char const *const name, IrqCancel const cancel = nullptr) noexcept
+    constexpr Registration(IrqHandler const handler, void *const context, IrqFlags const flags,
+                           char const *const name, IrqCancel const cancel = nullptr) noexcept
         : m_handler(handler), m_context(context), m_flags(flags), m_name(name), m_cancel(cancel) {}
 
-    Action(Self const &) = delete;
+    Registration(Self const &) = delete;
     auto operator=(Self const &) -> Self & = delete;
 
     [[nodiscard]]
@@ -106,10 +106,10 @@ class Action final {
     }
 
   private:
-    // Only the line may say which line an action is on: Desc::attach() and
+    // Only the line may say which line an action is on: Line::attach() and
     // detach() write `m_virqnum` together with linking `m_hook`, so the two
     // cannot disagree.
-    friend class Desc;
+    friend class Line;
 
     IrqHandler m_handler;
     void *m_context;
@@ -118,7 +118,7 @@ class Action final {
     char const *m_name;
     IrqCancel m_cancel;
     /// Written under the lock of the line it names, and by a removal as the
-    /// last thing it does to the action (Desc::revoke()); read without that
+    /// last thing it does to the action (Line::revoke()); read without that
     /// lock by detach() to find the line.
     std::atomic<VIrqNum> m_virqnum{INVALID_V_IRQ_NUM};
     ustl::collections::intrusive::ListMemberHook<> m_hook;
@@ -129,4 +129,4 @@ class Action final {
 };
 } // namespace ours::irq
 
-#endif // OURS_IRQ_ACTION_HPP
+#endif // OURS_IRQ_REGISTRATION_HPP

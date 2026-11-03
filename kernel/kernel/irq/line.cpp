@@ -1,5 +1,5 @@
 #include <ours/assert.hpp>
-#include <ours/irq/desc.hpp>
+#include <ours/irq/line.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 
@@ -7,18 +7,18 @@
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::irq {
-Desc::Desc(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name)
+Line::Line(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name)
     : m_canary(this)
     , m_lock()
     , m_flags(line_flags(flags))
-    , m_data(hirq, virq, nullptr /* No chip available */)
-    , m_actions()
+    , m_source(hirq, virq, nullptr /* No chip available */)
+    , m_registrations()
     , m_name(name) {}
 
 /// The bits share their positions with IrqFlags today, but they are
 /// translated one by one, so that the two types may part without anyone
 /// noticing a silent reinterpretation.
-auto Desc::line_flags(IrqFlags const flags) -> LineFlags {
+auto Line::line_flags(IrqFlags const flags) -> LineFlags {
     auto line = LineFlags::None;
     if (!!(flags & IrqFlags::Shared)) {
         line |= LineFlags::Shared;
@@ -32,7 +32,7 @@ auto Desc::line_flags(IrqFlags const flags) -> LineFlags {
     return line;
 }
 
-auto Desc::create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) -> Self * {
+auto Line::create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) -> Self * {
     return new (mm::GAF_KERNEL) Self(hirq, virq, flags, name);
 }
 
@@ -48,18 +48,18 @@ auto Desc::create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) 
 /// Nobody else can reach the line yet, so L1 is never contended here; it is
 /// taken because the flow is written under it everywhere else, and the read
 /// goes L1 -> LI, the order attach() takes.
-auto Desc::init(Chip const &chip) -> Status {
-    if (m_data.chip) {
+auto Line::init(ControllerOps const &chip) -> Status {
+    if (m_source.chip) {
         return Status::BadState;
     }
-    m_data.chip = &chip;
+    m_source.chip = &chip;
 
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     // A chip that cannot say how its pins signal gets the edge flow, which
     // asks nothing of the chip around the actions.
     auto trigger = TriggerMode::Edge;
     if (chip.trigger_mode) {
-        trigger = chip.trigger_mode(m_data);
+        trigger = chip.trigger_mode(m_source);
     }
     select_flow_locked(trigger);
     return Status::Ok;
@@ -71,7 +71,7 @@ auto Desc::init(Chip const &chip) -> Status {
 /// all, so the timer's request for a permanent line was dropped on the floor.
 /// Now Shared alone follows the line's occupants (set by the first, cleared
 /// by detach() when the last leaves), and Permanent, once set, stays.
-auto Desc::attach(Action &action) -> Status {
+auto Line::attach(Registration &action) -> Status {
     // The handler is fixed at construction, so it needs no lock to read.
     if (!action.m_handler) {
         return Status::InvArgs;
@@ -86,7 +86,7 @@ auto Desc::attach(Action &action) -> Status {
     // this looks at what the chip can say, not at the flow the line has now,
     // and the action needs a mode (the other attach). The chip is fixed before
     // the line is published, so it is read without the lock.
-    if (action.is_oneshot() && (m_data.chip == nullptr || !m_data.chip->trigger_mode)) {
+    if (action.is_oneshot() && (m_source.chip == nullptr || !m_source.chip->trigger_mode)) {
         return Status::NotSupported;
     }
 
@@ -108,7 +108,7 @@ auto Desc::attach(Action &action) -> Status {
     if (!!(flags & LineFlags::Permanent)) {
         return Status::AlreadyBound;
     }
-    if (!m_actions.empty()) {
+    if (!m_registrations.empty()) {
         // Joining an occupied line needs both sides to agree to share, and a
         // Permanent action never shares: it would freeze the others on the
         // line along with itself.
@@ -139,7 +139,8 @@ auto Desc::attach(Action &action) -> Status {
 /// The flow is chosen in the same hold, from the mode just set or read, so
 /// the action's first interrupt runs the flow of the mode it took the line
 /// in.
-auto Desc::attach(Action &action, ustl::Option<LineMode> const mode) -> ktl::Result<TriggerMode> {
+auto Line::attach(Registration &action, ustl::Option<LineMode> const mode)
+    -> ktl::Result<TriggerMode> {
     if (!action.m_handler) {
         return ustl::err(Status::InvArgs);
     }
@@ -148,7 +149,7 @@ auto Desc::attach(Action &action, ustl::Option<LineMode> const mode) -> ktl::Res
     }
     // The chip is fixed before the line is published, so it is read without
     // the lock, as mask() reads it.
-    auto const *const chip = m_data.chip;
+    auto const *const chip = m_source.chip;
     if (mode.is_some()) {
         if (!chip || !chip->configure) {
             return ustl::err(Status::NotSupported);
@@ -170,20 +171,20 @@ auto Desc::attach(Action &action, ustl::Option<LineMode> const mode) -> ktl::Res
     // action, and the mode of a line others are on is theirs. A Permanent
     // line always has its action; the flag is tested for what it says.
     auto const flags = m_flags.load(std::memory_order_relaxed);
-    if (!!(flags & LineFlags::Permanent) || !m_actions.empty()) {
+    if (!!(flags & LineFlags::Permanent) || !m_registrations.empty()) {
         return ustl::err(Status::AlreadyBound);
     }
 
     auto trigger = TriggerMode::Edge;
     if (mode.is_some()) {
-        if (auto const status = chip->configure(m_data, mode->trigger, mode->polarity);
+        if (auto const status = chip->configure(m_source, mode->trigger, mode->polarity);
             status != Status::Ok) {
             return ustl::err(status);
         }
         trigger = mode->trigger;
     } else {
-        chip->mask(m_data);
-        trigger = chip->trigger_mode(m_data);
+        chip->mask(m_source);
+        trigger = chip->trigger_mode(m_source);
     }
     select_flow_locked(trigger);
 
@@ -203,21 +204,21 @@ auto Desc::attach(Action &action, ustl::Option<LineMode> const mode) -> ktl::Res
 ///
 /// The flags and the handler are fixed at construction, and the chip before
 /// the line is published, so none of this needs L1.
-auto Desc::check_oneshot(Action const &action) const -> Status {
+auto Line::check_oneshot(Registration const &action) const -> Status {
     if (!action.is_oneshot()) {
         return Status::Ok;
     }
     if (action.is_permanent() || action.is_shared()) {
         return Status::InvArgs;
     }
-    auto const *const chip = m_data.chip;
+    auto const *const chip = m_source.chip;
     if (!chip || !chip->mask || !chip->unmask) {
         return Status::NotSupported;
     }
     return Status::Ok;
 }
 
-auto Desc::select_flow_locked(TriggerMode const trigger) -> void {
+auto Line::select_flow_locked(TriggerMode const trigger) -> void {
     if (trigger == TriggerMode::Level) {
         m_flow = Flow::FastEoi;
     } else {
@@ -232,13 +233,13 @@ auto Desc::select_flow_locked(TriggerMode const trigger) -> void {
 /// Oneshot is the line's for as long as its action is on it. A Oneshot
 /// action never shares, so it only ever takes an empty line, and detach()
 /// clears the flag as the line empties.
-auto Desc::link_locked(Action &action, LineFlags flags) -> void {
-    if (m_actions.empty() && action.is_shared()) {
+auto Line::link_locked(Registration &action, LineFlags flags) -> void {
+    if (m_registrations.empty() && action.is_shared()) {
         flags |= LineFlags::Shared;
     }
 
-    m_actions.push_back(action);
-    action.m_virqnum.store(m_data.virqnum, std::memory_order_release);
+    m_registrations.push_back(action);
+    action.m_virqnum.store(m_source.virqnum, std::memory_order_release);
 
     if (action.is_permanent()) {
         flags |= LineFlags::Permanent;
@@ -269,11 +270,11 @@ auto Desc::link_locked(Action &action, LineFlags flags) -> void {
 /// attached, unmasks it. Left unmasked, a level pin whose device still
 /// asserts it would raise an interrupt nobody handles before the flow masked
 /// it; a held line is masked already, and stays so though held is gone.
-auto Desc::detach(Action &action) -> Status {
+auto Line::detach(Registration &action) -> Status {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     // erase() trusts that the action is in this very list; erasing one that
     // is not would unlink it from whichever list it is on, or from none.
-    if (action.virqnum() != m_data.virqnum) {
+    if (action.virqnum() != m_source.virqnum) {
         return Status::NotFound;
     }
 
@@ -284,12 +285,12 @@ auto Desc::detach(Action &action) -> Status {
         return Status::AlreadyBound;
     }
 
-    m_actions.erase(action);
+    m_registrations.erase(action);
     action.m_virqnum.store(INVALID_V_IRQ_NUM, std::memory_order_release);
     // Held and, on a line left empty, the facts its last action brought go
     // out in one store.
     flags &= ~LineFlags::Held;
-    auto const emptied = m_actions.empty();
+    auto const emptied = m_registrations.empty();
     if (emptied) {
         flags &= ~(LineFlags::Shared | LineFlags::Oneshot);
     }
@@ -297,9 +298,9 @@ auto Desc::detach(Action &action) -> Status {
     if (emptied) {
         // Every line of the table has a chip that masks; only a line of a
         // test's own may have no chip at all.
-        auto const *const chip = m_data.chip;
+        auto const *const chip = m_source.chip;
         if (chip && chip->mask) {
-            chip->mask(m_data);
+            chip->mask(m_source);
         }
     }
     return Status::Ok;
@@ -327,14 +328,14 @@ auto Desc::detach(Action &action) -> Status {
 /// taken off again, with its object idle and nothing to raise the next
 /// interrupt; and if the removal goes through, revoke() clears held and masks
 /// the line last, under this same lock.
-auto Desc::finalize_oneshot(Action const &action) -> void {
+auto Line::finalize_oneshot(Registration const &action) -> void {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-    if (action.virqnum() != m_data.virqnum || !is_oneshot()) {
+    if (action.virqnum() != m_source.virqnum || !is_oneshot()) {
         return;
     }
     set_held_locked(false);
     // check_oneshot() let the action on only with a chip that unmasks.
-    m_data.chip->unmask(m_data);
+    m_source.chip->unmask(m_source);
 }
 
 namespace {
@@ -343,7 +344,7 @@ namespace {
     /// any of them says so. WakeThread says so too, and more: a thread still
     /// owes the device its service, which is what the level flow of a
     /// Oneshot line needs to know, so it outranks Handled in the answer.
-    auto notify_all(Action::List &actions) -> IrqReturn {
+    auto notify_all(Registration::List &actions) -> IrqReturn {
         auto result = IrqReturn::None;
         for (auto &action: actions) {
             auto const answer = action.on_event();
@@ -366,15 +367,15 @@ namespace {
     /// interrupt still in service beneath this one. A guard makes that a
     /// matter of scope rather than of each return path.
     ///
-    /// The chip is read without the lock, as Desc::mask() reads it: it is
+    /// The chip is read without the lock, as Line::mask() reads it: it is
     /// fixed before the line is published. A line of the table always has a
     /// chip with an eoi (DescTable::init()); a line of a test's own, outside
     /// the table, may have none, and is dispatched with Skip.
     class EoiGuard final {
       public:
         [[nodiscard]]
-        EoiGuard(Data const &data, Eoi const eoi)
-            : m_data(data), m_eoi(eoi) {}
+        EoiGuard(ControllerSource const &data, Eoi const eoi)
+            : m_source(data), m_eoi(eoi) {}
 
         USTL_NO_MOVEABLE_AND_COPYABLE(EoiGuard);
 
@@ -382,14 +383,14 @@ namespace {
             if (m_eoi == Eoi::Skip) {
                 return;
             }
-            auto const *const chip = m_data.chip;
+            auto const *const chip = m_source.chip;
             DEBUG_ASSERT(chip && chip->issue_eoi, "line {} ends an interrupt with no chip eoi",
-                         m_data.virqnum);
-            chip->issue_eoi(m_data);
+                         m_source.virqnum);
+            chip->issue_eoi(m_source);
         }
 
       private:
-        Data const &m_data;
+        ControllerSource const &m_source;
         Eoi const m_eoi;
     };
 } // namespace
@@ -404,13 +405,13 @@ namespace {
 /// its actions; it reads only which flow the line runs, its list, its chip
 /// and, on the level flow, the Oneshot flag, which attach() never sets with
 /// Permanent, and none of them changes once Permanent is set.
-auto Desc::handle_irq(Eoi const eoi) -> IrqReturn {
+auto Line::handle_irq(Eoi const eoi) -> IrqReturn {
     auto result = IrqReturn::None;
     if (is_permanent()) {
-        result = run_flow(permanent_flow(), permanent_actions(), eoi);
+        result = run_flow(permanent_flow(), permanent_registrations(), eoi);
     } else {
         Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-        result = run_flow(m_flow, m_actions, eoi);
+        result = run_flow(m_flow, m_registrations, eoi);
     }
 
     // An interrupt no action claimed is counted per line; WakeThread claims
@@ -428,8 +429,8 @@ auto Desc::handle_irq(Eoi const eoi) -> IrqReturn {
 /// flow does to the line -- the mask of a line nobody is on, the unmask of a
 /// Oneshot line that is not held -- and, on a line that is not Permanent,
 /// still inside the caller's hold of L1.
-auto Desc::run_flow(Flow const flow, Action::List &actions, Eoi const eoi) -> IrqReturn {
-    EoiGuard const end_of_interrupt{m_data, eoi};
+auto Line::run_flow(Flow const flow, Registration::List &actions, Eoi const eoi) -> IrqReturn {
+    EoiGuard const end_of_interrupt{m_source, eoi};
     switch (flow) {
         case Flow::Edge:
             return handle_edge(actions);
@@ -459,7 +460,7 @@ auto Desc::run_flow(Flow const flow, Action::List &actions, Eoi const eoi) -> Ir
 /// nothing again until the device signals anew, so there is nothing to hold
 /// off while a thread services the device, and a masked edge pin would drop
 /// the edges that came meanwhile, which nothing replays.
-auto Desc::handle_edge(Action::List &actions) -> IrqReturn {
+auto Line::handle_edge(Registration::List &actions) -> IrqReturn {
     if (actions.empty()) {
         mask_unclaimed();
         return IrqReturn::None;
@@ -484,7 +485,7 @@ auto Desc::handle_edge(Action::List &actions) -> IrqReturn {
 /// action services its device in its handler, before the end of interrupt,
 /// or keeps the line quiet itself. An interrupt object, whose driver
 /// services the device long after the handler, says Oneshot instead.
-auto Desc::handle_fasteoi(Action::List &actions) -> IrqReturn {
+auto Line::handle_fasteoi(Registration::List &actions) -> IrqReturn {
     if (actions.empty()) {
         mask_unclaimed();
         return IrqReturn::None;
@@ -515,17 +516,17 @@ auto Desc::handle_fasteoi(Action::List &actions) -> IrqReturn {
 /// Mask, actions, unmask and end of interrupt all run under the one hold of
 /// L1, which is what keeps finalize_oneshot() and detach(), which take it
 /// too, from landing between the check of held and the unmask.
-auto Desc::handle_oneshot_locked(Action::List &actions) -> IrqReturn {
+auto Line::handle_oneshot_locked(Registration::List &actions) -> IrqReturn {
     // check_oneshot() let the action on only with a chip that masks and
     // unmasks.
-    auto const &chip = *m_data.chip;
-    chip.mask(m_data);
+    auto const &chip = *m_source.chip;
+    chip.mask(m_source);
     auto const result = notify_all(actions);
     if (result == IrqReturn::WakeThread) {
         set_held_locked(true);
     }
     if (!is_held_locked()) {
-        chip.unmask(m_data);
+        chip.unmask(m_source);
     }
     return result;
 }
@@ -534,11 +535,11 @@ auto Desc::handle_oneshot_locked(Action::List &actions) -> IrqReturn {
 /// the line is published. A line of the table always has a chip that masks
 /// (DescTable::init()); a line of a test's own, outside the table, needs one
 /// too before it is dispatched with nobody on it.
-auto Desc::mask_unclaimed() const -> void {
-    auto const *const chip = m_data.chip;
+auto Line::mask_unclaimed() const -> void {
+    auto const *const chip = m_source.chip;
     DEBUG_ASSERT(chip && chip->mask, "line {} masks an unclaimed interrupt with no chip mask",
-                 m_data.virqnum);
-    chip->mask(m_data);
+                 m_source.virqnum);
+    chip->mask(m_source);
 }
 
 /// Under L1, like every other write of the line's mask -- the flow's,
@@ -550,13 +551,13 @@ auto Desc::mask_unclaimed() const -> void {
 ///
 /// The chip and its operations are fixed before the line is published, so
 /// they are read before the lock is taken, as configure() reads them.
-auto Desc::mask() -> Status {
-    auto const *const chip = m_data.chip;
+auto Line::mask() -> Status {
+    auto const *const chip = m_source.chip;
     if (!chip || !chip->mask) {
         return Status::NotSupported;
     }
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-    chip->mask(m_data);
+    chip->mask(m_source);
     return Status::Ok;
 }
 
@@ -571,8 +572,8 @@ auto Desc::mask() -> Status {
 /// could do with a refusal would make it run sooner, and the owner that
 /// starts its line after attach() must not take a refusal for a failure: an
 /// interrupt played on the line in between can have held it already.
-auto Desc::unmask() -> Status {
-    auto const *const chip = m_data.chip;
+auto Line::unmask() -> Status {
+    auto const *const chip = m_source.chip;
     if (!chip || !chip->unmask) {
         return Status::NotSupported;
     }
@@ -584,7 +585,7 @@ auto Desc::unmask() -> Status {
     if (is_held_locked()) {
         return Status::Ok;
     }
-    chip->unmask(m_data);
+    chip->unmask(m_source);
     return Status::Ok;
 }
 
@@ -594,8 +595,8 @@ auto Desc::unmask() -> Status {
 /// the write. It does not keep another caller's configure() from landing
 /// between this and a later attach(), which is why an owner sets the mode
 /// through attach() with a mode instead.
-auto Desc::configure(TriggerMode const trigger, Polarity const polarity) -> Status {
-    auto const *const chip = m_data.chip;
+auto Line::configure(TriggerMode const trigger, Polarity const polarity) -> Status {
+    auto const *const chip = m_source.chip;
     if (!chip || !chip->configure) {
         return Status::NotSupported;
     }
@@ -607,10 +608,10 @@ auto Desc::configure(TriggerMode const trigger, Polarity const polarity) -> Stat
     // A Permanent line always has its action; the flag is tested for what
     // it says, not as a stand-in for the list.
     auto const flags = m_flags.load(std::memory_order_relaxed);
-    if (!!(flags & LineFlags::Permanent) || !m_actions.empty()) {
+    if (!!(flags & LineFlags::Permanent) || !m_registrations.empty()) {
         return Status::AlreadyBound;
     }
-    auto const status = chip->configure(m_data, trigger, polarity);
+    auto const status = chip->configure(m_source, trigger, polarity);
     // The flow follows the mode only once the chip has taken it: a refused
     // configure leaves the pin, and so the flow, as they were.
     if (status == Status::Ok) {
@@ -625,22 +626,22 @@ auto Desc::configure(TriggerMode const trigger, Polarity const polarity) -> Stat
 /// and keeps the two in step: the table is built after the platform has
 /// programmed the pins, and from then on the mode changes only through
 /// configure() and attach() with a mode, which choose the flow again under L1.
-auto Desc::trigger_mode() const -> ktl::Result<TriggerMode> {
-    auto const *const chip = m_data.chip;
+auto Line::trigger_mode() const -> ktl::Result<TriggerMode> {
+    auto const *const chip = m_source.chip;
     if (!chip || !chip->trigger_mode) {
         return ustl::err(Status::NotSupported);
     }
-    return ustl::ok(chip->trigger_mode(m_data));
+    return ustl::ok(chip->trigger_mode(m_source));
 }
 
 /// Asked of the chip, as trigger_mode() is: the controller's entry is the one
 /// record of the mask, and the line keeps no copy of it to answer from.
-auto Desc::is_masked() const -> ktl::Result<bool> {
-    auto const *const chip = m_data.chip;
+auto Line::is_masked() const -> ktl::Result<bool> {
+    auto const *const chip = m_source.chip;
     if (!chip || !chip->is_masked) {
         return ustl::err(Status::NotSupported);
     }
-    return ustl::ok(chip->is_masked(m_data));
+    return ustl::ok(chip->is_masked(m_source));
 }
 
 /// Why a removal could not empty this line: a Permanent line dispatches
@@ -648,11 +649,11 @@ auto Desc::is_masked() const -> ktl::Result<bool> {
 /// kernel's own code, which holds it for good; and an action that gave no
 /// cancel hook has not agreed to be taken off, so its owner would never be
 /// told. Both are AlreadyBound, as an attach on such a line answers.
-auto Desc::revocable_locked() const -> Status {
+auto Line::revocable_locked() const -> Status {
     if (!!(m_flags.load(std::memory_order_relaxed) & LineFlags::Permanent)) {
         return Status::AlreadyBound;
     }
-    for (auto const &action: m_actions) {
+    for (auto const &action: m_registrations) {
         if (!action.is_revocable()) {
             return Status::AlreadyBound;
         }
@@ -660,7 +661,7 @@ auto Desc::revocable_locked() const -> Status {
     return Status::Ok;
 }
 
-auto Desc::check_revocable() -> Status {
+auto Line::check_revocable() -> Status {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     return revocable_locked();
 }
@@ -668,7 +669,7 @@ auto Desc::check_revocable() -> Status {
 /// The check and the mark are one hold of L1, so an attach that lands
 /// between a check_revocable() and this cannot make the removal take an
 /// action that was not there to be asked.
-auto Desc::mark_dying() -> Status {
+auto Line::mark_dying() -> Status {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     if (auto const status = revocable_locked(); status != Status::Ok) {
         return status;
@@ -678,12 +679,12 @@ auto Desc::mark_dying() -> Status {
     return Status::Ok;
 }
 
-auto Desc::has_actions() -> bool {
+auto Line::has_registrations() -> bool {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-    return !m_actions.empty();
+    return !m_registrations.empty();
 }
 
-auto Desc::unmark_dying() -> void {
+auto Line::unmark_dying() -> void {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     m_flags.store(m_flags.load(std::memory_order_relaxed) & ~LineFlags::Dying,
                   std::memory_order_release);
@@ -707,37 +708,37 @@ auto Desc::unmark_dying() -> void {
 /// Held goes with the actions, as in detach(): a Oneshot line's thread
 /// owes nothing to an owner that has been told it is gone. The line is
 /// masked last, through the chip, which the table's lines all have.
-auto Desc::revoke() -> void {
+auto Line::revoke() -> void {
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_lock};
     auto flags = m_flags.load(std::memory_order_relaxed);
     // Checked in the release image too: a line not marked may have an action
     // that never agreed to be taken off, and a Permanent line's list is walked
     // without this lock.
-    ASSERT(!!(flags & LineFlags::Dying), "line {} revoked before it was marked", m_data.virqnum);
-    ASSERT(!(flags & LineFlags::Permanent), "line {} is Permanent and revoked", m_data.virqnum);
+    ASSERT(!!(flags & LineFlags::Dying), "line {} revoked before it was marked", m_source.virqnum);
+    ASSERT(!(flags & LineFlags::Permanent), "line {} is Permanent and revoked", m_source.virqnum);
 
     for (;;) {
-        auto const first = m_actions.front();
+        auto const first = m_registrations.front();
         if (first.is_none()) {
             break;
         }
         auto &action = *first;
         ASSERT(action.is_revocable(), "line {} revokes an action with no cancel hook",
-               m_data.virqnum);
-        m_actions.erase(action);
+               m_source.virqnum);
+        m_registrations.erase(action);
         action.cancel();
         action.m_virqnum.store(INVALID_V_IRQ_NUM, std::memory_order_release);
     }
 
     flags &= ~(LineFlags::Held | LineFlags::Shared | LineFlags::Oneshot);
     m_flags.store(flags, std::memory_order_release);
-    auto const *const chip = m_data.chip;
+    auto const *const chip = m_source.chip;
     if (chip && chip->mask) {
-        chip->mask(m_data);
+        chip->mask(m_source);
     }
 }
 
-auto Desc::flow() -> Flow {
+auto Line::flow() -> Flow {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     return m_flow;
 }

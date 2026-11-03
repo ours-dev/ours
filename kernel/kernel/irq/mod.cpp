@@ -1,7 +1,7 @@
-#include <ours/irq/action.hpp>
 #include <ours/irq/desc_table.hpp>
 #include <ours/irq/domain_registry.hpp>
 #include <ours/irq/mod.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/task/irq_rcu.hpp>
 #include <ours/task/thread.hpp>
@@ -70,12 +70,12 @@ auto current_frame() -> arch::IrqFrame * {
     return mm::CpuLocal::read(CURRENT_FRAME);
 }
 
-auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip, DomainSlot &slot)
-    -> Status {
+auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums, ControllerOps const &chip,
+                DomainSlot &slot) -> Status {
     return get_domain_registry()->register_domain(DomainId::Root, hirqnums, chip, slot);
 }
 
-auto attach(VIrqNum const virqnum, Action &action) -> Status {
+auto attach(VIrqNum const virqnum, Registration &action) -> Status {
     task::IrqRcuReadGuard const guard;
     auto const table = find_table(virqnum, guard);
     if (table.is_err()) {
@@ -84,7 +84,7 @@ auto attach(VIrqNum const virqnum, Action &action) -> Status {
     return (*table)->attach(virqnum, action);
 }
 
-auto attach(VIrqNum const virqnum, Action &action, ustl::Option<LineMode> const mode)
+auto attach(VIrqNum const virqnum, Registration &action, ustl::Option<LineMode> const mode)
     -> ktl::Result<TriggerMode> {
     task::IrqRcuReadGuard const guard;
     auto const table = find_table(virqnum, guard);
@@ -99,7 +99,7 @@ auto attach(VIrqNum const virqnum, Action &action, ustl::Option<LineMode> const 
 /// INVALID_V_IRQ_NUM, which is what an action not on any line holds, is in no
 /// domain's block and answers NotFound, as it did when the machine had one
 /// table.
-auto detach(Action &action) -> Status {
+auto detach(Registration &action) -> Status {
     task::IrqRcuReadGuard const guard;
     auto *const table = get_domain_registry()->table_of(action.virqnum(), guard);
     if (table == nullptr) {
@@ -108,7 +108,7 @@ auto detach(Action &action) -> Status {
     return table->detach(action);
 }
 
-auto finalize_oneshot(VIrqNum const virqnum, Action const &action) -> void {
+auto finalize_oneshot(VIrqNum const virqnum, Registration const &action) -> void {
     task::IrqRcuReadGuard const guard;
     auto *const table = get_domain_registry()->table_of(virqnum, guard);
     if (table == nullptr) {

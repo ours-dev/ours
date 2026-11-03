@@ -2,8 +2,8 @@
 #include <ours/arch/time.hpp>
 #include <ours/assert.hpp>
 #include <ours/driver/i8253.hpp>
-#include <ours/irq/action.hpp>
 #include <ours/irq/mod.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/platform/isa.hpp>
 #include <ours/time/clock_event_device.hpp>
 
@@ -61,8 +61,8 @@ namespace {
     /// The line's action, owned here for the kernel's lifetime: the line is
     /// Permanent, so nothing ever detaches it.
     // NOLINTNEXTLINE(readability-identifier-naming): UPPER_CASE, as above.
-    constinit irq::Action LEGACY_TIMER_ACTION{&timer_interrupt, &LEGACY_TIMER,
-                                              irq::IrqFlags::Permanent, "IRQ-Timer"};
+    constinit irq::Registration LEGACY_TIMER_ACTION{&timer_interrupt, &LEGACY_TIMER,
+                                                    irq::IrqFlags::Permanent, "IRQ-Timer"};
 } // namespace
 
 auto global_clock_event() -> ClockEventDevice * {

@@ -10,7 +10,7 @@ Authorities: `kernel-design` and its `references/task.md`, `modern-cpp-developme
 
 Read primary reference implementations in the local checkouts: Linux `kernel/irq/chip.c` (`handle_fasteoi_irq`, `handle_edge_irq`), `kernel/irq/manage.c` (`irq_finalize_oneshot`), `kernel/irq/handle.c` (`handle_irq_event`), `include/linux/irqdesc.h`, and Zircon `kernel/platform/pc/interrupt_manager.rs` (`InterruptTableEntry::invoke_if_present`) and `kernel/dev/interrupt/include/dev/interrupt.h`.
 
-Validation used the repository's LLVM 23 binaries and an isolated `out/irq-design-review` build. All 15 IRQ C++ files pass `clang-format --dry-run -Werror`. Clang-tidy results and runtime checks are recorded in RESULT.md. Findings below are source-based unless explicitly described as exercised; the baseline tests do not prove absence of races.
+Validation used the repository's LLVM 23 binaries and an isolated `out/irq-design-review` build. All 15 IRQ C++ files pass `clang-format --dry-run -Werror`. Clang-tidy results and runtime checks are recorded in RESULT.md. Findings below are source-based unless explicitly described as exercised; the baseline tests do not prove absence of races. Self-review of the naming increment checked all migrated declarations, include paths, GN source entries and caller types; no semantic change or new finding was identified. All 22 touched C++ files ran clang-tidy and the nine targeted suites passed.
 
 ## What is done well
 

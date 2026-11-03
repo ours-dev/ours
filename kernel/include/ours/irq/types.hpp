@@ -113,12 +113,12 @@ struct LineMode {
 };
 
 /// An interrupt handler. `context` is whatever the action that carries the
-/// handler was constructed with (Action), so the handler finds its
+/// handler was constructed with (Registration), so the handler finds its
 /// device's state there rather than in a global.
 using IrqHandler = auto (*)(VIrqNum virqnum, void *context) -> IrqReturn;
 
 /// What an action may ask to be told when the kernel takes its line away
-/// from it (Desc::revoke()), instead of its owner letting the line go: the
+/// from it (Line::revoke()), instead of its owner letting the line go: the
 /// line's virq and the action's context, as the handler gets them.
 ///
 /// Called with the line's lock (L1) held, interrupts off and preemption off,

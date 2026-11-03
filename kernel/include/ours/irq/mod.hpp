@@ -17,8 +17,8 @@ struct IrqFrame;
 }
 
 namespace ours::irq {
-class Action;
-struct Chip;
+class Registration;
+struct ControllerOps;
 class DescTable;
 class DomainSlot;
 
@@ -58,8 +58,8 @@ class DomainSlot;
 /// chip with no eoi or no mask, NoMemory.
 /// Nothing is kept from a call that fails.
 [[nodiscard]]
-auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip, DomainSlot &slot)
-    -> Status;
+auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, ControllerOps const &chip,
+                DomainSlot &slot) -> Status;
 
 /// Hangs `action` on line `virqnum`; from then on every interrupt on the
 /// line calls the action's handler with the action's context. The caller
@@ -86,7 +86,7 @@ auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, Chip const &chip, Dom
 /// cannot say how its pins signal (give a mode: the attach with a mode),
 /// which is answered before AlreadyBound.
 [[nodiscard]]
-auto attach(VIrqNum virqnum, Action &action) -> Status;
+auto attach(VIrqNum virqnum, Registration &action) -> Status;
 
 /// Hangs `action` on line `virqnum` as attach() does, but only on a line
 /// nobody is on, and settles how the line signals in the same step: with
@@ -113,12 +113,12 @@ auto attach(VIrqNum virqnum, Action &action) -> Status;
 /// set its mode, or cannot say what it is and mask it; the other answers as
 /// attach().
 [[nodiscard]]
-auto attach(VIrqNum virqnum, Action &action, ustl::Option<LineMode> mode)
+auto attach(VIrqNum virqnum, Registration &action, ustl::Option<LineMode> mode)
     -> ktl::Result<TriggerMode>;
 
 /// Takes `action` off the line it hangs on; NotFound if it hangs on none,
 /// AlreadyBound if the line is Permanent. NotFound also answers an action the
-/// kernel took off (Desc::revoke()), and then means the removal is done with
+/// kernel took off (Line::revoke()), and then means the removal is done with
 /// the action and what it is embedded in, so the owner may free it as it may
 /// after Ok.
 ///
@@ -131,7 +131,7 @@ auto attach(VIrqNum virqnum, Action &action, ustl::Option<LineMode> mode)
 /// finalize_oneshot() that may never come; when the last action goes, the
 /// line is left masked until the next owner unmasks it.
 [[nodiscard]]
-auto detach(Action &action) -> Status;
+auto detach(Registration &action) -> Status;
 
 /// Tells line `virqnum` that `action`'s thread has serviced its device: the
 /// line stops being held and is unmasked. Called by the action's owner when
@@ -153,7 +153,7 @@ auto detach(Action &action) -> Status;
 /// the two the other way round. Nor from a handler of another line, whose
 /// dispatch holds that line's lock: no order is set between two lines'
 /// locks.
-auto finalize_oneshot(VIrqNum virqnum, Action const &action) -> void;
+auto finalize_oneshot(VIrqNum virqnum, Registration const &action) -> void;
 
 /// Masks line `virqnum` at its controller, so the pin raises no interrupt
 /// until it is unmasked.

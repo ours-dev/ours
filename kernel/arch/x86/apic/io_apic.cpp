@@ -1,6 +1,6 @@
 #include <ours/arch/apic.hpp>
 #include <ours/assert.hpp>
-#include <ours/irq/chip.hpp>
+#include <ours/irq/controller.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
@@ -80,19 +80,19 @@ namespace {
     // needs no chip data of its own, and `data.platform_data` stays null.
     // A line wired to several pins would need such data; no line is.
 
-    auto ioapic_mask_irq(irq::Data const &data) -> void {
+    auto ioapic_mask_irq(irq::ControllerSource const &data) -> void {
         auto &ioapic = owner_of(data.hirqnum);
         Guard<sync::SpinLock, IrqSave> const guard{IOAPIC_LOCK};
         ioapic.mask_irq(data.hirqnum);
     }
 
-    auto ioapic_unmask_irq(irq::Data const &data) -> void {
+    auto ioapic_unmask_irq(irq::ControllerSource const &data) -> void {
         auto &ioapic = owner_of(data.hirqnum);
         Guard<sync::SpinLock, IrqSave> const guard{IOAPIC_LOCK};
         ioapic.unmask_irq(data.hirqnum);
     }
 
-    auto ioapic_startup_irq(irq::Data const &data) -> Status {
+    auto ioapic_startup_irq(irq::ControllerSource const &data) -> Status {
         ioapic_unmask_irq(data);
         return Status::Ok;
     }
@@ -102,7 +102,7 @@ namespace {
     /// signals changes. The pin is left masked: a line changes how it
     /// signals only while nobody is on it, and the driver that attaches next
     /// unmasks it once its handler is in place.
-    auto ioapic_configure_irq(irq::Data const &data, TriggerMode const trigger,
+    auto ioapic_configure_irq(irq::ControllerSource const &data, TriggerMode const trigger,
                               Polarity const polarity) -> Status {
         auto apic_trigger = arch::ApicTriggerMode::Edge;
         if (trigger == TriggerMode::Level) {
@@ -122,7 +122,7 @@ namespace {
     /// Read from the pin's redirection entry, under LI like every register
     /// access: the entry is the one record of how the pin signals, written
     /// by the platform at boot and by ioapic_configure_irq() since.
-    auto ioapic_trigger_mode(irq::Data const &data) -> TriggerMode {
+    auto ioapic_trigger_mode(irq::ControllerSource const &data) -> TriggerMode {
         auto &ioapic = owner_of(data.hirqnum);
         auto apic_trigger = arch::ApicTriggerMode::Edge;
         {
@@ -140,7 +140,7 @@ namespace {
     /// masked: mask and unmask write it, and nothing keeps a copy. Only the
     /// kernel tests read it, to see what a line's flow and its owner leave
     /// there.
-    auto ioapic_is_masked(irq::Data const &data) -> bool {
+    auto ioapic_is_masked(irq::ControllerSource const &data) -> bool {
         auto &ioapic = owner_of(data.hirqnum);
         Guard<sync::SpinLock, IrqSave> const guard{IOAPIC_LOCK};
         return ioapic.is_masked(data.hirqnum);
@@ -152,7 +152,7 @@ namespace {
     /// local APIC also sends the EOI on to the IO-APICs, and the entry that
     /// carries the vector clears its Remote IRR, so the pin can deliver
     /// again. No IO-APIC register is written, so LI is not taken.
-    auto ioapic_eoi(irq::Data const &) -> void {
+    auto ioapic_eoi(irq::ControllerSource const &) -> void {
         apic_issue_eoi();
     }
 
@@ -161,7 +161,7 @@ namespace {
     /// ioapic_eoi(), and this is reached only through issue_ack, which
     /// nothing calls. It also writes the GSI where the vector belongs
     /// (docs/repairs/261003/x86-apic.md, item 2).
-    auto ioapic_issue_eoi(irq::Data const &data) -> void {
+    auto ioapic_issue_eoi(irq::ControllerSource const &data) -> void {
         auto &ioapic = owner_of(data.hirqnum);
         Guard<sync::SpinLock, IrqSave> const guard{IOAPIC_LOCK};
         // NotSupported from an IOAPIC older than version 0x20, which has
@@ -171,13 +171,13 @@ namespace {
         auto _ = ioapic.issue_eoi(data.hirqnum);
     }
 
-    auto ioapic_issue_ack(irq::Data const &data) -> void {
+    auto ioapic_issue_ack(irq::ControllerSource const &data) -> void {
         ioapic_issue_eoi(data);
     }
 
     // The platform aims every pin at the boot CPU when it programs it, and
     // nothing moves one afterwards.
-    auto ioapic_set_affinity(irq::Data const &, CpuMask const *) -> Status {
+    auto ioapic_set_affinity(irq::ControllerSource const &, CpuMask const *) -> Status {
         return Status::NotSupported;
     }
 
@@ -193,7 +193,7 @@ namespace {
         }
     }
 
-    constexpr irq::Chip IOAPIC_CHIP = {
+    constexpr irq::ControllerOps IOAPIC_CHIP = {
         .startup = ioapic_startup_irq,
         .mask = ioapic_mask_irq,
         .unmask = ioapic_unmask_irq,
@@ -209,7 +209,7 @@ namespace {
     std::array<arch::IoApicIsaOverride, arch::NUM_ISA_IRQS> IOAPIC_ISA_OVERRIDES;
 } // namespace
 
-auto io_apic_chip() -> irq::Chip const & {
+auto io_apic_chip() -> irq::ControllerOps const & {
     return IOAPIC_CHIP;
 }
 

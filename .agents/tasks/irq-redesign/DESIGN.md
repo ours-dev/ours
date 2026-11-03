@@ -9,7 +9,7 @@ The user asked to review kernel/irq and redesign it before rewriting implementat
 
 There is real design to preserve: one owner of a level line's Oneshot mask, a callback-lifetime barrier at detach, no reused virqs, root-controller ownership of unmatched EOI, and IRQ RCU reclamation. The structural problem is that Domain means a mapping, DescTable owns storage and forwards controls, DomainRegistry owns the lifetime, and callers can see all three. Short generic names and integer aliases make this harder to understand.
 
-This document is the first design cut, for the module's objects and seams. The user accepted D1 (b) on 2026-11-03: explicit Line, Registration, Domain and ControllerOps, with Domain owning mapping, storage and retirement. Concrete interfaces, the completion protocol and the controller protocol remain Proposed; this acceptance does not authorize implementation.
+This document is the first design cut, for the module's objects and seams. The user accepted D1 (b) on 2026-11-03: explicit Line, Registration, Domain and ControllerOps, with Domain owning mapping, storage and retirement. The user's subsequent active goal authorizes implementation of the full refactor, and the user suspended teaching-oriented arguments on 2026-11-03. Engineering decisions and their verification are recorded here and in STATUS.md.
 
 ## Goals and non-goals
 
@@ -17,7 +17,7 @@ This document is the first design cut, for the module's objects and seams. The u
 - Make hardware source identity and kernel line identity distinct types inside the kernel while preserving the current u32 syscall representation.
 - Preserve existing userspace interrupt semantics, including virtual interrupts, exclusive physical objects, NeedAck, coalescing, port delivery, revocation, and timestamps.
 - Preserve domains registered and removed after boot, globally unique never-reused virqs, domain ids chosen by registrants, root id 0, and the existing x86 GSI domain.
-- Preserve current locking and the Permanent dispatch path pending any explicit reopening. No performance claim, benchmark-driven optimization, or new lock-granularity decision is part of this cut.
+- Honor the user's explicit guard requirement on every dispatch, including Permanent lines: no TA_NO_THREAD_SAFETY_ANALYSIS escape around shared line state. Preserve the proven L1 -> L2 lock order. This reopens the older Permanent bypass under the user's newer requirement; no performance improvement is claimed.
 - Do not add MSI, affinity, hierarchical domains, kernel interrupt threads, disable depth, lazy disable, resend, new controllers, or a new userspace ABI.
 - Do not remove reserved hooks or initialization scaffolding. Do not modify the user's scheduler.
 
@@ -76,7 +76,7 @@ The retained order is L1 (line) -> L2 (interrupt object), with controller regist
 
 Two different lifetimes remain explicit: detach protects the callback and its context; IRQ RCU protects the domain, mapping, and line storage. Neither substitutes for the other. Hiding the table does not remove either guarantee.
 
-D2 is a blocking design question, not a selected locking mechanism. The user first writes which invariant completion protects, the concurrent actors, and the worst old-ack/new-dispatch ordering. Only then should we compare a generation-bearing completion, revalidation under the existing lock order, or a proof that supported delivery excludes the ordering. No choice is made here.
+The user suspended teaching-oriented arguments and requested development to continue. D2 must be resolved by an implementation argument and deterministic tests for the old-ack/new-dispatch ordering. Compare generation-bearing completion, revalidation under L1 -> L2, and controller-specific exclusion; do not wait for a learning exercise.
 
 ### Completion exercise for D2
 
@@ -94,7 +94,7 @@ Events to reason about, assuming a new dispatch can enter the gap (a synthetic d
 2. A new dispatch acquires L1 then L2 and creates a new NeedAck and Held.
 3. The old ack acquires L1 and attempts to clear Held and unmask the line.
 
-The user writes the invariant relating outstanding work to the line's mask, identifies the actors that modify those facts, and judges whether the old ack may clear Held in this ordering. The answer is recorded before alternatives are analyzed.
+Required invariant: an earlier completion must not reopen a deferred level line while newer delivered work still awaits service. The implementation must preserve L1 -> L2 and cover this ordering with a deterministic test. A controller-specific claim that the ordering is unlikely does not satisfy synthetic dispatch or future controller integration.
 
 ### Controller protocol
 
@@ -126,7 +126,7 @@ Before another controller is bound, its dispatch protocol must be stated and che
 | D2. Deferred completion invariant | Account for the old-ack/new-dispatch window by an event-aware protocol, revalidation, or a controller-specific exclusion proof | No mechanism selected; user writes the invariant and worst interleaving first | Pending: invariant, concurrent actors and worst ordering | |
 | D3. Controller protocol selection | A validated protocol enum; adapter-selected internal flow; a deliberately narrow wired-controller contract | Compare only when the concrete Interface is reviewed; preserve current x86 behavior now | Deferred until D2 is reviewed | |
 
-D1 is decided. D2 is the current design question; D3 remains deferred.
+D1 is decided and its object vocabulary is migrated. The full six-part goal and current evidence are tracked in STATUS.md. The user has suspended learning exercises; D2 and D3 are engineering work, not user-input gates.
 
 ## Testing and verification
 

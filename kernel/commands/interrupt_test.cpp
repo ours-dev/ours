@@ -66,9 +66,9 @@
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/interrupt.hpp>
-#include <ours/irq/action.hpp>
-#include <ours/irq/chip.hpp>
+#include <ours/irq/controller.hpp>
 #include <ours/irq/desc_table.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/object/handle.hpp>
@@ -927,7 +927,7 @@ namespace {
         using InterruptDispatcher::line_revoked;
 
         irq::DescTable *table = nullptr;
-        irq::Action action;
+        irq::Registration action;
         std::atomic<u32> detaches{0};
         /// The hook has told the object, and waits for the gate.
         std::atomic<bool> hooked{false};
@@ -1057,9 +1057,10 @@ namespace {
         auto *const table = new (mm::GAF_KERNEL) irq::DescTable();
         auto *const object = new (mm::GAF_KERNEL) RecordingInterrupt();
         std::array<HIrqNum, 1> const numbers{HIrqNum{9}};
-        constexpr irq::Chip NO_OP_CHIP = {.mask = [](irq::Data const &) -> void {},
-                                          .issue_eoi = [](irq::Data const &) -> void {},
-                                          .name = "interrupt-test"};
+        constexpr irq::ControllerOps NO_OP_CHIP = {
+            .mask = [](irq::ControllerSource const &) -> void {},
+            .issue_eoi = [](irq::ControllerSource const &) -> void {},
+            .name = "interrupt-test"};
         if (table == nullptr || object == nullptr ||
             table->init(ustl::views::Span<HIrqNum const>(numbers), NO_OP_CHIP) != Status::Ok) {
             verdict(tally, false, "make the chain case's line table and object");

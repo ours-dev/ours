@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `irqchip.test`: what a line does with a chip that cannot say how its pins
+// `irqcontroller.test`: what a line does with a chip that cannot say how its pins
 // signal, which is what the contract asks of a controller with no register for
 // the trigger mode: it leaves trigger_mode() null
 // (.agents/tasks/irq-multi-arch/PLAN.md, step 3). dbg image only: it is the
@@ -24,9 +24,9 @@
 //
 // A console command rather than a unit test: Desc allocates from the kernel's
 // heap.
-#include <ours/irq/action.hpp>
-#include <ours/irq/desc.hpp>
+#include <ours/irq/line.hpp>
 #include <ours/irq/mod.hpp>
+#include <ours/irq/registration.hpp>
 
 #include <atomic>
 
@@ -49,17 +49,17 @@ namespace {
     auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
         if (ok) {
             tally.passed += 1;
-            log::info("irqchip.test: pass  {}", name);
+            log::info("irqcontroller.test: pass  {}", name);
             return;
         }
         tally.failed += 1;
-        log::error("irqchip.test: FAIL  {}", name);
+        log::error("irqcontroller.test: FAIL  {}", name);
     }
 
     auto answered(Tally &tally, Status const got, Status const want, char const *const name)
         -> void {
         if (got != want) {
-            log::error("irqchip.test:   {} answered {}, expected {}", name, to_string(got),
+            log::error("irqcontroller.test:   {} answered {}, expected {}", name, to_string(got),
                        to_string(want));
         }
         verdict(tally, got == want, name);
@@ -71,27 +71,28 @@ namespace {
     constinit std::atomic<usize> CONFIGURES{0};
     constinit std::atomic<irq::TriggerMode> TOLD_TRIGGER{irq::TriggerMode::Edge};
 
-    auto mask_pin(irq::Data const &) -> void {}
+    auto mask_pin(irq::ControllerSource const &) -> void {}
 
-    auto unmask_pin(irq::Data const &) -> void {}
+    auto unmask_pin(irq::ControllerSource const &) -> void {}
 
-    auto end_interrupt(irq::Data const &) -> void {}
+    auto end_interrupt(irq::ControllerSource const &) -> void {}
 
     /// Leaves the pin masked, as a chip's configure must, and notes the mode
     /// it was told.
-    auto configure_pin(irq::Data const &, irq::TriggerMode const trigger, irq::Polarity) -> Status {
+    auto configure_pin(irq::ControllerSource const &, irq::TriggerMode const trigger, irq::Polarity)
+        -> Status {
         CONFIGURES.fetch_add(1, std::memory_order_relaxed);
         TOLD_TRIGGER.store(trigger, std::memory_order_relaxed);
         return Status::Ok;
     }
 
-    auto level_pin(irq::Data const &) -> irq::TriggerMode {
+    auto level_pin(irq::ControllerSource const &) -> irq::TriggerMode {
         return irq::TriggerMode::Level;
     }
 
     /// A chip that can mask, unmask and end an interrupt and accept a mode, but
     /// cannot say what the mode is: a controller with no mode register.
-    constexpr irq::Chip BLIND_CHIP = {
+    constexpr irq::ControllerOps BLIND_CHIP = {
         .mask = mask_pin,
         .unmask = unmask_pin,
         .configure = configure_pin,
@@ -100,7 +101,7 @@ namespace {
     };
 
     /// The same chip, with a pin that reads as level.
-    constexpr irq::Chip SEEING_CHIP = {
+    constexpr irq::ControllerOps SEEING_CHIP = {
         .mask = mask_pin,
         .unmask = unmask_pin,
         .configure = configure_pin,
@@ -115,8 +116,8 @@ namespace {
 
     /// A line of the test's own, outside the table, bound to `chip`; null if
     /// it cannot be made. The caller deletes it, with nobody on it.
-    auto make_line(irq::Chip const &chip) -> irq::Desc * {
-        auto *const line = irq::Desc::create(LINE, LINE, irq::IrqFlags::None, "irqchip-test");
+    auto make_line(irq::ControllerOps const &chip) -> irq::Line * {
+        auto *const line = irq::Line::create(LINE, LINE, irq::IrqFlags::None, "irqchip-test");
         if (line == nullptr) {
             return nullptr;
         }
@@ -132,8 +133,8 @@ namespace {
 
     /// The actions of an attach with no mode on the two chips.
     auto check_attach_without_a_mode(Tally &tally) -> void {
-        irq::Action oneshot(handled, nullptr, irq::IrqFlags::Oneshot, "irqchip-test");
-        irq::Action plain(handled, nullptr, irq::IrqFlags::None, "irqchip-test");
+        irq::Registration oneshot(handled, nullptr, irq::IrqFlags::Oneshot, "irqchip-test");
+        irq::Registration plain(handled, nullptr, irq::IrqFlags::None, "irqchip-test");
 
         auto *const blind = make_line(BLIND_CHIP);
         auto *const seeing = make_line(SEEING_CHIP);
@@ -173,7 +174,7 @@ namespace {
 
     /// The actions of an attach with a mode.
     auto check_attach_with_a_mode(Tally &tally) -> void {
-        irq::Action oneshot(handled, nullptr, irq::IrqFlags::Oneshot, "irqchip-test");
+        irq::Registration oneshot(handled, nullptr, irq::IrqFlags::Oneshot, "irqchip-test");
 
         auto *const blind = make_line(BLIND_CHIP);
         if (blind == nullptr) {
@@ -212,16 +213,16 @@ namespace {
                  "set_affinity answers NotSupported: no controller moves a line");
 
         if (tally.failed != 0) {
-            log::error("irqchip.test: FAILED -- {} of {} checks", tally.failed,
+            log::error("irqcontroller.test: FAILED -- {} of {} checks", tally.failed,
                        tally.passed + tally.failed);
             return 1;
         }
-        log::info("irqchip.test: ok -- {} checks", tally.passed);
+        log::info("irqcontroller.test: ok -- {} checks", tally.passed);
         return 0;
     }
 } // namespace
 } // namespace ours
 
-GKTL_COMMAND(IrqChipTest, "irqchip.test", ours::irq_chip_test_command,
+GKTL_COMMAND(IrqChipTest, "irqcontroller.test", ours::irq_chip_test_command,
              "run a line over chips that cannot say how their pins signal, and check what it "
              "takes with and without a mode");

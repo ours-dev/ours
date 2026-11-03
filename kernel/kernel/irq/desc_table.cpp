@@ -1,6 +1,6 @@
 #include <ours/assert.hpp>
-#include <ours/irq/desc.hpp>
 #include <ours/irq/desc_table.hpp>
+#include <ours/irq/line.hpp>
 #include <ours/mm/object_cache.hpp>
 
 #include <algorithm>
@@ -36,8 +36,8 @@ namespace ours::irq {
 /// It must be able to mask a line, too. A line's flow masks the line when an
 /// interrupt finds nobody on it, so that a level pin nobody services does not
 /// raise the same interrupt again the moment it is ended, for good. Each line
-/// takes its first flow from the chip as it is bound (Desc::init()).
-auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const &chip,
+/// takes its first flow from the chip as it is bound (Line::init()).
+auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, ControllerOps const &chip,
                      VIrqNum const min_first) -> Status {
     if (!m_descs.empty()) {
         return Status::BadState;
@@ -59,7 +59,7 @@ auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const
     }
 
     auto const nr_slots = domain.hwirq_limit();
-    auto *const raw_descs = new (mm::GAF_KERNEL) Desc *[nr_slots]();
+    auto *const raw_descs = new (mm::GAF_KERNEL) Line *[nr_slots]();
     if (!raw_descs) {
         domain.reset();
         return Status::OutOfMem;
@@ -77,7 +77,7 @@ auto DescTable::init(ustl::views::Span<HIrqNum const> const hirqnums, Chip const
 
     for (auto const hirqnum: hirqnums) {
         auto *&slot = descs[hirqnum];
-        slot = Desc::create(hirqnum, domain.virq_of(hirqnum), IrqFlags::None, "IRQD");
+        slot = Line::create(hirqnum, domain.virq_of(hirqnum), IrqFlags::None, "IRQD");
         if (!slot) {
             discard();
             return Status::OutOfMem;
@@ -146,10 +146,10 @@ auto DescTable::destroy() -> void {
         if (desc == nullptr) {
             continue;
         }
-        ASSERT(!desc->has_actions(), "a line is destroyed with an action on it");
-        desc->~Desc();
+        ASSERT(!desc->has_registrations(), "a line is destroyed with an action on it");
+        desc->~Line();
         auto *const bytes = reinterpret_cast<volatile u8 *>(desc);
-        for (usize i = 0; i < sizeof(Desc); ++i) {
+        for (usize i = 0; i < sizeof(Line); ++i) {
             bytes[i] = 0xDD;
         }
         ::operator delete(desc);
@@ -169,12 +169,12 @@ auto DescTable::hwirq_of(VIrqNum const virqnum) const -> HIrqNum {
 
 /// The control path. A number that is no virq of the domain, INVALID_V_IRQ_NUM
 /// included, becomes INVALID_H_IRQ_NUM, which is past the table.
-auto DescTable::irqnum_to_desc(VIrqNum const virqnum) -> Desc * {
+auto DescTable::irqnum_to_desc(VIrqNum const virqnum) -> Line * {
     return hwirq_to_desc(m_domain.hwirq_of(virqnum));
 }
 
 /// The interrupt path, and the second half of the control path.
-auto DescTable::hwirq_to_desc(HIrqNum const hirqnum) -> Desc * {
+auto DescTable::hwirq_to_desc(HIrqNum const hirqnum) -> Line * {
     if (hirqnum >= m_descs.size()) {
         return nullptr;
     }
@@ -182,7 +182,7 @@ auto DescTable::hwirq_to_desc(HIrqNum const hirqnum) -> Desc * {
     return m_descs[hirqnum];
 }
 
-auto DescTable::find_line(VIrqNum const virqnum) -> ktl::Result<Desc *> {
+auto DescTable::find_line(VIrqNum const virqnum) -> ktl::Result<Line *> {
     if (virqnum == INVALID_V_IRQ_NUM) {
         return ustl::err(Status::InvArgs);
     }
@@ -196,7 +196,7 @@ auto DescTable::find_line(VIrqNum const virqnum) -> ktl::Result<Desc *> {
 
 /// Nothing is allocated here: the action is the caller's, so a refused attach
 /// leaves nothing behind to free.
-auto DescTable::attach(VIrqNum virqnum, Action &action) -> Status {
+auto DescTable::attach(VIrqNum virqnum, Registration &action) -> Status {
     auto const line = find_line(virqnum);
     if (line.is_err()) {
         return line.unwrap_err();
@@ -204,8 +204,8 @@ auto DescTable::attach(VIrqNum virqnum, Action &action) -> Status {
     return (*line)->attach(action);
 }
 
-auto DescTable::attach(VIrqNum const virqnum, Action &action, ustl::Option<LineMode> const mode)
-    -> ktl::Result<TriggerMode> {
+auto DescTable::attach(VIrqNum const virqnum, Registration &action,
+                       ustl::Option<LineMode> const mode) -> ktl::Result<TriggerMode> {
     auto const line = find_line(virqnum);
     if (line.is_err()) {
         return ustl::err(line.unwrap_err());
@@ -215,7 +215,7 @@ auto DescTable::attach(VIrqNum const virqnum, Action &action, ustl::Option<LineM
 
 /// The action knows its line, so the caller names only the action: on a
 /// shared line a number alone cannot say which of its actions to remove.
-auto DescTable::detach(Action &action) -> Status {
+auto DescTable::detach(Registration &action) -> Status {
     auto desc = irqnum_to_desc(action.virqnum());
     if (!desc) {
         return Status::NotFound;
@@ -244,7 +244,7 @@ auto DescTable::unmark_dying(VIrqNum const virqnum) -> void {
 
 /// Answers nothing: a line that is not there holds nothing to finalize, and
 /// the line checks under its own lock whether the action is still on it.
-auto DescTable::finalize_oneshot(VIrqNum const virqnum, Action const &action) -> void {
+auto DescTable::finalize_oneshot(VIrqNum const virqnum, Registration const &action) -> void {
     auto *const desc = irqnum_to_desc(virqnum);
     if (!desc) {
         return;

@@ -5,7 +5,7 @@
 
 ## Request
 
-Review the design and naming of kernel/irq, then design its replacement before implementing it. The review and first module-ownership decision are recorded; the current design step is the deferred-completion invariant. No implementation change is authorized.
+Review the design and naming of kernel/irq, then design its replacement before implementing it. The user subsequently set the full six-part refactoring goal and suspended learning-oriented arguments. Implement the accepted object model and resolve the remaining engineering decisions autonomously, with per-increment formatting, tests, both boot checks, review and commits.
 
 ## Decisions
 
@@ -16,7 +16,8 @@ Review the design and naming of kernel/irq, then design its replacement before i
 ## Steps
 
 1. Completed in 02d20ed6: review current interfaces, lifetime and controller assumptions against settled decisions and primary source counterparts; record REVIEW.md and Proposed DESIGN.md. The baseline passed clang-format, clang-tidy, both boot images, host tests and six IRQ kernel suites.
-2. Record the user's D1 (b) choice and teach the D2 objects and event ordering. Await the user's concurrency argument before analyzing mechanisms. Validate documentation layout and run verify before committing this documentation update. No completion mechanism or implementation is selected.
+2. Completed in 76a75be5: record D1 (b) and the completion ordering. The user subsequently suspended learning exercises.
+3. Migrate the accepted object vocabulary through definitions, callers, build files and tests. Validate all touched C++ files, both images and nine IRQ suites; commit this naming increment before changing semantics. Remaining acceptance criteria are tracked in STATUS.md.
 
 ## Files
 
