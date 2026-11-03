@@ -26,11 +26,20 @@ vmaddress.test (42 checks), usercopy, physical mappings, snapshots, large
 pages, BTI, resources, page queues, page sources, pager, reclamation and
 memory pressure. These findings are verified through the public interfaces.
 
+The address-literal follow-up adds global constexpr `_va` and `_pa`
+operators to types.hpp. Integer literal operators use unsigned long long as
+required by C++; direct list initialization preserves the address bits without
+an unchecked narrowing cast. Compile-time checks cover suffix result types,
+zero, hexadecimal and decimal constants, bit 63 and the all-ones value.
+Both touched C++ files passed clang-format and clang-tidy with no new
+changed-line diagnostics. The follow-up build, both development boots and
+all 163 host tests passed.
+
 ## What is done well
 
 - system/public/ours/types.hpp:14 preserves distinct scoped address types;
   offsets, address differences and machine encodings retain their own types.
-- kernel/mm/tests/address_smoke.cpp:23 rejects cross-domain operations and
+- kernel/mm/tests/address_smoke.cpp:30 rejects cross-domain operations and
   implicit integer conversions at compile time, and distinguishes physical
   zero from failed physmap translation.
 - kernel/mm/vm_area.cpp:224 identifies special requests before alignment.

@@ -23,6 +23,11 @@ Fixed placement still requires CanMapSpecific and refuses overlaps with
 AlreadyExists. VmAspace creation rejects any range intersecting the reserved
 values, so automatic placement cannot return one.
 
+Address constants use the global `_va` and `_pa` literal suffixes in
+`system/public/ours/types.hpp` (user request, 2026-11-03). Like the integer
+suffixes in prelude.hpp, they are available without a namespace import and
+produce the corresponding scoped address type in constant expressions.
+
 ## Bring-up order
 
 physboot hands the memory layout over through OBI; a temporary allocator and

@@ -198,4 +198,13 @@ inline constexpr auto TASK_RETCODE_CRITICAL_PROCESS_KILL = i64{-1029};
 
 } // namespace ours
 
+/// Address constants follow the global integer-literal suffixes in prelude.hpp.
+constexpr auto operator""_va(unsigned long long const value) -> ours::VirtAddr {
+    return ours::VirtAddr{value};
+}
+
+constexpr auto operator""_pa(unsigned long long const value) -> ours::PhysAddr {
+    return ours::PhysAddr{value};
+}
+
 #endif // #ifndef OURS_TYPES_HPP

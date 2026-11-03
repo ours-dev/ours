@@ -21,6 +21,13 @@ concept Addable = requires(Left left, Right right) { left + right; };
 template <typename Left, typename Right>
 concept Subtractable = requires(Left left, Right right) { left - right; };
 
+static_assert(std::same_as<decltype(0_va), VirtAddr>);
+static_assert(std::same_as<decltype(0_pa), PhysAddr>);
+static_assert(0_va == VirtAddr{} && 0_pa == PhysAddr{});
+static_assert(0x1234_va == VirtAddr{0x1234} && 4096_pa == PhysAddr{4096});
+static_assert(0x8000'0000'0000'0000_pa == PhysAddr{1_usize << 63});
+static_assert(0xffff'ffff'ffff'ffff_va == VirtAddr::Invalid);
+
 static_assert(!std::is_convertible_v<VirtAddr, usize>);
 static_assert(!std::is_convertible_v<usize, VirtAddr>);
 static_assert(!std::is_convertible_v<PhysAddr, usize>);
