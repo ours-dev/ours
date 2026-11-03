@@ -73,17 +73,17 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     /// irq::attach() answers; NotSupported when ModeDefault asks a controller
     /// that cannot say how its line signals; NoMemory.
     [[nodiscard]]
-    static auto create(KernelHandle<InterruptDispatcher> *out, Rights *rights, u32 line,
+    static auto create(KernelHandle<InterruptDispatcher> *out, Rights *rights, IrqId line,
                        InterruptOptions options) -> Status;
 
   private:
-    explicit InterruptEventDispatcher(VIrqNum line);
+    explicit InterruptEventDispatcher(IrqId line);
 
     /// The action's handler: |context| is the object.
-    static auto on_interrupt(VIrqNum line, void *context) -> irq::IrqReturn;
+    static auto on_interrupt(IrqId line, void *context) -> irq::IrqReturn;
     /// The action's cancel hook: the kernel is taking the line away from the
     /// object (line_revoked()).
-    static auto on_revoked(VIrqNum line, void *context) -> void;
+    static auto on_revoked(IrqId line, void *context) -> void;
 
     /// Empty: the object writes no mask of its own. The line's flow masks a
     /// level line from each interrupt until the ack, and destroy()'s detach
@@ -97,7 +97,7 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     auto deactivate_interrupt() -> void override {}
     auto unregister_interrupt_handler() -> void override;
 
-    VIrqNum const m_line;
+    IrqId const m_line;
     irq::Registration m_registration;
 };
 } // namespace ours::object

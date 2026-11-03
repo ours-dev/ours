@@ -102,11 +102,11 @@ namespace {
         .name = "irq-registry-test",
     };
 
-    auto hooked_handler(VIrqNum, void *) -> irq::IrqReturn {
+    auto hooked_handler(IrqId, void *) -> irq::IrqReturn {
         return irq::IrqReturn::Handled;
     }
 
-    auto hooked_cancel(VIrqNum, void *context) -> void;
+    auto hooked_cancel(IrqId, void *context) -> void;
 
     struct Hooked {
         Hooked(irq::IrqFlags const flags, irq::IrqCancel const cancel)
@@ -119,16 +119,17 @@ namespace {
         std::atomic<u32> told{0};
     };
 
-    auto hooked_cancel(VIrqNum, void *const context) -> void {
+    auto hooked_cancel(IrqId, void *const context) -> void {
         static_cast<Hooked *>(context)->told.fetch_add(1, std::memory_order_relaxed);
     }
 
-    constexpr std::array<HIrqNum, 4> FOUR{0, 1, 2, 3};
-    constexpr std::array<HIrqNum, 2> TWO{0, 1};
-    constexpr std::array<HIrqNum, 1> ONE{0};
+    constexpr std::array<HardwareIrq, 4> FOUR{HardwareIrq{0}, HardwareIrq{1}, HardwareIrq{2},
+                                              HardwareIrq{3}};
+    constexpr std::array<HardwareIrq, 2> TWO{HardwareIrq{0}, HardwareIrq{1}};
+    constexpr std::array<HardwareIrq, 1> ONE{HardwareIrq{0}};
 
-    auto span(auto const &numbers) -> ustl::views::Span<HIrqNum const> {
-        return ustl::views::Span<HIrqNum const>(numbers);
+    auto span(auto const &numbers) -> ustl::views::Span<HardwareIrq const> {
+        return ustl::views::Span<HardwareIrq const>(numbers);
     }
 
     auto join_within(Thread *const thread) -> bool {
@@ -139,15 +140,14 @@ namespace {
 
     /// The virq of (id, hirqnum) and the owner of a virq, each in a read of
     /// its own.
-    auto virq_in(DomainRegistry const &registry, DomainId const id, HIrqNum const hirqnum)
-        -> VIrqNum {
+    auto virq_in(DomainRegistry const &registry, DomainId const id, u32 const hirqnum) -> IrqId {
         IrqRcuReadGuard const guard;
-        return registry.virq_of(id, hirqnum, guard);
+        return registry.virq_of(id, HardwareIrq{hirqnum}, guard);
     }
 
-    auto owner_of(DomainRegistry const &registry, VIrqNum const virq) -> irq::Domain * {
+    auto owner_of(DomainRegistry const &registry, auto const virq) -> irq::Domain * {
         IrqRcuReadGuard const guard;
-        return registry.table_of(virq, guard);
+        return registry.table_of(static_cast<IrqId>(virq), guard);
     }
 
     auto find_in(DomainRegistry const &registry, DomainId const id) -> irq::Domain * {
@@ -171,7 +171,7 @@ namespace {
         u32 unmasks = 0;
         u32 ended = 0;
         u32 handled = 0;
-        VIrqNum observed = irq::INVALID_V_IRQ_NUM;
+        IrqId observed = IrqId::Invalid;
     };
 
     constexpr irq::ControllerOps INSTANCE_OPS = {
@@ -199,7 +199,8 @@ namespace {
         ControllerInstance b;
         DomainEndpoint endpoint_a;
         DomainEndpoint endpoint_b;
-        verdict(tally, endpoint_a.dispatch(0).is_none(), "an unpublished endpoint finds no source");
+        verdict(tally, endpoint_a.dispatch(HardwareIrq{0}).is_none(),
+                "an unpublished endpoint finds no source");
         auto const first = irq::register_domain(A, span(ONE), INSTANCE_OPS, endpoint_a, &a);
         auto const second = irq::register_domain(B, span(ONE), INSTANCE_OPS, endpoint_b, &b);
         answered(tally, first, Status::Ok, "public registration publishes the first instance");
@@ -213,13 +214,11 @@ namespace {
             }
             return;
         }
-        auto const line_a = irq::virq_of_domain(A, 0);
-        auto const line_b = irq::virq_of_domain(B, 0);
-        verdict(tally,
-                line_a != line_b && line_a != irq::INVALID_V_IRQ_NUM &&
-                    line_b != irq::INVALID_V_IRQ_NUM,
+        auto const line_a = irq::virq_of_domain(A, HardwareIrq{0});
+        auto const line_b = irq::virq_of_domain(B, HardwareIrq{0});
+        verdict(tally, line_a != line_b && line_a != IrqId::Invalid && line_b != IrqId::Invalid,
                 "overlapping controller sources get distinct kernel identities");
-        constexpr auto HANDLE = [](VIrqNum const line, void *const context) -> irq::IrqReturn {
+        constexpr auto HANDLE = [](IrqId const line, void *const context) -> irq::IrqReturn {
             auto &instance = *static_cast<ControllerInstance *>(context);
             ++instance.handled;
             instance.observed = line;
@@ -229,17 +228,17 @@ namespace {
         irq::Registration registration_b({.handle = HANDLE}, &b, irq::IrqFlags::None, "instance-b");
         answered(tally, irq::attach(line_a, registration_a), Status::Ok, "attach to instance A");
         answered(tally, irq::attach(line_b, registration_b), Status::Ok, "attach to instance B");
-        auto const result_a = endpoint_a.dispatch(0);
+        auto const result_a = endpoint_a.dispatch(HardwareIrq{0});
         verdict(tally,
                 result_a.is_some() && *result_a == irq::IrqReturn::Handled && a.handled == 1 &&
                     a.observed == line_a && a.ended == 1 && b.handled == 0 && b.ended == 0,
                 "endpoint A dispatches and ends only instance A");
-        auto const result_b = endpoint_b.dispatch(0);
+        auto const result_b = endpoint_b.dispatch(HardwareIrq{0});
         verdict(tally,
                 result_b.is_some() && *result_b == irq::IrqReturn::Handled && b.handled == 1 &&
                     b.observed == line_b && b.ended == 1,
                 "endpoint B dispatches and ends only instance B");
-        verdict(tally, endpoint_a.dispatch(99).is_none() && a.ended == 1,
+        verdict(tally, endpoint_a.dispatch(HardwareIrq{99}).is_none() && a.ended == 1,
                 "an unknown source leaves root completion to the caller");
         auto const a_masks = a.masks;
         auto const b_masks = b.masks;
@@ -251,9 +250,12 @@ namespace {
         verdict(tally, b.unmasks == b_unmasks + 1, "unmask reaches the other controller context");
         answered(tally, irq::detach(registration_a), Status::Ok, "detach instance A");
         answered(tally, irq::unregister_domain(A), Status::Ok, "remove the first public domain");
-        verdict(tally, endpoint_a.dispatch(0).is_none() && irq::mask(line_a) == Status::NoResource,
+        verdict(tally,
+                endpoint_a.dispatch(HardwareIrq{0}).is_none() &&
+                    irq::mask(line_a) == Status::NoResource,
                 "withdrawal retracts its endpoint and control lookup");
-        verdict(tally, endpoint_b.dispatch(0).is_some() && b.handled == 2 && b.ended == 2,
+        verdict(tally,
+                endpoint_b.dispatch(HardwareIrq{0}).is_some() && b.handled == 2 && b.ended == 2,
                 "the other endpoint survives independent removal");
         answered(tally, irq::detach(registration_b), Status::Ok, "detach instance B");
         answered(tally, irq::unregister_domain(B), Status::Ok, "remove the second public domain");
@@ -270,10 +272,10 @@ namespace {
 
         auto const a0 = virq_in(registry, DomainId{1}, 0);
         auto const b0 = virq_in(registry, DomainId{2}, 0);
-        verdict(tally, a0 == 32, "the first domain gets the virqs a lone domain gets");
+        verdict(tally, a0 == IrqId{32}, "the first domain gets the virqs a lone domain gets");
         verdict(tally,
-                b0 == 64 && virq_in(registry, DomainId{2}, 3) == 67 &&
-                    virq_in(registry, DomainId{1}, 3) == 35,
+                b0 == IrqId{64} && virq_in(registry, DomainId{2}, 3) == IrqId{67} &&
+                    virq_in(registry, DomainId{1}, 3) == IrqId{35},
                 "and the second a block above it, so the same pin has two different virqs");
 
         auto *const table_a = find_in(registry, DomainId{1});
@@ -287,11 +289,11 @@ namespace {
         verdict(tally,
                 owner_of(registry, 36) == nullptr && owner_of(registry, 63) == nullptr &&
                     owner_of(registry, 68) == nullptr && owner_of(registry, 0) == nullptr &&
-                    owner_of(registry, irq::INVALID_V_IRQ_NUM) == nullptr,
+                    owner_of(registry, static_cast<u32>(IrqId::Invalid)) == nullptr,
                 "and the hole between the blocks, past them, and the invalid number find none");
         verdict(tally,
-                virq_in(registry, DomainId{9}, 0) == irq::INVALID_V_IRQ_NUM &&
-                    virq_in(registry, DomainId{1}, 99) == irq::INVALID_V_IRQ_NUM,
+                virq_in(registry, DomainId{9}, 0) == IrqId::Invalid &&
+                    virq_in(registry, DomainId{1}, 99) == IrqId::Invalid,
                 "interrupt_map's lookup finds no virq for an unknown domain or pin");
         verdict(tally, slot_holds(slot_a, table_a) && slot_holds(slot_b, table_b),
                 "the slot a root handler holds has its domain's table");
@@ -303,9 +305,9 @@ namespace {
         DomainRegistry registry;
         DomainEndpoint slot;
         DomainEndpoint other;
-        constexpr std::array<HIrqNum, 0> NONE{};
-        constexpr std::array<HIrqNum, 2> WITH_INVALID{1, irq::INVALID_H_IRQ_NUM};
-        constexpr std::array<HIrqNum, 2> TWICE{1, 1};
+        constexpr std::array<HardwareIrq, 0> NONE{};
+        constexpr std::array<HardwareIrq, 2> WITH_INVALID{HardwareIrq{1}, HardwareIrq::Invalid};
+        constexpr std::array<HardwareIrq, 2> TWICE{HardwareIrq{1}, HardwareIrq{1}};
 
         answered(tally, registry.register_domain(DomainId::Invalid, span(TWO), CHIP, slot),
                  Status::InvArgs, "the Invalid id is refused");
@@ -319,7 +321,7 @@ namespace {
                  Status::AlreadyExists, "a number given twice is refused");
         verdict(tally,
                 find_in(registry, DomainId{1}) == nullptr &&
-                    virq_in(registry, DomainId{1}, 1) == irq::INVALID_V_IRQ_NUM,
+                    virq_in(registry, DomainId{1}, 1) == IrqId::Invalid,
                 "and none of them keeps anything");
 
         answered(tally, registry.register_domain(DomainId{1}, span(TWO), CHIP, slot), Status::Ok,
@@ -371,12 +373,11 @@ namespace {
 
         auto const before = virq_in(registry, DomainId{2}, 0);
         answered(tally, registry.unregister_domain(DomainId{2}), Status::Ok, "a domain is removed");
-        verdict(tally,
-                find_in(registry, DomainId{2}) == nullptr &&
-                    owner_of(registry, before) == nullptr &&
-                    virq_in(registry, DomainId{2}, 0) == irq::INVALID_V_IRQ_NUM &&
-                    slot_holds(slot_b, nullptr),
-                "its lookups and its slot find nothing");
+        verdict(
+            tally,
+            find_in(registry, DomainId{2}) == nullptr && owner_of(registry, before) == nullptr &&
+                virq_in(registry, DomainId{2}, 0) == IrqId::Invalid && slot_holds(slot_b, nullptr),
+            "its lookups and its slot find nothing");
         verdict(tally,
                 find_in(registry, DomainId{1}) != nullptr && owner_of(registry, 32) != nullptr,
                 "the others are untouched");
@@ -387,7 +388,8 @@ namespace {
                  "its id is registered again");
         auto const after = virq_in(registry, DomainId{2}, 0);
         verdict(tally,
-                after != before && after >= before + FOUR.size() &&
+                after != before &&
+                    after >= static_cast<IrqId>(static_cast<u32>(before) + FOUR.size()) &&
                     owner_of(registry, before) == nullptr,
                 "in a block above everything given out; the dead block stays dead");
         drop(registry, DomainId{1});
@@ -398,11 +400,11 @@ namespace {
         DomainEndpoint slot_c;
         auto rose = true;
         auto each_ok = true;
-        auto last = VIrqNum{0};
+        auto last = IrqId{0};
         for (u32 round = 0; round < 3 * DomainRegistry::CAPACITY; ++round) {
             each_ok &= registry.register_domain(DomainId{5}, span(TWO), CHIP, slot_c) == Status::Ok;
             auto const first = virq_in(registry, DomainId{5}, 0);
-            rose &= first != irq::INVALID_V_IRQ_NUM && first > last;
+            rose &= first != IrqId::Invalid && first > last;
             last = first;
             each_ok &= registry.unregister_domain(DomainId{5}) == Status::Ok;
         }
@@ -413,8 +415,8 @@ namespace {
 
     /// Hardware numbers with holes, as a controller with pins missing has.
     auto check_sparse(Tally &tally) -> void {
-        constexpr std::array<HIrqNum, 3> SPARSE{0, 5, 9};
-        constexpr std::array<HIrqNum, 2> FAR{0, 40};
+        constexpr std::array<HardwareIrq, 3> SPARSE{HardwareIrq{0}, HardwareIrq{5}, HardwareIrq{9}};
+        constexpr std::array<HardwareIrq, 2> FAR{HardwareIrq{0}, HardwareIrq{40}};
         DomainRegistry registry;
         DomainEndpoint slot_a;
         DomainEndpoint slot_b;
@@ -428,10 +430,11 @@ namespace {
         auto const first = virq_in(registry, DomainId{1}, 0);
         verdict(
             tally,
-            virq_in(registry, DomainId{1}, 5) == first + 1 &&
-                virq_in(registry, DomainId{1}, 9) == first + 2 &&
-                virq_in(registry, DomainId{1}, 3) == irq::INVALID_V_IRQ_NUM &&
-                owner_of(registry, first + 3) == nullptr,
+            virq_in(registry, DomainId{1}, 5) == static_cast<IrqId>(static_cast<u32>(first) + 1) &&
+                virq_in(registry, DomainId{1}, 9) ==
+                    static_cast<IrqId>(static_cast<u32>(first) + 2) &&
+                virq_in(registry, DomainId{1}, 3) == IrqId::Invalid &&
+                owner_of(registry, static_cast<IrqId>(static_cast<u32>(first) + 3)) == nullptr,
             "has consecutive virqs for its pins, none for the pins it lacks, and none past them");
 
         answered(tally, registry.unregister_domain(DomainId{1}), Status::Ok, "and is removed");
@@ -439,12 +442,14 @@ namespace {
                  "another domain with a far pin is registered after it");
         auto const second = virq_in(registry, DomainId{2}, 0);
         verdict(tally,
-                second >= first + SPARSE.size() && owner_of(registry, first) == nullptr &&
-                    owner_of(registry, second) != nullptr,
+                second >= static_cast<IrqId>(static_cast<u32>(first) + SPARSE.size()) &&
+                    owner_of(registry, first) == nullptr && owner_of(registry, second) != nullptr,
                 "in a block above the dead one, which still finds no table");
         answered(tally, registry.register_domain(DomainId{3}, span(SPARSE), CHIP, slot_c),
                  Status::Ok, "and a third like the first");
-        verdict(tally, virq_in(registry, DomainId{3}, 0) >= second + 2,
+        verdict(tally,
+                virq_in(registry, DomainId{3}, 0) >=
+                    static_cast<IrqId>(static_cast<u32>(second) + 2),
                 "above the second's block again");
         drop(registry, DomainId{2});
         drop(registry, DomainId{3});
@@ -540,11 +545,10 @@ namespace {
         auto *const table = find_in(registry, DomainId{1});
         ready &= table != nullptr;
         for (usize pin = 0; ready && pin < FOUR.size(); ++pin) {
-            ready &=
-                irq::with_line(*table, virq_in(registry, DomainId{1}, static_cast<HIrqNum>(pin)),
-                               [&](irq::Line &resolved) {
-                                   return resolved.attach(all[pin]->action);
-                               }) == Status::Ok;
+            ready &= irq::with_line(*table, virq_in(registry, DomainId{1}, static_cast<u32>(pin)),
+                                    [&](irq::Line &resolved) {
+                                        return resolved.attach(all[pin]->action);
+                                    }) == Status::Ok;
         }
         verdict(tally, ready, "an action on each of four lines, the last without a hook");
         if (!ready) {
@@ -668,7 +672,7 @@ namespace {
         DomainId id = DomainId::Invalid;
         DomainEndpoint slot;
         std::atomic<u32> failures{0};
-        VIrqNum firsts[WRITER_ROUNDS]{};
+        IrqId firsts[WRITER_ROUNDS]{};
     };
     Writer WRITERS[2];
 
@@ -720,10 +724,11 @@ namespace {
             for (u32 j = i + 1; j < 2 * WRITER_ROUNDS; ++j) {
                 auto const x = WRITERS[i / WRITER_ROUNDS].firsts[i % WRITER_ROUNDS];
                 auto const y = WRITERS[j / WRITER_ROUNDS].firsts[j % WRITER_ROUNDS];
-                if (x == 0 || y == 0) {
+                if (x == IrqId{0} || y == IrqId{0}) {
                     continue;
                 }
-                if (x < y + 2 && y < x + 2) {
+                if (x < static_cast<IrqId>(static_cast<u32>(y) + 2) &&
+                    y < static_cast<IrqId>(static_cast<u32>(x) + 2)) {
                     overlaps += 1;
                 }
             }
@@ -744,7 +749,7 @@ namespace {
     struct Stress {
         DomainRegistry registry;
         DomainEndpoint slot;
-        std::atomic<VIrqNum> probe{irq::INVALID_V_IRQ_NUM};
+        std::atomic<IrqId> probe{IrqId::Invalid};
         std::atomic<bool> stop{false};
         std::atomic<u64> seen[MAX_CPU]{};
         /// Looks that began with the table registered and ended with it
@@ -769,7 +774,7 @@ namespace {
             // after, and a new domain's cannot be published under this guard.
             auto *const from_slot = DomainRegistry::published_domain(STRESS->slot, guard);
             if (table->is_destroyed() || table->first_virq() != first ||
-                table->hwirq_of(virq) == irq::INVALID_H_IRQ_NUM ||
+                table->hwirq_of(virq) == HardwareIrq::Invalid ||
                 (from_slot != nullptr && from_slot != table)) {
                 STRESS->broken[cpu].fetch_add(1, std::memory_order_relaxed);
                 break;

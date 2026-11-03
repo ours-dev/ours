@@ -9,7 +9,7 @@
 #include <ustl/option.hpp>
 
 namespace ours::object {
-InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line)
+InterruptEventDispatcher::InterruptEventDispatcher(IrqId const line)
     : Base(Flags::None)
     , m_line(line)
     , m_registration({.handle = &Self::on_interrupt,
@@ -43,7 +43,7 @@ InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line)
 /// after each interrupt, or an edge line it asked for held masked until
 /// each ack.
 auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const out,
-                                      Rights *const rights, u32 const line,
+                                      Rights *const rights, IrqId const line,
                                       InterruptOptions const options) -> Status {
     // Only what names a physical line and how it signals: Virtual is the
     // other kind's, and nothing else exists.
@@ -77,7 +77,7 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
 
     // The line is the number the irq layer names it by, which is what every
     // step below, and the object, use.
-    auto const virqnum = static_cast<VIrqNum>(line);
+    auto const virqnum = line;
 
     // A line the kernel holds for its own use is refused as such, not as one
     // another program holds (AlreadyBound, below): a program can never have
@@ -131,7 +131,7 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
 /// raise the same interrupt again and again until destroy()'s detach;
 /// WakeThread leaves the line held masked until that detach, which clears
 /// held and leaves the line masked as it lets it go.
-auto InterruptEventDispatcher::on_interrupt(VIrqNum, void *const context) -> irq::IrqReturn {
+auto InterruptEventDispatcher::on_interrupt(IrqId, void *const context) -> irq::IrqReturn {
     static_cast<Self *>(context)->handle_interrupt();
     return irq::IrqReturn::WakeThread;
 }
@@ -140,7 +140,7 @@ auto InterruptEventDispatcher::on_interrupt(VIrqNum, void *const context) -> irq
 /// detach, which the removal has done by unlinking the action; the owner's
 /// own destroy() still detaches, and that waits for the removal to be done
 /// with the object, which is why this is all it has to do.
-auto InterruptEventDispatcher::on_revoked(VIrqNum, void *const context) -> void {
+auto InterruptEventDispatcher::on_revoked(IrqId, void *const context) -> void {
     static_cast<Self *>(context)->line_revoked();
 }
 
@@ -166,6 +166,6 @@ auto InterruptEventDispatcher::unregister_interrupt_handler() -> void {
     [[maybe_unused]]
     auto const status = irq::detach(m_registration);
     DEBUG_ASSERT(Status::Ok == status || Status::NotFound == status,
-                 "detaching from line {} answered {}", m_line, to_string(status));
+                 "detaching from line {} answered {}", static_cast<u32>(m_line), to_string(status));
 }
 } // namespace ours::object

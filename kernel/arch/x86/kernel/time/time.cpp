@@ -49,7 +49,7 @@ namespace {
     // NOLINTNEXTLINE(readability-identifier-naming)
     constinit LegacyTimer LEGACY_TIMER;
 
-    auto timer_interrupt(VIrqNum, void *context) -> irq::IrqReturn {
+    auto timer_interrupt(IrqId, void *context) -> irq::IrqReturn {
         auto const *const timer = static_cast<LegacyTimer const *>(context);
         auto *const device = timer->device();
         DEBUG_ASSERT(device);
@@ -94,14 +94,16 @@ auto arch_time_init() -> void {
     auto const line = platform::isa_irq_line(ISA_IRQ_PIT);
     auto const attached = irq::attach(line, LEGACY_TIMER_ACTION);
     if (Status::Ok != attached) {
-        log::error("Failed to attach the legacy timer to line {}: {}", line, to_string(attached));
+        log::error("Failed to attach the legacy timer to line {}: {}", static_cast<u32>(line),
+                   to_string(attached));
         return;
     }
 
     // The line was just attached, so it exists and has the IO-APIC's chip.
     [[maybe_unused]]
     auto const unmasked = irq::unmask(line);
-    DEBUG_ASSERT(Status::Ok == unmasked, "unmasking line {}: {}", line, to_string(unmasked));
+    DEBUG_ASSERT(Status::Ok == unmasked, "unmasking line {}: {}", static_cast<u32>(line),
+                 to_string(unmasked));
 }
 GKTL_INIT_HOOK(InitTimerDevice, arch_time_init, gktl::InitLevel::Irq + 1);
 

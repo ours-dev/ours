@@ -8,10 +8,10 @@
 #include <ours/types.hpp>
 
 namespace ktl {
-using ours::HIrqNum;
+using ours::HardwareIrq;
+using ours::IrqId;
 using ours::NodeId;
 using ours::Status;
-using ours::VIrqNum;
 
 using ours::mm::Gaf;
 } // namespace ktl

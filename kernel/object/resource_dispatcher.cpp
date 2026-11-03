@@ -13,7 +13,7 @@
 namespace ours::object {
 namespace {
     /// How many numbers the space of a ranged kind holds: interrupt lines are
-    /// numbered by a u32 (VIrqNum), I/O ports by a u16, and physical addresses
+    /// numbered by a u32 (IrqId), I/O ports by a u16, and physical addresses
     /// by as many bits as the CPU can put on its bus. Zero for a kind with no
     /// ranges here: System is numbered by slot.
     auto space_of(RsrcKind const kind) -> u64 {

@@ -83,7 +83,7 @@ auto apic_send_ipi_multicast(CpuMask const &targets, arch::IrqVec vector, ApicDe
 
 auto apic_send_ipi_broadcast(arch::IrqVec vector, ApicDeliveryMode mode) -> void;
 
-auto apic_configure_irq(HIrqNum global_irq, arch::ApicTriggerMode, arch::ApicInterruptPolarity,
+auto apic_configure_irq(HardwareIrq global_irq, arch::ApicTriggerMode, arch::ApicInterruptPolarity,
                         arch::ApicDeliveryMode, bool mask, arch::ApicDestinationMode, u8 dst,
                         arch::IrqVec vector) -> void;
 
@@ -91,7 +91,7 @@ auto apic_configure_isa_irq(u8 isa_irq, arch::ApicDeliveryMode del_mode, bool ma
                             arch::ApicDestinationMode dst_mode, u8 dst, arch::IrqVec vector)
     -> void;
 
-auto apic_io_isa_to_global(u8 isa_irq) -> HIrqNum;
+auto apic_io_isa_to_global(u8 isa_irq) -> HardwareIrq;
 
 INIT_CODE
 auto assign_cpunum_for_apic(u32 apicid) -> CpuNum;

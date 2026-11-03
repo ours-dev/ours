@@ -52,8 +52,8 @@ auto interrupt_create(ours::Uandle const resource, u32 const line, InterruptOpti
             status != Status::Ok) {
             return status;
         }
-        if (auto const status =
-                InterruptEventDispatcher::create(&interrupt, &rights, line, options);
+        if (auto const status = InterruptEventDispatcher::create(&interrupt, &rights,
+                                                                 static_cast<IrqId>(line), options);
             status != Status::Ok) {
             return status;
         }
@@ -97,7 +97,7 @@ auto interrupt_map(ours::Uandle const resource, u32 const domain, u32 const sour
     if (domain == std::to_underlying(irq::DomainId::Invalid)) {
         return Status::InvArgs;
     }
-    if (source == irq::INVALID_H_IRQ_NUM) {
+    if (source == static_cast<u32>(HardwareIrq::Invalid)) {
         return Status::InvArgs;
     }
     if (auto const status = object::validate_root_resource(resource, RsrcKind::Irq);
@@ -105,8 +105,9 @@ auto interrupt_map(ours::Uandle const resource, u32 const domain, u32 const sour
         return status;
     }
 
-    auto const virq = irq::virq_of_domain(static_cast<irq::DomainId>(domain), source);
-    if (virq == irq::INVALID_V_IRQ_NUM) {
+    auto const virq =
+        irq::virq_of_domain(static_cast<irq::DomainId>(domain), static_cast<HardwareIrq>(source));
+    if (virq == IrqId::Invalid) {
         return Status::NoResource;
     }
     // A line the kernel holds for its own use is not one a program can take,
@@ -115,7 +116,7 @@ auto interrupt_map(ours::Uandle const resource, u32 const domain, u32 const sour
     if (irq::is_kernel_owned(virq)) {
         return Status::AccessDenied;
     }
-    return out.copy_to_user(virq);
+    return out.copy_to_user(static_cast<u32>(virq));
 }
 
 /// Takes the next interrupt, blocking until one arrives: Cancelled once the

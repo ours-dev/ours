@@ -8,13 +8,6 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::irq {
-/// No kernel interrupt number: what a lookup answers for a number that has no
-/// line, and what an action not on any line holds.
-inline constexpr auto INVALID_V_IRQ_NUM = static_cast<VIrqNum>(-1);
-
-/// No hardware interrupt number, the same for a lookup that finds none.
-inline constexpr auto INVALID_H_IRQ_NUM = static_cast<HIrqNum>(-1);
-
 /// Names an interrupt domain: a controller's own table of lines. A number the
 /// domain's registrant chooses, by the rule of the platform that has more
 /// than one: the root controller is Root on every platform, and the kernel
@@ -95,7 +88,7 @@ struct LineMode {
 /// An interrupt handler. `context` is whatever the action that carries the
 /// handler was constructed with (Registration), so the handler finds its
 /// device's state there rather than in a global.
-using IrqHandler = auto (*)(VIrqNum virqnum, void *context) -> IrqReturn;
+using IrqHandler = auto (*)(IrqId virqnum, void *context) -> IrqReturn;
 
 /// Revalidates deferred work while the line holds L1. The owner checks its
 /// current pending work under its handler lock, preserving the handler's lock
@@ -112,7 +105,7 @@ using IrqCompletionCheck = auto (*)(void *context) -> bool;
 /// handler takes after L1, and must not call into the irq layer, which would
 /// take L1 again. Its owner may free the action and its context only after
 /// irq::detach() has returned, which waits for this call to finish.
-using IrqCancel = auto (*)(VIrqNum virqnum, void *context) -> void;
+using IrqCancel = auto (*)(IrqId virqnum, void *context) -> void;
 } // namespace ours::irq
 
 #endif // OURS_IRQ_TYPES_HPP

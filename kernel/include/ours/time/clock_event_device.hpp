@@ -146,12 +146,12 @@ class ClockEventDevice {
     }
 
     FORCE_INLINE
-    auto set_irqnum(VIrqNum irqnum) -> void {
+    auto set_irqnum(IrqId irqnum) -> void {
         m_irqnum = irqnum;
     }
 
     FORCE_INLINE
-    auto irqnum() const -> VIrqNum {
+    auto irqnum() const -> IrqId {
         return m_irqnum;
     }
 
@@ -293,7 +293,7 @@ class ClockEventDevice {
     Mode m_mode;
     Feature m_feature;
     Rating m_rating;
-    VIrqNum m_irqnum;
+    IrqId m_irqnum;
     TimePoint<> m_next_event;
 
     /// Converts a duration to clock ticks.

@@ -942,11 +942,11 @@ namespace {
         std::atomic<bool> hook_done{false};
 
       private:
-        static auto on_event(VIrqNum, void *) -> irq::IrqReturn {
+        static auto on_event(IrqId, void *) -> irq::IrqReturn {
             return irq::IrqReturn::Handled;
         }
 
-        static auto on_cancel(VIrqNum, void *const context) -> void {
+        static auto on_cancel(IrqId, void *const context) -> void {
             auto &self = *static_cast<RecordingInterrupt *>(context);
             self.line_revoked();
             self.hooked.store(true, std::memory_order_release);
@@ -1010,7 +1010,7 @@ namespace {
     /// What the chain case's two threads need.
     struct Chain {
         irq::Domain *table = nullptr;
-        VIrqNum virq = irq::INVALID_V_IRQ_NUM;
+        IrqId virq = IrqId::Invalid;
         RecordingInterrupt *object = nullptr;
         std::atomic<bool> destroy_returned{false};
         std::atomic<bool> hook_done_at_return{false};
@@ -1062,7 +1062,7 @@ namespace {
 
         auto *const table = new (mm::GAF_KERNEL) irq::Domain();
         auto *const object = new (mm::GAF_KERNEL) RecordingInterrupt();
-        std::array<HIrqNum, 1> const numbers{HIrqNum{9}};
+        std::array<HardwareIrq, 1> const numbers{HardwareIrq{9}};
         constexpr irq::ControllerOps NO_OP_CHIP = {
             .protocol = irq::DispatchProtocol::Eoi,
             .masking = irq::Masking::Synchronous,
@@ -1070,14 +1070,14 @@ namespace {
             .issue_eoi = [](irq::ControllerSource const &) -> void {},
             .name = "interrupt-test"};
         if (table == nullptr || object == nullptr ||
-            table->init(ustl::views::Span<HIrqNum const>(numbers), NO_OP_CHIP) != Status::Ok) {
+            table->init(ustl::views::Span<HardwareIrq const>(numbers), NO_OP_CHIP) != Status::Ok) {
             verdict(tally, false, "make the chain case's line table and object");
             self->set_cpu_affinity_hard(cpu_possible_mask());
             return;
         }
         object->table = table;
         CHAIN.table = table;
-        CHAIN.virq = table->virq_of(HIrqNum{9});
+        CHAIN.virq = table->virq_of(HardwareIrq{9});
         CHAIN.object = object;
         CHAIN.destroy_returned.store(false, std::memory_order_relaxed);
         CHAIN.hook_done_at_return.store(false, std::memory_order_relaxed);

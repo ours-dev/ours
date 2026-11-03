@@ -42,7 +42,7 @@ namespace ours {
 namespace {
     /// The number of the test's own line, which the line table does not
     /// reach: it only names the line to its actions.
-    constexpr auto LINE = irq::INVALID_V_IRQ_NUM - 1;
+    constexpr auto LINE = IrqId{0xffff'fffe};
 
     struct Tally {
         usize passed = 0;
@@ -117,14 +117,15 @@ namespace {
         .name = "irqchip-test",
     };
 
-    auto handled(VIrqNum, void *) -> irq::IrqReturn {
+    auto handled(IrqId, void *) -> irq::IrqReturn {
         return irq::IrqReturn::Handled;
     }
 
     /// A line of the test's own, outside the table, bound to `chip`; null if
     /// it cannot be made. The caller deletes it, with nobody on it.
     auto make_line(irq::ControllerOps const &chip) -> irq::Line * {
-        auto *const line = irq::Line::create(LINE, LINE, irq::IrqFlags::None, "irqchip-test");
+        auto *const line =
+            irq::Line::create(HardwareIrq{7}, LINE, irq::IrqFlags::None, "irqchip-test");
         if (line == nullptr) {
             return nullptr;
         }
@@ -263,7 +264,7 @@ namespace {
         return operations;
     }();
 
-    auto handshake_handler(VIrqNum, void *const context) -> irq::IrqReturn {
+    auto handshake_handler(IrqId, void *const context) -> irq::IrqReturn {
         auto &probe = *static_cast<HandshakeProbe *>(context);
         probe.record(Phase::Handle);
         return probe.answer;
@@ -273,7 +274,8 @@ namespace {
                          irq::TriggerMode const trigger) -> void {
         HandshakeProbe probe;
         probe.trigger = trigger;
-        auto *const line = irq::Line::create(LINE, LINE, irq::IrqFlags::None, "handshake-test");
+        auto *const line =
+            irq::Line::create(HardwareIrq{7}, LINE, irq::IrqFlags::None, "handshake-test");
         if (line == nullptr) {
             verdict(tally, false, "allocate the handshake line");
             return;
@@ -321,7 +323,8 @@ namespace {
         probe.trigger = irq::TriggerMode::Level;
         probe.answer = irq::IrqReturn::WakeThread;
         probe.ready = false;
-        auto *const line = irq::Line::create(LINE, LINE, irq::IrqFlags::None, "hold-test");
+        auto *const line =
+            irq::Line::create(HardwareIrq{7}, LINE, irq::IrqFlags::None, "hold-test");
         if (line == nullptr) {
             verdict(tally, false, "allocate the hold line");
             return;
@@ -372,7 +375,7 @@ namespace {
         auto ordinary_only = END_OPS;
         ordinary_only.masking = irq::Masking::Unspecified;
         auto *const restricted =
-            irq::Line::create(LINE, LINE, irq::IrqFlags::None, "restricted-test");
+            irq::Line::create(HardwareIrq{7}, LINE, irq::IrqFlags::None, "restricted-test");
         if (restricted == nullptr) {
             verdict(tally, false, "make the restricted-capability line");
             return;

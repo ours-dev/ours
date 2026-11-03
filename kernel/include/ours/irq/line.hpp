@@ -52,7 +52,7 @@ class Line final {
     using Self = Line;
 
   public:
-    static auto create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) -> Self *;
+    static auto create(HardwareIrq hirq, IrqId virq, IrqFlags flags, char const *name) -> Self *;
 
     /// Binds the line to the controller that drives its pin, and gives the
     /// line the flow that suits how the chip says the pin signals now; the
@@ -219,7 +219,7 @@ class Line final {
     /// The line's facts that `flags` asks for, for the constructor.
     static auto line_flags(IrqFlags flags) -> LineFlags;
 
-    Line(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name);
+    Line(HardwareIrq hirq, IrqId virq, IrqFlags flags, char const *name);
 
     /// Checks immutable registration policy before either attach touches the
     /// line or its controller. Deferred work also requires mask and unmask.

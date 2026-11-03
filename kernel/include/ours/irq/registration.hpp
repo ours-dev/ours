@@ -94,20 +94,20 @@ class Registration final {
         }
     }
 
-    /// The line this action is attached to, or INVALID_V_IRQ_NUM when it
+    /// The line this action is attached to, or IrqId::Invalid when it
     /// is on none. An acquire load: a reader that sees INVALID after a
     /// removal also sees everything the removal did to the action and its
     /// owner's state first, which is what lets irq::detach() answer NotFound
     /// for an action a removal has finished with, without taking the line's
     /// lock.
     [[nodiscard]]
-    auto virqnum() const -> VIrqNum {
+    auto virqnum() const -> IrqId {
         return m_virqnum.load(std::memory_order_acquire);
     }
 
     [[nodiscard]]
     auto is_attached() const -> bool {
-        return virqnum() != INVALID_V_IRQ_NUM;
+        return virqnum() != IrqId::Invalid;
     }
 
   private:
@@ -144,7 +144,7 @@ class Registration final {
     /// Written under the lock of the line it names, and by a removal as the
     /// last thing it does to the action (Line::revoke()); read without that
     /// lock by detach() to find the line.
-    std::atomic<VIrqNum> m_virqnum{INVALID_V_IRQ_NUM};
+    std::atomic<IrqId> m_virqnum{IrqId::Invalid};
     ustl::collections::intrusive::ListMemberHook<> m_hook;
 
   public:

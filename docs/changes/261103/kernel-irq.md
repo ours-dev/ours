@@ -429,3 +429,42 @@ None. Teaching exercises are suspended for this task.
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task.
+
+## Make hardware sources, kernel IRQ ids and vectors distinct types (2026-11-03)
+
+**Files**
+- `system/public/ours/types.hpp` and IRQ interfaces/implementations — replace the two u32 aliases with scoped HardwareIrq and IrqId enums, with no compatibility aliases or implicit numeric conversion.
+- Physical interrupt objects, platform/time adapters, syscall implementation and test fixtures — convert only at numeric indexing, hardware encoding, diagnostic serialization and ABI boundaries.
+- `kernel/arch/x86/lib/arch/include/arch/x86/apic/ioapic.hpp` — directed EOI takes IrqVec, not a GSI.
+- `docs/repairs/261003/x86-apic.md` — retire the two issues belonging to the removed EOI-as-ACK adapter and its untyped low-level call.
+
+**Symptom**
+A hardware number could be passed to a kernel IRQ operation with no compiler diagnostic because HIrqNum and VIrqNum were aliases of the same u32. Numeric separation caught some mistakes at runtime but failed when another domain's hardware source happened to equal a valid kernel id. The directed IO-APIC EOI API also accepted a source number although its register identifies a vector.
+
+**Cause**
+Names on primitive aliases do not establish distinct C++ types. They cannot express which namespace an identity belongs to, so every caller had to remember the distinction. Arithmetic on those aliases also obscured whether code was computing an array index, a source identity or a kernel id.
+
+**Change**
+Before, `using HIrqNum = u32; using VIrqNum = u32;`. Now HardwareIrq and IrqId are distinct enum classes with explicit Invalid values. No implicit conversion exists between them or to/from u32. Storage construction and range calculations use numeric indices, then explicitly construct identities; interfaces pass identities throughout. Physical interrupt-object creation takes IrqId. Syscalls validate the existing u32 resource/wire arguments and convert once into the typed interface; interrupt_map serializes its resulting IrqId explicitly. No syscall number, width, resource range or user wire format changes.
+
+Scoped enums were chosen over wrapper classes with conversion/arithmetic operators: they provide the distinction without a parallel arithmetic API or implicit escape. They were chosen over retaining aliases plus disjoint ranges because independent domains can overlap numerically. Diagnostic output casts at the call site instead of coupling fundamental identities to a formatting library.
+
+The directed EOI method now requires arch::IrqVec; a compile-time assertion rejects HardwareIrq. The removed adapter's ignored NotSupported and GSI-as-vector calls no longer exist; the remaining low-level method returns NotSupported on old controllers, and the live generic path uses local-APIC broadcast completion. No directed fallback for pre-0x20 hardware was added because no supported path requests directed completion. The retired repairs are recorded here instead of retaining descriptions of nonexistent callers.
+
+**Reference**
+None, this project's own type boundary. The directed-register distinction follows the existing IO-APIC repair diagnosis; its prior comparison was Linux io_apic_eoi(apic, vector) and __eoi_ioapic_pin(apic, pin, vector).
+
+**Verification**
+All 39 changed C++ files ran changed-line formatting and LLVM 23 clang-tidy. The architecture types header was checked using the actual x86 IO-APIC compiler flags because automatic header inference selected a command lacking kernel include paths. No new changed-line diagnostics remain; older HPET naming diagnostics are outside the diff. Compile-time assertions reject implicit numeric/source/id conversions, HardwareIrq passed to irq::mask, IrqId passed to DomainEndpoint::dispatch, and HardwareIrq passed to directed EOI. Both enum widths equal u32. Both x86 images boot: dbg 46 passed, 5 skipped, 0 failed; rel 44 passed, 8 skipped, 0 failed, 7/7 required. All 161 host tests pass. All nine IRQ suites pass at their existing counts, including 87 domain layouts, 85 registry checks, 49 controller checks and 83 interrupt-line checks. Performance was not measured.
+
+**Deliberately not done**
+No arithmetic operators, numeric compatibility aliases, changed syscall encoding, ARM/RISC-V boot claim or physical directed-EOI experiment. Architecture stub return types are migrated and syntax-checked; the verified product is x86.
+
+**How it was found**
+Replacing the aliases made the compiler enumerate previously implicit boundary crossings. Those diagnostics exposed source/id confusion in test fixtures, raw object-creation arguments and vector serialization. Runtime mapping and ABI regressions exercise the corrected boundaries.
+
+**The user's prediction**
+None. Teaching exercises are suspended for this task.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.

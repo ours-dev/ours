@@ -48,7 +48,7 @@ ClockEventDevice::ClockEventDevice(char const *name, Vtable const *vtable, Featu
     , m_mode(Mode::Detached)
     , m_feature(feature)
     , m_rating(rating)
-    , m_irqnum(irq::INVALID_V_IRQ_NUM)
+    , m_irqnum(IrqId::Invalid)
     , m_next_event()
     , m_scaler()
     , m_min_delta_ticks()

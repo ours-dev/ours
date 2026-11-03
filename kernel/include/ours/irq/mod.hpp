@@ -37,13 +37,13 @@ class Registration;
 /// BadState if the action is on a line already, NoResource if there is no
 /// such line or the kernel is taking it away (a removal of its domain has
 /// marked it, and the answer clears if the removal is refused), InvArgs for
-/// INVALID_V_IRQ_NUM, a null handler, or an action
+/// IrqId::Invalid, a null handler, or an action
 /// that says Oneshot together with Permanent or Shared; NotSupported for a
 /// Oneshot action on a line whose controller cannot mask and unmask, or
 /// cannot say how its pins signal (give a mode: the attach with a mode),
 /// which is answered before AlreadyBound.
 [[nodiscard]]
-auto attach(VIrqNum virqnum, Registration &action) -> Status;
+auto attach(IrqId virqnum, Registration &action) -> Status;
 
 /// Hangs `action` on line `virqnum` as attach() does, but only on a line
 /// nobody is on, and settles how the line signals in the same step: with
@@ -70,7 +70,7 @@ auto attach(VIrqNum virqnum, Registration &action) -> Status;
 /// set its mode, or cannot say what it is and mask it; the other answers as
 /// attach().
 [[nodiscard]]
-auto attach(VIrqNum virqnum, Registration &action, ustl::Option<LineMode> mode)
+auto attach(IrqId virqnum, Registration &action, ustl::Option<LineMode> mode)
     -> ktl::Result<TriggerMode>;
 
 /// Takes `action` off the line it hangs on; NotFound if it hangs on none,
@@ -110,7 +110,7 @@ auto detach(Registration &action) -> Status;
 /// the two the other way round. Nor from a handler of another line, whose
 /// dispatch holds that line's lock: no order is set between two lines'
 /// locks.
-auto finalize_oneshot(VIrqNum virqnum, Registration const &action) -> void;
+auto finalize_oneshot(IrqId virqnum, Registration const &action) -> void;
 
 /// Masks line `virqnum` at its controller, so the pin raises no interrupt
 /// until it is unmasked.
@@ -131,11 +131,11 @@ auto finalize_oneshot(VIrqNum virqnum, Registration const &action) -> void;
 /// that was on its way when the mask landed and that its action handled
 /// itself.
 ///
-/// NoResource if there is no such line, InvArgs for INVALID_V_IRQ_NUM,
+/// NoResource if there is no such line, InvArgs for IrqId::Invalid,
 /// NotSupported if the line's controller cannot mask. A line the kernel is
 /// taking away is masked as any other.
 [[nodiscard]]
-auto mask(VIrqNum virqnum) -> Status;
+auto mask(IrqId virqnum) -> Status;
 
 /// Unmasks line `virqnum` at its controller, unless the line is held: a
 /// Oneshot line whose thread still owes its device a service stays masked,
@@ -151,7 +151,7 @@ auto mask(VIrqNum virqnum) -> Status;
 /// The same context rules and answers as mask(), NotSupported meaning the
 /// controller cannot unmask.
 [[nodiscard]]
-auto unmask(VIrqNum virqnum) -> Status;
+auto unmask(IrqId virqnum) -> Status;
 
 /// Sets how line `virqnum` signals, and leaves it masked; the line's flow
 /// follows the new mode. Only a line nobody is on may change how it signals:
@@ -167,7 +167,7 @@ auto unmask(VIrqNum virqnum) -> Status;
 /// has an action, NoResource also if the kernel is taking the line away, the
 /// same answers as mask() otherwise.
 [[nodiscard]]
-auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Status;
+auto configure(IrqId virqnum, TriggerMode trigger, Polarity polarity) -> Status;
 
 /// How line `virqnum` signals now: what configure() last set, or what the
 /// platform programmed at boot from the firmware's tables. An owner that
@@ -180,7 +180,7 @@ auto configure(VIrqNum virqnum, TriggerMode trigger, Polarity polarity) -> Statu
 /// lock. The same answers as mask(), NotSupported meaning the controller
 /// cannot say.
 [[nodiscard]]
-auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
+auto trigger_mode(IrqId virqnum) -> ktl::Result<TriggerMode>;
 
 /// Whether line `virqnum` is masked at its controller now, read from the
 /// controller. For kernel tests: the irq layer keeps no copy of a line's
@@ -193,17 +193,17 @@ auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
 /// under the controller's register lock and takes no line lock. The same
 /// answers as mask(), NotSupported meaning the controller cannot say.
 [[nodiscard]]
-auto is_masked_for_test(VIrqNum virqnum) -> ktl::Result<bool>;
+auto is_masked_for_test(IrqId virqnum) -> ktl::Result<bool>;
 
 /// The resolver of the user ABI: the virq of the line made for hardware
-/// number `hirqnum` in the domain named `id`; INVALID_V_IRQ_NUM if no such
+/// number `hirqnum` in the domain named `id`; IrqId::Invalid if no such
 /// domain is registered or it holds no such line. interrupt_map asks it with
 /// the domain and the source the route service's answer named. The number is
 /// good for good: virqs are not reused, so it is safe to keep after the
 /// lookup, and never equal to `hirqnum`, and not the same on another machine
 /// or another kernel: a program asks, and does not compute it.
 [[nodiscard]]
-auto virq_of_domain(DomainId id, HIrqNum hirqnum) -> VIrqNum;
+auto virq_of_domain(DomainId id, HardwareIrq hirqnum) -> IrqId;
 
 /// The same question asked of the root controller's domain, whose numbers are
 /// the platform's single numbering (on x86, the GSI): what the kernel's own
@@ -211,17 +211,17 @@ auto virq_of_domain(DomainId id, HIrqNum hirqnum) -> VIrqNum;
 /// domain and hardware number together (virq_of_domain()), never by the
 /// number alone, since two domains may hold the same one.
 [[nodiscard]]
-auto virq_of_hwirq(HIrqNum hirqnum) -> VIrqNum;
+auto virq_of_hwirq(HardwareIrq hirqnum) -> IrqId;
 
 /// The hardware number of line `virqnum`, the inverse of virq_of_hwirq();
-/// INVALID_H_IRQ_NUM if there is no such line.
+/// HardwareIrq::Invalid if there is no such line.
 [[nodiscard]]
-auto hwirq_of_virq(VIrqNum virqnum) -> HIrqNum;
+auto hwirq_of_virq(IrqId virqnum) -> HardwareIrq;
 
 /// Whether the root domain contains this hardware source. Internal storage
 /// and its reader lifetime stay inside the query.
 [[nodiscard]]
-auto root_source_exists_for_test(HIrqNum source) -> bool;
+auto root_source_exists_for_test(HardwareIrq source) -> bool;
 
 /// The flow of line `virqnum` for a kernel test that plays an interrupt from
 /// thread context: the same actions under the same locks as
@@ -232,7 +232,7 @@ auto root_source_exists_for_test(HIrqNum source) -> bool;
 /// keep preemption disabled through callbacks; the caller needs no extra
 /// preemption scope.
 [[nodiscard]]
-auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn;
+auto handle_irq_for_test(IrqId virqnum) -> IrqReturn;
 
 /// What the removal of a domain does to one of its lines (Domain::
 /// revoke_line()): marks the line and takes its actions off it, telling
@@ -241,13 +241,13 @@ auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn;
 /// Nothing calls it but tests yet: no tree code removes a domain.
 /// unmark_dying_for_test() makes the line take actions again.
 [[nodiscard]]
-auto revoke_line_for_test(VIrqNum virqnum) -> Status;
-auto unmark_dying_for_test(VIrqNum virqnum) -> void;
+auto revoke_line_for_test(IrqId virqnum) -> Status;
+auto unmark_dying_for_test(IrqId virqnum) -> void;
 
 /// How many interrupts on line `virqnum` no action handled since boot;
 /// none if there is no such line.
 [[nodiscard]]
-auto spurious_count(VIrqNum const virqnum) -> ustl::Option<u64>;
+auto spurious_count(IrqId const virqnum) -> ustl::Option<u64>;
 
 /// Whether the kernel itself holds line `virqnum`: an action that says
 /// Permanent is on it, as the legacy timer's is. False for a line nobody is on,
@@ -263,7 +263,7 @@ auto spurious_count(VIrqNum const virqnum) -> ustl::Option<u64>;
 /// and is never detached, so a kernel holder that needs any of that is not
 /// reported.
 [[nodiscard]]
-auto is_kernel_owned(VIrqNum virqnum) -> bool;
+auto is_kernel_owned(IrqId virqnum) -> bool;
 
 /// The bookkeeping on entry to a trap, which arch calls once, before it
 /// dispatches: records the frame and raises the counts that keep this CPU from

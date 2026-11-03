@@ -144,11 +144,11 @@ namespace {
 
     /// The free line, by the number the irq layer names it: q35 has no
     /// override for ISA 3, so it is GSI 3.
-    auto free_line() -> VIrqNum {
+    auto free_line() -> IrqId {
         return platform::isa_irq_line(ISA_IRQ_SERIAL2);
     }
 
-    auto timer_line() -> VIrqNum {
+    auto timer_line() -> IrqId {
         return platform::isa_irq_line(ISA_IRQ_PIT);
     }
 
@@ -189,8 +189,9 @@ namespace {
     /// not the line's virq, so this comes in through the interrupt entry as
     /// the line's own interrupt would.
     auto raise() -> void {
-        auto const vector = static_cast<arch::IrqVec>(
-            static_cast<usize>(arch::IrqVec::PlatformIrqMin) + irq::hwirq_of_virq(free_line()));
+        auto const vector =
+            static_cast<arch::IrqVec>(static_cast<usize>(arch::IrqVec::PlatformIrqMin) +
+                                      static_cast<usize>(irq::hwirq_of_virq(free_line())));
         apic_send_ipi_self(vector, ApicDeliveryMode::Fixed);
     }
 
@@ -302,13 +303,14 @@ namespace {
         verdict(tally, irq::is_kernel_owned(timer_line()),
                 "the timer's line is the kernel's own: Permanent");
         verdict(tally, !irq::is_kernel_owned(free_line()), "the free line is not");
-        verdict(tally, !irq::is_kernel_owned(irq::INVALID_V_IRQ_NUM),
-                "and INVALID_V_IRQ_NUM, which is no line, is not");
+        verdict(tally, !irq::is_kernel_owned(IrqId::Invalid),
+                "and IrqId::Invalid, which is no line, is not");
         // Every line the machine has: the timer's is the only one.
         auto owned = usize{0};
-        for (auto hwirq = HIrqNum{0}; hwirq < 256; ++hwirq) {
+        for (u32 source = 0; source < 256; ++source) {
+            auto const hwirq = HardwareIrq{source};
             auto const virq = irq::virq_of_hwirq(hwirq);
-            if (virq != irq::INVALID_V_IRQ_NUM && irq::is_kernel_owned(virq)) {
+            if (virq != IrqId::Invalid && irq::is_kernel_owned(virq)) {
                 owned += 1;
             }
         }
@@ -469,7 +471,7 @@ namespace {
         }
         auto const read = read_within(*port.dispatcher(), &packet);
         auto const to = now();
-        verdict(tally, irq::spurious_count(NO_SUCH_LINE).is_none(),
+        verdict(tally, irq::spurious_count(IrqId{NO_SUCH_LINE}).is_none(),
                 "a vector past every line has no line");
         verdict(tally, read && is_packet(packet, from, to),
                 "raised before the line's own, it is ended by the root handler: the line's "
@@ -1073,7 +1075,7 @@ namespace {
         KernelHandle<InterruptDispatcher> interrupt;
         auto rights = Rights::None;
         answered(tally,
-                 InterruptEventDispatcher::create(&interrupt, &rights, ISA_IRQ_SERIAL2,
+                 InterruptEventDispatcher::create(&interrupt, &rights, IrqId{ISA_IRQ_SERIAL2},
                                                   InterruptOptions::Virtual),
                  Status::InvArgs, "a physical line refuses Virtual");
         answered(tally, make(&interrupt, static_cast<InterruptOptions>(5U << 1)), Status::InvArgs,
@@ -1085,11 +1087,11 @@ namespace {
                                                   static_cast<InterruptOptions>(0x1)),
                  Status::InvArgs, "the retired RemapIrq bit");
         answered(tally,
-                 InterruptEventDispatcher::create(&interrupt, &rights, NO_SUCH_LINE,
+                 InterruptEventDispatcher::create(&interrupt, &rights, IrqId{NO_SUCH_LINE},
                                                   InterruptOptions::ModeDefault),
                  Status::NoResource, "a number no line has answers NoResource");
         answered(tally,
-                 InterruptEventDispatcher::create(&interrupt, &rights, NO_SUCH_LINE,
+                 InterruptEventDispatcher::create(&interrupt, &rights, IrqId{NO_SUCH_LINE},
                                                   InterruptOptions::ModeEdgeHigh),
                  Status::NoResource, "with a mode as well");
     }

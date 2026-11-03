@@ -7,7 +7,7 @@
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::irq {
-Line::Line(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name)
+Line::Line(HardwareIrq hirq, IrqId virq, IrqFlags flags, char const *name)
     : m_canary(this)
     , m_lock()
     , m_flags(line_flags(flags))
@@ -32,7 +32,7 @@ auto Line::line_flags(IrqFlags const flags) -> LineFlags {
     return line;
 }
 
-auto Line::create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) -> Self * {
+auto Line::create(HardwareIrq hirq, IrqId virq, IrqFlags flags, char const *name) -> Self * {
     return new (mm::GAF_KERNEL) Self(hirq, virq, flags, name);
 }
 
@@ -269,7 +269,7 @@ auto Line::detach(Registration &action) -> Status {
     }
 
     m_registrations.erase(action);
-    action.m_virqnum.store(INVALID_V_IRQ_NUM, std::memory_order_release);
+    action.m_virqnum.store(IrqId::Invalid, std::memory_order_release);
     // Held and, on a line left empty, the facts its last action brought go
     // out in one store.
     flags &= ~LineFlags::Held;
@@ -372,7 +372,7 @@ namespace {
             }
             auto const *const chip = m_source.chip;
             DEBUG_ASSERT(chip && chip->issue_eoi, "line {} ends an interrupt with no chip eoi",
-                         m_source.virqnum);
+                         static_cast<u32>(m_source.virqnum));
             chip->issue_eoi(m_source);
         }
 
@@ -454,7 +454,7 @@ auto Line::handle_oneshot_locked() -> IrqReturn {
 auto Line::mask_unclaimed() const -> void {
     auto const *const chip = m_source.chip;
     DEBUG_ASSERT(chip && chip->mask, "line {} masks an unclaimed interrupt with no chip mask",
-                 m_source.virqnum);
+                 static_cast<u32>(m_source.virqnum));
     chip->mask(m_source);
 }
 
@@ -621,8 +621,10 @@ auto Line::revoke() -> void {
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_lock};
     auto flags = m_flags;
     // Revocation is only valid after every registration agreed to it.
-    ASSERT(!!(flags & LineFlags::Dying), "line {} revoked before it was marked", m_source.virqnum);
-    ASSERT(!(flags & LineFlags::Permanent), "line {} is Permanent and revoked", m_source.virqnum);
+    ASSERT(!!(flags & LineFlags::Dying), "line {} revoked before it was marked",
+           static_cast<u32>(m_source.virqnum));
+    ASSERT(!(flags & LineFlags::Permanent), "line {} is Permanent and revoked",
+           static_cast<u32>(m_source.virqnum));
 
     for (;;) {
         auto const first = m_registrations.front();
@@ -631,10 +633,10 @@ auto Line::revoke() -> void {
         }
         auto &action = *first;
         ASSERT(action.is_revocable(), "line {} revokes an action with no cancel hook",
-               m_source.virqnum);
+               static_cast<u32>(m_source.virqnum));
         m_registrations.erase(action);
         action.cancel();
-        action.m_virqnum.store(INVALID_V_IRQ_NUM, std::memory_order_release);
+        action.m_virqnum.store(IrqId::Invalid, std::memory_order_release);
     }
 
     flags &= ~(LineFlags::Held | LineFlags::Shared | LineFlags::Oneshot);
