@@ -106,3 +106,62 @@ None
 - Where does a caller of a `Ref` have to show it holds a lock, and why there?
 - What would a parameter naming the lock argument add, and what would it cost?
 
+## Title: ustl::Own, the owning counterpart of Ref (2026-11-03)
+
+**Files**
+- `system/lib/ustl/include/ustl/dyn.hpp` — `Own<Dyn, Size, Align>`; `Method::thunk` launders the pointer it is given; `Ref` gets a private constructor and `Own` as a friend
+- `system/lib/ustl/test/dyn_test.cpp` — four tests of `Own` and the `static_assert`s of what fits
+- `.agents/tasks/sched-facade/DESIGN.md` — `Own` described as built
+
+**Symptom**
+None. The user asked for an owning type beside `Ref` (the answer to the scope question of 2026-11-03), and the scheduler does not use it.
+
+**Cause**
+**A `Ref` needs a table of methods; an object that has to move and die needs two more things the table does not have, how to relocate and how to destroy.** So `Own` is `{Ops const *, storage}`, where `Ops` is `{the Ref's own method table, relocate, destroy}`, one per held type, in read-only data. Everything else follows from the object living in the `Own`.
+
+1. **The buffer is in the type.** `Own<Dyn, Size, Align>` holds `Size` bytes aligned to `Align`, three pointers by default, as `ustl::Function` does. `Function` fixes the size; `Own` makes it a parameter, because the objects behind an interface are not all as small as a callable's capture list, and a different size is a different type, as with any buffer. A type that does not fit is a compile error at the line that built it, not a trip to the heap: the `FitsInline` concept makes "does not fit" part of overload resolution, so `std::is_constructible_v` says no and the compiler reports the clause that failed.
+2. **The held type's move must not throw.** Moving an `Own` is relocation: construct at the destination from the source, then destroy the source. A move that could throw would leave the object in neither place, so a type with a throwing move does not construct an `Own` (the same rule as `Function`), and `relocate` is `noexcept`.
+3. **The empty state is a table, not a null pointer.** An empty `Own` points at an `Ops` whose methods trap and whose `relocate` and `destroy` do nothing, so moving, resetting and destroying an empty one need no branch and calling one stops at once. `operator bool` compares the pointer.
+4. **`launder`.** The method thunk is given the address of the storage, not the pointer `std::construct_at` returned, and a pointer to bytes is not a pointer to the object built in them until `std::launder` says so. `Function::target` does the same. The thunk is shared with `Ref`, so it launders for both; for a `Ref` the pointer already points at an object and the call does nothing.
+5. **Value semantics, so `call` is not const.** A `Ref` is a reference, and calling through a const reference may still change the object it refers to. An `Own` holds the object, and a method that changes it changes the `Own`.
+
+`ref()` lends a `Ref` to the held object. It is good until the `Own` is moved from, reset or destroyed, which the comment says; it is built through a private constructor that `Own` is a friend of, so a `Ref` cannot be made from a bare pointer elsewhere.
+
+**Change**
+```cpp
+ustl::Own<Schedule> own{RoundRobin{}};            // the object lives in the Own
+ustl::Own<Schedule> placed{std::in_place_type<RoundRobin>};   // built in place
+own.call<Enqueue>(rq, thread, options);
+ustl::Ref<Schedule> view = own.ref();             // lent; dies with the Own's object
+ustl::Own<Schedule> moved = std::move(own);       // relocates; `own` is empty
+```
+
+Rejected: a heap fallback for what does not fit (the reason `Function` has none), a copyable `Own` (it would demand that every held type be copyable), and a shared `Own` (no user for it).
+
+**Reference**
+In-tree, `ustl::Function` (`system/lib/ustl/include/ustl/function/function.hpp`): the `Ops` table with `invoke`, `relocate` and `destroy`, the empty table, `FitsInline`, and `launder` in `target()`. Outside, EnTT `basic_poly<Concept, Size, Align>` (the same inline-buffer parameters, read in its documentation) and Microsoft `proxy`'s `make_proxy_inplace`.
+
+**Verification**
+- Built and tested in a clean worktree (`.worktrees/verify-own`, HEAD `72c9b361` plus the two files). `python3 .agents/skills/verify/scripts/boot_check.py`: build ok in 14.9 s; dbg PASS, 46 passed, 5 skipped, 0 failed; rel PASS, 44 passed, 8 skipped, 0 failed, 7/7 required; host-tests PASS, 164 passed. `waitqueue.test`, `threadjoin.test`, `preempt.test`, `dpc.test`, `timer.test`, `timershare.test` and `hotplug.test` ok on the dbg image with four CPUs, since the scheduler is built on `Method::thunk`, which changed.
+- A scheduler-shaped probe that builds an `Own` from a class, calls it and moves it compiles with the flags of `scheduler.cpp` (`-ffreestanding -nostdinc++ -fno-exceptions -fno-rtti -std=c++2c`); `sizeof(Own)` is four words.
+- Mutations of the header against the host test, each caught by `test_own_destroys_what_it_holds_exactly_once`: `destroy_target` destroying nothing (`live == 1` fails), a move that leaves the source non-empty (`!a` fails), and a relocation that does not destroy the source (`live == 1` fails).
+- `static_assert`s: not copyable, nothrow movable; accepts a class, a copy of one and an in-place construction; refuses a type that does not model the interface, one too big, one over-aligned and one with a throwing move; accepts the big and the over-aligned ones in a larger buffer.
+- `scripts/format_cpp.py --check` clean; `clang-tidy` on `scheduler.cpp` (which includes the header) reports nothing in `dyn.hpp`.
+- Not verified: the empty `Own` trapping (a death test, and the thunk is one line); that the `launder` is needed rather than prudent, which is a question for the language lawyer and not for a test; an `Own` used by anything but its test.
+
+**Deliberately not done**
+- Nothing uses it. The scheduler holds its disciplines as `Ref`s to static objects, which is what a stateless discipline wants.
+- No conversion between `Own`s of different sizes, no `swap`, no `emplace` on a live `Own` (`reset()` and construct another), no `make<T>` beside the two constructors.
+- No allocation, and no shared ownership.
+
+**How it was found**
+By the user's answer to the scope question: both a non-owning reference and an owning type.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- What does an `Own` need in its table that a `Ref` does not, and why?
+- Why does a type with a throwing move constructor not construct an `Own`, and what would break if it did?
+- Why does the method thunk call `std::launder`, and why is that harmless for a `Ref`?
+

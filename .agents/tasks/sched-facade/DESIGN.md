@@ -30,7 +30,7 @@ Non-goals:
 
 - No speedup is claimed. The call is still one indirect call through a table, as a virtual call is. If a measurement is wanted it goes through the performance workflow of CLAUDE.md, before and after.
 - `fair.*` and every scheduling algorithm stay as they are.
-- Not a general `proxy`: no shared or weak ownership, no run-time casts, no formatting support. Owning storage is in scope (the user's call) as `Own`, in a commit of its own after `Ref`, which is all the scheduler needs.
+- Not a general `proxy`: no shared or weak ownership, no run-time casts, no formatting support. Owning storage is `Own`, in scope by the user's call and built after `Ref`, which is all the scheduler needs.
 
 ## Design
 
@@ -45,7 +45,7 @@ It lives in `ustl`, beside `ustl::Function` (`system/lib/ustl/include/ustl/funct
 | `Dyn<Method...>` | The interface: a list of methods. A type models it when every dispatch is invocable on it with the method's arguments and gives a result convertible to the method's return type. Two methods with the same dispatch do not compile. |
 | Table | One `constexpr` list of function pointers per (concrete type, interface), in `.rodata`. |
 | `Ref<Dyn>` | `{void *object, Table const *table}`. Non-owning, trivially copyable, two pointers. Built from an `T &` that models the interface. A default-constructed `Ref` points at a table whose entries trap. |
-| `Own<Dyn>` | The owning counterpart, to come in a commit of its own: the object lives inside the `Own`, in a fixed inline buffer, as `ustl::Function` keeps its target. Move-only, never allocates, an empty state that traps. It is not needed by the scheduler. |
+| `Own<Dyn, Size, Align>` | The owning counterpart, built in the commit after `Ref`: the object lives inside the `Own`, in an inline buffer of `Size` bytes (three pointers by default), as `ustl::Function` keeps its target. Move-only; never allocates; a type that does not fit, is over-aligned or could throw from its move does not construct; an empty state that traps; `ref()` lends a `Ref` to the held object. The scheduler does not use it. |
 
 Events, in order, for one call: the caller holds a `Ref` it got from `Scheduler::schedule_of(discipline)`; `ref.call<Enqueue>(args...)` loads the function pointer for that method from the table and calls it with the object pointer; the thunk casts the pointer back to the concrete type and runs the dispatch on it; the dispatch calls the member function or, for an optional method the type lacks, the fallback.
 

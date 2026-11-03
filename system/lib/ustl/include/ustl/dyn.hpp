@@ -3,9 +3,13 @@
 #ifndef USTL_DYN_HPP
 #define USTL_DYN_HPP 1
 
+#include <array>
 #include <memory>
+#include <new>
 #include <type_traits>
 #include <utility>
+
+#include <cstddef>
 
 /// Dynamic dispatch without a base class.
 ///
@@ -117,7 +121,9 @@ struct Method<Dispatch, R(Args...)> {
 
     template <typename T>
     static auto thunk(void *const object, Args... args) -> R {
-        return Dispatch{}(*static_cast<T *>(object), std::forward<Args>(args)...);
+        // launder: for an Own the pointer is the address of its storage, in
+        // which the object was constructed, and not a pointer to the object.
+        return Dispatch{}(*std::launder(static_cast<T *>(object)), std::forward<Args>(args)...);
     }
 
     /// The thunk of the empty reference: calling nothing stops at once, not
@@ -179,6 +185,10 @@ class Dyn final {
 /// copyable. It owns nothing and does not extend the object's lifetime; the
 /// object has to be there, at the same address, for as long as a copy of the
 /// reference is called.
+/// The default buffer is three pointers, as ustl::Function's is.
+template <typename Interface, usize Size = 3 * sizeof(void *), usize Align = alignof(void *)>
+class Own;
+
 template <typename Interface>
 class Ref;
 
@@ -215,8 +225,183 @@ class Ref<Dyn<Methods...>> final {
     }
 
   private:
+    template <typename, usize, usize>
+    friend class Own;
+
+    constexpr Ref(void *const object, typename Interface::Table const *const table) noexcept
+        : m_object(object), m_table(table) {}
+
     void *m_object;
     typename Interface::Table const *m_table;
+};
+
+namespace detail {
+    /// What a target of type T must satisfy to live in |Size| bytes aligned to
+    /// |Align|, as ustl::Function asks. A concept, so that "does not fit" takes
+    /// part in overload resolution and a failed one is reported as the clause
+    /// that failed.
+    template <typename T, usize Size, usize Align>
+    concept FitsInline =
+        sizeof(T) <= Size && alignof(T) <= Align && std::is_nothrow_move_constructible_v<T>;
+} // namespace detail
+
+/// An object that models the interface, living inside the Own itself: the
+/// owning counterpart of Ref, as ustl::Function is the owning callable. Where a
+/// Ref refers to an object somewhere else and must not outlive it, an Own
+/// holds one, moves it when it is moved and destroys it when it dies.
+///
+/// It never allocates. The object lives in |Size| bytes aligned to |Align|, and
+/// a type that does not fit, is aligned more strictly, or could throw from its
+/// move constructor does not construct an Own: it is a compile error at the line
+/// that built it, not a trip to the heap. The default holds three pointers.
+/// Different sizes are different types, as with any buffer.
+///
+/// Move-only, like ustl::Function: copying would demand that every held type be
+/// copyable. Moving relocates the object into the destination, and the source is
+/// left empty. An empty Own is not a null pointer but a table whose methods
+/// trap, so a call has no branch and calling nothing stops at once.
+template <typename... Methods, usize Size, usize Align>
+class Own<Dyn<Methods...>, Size, Align> final {
+    using Interface = Dyn<Methods...>;
+
+    template <typename T>
+    static constexpr bool HOLDS =
+        Interface::template MODELED_BY<T> && detail::FitsInline<T, Size, Align>;
+
+  public:
+    /// The empty Own. Calling it traps.
+    Own() noexcept = default;
+
+    /// Holds a copy of, or the moved value of, |target|.
+    template <typename T>
+        requires(HOLDS<std::remove_cvref_t<T>> && !std::is_same_v<std::remove_cvref_t<T>, Own> &&
+                 std::is_constructible_v<std::remove_cvref_t<T>, T>)
+    Own(T &&target) noexcept(std::is_nothrow_constructible_v<std::remove_cvref_t<T>, T>)
+        : m_ops(&OPS<std::remove_cvref_t<T>>) {
+        std::construct_at(static_cast<std::remove_cvref_t<T> *>(storage()),
+                          std::forward<T>(target));
+    }
+
+    /// Constructs a |T| in place from |args|.
+    template <typename T, typename... Args>
+        requires(HOLDS<T> && std::is_constructible_v<T, Args...>)
+    explicit Own(std::in_place_type_t<T>,
+                 Args &&...args) noexcept(std::is_nothrow_constructible_v<T, Args...>)
+        : m_ops(&OPS<T>) {
+        std::construct_at(static_cast<T *>(storage()), std::forward<Args>(args)...);
+    }
+
+    Own(Own &&other) noexcept {
+        take(other);
+    }
+
+    auto operator=(Own &&other) noexcept -> Own & {
+        if (this != &other) {
+            reset();
+            take(other);
+        }
+        return *this;
+    }
+
+    Own(Own const &) = delete;
+    auto operator=(Own const &) -> Own & = delete;
+
+    ~Own() {
+        m_ops->destroy(storage());
+    }
+
+    /// Destroys the held object, if any, and leaves the Own empty.
+    auto reset() noexcept -> void {
+        m_ops->destroy(storage());
+        m_ops = &EMPTY_OPS;
+    }
+
+    [[nodiscard]]
+    explicit operator bool() const noexcept {
+        return m_ops != &EMPTY_OPS;
+    }
+
+    /// Calls the method whose dispatch is |Dispatch| on the held object, with
+    /// the guarantees of Ref::call(). Not const: the object is this Own's own,
+    /// and the method may change it.
+    template <typename Dispatch, typename... CallArgs>
+        requires(Interface::template HAS<Dispatch> &&
+                 std::is_invocable_v<typename Interface::template MethodOf<Dispatch>::Thunk, void *,
+                                     CallArgs...>)
+    auto call(CallArgs &&...args) -> typename Interface::template MethodOf<Dispatch>::Result {
+        return detail::fn_at<Interface::template index_of<Dispatch>()>(*m_ops->methods)(
+            storage(), std::forward<CallArgs>(args)...);
+    }
+
+    /// A reference to the held object. It is good until this Own is moved from,
+    /// reset or destroyed; an empty Own gives an empty Ref.
+    [[nodiscard]]
+    auto ref() noexcept -> Ref<Interface> {
+        return Ref<Interface>{storage(), m_ops->methods};
+    }
+
+  private:
+    /// What is known about the held type, one table per type: its methods, how to
+    /// move it into another buffer and how to destroy it.
+    struct Ops {
+        typename Interface::Table const *methods;
+        auto (*relocate)(void *dst, void *src) noexcept -> void;
+        auto (*destroy)(void *target) noexcept -> void;
+    };
+
+    /// The object lives in the storage, constructed by std::construct_at;
+    /// std::launder is what turns the storage's address back into a pointer to
+    /// that object rather than to the bytes under it.
+    template <typename T>
+    static auto target(void *const storage) noexcept -> T * {
+        return std::launder(static_cast<T *>(storage));
+    }
+
+    template <typename T>
+    static auto relocate_target(void *const dst, void *const src) noexcept -> void {
+        std::construct_at(static_cast<T *>(dst), std::move(*target<T>(src)));
+        std::destroy_at(target<T>(src));
+    }
+
+    template <typename T>
+    static auto destroy_target(void *const storage) noexcept -> void {
+        std::destroy_at(target<T>(storage));
+    }
+
+    static auto relocate_empty(void * /*dst*/, void * /*src*/) noexcept -> void {}
+
+    static auto destroy_empty(void * /*storage*/) noexcept -> void {}
+
+    template <typename T>
+    static constexpr Ops OPS = {
+        .methods = &Interface::template TABLE_FOR<T>,
+        .relocate = &relocate_target<T>,
+        .destroy = &destroy_target<T>,
+    };
+
+    static constexpr Ops EMPTY_OPS = {
+        .methods = &Interface::EMPTY,
+        .relocate = &relocate_empty,
+        .destroy = &destroy_empty,
+    };
+
+    /// Moves |other|'s object into this Own, which must be empty, and leaves
+    /// |other| empty.
+    auto take(Own &other) noexcept -> void {
+        m_ops = other.m_ops;
+        m_ops->relocate(storage(), other.storage());
+        other.m_ops = &EMPTY_OPS;
+    }
+
+    [[nodiscard]]
+    auto storage() noexcept -> void * {
+        return m_storage.data();
+    }
+
+    Ops const *m_ops = &EMPTY_OPS;
+
+    /// Left uninitialised: only a constructed object is ever read from it.
+    alignas(Align) std::array<std::byte, Size> m_storage;
 };
 
 } // namespace ustl
