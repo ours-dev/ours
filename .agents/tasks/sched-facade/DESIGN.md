@@ -30,7 +30,7 @@ Non-goals:
 
 - No speedup is claimed. The call is still one indirect call through a table, as a virtual call is. If a measurement is wanted it goes through the performance workflow of CLAUDE.md, before and after.
 - `fair.*` and every scheduling algorithm stay as they are.
-- Not a general `proxy`: no owning storage, no small-buffer optimisation, no `dynamic_cast` equivalent, no formatting support. Those are added only when a second user needs them.
+- Not a general `proxy`: no shared or weak ownership, no run-time casts, no formatting support. Owning storage is in scope (the user's call) as `Own`, in a commit of its own after `Ref`, which is all the scheduler needs.
 
 ## Design
 
@@ -40,42 +40,40 @@ It lives in `ustl`, beside `ustl::Function` (`system/lib/ustl/include/ustl/funct
 
 | Object | What it is |
 |---|---|
-| Dispatch | A stateless constant naming an operation and how a concrete type answers it. A captureless generic lambda used as a non-type template argument, so no macro is needed. It may carry a fallback. |
-| Convention | A dispatch together with the signature the erased call has: `Convention<dispatch, auto(RunQueue &, Thread *, EnqueueOptions) -> Status>`. |
-| Facade | A list of conventions: the interface. A type models it when every dispatch is invocable on it with the convention's arguments and gives a result convertible to the convention's return type. |
-| Table | One `constexpr` array of function pointers per (concrete type, facade), in `.rodata`. |
-| View | `{void *object, Table const *table}`. Non-owning, trivially copyable, two pointers. `View<F>::of(object)` picks the table. An empty View points at a table whose entries trap. |
+| Dispatch | A type with a static call operator that takes the object first and says how a concrete type answers one operation, a fallback included. Declared with `USTL_DYN_MEMBER` or `USTL_DYN_MEMBER_OR`, which write that struct and nothing else (the user's call to allow a macro here, 2026-11-03). |
+| `Method<Dispatch, Signature>` | A dispatch together with the signature the erased call has: `Method<Enqueue, auto(RunQueue &, Thread *, EnqueueOptions) -> Status>`. |
+| `Dyn<Method...>` | The interface: a list of methods. A type models it when every dispatch is invocable on it with the method's arguments and gives a result convertible to the method's return type. Two methods with the same dispatch do not compile. |
+| Table | One `constexpr` list of function pointers per (concrete type, interface), in `.rodata`. |
+| `Ref<Dyn>` | `{void *object, Table const *table}`. Non-owning, trivially copyable, two pointers. Built from an `T &` that models the interface. A default-constructed `Ref` points at a table whose entries trap. |
+| `Own<Dyn>` | The owning counterpart, to come in a commit of its own: the object lives inside the `Own`, in a fixed inline buffer, as `ustl::Function` keeps its target. Move-only, never allocates, an empty state that traps. It is not needed by the scheduler. |
 
-Events, in order, for one call: the caller holds a `View` it got from `Scheduler::schedule_of(discipline)`; `view.call<dispatch>(args...)` loads the function pointer for that dispatch from the table and calls it with the object pointer; the thunk casts the pointer back to the concrete type and runs the dispatch on it; the dispatch calls the member function, or, for an optional hook the type lacks, returns the default.
+Events, in order, for one call: the caller holds a `Ref` it got from `Scheduler::schedule_of(discipline)`; `ref.call<Enqueue>(args...)` loads the function pointer for that method from the table and calls it with the object pointer; the thunk casts the pointer back to the concrete type and runs the dispatch on it; the dispatch calls the member function or, for an optional method the type lacks, the fallback.
 
-A sketch of the shape, not compiled:
+Built in the first commit (`ustl/dyn.hpp`, `ustl/test/dyn_test.cpp`), and written the way the scheduler will use it:
 
 ```cpp
-// A dispatch is a constant. The optional ones carry their default.
-inline constexpr auto enqueue_thread = [](auto &d, auto &&...args) -> decltype(auto) {
-    return d.enqueue_thread(std::forward<decltype(args)>(args)...);
-};
-inline constexpr auto yield_thread = [](auto &d, RunQueue &rq, Thread *t) -> void {
-    if constexpr (requires { d.yield_thread(rq, t); }) {
-        d.yield_thread(rq, t);
-    }
-};
+USTL_DYN_MEMBER(Enqueue, enqueue_thread);
+USTL_DYN_MEMBER_OR(Yield, yield_thread, ustl::dyn::Ignore{});
+USTL_DYN_MEMBER_OR(YieldTo, yield_to_thread, ustl::dyn::Returns<Status::NotSupported>{});
 
-using ScheduleFacade = ustl::Facade<
-    ustl::Convention<enqueue_thread, auto(RunQueue &, Thread *, EnqueueOptions) -> Status>,
-    ustl::Convention<yield_thread, auto(RunQueue &, Thread *) -> void>
-    /* ... */>;
+using Schedule = ustl::Dyn<
+    ustl::Method<Enqueue, auto(RunQueue &, Thread *, EnqueueOptions)->Status>,
+    ustl::Method<Yield, auto(RunQueue &, Thread *)->void>,
+    ustl::Method<YieldTo, auto(RunQueue &, Thread *, Thread *)->Status>>;
 
-view.call<yield_thread>(rq, thread);
+ustl::Ref<Schedule> schedule = round_robin;
+schedule.call<Enqueue>(rq, thread, options);
 ```
+
+What the first commit established, with the kernel's own flags (`-ffreestanding -nostdinc++ -fno-exceptions -fno-rtti -std=c++2c`, taken from the compile command of `scheduler.cpp`): the header compiles; a `Ref` is two pointers; an erased call compiles at `-O2` to moving the arguments into place and `jmpq *(%rax)`, one indirect tail call through the table entry. A virtual call loads the vptr from the object first and then the function from the vtable; here the table pointer is already in the `Ref`, so the call has one dependent load fewer. That is read off the assembly and not measured.
 
 References. Linux `struct sched_class` (`kernel/sched/sched.h`, from memory, not opened) is the same idea written by hand: one table of function pointers per class, linked in priority order. Zircon has no counterpart: `Scheduler` (`zircon/kernel/include/kernel/scheduler.h:83-85`, checked in the local checkout) is one class that "implements fair and deadline scheduling algorithms", which is the shape this project chose not to follow in 260918. In-tree, `ustl::Function::Ops` is the closest precedent.
 
 ### Applied to the scheduler
 
-- **The facade.** `ScheduleFacade` has one convention per `ISchedule` entry point except `discipline()`. The five pure ones become required. The others, which are virtual with a default body today, become optional: the default moves, unchanged, into the dispatch (a no-op for `yield_thread`, `put_prev_thread`, `set_next_thread`, `update_thread`, `on_thread_init`, `on_thread_dead` and `on_thread_unpark`; `NotSupported` for `yield_to_thread`; `Unimplemented` for `unpark_preempt` and `override_thread_base_profile`; `INVALID_CPU_NUM` for `select_target_cpu`; `Unsupported` for `migrate_thread`).
-- **The registry.** `Scheduler::schedule_of(Discipline)` is a `switch` over the closed enum that returns the view of the discipline's static instance. Normal gives whichever of RoundRobin and Fair `SCHED_NORMAL_DISCIPLINE_FAIR` selects, the way `NormalRunQueue` is chosen today. Deadline gives an empty view that traps, which is what the debug assertion in `get_schedule()` does now. Adding a discipline is one enumerator, one case and one class. Gone: `ISchedule`, `Schedule<>`, `ScheduleEntry`, `.task.schedules` and its `KEEP` in `kernel.ld`, `Scheduler::m_schedules`, `set_schedule()` and `get_schedule()`, and the virtual `discipline()`.
-- **No per-thread pointer.** `SchedEntity::m_schedule` is removed. Each call looks the view up by `ctx.discipline()`, an index into a two-element array of views. That removes the null-before-bind failure instead of guarding it.
+- **The interface.** `Schedule`, a `Dyn`, has one method per `ISchedule` entry point except `discipline()`. The five pure ones become required. The others, which are virtual with a default body today, become optional: the default moves, unchanged, into the declaration of the method as its fallback (a no-op for `yield_thread`, `put_prev_thread`, `set_next_thread`, `update_thread`, `on_thread_init`, `on_thread_dead` and `on_thread_unpark`; `NotSupported` for `yield_to_thread`; `Unimplemented` for `unpark_preempt` and `override_thread_base_profile`; `INVALID_CPU_NUM` for `select_target_cpu`; `Unsupported` for `migrate_thread`).
+- **The registry.** `Scheduler::schedule_of(Discipline)` is a `switch` over the closed enum that returns a `Ref` to the discipline's static instance. Normal gives whichever of RoundRobin and Fair `SCHED_NORMAL_DISCIPLINE_FAIR` selects, the way `NormalRunQueue` is chosen today. Deadline gives an empty `Ref`, which traps, which is what the debug assertion in `get_schedule()` does now. Adding a discipline is one enumerator, one case and one class. Gone: `ISchedule`, `Schedule<>`, `ScheduleEntry`, `.task.schedules` and its `KEEP` in `kernel.ld`, `Scheduler::m_schedules`, `set_schedule()` and `get_schedule()`, and the virtual `discipline()`.
+- **No per-thread pointer.** `SchedEntity::m_schedule` is removed. Each call looks the view up by `ctx.discipline()`, an index into a two-element array of `Ref`s. That removes the null-before-bind failure instead of guarding it.
 - **Thread-safety analysis.** Two probes with the kernel's clang (scratchpad, not in the repo) show that `-Wthread-safety` checks a plain function call and a virtual call, does not check a call through a function pointer or a table (the attribute is ignored on a function-pointer type), and does not connect a lambda-based visitor to its dispatcher, because the lambda's captured `rq` and the dispatcher's parameter `rq` are different expressions to the analysis. So the erased hop is unchecked. The discipline functions keep `TA_REQUIRES(rq.lock())` and their bodies stay checked, and `Scheduler` gets one thin private function per entry point that is itself `TA_REQUIRES(rq.lock())` and makes the single erased call, so every caller of the scheduler is still checked. The unchecked part is that one line per entry point.
 - **Disciplines.** `RoundRobin` stops deriving from `Schedule<>` and drops `override`; it keeps its member functions and stays a stateless object.
 - **Fair.** `fair.hpp` and `fair.cpp` need the same mechanical adaptation (drop the base, drop `override`). They are out of the build and are the user's own, so this design does not touch them; the adaptation is written as a list for the user, as section 5 of 260918 did.
@@ -94,17 +92,17 @@ References. Linux `struct sched_class` (`kernel/sched/sched.h`, from memory, not
 |---|---|---|---|---|
 | D1 Direction | virtual and tidy / static switch / table with a facility | Table with a facility | None | Facility, 2026-11-03 (first answered "static switch", changed after the 260918 premise was shown) |
 | D2 Where it lives | `ustl` / vendored `proxy` / EnTT | `ustl` | None | `ustl`, 2026-11-03 |
-| D3 Scope | non-owning view only / also owning inline storage | View only | None | |
-| D4 Names | Facade, Convention, View / Rust-style `Dyn` | Facade, Convention, View | None | |
-| D5 Writing a dispatch | captureless lambda as a non-type template argument / macro | Lambda | None | |
-| D6 Per-thread pointer | remove `SchedEntity::m_schedule` / keep a View per thread | Remove | None | |
+| D3 Scope | non-owning reference only / also owning inline storage | Reference only, owning later | None | Both, 2026-11-03 (`Ref` first, `Own` in a later commit) |
+| D4 Names | Facade, Convention, View / Dyn, Method, Ref | Facade, Convention, View | None | `Dyn`, `Method`, `Ref`; the owning type `Own`, 2026-11-03 |
+| D5 Writing a dispatch | macro / captureless lambda as a non-type template argument | Lambda | None | Macro (`USTL_DYN_MEMBER`, `USTL_DYN_MEMBER_OR`), 2026-11-03 |
+| D6 Per-thread pointer | remove `SchedEntity::m_schedule` / keep a reference per thread | Remove | None | Remove, 2026-11-03 |
 | D7 Required entry points | the five pure ones / more / fewer | The five that are pure today | None | |
 | D8 The empty slot (Deadline) | trap as `Function` does / answer `NotSupported` | Trap | None | |
 | D9 Fair's adaptation | list for the user / done here | List for the user | None | |
 
 ## Testing and verification
 
-- **The facility.** Host tests in `ustl` with gtest: two unrelated types behind one facade; an optional hook answered by the type's own function and by the default; a required one missing is a compile error (`static_assert` on the modelling concept); `View` is trivially copyable and no larger than two pointers; an empty view traps. A translation unit built with the kernel's flags (`-ffreestanding -fno-exceptions -fno-rtti`) is the real test of the freestanding claim, and the scheduler is it.
+- **The facility.** `ustl/test/dyn_test.cpp`, in the style of `function_test.cpp` (plain `assert`, one `main`): two unrelated types behind one interface and the objects themselves changing; a reference as a result; an optional method answered by the type's own function and by the fallback; `static_assert`s that a type lacking a required method, or a const object, does not model the interface, that a call naming no method of the interface or with the wrong arguments does not exist, and that a `Ref` is two pointers and trivially copyable; the empty `Ref` and rebinding. Two mutations of the header were tried: an optional method always answering with its fallback fails an assertion, and a `Ref` that never takes its object's table is caught at compile time. Not tested: that the empty `Ref` traps (it would need a death test, and the thunk is one line). The freestanding claim was checked by compiling a scheduler-shaped probe with the kernel's own flags, once; the scheduler itself will be the standing test.
 - **The scheduler.** The behaviour must not change, so the check is `verify` (both images and the host tests), the kernel tests that exercise scheduling (`thread_join.test`, `waitqueue.test`, `pagereclaim.test` as a user of preemption), and a four-CPU boot, as the 260918 sequence did. `clang-tidy` on every touched file.
 - **Fair.** After the user's adaptation, `-fsyntax-only` on `fair.cpp`, the way `docs/changes/260917/kernel-task-sched.md` does it.
 - **Not verifiable yet.** Performance. No claim is made, and one would need a before-and-after under the performance workflow.
