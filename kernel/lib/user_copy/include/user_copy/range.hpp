@@ -36,12 +36,18 @@ constexpr auto is_within(ours::VirtAddr const addr, usize const size, ours::Virt
 
 // The cases that have gone wrong in hand-written range checks elsewhere in
 // this tree, checked on every build.
-static_assert(is_within(0x2000, 0x1000, 0x1000, 0x2000), "ends exactly at the limit");
-static_assert(!is_within(0x2000, 0x1001, 0x1000, 0x2000), "one byte past the limit");
-static_assert(!is_within(0xfff, 1, 0x1000, 0x2000), "starts below the base");
-static_assert(!is_within(0x3000, 0, 0x1000, 0x2000), "empty, but starts at the limit");
-static_assert(is_within(0x1000, 0, 0x1000, 0x2000), "empty and inside");
-static_assert(!is_within(0x1800, ~usize{0}, 0x1000, 0x2000), "a size that would wrap the sum");
+static_assert(is_within(ours::VirtAddr{0x2000}, 0x1000, ours::VirtAddr{0x1000}, 0x2000),
+              "ends exactly at the limit");
+static_assert(!is_within(ours::VirtAddr{0x2000}, 0x1001, ours::VirtAddr{0x1000}, 0x2000),
+              "one byte past the limit");
+static_assert(!is_within(ours::VirtAddr{0xfff}, 1, ours::VirtAddr{0x1000}, 0x2000),
+              "starts below the base");
+static_assert(!is_within(ours::VirtAddr{0x3000}, 0, ours::VirtAddr{0x1000}, 0x2000),
+              "empty, but starts at the limit");
+static_assert(is_within(ours::VirtAddr{0x1000}, 0, ours::VirtAddr{0x1000}, 0x2000),
+              "empty and inside");
+static_assert(!is_within(ours::VirtAddr{0x1800}, ~usize{0}, ours::VirtAddr{0x1000}, 0x2000),
+              "a size that would wrap the sum");
 
 } // namespace user_copy
 

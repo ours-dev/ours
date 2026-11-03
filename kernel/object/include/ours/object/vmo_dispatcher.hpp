@@ -222,7 +222,7 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// kernel buffer; a user buffer goes through read_user(). No rights are
     /// checked here -- that is the caller's, against its handle.
     auto read(void *out, u64 offset, usize size) -> Status {
-        return m_vmo->read(out, VirtAddr(offset), size);
+        return m_vmo->read(out, offset, size);
     }
 
     /// Copies [offset, offset + length) of the VMO to the user buffer |out|:
@@ -246,12 +246,12 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// Copies |size| bytes from the kernel buffer |in| into the VMO at byte
     /// |offset|. The same rules as read().
     auto write(void const *in, u64 offset, usize size) -> Status {
-        return m_vmo->write(in, VirtAddr(offset), size);
+        return m_vmo->write(in, offset, size);
     }
 
     /// One aligned 8-byte store at |offset|. See VmObject::store_u64().
     auto store_u64(u64 offset, u64 value) -> Status {
-        return m_vmo->store_u64(VirtAddr(offset), value);
+        return m_vmo->store_u64(offset, value);
     }
 
     /// Copies |length| bytes from the user buffer |in| into the VMO at byte

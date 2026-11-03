@@ -127,7 +127,7 @@ namespace {
         // there is nothing a caller could resolve.
         {
             u64 kernel_word = 0;
-            auto const kernel_va = reinterpret_cast<VirtAddr>(&kernel_word);
+            auto const kernel_va = VirtAddr{reinterpret_cast<usize>(&kernel_word)};
             auto const r = user_copy::copy_to_user_capture_faults(kernel_va, &PATTERN, 8);
             show("kernel address", r);
             verdict(tally, refused_without_fault(r), "a kernel address is refused, no fault");

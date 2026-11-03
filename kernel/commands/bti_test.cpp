@@ -104,7 +104,7 @@ namespace {
     auto phys_of(mm::VmObjectPaged &vmo, usize const index) -> PhysAddr {
         auto pa = PhysAddr{0};
         if (vmo.lookup_contiguous(index * P, P, &pa) != Status::Ok) {
-            return 0;
+            return PhysAddr{0};
         }
         return pa;
     }
@@ -256,7 +256,8 @@ namespace {
         }
         verdict(tally,
                 nr_pinned(*vmo) == 2 && bti.pin_count() == 1 && bti.quarantine_count() == 0 &&
-                    !bti.in_fault_state() && phys_of(*vmo, 0) == 0 && phys_of(*vmo, 3) == 0,
+                    !bti.in_fault_state() && phys_of(*vmo, 0) == PhysAddr{0} &&
+                    phys_of(*vmo, 3) == PhysAddr{0},
                 "two pages are pinned and one pin is counted; the pages beside are not committed");
         verdict(tally, first.rights == object::RIGHTS_DEFAULT_PMT,
                 "the token has the default rights");
@@ -264,23 +265,24 @@ namespace {
         auto &token = *first.token.dispatcher();
         auto const page1 = phys_of(*vmo, 1);
         auto const page2 = phys_of(*vmo, 2);
-        auto const adjacent = page1 != 0 && page2 == page1 + P;
+        auto const adjacent = page1 != PhysAddr{0} && page2 == page1 + P;
         log::info("bti.test: the two pinned pages are {}",
                   choose<char const *>(adjacent, "adjacent", "apart"));
 
         PmtAddress where{};
         verdict(tally,
-                token.query_address(0, 2 * P, where) == Status::Ok && where.address == page1 &&
+                token.query_address(0, 2 * P, where) == Status::Ok &&
+                    where.address == std::to_underlying(page1) &&
                     where.size == choose(adjacent, 2 * P, P),
                 "the whole range is asked for: its first address, as one run if it is one, "
                 "else its first page");
         verdict(tally,
-                token.query_address(P, P, where) == Status::Ok && where.address == page2 &&
-                    where.size == P,
+                token.query_address(P, P, where) == Status::Ok &&
+                    where.address == std::to_underlying(page2) && where.size == P,
                 "the second page is asked for alone");
         verdict(tally,
-                token.query_address(0, 1, where) == Status::Ok && where.address == page1 &&
-                    where.size == P,
+                token.query_address(0, 1, where) == Status::Ok &&
+                    where.address == std::to_underlying(page1) && where.size == P,
                 "a size is rounded up to whole pages");
 
         auto before = where;
@@ -347,7 +349,8 @@ namespace {
         if (committed) {
             for (auto layout: {apart, together}) {
                 auto const first_frame = phys_of(*layout, 0);
-                auto const one_run = first_frame != 0 && phys_of(*layout, 1) == first_frame + P;
+                auto const one_run =
+                    first_frame != PhysAddr{0} && phys_of(*layout, 1) == first_frame + P;
                 log::info("bti.test: a layout of two pages is {}",
                           choose<char const *>(one_run, "one run", "apart"));
 
@@ -366,7 +369,8 @@ namespace {
                 verdict(tally,
                         plain.status == Status::Ok && plain.token.dispatcher() &&
                             plain.token.dispatcher()->query_address(0, 2 * P, run) == Status::Ok &&
-                            run.address == first_frame && run.size == choose(one_run, 2 * P, P),
+                            run.address == std::to_underlying(first_frame) &&
+                            run.size == choose(one_run, 2 * P, P),
                         "without Contiguous the same pages are pinned, and asked for as the layout "
                         "allows");
                 if (plain.token.dispatcher()) {
@@ -383,11 +387,11 @@ namespace {
                             pinned_token.query_pieces(P, 1, one) == Status::Ok &&
                                 one[0] == second_frame,
                             "a later piece alone");
-                    one[0] = 0;
+                    one[0] = PhysAddr{};
                     verdict(tally,
                             pinned_token.query_pieces(2 * P, 0, one) ==
                                     choose(one_run, Status::Ok, Status::InternalError) &&
-                                one[0] == choose<PhysAddr>(one_run, first_frame, 0),
+                                one[0] == choose<PhysAddr>(one_run, first_frame, PhysAddr{}),
                             "the whole pin as one piece is Ok for one run and InternalError for "
                             "pages apart");
                     verdict(tally,
@@ -431,7 +435,7 @@ namespace {
             auto untouched = make_vmo(1);
             verdict(tally,
                     untouched && pin(bti, untouched, 0, P, RW).status == Status::BadState &&
-                        phys_of(*untouched, 0) == 0,
+                        phys_of(*untouched, 0) == PhysAddr{0},
                     "and it refuses before committing the pages it would have pinned");
 
             bti.release_quarantine();
@@ -498,7 +502,7 @@ namespace {
                         slice.status == Status::Ok && slice.token.dispatcher() &&
                             nr_pinned(*child) == 2 && nr_pinned(*parent) == 0 &&
                             slice.token.dispatcher()->query_address(P, P, at) == Status::Ok &&
-                            at.address == phys_of(*child, 1) && at.size == P,
+                            at.address == std::to_underlying(phys_of(*child, 1)) && at.size == P,
                         "the clone's pages are pinned and asked for through the clone, and the "
                         "parent's are not pinned");
                 if (slice.token.dispatcher()) {

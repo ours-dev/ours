@@ -71,7 +71,7 @@ namespace {
     /// What the page table holds for |va|.
     struct Entry {
         bool present = false;
-        PhysAddr pa = 0;
+        PhysAddr pa{};
         mm::MmuFlags flags{};
     };
 
@@ -100,7 +100,7 @@ namespace {
         object::KernelHandle<object::VmoDispatcher> paged;
         auto vmo_rights = Rights::None;
         auto const made =
-            phys != 0 &&
+            phys != PhysAddr{0} &&
             object::VmaDispatcher::create(aspace->root_vma(), region, region_rights) ==
                 Status::Ok &&
             object::VmoDispatcher::create_physical(phys, PAGES * PAGE_SIZE, window, vmo_rights) ==

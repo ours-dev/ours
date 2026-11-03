@@ -139,10 +139,11 @@ auto ArchVmAspace::init() -> Status {
 auto ArchVmAspace::destroy() -> Teardown {
     m_canary.verify<Self>();
 
-    if (m_kind != VmasKind::User || m_page_table.pgd_phys() == 0) {
+    if (m_kind != VmasKind::User || m_page_table.pgd_phys() == PhysAddr{0}) {
         return {};
     }
-    DEBUG_ASSERT(arch::Cr3::read().get<arch::Cr3::PageTableAddress>() != m_page_table.pgd_phys(),
+    DEBUG_ASSERT(arch::Cr3::read().get<arch::Cr3::PageTableAddress>() !=
+                     std::to_underlying(m_page_table.pgd_phys()),
                  "freeing the page tables this CPU is running on");
     DEBUG_ASSERT(active_cpus().none(), "freeing page tables another CPU is running on");
 
@@ -181,12 +182,15 @@ auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
     using arch::Cr3;
     if (to != nullptr) {
         to->m_canary.verify<Self>();
-        VirtAddr const to_pgd = to->m_page_table.pgd_phys();
+        PhysAddr const to_pgd = to->m_page_table.pgd_phys();
         auto const cpu = Cpu::id();
         set_cpu(to->m_active_cpus, cpu, true);
 
         if (to->m_pcid != INVALID_PCID) {
-            Cr3::read().set<Cr3::Pcid>(to->m_pcid).set<Cr3::PageTableAddress>(to_pgd).write();
+            Cr3::read()
+                .set<Cr3::Pcid>(to->m_pcid)
+                .set<Cr3::PageTableAddress>(std::to_underlying(to_pgd))
+                .write();
         } else {
             Cr3::write(to_pgd);
         }

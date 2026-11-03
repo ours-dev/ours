@@ -464,7 +464,7 @@ namespace {
         };
 
         Kind kind = Kind::Load;
-        VirtAddr va = 0;
+        VirtAddr va{};
         mm::VmObjectPaged *vmo = nullptr;
         u64 offset = 0;
         /// How much a VmoCommit commits.
@@ -788,7 +788,7 @@ namespace {
             return;
         }
         auto const base = mapping.unwrap()->base();
-        PhysAddr pa = 0;
+        PhysAddr pa{};
         mm::MmuFlags mmuf{};
         auto const supplied_mapped = aspace.arch_aspace().query(base + P, &pa, &mmuf) == Status::Ok;
         auto const missing_mapped = aspace.arch_aspace().query(base, &pa, &mmuf) == Status::Ok;
@@ -853,7 +853,7 @@ namespace {
         auto aux_map = root->map_with_vmo(mm::VmPlacement::anywhere(), 4 * P, 0, rw,
                                           mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(aux),
                                           mm::VmMapOption::Populate, "pagesource.test aux");
-        PhysAddr frame0 = 0;
+        PhysAddr frame0{};
         auto const aux_ready =
             aux_made && aux_map.is_ok() && present_at(aux_map.unwrap()->base(), &frame0);
         verdict(tally, aux_ready,
@@ -881,7 +881,7 @@ namespace {
         // The hand-over.
         mm::VmPageSpliceList pages(4);
         auto const taken = aux->take_pages(0, 4 * P, &pages) == Status::Ok;
-        PhysAddr unused = 0;
+        PhysAddr unused{};
         auto const aux_base = aux_map.unwrap()->base();
         verdict(tally,
                 taken && aux->committed_pages(0, 4 * P) == 0 && !present_at(aux_base, &unused) &&
@@ -910,7 +910,7 @@ namespace {
                     dst->committed_pages(0, 4 * P) == 2,
                 "page 0 has the bytes it left with, pages 1 and 2 are zero without a page, page "
                 "3 keeps what was supplied first, and the provider is asked nothing");
-        PhysAddr frame0_now = 0;
+        PhysAddr frame0_now{};
         verdict(tally,
                 aspace.soft_fault(dst_base, mm::VmfCause::Absent) == Status::Ok &&
                     present_at(dst_base, &frame0_now) && frame0_now == frame0,

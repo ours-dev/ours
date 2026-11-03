@@ -113,17 +113,17 @@ class Paging final {
         if (n == 0) {
             return ustl::ok();
         }
-        if (page_size != PAGE_SIZE || va % page_size != 0 || pa % page_size != 0 ||
-            n > (~usize{0}) / page_size) {
+        if (page_size != PAGE_SIZE || std::to_underlying(va) % page_size != 0 ||
+            std::to_underlying(pa) % page_size != 0 || n > (~usize{0}) / page_size) {
             return ustl::err(MapError::InvArgs);
         }
         auto const size = n * page_size;
-        if (size - 1 > (~VirtAddr{0}) - va) {
+        if (size - 1 > VirtAddr{~0_usize} - va) {
             return ustl::err(MapError::InvArgs);
         }
         if constexpr (Traits::MAX_PHYS_ADDR_SIZE < sizeof(PhysAddr) * 8) {
-            constexpr auto max_phys_addr = (PhysAddr{1} << Traits::MAX_PHYS_ADDR_SIZE) - 1;
-            if (pa > max_phys_addr || size - 1 > max_phys_addr - pa) {
+            constexpr auto MAX_PHYS_ADDR = PhysAddr{(1_usize << Traits::MAX_PHYS_ADDR_SIZE) - 1};
+            if (pa > MAX_PHYS_ADDR || size - 1 > MAX_PHYS_ADDR - pa) {
                 return ustl::err(MapError::InvArgs);
             }
         }
@@ -152,17 +152,18 @@ class Paging final {
         if (n == 0) {
             return ustl::ok();
         }
-        if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE ||
-            n * PAGE_SIZE - 1 > (~VirtAddr{0}) - va) {
+        if (std::to_underlying(va) % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE ||
+            n * PAGE_SIZE - 1 > VirtAddr{~0_usize} - va) {
             return ustl::err(MapError::InvArgs);
         }
         for (usize i = 0; i < n; ++i) {
-            if (frames[i] % PAGE_SIZE != 0) {
+            if (std::to_underlying(frames[i]) % PAGE_SIZE != 0) {
                 return ustl::err(MapError::InvArgs);
             }
             if constexpr (Traits::MAX_PHYS_ADDR_SIZE < sizeof(PhysAddr) * 8) {
-                constexpr auto max_phys_addr = (PhysAddr{1} << Traits::MAX_PHYS_ADDR_SIZE) - 1;
-                if (frames[i] > max_phys_addr - (PAGE_SIZE - 1)) {
+                constexpr auto MAX_PHYS_ADDR =
+                    PhysAddr{(1_usize << Traits::MAX_PHYS_ADDR_SIZE) - 1};
+                if (frames[i] > MAX_PHYS_ADDR - (PAGE_SIZE - 1)) {
                     return ustl::err(MapError::InvArgs);
                 }
             }
@@ -191,11 +192,11 @@ class Paging final {
         if (n == 0) {
             return ustl::ok(0);
         }
-        if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
+        if (std::to_underlying(va) % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
             return ustl::err(MapError::InvArgs);
         }
         auto const size = n * PAGE_SIZE;
-        if (size - 1 > (~VirtAddr{0}) - va) {
+        if (size - 1 > VirtAddr{~0_usize} - va) {
             return ustl::err(MapError::InvArgs);
         }
         RangeCursor cursor{va, size};
@@ -238,11 +239,11 @@ class Paging final {
         if (n == 0) {
             return ustl::ok(0);
         }
-        if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
+        if (std::to_underlying(va) % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
             return ustl::err(MapError::InvArgs);
         }
         auto const size = n * PAGE_SIZE;
-        if (size - 1 > (~VirtAddr{0}) - va) {
+        if (size - 1 > VirtAddr{~0_usize} - va) {
             return ustl::err(MapError::InvArgs);
         }
         RangeCursor cursor{va, size};
@@ -433,7 +434,7 @@ class Paging final {
         auto on_terminal(Pte<Level> const &entry, PhysAddr) const -> ustl::Option<QueryResult> {
             auto const page_size = Traits::page_size(Level);
             return ustl::Option<QueryResult>(QueryResult{
-                .phys = entry.address() + (m_addr % page_size),
+                .phys = entry.address() + (std::to_underlying(m_addr) % page_size),
                 .size = page_size,
                 .flags = MmuFlagsConv<ArchMmuFlags>::from_arch(entry.arch_mmu_flags()),
             });
@@ -495,7 +496,7 @@ class Paging final {
              index < Traits::max_entries(Level) && cursor.remaining != 0; ++index) {
             auto &entry = table[index];
             // The part of the range under this entry.
-            auto const offset = cursor.va % page_size;
+            auto const offset = std::to_underlying(cursor.va) % page_size;
             auto step = page_size - offset;
             if (step > cursor.remaining) {
                 step = cursor.remaining;
@@ -682,13 +683,14 @@ class Paging final {
                 // Whether a leaf of this level's size would go here: the rest
                 // of the run is that long, and both addresses are aligned.
                 auto const fits = page_size <= context.phys_cursor().remaining_size() &&
-                                  physical_address % page_size == 0 && address % page_size == 0;
+                                  std::to_underlying(physical_address) % page_size == 0 &&
+                                  std::to_underlying(address) % page_size == 0;
 
                 if (entry.is_present() && entry.is_terminal()) {
                     if (!!(options & MapOptions::SkipIfExisting)) {
                         // The rest of the leaf that is there, as far as the
                         // range goes, stays as it is.
-                        auto step = page_size - address % page_size;
+                        auto step = page_size - std::to_underlying(address) % page_size;
                         if (step > context.virt_cursor().remaining_size()) {
                             step = context.virt_cursor().remaining_size();
                         }
@@ -717,7 +719,7 @@ class Paging final {
                     }
                     auto const sub_table =
                         allocator(Traits::template SIZE_OF_TABLE<Level>, Traits::TABLE_ALIGNMENT);
-                    if (!sub_table) {
+                    if (sub_table == PhysAddr{}) {
                         return ustl::err(MapError::NoMem);
                     }
                     entry = Pte<Level>::make(sub_table, context.mmuflags(), false);

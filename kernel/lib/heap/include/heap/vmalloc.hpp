@@ -20,8 +20,8 @@ using ours::mm::Gaf;
 /// and no constant names the last valid address: an inclusive end tested
 /// with `<`, as is_vmalloc_addr() tests, would leave the window's last byte
 /// outside it.
-inline constexpr auto VMALLOC_BASE = VirtAddr{ARCH_VMALLOC_VIRT_BASE};
-inline constexpr auto VMALLOC_SIZE = usize{ARCH_VMALLOC_SIZE};
+inline constexpr auto VMALLOC_BASE = ours::ARCH_VMALLOC_VIRT_BASE;
+inline constexpr auto VMALLOC_SIZE = ours::ARCH_VMALLOC_SIZE;
 
 /// Whether |pointer| came from vmalloc().
 ///
@@ -36,7 +36,7 @@ inline constexpr auto VMALLOC_SIZE = usize{ARCH_VMALLOC_SIZE};
 [[nodiscard]]
 FORCE_INLINE
 constexpr auto is_vmalloc_addr(void const *const pointer) -> bool {
-    return VirtAddr(pointer) - VMALLOC_BASE < VMALLOC_SIZE;
+    return VirtAddr{reinterpret_cast<usize>(pointer)} - VMALLOC_BASE < VMALLOC_SIZE;
 }
 
 /// Brings the window's bookkeeping up. Must run after the kernel address

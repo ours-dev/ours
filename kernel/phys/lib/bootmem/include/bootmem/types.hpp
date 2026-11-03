@@ -27,7 +27,7 @@ struct Range final {
         if (size == 0) {
             return ustl::err(Status::InvArgs);
         }
-        if (base > std::numeric_limits<PhysAddr>::max() - size) {
+        if (base > PhysAddr{~0_usize} - size) {
             return ustl::err(Status::OutOfRange);
         }
         return ustl::ok(Range{.base = base, .size = size});

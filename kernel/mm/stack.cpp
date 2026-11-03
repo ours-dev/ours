@@ -8,12 +8,12 @@
 namespace ours::mm {
 // This is relative with the boot stack, so marked INIT_DATA
 extern "C" INIT_DATA
-VirtAddr KERNEL_STACK_BOTTOM = 0;
+VirtAddr KERNEL_STACK_BOTTOM{};
 
 extern "C" INIT_DATA
 usize KERNEL_STACK_SIZE = 0;
 
-Stack::Stack() : m_stack(), m_base(0), m_size(0) {}
+Stack::Stack() : m_stack(), m_base{}, m_size(0) {}
 
 auto Stack::init_first() -> void {
     m_base = KERNEL_STACK_BOTTOM;

@@ -77,7 +77,7 @@ auto x86_dump_gdt() -> void {
 
 auto x86_set_tss_sp(VirtAddr sp) -> void {
     auto tss = &mm::CpuLocal::access(X86_PCPU).tss;
-    tss->sp0 = sp;
+    tss->sp0 = std::to_underlying(sp);
 }
 
 /// For the paranoid entry path (x86_handle_paranoid_exception()), which has
@@ -102,7 +102,7 @@ auto x86_cpu_num_from_tr() -> CpuNum {
 INIT_CODE
 auto x86_setup_gdt() -> void {
     auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_phys(
-        mm::virt_to_phys(VirtAddr(PGDT)),
+        mm::virt_to_phys(VirtAddr{reinterpret_cast<usize>(PGDT)}),
         mm::VmPlacement::anywhere(), // Wherever the VMM has room
         PAGE_SIZE,
         mm::MmuFlags::Readable,                              // Read only

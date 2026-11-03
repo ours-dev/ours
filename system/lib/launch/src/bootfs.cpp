@@ -48,7 +48,7 @@ auto map_bootfs(Uandle const bootfs, Uandle const vma, elfload::Diagnostics cons
     if (mapped < header.total_size || mapped > std::numeric_limits<usize>::max()) {
         return ustl::err(failed(diagnostics, "sizing the BootFS mapping", Status::OutOfRange));
     }
-    ours::VirtAddr address = 0;
+    ours::VirtAddr address{};
     if (auto const status = ours::vma_map(vma, ours::VmOptions::PermRead, 0, bootfs, 0,
                                           static_cast<usize>(mapped), &address);
         status != Status::Ok) {
@@ -72,7 +72,8 @@ auto make_bootfs_launcher(Uandle const bootfs, Uandle const vmex, Uandle const v
     // launcher in its address space. The length rounds up to the pages
     // map_bootfs() mapped.
     auto const unmapped = [&](std::string_view const step, Status const status) -> Status {
-        auto _ = ours::vma_unmap(vma, reinterpret_cast<ours::VirtAddr>(file.data()), file.size());
+        auto _ =
+            ours::vma_unmap(vma, ours::VirtAddr{reinterpret_cast<usize>(file.data())}, file.size());
         return failed(diagnostics, step, status);
     };
 

@@ -63,12 +63,12 @@ constexpr auto get_kernel_phys_base() -> PhysAddr {
 ///
 /// PhysMap's translation does not cover these: the image is mapped at the
 /// kernel's load base, outside the physmap window, so PhysMap::virt_to_phys()
-/// rejects such an address and answers zero.  What does hold is that physboot
+/// rejects such an address and answers PhysAddr::Invalid. Physboot
 /// placed the whole image in one contiguous physical allocation and handed its
 /// base over as KERNEL_PHYS_BASE, so the image offset carries straight across.
 FORCE_INLINE
 inline auto kernel_image_virt_to_phys(VirtAddr virt_addr) -> PhysAddr {
-    return KERNEL_PHYS_BASE + (virt_addr - VirtAddr(IMAGE_START));
+    return KERNEL_PHYS_BASE + (virt_addr - VirtAddr{reinterpret_cast<usize>(IMAGE_START)});
 }
 
 FORCE_INLINE [[nodiscard]]
@@ -81,12 +81,12 @@ extern "C" u8 ARCH_PHYS_ADDR_BITS;
 extern "C" u8 ARCH_VIRT_ADDR_BITS;
 
 FORCE_INLINE
-constexpr auto get_phys_addr_bits() -> PhysAddr {
+constexpr auto get_phys_addr_bits() -> u8 {
     return ARCH_PHYS_ADDR_BITS;
 }
 
 FORCE_INLINE
-constexpr auto get_virt_addr_bits() -> VirtAddr {
+constexpr auto get_virt_addr_bits() -> u8 {
     return ARCH_VIRT_ADDR_BITS;
 }
 

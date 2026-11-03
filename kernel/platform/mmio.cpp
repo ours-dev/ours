@@ -57,14 +57,14 @@ namespace {
     /// Whether [base, base + size) and [other_base, other_base + other_size)
     /// share an address. Neither run may be empty, nor end past the 64-bit
     /// space.
-    auto overlaps(u64 const base, u64 const size, u64 const other_base, u64 const other_size)
-        -> bool {
+    auto overlaps(PhysAddr const base, u64 const size, PhysAddr const other_base,
+                  u64 const other_size) -> bool {
         return base < other_base + other_size && other_base < base + size;
     }
 
     /// Whether any RAM the kernel knows of lies in [base, base + size), claimed
     /// or free.
-    auto touches_ram(u64 const base, u64 const size) -> bool {
+    auto touches_ram(PhysAddr const base, u64 const size) -> bool {
         if (!KERNEL_RAM_KNOWN) {
             return true;
         }
@@ -94,8 +94,8 @@ namespace {
                     fits = false;
                     return false;
                 }
-                auto const first = ustl::round_down(u64{region.range.base}, u64{PAGE_SIZE});
-                auto const last = ustl::round_up(u64{region.range.end()}, u64{PAGE_SIZE});
+                auto const first = ustl::round_down(region.range.base, u64{PAGE_SIZE});
+                auto const last = ustl::round_up(region.range.end(), u64{PAGE_SIZE});
                 KERNEL_RAM[count] = MmioRange{.base = first, .size = last - first};
                 count += 1;
                 return true;
@@ -114,7 +114,7 @@ namespace {
 
 GKTL_INIT_HOOK(KernelRamSnapshot, snapshot_ram, gktl::InitLevel::Vmm);
 
-auto reserve_kernel_mmio(u64 const base, u64 const size) -> void {
+auto reserve_kernel_mmio(PhysAddr const base, u64 const size) -> void {
     ASSERT(size != 0, "the kernel reserved an empty run of registers at {:#x}", base);
     if (KERNEL_MMIO_COUNT == MAX_KERNEL_MMIO) {
         KERNEL_MMIO_FULL = true;
@@ -138,7 +138,7 @@ auto kernel_ram() -> ustl::views::Span<MmioRange const> {
     return ustl::views::Span<MmioRange const>(KERNEL_RAM.data(), KERNEL_RAM_COUNT);
 }
 
-auto touches_kernel_physical(u64 const base, u64 const size) -> bool {
+auto touches_kernel_physical(PhysAddr const base, u64 const size) -> bool {
     // A request that covers no address shares none.
     if (size == 0) {
         return false;

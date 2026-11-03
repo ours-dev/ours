@@ -64,7 +64,7 @@ auto test_mmio_port() -> void {
     auto port = acpi::parse_debug_port(*layout.table);
     require(bool(port));
     require(port->kind == acpi::DebugPort::Kind::Mmio);
-    require(port->address == 0xfedc'0000);
+    require(port->address == ours::PhysAddr{0xfedc'0000});
     require(port->length == 0x1000);
 }
 
@@ -77,7 +77,7 @@ auto test_port_io() -> void {
     auto port = acpi::parse_debug_port(*layout.table);
     require(bool(port));
     require(port->kind == acpi::DebugPort::Kind::PortIo);
-    require(port->address == 0x3f8);
+    require(port->address == ours::PhysAddr{0x3f8});
 }
 
 auto test_non_serial_is_not_found() -> void {

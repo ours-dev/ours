@@ -5,10 +5,16 @@
 The user explicitly prefers distinct strong VirtAddr and PhysAddr types in
 `system/public/ours/types.hpp`, in the enum-class form they drafted, because
 they need address type safety. Preserve that intent. Do not replace them with
-primitive aliases merely to make an unrelated integration compile. Consumer
-conversion and arithmetic assumptions require a separate, deliberate migration;
-the IRQ integration does not claim to have completed it. No particular address
-operator API was selected by this naming and preservation decision.
+primitive aliases merely to make an unrelated integration compile. The user
+subsequently requested removing VmPlacement and completing both address
+migrations in this task (2026-11-03). Address plus/minus a byte offset
+preserves the domain; subtracting two addresses in one domain yields a byte
+offset. Addresses do not implicitly convert to integers or each other, and two
+addresses cannot be added. Machine encodings and ABI records convert
+explicitly. VirtAddr reserves the top sixteen numeric values for special
+requests: Invalid is all ones and Anywhere is one below it. Zero remains a
+concrete address. The kernel virtual layout excludes the page containing these
+values.
 
 ## Bring-up order
 
@@ -51,9 +57,10 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
 ## VmObject
 
 - Offsets in the `VmObject` interface (`read`, `write`, `commit_range` and
-  their helpers) are byte offsets typed `VirtAddr`, never page offsets typed
-  `PgOff`, because `VmObjectPhysical` need not be page aligned. Resolve any
-  mismatch toward `VirtAddr`.
+  their helpers) are byte offsets typed `usize`, never virtual addresses or
+  page offsets: an object has no virtual address, and `VmObjectPhysical` need
+  not be page aligned. This supersedes the earlier `VirtAddr` spelling now
+  that VirtAddr is a distinct strong type (2026-11-03).
 - Never use a bounce page between user memory and a kernel object. Copy
   directly between the VMO page (through the physmap) and the user buffer while
   holding the VMO lock, using the `*_capture_faults` user copy. On a fault:

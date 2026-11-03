@@ -224,7 +224,7 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
         auto const resume = task::X86Thread::current_user_copy()->resume;
         if ((resume & UserCopyState::RUN_FAULT_HANDLER) == 0) {
             frame->ip = resume | UserCopyState::RUN_FAULT_HANDLER;
-            frame->dx = addr;
+            frame->dx = std::to_underlying(addr);
             frame->cx = static_cast<usize>(cause);
             return Status::Ok;
         }

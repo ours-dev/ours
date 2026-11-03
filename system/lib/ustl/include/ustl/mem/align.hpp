@@ -6,6 +6,9 @@
 
 #include <ustl/bit.hpp>
 
+#include <type_traits>
+#include <utility>
+
 #include <cstddef>
 
 namespace ustl {
@@ -27,19 +30,31 @@ namespace detail {
 template <typename T>
 constexpr auto round_down(T value, std::size_t alignment) noexcept -> T {
     detail::require_power_of_two(alignment);
-    return static_cast<T>(value & ~static_cast<T>(alignment - 1));
+    if constexpr (std::is_enum_v<T>) {
+        return static_cast<T>(round_down(std::to_underlying(value), alignment));
+    } else {
+        return static_cast<T>(value & ~static_cast<T>(alignment - 1));
+    }
 }
 
 /// Checked by round_down().
 template <typename T>
 constexpr auto round_up(T value, std::size_t alignment) noexcept -> T {
-    return round_down(static_cast<T>(value + static_cast<T>(alignment - 1)), alignment);
+    if constexpr (std::is_enum_v<T>) {
+        return static_cast<T>(round_up(std::to_underlying(value), alignment));
+    } else {
+        return round_down(static_cast<T>(value + static_cast<T>(alignment - 1)), alignment);
+    }
 }
 
 template <typename T>
 constexpr auto is_aligned(T value, std::size_t alignment) noexcept -> bool {
     detail::require_power_of_two(alignment);
-    return (value & static_cast<T>(alignment - 1)) == 0;
+    if constexpr (std::is_enum_v<T>) {
+        return is_aligned(std::to_underlying(value), alignment);
+    } else {
+        return (value & static_cast<T>(alignment - 1)) == 0;
+    }
 }
 
 } // namespace ustl

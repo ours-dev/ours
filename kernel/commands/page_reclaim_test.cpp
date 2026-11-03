@@ -292,7 +292,7 @@ namespace {
             verdict(tally, false, "the VMO is mapped");
         } else {
             auto const base = mapping.unwrap()->base();
-            PhysAddr pa = 0;
+            PhysAddr pa{};
             mm::MmuFlags flags{};
             auto const mapped = aspace->arch_aspace().query(base + P, &pa, &flags) == Status::Ok;
             verdict(tally,
@@ -453,7 +453,7 @@ namespace {
             verdict(tally, false, "the VMO is mapped");
         } else {
             auto const base = mapping.unwrap()->base();
-            PhysAddr pa = 0;
+            PhysAddr pa{};
             mm::MmuFlags flags{};
             auto const mapped = aspace->arch_aspace().query(base, &pa, &flags) == Status::Ok &&
                                 pa == mm::frame_to_phys(page) && !!(flags & mm::MmuFlags::Writable);
@@ -469,7 +469,7 @@ namespace {
 
     struct Race {
         mm::VmAspace *aspace = nullptr;
-        VirtAddr base = 0;
+        VirtAddr base{};
         std::atomic<bool> done{false};
         std::atomic<usize> lost{0};
         std::atomic<usize> rounds{0};

@@ -13,7 +13,7 @@ auto VmObjectPhysical::create(PhysAddr base, usize size, Flags vmof, ustl::Arc<S
     if (!size) {
         return Status::InvArgs;
     }
-    if (!base) {
+    if (base == PhysAddr{}) {
         return Status::InvArgs;
     }
 

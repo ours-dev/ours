@@ -281,7 +281,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// racing would erase each other's bit.
     Flags m_flags TA_GUARDED(m_lock);
     VirtAddr m_base;
-    VirtAddr m_size;
+    usize m_size;
     /// Sleepable, and it has to be.
     ///
     /// It was a spin lock, held with interrupts off, because the #PF handler
@@ -320,7 +320,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// withdrawn, which is what makes vdso_contains() refuse everything. The
     /// address space's teardown leaves them as they are: no thread of a
     /// destroyed address space runs user code to ask.
-    std::atomic<VirtAddr> m_vdso_code_base{0};
+    std::atomic<VirtAddr> m_vdso_code_base{VirtAddr{}};
     std::atomic<usize> m_vdso_code_size{0};
 
     /// The only root region.

@@ -712,7 +712,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // that already exists. An unconditional map() therefore reported
     // AlreadyExists for a fault that was in fact already resolved, which the
     // probe written for this change caught on its second fault of one page.
-    PhysAddr existing = 0;
+    PhysAddr existing{};
     MmuFlags existing_mmuf{};
     if (Status::Ok == arch_aspace.query(va, &existing, &existing_mmuf)) {
         // What this access needs and the entry lacks. Protection only ever
@@ -863,7 +863,7 @@ auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existin
             // lock is held. One that is gone, or names another frame, is not the
             // one this fault saw: the access retries, and finds what is there now.
             // Mapping |existing| again would map a frame the object no longer has.
-            PhysAddr now = 0;
+            PhysAddr now{};
             MmuFlags now_mmuf{};
             if (Status::Ok != m_aspace->arch_aspace().query(va, &now, &now_mmuf) ||
                 now != existing) {

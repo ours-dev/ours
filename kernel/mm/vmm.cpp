@@ -32,10 +32,10 @@ auto virt_to_phys(VirtAddr virt_addr) -> PhysAddr {
 
     // TODO(SmallHuaZi): Determine if it is kernel address.
 
-    if (!phys_addr) {
+    if (phys_addr == PhysAddr::Invalid) {
         auto status = VmAspace::kernel_aspace()->arch_aspace().query(virt_addr, &phys_addr, 0);
         if (Status::Ok != status) {
-            return 0;
+            return PhysAddr::Invalid;
         }
     }
 

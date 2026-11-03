@@ -238,7 +238,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     }
 
     FORCE_INLINE
-    auto size() const -> VirtAddr {
+    auto size() const -> usize {
         return m_size;
     }
 
@@ -373,7 +373,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
             bool m_empty{true};
             VirtAddr m_min_start{};
             VirtAddr m_max_last{};
-            VirtAddr m_max_gap{};
+            usize m_max_gap{};
 
             friend auto operator==(Aggregate const &, Aggregate const &) -> bool = default;
         };
@@ -519,7 +519,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     gktl::Canary m_canary;
     char const *m_name;
     VirtAddr m_base;
-    VirtAddr m_size;
+    usize m_size;
     VmaFlags m_vmaf;
     VmArea *m_parent;
     ustl::Arc<VmAspace> m_aspace;

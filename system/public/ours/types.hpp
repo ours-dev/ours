@@ -7,9 +7,69 @@
 #ifndef OURS_TYPES_HPP
 #define OURS_TYPES_HPP 1
 
+#include <utility>
+
 namespace ours {
-using VirtAddr = usize;
-using PhysAddr = usize;
+/// A virtual address, distinct from physical addresses and byte offsets.
+/// The top sixteen values are reserved for special requests, never mappings.
+enum class VirtAddr : usize {
+    Anywhere = ~0_usize - 1,
+    Invalid = ~0_usize,
+};
+
+inline constexpr auto VIRT_ADDR_RESERVED_BASE = VirtAddr{~0_usize - 15};
+
+/// A physical address. Zero is a real address, never an allocation request.
+enum class PhysAddr : usize {
+    Anywhere = ~0_usize - 1,
+    Invalid = ~0_usize,
+};
+
+/// Address arithmetic keeps the address domain; a difference is a byte offset.
+constexpr auto operator+(VirtAddr const base, usize const offset) -> VirtAddr {
+    return VirtAddr{std::to_underlying(base) + offset};
+}
+
+constexpr auto operator-(VirtAddr const base, usize const offset) -> VirtAddr {
+    return VirtAddr{std::to_underlying(base) - offset};
+}
+
+constexpr auto operator-(VirtAddr const end, VirtAddr const begin) -> usize {
+    return std::to_underlying(end) - std::to_underlying(begin);
+}
+
+constexpr auto operator+=(VirtAddr &base, usize const offset) -> VirtAddr & {
+    base = base + offset;
+    return base;
+}
+
+constexpr auto operator-=(VirtAddr &base, usize const offset) -> VirtAddr & {
+    base = base - offset;
+    return base;
+}
+
+/// Address arithmetic keeps the address domain; a difference is a byte offset.
+constexpr auto operator+(PhysAddr const base, usize const offset) -> PhysAddr {
+    return PhysAddr{std::to_underlying(base) + offset};
+}
+
+constexpr auto operator-(PhysAddr const base, usize const offset) -> PhysAddr {
+    return PhysAddr{std::to_underlying(base) - offset};
+}
+
+constexpr auto operator-(PhysAddr const end, PhysAddr const begin) -> usize {
+    return std::to_underlying(end) - std::to_underlying(begin);
+}
+
+constexpr auto operator+=(PhysAddr &base, usize const offset) -> PhysAddr & {
+    base = base + offset;
+    return base;
+}
+
+constexpr auto operator-=(PhysAddr &base, usize const offset) -> PhysAddr & {
+    base = base - offset;
+    return base;
+}
 
 /// Controller-local source identity; meaningful only inside its domain.
 enum class HIrqNum : u32 {

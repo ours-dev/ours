@@ -147,7 +147,7 @@ namespace {
             return false;
         }
         auto const base = mm::frame_to_phys(head);
-        if (base % LARGE != 0) {
+        if (std::to_underlying(base) % LARGE != 0) {
             return false;
         }
         for (usize i = 0; i < PAGES_PER_BLOCK; ++i) {
@@ -283,7 +283,7 @@ namespace {
             auto const leaf = fault_at(*aspace, a + 5 * PAGE_SIZE, WRITE);
             verdict(tally,
                     leaf.present && leaf.size == LARGE && writable(leaf) &&
-                        (leaf.pa - 5 * PAGE_SIZE) % LARGE == 0,
+                        std::to_underlying((leaf.pa - 5 * PAGE_SIZE)) % LARGE == 0,
                     "a write fault in a large-page object maps its 2 MiB as one writable leaf");
 
             auto const second = a + LARGE;
@@ -363,7 +363,7 @@ namespace {
         }
         verdict(tally,
                 shared.present && shared.size == LARGE && !writable(shared) &&
-                    shared.pa % LARGE == 0,
+                    std::to_underlying(shared.pa) % LARGE == 0,
                 "a read of a clone maps the shared block as one read-only leaf");
         auto written = Translation{};
         if (shared.present) {
@@ -466,8 +466,8 @@ namespace {
             zero_leaf = fault_at(*aspace, zero->base() + 5 * PAGE_SIZE, WRITE);
         }
         verdict(tally,
-                spacer && zero && zero->base() % LARGE == 0 && zero_leaf.present &&
-                    zero_leaf.size == LARGE,
+                spacer && zero && std::to_underlying(zero->base()) % LARGE == 0 &&
+                    zero_leaf.present && zero_leaf.size == LARGE,
                 "placed by the VMM at offset 0, the mapping starts on a block boundary, and a "
                 "fault maps a leaf");
         ustl::Arc<mm::VmObjectPaged> at_page;
@@ -478,8 +478,8 @@ namespace {
                 fault_at(*aspace, page->base() + (LARGE - PAGE_SIZE) + 5 * PAGE_SIZE, WRITE);
         }
         verdict(tally,
-                page && page->base() % LARGE == PAGE_SIZE && page_leaf.present &&
-                    page_leaf.size == LARGE,
+                page && std::to_underlying(page->base()) % LARGE == PAGE_SIZE &&
+                    page_leaf.present && page_leaf.size == LARGE,
                 "placed by the VMM at offset 4 KiB, it starts 4 KiB past a boundary, and its "
                 "window at object offset 2 MiB maps a leaf");
 

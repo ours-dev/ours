@@ -166,7 +166,7 @@ auto vfree(void *const pointer) -> void {
         return;
     }
 
-    auto const base = ours::VirtAddr(pointer);
+    auto const base = ours::VirtAddr{reinterpret_cast<usize>(pointer)};
     DEBUG_ASSERT(is_vmalloc_addr(pointer), "vfree() on an address outside the vmalloc window");
 
     Guard guard{LOCK};
@@ -241,7 +241,7 @@ auto vmalloc_self_test() -> void {
     check(one != nullptr, "one-page allocation");
     if (one) {
         check(is_vmalloc_addr(one), "the result is inside the window");
-        check(ours::VirtAddr(one) % PAGE_SIZE == 0, "the result is page aligned");
+        check(reinterpret_cast<usize>(one) % PAGE_SIZE == 0, "the result is page aligned");
         for (auto index = usize{0}; index < PAGE_SIZE; ++index) {
             one[index] = u8(index);
         }

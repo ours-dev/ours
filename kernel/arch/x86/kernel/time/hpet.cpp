@@ -391,7 +391,7 @@ static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
 /// 5. Set ENABLE_CNF bit.
 INIT_CODE
 auto hpet_init(PhysAddr mmio) -> Status {
-    DEBUG_ASSERT(mmio);
+    DEBUG_ASSERT(mmio != PhysAddr{});
 
     auto status = setup_hpet_mmio(mmio);
     if (Status::Ok != status) {
@@ -402,7 +402,7 @@ auto hpet_init(PhysAddr mmio) -> Status {
     status = hpet_init_internal();
     if (Status::Ok != status) {
         log::info("Failed to create HPET MMIO: {}.", static_cast<u32>(status));
-        HPET_MMIO_PHYS = 0;
+        HPET_MMIO_PHYS = PhysAddr{};
         return status;
     }
 

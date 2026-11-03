@@ -108,7 +108,7 @@ namespace {
     /// there is nothing left to leave lying around.
     struct LoadedImage {
         elfload::Image image;
-        VirtAddr stack_top = 0;
+        VirtAddr stack_top{};
     };
 
     /// Where a program's stack goes, and how big.
@@ -137,9 +137,9 @@ namespace {
     /// value.
     [[nodiscard]]
     constexpr auto initial_stack_pointer(VirtAddr const top) -> VirtAddr {
-        return (top & ~VirtAddr{15}) - 8;
+        return VirtAddr{std::to_underlying(top) & ~15_usize} - 8;
     }
-    static_assert(initial_stack_pointer(USER_STACK_TOP) % 16 == 8);
+    static_assert(std::to_underlying(initial_stack_pointer(USER_STACK_TOP)) % 16 == 8);
 
     /// The vDSO, laid out in one VMO once and mapped into every process:
     /// into userboot by launch(), and into every other by a user-space
@@ -866,13 +866,13 @@ namespace {
             log::error("userabi: vdso.published has no {}", name);
             return status;
         }
-        if (size != expect_size || vaddr < image.image_base ||
-            (vaddr - image.image_base) + size > image.span) {
+        if (size != expect_size || VirtAddr{vaddr} < image.image_base ||
+            (VirtAddr{vaddr} - image.image_base) + size > image.span) {
             log::error("userabi: {} is {:#x}+{}, image base {:#x}", name, vaddr, size,
                        image.image_base);
             return Status::InvArgs;
         }
-        offset = vaddr - image.image_base;
+        offset = VirtAddr{vaddr} - image.image_base;
         return Status::Ok;
     }
 
@@ -990,7 +990,7 @@ namespace {
         // Irq + 2). Missing, a monotonic read still traps; the vDSO is still
         // the one that must exist.
         auto const phys = hpet_mmio_phys();
-        if (phys != 0) {
+        if (phys != PhysAddr{}) {
             Rights rights;
             if (auto const status =
                     object::VmoDispatcher::create_physical(phys, PAGE_SIZE, CLOCK_PAGE_VMO, rights);
@@ -1180,7 +1180,7 @@ namespace {
         // runtime that walks its own stack or binds itself later (P2) wants it.
         status = process.dispatcher()->start(*thread.dispatcher(), loaded.image.entry,
                                              initial_stack_pointer(loaded.stack_top),
-                                             ustl::move(bootstrap), vdso.base);
+                                             ustl::move(bootstrap), std::to_underlying(vdso.base));
         if (Status::Ok != status) {
             log::error("userabi: could not start '{}': {}", program.view(), to_string(status));
             return status;

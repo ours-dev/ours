@@ -113,8 +113,8 @@ class MirrorTable {
 
         /// Moves to the start of the next entry of size |ps|, or to the end.
         auto skip_entry(usize const ps) -> void {
-            auto const next = (m_va / ps + 1) * ps;
-            consume(std::min(next - m_va, m_size));
+            auto const next = (std::to_underlying(m_va) / ps + 1) * ps;
+            consume(std::min(next - std::to_underlying(m_va), m_size));
         }
 
         [[nodiscard]]
@@ -198,8 +198,8 @@ class MirrorTable {
                 m_full_shootdown = true;
                 return;
             }
-            m_items[m_count] = (va >> 12 << 12) | (u64(is_terminal) << 4) | (u64(is_global) << 3) |
-                               static_cast<u64>(level);
+            m_items[m_count] = (std::to_underlying(va) >> 12 << 12) | (u64(is_terminal) << 4) |
+                               (u64(is_global) << 3) | static_cast<u64>(level);
             m_count++;
         }
 
@@ -238,19 +238,19 @@ class MirrorTable {
     }
 
     static auto page_aligned(Level const level, VirtAddr const va) -> bool {
-        return (va & (page_size(level) - 1)) == 0;
+        return (std::to_underlying(va) & (page_size(level) - 1)) == 0;
     }
 
     static auto vaddr_to_index(Level const level, VirtAddr const va) -> u32 {
         switch (level) {
             case Level::PageMapLevel4:
-                return static_cast<u32>((va >> 39) & 511);
+                return static_cast<u32>((std::to_underlying(va) >> 39) & 511);
             case Level::PageDirectoryPointerTable:
-                return static_cast<u32>((va >> 30) & 511);
+                return static_cast<u32>((std::to_underlying(va) >> 30) & 511);
             case Level::PageDirectory:
-                return static_cast<u32>((va >> 21) & 511);
+                return static_cast<u32>((std::to_underlying(va) >> 21) & 511);
             case Level::PageTable:
-                return static_cast<u32>((va >> 12) & 511);
+                return static_cast<u32>((std::to_underlying(va) >> 12) & 511);
             default:
                 __builtin_trap();
         }
@@ -259,11 +259,11 @@ class MirrorTable {
     static auto paddr_from_pte(Level const level, Entry const pte) -> PhysAddr {
         switch (level) {
             case Level::PageDirectoryPointerTable:
-                return pte & X86_PDP_FRAME;
+                return PhysAddr{pte & X86_PDP_FRAME};
             case Level::PageDirectory:
-                return pte & X86_PD_FRAME;
+                return PhysAddr{pte & X86_PD_FRAME};
             case Level::PageTable:
-                return pte & X86_PG_FRAME;
+                return PhysAddr{pte & X86_PG_FRAME};
             default:
                 __builtin_trap();
         }
@@ -282,11 +282,11 @@ class MirrorTable {
     }
 
     static auto check_vaddr(VirtAddr const va) -> bool {
-        return va % PAGE_SIZE == 0 && va < (VirtAddr{1} << 47);
+        return std::to_underlying(va) % PAGE_SIZE == 0 && std::to_underlying(va) < (1_usize << 47);
     }
 
     static auto check_paddr(PhysAddr const pa) -> bool {
-        return pa % PAGE_SIZE == 0 && pa < (PhysAddr{1} << 52);
+        return std::to_underlying(pa) % PAGE_SIZE == 0 && std::to_underlying(pa) < (1_usize << 52);
     }
 
     static auto intermediate_flags() -> Entry {
@@ -329,14 +329,14 @@ class MirrorTable {
 
     [[nodiscard]]
     auto mappings(Entry volatile *const table) -> u32 & {
-        return mappings(reinterpret_cast<PhysAddr>(table));
+        return mappings(PhysAddr{reinterpret_cast<usize>(table)});
     }
 
     auto update_entry(ConsistencyManager *const cm, Level const level, VirtAddr const va,
                       Entry volatile *const pte, PhysAddr const paddr, Entry const flags,
                       bool const was_terminal) -> void {
         Entry const old = *pte;
-        Entry const fresh = paddr | flags | X86_MMUF_PRESENT;
+        Entry const fresh = std::to_underlying(paddr) | flags | X86_MMUF_PRESENT;
         if ((old & ~Entry(X86_MMUF_ACCESSED | X86_MMUF_DIRTY)) == fresh) {
             return;
         }
@@ -428,7 +428,7 @@ class MirrorTable {
             }
 
             auto const valigned = page_aligned(level, cursor.vaddr());
-            auto const paligned = page_aligned(level, cursor.paddr());
+            auto const paligned = (std::to_underlying(cursor.paddr()) & (ps - 1)) == 0;
             if (supports_large && !is_present(pt_val) && valigned && paligned &&
                 cursor.page_remaining() >= ps) {
                 update_entry(cm, level, cursor.vaddr(), table + index, cursor.paddr(),
@@ -438,7 +438,7 @@ class MirrorTable {
             } else {
                 if (!is_present(pt_val)) {
                     auto const table_paddr = m_arena->allocate(PAGE_SIZE, PAGE_SIZE);
-                    if (table_paddr == 0) {
+                    if (table_paddr == PhysAddr{}) {
                         cursor.consume(PAGE_SIZE);
                         return {ours::Status::NoMemory, mapped};
                     }
@@ -473,7 +473,8 @@ class MirrorTable {
             if (valid && action == ExistingEntryAction::Error) {
                 return {ours::Status::AlreadyExists, mapped};
             }
-            auto const paddr_changing = (*existing & X86_PG_FRAME) != cursor.paddr();
+            auto const paddr_changing =
+                (*existing & X86_PG_FRAME) != std::to_underlying(cursor.paddr());
             if (valid && action == ExistingEntryAction::Skip) {
                 // Left as it is.
             } else if (valid && action == ExistingEntryAction::Upgrade && !paddr_changing) {
@@ -519,7 +520,8 @@ class MirrorTable {
                     cursor.consume(ps);
                     continue;
                 }
-                auto const status = split_large_page(level, cursor.vaddr() & ~(ps - 1), e, cm);
+                auto const status = split_large_page(
+                    level, VirtAddr{std::to_underlying(cursor.vaddr()) & ~(ps - 1)}, e, cm);
                 if (status != ours::Status::Ok) {
                     return {status, unmapped};
                 }
@@ -541,7 +543,7 @@ class MirrorTable {
             if (unmap_lower) {
                 unmap_entry(cm, level, unmap_vaddr, e, false);
                 unmapped++;
-                cm->queue_free(reinterpret_cast<PhysAddr>(next));
+                cm->queue_free(PhysAddr{reinterpret_cast<usize>(next)});
             }
         }
         return {ours::Status::Ok, unmapped};
@@ -585,7 +587,8 @@ class MirrorTable {
                     cursor.consume(ps);
                     continue;
                 }
-                auto const status = split_large_page(level, cursor.vaddr() & ~(ps - 1), e, cm);
+                auto const status = split_large_page(
+                    level, VirtAddr{std::to_underlying(cursor.vaddr()) & ~(ps - 1)}, e, cm);
                 if (status != ours::Status::Ok) {
                     return status;
                 }
@@ -622,7 +625,7 @@ class MirrorTable {
     auto split_large_page(Level const level, VirtAddr const va, Entry volatile *const pte,
                           ConsistencyManager *const cm) -> ours::Status {
         auto const table_paddr = m_arena->allocate(PAGE_SIZE, PAGE_SIZE);
-        if (table_paddr == 0) {
+        if (table_paddr == PhysAddr{}) {
             return ours::Status::NoMemory;
         }
         auto *const table = reinterpret_cast<Entry volatile *>(table_paddr);
@@ -634,7 +637,7 @@ class MirrorTable {
         }
         auto const base = paddr_from_pte(level, *pte);
         for (u32 i = 0; i < 512; ++i) {
-            table[i] = (base + i * ps) | flags | X86_MMUF_PRESENT;
+            table[i] = std::to_underlying((base + i * ps)) | flags | X86_MMUF_PRESENT;
         }
         mappings(table_paddr) = 512;
         update_entry(cm, level, va, pte, table_paddr, intermediate_flags(), true);

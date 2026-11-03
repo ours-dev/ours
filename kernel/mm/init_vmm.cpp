@@ -101,8 +101,8 @@ namespace {
 
     INIT_CODE
     auto entrol_preset_vma(PhysVma const &phys_vma) -> void {
-        auto [base, end] = resolve_page_range(phys_vma.base, phys_vma.base + phys_vma.size);
-        log::trace("Reserve area {}: [{:X}, {:X})", phys_vma.name, base, end);
+        auto const [base, size] = resolve_page_range(phys_vma.base, phys_vma.size);
+        log::trace("Reserve area {}: [{:X}, {:X})", phys_vma.name, base, base + size);
 
         auto kaspace = VmAspace::kernel_aspace();
         auto root_vma = kaspace->root_vma();
@@ -173,8 +173,8 @@ namespace {
     INIT_CODE
     auto tighten_init_rodata(phys::MappingPerms const perms, VirtAddr const base,
                              usize const size) -> phys::MappingPerms {
-        auto const first = VirtAddr(KERNEL_INIT_RODATA_START);
-        auto const last = VirtAddr(KERNEL_INIT_RODATA_END);
+        auto const first = VirtAddr{reinterpret_cast<usize>(KERNEL_INIT_RODATA_START)};
+        auto const last = VirtAddr{reinterpret_cast<usize>(KERNEL_INIT_RODATA_END)};
         if (base >= last || first >= base + size) {
             return perms;
         }

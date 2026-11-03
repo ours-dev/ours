@@ -230,7 +230,7 @@ namespace {
     // Whether the page at |va| is mapped, and with what.
     auto pte_flags(ustl::Arc<mm::VmAspace> &aspace, VirtAddr const va)
         -> ustl::Option<mm::MmuFlags> {
-        PhysAddr pa = 0;
+        PhysAddr pa{};
         mm::MmuFlags flags{};
         if (aspace->arch_aspace().query(va, &pa, &flags) != Status::Ok) {
             return ustl::NONE;
@@ -406,10 +406,10 @@ namespace {
     }
 
     auto entry_pa(ustl::Arc<mm::VmAspace> &aspace, VirtAddr const va) -> PhysAddr {
-        PhysAddr pa = 0;
+        PhysAddr pa{};
         mm::MmuFlags flags{};
         if (aspace->arch_aspace().query(va, &pa, &flags) != Status::Ok) {
-            return 0;
+            return PhysAddr{0};
         }
         return pa;
     }
@@ -1274,9 +1274,9 @@ namespace {
             return popped;
         }
         if (slot.is_zero_marker()) {
-            return {.kind = Popped::Kind::ZeroMarker, .word = 0, .frame = 0};
+            return {.kind = Popped::Kind::ZeroMarker, .word = 0, .frame = PhysAddr{0}};
         }
-        return {.kind = Popped::Kind::Gap, .word = 0, .frame = 0};
+        return {.kind = Popped::Kind::Gap, .word = 0, .frame = PhysAddr{0}};
     }
 
     // take_pages() from a clone, in a copy-on-write tree. The origin has pages
@@ -1317,7 +1317,7 @@ namespace {
         }
         Node origin_pages = origin->cow_pages();
         Node clone_pages = clone->cow_pages();
-        PhysAddr shared_frame = 0;
+        PhysAddr shared_frame{};
         if (auto const shared = lookup(origin_pages, false, 0)) {
             shared_frame = mm::frame_to_phys(shared->page);
         }
@@ -1398,7 +1398,7 @@ namespace {
         mm::VmAspace *aspace = nullptr;
         ustl::Arc<mm::VmObjectPaged> object;
         ustl::Arc<mm::VmObjectPaged> clone;
-        VirtAddr at = 0;
+        VirtAddr at{};
         std::atomic<bool> warm{false};
         std::atomic<bool> cloned{false};
         std::atomic<usize> finished{0};
@@ -1560,7 +1560,7 @@ namespace {
     struct KernelRemapRun {
         ustl::Arc<mm::VmObjectPaged> before;
         ustl::Arc<mm::VmObjectPaged> after;
-        VirtAddr at = 0;
+        VirtAddr at{};
         std::atomic<bool> warm{false};
         std::atomic<bool> remapped{false};
         std::atomic<usize> finished{0};

@@ -94,9 +94,28 @@ executable("alloc-request-smoke") {
   visibility = [ "*" ]
 }
 
+executable("address-smoke") {
+  testonly = true
+  sources = [ "address_smoke.cpp" ]
+  include_dirs = [
+    "//kernel/include",
+    "//kernel/arch/x86/kernel/include",
+  ]
+  configs += [ "//kernel/mm:headers.config" ]
+  deps = [
+    "//kernel/lib/arch:headers",
+    "//kernel/arch/x86:headers",
+    "//system/lib/ustl:headers",
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
+    "//system/public",
+  ]
+}
+
 group("tests") {
   testonly = true
   public_deps = [
+    ":address-smoke",
     ":frame-buddy-smoke",
     ":protection-ranges-smoke",
     ":alloc-request-smoke",

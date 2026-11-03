@@ -14,7 +14,7 @@ namespace {
     /// page starts at zero, and every publish advances this by two.
     u64 SEQ = 0;
     /// User VA of the counter, or 0 when ring 3 has no mapping of it.
-    VirtAddr COUNTER_VA = 0;
+    VirtAddr COUNTER_VA{};
     /// ~0 until lay_out_vdso binds the single-word records.
     u64 TICKS_OFFSET = ~u64{0};
     u64 BOOT_OFFSET_AT = ~u64{0};
@@ -71,7 +71,7 @@ auto publish_anchor(AnchorReading const &reading) -> void {
         SEQ -= 1;
         return;
     }
-    u8 const accessible = static_cast<u8>(COUNTER_VA != 0);
+    u8 const accessible = static_cast<u8>(COUNTER_VA != VirtAddr{0});
     Payload const payload{
         .ticks = reading.ticks,
         .nanoseconds = reading.nanoseconds,
@@ -79,7 +79,7 @@ auto publish_anchor(AnchorReading const &reading) -> void {
         .denominator = reading.denominator,
         .accessible = accessible,
         .pad = {},
-        .counter = COUNTER_VA,
+        .counter = std::to_underlying(COUNTER_VA),
     };
     auto const stored =
         STORE(CONTEXT, OFFSET + offsetof(ours::TimeValues, ticks), &payload, sizeof(payload));

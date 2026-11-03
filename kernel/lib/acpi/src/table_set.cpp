@@ -73,7 +73,7 @@ namespace {
             return ktl::err(Status::NotFound);
         }
 
-        RootTables roots{.rsdt_addr = rsdp->rsdt_addr, .xsdt_addr = 0};
+        RootTables roots{.rsdt_addr = PhysAddr{rsdp->rsdt_addr}, .xsdt_addr = PhysAddr{}};
         if (rsdp->revision >= sdt::Rsdp::REVISION_V2) {
             auto maybe_xsdp = map_structure<sdt::RsdpV2>(mapper, rsdp_pa);
             if (!maybe_xsdp) {
@@ -125,7 +125,7 @@ auto TableSet::from_rsdp(PhysMapper &mapper, PhysAddr rsdp_pa) -> ktl::Result<Ta
     // or malformed -- the old code fell back on a failed *validation* but bailed
     // out entirely on a failed *mapping*, which are the same situation as far as
     // a caller is concerned.
-    if (roots->xsdt_addr) {
+    if (roots->xsdt_addr != PhysAddr{}) {
         if (auto maybe_xsdt = map_structure<sdt::Xsdt>(mapper, roots->xsdt_addr)) {
             auto const *xsdt = maybe_xsdt.unwrap();
             if (auto const count = count_root_entries(xsdt, sizeof(u64))) {
@@ -134,7 +134,7 @@ auto TableSet::from_rsdp(PhysMapper &mapper, PhysAddr rsdp_pa) -> ktl::Result<Ta
         }
     }
 
-    if (roots->rsdt_addr) {
+    if (roots->rsdt_addr != PhysAddr{}) {
         if (auto maybe_rsdt = map_structure<sdt::Rsdt>(mapper, roots->rsdt_addr)) {
             auto const *rsdt = maybe_rsdt.unwrap();
             if (auto const count = count_root_entries(rsdt, sizeof(u32))) {
@@ -148,7 +148,7 @@ auto TableSet::from_rsdp(PhysMapper &mapper, PhysAddr rsdp_pa) -> ktl::Result<Ta
 
 auto TableSet::phys_addr_at(usize index) const -> PhysAddr {
     if (index >= m_num_tables) {
-        return 0;
+        return PhysAddr{};
     }
     if (m_xsdt) {
         return PhysAddr(m_xsdt->addr64[index]);
@@ -159,7 +159,7 @@ auto TableSet::phys_addr_at(usize index) const -> PhysAddr {
 
 auto TableSet::header_at(usize index) -> ktl::Result<TableHeader const *> {
     auto const phys_addr = phys_addr_at(index);
-    if (!phys_addr) {
+    if (phys_addr == PhysAddr{}) {
         return ktl::err(Status::NotFound);
     }
 
@@ -179,7 +179,7 @@ auto TableSet::dsdt() -> TableHeader const * {
     if (fadt->header.length >= sizeof(Fadt) && fadt->x_dsdt != 0) {
         phys_addr = PhysAddr(fadt->x_dsdt);
     }
-    if (!phys_addr) {
+    if (phys_addr == PhysAddr{}) {
         return nullptr;
     }
 

@@ -199,7 +199,7 @@ auto unpack_bootfs(ours::Uandle const image, ours::Uandle const vma)
         report("userboot: sizing the boot image = ", image_size.unwrap_err());
         return ustl::err(image_size.unwrap_err());
     }
-    ours::VirtAddr image_address = 0;
+    ours::VirtAddr image_address{};
     if (auto const status = ours::vma_map(vma, ours::VmOptions::PermRead, 0, image, 0,
                                           image_size.unwrap(), &image_address);
         status != Status::Ok) {
@@ -244,7 +244,7 @@ auto unpack_bootfs(ours::Uandle const image, ours::Uandle const vma)
         report("userboot: creating the BootFS VMO = ", status);
         return ustl::err(status);
     }
-    ours::VirtAddr bootfs_address = 0;
+    ours::VirtAddr bootfs_address{};
     auto status = ours::vma_map(vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite, 0,
                                 writable, 0, bootfs_size.unwrap(), &bootfs_address);
     if (status != Status::Ok) {

@@ -37,7 +37,7 @@ class PHYS_EXPORT Aspace {
     /// zero, and phys maps nothing tagged.
     [[nodiscard]]
     static constexpr auto is_upper(VirtAddr const va) -> bool {
-        return (va >> 63) != 0;
+        return (std::to_underlying(va) >> 63) != 0;
     }
 
     auto init() -> void {
@@ -45,7 +45,7 @@ class PHYS_EXPORT Aspace {
         m_lower_pgd =
             alloc_page_table(LowerPagingTraits::SIZE_OF_TABLE<LowerPagingTraits::PAGING_LEVEL>,
                              LowerPagingTraits::TABLE_ALIGNMENT);
-        DEBUG_ASSERT(m_lower_pgd, "");
+        DEBUG_ASSERT(m_lower_pgd != PhysAddr{}, "");
 
         if constexpr (!DUAL_ASPACE) {
             return;
@@ -55,7 +55,7 @@ class PHYS_EXPORT Aspace {
         m_upper_pgd =
             alloc_page_table(UpperPagingTraits::SIZE_OF_TABLE<UpperPagingTraits::PAGING_LEVEL>,
                              UpperPagingTraits::TABLE_ALIGNMENT);
-        DEBUG_ASSERT(m_upper_pgd, "");
+        DEBUG_ASSERT(m_upper_pgd != PhysAddr{}, "");
     }
 
     auto map(VirtAddr va, usize n, PhysAddr pa, MmuFlags flags) -> ustl::Result<void, MapError>;
@@ -63,7 +63,7 @@ class PHYS_EXPORT Aspace {
     FORCE_INLINE
     constexpr auto map_identically(VirtAddr va, usize n, MmuFlags flags)
         -> ustl::Result<void, MapError> {
-        return map(va, n, va, flags);
+        return map(va, n, PhysAddr{std::to_underlying(va)}, flags);
     }
 
     auto unmap(VirtAddr va, usize n) -> Status;

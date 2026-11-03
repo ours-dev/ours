@@ -54,17 +54,18 @@ namespace {
     [[noreturn]] FORCE_INLINE
     auto arch_enter_uspace(arch::IrqFrame *frame) -> void {
         DEBUG_ASSERT(arch::irqs_disabled());
-        ASSERT(arch_is_valid_user_pc(frame->ip), "entering user mode at {:#x}", frame->ip);
+        ASSERT(arch_is_valid_user_pc(VirtAddr{frame->ip}), "entering user mode at {:#x}",
+               frame->ip);
         x86_enter_uspace(frame);
     }
 
     FORCE_INLINE
-    auto arch_build_uspace_irqframe(arch::IrqFrame *frame, usize ip, usize sp, usize arg1,
+    auto arch_build_uspace_irqframe(arch::IrqFrame *frame, VirtAddr ip, VirtAddr sp, usize arg1,
                                     usize arg2) -> void {
         using arch::ArchCpuState;
 
-        frame->ip = ip;
-        frame->usp = sp;
+        frame->ip = std::to_underlying(ip);
+        frame->usp = std::to_underlying(sp);
 
         frame->cs = X86_GDT_USER_CODE64;
         frame->uss = X86_GDT_USER_DATA;

@@ -86,7 +86,7 @@ auto Aspace::alloc_page_table(usize size, usize alignment) const -> PhysAddr {
     });
     auto const phys = allocated.is_ok() ? allocated.unwrap().base : PhysAddr{};
 
-    if (phys) {
+    if (phys != PhysAddr{}) {
         std::memset(reinterpret_cast<void *>(phys), 0, size);
     }
 
@@ -100,7 +100,7 @@ auto Aspace::map_usable_ram(PhysAddr max_limit) -> void {
         log::debug("Map identically (0x{:X}, 0x{:X})", base, size);
 
         constexpr auto mmuf = MmuFlags::PermMask | MmuFlags::Present;
-        auto result = map_identically(base, size / PAGE_SIZE, mmuf);
+        auto result = map_identically(VirtAddr{std::to_underlying(base)}, size / PAGE_SIZE, mmuf);
         if (result.is_err()) {
             panic("Identically map {} pages", to_string(result.unwrap_err()));
         }
@@ -113,7 +113,7 @@ auto Aspace::map_usable_ram(PhysAddr max_limit) -> void {
     auto has_range = false;
     auto const status = mem->visit(
         {
-            .lower = 0,
+            .lower = PhysAddr{},
             .upper = max_limit,
             .node = bootmem::ANY_NODE,
             .view = bootmem::MemoryView::Usable,

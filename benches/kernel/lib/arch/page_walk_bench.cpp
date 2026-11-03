@@ -75,14 +75,14 @@ class Arena {
 
     [[nodiscard]]
     auto root() const -> PhysAddr {
-        return reinterpret_cast<PhysAddr>(m_memory);
+        return PhysAddr{reinterpret_cast<usize>(m_memory)};
     }
 
     auto allocate(usize const size, usize const alignment) -> PhysAddr {
         if (size != PAGE_SIZE || alignment != PAGE_SIZE || m_next == ARENA_TABLES) {
-            return 0;
+            return PhysAddr{};
         }
-        return reinterpret_cast<PhysAddr>(m_memory + (m_next++) * PAGE_SIZE);
+        return PhysAddr{reinterpret_cast<usize>(m_memory + (m_next++) * PAGE_SIZE)};
     }
 
   private:
@@ -154,15 +154,16 @@ constexpr auto FRESH = MapOptions::ErrorIfExisting | MapOptions::UndoOnFailure;
 
 /// Where the ranges start: 1 GiB, so that a range of up to 1 GiB stays under
 /// one third-level entry, and the frames, 2 GiB, with |misalign| added.
-constexpr VirtAddr BASE_VA = VirtAddr{1} << 30;
-constexpr PhysAddr BASE_PA = PhysAddr{1} << 31;
+constexpr VirtAddr BASE_VA = VirtAddr{1_usize << 30};
+constexpr PhysAddr BASE_PA = PhysAddr{1_usize << 31};
 
 /// How many distinct tables a range of |n| pages at |va| touches, with
 /// final-level tables only when its leaves are 4 KiB.
 auto floor_tables(VirtAddr const va, usize const n, bool const small) -> usize {
     auto const last = va + n * PAGE_SIZE - 1;
     auto const span = [&](unsigned const shift) {
-        return static_cast<usize>((last >> shift) - (va >> shift) + 1);
+        return static_cast<usize>((std::to_underlying(last) >> shift) -
+                                  (std::to_underlying(va) >> shift) + 1);
     };
     // The root, one third-level table per root entry spanned, one second-level
     // table per third-level entry, and one final-level table per second-level
@@ -282,7 +283,7 @@ auto table_unmap(Table &table, VirtAddr const va, usize const n) -> bool {
 /// |SAMPLES| samples of map, protect and unmap of ranges of |n| pages, with
 /// the frames |misalign| off a 2 MiB boundary. Each sample starts from an
 /// empty table. Gives time and table visits per page.
-auto run(Recorder &recorder, char const *const leaves, usize const n, PhysAddr const misalign)
+auto run(Recorder &recorder, char const *const leaves, usize const n, usize const misalign)
     -> void {
     Arena arena;
     usize visits = 0;
@@ -385,7 +386,7 @@ auto yardsticks(Recorder &recorder) -> void {
         asm volatile("" : : "r"(pages.data()) : "memory");
         auto const t1 = Clock::now();
         for (usize i = 0; i < SAMPLE_PAGES; ++i) {
-            entries[i] = (BASE_PA + i * PAGE_SIZE) | 0x7 | sample;
+            entries[i] = std::to_underlying(BASE_PA + i * PAGE_SIZE) | 0x7 | sample;
         }
         asm volatile("" : : "r"(entries.data()) : "memory");
         auto const t2 = Clock::now();

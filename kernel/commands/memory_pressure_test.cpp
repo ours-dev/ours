@@ -276,7 +276,7 @@ namespace {
 
         Kind kind = Kind::Store;
         mm::VmObjectPaged *vmo = nullptr;
-        VirtAddr va = 0;
+        VirtAddr va{};
         u64 offset = 0;
         u64 value = 0;
         Status status = Status::InternalError;
@@ -342,7 +342,7 @@ namespace {
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto const made =
             mm::VmObjectPaged::create(WAITABLE, 3 * P, mm::VmoFlags::Lazy, &vmo) == Status::Ok;
-        VirtAddr base = 0;
+        VirtAddr base{};
         if (made) {
             auto mapping = aspace->root_vma()->map_with_vmo(
                 mm::VmPlacement::anywhere(), 3 * P, 0, rw, mm::VmaFlags::PermMask,
@@ -351,7 +351,7 @@ namespace {
                 base = mapping.unwrap()->base();
             }
         }
-        if (base == 0) {
+        if (base == VirtAddr{0}) {
             verdict(tally, false, "a user VMO is made and mapped");
             auto _ = aspace->destroy();
             return;

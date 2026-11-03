@@ -51,20 +51,20 @@ class X86Thread {
         /// has bit 63 set (the kernel's half starts at KERNEL_ASPACE_BASE and
         /// runs to the top), so the exit's address is recovered by setting it
         /// again. user_copy.cpp asserts that at compile time.
-        static constexpr VirtAddr RUN_FAULT_HANDLER = VirtAddr(1) << 63;
+        static constexpr usize RUN_FAULT_HANDLER = 1_usize << 63;
 
         /// The address of the copy's own fault exit, with RUN_FAULT_HANDLER
         /// cleared when the copy captures its faults. x86_user_copy
         /// (user_copy.S) stores it before touching user memory and clears it
         /// before returning.
-        VirtAddr resume = 0;
+        usize resume = 0;
 
         /// The user operand of the copy -- the range the range check admitted.
         /// A fault inside the copy is resumed only if it lies here. The copy
         /// has two operands and only one of them is the user's; a fault on the
         /// other one (a null kernel buffer, say) is a kernel bug that should
         /// stop the kernel, not an InvArgs the system call quietly returns.
-        VirtAddr user_base = 0;
+        VirtAddr user_base{};
         usize user_size = 0;
     };
 

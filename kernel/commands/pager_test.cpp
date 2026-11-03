@@ -131,7 +131,7 @@ namespace {
 
     /// A load from |va| by a thread of its own, which may sleep in the fault.
     struct Access {
-        VirtAddr va = 0;
+        VirtAddr va{};
         u64 value = 0;
         Status status = Status::InternalError;
     };

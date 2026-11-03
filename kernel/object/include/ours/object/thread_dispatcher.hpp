@@ -75,8 +75,8 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     enum class ParkedReason : u16 {};
 
     struct TaskState {
-        VirtAddr entry = 0;
-        VirtAddr stack = 0;
+        VirtAddr entry{};
+        VirtAddr stack{};
         usize arg1 = 0;
         usize arg2 = 0;
     };

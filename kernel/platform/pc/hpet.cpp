@@ -25,9 +25,9 @@ static auto platform_hpet_init() -> void {
 
     // The kernel maps the page the HPET's registers are in; no MmIo resource
     // grants it.
-    platform::reserve_kernel_mmio(hpet->address.address, PAGE_SIZE);
+    platform::reserve_kernel_mmio(PhysAddr{hpet->address.address}, PAGE_SIZE);
 
-    auto const status = hpet_init(hpet->address.address);
+    auto const status = hpet_init(PhysAddr{hpet->address.address});
     if (Status::Ok != status) {
         // There is no to_string(Status) in the tree; log the raw value.
         log::info("Failed to initialize HPET: {}", u32(status));

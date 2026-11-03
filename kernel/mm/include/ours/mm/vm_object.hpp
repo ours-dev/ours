@@ -77,8 +77,8 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// Commit the given range [offset, offset + size) to address space with |options|.
     ///
     /// Return Status::Ok if successfully commited. Otherwise failed to.
-    virtual auto commit_range(VirtAddr offset, usize size,
-                              CommitOptions options = CommitOptions::None) -> Status {
+    virtual auto commit_range(usize offset, usize size, CommitOptions options = CommitOptions::None)
+        -> Status {
         return Status::Unimplemented;
     }
 
@@ -86,7 +86,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// However whether the range was mapped.
     ///
     /// Return Status::Ok if successfully decommited. Otherwise failed to.
-    virtual auto decommit(VirtAddr offset, usize size) -> Status {
+    virtual auto decommit(usize offset, usize size) -> Status {
         return Status::Unimplemented;
     }
 
@@ -97,7 +97,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// Not empty (InvArgs), and page aligned for a paged object; within the
     /// object (OutOfRange); a page that is not committed, or a gap between two
     /// frames, BadState.
-    virtual auto lookup_contiguous(VirtAddr offset, usize size, PhysAddr *out) -> Status {
+    virtual auto lookup_contiguous(usize offset, usize size, PhysAddr *out) -> Status {
         return Status::NotSupported;
     }
 
@@ -109,13 +109,13 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// Counted: a range pinned twice is unpinned twice.
     ///
     /// NotSupported for an object whose pages are not the kernel's to hold.
-    virtual auto pin_range(VirtAddr offset, usize size) -> Status {
+    virtual auto pin_range(usize offset, usize size) -> Status {
         return Status::NotSupported;
     }
 
     /// Undoes one pin_range() of exactly the pages of [offset, offset + size).
     /// BadState, and nothing changed, if any page of it holds no pin.
-    virtual auto unpin_range(VirtAddr offset, usize size) -> Status {
+    virtual auto unpin_range(usize offset, usize size) -> Status {
         return Status::NotSupported;
     }
 
@@ -124,7 +124,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// page it has nothing at -- and unmaps them from every mapping first.
     /// What the object has there afterwards is nothing. |pages| has to be a
     /// fresh list of exactly size / PAGE_SIZE slots. See VmPageSpliceList.
-    virtual auto take_pages(VirtAddr offset, usize size, VmPageSpliceList *pages) -> Status {
+    virtual auto take_pages(usize offset, usize size, VmPageSpliceList *pages) -> Status {
         return Status::Unsupported;
     }
 
@@ -157,7 +157,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// object whose content comes from a page source: what the source's
     /// provider answers a request with. |pages| has to be unread and exactly
     /// size / PAGE_SIZE slots long.
-    virtual auto supply_pages(VirtAddr offset, usize size, VmPageSpliceList *pages,
+    virtual auto supply_pages(usize offset, usize size, VmPageSpliceList *pages,
                               SupplyOption = SupplyOption::Default) -> Status {
         return Status::Unsupported;
     }
@@ -168,13 +168,13 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// Kernel buffers only: the copy runs under the object's lock and must not
     /// fault. A user buffer goes through read_user(). A range that does not lie
     /// wholly inside the object is OutOfRange and nothing is copied.
-    virtual auto read(void *outbuf, VirtAddr offset, usize size) -> Status {
+    virtual auto read(void *outbuf, usize offset, usize size) -> Status {
         return Status::Unsupported;
     }
 
     /// Copies |size| bytes from the kernel buffer |inbuf| into this object,
     /// starting at byte |offset|. The same rules as read().
-    virtual auto write(void const *inbuf, VirtAddr offset, usize size) -> Status {
+    virtual auto write(void const *inbuf, usize offset, usize size) -> Status {
         return Status::Unsupported;
     }
 
@@ -184,7 +184,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// another CPU to load has to change in one store: a torn word can look
     /// even while the other words do not agree. |offset| not a multiple of 8
     /// is InvArgs. Unsupported for an object that is not paged.
-    virtual auto store_u64(VirtAddr offset, u64 value) -> Status {
+    virtual auto store_u64(usize offset, u64 value) -> Status {
         return Status::Unsupported;
     }
 
@@ -198,14 +198,13 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// The user bytes before a failure may have been written.
     ///
     /// Unsupported by default, which is where a physical VMO stays.
-    virtual auto read_user(user_copy::UserOutPtr<u8> out, VirtAddr offset, usize size) -> Status {
+    virtual auto read_user(user_copy::UserOutPtr<u8> out, usize offset, usize size) -> Status {
         return Status::Unsupported;
     }
 
     /// Copies |size| bytes from the user buffer |in| straight into this object,
     /// starting at byte |offset|. The same rules as read_user().
-    virtual auto write_user(user_copy::UserInPtr<u8 const> in, VirtAddr offset, usize size)
-        -> Status {
+    virtual auto write_user(user_copy::UserInPtr<u8 const> in, usize offset, usize size) -> Status {
         return Status::Unsupported;
     }
 
@@ -214,15 +213,15 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     [[nodiscard]]
     virtual auto size() const -> usize = 0;
 
-    virtual auto dirty_pages(VirtAddr offset, usize size) -> Status {
+    virtual auto dirty_pages(usize offset, usize size) -> Status {
         return Status::Unimplemented;
     }
 
-    virtual auto write_back_preamble(VirtAddr offset, usize size) -> Status {
+    virtual auto write_back_preamble(usize offset, usize size) -> Status {
         return Status::Unimplemented;
     }
 
-    virtual auto write_back_postamble(VirtAddr offset, usize size) -> Status {
+    virtual auto write_back_postamble(usize offset, usize size) -> Status {
         return Status::Unimplemented;
     }
 

@@ -102,8 +102,8 @@ auto fake_kernel_main(ours::phys::Handoff const *handoff) -> void {
     // Reporting them before verify() means a failure names which one is
     // wrong instead of just saying the handoff is bad.
     write_line("[fake-kernel] acpi rsdp    ",
-               handoff->acpi_rsdp.is_some() ? handoff->acpi_rsdp.value() : 0);
-    write_line("[fake-kernel] kernel at    ", handoff->mem.kernel_load_addr);
+               handoff->acpi_rsdp.is_some() ? std::to_underlying(handoff->acpi_rsdp.value()) : 0);
+    write_line("[fake-kernel] kernel at    ", std::to_underlying(handoff->mem.kernel_load_addr));
     write_line("[fake-kernel] memory ranges", handoff->mem.ranges.size());
     write_line("[fake-kernel] uart kind    ", static_cast<u64>(handoff->uart.kind));
     write_line("[fake-kernel] uart base    ", handoff->uart.base);
