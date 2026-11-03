@@ -35,7 +35,7 @@ namespace {
 
 auto LoopServer::Delegate::write_failed(Status) -> void {}
 
-auto LoopServer::Delegate::subtree(u64, std::string_view, ours_io::Flags, Uandle const channel)
+auto LoopServer::Delegate::subtree(u64, std::string_view, prot::io::Flags, Uandle const channel)
     -> void {
     // Nobody else holds the channel now: it was the Open's, and the server
     // gave it away. Nothing can be done about a close that fails.
@@ -52,7 +52,7 @@ LoopServer::LoopServer(Tree const &tree, loop::Loop &loop, Syscalls const syscal
     , m_delegate(delegate) {}
 
 auto LoopServer::serve(Uandle const channel, NodeId const directory,
-                       ours_io::Operations const rights) -> Status {
+                       prot::io::Operations const rights) -> Status {
     auto const bound = m_server.bind(channel, directory, rights);
     if (bound.is_err()) {
         return bound.unwrap_err();

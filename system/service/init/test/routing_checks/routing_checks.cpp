@@ -113,24 +113,24 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
-#include <ours_acpi/client.hpp>
-#include <ours_block/client.hpp>
-#include <ours_block/ours_block.hpp>
 #include <ours_examples_echo/ours_examples_echo.hpp>
-#include <ours_fshost/ours_fshost.hpp>
 #include <ours_gpt/ours_gpt.hpp>
-#include <ours_io/ours_io.hpp>
-#include <ours_process/ours_process.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/acpi_client.hpp>
+#include <prot/block.hpp>
+#include <prot/block_client.hpp>
+#include <prot/fshost.hpp>
+#include <prot/io.hpp>
+#include <prot/process.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 #include <ustl/option.hpp>
 #include <wire/wire.hpp>
 
 namespace {
 using ours::Status;
 using ours::Uandle;
-using ours_io::Flags;
-using ours_io::VmoFlags;
+using prot::io::Flags;
+using prot::io::VmoFlags;
 
 constexpr auto PAGE = usize{4096};
 
@@ -294,13 +294,13 @@ auto check_read(std::string_view const path) -> void {
 struct Listing {
     bool dot_first = false;
     bool found = false;
-    ours_io::DirentType type = ours_io::DirentType::Unknown;
+    prot::io::DirentType type = prot::io::DirentType::Unknown;
 };
 
 /// Directory.ReadDirents on |path|: "." comes first, as ioservice::Server lists a
 /// directory, and |name| is there, with |type|.
 auto check_read_dirents(std::string_view const path, std::string_view const name,
-                        ours_io::DirentType const type) -> void {
+                        prot::io::DirentType const type) -> void {
     auto const directory =
         open_or_fail(path, Flags::ProtocolDirectory | Flags::PermEnumerate | Flags::PermReadBytes);
     if (directory == Uandle::Invalid) {
@@ -308,13 +308,13 @@ auto check_read_dirents(std::string_view const path, std::string_view const name
     }
     auto listing = Listing{};
     auto first = true;
-    std::array<u8, ours_io::MAX_BUF> buffer{};
+    std::array<u8, prot::io::MAX_BUF> buffer{};
     for (;;) {
         auto const read = fsio::read_dirents(directory, buffer);
         if (!expect("read_dirents", status_of(read), Status::Ok) || read.unwrap() == 0) {
             break;
         }
-        auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+        auto reader = prot::io::DirentReader(std::span{buffer}.first(read.unwrap()));
         for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
             auto const &dirent = next.unwrap().value();
             if (first) {
@@ -348,13 +348,13 @@ auto check_read_dirents_absent(std::string_view const path, std::string_view con
         return;
     }
     auto present = false;
-    std::array<u8, ours_io::MAX_BUF> buffer{};
+    std::array<u8, prot::io::MAX_BUF> buffer{};
     for (;;) {
         auto const read = fsio::read_dirents(directory, buffer);
         if (!expect("read_dirents", status_of(read), Status::Ok) || read.unwrap() == 0) {
             break;
         }
-        auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+        auto reader = prot::io::DirentReader(std::span{buffer}.first(read.unwrap()));
         for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
             present = present || next.unwrap().value().name == name;
         }
@@ -485,13 +485,13 @@ auto check_names(std::string_view const path, std::string_view const expected) -
     }
     std::array<char, 128> joined{};
     auto length = usize{0};
-    std::array<u8, ours_io::MAX_BUF> buffer{};
+    std::array<u8, prot::io::MAX_BUF> buffer{};
     for (;;) {
         auto const read = fsio::read_dirents(directory, buffer);
         if (!expect("read_dirents", status_of(read), Status::Ok) || read.unwrap() == 0) {
             break;
         }
-        auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+        auto reader = prot::io::DirentReader(std::span{buffer}.first(read.unwrap()));
         for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
             auto const name = next.unwrap().value().name;
             if (length != 0 && length < joined.size()) {
@@ -748,11 +748,11 @@ auto call(Uandle const connection, wire::Message const request, Incoming &reply)
     return Status::Ok;
 }
 
-/// ours_resource::get(): the resource |protocol| hands out, from /svc, which
+/// prot::resource::get(): the resource |protocol| hands out, from /svc, which
 /// the caller owns from here, or Invalid after saying why not -- the route's
 /// epitaph, the root's failure, or a reply that does not decode.
-auto get_resource(ours_resource::Protocol const &protocol) -> Uandle {
-    auto const got = ours_resource::get(protocol);
+auto get_resource(prot::resource::Protocol const &protocol) -> Uandle {
+    auto const got = prot::resource::get(protocol);
     if (!expect(protocol.get.selector, status_of(got), Status::Ok)) {
         return Uandle::Invalid;
     }
@@ -763,7 +763,7 @@ auto get_resource(ours_resource::Protocol const &protocol) -> Uandle {
 /// which it refuses from anything but the System Debug resource. debug_read
 /// of 0 bytes returns at once.
 auto check_debug_resource() -> void {
-    auto const debug = get_resource(ours_resource::DEBUG_PROTOCOL);
+    auto const debug = get_resource(prot::resource::DEBUG_PROTOCOL);
     if (debug == Uandle::Invalid) {
         return;
     }
@@ -781,7 +781,7 @@ auto check_debug_resource() -> void {
 /// then the config (InvArgs), and only then looks for a session, so InvArgs
 /// says the resource passed and nothing was claimed.
 auto check_sampling_resource() -> void {
-    auto const sampling = get_resource(ours_resource::SAMPLING_PROTOCOL);
+    auto const sampling = get_resource(prot::resource::SAMPLING_PROTOCOL);
     if (sampling == Uandle::Invalid) {
         return;
     }
@@ -922,7 +922,7 @@ auto check_interrupt_map(Uandle const irq) -> void {
 /// BadType, so this also shows the root did not mix the two up. The same root
 /// is what interrupt_map asks for.
 auto check_irq_resource() -> void {
-    auto const irq = get_resource(ours_resource::IRQ_PROTOCOL);
+    auto const irq = get_resource(prot::resource::IRQ_PROTOCOL);
     if (irq == Uandle::Invalid) {
         return;
     }
@@ -949,7 +949,7 @@ auto check_irq_resource() -> void {
 /// and the shell's to check. The IRQ root would be refused with BadType, as
 /// above.
 auto check_ioport_resource() -> void {
-    auto const ioport = get_resource(ours_resource::IOPORT_PROTOCOL);
+    auto const ioport = get_resource(prot::resource::IOPORT_PROTOCOL);
     if (ioport == Uandle::Invalid) {
         return;
     }
@@ -1012,7 +1012,7 @@ auto check_physical_vmo(Uandle const vma, Uandle const mmio) -> void {
            Status::OutOfRange);
     expect("vmo_create_physical(no resource)",
            ours::vmo_create_physical(Uandle::Invalid, ECAM_BASE, PAGE, &none), Status::BadHandle);
-    if (auto const irq = get_resource(ours_resource::IRQ_PROTOCOL); irq != Uandle::Invalid) {
+    if (auto const irq = get_resource(prot::resource::IRQ_PROTOCOL); irq != Uandle::Invalid) {
         expect("vmo_create_physical(the Irq root)",
                ours::vmo_create_physical(irq, ECAM_BASE, PAGE, &none), Status::BadType);
         auto _ = ours::handle_close(irq);
@@ -1109,7 +1109,7 @@ auto check_device_dma_refusals(Uandle const mmio) -> void {
 /// and then it is used: check_physical_vmo(), and as the wrong kind of resource
 /// for the calls that want a System one: check_device_dma_refusals().
 auto check_mmio_resource(Uandle const vma) -> void {
-    auto const mmio = get_resource(ours_resource::MMIO_PROTOCOL);
+    auto const mmio = get_resource(prot::resource::MMIO_PROTOCOL);
     if (mmio == Uandle::Invalid) {
         return;
     }
@@ -1510,7 +1510,7 @@ auto check_iommu_and_bti(Uandle const resource) -> void {
            ours::iommu_create(resource, ours::IommuType::Stub, nullptr,
                               ours::IOMMU_DESC_MAX_SIZE + 1, &none),
            Status::InvArgs);
-    if (auto const debug = get_resource(ours_resource::DEBUG_PROTOCOL); debug != Uandle::Invalid) {
+    if (auto const debug = get_resource(prot::resource::DEBUG_PROTOCOL); debug != Uandle::Invalid) {
         expect("iommu_create(the System resource of another slot)",
                ours::iommu_create(debug, ours::IommuType::Stub, nullptr, 0, &none),
                Status::OutOfRange);
@@ -1548,7 +1548,7 @@ auto check_iommu_and_bti(Uandle const resource) -> void {
 /// that kind, at that base, of size 1. It is then used as a driver would: to
 /// make an IOMMU and a BTI, and pin memory through them.
 auto check_iommu_resource() -> void {
-    auto const resource = get_resource(ours_resource::IOMMU_PROTOCOL);
+    auto const resource = get_resource(prot::resource::IOMMU_PROTOCOL);
     if (resource == Uandle::Invalid) {
         return;
     }
@@ -1616,7 +1616,7 @@ auto launch_status(Uandle const launcher, Uandle const executable, Uandle const 
     auto const txid = next_txid();
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 2> handles{};
-    auto const request = ours_process::encode_launch(
+    auto const request = prot::process::encode_launch(
         bytes, handles,
         {.txid = txid, .info = {.executable = executable, .job = launch_job, .name = "refused"}});
     if (request.is_err()) {
@@ -1635,7 +1635,7 @@ auto launch_status(Uandle const launcher, Uandle const executable, Uandle const 
     if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
         return *epitaph;
     }
-    auto const decoded = ours_process::decode_launch_reply(reply.message(), txid);
+    auto const decoded = prot::process::decode_launch_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return Status::InvArgs;
     }
@@ -1649,7 +1649,7 @@ auto launch_status(Uandle const launcher, Uandle const executable, Uandle const 
 /// and the rest User0, each with its index as the argument.
 auto add_handles(Uandle const launcher, Uandle const job, usize const count,
                  ours::HandleType const first_type) -> Status {
-    std::array<ours_process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
+    std::array<prot::process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
     auto const close_made = [&infos](usize const made) {
         for (auto index = usize{0}; index < made; ++index) {
             auto _ = ours::handle_close(infos[index].handle);
@@ -1671,7 +1671,7 @@ auto add_handles(Uandle const launcher, Uandle const job, usize const count,
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, wire::MAX_MESSAGE_HANDLES> handles{};
     auto const request =
-        ours_process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
+        prot::process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
     if (request.is_err()) {
         close_made(count);
         return request.unwrap_err();
@@ -1867,7 +1867,7 @@ auto check_block() -> void {
     // disk. Anything else is the disk's to answer.
     auto const txid = next_txid();
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const info = ours_block::encode_get_info(bytes, {.txid = txid});
+    auto const info = prot::block::encode_get_info(bytes, {.txid = txid});
     if (!expect("Block.GetInfo", status_of(info), Status::Ok)) {
         return;
     }
@@ -1888,31 +1888,31 @@ auto check_block() -> void {
         fail("Block.GetInfo: the route answered with an epitaph");
         return;
     }
-    auto const geometry = ours_block::decode_get_info_reply(reply.message(), txid);
+    auto const geometry = prot::block::decode_get_info_reply(reply.message(), txid);
     if (!expect("Block.GetInfo's reply", status_of(geometry), Status::Ok) ||
         !expect("Block.GetInfo's status", geometry->status, Status::Ok)) {
         return;
     }
     BLOCK_DEVICE_SEEN = true;
-    if (geometry->block_size != ours_block::BLOCK_SIZE) {
+    if (geometry->block_size != prot::block::BLOCK_SIZE) {
         fail("Block.GetInfo: the block size is not 512");
         return;
     }
 
     auto const read_txid = next_txid();
-    auto const read = ours_block::encode_read(bytes, {.txid = read_txid, .lba = 0, .count = 1});
+    auto const read = prot::block::encode_read(bytes, {.txid = read_txid, .lba = 0, .count = 1});
     if (!expect("Block.Read", status_of(read), Status::Ok)) {
         return;
     }
     if (!expect("Block.Read", call(connection, read.unwrap(), reply), Status::Ok)) {
         return;
     }
-    auto const block = ours_block::decode_read_reply(reply.message(), read_txid);
+    auto const block = prot::block::decode_read_reply(reply.message(), read_txid);
     if (!expect("Block.Read's reply", status_of(block), Status::Ok) ||
         !expect("Block.Read's status", block->status, Status::Ok)) {
         return;
     }
-    if (block->data.size() != ours_block::BLOCK_SIZE) {
+    if (block->data.size() != prot::block::BLOCK_SIZE) {
         fail("Block.Read: the block is not 512 bytes");
         return;
     }
@@ -1927,14 +1927,14 @@ auto check_block() -> void {
     // disk this is. The plain checks stop here; the write check below runs
     // on either shape.
     auto const probe_txid = next_txid();
-    auto const probe = ours_block::encode_read(bytes, {.txid = probe_txid, .lba = 1, .count = 1});
+    auto const probe = prot::block::encode_read(bytes, {.txid = probe_txid, .lba = 1, .count = 1});
     if (!expect("Block.Read", status_of(probe), Status::Ok)) {
         return;
     }
     if (!expect("Block.Read", call(connection, probe.unwrap(), reply), Status::Ok)) {
         return;
     }
-    auto const lba1 = ours_block::decode_read_reply(reply.message(), probe_txid);
+    auto const lba1 = prot::block::decode_read_reply(reply.message(), probe_txid);
     if (!expect("Block.Read's reply", status_of(lba1), Status::Ok) ||
         !expect("Block.Read's status", lba1->status, Status::Ok)) {
         return;
@@ -1958,13 +1958,13 @@ auto check_block() -> void {
 auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE_BYTES> &bytes,
                        Incoming &reply) -> void {
     constexpr auto SCRATCH_LBA = u64{1000};
-    std::array<u8, ours_block::BLOCK_SIZE> pattern{};
+    std::array<u8, prot::block::BLOCK_SIZE> pattern{};
     pattern.fill(0xA5);
     constexpr auto MARK = std::string_view{"virtio-blk write check"};
     std::copy(MARK.begin(), MARK.end(), pattern.begin());
 
     auto const write_txid = next_txid();
-    auto const write = ours_block::encode_write(
+    auto const write = prot::block::encode_write(
         bytes, {.txid = write_txid, .lba = SCRATCH_LBA, .count = 1, .data = pattern});
     if (!expect("Block.Write", status_of(write), Status::Ok)) {
         return;
@@ -1973,7 +1973,7 @@ auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE
         return;
     }
     auto const write_status =
-        wire::decode_reply_status(reply.message(), ours_block::WRITE, write_txid);
+        wire::decode_reply_status(reply.message(), prot::block::WRITE, write_txid);
     if (!expect("Block.Write's reply", status_of(write_status), Status::Ok) ||
         !expect("Block.Write's status", write_status.unwrap(), Status::Ok)) {
         return;
@@ -1984,19 +1984,19 @@ auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE
     // -- at 512+496 (per-block) or 496 (per-buffer) -- says which.
     auto const verify_txid = next_txid();
     auto const verify =
-        ours_block::encode_read(bytes, {.txid = verify_txid, .lba = SCRATCH_LBA - 1, .count = 2});
+        prot::block::encode_read(bytes, {.txid = verify_txid, .lba = SCRATCH_LBA - 1, .count = 2});
     if (!expect("Block.Read(scratch)", status_of(verify), Status::Ok)) {
         return;
     }
     if (!expect("Block.Read(scratch)", call(connection, verify.unwrap(), reply), Status::Ok)) {
         return;
     }
-    auto const read_back = ours_block::decode_read_reply(reply.message(), verify_txid);
+    auto const read_back = prot::block::decode_read_reply(reply.message(), verify_txid);
     if (!expect("Block.Read(scratch)'s reply", status_of(read_back), Status::Ok) ||
         !expect("Block.Read(scratch)'s status", read_back->status, Status::Ok)) {
         return;
     }
-    constexpr auto PATTERN_BYTES = usize{ours_block::BLOCK_SIZE};
+    constexpr auto PATTERN_BYTES = usize{prot::block::BLOCK_SIZE};
     auto const want = [&](usize const index) -> u8 {
         // Block 999 was never written: zeros. Block 1000 the pattern.
         return index >= PATTERN_BYTES ? pattern[index - PATTERN_BYTES] : u8{0};
@@ -2045,7 +2045,7 @@ auto check_nvme() -> void {
     // GetInfo is the probe, as it is for the virtio disk.
     auto const txid = next_txid();
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const info = ours_block::encode_get_info(bytes, {.txid = txid});
+    auto const info = prot::block::encode_get_info(bytes, {.txid = txid});
     if (!expect("Nvme.GetInfo", status_of(info), Status::Ok)) {
         return;
     }
@@ -2066,12 +2066,12 @@ auto check_nvme() -> void {
         fail("Nvme.GetInfo: the route answered with an epitaph");
         return;
     }
-    auto const geometry = ours_block::decode_get_info_reply(reply.message(), txid);
+    auto const geometry = prot::block::decode_get_info_reply(reply.message(), txid);
     if (!expect("Nvme.GetInfo's reply", status_of(geometry), Status::Ok) ||
         !expect("Nvme.GetInfo's status", geometry->status, Status::Ok)) {
         return;
     }
-    if (geometry->block_size != ours_block::BLOCK_SIZE) {
+    if (geometry->block_size != prot::block::BLOCK_SIZE) {
         fail("Nvme.GetInfo: the block size is not 512");
         return;
     }
@@ -2085,13 +2085,13 @@ auto check_nvme() -> void {
     // blocks a stray write landed in: the pattern into LBA 5, then two
     // blocks read back from LBA 4 -- 4 the zeros, 5 the pattern.
     constexpr auto SCRATCH_LBA = u64{5};
-    std::array<u8, ours_block::BLOCK_SIZE> pattern{};
+    std::array<u8, prot::block::BLOCK_SIZE> pattern{};
     pattern.fill(0x5A);
     constexpr auto MARK = std::string_view{"nvme write check"};
     std::copy(MARK.begin(), MARK.end(), pattern.begin());
 
     auto const write_txid = next_txid();
-    auto const write = ours_block::encode_write(
+    auto const write = prot::block::encode_write(
         bytes, {.txid = write_txid, .lba = SCRATCH_LBA, .count = 1, .data = pattern});
     if (!expect("Nvme.Write", status_of(write), Status::Ok)) {
         return;
@@ -2100,7 +2100,7 @@ auto check_nvme() -> void {
         return;
     }
     auto const write_status =
-        wire::decode_reply_status(reply.message(), ours_block::WRITE, write_txid);
+        wire::decode_reply_status(reply.message(), prot::block::WRITE, write_txid);
     if (!expect("Nvme.Write's reply", status_of(write_status), Status::Ok) ||
         !expect("Nvme.Write's status", write_status.unwrap(), Status::Ok)) {
         return;
@@ -2108,19 +2108,19 @@ auto check_nvme() -> void {
 
     auto const verify_txid = next_txid();
     auto const verify =
-        ours_block::encode_read(bytes, {.txid = verify_txid, .lba = SCRATCH_LBA - 1, .count = 2});
+        prot::block::encode_read(bytes, {.txid = verify_txid, .lba = SCRATCH_LBA - 1, .count = 2});
     if (!expect("Nvme.Read(scratch)", status_of(verify), Status::Ok)) {
         return;
     }
     if (!expect("Nvme.Read(scratch)", call(connection, verify.unwrap(), reply), Status::Ok)) {
         return;
     }
-    auto const read_back = ours_block::decode_read_reply(reply.message(), verify_txid);
+    auto const read_back = prot::block::decode_read_reply(reply.message(), verify_txid);
     if (!expect("Nvme.Read(scratch)'s reply", status_of(read_back), Status::Ok) ||
         !expect("Nvme.Read(scratch)'s status", read_back->status, Status::Ok)) {
         return;
     }
-    constexpr auto PATTERN_BYTES = usize{ours_block::BLOCK_SIZE};
+    constexpr auto PATTERN_BYTES = usize{prot::block::BLOCK_SIZE};
     auto const want = [&](usize const index) -> u8 {
         // Block 4 was never written: zeros. Block 5 the pattern.
         return index >= PATTERN_BYTES ? pattern[index - PATTERN_BYTES] : u8{0};
@@ -2246,7 +2246,7 @@ auto check_disk() -> void {
         return;
     }
     auto inner_named = false;
-    auto reader = ours_io::DirentReader(std::span{dir_listing}.first(listed.unwrap()));
+    auto reader = prot::io::DirentReader(std::span{dir_listing}.first(listed.unwrap()));
     while (true) {
         auto const entry = reader.next();
         if (entry.is_err() || entry->is_none()) {
@@ -2375,7 +2375,7 @@ auto check_disk() -> void {
     // The mounted capability is THIS handle's rights: everything the
     // mounted path will ever ask must be asked here too, so the listing's
     // Enumerate and GetAttributes ride along.
-    auto const disk_dir = fsio::open("/disk", ours_io::PERM_READABLE | ours_io::PERM_WRITABLE);
+    auto const disk_dir = fsio::open("/disk", prot::io::PERM_READABLE | prot::io::PERM_WRITABLE);
     if (disk_dir.is_err()) {
         // No disk, or the filesystem on it having found none: any refusal
         // here is the skip case, as /disk is simply not there.
@@ -2388,8 +2388,8 @@ auto check_disk() -> void {
     auto mount_bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
     auto mount_handles = std::array<Uandle, 1>{disk_dir.unwrap()};
     auto const mount_request =
-        ours_fshost::encode_mount(mount_bytes, mount_handles,
-                                  {.txid = mount_txid, .handle = disk_dir.unwrap(), .name = NAME});
+        prot::fshost::encode_mount(mount_bytes, mount_handles,
+                                   {.txid = mount_txid, .handle = disk_dir.unwrap(), .name = NAME});
     if (!expect("Admin.Mount encode", status_of(mount_request), Status::Ok)) {
         auto _ = ours::handle_close(disk_dir.unwrap());
         auto _ = ours::handle_close(admin);
@@ -2408,7 +2408,7 @@ auto check_disk() -> void {
         return;
     }
     auto const mount_status =
-        wire::decode_reply_status(mount_reply.message(), ours_fshost::MOUNT, mount_txid);
+        wire::decode_reply_status(mount_reply.message(), prot::fshost::MOUNT, mount_txid);
     if (!expect("Admin.Mount reply", status_of(mount_status), Status::Ok)) {
         auto _ = ours::handle_close(disk_dir.unwrap());
         auto _ = ours::handle_close(admin);
@@ -2476,7 +2476,8 @@ auto check_disk() -> void {
         return;
     }
     auto listed_named = false;
-    auto list_reader = ours_io::DirentReader(std::span{mount_listing}.first(mount_listed.unwrap()));
+    auto list_reader =
+        prot::io::DirentReader(std::span{mount_listing}.first(mount_listed.unwrap()));
     while (true) {
         auto const entry = list_reader.next();
         if (entry.is_err() || entry->is_none()) {
@@ -2498,7 +2499,7 @@ auto check_disk() -> void {
     // The working directory on the mounted filesystem: relative create,
     // write, and read back -- the cwd handle is a direct line to this
     // filesystem, so relative opens need no namespace and no forwarding.
-    auto const cwd_flags = ours_io::PERM_READABLE | ours_io::PERM_WRITABLE;
+    auto const cwd_flags = prot::io::PERM_READABLE | prot::io::PERM_WRITABLE;
     expect("chdir mounted", fsio::chdir("/vfs-all/extra", cwd_flags), Status::Ok);
     auto const cwd_file = fsio::open("cwd-check.txt", Flags::PermReadBytes | Flags::PermWriteBytes |
                                                           Flags::FlagMaybeCreate);
@@ -2576,7 +2577,7 @@ auto check_disk() -> void {
     auto listing = std::array<u8, 512>{};
     auto const dirents = fsio::read_dirents(root.unwrap(), listing);
     if (expect("/disk listing", status_of(dirents), Status::Ok)) {
-        auto root_reader = ours_io::DirentReader(std::span{listing}.first(dirents.unwrap()));
+        auto root_reader = prot::io::DirentReader(std::span{listing}.first(dirents.unwrap()));
         auto named = false;
         while (true) {
             auto const entry = root_reader.next();
@@ -2599,7 +2600,7 @@ auto check_gpt() -> void {
     if (connection == Uandle::Invalid) {
         return;
     }
-    ours_block::Client block{connection};
+    prot::block::Client block{connection};
     auto geometry = block.get_info();
     if (geometry.is_err() && geometry.unwrap_err() == Status::NotFound) {
         auto _ = ort::debug_line("routing_checks: no block device, GPT skipped");
@@ -2642,7 +2643,7 @@ auto check_gpt() -> void {
         return;
     }
 
-    auto super = std::array<u8, ours_block::BLOCK_SIZE>{};
+    auto super = std::array<u8, prot::block::BLOCK_SIZE>{};
     if (!expect("Gpt partition read", block.read(partition.first_lba, 1, super), Status::Ok)) {
         return;
     }
@@ -2670,7 +2671,7 @@ auto check_cwd() -> void {
     // chdir's flags include Modify -- a writable cwd -- so a read-only dir
     // like /boot would refuse, its epitaph surfacing at the first relative
     // use; the writable view is the honest probe.)
-    expect("chdir /vfs-all", fsio::chdir("/vfs-all", ours_io::PERM_READABLE), Status::Ok);
+    expect("chdir /vfs-all", fsio::chdir("/vfs-all", prot::io::PERM_READABLE), Status::Ok);
     auto const self = fsio::open("boot/bin/routing_checks", Flags::PermReadBytes);
     if (!expect("cwd open relative", status_of(self), Status::Ok)) {
         return;
@@ -2900,7 +2901,7 @@ auto acpi_bytes_sum_to_zero(Uandle const vmo, u64 const offset, u32 const length
 /// bytes add up to zero, which is ACPI's checksum. QEMU's q35 has a FADT and a
 /// MADT, so those two are asked for by name.
 auto check_acpi_tables() -> void {
-    auto const vmo = get_resource(ours_resource::ACPI_PROTOCOL);
+    auto const vmo = get_resource(prot::resource::ACPI_PROTOCOL);
     if (vmo == Uandle::Invalid) {
         return;
     }
@@ -3039,13 +3040,13 @@ auto check_acpi_route() -> void {
     constexpr auto GSI_TIMER = u32{2};
     constexpr auto UNTOUCHED = u32{0xA5A5'A5A5};
 
-    auto const irq = get_resource(ours_resource::IRQ_PROTOCOL);
+    auto const irq = get_resource(prot::resource::IRQ_PROTOCOL);
     if (irq == Uandle::Invalid) {
         return;
     }
 
     for (auto isa = u32{0}; isa < NUM_ISA_IRQS; ++isa) {
-        auto const route = ours_acpi::isa_irq(isa);
+        auto const route = prot::acpi::isa_irq(isa);
         if (isa == CASCADE) {
             expect("Route.IsaIrq(2), the cascade", status_of(route), Status::NotFound);
             continue;
@@ -3060,10 +3061,10 @@ auto check_acpi_route() -> void {
         if (route->gsi != (moved ? GSI_TIMER : isa)) {
             fail("Route.IsaIrq: an ISA number is not on the GSI QEMU's q35 puts it on");
         }
-        if (route->trigger != (level ? ours_acpi::Trigger::Level : ours_acpi::Trigger::Edge)) {
+        if (route->trigger != (level ? prot::acpi::Trigger::Level : prot::acpi::Trigger::Edge)) {
             fail("Route.IsaIrq: an ISA number does not signal as QEMU's q35 says (trigger)");
         }
-        if (route->polarity != ours_acpi::Polarity::ActiveHigh) {
+        if (route->polarity != prot::acpi::Polarity::ActiveHigh) {
             fail("Route.IsaIrq: an ISA number does not signal as QEMU's q35 says (polarity)");
         }
         if (route->domain != ours::ROOT_INTERRUPT_DOMAIN) {
@@ -3085,11 +3086,11 @@ auto check_acpi_route() -> void {
     // itself and answers InvArgs; to the service it is just a number that is no
     // ISA line.
     for (auto const isa: {NUM_ISA_IRQS, u32{0x100}, u32{0xffff'ffff}}) {
-        expect("Route.IsaIrq(past the ISA lines)", status_of(ours_acpi::isa_irq(isa)),
+        expect("Route.IsaIrq(past the ISA lines)", status_of(prot::acpi::isa_irq(isa)),
                Status::NotFound);
     }
 
-    auto const window = ours_acpi::ecam_base(0);
+    auto const window = prot::acpi::ecam_base(0);
     if (expect("Route.EcamBase(0)", window.is_ok() ? Status::Ok : window.unwrap_err(),
                Status::Ok)) {
         if (window->address != ECAM_BASE) {
@@ -3100,7 +3101,7 @@ auto check_acpi_route() -> void {
             fail("Route.EcamBase(0): the size is not one MiB to a bus");
         }
     }
-    auto const none = ours_acpi::ecam_base(1);
+    auto const none = prot::acpi::ecam_base(1);
     expect("Route.EcamBase(1), a segment the MCFG does not list",
            none.is_ok() ? Status::Ok : none.unwrap_err(), Status::NotFound);
     auto _ = ours::handle_close(irq);
@@ -3126,15 +3127,15 @@ auto main(int argc, char **argv) -> int {
     check_read(SELF_IN_BOOT_R);
     check_read(SELF_IN_BIN);
     check_read(SELF_IN_VFS);
-    check_read_dirents("/boot", "bin", ours_io::DirentType::Directory);
+    check_read_dirents("/boot", "bin", prot::io::DirentType::Directory);
     // This component holds fshost's `ro` view: boot is there, the writable
     // tmp is not.
-    check_read_dirents("/vfs", "boot", ours_io::DirentType::Directory);
+    check_read_dirents("/vfs", "boot", prot::io::DirentType::Directory);
     check_read_dirents_absent("/vfs", "tmp");
-    check_read_dirents("/vfs/boot", "bin", ours_io::DirentType::Directory);
-    check_read_dirents("/boot", "meta", ours_io::DirentType::Directory);
-    check_read_dirents("/bin", "routing_checks", ours_io::DirentType::File);
-    check_read_dirents("/svc", "ours.process.Launcher", ours_io::DirentType::Service);
+    check_read_dirents("/vfs/boot", "bin", prot::io::DirentType::Directory);
+    check_read_dirents("/boot", "meta", prot::io::DirentType::Directory);
+    check_read_dirents("/bin", "routing_checks", prot::io::DirentType::File);
+    check_read_dirents("/svc", "ours.process.Launcher", prot::io::DirentType::Service);
     if (vma == Uandle::Invalid) {
         fail("started without VmaRoot");
     } else {

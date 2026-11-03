@@ -68,7 +68,7 @@ enum class RecordFlags : u32 {
 USTL_ENABLE_ENUM_BITMASK(RecordFlags);
 
 /// The rights a directory hop states, by their ours.io wire values
-/// (ours_io::Operations).
+/// (prot::io::Operations).
 enum class Rights : u64 {
     None = 0,
     Connect = 0x01,
@@ -92,13 +92,13 @@ USTL_ENABLE_ENUM_BITMASK(Rights);
 
 /// The longest name a manifest may hold: a child's name, a capability's, an
 /// `as`. A protocol name this long still fits the one path segment it
-/// becomes under /svc (ours_io::MAX_NAME_LENGTH, 255). The compiler enforces
+/// becomes under /svc (prot::io::MAX_NAME_LENGTH, 255). The compiler enforces
 /// it; the decoder does not, since a longer name is a semantic error, not an
 /// unsafe one.
 inline constexpr u32 MAX_NAME_LENGTH = 100;
 
 /// The longest path or subdir: the longest path an ours.io Open carries
-/// (ours_io::MAX_PATH_LENGTH).
+/// (prot::io::MAX_PATH_LENGTH).
 inline constexpr u32 MAX_PATH_LENGTH = 1024;
 } // namespace component
 

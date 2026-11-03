@@ -63,10 +63,10 @@
 #include <fsio/fsio.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
-#include <ours_acpi/client.hpp>
-#include <ours_acpi/ours_acpi.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/acpi.hpp>
+#include <prot/acpi_client.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
 
@@ -99,21 +99,21 @@ auto fail(std::string_view const what, Status const got, Status const expected) 
 }
 
 /// How a line signals, as the route service says it, for the log.
-auto trigger_name(ours_acpi::Trigger const trigger) -> std::string_view {
+auto trigger_name(prot::acpi::Trigger const trigger) -> std::string_view {
     switch (trigger) {
-        case ours_acpi::Trigger::Edge:
+        case prot::acpi::Trigger::Edge:
             return "edge";
-        case ours_acpi::Trigger::Level:
+        case prot::acpi::Trigger::Level:
             return "level";
     }
     return "unknown trigger";
 }
 
-auto polarity_name(ours_acpi::Polarity const polarity) -> std::string_view {
+auto polarity_name(prot::acpi::Polarity const polarity) -> std::string_view {
     switch (polarity) {
-        case ours_acpi::Polarity::ActiveHigh:
+        case prot::acpi::Polarity::ActiveHigh:
             return "active high";
-        case ours_acpi::Polarity::ActiveLow:
+        case prot::acpi::Polarity::ActiveLow:
             return "active low";
     }
     return "unknown polarity";
@@ -134,10 +134,10 @@ auto open_ports(Uandle const ioport) -> Status {
 /// What the route service says of the keyboard's line: the GSI it arrives on,
 /// which the firmware's interrupt source overrides decide and which need not
 /// equal the ISA number, and how it signals. Logged in one line. The error is
-/// why the service could not say (see ours_acpi/client.hpp): not reached,
+/// why the service could not say (see prot/acpi_client.hpp): not reached,
 /// gone, or no such line in the tables.
-auto keyboard_route() -> ustl::Result<ours_acpi::IsaIrqReply, Status> {
-    auto const route = ours_acpi::isa_irq(ISA_KEYBOARD);
+auto keyboard_route() -> ustl::Result<prot::acpi::IsaIrqReply, Status> {
+    auto const route = prot::acpi::isa_irq(ISA_KEYBOARD);
     if (route.is_err()) {
         return ustl::err(route.unwrap_err());
     }
@@ -244,7 +244,7 @@ auto main(int, char **) -> int {
 
     // The ports next, which the reset needs, then the line, which is
     // taken once the controller raises it only for keys.
-    auto const ioport = ours_resource::get(ours_resource::IOPORT_PROTOCOL);
+    auto const ioport = prot::resource::get(prot::resource::IOPORT_PROTOCOL);
     if (ioport.is_err()) {
         report("getting the I/O port resource", ioport.unwrap_err());
         return 1;
@@ -262,7 +262,7 @@ auto main(int, char **) -> int {
         return 1;
     }
 
-    auto const irq = ours_resource::get(ours_resource::IRQ_PROTOCOL);
+    auto const irq = prot::resource::get(prot::resource::IRQ_PROTOCOL);
     if (irq.is_err()) {
         report("getting the IRQ resource", irq.unwrap_err());
         return 1;

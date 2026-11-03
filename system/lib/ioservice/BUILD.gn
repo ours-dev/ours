@@ -16,7 +16,7 @@ source_set("ioservice") {
   # server is a user of both.
   public_deps = [
     ":headers",
-    "//system/lib/ours.io",
+    "//system/lib/protocols",
   ]
   visibility = [ "*" ]
 }
@@ -30,7 +30,7 @@ cpp_interface("headers") {
     "include/ioservice/tree.hpp",
   ]
   public_deps = [
-    "//system/lib/ours.io:headers",
+    "//system/lib/protocols:headers",
     "//system/lib/ustl:headers",
     "//system/lib/wire:headers",
     "//system/public",

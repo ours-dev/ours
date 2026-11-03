@@ -45,9 +45,9 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
-#include <ours_acpi/ours_acpi.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/acpi.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
 
@@ -90,14 +90,14 @@ auto close_with_epitaph(Uandle const channel, Status const status) -> void {
     auto _ = ours::handle_close(channel);
 }
 
-constexpr auto wire_trigger(acpi_route::Trigger const trigger) -> ours_acpi::Trigger {
-    return trigger == acpi_route::Trigger::Level ? ours_acpi::Trigger::Level
-                                                 : ours_acpi::Trigger::Edge;
+constexpr auto wire_trigger(acpi_route::Trigger const trigger) -> prot::acpi::Trigger {
+    return trigger == acpi_route::Trigger::Level ? prot::acpi::Trigger::Level
+                                                 : prot::acpi::Trigger::Edge;
 }
 
-constexpr auto wire_polarity(acpi_route::Polarity const polarity) -> ours_acpi::Polarity {
-    return polarity == acpi_route::Polarity::ActiveLow ? ours_acpi::Polarity::ActiveLow
-                                                       : ours_acpi::Polarity::ActiveHigh;
+constexpr auto wire_polarity(acpi_route::Polarity const polarity) -> prot::acpi::Polarity {
+    return polarity == acpi_route::Polarity::ActiveLow ? prot::acpi::Polarity::ActiveLow
+                                                       : prot::acpi::Polarity::ActiveHigh;
 }
 
 /// The Route server: the connections ioservice::Outgoing hands it, each served
@@ -222,15 +222,15 @@ class RouteServer final: public ioservice::Handler {
 
         // A closed protocol: an ordinal it does not know, or a message its
         // decoder refuses, closes the connection without an epitaph, as
-        // <ours_acpi/ours_acpi.hpp> lays down. Neither method takes a handle,
+        // <prot/acpi.hpp> lays down. Neither method takes a handle,
         // so any the message brought are closed with it.
         auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
-        if (header.is_ok() && header->ordinal == ours_acpi::ISA_IRQ.ordinal) {
-            if (auto const request = ours_acpi::decode_isa_irq(message); request.is_ok()) {
+        if (header.is_ok() && header->ordinal == prot::acpi::ISA_IRQ.ordinal) {
+            if (auto const request = prot::acpi::decode_isa_irq(message); request.is_ok()) {
                 return isa_irq(client, *request);
             }
-        } else if (header.is_ok() && header->ordinal == ours_acpi::ECAM_BASE.ordinal) {
-            if (auto const request = ours_acpi::decode_ecam_base(message); request.is_ok()) {
+        } else if (header.is_ok() && header->ordinal == prot::acpi::ECAM_BASE.ordinal) {
+            if (auto const request = prot::acpi::decode_ecam_base(message); request.is_ok()) {
                 return ecam_base(client, *request);
             }
         }
@@ -243,8 +243,8 @@ class RouteServer final: public ioservice::Handler {
     /// IsaIrq: the GSI of the ISA line, the interrupt domain that GSI is a
     /// number of, and how it signals, from the MADT's overrides, or why there
     /// is none.
-    auto isa_irq(Client &client, ours_acpi::IsaIrqRequest const &request) -> loop::Action {
-        auto reply = ours_acpi::IsaIrqReply{.status = Status::Ok};
+    auto isa_irq(Client &client, prot::acpi::IsaIrqRequest const &request) -> loop::Action {
+        auto reply = prot::acpi::IsaIrqReply{.status = Status::Ok};
         if (auto const route = acpi_route::isa_irq_to_gsi(*m_tables, request.isa_irq);
             route.is_ok()) {
             // ACPI's numbering is the root controller's: the GSI is a number
@@ -257,14 +257,14 @@ class RouteServer final: public ioservice::Handler {
             reply = {.status = route.unwrap_err()};
         }
         auto const encoded =
-            ours_acpi::encode_isa_irq_reply(m_storage->reply_bytes, request.txid, reply);
+            prot::acpi::encode_isa_irq_reply(m_storage->reply_bytes, request.txid, reply);
         return answer(client, encoded);
     }
 
     /// EcamBase: where the segment's configuration space is, from the MCFG, or
     /// why there is none.
-    auto ecam_base(Client &client, ours_acpi::EcamBaseRequest const &request) -> loop::Action {
-        auto reply = ours_acpi::EcamBaseReply{.status = Status::Ok};
+    auto ecam_base(Client &client, prot::acpi::EcamBaseRequest const &request) -> loop::Action {
+        auto reply = prot::acpi::EcamBaseReply{.status = Status::Ok};
         if (auto const window = acpi_route::ecam_window(*m_tables, request.segment);
             window.is_ok()) {
             reply.address = window->address;
@@ -275,7 +275,7 @@ class RouteServer final: public ioservice::Handler {
             reply = {.status = window.unwrap_err()};
         }
         auto const encoded =
-            ours_acpi::encode_ecam_base_reply(m_storage->reply_bytes, request.txid, reply);
+            prot::acpi::encode_ecam_base_reply(m_storage->reply_bytes, request.txid, reply);
         return answer(client, encoded);
     }
 
@@ -313,7 +313,7 @@ constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 /// hands out and checked: the bytes stay mapped for as long as the program
 /// lives, which is what TableDirectory asks of them. Otherwise why not.
 auto map_tables(Uandle const vma) -> ustl::Result<acpi_route::TableDirectory, Status> {
-    auto const vmo = ours_resource::get(ours_resource::ACPI_PROTOCOL);
+    auto const vmo = prot::resource::get(prot::resource::ACPI_PROTOCOL);
     if (vmo.is_err()) {
         return ustl::err(vmo.unwrap_err());
     }
@@ -365,7 +365,7 @@ auto main(int, char **) -> int {
     ioservice::Outgoing outgoing(*OUTGOING_STORAGE.init(), loop);
     RouteServer server(*ROUTE_STORAGE.init(), loop, tables.unwrap());
 
-    if (auto const status = outgoing.add_protocol(ours_acpi::ROUTE_NAME, server);
+    if (auto const status = outgoing.add_protocol(prot::acpi::ROUTE_NAME, server);
         status != Status::Ok) {
         report("cannot add its protocol", status);
         return 1;

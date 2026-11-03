@@ -31,9 +31,7 @@ user_executable("nvme") {
     "//system/lib/ddk",
     "//system/lib/ioservice:outgoing",
     "//system/lib/loop",
-    "//system/lib/ours.acpi:client",
-    "//system/lib/ours.block",
-    "//system/lib/ours.resource:client",
+    "//system/lib/protocols:client",
     "//system/lib/ustl",
     "//system/lib/wire",
   ]

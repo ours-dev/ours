@@ -69,7 +69,7 @@
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/resource.hpp>
 #include <ustl/lazy_init.hpp>
 
 namespace {
@@ -337,24 +337,24 @@ auto main(int, char **) -> int {
     init::LauncherServer launcher_server(*LAUNCHER_STORAGE.init(), loop, environment,
                                          {.report = print_launch_error, .context = nullptr});
     init::ResourceServer debug_resource_server(*DEBUG_RESOURCE_STORAGE.init(), loop,
-                                               ours_resource::DEBUG_PROTOCOL, debug);
+                                               prot::resource::DEBUG_PROTOCOL, debug);
     init::ResourceServer irq_resource_server(*IRQ_RESOURCE_STORAGE.init(), loop,
-                                             ours_resource::IRQ_PROTOCOL, irq);
+                                             prot::resource::IRQ_PROTOCOL, irq);
     init::ResourceServer ioport_resource_server(*IOPORT_RESOURCE_STORAGE.init(), loop,
-                                                ours_resource::IOPORT_PROTOCOL, ioport);
+                                                prot::resource::IOPORT_PROTOCOL, ioport);
     init::ResourceServer mmio_resource_server(*MMIO_RESOURCE_STORAGE.init(), loop,
-                                              ours_resource::MMIO_PROTOCOL, mmio);
+                                              prot::resource::MMIO_PROTOCOL, mmio);
     init::ResourceServer iommu_resource_server(*IOMMU_RESOURCE_STORAGE.init(), loop,
-                                               ours_resource::IOMMU_PROTOCOL, iommu);
+                                               prot::resource::IOMMU_PROTOCOL, iommu);
     init::ResourceServer sampling_resource_server(*SAMPLING_RESOURCE_STORAGE.init(), loop,
-                                                  ours_resource::SAMPLING_PROTOCOL, sampling);
+                                                  prot::resource::SAMPLING_PROTOCOL, sampling);
     // The ACPI tables' VMO, read only: each Get answers a duplicate of it.
-    init::ResourceServer acpi_server(*ACPI_STORAGE.init(), loop, ours_resource::ACPI_PROTOCOL,
+    init::ResourceServer acpi_server(*ACPI_STORAGE.init(), loop, prot::resource::ACPI_PROTOCOL,
                                      acpi);
     // The root job the root was started with, which stays the root's: each
     // Get answers a duplicate with every right of it.
     init::ResourceServer root_job_server(*ROOT_JOB_STORAGE.init(), loop,
-                                         ours_resource::ROOT_JOB_PROTOCOL, job);
+                                         prot::resource::ROOT_JOB_PROTOCOL, job);
     init::Realm realm(*INSTANCES.init(), boot, loop, environment,
                       {
                           .launcher = &launcher_server,

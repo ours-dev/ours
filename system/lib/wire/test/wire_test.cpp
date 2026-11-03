@@ -556,19 +556,19 @@ struct Golden {
 };
 
 constexpr auto GOLDEN = std::array{
-    // ours_io
+    // prot::io
     Golden{"ours.io/Directory.Open", 0x3d1d'dd82'1049'bce2},
     Golden{"ours.io/Node.Close", 0x67bf'e5a2'cd64'acda},
     Golden{"ours.io/Cloneable.Clone", 0x151b'66f7'6607'428b},
     Golden{"ours.io/File.Read", 0x2348'9a6f'12eb'b0f0},
     Golden{"ours.io/File.GetBackingMemory", 0x13b0'3c8a'57b0'6719},
     Golden{"ours.io/Directory.ReadDirents", 0x3acf'c05d'99ef'c34b},
-    // ours_process
+    // prot::process
     Golden{"ours.process/Launcher.AddArgs", 0x6177'27c9'8e66'bde8},
     Golden{"ours.process/Launcher.AddHandles", 0x3292'5139'9bdc'bf52},
     Golden{"ours.process/Launcher.AddNames", 0x0987'826f'a969'0f15},
     Golden{"ours.process/Launcher.Launch", 0x4842'5238'011e'a49e},
-    // ours_resource
+    // prot::resource
     Golden{"ours.resource/Debug.Get", 0x226c'd5bb'1821'8fda},
     Golden{"ours.resource/Irq.Get", 0x273c'3e02'af63'50e0},
     Golden{"ours.resource/Ioport.Get", 0x231b'c3b7'4044'47b5},

@@ -67,10 +67,10 @@
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
-#include <ours_acpi/client.hpp>
-#include <ours_block/ours_block.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/acpi_client.hpp>
+#include <prot/block.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
 
@@ -471,7 +471,7 @@ class NvmeBlockServer final
     /// sector ours.block names, and the count is what Identify returned.
     [[nodiscard]]
     auto geometry() const -> block_server::Geometry {
-        return {.block_size = ours_block::BLOCK_SIZE, .blocks = m_blocks};
+        return {.block_size = prot::block::BLOCK_SIZE, .blocks = m_blocks};
     }
 
     /// The library's hand-off: run the parked request against the device,
@@ -508,7 +508,7 @@ class NvmeBlockServer final
         if (data.empty()) {
             complete(index, Status::Ok,
                      std::span{reinterpret_cast<u8 const *>(m_controller->data()),
-                               usize{parked.count} * ours_block::BLOCK_SIZE});
+                               usize{parked.count} * prot::block::BLOCK_SIZE});
         } else {
             complete(index, Status::Ok);
         }
@@ -560,7 +560,7 @@ auto main(int, char **) -> int {
 
     // Where the ECAM window is: the route service reads it from the MCFG
     // table, as virtio-blk's driver does for its enumeration.
-    auto const ecam = ours_acpi::ecam_base(0);
+    auto const ecam = prot::acpi::ecam_base(0);
     if (ecam.is_err()) {
         auto _ = ort::debug_line(
             {"nvme: no ECAM base from the route service: ", ours::to_string(ecam.unwrap_err())});
@@ -767,7 +767,7 @@ auto main(int, char **) -> int {
 
     auto &outgoing_storage = *OUTGOING_STORAGE.init();
     ioservice::Outgoing outgoing(outgoing_storage, loop);
-    if (auto const status = outgoing.add_protocol(ours_block::BLOCK_NAME, server);
+    if (auto const status = outgoing.add_protocol(prot::block::BLOCK_NAME, server);
         status != Status::Ok) {
         auto _ = ort::debug_line({"nvme: cannot serve its protocol: ", ours::to_string(status)});
         return 1;
@@ -780,8 +780,8 @@ auto main(int, char **) -> int {
 
     // Stop ends the program from inside an on_signals(); run() comes back
     // only when the port itself fails.
-    auto _ = ort::debug_line(
-        {"nvme: serving ", ours_block::BLOCK_NAME, " over ", ort::hex(nsze, nsze_text), " blocks"});
+    auto _ = ort::debug_line({"nvme: serving ", prot::block::BLOCK_NAME, " over ",
+                              ort::hex(nsze, nsze_text), " blocks"});
     auto _ = ort::debug_line(
         {"nvme: its Loop stopped: ", ours::to_string(loop.run(ours::INSTANT_INFINITE))});
     return 1;

@@ -58,10 +58,10 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
-#include <ours_block/client.hpp>
 #include <ours_btreefs/ours_btreefs.hpp>
 #include <ours_gpt/ours_gpt.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/block_client.hpp>
+#include <prot/io.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
 
@@ -72,8 +72,8 @@ using ours::Status;
 using ours::Uandle;
 using ours_btreefs::ItemType;
 using ours_btreefs::ObjectKind;
-using ours_io::Flags;
-using ours_io::Operations;
+using prot::io::Flags;
+using prot::io::Operations;
 
 /// How many connections may be live at once: the outgoing directory, plus
 /// every directory and file connection clients hold.
@@ -92,7 +92,7 @@ constexpr auto EXPOSED_NAME = std::string_view{"disk"};
 /// `disk` may ask. root.cm offers it rw*, whose every bit a use states has
 /// to be below this ceiling -- a missing one is AccessDenied on the
 /// forwarded Open, and the mount point dies with it.
-constexpr auto SERVED_RIGHTS = ours_io::RW_STAR_DIR;
+constexpr auto SERVED_RIGHTS = prot::io::RW_STAR_DIR;
 
 /// Every right the protocol defines, what a request's rights are read
 /// against.
@@ -121,7 +121,7 @@ auto holds(Operations const rights, Operations const bits) -> bool {
 /// read and written in the chunks of 7 the block codec carries per call.
 class BlockAdapter final {
   public:
-    BlockAdapter(ours_block::Client &client, u64 const first_lba)
+    BlockAdapter(prot::block::Client &client, u64 const first_lba)
         : m_client(client), m_first_lba(first_lba) {}
 
     auto read_block(u64 const block, std::span<u8> bytes) -> Status {
@@ -166,7 +166,7 @@ class BlockAdapter final {
         return m_first_lba + block * (ours_btreefs::BLOCK_BYTES / 512);
     }
 
-    ours_block::Client &m_client;
+    prot::block::Client &m_client;
     u64 m_first_lba = 0;
 };
 
@@ -231,7 +231,7 @@ struct Storage {
 };
 
 constinit ustl::LazyInit<Storage> STORAGE;
-constinit ustl::LazyInit<ours_block::Client> CLIENT;
+constinit ustl::LazyInit<prot::block::Client> CLIENT;
 constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 
 /// The Loop the connections are armed on, set before any message can
@@ -244,7 +244,7 @@ loop::Loop *LOOP = nullptr;
 /// is Storage's, the Loop's own plumbing.
 class Filesystem final {
   public:
-    explicit Filesystem(ours_block::Client &client) : m_client(client) {}
+    explicit Filesystem(prot::block::Client &client) : m_client(client) {}
 
     /// Opens the volume on the disk's ours-fs partition -- found through the
     /// GPT, formatted when it carries none -- and makes the root directory.
@@ -258,11 +258,11 @@ class Filesystem final {
         -> ustl::Result<std::pair<u64, ObjectKind>, Status>;
     auto create_object(u64 directory, std::string_view name, ObjectKind kind)
         -> ustl::Result<u64, Status>;
-    auto read_file(Connection &connection, ours_io::ReadRequest const &request,
+    auto read_file(Connection &connection, prot::io::ReadRequest const &request,
                    std::span<u8> reply_bytes) -> void;
-    auto write_file(Connection &connection, ours_io::WriteRequest const &request,
+    auto write_file(Connection &connection, prot::io::WriteRequest const &request,
                     std::span<u8> reply_bytes) -> void;
-    auto read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &request,
+    auto read_dirents(Connection &connection, prot::io::ReadDirentsRequest const &request,
                       std::span<u8> reply_bytes) -> void;
     auto unlink_at(u64 directory, std::string_view name) -> Status;
 
@@ -285,7 +285,7 @@ class Filesystem final {
         return tx;
     }
 
-    ours_block::Client &m_client;
+    prot::block::Client &m_client;
     ustl::LazyInit<BlockAdapter> m_adapter;
     /// The transaction's own storage, outside the stack: its cache of
     /// copied blocks is ~200 KiB, far past this thread's stack to carry.
@@ -468,16 +468,16 @@ auto Filesystem::create_object(u64 const directory, std::string_view const name,
 
 /// Read on the file connection |index|: the file's DATA items name its
 /// blocks, a block with no item yet reading as zeros.
-auto Filesystem::read_file(Connection &connection, ours_io::ReadRequest const &request,
+auto Filesystem::read_file(Connection &connection, prot::io::ReadRequest const &request,
                            std::span<u8> reply_bytes) -> void {
     auto const metadata = inode_of(connection.object);
     if (metadata.is_err()) {
-        answer_status(connection.channel, ours_io::READ, request.txid, metadata.unwrap_err());
+        answer_status(connection.channel, prot::io::READ, request.txid, metadata.unwrap_err());
         return;
     }
     auto const offset = std::min<u64>(connection.seek, metadata->size);
     auto const size = std::min<u64>(std::min<u64>(request.count, metadata->size - offset),
-                                    ours_io::MAX_TRANSFER_SIZE);
+                                    prot::io::MAX_TRANSFER_SIZE);
     auto const payload = reply_bytes.subspan(wire::STATUS_FORM_SIZE).first(size);
     auto done = usize{0};
     while (done < size) {
@@ -489,7 +489,7 @@ auto Filesystem::read_file(Connection &connection, ours_io::ReadRequest const &r
             device(), m_volume,
             {.object = connection.object, .type = ItemType::Data, .offset = index}, m_item);
         if (looked != Status::Ok && looked != Status::NotFound) {
-            answer_status(connection.channel, ours_io::READ, request.txid, looked);
+            answer_status(connection.channel, prot::io::READ, request.txid, looked);
             return;
         }
         if (looked == Status::NotFound) {
@@ -499,7 +499,7 @@ auto Filesystem::read_file(Connection &connection, ours_io::ReadRequest const &r
             if (auto const status = device().read_block(ours_btreefs::decode_data_value(m_item),
                                                         std::span{m_block});
                 status != Status::Ok) {
-                answer_status(connection.channel, ours_io::READ, request.txid, status);
+                answer_status(connection.channel, prot::io::READ, request.txid, status);
                 return;
             }
             std::memcpy(payload.data() + done, m_block.data() + within, chunk);
@@ -507,8 +507,8 @@ auto Filesystem::read_file(Connection &connection, ours_io::ReadRequest const &r
         done += chunk;
     }
     connection.seek = offset + size;
-    auto const encoded = ours_io::encode_read_reply(reply_bytes, request.txid,
-                                                    {.status = Status::Ok, .data = payload});
+    auto const encoded = prot::io::encode_read_reply(reply_bytes, request.txid,
+                                                     {.status = Status::Ok, .data = payload});
     if (encoded.is_ok()) {
         auto _ = write(connection.channel, encoded.unwrap());
     }
@@ -517,12 +517,12 @@ auto Filesystem::read_file(Connection &connection, ours_io::ReadRequest const &r
 /// Write on the file connection |index|: each 4 KiB of the file the write
 /// touches gets its DATA item -- made, with a fresh block, when it is the
 /// first -- and its block patched and written back whole.
-auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const &request,
+auto Filesystem::write_file(Connection &connection, prot::io::WriteRequest const &request,
                             std::span<u8> reply_bytes) -> void {
     auto const metadata = inode_of(connection.object);
     auto &tx = tx_begin();
     if (metadata.is_err()) {
-        answer_status(connection.channel, ours_io::WRITE, request.txid, metadata.unwrap_err());
+        answer_status(connection.channel, prot::io::WRITE, request.txid, metadata.unwrap_err());
         return;
     }
     auto const offset = connection.seek;
@@ -537,20 +537,21 @@ auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const 
             device(), m_volume,
             {.object = connection.object, .type = ItemType::Data, .offset = index}, m_item);
         if (looked != Status::Ok && looked != Status::NotFound) {
-            answer_status(connection.channel, ours_io::WRITE, request.txid, looked);
+            answer_status(connection.channel, prot::io::WRITE, request.txid, looked);
             return;
         }
         if (looked == Status::NotFound) {
             auto const block = tx.alloc_block();
             if (block.is_err()) {
-                answer_status(connection.channel, ours_io::WRITE, request.txid, block.unwrap_err());
+                answer_status(connection.channel, prot::io::WRITE, request.txid,
+                              block.unwrap_err());
                 return;
             }
             ours_btreefs::encode_data_value(m_item, block.unwrap());
             auto const inserted = ours_btreefs::insert(
                 tx, {.object = connection.object, .type = ItemType::Data, .offset = index}, m_item);
             if (inserted != Status::Ok) {
-                answer_status(connection.channel, ours_io::WRITE, request.txid, inserted);
+                answer_status(connection.channel, prot::io::WRITE, request.txid, inserted);
                 return;
             }
         }
@@ -560,7 +561,7 @@ auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const 
             if (auto const status = device().read_block(ours_btreefs::decode_data_value(m_item),
                                                         std::span{m_block});
                 status != Status::Ok) {
-                answer_status(connection.channel, ours_io::WRITE, request.txid, status);
+                answer_status(connection.channel, prot::io::WRITE, request.txid, status);
                 return;
             }
         }
@@ -568,7 +569,7 @@ auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const 
         if (auto const status =
                 device().write_block(ours_btreefs::decode_data_value(m_item), std::span{m_block});
             status != Status::Ok) {
-            answer_status(connection.channel, ours_io::WRITE, request.txid, status);
+            answer_status(connection.channel, prot::io::WRITE, request.txid, status);
             return;
         }
         done += chunk;
@@ -583,16 +584,16 @@ auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const 
         if (auto const status = ours_btreefs::update(
                 tx, {.object = connection.object, .type = ItemType::Inode, .offset = 0}, value);
             status != Status::Ok) {
-            answer_status(connection.channel, ours_io::WRITE, request.txid, status);
+            answer_status(connection.channel, prot::io::WRITE, request.txid, status);
             return;
         }
     }
     if (auto const status = tx.commit(); status != Status::Ok) {
-        answer_status(connection.channel, ours_io::WRITE, request.txid, status);
+        answer_status(connection.channel, prot::io::WRITE, request.txid, status);
         return;
     }
     connection.seek = end;
-    auto const encoded = ours_io::encode_write_reply(
+    auto const encoded = prot::io::encode_write_reply(
         reply_bytes, request.txid, {.status = Status::Ok, .actual = static_cast<u32>(size)});
     if (encoded.is_ok()) {
         auto _ = write(connection.channel, encoded.unwrap());
@@ -602,19 +603,19 @@ auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const 
 /// ReadDirents on the root connection: "." first, then the root's DIRENT
 /// items along the leaves' chain, in name-hash order, the listing resuming
 /// after the last entry that fit.
-auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &request,
+auto Filesystem::read_dirents(Connection &connection, prot::io::ReadDirentsRequest const &request,
                               std::span<u8> reply_bytes) -> void {
     if (!holds(connection.rights, Operations::Enumerate)) {
-        answer_status(connection.channel, ours_io::READ_DIRENTS, request.txid,
+        answer_status(connection.channel, prot::io::READ_DIRENTS, request.txid,
                       Status::AccessDenied);
         return;
     }
-    auto writer = ours_io::DirentWriter(reply_bytes.subspan(wire::STATUS_FORM_SIZE));
+    auto writer = prot::io::DirentWriter(reply_bytes.subspan(wire::STATUS_FORM_SIZE));
     if (!connection.listed_dot) {
-        if (writer.append({.ino = ours_io::INO_UNKNOWN,
-                           .type = ours_io::DirentType::Directory,
+        if (writer.append({.ino = prot::io::INO_UNKNOWN,
+                           .type = prot::io::DirentType::Directory,
                            .name = "."}) != Status::Ok) {
-            answer_status(connection.channel, ours_io::READ_DIRENTS, request.txid,
+            answer_status(connection.channel, prot::io::READ_DIRENTS, request.txid,
                           Status::BufferTooSmall);
             return;
         }
@@ -644,9 +645,10 @@ auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsReques
                 return true;
             }
             auto const type = decoded->kind == ObjectKind::Directory
-                                  ? ours_io::DirentType::Directory
-                                  : ours_io::DirentType::File;
-            if (writer.append({.ino = ours_io::INO_UNKNOWN, .type = type, .name = decoded->name}) !=
+                                  ? prot::io::DirentType::Directory
+                                  : prot::io::DirentType::File;
+            if (writer.append(
+                    {.ino = prot::io::INO_UNKNOWN, .type = type, .name = decoded->name}) !=
                 Status::Ok) {
                 // It did not fit: it comes again on the next call, the
                 // cursor not having moved.
@@ -656,10 +658,10 @@ auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsReques
             return true;
         });
     if (walked != Status::Ok) {
-        answer_status(connection.channel, ours_io::READ_DIRENTS, request.txid, walked);
+        answer_status(connection.channel, prot::io::READ_DIRENTS, request.txid, walked);
         return;
     }
-    auto const encoded = ours_io::encode_read_dirents_reply(
+    auto const encoded = prot::io::encode_read_dirents_reply(
         reply_bytes, request.txid, {.status = Status::Ok, .dirents = writer.written()});
     if (encoded.is_ok()) {
         auto _ = write(connection.channel, encoded.unwrap());
@@ -668,7 +670,7 @@ auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsReques
 
 /// Binds |open|'s server end to a connection of its own: the root when
 /// |object| is 0, the file at that object otherwise.
-auto open_below_dir_bind(ours_io::OpenRequest const &open, Operations const requested,
+auto open_below_dir_bind(prot::io::OpenRequest const &open, Operations const requested,
                          u64 const object, bool const directory) -> void {
     auto &storage = *STORAGE;
     auto const made = allocate(open.object, requested);
@@ -694,7 +696,7 @@ auto open_below_dir_bind(ours_io::OpenRequest const &open, Operations const requ
 /// Open on a directory connection: walk what |open| names from it, or make
 /// it, and bind its server end to a connection of its own. The checks are
 /// ioservice's, in its order.
-auto open_below_dir(Connection &connection, ours_io::OpenRequest const &open) -> void {
+auto open_below_dir(Connection &connection, prot::io::OpenRequest const &open) -> void {
     auto const flags = open.flags;
     if (!ioservice::is_valid_path(open.path)) {
         refuse(open.object, Status::BadPath);
@@ -949,14 +951,14 @@ auto handle(usize const index) -> loop::Action {
     // TEMPORARY: the dispatch's witness.
 
     // Node.Close, on every connection.
-    if (ordinal == ours_io::CLOSE.ordinal) {
-        auto const request = ours_io::decode_close(message);
+    if (ordinal == prot::io::CLOSE.ordinal) {
+        auto const request = prot::io::decode_close(message);
         if (request.is_err()) {
             forget(index);
             return loop::Action::Close;
         }
-        auto const encoded =
-            ours_io::encode_close_reply(storage.reply_bytes, request->txid, {.status = Status::Ok});
+        auto const encoded = prot::io::encode_close_reply(storage.reply_bytes, request->txid,
+                                                          {.status = Status::Ok});
         auto const channel = connection.channel;
         forget(index);
         if (encoded.is_ok()) {
@@ -967,8 +969,8 @@ auto handle(usize const index) -> loop::Action {
 
     // Cloneable.Clone: another connection to the same target, with the same
     // rights, from the start again.
-    if (ordinal == ours_io::CLONE.ordinal) {
-        auto const request = ours_io::decode_clone(message);
+    if (ordinal == prot::io::CLONE.ordinal) {
+        auto const request = prot::io::decode_clone(message);
         if (request.is_err()) {
             forget(index);
             return loop::Action::Close;
@@ -988,12 +990,12 @@ auto handle(usize const index) -> loop::Action {
     }
 
     // Directory.Open, on the root only.
-    if (ordinal == ours_io::OPEN.ordinal) {
+    if (ordinal == prot::io::OPEN.ordinal) {
         if (connection.target != Target::Directory) {
             forget(index);
             return loop::Action::Close;
         }
-        auto const request = ours_io::decode_open(message);
+        auto const request = prot::io::decode_open(message);
         if (request.is_err()) {
             forget(index);
             return loop::Action::Close;
@@ -1003,8 +1005,8 @@ auto handle(usize const index) -> loop::Action {
     }
 
     // Directory.ReadDirents, on the root only.
-    if (ordinal == ours_io::READ_DIRENTS.ordinal) {
-        auto const request = ours_io::decode_read_dirents(message);
+    if (ordinal == prot::io::READ_DIRENTS.ordinal) {
+        auto const request = prot::io::decode_read_dirents(message);
         if (request.is_err() || connection.target != Target::Directory) {
             forget(index);
             return loop::Action::Close;
@@ -1014,8 +1016,8 @@ auto handle(usize const index) -> loop::Action {
     }
 
     // Directory.Unlink, on the root only: the file leaves the volume.
-    if (ordinal == ours_io::UNLINK.ordinal) {
-        auto const request = ours_io::decode_unlink(message);
+    if (ordinal == prot::io::UNLINK.ordinal) {
+        auto const request = prot::io::decode_unlink(message);
         if (request.is_err() || connection.target != Target::Directory) {
             forget(index);
             return loop::Action::Close;
@@ -1023,7 +1025,8 @@ auto handle(usize const index) -> loop::Action {
         // Unlinking mutates the directory's contents, and costs the same
         // right creating in it does.
         if (!holds(connection.rights, Operations::ModifyDirectory)) {
-            answer_status(connection.channel, ours_io::UNLINK, request->txid, Status::AccessDenied);
+            answer_status(connection.channel, prot::io::UNLINK, request->txid,
+                          Status::AccessDenied);
             return loop::Action::Rearm;
         }
         // The path is relative to this directory: its components walk, the
@@ -1037,41 +1040,41 @@ auto handle(usize const index) -> loop::Action {
         if (!parent_path.empty()) {
             auto const walked = FILESYSTEM->resolve(parent, parent_path);
             if (walked.is_err()) {
-                answer_status(connection.channel, ours_io::UNLINK, request->txid,
+                answer_status(connection.channel, prot::io::UNLINK, request->txid,
                               walked.unwrap_err());
                 return loop::Action::Rearm;
             }
             parent = walked->first;
         }
         auto const status = FILESYSTEM->unlink_at(parent, name);
-        answer_status(connection.channel, ours_io::UNLINK, request->txid, status);
+        answer_status(connection.channel, prot::io::UNLINK, request->txid, status);
         return loop::Action::Rearm;
     }
 
     // File.Read and File.Write, on a file connection.
-    if (ordinal == ours_io::READ.ordinal || ordinal == ours_io::WRITE.ordinal) {
-        auto const is_read = ordinal == ours_io::READ.ordinal;
+    if (ordinal == prot::io::READ.ordinal || ordinal == prot::io::WRITE.ordinal) {
+        auto const is_read = ordinal == prot::io::READ.ordinal;
         if (connection.target != Target::File) {
             forget(index);
             return loop::Action::Close;
         }
         if (is_read && !holds(connection.rights, Operations::ReadBytes)) {
-            answer_status(connection.channel, ours_io::READ, header->txid, Status::AccessDenied);
+            answer_status(connection.channel, prot::io::READ, header->txid, Status::AccessDenied);
             return loop::Action::Rearm;
         }
         if (!is_read && !holds(connection.rights, Operations::WriteBytes)) {
-            answer_status(connection.channel, ours_io::WRITE, header->txid, Status::AccessDenied);
+            answer_status(connection.channel, prot::io::WRITE, header->txid, Status::AccessDenied);
             return loop::Action::Rearm;
         }
         if (is_read) {
-            auto const request = ours_io::decode_read(message);
+            auto const request = prot::io::decode_read(message);
             if (request.is_err()) {
                 forget(index);
                 return loop::Action::Close;
             }
             FILESYSTEM->read_file(connection, request.unwrap(), storage.reply_bytes);
         } else {
-            auto const request = ours_io::decode_write(message);
+            auto const request = prot::io::decode_write(message);
             if (request.is_err()) {
                 forget(index);
                 return loop::Action::Close;
@@ -1082,13 +1085,13 @@ auto handle(usize const index) -> loop::Action {
     }
 
     // GetBackingMemory: nothing here is backed by a VMO, now or ever.
-    if (ordinal == ours_io::GET_BACKING_MEMORY.ordinal) {
-        auto const request = ours_io::decode_get_backing_memory(message);
+    if (ordinal == prot::io::GET_BACKING_MEMORY.ordinal) {
+        auto const request = prot::io::decode_get_backing_memory(message);
         if (request.is_err()) {
             forget(index);
             return loop::Action::Close;
         }
-        answer_status(connection.channel, ours_io::GET_BACKING_MEMORY, request->txid,
+        answer_status(connection.channel, prot::io::GET_BACKING_MEMORY, request->txid,
                       Status::NotSupported);
         return loop::Action::Rearm;
     }

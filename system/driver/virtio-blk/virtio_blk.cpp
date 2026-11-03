@@ -73,10 +73,10 @@
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
-#include <ours_acpi/client.hpp>
-#include <ours_block/ours_block.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/acpi_client.hpp>
+#include <prot/block.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 #include <server/server.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
@@ -151,7 +151,7 @@ constexpr auto MAX_INFLIGHT = usize{1};
 constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS;
 
 static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
-static_assert(DATA_OFFSET + ours_block::MAX_READ_BLOCKS * SECTOR + 1 <= REGION_BYTES);
+static_assert(DATA_OFFSET + prot::block::MAX_READ_BLOCKS * SECTOR + 1 <= REGION_BYTES);
 
 /// Configuration space as this driver sees it: a mapped window plus the
 /// offset of one function in it.
@@ -449,7 +449,7 @@ class VirtioBlockServer final
     /// the geometry is what setup read from the device.
     [[nodiscard]]
     auto geometry() const -> block_server::Geometry {
-        return {.block_size = ours_block::BLOCK_SIZE, .blocks = m_device->blocks()};
+        return {.block_size = prot::block::BLOCK_SIZE, .blocks = m_device->blocks()};
     }
 
     /// The library's hand-off: run the parked request against the device,
@@ -546,7 +546,7 @@ auto main(int, char **) -> int {
     // The enumeration window's base is the firmware's to name: the route
     // service reads it from the MCFG table, and this driver asks instead of
     // carrying a chipset constant.
-    auto const ecam = ours_acpi::ecam_base(0);
+    auto const ecam = prot::acpi::ecam_base(0);
     if (ecam.is_err()) {
         auto _ = ort::debug_line({"virtio-blk: no ECAM base from the route service: ",
                                   ours::to_string(ecam.unwrap_err())});
@@ -699,7 +699,7 @@ auto main(int, char **) -> int {
 
     auto &outgoing_storage = *OUTGOING_STORAGE.init();
     ioservice::Outgoing outgoing(outgoing_storage, loop);
-    if (auto const status = outgoing.add_protocol(ours_block::BLOCK_NAME, server);
+    if (auto const status = outgoing.add_protocol(prot::block::BLOCK_NAME, server);
         status != Status::Ok) {
         auto _ =
             ort::debug_line({"virtio-blk: cannot serve its protocol: ", ours::to_string(status)});
@@ -713,7 +713,7 @@ auto main(int, char **) -> int {
 
     // Stop ends the program from inside an on_signals(); run() comes back
     // only when the port itself fails.
-    auto _ = ort::debug_line({"virtio-blk: serving ", ours_block::BLOCK_NAME});
+    auto _ = ort::debug_line({"virtio-blk: serving ", prot::block::BLOCK_NAME});
     auto _ = ort::debug_line(
         {"virtio-blk: its Loop stopped: ", ours::to_string(loop.run(ours::INSTANT_INFINITE))});
     return 1;
