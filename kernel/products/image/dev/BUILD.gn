@@ -158,6 +158,11 @@ component_manifest("root.cm") {
       manifest = "//system/driver/virtio-blk:virtio-blk.cm"
       startup = "eager"
     },
+    {
+      name = "nvme"
+      manifest = "//system/driver/nvme:nvme.cm"
+      startup = "eager"
+    },
   ]
   manifest = {
     offer = [
@@ -311,26 +316,30 @@ component_manifest("root.cm") {
       },
 
       # The root of the physical address space, to routing_checks -- it reads
-      # what the resource is and probes the host bridge -- and to the block
-      # device driver, whose windows onto its device come through it.
+      # what the resource is and probes the host bridge -- to the block
+      # device driver, whose windows onto its device come through it, and to
+      # the NVMe driver, whose register file is an MMIO BAR.
       {
         protocol = [ "ours.resource.Mmio" ]
         from = "parent"
         to = [
           "#routing_checks",
           "#virtio-blk",
+          "#nvme",
         ]
       },
 
       # The IOMMU resource, to routing_checks -- which makes an IOMMU, a BTI
       # and pins with it, as a bus driver would -- and to the block device
-      # driver, whose rings and buffers the device reaches through its pins.
+      # driver, whose rings and buffers the device reaches through its pins,
+      # and to the NVMe driver, whose queues are pinned the same way.
       {
         protocol = [ "ours.resource.Iommu" ]
         from = "parent"
         to = [
           "#routing_checks",
           "#virtio-blk",
+          "#nvme",
         ]
       },
 
@@ -367,6 +376,7 @@ component_manifest("root.cm") {
           "#routing_checks",
           "#pc-ps2",
           "#virtio-blk",
+          "#nvme",
         ]
       },
 

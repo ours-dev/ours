@@ -22,8 +22,9 @@
 namespace init {
 /// Component instances, the root's own among them (D27: 8 components; dev
 /// has outgrown the design's count with the filesystem component, and the
-/// next component bumps this with its own: the ACPI route service did).
-inline constexpr auto MAX_INSTANCES = usize{11};
+/// next component bumps this with its own: the ACPI route service did,
+/// then the NVMe driver).
+inline constexpr auto MAX_INSTANCES = usize{12};
 
 /// /boot connections: namespace entries the root binds, and every Open and
 /// Clone through them (D27: 128).
