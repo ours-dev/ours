@@ -86,6 +86,8 @@ namespace {
     auto no_op(irq::ControllerSource const &) -> void {}
 
     constexpr irq::ControllerOps CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = no_op,
         .unmask = no_op,
         .issue_eoi = no_op,
@@ -94,6 +96,8 @@ namespace {
 
     /// A chip that cannot end an interrupt.
     constexpr irq::ControllerOps NO_EOI_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = no_op,
         .name = "irq-registry-test",
     };
@@ -171,6 +175,8 @@ namespace {
     };
 
     constexpr irq::ControllerOps INSTANCE_OPS = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask =
             [](irq::ControllerSource const &source) {
                 ++static_cast<ControllerInstance *>(source.platform_data)->masks;

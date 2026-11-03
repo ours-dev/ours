@@ -28,7 +28,7 @@ auto Domain::init(ustl::views::Span<HIrqNum const> const sources, ControllerOps 
     if (!m_storage.lines.empty()) {
         return Status::BadState;
     }
-    if (sources.empty() || !controller.issue_eoi || !controller.mask) {
+    if (sources.empty() || !controller.is_valid()) {
         return Status::InvArgs;
     }
     auto highest = HIrqNum{0};

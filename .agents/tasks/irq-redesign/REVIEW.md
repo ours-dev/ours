@@ -39,7 +39,7 @@ This does not currently allow a second action onto the immutable line, because P
 
 This is an existing open question in `irq-genirq/DESIGN.md`, not a newly reproduced hardware failure. The source-level interleaving is: old ack sets Idle; another dispatch sets NeedAck and Held; old finalize clears Held. Whether an ordinary wired level interrupt can enter that window depends on the controller's masking and pending-delivery guarantees. Synthetic dispatch can express it; the current tests do not force the window before finalize.
 
-Resolved by owner-state revalidation under L1 -> L2. Deterministic port-ack and wait-as-ack tests inject a new interrupt before completion; removing the readiness gate fails both assertions and restoring it passes. Merely renaming finalize to complete does not fix it. Preserve L1 -> L2: calling into the line while holding L2 would deadlock against dispatch. Linux's `irq_finalize_oneshot()` rechecks RUNTHREAD; its exact algorithm cannot be copied without accounting for ours holding L1 across callbacks. The user must write the concurrency argument before a replacement protocol is selected.
+Resolved by owner-state revalidation under L1 -> L2. Deterministic port-ack and wait-as-ack tests inject a new interrupt before completion; removing the readiness gate fails both assertions and restoring it passes. Merely renaming finalize to complete does not fix it. Preserve L1 -> L2: calling into the line while holding L2 would deadlock against dispatch. Linux's `irq_finalize_oneshot()` rechecks RUNTHREAD; its exact algorithm cannot be copied without accounting for ours holding L1 across callbacks. The user suspended teaching arguments; the engineering invariant and counterfactual proof are recorded in DESIGN.md.
 
 ### M3. Owning storage is represented by copyable views
 
@@ -53,7 +53,7 @@ The current call sites manually maintain the convention, so this review does not
 
 Linux's `handle_edge_irq()` acknowledges before its event loop; `handle_level_irq()` masks and acknowledges; `handle_fasteoi_irq()` uses an EOI-oriented controller protocol. Ours's Edge flow simply runs callbacks then sends EOI. The shared name does not imply Linux's pending/replay guarantees.
 
-Treat current support as wired sources with synchronous masking and end-on-the-receiving-CPU semantics. Before adding another controller, make its supported dispatch protocol explicit and reject incompatible bindings. Do not claim GIC, PLIC, or MSI support from the presence of a function table alone. This is an extension hazard, not evidence that today's IO-APIC sequence is broken; irq-multi-arch D6 and D7 remain open.
+Resolved by explicit Eoi/AckEoi and synchronous-mask contracts, validated before binding; 49 controller checks cover both protocols over both electrical modes. Current support remains wired sources with synchronous masking and end-on-the-receiving-CPU semantics. Before adding another controller, make its supported dispatch protocol explicit and reject incompatible bindings. Do not claim GIC, PLIC, or MSI support from the presence of a function table alone. This is an extension hazard, not evidence that today's IO-APIC sequence is broken; irq-multi-arch D6 and D7 remain open.
 
 ### M5. Public interfaces expose three copies of one control surface
 

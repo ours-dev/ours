@@ -139,9 +139,6 @@ auto is_masked_for_test(VIrqNum const virqnum) -> ktl::Result<bool> {
     return with_line(*get_domain_registry(), virqnum, [&](Line &line) { return line.is_masked(); });
 }
 
-auto set_affinity(VIrqNum, CpuMask const &) -> Status {
-    return Status::NotSupported;
-}
 
 auto virq_of_domain(DomainId const id, HIrqNum const hirqnum) -> VIrqNum {
     // One read of the directory, and the answer is a plain number: good after

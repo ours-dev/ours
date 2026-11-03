@@ -52,6 +52,9 @@ auto Line::init(ControllerOps const &chip, void *const context) -> Status {
     if (m_source.chip) {
         return Status::BadState;
     }
+    if (!chip.is_valid()) {
+        return Status::InvArgs;
+    }
     m_source.chip = &chip;
     m_source.platform_data = context;
 
@@ -62,7 +65,7 @@ auto Line::init(ControllerOps const &chip, void *const context) -> Status {
     if (chip.trigger_mode) {
         trigger = chip.trigger_mode(m_source);
     }
-    select_flow_locked(trigger);
+    m_trigger = trigger;
     return Status::Ok;
 }
 
@@ -178,7 +181,7 @@ auto Line::attach(Registration &action, ustl::Option<LineMode> const mode)
         chip->mask(m_source);
         trigger = chip->trigger_mode(m_source);
     }
-    select_flow_locked(trigger);
+    m_trigger = trigger;
 
     link_locked(action, flags);
     return ustl::ok(trigger);
@@ -203,18 +206,10 @@ auto Line::check_registration(Registration const &action) const -> Status {
         return Status::Ok;
     }
     auto const *const chip = m_source.chip;
-    if (!chip || !chip->mask || !chip->unmask) {
+    if (!chip || !chip->mask || !chip->unmask || chip->masking != Masking::Synchronous) {
         return Status::NotSupported;
     }
     return Status::Ok;
-}
-
-auto Line::select_flow_locked(TriggerMode const trigger) -> void {
-    if (trigger == TriggerMode::Level) {
-        m_flow = Flow::FastEoi;
-    } else {
-        m_flow = Flow::Edge;
-    }
 }
 
 /// The first action decides whether the line shares; one that joins later
@@ -391,7 +386,7 @@ namespace {
 /// stays off through callbacks even when a test dispatches from thread context.
 auto Line::handle_irq(Eoi const eoi) -> IrqReturn {
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_lock};
-    auto const result = run_flow(m_flow, m_registrations, eoi);
+    auto const result = dispatch_locked(eoi);
 
     // An interrupt no action claimed is counted per line; WakeThread claims
     // it as Handled does. A line whose actions keep answering None is only
@@ -403,75 +398,21 @@ auto Line::handle_irq(Eoi const eoi) -> IrqReturn {
     return result;
 }
 
-/// The guard is constructed before the flow runs, so it is destroyed after
-/// the flow has returned: the end of interrupt comes after everything the
-/// flow does to the line -- the mask of a line nobody is on, the unmask of a
-/// Oneshot line that is not held -- inside the caller's hold of L1.
-auto Line::run_flow(Flow const flow, Registration::List &actions, Eoi const eoi) -> IrqReturn {
-    EoiGuard const end_of_interrupt{m_source, eoi};
-    switch (flow) {
-        case Flow::Edge:
-            return handle_edge(actions);
-        case Flow::FastEoi:
-            return handle_fasteoi(actions);
+/// Handshake and electrical holding policy are independent. The scope guard
+/// completes even an unclaimed source after any mask or deferred-work update.
+auto Line::dispatch_locked(Eoi const eoi) -> IrqReturn {
+    if (eoi == Eoi::Send && m_source.chip->protocol == DispatchProtocol::AckEoi) {
+        m_source.chip->issue_ack(m_source);
     }
-    unreachable();
-}
-
-/// An edge is one event: once the pin has signalled, nothing raises the line
-/// again until the device signals anew, so the line stays unmasked while its
-/// actions run: an edge that comes meanwhile waits at the controller and is
-/// delivered once this interrupt is ended.
-///
-/// The end of interrupt goes out after the actions, whether or not they
-/// handled the interrupt: the controller delivered it either way, and keeps
-/// it in service until it is ended. L1 is held across the actions, so a
-/// second edge taken on another CPU waits for L1 rather than running beside
-/// them, and ending the interrupt first would gain nothing.
-///
-/// An interrupt that finds nobody on the line masks it: the device that sent
-/// it may keep sending, each edge an interrupt nobody handles, and the line
-/// stays quiet until an owner attaches and unmasks it. The end of interrupt
-/// goes out all the same; the controller delivered the interrupt either way.
-///
-/// Oneshot is ignored here, and the line is never held: an edge raises
-/// nothing again until the device signals anew, so there is nothing to hold
-/// off while a thread services the device, and a masked edge pin would drop
-/// the edges that came meanwhile, which nothing replays.
-auto Line::handle_edge(Registration::List &actions) -> IrqReturn {
-    if (actions.empty()) {
+    EoiGuard const completion{m_source, eoi};
+    if (m_registrations.empty()) {
         mask_unclaimed();
         return IrqReturn::None;
     }
-    return notify_all(actions);
-}
-
-/// A level pin stays asserted until its device is serviced, and the one end of
-/// interrupt after the actions is what tells the controller the line was
-/// serviced: on the IO-APIC it clears the pin's Remote IRR, and a pin still
-/// asserted then delivers again at once.
-///
-/// So a level interrupt that finds nobody on the line must mask it before it
-/// is ended: left unmasked, the pin would raise the same interrupt again the
-/// moment it is ended, for as long as its device holds it asserted, a storm
-/// that nobody handles and nothing stops.
-///
-/// A Oneshot line is held masked across its thread's work: see
-/// handle_oneshot_locked().
-///
-/// With an action that is not Oneshot, the steps are handle_edge()'s: the
-/// action services its device in its handler, before the end of interrupt,
-/// or keeps the line quiet itself. An interrupt object, whose driver
-/// services the device long after the handler, says Oneshot instead.
-auto Line::handle_fasteoi(Registration::List &actions) -> IrqReturn {
-    if (actions.empty()) {
-        mask_unclaimed();
-        return IrqReturn::None;
+    if (m_trigger == TriggerMode::Level && is_oneshot_locked()) {
+        return handle_oneshot_locked();
     }
-    if (is_oneshot_locked()) {
-        return handle_oneshot_locked(actions);
-    }
-    return notify_all(actions);
+    return notify_all(m_registrations);
 }
 
 /// The line is masked before the action runs. The action's handler answers
@@ -491,12 +432,12 @@ auto Line::handle_fasteoi(Registration::List &actions) -> IrqReturn {
 /// Mask, actions, unmask and end of interrupt all run under the one hold of
 /// L1, which is what keeps finalize_oneshot() and detach(), which take it
 /// too, from landing between the check of held and the unmask.
-auto Line::handle_oneshot_locked(Registration::List &actions) -> IrqReturn {
+auto Line::handle_oneshot_locked() -> IrqReturn {
     // check_registration() let the action on only with a chip that masks and
     // unmasks.
     auto const &chip = *m_source.chip;
     chip.mask(m_source);
-    auto const result = notify_all(actions);
+    auto const result = notify_all(m_registrations);
     if (result == IrqReturn::WakeThread) {
         set_held_locked(true);
     }
@@ -590,7 +531,7 @@ auto Line::configure(TriggerMode const trigger, Polarity const polarity) -> Stat
     // The flow follows the mode only once the chip has taken it: a refused
     // configure leaves the pin, and so the flow, as they were.
     if (status == Status::Ok) {
-        select_flow_locked(trigger);
+        m_trigger = trigger;
     }
     return status;
 }
@@ -709,9 +650,9 @@ auto Line::is_kernel_owned() -> bool {
     return !!(m_flags & LineFlags::Permanent);
 }
 
-auto Line::flow() -> Flow {
+auto Line::dispatch_trigger() -> TriggerMode {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-    return m_flow;
+    return m_trigger;
 }
 
 } // namespace ours::irq

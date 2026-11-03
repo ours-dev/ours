@@ -1064,6 +1064,8 @@ namespace {
         auto *const object = new (mm::GAF_KERNEL) RecordingInterrupt();
         std::array<HIrqNum, 1> const numbers{HIrqNum{9}};
         constexpr irq::ControllerOps NO_OP_CHIP = {
+            .protocol = irq::DispatchProtocol::Eoi,
+            .masking = irq::Masking::Synchronous,
             .mask = [](irq::ControllerSource const &) -> void {},
             .issue_eoi = [](irq::ControllerSource const &) -> void {},
             .name = "interrupt-test"};

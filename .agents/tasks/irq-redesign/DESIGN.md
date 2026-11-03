@@ -105,9 +105,15 @@ with_line(source, id, operation) owns the IRQ RCU scope, invokes source.find_lin
 
 ### Controller protocol
 
-Current support is the established IO-APIC contract: synchronous masking and receiving-CPU EOI after callbacks, with level Oneshot held masked until completion. Edge/Level describes electrical signaling; it must not imply that every controller has the same acknowledgement or completion sequence.
+Electrical trigger and receiving-CPU handshake are separate. Line caches TriggerMode under L1 to decide whether a deferred level source must stay masked; the duplicate Flow enum and separate Edge/FastEoi handler bodies are removed. ControllerOps declares DispatchProtocol::Eoi or AckEoi. Eoi completes after callbacks; AckEoi acknowledges the known source before callbacks and completes afterward. Claim reads that identify a source remain in the controller entry. AckEoi requires acknowledgment to retain the in-service state until EOI; a mask-before-ack controller or one needing a claim token is not supported by this protocol. A new protocol must define and test that sequence explicitly.
 
-Before another controller is bound, its dispatch protocol must be stated and checked against the line flow. The design must distinguish electrical mode from the controller's acknowledgement/completion needs. Whether that becomes a small protocol enum, an internal flow selection supplied by the adapter, or a narrower ControllerOps contract is deferred under D3. Reserved hooks remain reserved; their presence is not evidence of support.
+Binding validates the declaration, mandatory mask/EOI, absence of an unused ACK on Eoi and presence of ACK on AckEoi. Synthetic delivery performs neither ACK nor EOI. All real source paths, including unclaimed and held lines, complete on the receiving CPU under L1. Completion of deferred work never acknowledges or ends again.
+
+Masking::Synchronous explicitly promises that delivery is stopped before mask returns. Deferred registration requires this promise and mask/unmask hooks; bare pointer presence is insufficient. Unspecified masking remains valid for ordinary handlers. Unknown protocols/capabilities fail before binding. IO-APIC declares Eoi with synchronous masking; fake adapters verify both handshakes independently over Edge and Level. No GIC, PLIC or MSI support is claimed.
+
+Unused startup, dump and affinity hooks are removed instead of advertising unimplemented behavior. The public affinity stub and its ignored timer call are removed; timer routing remains as established by the platform. The dead IO-APIC EOI-as-ACK adapter is removed and never enters the new AckEoi protocol.
+
+Compared alternatives: adapter-supplied arbitrary flow callbacks move shared masking and lifetime invariants out of Line; a full pending/replay state machine has no demonstrated current requirement; deriving handshake from Edge/Level silently conflates independent facts. A small validated protocol enum keeps these costs bounded and leaves future sequences local to the controller contract.
 
 ### References and deliberate differences
 
@@ -131,7 +137,7 @@ Before another controller is bound, its dispatch protocol must be stated and che
 |---|---|---|---|---|
 | D1. Object vocabulary and domain ownership | (a) keep genirq names and hide the current machinery, with one internal domain lifetime owner; (b) Line, Registration, Domain and ControllerOps, with Domain owning mapping, storage and retirement | (b), for explicit objects and a smaller caller Interface; retain genirq counterparts in documentation | Not supplied | (b), 2026-11-03: the user answered "B" |
 | D2. Deferred completion invariant | Generation-bearing completion; owner-state revalidation; controller-specific exclusion | Owner-state revalidation under L1 -> L2 | Waived: the user suspended teaching exercises | Implemented after delegated engineering analysis, 2026-11-03; deterministic tests reject the old behavior |
-| D3. Controller protocol selection | A validated protocol enum; adapter-selected internal flow; a deliberately narrow wired-controller contract | Compare only when the concrete Interface is reviewed; preserve current x86 behavior now | Deferred until D2 is reviewed | |
+| D3. Controller protocol selection | A validated protocol enum; adapter-selected internal flow; a deliberately narrow wired-controller contract | Validated Eoi/AckEoi protocol and explicit synchronous-mask capability | Waived: teaching exercises suspended | Implemented after engineering comparison, 2026-11-03 |
 
 D1 is decided and its object vocabulary is migrated. The full six-part goal and current evidence are tracked in STATUS.md. The user has suspended learning exercises; D2 and D3 are engineering work, not user-input gates.
 

@@ -46,6 +46,8 @@ namespace {
     static_assert(!std::is_move_constructible_v<Domain>);
 
     constexpr irq::ControllerOps CONTROLLER = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = [](irq::ControllerSource const &) -> void {},
         .issue_eoi = [](irq::ControllerSource const &) -> void {},
         .name = "irq-domain-test",

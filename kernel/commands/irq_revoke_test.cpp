@@ -115,6 +115,8 @@ namespace {
     auto no_eoi(irq::ControllerSource const &) -> void {}
 
     constexpr irq::ControllerOps CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = count_mask,
         .unmask = count_unmask,
         .configure = count_configure,
@@ -126,6 +128,8 @@ namespace {
     /// The same over a pin that signals a level, so its lines run the level
     /// flow, which holds a Oneshot line masked.
     constexpr irq::ControllerOps LEVEL_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = count_mask,
         .unmask = count_unmask,
         .configure = count_configure,

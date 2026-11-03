@@ -217,6 +217,8 @@ namespace {
     /// send. It cannot say how its pin signals, so its lines run the edge
     /// flow.
     constexpr irq::ControllerOps COUNTING_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = count_mask,
         .issue_eoi = count_eoi,
         .name = "irq-test",
@@ -225,6 +227,8 @@ namespace {
     /// The counting chip, with a pin's mode and mask bit as well: its lines
     /// take their flow from PIN_TRIGGER, and configure() sets it.
     constexpr irq::ControllerOps PIN_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = count_mask,
         .unmask = pin_unmask,
         .configure = pin_configure,
@@ -235,12 +239,16 @@ namespace {
 
     /// A chip that cannot end an interrupt.
     constexpr irq::ControllerOps NO_EOI_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = count_mask,
         .name = "irq-test",
     };
 
     /// A chip that cannot mask.
     constexpr irq::ControllerOps NO_MASK_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .issue_eoi = count_eoi,
         .name = "irq-test",
     };
@@ -569,8 +577,8 @@ namespace {
     }
 
     /// Which flow a line runs, for the log.
-    auto flow_name(irq::Flow const flow) -> char const * {
-        if (flow == irq::Flow::FastEoi) {
+    auto flow_name(irq::TriggerMode const flow) -> char const * {
+        if (flow == irq::TriggerMode::Level) {
             return "fasteoi";
         }
         return "edge";
@@ -591,16 +599,16 @@ namespace {
             verdict(tally, false, "make the lines for flow selection");
             return;
         }
-        auto const bound_level = level_line->flow();
-        auto const bound_edge = line->flow();
-        auto const bound_modeless = modeless_line->flow();
+        auto const bound_level = level_line->dispatch_trigger();
+        auto const bound_edge = line->dispatch_trigger();
+        auto const bound_modeless = modeless_line->dispatch_trigger();
         delete level_line;
         delete modeless_line;
 
         auto const to_level = line->configure(irq::TriggerMode::Level, irq::Polarity::ActiveLow);
-        auto const after_level = line->flow();
+        auto const after_level = line->dispatch_trigger();
         auto const to_edge = line->configure(irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
-        auto const after_edge = line->flow();
+        auto const after_edge = line->dispatch_trigger();
 
         // A configure refused because someone is on the line changes neither
         // the pin nor the flow.
@@ -609,23 +617,23 @@ namespace {
             {.handle = &probe_handler}, &probe, irq::IrqFlags::None, "irq-test"};
         auto const occupied = line->attach(action);
         auto const refused = line->configure(irq::TriggerMode::Level, irq::Polarity::ActiveLow);
-        auto const after_refused = line->flow();
+        auto const after_refused = line->dispatch_trigger();
         auto const left = line->detach(action);
 
         auto const level_mode = irq::LineMode{irq::TriggerMode::Level, irq::Polarity::ActiveHigh};
         auto const edge_mode = irq::LineMode{irq::TriggerMode::Edge, irq::Polarity::ActiveHigh};
         auto const level_attach = line->attach(action, ustl::some(level_mode));
-        auto const after_level_attach = line->flow();
+        auto const after_level_attach = line->dispatch_trigger();
         auto const level_detach = line->detach(action);
         auto const edge_attach = line->attach(action, ustl::some(edge_mode));
-        auto const after_edge_attach = line->flow();
+        auto const after_edge_attach = line->dispatch_trigger();
         auto const edge_detach = line->detach(action);
         // The pin turned level behind the line's back, as the platform
         // programs pins without going through a line: an attach that reads
         // the mode takes the flow from what it read.
         PIN_TRIGGER.store(irq::TriggerMode::Level, std::memory_order_relaxed);
         auto const read_attach = line->attach(action, ustl::none());
-        auto const after_read_attach = line->flow();
+        auto const after_read_attach = line->dispatch_trigger();
         auto const read_detach = line->detach(action);
         drop_from(*line, action);
         delete line;
@@ -633,27 +641,28 @@ namespace {
 
         log::info("irq.test:   bound: a level pin runs {}, an edge pin {}, a chip with no mode {}",
                   flow_name(bound_level), flow_name(bound_edge), flow_name(bound_modeless));
-        verdict(tally, bound_level == irq::Flow::FastEoi && bound_edge == irq::Flow::Edge,
+        verdict(tally,
+                bound_level == irq::TriggerMode::Level && bound_edge == irq::TriggerMode::Edge,
                 "a line bound to its chip runs the flow of how its pin signals");
-        verdict(tally, bound_modeless == irq::Flow::Edge,
+        verdict(tally, bound_modeless == irq::TriggerMode::Edge,
                 "a chip that cannot say how its pin signals gives the edge flow");
         verdict(tally,
-                to_level == Status::Ok && after_level == irq::Flow::FastEoi &&
-                    to_edge == Status::Ok && after_edge == irq::Flow::Edge,
+                to_level == Status::Ok && after_level == irq::TriggerMode::Level &&
+                    to_edge == Status::Ok && after_edge == irq::TriggerMode::Edge,
                 "configure moves the line's flow with its mode, there and back");
         verdict(tally,
                 occupied == Status::Ok && refused == Status::AlreadyBound &&
-                    after_refused == irq::Flow::Edge && left == Status::Ok,
+                    after_refused == irq::TriggerMode::Edge && left == Status::Ok,
                 "a configure refused on an occupied line leaves its flow");
         verdict(tally,
                 level_attach.is_ok() && *level_attach == irq::TriggerMode::Level &&
-                    after_level_attach == irq::Flow::FastEoi && level_detach == Status::Ok &&
+                    after_level_attach == irq::TriggerMode::Level && level_detach == Status::Ok &&
                     edge_attach.is_ok() && *edge_attach == irq::TriggerMode::Edge &&
-                    after_edge_attach == irq::Flow::Edge && edge_detach == Status::Ok,
+                    after_edge_attach == irq::TriggerMode::Edge && edge_detach == Status::Ok,
                 "attach with a mode gives the line that mode's flow");
         verdict(tally,
                 read_attach.is_ok() && *read_attach == irq::TriggerMode::Level &&
-                    after_read_attach == irq::Flow::FastEoi && read_detach == Status::Ok,
+                    after_read_attach == irq::TriggerMode::Level && read_detach == Status::Ok,
                 "attach without one reads the mode and gives the line its flow");
     }
 
@@ -699,8 +708,8 @@ namespace {
             verdict(tally, false, "make the lines for the flows' masks");
             return;
         }
-        auto const flows_ok =
-            level_line->flow() == irq::Flow::FastEoi && edge_line->flow() == irq::Flow::Edge;
+        auto const flows_ok = level_line->dispatch_trigger() == irq::TriggerMode::Level &&
+                              edge_line->dispatch_trigger() == irq::TriggerMode::Edge;
 
         auto const level_unclaimed = dispatch_on_pin(*level_line, irq::Eoi::Send);
         auto const edge_unclaimed = dispatch_on_pin(*edge_line, irq::Eoi::Send);

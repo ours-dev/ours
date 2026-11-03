@@ -5,6 +5,8 @@
 **Severity**
 Medium: wrong, but only on an IOAPIC without an EOI register. The QEMU this project boots (`prebuilt/qemu`, `-M q35`) emulates version 0x20 by default, which has one. Off the path since irq-genirq step 3 (2026-10-05): a line's interrupt is ended by the IO-APIC chip's `issue_eoi`, which is `ioapic_eoi()`, the local APIC's EOI, sent on by the local APIC to every IO-APIC whatever its version; `ioapic_issue_eoi()` is reached only through the chip's `issue_ack`, which nothing calls.
 
+Current reachability, 2026-11-03: The unused ioapic_issue_eoi/ioapic_issue_ack adapter path has been removed. The live controller explicitly declares an Eoi handshake using the receiving CPU's local APIC. This item now concerns only the unused low-level IoApic::issue_eoi API; no live IRQ dispatch reaches it. Its old diagnosis below describes the removed adapter.
+
 **Symptom**
 Latent, cannot be triggered today. On an IOAPIC whose version is below 0x20, a level-triggered interrupt routed through it fires once and then never again: the pin's Remote IRR bit stays set, and the IOAPIC delivers nothing more on that pin.
 
@@ -24,6 +26,8 @@ A QEMU boot with an IOAPIC forced below version 0x20 (QEMU's `ioapic` device has
 
 **Severity**
 Medium: wrong, but not reached today. Nothing calls `ioapic_issue_eoi()`. Since irq-genirq step 3 (2026-10-05) every line's flow ends its interrupt through the IO-APIC chip's `issue_eoi`, but that slot holds `ioapic_eoi()`, the local APIC's EOI (`kernel/arch/x86/apic/io_apic.cpp`); `ioapic_issue_eoi()` is reached only through the chip's `issue_ack`, which nothing calls.
+
+Current reachability, 2026-11-03: The unused ioapic_issue_eoi/ioapic_issue_ack adapter path has been removed. The live controller explicitly declares an Eoi handshake using the receiving CPU's local APIC. This item now concerns only the unused low-level IoApic::issue_eoi API; no live IRQ dispatch reaches it. Its old diagnosis below describes the removed adapter.
 
 **Symptom**
 Latent, cannot be triggered today. Once a level-triggered line's EOI goes through `ioapic_issue_eoi()`, the IO-APIC clears Remote IRR on whichever redirection entry has the GSI as its vector, if any, not on the line's own entry. The line then takes one interrupt and never another. Under the static `32+GSI` vectors of `.agents/tasks/microkernel-interrupts/DESIGN.md` (D7), the value written is never the line's own vector.

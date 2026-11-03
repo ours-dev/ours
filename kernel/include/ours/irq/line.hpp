@@ -128,7 +128,7 @@ class Line final {
     /// marked dying, and not Permanent.
     auto revoke() -> void;
 
-    /// Runs the line's flow, handle_edge() or handle_fasteoi(), once for
+    /// Runs the controller handshake and electrical holding policy once for
     /// each interrupt on the line, in interrupt context: every action's
     /// handler, then, if `eoi` says Send, the end of interrupt through the
     /// line's chip. Answers WakeThread if any action woke its thread, else
@@ -187,7 +187,7 @@ class Line final {
     /// The flow the line runs now. Takes L1, so it reads the flow as a
     /// dispatch would find it: for tests and diagnostics.
     [[nodiscard]]
-    auto flow() -> Flow;
+    auto dispatch_trigger() -> TriggerMode;
 
     /// Whether the line is held for the kernel's lifetime. Takes L1.
     [[nodiscard]]
@@ -232,21 +232,10 @@ class Line final {
     TA_REQUIRES(m_lock)
     auto link_locked(Registration &action, LineFlags flags) -> void;
 
-    /// The flow for a line that signals as `trigger` says. For init(),
-    /// configure() and attach() with a mode, the three places a line's mode
-    /// is learnt or set.
     TA_REQUIRES(m_lock)
-    auto select_flow_locked(TriggerMode trigger) -> void;
-
-    /// Runs the selected controller flow while the line's state is guarded.
+    auto dispatch_locked(Eoi eoi) -> IrqReturn;
     TA_REQUIRES(m_lock)
-    auto run_flow(Flow flow, Registration::List &registrations, Eoi eoi) -> IrqReturn;
-    TA_REQUIRES(m_lock)
-    auto handle_edge(Registration::List &registrations) -> IrqReturn;
-    TA_REQUIRES(m_lock)
-    auto handle_fasteoi(Registration::List &registrations) -> IrqReturn;
-    TA_REQUIRES(m_lock)
-    auto handle_oneshot_locked(Registration::List &registrations) -> IrqReturn;
+    auto handle_oneshot_locked() -> IrqReturn;
     TA_REQUIRES(m_lock)
     auto mask_unclaimed() const -> void;
 
@@ -283,7 +272,7 @@ class Line final {
     sync::SpinLock m_lock;
 
     LineFlags m_flags TA_GUARDED(m_lock);
-    Flow m_flow TA_GUARDED(m_lock) = Flow::Edge;
+    TriggerMode m_trigger TA_GUARDED(m_lock) = TriggerMode::Edge;
 
     /// Written by the constructor and, for its chip, once by init() before
     /// the line is published; read-only from then on, so read without L1.

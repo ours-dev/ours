@@ -195,12 +195,6 @@ auto trigger_mode(VIrqNum virqnum) -> ktl::Result<TriggerMode>;
 [[nodiscard]]
 auto is_masked_for_test(VIrqNum virqnum) -> ktl::Result<bool>;
 
-/// Aims line `virqnum` at the CPUs in `targets`. NotSupported for every line:
-/// no controller moves a line yet, and each line stays on the CPU the platform
-/// aimed it at. The call, including what it returns, is settled by the work of
-/// interrupt-system P4.
-auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
-
 /// The resolver of the user ABI: the virq of the line made for hardware
 /// number `hirqnum` in the domain named `id`; INVALID_V_IRQ_NUM if no such
 /// domain is registered or it holds no such line. interrupt_map asks it with

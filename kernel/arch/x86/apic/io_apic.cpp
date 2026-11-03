@@ -92,11 +92,6 @@ namespace {
         ioapic.unmask_irq(data.hirqnum);
     }
 
-    auto ioapic_startup_irq(irq::ControllerSource const &data) -> Status {
-        ioapic_unmask_irq(data);
-        return Status::Ok;
-    }
-
     /// The vector, delivery mode and destination stay as platform_init_apic()
     /// programmed them: a line's vector is fixed by its GSI. Only how the pin
     /// signals changes. The pin is left masked: a line changes how it
@@ -156,54 +151,15 @@ namespace {
         apic_issue_eoi();
     }
 
-    /// The IO-APIC's own EOI register, an EOI aimed at one IO-APIC rather
-    /// than sent on by the local APIC. Unused: the chip's issue_eoi is
-    /// ioapic_eoi(), and this is reached only through issue_ack, which
-    /// nothing calls. It also writes the GSI where the vector belongs
-    /// (docs/repairs/261003/x86-apic.md, item 2).
-    auto ioapic_issue_eoi(irq::ControllerSource const &data) -> void {
-        auto &ioapic = owner_of(data.hirqnum);
-        Guard<sync::SpinLock, IrqSave> const guard{IOAPIC_LOCK};
-        // NotSupported from an IOAPIC older than version 0x20, which has
-        // no EOI register; the pin's EOI is then simply not sent. Such a
-        // chip needs the entry toggled to edge and back instead, which is
-        // not implemented (docs/repairs/261003/x86-apic.md, item 1).
-        auto _ = ioapic.issue_eoi(data.hirqnum);
-    }
-
-    auto ioapic_issue_ack(irq::ControllerSource const &data) -> void {
-        ioapic_issue_eoi(data);
-    }
-
-    // The platform aims every pin at the boot CPU when it programs it, and
-    // nothing moves one afterwards.
-    auto ioapic_set_affinity(irq::ControllerSource const &, CpuMask const *) -> Status {
-        return Status::NotSupported;
-    }
-
-    /// Reads only what reset_mmio() cached, no register: no lock.
-    auto ioapic_dump() -> void {
-        for (auto &ioapic: IOAPICS) {
-            log::info("IoApic[{}]:", ioapic.id());
-            log::info("  version: {}", ioapic.version());
-            log::info("  Addr: 0x{:X}", ioapic.phys_base());
-            log::info("  MMIO: 0x{:X}", ioapic.virt_base());
-            log::info("  GBI base: {}", ioapic.gsi_base());
-            log::info("  Max local IRQ: {}\n", ioapic.max_local_irqnum());
-        }
-    }
-
     constexpr irq::ControllerOps IOAPIC_CHIP = {
-        .startup = ioapic_startup_irq,
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = ioapic_mask_irq,
         .unmask = ioapic_unmask_irq,
         .configure = ioapic_configure_irq,
         .trigger_mode = ioapic_trigger_mode,
         .is_masked = ioapic_is_masked,
         .issue_eoi = ioapic_eoi,
-        .issue_ack = ioapic_issue_ack,
-        .set_affinity = ioapic_set_affinity,
-        .dump = ioapic_dump,
         .name = "IO-APIC",
     };
     std::array<arch::IoApicIsaOverride, arch::NUM_ISA_IRQS> IOAPIC_ISA_OVERRIDES;

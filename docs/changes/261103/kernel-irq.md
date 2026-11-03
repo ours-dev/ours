@@ -389,3 +389,43 @@ None. Teaching exercises are suspended for this task.
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task.
+
+## Separate electrical holding policy from controller handshakes (2026-11-03)
+
+**Files**
+- `kernel/include/ours/irq/controller.hpp`, `types.hpp` — explicit validated handshake and deferred-mask contract; remove unused hooks and the duplicate Flow encoding.
+- `kernel/include/ours/irq/line.hpp`, `kernel/kernel/irq/line.cpp` — one guarded dispatch with ACK before notification and EOI after the final line-state update.
+- `kernel/arch/x86/apic/io_apic.cpp`, adapter fixtures and controller tests — declare contracts and verify the two protocols independently over Edge/Level.
+- IRQ public facade and `kernel/kernel/time/tick_device.cpp` — remove the unsupported affinity API and its ignored no-op caller.
+- `docs/repairs/261003/x86-apic.md` — clarify that the removed EOI-as-ACK adapter no longer reaches the separately tracked low-level API issues.
+
+**Symptom**
+A line's electrical mode selected a Flow named Edge or FastEoi, but both silently assumed the same receiving-CPU completion protocol. An unused issue_ack field advertised no defined behavior; the IO-APIC filled it with a directed EOI operation. Bare mask/unmask pointer presence was treated as sufficient proof of deferred holding.
+
+**Cause**
+Edge versus Level describes the source signal. Acknowledge and end-of-interrupt describe controller state transitions. Encoding both concepts through an electrical flow label allowed an adapter with different handshake requirements to bind successfully and then be driven incorrectly. A function pointer proves an operation exists, not when its hardware effect has completed.
+
+**Change**
+ControllerOps now declares DispatchProtocol::Eoi or AckEoi and is_valid checks its mandatory and unused hooks before binding. Eoi performs notification then EOI; AckEoi performs a known-source ACK, notification, then EOI. The existing scope guard completes all claimed and unclaimed paths after their last masking update. Synthetic Eoi::Skip performs neither handshake operation. Claim reads that identify the source remain in the controller entry. This AckEoi contract requires ACK to retain the in-service state until EOI; mask-before-ACK and claim-token protocols need their own future declaration and tests.
+
+The old `m_flow = Flow::FastEoi` mapping becomes guarded `m_trigger = TriggerMode::Level`. Dispatch chooses deferred holding only from Level and Oneshot; handshake comes independently from the immutable controller protocol. Two nearly identical flow handlers and an extra enum are removed. Deferred registrations additionally require Masking::Synchronous, meaning mask has stopped delivery before returning. Unspecified masking accepts ordinary registrations but refuses deferred holds even if both pointers exist.
+
+Unused startup/dump/affinity hooks are removed. The IO-APIC explicitly declares Eoi and synchronous masking; its dead directed-EOI-as-ACK adapter is removed. The public affinity stub and the timer's ignored call are removed without changing platform-established routing. Arbitrary adapter flow callbacks were rejected because they move shared holding/lifetime invariants out of Line; a general pending/replay machine was rejected because no current requirement needs it. DESIGN.md records the full comparison.
+
+**Reference**
+None, this project's own protocol decomposition. Existing reference comparisons in DESIGN.md distinguish controller acknowledgment from electrical trigger and do not claim that similarly named reference flows have identical guarantees.
+
+**Verification**
+All 15 changed C++ files ran LLVM 23 formatting and clang-tidy; the new nodiscard diagnostic was fixed. Both images boot: dbg 46 passed, 5 skipped, 0 failed; rel 44 passed, 8 skipped, 0 failed, 7/7 required. All 161 host tests pass. All nine IRQ suites pass; irqcontroller.test increases from 18 to 49 checks (32 contract checks added, one unsupported-stub check removed). Its ordered event traces cover Eoi/AckEoi over Edge/Level, handled/unclaimed paths, synthetic delivery, deferred readiness and malformed declarations. Other counts remain irq.test 78, irqrevoke.test 37, irqregistry.test 85, irqdomain.test 87, irqrcu.test 34, interrupt.test 67, interruptline.test 83 and pinlines.test 28. Performance was not measured.
+
+**Deliberately not done**
+No GIC, PLIC, MSI, asynchronous deferred holding, dynamic affinity or physical timing claim. The fake AckEoi adapter proves the generic operation sequence, not compatibility with an unimplemented hardware controller. Low-level directed IO-APIC completion remains outside the live generic path and is tracked separately.
+
+**How it was found**
+The review compared electrical flow selection with every controller hook caller. It found two nearly identical flow bodies, unused hooks and a capability inferred from pointer presence. Event traces test the actual hook order rather than copying the implementation's branch conditions.
+
+**The user's prediction**
+None. Teaching exercises are suspended for this task.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.
