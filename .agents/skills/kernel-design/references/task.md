@@ -80,6 +80,15 @@ action says Oneshot and a level line's flow masks it, and every write of a
 line's mask, `irq::mask()` and `irq::unmask()` included, is made under the
 line's lock L1.
 
+- Accepted rewrite target, 2026-11-03 (irq-redesign D1 (b), the user chose
+  "B"): `Line` owns line state and dispatch, `Registration` is the
+  caller-owned callback binding, `Domain` owns mapping, storage, publication
+  and retirement, and `ControllerOps` names the hardware-operation table.
+  This consolidates one lifetime and hides the descriptor table and RCU
+  pointers from callers. The code still uses `Desc`, `Action`, `Chip` and
+  `Data`; the existing behavior and locking below remain binding until a
+  separate decision changes them. Concrete interfaces and the completion
+  handshake are still Proposed in `.agents/tasks/irq-redesign/DESIGN.md`.
 - A line the kernel holds for its own use is one an action that says
   Permanent is on (the legacy timer's; `irq::is_kernel_owned()`). A kernel
   driver that takes a line for its own uses a Permanent action, and so keeps

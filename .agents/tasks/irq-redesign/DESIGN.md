@@ -9,7 +9,7 @@ The user asked to review kernel/irq and redesign it before rewriting implementat
 
 There is real design to preserve: one owner of a level line's Oneshot mask, a callback-lifetime barrier at detach, no reused virqs, root-controller ownership of unmatched EOI, and IRQ RCU reclamation. The structural problem is that Domain means a mapping, DescTable owns storage and forwards controls, DomainRegistry owns the lifetime, and callers can see all three. Short generic names and integer aliases make this harder to understand.
 
-This document is the first design cut, for the module's objects and seams. It is a candidate for discussion, not an accepted specification or an implementation roadmap. The completion protocol and controller protocol remain explicitly unresolved.
+This document is the first design cut, for the module's objects and seams. The user accepted D1 (b) on 2026-11-03: explicit Line, Registration, Domain and ControllerOps, with Domain owning mapping, storage and retirement. Concrete interfaces, the completion protocol and the controller protocol remain Proposed; this acceptance does not authorize implementation.
 
 ## Goals and non-goals
 
@@ -25,7 +25,7 @@ This document is the first design cut, for the module's objects and seams. It is
 
 ### Objects
 
-The recommended vocabulary below is provisional until D1 is decided.
+D1 (b)'s object vocabulary and consolidated domain ownership were accepted on 2026-11-03. The detailed Interfaces below remain subject to D2 and D3.
 
 | Object | What it is | Owns | Exposes to |
 |---|---|---|---|
@@ -78,6 +78,24 @@ Two different lifetimes remain explicit: detach protects the callback and its co
 
 D2 is a blocking design question, not a selected locking mechanism. The user first writes which invariant completion protects, the concurrent actors, and the worst old-ack/new-dispatch ordering. Only then should we compare a generation-bearing completion, revalidation under the existing lock order, or a proof that supported delivery excludes the ordering. No choice is made here.
 
+### Completion exercise for D2
+
+Use the bound-port ack path: the old packet has been consumed and no coalesced timestamp is pending.
+
+Objects:
+
+- Line::Held says the deferred level line must remain masked; L1 protects it.
+- InterruptDispatcher::NeedAck says a delivered interrupt still needs the driver's acknowledgement; L2 protects it.
+- Ack clears the object's debt under L2, drops L2, and then completes the line under L1. Dispatch takes L1 and then L2. No replacement lock or protocol is selected yet.
+
+Events to reason about, assuming a new dispatch can enter the gap (a synthetic dispatch can express this; physical-controller admission is a separate question):
+
+1. An old ack clears NeedAck under L2, then releases L2.
+2. A new dispatch acquires L1 then L2 and creates a new NeedAck and Held.
+3. The old ack acquires L1 and attempts to clear Held and unmask the line.
+
+The user writes the invariant relating outstanding work to the line's mask, identifies the actors that modify those facts, and judges whether the old ack may clear Held in this ordering. The answer is recorded before alternatives are analyzed.
+
 ### Controller protocol
 
 Current support is the established IO-APIC contract: synchronous masking and receiving-CPU EOI after callbacks, with level Oneshot held masked until completion. Edge/Level describes electrical signaling; it must not imply that every controller has the same acknowledgement or completion sequence.
@@ -104,11 +122,11 @@ Before another controller is bound, its dispatch protocol must be stated and che
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. Object vocabulary and domain ownership | (a) keep genirq names and hide the current machinery, with one internal domain lifetime owner; (b) Line, Registration, Domain and ControllerOps, with Domain owning mapping, storage and retirement | (b), for explicit objects and a smaller caller Interface; retain genirq counterparts in documentation | Pending: one line choosing a or b and predicting what caller knowledge disappears | |
-| D2. Deferred completion invariant | Account for the old-ack/new-dispatch window by an event-aware protocol, revalidation, or a controller-specific exclusion proof | No mechanism selected; user writes the invariant and worst interleaving first | Pending after D1 | |
-| D3. Controller protocol selection | A validated protocol enum; adapter-selected internal flow; a deliberately narrow wired-controller contract | Compare only when the concrete Interface is reviewed; preserve current x86 behavior now | Pending after D1 | |
+| D1. Object vocabulary and domain ownership | (a) keep genirq names and hide the current machinery, with one internal domain lifetime owner; (b) Line, Registration, Domain and ControllerOps, with Domain owning mapping, storage and retirement | (b), for explicit objects and a smaller caller Interface; retain genirq counterparts in documentation | Not supplied | (b), 2026-11-03: the user answered "B" |
+| D2. Deferred completion invariant | Account for the old-ack/new-dispatch window by an event-aware protocol, revalidation, or a controller-specific exclusion proof | No mechanism selected; user writes the invariant and worst interleaving first | Pending: invariant, concurrent actors and worst ordering | |
+| D3. Controller protocol selection | A validated protocol enum; adapter-selected internal flow; a deliberately narrow wired-controller contract | Compare only when the concrete Interface is reviewed; preserve current x86 behavior now | Deferred until D2 is reviewed | |
 
-Only D1 is presented for a decision in this round. D2 and D3 are recorded so the candidate does not silently treat them as solved.
+D1 is decided. D2 is the current design question; D3 remains deferred.
 
 ## Testing and verification
 
@@ -120,7 +138,6 @@ Every implementation increment must run the repository formatter on changed line
 
 ## Open questions
 
-- D1: does the user prefer source-system vocabulary or explicit domain-owned objects?
 - D2: can a new real delivery be admitted between clearing the object's debt and completing the line on each supported controller, and how must synthetic delivery behave?
 - D3: what is the minimal validated controller protocol, independently of electrical trigger mode?
 - Where should trap bookkeeping live so that device-line control no longer exports exception-entry state?

@@ -4,7 +4,7 @@
 
 ## Delivered
 
-Documentation-only review of the IRQ line module and a Proposed first design cut. REVIEW.md records source-backed findings and retained guarantees. DESIGN.md presents candidate objects and Interfaces, with D1 undecided. PLAN.md records this round's scope. No implementation commits or C++ changes were made.
+Documentation-only review of the IRQ line module and a Proposed first design cut. REVIEW.md records source-backed findings and retained guarantees. The user accepted DESIGN.md D1 (b) on 2026-11-03 by answering "B": Line, Registration, Domain and ControllerOps, with Domain owning mapping, storage and retirement. Concrete Interfaces remain Proposed. PLAN.md records this round's scope. No implementation commits or C++ changes were made.
 
 The independently claimable invalid-registration policy defect is recorded in `docs/repairs/261103/kernel-irq.md`. The deferred-completion question remains explicitly open in DESIGN.md and the original irq-genirq design; it is not reported as a reproduced real-device failure.
 
@@ -39,11 +39,20 @@ interruptline.test: ok -- 78 checks
 
 Boot logs: `/var/folders/n_/20ryw2px3052ggtjf0xpsc8h0000gn/T/ours-verify-irq-design-review-96943ff4fb/`. Kernel-suite log: `/var/folders/n_/20ryw2px3052ggtjf0xpsc8h0000gn/T/ours-kshell-irq-design-review-96943ff4fb/dbg.log`.
 
+D1 acceptance recheck on 2026-11-03, using the same isolated output:
+
+```text
+build      ok (out/irq-design-review, 2.5s)
+dbg        PASS  shell finished at 5.8s · 46 passed, 5 skipped, 0 failed · 0 error line(s) · reached: end
+rel        PASS  shell finished at 4.9s · 44 passed, 8 skipped, 0 failed · 7/7 required · 0 error line(s) · reached: end
+host-tests PASS  161 passed, 0 failed · 1.0s
+```
+
 Performance: not measured. Real-controller delivery during the old-ack/new-dispatch window: not verified. Non-x86 controller protocols: not verified.
 
 ## Deviations from the design
 
-None. The design remains Proposed; no strategy or concurrency decision was silently accepted.
+None. D1 was explicitly accepted by the user. The overall design remains Proposed while D2 and D3 are unresolved; no concurrency mechanism was silently selected.
 
 ## Found along the way
 
@@ -53,4 +62,4 @@ None. The design remains Proposed; no strategy or concurrency decision was silen
 
 ## Not done
 
-The user has not decided D1 or supplied the concurrency argument for D2. No implementation plan, rewrite, changed lock, new controller, or performance optimization has been started.
+D1 is decided. The user has not yet supplied the concurrency argument for D2. No implementation plan, rewrite, changed lock, new controller, or performance optimization has been started.
