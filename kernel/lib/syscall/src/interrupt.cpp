@@ -106,7 +106,7 @@ auto interrupt_map(ours::Uandle const resource, u32 const domain, u32 const sour
     }
 
     auto const virq =
-        irq::virq_of_domain(static_cast<irq::DomainId>(domain), static_cast<HardwareIrq>(source));
+        irq::irq_for_source(static_cast<irq::DomainId>(domain), static_cast<HardwareIrq>(source));
     if (virq == IrqId::Invalid) {
         return Status::NoResource;
     }

@@ -34,25 +34,25 @@ class Domain final {
     auto init(ustl::views::Span<HardwareIrq const> sources, ControllerOps const &controller,
               IrqId minimum = IrqId{0}, void *context = nullptr) -> Status;
     [[nodiscard]]
-    auto first_virq() const -> IrqId {
+    auto first_id() const -> IrqId {
         return m_first;
     }
     [[nodiscard]]
     auto num_lines() const -> usize {
-        return m_storage.hwirqs.size();
+        return m_storage.sources.size();
     }
     [[nodiscard]]
     auto contains(IrqId const line) const -> bool {
         return line >= m_first && static_cast<u32>(line) - static_cast<u32>(m_first) < num_lines();
     }
     [[nodiscard]]
-    auto hwirq_limit() const -> usize {
+    auto source_limit() const -> usize {
         return m_storage.lines.size();
     }
     [[nodiscard]]
-    auto virq_of(HardwareIrq source) const -> IrqId;
+    auto irq_for_source(HardwareIrq source) const -> IrqId;
     [[nodiscard]]
-    auto hwirq_of(IrqId line) const -> HardwareIrq;
+    auto source_for_irq(IrqId line) const -> HardwareIrq;
 
     [[nodiscard]]
     auto begin_removal() -> Status;
@@ -81,8 +81,8 @@ class Domain final {
 
   private:
     struct Storage {
-        ktl::Vec<IrqId> virqs;
-        ktl::Vec<HardwareIrq> hwirqs;
+        ktl::Vec<IrqId> ids;
+        ktl::Vec<HardwareIrq> sources;
         ktl::Vec<ustl::Box<Line>> lines;
     };
 

@@ -56,7 +56,7 @@ auto DomainRegistry::register_domain(DomainId const id,
             if (auto const status = claim_locked(id, &index); status != Status::Ok) {
                 return status;
             }
-            floor = m_next_virq;
+            floor = m_next_id;
         }
         auto domain = ustl::Box<Domain>::adopt(new (mm::GAF_KERNEL) Domain());
         if (!domain) {
@@ -80,13 +80,12 @@ auto DomainRegistry::register_domain(DomainId const id,
             if (status == Status::Ok && endpoint.m_domain.read_with_irqs_off() != nullptr) {
                 status = Status::BadState;
             }
-            if (status == Status::Ok && m_next_virq != floor) {
+            if (status == Status::Ok && m_next_id != floor) {
                 raced = true;
             } else if (status == Status::Ok) {
                 auto *const published = entry.as_ptr_mut();
-                m_next_virq =
-                    static_cast<IrqId>(static_cast<usize>(published->domain->first_virq()) +
-                                       published->domain->num_lines());
+                m_next_id = static_cast<IrqId>(static_cast<usize>(published->domain->first_id()) +
+                                               published->domain->num_lines());
                 m_slots[index].entry = std::move(entry);
                 m_slots[index].state = State::Live;
                 endpoint.m_domain.publish(published->domain.as_ptr_mut());
@@ -150,7 +149,7 @@ auto DomainRegistry::unregister_domain(DomainId const id) -> Status {
     return Status::Ok;
 }
 
-auto DomainRegistry::table_of(IrqId const line, task::IrqRcuReadGuard const &guard) const
+auto DomainRegistry::domain_for(IrqId const line, task::IrqRcuReadGuard const &guard) const
     -> Domain * {
     for (auto const &publication: m_published) {
         auto *const entry = publication.read(guard);
@@ -171,13 +170,13 @@ auto DomainRegistry::find(DomainId const id, task::IrqRcuReadGuard const &guard)
     return nullptr;
 }
 
-auto DomainRegistry::virq_of(DomainId const id, HardwareIrq const source,
-                             task::IrqRcuReadGuard const &guard) const -> IrqId {
+auto DomainRegistry::irq_for_source(DomainId const id, HardwareIrq const source,
+                                    task::IrqRcuReadGuard const &guard) const -> IrqId {
     auto *const domain = find(id, guard);
     if (domain == nullptr) {
         return IrqId::Invalid;
     }
-    return domain->virq_of(source);
+    return domain->irq_for_source(source);
 }
 
 auto DomainRegistry::find_line(IrqId const line, task::IrqRcuReadGuard const &guard) const
@@ -185,7 +184,7 @@ auto DomainRegistry::find_line(IrqId const line, task::IrqRcuReadGuard const &gu
     if (line == IrqId::Invalid) {
         return ustl::err(Status::InvArgs);
     }
-    auto *const domain = table_of(line, guard);
+    auto *const domain = domain_for(line, guard);
     if (domain == nullptr) {
         return ustl::err(Status::NoResource);
     }

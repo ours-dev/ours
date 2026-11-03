@@ -11,15 +11,15 @@ struct ControllerOps;
 
 /// Immutable routing identity and instance context, bound before publication.
 struct ControllerSource final {
-    constexpr ControllerSource(HardwareIrq hirq, IrqId virq,
-                               ControllerOps const *controller = nullptr,
-                               void *context = nullptr) noexcept
-        : hirqnum(hirq), virqnum(virq), chip(controller), platform_data(context) {}
+    constexpr ControllerSource(HardwareIrq const source_id, IrqId const irq_id,
+                               ControllerOps const *const controller = nullptr,
+                               void *const context = nullptr) noexcept
+        : source(source_id), id(irq_id), controller(controller), context(context) {}
 
-    HardwareIrq hirqnum;
-    IrqId virqnum;
-    ControllerOps const *chip;
-    void *platform_data;
+    HardwareIrq source;
+    IrqId id;
+    ControllerOps const *controller;
+    void *context;
 };
 
 /// Handshake for a known source on the receiving CPU, independent of whether
@@ -61,7 +61,6 @@ struct ControllerOps final {
     /// AckEoi only: once before callbacks, including an unclaimed source.
     /// It acknowledges this known source without a returned claim token.
     auto (*issue_ack)(ControllerSource const &) -> void = nullptr;
-    char const *name = nullptr;
 
     /// Reject unused or missing handshake hooks before any source is bound.
     [[nodiscard]]

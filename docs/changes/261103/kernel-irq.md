@@ -468,3 +468,42 @@ None. Teaching exercises are suspended for this task.
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task.
+
+## Close the IRQ storage and callback boundaries (2026-11-03)
+
+**Files**
+- `kernel/kernel/irq/line.hpp` — move Line out of the public include tree; construct it from source and identity only.
+- Public IRQ interfaces, private implementation, adapters and fixtures — RegistrationOptions, line_id, irq_for_source(domain, source), source_for_irq and ControllerSource's source/id/controller/context roles.
+- `kernel/include/ours/irq/registration.hpp`, `kernel/kernel/irq/line.cpp` — private handler/revocation invocation, one L1-required notification member and immutable policy.
+- `kernel/arch/x86/apic/local_apic.cpp`, `docs/repairs/261003/x86-apic.md` — retire the unused, invalid XAPIC_CHIP table and close its repair by removing the nonexistent generic binding.
+
+**Symptom**
+Callers could include Line's storage internals and directly invoke a registration callback without entering a line Guard. Line construction accepted initial policy flags that every caller passed as None; line, registration and ops names were stored but never read. Mapping functions still spoke in the removed numeric-alias vocabulary. The unused LAPIC table hardcoded LINT0 for every source and put EOI in an ACK slot.
+
+**Cause**
+The public boundary exposed implementation details without giving callers useful operations. A callback invocation method outside its synchronization owner makes the callback's documented execution context a convention instead of a module property. Duplicated initial-policy inputs also bypass the single attachment policy authority even when today's callers happen to supply None.
+
+**Change**
+Line, Domain and DomainRegistry are private. Line's constructor establishes an empty, unbound line from HardwareIrq and IrqId; existing repository allocation is used directly and Domain immediately adopts Box ownership. The allocation-only factory, initial flags decoder and unused name fields are deleted. Registration takes callbacks, context and RegistrationOptions. Only Line can invoke handler/revocation/readiness callbacks; its notify_locked member requires L1 and all dispatches reach it through the actual Guard. Revocation's callback type is IrqRevocationHandler and its private verb is notify_revoked.
+
+Source metadata is source/id/controller/context. Registration exposes line_id; mapping always names its domain through irq_for_source(domain, source), with source_for_irq as the reverse lookup. The root-only forwarding lookup is removed. Public control comments now state current lifetime, error and execution contracts concisely; historical debugging stories remain in change records.
+
+The unused XAPIC_CHIP object is removed under the task's explicit rejection of meaningless objects. Local APIC timer/IPI handling already uses fixed architecture vectors and specific operations, not this table. Keeping a declaration that could mask the wrong LVT register was rejected as an extension seam; a future generic local-source adapter must provide actual source routing and a validated protocol. All former x86-apic repair items now belong to removed invalid adapters or the already corrected vector-typed API, so the empty repair file is removed.
+
+**Reference**
+None, this project's own ownership and guard boundaries. The former LAPIC repair compared per-vector handling to Zircon apic_timer_mask and the LAPIC exception dispatch path; that existing architectural boundary is retained.
+
+**Verification**
+All 28 changed C++ files ran changed-line formatting and LLVM 23 clang-tidy with no new changed-line diagnostics. Both images boot: dbg 46 passed, 5 skipped, 0 failed; rel 44 passed, 8 skipped, 0 failed, 7/7 required. All 161 host tests and all nine IRQ suites pass at their existing counts. The final diff excludes unrelated offset-field and idle-state names; only IRQ interfaces and their real callers remain. No compatibility headers or old-name aliases remain. Performance was not measured.
+
+**Deliberately not done**
+No new metadata getter is added solely to justify unused labels. No generic LAPIC-source support is advertised. Trap-entry bookkeeping is separated and audited in the next increment; callback behavior and lock granularity remain unchanged here.
+
+**How it was found**
+The final API audit traced every public member to its callers, every stored label to its readers, and callback entry to its owning Guard. Compile and diff review caught incomplete/broad mechanical migrations before verification and commit; unrelated edits were restored.
+
+**The user's prediction**
+None. Teaching exercises are suspended for this task.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.

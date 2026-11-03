@@ -62,7 +62,7 @@ namespace {
     /// Permanent, so nothing ever detaches it.
     // NOLINTNEXTLINE(readability-identifier-naming): UPPER_CASE, as above.
     constinit irq::Registration LEGACY_TIMER_ACTION{
-        {.handle = &timer_interrupt}, &LEGACY_TIMER, irq::IrqFlags::Permanent, "IRQ-Timer"};
+        {.handle = &timer_interrupt}, &LEGACY_TIMER, irq::RegistrationOptions::Permanent};
 } // namespace
 
 auto global_clock_event() -> ClockEventDevice * {

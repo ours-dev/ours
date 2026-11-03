@@ -91,7 +91,6 @@ namespace {
         .mask = no_op,
         .unmask = no_op,
         .issue_eoi = no_op,
-        .name = "irq-registry-test",
     };
 
     /// A chip that cannot end an interrupt.
@@ -99,7 +98,6 @@ namespace {
         .protocol = irq::DispatchProtocol::Eoi,
         .masking = irq::Masking::Synchronous,
         .mask = no_op,
-        .name = "irq-registry-test",
     };
 
     auto hooked_handler(IrqId, void *) -> irq::IrqReturn {
@@ -109,11 +107,11 @@ namespace {
     auto hooked_cancel(IrqId, void *context) -> void;
 
     struct Hooked {
-        Hooked(irq::IrqFlags const flags, irq::IrqCancel const cancel)
+        Hooked(irq::RegistrationOptions const flags, irq::IrqRevocationHandler const cancel)
             : action({.handle = &hooked_handler,
                       .revoke = cancel,
                       .ready = [](void *) -> bool { return true; }},
-                     this, flags, "irq-registry-test") {}
+                     this, flags) {}
 
         irq::Registration action;
         std::atomic<u32> told{0};
@@ -142,12 +140,12 @@ namespace {
     /// its own.
     auto virq_in(DomainRegistry const &registry, DomainId const id, u32 const hirqnum) -> IrqId {
         IrqRcuReadGuard const guard;
-        return registry.virq_of(id, HardwareIrq{hirqnum}, guard);
+        return registry.irq_for_source(id, HardwareIrq{hirqnum}, guard);
     }
 
     auto owner_of(DomainRegistry const &registry, auto const virq) -> irq::Domain * {
         IrqRcuReadGuard const guard;
-        return registry.table_of(static_cast<IrqId>(virq), guard);
+        return registry.domain_for(static_cast<IrqId>(virq), guard);
     }
 
     auto find_in(DomainRegistry const &registry, DomainId const id) -> irq::Domain * {
@@ -179,17 +177,16 @@ namespace {
         .masking = irq::Masking::Synchronous,
         .mask =
             [](irq::ControllerSource const &source) {
-                ++static_cast<ControllerInstance *>(source.platform_data)->masks;
+                ++static_cast<ControllerInstance *>(source.context)->masks;
             },
         .unmask =
             [](irq::ControllerSource const &source) {
-                ++static_cast<ControllerInstance *>(source.platform_data)->unmasks;
+                ++static_cast<ControllerInstance *>(source.context)->unmasks;
             },
         .issue_eoi =
             [](irq::ControllerSource const &source) {
-                ++static_cast<ControllerInstance *>(source.platform_data)->ended;
+                ++static_cast<ControllerInstance *>(source.context)->ended;
             },
-        .name = "irq-endpoint-test",
     };
 
     auto check_public_endpoints(Tally &tally) -> void {
@@ -214,8 +211,8 @@ namespace {
             }
             return;
         }
-        auto const line_a = irq::virq_of_domain(A, HardwareIrq{0});
-        auto const line_b = irq::virq_of_domain(B, HardwareIrq{0});
+        auto const line_a = irq::irq_for_source(A, HardwareIrq{0});
+        auto const line_b = irq::irq_for_source(B, HardwareIrq{0});
         verdict(tally, line_a != line_b && line_a != IrqId::Invalid && line_b != IrqId::Invalid,
                 "overlapping controller sources get distinct kernel identities");
         constexpr auto HANDLE = [](IrqId const line, void *const context) -> irq::IrqReturn {
@@ -224,8 +221,8 @@ namespace {
             instance.observed = line;
             return irq::IrqReturn::Handled;
         };
-        irq::Registration registration_a({.handle = HANDLE}, &a, irq::IrqFlags::None, "instance-a");
-        irq::Registration registration_b({.handle = HANDLE}, &b, irq::IrqFlags::None, "instance-b");
+        irq::Registration registration_a({.handle = HANDLE}, &a, irq::RegistrationOptions::None);
+        irq::Registration registration_b({.handle = HANDLE}, &b, irq::RegistrationOptions::None);
         answered(tally, irq::attach(line_a, registration_a), Status::Ok, "attach to instance A");
         answered(tally, irq::attach(line_b, registration_b), Status::Ok, "attach to instance B");
         auto const result_a = endpoint_a.dispatch(HardwareIrq{0});
@@ -462,7 +459,7 @@ namespace {
         // A Permanent line: the domain, its registry, its slot and its owner
         // are leaked, one set per run, as the action can never come off.
         auto *const permanent =
-            new (mm::GAF_KERNEL) Hooked(irq::IrqFlags::Permanent, &hooked_cancel);
+            new (mm::GAF_KERNEL) Hooked(irq::RegistrationOptions::Permanent, &hooked_cancel);
         auto *const permanent_registry = new (mm::GAF_KERNEL) DomainRegistry();
         auto *const leaked_slot = new (mm::GAF_KERNEL) DomainEndpoint();
         if (permanent == nullptr || permanent_registry == nullptr || leaked_slot == nullptr) {
@@ -484,7 +481,7 @@ namespace {
                 "a domain with a Permanent action on one line");
         answered(tally, permanent_registry->unregister_domain(DomainId{1}), Status::AlreadyBound,
                  "is not removed");
-        Hooked probe(irq::IrqFlags::None, &hooked_cancel);
+        Hooked probe(irq::RegistrationOptions::None, &hooked_cancel);
         verdict(tally,
                 find_in(*permanent_registry, DomainId{1}) == table && permanent->told.load() == 0 &&
                     irq::with_line(*table, virq0,
@@ -498,8 +495,8 @@ namespace {
         auto _ = table->detach(probe.action); // Clean-up; the check above is the result.
 
         // An action with no cancel hook.
-        Hooked hookless(irq::IrqFlags::None, nullptr);
-        Hooked hooked(irq::IrqFlags::None, &hooked_cancel);
+        Hooked hookless(irq::RegistrationOptions::None, nullptr);
+        Hooked hooked(irq::RegistrationOptions::None, &hooked_cancel);
         auto const ok =
             registry.register_domain(DomainId{1}, span(TWO), CHIP, hookless_slot) == Status::Ok;
         auto *const second = find_in(registry, DomainId{1});
@@ -535,10 +532,10 @@ namespace {
     auto check_removal_tells_every_line(Tally &tally) -> void {
         DomainRegistry registry;
         DomainEndpoint slot;
-        Hooked one(irq::IrqFlags::None, &hooked_cancel);
-        Hooked two(irq::IrqFlags::None, &hooked_cancel);
-        Hooked three(irq::IrqFlags::None, &hooked_cancel);
-        Hooked four(irq::IrqFlags::None, nullptr);
+        Hooked one(irq::RegistrationOptions::None, &hooked_cancel);
+        Hooked two(irq::RegistrationOptions::None, &hooked_cancel);
+        Hooked three(irq::RegistrationOptions::None, &hooked_cancel);
+        Hooked four(irq::RegistrationOptions::None, nullptr);
         Hooked *const all[] = {&one, &two, &three, &four};
 
         auto ready = registry.register_domain(DomainId{1}, span(FOUR), CHIP, slot) == Status::Ok;
@@ -762,19 +759,19 @@ namespace {
     auto look_once(CpuNum const cpu) -> bool {
         IrqRcuReadGuard const guard;
         auto const virq = STRESS->probe.load(std::memory_order_acquire);
-        auto *const table = STRESS->registry.table_of(virq, guard);
+        auto *const table = STRESS->registry.domain_for(virq, guard);
         if (table == nullptr) {
             return false;
         }
-        auto const first = table->first_virq();
+        auto const first = table->first_id();
         STRESS->seen[cpu].fetch_add(1, std::memory_order_relaxed);
         for (u32 i = 0; i < LOOK_FOR; ++i) {
             // The slot a root handler reads, when it holds a table, holds this
             // one: the removal retracts it before the grace period, never
             // after, and a new domain's cannot be published under this guard.
             auto *const from_slot = DomainRegistry::published_domain(STRESS->slot, guard);
-            if (table->is_destroyed() || table->first_virq() != first ||
-                table->hwirq_of(virq) == HardwareIrq::Invalid ||
+            if (table->is_destroyed() || table->first_id() != first ||
+                table->source_for_irq(virq) == HardwareIrq::Invalid ||
                 (from_slot != nullptr && from_slot != table)) {
                 STRESS->broken[cpu].fetch_add(1, std::memory_order_relaxed);
                 break;

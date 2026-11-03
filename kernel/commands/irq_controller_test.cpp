@@ -24,7 +24,6 @@
 // A console command rather than a unit test: Desc allocates from the kernel's
 // heap.
 #include <ours/irq/domain.hpp>
-#include <ours/irq/line.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/irq/registration.hpp>
 
@@ -35,6 +34,7 @@
 
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <kernel/kernel/irq/line.hpp>
 #include <logz4/log.hpp>
 #include <ustl/option.hpp>
 
@@ -102,7 +102,6 @@ namespace {
         .unmask = unmask_pin,
         .configure = configure_pin,
         .issue_eoi = end_interrupt,
-        .name = "irqchip-test",
     };
 
     /// The same chip, with a pin that reads as level.
@@ -114,7 +113,6 @@ namespace {
         .configure = configure_pin,
         .trigger_mode = level_pin,
         .issue_eoi = end_interrupt,
-        .name = "irqchip-test",
     };
 
     auto handled(IrqId, void *) -> irq::IrqReturn {
@@ -124,8 +122,7 @@ namespace {
     /// A line of the test's own, outside the table, bound to `chip`; null if
     /// it cannot be made. The caller deletes it, with nobody on it.
     auto make_line(irq::ControllerOps const &chip) -> irq::Line * {
-        auto *const line =
-            irq::Line::create(HardwareIrq{7}, LINE, irq::IrqFlags::None, "irqchip-test");
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HardwareIrq{7}, LINE);
         if (line == nullptr) {
             return nullptr;
         }
@@ -142,8 +139,8 @@ namespace {
     /// The actions of an attach with no mode on the two chips.
     auto check_attach_without_a_mode(Tally &tally) -> void {
         irq::Registration oneshot({.handle = handled, .ready = [](void *) -> bool { return true; }},
-                                  nullptr, irq::IrqFlags::Oneshot, "irqchip-test");
-        irq::Registration plain({.handle = handled}, nullptr, irq::IrqFlags::None, "irqchip-test");
+                                  nullptr, irq::RegistrationOptions::Oneshot);
+        irq::Registration plain({.handle = handled}, nullptr, irq::RegistrationOptions::None);
 
         auto *const blind = make_line(BLIND_CHIP);
         auto *const seeing = make_line(SEEING_CHIP);
@@ -184,7 +181,7 @@ namespace {
     /// The actions of an attach with a mode.
     auto check_attach_with_a_mode(Tally &tally) -> void {
         irq::Registration oneshot({.handle = handled, .ready = [](void *) -> bool { return true; }},
-                                  nullptr, irq::IrqFlags::Oneshot, "irqchip-test");
+                                  nullptr, irq::RegistrationOptions::Oneshot);
 
         auto *const blind = make_line(BLIND_CHIP);
         if (blind == nullptr) {
@@ -239,27 +236,26 @@ namespace {
         .masking = irq::Masking::Synchronous,
         .mask =
             [](irq::ControllerSource const &source) {
-                static_cast<HandshakeProbe *>(source.platform_data)->record(Phase::Mask);
+                static_cast<HandshakeProbe *>(source.context)->record(Phase::Mask);
             },
         .unmask =
             [](irq::ControllerSource const &source) {
-                static_cast<HandshakeProbe *>(source.platform_data)->record(Phase::Unmask);
+                static_cast<HandshakeProbe *>(source.context)->record(Phase::Unmask);
             },
         .trigger_mode =
             [](irq::ControllerSource const &source) {
-                return static_cast<HandshakeProbe *>(source.platform_data)->trigger;
+                return static_cast<HandshakeProbe *>(source.context)->trigger;
             },
         .issue_eoi =
             [](irq::ControllerSource const &source) {
-                static_cast<HandshakeProbe *>(source.platform_data)->record(Phase::End);
+                static_cast<HandshakeProbe *>(source.context)->record(Phase::End);
             },
-        .name = "end-test",
     };
     constexpr auto ACK_OPS = [] {
         auto operations = END_OPS;
         operations.protocol = irq::DispatchProtocol::AckEoi;
         operations.issue_ack = [](irq::ControllerSource const &source) {
-            static_cast<HandshakeProbe *>(source.platform_data)->record(Phase::Ack);
+            static_cast<HandshakeProbe *>(source.context)->record(Phase::Ack);
         };
         return operations;
     }();
@@ -274,16 +270,15 @@ namespace {
                          irq::TriggerMode const trigger) -> void {
         HandshakeProbe probe;
         probe.trigger = trigger;
-        auto *const line =
-            irq::Line::create(HardwareIrq{7}, LINE, irq::IrqFlags::None, "handshake-test");
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HardwareIrq{7}, LINE);
         if (line == nullptr) {
             verdict(tally, false, "allocate the handshake line");
             return;
         }
         answered(tally, line->init(operations, &probe), Status::Ok,
                  "bind a validated handshake and controller context");
-        irq::Registration registration({.handle = handshake_handler}, &probe, irq::IrqFlags::None,
-                                       "handshake-test");
+        irq::Registration registration({.handle = handshake_handler}, &probe,
+                                       irq::RegistrationOptions::None);
         answered(tally, line->attach(registration), Status::Ok, "attach the handshake handler");
         auto const handled_result = line->handle_irq(irq::Eoi::Send);
         auto const ack = operations.protocol == irq::DispatchProtocol::AckEoi;
@@ -323,8 +318,7 @@ namespace {
         probe.trigger = irq::TriggerMode::Level;
         probe.answer = irq::IrqReturn::WakeThread;
         probe.ready = false;
-        auto *const line =
-            irq::Line::create(HardwareIrq{7}, LINE, irq::IrqFlags::None, "hold-test");
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HardwareIrq{7}, LINE);
         if (line == nullptr) {
             verdict(tally, false, "allocate the hold line");
             return;
@@ -354,7 +348,7 @@ namespace {
             {.handle = handshake_handler,
              .ready =
                  [](void *const context) { return static_cast<HandshakeProbe *>(context)->ready; }},
-            &probe, irq::IrqFlags::Oneshot, "hold-test");
+            &probe, irq::RegistrationOptions::Oneshot);
         answered(tally, line->attach(registration), Status::Ok,
                  "a synchronous controller accepts deferred work");
         auto const result = line->handle_irq(irq::Eoi::Send);
@@ -374,8 +368,7 @@ namespace {
 
         auto ordinary_only = END_OPS;
         ordinary_only.masking = irq::Masking::Unspecified;
-        auto *const restricted =
-            irq::Line::create(HardwareIrq{7}, LINE, irq::IrqFlags::None, "restricted-test");
+        auto *const restricted = new (mm::GAF_KERNEL) irq::Line(HardwareIrq{7}, LINE);
         if (restricted == nullptr) {
             verdict(tally, false, "make the restricted-capability line");
             return;

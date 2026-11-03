@@ -928,7 +928,7 @@ namespace {
             : InterruptDispatcher(Flags::None)
             , action({.handle = &RecordingInterrupt::on_event,
                       .revoke = &RecordingInterrupt::on_cancel},
-                     this, irq::IrqFlags::None, "interrupt.test") {}
+                     this, irq::RegistrationOptions::None) {}
 
         using InterruptDispatcher::line_revoked;
 
@@ -1068,7 +1068,7 @@ namespace {
             .masking = irq::Masking::Synchronous,
             .mask = [](irq::ControllerSource const &) -> void {},
             .issue_eoi = [](irq::ControllerSource const &) -> void {},
-            .name = "interrupt-test"};
+        };
         if (table == nullptr || object == nullptr ||
             table->init(ustl::views::Span<HardwareIrq const>(numbers), NO_OP_CHIP) != Status::Ok) {
             verdict(tally, false, "make the chain case's line table and object");
@@ -1077,7 +1077,7 @@ namespace {
         }
         object->table = table;
         CHAIN.table = table;
-        CHAIN.virq = table->virq_of(HardwareIrq{9});
+        CHAIN.virq = table->irq_for_source(HardwareIrq{9});
         CHAIN.object = object;
         CHAIN.destroy_returned.store(false, std::memory_order_relaxed);
         CHAIN.hook_done_at_return.store(false, std::memory_order_relaxed);

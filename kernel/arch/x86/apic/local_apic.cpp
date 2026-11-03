@@ -108,18 +108,6 @@ auto apic_issue_eoi() -> void {
     XAPIC_STORAGE.issue_eoi();
 }
 
-[[maybe_unused]]
-irq::ControllerOps XAPIC_CHIP{
-    .mask = [](irq::ControllerSource const &data) -> void {
-        XAPIC_STORAGE.mask(arch::XApicRegType::LvtLint0);
-    },
-    .unmask = [](irq::ControllerSource const &data) -> void {
-        XAPIC_STORAGE.unmask(arch::XApicRegType::LvtLint0);
-    },
-    .issue_ack = [](irq::ControllerSource const &data) -> void { XAPIC_STORAGE.issue_eoi(); },
-    .name = "XApic",
-};
-
 /// This is the local APIC timer event device for non-deadline TSC devices.
 /// Rated lower than the PIT's 110, and that is fine: it is per-CPU, and
 /// TickDevice prefers a per-CPU device over a global one before it looks at

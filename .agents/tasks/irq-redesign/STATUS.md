@@ -45,3 +45,5 @@ The completion protocol is committed as 3972cbb9. DomainEndpoint now hides raw d
 - Controller protocol: electrical trigger no longer selects a handshake. Eoi and AckEoi are validated independently of Edge/Level; synchronous deferred masking is explicit. irqcontroller.test passes 49 checks, with 32 new contract checks and the unsupported affinity-stub check removed. Fifteen C++ files pass format/tidy; both images and 161 host tests pass.
 
 - Typed identities: 39 changed C++ files pass formatting and actual clang-tidy. Both x86 images, 161 host tests and all nine IRQ suites pass. No old aliases remain in C++ source; syscall wire format remains u32. Directed EOI now takes IrqVec.
+
+- Public boundary: Line/Domain/registry are private; callbacks are invoked only by L1-required Line members. Unused names, initial Line policy, allocation-only factory, root-only mapping wrapper and invalid unbound LAPIC table are removed. Twenty-eight C++ files, both images, 161 host tests and all nine suites pass. Trap-entry bookkeeping and final document reconciliation remain.

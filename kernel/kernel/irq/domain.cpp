@@ -1,5 +1,4 @@
 #include <ours/assert.hpp>
-#include <ours/irq/line.hpp>
 #include <ours/mm/gaf.hpp>
 
 #include <algorithm>
@@ -7,6 +6,7 @@
 
 #include <heap/new.hpp>
 #include <kernel/kernel/irq/domain.hpp>
+#include <kernel/kernel/irq/line.hpp>
 #include <ustl/mem/align.hpp>
 
 namespace ours::irq {
@@ -46,28 +46,28 @@ auto Domain::init(ustl::views::Span<HardwareIrq const> const sources,
     }
 
     Storage storage;
-    if (storage.virqs.resize(slots).is_err() || storage.hwirqs.resize(sources.size()).is_err() ||
+    if (storage.ids.resize(slots).is_err() || storage.sources.resize(sources.size()).is_err() ||
         storage.lines.resize(slots).is_err()) {
         return Status::OutOfMem;
     }
-    std::ranges::fill(storage.virqs, IrqId::Invalid);
+    std::ranges::fill(storage.ids, IrqId::Invalid);
     for (auto const source: sources) {
         auto const index = static_cast<usize>(source);
-        if (storage.virqs[index] != IrqId::Invalid) {
+        if (storage.ids[index] != IrqId::Invalid) {
             return Status::AlreadyExists;
         }
-        storage.virqs[index] = IrqId{0};
+        storage.ids[index] = IrqId{0};
     }
     auto next = first;
     for (usize index = 0; index < slots; ++index) {
-        if (storage.virqs[index] == IrqId::Invalid) {
+        if (storage.ids[index] == IrqId::Invalid) {
             continue;
         }
         auto const source = static_cast<HardwareIrq>(index);
         auto const id = static_cast<IrqId>(next);
-        storage.virqs[index] = id;
-        storage.hwirqs[next - first] = source;
-        auto line = ustl::Box<Line>::adopt(Line::create(source, id, IrqFlags::None, "irq"));
+        storage.ids[index] = id;
+        storage.sources[next - first] = source;
+        auto line = ustl::Box<Line>::adopt(new (mm::GAF_KERNEL) Line(source, id));
         if (!line) {
             return Status::OutOfMem;
         }
@@ -117,62 +117,62 @@ auto Domain::finish_removal() -> void {
     }
 }
 
-auto Domain::virq_of(HardwareIrq const hirqnum) const -> IrqId {
-    if (static_cast<usize>(hirqnum) >= m_storage.virqs.size()) {
+auto Domain::irq_for_source(HardwareIrq const source) const -> IrqId {
+    if (static_cast<usize>(source) >= m_storage.ids.size()) {
         return IrqId::Invalid;
     }
-    return m_storage.virqs[static_cast<usize>(hirqnum)];
+    return m_storage.ids[static_cast<usize>(source)];
 }
 
-auto Domain::hwirq_of(IrqId const virqnum) const -> HardwareIrq {
-    if (virqnum < m_first ||
-        static_cast<u32>(virqnum) - static_cast<u32>(m_first) >= m_storage.hwirqs.size()) {
+auto Domain::source_for_irq(IrqId const id) const -> HardwareIrq {
+    if (id < m_first ||
+        static_cast<u32>(id) - static_cast<u32>(m_first) >= m_storage.sources.size()) {
         return HardwareIrq::Invalid;
     }
-    return m_storage.hwirqs[static_cast<u32>(virqnum) - static_cast<u32>(m_first)];
+    return m_storage.sources[static_cast<u32>(id) - static_cast<u32>(m_first)];
 }
 
 /// The control path. A number that is no virq of the domain, IrqId::Invalid
 /// included, becomes HardwareIrq::Invalid, which is past the table.
-auto Domain::line_by_id(IrqId const virqnum) -> Line * {
-    return line_by_source(hwirq_of(virqnum));
+auto Domain::line_by_id(IrqId const id) -> Line * {
+    return line_by_source(source_for_irq(id));
 }
 
 /// The interrupt path, and the second half of the control path.
-auto Domain::line_by_source(HardwareIrq const hirqnum) -> Line * {
-    if (static_cast<usize>(hirqnum) >= m_storage.lines.size()) {
+auto Domain::line_by_source(HardwareIrq const source) -> Line * {
+    if (static_cast<usize>(source) >= m_storage.lines.size()) {
         return nullptr;
     }
 
-    return m_storage.lines[static_cast<usize>(hirqnum)].as_ptr_mut();
+    return m_storage.lines[static_cast<usize>(source)].as_ptr_mut();
 }
 
-auto Domain::find_line(IrqId const virqnum, task::IrqRcuReadGuard const &) -> ktl::Result<Line *> {
-    if (virqnum == IrqId::Invalid) {
+auto Domain::find_line(IrqId const id, task::IrqRcuReadGuard const &) -> ktl::Result<Line *> {
+    if (id == IrqId::Invalid) {
         return ustl::err(Status::InvArgs);
     }
 
-    auto *const line = line_by_id(virqnum);
+    auto *const line = line_by_id(id);
     if (!line) {
         return ustl::err(Status::NoResource);
     }
     return ustl::ok(line);
 }
 
-/// The action knows its line, so the caller names only the action: on a
-/// shared line a number alone cannot say which of its actions to remove.
-auto Domain::detach(Registration &action) -> Status {
-    auto line = line_by_id(action.virqnum());
+/// The registration knows its line, so the caller names only the registration: on a
+/// shared line a number alone cannot say which of its registrations to remove.
+auto Domain::detach(Registration &registration) -> Status {
+    auto line = line_by_id(registration.line_id());
     if (!line) {
         return Status::NotFound;
     }
 
-    return line->detach(action);
+    return line->detach(registration);
 }
 
-auto Domain::revoke_line(IrqId const virqnum) -> Status {
+auto Domain::revoke_line(IrqId const id) -> Status {
     task::IrqRcuReadGuard const guard;
-    auto const line = find_line(virqnum, guard);
+    auto const line = find_line(id, guard);
     if (line.is_err()) {
         return line.unwrap_err();
     }
@@ -183,31 +183,31 @@ auto Domain::revoke_line(IrqId const virqnum) -> Status {
     return Status::Ok;
 }
 
-auto Domain::unmark_dying(IrqId const virqnum) -> void {
-    if (auto *const line = line_by_id(virqnum)) {
+auto Domain::unmark_dying(IrqId const id) -> void {
+    if (auto *const line = line_by_id(id)) {
         line->unmark_dying();
     }
 }
 
 /// Answers nothing: a line that is not there holds nothing to finalize, and
-/// the line checks under its own lock whether the action is still on it.
-auto Domain::finalize_oneshot(IrqId const virqnum, Registration const &action) -> void {
-    auto *const line = line_by_id(virqnum);
+/// the line checks under its own lock whether the registration is still on it.
+auto Domain::finalize_oneshot(IrqId const id, Registration const &registration) -> void {
+    auto *const line = line_by_id(id);
     if (!line) {
         return;
     }
-    line->finalize_oneshot(action);
+    line->finalize_oneshot(registration);
 }
 
-/// Answers what the line's actions answered. It used to answer Handled
-/// whatever happened, even on a line with no action at all, so an
+/// Answers what the line's registrations answered. It used to answer Handled
+/// whatever happened, even on a line with no registration at all, so an
 /// interrupt nobody handled could not be told from one somebody did.
 ///
 /// No line is an answer of its own, not None: a line ends its interrupt
-/// whatever its actions answer, and a number with no line has nobody to end
+/// whatever its registrations answer, and a number with no line has nobody to end
 /// it, so the caller has to know which of the two it was.
-auto Domain::handle_irq(HardwareIrq const hirqnum, Eoi const eoi) -> ustl::Option<IrqReturn> {
-    auto *const line = line_by_source(hirqnum);
+auto Domain::handle_irq(HardwareIrq const source, Eoi const eoi) -> ustl::Option<IrqReturn> {
+    auto *const line = line_by_source(source);
     if (!line) {
         return ustl::none();
     }
@@ -215,13 +215,13 @@ auto Domain::handle_irq(HardwareIrq const hirqnum, Eoi const eoi) -> ustl::Optio
     return ustl::some(line->handle_irq(eoi));
 }
 
-auto Domain::is_kernel_owned(IrqId const virqnum) -> bool {
-    auto *const line = line_by_id(virqnum);
+auto Domain::is_kernel_owned(IrqId const id) -> bool {
+    auto *const line = line_by_id(id);
     return line != nullptr && line->is_kernel_owned();
 }
 
-auto Domain::spurious_count(IrqId virqnum) -> ustl::Option<u64> {
-    auto const *const line = line_by_id(virqnum);
+auto Domain::spurious_count(IrqId id) -> ustl::Option<u64> {
+    auto const *const line = line_by_id(id);
     if (!line) {
         return ustl::none();
     }

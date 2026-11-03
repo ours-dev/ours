@@ -35,11 +35,11 @@ class DomainRegistry final {
     [[nodiscard]]
     auto unregister_domain(DomainId id) -> Status;
     [[nodiscard]]
-    auto table_of(IrqId line, task::IrqRcuReadGuard const &guard) const -> Domain *;
+    auto domain_for(IrqId line, task::IrqRcuReadGuard const &guard) const -> Domain *;
     [[nodiscard]]
     auto find(DomainId id, task::IrqRcuReadGuard const &guard) const -> Domain *;
     [[nodiscard]]
-    auto virq_of(DomainId id, HardwareIrq source, task::IrqRcuReadGuard const &guard) const
+    auto irq_for_source(DomainId id, HardwareIrq source, task::IrqRcuReadGuard const &guard) const
         -> IrqId;
 
     [[nodiscard]]
@@ -69,7 +69,7 @@ class DomainRegistry final {
 
     sync::SpinLock m_lock;
     Slot m_slots[CAPACITY] TA_GUARDED(m_lock);
-    IrqId m_next_virq TA_GUARDED(m_lock) = IrqId{0};
+    IrqId m_next_id TA_GUARDED(m_lock) = IrqId{0};
     task::IrqRcuPointer<Entry> m_published[CAPACITY];
 };
 } // namespace ours::irq

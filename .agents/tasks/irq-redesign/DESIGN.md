@@ -99,6 +99,10 @@ The public DomainEndpoint is controller-owned and noncopyable. It is registered 
 
 The directory owns Box<Entry>; each entry owns Box<Domain> and borrows its endpoint. Removing slots keep their entry until revocation, retraction and reader grace complete. Ownership is moved out and the slot freed atomically under the writer Guard; destruction runs outside the lock. Another writer never reads an entry already freed. The directory destructor requires quiescent users and does not dereference borrowed endpoints. Context and operations outlive successful unregistration; the endpoint outlives all delivery calls.
 
+### Public boundary
+
+The public objects are Registration, ControllerOps/ControllerSource and DomainEndpoint. Line, Domain and DomainRegistry are private implementation types. RegistrationOptions states immutable acquisition policy; only Line invokes handler, revocation and readiness callbacks. notify_locked requires L1, reached through the real Guard. A line starts empty from its source and kernel identity; attachment is the only policy authority. Unused name storage and allocation-only forwarding are removed. Mapping is irq_for_source(domain, source), source_for_irq(id), and registration.line_id(); there is no root-only alias. The unbound, invalid LAPIC table is retired because actual local interrupt routing is already architecture-owned.
+
 ### Typed identities and numeric boundaries
 
 HardwareIrq identifies a source only within its domain; IrqId identifies a kernel line and is never reused after withdrawal. Both are scoped u32 enums, mutually non-convertible and not implicitly convertible to/from integers. Each has its own Invalid. Numeric indexing, vector encoding, diagnostics and syscall wire conversion are explicit. Physical interrupt-object creation accepts IrqId; syscalls keep their existing u32 wire format and resource validation. Directed IO-APIC completion takes IrqVec, a third independent type. Compile-time assertions enforce the distinction at real interfaces.

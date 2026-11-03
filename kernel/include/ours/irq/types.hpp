@@ -23,24 +23,24 @@ enum class DomainId : u32 {
 
 /// What a handler answers for one interrupt on its line.
 enum class IrqReturn : u8 {
-    /// The interrupt was not this handler's device's. A line whose actions
+    /// The interrupt was not this handler's device's. A line whose registrations
     /// all answer None counts the interrupt as spurious.
     None,
     /// The device raised it, and the handler is done with it.
     Handled,
     /// The device raised it, and the handler has handed the rest of the work
     /// to a thread, which it has woken. Counts as handled. On a Oneshot line
-    /// it also leaves the line held: masked until the action's
+    /// it also leaves the line held: masked until the registration's
     /// irq::finalize_oneshot() says the thread is done.
     WakeThread,
 };
 
-enum class IrqFlags : u32 {
+enum class RegistrationOptions : u32 {
     None,
     Shared = 0_bit,
     Permanent = 1_bit,
-    /// Asks for the line to stay masked from an interrupt the action's
-    /// handler answers WakeThread for until the action calls
+    /// Asks for the line to stay masked from an interrupt the registration's
+    /// handler answers WakeThread for until the registration calls
     /// irq::finalize_oneshot(). On a level line that is what keeps a device
     /// still asserting its pin from raising the line again before the thread
     /// has serviced it; an edge line raises nothing until the device signals
@@ -48,10 +48,10 @@ enum class IrqFlags : u32 {
     /// or Shared.
     Oneshot = 2_bit,
 };
-USTL_ENABLE_ENUM_BITMASK(IrqFlags);
+USTL_ENABLE_ENUM_BITMASK(RegistrationOptions);
 
 /// Whether a dispatch of a line ends the interrupt at the line's controller,
-/// through its chip, once the actions have run.
+/// through its controller, once the registrations have run.
 enum class Eoi : u8 {
     /// A real interrupt. It stays in service until it is ended, and while it
     /// is, the controller holds back every interrupt of its priority and
@@ -65,7 +65,7 @@ enum class Eoi : u8 {
 };
 
 /// How a line signals: by an edge, once per event, or by a level held until
-/// the device is serviced. A controller's own encoding stays in its chip,
+/// the device is serviced. A controller's own encoding stays in its controller,
 /// which translates.
 enum class TriggerMode : u8 {
     Edge,
@@ -85,27 +85,27 @@ struct LineMode {
     Polarity polarity;
 };
 
-/// An interrupt handler. `context` is whatever the action that carries the
+/// An interrupt handler. `context` is whatever the registration that carries the
 /// handler was constructed with (Registration), so the handler finds its
 /// device's state there rather than in a global.
-using IrqHandler = auto (*)(IrqId virqnum, void *context) -> IrqReturn;
+using IrqHandler = auto (*)(IrqId id, void *context) -> IrqReturn;
 
 /// Revalidates deferred work while the line holds L1. The owner checks its
 /// current pending work under its handler lock, preserving the handler's lock
 /// order. The callback cannot sleep or call line control operations.
 using IrqCompletionCheck = auto (*)(void *context) -> bool;
 
-/// What an action may ask to be told when the kernel takes its line away
+/// What an registration may ask to be told when the kernel takes its line away
 /// from it (Line::revoke()), instead of its owner letting the line go: the
-/// line's virq and the action's context, as the handler gets them.
+/// line's virq and the registration's context, as the handler gets them.
 ///
 /// Called with the line's lock (L1) held, interrupts off and preemption off,
-/// once the action is off the line and before the action's line is cleared.
+/// once the registration is off the line and before the registration's line is cleared.
 /// So it runs where a handler runs: it may wake a thread and take the locks a
 /// handler takes after L1, and must not call into the irq layer, which would
-/// take L1 again. Its owner may free the action and its context only after
+/// take L1 again. Its owner may free the registration and its context only after
 /// irq::detach() has returned, which waits for this call to finish.
-using IrqCancel = auto (*)(IrqId virqnum, void *context) -> void;
+using IrqRevocationHandler = auto (*)(IrqId id, void *context) -> void;
 } // namespace ours::irq
 
 #endif // OURS_IRQ_TYPES_HPP

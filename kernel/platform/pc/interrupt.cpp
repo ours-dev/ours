@@ -216,7 +216,7 @@ namespace {
         // lines are the machine's root domain, and their table is published
         // through ROOT_ENDPOINT, which the handler above dispatches through.
         auto const status = irq::register_domain(irq::DomainId::Root, ustl::views::Span(gsis),
-                                                 io_apic_chip(), ROOT_ENDPOINT);
+                                                 io_apic_controller(), ROOT_ENDPOINT);
         ASSERT(Status::Ok == status, "Failed to build the interrupt lines: {}", to_string(status));
 
         // The root controller's driver gives arch its handler now, with the
@@ -245,6 +245,7 @@ auto platform::isa_irq_line(u32 const isa_irq) -> IrqId {
     if (isa_irq >= arch::NUM_ISA_IRQS || isa_irq == ISA_IRQ_PIC2) {
         return IrqId::Invalid;
     }
-    return irq::virq_of_hwirq(apic_io_isa_to_global(static_cast<u8>(isa_irq)));
+    return irq::irq_for_source(irq::DomainId::Root,
+                               apic_io_isa_to_global(static_cast<u8>(isa_irq)));
 }
 } // namespace ours

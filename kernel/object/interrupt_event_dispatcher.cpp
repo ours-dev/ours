@@ -17,7 +17,7 @@ InterruptEventDispatcher::InterruptEventDispatcher(IrqId const line)
                       .ready = [](void *const context) -> bool {
                           return static_cast<Self *>(context)->deferred_work_complete();
                       }},
-                     this, irq::IrqFlags::Oneshot, "interrupt") {}
+                     this, irq::RegistrationOptions::Oneshot) {}
 
 /// The order is what keeps a failure from touching a line that is not the
 /// object's. Nothing is made or programmed until the options are known to be

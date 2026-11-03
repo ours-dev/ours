@@ -3,12 +3,13 @@
 #ifndef KERNEL_IRQ_LINE_ACCESS_HPP
 #define KERNEL_IRQ_LINE_ACCESS_HPP 1
 
-#include <ours/irq/line.hpp>
 #include <ours/task/irq_rcu.hpp>
 
 #include <functional>
 #include <type_traits>
 #include <utility>
+
+#include <kernel/kernel/irq/line.hpp>
 
 namespace ours::irq {
 /// Resolve and use a line in one reader scope. Both a private Domain and the

@@ -128,7 +128,7 @@ namespace {
                 past_vectors += 1;
                 return;
             }
-            if (line_status(irq::virq_of_hwirq(gsi)) == Status::Ok) {
+            if (line_status(irq::irq_for_source(irq::DomainId::Root, gsi)) == Status::Ok) {
                 with_line += 1;
                 return;
             }
@@ -156,20 +156,20 @@ namespace {
         // The rule of domain.hpp, written out from its words: the virqs are
         // consecutive, in the order of the GSIs wherever the IO-APICs list
         // them, from the first multiple of 32 past the highest GSI.
-        auto const first_virq = (static_cast<u32>(highest_gsi) / 32 + 1) * 32;
+        auto const first_id = (static_cast<u32>(highest_gsi) / 32 + 1) * 32;
         for_each_pin([&](HardwareIrq const gsi) -> void {
             if (static_cast<usize>(gsi) > LAST_GSI) {
                 return;
             }
             checked += 1;
-            auto const virq = irq::virq_of_hwirq(gsi);
+            auto const virq = irq::irq_for_source(irq::DomainId::Root, gsi);
             if (static_cast<u32>(virq) == static_cast<u32>(gsi)) {
                 equal += 1;
             }
-            if (irq::hwirq_of_virq(virq) != gsi) {
+            if (irq::source_for_irq(virq) != gsi) {
                 not_inverse += 1;
                 log::error("pinlines.test:   GSI {} -> virq {} -> GSI {}", static_cast<u32>(gsi),
-                           static_cast<u32>(virq), static_cast<u32>(irq::hwirq_of_virq(virq)));
+                           static_cast<u32>(virq), static_cast<u32>(irq::source_for_irq(virq)));
             }
             auto below = u32{0};
             for_each_pin([&](HardwareIrq const other) -> void {
@@ -177,14 +177,14 @@ namespace {
                     below += 1;
                 }
             });
-            if (virq != static_cast<IrqId>(first_virq + below)) {
+            if (virq != static_cast<IrqId>(first_id + below)) {
                 misplaced += 1;
                 log::error("pinlines.test:   GSI {} has virq {}, expected {}",
-                           static_cast<u32>(gsi), static_cast<u32>(virq), first_virq + below);
+                           static_cast<u32>(gsi), static_cast<u32>(virq), first_id + below);
             }
         });
         log::info("pinlines.test:   {} GSIs map to virqs from {}", checked,
-                  static_cast<u32>(first_virq));
+                  static_cast<u32>(first_id));
 
         verdict(tally, checked != 0, "there are GSIs to map");
         verdict(tally, not_inverse == 0, "each GSI's virq maps back to it");
@@ -194,27 +194,31 @@ namespace {
 
         // The ends of both tables: one past the last pin, one either side of
         // the virqs.
-        auto const last_virq = static_cast<IrqId>(first_virq + checked - 1);
+        auto const last_virq = static_cast<IrqId>(first_id + checked - 1);
         verdict(tally,
-                irq::virq_of_hwirq(static_cast<HardwareIrq>(static_cast<u32>(highest_gsi) + 1)) ==
+                irq::irq_for_source(irq::DomainId::Root,
+                                    static_cast<HardwareIrq>(static_cast<u32>(highest_gsi) + 1)) ==
                     IrqId::Invalid,
                 "the hardware number past the last pin has no virq");
         verdict(tally,
-                irq::hwirq_of_virq(static_cast<IrqId>(static_cast<u32>(last_virq) + 1)) ==
+                irq::source_for_irq(static_cast<IrqId>(static_cast<u32>(last_virq) + 1)) ==
                     HardwareIrq::Invalid,
                 "the number past the last virq has no hardware number");
         verdict(tally,
-                irq::hwirq_of_virq(static_cast<IrqId>(first_virq - 1)) == HardwareIrq::Invalid,
+                irq::source_for_irq(static_cast<IrqId>(first_id - 1)) == HardwareIrq::Invalid,
                 "the number before the first virq has none");
         verdict(tally,
                 !irq::root_source_exists_for_test(
                     static_cast<HardwareIrq>(static_cast<u32>(highest_gsi) + 1)),
                 "an interrupt on the hardware number past the last pin finds no line");
-        verdict(tally, irq::virq_of_hwirq(HardwareIrq::Invalid) == IrqId::Invalid,
+        verdict(tally,
+                irq::irq_for_source(irq::DomainId::Root, HardwareIrq::Invalid) == IrqId::Invalid,
                 "the invalid hardware number has no virq");
-        verdict(tally, irq::hwirq_of_virq(IrqId::Invalid) == HardwareIrq::Invalid,
+        verdict(tally, irq::source_for_irq(IrqId::Invalid) == HardwareIrq::Invalid,
                 "the invalid virq has no hardware number");
-        verdict(tally, irq::virq_of_hwirq(static_cast<HardwareIrq>(LAST_GSI + 1)) == IrqId::Invalid,
+        verdict(tally,
+                irq::irq_for_source(irq::DomainId::Root, static_cast<HardwareIrq>(LAST_GSI + 1)) ==
+                    IrqId::Invalid,
                 "a hardware number past the platform vectors has no virq");
     }
 
@@ -238,10 +242,10 @@ namespace {
                 continue;
             }
             auto const pin = apic_io_isa_to_global(static_cast<u8>(isa));
-            if (irq::hwirq_of_virq(line) != pin) {
+            if (irq::source_for_irq(line) != pin) {
                 wrong += 1;
                 log::error("pinlines.test:   ISA {} gave line {}, pin {}; the MADT says pin {}",
-                           isa, static_cast<u32>(line), static_cast<u32>(irq::hwirq_of_virq(line)),
+                           isa, static_cast<u32>(line), static_cast<u32>(irq::source_for_irq(line)),
                            static_cast<u32>(pin));
             }
         }
@@ -266,7 +270,7 @@ namespace {
                 return;
             }
             checked += 1;
-            auto const virq = irq::virq_of_hwirq(gsi);
+            auto const virq = irq::irq_for_source(irq::DomainId::Root, gsi);
             auto const masked = irq::is_masked_for_test(virq);
             if (!masked.is_ok() || !*masked) {
                 not_masked += 1;
@@ -300,7 +304,7 @@ namespace {
                 gsi_lines += 1;
                 log::error("pinlines.test:   the number {} names a line", static_cast<u32>(gsi));
             }
-            highest_virq = std::max(highest_virq, irq::virq_of_hwirq(gsi));
+            highest_virq = std::max(highest_virq, irq::irq_for_source(irq::DomainId::Root, gsi));
         });
         verdict(tally, gsi_lines == 0, "a GSI used as a virq names no line");
 
@@ -317,7 +321,7 @@ namespace {
         // slot 0 to 24 is wired to GSI 20 to 23 (slot + pin, modulo 4, past
         // 20), so a device attached with DISK= does not hold this one.
         auto const gsi = static_cast<HardwareIrq>(arch::NUM_ISA_IRQS);
-        auto const pin = irq::virq_of_hwirq(gsi);
+        auto const pin = irq::irq_for_source(irq::DomainId::Root, gsi);
         if (static_cast<usize>(gsi) > LAST_GSI || pin == IrqId::Invalid) {
             verdict(tally, false, "there is a pin just past the ISA range to take");
             return;

@@ -3,14 +3,11 @@
 #ifndef OURS_IRQ_MOD_HPP
 #define OURS_IRQ_MOD_HPP 1
 
-#include <ours/cpu_mask.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
-#include <ours/types.hpp>
 
 #include <ktl/result.hpp>
 #include <ustl/option.hpp>
-#include <ustl/views/span.hpp>
 
 namespace arch {
 struct IrqFrame;
@@ -18,252 +15,100 @@ struct IrqFrame;
 
 namespace ours::irq {
 class Registration;
-/// Hangs `action` on line `virqnum`; from then on every interrupt on the
-/// line calls the action's handler with the action's context. The caller
-/// owns the action and keeps it alive until detach() has returned.
-///
-/// An action that says Permanent takes the line for good: no other attach
-/// succeeds after it, and detach() refuses it.
-///
-/// An action that says Oneshot makes the line Oneshot for as long as it is
-/// on it. On a level line, the line's flow then masks the line before the
-/// handler runs, and keeps it masked from an interrupt the handler answers
-/// WakeThread for until the action's finalize_oneshot(); an edge line
-/// ignores it. Oneshot never shares and is never Permanent: the line keeps
-/// one record of what it is held for, under its lock.
-///
-/// AlreadyBound if the line is Permanent, or holds an action and the two do
-/// not both say Shared, or holds one and this action says Permanent;
-/// BadState if the action is on a line already, NoResource if there is no
-/// such line or the kernel is taking it away (a removal of its domain has
-/// marked it, and the answer clears if the removal is refused), InvArgs for
-/// IrqId::Invalid, a null handler, or an action
-/// that says Oneshot together with Permanent or Shared; NotSupported for a
-/// Oneshot action on a line whose controller cannot mask and unmask, or
-/// cannot say how its pins signal (give a mode: the attach with a mode),
-/// which is answered before AlreadyBound.
-[[nodiscard]]
-auto attach(IrqId virqnum, Registration &action) -> Status;
 
-/// Hangs `action` on line `virqnum` as attach() does, but only on a line
-/// nobody is on, and settles how the line signals in the same step: with
-/// `mode` it sets the line to that mode, as configure() would; with none it
-/// leaves the line as it is and reads how it signals, as trigger_mode()
-/// would. Answers the line's trigger mode, which holds for as long as the
-/// action is on the line, since configure() refuses a line someone is on.
+/// Controls borrow line storage inside an IRQ RCU scope. Writes take the
+/// line Guard, L1, then any controller register lock. Callbacks run under L1
+/// with interrupts and preemption disabled. A handler must never call line
+/// control, including control of a different line; no ordering exists between
+/// two line locks. Callers must not hold a lock that a line callback takes.
+/// No control sleeps or allocates.
 ///
-/// The line's lock is held from the check that the line is free, through the
-/// mode, to the link, so no other caller's mode can land in between. Set with
-/// configure() and then attach(), two owners racing for one free line could
-/// each set or read its mode before either took it, and the one that took it
-/// would hold a line in the other's mode: an owner that masks a level line
-/// until it is serviced, or leaves an edge line unmasked, would be doing so
-/// on the wrong kind of line.
-///
-/// Leaves the line masked, whichever way the mode was settled: the caller
-/// unmasks it once it is ready for the first interrupt, which it can only be
-/// once it knows how the line signals. The line's flow follows the mode, set
-/// or read, before the action is linked.
-///
-/// Thread context only, as configure(). AlreadyBound if the line has an
-/// action or is Permanent; NotSupported if the line's controller cannot
-/// set its mode, or cannot say what it is and mask it; the other answers as
-/// attach().
+/// Ordinary controls return InvArgs for IrqId::Invalid, NoResource for an
+/// absent/withdrawn line, and NotSupported for a missing controller operation.
+
+/// Attach caller-owned, address-stable registration storage. The owner
+/// serializes attach/detach of that registration and retains it and its
+/// context until detach returns. Shared registrations may join only a Shared
+/// line; Permanent takes an empty line for the kernel's lifetime. Oneshot
+/// cannot share or be Permanent, and requires bounded readiness plus a
+/// synchronous mask/unmask contract. Invalid policy is rejected before any
+/// line or hardware change. BadState means already attached; AlreadyBound
+/// means conflicting occupancy. Without a mode, Oneshot needs a readable mode.
 [[nodiscard]]
-auto attach(IrqId virqnum, Registration &action, ustl::Option<LineMode> mode)
+auto attach(IrqId id, Registration &registration) -> Status;
+
+/// Exclusively acquire and configure/read the mode under one L1 hold. With
+/// mode, configure it; with None, query it. Leave the source masked until its
+/// owner unmasks. Occupancy is checked before hardware changes. The returned
+/// mode remains stable while the registration is attached.
+[[nodiscard]]
+auto attach(IrqId id, Registration &registration, ustl::Option<LineMode> mode)
     -> ktl::Result<TriggerMode>;
 
-/// Takes `action` off the line it hangs on; NotFound if it hangs on none,
-/// AlreadyBound if the line is Permanent. NotFound also answers an action the
-/// kernel took off (Line::revoke()), and then means the removal is done with
-/// the action and what it is embedded in, so the owner may free it as it may
-/// after Ok.
-///
-/// A barrier: it returns only once no handler of the line is running on any
-/// CPU, so the owner may free the action and its context right after. It
-/// spins with interrupts off while a handler runs, so it must not be called
-/// from a handler of the same line.
-///
-/// A Oneshot line stops being held as its action goes, without waiting for a
-/// finalize_oneshot() that may never come; when the last action goes, the
-/// line is left masked until the next owner unmasks it.
+/// Drain callbacks and unlink this registration. Last detach masks the source
+/// and clears its Shared/Oneshot/Held state. Permanent returns AlreadyBound;
+/// already detached or revoked returns NotFound. The owner separately drains
+/// its own completion callers before reusing storage or freeing context.
 [[nodiscard]]
-auto detach(Registration &action) -> Status;
+auto detach(Registration &registration) -> Status;
 
-/// Tells line `virqnum` that `action`'s thread has serviced its device: the
-/// line stops being held and is unmasked. Called by the action's owner when
-/// the work its handler answered WakeThread for is done, and only then: on
-/// a level line, an unmask before the device is serviced raises the same
-/// interrupt again at once.
-///
-/// Does nothing if `action` is no longer on that line -- a detach that ran
-/// first, or a removal, has cleared held and masked the line for it -- or if
-/// the line is not Oneshot, or if there is no such line. A line marked for
-/// removal is finalized as any other. The owner names the line
-/// because the action's own record of it is written under that line's lock,
-/// and a finalize may race a detach of the same action.
-///
-/// It takes the line's lock, which a dispatch holds while it calls the
-/// handler. So it is never called from a handler of the same line, which
-/// would spin on its own dispatch, nor with a lock held that the handler
-/// takes: a dispatch takes that lock inside the line's, and this would take
-/// the two the other way round. Nor from a handler of another line, whose
-/// dispatch holds that line's lock: no order is set between two lines'
-/// locks.
-auto finalize_oneshot(IrqId virqnum, Registration const &action) -> void;
+/// Complete deferred work on this identity and registration. Under L1, check
+/// attachment and revalidate the owner's current readiness before clearing
+/// Held and unmasking. No-op after detach, for a different registration, for
+/// non-Oneshot or while newer work is pending. It never repeats ACK or EOI.
+/// An explicit identity remains valid while detach clears the binding.
+auto finalize_oneshot(IrqId id, Registration const &registration) -> void;
 
-/// Masks line `virqnum` at its controller, so the pin raises no interrupt
-/// until it is unmasked.
-///
-/// It takes the line's lock, then the controller's register lock, as every
-/// other write of the line's mask does, so it lands wholly before or wholly
-/// after a dispatch of the line, and waits for one running on another CPU. The rules of finalize_oneshot() follow from that: never from a
-/// handler of the same line, which would spin on its own dispatch, nor with
-/// a lock held that the line's handler takes, which would take the two locks
-/// the other way round from a dispatch, nor from a handler of another line:
-/// its dispatch holds that line's lock, and two lines' locks have no order,
-/// so two handlers each masking the other's line on two CPUs would wait on
-/// each other for good. Thread context.
-///
-/// A mask is not a disable: the line keeps no record of it, so the next
-/// unmask opens the line again, whoever makes it -- unmask(),
-/// finalize_oneshot(), or a Oneshot level line's flow, after an interrupt
-/// that was on its way when the mask landed and that its action handled
-/// itself.
-///
-/// NoResource if there is no such line, InvArgs for IrqId::Invalid,
-/// NotSupported if the line's controller cannot mask. A line the kernel is
-/// taking away is masked as any other.
+/// Serialize a controller mask with dispatch. A retiring line may be masked.
 [[nodiscard]]
-auto mask(IrqId virqnum) -> Status;
+auto mask(IrqId id) -> Status;
 
-/// Unmasks line `virqnum` at its controller, unless the line is held: a
-/// Oneshot line whose thread still owes its device a service stays masked,
-/// and finalize_oneshot() unmasks it once the thread is done. Answers Ok
-/// either way, since the line runs again as soon as nothing is owed. A line
-/// the kernel is taking away is not started: NoResource.
-///
-/// Held is read under the line's lock, in the same hold as the unmask, so a
-/// dispatch on another CPU cannot hold the line between the two. The owner
-/// of a Oneshot action may call it to start the line after attach() even if
-/// an interrupt has held the line in between.
-///
-/// The same context rules and answers as mask(), NotSupported meaning the
-/// controller cannot unmask.
+/// Start delivery unless Held, in which case return Ok without reopening.
+/// A retiring line returns NoResource.
 [[nodiscard]]
-auto unmask(IrqId virqnum) -> Status;
+auto unmask(IrqId id) -> Status;
 
-/// Sets how line `virqnum` signals, and leaves it masked; the line's flow
-/// follows the new mode. Only a line nobody is on may change how it signals:
-/// an action already there would be handed interrupts it was not set up for,
-/// or none.
-///
-/// For a line nobody is about to take. An owner sets the mode of the line it
-/// takes through attach() with a mode, which does both under one hold of the
-/// line's lock: between this and a later attach(), another caller can set
-/// the mode again.
-///
-/// Thread context only: it takes the line's lock. AlreadyBound if the line
-/// has an action, NoResource also if the kernel is taking the line away, the
-/// same answers as mask() otherwise.
+/// Configure an unoccupied line and leave it masked. Occupied lines return
+/// AlreadyBound; a retiring line returns NoResource. Acquire a particular
+/// mode through attach(mode) when configuration and ownership must be atomic.
 [[nodiscard]]
-auto configure(IrqId virqnum, TriggerMode trigger, Polarity polarity) -> Status;
+auto configure(IrqId id, TriggerMode trigger, Polarity polarity) -> Status;
 
-/// How line `virqnum` signals now: what configure() last set, or what the
-/// platform programmed at boot from the firmware's tables. An owner that
-/// leaves the mode as it is reads it here to know whether the line is
-/// level-triggered, and so has to stay masked from an interrupt until the
-/// device behind it has been serviced.
-///
-/// Callable from any context, a handler of the same line included: it reads
-/// the controller under the controller's register lock and takes no line
-/// lock. The same answers as mask(), NotSupported meaning the controller
-/// cannot say.
+/// Read hardware mode under the controller's own lock, without L1. Safe in a
+/// callback; a caller needing stable ownership uses attach(mode).
 [[nodiscard]]
-auto trigger_mode(IrqId virqnum) -> ktl::Result<TriggerMode>;
+auto trigger_mode(IrqId id) -> ktl::Result<TriggerMode>;
 
-/// Whether line `virqnum` is masked at its controller now, read from the
-/// controller. For kernel tests: the irq layer keeps no copy of a line's
-/// mask and nothing on the interrupt path reads it, so this is how a test
-/// sees what a line's flow, or the owner on it, left at the controller. The
-/// answer holds only while nothing else masks or unmasks the line, so a test
-/// reads it where it alone drives the line.
-///
-/// Callable from any context, as trigger_mode(): it reads the controller
-/// under the controller's register lock and takes no line lock. The same
-/// answers as mask(), NotSupported meaning the controller cannot say.
+/// Resolve a domain-local source. Invalid means no mapping. Kernel identities
+/// are never reused, so the answer may be retained after the lookup scope.
 [[nodiscard]]
-auto is_masked_for_test(IrqId virqnum) -> ktl::Result<bool>;
+auto irq_for_source(DomainId domain, HardwareIrq source) -> IrqId;
 
-/// The resolver of the user ABI: the virq of the line made for hardware
-/// number `hirqnum` in the domain named `id`; IrqId::Invalid if no such
-/// domain is registered or it holds no such line. interrupt_map asks it with
-/// the domain and the source the route service's answer named. The number is
-/// good for good: virqs are not reused, so it is safe to keep after the
-/// lookup, and never equal to `hirqnum`, and not the same on another machine
-/// or another kernel: a program asks, and does not compute it.
+/// Recover the controller-local source of a known kernel identity. Invalid
+/// means no mapping. The caller supplies its domain when resolving it again.
 [[nodiscard]]
-auto virq_of_domain(DomainId id, HardwareIrq hirqnum) -> IrqId;
+auto source_for_irq(IrqId id) -> HardwareIrq;
 
-/// The same question asked of the root controller's domain, whose numbers are
-/// the platform's single numbering (on x86, the GSI): what the kernel's own
-/// code names a root line by. The lines of a second domain are asked for by
-/// domain and hardware number together (virq_of_domain()), never by the
-/// number alone, since two domains may hold the same one.
+/// Permanent occupancy is advisory for user error selection; attach remains
+/// the authority that excludes a conflicting owner.
 [[nodiscard]]
-auto virq_of_hwirq(HardwareIrq hirqnum) -> IrqId;
+auto is_kernel_owned(IrqId id) -> bool;
 
-/// The hardware number of line `virqnum`, the inverse of virq_of_hwirq();
-/// HardwareIrq::Invalid if there is no such line.
+/// Unclaimed deliveries since boot, or None for an absent line.
 [[nodiscard]]
-auto hwirq_of_virq(IrqId virqnum) -> HardwareIrq;
+auto spurious_count(IrqId id) -> ustl::Option<u64>;
 
-/// Whether the root domain contains this hardware source. Internal storage
-/// and its reader lifetime stay inside the query.
+/// Test seams retain the same reader scope and line guards as production.
+/// Synthetic delivery skips controller ACK/EOI; no interrupt is in service.
+[[nodiscard]]
+auto handle_irq_for_test(IrqId id) -> IrqReturn;
+[[nodiscard]]
+auto is_masked_for_test(IrqId id) -> ktl::Result<bool>;
 [[nodiscard]]
 auto root_source_exists_for_test(HardwareIrq source) -> bool;
-
-/// The flow of line `virqnum` for a kernel test that plays an interrupt from
-/// thread context: the same actions under the same locks as
-/// DomainEndpoint::dispatch(), without the end of interrupt, since no interrupt is
-/// in service to end. A line nobody is on is masked at its controller all the
-/// same, as a real interrupt would leave it. Answers what the actions
-/// answered, None if there is no such line. The read scope and line Guard
-/// keep preemption disabled through callbacks; the caller needs no extra
-/// preemption scope.
 [[nodiscard]]
-auto handle_irq_for_test(IrqId virqnum) -> IrqReturn;
-
-/// What the removal of a domain does to one of its lines (Domain::
-/// revoke_line()): marks the line and takes its actions off it, telling
-/// each through its cancel hook; AlreadyBound with nothing changed for a
-/// Permanent line or an action with no hook, NoResource for no such line.
-/// Nothing calls it but tests yet: no tree code removes a domain.
-/// unmark_dying_for_test() makes the line take actions again.
-[[nodiscard]]
-auto revoke_line_for_test(IrqId virqnum) -> Status;
-auto unmark_dying_for_test(IrqId virqnum) -> void;
-
-/// How many interrupts on line `virqnum` no action handled since boot;
-/// none if there is no such line.
-[[nodiscard]]
-auto spurious_count(IrqId const virqnum) -> ustl::Option<u64>;
-
-/// Whether the kernel itself holds line `virqnum`: an action that says
-/// Permanent is on it, as the legacy timer's is. False for a line nobody is on,
-/// a line a user program's interrupt object holds, and a number that is no
-/// line. A line is Permanent for good once it is, and no user program can make
-/// one; the kernel makes them as it starts, and an answer asked for before it
-/// has taken its own line can be out of date. So the answer chooses which
-/// refusal a program gets and never what it is granted: attach() is the
-/// authority, and refuses a Permanent line with AlreadyBound whatever was asked
-/// first. A kernel driver that takes a line for its own uses a Permanent
-/// action, and so keeps programs off it: interrupt_map and interrupt_create
-/// answer AccessDenied for it. A Permanent action cannot be Oneshot or Shared
-/// and is never detached, so a kernel holder that needs any of that is not
-/// reported.
-[[nodiscard]]
-auto is_kernel_owned(IrqId virqnum) -> bool;
+auto revoke_line_for_test(IrqId id) -> Status;
+auto unmark_dying_for_test(IrqId id) -> void;
 
 /// The bookkeeping on entry to a trap, which arch calls once, before it
 /// dispatches: records the frame and raises the counts that keep this CPU from

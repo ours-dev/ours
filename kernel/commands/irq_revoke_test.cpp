@@ -33,7 +33,6 @@
 //     NotFound must find the hook done. This needs two CPUs.
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/irq/line.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/status.hpp>
 #include <ours/task/sched/common.hpp>
@@ -48,6 +47,7 @@
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <kernel/kernel/irq/domain.hpp>
+#include <kernel/kernel/irq/line.hpp>
 #include <kernel/kernel/irq/line_access.hpp>
 #include <logz4/log.hpp>
 #include <ustl/views/span.hpp>
@@ -122,7 +122,6 @@ namespace {
         .configure = count_configure,
         .trigger_mode = edge_mode,
         .issue_eoi = no_eoi,
-        .name = "irq-revoke-test",
     };
 
     /// The same over a pin that signals a level, so its lines run the level
@@ -135,7 +134,6 @@ namespace {
         .configure = count_configure,
         .trigger_mode = level_mode,
         .issue_eoi = no_eoi,
-        .name = "irq-revoke-test",
     };
 
     /// A handler in flight that the test can see: it holds the line from the
@@ -151,11 +149,11 @@ namespace {
 
     /// An action and what its owner sees of it.
     struct Owner {
-        Owner(irq::IrqFlags const flags, irq::IrqCancel const cancel)
+        Owner(irq::RegistrationOptions const flags, irq::IrqRevocationHandler const cancel)
             : action({.handle = &owner_handler,
                       .revoke = cancel,
                       .ready = [](void *) -> bool { return true; }},
-                     this, flags, "irq-revoke-test") {}
+                     this, flags) {}
 
         irq::Registration action;
         Hold *hold = nullptr;
@@ -204,7 +202,7 @@ namespace {
     auto owner_cancel(IrqId const line, void *const context) -> void {
         auto &owner = *static_cast<Owner *>(context);
         owner.told_with.store(line, std::memory_order_relaxed);
-        owner.on_line_in_hook.store(owner.action.virqnum() == line, std::memory_order_relaxed);
+        owner.on_line_in_hook.store(owner.action.line_id() == line, std::memory_order_relaxed);
         owner.irqs_off_in_hook.store(arch::irqs_disabled(), std::memory_order_relaxed);
         owner.preempt_off_in_hook.store(
             Thread::Current::preemption_state().preemption_disabled_count() > 0,
@@ -224,8 +222,7 @@ namespace {
     /// A line of the test's own; null if it cannot be made. The caller
     /// deletes it with nobody on it.
     auto own_line(irq::ControllerOps const &chip = CHIP) -> irq::Line * {
-        auto *const line =
-            irq::Line::create(OWN_HWIRQ, OWN_LINE, irq::IrqFlags::None, "irq-revoke-test");
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(OWN_HWIRQ, OWN_LINE);
         if (line == nullptr) {
             return nullptr;
         }
@@ -260,8 +257,8 @@ namespace {
             verdict(tally, false, "make the line");
             return;
         }
-        Owner first(irq::IrqFlags::Shared, &owner_cancel);
-        Owner second(irq::IrqFlags::Shared, &owner_cancel);
+        Owner first(irq::RegistrationOptions::Shared, &owner_cancel);
+        Owner second(irq::RegistrationOptions::Shared, &owner_cancel);
         auto const attached =
             line->attach(first.action) == Status::Ok && line->attach(second.action) == Status::Ok;
         verdict(tally, attached, "two shared actions with hooks take the line");
@@ -304,8 +301,8 @@ namespace {
         // What the revoked line is left with: it was Shared, and takes an
         // exclusive action as it would any empty line, then refuses a shared.
         line->unmark_dying();
-        Owner exclusive(irq::IrqFlags::None, &owner_cancel);
-        Owner sharer(irq::IrqFlags::Shared, &owner_cancel);
+        Owner exclusive(irq::RegistrationOptions::None, &owner_cancel);
+        Owner sharer(irq::RegistrationOptions::Shared, &owner_cancel);
         auto const took = line->attach(exclusive.action);
         auto const refused = line->attach(sharer.action);
         verdict(tally, took == Status::Ok && refused == Status::AlreadyBound,
@@ -320,7 +317,7 @@ namespace {
             verdict(tally, false, "make the line");
             return;
         }
-        Owner owner(irq::IrqFlags::None, &owner_cancel);
+        Owner owner(irq::RegistrationOptions::None, &owner_cancel);
         auto const marked = line->mark_dying();
 
         auto const configures = CONFIGURES.load(std::memory_order_relaxed);
@@ -357,7 +354,8 @@ namespace {
     /// action can never come off.
     auto check_refuses_permanent(Tally &tally) -> void {
         auto *const line = own_line();
-        auto *const owner = new (mm::GAF_KERNEL) Owner(irq::IrqFlags::Permanent, &owner_cancel);
+        auto *const owner =
+            new (mm::GAF_KERNEL) Owner(irq::RegistrationOptions::Permanent, &owner_cancel);
         if (line == nullptr || owner == nullptr) {
             verdict(tally, false, "make the Permanent line");
             return;
@@ -383,8 +381,8 @@ namespace {
             verdict(tally, false, "make the line");
             return;
         }
-        Owner hooked(irq::IrqFlags::Shared, &owner_cancel);
-        Owner hookless(irq::IrqFlags::Shared, nullptr);
+        Owner hooked(irq::RegistrationOptions::Shared, &owner_cancel);
+        Owner hookless(irq::RegistrationOptions::Shared, nullptr);
         auto const attached = line->attach(hooked.action) == Status::Ok &&
                               line->attach(hookless.action) == Status::Ok;
         verdict(tally, attached, "a shared line takes an action with a hook and one without");
@@ -422,7 +420,7 @@ namespace {
             verdict(tally, false, "make the level line");
             return;
         }
-        Owner owner(irq::IrqFlags::Oneshot, &owner_cancel);
+        Owner owner(irq::RegistrationOptions::Oneshot, &owner_cancel);
         owner.wake = true;
         auto const attached = line->attach(owner.action);
         auto const woke = line->handle_irq(irq::Eoi::Skip);
@@ -458,7 +456,7 @@ namespace {
         }
         line->revoke();
         line->unmark_dying();
-        Owner next(irq::IrqFlags::Oneshot, &owner_cancel);
+        Owner next(irq::RegistrationOptions::Oneshot, &owner_cancel);
         auto const taken = line->attach(next.action);
         unmasks = UNMASKS.load(std::memory_order_relaxed);
         verdict(tally,
@@ -492,7 +490,7 @@ namespace {
             return;
         }
         Hold hold;
-        Owner owner(irq::IrqFlags::None, &owner_cancel);
+        Owner owner(irq::RegistrationOptions::None, &owner_cancel);
         owner.hold = &hold;
         auto const attached = line->attach(owner.action) == Status::Ok;
         auto const marked = line->mark_dying();
@@ -622,7 +620,7 @@ namespace {
             return;
         }
         RACE.table = table;
-        RACE.virq = table->virq_of(OWN_HWIRQ);
+        RACE.virq = table->irq_for_source(OWN_HWIRQ);
         RACE.stop.store(false, std::memory_order_relaxed);
         RACE.go.store(0, std::memory_order_relaxed);
         RACE.remover_done.store(0, std::memory_order_relaxed);
@@ -637,7 +635,8 @@ namespace {
             spawn_pinned("irqrevoke.test/detach", detacher_routine, nullptr, detacher_cpu);
         auto ran = remover != nullptr && detacher != nullptr;
         for (u32 round = 1; ran && round <= RACE_ROUNDS; ++round) {
-            auto *const owner = new (mm::GAF_KERNEL) Owner(irq::IrqFlags::None, &owner_cancel);
+            auto *const owner =
+                new (mm::GAF_KERNEL) Owner(irq::RegistrationOptions::None, &owner_cancel);
             if (owner == nullptr) {
                 ran = false;
                 break;

@@ -191,7 +191,7 @@ namespace {
     auto raise() -> void {
         auto const vector =
             static_cast<arch::IrqVec>(static_cast<usize>(arch::IrqVec::PlatformIrqMin) +
-                                      static_cast<usize>(irq::hwirq_of_virq(free_line())));
+                                      static_cast<usize>(irq::source_for_irq(free_line())));
         apic_send_ipi_self(vector, ApicDeliveryMode::Fixed);
     }
 
@@ -309,7 +309,7 @@ namespace {
         auto owned = usize{0};
         for (u32 source = 0; source < 256; ++source) {
             auto const hwirq = HardwareIrq{source};
-            auto const virq = irq::virq_of_hwirq(hwirq);
+            auto const virq = irq::irq_for_source(irq::DomainId::Root, hwirq);
             if (virq != IrqId::Invalid && irq::is_kernel_owned(virq)) {
                 owned += 1;
             }
