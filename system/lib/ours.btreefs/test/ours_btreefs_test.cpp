@@ -58,6 +58,16 @@ class FakeDevice final {
         return Status::Ok;
     }
 
+    /// Overwrites every block from |first| on with |byte|: a partition that held
+    /// other data before the volume was made over it.
+    auto fill_from(u64 const first, u8 const byte) -> void {
+        for (auto &[index, bytes]: blocks_) {
+            if (index >= first) {
+                bytes.fill(byte);
+            }
+        }
+    }
+
   private:
     std::map<u64, std::array<u8, BLOCK_BYTES>> blocks_;
 };
@@ -355,6 +365,52 @@ TEST(BtreefsTree, SplitsThroughTheRootToHeightThree) {
                                        key_of(1, ours_btreefs::ItemType::Data, offset), value),
                   Status::Ok);
         EXPECT_EQ(marker_of(value), offset * 10);
+    }
+}
+
+TEST(BtreefsTree, BuildsOnBlocksThatHoldOldBytes) {
+    // A partition that held other data: the free blocks are not zero, and every
+    // node the tree grows lands on one. 10'000 ascending inserts reach all four
+    // places a node is made: the first leaf, a leaf split, an internal split and
+    // a new root.
+    Mounted fs(8192, 1);
+    fs.device.fill_from(u64{fs.volume.bitmap_first} + fs.volume.bitmap_blocks, 0xA5);
+    auto offsets = std::vector<u64>{};
+    for (auto offset = u64{0}; offset < 10'000; ++offset) {
+        offsets.push_back(offset);
+    }
+    insert_all(fs, 1, offsets);
+    EXPECT_EQ(fs.volume.height, 3);
+    for (auto const offset: offsets) {
+        auto value = Value{};
+        ASSERT_EQ(ours_btreefs::lookup(fs.device, fs.volume,
+                                       key_of(1, ours_btreefs::ItemType::Data, offset), value),
+                  Status::Ok);
+        EXPECT_EQ(marker_of(value), offset * 10);
+    }
+
+    // A scan sees exactly the items that were inserted: no entry from a count
+    // the old bytes left in a node.
+    auto seen = std::vector<u64>{};
+    EXPECT_EQ(ours_btreefs::scan(fs.device, fs.volume, key_of(1, ours_btreefs::ItemType::Data, 0),
+                                 [&](Key const &, Value const &value) -> bool {
+                                     seen.push_back(marker_of(value));
+                                     return true;
+                                 }),
+              Status::Ok);
+    EXPECT_EQ(seen.size(), offsets.size());
+}
+
+TEST(BtreefsTree, AFirstLeafOnOldBytesHoldsNothingBeyondItsItems) {
+    // Nothing the block held before may reach the disk inside a new node: past
+    // the one item the leaf holds, every byte is zero.
+    Mounted fs(64, 1);
+    fs.device.fill_from(u64{fs.volume.bitmap_first} + fs.volume.bitmap_blocks, 0xA5);
+    insert_all(fs, 1, {0});
+    auto bytes = std::array<u8, BLOCK_BYTES>{};
+    ASSERT_EQ(fs.device.read_block(fs.volume.root, bytes), Status::Ok);
+    for (auto at = usize{256}; at < BLOCK_BYTES; ++at) {
+        ASSERT_EQ(bytes[at], u8{0}) << "byte " << at;
     }
 }
 
@@ -1077,6 +1133,69 @@ TEST(BtreefsTransactions, TruncateOfABigFileRunsEveryRemoveInOneTransaction) {
                                                     value_of(88));
                     }),
               Status::Ok);
+}
+
+TEST(BtreefsNodes, ANewNodeStartsEmptyOverOldBytes) {
+    // The bytes under a new node are whatever its block held before: here every
+    // one is set, the count and the chain link included.
+    auto bytes = std::array<u8, BLOCK_BYTES>{};
+    bytes.fill(0xFF);
+    auto const leaf = ours_btreefs::detail::Node::leaf(bytes);
+    EXPECT_TRUE(leaf.is_leaf());
+    EXPECT_EQ(leaf.count(), usize{0});
+    EXPECT_EQ(leaf.next_leaf(), u64{0});
+
+    bytes.fill(0xFF);
+    auto const internal = ours_btreefs::detail::Node::internal(bytes);
+    EXPECT_FALSE(internal.is_leaf());
+    EXPECT_EQ(internal.count(), usize{0});
+}
+
+TEST(BtreefsTransactions, FreshBlocksAreZeroNotTheDevicesOldBytes) {
+    // fresh() answers zeros for a block the transaction has just taken, and
+    // overwrites a copy it already holds, where cached() would answer what the
+    // device has.
+    auto fs = Mounted(64, 1);
+    fs.device.fill_from(u64{fs.volume.bitmap_first} + fs.volume.bitmap_blocks, 0xA5);
+    auto tx = ours_btreefs::Transaction(fs.device, fs.volume);
+    auto const block = tx.alloc_block();
+    ASSERT_TRUE(block.is_ok());
+
+    auto const bytes = tx.fresh(block.unwrap());
+    ASSERT_TRUE(bytes.is_ok());
+    for (auto const byte: bytes.unwrap()) {
+        ASSERT_EQ(byte, u8{0});
+    }
+
+    bytes.unwrap()[7] = 0x42;
+    auto const again = tx.fresh(block.unwrap());
+    ASSERT_TRUE(again.is_ok());
+    EXPECT_EQ(again.unwrap()[7], u8{0});
+}
+
+TEST(BtreefsTransactions, FreshRefusesABlockThisTransactionHasNotTaken) {
+    // A block the committed tree owns, or a copy on the walk's path, is not
+    // fresh: zeroing it would erase what the transaction stands on.
+    auto fs = Mounted(64, 1);
+    auto tx = ours_btreefs::Transaction(fs.device, fs.volume);
+    auto const refused = tx.fresh(40);
+    ASSERT_TRUE(refused.is_err());
+    EXPECT_EQ(refused.unwrap_err(), Status::InvArgs);
+}
+
+TEST(BtreefsTransactions, FreshAnswersNoResourceWhenTheCacheIsFull) {
+    auto fs = Mounted(256, 1);
+    auto tx = ours_btreefs::Transaction(fs.device, fs.volume);
+    for (auto held = usize{0}; held < decltype(tx)::CACHE_ENTRIES; ++held) {
+        auto const block = tx.alloc_block();
+        ASSERT_TRUE(block.is_ok());
+        ASSERT_TRUE(tx.fresh(block.unwrap()).is_ok());
+    }
+    auto const last = tx.alloc_block();
+    ASSERT_TRUE(last.is_ok());
+    auto const refused = tx.fresh(last.unwrap());
+    ASSERT_TRUE(refused.is_err());
+    EXPECT_EQ(refused.unwrap_err(), Status::NoResource);
 }
 
 // A corrupted count byte cannot drive the slot arithmetic out of the
