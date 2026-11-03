@@ -769,6 +769,31 @@ auto unlink(std::string_view const path) -> ours::Status {
     return decoded.unwrap();
 }
 
+auto unlink_at(ours::Uandle const dir, std::string_view const name) -> ours::Status {
+    if (name.empty() || name == "." || name == "..") {
+        return Status::BadPath;
+    }
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const txid = next_txid();
+    auto const request =
+        ours_io::encode_unlink(bytes, ours_io::UnlinkRequest{.txid = txid, .path = name});
+    if (request.is_err()) {
+        return request.unwrap_err();
+    }
+    Incoming reply;
+    if (auto const status = call(dir, request.unwrap(), reply); status != Status::Ok) {
+        return status;
+    }
+    if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+        return *closed;
+    }
+    auto const decoded = wire::decode_reply_status(reply.message(), ours_io::UNLINK, txid);
+    if (decoded.is_err()) {
+        return Status::InvArgs;
+    }
+    return decoded.unwrap();
+}
+
 auto chdir(std::string_view const path, ours_io::Flags const flags) -> Status {
     // The open itself resolves absolute paths through the namespace and
     // relative ones against the working directory -- so a relative chdir

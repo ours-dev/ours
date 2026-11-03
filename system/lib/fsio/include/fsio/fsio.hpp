@@ -195,6 +195,12 @@ auto read_dirents(ours::Uandle directory, std::span<u8> buffer)
 /// what it named. NotFound when nothing carries the name.
 auto unlink(std::string_view path) -> ours::Status;
 
+/// Directory.Unlink on |name| under the directory |dir| names -- the
+/// handle form of unlink(path), for a caller already holding the parent:
+/// the message goes on that connection, whose rights gate it as any other.
+/// NotFound when nothing carries the name.
+auto unlink_at(ours::Uandle dir, std::string_view name) -> ours::Status;
+
 /// Sets this process's working directory to |path| -- absolute, or relative
 /// to the working directory already set -- with |flags| as the working
 /// directory's rights: a relative open later may ask no more than chdir

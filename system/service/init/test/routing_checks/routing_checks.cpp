@@ -2190,6 +2190,57 @@ auto check_disk() -> void {
         fail("/disk openat read: the bytes are not the pattern");
     }
     expect("/disk openat read close", fsio::close(reopened_at.unwrap()), Status::Ok);
+
+    // A read-only connection to the same directory cannot unlink from it:
+    // the right the operation costs is ModifyDirectory, and the r* handle
+    // does not hold it. unlink_at() carries the message on the caller's
+    // connection, whose gate answers in the reply. r*, spelled out: the
+    // rights a read-only offer carries.
+    auto const readonly_dir =
+        fsio::open(std::string_view{"/disk"}, Flags::PermReadBytes | Flags::PermEnumerate |
+                                                  Flags::PermTraverse | Flags::PermGetAttributes |
+                                                  Flags::PermConnect);
+    if (!expect("/disk readonly openat", status_of(readonly_dir), Status::Ok)) {
+        auto _ = fsio::close(at_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk readonly unlink",
+           fsio::unlink_at(readonly_dir.unwrap(), std::string_view{"openat-check.txt"}),
+           Status::AccessDenied);
+    expect("/disk readonly close", fsio::close(readonly_dir.unwrap()), Status::Ok);
+
+    // The write-side gate on O_TRUNC, with the discriminator that makes it
+    // airtight: a fresh file, an ask carrying FileTruncate and no write
+    // right -- refused by whatever layer answers first, the namespace's walk
+    // (its binding cannot carry the ask) or the file connection's own
+    // -- and then the file survives the ask byte for byte. The refusal's
+    // exact status is layered; the survival is the behavior.
+    auto const ro_trunc =
+        fsio::open(at_dir.unwrap(), std::string_view{"ro-trunc.txt"},
+                   Flags::PermReadBytes | Flags::PermWriteBytes | Flags::FlagMaybeCreate);
+    if (!expect("/disk ro-trunc create", status_of(ro_trunc), Status::Ok)) {
+        auto _ = fsio::close(at_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    auto const ro_pattern = std::array<u8, 1>{0xA5};
+    if (!expect("/disk ro-trunc write", status_of(fsio::write(ro_trunc.unwrap(), ro_pattern)),
+                Status::Ok)) {
+        auto _ = fsio::close(ro_trunc.unwrap());
+        auto _ = fsio::close(at_dir.unwrap());
+        auto _ = fsio::close(root.unwrap());
+        return;
+    }
+    expect("/disk ro-trunc close", fsio::close(ro_trunc.unwrap()), Status::Ok);
+    // The namespace open waits, so the refusal is the open's own status:
+    // the gate is the open's own ask, not the connection's ceiling.
+    expect(
+        "/disk readonly truncate",
+        refused(std::string_view{"/disk/ro-trunc.txt"}, Flags::PermReadBytes | Flags::FileTruncate),
+        Status::AccessDenied);
+    expect("/disk ro-trunc unlink",
+           fsio::unlink_at(at_dir.unwrap(), std::string_view{"ro-trunc.txt"}), Status::Ok);
     expect("/disk openat unlink", fsio::unlink(OPENAT_FILE), Status::Ok);
     expect("/disk openat dotdot",
            status_of(fsio::open(at_dir.unwrap(), std::string_view{"../x"}, Flags::PermReadBytes)),
