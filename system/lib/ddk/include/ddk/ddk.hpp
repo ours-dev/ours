@@ -15,7 +15,7 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
-#include <ours_resource/client.hpp>
+#include <prot/resource_client.hpp>
 #include <ustl/result.hpp>
 
 /// The runtime helpers every userspace driver restates by hand, as objects
@@ -57,7 +57,7 @@ enum class Kind : u8 {
 
 /// How `Resources` reaches the root's built-ins: the real client by default,
 /// a fake in the host tests.
-using Getter = auto (*)(ours_resource::Protocol const &)
+using Getter = auto (*)(prot::resource::Protocol const &)
     -> ustl::Result<ours::Uandle, ours::Status>;
 
 /// The resource ladder. Copying is refused: the handles are this object's to
@@ -116,23 +116,23 @@ class Resources final {
     }
 
   private:
-    static auto default_getter(ours_resource::Protocol const &protocol)
+    static auto default_getter(prot::resource::Protocol const &protocol)
         -> ustl::Result<ours::Uandle, ours::Status> {
-        return ours_resource::get(protocol);
+        return prot::resource::get(protocol);
     }
 
-    static auto protocol_of(Kind const kind) -> ours_resource::Protocol const & {
+    static auto protocol_of(Kind const kind) -> prot::resource::Protocol const & {
         switch (kind) {
             case Kind::Mmio:
-                return ours_resource::MMIO_PROTOCOL;
+                return prot::resource::MMIO_PROTOCOL;
             case Kind::Ioport:
-                return ours_resource::IOPORT_PROTOCOL;
+                return prot::resource::IOPORT_PROTOCOL;
             case Kind::Iommu:
-                return ours_resource::IOMMU_PROTOCOL;
+                return prot::resource::IOMMU_PROTOCOL;
             case Kind::Irq:
-                return ours_resource::IRQ_PROTOCOL;
+                return prot::resource::IRQ_PROTOCOL;
         }
-        return ours_resource::MMIO_PROTOCOL;
+        return prot::resource::MMIO_PROTOCOL;
     }
 
     /// The roots this object holds, in acquisition order.

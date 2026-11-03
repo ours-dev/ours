@@ -24,7 +24,7 @@ namespace {
     }
 
     /// Whether every name of the clean path |path| fits in
-    /// ours_io::MAX_NAME_LENGTH, as the walk down the namespace checks each
+    /// prot::io::MAX_NAME_LENGTH, as the walk down the namespace checks each
     /// name it reaches.
     auto names_fit(std::string_view const path) -> bool {
         auto start = usize{0};
@@ -33,7 +33,7 @@ namespace {
             if (end == std::string_view::npos) {
                 end = path.size();
             }
-            if (end - start > ours_io::MAX_NAME_LENGTH) {
+            if (end - start > prot::io::MAX_NAME_LENGTH) {
                 return false;
             }
             start = end + 1;

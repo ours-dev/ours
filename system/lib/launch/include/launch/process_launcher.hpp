@@ -11,7 +11,7 @@
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
-#include <ours_process/ours_process.hpp>
+#include <prot/process.hpp>
 #include <ustl/result.hpp>
 #include <ustl/util/enum_bits.hpp>
 #include <wire/wire.hpp>
@@ -37,7 +37,7 @@ struct Startup {
     ours::Uandle job;
 
     /// The process's name, from LaunchInfo: at most
-    /// ours_process::MAX_NAME_LEN bytes, no NUL.
+    /// prot::process::MAX_NAME_LEN bytes, no NUL.
     std::string_view name;
 
     /// The program, from LaunchInfo. Not consumed, like |job|.
@@ -150,7 +150,7 @@ class ProcessLauncherState final {
 
         /// With Reply: the answer. On Ok, |reply.process| is the caller's,
         /// to send with the reply or close.
-        ours_process::LaunchReply reply = {.status = ours::Status::Ok};
+        prot::process::LaunchReply reply = {.status = ours::Status::Ok};
     };
 
     /// A state that calls |ops| for as long as it lives: |ops| must outlive
@@ -228,20 +228,20 @@ class ProcessLauncherState final {
     };
     static_assert(MAX_STRING_BYTES <= 0xFFFF);
 
-    auto add_args(ours_process::PackedStrings args) -> void;
-    auto add_handles(ours_process::AddHandlesRequest const &request) -> void;
-    auto add_names(ours_process::AddNamesRequest const &request) -> void;
-    auto launch(ours_process::LaunchRequest const &request, std::span<u8> scratch) -> Received;
+    auto add_args(prot::process::PackedStrings args) -> void;
+    auto add_handles(prot::process::AddHandlesRequest const &request) -> void;
+    auto add_names(prot::process::AddNamesRequest const &request) -> void;
+    auto launch(prot::process::LaunchRequest const &request, std::span<u8> scratch) -> Received;
 
     /// Judges what is held against |info|, encodes the processargs into
     /// |scratch| and calls LauncherOps::start(). Its answer, or InvArgs.
-    auto start(ours_process::LaunchInfo const &info, std::span<u8> scratch)
+    auto start(prot::process::LaunchInfo const &info, std::span<u8> scratch)
         -> ustl::Result<ours::Uandle, ours::Status>;
 
     /// Copies |strings| to the end of m_strings and records where each one
     /// lies in |pieces|, from |count| on. The caller has checked that they
     /// fit.
-    auto store_strings(ours_process::PackedStrings strings, std::span<Piece> pieces, usize count)
+    auto store_strings(prot::process::PackedStrings strings, std::span<Piece> pieces, usize count)
         -> void;
 
     [[nodiscard]]

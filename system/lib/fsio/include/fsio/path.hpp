@@ -8,17 +8,17 @@
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 
 namespace fsio {
 /// The longest path fsio takes: the longest one Open carries
-/// (ours_io::MAX_PATH_LENGTH), which leaves room in a 4 KiB channel message
+/// (prot::io::MAX_PATH_LENGTH), which leaves room in a 4 KiB channel message
 /// for Open's other fields.
 ///
 /// A path this long still fits in an Open once cleaned, because cleaning never
 /// lengthens a path (see clean_path()), and the part of it that Open carries,
 /// what is left after its mount point, is shorter again.
-inline constexpr auto MAX_PATH_LENGTH = ours_io::MAX_PATH_LENGTH;
+inline constexpr auto MAX_PATH_LENGTH = prot::io::MAX_PATH_LENGTH;
 
 /// A path as clean_path() leaves it, held in place: MAX_PATH_LENGTH bytes,
 /// wherever the caller puts it, since a user program has no heap.

@@ -8,7 +8,7 @@ executable("block_server") {
   deps = [
     "//system/lib/block-server",
     "//system/lib/ioservice:outgoing",
-    "//system/lib/ours.io",
+    "//system/lib/protocols",
     "//system/lib/testing/fake_kernel",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",

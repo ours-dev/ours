@@ -32,7 +32,7 @@
 #include <ours/port.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <wire/wire.hpp>
 
 // How gtest prints a status in a failure: by name, found by argument-
@@ -49,7 +49,7 @@ namespace {
 using ioservice::NodeId;
 using ours::Status;
 using ours::Uandle;
-using ours_io::Flags;
+using prot::io::Flags;
 
 constexpr auto ECHO = std::string_view{"ours.test.Echo"};
 constexpr auto OTHER = std::string_view{"ours.test.Other"};
@@ -58,7 +58,7 @@ constexpr auto OTHER = std::string_view{"ours.test.Other"};
 /// the protocol bit that makes a file or a service answer NotDir. The root
 /// writes this, with the declared path and the joined subdir, for each
 /// directory use that routes to a provider.
-constexpr auto READABLE_DIRECTORY = Flags::ProtocolDirectory | ours_io::PERM_READABLE;
+constexpr auto READABLE_DIRECTORY = Flags::ProtocolDirectory | prot::io::PERM_READABLE;
 
 /// The tests use the decided sizes as numbers, not through the constants, so
 /// that a constant changed by mistake fails them instead of moving them.
@@ -175,8 +175,8 @@ class OutgoingTest: public testing::Test {
                      Uandle const object) -> void {
         std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
         std::array<Uandle, 1> handles{};
-        auto const encoded = ours_io::encode_open(
-            bytes, handles, ours_io::OpenRequest{.flags = flags, .path = path, .object = object});
+        auto const encoded = prot::io::encode_open(
+            bytes, handles, prot::io::OpenRequest{.flags = flags, .path = path, .object = object});
         ASSERT_TRUE(encoded.is_ok());
         auto const message = encoded.unwrap();
         EXPECT_EQ(ours::channel_write(directory, ours::ChannelWriteOptions::None,
@@ -238,7 +238,7 @@ class OutgoingTest: public testing::Test {
     auto read_all(Uandle const file, u64 const count) -> std::optional<std::string> {
         std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
         auto const encoded =
-            ours_io::encode_read(bytes, ours_io::ReadRequest{.txid = 1, .count = count});
+            prot::io::encode_read(bytes, prot::io::ReadRequest{.txid = 1, .count = count});
         EXPECT_TRUE(encoded.is_ok());
         if (encoded.is_err()) {
             return std::nullopt;
@@ -257,7 +257,7 @@ class OutgoingTest: public testing::Test {
                                &num_handles) != Status::Ok) {
             return std::nullopt;
         }
-        auto const decoded = ours_io::decode_read_reply(
+        auto const decoded = prot::io::decode_read_reply(
             wire::Message{.bytes = std::span{reply}.first(num_bytes), .handles = {}}, 1);
         if (decoded.is_err() || decoded.unwrap().status != Status::Ok) {
             return std::nullopt;
@@ -557,11 +557,11 @@ TEST_F(OutgoingTest, AddDirectoryRefusesAPathThatIsNotValid) {
     // One byte past what a path may be, in segments that are each a valid
     // name, so that the length is what is wrong with it.
     auto too_long = std::string{};
-    while (too_long.size() <= ours_io::MAX_PATH_LENGTH) {
+    while (too_long.size() <= prot::io::MAX_PATH_LENGTH) {
         too_long += "/a";
     }
     auto const long_path = keep(too_long);
-    auto const long_name = keep("/" + std::string(ours_io::MAX_NAME_LENGTH + 1, 'x'));
+    auto const long_name = keep("/" + std::string(prot::io::MAX_NAME_LENGTH + 1, 'x'));
     auto const refused = std::vector<std::string_view>{
         // Not absolute, or nothing below the root.
         "",
@@ -763,7 +763,7 @@ TEST_F(OutgoingTest, AnOpenWithRightsBeyondTheConnectionsIsAccessDenied) {
     // the first Open, for the entry, is the route's own check: this asks for
     // what a use of w* would, and the directory serves it.
     EXPECT_EQ(
-        open_through(directory, "export/data", Flags::ProtocolDirectory | ours_io::PERM_WRITABLE)
+        open_through(directory, "export/data", Flags::ProtocolDirectory | prot::io::PERM_WRITABLE)
             .status,
         Status::Ok);
 }
@@ -1376,8 +1376,8 @@ TEST_F(OutgoingTest, ASubtreeNodeIsListedAsADirectoryNextToItsSiblings) {
     auto const export_dir = open_through(directory, "export", READABLE_DIRECTORY);
     ASSERT_EQ(export_dir.status, Status::Ok);
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_io::encode_read_dirents(
-        bytes, ours_io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
+    auto const encoded = prot::io::encode_read_dirents(
+        bytes, prot::io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
     ASSERT_TRUE(encoded.is_ok());
     EXPECT_EQ(ours::channel_write(export_dir.client, ours::ChannelWriteOptions::None,
                                   encoded.unwrap().bytes.data(),
@@ -1391,21 +1391,21 @@ TEST_F(OutgoingTest, ASubtreeNodeIsListedAsADirectoryNextToItsSiblings) {
                                  nullptr, static_cast<u32>(reply.size()), 0, &num_bytes,
                                  &num_handles),
               Status::Ok);
-    auto const decoded = ours_io::decode_read_dirents_reply(
+    auto const decoded = prot::io::decode_read_dirents_reply(
         wire::Message{.bytes = std::span{reply}.first(num_bytes), .handles = {}}, 1);
     ASSERT_TRUE(decoded.is_ok());
     ASSERT_EQ(decoded.unwrap().status, Status::Ok);
     auto names = std::vector<std::string>{};
-    auto types = std::vector<ours_io::DirentType>{};
-    auto reader = ours_io::DirentReader(decoded.unwrap().dirents);
+    auto types = std::vector<prot::io::DirentType>{};
+    auto reader = prot::io::DirentReader(decoded.unwrap().dirents);
     for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
         names.emplace_back(next.unwrap().value().name);
         types.push_back(next.unwrap().value().type);
     }
     EXPECT_EQ(names, (std::vector<std::string>{".", "data", "live"}));
-    EXPECT_EQ(types, (std::vector<ours_io::DirentType>{ours_io::DirentType::Directory,
-                                                       ours_io::DirentType::Directory,
-                                                       ours_io::DirentType::Directory}));
+    EXPECT_EQ(types, (std::vector<prot::io::DirentType>{prot::io::DirentType::Directory,
+                                                        prot::io::DirentType::Directory,
+                                                        prot::io::DirentType::Directory}));
 }
 
 TEST_F(OutgoingTest, AddSubtreeRefusesAPathThatIsNotValid) {

@@ -1,0 +1,97 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# The protocols library: every wire contract between OS components, one
+# include root (<prot/...>) and one namespace (prot, a sub-namespace per
+# family -- prot::block, prot::io, ...), written by hand on //system/lib/wire
+# (component-framework design D20). ours.block, ours.io, ours.resource,
+# ours.acpi, ours.fshost and ours.process were the six libraries this
+# consolidates; their per-family split lives on as the sub-namespaces.
+#
+# Under //system/lib rather than beside a component: both sides of every
+# route speak it. Bytes alone, no system call, so the codecs build in every
+# toolchain, the host one included, where their tests run; the client
+# plumbing (the *_client.hpp headers) makes system calls and is user-only.
+source_set("protocols") {
+  sources = [
+    "src/acpi.cpp",
+    "src/block.cpp",
+    "src/fshost.cpp",
+    "src/io.cpp",
+    "src/process.cpp",
+    "src/resource.cpp",
+  ]
+
+  # Its messages are wire::Message and its methods wire::Method, so a user
+  # of the codecs is a user of the framing too.
+  public_deps = [
+    ":headers",
+    "//system/lib/wire",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [
+    "include/prot/acpi.hpp",
+    "include/prot/block.hpp",
+    "include/prot/fshost.hpp",
+    "include/prot/io.hpp",
+    "include/prot/process.hpp",
+    "include/prot/resource.hpp",
+  ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# The client side: the calls with their plumbing, over one connected channel.
+# Its own target, apart from "headers", because it makes system calls and so
+# builds in a user toolchain only, while the codecs alone build in the host
+# toolchain too, where their tests run.
+if (!is_host_toolchain && toolchain_environment == "user") {
+  source_set("client") {
+    sources = [
+      "src/acpi_client.cpp",
+      "src/resource_client.cpp",
+    ]
+    public_deps = [
+      ":client.headers",
+      ":protocols",
+    ]
+    deps = [ "//system/lib/fsio" ]
+    visibility = [ "*" ]
+  }
+
+  cpp_interface("client.headers") {
+    public = [
+      "include/prot/acpi_client.hpp",
+      "include/prot/block_client.hpp",
+      "include/prot/resource_client.hpp",
+    ]
+    public_deps = [ ":headers" ]
+    visibility = [ ":*" ]
+  }
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [
+    "test:block($host_toolchain)",
+    "test:fshost($host_toolchain)",
+    "test:io($host_toolchain)",
+    "test:process($host_toolchain)",
+    "test:resource($host_toolchain)",
+    "test:acpi($host_toolchain)",
+  ]
+}

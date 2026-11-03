@@ -71,7 +71,7 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <ustl/lazy_init.hpp>
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
@@ -79,7 +79,7 @@
 namespace {
 using ours::Status;
 using ours::Uandle;
-using ours_io::Flags;
+using prot::io::Flags;
 
 /// How many connections DocsTree's server allows at once: the root connection
 /// the Opens are forwarded to, a consumer's entry, every directory or file a
@@ -280,9 +280,9 @@ class DocsTree final: public ioservice::SubtreeHandler, private ioservice::LoopS
     auto open(std::string_view const rest, Flags const flags, Uandle const channel)
         -> void override {
         auto handles = std::array{channel};
-        auto const encoded = ours_io::encode_open(
+        auto const encoded = prot::io::encode_open(
             m_storage->forward_bytes, handles,
-            ours_io::OpenRequest{.flags = flags, .path = rest, .object = channel});
+            prot::io::OpenRequest{.flags = flags, .path = rest, .object = channel});
         if (encoded.is_err()) {
             // A rest the outgoing directory handed over is a valid path, which
             // fits a message, so this is the buffer's own bug.

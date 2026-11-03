@@ -74,8 +74,7 @@ if (!is_host_toolchain) {
       "//system/lib/ddk",
       "//system/lib/ioservice:outgoing",
       "//system/lib/loop",
-      "//system/lib/ours.acpi",
-      "//system/lib/ours.resource:client",
+      "//system/lib/protocols:client",
       "//system/lib/wire",
     ]
   }

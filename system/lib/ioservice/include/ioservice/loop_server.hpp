@@ -13,7 +13,7 @@
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <wire/wire.hpp>
 
 /// A Server served on a Loop: the glue between the core, which answers one
@@ -82,7 +82,7 @@ class LoopServer final {
         /// Unless overridden it closes |channel|, since nothing else would: a
         /// program that adds no Subtree node never reaches it, and one that
         /// does is told by its client seeing the channel close.
-        virtual auto subtree(u64 value, std::string_view rest, ours_io::Flags flags,
+        virtual auto subtree(u64 value, std::string_view rest, prot::io::Flags flags,
                              ours::Uandle channel) -> void;
 
         /// A reply could not be written, with what channel_write answered:
@@ -197,7 +197,7 @@ class LoopServer final {
     /// (InvArgs, NotDir), or NoResource when every connection is in use, a
     /// connection has no Binding, or the Loop is full.
     [[nodiscard]]
-    auto serve(ours::Uandle channel, NodeId directory, ours_io::Operations rights) -> ours::Status;
+    auto serve(ours::Uandle channel, NodeId directory, prot::io::Operations rights) -> ours::Status;
 
   private:
     /// Handles what |observed| says happened on |connection|: one message,

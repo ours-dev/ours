@@ -28,7 +28,7 @@
 #include <ours/port.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <wire/wire.hpp>
 
 // How gtest prints a status in a failure: by name, found by argument-
@@ -44,7 +44,7 @@ auto PrintTo(Status const status, std::ostream *const out) -> void {
 namespace {
 using ours::Status;
 using ours::Uandle;
-using ours_io::Flags;
+using prot::io::Flags;
 
 /// The connections the server allows at once.
 constexpr auto CONNECTIONS = usize{4};
@@ -148,8 +148,8 @@ auto open(Uandle const directory, std::string_view const path, Flags const flags
           Uandle const object) -> void {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 1> handles{};
-    auto const encoded = ours_io::encode_open(
-        bytes, handles, ours_io::OpenRequest{.flags = flags, .path = path, .object = object});
+    auto const encoded = prot::io::encode_open(
+        bytes, handles, prot::io::OpenRequest{.flags = flags, .path = path, .object = object});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
 }
@@ -157,8 +157,8 @@ auto open(Uandle const directory, std::string_view const path, Flags const flags
 /// Writes ReadDirents(|txid|) on |directory|.
 auto request_dirents(Uandle const directory, u32 const txid) -> void {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_io::encode_read_dirents(
-        bytes, ours_io::ReadDirentsRequest{.txid = txid, .max_bytes = 512});
+    auto const encoded = prot::io::encode_read_dirents(
+        bytes, prot::io::ReadDirentsRequest{.txid = txid, .max_bytes = 512});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
 }
@@ -168,7 +168,7 @@ auto clone(Uandle const directory, Uandle const object) -> void {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 1> handles{};
     auto const encoded =
-        ours_io::encode_clone(bytes, handles, ours_io::CloneRequest{.request = object});
+        prot::io::encode_clone(bytes, handles, prot::io::CloneRequest{.request = object});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
 }
@@ -193,7 +193,7 @@ auto expect_dirents_reply(Uandle const directory, u32 const txid) -> void {
     auto const reply = receive(directory);
     ASSERT_TRUE(reply.has_value());
     auto const decoded =
-        ours_io::decode_read_dirents_reply(wire::Message{.bytes = *reply, .handles = {}}, txid);
+        prot::io::decode_read_dirents_reply(wire::Message{.bytes = *reply, .handles = {}}, txid);
     ASSERT_TRUE(decoded.is_ok());
     EXPECT_EQ(decoded.unwrap().status, Status::Ok);
     EXPECT_FALSE(decoded.unwrap().dirents.empty());
@@ -299,7 +299,7 @@ class LoopServerTest: public testing::Test {
     /// directory: the client end first.
     auto serve_root() -> std::array<Uandle, 2> {
         auto const ends = channel();
-        EXPECT_EQ(server().serve(ends[1], m_root, ours_io::R_STAR_DIR), Status::Ok);
+        EXPECT_EQ(server().serve(ends[1], m_root, prot::io::R_STAR_DIR), Status::Ok);
         return ends;
     }
 
@@ -323,11 +323,11 @@ class LoopServerTest: public testing::Test {
 };
 
 TEST_F(LoopServerTest, ServeRefusals) {
-    EXPECT_EQ(server().serve(Uandle::Invalid, m_root, ours_io::R_STAR_DIR), Status::InvArgs);
+    EXPECT_EQ(server().serve(Uandle::Invalid, m_root, prot::io::R_STAR_DIR), Status::InvArgs);
 
     // A service is not a directory, and nothing is served.
     auto const [client, server_end] = channel();
-    EXPECT_EQ(server().serve(server_end, m_echo, ours_io::R_STAR_DIR), Status::NotDir);
+    EXPECT_EQ(server().serve(server_end, m_echo, prot::io::R_STAR_DIR), Status::NotDir);
     EXPECT_TRUE(fake::kernel().is_open(server_end));
 }
 
@@ -336,7 +336,7 @@ TEST_F(LoopServerTest, ServeRefusesPastItsConnections) {
         serve_root();
     }
     auto const [client, server_end] = channel();
-    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
+    EXPECT_EQ(server().serve(server_end, m_root, prot::io::R_STAR_DIR), Status::NoResource);
     // Refused, so still the caller's.
     EXPECT_TRUE(fake::kernel().is_open(server_end));
 }
@@ -378,7 +378,7 @@ class ConnectOnly final: public ioservice::LoopServer::Delegate {
 TEST_F(LoopServerTest, OpenThatWalksToASubtreeNodeReachesTheDelegateWithWhatItWasAskedFor) {
     auto const [directory, directory_server] = serve_root();
     auto const [client, object] = channel();
-    constexpr auto FLAGS = Flags::ProtocolDirectory | ours_io::PERM_READABLE;
+    constexpr auto FLAGS = Flags::ProtocolDirectory | prot::io::PERM_READABLE;
     open(directory, "mount/a/b", FLAGS, object);
     run();
 
@@ -400,7 +400,7 @@ TEST_F(LoopServerTest, OpenThatWalksToASubtreeNodeReachesTheDelegateWithWhatItWa
 TEST_F(LoopServerTest, TheRestIsDotWhenTheOpenNamesTheSubtreeNodeItself) {
     auto const [directory, directory_server] = serve_root();
     auto const [client, object] = channel();
-    open(directory, "mount", Flags::ProtocolDirectory | ours_io::PERM_READABLE, object);
+    open(directory, "mount", Flags::ProtocolDirectory | prot::io::PERM_READABLE, object);
     run();
 
     ASSERT_EQ(calls().subtrees.size(), 1u);
@@ -412,7 +412,7 @@ TEST_F(LoopServerTest, OpenOfASubtreeNodeMakesNoConnectionAndNoSlot) {
     // Many more Opens than there are connections: none takes one.
     for (auto count = usize{0}; count < 2 * CONNECTIONS; ++count) {
         auto const [client, object] = channel();
-        open(directory, "mount/x", ours_io::PERM_READABLE, object);
+        open(directory, "mount/x", prot::io::PERM_READABLE, object);
         run();
     }
     EXPECT_EQ(calls().subtrees.size(), 2 * CONNECTIONS);
@@ -423,13 +423,13 @@ TEST_F(LoopServerTest, OpenOfASubtreeNodeMakesNoConnectionAndNoSlot) {
         serve_root();
     }
     auto const [client, server_end] = channel();
-    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
+    EXPECT_EQ(server().serve(server_end, m_root, prot::io::R_STAR_DIR), Status::NoResource);
 }
 
 TEST_F(LoopServerTest, TheRestViewsTheRequestAndDoesNotLastPastTheCall) {
     auto const [directory, directory_server] = serve_root();
     auto const [client, first] = channel();
-    open(directory, "mount/abc", ours_io::PERM_READABLE, first);
+    open(directory, "mount/abc", prot::io::PERM_READABLE, first);
     run();
     ASSERT_EQ(calls().subtrees.size(), 1u);
 
@@ -444,7 +444,7 @@ TEST_F(LoopServerTest, TheRestViewsTheRequestAndDoesNotLastPastTheCall) {
 
     // The next request is read over it.
     auto const [other_client, second] = channel();
-    open(directory, "mount/XYZ", ours_io::PERM_READABLE, second);
+    open(directory, "mount/XYZ", prot::io::PERM_READABLE, second);
     run();
     EXPECT_EQ(viewed, "XYZ");
     EXPECT_EQ(calls().subtrees[0].rest, "abc");
@@ -454,7 +454,7 @@ TEST_F(LoopServerTest, TheRestViewsTheRequestAndDoesNotLastPastTheCall) {
 TEST_F(LoopServerTest, ADelegateThatParksAnOpenCanAnswerItLaterOnItsChannel) {
     auto const [directory, directory_server] = serve_root();
     auto const [client, object] = channel();
-    open(directory, "mount/parked", ours_io::PERM_READABLE, object);
+    open(directory, "mount/parked", prot::io::PERM_READABLE, object);
     run();
     ASSERT_EQ(calls().subtrees.size(), 1u);
 
@@ -483,7 +483,7 @@ TEST_F(LoopServerTest, ADelegateThatDoesNotOverrideSubtreeClosesTheChannel) {
     server().set_delegate(&connect_only);
     auto const [directory, directory_server] = serve_root();
     auto const [client, object] = channel();
-    open(directory, "mount/x", ours_io::PERM_READABLE, object);
+    open(directory, "mount/x", prot::io::PERM_READABLE, object);
     run();
 
     // Nobody else would: the server gave the channel away, and the default
@@ -497,7 +497,7 @@ TEST_F(LoopServerTest, OpenOfASubtreeNodeWithoutADelegateClosesItsChannel) {
     server().set_delegate(nullptr);
     auto const [directory, directory_server] = serve_root();
     auto const [client, object] = channel();
-    open(directory, "mount/x", ours_io::PERM_READABLE, object);
+    open(directory, "mount/x", prot::io::PERM_READABLE, object);
     run();
 
     EXPECT_FALSE(fake::kernel().is_open(object));
@@ -529,7 +529,7 @@ TEST_F(LoopServerTest, SubtreeOpensAreHandedOverInTheOrderTheyArrived) {
     for (auto const rest: {"one", "two", "three"}) {
         auto const [client, object] = channel();
         objects.push_back(object);
-        open(directory, std::string{"mount/"} + rest, ours_io::PERM_READABLE, object);
+        open(directory, std::string{"mount/"} + rest, prot::io::PERM_READABLE, object);
     }
     run();
 
@@ -665,8 +665,8 @@ TEST_F(LoopServerTest, OpenOfADirectoryMakesAConnectionOfItsOwn) {
 TEST_F(LoopServerTest, ReadDirentsIsAnsweredOnTheConnection) {
     auto const [directory, directory_server] = serve_root();
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_io::encode_read_dirents(
-        bytes, ours_io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
+    auto const encoded = prot::io::encode_read_dirents(
+        bytes, prot::io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
     run();
@@ -674,7 +674,7 @@ TEST_F(LoopServerTest, ReadDirentsIsAnsweredOnTheConnection) {
     auto const reply = receive(directory);
     ASSERT_TRUE(reply.has_value());
     auto const decoded =
-        ours_io::decode_read_dirents_reply(wire::Message{.bytes = *reply, .handles = {}}, 1);
+        prot::io::decode_read_dirents_reply(wire::Message{.bytes = *reply, .handles = {}}, 1);
     ASSERT_TRUE(decoded.is_ok());
     EXPECT_EQ(decoded.unwrap().status, Status::Ok);
     EXPECT_FALSE(decoded.unwrap().dirents.empty());
@@ -707,7 +707,7 @@ TEST_F(LoopServerTest, EachConnectionIsReachedThroughItsOwnBinding) {
 TEST_F(LoopServerTest, CloseIsAnsweredAndEndsTheConnection) {
     auto const [directory, directory_server] = serve_root();
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_io::encode_close(bytes, ours_io::CloseRequest{.txid = 1});
+    auto const encoded = prot::io::encode_close(bytes, prot::io::CloseRequest{.txid = 1});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
     run();
@@ -715,7 +715,7 @@ TEST_F(LoopServerTest, CloseIsAnsweredAndEndsTheConnection) {
     auto const reply = receive(directory);
     ASSERT_TRUE(reply.has_value());
     auto const decoded =
-        ours_io::decode_close_reply(wire::Message{.bytes = *reply, .handles = {}}, 1);
+        prot::io::decode_close_reply(wire::Message{.bytes = *reply, .handles = {}}, 1);
     ASSERT_TRUE(decoded.is_ok());
     EXPECT_EQ(decoded.unwrap().status, Status::Ok);
     EXPECT_FALSE(fake::kernel().is_open(directory_server));
@@ -738,8 +738,8 @@ TEST_F(LoopServerTest, MalformedMessageDropsTheConnection) {
 TEST_F(LoopServerTest, ReplyThatCannotBeWrittenIsReportedAndEndsTheConnection) {
     auto const [directory, directory_server] = serve_root();
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_io::encode_read_dirents(
-        bytes, ours_io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
+    auto const encoded = prot::io::encode_read_dirents(
+        bytes, prot::io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
     // The client goes away with its request still queued: the server reads
@@ -785,7 +785,7 @@ TEST_F(LoopServerTest, ConnectionIsReleasedWhenTheLoopCannotArmItsWaitAgain) {
         serve_root();
     }
     auto const [client, server_end] = channel();
-    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
+    EXPECT_EQ(server().serve(server_end, m_root, prot::io::R_STAR_DIR), Status::NoResource);
 }
 
 // Only the connection whose wait failed is released: the other, on the same
@@ -809,7 +809,7 @@ TEST_F(LoopServerTest, OnlyTheConnectionWhoseRearmFailedIsReleased) {
         serve_root();
     }
     auto const [client, server_end] = channel();
-    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
+    EXPECT_EQ(server().serve(server_end, m_root, prot::io::R_STAR_DIR), Status::NoResource);
 }
 
 TEST_F(LoopServerTest, ConnectionsPastTheBindingsAreRefused) {
@@ -823,9 +823,9 @@ TEST_F(LoopServerTest, ConnectionsPastTheBindingsAreRefused) {
     auto small = ioservice::LoopServer(tree(), event_loop(), syscalls(), memory);
 
     auto const first = channel();
-    EXPECT_EQ(small.serve(first[1], m_root, ours_io::R_STAR_DIR), Status::Ok);
+    EXPECT_EQ(small.serve(first[1], m_root, prot::io::R_STAR_DIR), Status::Ok);
     auto const second = channel();
-    EXPECT_EQ(small.serve(second[1], m_root, ours_io::R_STAR_DIR), Status::NoResource);
+    EXPECT_EQ(small.serve(second[1], m_root, prot::io::R_STAR_DIR), Status::NoResource);
     // Refused, so still the caller's.
     EXPECT_TRUE(fake::kernel().is_open(second[1]));
 }
@@ -841,7 +841,7 @@ TEST_F(LoopServerTest, OpenThroughARemoteEntryIsForwardedOnItsChannel) {
 
     auto const ends = serve_root();
     auto const object = channel();
-    open(ends[0], "boot/bin/x", ours_io::PERM_READABLE, object[1]);
+    open(ends[0], "boot/bin/x", prot::io::PERM_READABLE, object[1]);
     run();
 
     // The Open arrived on the remote's end of the link, the rest of its path
@@ -854,13 +854,13 @@ TEST_F(LoopServerTest, OpenThroughARemoteEntryIsForwardedOnItsChannel) {
                                  handles.data(), static_cast<u32>(bytes.size()),
                                  static_cast<u32>(handles.size()), &num_bytes, &num_handles),
               Status::Ok);
-    auto const forwarded = ours_io::decode_open(wire::Message{
+    auto const forwarded = prot::io::decode_open(wire::Message{
         .bytes = std::span{bytes}.first(num_bytes),
         .handles = std::span{handles}.first(num_handles),
     });
     ASSERT_TRUE(forwarded.is_ok());
     EXPECT_EQ(forwarded->path, "bin/x");
-    EXPECT_EQ(forwarded->flags, ours_io::PERM_READABLE);
+    EXPECT_EQ(forwarded->flags, prot::io::PERM_READABLE);
     EXPECT_EQ(forwarded->object, object[1]);
     // Nothing came back on the client's connection: forwarding keeps no
     // per-open state.
@@ -875,7 +875,7 @@ TEST_F(LoopServerTest, ForwardToADeadRemoteConsumesTheOpen) {
 
     auto const ends = serve_root();
     auto const object = channel();
-    open(ends[0], "boot/x", ours_io::PERM_READABLE, object[1]);
+    open(ends[0], "boot/x", prot::io::PERM_READABLE, object[1]);
     run();
 
     // The failed write consumed the client's server end, so the client sees
