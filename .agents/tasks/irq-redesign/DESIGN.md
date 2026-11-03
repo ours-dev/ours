@@ -99,6 +99,10 @@ The public DomainEndpoint is controller-owned and noncopyable. It is registered 
 
 The directory owns Box<Entry>; each entry owns Box<Domain> and borrows its endpoint. Removing slots keep their entry until revocation, retraction and reader grace complete. Ownership is moved out and the slot freed atomically under the writer Guard; destruction runs outside the lock. Another writer never reads an entry already freed. The directory destructor requires quiescent users and does not dereference borrowed endpoints. Context and operations outlive successful unregistration; the endpoint outlives all delivery calls.
 
+### Common control resolution
+
+with_line(source, id, operation) owns the IRQ RCU scope, invokes source.find_line(id, guard) and performs the operation before the scope closes. Its structural constraint accepts callable operations on Line; the return contract must be Status or a status Result. Domain and DomainRegistry implement the private resolver shape. The public ordinary controls and tests of private domains use the same mechanism. Domain's duplicate ordinary control facade is deleted. Special detach, completion and revocation semantics remain explicit.
+
 ### Controller protocol
 
 Current support is the established IO-APIC contract: synchronous masking and receiving-CPU EOI after callbacks, with level Oneshot held masked until completion. Edge/Level describes electrical signaling; it must not imply that every controller has the same acknowledgement or completion sequence.

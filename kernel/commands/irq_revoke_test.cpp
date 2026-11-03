@@ -48,6 +48,7 @@
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <kernel/kernel/irq/domain.hpp>
+#include <kernel/kernel/irq/line_access.hpp>
 #include <logz4/log.hpp>
 #include <ustl/views/span.hpp>
 
@@ -638,7 +639,9 @@ namespace {
                 break;
             }
             owner->hook_spins = RACE_HOOK_SPINS;
-            if (table->attach(RACE.virq, owner->action) != Status::Ok) {
+            if (irq::with_line(*table, RACE.virq, [&](irq::Line &resolved) {
+                    return resolved.attach(owner->action);
+                }) != Status::Ok) {
                 ran = false;
                 delete owner;
                 break;

@@ -41,6 +41,9 @@ class DomainRegistry final {
     [[nodiscard]]
     auto virq_of(DomainId id, HIrqNum source, task::IrqRcuReadGuard const &guard) const -> VIrqNum;
 
+    [[nodiscard]]
+    auto find_line(VIrqNum line, task::IrqRcuReadGuard const &guard) const -> ktl::Result<Line *>;
+
     /// Internal test seam for publication/reclamation checks. Production
     /// controller code can only dispatch through the endpoint.
     [[nodiscard]]

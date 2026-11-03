@@ -179,6 +179,18 @@ auto DomainRegistry::virq_of(DomainId const id, HIrqNum const source,
     return domain->virq_of(source);
 }
 
+auto DomainRegistry::find_line(VIrqNum const line, task::IrqRcuReadGuard const &guard) const
+    -> ktl::Result<Line *> {
+    if (line == INVALID_V_IRQ_NUM) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto *const domain = table_of(line, guard);
+    if (domain == nullptr) {
+        return ustl::err(Status::NoResource);
+    }
+    return domain->find_line(line, guard);
+}
+
 auto DomainRegistry::published_domain(DomainEndpoint const &endpoint,
                                       task::IrqRcuReadGuard const &guard) -> Domain * {
     return endpoint.m_domain.read(guard);

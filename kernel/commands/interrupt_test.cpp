@@ -90,6 +90,7 @@
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <kernel/kernel/irq/domain.hpp>
+#include <kernel/kernel/irq/line_access.hpp>
 #include <logz4/log.hpp>
 #include <ustl/views/span.hpp>
 
@@ -1080,7 +1081,9 @@ namespace {
         CHAIN.hook_done_at_return.store(false, std::memory_order_relaxed);
         CHAIN.destroy_status.store(Status::BadState, std::memory_order_relaxed);
 
-        auto const attached = table->attach(CHAIN.virq, object->action) == Status::Ok;
+        auto const attached = irq::with_line(*table, CHAIN.virq, [&](irq::Line &resolved) {
+                                  return resolved.attach(object->action);
+                              }) == Status::Ok;
         auto *const remover =
             Thread::spawn("interrupt.test/revoke", chain_remover, nullptr, task::DEFAULT_PRIORITY);
         if (!attached || remover == nullptr) {

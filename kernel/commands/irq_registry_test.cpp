@@ -42,6 +42,7 @@
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <kernel/kernel/irq/domain_registry.hpp>
+#include <kernel/kernel/irq/line_access.hpp>
 #include <logz4/log.hpp>
 #include <ustl/views/span.hpp>
 
@@ -464,7 +465,9 @@ namespace {
         auto const virq1 = virq_in(*permanent_registry, DomainId{1}, 1);
         auto attached = Status::NotFound;
         if (table != nullptr) {
-            attached = table->attach(virq1, permanent->action);
+            attached = irq::with_line(*table, virq1, [&](irq::Line &resolved) {
+                return resolved.attach(permanent->action);
+            });
         }
         verdict(tally, registered == Status::Ok && attached == Status::Ok,
                 "a domain with a Permanent action on one line");
@@ -473,8 +476,13 @@ namespace {
         Hooked probe(irq::IrqFlags::None, &hooked_cancel);
         verdict(tally,
                 find_in(*permanent_registry, DomainId{1}) == table && permanent->told.load() == 0 &&
-                    table->unmask(virq0) == Status::Ok &&
-                    table->attach(virq0, probe.action) == Status::Ok,
+                    irq::with_line(*table, virq0,
+                                   [&](irq::Line &resolved) { return resolved.unmask(); }) ==
+                        Status::Ok &&
+                    irq::with_line(*table, virq0,
+                                   [&](irq::Line &resolved) {
+                                       return resolved.attach(probe.action);
+                                   }) == Status::Ok,
                 "and works as before: no mark is left on its other line, and nothing was told");
         auto _ = table->detach(probe.action); // Clean-up; the check above is the result.
 
@@ -486,14 +494,22 @@ namespace {
         auto *const second = find_in(registry, DomainId{1});
         auto const v0 = virq_in(registry, DomainId{1}, 0);
         auto const v1 = virq_in(registry, DomainId{1}, 1);
-        auto const both = ok && second->attach(v0, hooked.action) == Status::Ok &&
-                          second->attach(v1, hookless.action) == Status::Ok;
+        auto const both = ok &&
+                          irq::with_line(*second, v0,
+                                         [&](irq::Line &resolved) {
+                                             return resolved.attach(hooked.action);
+                                         }) == Status::Ok &&
+                          irq::with_line(*second, v1, [&](irq::Line &resolved) {
+                              return resolved.attach(hookless.action);
+                          }) == Status::Ok;
         verdict(tally, both, "a domain with an action with a hook and one without");
         answered(tally, registry.unregister_domain(DomainId{1}), Status::AlreadyBound,
                  "is not removed either");
         verdict(tally,
                 hooked.told.load() == 0 && hooked.action.is_attached() &&
-                    second->unmask(v0) == Status::Ok,
+                    irq::with_line(*second, v0,
+                                   [&](irq::Line &resolved) { return resolved.unmask(); }) ==
+                        Status::Ok,
                 "its hooked action is left on its line, untold, and the line unmasks");
         auto const dropped = second->detach(hookless.action);
         answered(tally, registry.unregister_domain(DomainId{1}), Status::Ok,
@@ -518,8 +534,11 @@ namespace {
         auto *const table = find_in(registry, DomainId{1});
         ready &= table != nullptr;
         for (usize pin = 0; ready && pin < FOUR.size(); ++pin) {
-            ready &= table->attach(virq_in(registry, DomainId{1}, static_cast<HIrqNum>(pin)),
-                                   all[pin]->action) == Status::Ok;
+            ready &=
+                irq::with_line(*table, virq_in(registry, DomainId{1}, static_cast<HIrqNum>(pin)),
+                               [&](irq::Line &resolved) {
+                                   return resolved.attach(all[pin]->action);
+                               }) == Status::Ok;
         }
         verdict(tally, ready, "an action on each of four lines, the last without a hook");
         if (!ready) {

@@ -129,12 +129,12 @@ auto Domain::hwirq_of(VIrqNum const virqnum) const -> HIrqNum {
 
 /// The control path. A number that is no virq of the domain, INVALID_V_IRQ_NUM
 /// included, becomes INVALID_H_IRQ_NUM, which is past the table.
-auto Domain::irqnum_to_desc(VIrqNum const virqnum) -> Line * {
-    return hwirq_to_desc(hwirq_of(virqnum));
+auto Domain::line_by_id(VIrqNum const virqnum) -> Line * {
+    return line_by_source(hwirq_of(virqnum));
 }
 
 /// The interrupt path, and the second half of the control path.
-auto Domain::hwirq_to_desc(HIrqNum const hirqnum) -> Line * {
+auto Domain::line_by_source(HIrqNum const hirqnum) -> Line * {
     if (hirqnum >= m_storage.lines.size()) {
         return nullptr;
     }
@@ -142,50 +142,33 @@ auto Domain::hwirq_to_desc(HIrqNum const hirqnum) -> Line * {
     return m_storage.lines[hirqnum].as_ptr_mut();
 }
 
-auto Domain::find_line(VIrqNum const virqnum) -> ktl::Result<Line *> {
+auto Domain::find_line(VIrqNum const virqnum, task::IrqRcuReadGuard const &)
+    -> ktl::Result<Line *> {
     if (virqnum == INVALID_V_IRQ_NUM) {
         return ustl::err(Status::InvArgs);
     }
 
-    auto *const desc = irqnum_to_desc(virqnum);
-    if (!desc) {
+    auto *const line = line_by_id(virqnum);
+    if (!line) {
         return ustl::err(Status::NoResource);
     }
-    return ustl::ok(desc);
-}
-
-/// Nothing is allocated here: the action is the caller's, so a refused attach
-/// leaves nothing behind to free.
-auto Domain::attach(VIrqNum virqnum, Registration &action) -> Status {
-    auto const line = find_line(virqnum);
-    if (line.is_err()) {
-        return line.unwrap_err();
-    }
-    return (*line)->attach(action);
-}
-
-auto Domain::attach(VIrqNum const virqnum, Registration &action, ustl::Option<LineMode> const mode)
-    -> ktl::Result<TriggerMode> {
-    auto const line = find_line(virqnum);
-    if (line.is_err()) {
-        return ustl::err(line.unwrap_err());
-    }
-    return (*line)->attach(action, mode);
+    return ustl::ok(line);
 }
 
 /// The action knows its line, so the caller names only the action: on a
 /// shared line a number alone cannot say which of its actions to remove.
 auto Domain::detach(Registration &action) -> Status {
-    auto desc = irqnum_to_desc(action.virqnum());
-    if (!desc) {
+    auto line = line_by_id(action.virqnum());
+    if (!line) {
         return Status::NotFound;
     }
 
-    return desc->detach(action);
+    return line->detach(action);
 }
 
 auto Domain::revoke_line(VIrqNum const virqnum) -> Status {
-    auto const line = find_line(virqnum);
+    task::IrqRcuReadGuard const guard;
+    auto const line = find_line(virqnum, guard);
     if (line.is_err()) {
         return line.unwrap_err();
     }
@@ -197,19 +180,19 @@ auto Domain::revoke_line(VIrqNum const virqnum) -> Status {
 }
 
 auto Domain::unmark_dying(VIrqNum const virqnum) -> void {
-    if (auto *const desc = irqnum_to_desc(virqnum)) {
-        desc->unmark_dying();
+    if (auto *const line = line_by_id(virqnum)) {
+        line->unmark_dying();
     }
 }
 
 /// Answers nothing: a line that is not there holds nothing to finalize, and
 /// the line checks under its own lock whether the action is still on it.
 auto Domain::finalize_oneshot(VIrqNum const virqnum, Registration const &action) -> void {
-    auto *const desc = irqnum_to_desc(virqnum);
-    if (!desc) {
+    auto *const line = line_by_id(virqnum);
+    if (!line) {
         return;
     }
-    desc->finalize_oneshot(action);
+    line->finalize_oneshot(action);
 }
 
 /// Answers what the line's actions answered. It used to answer Handled
@@ -220,67 +203,26 @@ auto Domain::finalize_oneshot(VIrqNum const virqnum, Registration const &action)
 /// whatever its actions answer, and a number with no line has nobody to end
 /// it, so the caller has to know which of the two it was.
 auto Domain::handle_irq(HIrqNum const hirqnum, Eoi const eoi) -> ustl::Option<IrqReturn> {
-    auto *const desc = hwirq_to_desc(hirqnum);
-    if (!desc) {
+    auto *const line = line_by_source(hirqnum);
+    if (!line) {
         return ustl::none();
     }
 
-    return ustl::some(desc->handle_irq(eoi));
-}
-
-auto Domain::mask(VIrqNum const virqnum) -> Status {
-    auto const line = find_line(virqnum);
-    if (line.is_err()) {
-        return line.unwrap_err();
-    }
-    return (*line)->mask();
-}
-
-auto Domain::unmask(VIrqNum const virqnum) -> Status {
-    auto const line = find_line(virqnum);
-    if (line.is_err()) {
-        return line.unwrap_err();
-    }
-    return (*line)->unmask();
-}
-
-auto Domain::configure(VIrqNum const virqnum, TriggerMode const trigger, Polarity const polarity)
-    -> Status {
-    auto const line = find_line(virqnum);
-    if (line.is_err()) {
-        return line.unwrap_err();
-    }
-    return (*line)->configure(trigger, polarity);
-}
-
-auto Domain::trigger_mode(VIrqNum const virqnum) -> ktl::Result<TriggerMode> {
-    auto const line = find_line(virqnum);
-    if (line.is_err()) {
-        return ustl::err(line.unwrap_err());
-    }
-    return (*line)->trigger_mode();
-}
-
-auto Domain::is_masked(VIrqNum const virqnum) -> ktl::Result<bool> {
-    auto const line = find_line(virqnum);
-    if (line.is_err()) {
-        return ustl::err(line.unwrap_err());
-    }
-    return (*line)->is_masked();
+    return ustl::some(line->handle_irq(eoi));
 }
 
 auto Domain::is_kernel_owned(VIrqNum const virqnum) -> bool {
-    auto *const desc = irqnum_to_desc(virqnum);
-    return desc != nullptr && desc->is_kernel_owned();
+    auto *const line = line_by_id(virqnum);
+    return line != nullptr && line->is_kernel_owned();
 }
 
 auto Domain::spurious_count(VIrqNum virqnum) -> ustl::Option<u64> {
-    auto const *const desc = irqnum_to_desc(virqnum);
-    if (!desc) {
+    auto const *const line = line_by_id(virqnum);
+    if (!line) {
         return ustl::none();
     }
 
-    return ustl::some(desc->spurious_count());
+    return ustl::some(line->spurious_count());
 }
 
 } // namespace ours::irq

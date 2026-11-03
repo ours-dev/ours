@@ -353,3 +353,39 @@ None. Teaching exercises are suspended for this task.
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task.
+
+## Resolve line controls through one scoped operation (2026-11-03)
+
+**Files**
+- `kernel/kernel/irq/line_access.hpp` — constrained with_line template owns resolution, the reader scope and failure propagation.
+- `kernel/kernel/irq/domain.hpp`, `domain.cpp`, `domain_registry.hpp`, `domain_registry.cpp` — private guarded lookup; remove Domain's duplicate attach, mask, unmask, configure and query facade.
+- `kernel/kernel/irq/mod.cpp` and domain-using tests — perform control operations inside the common reader scope.
+
+**Symptom**
+Every ordinary control repeated the same lookup, error branch and reader lifetime; Domain repeated the public control facade again. A new operation could accidentally keep the lookup guard but drop it before using the line.
+
+**Cause**
+The repeated code represented one invariant: resolved storage remains borrowed until the operation finishes. Maintaining that invariant independently in each wrapper was mechanical work and made unrelated policy look necessary in the storage owner.
+
+**Change**
+Before, mask opened a guard, found Domain, checked errors, called Domain::mask, found Line and checked errors again. Now `with_line(registry, id, operation)` resolves directly to Line and invokes the operation under its own IRQ RCU guard. Domain and DomainRegistry implement the same private resolver shape. std::invoke and std::invoke_result_t preserve the operation's Status or Result return; unsupported return contracts fail compilation instead of inventing a default result. Tests using private domains exercise the same mechanism. Special detach, deferred completion, revocation and diagnostic contracts remain explicit rather than forcing every return convention into the template.
+
+A macro-generated facade was rejected because it hides scope and type checking. A virtual resolver interface was rejected because both resolver types are known at compilation. An all-purpose failure-policy framework was rejected because ordinary controls share exactly two existing error contracts.
+
+**Reference**
+None, this project's own design. A structural template shares the actual lifetime invariant without importing another kernel's controller hierarchy.
+
+**Verification**
+All nine changed C++ files ran formatting and clang-tidy with no new changed-line diagnostics. Both images boot: dbg 46 passed, 5 skipped, 0 failed; rel 44 passed, 8 skipped, 0 failed and 7/7 required. All 161 host tests and all nine IRQ suites pass with the existing counts, including 85 registry checks. Existing tests cover invalid versus absent identities, control versus in-flight handlers, and concurrent domain withdrawal. Performance was not measured.
+
+**Deliberately not done**
+The template serves ordinary Status/Result controls only. It does not turn detach's NotFound, optional diagnostics or silent completion into a configurable error-policy system.
+
+**How it was found**
+The API audit counted the repeated two-level lookup paths and traced each scope through its final Line call.
+
+**The user's prediction**
+None. Teaching exercises are suspended for this task.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.

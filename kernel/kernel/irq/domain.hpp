@@ -5,6 +5,7 @@
 
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
+#include <ours/task/irq_rcu.hpp>
 
 #include <atomic>
 
@@ -62,25 +63,10 @@ class Domain final {
     }
 
     [[nodiscard]]
-    auto attach(VIrqNum line, Registration &registration) -> Status;
-    [[nodiscard]]
-    auto attach(VIrqNum line, Registration &registration, ustl::Option<LineMode> mode)
-        -> ktl::Result<TriggerMode>;
-    [[nodiscard]]
     auto detach(Registration &registration) -> Status;
     auto finalize_oneshot(VIrqNum line, Registration const &registration) -> void;
     [[nodiscard]]
     auto handle_irq(HIrqNum source, Eoi eoi) -> ustl::Option<IrqReturn>;
-    [[nodiscard]]
-    auto mask(VIrqNum line) -> Status;
-    [[nodiscard]]
-    auto unmask(VIrqNum line) -> Status;
-    [[nodiscard]]
-    auto configure(VIrqNum line, TriggerMode trigger, Polarity polarity) -> Status;
-    [[nodiscard]]
-    auto trigger_mode(VIrqNum line) -> ktl::Result<TriggerMode>;
-    [[nodiscard]]
-    auto is_masked(VIrqNum line) -> ktl::Result<bool>;
     [[nodiscard]]
     auto spurious_count(VIrqNum line) -> ustl::Option<u64>;
     [[nodiscard]]
@@ -88,6 +74,10 @@ class Domain final {
     auto unmark_dying(VIrqNum line) -> void;
     [[nodiscard]]
     auto is_kernel_owned(VIrqNum line) -> bool;
+
+    /// Internal borrow valid only inside the supplied reader scope.
+    [[nodiscard]]
+    auto find_line(VIrqNum line, task::IrqRcuReadGuard const &guard) -> ktl::Result<Line *>;
 
   private:
     struct Storage {
@@ -98,10 +88,8 @@ class Domain final {
 
     static constexpr auto VIRQ_ALIGNMENT = u32{32};
 
-    auto irqnum_to_desc(VIrqNum line) -> Line *;
-    auto hwirq_to_desc(HIrqNum source) -> Line *;
-    [[nodiscard]]
-    auto find_line(VIrqNum line) -> ktl::Result<Line *>;
+    auto line_by_id(VIrqNum line) -> Line *;
+    auto line_by_source(HIrqNum source) -> Line *;
 
     VIrqNum m_first = 0;
     Storage m_storage;

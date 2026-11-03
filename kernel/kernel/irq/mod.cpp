@@ -8,6 +8,7 @@
 
 #include <kernel/kernel/irq/domain.hpp>
 #include <kernel/kernel/irq/domain_registry.hpp>
+#include <kernel/kernel/irq/line_access.hpp>
 
 namespace ours::irq {
 namespace {
@@ -82,22 +83,14 @@ auto unregister_domain(DomainId const id) -> Status {
 }
 
 auto attach(VIrqNum const virqnum, Registration &action) -> Status {
-    task::IrqRcuReadGuard const guard;
-    auto const table = find_table(virqnum, guard);
-    if (table.is_err()) {
-        return table.unwrap_err();
-    }
-    return (*table)->attach(virqnum, action);
+    return with_line(*get_domain_registry(), virqnum,
+                     [&](Line &line) { return line.attach(action); });
 }
 
 auto attach(VIrqNum const virqnum, Registration &action, ustl::Option<LineMode> const mode)
     -> ktl::Result<TriggerMode> {
-    task::IrqRcuReadGuard const guard;
-    auto const table = find_table(virqnum, guard);
-    if (table.is_err()) {
-        return ustl::err(table.unwrap_err());
-    }
-    return (*table)->attach(virqnum, action, mode);
+    return with_line(*get_domain_registry(), virqnum,
+                     [&](Line &line) { return line.attach(action, mode); });
 }
 
 /// The action knows its line, so the caller names only the action: on a
@@ -124,49 +117,26 @@ auto finalize_oneshot(VIrqNum const virqnum, Registration const &action) -> void
 }
 
 auto mask(VIrqNum const virqnum) -> Status {
-    task::IrqRcuReadGuard const guard;
-    auto const table = find_table(virqnum, guard);
-    if (table.is_err()) {
-        return table.unwrap_err();
-    }
-    return (*table)->mask(virqnum);
+    return with_line(*get_domain_registry(), virqnum, [&](Line &line) { return line.mask(); });
 }
 
 auto unmask(VIrqNum const virqnum) -> Status {
-    task::IrqRcuReadGuard const guard;
-    auto const table = find_table(virqnum, guard);
-    if (table.is_err()) {
-        return table.unwrap_err();
-    }
-    return (*table)->unmask(virqnum);
+    return with_line(*get_domain_registry(), virqnum, [&](Line &line) { return line.unmask(); });
 }
 
 auto configure(VIrqNum const virqnum, TriggerMode const trigger, Polarity const polarity)
     -> Status {
-    task::IrqRcuReadGuard const guard;
-    auto const table = find_table(virqnum, guard);
-    if (table.is_err()) {
-        return table.unwrap_err();
-    }
-    return (*table)->configure(virqnum, trigger, polarity);
+    return with_line(*get_domain_registry(), virqnum,
+                     [&](Line &line) { return line.configure(trigger, polarity); });
 }
 
 auto trigger_mode(VIrqNum const virqnum) -> ktl::Result<TriggerMode> {
-    task::IrqRcuReadGuard const guard;
-    auto const table = find_table(virqnum, guard);
-    if (table.is_err()) {
-        return ustl::err(table.unwrap_err());
-    }
-    return (*table)->trigger_mode(virqnum);
+    return with_line(*get_domain_registry(), virqnum,
+                     [&](Line &line) { return line.trigger_mode(); });
 }
 
 auto is_masked_for_test(VIrqNum const virqnum) -> ktl::Result<bool> {
-    task::IrqRcuReadGuard const guard;
-    auto const table = find_table(virqnum, guard);
-    if (table.is_err()) {
-        return ustl::err(table.unwrap_err());
-    }
-    return (*table)->is_masked(virqnum);
+    return with_line(*get_domain_registry(), virqnum, [&](Line &line) { return line.is_masked(); });
 }
 
 auto set_affinity(VIrqNum, CpuMask const &) -> Status {
