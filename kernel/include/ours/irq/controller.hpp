@@ -11,13 +11,13 @@ struct ControllerOps;
 
 /// Immutable routing identity and instance context, bound before publication.
 struct ControllerSource final {
-    constexpr ControllerSource(HardwareIrq const source_id, IrqId const irq_id,
+    constexpr ControllerSource(HIrqNum const source_id, VIrqNum const irq_id,
                                ControllerOps const *const controller = nullptr,
                                void *const context = nullptr) noexcept
         : source(source_id), id(irq_id), controller(controller), context(context) {}
 
-    HardwareIrq source;
-    IrqId id;
+    HIrqNum source;
+    VIrqNum id;
     ControllerOps const *controller;
     void *context;
 };

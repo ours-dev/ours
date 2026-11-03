@@ -133,8 +133,8 @@ class IoApic final {
     }
 
     [[nodiscard]]
-    auto owns_global_irq(HardwareIrq irq) const noexcept -> bool {
-        auto const base = static_cast<HardwareIrq>(global_irq_base_);
+    auto owns_global_irq(HIrqNum irq) const noexcept -> bool {
+        auto const base = static_cast<HIrqNum>(global_irq_base_);
         return irq >= base && static_cast<u32>(irq) - static_cast<u32>(base) < irq_count();
     }
 
@@ -163,13 +163,13 @@ class IoApic final {
         return ours::Status::Ok;
     }
 
-    auto mask_irq(HardwareIrq irq) noexcept -> void {
+    auto mask_irq(HIrqNum irq) noexcept -> void {
         auto entry = read_redirection(irq);
         entry.set_masked(true);
         write_redirection(irq, entry);
     }
 
-    auto unmask_irq(HardwareIrq irq) noexcept -> void {
+    auto unmask_irq(HIrqNum irq) noexcept -> void {
         auto entry = read_redirection(irq);
         entry.set_masked(false);
         write_redirection(irq, entry);
@@ -179,7 +179,7 @@ class IoApic final {
     /// place it is kept. Two register reads, so the caller serialises them
     /// with every other access to this IO-APIC, as for the writes.
     [[nodiscard]]
-    auto trigger_mode(HardwareIrq irq) const noexcept -> ApicTriggerMode {
+    auto trigger_mode(HIrqNum irq) const noexcept -> ApicTriggerMode {
         return read_redirection(irq).trigger_mode();
     }
 
@@ -187,7 +187,7 @@ class IoApic final {
     /// one place it is kept. Two register reads, so the caller serialises
     /// them with every other access to this IO-APIC, as for trigger_mode().
     [[nodiscard]]
-    auto is_masked(HardwareIrq irq) const noexcept -> bool {
+    auto is_masked(HIrqNum irq) const noexcept -> bool {
         return read_redirection(irq).masked();
     }
 
@@ -196,14 +196,14 @@ class IoApic final {
     /// and only the signalling changes afterwards. Like mask_irq(), a
     /// read-modify-write, so the caller serialises it with every other
     /// access to this IO-APIC.
-    auto reconfigure_irq(HardwareIrq irq, ApicTriggerMode trigger,
+    auto reconfigure_irq(HIrqNum irq, ApicTriggerMode trigger,
                          ApicInterruptPolarity polarity) noexcept -> void {
         auto entry = read_redirection(irq);
         entry.set_trigger_mode(trigger).set_polarity(polarity).set_masked(true);
         write_redirection(irq, entry);
     }
 
-    auto config_irq(HardwareIrq irq, ApicTriggerMode trigger, ApicInterruptPolarity polarity,
+    auto config_irq(HIrqNum irq, ApicTriggerMode trigger, ApicInterruptPolarity polarity,
                     ApicDeliveryMode delivery, ApicDestinationMode destination_mode, u8 destination,
                     IrqVec vector, bool masked = true) noexcept -> void {
         IoApicRouteEntry entry;
@@ -230,12 +230,12 @@ class IoApic final {
     }
 
     [[nodiscard]]
-    auto redirection_index(HardwareIrq irq) const noexcept -> u32 {
+    auto redirection_index(HIrqNum irq) const noexcept -> u32 {
         return static_cast<u32>(irq) - global_irq_base_;
     }
 
     [[nodiscard]]
-    auto read_redirection(HardwareIrq irq) const noexcept -> IoApicRouteEntry {
+    auto read_redirection(HIrqNum irq) const noexcept -> IoApicRouteEntry {
         auto const index = redirection_index(irq);
         auto const low =
             read(static_cast<Register>(static_cast<u32>(Register::RedirectionTable) + index * 2));
@@ -246,7 +246,7 @@ class IoApic final {
         return entry;
     }
 
-    auto write_redirection(HardwareIrq irq, IoApicRouteEntry const &entry) noexcept -> void {
+    auto write_redirection(HIrqNum irq, IoApicRouteEntry const &entry) noexcept -> void {
         auto const index = redirection_index(irq);
         auto const value = entry.value();
         write(static_cast<Register>(static_cast<u32>(Register::RedirectionTable) + index * 2),

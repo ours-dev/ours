@@ -20,7 +20,7 @@
 //     space;
 //   - in every one, a number the domain does not hold answers INVALID both
 //     ways, around each end and far away;
-//   - refused: an empty list and HardwareIrq::Invalid (InvArgs), a number given
+//   - refused: an empty list and HIrqNum::Invalid (InvArgs), a number given
 //     twice (AlreadyExists), a list the virq space cannot hold (InvArgs), also
 //     from a floor too high for it. A refusal keeps nothing: the same domain takes a good list after it. A
 //     built domain refuses a second build (BadState) and keeps its map.
@@ -44,14 +44,14 @@ namespace {
 
     static_assert(!std::is_copy_constructible_v<Domain>);
     static_assert(!std::is_move_constructible_v<Domain>);
-    static_assert(!std::is_convertible_v<HardwareIrq, IrqId>);
-    static_assert(!std::is_convertible_v<IrqId, HardwareIrq>);
-    static_assert(!std::is_convertible_v<u32, IrqId>);
-    static_assert(!std::is_convertible_v<u32, HardwareIrq>);
-    static_assert(!std::is_convertible_v<IrqId, u32>);
-    static_assert(!std::is_convertible_v<HardwareIrq, u32>);
-    static_assert(sizeof(IrqId) == sizeof(u32));
-    static_assert(sizeof(HardwareIrq) == sizeof(u32));
+    static_assert(!std::is_convertible_v<HIrqNum, VIrqNum>);
+    static_assert(!std::is_convertible_v<VIrqNum, HIrqNum>);
+    static_assert(!std::is_convertible_v<u32, VIrqNum>);
+    static_assert(!std::is_convertible_v<u32, HIrqNum>);
+    static_assert(!std::is_convertible_v<VIrqNum, u32>);
+    static_assert(!std::is_convertible_v<HIrqNum, u32>);
+    static_assert(sizeof(VIrqNum) == sizeof(u32));
+    static_assert(sizeof(HIrqNum) == sizeof(u32));
 
     constexpr irq::ControllerOps CONTROLLER = {
         .protocol = irq::DispatchProtocol::Eoi,
@@ -60,9 +60,9 @@ namespace {
         .issue_eoi = [](irq::ControllerSource const &) -> void {},
     };
 
-    auto build_domain(Domain &domain, ustl::views::Span<HardwareIrq const> const sources,
+    auto build_domain(Domain &domain, ustl::views::Span<HIrqNum const> const sources,
                       u32 const minimum = 0) -> Status {
-        return domain.init(sources, CONTROLLER, IrqId{minimum});
+        return domain.init(sources, CONTROLLER, VIrqNum{minimum});
     }
 
     struct Tally {
@@ -94,7 +94,7 @@ namespace {
     /// hardware numbers, and INVALID for every number the list does not hold.
     /// |min_first| is the floor given to init().
     auto check_layout(Tally &tally, char const *const name,
-                      ustl::views::Span<HardwareIrq const> const list, u32 const first_id,
+                      ustl::views::Span<HIrqNum const> const list, u32 const first_id,
                       u32 const min_first = 0) -> void {
         Domain domain;
         auto const built = build_domain(domain, list, min_first);
@@ -104,7 +104,7 @@ namespace {
             return;
         }
 
-        auto highest = HardwareIrq{0};
+        auto highest = HIrqNum{0};
         for (auto const hwirq: list) {
             highest = std::max(highest, hwirq);
         }
@@ -114,8 +114,8 @@ namespace {
         auto wrong = usize{0};
         for (auto const hwirq: list) {
             auto const rank = static_cast<u32>(std::ranges::count_if(
-                list, [hwirq](HardwareIrq const other) -> bool { return other < hwirq; }));
-            auto const virq = IrqId{first_id + rank};
+                list, [hwirq](HIrqNum const other) -> bool { return other < hwirq; }));
+            auto const virq = VIrqNum{first_id + rank};
             if (domain.irq_for_source(hwirq) != virq || domain.source_for_irq(virq) != hwirq) {
                 wrong += 1;
                 log::error("irqdomain.test:   {}: hwirq {} -> virq {} (want {}), back {}", name,
@@ -128,13 +128,13 @@ namespace {
         // Every number around and past the list: held exactly when it is in it.
         auto held_wrong = usize{0};
         for (u32 raw = 0; raw <= static_cast<u32>(highest) + 40; ++raw) {
-            auto const hwirq = HardwareIrq{raw};
+            auto const hwirq = HIrqNum{raw};
             auto const in_list = std::ranges::find(list, hwirq) != list.end();
-            if ((domain.irq_for_source(hwirq) != IrqId::Invalid) != in_list) {
+            if ((domain.irq_for_source(hwirq) != VIrqNum::Invalid) != in_list) {
                 held_wrong += 1;
                 log::error("irqdomain.test:   {}: hwirq {} held={} but listed={}", name,
-                           static_cast<u32>(hwirq), domain.irq_for_source(hwirq) != IrqId::Invalid,
-                           in_list);
+                           static_cast<u32>(hwirq),
+                           domain.irq_for_source(hwirq) != VIrqNum::Invalid, in_list);
             }
         }
         verdict(tally, held_wrong == 0, "a hardware number is held exactly when it is listed");
@@ -142,9 +142,9 @@ namespace {
         auto virq_wrong = usize{0};
         auto const last_virq = first_id + count - 1;
         for (u32 raw = 0; raw <= last_virq + 40; ++raw) {
-            auto const virq = IrqId{raw};
+            auto const virq = VIrqNum{raw};
             auto const is_virq = raw >= first_id && raw <= last_virq;
-            if ((domain.source_for_irq(virq) != HardwareIrq::Invalid) != is_virq) {
+            if ((domain.source_for_irq(virq) != HIrqNum::Invalid) != is_virq) {
                 virq_wrong += 1;
                 log::error("irqdomain.test:   {}: virq {} is_virq={} but hwirq {}", name,
                            static_cast<u32>(virq), is_virq,
@@ -155,45 +155,44 @@ namespace {
         verdict(tally, first_id > static_cast<u32>(highest),
                 "and every virq is past every hardware number");
         verdict(tally,
-                domain.irq_for_source(HardwareIrq{0xFFFF'FFFE}) == IrqId::Invalid &&
-                    domain.source_for_irq(IrqId::Invalid) == HardwareIrq::Invalid &&
-                    domain.irq_for_source(HardwareIrq::Invalid) == IrqId::Invalid,
+                domain.irq_for_source(HIrqNum{0xFFFF'FFFE}) == VIrqNum::Invalid &&
+                    domain.source_for_irq(VIrqNum::Invalid) == HIrqNum::Invalid &&
+                    domain.irq_for_source(HIrqNum::Invalid) == VIrqNum::Invalid,
                 "a far number and the invalid ones are held by no layout");
         verdict(tally, domain.source_limit() == static_cast<usize>(highest) + 1,
                 "the table size to index by hardware number is one past the highest");
     }
 
     auto check_layouts(Tally &tally) -> void {
-        constexpr auto ONE = std::array<HardwareIrq, 1>{HardwareIrq{5}};
-        check_layout(tally, "one number, 5", ustl::views::Span<HardwareIrq const>(ONE), 32);
+        constexpr auto ONE = std::array<HIrqNum, 1>{HIrqNum{5}};
+        check_layout(tally, "one number, 5", ustl::views::Span<HIrqNum const>(ONE), 32);
 
-        constexpr auto HOLES =
-            std::array<HardwareIrq, 3>{HardwareIrq{7}, HardwareIrq{0}, HardwareIrq{2}};
+        constexpr auto HOLES = std::array<HIrqNum, 3>{HIrqNum{7}, HIrqNum{0}, HIrqNum{2}};
         check_layout(tally, "numbers 7, 0, 2 with holes, out of order",
-                     ustl::views::Span<HardwareIrq const>(HOLES), 32);
+                     ustl::views::Span<HIrqNum const>(HOLES), 32);
 
-        constexpr auto AT_32 = std::array<HardwareIrq, 2>{HardwareIrq{0}, HardwareIrq{32}};
+        constexpr auto AT_32 = std::array<HIrqNum, 2>{HIrqNum{0}, HIrqNum{32}};
         check_layout(tally, "the highest number at 32 moves the first virq to 64",
-                     ustl::views::Span<HardwareIrq const>(AT_32), 64);
+                     ustl::views::Span<HIrqNum const>(AT_32), 64);
 
-        std::array<HardwareIrq, 48> two_runs{};
+        std::array<HIrqNum, 48> two_runs{};
         for (auto i = usize{0}; i < 24; ++i) {
-            two_runs[i] = static_cast<HardwareIrq>(24 + i);
-            two_runs[24 + i] = static_cast<HardwareIrq>(i);
+            two_runs[i] = static_cast<HIrqNum>(24 + i);
+            two_runs[24 + i] = static_cast<HIrqNum>(i);
         }
         check_layout(tally, "pins 24 to 47 listed before pins 0 to 23",
-                     ustl::views::Span<HardwareIrq const>(two_runs), 64);
+                     ustl::views::Span<HIrqNum const>(two_runs), 64);
 
-        std::array<HardwareIrq, 24> machine{};
+        std::array<HIrqNum, 24> machine{};
         for (auto i = usize{0}; i < machine.size(); ++i) {
-            machine[i] = static_cast<HardwareIrq>(i);
+            machine[i] = static_cast<HIrqNum>(i);
         }
         check_layout(tally, "pins 0 to 23, this machine's layout",
-                     ustl::views::Span<HardwareIrq const>(machine), 32);
+                     ustl::views::Span<HIrqNum const>(machine), 32);
 
         // The floor: the first virq is the higher of the domain's own start
         // (32 for these pins) and the floor rounded up to a multiple of 32.
-        auto const pins = ustl::views::Span<HardwareIrq const>(machine);
+        auto const pins = ustl::views::Span<HIrqNum const>(machine);
         check_layout(tally, "a floor above the domain's own start moves the first virq to it", pins,
                      128, 128);
         check_layout(tally, "a floor between two multiples of 32 is rounded up", pins, 96, 65);
@@ -202,81 +201,77 @@ namespace {
         check_layout(tally, "a floor below the domain's own start changes nothing", pins, 32, 10);
         check_layout(tally, "a floor of 0 is no floor", pins, 32, 0);
         check_layout(tally, "a floor above a start that a high number already raised",
-                     ustl::views::Span<HardwareIrq const>(AT_32), 96, 70);
+                     ustl::views::Span<HIrqNum const>(AT_32), 96, 70);
     }
 
     auto check_refusals(Tally &tally) -> void {
-        constexpr auto NONE = std::array<HardwareIrq, 0>{};
-        constexpr auto WITH_INVALID =
-            std::array<HardwareIrq, 2>{HardwareIrq{1}, HardwareIrq::Invalid};
-        constexpr auto TWICE = std::array<HardwareIrq, 2>{HardwareIrq{3}, HardwareIrq{3}};
-        constexpr auto TOO_BIG = std::array<HardwareIrq, 1>{HardwareIrq{0xFFFF'FFFE}};
-        constexpr auto GOOD = std::array<HardwareIrq, 1>{HardwareIrq{3}};
-        constexpr auto OTHER = std::array<HardwareIrq, 1>{HardwareIrq{9}};
-        auto const many = []() -> std::array<HardwareIrq, 32> {
-            auto list = std::array<HardwareIrq, 32>{};
+        constexpr auto NONE = std::array<HIrqNum, 0>{};
+        constexpr auto WITH_INVALID = std::array<HIrqNum, 2>{HIrqNum{1}, HIrqNum::Invalid};
+        constexpr auto TWICE = std::array<HIrqNum, 2>{HIrqNum{3}, HIrqNum{3}};
+        constexpr auto TOO_BIG = std::array<HIrqNum, 1>{HIrqNum{0xFFFF'FFFE}};
+        constexpr auto GOOD = std::array<HIrqNum, 1>{HIrqNum{3}};
+        constexpr auto OTHER = std::array<HIrqNum, 1>{HIrqNum{9}};
+        auto const many = []() -> std::array<HIrqNum, 32> {
+            auto list = std::array<HIrqNum, 32>{};
             for (auto i = usize{0}; i < list.size(); ++i) {
-                list[i] = static_cast<HardwareIrq>(i);
+                list[i] = static_cast<HIrqNum>(i);
             }
             return list;
         }();
 
         {
             Domain domain;
-            answered(tally, build_domain(domain, ustl::views::Span<HardwareIrq const>(NONE)),
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(NONE)),
                      Status::InvArgs, "an empty list is refused");
-            answered(tally,
-                     build_domain(domain, ustl::views::Span<HardwareIrq const>(WITH_INVALID)),
-                     Status::InvArgs, "HardwareIrq::Invalid in the list is refused");
-            answered(tally, build_domain(domain, ustl::views::Span<HardwareIrq const>(TOO_BIG)),
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(WITH_INVALID)),
+                     Status::InvArgs, "HIrqNum::Invalid in the list is refused");
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(TOO_BIG)),
                      Status::InvArgs, "a list the virq space cannot hold is refused");
-            // IrqId::Invalid is the last number of the space and no virq.
+            // VIrqNum::Invalid is the last number of the space and no virq.
             // The last multiple of 32 below it is u32{0xffff'ffe0}, and
             // the one line fits there; a floor past it rounds up out of the
             // space, and so does a list of 32 lines from it.
             answered(tally,
-                     build_domain(domain, ustl::views::Span<HardwareIrq const>(GOOD),
-                                  static_cast<u32>(IrqId::Invalid)),
-                     Status::InvArgs, "a floor at IrqId::Invalid leaves no room and is refused");
-            answered(
-                tally,
-                build_domain(domain, ustl::views::Span<HardwareIrq const>(GOOD), u32{0xffff'ffe1}),
-                Status::InvArgs, "a floor that rounds up out of the space is refused");
-            answered(
-                tally,
-                build_domain(domain, ustl::views::Span<HardwareIrq const>(many), u32{0xffff'ffe0}),
-                Status::InvArgs, "a floor that leaves room for fewer virqs than lines is refused");
+                     build_domain(domain, ustl::views::Span<HIrqNum const>(GOOD),
+                                  static_cast<u32>(VIrqNum::Invalid)),
+                     Status::InvArgs, "a floor at VIrqNum::Invalid leaves no room and is refused");
+            answered(tally,
+                     build_domain(domain, ustl::views::Span<HIrqNum const>(GOOD), u32{0xffff'ffe1}),
+                     Status::InvArgs, "a floor that rounds up out of the space is refused");
+            answered(tally,
+                     build_domain(domain, ustl::views::Span<HIrqNum const>(many), u32{0xffff'ffe0}),
+                     Status::InvArgs,
+                     "a floor that leaves room for fewer virqs than lines is refused");
             verdict(tally,
-                    domain.irq_for_source(HardwareIrq{3}) == IrqId::Invalid &&
+                    domain.irq_for_source(HIrqNum{3}) == VIrqNum::Invalid &&
                         domain.source_limit() == 0,
                     "and none of the three keeps anything");
-            answered(
-                tally,
-                build_domain(domain, ustl::views::Span<HardwareIrq const>(GOOD), u32{0xffff'ffe0}),
-                Status::Ok, "the last multiple of 32 with room for the line is taken");
-            verdict(tally, domain.irq_for_source(HardwareIrq{3}) == IrqId{0xffff'ffe0},
+            answered(tally,
+                     build_domain(domain, ustl::views::Span<HIrqNum const>(GOOD), u32{0xffff'ffe0}),
+                     Status::Ok, "the last multiple of 32 with room for the line is taken");
+            verdict(tally, domain.irq_for_source(HIrqNum{3}) == VIrqNum{0xffff'ffe0},
                     "and is the line's virq");
         }
         {
             Domain domain;
-            answered(tally, build_domain(domain, ustl::views::Span<HardwareIrq const>(TWICE)),
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(TWICE)),
                      Status::AlreadyExists, "a number given twice is refused");
             verdict(tally,
-                    domain.irq_for_source(HardwareIrq{3}) == IrqId::Invalid &&
+                    domain.irq_for_source(HIrqNum{3}) == VIrqNum::Invalid &&
                         domain.source_limit() == 0,
                     "and the refusal keeps nothing");
-            answered(tally, build_domain(domain, ustl::views::Span<HardwareIrq const>(GOOD)),
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(GOOD)),
                      Status::Ok, "so the same domain takes a good list after it");
             verdict(tally,
-                    domain.irq_for_source(HardwareIrq{3}) == IrqId{32} &&
-                        domain.source_for_irq(IrqId{32}) == HardwareIrq{3},
+                    domain.irq_for_source(HIrqNum{3}) == VIrqNum{32} &&
+                        domain.source_for_irq(VIrqNum{32}) == HIrqNum{3},
                     "and maps it");
-            answered(tally, build_domain(domain, ustl::views::Span<HardwareIrq const>(OTHER)),
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(OTHER)),
                      Status::BadState, "a built domain refuses a second build");
             verdict(tally,
-                    domain.irq_for_source(HardwareIrq{3}) == IrqId{32} &&
-                        domain.source_for_irq(IrqId{32}) == HardwareIrq{3} &&
-                        domain.irq_for_source(HardwareIrq{9}) == IrqId::Invalid,
+                    domain.irq_for_source(HIrqNum{3}) == VIrqNum{32} &&
+                        domain.source_for_irq(VIrqNum{32}) == HIrqNum{3} &&
+                        domain.irq_for_source(HIrqNum{9}) == VIrqNum::Invalid,
                     "and keeps its map");
         }
     }

@@ -144,11 +144,11 @@ namespace {
 
     /// The free line, by the number the irq layer names it: q35 has no
     /// override for ISA 3, so it is GSI 3.
-    auto free_line() -> IrqId {
+    auto free_line() -> VIrqNum {
         return platform::isa_irq_line(ISA_IRQ_SERIAL2);
     }
 
-    auto timer_line() -> IrqId {
+    auto timer_line() -> VIrqNum {
         return platform::isa_irq_line(ISA_IRQ_PIT);
     }
 
@@ -303,14 +303,14 @@ namespace {
         verdict(tally, irq::is_kernel_owned(timer_line()),
                 "the timer's line is the kernel's own: Permanent");
         verdict(tally, !irq::is_kernel_owned(free_line()), "the free line is not");
-        verdict(tally, !irq::is_kernel_owned(IrqId::Invalid),
-                "and IrqId::Invalid, which is no line, is not");
+        verdict(tally, !irq::is_kernel_owned(VIrqNum::Invalid),
+                "and VIrqNum::Invalid, which is no line, is not");
         // Every line the machine has: the timer's is the only one.
         auto owned = usize{0};
         for (u32 source = 0; source < 256; ++source) {
-            auto const hwirq = HardwareIrq{source};
+            auto const hwirq = HIrqNum{source};
             auto const virq = irq::irq_for_source(irq::DomainId::Root, hwirq);
-            if (virq != IrqId::Invalid && irq::is_kernel_owned(virq)) {
+            if (virq != VIrqNum::Invalid && irq::is_kernel_owned(virq)) {
                 owned += 1;
             }
         }
@@ -471,7 +471,7 @@ namespace {
         }
         auto const read = read_within(*port.dispatcher(), &packet);
         auto const to = now();
-        verdict(tally, irq::spurious_count(IrqId{NO_SUCH_LINE}).is_none(),
+        verdict(tally, irq::spurious_count(VIrqNum{NO_SUCH_LINE}).is_none(),
                 "a vector past every line has no line");
         verdict(tally, read && is_packet(packet, from, to),
                 "raised before the line's own, it is ended by the root handler: the line's "
@@ -1075,7 +1075,7 @@ namespace {
         KernelHandle<InterruptDispatcher> interrupt;
         auto rights = Rights::None;
         answered(tally,
-                 InterruptEventDispatcher::create(&interrupt, &rights, IrqId{ISA_IRQ_SERIAL2},
+                 InterruptEventDispatcher::create(&interrupt, &rights, VIrqNum{ISA_IRQ_SERIAL2},
                                                   InterruptOptions::Virtual),
                  Status::InvArgs, "a physical line refuses Virtual");
         answered(tally, make(&interrupt, static_cast<InterruptOptions>(5U << 1)), Status::InvArgs,
@@ -1087,11 +1087,11 @@ namespace {
                                                   static_cast<InterruptOptions>(0x1)),
                  Status::InvArgs, "the retired RemapIrq bit");
         answered(tally,
-                 InterruptEventDispatcher::create(&interrupt, &rights, IrqId{NO_SUCH_LINE},
+                 InterruptEventDispatcher::create(&interrupt, &rights, VIrqNum{NO_SUCH_LINE},
                                                   InterruptOptions::ModeDefault),
                  Status::NoResource, "a number no line has answers NoResource");
         answered(tally,
-                 InterruptEventDispatcher::create(&interrupt, &rights, IrqId{NO_SUCH_LINE},
+                 InterruptEventDispatcher::create(&interrupt, &rights, VIrqNum{NO_SUCH_LINE},
                                                   InterruptOptions::ModeEdgeHigh),
                  Status::NoResource, "with a mode as well");
     }

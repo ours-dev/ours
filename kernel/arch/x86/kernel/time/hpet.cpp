@@ -139,8 +139,8 @@ class HpetChannel {
         regs_mmio_ = mmio;
         // The comparator's routing is an IO-APIC pin, a hardware number; the
         // device names its line by the kernel's number for it.
-        m_clkevt.set_irqnum(irq::irq_for_source(irq::DomainId::Root,
-                                                static_cast<HardwareIrq>(mmio->conf_caps.irq())));
+        m_clkevt.set_irqnum(
+            irq::irq_for_source(irq::DomainId::Root, static_cast<HIrqNum>(mmio->conf_caps.irq())));
     }
 
     /// Arms the comparator |delta| ticks ahead of the main counter, and

@@ -29,7 +29,7 @@ class DomainEndpoint final {
     /// ended, including an unclaimed source. None leaves completion to the
     /// root controller. The endpoint opens its own reader scope.
     [[nodiscard]]
-    auto dispatch(HardwareIrq source) const -> ustl::Option<IrqReturn>;
+    auto dispatch(HIrqNum source) const -> ustl::Option<IrqReturn>;
 
   private:
     friend class DomainRegistry;
@@ -40,7 +40,7 @@ class DomainEndpoint final {
 /// the domain. The root uses DomainId::Root; other ids are registrant-chosen.
 /// Registration failure keeps neither storage nor an endpoint publication.
 [[nodiscard]]
-auto register_domain(DomainId id, ustl::views::Span<HardwareIrq const> sources,
+auto register_domain(DomainId id, ustl::views::Span<HIrqNum const> sources,
                      ControllerOps const &controller, DomainEndpoint &endpoint,
                      void *context = nullptr) -> Status;
 

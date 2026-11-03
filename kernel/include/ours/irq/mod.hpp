@@ -23,7 +23,7 @@ class Registration;
 /// two line locks. Callers must not hold a lock that a line callback takes.
 /// No control sleeps or allocates.
 ///
-/// Ordinary controls return InvArgs for IrqId::Invalid, NoResource for an
+/// Ordinary controls return InvArgs for VIrqNum::Invalid, NoResource for an
 /// absent/withdrawn line, and NotSupported for a missing controller operation.
 
 /// Attach caller-owned, address-stable registration storage. The owner
@@ -35,14 +35,14 @@ class Registration;
 /// line or hardware change. BadState means already attached; AlreadyBound
 /// means conflicting occupancy. Without a mode, Oneshot needs a readable mode.
 [[nodiscard]]
-auto attach(IrqId id, Registration &registration) -> Status;
+auto attach(VIrqNum id, Registration &registration) -> Status;
 
 /// Exclusively acquire and configure/read the mode under one L1 hold. With
 /// mode, configure it; with None, query it. Leave the source masked until its
 /// owner unmasks. Occupancy is checked before hardware changes. The returned
 /// mode remains stable while the registration is attached.
 [[nodiscard]]
-auto attach(IrqId id, Registration &registration, ustl::Option<LineMode> mode)
+auto attach(VIrqNum id, Registration &registration, ustl::Option<LineMode> mode)
     -> ktl::Result<TriggerMode>;
 
 /// Drain callbacks and unlink this registration. Last detach masks the source
@@ -57,58 +57,58 @@ auto detach(Registration &registration) -> Status;
 /// Held and unmasking. No-op after detach, for a different registration, for
 /// non-Oneshot or while newer work is pending. It never repeats ACK or EOI.
 /// An explicit identity remains valid while detach clears the binding.
-auto finalize_oneshot(IrqId id, Registration const &registration) -> void;
+auto finalize_oneshot(VIrqNum id, Registration const &registration) -> void;
 
 /// Serialize a controller mask with dispatch. A retiring line may be masked.
 [[nodiscard]]
-auto mask(IrqId id) -> Status;
+auto mask(VIrqNum id) -> Status;
 
 /// Start delivery unless Held, in which case return Ok without reopening.
 /// A retiring line returns NoResource.
 [[nodiscard]]
-auto unmask(IrqId id) -> Status;
+auto unmask(VIrqNum id) -> Status;
 
 /// Configure an unoccupied line and leave it masked. Occupied lines return
 /// AlreadyBound; a retiring line returns NoResource. Acquire a particular
 /// mode through attach(mode) when configuration and ownership must be atomic.
 [[nodiscard]]
-auto configure(IrqId id, TriggerMode trigger, Polarity polarity) -> Status;
+auto configure(VIrqNum id, TriggerMode trigger, Polarity polarity) -> Status;
 
 /// Read hardware mode under the controller's own lock, without L1. Safe in a
 /// callback; a caller needing stable ownership uses attach(mode).
 [[nodiscard]]
-auto trigger_mode(IrqId id) -> ktl::Result<TriggerMode>;
+auto trigger_mode(VIrqNum id) -> ktl::Result<TriggerMode>;
 
 /// Resolve a domain-local source. Invalid means no mapping. Kernel identities
 /// are never reused, so the answer may be retained after the lookup scope.
 [[nodiscard]]
-auto irq_for_source(DomainId domain, HardwareIrq source) -> IrqId;
+auto irq_for_source(DomainId domain, HIrqNum source) -> VIrqNum;
 
 /// Recover the controller-local source of a known kernel identity. Invalid
 /// means no mapping. The caller supplies its domain when resolving it again.
 [[nodiscard]]
-auto source_for_irq(IrqId id) -> HardwareIrq;
+auto source_for_irq(VIrqNum id) -> HIrqNum;
 
 /// Permanent occupancy is advisory for user error selection; attach remains
 /// the authority that excludes a conflicting owner.
 [[nodiscard]]
-auto is_kernel_owned(IrqId id) -> bool;
+auto is_kernel_owned(VIrqNum id) -> bool;
 
 /// Unclaimed deliveries since boot, or None for an absent line.
 [[nodiscard]]
-auto spurious_count(IrqId id) -> ustl::Option<u64>;
+auto spurious_count(VIrqNum id) -> ustl::Option<u64>;
 
 /// Test seams retain the same reader scope and line guards as production.
 /// Synthetic delivery skips controller ACK/EOI; no interrupt is in service.
 [[nodiscard]]
-auto handle_irq_for_test(IrqId id) -> IrqReturn;
+auto handle_irq_for_test(VIrqNum id) -> IrqReturn;
 [[nodiscard]]
-auto is_masked_for_test(IrqId id) -> ktl::Result<bool>;
+auto is_masked_for_test(VIrqNum id) -> ktl::Result<bool>;
 [[nodiscard]]
-auto root_source_exists_for_test(HardwareIrq source) -> bool;
+auto root_source_exists_for_test(HIrqNum source) -> bool;
 [[nodiscard]]
-auto revoke_line_for_test(IrqId id) -> Status;
-auto unmark_dying_for_test(IrqId id) -> void;
+auto revoke_line_for_test(VIrqNum id) -> Status;
+auto unmark_dying_for_test(VIrqNum id) -> void;
 
 /// The bookkeeping on entry to a trap, which arch calls once, before it
 /// dispatches: records the frame and raises the counts that keep this CPU from

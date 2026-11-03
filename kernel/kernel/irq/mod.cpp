@@ -37,11 +37,11 @@ namespace {
 
     /// The table that owns `id`, `guard` held over it and over the caller's
     /// whole use of the answer: Domain::find_line()'s contract, one directory
-    /// up. InvArgs for IrqId::Invalid, NoResource for a number no registered
+    /// up. InvArgs for VIrqNum::Invalid, NoResource for a number no registered
     /// domain owns.
     [[nodiscard]]
-    auto find_table(IrqId const id, task::IrqRcuReadGuard const &guard) -> ktl::Result<Domain *> {
-        if (id == IrqId::Invalid) {
+    auto find_table(VIrqNum const id, task::IrqRcuReadGuard const &guard) -> ktl::Result<Domain *> {
+        if (id == VIrqNum::Invalid) {
             return ustl::err(Status::InvArgs);
         }
         auto *const table = get_domain_registry()->domain_for(id, guard);
@@ -71,7 +71,7 @@ auto current_frame() -> arch::IrqFrame * {
     return mm::CpuLocal::read(CURRENT_FRAME);
 }
 
-auto register_domain(DomainId const id, ustl::views::Span<HardwareIrq const> const sources,
+auto register_domain(DomainId const id, ustl::views::Span<HIrqNum const> const sources,
                      ControllerOps const &controller, DomainEndpoint &endpoint, void *const context)
     -> Status {
     return get_domain_registry()->register_domain(id, sources, controller, endpoint, context);
@@ -81,12 +81,12 @@ auto unregister_domain(DomainId const id) -> Status {
     return get_domain_registry()->unregister_domain(id);
 }
 
-auto attach(IrqId const id, Registration &registration) -> Status {
+auto attach(VIrqNum const id, Registration &registration) -> Status {
     return with_line(*get_domain_registry(), id,
                      [&](Line &line) { return line.attach(registration); });
 }
 
-auto attach(IrqId const id, Registration &registration, ustl::Option<LineMode> const mode)
+auto attach(VIrqNum const id, Registration &registration, ustl::Option<LineMode> const mode)
     -> ktl::Result<TriggerMode> {
     return with_line(*get_domain_registry(), id,
                      [&](Line &line) { return line.attach(registration, mode); });
@@ -94,7 +94,7 @@ auto attach(IrqId const id, Registration &registration, ustl::Option<LineMode> c
 
 /// The registration knows its line, so the caller names only the registration: on a
 /// shared line a number alone cannot say which of its registrations to remove.
-/// IrqId::Invalid, which is what an registration not on any line holds, is in no
+/// VIrqNum::Invalid, which is what an registration not on any line holds, is in no
 /// domain's block and answers NotFound, as it did when the machine had one
 /// table.
 auto detach(Registration &registration) -> Status {
@@ -106,7 +106,7 @@ auto detach(Registration &registration) -> Status {
     return table->detach(registration);
 }
 
-auto finalize_oneshot(IrqId const id, Registration const &registration) -> void {
+auto finalize_oneshot(VIrqNum const id, Registration const &registration) -> void {
     task::IrqRcuReadGuard const guard;
     auto *const table = get_domain_registry()->domain_for(id, guard);
     if (table == nullptr) {
@@ -115,39 +115,39 @@ auto finalize_oneshot(IrqId const id, Registration const &registration) -> void 
     table->finalize_oneshot(id, registration);
 }
 
-auto mask(IrqId const id) -> Status {
+auto mask(VIrqNum const id) -> Status {
     return with_line(*get_domain_registry(), id, [&](Line &line) { return line.mask(); });
 }
 
-auto unmask(IrqId const id) -> Status {
+auto unmask(VIrqNum const id) -> Status {
     return with_line(*get_domain_registry(), id, [&](Line &line) { return line.unmask(); });
 }
 
-auto configure(IrqId const id, TriggerMode const trigger, Polarity const polarity) -> Status {
+auto configure(VIrqNum const id, TriggerMode const trigger, Polarity const polarity) -> Status {
     return with_line(*get_domain_registry(), id,
                      [&](Line &line) { return line.configure(trigger, polarity); });
 }
 
-auto trigger_mode(IrqId const id) -> ktl::Result<TriggerMode> {
+auto trigger_mode(VIrqNum const id) -> ktl::Result<TriggerMode> {
     return with_line(*get_domain_registry(), id, [&](Line &line) { return line.trigger_mode(); });
 }
 
-auto is_masked_for_test(IrqId const id) -> ktl::Result<bool> {
+auto is_masked_for_test(VIrqNum const id) -> ktl::Result<bool> {
     return with_line(*get_domain_registry(), id, [&](Line &line) { return line.is_masked(); });
 }
 
-auto irq_for_source(DomainId const id, HardwareIrq const source) -> IrqId {
+auto irq_for_source(DomainId const id, HIrqNum const source) -> VIrqNum {
     // One read of the directory, and the answer is a plain number: good after
     // the guard closes, because a virq is never reused.
     task::IrqRcuReadGuard const guard;
     return get_domain_registry()->irq_for_source(id, source, guard);
 }
 
-auto source_for_irq(IrqId const id) -> HardwareIrq {
+auto source_for_irq(VIrqNum const id) -> HIrqNum {
     task::IrqRcuReadGuard const guard;
     auto *const table = get_domain_registry()->domain_for(id, guard);
     if (table == nullptr) {
-        return HardwareIrq::Invalid;
+        return HIrqNum::Invalid;
     }
     return table->source_for_irq(id);
 }
@@ -156,9 +156,9 @@ auto source_for_irq(IrqId const id) -> HardwareIrq {
 /// interrupt entry does, and a thread-context entrant into the interrupt path
 /// is a read of the directory like any control call: the guard covers the
 /// lookup and the flow both. The virq is turned into the hardware number
-/// inside the table; a number that is no line becomes HardwareIrq::Invalid,
+/// inside the table; a number that is no line becomes HIrqNum::Invalid,
 /// which has no line.
-auto handle_irq_for_test(IrqId const id) -> IrqReturn {
+auto handle_irq_for_test(VIrqNum const id) -> IrqReturn {
     task::IrqRcuReadGuard const guard;
     auto *const table = get_domain_registry()->domain_for(id, guard);
     if (table == nullptr) {
@@ -171,7 +171,7 @@ auto handle_irq_for_test(IrqId const id) -> IrqReturn {
     return *result;
 }
 
-auto revoke_line_for_test(IrqId const id) -> Status {
+auto revoke_line_for_test(VIrqNum const id) -> Status {
     task::IrqRcuReadGuard const guard;
     auto const table = find_table(id, guard);
     if (table.is_err()) {
@@ -180,7 +180,7 @@ auto revoke_line_for_test(IrqId const id) -> Status {
     return (*table)->revoke_line(id);
 }
 
-auto unmark_dying_for_test(IrqId const id) -> void {
+auto unmark_dying_for_test(VIrqNum const id) -> void {
     task::IrqRcuReadGuard const guard;
     auto *const table = get_domain_registry()->domain_for(id, guard);
     if (table == nullptr) {
@@ -189,7 +189,7 @@ auto unmark_dying_for_test(IrqId const id) -> void {
     table->unmark_dying(id);
 }
 
-auto spurious_count(IrqId const id) -> ustl::Option<u64> {
+auto spurious_count(VIrqNum const id) -> ustl::Option<u64> {
     task::IrqRcuReadGuard const guard;
     auto *const table = get_domain_registry()->domain_for(id, guard);
     if (table == nullptr) {
@@ -198,7 +198,7 @@ auto spurious_count(IrqId const id) -> ustl::Option<u64> {
     return table->spurious_count(id);
 }
 
-auto is_kernel_owned(IrqId const id) -> bool {
+auto is_kernel_owned(VIrqNum const id) -> bool {
     task::IrqRcuReadGuard const guard;
     auto *const table = get_domain_registry()->domain_for(id, guard);
     if (table == nullptr) {
@@ -207,9 +207,9 @@ auto is_kernel_owned(IrqId const id) -> bool {
     return table->is_kernel_owned(id);
 }
 
-auto root_source_exists_for_test(HardwareIrq const source) -> bool {
+auto root_source_exists_for_test(HIrqNum const source) -> bool {
     task::IrqRcuReadGuard const guard;
-    return get_domain_registry()->irq_for_source(DomainId::Root, source, guard) != IrqId::Invalid;
+    return get_domain_registry()->irq_for_source(DomainId::Root, source, guard) != VIrqNum::Invalid;
 }
 
 /// The bookkeeping on entry to an interrupt: record the frame, and raise the

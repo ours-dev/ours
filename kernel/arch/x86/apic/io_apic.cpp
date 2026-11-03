@@ -55,7 +55,7 @@ namespace {
     /// numbers it is made of, so no caller has to remember that the version
     /// register reports the highest redirection index rather than the pin
     /// count, or that the pins are numbered from the IO-APIC's own base.
-    auto resolve_irqnum_to_ioapic(HardwareIrq irqnum) -> arch::IoApic * {
+    auto resolve_irqnum_to_ioapic(HIrqNum irqnum) -> arch::IoApic * {
         for (auto &ioapic: IOAPICS) {
             if (ioapic.owns_global_irq(irqnum)) {
                 return &ioapic;
@@ -69,7 +69,7 @@ namespace {
     /// programmed at boot through apic_configure_irq(), which stops on a GSI
     /// no IO-APIC owns, so a miss here is a kernel bug: stop rather than
     /// dereference null.
-    auto owner_of(HardwareIrq const gsi) -> arch::IoApic & {
+    auto owner_of(HIrqNum const gsi) -> arch::IoApic & {
         auto *const ioapic = resolve_irqnum_to_ioapic(gsi);
         ASSERT(ioapic, "IO-APIC: no IO-APIC owns GSI {}", static_cast<u32>(gsi));
         return *ioapic;
@@ -172,7 +172,7 @@ auto registered_io_apics() -> ustl::views::Span<arch::IoApic const> {
     return IOAPICS;
 }
 
-auto apic_configure_irq(HardwareIrq global_irq, arch::ApicTriggerMode trimode,
+auto apic_configure_irq(HIrqNum global_irq, arch::ApicTriggerMode trimode,
                         arch::ApicInterruptPolarity polarity, arch::ApicDeliveryMode delmode,
                         bool mask, arch::ApicDestinationMode dstmode, u8 dst, arch::IrqVec vector)
     -> void {
@@ -194,11 +194,11 @@ auto apic_configure_isa_irq(u8 isa_irq, arch::ApicDeliveryMode del_mode, bool ma
     // caller's bug, so stop here rather than read past the table.
     ASSERT(isa_irq < arch::NUM_ISA_IRQS, "ISA IRQ {} is past the {} ISA lines", isa_irq,
            arch::NUM_ISA_IRQS);
-    auto irq = HardwareIrq{isa_irq};
+    auto irq = HIrqNum{isa_irq};
     auto trigger_mode = arch::ApicTriggerMode::Edge;
     auto polarity = arch::ApicInterruptPolarity::ActiveHigh;
     if (IOAPIC_ISA_OVERRIDES[isa_irq].remapped) {
-        irq = static_cast<HardwareIrq>(IOAPIC_ISA_OVERRIDES[isa_irq].global_irq);
+        irq = static_cast<HIrqNum>(IOAPIC_ISA_OVERRIDES[isa_irq].global_irq);
         trigger_mode = IOAPIC_ISA_OVERRIDES[isa_irq].tri_mode;
         polarity = IOAPIC_ISA_OVERRIDES[isa_irq].polarity;
     }
@@ -206,14 +206,14 @@ auto apic_configure_isa_irq(u8 isa_irq, arch::ApicDeliveryMode del_mode, bool ma
     apic_configure_irq(irq, trigger_mode, polarity, del_mode, mask, dst_mode, dst, vector);
 }
 
-auto apic_io_isa_to_global(u8 isa_irq) -> HardwareIrq {
+auto apic_io_isa_to_global(u8 isa_irq) -> HIrqNum {
     for (auto &override: IOAPIC_ISA_OVERRIDES) {
         if (override.isa_irq == isa_irq && override.remapped) {
-            return static_cast<HardwareIrq>(override.global_irq);
+            return static_cast<HIrqNum>(override.global_irq);
         }
     }
 
-    return HardwareIrq{isa_irq};
+    return HIrqNum{isa_irq};
 }
 
 INIT_CODE
@@ -271,9 +271,9 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
     // of the last pin would test nothing.
     for (auto const &ioapic: IOAPICS) {
         [[maybe_unused]]
-        auto const first = static_cast<HardwareIrq>(ioapic.gsi_base());
+        auto const first = static_cast<HIrqNum>(ioapic.gsi_base());
         [[maybe_unused]]
-        auto const last = static_cast<HardwareIrq>(ioapic.gsi_base() + ioapic.irq_count() - 1);
+        auto const last = static_cast<HIrqNum>(ioapic.gsi_base() + ioapic.irq_count() - 1);
         DEBUG_ASSERT(resolve_irqnum_to_ioapic(first) == &ioapic,
                      "IO-APIC[{}]: its first GSI {} does not resolve to it", ioapic.id(),
                      static_cast<u32>(first));

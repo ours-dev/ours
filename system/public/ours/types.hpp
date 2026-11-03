@@ -12,12 +12,12 @@ using VirtAddr = usize;
 using PhysAddr = usize;
 
 /// Controller-local source identity; meaningful only inside its domain.
-enum class HardwareIrq : u32 {
+enum class HIrqNum : u32 {
     Invalid = 0xFFFF'FFFF,
 };
 
 /// Kernel line identity. Allocated once and never reused after withdrawal.
-enum class IrqId : u32 {
+enum class VIrqNum : u32 {
     Invalid = 0xFFFF'FFFF,
 };
 

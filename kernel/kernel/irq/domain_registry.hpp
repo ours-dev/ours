@@ -29,21 +29,21 @@ class DomainRegistry final {
     ~DomainRegistry();
 
     [[nodiscard]]
-    auto register_domain(DomainId id, ustl::views::Span<HardwareIrq const> sources,
+    auto register_domain(DomainId id, ustl::views::Span<HIrqNum const> sources,
                          ControllerOps const &controller, DomainEndpoint &endpoint,
                          void *context = nullptr) -> Status;
     [[nodiscard]]
     auto unregister_domain(DomainId id) -> Status;
     [[nodiscard]]
-    auto domain_for(IrqId line, task::IrqRcuReadGuard const &guard) const -> Domain *;
+    auto domain_for(VIrqNum line, task::IrqRcuReadGuard const &guard) const -> Domain *;
     [[nodiscard]]
     auto find(DomainId id, task::IrqRcuReadGuard const &guard) const -> Domain *;
     [[nodiscard]]
-    auto irq_for_source(DomainId id, HardwareIrq source, task::IrqRcuReadGuard const &guard) const
-        -> IrqId;
+    auto irq_for_source(DomainId id, HIrqNum source, task::IrqRcuReadGuard const &guard) const
+        -> VIrqNum;
 
     [[nodiscard]]
-    auto find_line(IrqId line, task::IrqRcuReadGuard const &guard) const -> ktl::Result<Line *>;
+    auto find_line(VIrqNum line, task::IrqRcuReadGuard const &guard) const -> ktl::Result<Line *>;
 
     /// Internal test seam for publication/reclamation checks. Production
     /// controller code can only dispatch through the endpoint.
@@ -69,7 +69,7 @@ class DomainRegistry final {
 
     sync::SpinLock m_lock;
     Slot m_slots[CAPACITY] TA_GUARDED(m_lock);
-    IrqId m_next_id TA_GUARDED(m_lock) = IrqId{0};
+    VIrqNum m_next_id TA_GUARDED(m_lock) = VIrqNum{0};
     task::IrqRcuPointer<Entry> m_published[CAPACITY];
 };
 } // namespace ours::irq

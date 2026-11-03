@@ -52,8 +52,8 @@ auto interrupt_create(ours::Uandle const resource, u32 const line, InterruptOpti
             status != Status::Ok) {
             return status;
         }
-        if (auto const status = InterruptEventDispatcher::create(&interrupt, &rights,
-                                                                 static_cast<IrqId>(line), options);
+        if (auto const status = InterruptEventDispatcher::create(
+                &interrupt, &rights, static_cast<VIrqNum>(line), options);
             status != Status::Ok) {
             return status;
         }
@@ -97,7 +97,7 @@ auto interrupt_map(ours::Uandle const resource, u32 const domain, u32 const sour
     if (domain == std::to_underlying(irq::DomainId::Invalid)) {
         return Status::InvArgs;
     }
-    if (source == static_cast<u32>(HardwareIrq::Invalid)) {
+    if (source == static_cast<u32>(HIrqNum::Invalid)) {
         return Status::InvArgs;
     }
     if (auto const status = object::validate_root_resource(resource, RsrcKind::Irq);
@@ -106,8 +106,8 @@ auto interrupt_map(ours::Uandle const resource, u32 const domain, u32 const sour
     }
 
     auto const virq =
-        irq::irq_for_source(static_cast<irq::DomainId>(domain), static_cast<HardwareIrq>(source));
-    if (virq == IrqId::Invalid) {
+        irq::irq_for_source(static_cast<irq::DomainId>(domain), static_cast<HIrqNum>(source));
+    if (virq == VIrqNum::Invalid) {
         return Status::NoResource;
     }
     // A line the kernel holds for its own use is not one a program can take,

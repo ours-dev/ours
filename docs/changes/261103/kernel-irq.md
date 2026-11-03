@@ -507,3 +507,37 @@ None. Teaching exercises are suspended for this task.
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task.
+
+## Retain the requested HIrqNum and VIrqNum spelling for strong identities (2026-11-03)
+
+**Files**
+- `system/public/ours/types.hpp` and IRQ interfaces/callers — use distinct scoped HIrqNum and VIrqNum enums throughout.
+
+**Symptom**
+The shared checkout's type migration used HIrqNum/VIrqNum while the IRQ increment used HardwareIrq/IrqId. The user explicitly selected the former spelling when asked which interface to keep.
+
+**Cause**
+The safety property is type distinction, not a particular spelling. Parallel interface migrations need one canonical vocabulary; adding aliases would retain two vocabularies and reintroduce redundant compatibility surface.
+
+**Change**
+Rename the two scoped types to HIrqNum and VIrqNum, including namespace imports, explicit conversions, callback signatures and compile-time interface checks. Keep the existing source/id semantic roles, Invalid values, u32 width and prohibition on implicit mixing. No compatibility aliases or arithmetic operators are added. The user-directed spelling overrides the earlier prototype names without reverting to primitive aliases.
+
+The shared worktree also contains an independent, unfinished VirtAddr/PhysAddr migration. Its code is preserved. This increment is built in .worktrees/codex-irq-final-review on codex/irq-final-review from 8a96f1e2, with only the IRQ type spelling changed in the common types header. No claim is made that the shared address migration builds. The application created the worktree in its managed directory; it was moved under the repository-required .worktrees directory before use. The application cannot attach the relocated directory as managed, so commands use the explicit project-local path.
+
+**Reference**
+None, the user's explicit naming decision. The strong-type design and boundary assertions are unchanged.
+
+**Verification**
+All 39 changed C++ files ran changed-line formatting and LLVM 23 clang-tidy; the architecture types header used actual IO-APIC flags to avoid incorrect automatic header inference. No new changed-line diagnostics remain. In out/irq-final, both images boot: dbg 46 passed, 5 skipped, 0 failed; rel 44 passed, 8 skipped, 0 failed, 7/7 required. All 161 host tests and all nine IRQ suites pass at their existing counts. Compile-time checks still reject numeric/source/id mixing at the real interfaces. Performance was not measured.
+
+**Deliberately not done**
+No address-type changes, old-name aliases or integration of unrelated shared work. Trap-entry behavior is a separate increment.
+
+**How it was found**
+A shared-checkout build exposed both address conversion failures and missing IRQ type names. Inspection of git diff separated the independent address edits; the user selected HIrqNum/VIrqNum, and the IRQ-only migration was verified in isolation.
+
+**The user's prediction**
+None. The user selected the canonical spelling, not a teaching exercise.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.

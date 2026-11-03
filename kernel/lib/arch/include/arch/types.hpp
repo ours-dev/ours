@@ -9,9 +9,9 @@
 namespace arch {
 /// The follwoing types which was defined in subnamespaces of `ours`
 /// is immigrating into `arch` namespace grudually.
-using ours::HardwareIrq;
-using ours::IrqId;
+using ours::HIrqNum;
 using ours::PhysAddr;
+using ours::VIrqNum;
 using ours::VirtAddr;
 typedef usize PteVal;
 

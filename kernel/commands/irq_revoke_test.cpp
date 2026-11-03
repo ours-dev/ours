@@ -58,8 +58,8 @@ namespace {
 
     /// A line's numbers differ, as they do in the table: a hook told the
     /// hardware number instead of the virq would show.
-    constexpr auto OWN_HWIRQ = HardwareIrq{7};
-    constexpr auto OWN_LINE = IrqId{0xffff'fffe};
+    constexpr auto OWN_HWIRQ = HIrqNum{7};
+    constexpr auto OWN_LINE = VIrqNum{0xffff'fffe};
     constexpr auto LOST_AFTER = Seconds(5);
     /// How long the slow handler holds its line after the revoke has begun.
     constexpr auto HOLD_FOR = Milliseconds(20);
@@ -144,8 +144,8 @@ namespace {
         std::atomic<bool> returned{false};
     };
 
-    auto owner_handler(IrqId line, void *context) -> irq::IrqReturn;
-    auto owner_cancel(IrqId line, void *context) -> void;
+    auto owner_handler(VIrqNum line, void *context) -> irq::IrqReturn;
+    auto owner_cancel(VIrqNum line, void *context) -> void;
 
     /// An action and what its owner sees of it.
     struct Owner {
@@ -167,7 +167,7 @@ namespace {
         /// was still on that line as the owner reads it, whether it ran with
         /// interrupts and preemption off as promised, and whether the
         /// handler in flight had returned.
-        std::atomic<IrqId> told_with{IrqId::Invalid};
+        std::atomic<VIrqNum> told_with{VIrqNum::Invalid};
         std::atomic<bool> on_line_in_hook{false};
         std::atomic<bool> irqs_off_in_hook{false};
         std::atomic<bool> preempt_off_in_hook{false};
@@ -177,7 +177,7 @@ namespace {
         std::atomic<bool> hook_done{false};
     };
 
-    auto owner_handler(IrqId, void *const context) -> irq::IrqReturn {
+    auto owner_handler(VIrqNum, void *const context) -> irq::IrqReturn {
         auto &owner = *static_cast<Owner *>(context);
         owner.handled.fetch_add(1, std::memory_order_relaxed);
         if (owner.hold != nullptr) {
@@ -199,7 +199,7 @@ namespace {
         return irq::IrqReturn::Handled;
     }
 
-    auto owner_cancel(IrqId const line, void *const context) -> void {
+    auto owner_cancel(VIrqNum const line, void *const context) -> void {
         auto &owner = *static_cast<Owner *>(context);
         owner.told_with.store(line, std::memory_order_relaxed);
         owner.on_line_in_hook.store(owner.action.line_id() == line, std::memory_order_relaxed);
@@ -537,7 +537,7 @@ namespace {
     /// a table cannot be freed.
     struct Race {
         irq::Domain *table = nullptr;
-        IrqId virq = IrqId::Invalid;
+        VIrqNum virq = VIrqNum::Invalid;
         Owner *owner = nullptr;
         std::atomic<u32> go{0};
         std::atomic<u32> remover_done{0};
@@ -613,9 +613,9 @@ namespace {
 
     auto check_race(Tally &tally, CpuNum const remover_cpu, CpuNum const detacher_cpu) -> void {
         auto *const table = new (mm::GAF_KERNEL) irq::Domain();
-        constexpr std::array<HardwareIrq, 1> NUMBERS{OWN_HWIRQ};
+        constexpr std::array<HIrqNum, 1> NUMBERS{OWN_HWIRQ};
         if (table == nullptr ||
-            table->init(ustl::views::Span<HardwareIrq const>(NUMBERS), CHIP) != Status::Ok) {
+            table->init(ustl::views::Span<HIrqNum const>(NUMBERS), CHIP) != Status::Ok) {
             verdict(tally, false, "make the race's line table");
             return;
         }

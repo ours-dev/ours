@@ -74,8 +74,8 @@ namespace {
     /// good.
     auto handle_root_interrupt(arch::IrqFrame *const frame) -> void {
         DEBUG_ASSERT(frame->vector >= arch::IrqVec::PlatformIrqMin);
-        auto const gsi = static_cast<HardwareIrq>(static_cast<u32>(frame->vector) -
-                                                  static_cast<u32>(arch::IrqVec::PlatformIrqMin));
+        auto const gsi = static_cast<HIrqNum>(static_cast<u32>(frame->vector) -
+                                              static_cast<u32>(arch::IrqVec::PlatformIrqMin));
         if (ROOT_ENDPOINT.dispatch(gsi).is_none()) {
             apic_issue_eoi();
         }
@@ -139,12 +139,12 @@ namespace {
         // 24 pins fit the 208 platform vectors with room to spare; allocating
         // them waits for MSI, which brings more.
         constexpr auto MAX_GSI = usize(IrqVec::PlatformIrqMax) - usize(IrqVec::PlatformIrqMin);
-        ktl::Vec<HardwareIrq> gsis;
-        auto const is_programmed = [&gsis](HardwareIrq const gsi) -> bool {
+        ktl::Vec<HIrqNum> gsis;
+        auto const is_programmed = [&gsis](HIrqNum const gsi) -> bool {
             auto const taken = ustl::views::Span(gsis);
             return std::ranges::find(taken, gsi) != taken.end();
         };
-        auto const remember = [&gsis](HardwareIrq const gsi) -> void {
+        auto const remember = [&gsis](HIrqNum const gsi) -> void {
             auto slot = gsis.emplace_back(gsi);
             ASSERT(slot, "Out of memory while collecting the GSIs of the IO-APIC pins");
         };
@@ -187,7 +187,7 @@ namespace {
         // the firmware left it.
         for (auto const &ioapic: registered_io_apics()) {
             for (auto pin = usize{0}; pin < ioapic.irq_count(); ++pin) {
-                auto const gsi = static_cast<HardwareIrq>(ioapic.gsi_base() + pin);
+                auto const gsi = static_cast<HIrqNum>(ioapic.gsi_base() + pin);
                 if (is_programmed(gsi)) {
                     continue;
                 }
@@ -241,9 +241,9 @@ namespace {
 /// out: platform_init_apic() does not program it, and its GSI is commonly the
 /// timer's (q35 sends ISA 0 to GSI 2 and leaves ISA 2 on it), so naming it
 /// would hand out the timer's line under a second name.
-auto platform::isa_irq_line(u32 const isa_irq) -> IrqId {
+auto platform::isa_irq_line(u32 const isa_irq) -> VIrqNum {
     if (isa_irq >= arch::NUM_ISA_IRQS || isa_irq == ISA_IRQ_PIC2) {
-        return IrqId::Invalid;
+        return VIrqNum::Invalid;
     }
     return irq::irq_for_source(irq::DomainId::Root,
                                apic_io_isa_to_global(static_cast<u8>(isa_irq)));
