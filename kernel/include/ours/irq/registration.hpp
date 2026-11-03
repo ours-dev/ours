@@ -57,21 +57,21 @@ class Registration final {
     }
 
     [[nodiscard]]
-    auto is_shared() const -> bool {
+    constexpr auto is_shared() const -> bool {
         return !!(m_flags & IrqFlags::Shared);
     }
 
     /// Asks for the line for good: it takes only an empty line, and the line
     /// then refuses every other attach and refuses to let this one go.
     [[nodiscard]]
-    auto is_permanent() const -> bool {
+    constexpr auto is_permanent() const -> bool {
         return !!(m_flags & IrqFlags::Permanent);
     }
 
     /// Asks the line to stay masked after an interrupt this action answers
     /// WakeThread for, until irq::finalize_oneshot().
     [[nodiscard]]
-    auto is_oneshot() const -> bool {
+    constexpr auto is_oneshot() const -> bool {
         return !!(m_flags & IrqFlags::Oneshot);
     }
 
@@ -111,12 +111,24 @@ class Registration final {
     // cannot disagree.
     friend class Line;
 
-    IrqHandler m_handler;
-    void *m_context;
-    IrqFlags m_flags;
+    [[nodiscard]]
+    constexpr auto is_valid() const -> bool {
+        constexpr auto OPTIONS = IrqFlags::Shared | IrqFlags::Permanent | IrqFlags::Oneshot;
+        if (!m_handler || !!(m_flags & ~OPTIONS)) {
+            return false;
+        }
+        if (is_permanent() && (is_shared() || is_oneshot())) {
+            return false;
+        }
+        return !(is_shared() && is_oneshot());
+    }
+
+    IrqHandler const m_handler;
+    void *const m_context;
+    IrqFlags const m_flags;
     [[maybe_unused]]
-    char const *m_name;
-    IrqCancel m_cancel;
+    char const *const m_name;
+    IrqCancel const m_cancel;
     /// Written under the lock of the line it names, and by a removal as the
     /// last thing it does to the action (Line::revoke()); read without that
     /// lock by detach() to find the line.

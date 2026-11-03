@@ -72,7 +72,7 @@ struct ControllerSource final {
 ///     `platform_data` is null, and nothing sets it yet.
 ///   - A controller whose mask takes effect on another CPU, later, cannot hold
 ///     a Oneshot line, which stays masked from its interrupt until the owner's
-///     ack. The layer cannot tell (check_oneshot() only asks that mask() and
+///     ack. The layer cannot tell (check_registration() only asks that mask() and
 ///     unmask() exist), so for now such a chip leaves unmask() null: a Oneshot
 ///     action is refused, and so is irq::unmask(), which every owner calls to
 ///     start its line, so the chip serves no owner until a flag for it exists.

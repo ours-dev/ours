@@ -6,7 +6,7 @@
 
 Documentation-only review of the IRQ line module and a Proposed first design cut. REVIEW.md records source-backed findings and retained guarantees. The user accepted DESIGN.md D1 (b) on 2026-11-03 by answering "B": Line, Registration, Domain and ControllerOps, with Domain owning mapping, storage and retirement. Concrete Interfaces remain Proposed. PLAN.md records this round's scope. No implementation commits or C++ changes were made.
 
-The independently claimable invalid-registration policy defect is recorded in `docs/repairs/261103/kernel-irq.md`. The deferred-completion question remains explicitly open in DESIGN.md and the original irq-genirq design; it is not reported as a reproduced real-device failure.
+The invalid-registration policy defect is fixed and its repair record removed; the change and validation are in `docs/changes/261103/kernel-irq.md`. The deferred-completion question remains explicitly open in DESIGN.md and the original irq-genirq design; it is not reported as a reproduced real-device failure.
 
 ## Verification
 
@@ -56,7 +56,7 @@ None. D1 was explicitly accepted by the user. The overall design remains Propose
 
 ## Found along the way
 
-- Invalid Permanent plus Shared on an empty line: `docs/repairs/261103/kernel-irq.md`, item 1.
+- Invalid Permanent plus Shared on an empty line is fixed by immutable policy validation before attachment; both forms and unknown bits are covered by irq.test.
 - The old thread-context preemption repair describes behavior superseded by the current IrqRcuReadGuard in the public test-dispatch facade. It was not deleted during this review.
 - Owning Span fields, repeated public controls, weak number types, and controller-protocol assumptions are design findings in REVIEW.md. They were not opportunistically changed.
 

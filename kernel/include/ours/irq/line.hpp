@@ -229,13 +229,10 @@ class Line final {
 
     Line(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name);
 
-    /// Whether this line can keep the promise of `action`'s Oneshot, for the
-    /// two attach() forms before they take L1: InvArgs for an action that
-    /// says Oneshot together with Permanent or Shared, NotSupported for a
-    /// line whose chip cannot both mask and unmask; Ok otherwise, and for an
-    /// action that does not say Oneshot.
+    /// Checks immutable registration policy before either attach touches the
+    /// line or its controller. Deferred work also requires mask and unmask.
     [[nodiscard]]
-    auto check_oneshot(Registration const &action) const -> Status;
+    auto check_registration(Registration const &registration) const -> Status;
 
     /// Links |action| into the list and publishes the line's flags, |flags|
     /// with what the action adds to them. For the two attach() forms, once

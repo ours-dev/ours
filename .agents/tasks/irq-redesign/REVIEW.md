@@ -31,7 +31,7 @@ None established on the exercised x86 paths. The fresh build, both boot checks, 
 
 `kernel/kernel/irq/desc.cpp:206`, `:235`; `kernel/commands/irq_test.cpp:284`. The settled contract says a Permanent action cannot be Shared, but `check_oneshot()` validates incompatible flags only when Oneshot is set. On an empty line `attach()` therefore reaches `link_locked()`, which stores both Shared and Permanent. The existing test tries this action only on an occupied line, where the occupancy check hides the gap.
 
-This does not currently allow a second action onto the immutable line, because Permanent takes precedence. It is an observable contract mismatch and leaves a supposedly rejected registration permanently attached. Validate registration policy as a whole, including the empty-line case; do not make Oneshot validation own unrelated policy rules. Source-confirmed; no new executable reproducer was added in this design-only round.
+This does not currently allow a second action onto the immutable line, because Permanent takes precedence. It is an observable contract mismatch and leaves a supposedly rejected registration permanently attached. Validate registration policy as a whole, including the empty-line case; do not make Oneshot validation own unrelated policy rules. Resolved by the registration-policy increment: both attach forms now validate immutable registration policy first. Four new runtime checks pass in irq.test, bringing it to 76 checks.
 
 ### M2. Completion does not distinguish the deferred work being completed
 

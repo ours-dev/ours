@@ -135,3 +135,45 @@ None. D1 (b) was explicitly selected, and the user then suspended teaching exerc
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task at the user's request.
+
+## Validate registration policy before either attachment path changes state (2026-11-03)
+
+**Files**
+- `kernel/include/ours/irq/registration.hpp` — keep callback configuration immutable and validate its policy in one constexpr predicate.
+- `kernel/kernel/irq/line.cpp`, `kernel/include/ours/irq/line.hpp`, `kernel/include/ours/irq/controller.hpp` — share registration validation before controller checks or mutations.
+- `kernel/commands/irq_test.cpp` — cover invalid policy on empty and occupied lines, both attach forms, unknown option bits, and unchanged controller state.
+
+**Symptom**
+Permanent | Shared was accepted on an empty line and could never be detached. The mode-setting attach could also program the controller before accepting this invalid registration. Occupied-line coverage previously hid the defect.
+
+**Cause**
+The old validator returned immediately for every non-Oneshot registration. Permanent and Shared are incompatible independently of deferred handling, so the registration's policy must be validated before occupancy and hardware decisions. Mutable callback configuration also represented an immutability promise only in comments.
+
+**Change**
+Registration now owns one private constexpr validity predicate, and its callback, context, policy, name and revocation hook are const after construction. Both attach forms enter through check_registration() before changing state:
+
+```cpp
+if (!action.is_valid()) {
+    return Status::InvArgs;
+}
+```
+
+Validation rejects unknown bits and every incompatible Permanent/Shared/Oneshot combination. Controller capability checks remain the line's responsibility. No public validation wrapper or duplicate policy word was introduced.
+
+**Reference**
+None, this project's own registration contract and ownership rule. The defect was recorded by this task in docs/repairs/261103/kernel-irq.md; that fixed item has been removed.
+
+**Verification**
+Both images boot: dbg 46 passed, 5 skipped, 0 failed; rel 44 passed, 8 skipped, 0 failed and 7/7 required markers. All 161 host tests pass. irq.test passes 76 checks, including four new policy checks; irqcontroller.test passes 18 and interruptline.test passes 78. All five touched C++ files pass changed-line formatting and run clang-tidy without new diagnostics on changed lines. Self-review confirmed errors are returned before mode writes, linking or publication. Performance was not measured.
+
+**Deliberately not done**
+The Permanent dispatch bypass and domain ownership are the next independent changes. This fix preserves callback lifetime and current masking behavior.
+
+**How it was found**
+The earlier review traced check_oneshot()'s early return for non-Oneshot policy and found the empty-line path into link_locked(). New tests check actual attachment and controller state, not just a returned error.
+
+**The user's prediction**
+None. The user suspended teaching exercises and requested focused development.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.

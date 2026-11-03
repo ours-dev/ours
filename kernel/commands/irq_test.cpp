@@ -304,7 +304,38 @@ namespace {
             verdict(tally, false, "allocate the Permanent line");
             return;
         }
-        auto const bound = line->init(COUNTING_CHIP);
+        auto const bound = line->init(PIN_CHIP);
+
+        PIN_TRIGGER.store(irq::TriggerMode::Edge, std::memory_order_relaxed);
+        PIN_MASKED.store(false, std::memory_order_relaxed);
+        auto const invalid_mode = line->attach(
+            c->permanent_shared, irq::LineMode{irq::TriggerMode::Level, irq::Polarity::ActiveLow});
+        verdict(tally, invalid_mode.is_err() && invalid_mode.unwrap_err() == Status::InvArgs,
+                "Permanent with Shared is refused before setting a mode");
+        verdict(tally,
+                !c->permanent_shared.is_attached() &&
+                    PIN_TRIGGER.load(std::memory_order_relaxed) == irq::TriggerMode::Edge &&
+                    !PIN_MASKED.load(std::memory_order_relaxed),
+                "invalid policy changes neither attachment nor controller state");
+        auto const invalid_plain = line->attach(c->permanent_shared);
+        verdict(tally, invalid_plain == Status::InvArgs && !c->permanent_shared.is_attached(),
+                "Permanent with Shared is refused on an empty line");
+
+        irq::Registration unknown{&probe_handler, &c->probe,
+                                  static_cast<irq::IrqFlags>(u32{1} << 31), "irq-test"};
+        auto const unknown_plain = line->attach(unknown);
+        if (unknown.is_attached()) {
+            auto _ = line->detach(unknown); // Keep a failed policy check isolated.
+        }
+        auto const unknown_mode =
+            line->attach(unknown, irq::LineMode{irq::TriggerMode::Level, irq::Polarity::ActiveLow});
+        if (unknown.is_attached()) {
+            auto _ = line->detach(unknown); // Keep a failed policy check isolated.
+        }
+        verdict(tally,
+                unknown_plain == Status::InvArgs && unknown_mode.is_err() &&
+                    unknown_mode.unwrap_err() == Status::InvArgs,
+                "unknown registration option bits are refused by both attach forms");
 
         // A Permanent action never joins an occupied line, even one whose
         // occupant shares, with a request that says Shared too.
@@ -324,9 +355,9 @@ namespace {
         auto const eois = EOIS_SENT.load(std::memory_order_relaxed) - eois_before;
 
         verdict(tally,
-                occupied_status == Status::Ok && join_status == Status::AlreadyBound &&
+                occupied_status == Status::Ok && join_status == Status::InvArgs &&
                     leave_status == Status::Ok,
-                "a Permanent action cannot join an occupied line");
+                "invalid registration policy is refused on occupied lines too");
         verdict(tally, oneshot_status == Status::InvArgs && !c->permanent_oneshot.is_attached(),
                 "a Permanent action that says Oneshot is refused");
         verdict(tally, attach_status == Status::Ok, "a Permanent action takes an empty line");

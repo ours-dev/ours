@@ -72,11 +72,7 @@ auto Line::init(ControllerOps const &chip) -> Status {
 /// Now Shared alone follows the line's occupants (set by the first, cleared
 /// by detach() when the last leaves), and Permanent, once set, stays.
 auto Line::attach(Registration &action) -> Status {
-    // The handler is fixed at construction, so it needs no lock to read.
-    if (!action.m_handler) {
-        return Status::InvArgs;
-    }
-    if (auto const status = check_oneshot(action); status != Status::Ok) {
+    if (auto const status = check_registration(action); status != Status::Ok) {
         return status;
     }
     // Only the level flow holds a Oneshot line masked. With no mode the line
@@ -141,10 +137,7 @@ auto Line::attach(Registration &action) -> Status {
 /// in.
 auto Line::attach(Registration &action, ustl::Option<LineMode> const mode)
     -> ktl::Result<TriggerMode> {
-    if (!action.m_handler) {
-        return ustl::err(Status::InvArgs);
-    }
-    if (auto const status = check_oneshot(action); status != Status::Ok) {
+    if (auto const status = check_registration(action); status != Status::Ok) {
         return ustl::err(status);
     }
     // The chip is fixed before the line is published, so it is read without
@@ -204,12 +197,12 @@ auto Line::attach(Registration &action, ustl::Option<LineMode> const mode)
 ///
 /// The flags and the handler are fixed at construction, and the chip before
 /// the line is published, so none of this needs L1.
-auto Line::check_oneshot(Registration const &action) const -> Status {
+auto Line::check_registration(Registration const &action) const -> Status {
+    if (!action.is_valid()) {
+        return Status::InvArgs;
+    }
     if (!action.is_oneshot()) {
         return Status::Ok;
-    }
-    if (action.is_permanent() || action.is_shared()) {
-        return Status::InvArgs;
     }
     auto const *const chip = m_source.chip;
     if (!chip || !chip->mask || !chip->unmask) {
@@ -334,7 +327,7 @@ auto Line::finalize_oneshot(Registration const &action) -> void {
         return;
     }
     set_held_locked(false);
-    // check_oneshot() let the action on only with a chip that unmasks.
+    // check_registration() let the action on only with a chip that unmasks.
     m_source.chip->unmask(m_source);
 }
 
@@ -491,7 +484,7 @@ auto Line::handle_fasteoi(Registration::List &actions) -> IrqReturn {
         return IrqReturn::None;
     }
     if (is_oneshot()) {
-        // check_oneshot() refuses Oneshot on a Permanent action, so a Oneshot
+        // check_registration() refuses Oneshot on a Permanent action, so a Oneshot
         // line is dispatched under L1, and held, which L1 guards, may be read.
         m_lock.assert_held();
         return handle_oneshot_locked(actions);
@@ -517,7 +510,7 @@ auto Line::handle_fasteoi(Registration::List &actions) -> IrqReturn {
 /// L1, which is what keeps finalize_oneshot() and detach(), which take it
 /// too, from landing between the check of held and the unmask.
 auto Line::handle_oneshot_locked(Registration::List &actions) -> IrqReturn {
-    // check_oneshot() let the action on only with a chip that masks and
+    // check_registration() let the action on only with a chip that masks and
     // unmasks.
     auto const &chip = *m_source.chip;
     chip.mask(m_source);

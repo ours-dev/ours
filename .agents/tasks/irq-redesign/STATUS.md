@@ -21,11 +21,13 @@ The preceding turn made authoritative progress by recording D1 and verifying the
 
 ## Verified increments
 
-- Object vocabulary migration: six IRQ implementation roles and all affected callers compile with Line, Registration, ControllerOps and ControllerSource. No compatibility aliases.
+- 29198710, object vocabulary migration: six IRQ implementation roles and all affected callers compile with Line, Registration, ControllerOps and ControllerSource. No compatibility aliases.
 - LLVM 23 formatting and clang-tidy ran on all 22 touched C++ files; no new changed-line diagnostics.
 - Build and both boot images pass in out/irq-design-review; 161 host tests pass.
 - Nine kernel suites pass: irq.test 72, irqcontroller.test 18, irqrevoke.test 37, irqregistry.test 66, irqdomain.test 87, irqrcu.test 34, interrupt.test 67, interruptline.test 78, pinlines.test 28.
 
+- Registration policy validation: both attach paths reject Permanent | Shared and unknown bits before state changes; irq.test now passes 76 checks, irqcontroller.test 18 and interruptline.test 78. Both images and 161 host tests pass.
+
 ## Current work
 
-Commit the verified naming increment, then implement registration contract validation and guarded line state before consolidating domain ownership and closing the completion protocol. Naming is an initial migration, not a substitute for the full goal. Final completion requires auditing every ledger row against current source and current verification.
+Commit the verified registration-policy fix, then remove the unguarded Permanent path before consolidating domain ownership and closing the completion protocol. Naming is an initial migration, not a substitute for the full goal. Final completion requires auditing every ledger row against current source and current verification.
