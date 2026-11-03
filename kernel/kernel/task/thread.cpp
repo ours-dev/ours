@@ -157,7 +157,7 @@ auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry, void *arg
     if (!trampoline_routine) {
         trampoline_routine = Thread::trampoline;
     }
-    self->m_arch_thread.init(VirtAddr(trampoline_routine));
+    self->m_arch_thread.init(VirtAddr{reinterpret_cast<usize>(trampoline_routine)});
 
     {
         // Interrupts off, or a tick preempting this section leaves the lock

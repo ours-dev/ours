@@ -655,7 +655,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
     return Status::Ok;
 }
 
-auto VmCowPages::make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor, Status> {
+auto VmCowPages::make_cursor(usize offset, usize size) -> ustl::Result<Cursor, Status> {
     return ustl::ok(Cursor(this, offset, size));
 }
 
@@ -1015,7 +1015,7 @@ auto VmCowPages::shows_ancestor_page_locked(u64 const offset) -> bool {
     return m_parent->find_content(offset + m_parent_offset).page != nullptr;
 }
 
-auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, MultiPageRequest *const request,
+auto VmCowPages::commit_range_locked(usize offset, usize size, MultiPageRequest *const request,
                                      usize *nr_commited) -> Status {
     if (!size) {
         return Status::InvArgs;
@@ -1050,7 +1050,7 @@ auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, MultiPageReque
     return status;
 }
 
-auto VmCowPages::pin_range_locked(VirtAddr const offset, usize const size,
+auto VmCowPages::pin_range_locked(usize const offset, usize const size,
                                   MultiPageRequest *const request, usize *const nr_pinned)
     -> Status {
     *nr_pinned = 0;
@@ -1090,7 +1090,7 @@ auto VmCowPages::pin_range_locked(VirtAddr const offset, usize const size,
     return Status::Ok;
 }
 
-auto VmCowPages::unpin_range_locked(VirtAddr const offset, usize const size) -> Status {
+auto VmCowPages::unpin_range_locked(usize const offset, usize const size) -> Status {
     if (!size) {
         return Status::InvArgs;
     }
@@ -1197,7 +1197,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
 
 /// The followings are in class VmCowPages::Cursor.
 
-VmCowPages::Cursor::Cursor(VmCowPages *target, VirtAddr offset, usize size)
+VmCowPages::Cursor::Cursor(VmCowPages *target, usize offset, usize size)
     // Initializer order follows the member declaration order in the header.
     : m_target(target), m_offset(offset), m_end(offset + size), m_mark_accessed(true) {}
 

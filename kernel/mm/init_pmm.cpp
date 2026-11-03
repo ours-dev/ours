@@ -175,7 +175,7 @@ auto handoff_early_pmm(phys::MemoryHandoff const &mh) -> Status {
     mm::KERNEL_PHYS_BASE = mh.kernel_load_addr;
     // Where the image actually landed after KASLR: physboot relocated it, so
     // the linker symbol already carries the runtime address.
-    mm::KERNEL_VIRT_BASE = VirtAddr(IMAGE_START);
+    mm::KERNEL_VIRT_BASE = VirtAddr{reinterpret_cast<usize>(IMAGE_START)};
 
     mm::priv::MAX_PHYS_ADDR = bootmem->max_address();
     mm::priv::MIN_PHYS_ADDR = bootmem->min_address();

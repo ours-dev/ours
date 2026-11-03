@@ -51,7 +51,7 @@ namespace {
     constinit u32 INFOS[ours::CHANNEL_MAX_MSG_HANDLES] = {};
     constinit ProcessArgs STARTUP_ARGS;
     constinit StartupHandles STARTUP_HANDLES;
-    constinit ours::VirtAddr VDSO = 0;
+    constinit ours::VirtAddr VDSO{};
 
     // The process's handle to itself (HandleType::ProcSelf), taken from the
     // startup handles before main and kept for the life of the process.

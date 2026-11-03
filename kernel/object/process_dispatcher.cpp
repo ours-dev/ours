@@ -21,15 +21,15 @@ GKTL_COUNTER(DISPATCHER_PROCESS_CREATE_COUNT, "dispatcher.process.create");
 GKTL_COUNTER(DISPATCHER_PROCESS_DESTROY_COUNT, "dispatcher.process.destroy");
 
 namespace {
-constexpr auto PRIVATE_ASPACE_BASE = USER_ASPACE_BASE;
+constexpr auto PRIVATE_ASPACE_BASE = ours::USER_ASPACE_BASE;
 
-constexpr auto PRIVATE_ASPACE_SIZE = USER_ASPACE_RESTRICTED_SIZE;
+constexpr auto PRIVATE_ASPACE_SIZE = ours::USER_ASPACE_RESTRICTED_SIZE;
 
 [[maybe_unused]]
 constexpr auto SHARED_ASPACE_BASE = PRIVATE_ASPACE_BASE + PRIVATE_ASPACE_SIZE + PAGE_SIZE;
 
 [[maybe_unused]]
-constexpr auto SHARED_ASPACE_SIZE = USER_ASPACE_SIZE - USER_ASPACE_RESTRICTED_SIZE;
+constexpr auto SHARED_ASPACE_SIZE = ours::USER_ASPACE_SIZE - ours::USER_ASPACE_RESTRICTED_SIZE;
 
 } // namespace
 
@@ -540,7 +540,7 @@ namespace {
         if (!node.is_mapping()) {
             InfoMaps record{};
             copy_name(record.name, node.name());
-            record.base = node.base();
+            record.base = std::to_underlying(node.base());
             record.size = node.size();
             record.depth = depth;
             record.type = InfoMapsType::Vma;
@@ -561,7 +561,7 @@ namespace {
                 pass.records != nullptr && pass.records->size() < pass.records->capacity();
             InfoMaps record{};
             copy_name(record.name, vmo_name);
-            record.base = base;
+            record.base = std::to_underlying(base);
             record.size = size;
             record.depth = depth;
             record.type = InfoMapsType::Mapping;
@@ -597,7 +597,7 @@ auto ProcessDispatcher::get_maps(usize const max, ktl::Vec<InfoMaps> *const reco
     auto filling = MapsPass{records, 0};
     InfoMaps aspace{};
     copy_name(aspace.name, m_aspace->name());
-    aspace.base = m_aspace->base();
+    aspace.base = std::to_underlying(m_aspace->base());
     aspace.size = m_aspace->size();
     aspace.depth = 0;
     aspace.type = InfoMapsType::Aspace;
@@ -653,7 +653,7 @@ auto ProcessDispatcher::read_memory(VirtAddr const va, user_copy::UserOutPtr<u8>
     if (length > vmo->size() || offset > vmo->size() - length) {
         return Status::OutOfRange;
     }
-    if (auto const status = vmo->read_user(out, VirtAddr(offset), length); status != Status::Ok) {
+    if (auto const status = vmo->read_user(out, offset, length); status != Status::Ok) {
         return status;
     }
     *actual = length;

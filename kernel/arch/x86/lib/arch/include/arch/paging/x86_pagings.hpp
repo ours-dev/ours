@@ -71,7 +71,7 @@ struct X86Pte {
     /// plus the kernel defaults, which made a table's permissions depend on
     /// whichever page happened to be mapped under it first.
     static constexpr auto make(PhysAddr addr, X86MmuFlags flags, bool terminal) -> X86Pte {
-        auto const frame = static_cast<PteVal>(addr & X86_PG_FRAME);
+        auto const frame = static_cast<PteVal>(std::to_underlying(addr) & X86_PG_FRAME);
         if (!terminal) {
             constexpr auto TABLE_FLAGS =
                 PteVal(X86_MMUF_PRESENT | X86_MMUF_ACCESSED | X86_MMUF_WRITABLE | X86_MMUF_USER);
@@ -92,7 +92,7 @@ struct X86Pte {
     }
 
     constexpr auto address() const -> PhysAddr {
-        return inner_ & X86_PG_FRAME;
+        return PhysAddr{inner_ & X86_PG_FRAME};
     }
 
     constexpr auto is_present() const -> bool {
@@ -152,7 +152,7 @@ struct X86Paging: X86PagingBase {
         constexpr usize SHIFT[] = {
             X86_PT_SHIFT, X86_PD_SHIFT, X86_PDP_SHIFT, X86_PML4_SHIFT, X86_PML5_SHIFT,
         };
-        return (virt >> SHIFT[usize(level)]) & (X86_MAX_PTES - 1);
+        return (std::to_underlying(virt) >> SHIFT[usize(level)]) & (X86_MAX_PTES - 1);
     }
 
     static constexpr auto max_entries(Level) -> usize {
@@ -162,7 +162,7 @@ struct X86Paging: X86PagingBase {
         return LEVEL_CAN_BE_TERMINAL_MAP[usize(level)];
     }
     static constexpr auto phys_addr_from_pte(Level, PteVal pte) -> PhysAddr {
-        return pte & X86_PG_FRAME;
+        return PhysAddr{pte & X86_PG_FRAME};
     }
     static constexpr auto arch_mmu_flags_from_pte(Level, PteVal pte) -> X86MmuFlags {
         return static_cast<X86MmuFlags>(pte & X86_MMUF_MASK);

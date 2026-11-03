@@ -117,7 +117,7 @@ class IoApic final {
     }
     [[nodiscard]]
     auto virt_base() const noexcept -> VirtAddr {
-        return reinterpret_cast<VirtAddr>(mmio_base_);
+        return VirtAddr{reinterpret_cast<usize>(mmio_base_)};
     }
     [[nodiscard]]
     auto gsi_base() const noexcept -> usize {

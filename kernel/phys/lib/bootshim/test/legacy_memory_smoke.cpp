@@ -256,8 +256,9 @@ auto scratch_takes_the_first_region_that_fits() -> void {
         available(0x80000, 0x40000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        auto const found = bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x2000, PAGE);
-        require(found.is_some() && found.value() == 0x10000);
+        auto const found =
+            bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x2000, PAGE);
+        require(found.is_some() && found.value() == ours::PhysAddr{0x10000});
     });
 }
 
@@ -270,8 +271,9 @@ auto scratch_skips_regions_that_are_not_available() -> void {
         available(0x400000, 0x10000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        auto const found = bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x8000, PAGE);
-        require(found.is_some() && found.value() == 0x400000);
+        auto const found =
+            bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x8000, PAGE);
+        require(found.is_some() && found.value() == ours::PhysAddr{0x400000});
     });
 }
 
@@ -282,8 +284,9 @@ auto scratch_skips_regions_that_are_too_small() -> void {
         available(0x30000, 0x20000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        auto const found = bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x8000, PAGE);
-        require(found.is_some() && found.value() == 0x30000);
+        auto const found =
+            bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x8000, PAGE);
+        require(found.is_some() && found.value() == ours::PhysAddr{0x30000});
     });
 }
 
@@ -292,9 +295,9 @@ auto scratch_starts_at_the_floor_inside_a_region() -> void {
     with_parsed_map(entries, [](View::MemoryMap const &map) {
         // The floor lands inside the region: the placement moves up to it
         // rather than taking the region's own base.
-        auto const found =
-            bootshim::LegacyMemoryTranslator::find_scratch(map, 0x40000, 0x1000, PAGE);
-        require(found.is_some() && found.value() == 0x40000);
+        auto const found = bootshim::LegacyMemoryTranslator::find_scratch(
+            map, ours::PhysAddr{0x40000}, 0x1000, PAGE);
+        require(found.is_some() && found.value() == ours::PhysAddr{0x40000});
     });
 }
 
@@ -303,14 +306,14 @@ auto scratch_aligns_the_floor_up() -> void {
     with_parsed_map(entries, [](View::MemoryMap const &map) {
         // An unaligned floor -- the end of some image the caller must not
         // overwrite -- rounds up, never down.
-        auto const found =
-            bootshim::LegacyMemoryTranslator::find_scratch(map, 0x40001, 0x1000, PAGE);
-        require(found.is_some() && found.value() == 0x41000);
+        auto const found = bootshim::LegacyMemoryTranslator::find_scratch(
+            map, ours::PhysAddr{0x40001}, 0x1000, PAGE);
+        require(found.is_some() && found.value() == ours::PhysAddr{0x41000});
 
         // A larger alignment rounds further.
-        auto const aligned =
-            bootshim::LegacyMemoryTranslator::find_scratch(map, 0x40001, 0x1000, 0x10000);
-        require(aligned.is_some() && aligned.value() == 0x50000);
+        auto const aligned = bootshim::LegacyMemoryTranslator::find_scratch(
+            map, ours::PhysAddr{0x40001}, 0x1000, 0x10000);
+        require(aligned.is_some() && aligned.value() == ours::PhysAddr{0x50000});
     });
 }
 
@@ -321,9 +324,9 @@ auto scratch_rejects_a_region_the_floor_has_eaten() -> void {
         available(0x100000, 0x10000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        auto const found =
-            bootshim::LegacyMemoryTranslator::find_scratch(map, 0x1F000, 0x8000, PAGE);
-        require(found.is_some() && found.value() == 0x100000);
+        auto const found = bootshim::LegacyMemoryTranslator::find_scratch(
+            map, ours::PhysAddr{0x1F000}, 0x8000, PAGE);
+        require(found.is_some() && found.value() == ours::PhysAddr{0x100000});
     });
 }
 
@@ -334,10 +337,12 @@ auto scratch_rejects_a_region_alignment_has_eaten() -> void {
     // running 0x800 bytes past the end of usable memory.
     auto const entries = std::vector<MultibootMemoryMap>{available(0x10001, 0x7FFF)};
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        require(bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x7800, PAGE).is_none());
+        require(bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x7800, PAGE)
+                    .is_none());
         // The largest request the aligned start can still satisfy.
-        auto const fits = bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x7000, PAGE);
-        require(fits.is_some() && fits.value() == 0x11000);
+        auto const fits =
+            bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x7000, PAGE);
+        require(fits.is_some() && fits.value() == ours::PhysAddr{0x11000});
     });
 }
 
@@ -347,8 +352,9 @@ auto scratch_fails_when_the_floor_is_above_everything() -> void {
         available(0x30000, 0x10000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        require(
-            bootshim::LegacyMemoryTranslator::find_scratch(map, 0x100000, 0x1000, PAGE).is_none());
+        require(bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0x100000},
+                                                               0x1000, PAGE)
+                    .is_none());
     });
 }
 
@@ -358,13 +364,15 @@ auto scratch_fails_when_nothing_is_big_enough() -> void {
         available(0x20000, 0x1000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        require(bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x8000, PAGE).is_none());
+        require(bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x8000, PAGE)
+                    .is_none());
     });
 }
 
 auto scratch_fails_on_an_empty_map() -> void {
     with_parsed_map({}, [](View::MemoryMap const &map) {
-        require(bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x1000, PAGE).is_none());
+        require(bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x1000, PAGE)
+                    .is_none());
     });
 }
 
@@ -373,13 +381,15 @@ auto scratch_rejects_an_unusable_alignment() -> void {
     with_parsed_map(entries, [](View::MemoryMap const &map) {
         // Rounding a non-power-of-two "alignment" to something else would
         // hand back a range the caller's assumptions do not hold for.
-        require(bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x1000, 3).is_none());
-        require(bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x1000, 0).is_none());
+        require(bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x1000, 3)
+                    .is_none());
+        require(bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x1000, 0)
+                    .is_none());
 
         // 1 is a power of two and means "no alignment at all".
         auto const unaligned =
-            bootshim::LegacyMemoryTranslator::find_scratch(map, 0x10001, 0x1000, 1);
-        require(unaligned.is_some() && unaligned.value() == 0x10001);
+            bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0x10001}, 0x1000, 1);
+        require(unaligned.is_some() && unaligned.value() == ours::PhysAddr{0x10001});
     });
 }
 
@@ -390,10 +400,13 @@ auto scratch_fits_a_region_exactly() -> void {
     with_parsed_map(entries, [](View::MemoryMap const &map) {
         // A request that consumes the region down to its last byte is a fit,
         // not an overrun.
-        auto const found = bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x10000, PAGE);
-        require(found.is_some() && found.value() == 0x10000);
+        auto const found =
+            bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x10000, PAGE);
+        require(found.is_some() && found.value() == ours::PhysAddr{0x10000});
         // One byte more is not.
-        require(bootshim::LegacyMemoryTranslator::find_scratch(map, 0, 0x10001, PAGE).is_none());
+        require(
+            bootshim::LegacyMemoryTranslator::find_scratch(map, ours::PhysAddr{0}, 0x10001, PAGE)
+                .is_none());
     });
 }
 

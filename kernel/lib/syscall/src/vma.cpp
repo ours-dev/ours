@@ -74,7 +74,7 @@ auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize cons
 
     object::KernelHandle<object::VmaDispatcher> sub;
     auto rights = Rights::None;
-    VirtAddr base = 0;
+    VirtAddr base{};
     if (auto const status = region->allocate(options, offset, size, sub, rights, base);
         status != Status::Ok) {
         return status;

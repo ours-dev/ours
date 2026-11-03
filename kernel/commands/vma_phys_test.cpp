@@ -59,7 +59,7 @@ namespace {
     /// nothing.
     struct Entry {
         bool present = false;
-        PhysAddr pa = 0;
+        PhysAddr pa{};
         mm::MmuFlags flags{};
     };
 
@@ -70,7 +70,7 @@ namespace {
     }
 
     auto check_two_regions(Tally &tally, mm::VmAspace &aspace) -> void {
-        PhysAddr phys = 0;
+        PhysAddr phys{};
         auto *const frames = mm::alloc_frames(mm::GAF_KERNEL, &phys, 1);
         if (!frames) {
             verdict(tally, false, "two contiguous frames are allocated");
@@ -79,8 +79,8 @@ namespace {
 
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_phys(phys, mm::VmPlacement::anywhere(), 2 * P, rw,
-                                      mm::VmMapOption::None, "vmaphys.test");
+        auto mapping = root->map_phys(phys, VirtAddr::Anywhere, 2 * P, rw, mm::VmMapOption::None,
+                                      "vmaphys.test");
         if (mapping.is_err()) {
             verdict(tally, false, "the two frames are mapped as a physical object");
             mm::free_frames(frames, 1);
@@ -135,8 +135,8 @@ namespace {
         constexpr u64 SECOND = 0x8796'a5b4'c3d2'e1f0;
         constexpr auto RW = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
 
-        PhysAddr first_pa = 0;
-        PhysAddr second_pa = 0;
+        PhysAddr first_pa{};
+        PhysAddr second_pa{};
         auto *const first = mm::alloc_frames(mm::GAF_KERNEL, &first_pa, 0);
         auto *const second = mm::alloc_frames(mm::GAF_KERNEL, &second_pa, 0);
         if (!first || !second) {
@@ -153,7 +153,7 @@ namespace {
         *reinterpret_cast<u64 *>(mm::PhysMap::phys_to_virt(second_pa)) = SECOND;
 
         auto root = aspace.root_vma();
-        auto mapping = root->map_phys(first_pa, mm::VmPlacement::anywhere(), P, RW,
+        auto mapping = root->map_phys(first_pa, VirtAddr::Anywhere, P, RW,
                                       mm::VmMapOption::Populate, "vmaphys.test overwrite");
         if (mapping.is_err()) {
             verdict(tally, false, "the first frame is mapped, populated");

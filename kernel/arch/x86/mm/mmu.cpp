@@ -11,7 +11,7 @@
 namespace ours {
 namespace mem {
     extern "C" {
-    PhysAddr KERNEL_PGD = 0;
+    PhysAddr KERNEL_PGD{};
     u8 ARCH_PHYS_ADDR_BITS = 32;
     u8 ARCH_VIRT_ADDR_BITS = 48;
     }
@@ -50,7 +50,7 @@ auto x86_init_mmu_percpu() -> void {
 }
 
 auto x86_init_mmu_early() -> void {
-    mem::KERNEL_PGD = Cr3::read().get<Cr3::PageTableAddress>();
+    mem::KERNEL_PGD = PhysAddr{Cr3::read().get<Cr3::PageTableAddress>()};
 
     // Tear down the transient 1:1 identity mappings established by `PhysBoot`
     // during early boot process, and permit low-memory regions to temporarily

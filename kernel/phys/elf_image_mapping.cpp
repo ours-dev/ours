@@ -52,7 +52,8 @@ class SegmentMapper final {
         // already-mapped range can have been backed by a large page that the
         // RELRO interval only partly covers, and there is nothing left to
         // split it with.
-        if (m_target_base % PAGE_SIZE != 0 || m_pa_load % PAGE_SIZE != 0) {
+        if (std::to_underlying(m_target_base) % PAGE_SIZE != 0 ||
+            std::to_underlying(m_pa_load) % PAGE_SIZE != 0) {
             return Status::InvArgs;
         }
 
@@ -63,7 +64,7 @@ class SegmentMapper final {
             auto const end_offset =
                 detail::checked_to_usize(interval.virtual_end - m_plan.image_base());
             if (end_offset.is_none() || end_offset.value() > m_plan.image_size() ||
-                m_target_base > std::numeric_limits<VirtAddr>::max() - end_offset.value()) {
+                m_target_base > VirtAddr{~0_usize} - end_offset.value()) {
                 return Status::InvArgs;
             }
         }
@@ -159,8 +160,8 @@ class SegmentMapper final {
         auto const &region = segment.region;
         if (region.image_offset > m_plan.image_size() ||
             segment.memory_size > m_plan.image_size() - region.image_offset ||
-            m_target_base > std::numeric_limits<VirtAddr>::max() - region.image_offset ||
-            m_pa_load > std::numeric_limits<PhysAddr>::max() - region.image_offset) {
+            m_target_base > VirtAddr{~0_usize} - region.image_offset ||
+            m_pa_load > PhysAddr{~0_usize} - region.image_offset) {
             return Status::InvArgs;
         }
         auto const native_size = detail::checked_to_usize(segment.memory_size);
@@ -169,8 +170,8 @@ class SegmentMapper final {
         }
         auto const virtual_address = m_target_base + region.image_offset;
         auto const physical_address = m_pa_load + region.image_offset;
-        auto const page_offset = virtual_address % PAGE_BYTES;
-        if (page_offset != physical_address % PAGE_BYTES ||
+        auto const page_offset = std::to_underlying(virtual_address) % PAGE_BYTES;
+        if (page_offset != std::to_underlying(physical_address) % PAGE_BYTES ||
             native_size.value() > std::numeric_limits<usize>::max() - page_offset) {
             return Status::InvArgs;
         }
@@ -184,8 +185,8 @@ class SegmentMapper final {
         // `pages`, not `pages - 1`: the carving below works with the
         // segment's exclusive end address, so that address has to be
         // representable too, not just its last page.
-        if (pages.value() > (std::numeric_limits<VirtAddr>::max() - virtual_page) / PAGE_BYTES ||
-            pages.value() > (std::numeric_limits<PhysAddr>::max() - physical_page) / PAGE_BYTES) {
+        if (pages.value() > (VirtAddr{~0_usize} - virtual_page) / PAGE_BYTES ||
+            pages.value() > (PhysAddr{~0_usize} - physical_page) / PAGE_BYTES) {
             return Status::InvArgs;
         }
         auto const segment_end = virtual_page + (pages.value() * PAGE_BYTES);

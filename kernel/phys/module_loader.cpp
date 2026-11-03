@@ -160,7 +160,8 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
             return resolve_export(name);
         },
     };
-    if (auto const status = m_image.relocate_and_bind(target, binder); status != Status::Ok) {
+    if (auto const status = m_image.relocate_and_bind(std::to_underlying(target), binder);
+        status != Status::Ok) {
         return status;
     }
 

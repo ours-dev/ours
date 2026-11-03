@@ -177,12 +177,12 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     // place at all (CanMapSpecific), so a Specific request into a region
     // without it is AccessDenied however far off it points. mm's check is in
     // offset form, so an offset that wraps the address is refused there too.
-    auto where = mm::VmPlacement::anywhere();
+    auto where = VirtAddr::Anywhere;
     if (!!(options & VmOptions::Specific)) {
         if (!ustl::is_aligned(vma_offset, PAGE_SIZE)) {
             return ktl::err(Status::InvArgs);
         }
-        where = mm::VmPlacement::at(m_vma->base() + vma_offset);
+        where = m_vma->base() + vma_offset;
     } else if (vma_offset != 0) {
         return ktl::err(Status::InvArgs);
     }
@@ -321,9 +321,9 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
     // it the kernel finds room, and an offset would be a request nobody reads,
     // so it must be 0. As in map(), whether the place lies inside this region
     // is mm's to answer, after CanMapSpecific.
-    auto where = mm::VmPlacement::anywhere();
+    auto where = VirtAddr::Anywhere;
     if (!!(options & VmOptions::Specific)) {
-        where = mm::VmPlacement::at(m_vma->base() + offset);
+        where = m_vma->base() + offset;
     } else if (offset != 0) {
         return Status::InvArgs;
     }

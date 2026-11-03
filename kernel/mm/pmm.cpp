@@ -266,7 +266,7 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
     std::fill_n(table, size, u8(0));
 
     // EarlyMem hands back a physmap address, which is what virt_to_phys inverts.
-    return PhysMap::virt_to_phys(VirtAddr(table));
+    return PhysMap::virt_to_phys(table);
 }
 
 auto free_page_table(PhysAddr base, usize size) -> void {

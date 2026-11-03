@@ -499,7 +499,7 @@ class PhysicalMemory final {
         if (range.size == 0) {
             return Status::InvArgs;
         }
-        if (range.base > std::numeric_limits<PhysAddr>::max() - range.size) {
+        if (range.base > PhysAddr{~0_usize} - range.size) {
             return Status::OutOfRange;
         }
         return Status::Ok;
@@ -534,16 +534,16 @@ class PhysicalMemory final {
     static constexpr auto align_up(PhysAddr const value, usize const alignment,
                                    PhysAddr *const result) -> bool {
         auto const adjustment = alignment - 1;
-        if (value > std::numeric_limits<PhysAddr>::max() - adjustment) {
+        if (value > PhysAddr{~0_usize} - adjustment) {
             return false;
         }
-        *result = (value + adjustment) & ~static_cast<PhysAddr>(adjustment);
+        *result = PhysAddr{std::to_underlying(value + adjustment) & ~adjustment};
         return true;
     }
 
     [[nodiscard]]
     static constexpr auto align_down(PhysAddr const value, usize const alignment) -> PhysAddr {
-        return value & ~static_cast<PhysAddr>(alignment - 1);
+        return PhysAddr{std::to_underlying(value) & ~(alignment - 1)};
     }
 
     [[nodiscard]]

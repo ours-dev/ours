@@ -168,7 +168,7 @@ class PageTable final: public ::page_tables::X86PageTableImpl<PageTable> {
     /// let a holder be preempted, and the next thread on this CPU to map or
     /// fault in the same address space spin on a lock its own CPU holds.
     sync::SpinLock m_lock;
-    PhysAddr m_pgd_phys = 0;
+    PhysAddr m_pgd_phys{};
     Flags m_flags = Flags::None;
 };
 

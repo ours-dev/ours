@@ -43,7 +43,7 @@ namespace {
     auto read_exactly(ours::Uandle const process, u64 const address, void *const into,
                       usize const size) -> bool {
         usize actual = 0;
-        return ours::process_read_memory(process, address, into, size, &actual) ==
+        return ours::process_read_memory(process, ours::VirtAddr{address}, into, size, &actual) ==
                    ours::Status::Ok &&
                actual == size;
     }

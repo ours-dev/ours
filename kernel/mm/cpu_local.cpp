@@ -9,24 +9,14 @@
 #include <ours/mm/vmas_flags.hpp>
 #include <ours/sync/spin_lock.hpp>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 
 #include <ustl/bit.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/mem/align.hpp>
 #include <ustl/views/span.hpp>
-
-/// An architecture whose ArchCpuLocal reports `HAS_RESERVED_WINDOW == false` has
-/// no window to describe, and should not have to invent one to compile this
-/// file. The paged chunk allocator is never selected there, so these are never
-/// read.
-#ifndef ARCH_CPU_LOCAL_VIRT_BASE
-#include <algorithm>
-#include <array>
-#define ARCH_CPU_LOCAL_VIRT_BASE 0
-#define ARCH_CPU_LOCAL_CHUNK_SLOT PAGE_SIZE
-#define ARCH_CPU_LOCAL_SIZE 0
-#endif
 
 using ustl::round_up;
 
@@ -71,12 +61,13 @@ namespace {
     /// to the allocator by reclaim_init_area().
     FORCE_INLINE
     auto canonical_base() -> VirtAddr {
-        return VirtAddr(INITIAL_CPU_LOCAL_START);
+        return VirtAddr{reinterpret_cast<usize>(INITIAL_CPU_LOCAL_START)};
     }
 
     FORCE_INLINE
     auto is_in_initial_area(VirtAddr va) -> bool {
-        return va >= VirtAddr(INITIAL_CPU_LOCAL_START) && va < VirtAddr(INITIAL_CPU_LOCAL_END);
+        return va >= VirtAddr{reinterpret_cast<usize>(INITIAL_CPU_LOCAL_START)} &&
+               va < VirtAddr{reinterpret_cast<usize>(INITIAL_CPU_LOCAL_END)};
     }
 
     /// Bytes the static half of a unit occupies, rounded so the dynamic area
@@ -147,8 +138,8 @@ class CpuLocal::Mapper {
         , m_unit_offset()
         , m_group_num_units()
         , m_group_frames()
-        , m_base(0)
-        , m_replica(0)
+        , m_base{}
+        , m_replica{}
         , m_num_units(0)
         , m_num_groups(0)
         , m_next_slot(0)
@@ -239,7 +230,7 @@ class CpuLocal::Mapper {
     auto build_scattered() -> Status;
 
     auto slot_at(usize index) const -> VirtAddr {
-        return VirtAddr(ARCH_CPU_LOCAL_VIRT_BASE) + index * usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
+        return ARCH_CPU_LOCAL_VIRT_BASE + index * usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
     }
 
     auto node_of_unit(u32 unit) const -> NodeId {
@@ -277,7 +268,7 @@ auto CpuLocal::Mapper::init_early() -> Status {
         return Status::OutOfMem;
     }
 
-    m_replica = VirtAddr(block);
+    m_replica = VirtAddr{reinterpret_cast<usize>(block)};
     return Status::Ok;
 }
 
@@ -463,12 +454,12 @@ auto CpuLocal::Mapper::init() -> Status {
 
 auto CpuLocal::Mapper::alloc_chunk(Gaf gaf) -> VirtAddr {
     if (!can_grow()) {
-        return 0;
+        return VirtAddr{0};
     }
 
     auto const slot = slot_at(m_next_slot);
     if (Status::Ok != build_dense(slot, gaf)) {
-        return 0;
+        return VirtAddr{0};
     }
 
     ++m_next_slot;
@@ -578,7 +569,7 @@ auto CpuLocal::Dyn::grow() -> bool {
     }
 
     auto const base = m_mapper->alloc_chunk(GAF_GROW);
-    if (!base) {
+    if (base == VirtAddr{}) {
         return false;
     }
 
@@ -809,7 +800,7 @@ auto CpuLocal::init_early() -> void {
 /// CpuCache::on_mem_cache_init() -> CpuLocal::allocate<CpuCache>(). Taking
 /// even one kmalloc() here would close the loop.
 auto CpuLocal::init() -> void {
-    DEBUG_ASSERT(MAPPER && MAPPER->replica(), "CpuLocal::init_early() has not run");
+    DEBUG_ASSERT(MAPPER && MAPPER->replica() != VirtAddr{}, "CpuLocal::init_early() has not run");
 
     ASSERT(Status::Ok == MAPPER->init(), "Failed to lay out cpu local units");
 

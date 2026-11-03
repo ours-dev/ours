@@ -236,8 +236,9 @@ auto EarlyMem::reclaim_init_area() -> void {
     // rather than punching a hole in it.  Their addresses are image addresses:
     // PhysMap::virt_to_phys() does not translate those at all, it answers
     // zero, which is what made this a silent no-op.
-    auto const start = kernel_image_virt_to_phys(VirtAddr(KERNEL_INIT_START));
-    auto const end = kernel_image_virt_to_phys(VirtAddr(KERNEL_INIT_END));
+    auto const start =
+        kernel_image_virt_to_phys(VirtAddr{reinterpret_cast<usize>(KERNEL_INIT_START)});
+    auto const end = kernel_image_virt_to_phys(VirtAddr{reinterpret_cast<usize>(KERNEL_INIT_END)});
 
     if (end < start || end - start < PAGE_SIZE) {
         return;

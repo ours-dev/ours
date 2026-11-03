@@ -131,24 +131,24 @@ class VmObjectPaged: public VmObject {
         return m_cow_pages;
     }
 
-    auto commit_range(VirtAddr offset, usize size, CommitOptions option) -> Status override;
+    auto commit_range(usize offset, usize size, CommitOptions option) -> Status override;
 
     ///
-    auto decommit(VirtAddr offset, usize size) -> Status override;
+    auto decommit(usize offset, usize size) -> Status override;
 
     /// See VmObject::pin_range(). Commits the range as commit_range() does, one
     /// page source wait at a time, and pins what it committed; a failure part
     /// way undoes the pins already made, so the range is pinned whole or not
     /// at all. While any page of the object holds a pin, create_clone() and
     /// take_pages() are BadState: both would move or share a pinned page.
-    auto pin_range(VirtAddr offset, usize size) -> Status override;
+    auto pin_range(usize offset, usize size) -> Status override;
 
     /// See VmObject::unpin_range().
-    auto unpin_range(VirtAddr offset, usize size) -> Status override;
+    auto unpin_range(usize offset, usize size) -> Status override;
 
     /// See VmObject::lookup_contiguous(). A page this object only sees through
     /// an ancestor counts as there, at the ancestor's frame.
-    auto lookup_contiguous(VirtAddr offset, usize size, PhysAddr *out) -> Status override;
+    auto lookup_contiguous(usize offset, usize size, PhysAddr *out) -> Status override;
 
     /// Takes [offset, offset + size) of this object's slots into |pages|, a
     /// fresh list of size / PAGE_SIZE slots (see VmCowPages::take_pages_locked()).
@@ -157,7 +157,7 @@ class VmObjectPaged: public VmObject {
     /// mappings rely on staying put; NotSupported for an object with a page
     /// source. A clone's range reads zero afterwards, and its siblings still
     /// see what they saw.
-    auto take_pages(VirtAddr, usize, VmPageSpliceList *) -> Status override;
+    auto take_pages(usize, usize, VmPageSpliceList *) -> Status override;
 
     /// Puts the slots of |pages| at [offset, offset + size) of an object made
     /// by with_source(), and wakes the faults waiting on them (see
@@ -166,7 +166,7 @@ class VmObjectPaged: public VmObject {
     /// Only SupplyOption::AutoRelease: a slot already full keeps what it has
     /// and the supplied page is freed. TransferData, which would replace it,
     /// is NotSupported.
-    auto supply_pages(VirtAddr, usize, VmPageSpliceList *, SupplyOption) -> Status override;
+    auto supply_pages(usize, usize, VmPageSpliceList *, SupplyOption) -> Status override;
 
     /// See VmCowPages::detach_source_locked(). Every object over the same
     /// pages, a slice included, is detached with it: the source is the pages'.
@@ -180,9 +180,9 @@ class VmObjectPaged: public VmObject {
     /// VMO made by with_source() there is no such page: the read waits until
     /// the provider supplies it, and fails if the provider fails it. The same
     /// holds for write(), read_user() and write_user().
-    auto read(void *out, VirtAddr offset, usize size) -> Status override;
+    auto read(void *out, usize offset, usize size) -> Status override;
 
-    auto store_u64(VirtAddr offset, u64 value) -> Status override;
+    auto store_u64(usize offset, u64 value) -> Status override;
 
     /// The pages of [offset, offset + len) of this object, a slice's window
     /// included, that its own node of the page tree holds. A range past the
@@ -191,12 +191,11 @@ class VmObjectPaged: public VmObject {
     auto committed_pages(u64 offset, u64 len) -> usize override;
 
     /// Commits every page the range touches.
-    auto write(void const *in, VirtAddr offset, usize size) -> Status override;
+    auto write(void const *in, usize offset, usize size) -> Status override;
 
-    auto read_user(user_copy::UserOutPtr<u8> out, VirtAddr offset, usize size) -> Status override;
+    auto read_user(user_copy::UserOutPtr<u8> out, usize offset, usize size) -> Status override;
 
-    auto write_user(user_copy::UserInPtr<u8 const> in, VirtAddr offset, usize size)
-        -> Status override;
+    auto write_user(user_copy::UserInPtr<u8 const> in, usize offset, usize size) -> Status override;
 
     /// Read without m_lock: nothing can change a paged VMO's size, because
     /// Resizable has no implementation. The day it does, this has to take the
@@ -222,7 +221,7 @@ class VmObjectPaged: public VmObject {
     /// otherwise reach the parent's pages beyond it.
     TA_REQUIRES(m_lock)
     FORCE_INLINE
-    auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<VmCowPages::Cursor, Status> {
+    auto make_cursor(usize offset, usize size) -> ustl::Result<VmCowPages::Cursor, Status> {
         if (size > m_size || offset > m_size - size) {
             return ustl::err(Status::OutOfRange);
         }
@@ -235,7 +234,7 @@ class VmObjectPaged: public VmObject {
     /// object as make_cursor() checks it, so a slice never answers for the
     /// pages past its end.
     [[nodiscard]]
-    TA_REQUIRES(m_lock) auto find_block_locked(VirtAddr const offset)
+    TA_REQUIRES(m_lock) auto find_block_locked(usize const offset)
         -> ustl::Option<VmCowPages::FoundBlock> {
         constexpr usize BLOCK = VmCowPages::BLOCK_SIZE;
         if (BLOCK > m_size || offset > m_size - BLOCK) {
@@ -273,7 +272,7 @@ class VmObjectPaged: public VmObject {
         m_cow_pages->lock().assert_held();
     }
 
-    auto commit_range_internal(VirtAddr offset, usize size, CommitOptions option) -> Status;
+    auto commit_range_internal(usize offset, usize size, CommitOptions option) -> Status;
 
     /// Moves |chunk| bytes between |page| and the caller's buffer at |done|,
     /// and says whether a user-side fault stopped it. |page| is writable even
@@ -291,7 +290,7 @@ class VmObjectPaged: public VmObject {
     /// instantiated once per caller, four copies of the same code, to save one
     /// indirect call per page when each call copies up to a page. The trade
     /// ran the wrong way, so it is one walk and one indirect call now.
-    auto copy_page_by_page(VirtAddr offset, usize size, bool will_write, CopyPage const &copy)
+    auto copy_page_by_page(usize offset, usize size, bool will_write, CopyPage const &copy)
         -> Status;
 
     /// Makes |change| to the page tables of this object's mappings of the part

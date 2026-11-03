@@ -59,7 +59,7 @@ auto KernelPackageLoader::init(Bytes const storage, PhysAddr const package_base,
         .present = true,
     };
     handoff_.kernel_storage = {
-        .base = reinterpret_cast<PhysAddr>(storage.data()),
+        .base = PhysAddr{reinterpret_cast<usize>(storage.data())},
         .size = storage.size(),
         .present = true,
     };

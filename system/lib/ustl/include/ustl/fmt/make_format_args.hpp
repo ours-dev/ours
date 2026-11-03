@@ -9,6 +9,7 @@
 #include <format>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace ustl::fmt {
 
@@ -22,7 +23,8 @@ using std::make_format_args;
 /// type rather than as `const char *`, and comes out of the formatter as
 /// nothing at all: no diagnostic, no output, just a `{}` that renders empty.
 /// A pointer or a string_view formats correctly, so decay the array on the way
-/// in. Everything else is forwarded untouched.
+/// in. An enum without its own formatter uses its underlying integer;
+/// everything else is forwarded untouched.
 ///
 /// The result may be a prvalue string_view, and make_format_args() requires
 /// lvalues, so a caller has to bind it before building the store -- see the
@@ -32,6 +34,8 @@ constexpr auto decay_format_arg(T &&value) -> decltype(auto) {
     using Bare = std::remove_cvref_t<T>;
     if constexpr (std::is_array_v<Bare> && std::is_same_v<std::remove_extent_t<Bare>, char>) {
         return std::string_view(value);
+    } else if constexpr (std::is_enum_v<Bare> && !std::formattable<Bare, char>) {
+        return std::to_underlying(value);
     } else {
         return static_cast<T &&>(value);
     }

@@ -347,7 +347,7 @@ auto VmObjectPaged::create_clone(u64 const offset, u64 const size,
 }
 
 FORCE_INLINE
-auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOptions option)
+auto VmObjectPaged::commit_range_internal(usize offset, usize size, CommitOptions option)
     -> Status {
     if (!!(option & CommitOptions::Pin)) {
         if (!size) {
@@ -402,20 +402,20 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
     return Status::Ok;
 }
 
-auto VmObjectPaged::commit_range(VirtAddr offset, usize size, CommitOptions option) -> Status {
+auto VmObjectPaged::commit_range(usize offset, usize size, CommitOptions option) -> Status {
     m_canary.verify<Self>();
 
     log::trace("VMO Commit Action: [ofs: {:X}, size: {:X}]", offset, size);
     return commit_range_internal(offset, size, option);
 }
 
-auto VmObjectPaged::decommit(VirtAddr offset, usize size) -> Status {
+auto VmObjectPaged::decommit(usize offset, usize size) -> Status {
     m_canary.verify<Self>();
 
     return Status::Unimplemented;
 }
 
-auto VmObjectPaged::pin_range(VirtAddr const offset, usize const size) -> Status {
+auto VmObjectPaged::pin_range(usize const offset, usize const size) -> Status {
     m_canary.verify<Self>();
 
     if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
@@ -467,7 +467,7 @@ auto VmObjectPaged::pin_range(VirtAddr const offset, usize const size) -> Status
     return status;
 }
 
-auto VmObjectPaged::unpin_range(VirtAddr const offset, usize const size) -> Status {
+auto VmObjectPaged::unpin_range(usize const offset, usize const size) -> Status {
     m_canary.verify<Self>();
 
     if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
@@ -482,7 +482,7 @@ auto VmObjectPaged::unpin_range(VirtAddr const offset, usize const size) -> Stat
     return m_cow_pages->unpin_range_locked(m_cow_offset + offset, size);
 }
 
-auto VmObjectPaged::lookup_contiguous(VirtAddr const offset, usize const size, PhysAddr *const out)
+auto VmObjectPaged::lookup_contiguous(usize const offset, usize const size, PhysAddr *const out)
     -> Status {
     m_canary.verify<Self>();
 
@@ -521,8 +521,8 @@ auto VmObjectPaged::lookup_contiguous(VirtAddr const offset, usize const size, P
     return Status::Ok;
 }
 
-auto VmObjectPaged::take_pages(VirtAddr const offset, usize const size,
-                               VmPageSpliceList *const pages) -> Status {
+auto VmObjectPaged::take_pages(usize const offset, usize const size, VmPageSpliceList *const pages)
+    -> Status {
     m_canary.verify<Self>();
 
     if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size ||
@@ -546,7 +546,7 @@ auto VmObjectPaged::take_pages(VirtAddr const offset, usize const size,
     return m_cow_pages->take_pages_locked(m_cow_offset + offset, size, pages);
 }
 
-auto VmObjectPaged::supply_pages(VirtAddr const offset, usize const size,
+auto VmObjectPaged::supply_pages(usize const offset, usize const size,
                                  VmPageSpliceList *const pages, SupplyOption const options)
     -> Status {
     m_canary.verify<Self>();
@@ -620,8 +620,8 @@ auto VmObjectPaged::source_owner_id() const -> ustl::Option<u64> {
 ///
 /// m_lock is a sleeping lock, not a spin lock, so a long copy holds up other
 /// users of this VMO but never a CPU with interrupts off.
-auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
-                                      bool const will_write, CopyPage const &copy) -> Status {
+auto VmObjectPaged::copy_page_by_page(usize const offset, usize const size, bool const will_write,
+                                      CopyPage const &copy) -> Status {
     m_canary.verify<Self>();
 
     if (!size) {
@@ -751,7 +751,7 @@ auto VmObjectPaged::committed_pages(u64 const offset, u64 const len) -> usize {
     return m_cow_pages->nr_pages_in_locked(m_cow_offset + offset, clipped);
 }
 
-auto VmObjectPaged::read(void *const out, VirtAddr const offset, usize const size) -> Status {
+auto VmObjectPaged::read(void *const out, usize const offset, usize const size) -> Status {
     auto *const dst = static_cast<u8 *>(out);
     return copy_page_by_page(offset, size, false,
                              [dst](u8 const *const page, usize const done, usize const chunk) {
@@ -760,7 +760,7 @@ auto VmObjectPaged::read(void *const out, VirtAddr const offset, usize const siz
                              });
 }
 
-auto VmObjectPaged::write(void const *const in, VirtAddr const offset, usize const size) -> Status {
+auto VmObjectPaged::write(void const *const in, usize const offset, usize const size) -> Status {
     auto const *const src = static_cast<u8 const *>(in);
     return copy_page_by_page(offset, size, true,
                              [src](u8 *const page, usize const done, usize const chunk) {
@@ -769,7 +769,7 @@ auto VmObjectPaged::write(void const *const in, VirtAddr const offset, usize con
                              });
 }
 
-auto VmObjectPaged::store_u64(VirtAddr const offset, u64 const value) -> Status {
+auto VmObjectPaged::store_u64(usize const offset, u64 const value) -> Status {
     if ((static_cast<u64>(offset) % alignof(u64)) != 0) {
         return Status::InvArgs;
     }
@@ -786,7 +786,7 @@ auto VmObjectPaged::store_u64(VirtAddr const offset, u64 const value) -> Status 
 /// The page walk with copy_array_to_user_capture_faults() as its copy: a
 /// fault in the user buffer is captured under the lock and resolved with it
 /// dropped.
-auto VmObjectPaged::read_user(user_copy::UserOutPtr<u8> const out, VirtAddr const offset,
+auto VmObjectPaged::read_user(user_copy::UserOutPtr<u8> const out, usize const offset,
                               usize const size) -> Status {
     return copy_page_by_page(
         offset, size, false, [out](u8 const *const page, usize const done, usize const chunk) {
@@ -797,7 +797,7 @@ auto VmObjectPaged::read_user(user_copy::UserOutPtr<u8> const out, VirtAddr cons
 /// The page walk with copy_array_from_user_capture_faults() as its copy. A
 /// chunk a fault interrupts is copied again whole on the retry; the page is
 /// overwritten with the same bytes, so the repetition is harmless.
-auto VmObjectPaged::write_user(user_copy::UserInPtr<u8 const> const in, VirtAddr const offset,
+auto VmObjectPaged::write_user(user_copy::UserInPtr<u8 const> const in, usize const offset,
                                usize const size) -> Status {
     return copy_page_by_page(
         offset, size, true, [in](u8 *const page, usize const done, usize const chunk) {

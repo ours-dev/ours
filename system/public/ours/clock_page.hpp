@@ -7,7 +7,7 @@
 
 namespace ours {
 /// Process root VMA base, matching the kernel's USER_ASPACE_BASE.
-inline constexpr auto PROCESS_ASPACE_BASE = u64{0x200000};
+inline constexpr auto PROCESS_ASPACE_BASE = VirtAddr{0x200000};
 /// The clock MMIO page in every process, one page below the kernel's vDSO
 /// base (`PROCESS_ASPACE_BASE + 8 MiB`). The published counter address is
 /// this plus |CLOCK_COUNTER_OFFSET|.

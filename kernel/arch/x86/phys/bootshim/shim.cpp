@@ -89,9 +89,10 @@ namespace {
         // ElfImage::load_at is about to read from it while writing
         // somewhere else -- letting the two ranges overlap could have it
         // read its own half-written output).
-        auto const floor = std::max({PhysAddr(__executable_end),
-                                     PhysAddr(legacy.ramdisk.data()) + legacy.ramdisk.size(),
-                                     mbi_base + legacy.mbi_size});
+        auto const floor = std::max(
+            {PhysAddr{reinterpret_cast<usize>(__executable_end)},
+             PhysAddr{reinterpret_cast<usize>(legacy.ramdisk.data())} + legacy.ramdisk.size(),
+             mbi_base + legacy.mbi_size});
         auto const total = ustl::round_up(image.size(), PAGE_SIZE);
         auto const target = bootshim::LegacyMemoryTranslator::find_scratch(
             legacy.memory_map.value(), floor, total, PAGE_SIZE);
@@ -103,7 +104,8 @@ namespace {
         if (entry.is_err()) {
             panic("Failed to load physload: {}", static_cast<u32>(entry.unwrap_err()));
         }
-        if (auto const status = image.relocate(target.value()); status != Status::Ok) {
+        if (auto const status = image.relocate(std::to_underlying(target.value()));
+            status != Status::Ok) {
             panic("Failed to relocate physload: {}", static_cast<u32>(status));
         }
 
@@ -138,7 +140,7 @@ namespace {
 
         auto const module_entry =
             reinterpret_cast<void (*)(PhysAddr, usize, LegacyPlatformInfo const *)>(entry.unwrap());
-        module_entry(PhysAddr(module.data()), module.size(), &info);
+        module_entry(PhysAddr{reinterpret_cast<usize>(module.data())}, module.size(), &info);
 
         panic("Never reach at here");
     }
@@ -151,7 +153,7 @@ auto phys_main(PhysAddr loader_param) -> void {
     log::info("boot-shim: loader params at 0x{:X}", loader_param);
 
     auto &legacy = LegacyBoot::get();
-    auto const handoff_status = legacy.parse_params(loader_param);
+    auto const handoff_status = legacy.parse_params(std::to_underlying(loader_param));
     if (handoff_status != Status::Ok) {
         panic("Invalid Multiboot2 handoff: {}", static_cast<u32>(handoff_status));
     }

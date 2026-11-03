@@ -286,7 +286,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// raised in |request|, which the caller waits on with this lock let go
     /// and then calls again from the page it stopped at.
     TA_REQUIRES(m_lock)
-    auto commit_range_locked(VirtAddr offset, usize size, MultiPageRequest *request,
+    auto commit_range_locked(usize offset, usize size, MultiPageRequest *request,
                              usize *nr_commited) -> Status;
 
     /// Makes every page of [offset, offset + size) the node's own, as
@@ -303,7 +303,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// stopped at; any other error leaves those pages pinned, for the caller
     /// to undo with unpin_range_locked() or to go on from.
     TA_REQUIRES(m_lock)
-    auto pin_range_locked(VirtAddr offset, usize size, MultiPageRequest *request, usize *nr_pinned)
+    auto pin_range_locked(usize offset, usize size, MultiPageRequest *request, usize *nr_pinned)
         -> Status;
 
     /// Undoes one pin of each page of [offset, offset + size). BadState, and no
@@ -313,7 +313,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// and a page of a node with a page source as written, not reclaimable:
     /// the pin handed it to a device that may have changed it.
     TA_REQUIRES(m_lock)
-    auto unpin_range_locked(VirtAddr offset, usize size) -> Status;
+    auto unpin_range_locked(usize offset, usize size) -> Status;
 
     /// How many pages of this node are pinned.
     TA_REQUIRES(m_lock)
@@ -322,7 +322,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     }
 
     TA_REQUIRES(m_lock)
-    auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor, Status>;
+    auto make_cursor(usize offset, usize size) -> ustl::Result<Cursor, Status>;
 
     /// One 2 MiB block as this node sees it: where its frames start, and
     /// whether the node may write them.
@@ -794,7 +794,7 @@ class VmCowPages::Cursor {
         bool writable;
     };
 
-    Cursor(VmCowPages *owner, VirtAddr offset, usize size);
+    Cursor(VmCowPages *owner, usize offset, usize size);
     ~Cursor() = default;
 
     /// Hand back the page for the offset the cursor sits on, then step past it.
@@ -896,8 +896,8 @@ class VmCowPages::Cursor {
     /// byte this cursor was made for. Byte rather than page offsets to match
     /// the rest of the VmObject interface, which is byte-addressed because a
     /// physical VMO need not begin on a page boundary.
-    VirtAddr m_offset;
-    VirtAddr m_end;
+    usize m_offset;
+    usize m_end;
     bool m_mark_accessed;
 };
 

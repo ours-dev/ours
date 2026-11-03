@@ -42,8 +42,9 @@ struct MmuFormat {
     [[nodiscard]]
     static constexpr auto leaf_bits(Level const level, arch::paging::MmuFlags const flags)
         -> arch::PteVal {
-        auto value =
-            arch::paging::X86Pte<Level::PageTable>::make(0, Conv::to_arch(flags), true).inner_;
+        auto value = arch::paging::X86Pte<Level::PageTable>::make(arch::PhysAddr{},
+                                                                  Conv::to_arch(flags), true)
+                         .inner_;
         if (level != Level::PageTable) {
             value |= X86_MMUF_PAGE_SIZE;
         }
@@ -53,7 +54,7 @@ struct MmuFormat {
     /// A leaf mapping |pa|, with the bits leaf_bits() gave.
     [[nodiscard]]
     static constexpr auto leaf(arch::PhysAddr const pa, arch::PteVal const bits) -> arch::PteVal {
-        return (pa & X86_PG_FRAME) | bits;
+        return (std::to_underlying(pa) & X86_PG_FRAME) | bits;
     }
 
     /// An entry pointing to the table at |pa|. It grants everything, so that

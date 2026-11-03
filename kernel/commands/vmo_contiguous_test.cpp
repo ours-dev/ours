@@ -91,7 +91,7 @@ namespace {
     auto phys_of(mm::VmObjectPaged &vmo, usize const index) -> PhysAddr {
         auto pa = PhysAddr{0};
         if (vmo.lookup_contiguous(index * P, P, &pa) != Status::Ok) {
-            return 0;
+            return PhysAddr{0};
         }
         return pa;
     }
@@ -132,8 +132,9 @@ namespace {
 
         // ---- one page, and the size rounded up
         verdict(tally,
-                make(1, 0, &vmo) == Status::Ok && vmo->size() == P && phys_of(*vmo, 0) != 0 &&
-                    all_pinned_queue(*vmo, 1) && all_zero(*vmo, 1),
+                make(1, 0, &vmo) == Status::Ok && vmo->size() == P &&
+                    phys_of(*vmo, 0) != PhysAddr{0} && all_pinned_queue(*vmo, 1) &&
+                    all_zero(*vmo, 1),
                 "one byte is one page, there from the start, on the pinned queue, and zero");
         verdict(tally,
                 make(P + 1, 0, &vmo) == Status::Ok && vmo->size() == 2 * P &&
@@ -145,17 +146,21 @@ namespace {
                 "three pages are made");
         auto first = PhysAddr{0};
         verdict(tally,
-                vmo->lookup_contiguous(0, 3 * P, &first) == Status::Ok && first % (4 * P) == 0 &&
-                    first == phys_of(*vmo, 0) && all_pinned_queue(*vmo, 3) && all_zero(*vmo, 3),
+                vmo->lookup_contiguous(0, 3 * P, &first) == Status::Ok &&
+                    std::to_underlying(first) % (4 * P) == 0 && first == phys_of(*vmo, 0) &&
+                    all_pinned_queue(*vmo, 3) && all_zero(*vmo, 3),
                 "they are one run on the block's own alignment, on the pinned queue, and zero");
         verdict(tally, kind_at(*vmo, 3) == Kind::None, "there is no fourth page");
 
         // ---- alignment
         verdict(tally,
-                make(2 * P, 16, &vmo) == Status::Ok && phys_of(*vmo, 0) % (usize{1} << 16) == 0 &&
+                make(2 * P, 16, &vmo) == Status::Ok &&
+                    std::to_underlying(phys_of(*vmo, 0)) % (usize{1} << 16) == 0 &&
                     vmo->lookup_contiguous(0, 2 * P, &first) == Status::Ok,
                 "two pages on 64 KiB are one run starting on a multiple of 64 KiB");
-        verdict(tally, make(P, 21, &vmo) == Status::Ok && phys_of(*vmo, 0) % (usize{1} << 21) == 0,
+        verdict(tally,
+                make(P, 21, &vmo) == Status::Ok &&
+                    std::to_underlying(phys_of(*vmo, 0)) % (usize{1} << 21) == 0,
                 "one page on 2 MiB starts on a multiple of 2 MiB");
 
         // ---- the largest block
@@ -163,7 +168,8 @@ namespace {
         verdict(tally,
                 make(MOST * P, 0, &vmo) == Status::Ok && vmo->size() == MOST * P &&
                     vmo->lookup_contiguous(0, MOST * P, &first) == Status::Ok &&
-                    first % (MOST * P) == 0 && all_pinned_queue(*vmo, MOST) && all_zero(*vmo, MOST),
+                    std::to_underlying(first) % (MOST * P) == 0 && all_pinned_queue(*vmo, MOST) &&
+                    all_zero(*vmo, MOST),
                 "the largest block is made: all its pages one run, on its alignment, pinned queue, "
                 "zero");
         vmo = {};

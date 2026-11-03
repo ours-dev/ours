@@ -88,7 +88,7 @@ namespace {
     /// entry, as if a call had just pushed its return address. The kernel's
     /// userboot does the same.
     constexpr auto initial_stack_pointer(VirtAddr const top) -> VirtAddr {
-        return (top & ~VirtAddr{15}) - 8;
+        return VirtAddr{std::to_underlying(top) & ~15_usize} - 8;
     }
 
     /// The pages an ELF's PT_LOAD segments cover, from the first page of the
@@ -201,8 +201,8 @@ namespace {
             // one mapping this made, not sealed, in a region this process
             // holds), and if the region were gone the mapping would be gone
             // with it.
-            auto _ =
-                ours::vma_unmap(m_vma, reinterpret_cast<VirtAddr>(m_bytes.data()), m_bytes.size());
+            auto _ = ours::vma_unmap(m_vma, VirtAddr{reinterpret_cast<usize>(m_bytes.data())},
+                                     m_bytes.size());
         }
 
         /// Maps all of |request|'s file into its |vma|, at the size
@@ -239,7 +239,7 @@ namespace {
             if (auto const status = ours::vmo_get_size(request.file, &size); status != Status::Ok) {
                 return failed(request, "vmo_get_size of the program's file", status);
             }
-            VirtAddr address = 0;
+            VirtAddr address{};
             if (auto const status =
                     ours::vma_map(request.vma, VmOptions::PermRead | VmOptions::PermExecute, 0,
                                   request.file, 0, usize(size), &address);
@@ -326,7 +326,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     // relative to each other wherever it lands. CanMapSpecific, because each
     // segment goes at its own offset in it.
     Owned image_region;
-    VirtAddr image_base = 0;
+    VirtAddr image_base{};
     if (auto const status =
             ours::vma_allocate(root.get(),
                                VmOptions::CanMapRead | VmOptions::CanMapWrite |
@@ -380,7 +380,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     // relocations go into the VMOs above, before anything of the program is
     // mapped, so every mapping can be made with its final protection.
     Owned vdso_region;
-    VirtAddr vdso_base = 0;
+    VirtAddr vdso_base{};
     if (auto const status = ours::vma_allocate(
             root.get(),
             VmOptions::CanMapRead | VmOptions::CanMapExecute | VmOptions::CanMapSpecific, 0,
@@ -398,7 +398,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
         if ((segment.flags & PF_X) != 0) {
             options |= VmOptions::PermExecute;
         }
-        VirtAddr at = 0;
+        VirtAddr at{};
         if (auto const status = ours::vma_map(vdso_region.get(), options, usize(offset),
                                               request.vdso, offset, usize(end - first), &at);
             status != Status::Ok) {
@@ -413,7 +413,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
         constexpr auto OPTIONS =
             VmOptions::PermRead | VmOptions::Specific | VmOptions::Sealed | VmOptions::MapRange;
         auto const offset = usize(ours::CLOCK_PAGE_BASE - ours::PROCESS_ASPACE_BASE);
-        VirtAddr at = 0;
+        VirtAddr at{};
         if (auto const status = ours::vma_map(root.get(), OPTIONS, offset, request.clock_page, 0,
                                               usize(PAGE_SIZE), &at);
             status != Status::Ok) {
@@ -423,9 +423,9 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     elfload::Image const vdso_image{
         .base = vdso_base,
         .span = usize(vdso_span.size),
-        .entry = 0,
+        .entry = ours::VirtAddr{0},
         .writer = {},
-        .image_base = vdso_span.first,
+        .image_base = VirtAddr{vdso_span.first},
     };
     auto const binder = elfload::Binder::from(
         request.diagnostics, {request.vdso_file.data(), request.vdso_file.size()}, vdso_image);
@@ -433,13 +433,13 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
         return ustl::err(binder.unwrap_err());
     }
     Writer writer{.plan = &plan, .first = image.first, .snapshots = &snapshots, .zeros = &zeros};
-    auto const bias = image_base - image.first;
+    auto const bias = image_base - VirtAddr{image.first};
     elfload::Image const program_image{
         .base = image_base,
         .span = usize(image.size),
-        .entry = program.unwrap().entry() + bias,
+        .entry = VirtAddr{program.unwrap().entry()} + bias,
         .writer = {.write = &Writer::write, .context = &writer},
-        .image_base = image.first,
+        .image_base = VirtAddr{image.first},
     };
     if (auto const status =
             binder.unwrap().bind(request.diagnostics, {file.data(), file.size()}, program_image);
@@ -456,7 +456,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
         if (mapping.source == Source::Zero) {
             vmo = zeros[mapping.segment];
         }
-        VirtAddr at = 0;
+        VirtAddr at{};
         if (auto const status = ours::vma_map(image_region.get(), options_for(mapping.perm),
                                               usize(mapping.vaddr - image.first), vmo,
                                               mapping.vmo_offset, usize(mapping.size), &at);
@@ -470,7 +470,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     // guard instead of writing into whatever the kernel placed below. Both go
     // at chosen offsets in it, hence CanMapSpecific.
     Owned stack_region;
-    VirtAddr stack_region_base = 0;
+    VirtAddr stack_region_base{};
     if (auto const status = ours::vma_allocate(
             root.get(), VmOptions::CanMapRead | VmOptions::CanMapWrite | VmOptions::CanMapSpecific,
             0, STACK_GUARD + stack_size.unwrap(), stack_region.out(), &stack_region_base);
@@ -478,7 +478,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
         return ustl::err(failed(request, "vma_allocate of the stack's region", status));
     }
     Owned guard;
-    VirtAddr guard_at = 0;
+    VirtAddr guard_at{};
     if (auto const status = ours::vma_allocate(stack_region.get(), VmOptions::Specific, 0,
                                                STACK_GUARD, guard.out(), &guard_at);
         status != Status::Ok) {
@@ -490,7 +490,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
         status != Status::Ok) {
         return ustl::err(failed(request, "vmo_create of the stack", status));
     }
-    VirtAddr stack_bottom = 0;
+    VirtAddr stack_bottom{};
     if (auto const status = ours::vma_map(
             stack_region.get(), VmOptions::PermRead | VmOptions::PermWrite | VmOptions::Specific,
             STACK_GUARD, stack.get(), 0, stack_size.unwrap(), &stack_bottom);
@@ -510,7 +510,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     if (auto const status =
             ours::process_start(process.get(), thread.get(), program_image.entry,
                                 initial_stack_pointer(stack_bottom + stack_size.unwrap()),
-                                bootstrap.release(), vdso_base);
+                                bootstrap.release(), std::to_underlying(vdso_base));
         status != Status::Ok) {
         return ustl::err(failed(request, "process_start", status));
     }

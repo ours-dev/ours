@@ -118,7 +118,7 @@ class UserPtr final {
 
     [[nodiscard]]
     constexpr auto is_null() const -> bool {
-        return m_address == 0;
+        return m_address == ours::VirtAddr{0};
     }
 
     /// The pointer |count| elements further on.
@@ -205,7 +205,7 @@ class UserPtr final {
     }
 
   private:
-    ours::VirtAddr m_address = 0;
+    ours::VirtAddr m_address{};
 };
 
 template <typename T>

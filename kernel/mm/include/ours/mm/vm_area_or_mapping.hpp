@@ -58,68 +58,6 @@ enum class VmMapOption {
 };
 USTL_ENABLE_ENUM_BITMASK(VmMapOption);
 
-/// Where a new area or mapping is to go.
-///
-/// Two states and no way to write a third, which is the whole point. The
-/// address used to be a `VirtAddr *` that meant three things at once -- an
-/// input hint, the output result, and, when null, "you choose" -- with a
-/// separate VmMapOption::Fixed deciding whether the input half counted at all.
-/// A caller who meant "anywhere" wrote a literal 0, and 0 is also a perfectly
-/// good address, so the request that put the local APIC's MMIO on top of the
-/// physmap was indistinguishable from a deliberate one (see section 36 of
-/// docs/repairs-20260830.md). Naming the intent instead of encoding it in a
-/// pointer's nullness makes that request unwritable.
-///
-/// The output half is gone rather than moved: the mapping this produces
-/// already knows where it is, and `(*result)->base()` is the answer. Two of
-/// the five call sites read it that way already and ignored the out-parameter
-/// they had passed.
-///
-/// A flag beside an address is the shape this replaces: the address is
-/// meaningless without the flag, and a null address can stand for "anywhere"
-/// only where nothing ever maps page 0. So the address is optional instead:
-/// at() holds one and anywhere() holds none, and "fixed" is whether there is
-/// one, not a second fact stored beside it.
-class VmPlacement {
-    using Self = VmPlacement;
-
-  public:
-    /// Any free spot inside the parent will do; the VMM picks.
-    FORCE_INLINE
-    static constexpr auto anywhere() -> Self {
-        return Self{};
-    }
-
-    /// This address or nothing. A range already spoken for is refused with
-    /// Status::AlreadyExists rather than replaced: replacement is not
-    /// implemented, and when it is, it gets its own named constructor rather
-    /// than a second meaning for this one.
-    FORCE_INLINE
-    static constexpr auto at(VirtAddr base) -> Self {
-        return Self{base};
-    }
-
-    [[nodiscard]]
-    FORCE_INLINE
-    constexpr auto is_fixed() const -> bool {
-        return m_base.is_some();
-    }
-
-    /// Only meaningful when is_fixed(); anywhere() has no address to give,
-    /// and asking it for one traps.
-    [[nodiscard]]
-    FORCE_INLINE
-    constexpr auto base() const -> VirtAddr {
-        return m_base.value();
-    }
-
-  private:
-    constexpr VmPlacement() = default;
-    constexpr explicit VmPlacement(VirtAddr base) : m_base(base) {}
-
-    ustl::Option<VirtAddr> m_base;
-};
-
 /// What a VMA -- an area or a mapping -- IS: its attributes and state, stored on
 /// the object and true for as long as it lives. The permissions it allows
 /// (which a mapping's protection may never exceed), whether it is active,
@@ -157,9 +95,9 @@ enum class VmaFlags : u32 {
     Sealed = 0x100000,
 
     // Only serves VmArea: whether a mapping or sub-area may go at a place its
-    // creator chose (VmPlacement::at). Without it everything in the area is
-    // placed by the VMM, the one placement that randomisation can reach, so a
-    // program handed such an area cannot pin anything at an address it picked.
+    // creator chose. Without it, creation takes VirtAddr::Anywhere and the
+    // VMM chooses the location, so callers cannot fix their own addresses
+    // and defeat randomisation.
     // VmArea::reserve() is a placement like any other and asks it too. A
     // mapping never carries it.
     // Every root area has it. A sub-area has it when it is made with it,
@@ -238,7 +176,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     }
 
     FORCE_INLINE
-    auto size() const -> VirtAddr {
+    auto size() const -> usize {
         return m_size;
     }
 
@@ -373,7 +311,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
             bool m_empty{true};
             VirtAddr m_min_start{};
             VirtAddr m_max_last{};
-            VirtAddr m_max_gap{};
+            usize m_max_gap{};
 
             friend auto operator==(Aggregate const &, Aggregate const &) -> bool = default;
         };
@@ -519,7 +457,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     gktl::Canary m_canary;
     char const *m_name;
     VirtAddr m_base;
-    VirtAddr m_size;
+    usize m_size;
     VmaFlags m_vmaf;
     VmArea *m_parent;
     ustl::Arc<VmAspace> m_aspace;
