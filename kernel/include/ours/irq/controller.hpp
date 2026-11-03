@@ -83,7 +83,7 @@ struct ControllerOps final {
     /// only there: irq::mask(); the line's flow, for an interrupt on a line
     /// nobody is on and before a Oneshot line's action; the attach that reads
     /// the mode; and detach(), as the last action goes. Every chip a line of the
-    /// table is bound to has one: init_lines() refuses a chip without.
+    /// table is bound to has one: register_domain() refuses a chip without.
     auto (*mask)(ControllerSource const &) -> void = nullptr;
     /// Unmasks the line at the controller. kernel/irq calls it under L1, and
     /// only when the line is not held: irq::unmask(); the level flow, after a
@@ -109,9 +109,8 @@ struct ControllerOps final {
     auto (*is_masked)(ControllerSource const &) -> bool = nullptr;
     /// Ends an interrupt on the line, so the controller delivers the next.
     /// Called by the line's flow once its actions have run, once per
-    /// interrupt, in interrupt context, under L1 unless the line is
-    /// Permanent. Every chip a line of the table is bound to has one:
-    /// init_lines() refuses a chip without.
+    /// interrupt, in interrupt context, under L1. Every chip a line of the table is bound to has one:
+    /// register_domain() refuses a chip without.
     auto (*issue_eoi)(ControllerSource const &) -> void = nullptr;
     auto (*issue_ack)(ControllerSource const &) -> void = nullptr;
     /// Aims the source at one of the CPUs in the set. Not called yet:

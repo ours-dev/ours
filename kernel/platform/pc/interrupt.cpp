@@ -1,5 +1,5 @@
 #include <ours/arch/apic.hpp>
-#include <ours/irq/domain_registry.hpp>
+#include <ours/irq/domain.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/mod.hpp>
 #include <ours/platform/acpi.hpp>
@@ -57,11 +57,9 @@ namespace {
         return object;
     }
 
-    /// The slot the machine's directory publishes the root domain's table
-    /// into, and that the handler below reads it from. Static storage, as the
-    /// registry's contract for a slot asks: the handler reads it for every
-    /// interrupt, and the root domain is never taken away.
-    irq::DomainSlot ROOT_SLOT;
+    /// Static controller entry for the root domain. It owns the reader scope
+    /// for each dispatch; the platform never borrows domain storage.
+    irq::DomainEndpoint ROOT_ENDPOINT;
 
     /// The root handler of a PC, installed by platform_init_apic(). Every pin
     /// of every IO-APIC was programmed with vector PlatformIrqMin + GSI, so
@@ -78,13 +76,7 @@ namespace {
         DEBUG_ASSERT(frame->vector >= arch::IrqVec::PlatformIrqMin);
         auto const gsi = static_cast<HIrqNum>(frame->vector) -
                          static_cast<HIrqNum>(arch::IrqVec::PlatformIrqMin);
-        // The table of the domain this handler serves, as init_lines()
-        // published it: one acquire load, and no read of the directory on the
-        // interrupt path. It is null only before the lines are built, which no
-        // interrupt can see -- interrupts are enabled below, after
-        // init_lines() -- and never after: the root domain is not removable.
-        auto *const table = ROOT_SLOT.table_with_irqs_off();
-        if (!irq::handle_irq_generic(table, gsi)) {
+        if (ROOT_ENDPOINT.dispatch(gsi).is_none()) {
             apic_issue_eoi();
         }
     }
@@ -166,7 +158,7 @@ namespace {
 
             auto const gsi = apic_io_isa_to_global(isa);
             // Two ISA lines on one GSI would program one entry twice and be
-            // one line, which init_lines() refuses. The first keeps the GSI.
+            // one line, which register_domain() refuses. The first keeps the GSI.
             // Mapping the overrides first would instead let a line moved onto
             // a pin beat the line whose own number it is; on QEMU the only
             // such pair is ISA 0 and 2, which the check above settles the
@@ -221,8 +213,9 @@ namespace {
         // masks and unmasks its line through the irq layer, and the chip
         // takes the IO-APIC register lock; no driver touches the IO-APIC. The
         // lines are the machine's root domain, and their table is published
-        // into ROOT_SLOT, which the handler above reads for every interrupt.
-        auto const status = irq::init_lines(ustl::views::Span(gsis), io_apic_chip(), ROOT_SLOT);
+        // through ROOT_ENDPOINT, which the handler above dispatches through.
+        auto const status = irq::register_domain(irq::DomainId::Root, ustl::views::Span(gsis),
+                                                 io_apic_chip(), ROOT_ENDPOINT);
         ASSERT(Status::Ok == status, "Failed to build the interrupt lines: {}", to_string(status));
 
         // The root controller's driver gives arch its handler now, with the

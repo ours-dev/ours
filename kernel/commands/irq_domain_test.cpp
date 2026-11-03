@@ -28,13 +28,13 @@
 // A console command rather than a unit test: Domain allocates from the
 // kernel's heap.
 #include <ours/irq/controller.hpp>
-#include <ours/irq/domain.hpp>
 
 #include <algorithm>
 #include <array>
 #include <type_traits>
 
 #include <gktl/command.hpp>
+#include <kernel/kernel/irq/domain.hpp>
 #include <logz4/log.hpp>
 #include <ustl/views/span.hpp>
 

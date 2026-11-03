@@ -18,49 +18,6 @@ struct IrqFrame;
 
 namespace ours::irq {
 class Registration;
-struct ControllerOps;
-class Domain;
-class DomainSlot;
-
-/// The machine's directory of interrupt domains (DomainRegistry), what every
-/// function below resolves its numbers through. A control call opens a short
-/// read of the directory (a task::IrqRcuReadGuard, interrupts off) and holds
-/// it to the last use of the line, so a domain being taken away is never half
-/// seen; nothing in the section sleeps, allocates or copies from user memory.
-/// The interrupt path does not read the directory: the root handler loads its
-/// domain's table from the DomainSlot the directory published it into, and
-/// hands it to handle_irq_generic().
-///
-/// Registers the root controller's lines as the machine's first domain: one
-/// line for each hardware number in `hirqnums`, in a table of its own, held
-/// by the directory under DomainId::Root and published into `slot`, which the
-/// root handler reads for every interrupt. On x86 that number is the GSI,
-/// which is also what dispatch delivers, since the platform programs each GSI
-/// with the vector PlatformIrqMin + GSI. A line is named by its virq, which
-/// the domain assigns (Domain) and which is never the hardware number:
-/// virq_of_hwirq() and hwirq_of_virq() go between the two.
-///
-/// Every line is bound to `chip`, the controller that drives its pin, which
-/// mask(), unmask() and configure() go through, and which ends each of the
-/// line's interrupts. The chip outlives the domain. Each line takes the flow
-/// that suits how the chip says its pin signals: the level flow for a level
-/// pin, the edge flow otherwise.
-///
-/// The platform calls it once, after it has read its interrupt controllers
-/// from the firmware and programmed the lines it found, and before it unmasks
-/// any of them, and before it installs the handler that reads `slot`. Until
-/// then there are no lines: attach() answers NoResource, and an interrupt
-/// finds no line and is ended by its caller (handle_irq_generic() answers
-/// false on a null table).
-///
-/// AlreadyExists if the root domain is registered already, BadState if `slot`
-/// holds a table, InvArgs for an invalid hardware number, an empty list or a
-/// chip with no eoi or no mask, NoMemory.
-/// Nothing is kept from a call that fails.
-[[nodiscard]]
-auto init_lines(ustl::views::Span<HIrqNum const> hirqnums, ControllerOps const &chip,
-                DomainSlot &slot) -> Status;
-
 /// Hangs `action` on line `virqnum`; from then on every interrupt on the
 /// line calls the action's handler with the action's context. The caller
 /// owns the action and keeps it alive until detach() has returned.
@@ -267,37 +224,14 @@ auto virq_of_hwirq(HIrqNum hirqnum) -> VIrqNum;
 [[nodiscard]]
 auto hwirq_of_virq(VIrqNum virqnum) -> HIrqNum;
 
-/// The interrupt that arrived for the line made for hardware number
-/// `hirqnum`, in interrupt context: runs the line's flow, which calls its
-/// actions and then ends the interrupt through the line's chip; a line
-/// nobody is on is masked, and its interrupt ended. Answers false if there is
-/// no such line: nothing has ended the interrupt then, and the caller, which
-/// knows how the interrupt arrived, ends it itself. Either way it is ended
-/// exactly once.
-///
-/// The lines are those of `table`, the handler's own domain, which the
-/// handler loads from the DomainSlot the directory published its table into:
-/// one acquire load, and no read of the directory on the interrupt path. A
-/// null table answers false, the shape of a domain that is gone, whose
-/// handler ends what it receives itself.
-///
-/// By hardware number, not virq: it is what the interrupt entry has, and it
-/// indexes the table directly, with no lookup between.
+/// Whether the root domain contains this hardware source. Internal storage
+/// and its reader lifetime stay inside the query.
 [[nodiscard]]
-auto handle_irq_generic(Domain *table, HIrqNum hirqnum) -> bool;
-
-/// The table of the root controller's domain, what a root handler holds its
-/// DomainSlot for and what handle_irq_generic() dispatches through. Null
-/// before init_lines(). For a kernel test that plays an interrupt by hardware
-/// number, as pinlines.test does for a number no pin has; everything else
-/// names a line by its virq. The root domain is never removed, so the
-/// pointer, once it is not null, is good for good.
-[[nodiscard]]
-auto root_table_for_test() -> Domain *;
+auto root_source_exists_for_test(HIrqNum source) -> bool;
 
 /// The flow of line `virqnum` for a kernel test that plays an interrupt from
 /// thread context: the same actions under the same locks as
-/// handle_irq_generic(), without the end of interrupt, since no interrupt is
+/// DomainEndpoint::dispatch(), without the end of interrupt, since no interrupt is
 /// in service to end. A line nobody is on is masked at its controller all the
 /// same, as a real interrupt would leave it. Answers what the actions
 /// answered, None if there is no such line. The read scope and line Guard
@@ -356,7 +290,7 @@ auto handle_irq_postamble() -> bool;
 /// tells them apart (an acknowledge read returns the processor-local
 /// interrupts too), the handler hands those back to arch. The handler finds
 /// out which interrupt it is in the way its controller allows (a vector, an
-/// acknowledge read, a claim), hands it to handle_irq_generic(), and ends the
+/// acknowledge read, a claim), hands it to DomainEndpoint::dispatch(), and ends the
 /// interrupt itself if no line had it, since nothing else knows how.
 using RootHandler = auto (*)(::arch::IrqFrame *frame) -> void;
 

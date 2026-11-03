@@ -33,7 +33,6 @@
 //     NotFound must find the hook done. This needs two CPUs.
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/irq/domain.hpp>
 #include <ours/irq/line.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/status.hpp>
@@ -48,6 +47,7 @@
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <kernel/kernel/irq/domain.hpp>
 #include <logz4/log.hpp>
 #include <ustl/views/span.hpp>
 

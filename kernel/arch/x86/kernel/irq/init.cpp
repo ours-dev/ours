@@ -1,4 +1,4 @@
-#include <ours/irq/domain.hpp>
+#include <kernel/kernel/irq/domain.hpp>
 
 namespace ours::irq {
 auto arch_init_irq() -> void {}

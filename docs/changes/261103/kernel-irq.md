@@ -315,3 +315,41 @@ None. The user suspended teaching-oriented arguments and requested focused devel
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task.
+
+## Hide domain storage behind an owning registry and controller endpoint (2026-11-03)
+
+**Files**
+- `kernel/include/ours/irq/domain.hpp` — the public DomainEndpoint and registration API.
+- `kernel/kernel/irq/domain.hpp`, `domain_registry.hpp`, `domain_registry.cpp` — private owning domain and registry with Box ownership.
+- `kernel/platform/pc/interrupt.cpp`, IRQ facade and kernel tests — dispatch through endpoints and pass per-controller context.
+
+**Symptom**
+Latent: an adapter could obtain a raw domain pointer without keeping its reader scope alive. The registry manually paired allocation and deletion, copied mapping bounds into entries, and exposed its implementation as public API. Controller instances sharing operations could not supply instance context at registration.
+
+**Cause**
+The storage interface made the controller responsible for both interrupt identification and another module's reclamation rules. A separate slot getter and generic dispatch call left the lifetime requirement between calls. Manual delete paths duplicated ownership instead of expressing who retained a retiring domain.
+
+**Change**
+Before, the root performed `handle_irq_generic(slot.table_with_irqs_off(), source)`. Now it calls `endpoint.dispatch(source)`. The endpoint opens the IRQ RCU scope and closes it only after lookup and flow complete. Some means the source's receiving-CPU interrupt was ended; None leaves fallback completion to the root. Domain and DomainRegistry headers moved out of the public include tree. No old-name forwarding API remains.
+
+Each registry slot owns Box<Entry>, and each immutable published entry owns Box<Domain>. Mapping bounds are queried from Domain instead of copied. Removal marks the slot Removing, revokes registrations, retracts both publications, waits for readers, then moves ownership out while freeing the slot under Guard. Destruction occurs after dropping the writer lock. The id is read only while an entry is still owned; no separate id array or post-free inspection is necessary. Controller context is bound before publication and reaches every operation through ControllerSource.
+
+Keeping a public borrowed-pointer getter was rejected because it preserves the caller's lifetime burden. Reference-counted domain handles were rejected because dispatch already has a reader protocol and ownership is unique. A general dynamic snapshot directory was not introduced: the eight-domain bound remains a private implementation limit, replaceable without changing controller callers.
+
+**Reference**
+None, this project's own design. The boundary follows its actual IRQ RCU and unique storage ownership rather than importing a reference kernel's domain hierarchy.
+
+**Verification**
+All 19 changed C++ files ran LLVM 23 formatting and clang-tidy with no new changed-line diagnostics. Both images pass: dbg 46 passed, 5 skipped, 0 failed; rel 44 passed, 8 skipped, 0 failed and 7/7 required. All 161 host tests pass. Nine kernel suites pass: irq.test 78, irqcontroller.test 18, irqrevoke.test 37, irqregistry.test 85, irqdomain.test 87, irqrcu.test 34, interrupt.test 67, interruptline.test 83 and pinlines.test 28. The 19 new registry checks use the public global API with two controllers sharing source zero and an ops table, but different contexts; they exercise dispatch, EOI, mask, unmask and independent withdrawal. Existing multi-CPU reader/removal and two-writer tests pass. Performance was not measured.
+
+**Deliberately not done**
+Typed numeric identities, common control resolution and explicit controller dispatch protocols are subsequent increments. Local test registries retain a private raw-pointer test seam under an explicit IRQ RCU guard. Their destruction requires users to have quiesced; no destructor blocks on a grace period.
+
+**How it was found**
+The API audit traced the root handler's raw-table acquisition and every registry new/delete path. Existing removal tests cover a retiring entry held in a grace period while another writer inspects ids; those tests remain green after ownership transfer replaces duplicate writer arrays.
+
+**The user's prediction**
+None. Teaching exercises are suspended for this task.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.

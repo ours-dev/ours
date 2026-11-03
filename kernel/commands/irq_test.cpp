@@ -69,7 +69,6 @@
 // host test target, and the barrier needs two CPUs and the real spin lock.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
-#include <ours/irq/domain.hpp>
 #include <ours/irq/line.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/irq/registration.hpp>
@@ -85,6 +84,7 @@
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <kernel/kernel/irq/domain.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {

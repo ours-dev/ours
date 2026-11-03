@@ -48,11 +48,12 @@ auto Line::create(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name) 
 /// Nobody else can reach the line yet, so L1 is never contended here; it is
 /// taken because the flow is written under it everywhere else, and the read
 /// goes L1 -> LI, the order attach() takes.
-auto Line::init(ControllerOps const &chip) -> Status {
+auto Line::init(ControllerOps const &chip, void *const context) -> Status {
     if (m_source.chip) {
         return Status::BadState;
     }
     m_source.chip = &chip;
+    m_source.platform_data = context;
 
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     // A chip that cannot say how its pins signal gets the edge flow, which

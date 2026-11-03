@@ -4,7 +4,7 @@
 #include <arch/interrupt.hpp>
 
 namespace ours::irq {
-// The line table is built by the platform, with init_lines(), and not here:
+// The line table is built by the platform, with register_domain(), and not here:
 // which lines exist is known only once the platform has read its interrupt
 // controllers from the firmware, on x86 the MADT at InitLevel::Irq.
 

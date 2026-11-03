@@ -62,7 +62,7 @@ class Line final {
     /// safe because it never changes afterwards. BadState if the line has a
     /// chip already.
     [[nodiscard]]
-    auto init(ControllerOps const &chip) -> Status;
+    auto init(ControllerOps const &chip, void *context = nullptr) -> Status;
 
     /// See irq::attach(). An action that says Permanent may only take an
     /// empty line, and makes the line Permanent; one that says Oneshot makes

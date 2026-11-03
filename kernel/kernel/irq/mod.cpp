@@ -1,5 +1,3 @@
-#include <ours/irq/domain.hpp>
-#include <ours/irq/domain_registry.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/irq/registration.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -7,6 +5,9 @@
 #include <ours/task/thread.hpp>
 
 #include <atomic>
+
+#include <kernel/kernel/irq/domain.hpp>
+#include <kernel/kernel/irq/domain_registry.hpp>
 
 namespace ours::irq {
 namespace {
@@ -25,7 +26,7 @@ namespace {
     std::atomic<RootHandler> ROOT_HANDLER{nullptr};
 
     // The machine's directory of interrupt domains. The root controller's
-    // driver registers its domain in it (init_lines()); every control call
+    // driver registers its domain in it (register_domain()); every control call
     // resolves its number through it, inside a read guard.
     FORCE_INLINE
     auto get_domain_registry() -> DomainRegistry * {
@@ -70,9 +71,14 @@ auto current_frame() -> arch::IrqFrame * {
     return mm::CpuLocal::read(CURRENT_FRAME);
 }
 
-auto init_lines(ustl::views::Span<HIrqNum const> const hirqnums, ControllerOps const &chip,
-                DomainSlot &slot) -> Status {
-    return get_domain_registry()->register_domain(DomainId::Root, hirqnums, chip, slot);
+auto register_domain(DomainId const id, ustl::views::Span<HIrqNum const> const sources,
+                     ControllerOps const &controller, DomainEndpoint &endpoint, void *const context)
+    -> Status {
+    return get_domain_registry()->register_domain(id, sources, controller, endpoint, context);
+}
+
+auto unregister_domain(DomainId const id) -> Status {
+    return get_domain_registry()->unregister_domain(id);
 }
 
 auto attach(VIrqNum const virqnum, Registration &action) -> Status {
@@ -187,14 +193,6 @@ auto hwirq_of_virq(VIrqNum const virqnum) -> HIrqNum {
     return table->hwirq_of(virqnum);
 }
 
-auto handle_irq_generic(Domain *const table, HIrqNum const hirqnum) -> bool {
-    ASSERT(hirqnum != INVALID_H_IRQ_NUM);
-    if (table == nullptr) {
-        return false;
-    }
-    return table->handle_irq(hirqnum, Eoi::Send).is_some();
-}
-
 /// A played interrupt names its line by virq, as every caller outside the
 /// interrupt entry does, and a thread-context entrant into the interrupt path
 /// is a read of the directory like any control call: the guard covers the
@@ -250,9 +248,9 @@ auto is_kernel_owned(VIrqNum const virqnum) -> bool {
     return table->is_kernel_owned(virqnum);
 }
 
-auto root_table_for_test() -> Domain * {
+auto root_source_exists_for_test(HIrqNum const source) -> bool {
     task::IrqRcuReadGuard const guard;
-    return get_domain_registry()->find(DomainId::Root, guard);
+    return get_domain_registry()->virq_of(DomainId::Root, source, guard) != INVALID_V_IRQ_NUM;
 }
 
 /// The bookkeeping on entry to an interrupt: record the frame, and raise the

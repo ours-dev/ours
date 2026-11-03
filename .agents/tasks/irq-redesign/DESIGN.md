@@ -93,6 +93,12 @@ The invariant is that completion cannot reopen a deferred level line while newer
 
 The unified test hook has BeforeCompletion and BeforePark phases, both outside L2. interruptline.test injects new work before completion for port ack and wait-as-ack. Removing only the readiness gate causes both new assertions to fail; restoring it passes. This is a verified synthetic interleaving, not a claim of a reproduced physical-controller failure.
 
+### Controller endpoint and registry ownership
+
+The public DomainEndpoint is controller-owned and noncopyable. It is registered with the source set, immutable operations and instance context. dispatch(source) covers acquisition and line flow with an IRQ RCU guard; it returns Some when the source was found and ended, otherwise None so the root can end an unmatched interrupt. The owning Domain and directory headers are private. The public API never returns a Domain or Line pointer.
+
+The directory owns Box<Entry>; each entry owns Box<Domain> and borrows its endpoint. Removing slots keep their entry until revocation, retraction and reader grace complete. Ownership is moved out and the slot freed atomically under the writer Guard; destruction runs outside the lock. Another writer never reads an entry already freed. The directory destructor requires quiescent users and does not dereference borrowed endpoints. Context and operations outlive successful unregistration; the endpoint outlives all delivery calls.
+
 ### Controller protocol
 
 Current support is the established IO-APIC contract: synchronous masking and receiving-CPU EOI after callbacks, with level Oneshot held masked until completion. Edge/Level describes electrical signaling; it must not imply that every controller has the same acknowledgement or completion sequence.

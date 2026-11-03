@@ -1,5 +1,4 @@
 #include <ours/assert.hpp>
-#include <ours/irq/domain.hpp>
 #include <ours/irq/line.hpp>
 #include <ours/mm/gaf.hpp>
 
@@ -7,6 +6,7 @@
 #include <utility>
 
 #include <heap/new.hpp>
+#include <kernel/kernel/irq/domain.hpp>
 #include <ustl/mem/align.hpp>
 
 namespace ours::irq {
@@ -24,7 +24,7 @@ Domain::~Domain() {
 /// Build all storage off to the side. Each Box releases its line on every
 /// refused build, and publication cannot observe a partial source set.
 auto Domain::init(ustl::views::Span<HIrqNum const> const sources, ControllerOps const &controller,
-                  VIrqNum const minimum) -> Status {
+                  VIrqNum const minimum, void *const context) -> Status {
     if (!m_storage.lines.empty()) {
         return Status::BadState;
     }
@@ -67,7 +67,7 @@ auto Domain::init(ustl::views::Span<HIrqNum const> const sources, ControllerOps 
         if (!line) {
             return Status::OutOfMem;
         }
-        if (auto const status = line->init(controller); status != Status::Ok) {
+        if (auto const status = line->init(controller, context); status != Status::Ok) {
             return status;
         }
         storage.lines[source] = std::move(line);
