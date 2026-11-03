@@ -352,6 +352,16 @@ component_manifest("root.cm") {
         to = [ "#routing_checks" ]
       },
 
+      # The NVMe driver's protocol, the same one the virtio driver speaks,
+      # under the name that says which disk answers: both components expose
+      # ours.block.Block, and a root offer names each connection's device.
+      {
+        protocol = "ours.block.Block"
+        from = "#nvme"
+        to = [ "#routing_checks" ]
+        as = "ours.block.Nvme"
+      },
+
       # The machine's ACPI tables, to the route service, which answers from
       # them, and to routing_checks, which reads the directory and checks every
       # table's checksum. Nothing else is offered them.

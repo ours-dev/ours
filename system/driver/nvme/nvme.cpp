@@ -2,10 +2,11 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// nvme -- the userspace driver of QEMU's NVMe controller (storage-layer
-/// plan, system/driver/nvme), as a component that provides
-/// ours.block.Nvme: a client opens the protocol, asks for the namespace's
+/// plan, system/driver/nvme), as a component that serves
+/// ours.block.Block: a client opens the protocol, asks for the namespace's
 /// geometry or for blocks by number, and the driver drives the controller
-/// on its behalf.
+/// on its behalf. Root.cm offers it under the name ours.block.Nvme, so a
+/// machine with both disks answers on two names.
 ///
 /// The device is found in the ECAM window by class code (01h/08h, mass
 /// storage / NVM controller) rather than by vendor and device: the class
@@ -56,7 +57,9 @@
 #include <string_view>
 
 #include <cstdint>
+#include <cstring>
 
+#include <block_server/block_server.hpp>
 #include <ddk/ddk.hpp>
 #include <ioservice/outgoing.hpp>
 #include <loop/loop.hpp>
@@ -65,6 +68,7 @@
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
 #include <ours_acpi/client.hpp>
+#include <ours_block/ours_block.hpp>
 #include <ours_resource/client.hpp>
 #include <ours_resource/ours_resource.hpp>
 #include <ustl/lazy_init.hpp>
@@ -102,9 +106,10 @@ constexpr auto NVME_CSTS = usize{0x1C};
 constexpr auto NVME_AQA = usize{0x24};
 constexpr auto NVME_ASQ = usize{0x28};
 constexpr auto NVME_ACQ = usize{0x30};
-/// The doorbells: SQ0's tail at 0x1000, CQ0's head one stride after.
+/// The doorbell array's base: queue pair |qid| rings its SQ tail at
+/// NVME_SQ0TDBL + 2*qid*stride and its CQ head one stride further, where
+/// stride is CAP.DSTRD's (1 << (2 + DSTRD)); the admin pair is qid 0.
 constexpr auto NVME_SQ0TDBL = usize{0x1000};
-/// The doorbells: SQ0's tail at 0x1000, CQ0's head DSTRD bytes after.
 
 /// CC's bits: enabled, and the I/O queue entry sizes in log2 units (64-byte
 /// SQ entries = 6, 16-byte CQE entries = 4), written before EN goes high.
@@ -118,33 +123,48 @@ constexpr auto CC_IOCQES_VALUE = u64{4} << CC_IOCQES_SHIFT;
 constexpr auto CSTS_READY = u64{1};
 constexpr auto CSTS_FATAL = u64{1} << 1;
 
-/// The admin queue depths: 2 entries each carries the four commands
-/// bring-up runs, one at a time. AQA packs both as (count - 1).
+/// The admin queue depths: 2 entries each carries bring-up's commands, run
+/// one at a time. AQA packs both as (count - 1).
 constexpr auto ADMIN_QUEUE_ENTRIES = usize{2};
-constexpr auto ADMIN_IDENTIFY = u8{6};
-constexpr auto CNS_IDENTIFY_NAMESPACE = u32{0};
+/// The I/O queue pair's depth: one slot is in flight at a time, the block
+/// service's tag depth, and the queue carries it with room to spare.
+constexpr auto IO_QUEUE_ENTRIES = usize{4};
 constexpr auto AQA_ASQS_FIELD = u32{ADMIN_QUEUE_ENTRIES - 1};
 constexpr auto AQA_ACQS_FIELD = u32{ADMIN_QUEUE_ENTRIES - 1} << 16;
 
-/// The admin command opcodes, and Identify's CNS value for a namespace.
-
-/// The I/O command opcodes.
+/// The admin command opcodes: Identify Namespace (CNS 0 names a namespace),
+/// and the I/O queue pair's creation, the CQ first, for the SQ to name it.
+constexpr auto ADMIN_CREATE_IO_SQ = u8{0x01};
+constexpr auto ADMIN_CREATE_IO_CQ = u8{0x05};
+constexpr auto ADMIN_IDENTIFY = u8{6};
+constexpr auto CNS_IDENTIFY_NAMESPACE = u32{0};
+/// The I/O command opcodes, NVM command set.
+constexpr auto IO_WRITE = u8{0x01};
+constexpr auto IO_READ = u8{0x02};
+/// The one namespace this driver claims, and the I/O queues' id: 0 is the
+/// admin pair's.
+constexpr auto NSID = u32{1};
+constexpr auto QID_IO = u16{1};
 
 /// DMA layout: every slice page-aligned, because PRP wants pages, and the
-/// slices' offsets are the driver's constant map of the region.
+/// slices' offsets are the driver's constant map of the region. One data
+/// page per in-flight request: the largest read, 7 blocks, fits a page, so
+/// PRP1 alone names the buffer and PRP2 stays zero.
 constexpr auto PAGE = usize{4096};
 constexpr auto ADMIN_SQ_BYTES = 2 * PAGE;
 constexpr auto ADMIN_CQ_BYTES = 2 * PAGE;
 constexpr auto IDENTIFY_BYTES = PAGE;
 constexpr auto IO_SQ_BYTES = 2 * PAGE;
 constexpr auto IO_CQ_BYTES = 2 * PAGE;
+constexpr auto DATA_BYTES = PAGE;
 constexpr auto DMA_BYTES =
-    ADMIN_SQ_BYTES + ADMIN_CQ_BYTES + IDENTIFY_BYTES + IO_SQ_BYTES + IO_CQ_BYTES;
+    ADMIN_SQ_BYTES + ADMIN_CQ_BYTES + IDENTIFY_BYTES + IO_SQ_BYTES + IO_CQ_BYTES + DATA_BYTES;
 constexpr auto SLICE_ADMIN_SQ = usize{0};
 constexpr auto SLICE_ADMIN_CQ = SLICE_ADMIN_SQ + ADMIN_SQ_BYTES;
 constexpr auto SLICE_IDENTIFY = SLICE_ADMIN_CQ + ADMIN_CQ_BYTES;
 constexpr auto SLICE_IO_SQ = SLICE_IDENTIFY + IDENTIFY_BYTES;
 constexpr auto SLICE_IO_CQ = SLICE_IO_SQ + IO_SQ_BYTES;
+constexpr auto SLICE_DATA = SLICE_IO_CQ + IO_CQ_BYTES;
 
 /// The 64-byte submission queue entry. Only the fields the commands here
 /// use are named; the rest stay zero, which the specification requires for
@@ -167,18 +187,26 @@ struct SqEntry final {
 };
 static_assert(sizeof(SqEntry) == 64);
 
-/// The 16-byte completion queue entry: the phase bit (bit 0 of word3)
-/// flips each pass of the ring, and is how a polled driver tells a fresh
-/// entry from a stale one.
+/// The 16-byte completion queue entry, as the device lays it out. The
+/// third dword names the submission queue's consumed head and its id; the
+/// fourth carries the command id in its low half, the phase at bit 16 --
+/// the bit a polled driver tells a fresh entry from a stale one by, which
+/// flips each pass of the ring -- and the status field above, whose clear
+/// value names success.
 struct CqEntry final {
     u32 command_specific = 0;
     u32 reserved = 0;
-    u16 sq_head = 0;
-    u16 sq_id = 0;
-    u16 command_id = 0;
-    u16 word3 = 0;
+    u32 word2 = 0;
+    u32 word3 = 0;
 };
 static_assert(sizeof(CqEntry) == 16);
+
+/// Whether the completion |dw3| names: the status field, the phase bit
+/// aside, is zero exactly when the command succeeded.
+[[nodiscard]]
+constexpr auto command_ok(u32 const dw3) -> bool {
+    return (dw3 & 0xFFFE'0000u) == 0;
+}
 
 /// MMIO reads and writes through the controller's mapping, volatile
 /// because the device acts on every store.
@@ -186,9 +214,11 @@ class Regs final {
   public:
     explicit Regs(ours::VirtAddr base) : m_base(base) {}
 
+    [[nodiscard]]
     auto read64(usize const at) const -> u64 {
         return *reinterpret_cast<volatile u64 const *>(m_base + at);
     }
+    [[nodiscard]]
     auto read32(usize const at) const -> u32 {
         return *reinterpret_cast<volatile u32 const *>(m_base + at);
     }
@@ -239,6 +269,18 @@ class Controller final {
     auto identify() const -> ours::VirtAddr {
         return m_dma_virt + SLICE_IDENTIFY;
     }
+    /// The in-flight request's buffer: the one data page, aligned as PRP
+    /// wants, where a Read's blocks land and a Write's start from. One page
+    /// carries the largest read -- 7 blocks -- and the tag depth is 1, so
+    /// the request in flight always owns it.
+    [[nodiscard]]
+    auto data() const -> ours::VirtAddr {
+        return m_dma_virt + SLICE_DATA;
+    }
+    [[nodiscard]]
+    auto data_phys() const -> ours::PhysAddr {
+        return m_dma_phys + SLICE_DATA;
+    }
     [[nodiscard]]
     auto io_sq_phys() const -> ours::PhysAddr {
         return m_dma_phys + SLICE_IO_SQ;
@@ -261,19 +303,32 @@ class Controller final {
     ours::VirtAddr m_dma_virt;
 };
 
-class AdminQueues final {
+/// One submission/completion queue pair, polled. The admin pair and the
+/// I/O pair differ in their DMA slices, their depths and their doorbells
+/// alone, so one class serves both: the doorbells are byte offsets in the
+/// register file, computed by the pair's queue id as the doorbell array's
+/// layout names them.
+class Queues final {
   public:
-    AdminQueues(Regs const &regs, ours::VirtAddr sq, ours::VirtAddr cq, usize const stride)
-        : m_regs(regs), m_sq(sq), m_cq(cq), m_stride(stride) {}
+    Queues(Regs const &regs, ours::VirtAddr sq, ours::VirtAddr cq, usize const sq_doorbell,
+           usize const cq_doorbell, usize const entries)
+        : m_regs(regs)
+        , m_sq(sq)
+        , m_cq(cq)
+        , m_sq_doorbell(sq_doorbell)
+        , m_cq_doorbell(cq_doorbell)
+        , m_entries(entries) {}
 
-    /// Submits the command |entry| names (its CID is |id|), polls for the
-    /// matching completion, and hands the entry back. False on timeout.
-    /// The expected phase starts true: the host zeroes every entry's phase
-    /// bit at creation, the controller writes 1 on the first pass, and the
-    /// expected phase toggles each full pass of the ring -- so a fresh
-    /// entry's bit matches the expected one, and a stale entry's differs.
+    /// Submits the command |entry| names, stamped with the command id |id|
+    /// the completion is matched by, polls for that completion, and hands
+    /// the entry back. False on timeout. The expected phase starts true:
+    /// the host zeroes every entry's phase bit at creation, the controller
+    /// writes 1 on the first pass, and the expected phase toggles each full
+    /// pass of the ring -- so a fresh entry's bit matches the expected one,
+    /// and a stale entry's differs.
     [[nodiscard]]
-    auto submit(SqEntry const &entry, u16 const id, CqEntry &out) -> bool {
+    auto submit(SqEntry entry, u16 const id, CqEntry &out) -> bool {
+        entry.command_id = id;
         auto *const slot = reinterpret_cast<volatile SqEntry *>(m_sq) + m_tail;
         // The whole 64-byte entry, written field by field: volatile
         // destinations reject the struct copy.
@@ -284,12 +339,11 @@ class AdminQueues final {
             std::memcpy(&value, reinterpret_cast<u8 const *>(src) + word * 4, 4);
             dst[word] = value;
         }
-        m_tail = (m_tail + 1) % ADMIN_QUEUE_ENTRIES;
-        // The doorbell takes the new tail, entries-as-count minus one
-        // written as the value the specification names: the tail index the
-        // device should consume up to... its field is the number of entries
-        // minus the one already consumed; QEMU reads it as a count.
-        m_regs.write32(NVME_SQ0TDBL, static_cast<u32>(m_tail));
+        m_tail = (m_tail + 1) % m_entries;
+        // The doorbell takes the new tail: the index one past the last
+        // entry the device has not consumed, which a fresh submission makes
+        // this entry's own slot.
+        m_regs.write32(m_sq_doorbell, static_cast<u32>(m_tail));
         return wait_for(id, out);
     }
 
@@ -300,20 +354,19 @@ class AdminQueues final {
         auto *const entries = reinterpret_cast<volatile CqEntry *>(m_cq);
         for (auto round = u32{0}; round < POLL_ROUNDS; ++round) {
             auto const &at = entries[m_head];
-            auto const phase = (at.word3 & 1) != 0;
+            auto const phase = (at.word3 & 0x1'0000u) != 0;
             if (phase != m_phase) {
                 continue;
             }
-            if (at.command_id == id) {
-                out = CqEntry{at.command_specific, at.reserved, at.sq_head, at.sq_id,
-                              at.command_id,       at.word3};
-                m_head = (m_head + 1) % ADMIN_QUEUE_ENTRIES;
+            if ((at.word3 & 0xFFFFu) == id) {
+                out = CqEntry{at.command_specific, at.reserved, at.word2, at.word3};
+                m_head = (m_head + 1) % m_entries;
                 if (m_head == 0) {
                     m_phase = !m_phase;
                 }
-                // The completion head doorbell: CQ0HDBL sits one stride
-                // past SQ0TDBL.
-                m_regs.write32(NVME_SQ0TDBL + m_stride, static_cast<u32>(m_head));
+                // The completion head doorbell: the controller may reuse
+                // the entry only once the host has rung.
+                m_regs.write32(m_cq_doorbell, static_cast<u32>(m_head));
                 return true;
             }
             ort::spin_hint();
@@ -324,10 +377,12 @@ class AdminQueues final {
     Regs m_regs;
     ours::VirtAddr m_sq;
     ours::VirtAddr m_cq;
+    usize m_sq_doorbell = 0;
+    usize m_cq_doorbell = 0;
+    usize m_entries = 0;
     u16 m_tail = 0;
     u16 m_head = 0;
     bool m_phase = true;
-    usize m_stride = 0;
     static constexpr auto POLL_ROUNDS = u32{4'000'000};
 };
 
@@ -366,12 +421,15 @@ class Config final {
   public:
     Config(ours::VirtAddr base, usize const offset) : m_at(base + offset) {}
 
+    [[nodiscard]]
     auto read8(usize const at) const -> u8 {
         return *reinterpret_cast<volatile u8 const *>(m_at + at);
     }
+    [[nodiscard]]
     auto read16(usize const at) const -> u16 {
         return *reinterpret_cast<volatile u16 const *>(m_at + at);
     }
+    [[nodiscard]]
     auto read32(usize const at) const -> u32 {
         return *reinterpret_cast<volatile u32 const *>(m_at + at);
     }
@@ -383,7 +441,91 @@ class Config final {
     ours::VirtAddr m_at;
 };
 
-constinit std::array<loop::Slot, 40> SLOT_STORAGE{};
+/// The block service's shape: two clients at once, and the device works on
+/// one request at a time -- the poll model, MAX_INFLIGHT the tag depth the
+/// one data page answers.
+constexpr auto MAX_CLIENTS = usize{2};
+constexpr auto MAX_INFLIGHT = usize{1};
+
+/// The block service over the polled controller, the driver's subclass of
+/// the block-driver library: GetInfo answers the Identify'd geometry, and
+/// start() runs one parked request to completion -- the 64-byte command
+/// built, the data page primed for a Write, the doorbell rung, the
+/// completion polled, the slot completed -- so the slot is free again by
+/// the time start() returns, as virtio-blk's synchronous start() is. One
+/// queue pair and one data page make the serialization physical.
+class NvmeBlockServer final
+    : public block_server::BlockServer<NvmeBlockServer, MAX_CLIENTS, MAX_INFLIGHT> {
+  public:
+    using Base = block_server::BlockServer<NvmeBlockServer, MAX_CLIENTS, MAX_INFLIGHT>;
+    using Storage = typename Base::Storage;
+
+    NvmeBlockServer(Storage &storage, loop::Loop &loop, Controller &controller, Queues &io)
+        : Base(storage, loop), m_controller(&controller), m_io(&io) {}
+
+    auto set_blocks(u64 const blocks) -> void {
+        m_blocks = blocks;
+    }
+
+    /// GetInfo's answer: the namespace's logical block is the 512-byte
+    /// sector ours.block names, and the count is what Identify returned.
+    [[nodiscard]]
+    auto geometry() const -> block_server::Geometry {
+        return {.block_size = ours_block::BLOCK_SIZE, .blocks = m_blocks};
+    }
+
+    /// The library's hand-off: run the parked request against the device,
+    /// and complete it before returning. |data| is a Write's blocks, copied
+    /// into the data page the command's PRP1 names -- the one copy of a
+    /// Write, as the region-backed virtio path copies once too.
+    auto start(usize const index, std::span<u8 const> const data) -> Status {
+        auto const &parked = slot(index);
+        auto entry = SqEntry{};
+        entry.opcode = data.empty() ? IO_READ : IO_WRITE;
+        entry.nsid = NSID;
+        entry.prp1 = m_controller->data_phys();
+        // SLBA, the first block, is 64 bits over CDW10 and CDW11; NLB, the
+        // count, is zero-based.
+        entry.cdw10 = static_cast<u32>(parked.lba);
+        entry.cdw11 = static_cast<u32>(parked.lba >> 32);
+        entry.cdw12 = parked.count - 1;
+        if (!data.empty()) {
+            std::memcpy(reinterpret_cast<void *>(m_controller->data()), data.data(), data.size());
+        }
+        auto cqe = CqEntry{};
+        if (!m_io->submit(entry, static_cast<u16>(index), cqe)) {
+            return Status::TimeOut;
+        }
+        // Success is the whole status field clear -- its position the
+        // device's own encoding, which a failure here says on the console
+        // instead of this driver guessing wrong about.
+        if (!command_ok(cqe.word3)) {
+            char status_text[18];
+            auto _ = ort::debug_line(
+                {"nvme: the device failed a command, DW3 ", ort::hex(cqe.word3, status_text)});
+            return Status::BadState;
+        }
+        if (data.empty()) {
+            complete(index, Status::Ok,
+                     std::span{reinterpret_cast<u8 const *>(m_controller->data()),
+                               usize{parked.count} * ours_block::BLOCK_SIZE});
+        } else {
+            complete(index, Status::Ok);
+        }
+        return Status::Ok;
+    }
+
+  private:
+    Controller *m_controller;
+    Queues *m_io;
+    u64 m_blocks = 0;
+};
+
+constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS;
+
+constinit ustl::LazyInit<ioservice::Outgoing::Storage> OUTGOING_STORAGE;
+constinit ustl::LazyInit<NvmeBlockServer::Storage> SERVER_STORAGE;
+constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 
 } // namespace
 
@@ -540,35 +682,78 @@ auto main(int, char **) -> int {
                               ort::hex(regs.read32(NVME_VS), ver_text), ", doorbell stride ",
                               ort::hex(static_cast<u32>(stride), stride_text)});
 
-    // The namespace's size, from Identify Namespace over the admin queues:
+    // The admin queues, then the namespace's size, from Identify Namespace:
     // the geometry the block service answers GetInfo with.
-    auto admin = AdminQueues(regs, controller.admin_sq(), controller.admin_cq(), stride);
+    auto admin = Queues(regs, controller.admin_sq(), controller.admin_cq(), NVME_SQ0TDBL,
+                        NVME_SQ0TDBL + stride, ADMIN_QUEUE_ENTRIES);
     auto cqe = CqEntry{};
     {
         auto entry = SqEntry{};
         entry.opcode = ADMIN_IDENTIFY;
-        entry.nsid = 1;
+        entry.nsid = NSID;
         entry.prp1 = dma->phys() + SLICE_IDENTIFY;
         entry.cdw10 = CNS_IDENTIFY_NAMESPACE;
         if (!admin.submit(entry, 0, cqe)) {
             auto _ = ort::debug_line("nvme: Identify timed out");
             return 1;
         }
+        if (!command_ok(cqe.word3)) {
+            auto _ = ort::debug_line("nvme: Identify failed");
+            return 1;
+        }
     }
-    char nsze_text[10];
+    char nsze_text[18];
     auto const nsze = *reinterpret_cast<volatile u64 const *>(controller.identify());
-    auto const nsze_blocks = static_cast<u32>(nsze);
-    auto _ = ort::debug_line(
-        {"nvme: controller ready, NSZE ", ort::decimal(nsze_blocks, nsze_text), " blocks"});
+    auto _ = ort::debug_line({"nvme: controller ready, NSZE ", ort::hex(nsze, nsze_text)});
     if (nsze == 0) {
         auto _ = ort::debug_line("nvme: the namespace names no blocks");
         return 0;
     }
 
-    // The outgoing directory, served when the block service lands on this
-    // controller. For now the driver holds the machine and stops: nothing
-    // exposes a protocol yet, and CC.EN is cleared before the destructors
-    // run -- the pin discipline's order.
+    // The I/O queue pair, created over the admin queues -- the CQ first,
+    // for the SQ to name it. Queue size is the entry count itself (AQA's
+    // counts were minus one; these are not); the CQ is physically
+    // contiguous, its interrupts not enabled -- the poll model -- and the
+    // SQ names this CQ at priority zero, which polling ignores.
+    auto io =
+        Queues(regs, controller.io_sq(), controller.io_cq(), NVME_SQ0TDBL + 2 * QID_IO * stride,
+               NVME_SQ0TDBL + (2 * QID_IO + 1) * stride, IO_QUEUE_ENTRIES);
+    {
+        auto entry = SqEntry{};
+        entry.opcode = ADMIN_CREATE_IO_CQ;
+        entry.prp1 = dma->phys() + SLICE_IO_CQ;
+        entry.cdw10 = static_cast<u32>(IO_QUEUE_ENTRIES) << 16 | QID_IO;
+        entry.cdw11 = 0x1 /* physically contiguous */;
+        if (!admin.submit(entry, 1, cqe)) {
+            auto _ = ort::debug_line("nvme: Create I/O CQ timed out");
+            return 1;
+        }
+        if (!command_ok(cqe.word3)) {
+            char status_text[18];
+            auto _ = ort::debug_line(
+                {"nvme: Create I/O CQ failed, DW3 ", ort::hex(cqe.word3, status_text)});
+            return 1;
+        }
+        entry = SqEntry{};
+        entry.opcode = ADMIN_CREATE_IO_SQ;
+        entry.prp1 = dma->phys() + SLICE_IO_SQ;
+        entry.cdw10 = static_cast<u32>(IO_QUEUE_ENTRIES) << 16 | QID_IO;
+        entry.cdw11 = 0x1 /* physically contiguous */ | u32{QID_IO} << 16;
+        if (!admin.submit(entry, 2, cqe)) {
+            auto _ = ort::debug_line("nvme: Create I/O SQ timed out");
+            return 1;
+        }
+        if (!command_ok(cqe.word3)) {
+            char status_text[18];
+            auto _ = ort::debug_line(
+                {"nvme: Create I/O SQ failed, DW3 ", ort::hex(cqe.word3, status_text)});
+            return 1;
+        }
+    }
+
+    // The device is brought up and the I/O queues live: the block service
+    // serves its protocol until the machine ends. The kit objects and the
+    // storages outlive the Loop.
     auto port = Uandle::Invalid;
     if (auto const status = ours::port_create(ours::PortCreateOptions::None, &port);
         status != Status::Ok) {
@@ -576,8 +761,27 @@ auto main(int, char **) -> int {
         return 1;
     }
     loop::Loop loop(port, SLOT_STORAGE);
-    regs.write32(NVME_CC, 0);
-    wait_silent([&] { return (regs.read32(NVME_CSTS) & CSTS_READY) == 0; }, 30, "CSTS.RDY 0");
+    auto &storage = *SERVER_STORAGE.init();
+    NvmeBlockServer server(storage, loop, controller, io);
+    server.set_blocks(nsze);
+
+    auto &outgoing_storage = *OUTGOING_STORAGE.init();
+    ioservice::Outgoing outgoing(outgoing_storage, loop);
+    if (auto const status = outgoing.add_protocol(ours_block::BLOCK_NAME, server);
+        status != Status::Ok) {
+        auto _ = ort::debug_line({"nvme: cannot serve its protocol: ", ours::to_string(status)});
+        return 1;
+    }
+    if (auto const status = outgoing.serve(directory_request.unwrap()); status != Status::Ok) {
+        auto _ = ort::debug_line(
+            {"nvme: cannot serve its outgoing directory: ", ours::to_string(status)});
+        return 1;
+    }
+
+    // Stop ends the program from inside an on_signals(); run() comes back
+    // only when the port itself fails.
+    auto _ = ort::debug_line(
+        {"nvme: serving ", ours_block::BLOCK_NAME, " over ", ort::hex(nsze, nsze_text), " blocks"});
     auto _ = ort::debug_line(
         {"nvme: its Loop stopped: ", ours::to_string(loop.run(ours::INSTANT_INFINITE))});
     return 1;

@@ -158,6 +158,7 @@ constexpr auto UNDECLARED = std::string_view{"/svc/ours.test.Undeclared"};
 /// echo's protocol, under the name root.cm's offer gives it.
 constexpr auto ECHO = component::names::routing_checks::USE_SVC_OURS_TEST_ECHO;
 constexpr auto BLOCK = component::names::routing_checks::USE_SVC_OURS_BLOCK_BLOCK;
+constexpr auto NVME = component::names::routing_checks::USE_SVC_OURS_BLOCK_NVME;
 
 /// The directories the sibling files provides that open, each at the path its
 /// use in routing_checks.cm gives it. /files-denied and /files-wide are the
@@ -213,8 +214,10 @@ constinit u32 TXID_COUNTER = 1;
 /// the mounted filesystem ran to one of their own. The verdict names what
 /// did not run, so a pass with the disk suite skipped reads as one: before
 /// these, a boot without a disk printed the same `passed` as a full one, and
-/// the disk stack could die without the verdict changing.
+/// the disk stack could die without the verdict changing. The NVMe flag is
+/// the same for the second disk, whose suite runs on its own connection.
 constinit bool BLOCK_DEVICE_SEEN = false;
+constinit bool NVME_DEVICE_SEEN = false;
 constinit bool DISK_CHECKS_RAN = false;
 
 auto next_txid() -> u32 {
@@ -2028,6 +2031,118 @@ auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE
     expect("close", fsio::close(connection), Status::Ok);
 }
 
+/// The NVMe disk through its protocol, when the image carries one: GetInfo
+/// names a 512-byte block and a namespace with blocks in it, and a pattern
+/// written to the scratch LBA 5 reads back over it and its untouched
+/// neighbour. The route answers NotFound while there is no NVMe disk -- the
+/// images boot_check boots carry none -- so the check skips there, as
+/// check_block does. snapshot=on drops the pattern with the boot.
+auto check_nvme() -> void {
+    auto const connection = connect_or_fail(NVME);
+    if (connection == Uandle::Invalid) {
+        return;
+    }
+    // GetInfo is the probe, as it is for the virtio disk.
+    auto const txid = next_txid();
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const info = ours_block::encode_get_info(bytes, {.txid = txid});
+    if (!expect("Nvme.GetInfo", status_of(info), Status::Ok)) {
+        return;
+    }
+    Incoming reply;
+    auto const answered = call(connection, info.unwrap(), reply);
+    if (answered == Status::PeerClosed || answered == Status::NotFound) {
+        auto _ = ort::debug_line("routing_checks: no nvme device, skipped");
+        return;
+    }
+    if (!expect("Nvme.GetInfo", answered, Status::Ok)) {
+        return;
+    }
+    if (auto const epitaph = wire::decode_epitaph(reply.message()); epitaph.is_ok()) {
+        if (epitaph.unwrap() == Status::NotFound) {
+            auto _ = ort::debug_line("routing_checks: no nvme device, skipped");
+            return;
+        }
+        fail("Nvme.GetInfo: the route answered with an epitaph");
+        return;
+    }
+    auto const geometry = ours_block::decode_get_info_reply(reply.message(), txid);
+    if (!expect("Nvme.GetInfo's reply", status_of(geometry), Status::Ok) ||
+        !expect("Nvme.GetInfo's status", geometry->status, Status::Ok)) {
+        return;
+    }
+    if (geometry->block_size != ours_block::BLOCK_SIZE) {
+        fail("Nvme.GetInfo: the block size is not 512");
+        return;
+    }
+    if (geometry->blocks == 0) {
+        fail("Nvme.GetInfo: the namespace names no blocks");
+        return;
+    }
+    NVME_DEVICE_SEEN = true;
+
+    // The write path, with the neighbour probe that names which of the two
+    // blocks a stray write landed in: the pattern into LBA 5, then two
+    // blocks read back from LBA 4 -- 4 the zeros, 5 the pattern.
+    constexpr auto SCRATCH_LBA = u64{5};
+    std::array<u8, ours_block::BLOCK_SIZE> pattern{};
+    pattern.fill(0x5A);
+    constexpr auto MARK = std::string_view{"nvme write check"};
+    std::copy(MARK.begin(), MARK.end(), pattern.begin());
+
+    auto const write_txid = next_txid();
+    auto const write = ours_block::encode_write(
+        bytes, {.txid = write_txid, .lba = SCRATCH_LBA, .count = 1, .data = pattern});
+    if (!expect("Nvme.Write", status_of(write), Status::Ok)) {
+        return;
+    }
+    if (!expect("Nvme.Write", call(connection, write.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const write_status =
+        wire::decode_reply_status(reply.message(), ours_block::WRITE, write_txid);
+    if (!expect("Nvme.Write's reply", status_of(write_status), Status::Ok) ||
+        !expect("Nvme.Write's status", write_status.unwrap(), Status::Ok)) {
+        return;
+    }
+
+    auto const verify_txid = next_txid();
+    auto const verify =
+        ours_block::encode_read(bytes, {.txid = verify_txid, .lba = SCRATCH_LBA - 1, .count = 2});
+    if (!expect("Nvme.Read(scratch)", status_of(verify), Status::Ok)) {
+        return;
+    }
+    if (!expect("Nvme.Read(scratch)", call(connection, verify.unwrap(), reply), Status::Ok)) {
+        return;
+    }
+    auto const read_back = ours_block::decode_read_reply(reply.message(), verify_txid);
+    if (!expect("Nvme.Read(scratch)'s reply", status_of(read_back), Status::Ok) ||
+        !expect("Nvme.Read(scratch)'s status", read_back->status, Status::Ok)) {
+        return;
+    }
+    constexpr auto PATTERN_BYTES = usize{ours_block::BLOCK_SIZE};
+    auto const want = [&](usize const index) -> u8 {
+        // Block 4 was never written: zeros. Block 5 the pattern.
+        return index >= PATTERN_BYTES ? pattern[index - PATTERN_BYTES] : u8{0};
+    };
+    ustl::Option<usize> first_bad = ustl::NONE;
+    for (auto index = usize{0}; index < read_back->data.size(); ++index) {
+        if (read_back->data[index] != want(index)) {
+            first_bad = ustl::some(index);
+            break;
+        }
+    }
+    if (first_bad.is_none()) {
+        expect("close", fsio::close(connection), Status::Ok);
+        return;
+    }
+    char at_text[10];
+    auto _ = ort::debug_line({"routing_checks: nvme first differing byte at ",
+                              ort::decimal(static_cast<u32>(*first_bad), at_text)});
+    fail("Nvme.Write: the scratch block does not read back the pattern");
+    expect("close", fsio::close(connection), Status::Ok);
+}
+
 /// The disk's partition table, when the disk carries one: ours.gpt reads the
 /// GPT through the block connection, and the ours-fs partition it names must
 /// carry the superblock scripts/make_gpt_disk.py lays at its first block. Skips
@@ -3046,6 +3161,7 @@ auto main(int argc, char **argv) -> int {
     }
     check_cwd();
     check_block();
+    check_nvme();
     check_gpt();
     check_disk();
     check_echo();
@@ -3067,6 +3183,11 @@ auto main(int argc, char **argv) -> int {
         auto _ =
             ort::debug_line({"routing_checks: disk checks not run (",
                              BLOCK_DEVICE_SEEN ? "no mounted volume" : "no block device", ")"});
+    }
+    if (!NVME_DEVICE_SEEN) {
+        // The second disk's suite, the same signal for the NVMe connection:
+        // a boot with the disk attached can demand this line absent.
+        auto _ = ort::debug_line("routing_checks: nvme checks not run (no nvme device)");
     }
     return 0;
 }

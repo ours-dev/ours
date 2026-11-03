@@ -16,9 +16,10 @@ assert(
 # The NVMe driver (storage-layer plan, system/driver/nvme): a component that
 # finds the machine's NVMe controller by class code in the ECAM window,
 # brings the controller up on its MMIO register file, and serves
-# ours.block.Nvme — completions polled, the device's interrupt pin never
-# unmasked. The route service answers the ECAM window's base; the interrupt
-# system is not asked for anything.
+# ours.block.Block — completions polled, the device's interrupt pin never
+# unmasked. Root.cm offers it under the name ours.block.Nvme. The route
+# service answers the ECAM window's base; the interrupt system is not asked
+# for anything.
 user_executable("nvme") {
   visibility = [
     ":*",
@@ -55,12 +56,12 @@ component_manifest("nvme.cm") {
     ]
     capabilities = [
       {
-        protocol = "ours.block.Nvme"
+        protocol = "ours.block.Block"
       },
     ]
     expose = [
       {
-        protocol = "ours.block.Nvme"
+        protocol = "ours.block.Block"
         from = "self"
       },
     ]
