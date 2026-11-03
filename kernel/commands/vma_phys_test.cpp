@@ -79,8 +79,8 @@ namespace {
 
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_phys(phys, mm::VmPlacement::anywhere(), 2 * P, rw,
-                                      mm::VmMapOption::None, "vmaphys.test");
+        auto mapping = root->map_phys(phys, VirtAddr::Anywhere, 2 * P, rw, mm::VmMapOption::None,
+                                      "vmaphys.test");
         if (mapping.is_err()) {
             verdict(tally, false, "the two frames are mapped as a physical object");
             mm::free_frames(frames, 1);
@@ -153,7 +153,7 @@ namespace {
         *reinterpret_cast<u64 *>(mm::PhysMap::phys_to_virt(second_pa)) = SECOND;
 
         auto root = aspace.root_vma();
-        auto mapping = root->map_phys(first_pa, mm::VmPlacement::anywhere(), P, RW,
+        auto mapping = root->map_phys(first_pa, VirtAddr::Anywhere, P, RW,
                                       mm::VmMapOption::Populate, "vmaphys.test overwrite");
         if (mapping.is_err()) {
             verdict(tally, false, "the first frame is mapped, populated");

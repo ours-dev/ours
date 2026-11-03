@@ -370,7 +370,7 @@ static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
     using namespace mm;
 
     auto result = VmAspace::kernel_aspace()->root_vma()->map_phys(
-        mmio, VmPlacement::anywhere(), PAGE_SIZE,
+        mmio, VirtAddr::Anywhere, PAGE_SIZE,
         MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Discache,
         VmMapOption::Populate | VmMapOption::Pinned, "HPET");
 

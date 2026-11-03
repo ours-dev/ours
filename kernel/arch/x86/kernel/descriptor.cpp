@@ -103,7 +103,7 @@ INIT_CODE
 auto x86_setup_gdt() -> void {
     auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_phys(
         mm::virt_to_phys(VirtAddr{reinterpret_cast<usize>(PGDT)}),
-        mm::VmPlacement::anywhere(), // Wherever the VMM has room
+        VirtAddr::Anywhere, // Wherever the VMM has room
         PAGE_SIZE,
         mm::MmuFlags::Readable,                              // Read only
         mm::VmMapOption::Populate | mm::VmMapOption::Pinned, // Disable swapping out.

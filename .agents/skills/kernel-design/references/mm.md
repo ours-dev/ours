@@ -16,6 +16,13 @@ requests: Invalid is all ones and Anywhere is one below it. Zero remains a
 concrete address. The kernel virtual layout excludes the page containing these
 values.
 
+VmArea creation interfaces now take VirtAddr directly: Anywhere requests a
+free spot, while zero and other concrete addresses request fixed placement.
+Invalid and unassigned reserved values fail with InvArgs before alignment.
+Fixed placement still requires CanMapSpecific and refuses overlaps with
+AlreadyExists. VmAspace creation rejects any range intersecting the reserved
+values, so automatic placement cannot return one.
+
 ## Bring-up order
 
 physboot hands the memory layout over through OBI; a temporary allocator and

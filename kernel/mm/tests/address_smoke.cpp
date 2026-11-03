@@ -36,6 +36,10 @@ static_assert(std::same_as<decltype(VirtAddr{} - VirtAddr{}), usize>);
 static_assert(std::same_as<decltype(PhysAddr{} - PhysAddr{}), usize>);
 static_assert(sizeof(VirtAddr) == sizeof(usize) && sizeof(PhysAddr) == sizeof(usize));
 static_assert(std::is_trivially_copyable_v<VirtAddr> && std::is_trivially_copyable_v<PhysAddr>);
+static_assert(VirtAddr::Anywhere >= ours::VIRT_ADDR_RESERVED_BASE);
+static_assert(VirtAddr::Invalid >= ours::VIRT_ADDR_RESERVED_BASE);
+static_assert(VirtAddr::Anywhere != VirtAddr::Invalid &&
+              VirtAddr{} < ours::VIRT_ADDR_RESERVED_BASE);
 
 // Physical zero remains translatable; failure has a different representation.
 static_assert(PhysMap::phys_to_virt(PhysMap::PHYS_BASE) == PhysMap::VIRT_BASE);

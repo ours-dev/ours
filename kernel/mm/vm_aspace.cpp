@@ -111,6 +111,11 @@ auto VmAspace::create(Kind kind, VmasFlags flags, char const *name, ustl::Arc<Vm
 
 auto VmAspace::create(VirtAddr base, usize size, Kind kind, Flags flags, char const *name,
                       ustl::Arc<VmAspace> *out) -> Status {
+    // An address space cannot contain request sentinels, even if a caller
+    // constructs a layout of its own. Compare before forming an end address.
+    if (size == 0 || base >= VIRT_ADDR_RESERVED_BASE || size > VIRT_ADDR_RESERVED_BASE - base) {
+        return Status::InvArgs;
+    }
     auto const aspace = AspaceCache::get(GAF_KERNEL, base, size, kind, flags, name);
     if (!aspace) {
         return Status::OutOfMem;

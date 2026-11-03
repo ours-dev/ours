@@ -284,7 +284,7 @@ namespace {
         }
         auto root = aspace->root_vma();
         auto mapping = root->map_with_vmo(
-            mm::VmPlacement::anywhere(), 2 * P, 0,
+            VirtAddr::Anywhere, 2 * P, 0,
             mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
             mm::VmaFlags::PermMask, vmo, mm::VmMapOption::Populate, "pagereclaim.test");
         auto const page = filed_at(*vmo, 1).page;
@@ -445,7 +445,7 @@ namespace {
         }
         auto root = aspace->root_vma();
         auto mapping = root->map_with_vmo(
-            mm::VmPlacement::anywhere(), 2 * P, 0,
+            VirtAddr::Anywhere, 2 * P, 0,
             mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
             mm::VmaFlags::PermMask, vmo, mm::VmMapOption::Populate, "pagereclaim.test");
         auto const page = filed_at(*vmo, 0).page;
@@ -514,7 +514,7 @@ namespace {
         }
         auto root = aspace->root_vma();
         auto mapping = root->map_with_vmo(
-            mm::VmPlacement::anywhere(), RACE_PAGES * P, 0,
+            VirtAddr::Anywhere, RACE_PAGES * P, 0,
             mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
             mm::VmaFlags::PermMask, vmo, mm::VmMapOption::None, "pagereclaim.test");
         Race race;

@@ -245,7 +245,7 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
 
             auto rvma = mm::VmAspace::kernel_aspace()->root_vma();
             auto result = rvma->map_phys(
-                phys_aligned, mm::VmPlacement::anywhere(), PAGE_SIZE,
+                phys_aligned, VirtAddr::Anywhere, PAGE_SIZE,
                 // `Discache` is required to prevent
                 mm::MmuFlags::Discache | mm::MmuFlags::Readable | mm::MmuFlags::Writable,
                 mm::VmMapOption::Populate | mm::VmMapOption::Pinned, "IO-APIC");

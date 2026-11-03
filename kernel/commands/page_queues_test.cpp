@@ -306,7 +306,7 @@ namespace {
         auto *const previous = attach(aspace.as_ptr_mut());
         auto root = aspace->root_vma();
         auto mapping = root->map_with_vmo(
-            mm::VmPlacement::anywhere(), 2 * P, 0, mm::MmuFlags::Readable | mm::MmuFlags::User,
+            VirtAddr::Anywhere, 2 * P, 0, mm::MmuFlags::Readable | mm::MmuFlags::User,
             mm::VmaFlags::PermMask, vmo, mm::VmMapOption::Populate, "pagequeues.test");
         auto const first = filed_at(*vmo, 0);
         auto const second = filed_at(*vmo, P);
