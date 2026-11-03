@@ -117,6 +117,11 @@ struct LineMode {
 /// device's state there rather than in a global.
 using IrqHandler = auto (*)(VIrqNum virqnum, void *context) -> IrqReturn;
 
+/// Revalidates deferred work while the line holds L1. The owner checks its
+/// current pending work under its handler lock, preserving the handler's lock
+/// order. The callback cannot sleep or call line control operations.
+using IrqCompletionCheck = auto (*)(void *context) -> bool;
+
 /// What an action may ask to be told when the kernel takes its line away
 /// from it (Line::revoke()), instead of its owner letting the line go: the
 /// line's virq and the action's context, as the handler gets them.

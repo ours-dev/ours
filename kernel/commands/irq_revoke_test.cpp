@@ -147,7 +147,10 @@ namespace {
     /// An action and what its owner sees of it.
     struct Owner {
         Owner(irq::IrqFlags const flags, irq::IrqCancel const cancel)
-            : action(&owner_handler, this, flags, "irq-revoke-test", cancel) {}
+            : action({.handle = &owner_handler,
+                      .revoke = cancel,
+                      .ready = [](void *) -> bool { return true; }},
+                     this, flags, "irq-revoke-test") {}
 
         irq::Registration action;
         Hold *hold = nullptr;

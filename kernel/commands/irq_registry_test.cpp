@@ -104,7 +104,10 @@ namespace {
 
     struct Hooked {
         Hooked(irq::IrqFlags const flags, irq::IrqCancel const cancel)
-            : action(&hooked_handler, this, flags, "irq-registry-test", cancel) {}
+            : action({.handle = &hooked_handler,
+                      .revoke = cancel,
+                      .ready = [](void *) -> bool { return true; }},
+                     this, flags, "irq-registry-test") {}
 
         irq::Registration action;
         std::atomic<u32> told{0};

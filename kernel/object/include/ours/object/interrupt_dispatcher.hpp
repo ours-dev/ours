@@ -180,17 +180,15 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// goes through destroy().
     auto on_zero_handles() -> void final;
 
-    /// A function wait() calls on a thread that has found nothing to take,
-    /// between begin_wait() and park(), with no lock held.
-    using BeforeParkHook = auto (*)(InterruptDispatcher &interrupt) -> void;
+    enum class InterleavePoint : u8 {
+        BeforeCompletion,
+        BeforePark,
+    };
+    using InterleaveHook = auto (*)(InterruptDispatcher &, InterleavePoint) -> void;
 
-    /// Installs |hook|, or none with nullptr, the default. For kernel tests
-    /// only: interrupt.test holds a waiter in that gap, where it has claimed
-    /// the wait but is not parked yet, to play another thread's trigger and
-    /// wait there -- an interleaving no timing makes reliably. The hook is
-    /// called for every interrupt object's waits, so it looks at which one
-    /// it was called for.
-    static auto set_before_park_hook_for_test(BeforeParkHook hook) -> void;
+    /// Installs a deterministic scheduling hook for kernel concurrency tests.
+    /// Both points run after L2 is released and before any line lock is taken.
+    static auto set_interleave_hook_for_test(InterleaveHook hook) -> void;
 
   protected:
     /// What a kind of interrupt asks of the state machine, fixed when the
@@ -229,6 +227,11 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     /// mask and deactivate work (empty for the kinds that exist) must not
     /// need more than the context of a handler.
     auto line_revoked() -> void;
+
+    /// Rechecks the current debt under L2, while a line completion holds L1.
+    /// Destroyed objects are retired by detach rather than rearmed.
+    [[nodiscard]]
+    TA_EXCLUDES(m_spinlock) auto deferred_work_complete() -> bool;
 
     /// The four operations on what stands behind the interrupt, each kind's
     /// own. A virtual interrupt has nothing to do in any of them.
@@ -275,6 +278,8 @@ class InterruptDispatcher: public InterruptDispatcherBase {
     auto sync_signals() -> void;
 
   private:
+    TA_EXCLUDES(m_spinlock) auto run_interleave_hook(InterleavePoint point) -> void;
+
     /// Where the interrupt is in its life:
     ///   - Idle: nothing pending, no one waiting. Where it starts.
     ///   - Waiting: a thread is parked, or about to park, on m_event, and

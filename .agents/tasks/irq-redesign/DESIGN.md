@@ -78,23 +78,20 @@ Two different lifetimes remain explicit: detach protects the callback and its co
 
 The user suspended teaching-oriented arguments and requested development to continue. D2 must be resolved by an implementation argument and deterministic tests for the old-ack/new-dispatch ordering. Compare generation-bearing completion, revalidation under L1 -> L2, and controller-specific exclusion; do not wait for a learning exercise.
 
-### Completion exercise for D2
+### Completion protocol and proof
 
-Use the bound-port ack path: the old packet has been consumed and no coalesced timestamp is pending.
+The selected mechanism is owner-state revalidation under L1 -> L2. Registration::Callbacks contains handle, revoke and ready over one context. Every deferred registration must supply ready. Line completion holds L1, confirms the registration is still attached, queries ready, and only then clears Held and unmasks. The physical object's query holds L2 and returns true only in Idle or Waiting; Destroyed retires through detach.
 
-Objects:
+The invariant is that completion cannot reopen a deferred level line while newer delivered work still awaits service. If a new dispatch precedes the recheck, its owner-state update is visible under L2 and readiness is false. If it follows the recheck, it cannot enter until L1 is released, so its mask/Held update follows the old completion. The handler and the readiness query both take L1 -> L2. Ack and wait release L2 before calling completion, so no reverse edge is introduced. Detach drains handlers; the owner must quiesce its own completion calls before reusing a registration or freeing its context.
 
-- Line::Held says the deferred level line must remain masked; L1 protects it.
-- InterruptDispatcher::NeedAck says a delivered interrupt still needs the driver's acknowledgement; L2 protects it.
-- Ack clears the object's debt under L2, drops L2, and then completes the line under L1. Dispatch takes L1 and then L2. No replacement lock or protocol is selected yet.
+| Alternative | State and Interface cost | Decision |
+|---|---|---|
+| Owner-state revalidation under L1 -> L2 | One readiness pointer; one bounded query of existing owner state; no extra pending-work word | Selected: matches the current guarded-dispatch model |
+| Generation-bearing event completion | Generation storage and token propagation through coalescing, wait, port resend and acknowledgement | Rejected: introduces another work-identity protocol for state the owner already knows |
+| Exclude the ordering by controller behavior | Depends on each controller's masking/pending guarantees and cannot cover synthetic dispatch | Rejected as a general line Interface |
+| Call completion while holding L2 | Reverses L1 -> L2 and can deadlock with dispatch | Rejected |
 
-Events to reason about, assuming a new dispatch can enter the gap (a synthetic dispatch can express this; physical-controller admission is a separate question):
-
-1. An old ack clears NeedAck under L2, then releases L2.
-2. A new dispatch acquires L1 then L2 and creates a new NeedAck and Held.
-3. The old ack acquires L1 and attempts to clear Held and unmask the line.
-
-Required invariant: an earlier completion must not reopen a deferred level line while newer delivered work still awaits service. The implementation must preserve L1 -> L2 and cover this ordering with a deterministic test. A controller-specific claim that the ordering is unlikely does not satisfy synthetic dispatch or future controller integration.
+The unified test hook has BeforeCompletion and BeforePark phases, both outside L2. interruptline.test injects new work before completion for port ack and wait-as-ack. Removing only the readiness gate causes both new assertions to fail; restoring it passes. This is a verified synthetic interleaving, not a claim of a reproduced physical-controller failure.
 
 ### Controller protocol
 
@@ -123,7 +120,7 @@ Before another controller is bound, its dispatch protocol must be stated and che
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | D1. Object vocabulary and domain ownership | (a) keep genirq names and hide the current machinery, with one internal domain lifetime owner; (b) Line, Registration, Domain and ControllerOps, with Domain owning mapping, storage and retirement | (b), for explicit objects and a smaller caller Interface; retain genirq counterparts in documentation | Not supplied | (b), 2026-11-03: the user answered "B" |
-| D2. Deferred completion invariant | Account for the old-ack/new-dispatch window by an event-aware protocol, revalidation, or a controller-specific exclusion proof | No mechanism selected; user writes the invariant and worst interleaving first | Pending: invariant, concurrent actors and worst ordering | |
+| D2. Deferred completion invariant | Generation-bearing completion; owner-state revalidation; controller-specific exclusion | Owner-state revalidation under L1 -> L2 | Waived: the user suspended teaching exercises | Implemented after delegated engineering analysis, 2026-11-03; deterministic tests reject the old behavior |
 | D3. Controller protocol selection | A validated protocol enum; adapter-selected internal flow; a deliberately narrow wired-controller contract | Compare only when the concrete Interface is reviewed; preserve current x86 behavior now | Deferred until D2 is reviewed | |
 
 D1 is decided and its object vocabulary is migrated. The full six-part goal and current evidence are tracked in STATUS.md. The user has suspended learning exercises; D2 and D3 are engineering work, not user-input gates.
@@ -132,13 +129,12 @@ D1 is decided and its object vocabulary is migrated. The full six-part goal and 
 
 The unchanged baseline builds and boots both dev images in `out/irq-design-review`; 161 host tests pass. All six targeted suites pass: irq.test, irqchip.test, irqrevoke.test, irqregistry.test, interrupt.test, and interruptline.test. These results establish a migration baseline, not acceptance of a future rewrite.
 
-A later concrete design must specify tests for mixed-number rejection, empty-line invalid policies, source lookup, attach/configure atomicity, one receiving-CPU EOI on claimed/unclaimed/unmatched paths, detach versus callbacks, revocation versus destruction, and removal versus readers. It must also force the completion window before finalize, rather than only the existing after-finalize/before-park hook.
+A later concrete design must specify tests for mixed-number rejection, empty-line invalid policies, source lookup, attach/configure atomicity, one receiving-CPU EOI on claimed/unclaimed/unmatched paths, detach versus callbacks, revocation versus destruction, and removal versus readers. The completion window is now forced by BeforeCompletion for both ack forms; the negative old-behavior run fails both checks.
 
 Every implementation increment must run the repository formatter on changed lines, clang-tidy with the real build flags, the relevant kernel suites, and `verify` before its commit. No controller other than the current x86 adapter, no hardware timing, and no performance improvement is claimed by this proposal.
 
 ## Open questions
 
-- D2: can a new real delivery be admitted between clearing the object's debt and completing the line on each supported controller, and how must synthetic delivery behave?
 - D3: what is the minimal validated controller protocol, independently of electrical trigger mode?
 - Where should trap bookkeeping live so that device-line control no longer exports exception-entry state?
 - irq-multi-arch D6, D7 and D20 are not closed by this proposal: non-x86 hold semantics, operation-table selection, and notifying port-bound drivers of domain removal still need their own decisions.

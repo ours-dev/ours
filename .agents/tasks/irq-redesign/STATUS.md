@@ -17,7 +17,7 @@ The preceding turn made authoritative progress by recording D1 and verifying the
 | 3. Independent reasoning | Each invariant and protocol justified from owned state, callers and controller behavior; references used for cross-checking rather than as authority for shape | Partial: review established the invariant inventory; final protocol argument remains |
 | 4. Responsible extension | Typed source and line identities; per-controller context; validated dispatch capability; safe dynamic domain removal; alternate-adapter contract tests | Incomplete: numeric types, capabilities and owning domain still required |
 | 5. Use C++ to remove mechanical repetition | Shared safe resolution of line control, explicit noncopyable ownership, constrained or constexpr validation where it enforces real rules | Partial: DescTable and owning Span convention removed; private Storage uses existing Vec and Box; shared safe control resolution remains |
-| 6. Compare other mechanisms and designs | Compare concrete completion and controller-protocol alternatives with costs, then implement the chosen mechanism and verify its invariant | Incomplete: comparison and final mechanism remain |
+| 6. Compare other mechanisms and designs | Compare concrete completion and controller-protocol alternatives with costs, then implement the chosen mechanism and verify its invariant | Partial: three completion alternatives compared; owner-state revalidation implemented and counterfactually tested; controller protocol still required |
 
 ## Verified increments
 
@@ -32,6 +32,8 @@ The preceding turn made authoritative progress by recording D1 and verifying the
 
 - Owning Domain: DescTable is removed. Transactional Storage uses Vec for both maps and Vec<Box<Line>> for lines. Domain copy and move are rejected at compile time. Both images, 161 host tests, all 14 changed C++ checks and all nine IRQ suites pass, including 87 Domain layout/refusal checks.
 
+- Completion revalidation: the line queries current owner state under L1 -> L2; deferred registration requires readiness in its named callback record. irq.test passes 78 checks, interruptline.test 83, and all nine suites pass. Removing only the gate fails both new ack interleaving checks; the restored fixed source is rebuilt and verified.
+
 ## Current work
 
-Commit the verified owning-Domain change. Next hide raw domain access and registry ownership behind the controller endpoint and safe control resolution, then finish typed identities and completion/controller protocols. Naming is an initial migration, not a substitute for the full goal. Final completion requires auditing every ledger row against current source and current verification.
+Commit the verified completion protocol. Next hide raw domain access and registry ownership behind the controller endpoint and safe control resolution, then finish typed identities and explicit controller capabilities. The goal remains active until every acceptance row is proved. Naming is an initial migration, not a substitute for the full goal. Final completion requires auditing every ledger row against current source and current verification.

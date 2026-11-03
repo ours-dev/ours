@@ -6,7 +6,7 @@
 
 Documentation-only review of the IRQ line module and a Proposed first design cut. REVIEW.md records source-backed findings and retained guarantees. The user accepted DESIGN.md D1 (b) on 2026-11-03 by answering "B": Line, Registration, Domain and ControllerOps, with Domain owning mapping, storage and retirement. Concrete Interfaces remain Proposed. PLAN.md records this round's scope. No implementation commits or C++ changes were made.
 
-The invalid-registration policy defect is fixed and its repair record removed; the change and validation are in `docs/changes/261103/kernel-irq.md`. The deferred-completion question remains explicitly open in DESIGN.md and the original irq-genirq design; it is not reported as a reproduced real-device failure.
+The invalid-registration policy defect is fixed and its repair record removed; the change and validation are in `docs/changes/261103/kernel-irq.md`. The deferred-completion protocol is implemented by owner-state revalidation; deterministic tests demonstrate the old synthetic failure and verify the fix. This is not reported as a reproduced real-device failure.
 
 ## Verification
 
@@ -62,4 +62,4 @@ None. D1 was explicitly accepted by the user. The overall design remains Propose
 
 ## Not done
 
-The user has suspended learning-oriented arguments and authorized development toward the full active goal. The naming increment is verified; remaining ownership, guards, identities, controller protocol and completion work are tracked in STATUS.md. No performance improvement is claimed.
+The user has suspended learning-oriented arguments and authorized development toward the full active goal. Naming, registration validation, uniform guards, owning Domain storage and completion revalidation are verified. Remaining endpoint/facade, registry ownership, numeric identity and controller capability work is tracked in STATUS.md. No performance improvement is claimed.

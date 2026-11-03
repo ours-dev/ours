@@ -266,3 +266,52 @@ None. The user chose D1 (b) and suspended teaching exercises.
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task.
+
+## Revalidate deferred completion under the line-to-owner lock order (2026-11-03)
+
+**Files**
+- `kernel/include/ours/irq/registration.hpp`, `types.hpp` — group handle, revoke and readiness callbacks into one immutable protocol; deferred registrations require readiness.
+- `kernel/kernel/irq/line.cpp` — revalidate the owner's current work before clearing Held or unmasking.
+- `kernel/object/interrupt_dispatcher.cpp` and interrupt-object headers/implementation — query Idle/Waiting under L2 and provide one test hook with completion and park phases.
+- Kernel registration callers and tests — use named callback records; inject a new interrupt before both ack and wait-as-ack complete.
+
+**Symptom**
+An old ack could clear NeedAck, drop L2, admit a new dispatch that set NeedAck and Held, then clear the new Held while finalizing under L1. The existing after-finalize/before-park hook did not exercise this window.
+
+**Cause**
+L1 serialized individual line mutations but did not establish whether the caller's earlier observation still described the owner's work. Held belongs to the line and NeedAck belongs to the delivery object; a stale observation of NeedAck cannot authorize a later unmask. Holding L2 while acquiring L1 would reverse the dispatch order and deadlock.
+
+**Change**
+Every deferred registration provides a bounded readiness callback that reads its actual owner state under the same lock the handler uses. Completion holds L1, validates attachment, then invokes readiness:
+
+```cpp
+if (!action.ready_to_complete()) {
+    return;
+}
+set_held_locked(false);
+m_source.chip->unmask(m_source);
+```
+
+The physical object's callback takes L2 and permits completion only in Idle or Waiting. Triggered, NeedAck and Destroyed do not reopen the line. Dispatch cannot establish new work between this recheck and unmask because L1 remains held. Work admitted before the recheck is seen under L2; work admitted after completion masks and holds the line afterward. No path takes L2 then L1.
+
+Registration::Callbacks groups the three operations over one immutable context and replaces positional handler/cancel arguments. No alternate legacy constructor remains. The extra readiness pointer is per registration; no event counter, acknowledgement token or second pending-work word is introduced. Detach still drains IRQ callbacks; owners must quiesce their own completion calls before reusing a registration or freeing its context.
+
+**Reference**
+None, this project's own state and lock-order argument. Compared alternatives: generation-bearing completion needs token propagation through coalesced wait/port delivery and creates another work-identity protocol; controller-specific exclusion cannot cover synthetic dispatch or another controller. Revalidation uses the owner state already serialized by L2 and the existing L1-held dispatch.
+
+**Verification**
+All 14 changed C++ files ran formatting and clang-tidy without new changed-line diagnostics. Both images boot and all 161 host tests pass. All nine suites pass: irq.test 78, irqcontroller.test 18, irqrevoke.test 37, irqregistry.test 66, irqdomain.test 87, irqrcu.test 34, interrupt.test 67, interruptline.test 83, pinlines.test 28. The policy suite rejects deferred registrations lacking readiness.
+
+Counterfactual verification temporarily removed only the readiness gate, built it, and ran interruptline.test. Both new assertions failed: "an old ack cannot unmask newer work admitted before completion" and "wait-as-ack cannot unmask an interrupt injected before completion". The exact fixed source was restored in a finally scope, rebuilt, and passed the final positive checks. Negative output is in /tmp/irq-completion-negative.log; positive suite output is in /tmp/irq-completion-tests.log. No failing variant was committed. Performance was not measured.
+
+**Deliberately not done**
+No claim is made that a real IO-APIC delivery reproduces the synthetic ordering. The invariant now holds for every admitted dispatch regardless. Controller capabilities, typed numeric identities and the facade/endpoint cleanup remain in STATUS.md.
+
+**How it was found**
+The review's open completion question identified the L2-drop/L1-acquire window. A phase-specific hook makes that ordering deterministic in the real interrupt object; the old-behavior run demonstrates that the test catches the missing synchronization property.
+
+**The user's prediction**
+None. The user suspended teaching-oriented arguments and requested focused development.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.

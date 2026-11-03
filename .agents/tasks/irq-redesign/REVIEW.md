@@ -39,7 +39,7 @@ This does not currently allow a second action onto the immutable line, because P
 
 This is an existing open question in `irq-genirq/DESIGN.md`, not a newly reproduced hardware failure. The source-level interleaving is: old ack sets Idle; another dispatch sets NeedAck and Held; old finalize clears Held. Whether an ordinary wired level interrupt can enter that window depends on the controller's masking and pending-delivery guarantees. Synthetic dispatch can express it; the current tests do not force the window before finalize.
 
-The rewrite needs an explicit invariant and a deterministic test for that window, or a proof that every supported delivery excludes it. Merely renaming finalize to complete does not fix it. Preserve L1 -> L2: calling into the line while holding L2 would deadlock against dispatch. Linux's `irq_finalize_oneshot()` rechecks RUNTHREAD; its exact algorithm cannot be copied without accounting for ours holding L1 across callbacks. The user must write the concurrency argument before a replacement protocol is selected.
+Resolved by owner-state revalidation under L1 -> L2. Deterministic port-ack and wait-as-ack tests inject a new interrupt before completion; removing the readiness gate fails both assertions and restoring it passes. Merely renaming finalize to complete does not fix it. Preserve L1 -> L2: calling into the line while holding L2 would deadlock against dispatch. Linux's `irq_finalize_oneshot()` rechecks RUNTHREAD; its exact algorithm cannot be copied without accounting for ours holding L1 across callbacks. The user must write the concurrency argument before a replacement protocol is selected.
 
 ### M3. Owning storage is represented by copyable views
 

@@ -40,20 +40,25 @@ class Registration final {
     using Self = Registration;
 
   public:
-    /// `context` is handed back to `handler` on every interrupt, untouched.
-    /// A `cancel` makes the action one that the kernel may take off its line
-    /// (see Line::revoke()): it is told, in the way IrqCancel says, and an
-    /// action with none keeps its line against a removal of the domain.
-    constexpr Registration(IrqHandler const handler, void *const context, IrqFlags const flags,
-                           char const *const name, IrqCancel const cancel = nullptr) noexcept
-        : m_handler(handler), m_context(context), m_flags(flags), m_name(name), m_cancel(cancel) {}
+    struct Callbacks {
+        IrqHandler handle = nullptr;
+        IrqCancel revoke = nullptr;
+        IrqCompletionCheck ready = nullptr;
+    };
+
+    /// The callbacks share one caller-owned context. Revoke opts into domain
+    /// removal; Ready is required for deferred work and is called under L1
+    /// before completion may reopen the line.
+    constexpr Registration(Callbacks const callbacks, void *const context, IrqFlags const flags,
+                           char const *const name) noexcept
+        : m_callbacks(callbacks), m_context(context), m_flags(flags), m_name(name) {}
 
     Registration(Self const &) = delete;
     auto operator=(Self const &) -> Self & = delete;
 
     [[nodiscard]]
     auto on_event() const -> IrqReturn {
-        return m_handler(virqnum(), m_context);
+        return m_callbacks.handle(virqnum(), m_context);
     }
 
     [[nodiscard]]
@@ -78,14 +83,14 @@ class Registration final {
     /// Whether the kernel may take this action off its line.
     [[nodiscard]]
     auto is_revocable() const -> bool {
-        return m_cancel != nullptr;
+        return m_callbacks.revoke != nullptr;
     }
 
     /// Tells the owner the kernel is taking the action off its line; the
     /// line calls it, with its lock held, after unlinking the action.
     auto cancel() const -> void {
-        if (m_cancel) {
-            m_cancel(virqnum(), m_context);
+        if (m_callbacks.revoke) {
+            m_callbacks.revoke(virqnum(), m_context);
         }
     }
 
@@ -114,21 +119,28 @@ class Registration final {
     [[nodiscard]]
     constexpr auto is_valid() const -> bool {
         constexpr auto OPTIONS = IrqFlags::Shared | IrqFlags::Permanent | IrqFlags::Oneshot;
-        if (!m_handler || !!(m_flags & ~OPTIONS)) {
+        if (!m_callbacks.handle || !!(m_flags & ~OPTIONS)) {
             return false;
         }
         if (is_permanent() && (is_shared() || is_oneshot())) {
             return false;
         }
+        if (is_oneshot() && !m_callbacks.ready) {
+            return false;
+        }
         return !(is_shared() && is_oneshot());
     }
 
-    IrqHandler const m_handler;
+    [[nodiscard]]
+    auto ready_to_complete() const -> bool {
+        return m_callbacks.ready != nullptr && m_callbacks.ready(m_context);
+    }
+
+    Callbacks const m_callbacks;
     void *const m_context;
     IrqFlags const m_flags;
     [[maybe_unused]]
     char const *const m_name;
-    IrqCancel const m_cancel;
     /// Written under the lock of the line it names, and by a removal as the
     /// last thing it does to the action (Line::revoke()); read without that
     /// lock by detach() to find the line.

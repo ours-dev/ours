@@ -133,8 +133,9 @@ namespace {
 
     /// The actions of an attach with no mode on the two chips.
     auto check_attach_without_a_mode(Tally &tally) -> void {
-        irq::Registration oneshot(handled, nullptr, irq::IrqFlags::Oneshot, "irqchip-test");
-        irq::Registration plain(handled, nullptr, irq::IrqFlags::None, "irqchip-test");
+        irq::Registration oneshot({.handle = handled, .ready = [](void *) -> bool { return true; }},
+                                  nullptr, irq::IrqFlags::Oneshot, "irqchip-test");
+        irq::Registration plain({.handle = handled}, nullptr, irq::IrqFlags::None, "irqchip-test");
 
         auto *const blind = make_line(BLIND_CHIP);
         auto *const seeing = make_line(SEEING_CHIP);
@@ -174,7 +175,8 @@ namespace {
 
     /// The actions of an attach with a mode.
     auto check_attach_with_a_mode(Tally &tally) -> void {
-        irq::Registration oneshot(handled, nullptr, irq::IrqFlags::Oneshot, "irqchip-test");
+        irq::Registration oneshot({.handle = handled, .ready = [](void *) -> bool { return true; }},
+                                  nullptr, irq::IrqFlags::Oneshot, "irqchip-test");
 
         auto *const blind = make_line(BLIND_CHIP);
         if (blind == nullptr) {

@@ -61,8 +61,8 @@ namespace {
     /// The line's action, owned here for the kernel's lifetime: the line is
     /// Permanent, so nothing ever detaches it.
     // NOLINTNEXTLINE(readability-identifier-naming): UPPER_CASE, as above.
-    constinit irq::Registration LEGACY_TIMER_ACTION{&timer_interrupt, &LEGACY_TIMER,
-                                                    irq::IrqFlags::Permanent, "IRQ-Timer"};
+    constinit irq::Registration LEGACY_TIMER_ACTION{
+        {.handle = &timer_interrupt}, &LEGACY_TIMER, irq::IrqFlags::Permanent, "IRQ-Timer"};
 } // namespace
 
 auto global_clock_event() -> ClockEventDevice * {

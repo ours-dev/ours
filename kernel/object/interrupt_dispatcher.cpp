@@ -13,22 +13,28 @@
 
 namespace ours::object {
 namespace {
-    /// wait()'s hook between begin_wait() and park(): see
-    /// set_before_park_hook_for_test(). Atomic, because a test installs it
-    /// on one CPU while waits run on others; release and acquire, so that a
-    /// waiter that finds the hook also finds what the test set up for it
-    /// before installing it.
-    // Namespace-scope objects are UPPER_CASE throughout this tree.
-    // NOLINTNEXTLINE(readability-identifier-naming)
-    constinit std::atomic<InterruptDispatcher::BeforeParkHook> BEFORE_PARK_HOOK{nullptr};
+    /// Tests publish a scheduling hook while other CPUs may enter wait or ack.
+    /// Acquire/release keeps the hook's context setup visible to those readers.
+    constinit std::atomic<InterruptDispatcher::InterleaveHook> INTERLEAVE_HOOK{nullptr};
 } // namespace
 
-auto InterruptDispatcher::set_before_park_hook_for_test(BeforeParkHook const hook) -> void {
-    BEFORE_PARK_HOOK.store(hook, std::memory_order_release);
+auto InterruptDispatcher::set_interleave_hook_for_test(InterleaveHook const hook) -> void {
+    INTERLEAVE_HOOK.store(hook, std::memory_order_release);
 }
 
 InterruptDispatcher::InterruptDispatcher(Flags const flags)
     : Base(), m_event(sync::Event::Options::AutoUnsignal), m_flags(flags) {}
+
+auto InterruptDispatcher::run_interleave_hook(InterleavePoint const point) -> void {
+    if (auto const hook = INTERLEAVE_HOOK.load(std::memory_order_acquire); hook != nullptr) {
+        hook(*this, point);
+    }
+}
+
+auto InterruptDispatcher::deferred_work_complete() -> bool {
+    Guard<sync::SpinLock, IrqSave> const guard{m_spinlock};
+    return m_state == State::Idle || m_state == State::Waiting;
+}
 
 /// Takes what is pending, or parks and looks again once woken. Woken does not
 /// mean an interrupt is there to take -- destroy() wakes the waiter too -- so
@@ -37,11 +43,8 @@ InterruptDispatcher::InterruptDispatcher(Flags const flags)
 /// A wait that acked the last interrupt on its way to the park tells the line
 /// so after begin_wait() has dropped the lock, and before it parks: the line
 /// may raise the next interrupt from then on, which this wait is about to
-/// wait for. Whether an interrupt that lands between begin_wait() and that
-/// call can leave a level line unmasked while the object is owed an ack is
-/// the design's open question (.agents/tasks/irq-genirq/DESIGN.md, Open
-/// questions); the hook below runs after the call, so interrupt.test can
-/// still play an interrupt there.
+/// wait for. The line rechecks the current debt under L1 -> L2 before it can
+/// unmask, so work admitted after begin_wait() is not completed by this wait.
 auto InterruptDispatcher::wait(Instant *const out_timestamp) -> Status {
     m_canary.verify<Self>();
 
@@ -51,11 +54,10 @@ auto InterruptDispatcher::wait(Instant *const out_timestamp) -> Status {
             return *start.answer;
         }
         if (start.debt == Debt::Cleared) {
+            run_interleave_hook(InterleavePoint::BeforeCompletion);
             unmask_interrupt();
         }
-        if (auto const hook = BEFORE_PARK_HOOK.load(std::memory_order_acquire); hook != nullptr) {
-            hook(*this);
-        }
+        run_interleave_hook(InterleavePoint::BeforePark);
         if (auto const status = park(); status != Status::Ok) {
             return status;
         }
@@ -458,10 +460,8 @@ auto InterruptDispatcher::unbind(ustl::Arc<PortDispatcher> const &port) -> Statu
 /// inside the lock's scope: an ack that sends the next packet leaves the
 /// object owed an ack for it, and telling the line there would unmask a
 /// level line whose device the driver has not serviced for that packet yet.
-/// Whether an interrupt that lands between the drop of the lock and that call
-/// can leave a level line unmasked while the object is owed an ack is the
-/// design's open question (.agents/tasks/irq-genirq/DESIGN.md, Open
-/// questions).
+/// The line rechecks the owner's debt under L1 -> L2, so an older ack cannot
+/// clear a newer dispatch's hold after this scope releases L2.
 auto InterruptDispatcher::ack() -> Status {
     m_canary.verify<Self>();
 
@@ -492,6 +492,7 @@ auto InterruptDispatcher::ack() -> Status {
         m_state = State::Idle;
     }
 
+    run_interleave_hook(InterleavePoint::BeforeCompletion);
     unmask_interrupt();
     return Status::Ok;
 }

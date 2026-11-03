@@ -313,7 +313,11 @@ namespace {
     /// The hook: holds the first wait on HELD_WAITER's object, after it has
     /// claimed the wait and before it parks, until the test thread lets it
     /// go. It sleeps rather than spins, so the waiter's CPU stays free.
-    auto hold_before_park(InterruptDispatcher &interrupt) -> void {
+    auto hold_before_park(InterruptDispatcher &interrupt,
+                          InterruptDispatcher::InterleavePoint const point) -> void {
+        if (point != InterruptDispatcher::InterleavePoint::BeforePark) {
+            return;
+        }
         auto *const waiter = HELD_WAITER.load(std::memory_order_acquire);
         if (waiter == nullptr || waiter->target != &interrupt ||
             waiter->held.exchange(true, std::memory_order_acq_rel)) {
@@ -360,9 +364,9 @@ namespace {
         auto &interrupt = *waiter->interrupt.dispatcher();
         waiter->target = &interrupt;
         HELD_WAITER.store(waiter, std::memory_order_release);
-        InterruptDispatcher::set_before_park_hook_for_test(hold_before_park);
+        InterruptDispatcher::set_interleave_hook_for_test(hold_before_park);
         auto const unhook = [] {
-            InterruptDispatcher::set_before_park_hook_for_test(nullptr);
+            InterruptDispatcher::set_interleave_hook_for_test(nullptr);
             HELD_WAITER.store(nullptr, std::memory_order_release);
         };
 
@@ -921,8 +925,9 @@ namespace {
       public:
         RecordingInterrupt()
             : InterruptDispatcher(Flags::None)
-            , action(&RecordingInterrupt::on_event, this, irq::IrqFlags::None, "interrupt.test",
-                     &RecordingInterrupt::on_cancel) {}
+            , action({.handle = &RecordingInterrupt::on_event,
+                      .revoke = &RecordingInterrupt::on_cancel},
+                     this, irq::IrqFlags::None, "interrupt.test") {}
 
         using InterruptDispatcher::line_revoked;
 

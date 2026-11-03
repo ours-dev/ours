@@ -737,6 +737,69 @@ namespace {
                 "a destroy masks the level line it lets go");
     }
 
+    std::atomic<InterruptDispatcher *> COMPLETION_TARGET{nullptr};
+
+    auto interrupt_before_completion(InterruptDispatcher &interrupt,
+                                     InterruptDispatcher::InterleavePoint const point) -> void {
+        if (point != InterruptDispatcher::InterleavePoint::BeforeCompletion ||
+            COMPLETION_TARGET.load(std::memory_order_acquire) != &interrupt) {
+            return;
+        }
+        COMPLETION_TARGET.store(nullptr, std::memory_order_release);
+        auto _ = fire(); // Establish newer work before the old completion takes L1.
+    }
+
+    auto check_completion_revalidation(Tally &tally) -> void {
+        {
+            KernelHandle<InterruptDispatcher> interrupt;
+            KernelHandle<PortDispatcher> port;
+            auto rights = Rights::None;
+            if (make(&interrupt, InterruptOptions::ModeLevelHigh) != Status::Ok ||
+                PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
+                    Status::Ok ||
+                interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
+                verdict(tally, false, "prepare the bound completion interleaving");
+                return;
+            }
+            auto &object = *interrupt.dispatcher();
+            auto &queue = *port.dispatcher();
+            auto packet = PortPacket{};
+            auto _ = fire();
+            verdict(tally, queue.dequeue(0, &packet) == Status::Ok && line_masked(),
+                    "the first packet leaves the deferred line masked");
+
+            COMPLETION_TARGET.store(&object, std::memory_order_release);
+            InterruptDispatcher::set_interleave_hook_for_test(interrupt_before_completion);
+            auto const acked = object.ack();
+            InterruptDispatcher::set_interleave_hook_for_test(nullptr);
+            COMPLETION_TARGET.store(nullptr, std::memory_order_release);
+            verdict(tally,
+                    acked == Status::Ok && queue.dequeue(0, &packet) == Status::Ok && line_masked(),
+                    "an old ack cannot unmask newer work admitted before completion");
+            verdict(tally, object.ack() == Status::Ok && line_unmasked(),
+                    "the new packet's own ack reopens the line");
+        }
+        {
+            KernelHandle<InterruptDispatcher> interrupt;
+            if (make(&interrupt, InterruptOptions::ModeLevelHigh) != Status::Ok) {
+                verdict(tally, false, "prepare the wait completion interleaving");
+                return;
+            }
+            auto &object = *interrupt.dispatcher();
+            auto timestamp = Instant{0};
+            auto _ = fire();
+            answered(tally, object.wait(&timestamp), Status::Ok, "take the first interrupt");
+
+            COMPLETION_TARGET.store(&object, std::memory_order_release);
+            InterruptDispatcher::set_interleave_hook_for_test(interrupt_before_completion);
+            auto const waited = object.wait(&timestamp);
+            InterruptDispatcher::set_interleave_hook_for_test(nullptr);
+            COMPLETION_TARGET.store(nullptr, std::memory_order_release);
+            verdict(tally, waited == Status::Ok && line_masked(),
+                    "wait-as-ack cannot unmask an interrupt injected before completion");
+        }
+    }
+
     /// An edge object: nothing it does masks its line, unbound or bound, until
     /// its destroy lets the line go. An edge is one event, so there is no level to hold the line raised while
     /// the device is serviced, and a masked edge line would lose the edges
@@ -1126,6 +1189,7 @@ namespace {
         check_modes(tally);
         check_level_mask_unbound(tally);
         check_level_mask_bound(tally);
+        check_completion_revalidation(tally);
         check_edge_mask(tally);
         check_mode_race(tally);
         check_refusals(tally);

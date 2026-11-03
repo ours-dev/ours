@@ -80,17 +80,19 @@ action says Oneshot and a level line's flow masks it, and every write of a
 line's mask, `irq::mask()` and `irq::unmask()` included, is made under the
 line's lock L1.
 
-- Accepted rewrite target, 2026-11-03 (irq-redesign D1 (b), the user chose
-  "B"): `Line` owns line state and dispatch, `Registration` is the
-  caller-owned callback binding, `Domain` owns mapping, storage, publication
-  and retirement, and `ControllerOps` names the hardware-operation table.
-  This consolidates one lifetime and hides the descriptor table and RCU
-  pointers from callers. The naming migration has landed: the code now uses
-  these four names. Domain now owns both mappings and boxed Lines in one
-  noncopyable Storage aggregate; DescTable is removed. The completion
-  protocol is still being refactored. Concrete interfaces and the completion
-  handshake are
-  still Proposed in `.agents/tasks/irq-redesign/DESIGN.md`.
+- Accepted rewrite target, 2026-11-03 (irq-redesign D1 (b), the user chose "B"):
+  `Line` owns line state and dispatch, `Registration` is the caller-owned
+  callback binding, `Domain` owns mapping, storage, publication and retirement,
+  and `ControllerOps` names the hardware-operation table. This consolidates one
+  lifetime and hides the descriptor table and RCU pointers from callers. The
+  naming migration has landed: the code now uses these four names. Domain now
+  owns both mappings and boxed Lines in one noncopyable Storage aggregate;
+  DescTable is removed. The completion protocol now revalidates owner state
+  under L1 -> L2 before unmasking. Deferred registrations supply handle, revoke
+  and ready callbacks over one context; ready reads the current owner debt, so
+  an old ack cannot clear a newer hold. Deterministic ack and wait-as-ack tests
+  fail with the gate removed and pass with it restored. Other interfaces remain
+  Proposed in `.agents/tasks/irq-redesign/DESIGN.md`.
 - A line the kernel holds for its own use is one an action that says
   Permanent is on (the legacy timer's; `irq::is_kernel_owned()`). A kernel
   driver that takes a line for its own uses a Permanent action, and so keeps

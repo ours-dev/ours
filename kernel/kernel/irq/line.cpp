@@ -305,10 +305,11 @@ auto Line::detach(Registration &action) -> Status {
 /// held and masked the line for it: then there is nothing to finalize, and
 /// unmasking would hand the next owner a line it has not unmasked itself.
 ///
-/// The unmask does not ask whether the line was held: held says the line owes
-/// a thread, not whether it is masked, which only the controller records. A
-/// finalize that comes when nothing was owed unmasks a line its flow left
-/// unmasked already, and the controller's unmask is idempotent.
+/// Completion revalidates the owner's current work while L1 excludes another
+/// dispatch. The callback uses the same lock order as its handler. If a newer
+/// dispatch established work after the caller released its own lock, the line
+/// remains held until that work's completion. No event counter or second copy
+/// of the owner's debt is needed.
 ///
 /// A line marked for removal is finalized all the same. Skipping it would
 /// leave the line held and masked if the removal is then refused and the mark
@@ -318,6 +319,9 @@ auto Line::detach(Registration &action) -> Status {
 auto Line::finalize_oneshot(Registration const &action) -> void {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
     if (action.virqnum() != m_source.virqnum || !is_oneshot_locked()) {
+        return;
+    }
+    if (!action.ready_to_complete()) {
         return;
     }
     set_held_locked(false);
