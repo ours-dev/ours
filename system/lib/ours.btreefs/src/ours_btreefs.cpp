@@ -121,6 +121,14 @@ namespace detail {
     Node::Node(std::span<u8> bytes) : m_bytes(bytes) {
         m_leaf = m_bytes[LEAF_FLAG_OFFSET] == LEAF_FLAG;
         m_count = usize{load_le16(m_bytes, COUNT_OFFSET)};
+        const auto cap = capacity();
+        if (m_count > cap) {
+            // The device's count names more entries than the block can
+            // hold: corrupted on the device. Clamped, every access the
+            // operations make stays inside the block; the tree's own
+            // writes never produce such a count.
+            m_count = cap;
+        }
     }
 
     auto Node::leaf(std::span<u8> bytes) -> Node {

@@ -52,10 +52,12 @@
 /// freed by the change go on the dead list too, their bits left alone;
 /// blocks taken are on the taken list, their bits left alone. commit()
 /// then does one thing in a fixed order: write the cached blocks, then
-/// the bitmap (taken bits set, dead bits cleared), then the other
-/// superblock slot with the next generation. Until that last write the
-/// disk holds the committed tree and its bitmap, whole and consistent --
-/// a crash is a dropped rehearsal, not a repair. Dropping the transaction
+/// the bitmap (taken bits set, dead bits cleared), and last the other
+/// superblock slot with the next generation -- the swap is the commit
+/// point, and it is LAST, after the bitmap the new tree's blocks need: a
+/// crash before the swap is a dropped rehearsal (the dead bits unset, a
+/// leak of this transaction's blocks, never a corruption), a crash after
+/// it finds the new tree whole. Dropping the transaction
 /// without committing is exactly that, on purpose.
 ///
 /// One thread touches a volume (the Loop serializes a server's messages),
@@ -202,6 +204,14 @@ namespace detail {
     /// comes from leaf() or internal() over the caller's zeroed block.
     class Node final {
       public:
+        /// The node over |bytes|, whose count is read from the block and
+        /// then clamped to the node's capacity: the bytes are the device's,
+        /// the superblock's CRC covers none of them, and a flipped byte in
+        /// the count field would otherwise drive the slot arithmetic --
+        /// upper_bound's probes, insert's memmove -- past the 4 KiB span.
+        /// A clamped node behaves as if it held exactly capacity() entries;
+        /// the tree's own writes never produce one, so meeting one means
+        /// the block was corrupted on the device.
         explicit Node(std::span<u8> bytes);
 
         static auto leaf(std::span<u8> bytes) -> Node;
@@ -536,14 +546,21 @@ class Transaction final {
         }
         // A block this transaction took is unborn: it leaves the taken list
         // and the cache, free again without ever having touched the bitmap.
-        // Anything else was the committed tree's; freeing it twice is the
-        // caller's error, BadState as the allocator has always answered.
         for (auto index = usize{0}; index < m_taken_count; ++index) {
             if (m_taken[index] == block) {
                 m_taken[index] = m_taken[m_taken_count - 1];
                 m_taken_count -= 1;
                 drop(block);
                 return ours::Status::Ok;
+            }
+        }
+        // A block the committed tree owns that this transaction already
+        // freed is on the dead list: freeing it twice is the caller's
+        // error, BadState -- the device's bit is still set until commit, so
+        // the bitmap cannot tell, and the dead list can.
+        for (auto index = usize{0}; index < m_dead_count; ++index) {
+            if (m_dead[index] == block) {
+                return ours::Status::BadState;
             }
         }
         auto bits = std::array<u8, BLOCK_BYTES>{};

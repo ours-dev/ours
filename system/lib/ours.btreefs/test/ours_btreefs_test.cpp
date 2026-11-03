@@ -1078,4 +1078,90 @@ TEST(BtreefsTransactions, TruncateOfABigFileRunsEveryRemoveInOneTransaction) {
                     }),
               Status::Ok);
 }
+
+// A corrupted count byte cannot drive the slot arithmetic out of the
+// block: the node clamps to its capacity, and every operation behaves on
+// the truncated view instead of writing past the 4 KiB span.
+TEST(BtreefsNodes, ACapBeyondCapacityIsClamped) {
+    auto fs = Mounted(64, 1);
+    ASSERT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        for (auto offset = u64{0}; offset < 30; ++offset) {
+                            if (auto const status = ours_btreefs::insert(
+                                    tx, key_of(1, ours_btreefs::ItemType::Data, offset),
+                                    value_of(offset));
+                                status != Status::Ok) {
+                                return status;
+                            }
+                        }
+                        return Status::Ok;
+                    }),
+              Status::Ok);
+
+    // Corrupt the count field of the root's leaf: 0xFFFF, past any
+    // capacity.
+    auto const leaf = fs.volume.root;
+    auto bytes = std::array<u8, BLOCK_BYTES>{};
+    ASSERT_EQ(fs.device.read_block(leaf, bytes), Status::Ok);
+    bytes[2] = 0xFF;
+    bytes[3] = 0xFF;
+    ASSERT_EQ(fs.device.write_block(leaf, bytes), Status::Ok);
+
+    // Every read of the corrupted node stays in bounds, on the truncated
+    // view: the intact entries before the clamp still look up (the clamp
+    // bounds the arithmetic, it does not destroy data), and a scan walks
+    // the node without writing past the block.
+    ASSERT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        auto item = Value{};
+                        auto const looked = ours_btreefs::lookup(
+                            tx, tx.volume(), key_of(1, ours_btreefs::ItemType::Data, 5), item);
+                        if (looked != Status::Ok) {
+                            return looked;
+                        }
+                        return ours_btreefs::decode_data_value(item) == 5 ? Status::Ok
+                                                                          : Status::BadState;
+                    }),
+              Status::Ok);
+    ASSERT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        // The scan walks the clamped node: bounded, whatever
+                        // the corrupted count claimed.
+                        return ours_btreefs::scan(
+                            tx, tx.volume(), key_of(1, ours_btreefs::ItemType::Data, 0),
+                            [](Key const &, Value const &) -> bool { return true; });
+                    }),
+              Status::Ok);
+}
+
+// An intra-transaction double free is the caller's error and answers
+// BadState: the dead list sees it, where the device's bitmap cannot (the
+// bit is still set until commit).
+TEST(BtreefsTransactions, ADoubleFreeInOneTransactionAnswersBadState) {
+    auto fs = Mounted(64, 1);
+    auto committed_block = u64{0};
+    ASSERT_EQ(apply(fs,
+                    [&](auto &tx) -> Status {
+                        auto const block = tx.alloc_block();
+                        if (block.is_err()) {
+                            return block.unwrap_err();
+                        }
+                        committed_block = block.unwrap();
+                        return ours_btreefs::insert(tx, key_of(1, ours_btreefs::ItemType::Data, 0),
+                                                    value_of(1));
+                    }),
+              Status::Ok);
+
+    // The block is the committed tree's now: first free Ok, second free of
+    // the same block BadState, not a second dead entry.
+    ASSERT_EQ(apply(fs,
+                    [&](auto &tx) -> Status {
+                        if (auto const status = tx.free_block(committed_block);
+                            status != Status::Ok) {
+                            return status;
+                        }
+                        return tx.free_block(committed_block);
+                    }),
+              Status::BadState);
+}
 } // namespace

@@ -185,9 +185,11 @@ struct Connection {
     Operations rights = Operations::None;
     /// A file's: where Read and Write go on from.
     u64 seek = 0;
-    /// The root's: whether "." has been listed, and the DIRENT offset the
-    /// listing continues after -- entries at a greater offset only, the
-    /// item that failed to fit coming again.
+    /// The root's: whether "." has been listed, and the DIRENT offset one
+    /// past the last entry listed -- entries at or past that only, the
+    /// item that failed to fit coming again. (One past, not at: an entry
+    /// whose folded offset is 0 must not be swallowed by the initial
+    /// cursor of 0.)
     bool listed_dot = false;
     u64 next_offset = 0;
 };
@@ -628,7 +630,13 @@ auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsReques
             // children only: the scan walks the one tree past this
             // directory's key range, and other objects' items are not
             // entries here.
-            if (key.object != connection.object || key.offset <= connection.next_offset) {
+            // The cursor names the last entry listed, and the listing
+            // resumes strictly after it -- hence the strict <, and the +1
+            // on advance: an entry whose folded offset is exactly the
+            // cursor must never list again, and one whose folded offset is
+            // 0 must not be swallowed by the initial cursor of 0 (which is
+            // why the skip is strict, not <=).
+            if (key.object != connection.object || key.offset < connection.next_offset) {
                 return true;
             }
             auto const decoded = ours_btreefs::decode_dirent_value(value);
@@ -644,7 +652,7 @@ auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsReques
                 // cursor not having moved.
                 return false;
             }
-            connection.next_offset = key.offset;
+            connection.next_offset = key.offset + 1;
             return true;
         });
     if (walked != Status::Ok) {
