@@ -45,7 +45,7 @@ The rewrite needs an explicit invariant and a deterministic test for that window
 
 `kernel/include/ours/irq/domain.hpp:24`, `:84`; `kernel/include/ours/irq/desc_table.hpp:23`; `kernel/kernel/irq/desc_table.cpp:91`. Domain owns two allocations through Span fields, is implicitly copyable, has no owning destructor, and requires explicit reset. DescTable likewise owns pointers through a Span and requires explicit destroy. Table construction intentionally transfers ownership by copying a temporary Domain.
 
-The current call sites manually maintain the convention, so this review does not establish a current double free. The types nevertheless allow two apparent owners to reset the same arrays, or a forgotten reset to leak them. Refactoring these public types is unusually hazardous because ordinary C++ copying silently changes ownership. Consolidate the lifetime under one noncopyable owner and use existing owning containers or an explicit ownership transfer; keep reader reclamation a prerequisite for storage destruction.
+The current call sites manually maintain the convention, so this review does not establish a current double free. The old types allowed two apparent owners to reset the same arrays, or a forgotten reset to leak them. Resolved by the owning-Domain increment: private Vec and Box storage, deleted copy/move, scoped rollback, and destruction only after registry retirement. Refactoring these public types is unusually hazardous because ordinary C++ copying silently changes ownership. Consolidate the lifetime under one noncopyable owner and use existing owning containers or an explicit ownership transfer; keep reader reclamation a prerequisite for storage destruction.
 
 ### M4. Trigger mode silently selects a controller protocol
 

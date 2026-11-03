@@ -67,7 +67,7 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/interrupt.hpp>
 #include <ours/irq/controller.hpp>
-#include <ours/irq/desc_table.hpp>
+#include <ours/irq/domain.hpp>
 #include <ours/irq/registration.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
@@ -926,7 +926,7 @@ namespace {
 
         using InterruptDispatcher::line_revoked;
 
-        irq::DescTable *table = nullptr;
+        irq::Domain *table = nullptr;
         irq::Registration action;
         std::atomic<u32> detaches{0};
         /// The hook has told the object, and waits for the gate.
@@ -1003,7 +1003,7 @@ namespace {
 
     /// What the chain case's two threads need.
     struct Chain {
-        irq::DescTable *table = nullptr;
+        irq::Domain *table = nullptr;
         VIrqNum virq = irq::INVALID_V_IRQ_NUM;
         RecordingInterrupt *object = nullptr;
         std::atomic<bool> destroy_returned{false};
@@ -1054,7 +1054,7 @@ namespace {
         self->set_cpu_affinity_hard(CpuMask::of(cpus[0]));
         auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
 
-        auto *const table = new (mm::GAF_KERNEL) irq::DescTable();
+        auto *const table = new (mm::GAF_KERNEL) irq::Domain();
         auto *const object = new (mm::GAF_KERNEL) RecordingInterrupt();
         std::array<HIrqNum, 1> const numbers{HIrqNum{9}};
         constexpr irq::ControllerOps NO_OP_CHIP = {

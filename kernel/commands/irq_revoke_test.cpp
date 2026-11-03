@@ -33,7 +33,7 @@
 //     NotFound must find the hook done. This needs two CPUs.
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/irq/desc_table.hpp>
+#include <ours/irq/domain.hpp>
 #include <ours/irq/line.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/status.hpp>
@@ -530,7 +530,7 @@ namespace {
     /// of its own. The table is the test's own, made once per run and kept:
     /// a table cannot be freed.
     struct Race {
-        irq::DescTable *table = nullptr;
+        irq::Domain *table = nullptr;
         VIrqNum virq = irq::INVALID_V_IRQ_NUM;
         Owner *owner = nullptr;
         std::atomic<u32> go{0};
@@ -606,7 +606,7 @@ namespace {
     }
 
     auto check_race(Tally &tally, CpuNum const remover_cpu, CpuNum const detacher_cpu) -> void {
-        auto *const table = new (mm::GAF_KERNEL) irq::DescTable();
+        auto *const table = new (mm::GAF_KERNEL) irq::Domain();
         constexpr std::array<HIrqNum, 1> NUMBERS{OWN_HWIRQ};
         if (table == nullptr ||
             table->init(ustl::views::Span<HIrqNum const>(NUMBERS), CHIP) != Status::Ok) {

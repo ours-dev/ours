@@ -19,7 +19,7 @@ struct IrqFrame;
 namespace ours::irq {
 class Registration;
 struct ControllerOps;
-class DescTable;
+class Domain;
 class DomainSlot;
 
 /// The machine's directory of interrupt domains (DomainRegistry), what every
@@ -284,7 +284,7 @@ auto hwirq_of_virq(VIrqNum virqnum) -> HIrqNum;
 /// By hardware number, not virq: it is what the interrupt entry has, and it
 /// indexes the table directly, with no lookup between.
 [[nodiscard]]
-auto handle_irq_generic(DescTable *table, HIrqNum hirqnum) -> bool;
+auto handle_irq_generic(Domain *table, HIrqNum hirqnum) -> bool;
 
 /// The table of the root controller's domain, what a root handler holds its
 /// DomainSlot for and what handle_irq_generic() dispatches through. Null
@@ -293,7 +293,7 @@ auto handle_irq_generic(DescTable *table, HIrqNum hirqnum) -> bool;
 /// names a line by its virq. The root domain is never removed, so the
 /// pointer, once it is not null, is good for good.
 [[nodiscard]]
-auto root_table_for_test() -> DescTable *;
+auto root_table_for_test() -> Domain *;
 
 /// The flow of line `virqnum` for a kernel test that plays an interrupt from
 /// thread context: the same actions under the same locks as
@@ -306,7 +306,7 @@ auto root_table_for_test() -> DescTable *;
 [[nodiscard]]
 auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn;
 
-/// What the removal of a domain does to one of its lines (DescTable::
+/// What the removal of a domain does to one of its lines (Domain::
 /// revoke_line()): marks the line and takes its actions off it, telling
 /// each through its cancel hook; AlreadyBound with nothing changed for a
 /// Permanent line or an action with no hook, NoResource for no such line.

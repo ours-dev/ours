@@ -356,7 +356,7 @@ namespace {
     ///
     /// The chip is read without the lock, as Line::mask() reads it: it is
     /// fixed before the line is published. A line of the table always has a
-    /// chip with an eoi (DescTable::init()); a line of a test's own, outside
+    /// chip with an eoi (Domain::init()); a line of a test's own, outside
     /// the table, may have none, and is dispatched with Skip.
     class EoiGuard final {
       public:
@@ -503,7 +503,7 @@ auto Line::handle_oneshot_locked(Registration::List &actions) -> IrqReturn {
 
 /// The chip is read without the lock, as mask() reads it: it is fixed before
 /// the line is published. A line of the table always has a chip that masks
-/// (DescTable::init()); a line of a test's own, outside the table, needs one
+/// (Domain::init()); a line of a test's own, outside the table, needs one
 /// too before it is dispatched with nobody on it.
 auto Line::mask_unclaimed() const -> void {
     auto const *const chip = m_source.chip;

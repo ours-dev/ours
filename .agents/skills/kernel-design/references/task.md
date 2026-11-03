@@ -86,8 +86,10 @@ line's lock L1.
   and retirement, and `ControllerOps` names the hardware-operation table.
   This consolidates one lifetime and hides the descriptor table and RCU
   pointers from callers. The naming migration has landed: the code now uses
-  these four names; domain ownership and the completion protocol are still
-  being refactored. Concrete interfaces and the completion handshake are
+  these four names. Domain now owns both mappings and boxed Lines in one
+  noncopyable Storage aggregate; DescTable is removed. The completion
+  protocol is still being refactored. Concrete interfaces and the completion
+  handshake are
   still Proposed in `.agents/tasks/irq-redesign/DESIGN.md`.
 - A line the kernel holds for its own use is one an action that says
   Permanent is on (the legacy timer's; `irq::is_kernel_owned()`). A kernel

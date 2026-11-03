@@ -27,10 +27,12 @@
 //
 // A console command rather than a unit test: Domain allocates from the
 // kernel's heap.
+#include <ours/irq/controller.hpp>
 #include <ours/irq/domain.hpp>
 
 #include <algorithm>
 #include <array>
+#include <type_traits>
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
@@ -39,6 +41,20 @@
 namespace ours {
 namespace {
     using irq::Domain;
+
+    static_assert(!std::is_copy_constructible_v<Domain>);
+    static_assert(!std::is_move_constructible_v<Domain>);
+
+    constexpr irq::ControllerOps CONTROLLER = {
+        .mask = [](irq::ControllerSource const &) -> void {},
+        .issue_eoi = [](irq::ControllerSource const &) -> void {},
+        .name = "irq-domain-test",
+    };
+
+    auto build_domain(Domain &domain, ustl::views::Span<HIrqNum const> const sources,
+                      VIrqNum const minimum = 0) -> Status {
+        return domain.init(sources, CONTROLLER, minimum);
+    }
 
     struct Tally {
         usize passed = 0;
@@ -72,7 +88,7 @@ namespace {
                       ustl::views::Span<HIrqNum const> const list, VIrqNum const first_virq,
                       VIrqNum const min_first = 0) -> void {
         Domain domain;
-        auto const built = domain.init(list, min_first);
+        auto const built = build_domain(domain, list, min_first);
         if (built != Status::Ok) {
             log::error("irqdomain.test:   {}: init answered {}", name, to_string(built));
             verdict(tally, false, name);
@@ -131,7 +147,6 @@ namespace {
         verdict(tally, domain.hwirq_limit() == static_cast<usize>(highest) + 1,
                 "the table size to index by hardware number is one past the highest");
 
-        domain.reset();
     }
 
     auto check_layouts(Tally &tally) -> void {
@@ -192,53 +207,53 @@ namespace {
 
         {
             Domain domain;
-            answered(tally, domain.init(ustl::views::Span<HIrqNum const>(NONE)), Status::InvArgs,
-                     "an empty list is refused");
-            answered(tally, domain.init(ustl::views::Span<HIrqNum const>(WITH_INVALID)),
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(NONE)),
+                     Status::InvArgs, "an empty list is refused");
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(WITH_INVALID)),
                      Status::InvArgs, "INVALID_H_IRQ_NUM in the list is refused");
-            answered(tally, domain.init(ustl::views::Span<HIrqNum const>(TOO_BIG)), Status::InvArgs,
-                     "a list the virq space cannot hold is refused");
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(TOO_BIG)),
+                     Status::InvArgs, "a list the virq space cannot hold is refused");
             // INVALID_V_IRQ_NUM is the last number of the space and no virq.
             // The last multiple of 32 below it is INVALID_V_IRQ_NUM - 31, and
             // the one line fits there; a floor past it rounds up out of the
             // space, and so does a list of 32 lines from it.
             answered(tally,
-                     domain.init(ustl::views::Span<HIrqNum const>(GOOD), irq::INVALID_V_IRQ_NUM),
+                     build_domain(domain, ustl::views::Span<HIrqNum const>(GOOD),
+                                  irq::INVALID_V_IRQ_NUM),
                      Status::InvArgs, "a floor at INVALID_V_IRQ_NUM leaves no room and is refused");
-            answered(
-                tally,
-                domain.init(ustl::views::Span<HIrqNum const>(GOOD), irq::INVALID_V_IRQ_NUM - 30),
-                Status::InvArgs, "a floor that rounds up out of the space is refused");
-            answered(
-                tally,
-                domain.init(ustl::views::Span<HIrqNum const>(many), irq::INVALID_V_IRQ_NUM - 31),
-                Status::InvArgs, "a floor that leaves room for fewer virqs than lines is refused");
+            answered(tally,
+                     build_domain(domain, ustl::views::Span<HIrqNum const>(GOOD),
+                                  irq::INVALID_V_IRQ_NUM - 30),
+                     Status::InvArgs, "a floor that rounds up out of the space is refused");
+            answered(tally,
+                     build_domain(domain, ustl::views::Span<HIrqNum const>(many),
+                                  irq::INVALID_V_IRQ_NUM - 31),
+                     Status::InvArgs,
+                     "a floor that leaves room for fewer virqs than lines is refused");
             verdict(tally, domain.virq_of(3) == irq::INVALID_V_IRQ_NUM && domain.hwirq_limit() == 0,
                     "and none of the three keeps anything");
-            answered(
-                tally,
-                domain.init(ustl::views::Span<HIrqNum const>(GOOD), irq::INVALID_V_IRQ_NUM - 31),
-                Status::Ok, "the last multiple of 32 with room for the line is taken");
+            answered(tally,
+                     build_domain(domain, ustl::views::Span<HIrqNum const>(GOOD),
+                                  irq::INVALID_V_IRQ_NUM - 31),
+                     Status::Ok, "the last multiple of 32 with room for the line is taken");
             verdict(tally, domain.virq_of(3) == irq::INVALID_V_IRQ_NUM - 31,
                     "and is the line's virq");
-            domain.reset();
         }
         {
             Domain domain;
-            answered(tally, domain.init(ustl::views::Span<HIrqNum const>(TWICE)),
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(TWICE)),
                      Status::AlreadyExists, "a number given twice is refused");
             verdict(tally, domain.virq_of(3) == irq::INVALID_V_IRQ_NUM && domain.hwirq_limit() == 0,
                     "and the refusal keeps nothing");
-            answered(tally, domain.init(ustl::views::Span<HIrqNum const>(GOOD)), Status::Ok,
-                     "so the same domain takes a good list after it");
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(GOOD)),
+                     Status::Ok, "so the same domain takes a good list after it");
             verdict(tally, domain.virq_of(3) == 32 && domain.hwirq_of(32) == 3, "and maps it");
-            answered(tally, domain.init(ustl::views::Span<HIrqNum const>(OTHER)), Status::BadState,
-                     "a built domain refuses a second build");
+            answered(tally, build_domain(domain, ustl::views::Span<HIrqNum const>(OTHER)),
+                     Status::BadState, "a built domain refuses a second build");
             verdict(tally,
                     domain.virq_of(3) == 32 && domain.hwirq_of(32) == 3 &&
                         domain.virq_of(9) == irq::INVALID_V_IRQ_NUM,
                     "and keeps its map");
-            domain.reset();
         }
     }
 

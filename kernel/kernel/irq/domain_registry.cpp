@@ -16,7 +16,7 @@ struct DomainRegistry::Entry {
     /// The block of virqs of the table: [first, end).
     VIrqNum first;
     VIrqNum end;
-    DescTable *table;
+    Domain *table;
     DomainSlot *slot;
 };
 
@@ -71,14 +71,14 @@ auto DomainRegistry::register_domain(DomainId const id,
             floor = m_next_virq;
         }
 
-        auto *const table = new (mm::GAF_KERNEL) DescTable();
+        auto *const table = new (mm::GAF_KERNEL) Domain();
         auto *const entry = new (mm::GAF_KERNEL) Entry{};
         if (table == nullptr || entry == nullptr) {
             delete table;
             delete entry;
             return Status::NoMemory;
         }
-        // A refused table is not half kept: DescTable::init() gives back what
+        // A refused table is not half kept: Domain::init() gives back what
         // it made.
         if (auto const status = table->init(hirqnums, chip, floor); status != Status::Ok) {
             delete table;
@@ -119,7 +119,6 @@ auto DomainRegistry::register_domain(DomainId const id,
         }
 
         // Never published, so no reader has seen either: they go at once.
-        table->destroy();
         delete table;
         delete entry;
         if (!raced) {
@@ -182,7 +181,6 @@ auto DomainRegistry::unregister_domain(DomainId const id) -> Status {
 
     task::irq_rcu_synchronize();
 
-    entry->table->destroy();
     delete entry->table;
     {
         // The place is given back with nothing in it that points at the
@@ -197,7 +195,7 @@ auto DomainRegistry::unregister_domain(DomainId const id) -> Status {
 }
 
 auto DomainRegistry::table_of(VIrqNum const virqnum, task::IrqRcuReadGuard const &guard) const
-    -> DescTable * {
+    -> Domain * {
     for (usize i = 0; i < CAPACITY; ++i) {
         auto *const entry = m_published[i].read(guard);
         if (entry != nullptr && virqnum >= entry->first && virqnum < entry->end) {
@@ -207,8 +205,7 @@ auto DomainRegistry::table_of(VIrqNum const virqnum, task::IrqRcuReadGuard const
     return nullptr;
 }
 
-auto DomainRegistry::find(DomainId const id, task::IrqRcuReadGuard const &guard) const
-    -> DescTable * {
+auto DomainRegistry::find(DomainId const id, task::IrqRcuReadGuard const &guard) const -> Domain * {
     for (usize i = 0; i < CAPACITY; ++i) {
         auto *const entry = m_published[i].read(guard);
         if (entry != nullptr && entry->id == id) {

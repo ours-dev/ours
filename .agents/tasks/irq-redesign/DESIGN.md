@@ -38,7 +38,7 @@ D1 (b)'s object vocabulary and consolidated domain ownership were accepted on 20
 | ControllerSource | Immutable binding information handed to ControllerOps | Domain-scoped source identity and controller context | Controller adapters |
 | DomainEndpoint | Opaque dispatch access published by a domain; replaces raw-table use through DomainSlot | Publication slot; no ownership of the controller | Root handler |
 
-The registry remains an internal implementation that locates domains and allocates globally unique virq blocks. It does not become a new public IrqManager. A Domain may internally compose a map and a line store, but those no longer repeat the whole caller control surface.
+Domain now owns one private Storage aggregate of mapping vectors and boxed Lines; DescTable is removed. The registry remains an internal implementation that locates domains and allocates globally unique virq blocks. It does not become a new public IrqManager. A Domain may internally compose a map and a line store, but those no longer repeat the whole caller control surface.
 
 ### Interfaces and placement
 

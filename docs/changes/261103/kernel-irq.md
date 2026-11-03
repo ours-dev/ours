@@ -220,3 +220,49 @@ None. The user suspended teaching exercises and requested development.
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task.
+
+## Make Domain the single owner of source mappings and line storage (2026-11-03)
+
+**Files**
+- `kernel/include/ours/irq/domain.hpp`, `kernel/kernel/irq/domain.cpp` — implement a noncopyable, address-stable Domain with one private Storage aggregate.
+- `kernel/include/ours/irq/desc_table.hpp`, `kernel/kernel/irq/desc_table.cpp` — removed.
+- Registry, facade, kernel tests and GN sources — use the owning Domain directly.
+
+**Symptom**
+Domain owned allocation-backed Span fields while DescTable owned another allocation of Line pointers. The map was implicitly copied into the table, and failure or removal depended on manual discard, reset and destroy calls. The public names split one source set's lifetime across unrelated representations.
+
+**Cause**
+A Span describes a borrowed range and does not express allocation ownership. Copying it preserved pointers rather than transferring ownership; an ordinary C++ copy could silently create two apparent owners. Separate map and table objects also repeated lifetime operations and left test scopes responsible for manual cleanup.
+
+**Change**
+Domain now owns a private Storage aggregate:
+
+```cpp
+struct Storage {
+    ktl::Vec<VIrqNum> virqs;
+    ktl::Vec<HIrqNum> hwirqs;
+    ktl::Vec<ustl::Box<Line>> lines;
+};
+```
+
+Initialization constructs a local Storage, validates source identities, builds the bijection and binds every Line, then moves the complete aggregate into Domain. Refusal destroys the local aggregate automatically. Domain cannot be copied or moved; its destructor checks that no registrations remain, then its existing owning containers reclaim the lines and arrays. Registry removal still waits for the RCU grace period before deleting Domain. No destructor performs an implicit grace period or silently detaches a live registration.
+
+The separate DescTable type, manual discard lambda, map reset and table destroy interface are removed. The old post-destructor byte-poison loop is also removed: scoped ownership and the existing destruction sentinel replace manual destruction and deallocation. This does not replace the reader grace-period guarantee.
+
+**Reference**
+None, this project's own D1 (b) ownership model, implemented with existing ktl::Vec and ustl::Box rather than a new ownership utility.
+
+**Verification**
+All 14 touched C++ files ran formatting and clang-tidy with no new changed-line diagnostics. Both dev images boot: dbg 46 passed, 5 skipped, 0 failed; rel 44 passed, 8 skipped, 0 failed, 7/7 required. All 161 host tests pass. All nine IRQ suites pass, including irqdomain.test's 87 layout, refusal and repeated-initialization checks through the actual owning Domain; compile-time assertions reject Domain copy and move. IRQ removal and reader suites also pass: irqrevoke.test 37, irqregistry.test 66 and irqrcu.test 34. The remaining suites pass: irq.test 77, irqcontroller.test 18, interrupt.test 67, interruptline.test 78, pinlines.test 28. Performance was not measured.
+
+**Deliberately not done**
+Raw domain pointer exposure, registry entry ownership and repeated facade controls remain for the next interface increment. Numeric identity separation and completion revalidation remain in the acceptance ledger.
+
+**How it was found**
+Review M3 identified ownership represented by copyable views; following the construction and retirement paths showed that mapping and line storage have exactly the same lifetime.
+
+**The user's prediction**
+None. The user chose D1 (b) and suspended teaching exercises.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.

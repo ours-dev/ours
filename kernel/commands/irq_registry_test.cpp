@@ -136,12 +136,12 @@ namespace {
         return registry.virq_of(id, hirqnum, guard);
     }
 
-    auto owner_of(DomainRegistry const &registry, VIrqNum const virq) -> irq::DescTable * {
+    auto owner_of(DomainRegistry const &registry, VIrqNum const virq) -> irq::Domain * {
         IrqRcuReadGuard const guard;
         return registry.table_of(virq, guard);
     }
 
-    auto find_in(DomainRegistry const &registry, DomainId const id) -> irq::DescTable * {
+    auto find_in(DomainRegistry const &registry, DomainId const id) -> irq::Domain * {
         IrqRcuReadGuard const guard;
         return registry.find(id, guard);
     }
@@ -152,7 +152,7 @@ namespace {
         auto _ = registry.unregister_domain(id);
     }
 
-    auto slot_holds(DomainSlot const &slot, irq::DescTable const *const table) -> bool {
+    auto slot_holds(DomainSlot const &slot, irq::Domain const *const table) -> bool {
         arch::AutoInterruptDisabler const off;
         return slot.table_with_irqs_off() == table;
     }

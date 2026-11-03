@@ -108,7 +108,7 @@ class Line final {
     ///   2. revoke(): takes every action off the line, tells each through its
     ///      cancel hook, masks the line.
     ///
-    /// The loops over all of a domain's lines are DescTable's
+    /// The loops over all of a domain's lines are Domain's
     /// (begin_removal(), finish_removal()).
     [[nodiscard]]
     auto check_revocable() -> Status;

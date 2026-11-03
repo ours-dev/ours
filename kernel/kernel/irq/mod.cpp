@@ -1,4 +1,4 @@
-#include <ours/irq/desc_table.hpp>
+#include <ours/irq/domain.hpp>
 #include <ours/irq/domain_registry.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/irq/registration.hpp>
@@ -34,12 +34,12 @@ namespace {
     }
 
     /// The table that owns `virqnum`, `guard` held over it and over the caller's
-    /// whole use of the answer: DescTable::find_line()'s contract, one directory
+    /// whole use of the answer: Domain::find_line()'s contract, one directory
     /// up. InvArgs for INVALID_V_IRQ_NUM, NoResource for a number no registered
     /// domain owns.
     [[nodiscard]]
     auto find_table(VIrqNum const virqnum, task::IrqRcuReadGuard const &guard)
-        -> ktl::Result<DescTable *> {
+        -> ktl::Result<Domain *> {
         if (virqnum == INVALID_V_IRQ_NUM) {
             return ustl::err(Status::InvArgs);
         }
@@ -187,7 +187,7 @@ auto hwirq_of_virq(VIrqNum const virqnum) -> HIrqNum {
     return table->hwirq_of(virqnum);
 }
 
-auto handle_irq_generic(DescTable *const table, HIrqNum const hirqnum) -> bool {
+auto handle_irq_generic(Domain *const table, HIrqNum const hirqnum) -> bool {
     ASSERT(hirqnum != INVALID_H_IRQ_NUM);
     if (table == nullptr) {
         return false;
@@ -250,7 +250,7 @@ auto is_kernel_owned(VIrqNum const virqnum) -> bool {
     return table->is_kernel_owned(virqnum);
 }
 
-auto root_table_for_test() -> DescTable * {
+auto root_table_for_test() -> Domain * {
     task::IrqRcuReadGuard const guard;
     return get_domain_registry()->find(DomainId::Root, guard);
 }

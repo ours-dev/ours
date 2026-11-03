@@ -69,7 +69,7 @@
 // host test target, and the barrier needs two CPUs and the real spin lock.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
-#include <ours/irq/desc_table.hpp>
+#include <ours/irq/domain.hpp>
 #include <ours/irq/line.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/irq/registration.hpp>
@@ -503,7 +503,7 @@ namespace {
         // A table of the test's own. It refuses the chip before it makes a
         // line, so it holds nothing to free.
         std::array<HIrqNum, 1> const numbers{idle_line()};
-        irq::DescTable table;
+        irq::Domain table;
         auto const refused = table.init(ustl::views::Span(numbers), NO_EOI_CHIP);
 
         verdict(tally, bound == Status::Ok && attached == Status::Ok && detached == Status::Ok,
@@ -701,7 +701,7 @@ namespace {
         // The line table refuses the chip before it makes a line, so it holds
         // nothing to free.
         std::array<HIrqNum, 1> const numbers{idle_line()};
-        irq::DescTable table;
+        irq::Domain table;
         auto const refused = table.init(ustl::views::Span(numbers), NO_MASK_CHIP);
 
         // The pin starts unmasked, so an end of interrupt sent before the

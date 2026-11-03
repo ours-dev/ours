@@ -4,7 +4,7 @@
 #define OURS_IRQ_DOMAIN_REGISTRY_HPP 1
 
 #include <ours/irq/controller.hpp>
-#include <ours/irq/desc_table.hpp>
+#include <ours/irq/domain.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -28,14 +28,14 @@ class DomainSlot final {
     ~DomainSlot() = default;
 
     [[nodiscard]]
-    auto table_with_irqs_off() const -> DescTable * {
+    auto table_with_irqs_off() const -> Domain * {
         return m_table.read_with_irqs_off();
     }
 
   private:
     friend class DomainRegistry;
 
-    task::IrqRcuPointer<DescTable> m_table;
+    task::IrqRcuPointer<Domain> m_table;
 };
 
 /// The interrupt controllers' domains of a machine: for each, an id, the block
@@ -67,7 +67,7 @@ class DomainRegistry final {
     /// line bound to `chip`, and publishes it under `id` and into `slot`.
     /// Thread context, and may allocate. InvArgs for Invalid, for an empty list
     /// or a number that is no hardware number or a chip that cannot end an
-    /// interrupt or mask (DescTable::init()); AlreadyExists for an id in use,
+    /// interrupt or mask (Domain::init()); AlreadyExists for an id in use,
     /// also while it is being removed, or a number given twice; BadState for
     /// a slot that holds a table; NoSpace when CAPACITY domains are registered;
     /// NoMemory. Nothing is kept from a refusal. The slot must not be freed
@@ -104,11 +104,11 @@ class DomainRegistry final {
     /// The table of the domain that owns `virqnum`, or null if none does, for
     /// as long as `guard` lives and no longer.
     [[nodiscard]]
-    auto table_of(VIrqNum virqnum, task::IrqRcuReadGuard const &guard) const -> DescTable *;
+    auto table_of(VIrqNum virqnum, task::IrqRcuReadGuard const &guard) const -> Domain *;
 
     /// The table of domain `id`, or null.
     [[nodiscard]]
-    auto find(DomainId id, task::IrqRcuReadGuard const &guard) const -> DescTable *;
+    auto find(DomainId id, task::IrqRcuReadGuard const &guard) const -> Domain *;
 
     /// The virq of hardware number `hirqnum` in domain `id`;
     /// INVALID_V_IRQ_NUM if there is no such domain or the domain has no such
