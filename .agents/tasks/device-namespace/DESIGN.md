@@ -119,9 +119,9 @@ replumbing it.
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| Who hosts the tree | child component (registry) / built-in in init | child component | — | — |
-| What a device publishes | the driver's outgoing directory end / a bare protocol channel per device | the outgoing directory end — forwarding is directory-native; the client-visible leaf is the protocol endpoint (service node), not a per-device directory wrapper | — | — |
-| Node naming | `class/block/000` numbered by publish order / by driver-given names | publish order, class dirs (Fuchsia devfs shape) | — | — |
+| Who hosts the tree | child component (registry) / built-in in init | child component | — | user proceeded on the recommendations 2026-11-04 |
+| What a device publishes | the driver's outgoing directory end / a bare protocol channel per device | the outgoing directory end — forwarding is directory-native; the client-visible leaf is the protocol endpoint (service node), not a per-device directory wrapper | — | user proceeded on the recommendations 2026-11-04 |
+| Node naming | `class/block/000` numbered by publish order / by driver-given names | publish order, class dirs (Fuchsia devfs shape) | — | user proceeded on the recommendations 2026-11-04 |
 | The tree's top level | registry composes every path; drivers name only a class and an instance / publishers name paths | reserve the top level: Publish mounts only under `class/`, `class/` outside stays unallocated for future views (the manager's topology), and no driver can squat them | — | user proposed the reservation 2026-11-04 |
 
 ## Testing and verification
