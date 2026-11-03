@@ -4,7 +4,7 @@
 #define OURS_TASK_SCHED_FAIR_HPP 1
 
 #include <ours/compiler.hpp>
-#include <ours/task/sched/context.hpp>
+#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/types.hpp>
 
 #include <gktl/canary.hpp>
@@ -12,20 +12,20 @@
 
 namespace ours::task::sched {
 /// Fair (EEVDF) discipline's per-CPU run queue -- all of the Fair
-/// discipline's per-CPU state. Held directly by Scheduler (see
-/// Scheduler::fair_run_queue()) rather than through its own CpuLocal
-/// instance: Scheduler is already a per-CPU singleton, so a second,
-/// independent per-CPU mechanism just for this queue would be redundant.
+/// discipline's per-CPU state. Held directly by the per-CPU RunQueue (see
+/// RunQueue::queue<Discipline::Normal>()) rather than through its own CpuLocal
+/// instance: the RunQueue is already per CPU, so a second, independent
+/// per-CPU mechanism just for this queue would be redundant.
 ///
 /// This mirrors Linux's `struct rq` embedding `struct cfs_rq cfs`
 /// directly rather than routing through a generic/type-erased slot: the
 /// set of disciplines is small and fixed at compile time (see
 /// `Discipline`), so the per-CPU container naming its disciplines' queues
-/// directly is simpler than full type erasure. `ISchedule`/`Schedule<>`
+/// directly is simpler than full type erasure. The `Schedule` interface
 /// already decouples the *behavior* (Fair's algorithm) from Scheduler;
 /// this only concerns where the *data* lives.
-class RunQueue {
-    using Self = RunQueue;
+class FairRunQueue {
+    using Self = FairRunQueue;
 
   public:
     FORCE_INLINE
@@ -33,16 +33,16 @@ class RunQueue {
         m_canary.verify<Self>();
     }
 
-    auto enqueue_object(Context &object) -> void;
+    auto enqueue_object(SchedEntity &object) -> void;
 
-    auto dequeue_object(Context &object) -> void;
+    auto dequeue_object(SchedEntity &object) -> void;
 
-    auto update_min_vruntime(Context &object) -> void;
+    auto update_min_vruntime(SchedEntity &object) -> void;
 
     /// Returns the lag of |object| relative to this runqueue.
     FORCE_INLINE
-    auto lag_of(Context &object) -> SchedDuration {
-        return avg_vruntime() - object.runtime();
+    auto lag_of(SchedEntity &object) -> SchedDuration {
+        return avg_vruntime() - object.exec_runtime();
     }
 
     FORCE_INLINE
@@ -107,18 +107,18 @@ class RunQueue {
     }
 
   private:
-    auto calc_weighted_time(Context &object) const -> SchedDuration;
+    auto calc_weighted_time(SchedEntity &object) const -> SchedDuration;
 
-    using Lesser = decltype([](Context const &x, Context const &y) noexcept {
+    using Lesser = decltype([](SchedEntity const &x, SchedEntity const &y) noexcept {
         return x.deadline() < y.deadline();
     });
     using Queue = ustl::collections::intrusive::MultiSet<
-        Context, ustl::collections::intrusive::ValueTraits<Context::RunQueueTraits<>>,
+        SchedEntity, ustl::collections::intrusive::ValueTraits<SchedEntity::RunQueueTraits<>>,
         ustl::collections::intrusive::Compare<Lesser>>;
 
     gktl::Canary m_canary{this};
     Queue queue_;
-    Context *current_;
+    SchedEntity *current_;
     Weight weight_sum_;
     SchedDuration total_vruntime_;
     SchedDuration min_vruntime_;

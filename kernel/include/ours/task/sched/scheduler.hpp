@@ -24,6 +24,12 @@
 #include <ustl/dyn.hpp>
 
 namespace ours::task::sched {
+#if SCHED_NORMAL_DISCIPLINE_FAIR
+/// The reference to the Fair discipline, made in fair.cpp where the class is
+/// complete.
+auto fair_schedule() -> ustl::Ref<Schedule>;
+#endif
+
 /// The core scheduler per cpu.
 class Scheduler {
     using Self = Scheduler;

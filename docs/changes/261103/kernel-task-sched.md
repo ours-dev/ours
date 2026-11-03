@@ -88,3 +88,90 @@ None
 - Why does the thread-safety analysis, which checked `TA_REQUIRES(rq.lock())` on the virtual declaration, say nothing about a call through a `Ref`, and which function now carries the check?
 - What did `x_schedule > y_schedule` compare, and why did it decide nothing while only one discipline was implemented?
 - Why is an empty `Ref` for Deadline safe to skip in `pick_next_thread()` and not safe to call?
+
+## Title: Fair is renamed onto the new framework, mechanically, and no further (2026-11-03)
+
+**Files**
+- `kernel/include/ours/task/sched/fair.hpp` — includes `sched_entity.hpp`; `Context` is `SchedEntity`; the class `RunQueue` is `FairRunQueue` (the name `RunQueue` is now the per-CPU object); `runtime()` is `exec_runtime()`
+- `kernel/kernel/task/sched/fair.cpp` — `Runtime`, `Context`, `EnqueueControl`, `DequeueControl`, `UnparkControl` and `scheduling_context()` renamed to `RunQueue`, `SchedEntity`, `EnqueueOptions`, `DequeueOptions`, `UnparkOptions` and `scheduling_entity()`; `m_params.*` renamed to `m_fair.*`, `m_exec_runtime` and `m_prev_exec_runtime`; `runtime.curr_thread` and `runtime.which_cpu` to `current_thread()` and `which_cpu()`; `fair_run_queue()` replaced by `runtime.queue<Discipline::Normal>()` in fourteen functions; `Fair` has no base class and no `override`; the explicit instantiation of the registrar is gone; `FAIR_SCHEDULE` and `fair_schedule()` added
+- `kernel/kernel/task/sched/scheduler.cpp`, `scheduler.hpp` — `normal_schedule()` chooses the object of `Discipline::Normal` (`NORMAL_SCHEDULE` of `RoundRobin`, or `fair_schedule()` where `SCHED_NORMAL_DISCIPLINE_FAIR` is on); `fair_schedule()` is declared under that switch
+- `kernel/include/ours/task/sched/run_queue.hpp` — the comment that said `FairRunQueue` was not defined yet
+- `.agents/tasks/sched-facade/DESIGN.md`, `docs/design/260918/kernel-task-sched.md` — the adaptation list, now what is done and what is left
+- `docs/repairs/261103/kernel-task-sched.md` — what is left, six items, each for the author
+
+**Symptom**
+None observable: Fair is still not built (`SCHED_NORMAL_DISCIPLINE_FAIR` is off by default), so the images, the boots and the tests are the ones of the entry above. With the switch on, `fair.cpp` still does not compile: 23 diagnostics in it and 3 in `scheduler.cpp`.
+
+**Cause**
+**Fair was written against names the framework no longer has**, and the previous entry left it alone on purpose. The user then asked for the adaptation, and chose the narrowest scope there was: rename what the compiler can name, and change no behaviour (2026-11-03: "Fair adaptation", then "mechanical renames, no semantics"). `kernel-design` lists `fair.*` as hands-off, "including mechanical renames"; this change was made on that explicit request, and the rule is left as written.
+
+Two results of the renaming are worth knowing before reading the diff.
+
+1. **`deadline()` is the one rename that would have changed what Fair does, so it was not made.** `fair.hpp` orders its tree by `x.deadline() < y.deadline()` and `Fair::update_thread()` tests `ctx.deadline() <= ctx.exec_runtime()`. The framework's `SchedEntity::deadline()` returned a field that nothing writes (so every thread was ordered by zero, and the test was always true), and it was replaced by `virtual_deadline()`, which returns `vdeadline`. The obvious rename compiles, and then orders the tree by the virtual deadline (a real order, where there was none) and compares a virtual-time value with real execution time (`SchedTime` and `SchedDuration` are one type, so the compiler says nothing). That is EEVDF's semantics being decided by a find-and-replace. It is the first item of `docs/repairs/261103/kernel-task-sched.md`, and the cause of nearly all of the diagnostics above: `Lesser` is in the definition of `FairRunQueue`, so the class is ill-formed and every use of it fails with it.
+2. **The diagnostic counts hide a missing member.** With `deadline()` renamed in a scratch copy, five diagnostics remain: `FairRunQueue::for_each` (called by `RunQueue::for_each_thread()`, and absent), three helpers that still call `Scheduler::Current::get().fair_run_queue()` (`is_object_eligible()`, `update_vlag()`, `set_next_object()`, which have no `RunQueue` parameter to take the queue from), and the `arm_preempt_timer` block of `set_next_thread()`. The 23 and the 3 do not include `for_each`, because the compiler does not report a missing member of a class it has already rejected.
+
+**Change**
+The renames, as a table:
+
+| Fair wrote | Now |
+|---|---|
+| `Context`, `scheduling_context()` | `SchedEntity`, `scheduling_entity()` |
+| `Runtime &`, `runtime.curr_thread`, `runtime.which_cpu` | `RunQueue &`, `runtime.current_thread()`, `runtime.which_cpu()` |
+| `Scheduler::Current::get().fair_run_queue()` | `runtime.queue<Discipline::Normal>()` |
+| `EnqueueControl`, `DequeueControl`, `UnparkControl` | `EnqueueOptions`, `DequeueOptions`, `UnparkOptions` |
+| `m_params.runtime`, `.prev_runtime` | `m_exec_runtime`, `m_prev_exec_runtime` |
+| `m_params.vruntime`, `.vdeadline`, `.vlag` | `m_fair.vruntime`, `.vdeadline`, `.vlag` |
+| `class Fair: public Schedule<Fair, Normal>` with `override`s, and `template class Schedule<Fair, Normal>;` | `class Fair final`, plain members, `constinit Fair FAIR_SCHEDULE;` |
+
+The reference to the object is made in `fair.cpp`, not in `scheduler.cpp`, because `Fair` is defined in the `.cpp`: `constinit Fair` needs the complete class, and `scheduler.cpp` only sees the declaration `fair_schedule()`.
+
+```cpp
+// scheduler.cpp, with SCHED_NORMAL_DISCIPLINE_FAIR on
+auto normal_schedule() -> ustl::Ref<Schedule> {
+    return fair_schedule();
+}
+
+// fair.cpp
+auto fair_schedule() -> ustl::Ref<Schedule> {
+    return ustl::Ref<Schedule>{FAIR_SCHEDULE};
+}
+```
+
+Kept as they were: `x.deadline() < y.deadline()`, `ctx.deadline() <= ctx.exec_runtime()`, the three helpers' calls of `fair_run_queue()`, `for_each` absent, the `arm_preempt_timer` block. None of them has a rename that is only a rename.
+
+Found by three adversarial reviewers, and not changed (all are in `docs/repairs/261103/kernel-task-sched.md`, or `docs/repairs/260917/kernel-task-sched.md` for the second):
+- `on_thread_tick` has no caller, so Fair's tick-driven charging never runs; `UpdateThread`, `OverrideThreadBaseProfile` and `MigrateThread` have no call site either, and the `OnThreadDead` call is commented out
+- `unpark_preempt` takes its two `Thread *` in the reverse of the interface's order
+- `on_thread_tick` calls `add_pending()` with its default, which names the executing CPU, not the run queue's
+- `FairRunQueue::m_num_queued` drifts by one on every park of a running thread
+- an enqueue into an empty tree divides by a zero weight sum, and `Fixed::operator/` saturates, so the first thread is given maximal `vruntime` and `vdeadline`
+
+The last two were read off the code, not run.
+
+Rejected: renaming `deadline()` to `virtual_deadline()` "because it is obviously what was meant" (item 1 above: it may be, and it is the author's to say), and deleting the `arm_preempt_timer` block, which computes a zero consumed slice and so looks dead, for the same reason.
+
+**Reference**
+None: this project's own code. For the unchanged semantics, the entry above and `docs/design/260918/kernel-task-sched.md`.
+
+**Verification**
+- Built and tested in a clean worktree (`.worktrees/fair-adapt`, HEAD `bcc31b8e` plus this diff). The switch is off in that build, so what it shows is that nothing else moved.
+- `python3 .agents/skills/verify/scripts/boot_check.py`: dbg PASS, 46 passed, 5 skipped, 0 failed; rel PASS, 44 passed, 8 skipped, 0 failed, 7/7 required; host-tests PASS, 164 passed. The counts are those of the entry above.
+- `preempt.test`, `threadjoin.test` and `hotplug.test` on the dbg image with four CPUs: all ok.
+- Fair itself was checked only by compiling `fair.cpp` and `scheduler.cpp` as syntax with the kernel's flags from `compile_commands.json` and `SCHED_NORMAL_DISCIPLINE_FAIR=true`: 23 and 3 diagnostics, and 5 with `deadline()` renamed in a scratch copy. Fair was not linked, booted or run.
+- `scripts/format_cpp.py --check` is clean on the five C++ files. `clang-tidy` was not run on `fair.cpp`: it is not in the compile database, since the switch is off.
+
+**Deliberately not done**
+- The switch is not turned on, and Fair is not built, linked or booted.
+- `deadline()`, `for_each`, the three helpers, the `arm_preempt_timer` block and the tick: the author's, in the repair file.
+- `kernel-design`'s "Hands off" rule is not changed. If the exception should become the rule, that is the user's to say.
+
+**How it was found**
+By the user's request after the scheduler seam was replaced: the previous entry's list of what bringing Fair back needs, applied up to the point where a rename stops being only a rename.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why does `deadline()` renamed to `virtual_deadline()` compile, and what does Fair then do that it did not before?
+- Why are there 23 diagnostics, then 5, and why is `for_each` in neither count?
+- Why is `fair_schedule()` defined in `fair.cpp` and only declared in `scheduler.hpp`?

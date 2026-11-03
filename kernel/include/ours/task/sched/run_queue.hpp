@@ -34,11 +34,9 @@ namespace ours::task::sched {
 /// The choice is `sched_normal_discipline` in //kernel/kernel_params.gni, the
 /// same shape as MemMap's two mutually exclusive implementations.
 ///
-/// The Fair branch names `FairRunQueue`, which Fair does not define yet: its
-/// class is still called `RunQueue`, the name this per-CPU object has now
-/// taken. Renaming it is part of bringing Fair back -- see the adaptation
-/// list in docs/design/260918 -- and until then the Fair branch does not
-/// build, which is the same thing the rest of that list already says.
+/// The Fair branch names `FairRunQueue`, which fair.hpp defines. The Fair branch
+/// still does not build: what is left of the adaptation list in
+/// docs/design/260918 is in .agents/tasks/sched-facade/DESIGN.md.
 #if SCHED_NORMAL_DISCIPLINE_FAIR
 using NormalRunQueue = FairRunQueue;
 #else

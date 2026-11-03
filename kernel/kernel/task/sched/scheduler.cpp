@@ -86,17 +86,22 @@ using ours::sync::SpinLock;
 
 namespace ours::task::sched {
 namespace {
-    /// The discipline that occupies Discipline::Normal, chosen at build time
-    /// the way NormalRunQueue is.
+    /// The schedule of the discipline that occupies Discipline::Normal, chosen
+    /// at build time the way NormalRunQueue is. A discipline keeps nothing of
+    /// its own, everything per CPU is in the RunQueue it is handed, so there is
+    /// one object of it.
 #if SCHED_NORMAL_DISCIPLINE_FAIR
-    using NormalSchedule = Fair;
+    // Fair is defined in fair.cpp, and the reference is made there.
+    auto normal_schedule() -> ustl::Ref<Schedule> {
+        return fair_schedule();
+    }
 #else
-    using NormalSchedule = RoundRobin;
-#endif
+    constinit RoundRobin NORMAL_SCHEDULE;
 
-    /// The one object of it. A discipline keeps nothing of its own: everything
-    /// per CPU is in the RunQueue it is handed.
-    constinit NormalSchedule NORMAL_SCHEDULE;
+    auto normal_schedule() -> ustl::Ref<Schedule> {
+        return ustl::Ref<Schedule>{NORMAL_SCHEDULE};
+    }
+#endif
 
     GKTL_COUNTER(SCHEDULE_IDLE_PAST, "schedule.idle_past");
     GKTL_COUNTER(SCHEDULE_PREEMPT_PAST, "schedule.preempt_past");
@@ -373,7 +378,7 @@ auto Scheduler::set_state(State state, bool on) -> void {
 auto Scheduler::schedule_of(Discipline const discipline) -> ustl::Ref<Schedule> {
     switch (discipline) {
         case Discipline::Normal:
-            return ustl::Ref<Schedule>{NORMAL_SCHEDULE};
+            return normal_schedule();
         case Discipline::Deadline:
         case Discipline::Count:
             break;
