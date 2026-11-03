@@ -69,6 +69,7 @@
 // host test target, and the barrier needs two CPUs and the real spin lock.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
+#include <ours/irq/entry.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/irq/registration.hpp>
 #include <ours/mm/gaf.hpp>
@@ -80,6 +81,8 @@
 #include <array>
 #include <atomic>
 
+#include <arch/auto_interrupt_disabler.hpp>
+#include <arch/interrupt.hpp>
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
@@ -92,7 +95,7 @@ namespace {
     /// The PIT's line, by the number time.cpp attaches it with: its virq, as
     /// every line is named. On q35 the MADT sends ISA 0 to GSI 2, and the line
     /// is the one made for that GSI.
-    auto pit_line() -> IrqId {
+    auto pit_line() -> VIrqNum {
         return platform::isa_irq_line(ISA_IRQ_PIT);
     }
 
@@ -100,13 +103,13 @@ namespace {
     /// platform programs the line masked, and no kernel driver attaches to
     /// it, so it is free. q35 has no override for it: it is GSI 3, and the
     /// line is the one made for that GSI.
-    auto idle_line() -> IrqId {
+    auto idle_line() -> VIrqNum {
         return platform::isa_irq_line(ISA_IRQ_SERIAL2);
     }
 
     /// The number of the test's own Permanent line, which the line table
     /// does not reach: it only names the line to its actions.
-    constexpr auto OWN_LINE = IrqId{0xffff'fffe};
+    constexpr auto OWN_LINE = VIrqNum{0xffff'fffe};
 
     constexpr usize ROUNDS = 1000;
     constexpr usize BARRIER_ROUNDS = 300;
@@ -150,7 +153,7 @@ namespace {
         usize hold_spins = 0;
     };
 
-    auto probe_handler(IrqId, void *const context) -> irq::IrqReturn {
+    auto probe_handler(VIrqNum, void *const context) -> irq::IrqReturn {
         auto &probe = *static_cast<Probe *>(context);
         probe.held_locks.store(sync::SpinLock::num_held_cpu(), std::memory_order_relaxed);
         probe.preemption_disabled.store(
@@ -250,7 +253,7 @@ namespace {
     };
 
     /// The spurious count of a line the test knows exists.
-    auto spurious_on(IrqId const line) -> u64 {
+    auto spurious_on(VIrqNum const line) -> u64 {
         auto const count = irq::spurious_count(line);
         if (count.is_none()) {
             return 0;
@@ -315,7 +318,7 @@ namespace {
     /// case are leaked, one pair per run: the Permanent action can never come
     /// off.
     auto check_permanent_line(Tally &tally) -> void {
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HardwareIrq{7}, OWN_LINE);
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         auto *const c = new (mm::GAF_KERNEL) PermanentCase{};
         if (line == nullptr || c == nullptr) {
             verdict(tally, false, "allocate the Permanent line");
@@ -504,7 +507,7 @@ namespace {
     /// On a line of the test's own, outside the table, bound to the counting
     /// chip, so the ends of interrupt are counted and no controller sees one.
     auto check_end_of_interrupt(Tally &tally) -> void {
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HardwareIrq{7}, OWN_LINE);
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
             verdict(tally, false, "allocate the counting line");
             return;
@@ -530,7 +533,7 @@ namespace {
 
         // A table of the test's own. It refuses the chip before it makes a
         // line, so it holds nothing to free.
-        std::array<HardwareIrq, 1> const numbers{HardwareIrq{3}};
+        std::array<HIrqNum, 1> const numbers{HIrqNum{3}};
         irq::Domain table;
         auto const refused = table.init(ustl::views::Span(numbers), NO_EOI_CHIP);
 
@@ -551,7 +554,7 @@ namespace {
     /// A line of the test's own, outside the table, bound to `chip`; null if
     /// it cannot be made. The caller deletes it, with nobody on it.
     auto own_line(irq::ControllerOps const &chip) -> irq::Line * {
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HardwareIrq{7}, OWN_LINE);
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
             return nullptr;
         }
@@ -732,7 +735,7 @@ namespace {
 
         // The line table refuses the chip before it makes a line, so it holds
         // nothing to free.
-        std::array<HardwareIrq, 1> const numbers{HardwareIrq{3}};
+        std::array<HIrqNum, 1> const numbers{HIrqNum{3}};
         irq::Domain table;
         auto const refused = table.init(ustl::views::Span(numbers), NO_MASK_CHIP);
 
@@ -776,7 +779,7 @@ namespace {
             {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
 
         auto const no_line_status = irq::mask(OWN_LINE);
-        auto const invalid_status = irq::unmask(IrqId::Invalid);
+        auto const invalid_status = irq::unmask(VIrqNum::Invalid);
         auto const pit_status =
             irq::configure(pit_line(), irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
 
@@ -807,7 +810,7 @@ namespace {
         auto const no_line_mask_read = irq::is_masked_for_test(OWN_LINE);
 
         // A line of the test's own, outside the table, which no chip drives.
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HardwareIrq{7}, OWN_LINE);
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
             verdict(tally, false, "allocate the line with no chip");
             return;
@@ -870,7 +873,7 @@ namespace {
     /// Whether `line` is masked at its controller now: the pin kept in memory
     /// for a line of the test's own, the IO-APIC entry for a line of the
     /// table. A read that fails answers false.
-    auto masked_now(IrqId const line) -> bool {
+    auto masked_now(VIrqNum const line) -> bool {
         if (line == OWN_LINE) {
             return PIN_MASKED.load(std::memory_order_relaxed);
         }
@@ -882,7 +885,7 @@ namespace {
     /// can: that the flow masks a Oneshot line before the action runs, not
     /// only by the time the dispatch returns. The read takes LI under the
     /// dispatch's L1, the order every other path takes them in.
-    auto oneshot_handler(IrqId const line, void *const context) -> irq::IrqReturn {
+    auto oneshot_handler(VIrqNum const line, void *const context) -> irq::IrqReturn {
         auto &probe = *static_cast<OneshotProbe *>(context);
         probe.saw_masked.store(masked_now(line), std::memory_order_relaxed);
         return probe.answer.load(std::memory_order_relaxed);
@@ -1175,7 +1178,7 @@ namespace {
         /// Holds the line for HOLD_FOR, timed by the steady clock, which reads
         /// its counter with interrupts off as well as on: the dispatch holds
         /// the line's lock with interrupts off for the whole of it.
-        static auto on_interrupt(IrqId, void *const context) -> irq::IrqReturn {
+        static auto on_interrupt(VIrqNum, void *const context) -> irq::IrqReturn {
             auto &c = *static_cast<HoldCase *>(context);
             c.started.store(true, std::memory_order_release);
             auto const until = time::SteadyClock::now() + HOLD_FOR;
@@ -1380,9 +1383,49 @@ namespace {
         verdict(tally, spurious == unhandled, "every unhandled dispatch counted as spurious");
     }
 
+    auto check_nested_entry(Tally &tally) -> void {
+        auto entered_outer = false;
+        auto entered_inner = false;
+        auto restored_outer = false;
+        auto restored_original = false;
+        {
+            arch::AutoInterruptDisabler const interrupts_off;
+            task::AutoPreemptDisabler const pinned;
+            auto &state = task::Thread::Current::preemption_state();
+            auto const preemption = state.preemption_disabled_count();
+            auto const eager = state.eager_resched_disabled_count();
+            auto *const original = irq::current_frame();
+            arch::IrqFrame outer{};
+            arch::IrqFrame inner{};
+            auto *const first = irq::enter_trap(&outer);
+            entered_outer = first == original && irq::current_frame() == &outer &&
+                            state.preemption_disabled_count() == preemption + 1 &&
+                            state.eager_resched_disabled_count() == eager + 1;
+            auto *const second = irq::enter_trap(&inner);
+            entered_inner = second == &outer && irq::current_frame() == &inner &&
+                            state.preemption_disabled_count() == preemption + 2 &&
+                            state.eager_resched_disabled_count() == eager + 2;
+            auto const inner_reschedule = irq::leave_trap(second);
+            restored_outer = !inner_reschedule && irq::current_frame() == &outer &&
+                             state.preemption_disabled_count() == preemption + 1 &&
+                             state.eager_resched_disabled_count() == eager + 1;
+            auto const outer_reschedule = irq::leave_trap(first);
+            restored_original = !outer_reschedule && irq::current_frame() == original &&
+                                state.preemption_disabled_count() == preemption &&
+                                state.eager_resched_disabled_count() == eager;
+        }
+        verdict(tally, entered_outer,
+                "outer trap publishes its frame and raises both disable counts");
+        verdict(tally, entered_inner,
+                "nested trap preserves the outer frame and nests both counts");
+        verdict(tally, restored_outer, "inner exit restores the outer frame and cannot preempt");
+        verdict(tally, restored_original, "outer exit restores the original frame and both counts");
+    }
+
     auto irq_test_command(int, char **) -> int {
         Tally tally;
 
+        check_nested_entry(tally);
         check_pit_line_is_taken(tally);
         check_permanent_line(tally);
         check_idle_line_repeatedly(tally);

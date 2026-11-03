@@ -507,3 +507,78 @@ None. Teaching exercises are suspended for this task.
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task.
+
+## Retain the requested HIrqNum and VIrqNum spelling for strong identities (2026-11-03)
+
+**Files**
+- `system/public/ours/types.hpp` and IRQ interfaces/callers — use distinct scoped HIrqNum and VIrqNum enums throughout.
+
+**Symptom**
+The shared checkout's type migration used HIrqNum/VIrqNum while the IRQ increment used HardwareIrq/IrqId. The user explicitly selected the former spelling when asked which interface to keep.
+
+**Cause**
+The safety property is type distinction, not a particular spelling. Parallel interface migrations need one canonical vocabulary; adding aliases would retain two vocabularies and reintroduce redundant compatibility surface.
+
+**Change**
+Rename the two scoped types to HIrqNum and VIrqNum, including namespace imports, explicit conversions, callback signatures and compile-time interface checks. Keep the existing source/id semantic roles, Invalid values, u32 width and prohibition on implicit mixing. No compatibility aliases or arithmetic operators are added. The user-directed spelling overrides the earlier prototype names without reverting to primitive aliases.
+
+The shared worktree also contains an independent, unfinished VirtAddr/PhysAddr migration. Its code is preserved. This increment is built in .worktrees/codex-irq-final-review on codex/irq-final-review from 8a96f1e2, with only the IRQ type spelling changed in the common types header. No claim is made that the shared address migration builds. The application created the worktree in its managed directory; it was moved under the repository-required .worktrees directory before use. The application cannot attach the relocated directory as managed, so commands use the explicit project-local path.
+
+**Reference**
+None, the user's explicit naming decision. The strong-type design and boundary assertions are unchanged.
+
+**Verification**
+All 39 changed C++ files ran changed-line formatting and LLVM 23 clang-tidy; the architecture types header used actual IO-APIC flags to avoid incorrect automatic header inference. No new changed-line diagnostics remain. In out/irq-final, both images boot: dbg 46 passed, 5 skipped, 0 failed; rel 44 passed, 8 skipped, 0 failed, 7/7 required. All 161 host tests and all nine IRQ suites pass at their existing counts. Compile-time checks still reject numeric/source/id mixing at the real interfaces. Performance was not measured.
+
+**Deliberately not done**
+No address-type changes, old-name aliases or integration of unrelated shared work. Trap-entry behavior is a separate increment.
+
+**How it was found**
+A shared-checkout build exposed both address conversion failures and missing IRQ type names. Inspection of git diff separated the independent address edits; the user selected HIrqNum/VIrqNum, and the IRQ-only migration was verified in isolation.
+
+**The user's prediction**
+None. The user selected the canonical spelling, not a teaching exercise.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.
+
+## Separate trap entry and restore outer frames on nested exit (2026-11-03)
+
+**Files**
+- `kernel/include/ours/irq/entry.hpp`, `kernel/kernel/irq/entry.cpp` — receiving-CPU frame state, root-handler publication and enter/leave scheduler transitions.
+- `kernel/arch/x86/kernel/faults.cpp`, frame consumers and IRQ facade — use the entry boundary; keep line controls free of trap bookkeeping.
+- `kernel/commands/irq_test.cpp` — nested entry/frame/count regression checks.
+- IRQ GN files, main and platform initialization — remove two empty initialization implementations, their header and no-op callers/includes; retain InitLevel::Irq dispatch.
+
+**Symptom**
+Nested regular traps overwrote CURRENT_FRAME, and inner exit cleared it instead of restoring the outer frame. Instrumentation then observed no active trap while the outer handler was still running. The line-control facade also owned CPU entry bookkeeping and exposed empty generic/architecture initialization calls.
+
+**Cause**
+Disable counts already nested, but a single frame pointer with unconditional clearing did not encode the trap stack. Counting depth alone would not recover the previous pointer. The actual controller initialization was already performed by the platform's Irq-level hook; the generic call and unreferenced architecture stub had no invariant or operation to own.
+
+**Change**
+Before, handle_irq_preamble wrote CURRENT_FRAME and handle_irq_postamble wrote null. Now enter_trap returns the previous frame and raises both disable counts; leave_trap restores that pointer, enables eager rescheduling, then drops preemption without scheduling and returns whether the architecture caller should preempt. The previous-frame token lives on the existing trap stack. Architecture finishes this scope before scheduling or delivering user signals. NMI, double fault and machine check keep their separate entry path.
+
+entry.hpp/entry.cpp now own this protocol and one-time root-handler publication. mod.hpp/mod.cpp expose line control only. Sampler, lockup detection and logging import the entry interface directly. Empty initialization functions and their callers/includes are removed; set_init_level(InitLevel::Irq) remains and still invokes the actual platform hook.
+
+A separate nesting counter was rejected because it cannot recover an outer frame. A heap context was rejected because the stack already owns both lifetimes. A destructor that reschedules was rejected because architecture must decide after entry bookkeeping is put away.
+
+**Reference**
+None, this project's own CPU-local frame and scheduler-count invariant. The preemption-state documentation already identified the required save/restore behavior; the implementation now supplies it without another per-thread IRQ count.
+
+**Verification**
+All 14 changed C++ files ran changed-line formatting and LLVM 23 clang-tidy; both GN files ran the repository formatter without reordering lists. No new changed-line diagnostics remain. irq.test grows from 78 to 82 checks: outer entry, nested entry, inner restoration and original-state restoration, including both disable counts. A counterfactual build changed only leave_trap back to clearing the pointer; the intended inner-restoration check failed (1 of 82). A finally scope restored the exact saved source and rebuilt it; byte comparison confirms restoration.
+
+The final fixed build in out/irq-final passes both images: dbg 46 passed, 5 skipped, 0 failed; rel 44 passed, 8 skipped, 0 failed, 7/7 required. All 161 host tests and all nine suites pass: irq.test 82, irqcontroller.test 49, irqrevoke.test 37, irqregistry.test 85, irqdomain.test 87, irqrcu.test 34, interrupt.test 67, interruptline.test 83, pinlines.test 28. Negative logs are /tmp/irq-entry-negative-tests.log; positive logs are /tmp/irq-entry-final-tests.log and /tmp/irq-entry-final-verify.log. Performance was not measured.
+
+**Deliberately not done**
+No new trap depth query, NMI accounting, scheduler policy change, Fair edits or address-type migration. Existing platform ISA override priority and lockdep class infrastructure repairs remain separate from the generic IRQ rewrite.
+
+**How it was found**
+The final responsibility audit followed CURRENT_FRAME writers and readers through nested entry. Reading the old postamble showed unconditional nulling; the new direct nested test and its counterfactual establish that the regression is covered.
+
+**The user's prediction**
+None. Teaching exercises are suspended for this task.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.

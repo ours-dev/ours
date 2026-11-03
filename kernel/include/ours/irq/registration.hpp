@@ -75,20 +75,20 @@ class Registration final {
         return !!(m_options & RegistrationOptions::Oneshot);
     }
 
-    /// The line this registration is attached to, or IrqId::Invalid when it
+    /// The line this registration is attached to, or VIrqNum::Invalid when it
     /// is on none. An acquire load: a reader that sees INVALID after a
     /// removal also sees everything the removal did to the registration and its
     /// owner's state first, which is what lets irq::detach() answer NotFound
     /// for a registration a removal has finished with, without taking the line's
     /// lock.
     [[nodiscard]]
-    auto line_id() const -> IrqId {
+    auto line_id() const -> VIrqNum {
         return m_line.load(std::memory_order_acquire);
     }
 
     [[nodiscard]]
     auto is_attached() const -> bool {
-        return line_id() != IrqId::Invalid;
+        return line_id() != VIrqNum::Invalid;
     }
 
   private:
@@ -143,7 +143,7 @@ class Registration final {
     /// Written under the lock of the line it names, and by a removal as the
     /// last thing it does to the registration (Line::revoke()); read without that
     /// lock by detach() to find the line.
-    std::atomic<IrqId> m_line{IrqId::Invalid};
+    std::atomic<VIrqNum> m_line{VIrqNum::Invalid};
     ustl::collections::intrusive::ListMemberHook<> m_hook;
 
   public:

@@ -51,7 +51,7 @@ namespace ours::irq {
 /// one thread.
 class Line final {
   public:
-    Line(HardwareIrq source, IrqId id);
+    Line(HIrqNum source, VIrqNum id);
     USTL_NO_MOVEABLE_AND_COPYABLE(Line);
 
     /// Binds the line to the controller that drives its pin, and gives the

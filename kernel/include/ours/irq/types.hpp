@@ -88,7 +88,7 @@ struct LineMode {
 /// An interrupt handler. `context` is whatever the registration that carries the
 /// handler was constructed with (Registration), so the handler finds its
 /// device's state there rather than in a global.
-using IrqHandler = auto (*)(IrqId id, void *context) -> IrqReturn;
+using IrqHandler = auto (*)(VIrqNum id, void *context) -> IrqReturn;
 
 /// Revalidates deferred work while the line holds L1. The owner checks its
 /// current pending work under its handler lock, preserving the handler's lock
@@ -105,7 +105,7 @@ using IrqCompletionCheck = auto (*)(void *context) -> bool;
 /// handler takes after L1, and must not call into the irq layer, which would
 /// take L1 again. Its owner may free the registration and its context only after
 /// irq::detach() has returned, which waits for this call to finish.
-using IrqRevocationHandler = auto (*)(IrqId id, void *context) -> void;
+using IrqRevocationHandler = auto (*)(VIrqNum id, void *context) -> void;
 } // namespace ours::irq
 
 #endif // OURS_IRQ_TYPES_HPP

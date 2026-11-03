@@ -5,7 +5,7 @@
 
 namespace ours::platform {
 /// A RISC-V platform has no ISA interrupts: no number is an ISA IRQ.
-auto isa_irq_line(u32) -> IrqId {
-    return IrqId::Invalid;
+auto isa_irq_line(u32) -> VIrqNum {
+    return VIrqNum::Invalid;
 }
 } // namespace ours::platform

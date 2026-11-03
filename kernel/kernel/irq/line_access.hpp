@@ -18,7 +18,7 @@ namespace ours::irq {
 template <typename Source, typename Operation>
     requires std::is_invocable_v<Operation, Line &>
 [[nodiscard]]
-auto with_line(Source &source, IrqId const id, Operation &&operation)
+auto with_line(Source &source, VIrqNum const id, Operation &&operation)
     -> std::invoke_result_t<Operation, Line &> {
     using Return = std::invoke_result_t<Operation, Line &>;
     task::IrqRcuReadGuard const guard;

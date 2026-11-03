@@ -6,7 +6,7 @@
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::irq {
-Line::Line(HardwareIrq const source, IrqId const id)
+Line::Line(HIrqNum const source, VIrqNum const id)
     : m_canary(this), m_flags(LineFlags::None), m_source(source, id) {}
 
 /// Refusing a second call keeps the controller what mask() and unmask(), which read
@@ -244,7 +244,7 @@ auto Line::detach(Registration &registration) -> Status {
     }
 
     m_registrations.erase(registration);
-    registration.m_line.store(IrqId::Invalid, std::memory_order_release);
+    registration.m_line.store(VIrqNum::Invalid, std::memory_order_release);
     // Held and, on a line left empty, the facts its last registration brought go
     // out in one store.
     flags &= ~LineFlags::Held;
@@ -607,7 +607,7 @@ auto Line::revoke() -> void {
                static_cast<u32>(m_source.id));
         m_registrations.erase(registration);
         registration.notify_revoked();
-        registration.m_line.store(IrqId::Invalid, std::memory_order_release);
+        registration.m_line.store(VIrqNum::Invalid, std::memory_order_release);
     }
 
     flags &= ~(LineFlags::Held | LineFlags::Shared | LineFlags::Oneshot);

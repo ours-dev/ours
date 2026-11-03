@@ -49,7 +49,7 @@ namespace {
     // NOLINTNEXTLINE(readability-identifier-naming)
     constinit LegacyTimer LEGACY_TIMER;
 
-    auto timer_interrupt(IrqId, void *context) -> irq::IrqReturn {
+    auto timer_interrupt(VIrqNum, void *context) -> irq::IrqReturn {
         auto const *const timer = static_cast<LegacyTimer const *>(context);
         auto *const device = timer->device();
         DEBUG_ASSERT(device);

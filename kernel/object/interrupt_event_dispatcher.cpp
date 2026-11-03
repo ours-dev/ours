@@ -9,7 +9,7 @@
 #include <ustl/option.hpp>
 
 namespace ours::object {
-InterruptEventDispatcher::InterruptEventDispatcher(IrqId const line)
+InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line)
     : Base(Flags::None)
     , m_line(line)
     , m_registration({.handle = &Self::on_interrupt,
@@ -43,7 +43,7 @@ InterruptEventDispatcher::InterruptEventDispatcher(IrqId const line)
 /// after each interrupt, or an edge line it asked for held masked until
 /// each ack.
 auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const out,
-                                      Rights *const rights, IrqId const line,
+                                      Rights *const rights, VIrqNum const line,
                                       InterruptOptions const options) -> Status {
     // Only what names a physical line and how it signals: Virtual is the
     // other kind's, and nothing else exists.
@@ -131,7 +131,7 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
 /// raise the same interrupt again and again until destroy()'s detach;
 /// WakeThread leaves the line held masked until that detach, which clears
 /// held and leaves the line masked as it lets it go.
-auto InterruptEventDispatcher::on_interrupt(IrqId, void *const context) -> irq::IrqReturn {
+auto InterruptEventDispatcher::on_interrupt(VIrqNum, void *const context) -> irq::IrqReturn {
     static_cast<Self *>(context)->handle_interrupt();
     return irq::IrqReturn::WakeThread;
 }
@@ -140,7 +140,7 @@ auto InterruptEventDispatcher::on_interrupt(IrqId, void *const context) -> irq::
 /// detach, which the removal has done by unlinking the action; the owner's
 /// own destroy() still detaches, and that waits for the removal to be done
 /// with the object, which is why this is all it has to do.
-auto InterruptEventDispatcher::on_revoked(IrqId, void *const context) -> void {
+auto InterruptEventDispatcher::on_revoked(VIrqNum, void *const context) -> void {
     static_cast<Self *>(context)->line_revoked();
 }
 
