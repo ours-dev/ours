@@ -19,7 +19,7 @@ lldb_ours.py -- waits for it forever and wedges the server behind it. Here the
 main thread only waits on an event, which releases the interpreter.
 
 Registered in .mcp.json. How to drive it against a kernel under QEMU is in
-.agents/skills/ours-verify/references/debugging.md.
+.agents/skills/verify/references/debugging.md.
 
 Environment:
     LLDB    the lldb whose Python module to load (default: /usr/bin/lldb; the

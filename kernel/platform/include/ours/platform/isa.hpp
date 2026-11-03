@@ -38,7 +38,7 @@ namespace platform {
     /// The interrupt line ISA IRQ `isa_irq` arrives on, by the number the irq
     /// layer names lines with, its virq: on a PC the line made for the pin the
     /// MADT's overrides send it to (q35 sends ISA 0 to GSI 2).
-    /// INVALID_V_IRQ_NUM if `isa_irq` is no ISA IRQ of this platform (past 15,
+    /// VIrqNum::Invalid if `isa_irq` is no ISA IRQ of this platform (past 15,
     /// or any number on a platform that has no ISA interrupts), if it is the
     /// cascade between the two legacy controllers, ISA 2, which carries no
     /// device, or if no line was made for its pin.

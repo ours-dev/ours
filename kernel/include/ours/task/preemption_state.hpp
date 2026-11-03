@@ -39,7 +39,7 @@ class PreemptionState {
     /// left out here on purpose.
     ///
     /// Nor is there an interrupt or NMI term. An interrupt handler is covered
-    /// by the two disable counts, which irq::handle_irq_preamble() raises on
+    /// by the two disable counts, which irq::enter_trap() raises on
     /// the way in; an NMI takes no bookkeeping at all, by design. See the note
     /// on Tag for why the word keeps no nesting count of its own.
     FORCE_INLINE
@@ -187,15 +187,13 @@ class PreemptionState {
     /// the stack the thread cannot switch, so a per-thread count would only
     /// mirror per-CPU state. For preemption, the disable counts already nest:
     /// an inner handler's exit sees the outer handler's count still raised,
-    /// so only the outermost exit takes a pending preemption. What nesting
-    /// will need lives per CPU beside CURRENT_FRAME in kernel/irq: the
-    /// preamble saving the frame it replaces and the postamble restoring it
-    /// rather than writing null, plus a depth there if something has to ask
-    /// how deep it is.
+    /// so only the outermost exit takes a pending preemption. Entry bookkeeping
+    /// saves the previous frame on the trap stack and restores it on exit. No separate depth count is needed unless a
+    /// consumer actually needs the numeric depth.
     ///
     /// "Is this CPU handling an interrupt" is answered per CPU by
-    /// irq::current_frame(), which the preamble sets and the postamble
-    /// clears; logz4 and the sampling profiler read it. A second signal kept
+    /// irq::current_frame(), which entry sets and exit restores; logz4 and the
+    /// sampling profiler read it. A second signal kept
     /// here would only drift from the first, as these did.
     enum class Tag {
         PreemptionDisabledCounter,

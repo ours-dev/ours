@@ -5,7 +5,7 @@
 
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
-#include <ours/irq/chip.hpp>
+#include <ours/irq/controller.hpp>
 
 #include <arch/x86/apic/ioapic.hpp>
 #include <arch/x86/apic/xapic.hpp>
@@ -33,7 +33,7 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
 /// apic_configure_irq() and apic_configure_isa_irq() below write a pin's
 /// whole entry, mask bit included, under the register lock but around the
 /// line: they are for the platform, at boot, before the table exists.
-auto io_apic_chip() -> irq::Chip const &;
+auto io_apic_controller() -> irq::ControllerOps const &;
 
 /// The IO-APICs init_io_apic() set up, one for each the MADT listed, each
 /// with its registers mapped and its pin count read from the chip: pin `n` of

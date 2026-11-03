@@ -1,5 +1,15 @@
 # Memory management
 
+## Strong address types (user decision, 2026-11-03)
+
+The user explicitly prefers distinct strong VirtAddr and PhysAddr types in
+`system/public/ours/types.hpp`, in the enum-class form they drafted, because
+they need address type safety. Preserve that intent. Do not replace them with
+primitive aliases merely to make an unrelated integration compile. Consumer
+conversion and arithmetic assumptions require a separate, deliberate migration;
+the IRQ integration does not claim to have completed it. No particular address
+operator API was selected by this naming and preservation decision.
+
 ## Bring-up order
 
 physboot hands the memory layout over through OBI; a temporary allocator and

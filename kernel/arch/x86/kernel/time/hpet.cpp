@@ -139,7 +139,8 @@ class HpetChannel {
         regs_mmio_ = mmio;
         // The comparator's routing is an IO-APIC pin, a hardware number; the
         // device names its line by the kernel's number for it.
-        m_clkevt.set_irqnum(irq::virq_of_hwirq(static_cast<HIrqNum>(mmio->conf_caps.irq())));
+        m_clkevt.set_irqnum(
+            irq::irq_for_source(irq::DomainId::Root, static_cast<HIrqNum>(mmio->conf_caps.irq())));
     }
 
     /// Arms the comparator |delta| ticks ahead of the main counter, and
@@ -337,7 +338,8 @@ static auto hpet_init_internal() -> Status {
         auto const line = platform::isa_irq_line(ISA_IRQ_PIT);
         auto const masked = irq::mask(line);
         if (Status::Ok != masked) {
-            log::error("HPET: masking the legacy timer's line {}: {}", line, to_string(masked));
+            log::error("HPET: masking the legacy timer's line {}: {}", static_cast<u32>(line),
+                       to_string(masked));
             return masked;
         }
 
@@ -350,7 +352,7 @@ static auto hpet_init_internal() -> Status {
         // The mask above found the line, so this one does too.
         [[maybe_unused]]
         auto const unmasked = irq::unmask(line);
-        DEBUG_ASSERT(Status::Ok == unmasked, "HPET: unmasking line {}: {}", line,
+        DEBUG_ASSERT(Status::Ok == unmasked, "HPET: unmasking line {}: {}", static_cast<u32>(line),
                      to_string(unmasked));
     }
 

@@ -1,7 +1,7 @@
 #include <ours/arch/apic.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/faults.hpp>
-#include <ours/irq/mod.hpp>
+#include <ours/irq/entry.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/platform/init.hpp>
@@ -421,9 +421,9 @@ extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
     auto const from_user = is_from_uspace(frame);
 
     task::ExceptionContext user_exception{};
-    irq::handle_irq_preamble(frame);
+    auto *const previous_frame = irq::enter_trap(frame);
     auto const raised = x86_dispatch_exception(vector, frame, &user_exception);
-    auto const need_preempt = irq::handle_irq_postamble();
+    auto const need_preempt = irq::leave_trap(previous_frame);
 
     // The order is: finish the interrupt, then preempt, then signals. Signals
     // come last because the next change to them lets a pending Kill exit the

@@ -135,7 +135,7 @@ class IoApic final {
     [[nodiscard]]
     auto owns_global_irq(HIrqNum irq) const noexcept -> bool {
         auto const base = static_cast<HIrqNum>(global_irq_base_);
-        return irq >= base && irq - base < irq_count();
+        return irq >= base && static_cast<u32>(irq) - static_cast<u32>(base) < irq_count();
     }
 
     /// A register is reached through a window: read() and write() put its
@@ -155,11 +155,11 @@ class IoApic final {
         *control_register(IO_WINDOW) = value;
     }
 
-    auto issue_eoi(HIrqNum irq) noexcept -> ours::Status {
+    auto issue_eoi(IrqVec vector) noexcept -> ours::Status {
         if (version_ < EOI_REGISTER_MIN_VERSION) {
             return ours::Status::NotSupported;
         }
-        *control_register(EOI_REGISTER) = static_cast<u32>(irq);
+        *control_register(EOI_REGISTER) = static_cast<u32>(vector);
         return ours::Status::Ok;
     }
 
@@ -231,7 +231,7 @@ class IoApic final {
 
     [[nodiscard]]
     auto redirection_index(HIrqNum irq) const noexcept -> u32 {
-        return static_cast<u32>(irq - static_cast<HIrqNum>(global_irq_base_));
+        return static_cast<u32>(irq) - global_irq_base_;
     }
 
     [[nodiscard]]

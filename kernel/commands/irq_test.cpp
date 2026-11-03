@@ -69,10 +69,9 @@
 // host test target, and the barrier needs two CPUs and the real spin lock.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
-#include <ours/irq/action.hpp>
-#include <ours/irq/desc.hpp>
-#include <ours/irq/desc_table.hpp>
+#include <ours/irq/entry.hpp>
 #include <ours/irq/mod.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/platform/isa.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
@@ -82,9 +81,13 @@
 #include <array>
 #include <atomic>
 
+#include <arch/auto_interrupt_disabler.hpp>
+#include <arch/interrupt.hpp>
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <kernel/kernel/irq/domain.hpp>
+#include <kernel/kernel/irq/line.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -106,7 +109,7 @@ namespace {
 
     /// The number of the test's own Permanent line, which the line table
     /// does not reach: it only names the line to its actions.
-    constexpr auto OWN_LINE = irq::INVALID_V_IRQ_NUM - 1;
+    constexpr auto OWN_LINE = VIrqNum{0xffff'fffe};
 
     constexpr usize ROUNDS = 1000;
     constexpr usize BARRIER_ROUNDS = 300;
@@ -145,11 +148,17 @@ namespace {
     struct Probe {
         std::atomic<usize> calls{0};
         std::atomic<bool> in_flight{false};
+        std::atomic<usize> held_locks{0};
+        std::atomic<bool> preemption_disabled{false};
         usize hold_spins = 0;
     };
 
     auto probe_handler(VIrqNum, void *const context) -> irq::IrqReturn {
         auto &probe = *static_cast<Probe *>(context);
+        probe.held_locks.store(sync::SpinLock::num_held_cpu(), std::memory_order_relaxed);
+        probe.preemption_disabled.store(
+            !task::Thread::Current::preemption_state().is_preemption_enabled(),
+            std::memory_order_relaxed);
         probe.in_flight.store(true, std::memory_order_relaxed);
         for (usize k = 0; k < probe.hold_spins; ++k) {
             arch::spin_hint();
@@ -177,30 +186,31 @@ namespace {
 
     /// Also notes an end of interrupt that found the pin unmasked: on a real
     /// level pin still asserted, that is the moment it delivers again.
-    auto count_eoi(irq::Data const &) -> void {
+    auto count_eoi(irq::ControllerSource const &) -> void {
         EOIS_SENT.fetch_add(1, std::memory_order_relaxed);
         if (!PIN_MASKED.load(std::memory_order_relaxed)) {
             EOIS_UNMASKED.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
-    auto count_mask(irq::Data const &) -> void {
+    auto count_mask(irq::ControllerSource const &) -> void {
         MASKS_SENT.fetch_add(1, std::memory_order_relaxed);
         PIN_MASKED.store(true, std::memory_order_relaxed);
     }
 
-    auto pin_unmask(irq::Data const &) -> void {
+    auto pin_unmask(irq::ControllerSource const &) -> void {
         PIN_MASKED.store(false, std::memory_order_relaxed);
     }
 
     /// Leaves the pin masked, as a chip's configure must.
-    auto pin_configure(irq::Data const &, irq::TriggerMode const trigger, irq::Polarity) -> Status {
+    auto pin_configure(irq::ControllerSource const &, irq::TriggerMode const trigger, irq::Polarity)
+        -> Status {
         PIN_TRIGGER.store(trigger, std::memory_order_relaxed);
         PIN_MASKED.store(true, std::memory_order_relaxed);
         return Status::Ok;
     }
 
-    auto pin_trigger_mode(irq::Data const &) -> irq::TriggerMode {
+    auto pin_trigger_mode(irq::ControllerSource const &) -> irq::TriggerMode {
         return PIN_TRIGGER.load(std::memory_order_relaxed);
     }
 
@@ -209,33 +219,37 @@ namespace {
     /// chip's end of interrupt is the local APIC's, which a thread must not
     /// send. It cannot say how its pin signals, so its lines run the edge
     /// flow.
-    constexpr irq::Chip COUNTING_CHIP = {
+    constexpr irq::ControllerOps COUNTING_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = count_mask,
         .issue_eoi = count_eoi,
-        .name = "irq-test",
     };
 
     /// The counting chip, with a pin's mode and mask bit as well: its lines
     /// take their flow from PIN_TRIGGER, and configure() sets it.
-    constexpr irq::Chip PIN_CHIP = {
+    constexpr irq::ControllerOps PIN_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = count_mask,
         .unmask = pin_unmask,
         .configure = pin_configure,
         .trigger_mode = pin_trigger_mode,
         .issue_eoi = count_eoi,
-        .name = "irq-test",
     };
 
     /// A chip that cannot end an interrupt.
-    constexpr irq::Chip NO_EOI_CHIP = {
+    constexpr irq::ControllerOps NO_EOI_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = count_mask,
-        .name = "irq-test",
     };
 
     /// A chip that cannot mask.
-    constexpr irq::Chip NO_MASK_CHIP = {
+    constexpr irq::ControllerOps NO_MASK_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .issue_eoi = count_eoi,
-        .name = "irq-test",
     };
 
     /// The spurious count of a line the test knows exists.
@@ -250,7 +264,7 @@ namespace {
     /// An action must be off every line before it is destroyed; its
     /// SafeLink hook traps otherwise. A check that attached by mistake comes
     /// through here before it returns.
-    auto drop_if_attached(irq::Action &action) -> void {
+    auto drop_if_attached(irq::Registration &action) -> void {
         if (action.is_attached()) {
             auto _ = irq::detach(action); // Best effort: the check already failed.
         }
@@ -258,8 +272,10 @@ namespace {
 
     auto check_pit_line_is_taken(Tally &tally) -> void {
         Probe probe;
-        irq::Action exclusive{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
-        irq::Action shared{&probe_handler, &probe, irq::IrqFlags::Shared, "irq-test"};
+        irq::Registration exclusive{
+            {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
+        irq::Registration shared{
+            {.handle = &probe_handler}, &probe, irq::RegistrationOptions::Shared};
 
         auto const exclusive_status = irq::attach(pit_line(), exclusive);
         auto const shared_status = irq::attach(pit_line(), shared);
@@ -281,14 +297,20 @@ namespace {
     struct PermanentCase {
         Probe probe;
         Probe other_probe;
-        irq::Action permanent{&probe_handler, &probe, irq::IrqFlags::Permanent, "irq-test"};
-        irq::Action shared{&probe_handler, &other_probe, irq::IrqFlags::Shared, "irq-test"};
-        irq::Action exclusive{&probe_handler, &other_probe, irq::IrqFlags::None, "irq-test"};
-        irq::Action permanent_shared{&probe_handler, &other_probe,
-                                     irq::IrqFlags::Permanent | irq::IrqFlags::Shared, "irq-test"};
-        irq::Action permanent_oneshot{&probe_handler, &other_probe,
-                                      irq::IrqFlags::Permanent | irq::IrqFlags::Oneshot,
-                                      "irq-test"};
+        irq::Registration permanent{
+            {.handle = &probe_handler}, &probe, irq::RegistrationOptions::Permanent};
+        irq::Registration shared{
+            {.handle = &probe_handler}, &other_probe, irq::RegistrationOptions::Shared};
+        irq::Registration exclusive{
+            {.handle = &probe_handler}, &other_probe, irq::RegistrationOptions::None};
+        irq::Registration permanent_shared{{.handle = &probe_handler},
+                                           &other_probe,
+                                           irq::RegistrationOptions::Permanent |
+                                               irq::RegistrationOptions::Shared};
+        irq::Registration permanent_oneshot{
+            {.handle = &probe_handler, .ready = [](void *) -> bool { return true; }},
+            &other_probe,
+            irq::RegistrationOptions::Permanent | irq::RegistrationOptions::Oneshot};
     };
 
     /// On a line descriptor of the test's own, outside the line table, so no
@@ -296,13 +318,55 @@ namespace {
     /// case are leaked, one pair per run: the Permanent action can never come
     /// off.
     auto check_permanent_line(Tally &tally) -> void {
-        auto *const line = irq::Desc::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         auto *const c = new (mm::GAF_KERNEL) PermanentCase{};
         if (line == nullptr || c == nullptr) {
             verdict(tally, false, "allocate the Permanent line");
             return;
         }
-        auto const bound = line->init(COUNTING_CHIP);
+        auto const bound = line->init(PIN_CHIP);
+
+        PIN_TRIGGER.store(irq::TriggerMode::Edge, std::memory_order_relaxed);
+        PIN_MASKED.store(false, std::memory_order_relaxed);
+        auto const invalid_mode = line->attach(
+            c->permanent_shared, irq::LineMode{irq::TriggerMode::Level, irq::Polarity::ActiveLow});
+        verdict(tally, invalid_mode.is_err() && invalid_mode.unwrap_err() == Status::InvArgs,
+                "Permanent with Shared is refused before setting a mode");
+        verdict(tally,
+                !c->permanent_shared.is_attached() &&
+                    PIN_TRIGGER.load(std::memory_order_relaxed) == irq::TriggerMode::Edge &&
+                    !PIN_MASKED.load(std::memory_order_relaxed),
+                "invalid policy changes neither attachment nor controller state");
+        auto const invalid_plain = line->attach(c->permanent_shared);
+        verdict(tally, invalid_plain == Status::InvArgs && !c->permanent_shared.is_attached(),
+                "Permanent with Shared is refused on an empty line");
+
+        irq::Registration unknown{{.handle = &probe_handler},
+                                  &c->probe,
+                                  static_cast<irq::RegistrationOptions>(u32{1} << 31)};
+        auto const unknown_plain = line->attach(unknown);
+        if (unknown.is_attached()) {
+            auto _ = line->detach(unknown); // Keep a failed policy check isolated.
+        }
+        auto const unknown_mode =
+            line->attach(unknown, irq::LineMode{irq::TriggerMode::Level, irq::Polarity::ActiveLow});
+        if (unknown.is_attached()) {
+            auto _ = line->detach(unknown); // Keep a failed policy check isolated.
+        }
+        verdict(tally,
+                unknown_plain == Status::InvArgs && unknown_mode.is_err() &&
+                    unknown_mode.unwrap_err() == Status::InvArgs,
+                "unknown registration option bits are refused by both attach forms");
+
+        irq::Registration missing_ready{
+            {.handle = &probe_handler}, &c->probe, irq::RegistrationOptions::Oneshot};
+        auto const missing_plain = line->attach(missing_ready);
+        auto const missing_mode = line->attach(
+            missing_ready, irq::LineMode{irq::TriggerMode::Level, irq::Polarity::ActiveLow});
+        verdict(tally,
+                missing_plain == Status::InvArgs && missing_mode.is_err() &&
+                    missing_mode.unwrap_err() == Status::InvArgs && !missing_ready.is_attached(),
+                "deferred registration requires a completion readiness callback");
 
         // A Permanent action never joins an occupied line, even one whose
         // occupant shares, with a request that says Shared too.
@@ -322,9 +386,9 @@ namespace {
         auto const eois = EOIS_SENT.load(std::memory_order_relaxed) - eois_before;
 
         verdict(tally,
-                occupied_status == Status::Ok && join_status == Status::AlreadyBound &&
+                occupied_status == Status::Ok && join_status == Status::InvArgs &&
                     leave_status == Status::Ok,
-                "a Permanent action cannot join an occupied line");
+                "invalid registration policy is refused on occupied lines too");
         verdict(tally, oneshot_status == Status::InvArgs && !c->permanent_oneshot.is_attached(),
                 "a Permanent action that says Oneshot is refused");
         verdict(tally, attach_status == Status::Ok, "a Permanent action takes an empty line");
@@ -336,7 +400,11 @@ namespace {
         verdict(tally,
                 result == irq::IrqReturn::Handled && c->probe.calls.load() == 1 &&
                     c->other_probe.calls.load() == 0,
-                "its dispatch, without the lock, reaches the action");
+                "its guarded dispatch reaches the registration");
+        verdict(tally,
+                c->probe.held_locks.load(std::memory_order_relaxed) != 0 &&
+                    c->probe.preemption_disabled.load(std::memory_order_relaxed),
+                "Permanent dispatch holds a spin lock with preemption disabled");
         verdict(tally, bound == Status::Ok && eois == 1,
                 "and ends the interrupt through the line's chip, once");
     }
@@ -344,8 +412,10 @@ namespace {
     auto check_idle_line_repeatedly(Tally &tally) -> void {
         Probe probe;
         Probe other_probe;
-        irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
-        irq::Action other{&probe_handler, &other_probe, irq::IrqFlags::None, "irq-test"};
+        irq::Registration action{
+            {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
+        irq::Registration other{
+            {.handle = &probe_handler}, &other_probe, irq::RegistrationOptions::None};
 
         auto attach_failures = usize{0};
         auto second_attach_failures = usize{0};
@@ -354,7 +424,7 @@ namespace {
         auto redetach_failures = usize{0};
         for (usize round = 0; round < ROUNDS; ++round) {
             if (irq::attach(idle_line(), action) != Status::Ok || !action.is_attached() ||
-                action.virqnum() != idle_line()) {
+                action.line_id() != idle_line()) {
                 attach_failures += 1;
                 drop_if_attached(action);
                 continue;
@@ -379,7 +449,7 @@ namespace {
             }
         }
 
-        log::info("irq.test:   {} rounds on line {}", ROUNDS, idle_line());
+        log::info("irq.test:   {} rounds on line {}", ROUNDS, static_cast<u32>(idle_line()));
         verdict(tally, attach_failures == 0, "an idle line takes an action every round");
         verdict(tally, second_attach_failures == 0,
                 "a second exclusive action answers AlreadyBound every round");
@@ -392,9 +462,12 @@ namespace {
     auto check_shared_then_exclusive(Tally &tally) -> void {
         Probe first_probe;
         Probe second_probe;
-        irq::Action first{&probe_handler, &first_probe, irq::IrqFlags::Shared, "irq-test"};
-        irq::Action second{&probe_handler, &second_probe, irq::IrqFlags::Shared, "irq-test"};
-        irq::Action exclusive{&probe_handler, &first_probe, irq::IrqFlags::None, "irq-test"};
+        irq::Registration first{
+            {.handle = &probe_handler}, &first_probe, irq::RegistrationOptions::Shared};
+        irq::Registration second{
+            {.handle = &probe_handler}, &second_probe, irq::RegistrationOptions::Shared};
+        irq::Registration exclusive{
+            {.handle = &probe_handler}, &first_probe, irq::RegistrationOptions::None};
 
         auto const first_status = irq::attach(idle_line(), first);
         auto const second_status = irq::attach(idle_line(), second);
@@ -434,13 +507,14 @@ namespace {
     /// On a line of the test's own, outside the table, bound to the counting
     /// chip, so the ends of interrupt are counted and no controller sees one.
     auto check_end_of_interrupt(Tally &tally) -> void {
-        auto *const line = irq::Desc::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
             verdict(tally, false, "allocate the counting line");
             return;
         }
         Probe probe;
-        irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Registration action{
+            {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
         auto const bound = line->init(COUNTING_CHIP);
         auto const attached = line->attach(action);
 
@@ -459,8 +533,8 @@ namespace {
 
         // A table of the test's own. It refuses the chip before it makes a
         // line, so it holds nothing to free.
-        std::array<HIrqNum, 1> const numbers{idle_line()};
-        irq::DescTable table;
+        std::array<HIrqNum, 1> const numbers{HIrqNum{3}};
+        irq::Domain table;
         auto const refused = table.init(ustl::views::Span(numbers), NO_EOI_CHIP);
 
         verdict(tally, bound == Status::Ok && attached == Status::Ok && detached == Status::Ok,
@@ -479,8 +553,8 @@ namespace {
 
     /// A line of the test's own, outside the table, bound to `chip`; null if
     /// it cannot be made. The caller deletes it, with nobody on it.
-    auto own_line(irq::Chip const &chip) -> irq::Desc * {
-        auto *const line = irq::Desc::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
+    auto own_line(irq::ControllerOps const &chip) -> irq::Line * {
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
             return nullptr;
         }
@@ -493,15 +567,15 @@ namespace {
 
     /// drop_if_attached() for a line of the test's own, which irq::detach()
     /// cannot find: it looks in the table.
-    auto drop_from(irq::Desc &line, irq::Action &action) -> void {
+    auto drop_from(irq::Line &line, irq::Registration &action) -> void {
         if (action.is_attached()) {
             auto _ = line.detach(action); // Best effort: the check already failed.
         }
     }
 
     /// Which flow a line runs, for the log.
-    auto flow_name(irq::Flow const flow) -> char const * {
-        if (flow == irq::Flow::FastEoi) {
+    auto flow_name(irq::TriggerMode const flow) -> char const * {
+        if (flow == irq::TriggerMode::Level) {
             return "fasteoi";
         }
         return "edge";
@@ -522,40 +596,41 @@ namespace {
             verdict(tally, false, "make the lines for flow selection");
             return;
         }
-        auto const bound_level = level_line->flow();
-        auto const bound_edge = line->flow();
-        auto const bound_modeless = modeless_line->flow();
+        auto const bound_level = level_line->dispatch_trigger();
+        auto const bound_edge = line->dispatch_trigger();
+        auto const bound_modeless = modeless_line->dispatch_trigger();
         delete level_line;
         delete modeless_line;
 
         auto const to_level = line->configure(irq::TriggerMode::Level, irq::Polarity::ActiveLow);
-        auto const after_level = line->flow();
+        auto const after_level = line->dispatch_trigger();
         auto const to_edge = line->configure(irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
-        auto const after_edge = line->flow();
+        auto const after_edge = line->dispatch_trigger();
 
         // A configure refused because someone is on the line changes neither
         // the pin nor the flow.
         Probe probe;
-        irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Registration action{
+            {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
         auto const occupied = line->attach(action);
         auto const refused = line->configure(irq::TriggerMode::Level, irq::Polarity::ActiveLow);
-        auto const after_refused = line->flow();
+        auto const after_refused = line->dispatch_trigger();
         auto const left = line->detach(action);
 
         auto const level_mode = irq::LineMode{irq::TriggerMode::Level, irq::Polarity::ActiveHigh};
         auto const edge_mode = irq::LineMode{irq::TriggerMode::Edge, irq::Polarity::ActiveHigh};
         auto const level_attach = line->attach(action, ustl::some(level_mode));
-        auto const after_level_attach = line->flow();
+        auto const after_level_attach = line->dispatch_trigger();
         auto const level_detach = line->detach(action);
         auto const edge_attach = line->attach(action, ustl::some(edge_mode));
-        auto const after_edge_attach = line->flow();
+        auto const after_edge_attach = line->dispatch_trigger();
         auto const edge_detach = line->detach(action);
         // The pin turned level behind the line's back, as the platform
         // programs pins without going through a line: an attach that reads
         // the mode takes the flow from what it read.
         PIN_TRIGGER.store(irq::TriggerMode::Level, std::memory_order_relaxed);
         auto const read_attach = line->attach(action, ustl::none());
-        auto const after_read_attach = line->flow();
+        auto const after_read_attach = line->dispatch_trigger();
         auto const read_detach = line->detach(action);
         drop_from(*line, action);
         delete line;
@@ -563,27 +638,28 @@ namespace {
 
         log::info("irq.test:   bound: a level pin runs {}, an edge pin {}, a chip with no mode {}",
                   flow_name(bound_level), flow_name(bound_edge), flow_name(bound_modeless));
-        verdict(tally, bound_level == irq::Flow::FastEoi && bound_edge == irq::Flow::Edge,
+        verdict(tally,
+                bound_level == irq::TriggerMode::Level && bound_edge == irq::TriggerMode::Edge,
                 "a line bound to its chip runs the flow of how its pin signals");
-        verdict(tally, bound_modeless == irq::Flow::Edge,
+        verdict(tally, bound_modeless == irq::TriggerMode::Edge,
                 "a chip that cannot say how its pin signals gives the edge flow");
         verdict(tally,
-                to_level == Status::Ok && after_level == irq::Flow::FastEoi &&
-                    to_edge == Status::Ok && after_edge == irq::Flow::Edge,
+                to_level == Status::Ok && after_level == irq::TriggerMode::Level &&
+                    to_edge == Status::Ok && after_edge == irq::TriggerMode::Edge,
                 "configure moves the line's flow with its mode, there and back");
         verdict(tally,
                 occupied == Status::Ok && refused == Status::AlreadyBound &&
-                    after_refused == irq::Flow::Edge && left == Status::Ok,
+                    after_refused == irq::TriggerMode::Edge && left == Status::Ok,
                 "a configure refused on an occupied line leaves its flow");
         verdict(tally,
                 level_attach.is_ok() && *level_attach == irq::TriggerMode::Level &&
-                    after_level_attach == irq::Flow::FastEoi && level_detach == Status::Ok &&
+                    after_level_attach == irq::TriggerMode::Level && level_detach == Status::Ok &&
                     edge_attach.is_ok() && *edge_attach == irq::TriggerMode::Edge &&
-                    after_edge_attach == irq::Flow::Edge && edge_detach == Status::Ok,
+                    after_edge_attach == irq::TriggerMode::Edge && edge_detach == Status::Ok,
                 "attach with a mode gives the line that mode's flow");
         verdict(tally,
                 read_attach.is_ok() && *read_attach == irq::TriggerMode::Level &&
-                    after_read_attach == irq::Flow::FastEoi && read_detach == Status::Ok,
+                    after_read_attach == irq::TriggerMode::Level && read_detach == Status::Ok,
                 "attach without one reads the mode and gives the line its flow");
     }
 
@@ -599,7 +675,7 @@ namespace {
     };
 
     /// Sets the pin's mask bit to `masked`, then dispatches `line` once.
-    auto dispatch_on_pin(irq::Desc &line, irq::Eoi const eoi, bool const masked = false)
+    auto dispatch_on_pin(irq::Line &line, irq::Eoi const eoi, bool const masked = false)
         -> PinDispatch {
         PIN_MASKED.store(masked, std::memory_order_relaxed);
         auto const masks_before = MASKS_SENT.load(std::memory_order_relaxed);
@@ -629,8 +705,8 @@ namespace {
             verdict(tally, false, "make the lines for the flows' masks");
             return;
         }
-        auto const flows_ok =
-            level_line->flow() == irq::Flow::FastEoi && edge_line->flow() == irq::Flow::Edge;
+        auto const flows_ok = level_line->dispatch_trigger() == irq::TriggerMode::Level &&
+                              edge_line->dispatch_trigger() == irq::TriggerMode::Edge;
 
         auto const level_unclaimed = dispatch_on_pin(*level_line, irq::Eoi::Send);
         auto const edge_unclaimed = dispatch_on_pin(*edge_line, irq::Eoi::Send);
@@ -638,8 +714,10 @@ namespace {
         auto const edge_played = dispatch_on_pin(*edge_line, irq::Eoi::Skip);
 
         Probe probe;
-        irq::Action level_action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
-        irq::Action edge_action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Registration level_action{
+            {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
+        irq::Registration edge_action{
+            {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
         auto const level_attached = level_line->attach(level_action);
         auto const edge_attached = edge_line->attach(edge_action);
         // With the pin unmasked and then masked: the flow neither masks the
@@ -657,8 +735,8 @@ namespace {
 
         // The line table refuses the chip before it makes a line, so it holds
         // nothing to free.
-        std::array<HIrqNum, 1> const numbers{idle_line()};
-        irq::DescTable table;
+        std::array<HIrqNum, 1> const numbers{HIrqNum{3}};
+        irq::Domain table;
         auto const refused = table.init(ustl::views::Span(numbers), NO_MASK_CHIP);
 
         // The pin starts unmasked, so an end of interrupt sent before the
@@ -697,10 +775,11 @@ namespace {
     /// itself, so a mask or an unmask that never reached the pin shows.
     auto check_line_control(Tally &tally) -> void {
         Probe probe;
-        irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Registration action{
+            {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
 
         auto const no_line_status = irq::mask(OWN_LINE);
-        auto const invalid_status = irq::unmask(irq::INVALID_V_IRQ_NUM);
+        auto const invalid_status = irq::unmask(VIrqNum::Invalid);
         auto const pit_status =
             irq::configure(pit_line(), irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
 
@@ -731,7 +810,7 @@ namespace {
         auto const no_line_mask_read = irq::is_masked_for_test(OWN_LINE);
 
         // A line of the test's own, outside the table, which no chip drives.
-        auto *const line = irq::Desc::create(OWN_LINE, OWN_LINE, irq::IrqFlags::None, "irq-test");
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
             verdict(tally, false, "allocate the line with no chip");
             return;
@@ -845,9 +924,18 @@ namespace {
         }
 
         OneshotProbe probe;
-        irq::Action level_action{&oneshot_handler, &probe, irq::IrqFlags::Oneshot, "irq-test"};
-        irq::Action edge_action{&oneshot_handler, &probe, irq::IrqFlags::Oneshot, "irq-test"};
-        irq::Action counting_action{&oneshot_handler, &probe, irq::IrqFlags::Oneshot, "irq-test"};
+        irq::Registration level_action{
+            {.handle = &oneshot_handler, .ready = [](void *) -> bool { return true; }},
+            &probe,
+            irq::RegistrationOptions::Oneshot};
+        irq::Registration edge_action{
+            {.handle = &oneshot_handler, .ready = [](void *) -> bool { return true; }},
+            &probe,
+            irq::RegistrationOptions::Oneshot};
+        irq::Registration counting_action{
+            {.handle = &oneshot_handler, .ready = [](void *) -> bool { return true; }},
+            &probe,
+            irq::RegistrationOptions::Oneshot};
         auto const level_attached = level_line->attach(level_action);
         auto const edge_attached = edge_line->attach(edge_action);
         // The counting chip masks but cannot unmask.
@@ -873,7 +961,8 @@ namespace {
         // Oneshot, and a pin masked as if by its owner. The flow never masks
         // such a line for its action, so a finalize there could only undo a
         // mask somebody else asked for: it must do nothing.
-        irq::Action plain_action{&oneshot_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Registration plain_action{
+            {.handle = &oneshot_handler}, &probe, irq::RegistrationOptions::None};
         auto const plain_attached = level_line->attach(plain_action);
         PIN_MASKED.store(true, std::memory_order_relaxed);
         level_line->finalize_oneshot(plain_action);
@@ -918,10 +1007,18 @@ namespace {
     /// handle_irq_for_test(), which ends none at the controller.
     auto check_oneshot_idle_line(Tally &tally) -> void {
         OneshotProbe probe;
-        irq::Action action{&oneshot_handler, &probe, irq::IrqFlags::Oneshot, "irq-test"};
-        irq::Action next{&oneshot_handler, &probe, irq::IrqFlags::Oneshot, "irq-test"};
-        irq::Action shared{&oneshot_handler, &probe, irq::IrqFlags::Oneshot | irq::IrqFlags::Shared,
-                           "irq-test"};
+        irq::Registration action{
+            {.handle = &oneshot_handler, .ready = [](void *) -> bool { return true; }},
+            &probe,
+            irq::RegistrationOptions::Oneshot};
+        irq::Registration next{
+            {.handle = &oneshot_handler, .ready = [](void *) -> bool { return true; }},
+            &probe,
+            irq::RegistrationOptions::Oneshot};
+        irq::Registration shared{
+            {.handle = &oneshot_handler, .ready = [](void *) -> bool { return true; }},
+            &probe,
+            irq::RegistrationOptions::Oneshot | irq::RegistrationOptions::Shared};
         auto const level = ustl::some(irq::LineMode{.trigger = irq::TriggerMode::Level,
                                                     .polarity = irq::Polarity::ActiveHigh});
 
@@ -1075,7 +1172,8 @@ namespace {
         std::atomic<bool> started{false};
         std::atomic<bool> finished{false};
         std::atomic<bool> done{false};
-        irq::Action action{&HoldCase::on_interrupt, this, irq::IrqFlags::None, "irq-test"};
+        irq::Registration action{
+            {.handle = &HoldCase::on_interrupt}, this, irq::RegistrationOptions::None};
 
         /// Holds the line for HOLD_FOR, timed by the steady clock, which reads
         /// its counter with interrupts off as well as on: the dispatch holds
@@ -1206,7 +1304,8 @@ namespace {
 
         Probe probe;
         probe.hold_spins = HOLD_SPINS;
-        irq::Action action{&probe_handler, &probe, irq::IrqFlags::None, "irq-test"};
+        irq::Registration action{
+            {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
         auto const spurious_before = spurious_on(idle_line());
 
         auto *const dispatcher =
@@ -1284,9 +1383,49 @@ namespace {
         verdict(tally, spurious == unhandled, "every unhandled dispatch counted as spurious");
     }
 
+    auto check_nested_entry(Tally &tally) -> void {
+        auto entered_outer = false;
+        auto entered_inner = false;
+        auto restored_outer = false;
+        auto restored_original = false;
+        {
+            arch::AutoInterruptDisabler const interrupts_off;
+            task::AutoPreemptDisabler const pinned;
+            auto &state = task::Thread::Current::preemption_state();
+            auto const preemption = state.preemption_disabled_count();
+            auto const eager = state.eager_resched_disabled_count();
+            auto *const original = irq::current_frame();
+            arch::IrqFrame outer{};
+            arch::IrqFrame inner{};
+            auto *const first = irq::enter_trap(&outer);
+            entered_outer = first == original && irq::current_frame() == &outer &&
+                            state.preemption_disabled_count() == preemption + 1 &&
+                            state.eager_resched_disabled_count() == eager + 1;
+            auto *const second = irq::enter_trap(&inner);
+            entered_inner = second == &outer && irq::current_frame() == &inner &&
+                            state.preemption_disabled_count() == preemption + 2 &&
+                            state.eager_resched_disabled_count() == eager + 2;
+            auto const inner_reschedule = irq::leave_trap(second);
+            restored_outer = !inner_reschedule && irq::current_frame() == &outer &&
+                             state.preemption_disabled_count() == preemption + 1 &&
+                             state.eager_resched_disabled_count() == eager + 1;
+            auto const outer_reschedule = irq::leave_trap(first);
+            restored_original = !outer_reschedule && irq::current_frame() == original &&
+                                state.preemption_disabled_count() == preemption &&
+                                state.eager_resched_disabled_count() == eager;
+        }
+        verdict(tally, entered_outer,
+                "outer trap publishes its frame and raises both disable counts");
+        verdict(tally, entered_inner,
+                "nested trap preserves the outer frame and nests both counts");
+        verdict(tally, restored_outer, "inner exit restores the outer frame and cannot preempt");
+        verdict(tally, restored_original, "outer exit restores the original frame and both counts");
+    }
+
     auto irq_test_command(int, char **) -> int {
         Tally tally;
 
+        check_nested_entry(tally);
         check_pit_line_is_taken(tally);
         check_permanent_line(tally);
         check_idle_line_repeatedly(tally);

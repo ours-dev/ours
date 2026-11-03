@@ -2,7 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 //
 // `irqrevoke.test`: the kernel taking a line away from its actions
-// (irq::Desc::mark_dying(), revoke(), unmark_dying(); .agents/tasks/
+// (irq::Line::mark_dying(), revoke(), unmark_dying(); .agents/tasks/
 // irq-multi-arch/PLAN.md, step 9). dbg image only: it is the one with a
 // kernel shell. The lines are descriptors of the test's own, outside the line
 // table, bound to a chip that only counts, except in the race, which uses a
@@ -33,8 +33,6 @@
 //     NotFound must find the hook done. This needs two CPUs.
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/irq/desc.hpp>
-#include <ours/irq/desc_table.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/status.hpp>
 #include <ours/task/sched/common.hpp>
@@ -48,6 +46,9 @@
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <kernel/kernel/irq/domain.hpp>
+#include <kernel/kernel/irq/line.hpp>
+#include <kernel/kernel/irq/line_access.hpp>
 #include <logz4/log.hpp>
 #include <ustl/views/span.hpp>
 
@@ -58,7 +59,7 @@ namespace {
     /// A line's numbers differ, as they do in the table: a hook told the
     /// hardware number instead of the virq would show.
     constexpr auto OWN_HWIRQ = HIrqNum{7};
-    constexpr auto OWN_LINE = irq::INVALID_V_IRQ_NUM - 1;
+    constexpr auto OWN_LINE = VIrqNum{0xffff'fffe};
     constexpr auto LOST_AFTER = Seconds(5);
     /// How long the slow handler holds its line after the revoke has begun.
     constexpr auto HOLD_FOR = Milliseconds(20);
@@ -90,47 +91,49 @@ namespace {
     std::atomic<u64> CONFIGURES{0};
     // NOLINTEND(readability-identifier-naming)
 
-    auto count_mask(irq::Data const &) -> void {
+    auto count_mask(irq::ControllerSource const &) -> void {
         MASKS.fetch_add(1, std::memory_order_relaxed);
     }
 
-    auto count_unmask(irq::Data const &) -> void {
+    auto count_unmask(irq::ControllerSource const &) -> void {
         UNMASKS.fetch_add(1, std::memory_order_relaxed);
     }
 
-    auto count_configure(irq::Data const &, irq::TriggerMode, irq::Polarity) -> Status {
+    auto count_configure(irq::ControllerSource const &, irq::TriggerMode, irq::Polarity) -> Status {
         CONFIGURES.fetch_add(1, std::memory_order_relaxed);
         return Status::Ok;
     }
 
-    auto edge_mode(irq::Data const &) -> irq::TriggerMode {
+    auto edge_mode(irq::ControllerSource const &) -> irq::TriggerMode {
         return irq::TriggerMode::Edge;
     }
 
-    auto level_mode(irq::Data const &) -> irq::TriggerMode {
+    auto level_mode(irq::ControllerSource const &) -> irq::TriggerMode {
         return irq::TriggerMode::Level;
     }
 
-    auto no_eoi(irq::Data const &) -> void {}
+    auto no_eoi(irq::ControllerSource const &) -> void {}
 
-    constexpr irq::Chip CHIP = {
+    constexpr irq::ControllerOps CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = count_mask,
         .unmask = count_unmask,
         .configure = count_configure,
         .trigger_mode = edge_mode,
         .issue_eoi = no_eoi,
-        .name = "irq-revoke-test",
     };
 
     /// The same over a pin that signals a level, so its lines run the level
     /// flow, which holds a Oneshot line masked.
-    constexpr irq::Chip LEVEL_CHIP = {
+    constexpr irq::ControllerOps LEVEL_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = count_mask,
         .unmask = count_unmask,
         .configure = count_configure,
         .trigger_mode = level_mode,
         .issue_eoi = no_eoi,
-        .name = "irq-revoke-test",
     };
 
     /// A handler in flight that the test can see: it holds the line from the
@@ -146,10 +149,13 @@ namespace {
 
     /// An action and what its owner sees of it.
     struct Owner {
-        Owner(irq::IrqFlags const flags, irq::IrqCancel const cancel)
-            : action(&owner_handler, this, flags, "irq-revoke-test", cancel) {}
+        Owner(irq::RegistrationOptions const flags, irq::IrqRevocationHandler const cancel)
+            : action({.handle = &owner_handler,
+                      .revoke = cancel,
+                      .ready = [](void *) -> bool { return true; }},
+                     this, flags) {}
 
-        irq::Action action;
+        irq::Registration action;
         Hold *hold = nullptr;
         /// The handler answers WakeThread, so a Oneshot line is held.
         bool wake = false;
@@ -161,7 +167,7 @@ namespace {
         /// was still on that line as the owner reads it, whether it ran with
         /// interrupts and preemption off as promised, and whether the
         /// handler in flight had returned.
-        std::atomic<VIrqNum> told_with{irq::INVALID_V_IRQ_NUM};
+        std::atomic<VIrqNum> told_with{VIrqNum::Invalid};
         std::atomic<bool> on_line_in_hook{false};
         std::atomic<bool> irqs_off_in_hook{false};
         std::atomic<bool> preempt_off_in_hook{false};
@@ -196,7 +202,7 @@ namespace {
     auto owner_cancel(VIrqNum const line, void *const context) -> void {
         auto &owner = *static_cast<Owner *>(context);
         owner.told_with.store(line, std::memory_order_relaxed);
-        owner.on_line_in_hook.store(owner.action.virqnum() == line, std::memory_order_relaxed);
+        owner.on_line_in_hook.store(owner.action.line_id() == line, std::memory_order_relaxed);
         owner.irqs_off_in_hook.store(arch::irqs_disabled(), std::memory_order_relaxed);
         owner.preempt_off_in_hook.store(
             Thread::Current::preemption_state().preemption_disabled_count() > 0,
@@ -215,9 +221,8 @@ namespace {
 
     /// A line of the test's own; null if it cannot be made. The caller
     /// deletes it with nobody on it.
-    auto own_line(irq::Chip const &chip = CHIP) -> irq::Desc * {
-        auto *const line =
-            irq::Desc::create(OWN_HWIRQ, OWN_LINE, irq::IrqFlags::None, "irq-revoke-test");
+    auto own_line(irq::ControllerOps const &chip = CHIP) -> irq::Line * {
+        auto *const line = new (mm::GAF_KERNEL) irq::Line(OWN_HWIRQ, OWN_LINE);
         if (line == nullptr) {
             return nullptr;
         }
@@ -252,8 +257,8 @@ namespace {
             verdict(tally, false, "make the line");
             return;
         }
-        Owner first(irq::IrqFlags::Shared, &owner_cancel);
-        Owner second(irq::IrqFlags::Shared, &owner_cancel);
+        Owner first(irq::RegistrationOptions::Shared, &owner_cancel);
+        Owner second(irq::RegistrationOptions::Shared, &owner_cancel);
         auto const attached =
             line->attach(first.action) == Status::Ok && line->attach(second.action) == Status::Ok;
         verdict(tally, attached, "two shared actions with hooks take the line");
@@ -296,8 +301,8 @@ namespace {
         // What the revoked line is left with: it was Shared, and takes an
         // exclusive action as it would any empty line, then refuses a shared.
         line->unmark_dying();
-        Owner exclusive(irq::IrqFlags::None, &owner_cancel);
-        Owner sharer(irq::IrqFlags::Shared, &owner_cancel);
+        Owner exclusive(irq::RegistrationOptions::None, &owner_cancel);
+        Owner sharer(irq::RegistrationOptions::Shared, &owner_cancel);
         auto const took = line->attach(exclusive.action);
         auto const refused = line->attach(sharer.action);
         verdict(tally, took == Status::Ok && refused == Status::AlreadyBound,
@@ -312,7 +317,7 @@ namespace {
             verdict(tally, false, "make the line");
             return;
         }
-        Owner owner(irq::IrqFlags::None, &owner_cancel);
+        Owner owner(irq::RegistrationOptions::None, &owner_cancel);
         auto const marked = line->mark_dying();
 
         auto const configures = CONFIGURES.load(std::memory_order_relaxed);
@@ -349,7 +354,8 @@ namespace {
     /// action can never come off.
     auto check_refuses_permanent(Tally &tally) -> void {
         auto *const line = own_line();
-        auto *const owner = new (mm::GAF_KERNEL) Owner(irq::IrqFlags::Permanent, &owner_cancel);
+        auto *const owner =
+            new (mm::GAF_KERNEL) Owner(irq::RegistrationOptions::Permanent, &owner_cancel);
         if (line == nullptr || owner == nullptr) {
             verdict(tally, false, "make the Permanent line");
             return;
@@ -375,8 +381,8 @@ namespace {
             verdict(tally, false, "make the line");
             return;
         }
-        Owner hooked(irq::IrqFlags::Shared, &owner_cancel);
-        Owner hookless(irq::IrqFlags::Shared, nullptr);
+        Owner hooked(irq::RegistrationOptions::Shared, &owner_cancel);
+        Owner hookless(irq::RegistrationOptions::Shared, nullptr);
         auto const attached = line->attach(hooked.action) == Status::Ok &&
                               line->attach(hookless.action) == Status::Ok;
         verdict(tally, attached, "a shared line takes an action with a hook and one without");
@@ -414,7 +420,7 @@ namespace {
             verdict(tally, false, "make the level line");
             return;
         }
-        Owner owner(irq::IrqFlags::Oneshot, &owner_cancel);
+        Owner owner(irq::RegistrationOptions::Oneshot, &owner_cancel);
         owner.wake = true;
         auto const attached = line->attach(owner.action);
         auto const woke = line->handle_irq(irq::Eoi::Skip);
@@ -450,7 +456,7 @@ namespace {
         }
         line->revoke();
         line->unmark_dying();
-        Owner next(irq::IrqFlags::Oneshot, &owner_cancel);
+        Owner next(irq::RegistrationOptions::Oneshot, &owner_cancel);
         auto const taken = line->attach(next.action);
         unmasks = UNMASKS.load(std::memory_order_relaxed);
         verdict(tally,
@@ -463,7 +469,7 @@ namespace {
     }
 
     struct Dispatch {
-        irq::Desc *line;
+        irq::Line *line;
     };
 
     auto dispatch_routine(void *const arg) -> i32 {
@@ -484,7 +490,7 @@ namespace {
             return;
         }
         Hold hold;
-        Owner owner(irq::IrqFlags::None, &owner_cancel);
+        Owner owner(irq::RegistrationOptions::None, &owner_cancel);
         owner.hold = &hold;
         auto const attached = line->attach(owner.action) == Status::Ok;
         auto const marked = line->mark_dying();
@@ -530,8 +536,8 @@ namespace {
     /// of its own. The table is the test's own, made once per run and kept:
     /// a table cannot be freed.
     struct Race {
-        irq::DescTable *table = nullptr;
-        VIrqNum virq = irq::INVALID_V_IRQ_NUM;
+        irq::Domain *table = nullptr;
+        VIrqNum virq = VIrqNum::Invalid;
         Owner *owner = nullptr;
         std::atomic<u32> go{0};
         std::atomic<u32> remover_done{0};
@@ -606,7 +612,7 @@ namespace {
     }
 
     auto check_race(Tally &tally, CpuNum const remover_cpu, CpuNum const detacher_cpu) -> void {
-        auto *const table = new (mm::GAF_KERNEL) irq::DescTable();
+        auto *const table = new (mm::GAF_KERNEL) irq::Domain();
         constexpr std::array<HIrqNum, 1> NUMBERS{OWN_HWIRQ};
         if (table == nullptr ||
             table->init(ustl::views::Span<HIrqNum const>(NUMBERS), CHIP) != Status::Ok) {
@@ -614,7 +620,7 @@ namespace {
             return;
         }
         RACE.table = table;
-        RACE.virq = table->virq_of(OWN_HWIRQ);
+        RACE.virq = table->irq_for_source(OWN_HWIRQ);
         RACE.stop.store(false, std::memory_order_relaxed);
         RACE.go.store(0, std::memory_order_relaxed);
         RACE.remover_done.store(0, std::memory_order_relaxed);
@@ -629,13 +635,16 @@ namespace {
             spawn_pinned("irqrevoke.test/detach", detacher_routine, nullptr, detacher_cpu);
         auto ran = remover != nullptr && detacher != nullptr;
         for (u32 round = 1; ran && round <= RACE_ROUNDS; ++round) {
-            auto *const owner = new (mm::GAF_KERNEL) Owner(irq::IrqFlags::None, &owner_cancel);
+            auto *const owner =
+                new (mm::GAF_KERNEL) Owner(irq::RegistrationOptions::None, &owner_cancel);
             if (owner == nullptr) {
                 ran = false;
                 break;
             }
             owner->hook_spins = RACE_HOOK_SPINS;
-            if (table->attach(RACE.virq, owner->action) != Status::Ok) {
+            if (irq::with_line(*table, RACE.virq, [&](irq::Line &resolved) {
+                    return resolved.attach(owner->action);
+                }) != Status::Ok) {
                 ran = false;
                 delete owner;
                 break;

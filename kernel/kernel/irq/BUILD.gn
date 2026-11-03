@@ -1,10 +1,9 @@
 source_set("irq") {
   sources = [
-    "init.cpp",
-    "desc_table.cpp",
+    "entry.cpp",
     "domain.cpp",
     "domain_registry.cpp",
-    "desc.cpp",
+    "line.cpp",
     "mod.cpp",
   ]
   deps = [

@@ -11,8 +11,15 @@ namespace ours {
 using VirtAddr = usize;
 using PhysAddr = usize;
 
-using HIrqNum = u32;
-using VIrqNum = u32;
+/// Controller-local source identity; meaningful only inside its domain.
+enum class HIrqNum : u32 {
+    Invalid = 0xFFFF'FFFF,
+};
+
+/// Kernel line identity. Allocated once and never reused after withdrawal.
+enum class VIrqNum : u32 {
+    Invalid = 0xFFFF'FFFF,
+};
 
 using CpuNum = u32;
 constexpr auto INVALID_CPU_NUM = static_cast<CpuNum>(-1);

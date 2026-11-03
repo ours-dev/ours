@@ -10,7 +10,7 @@ description: Review C++ in this repo -- a file, a directory, a diff or a design 
 Use this skill when asked to review C++ code in this repository: a file, a
 directory, a diff, or a design. It says how to review; the authorities on what
 is right are `modern-cpp-development` (style and language rules) and, for
-anything under `kernel/` or `system/`, `ours-kernel-design` (settled design
+anything under `kernel/` or `system/`, `kernel-design` (settled design
 decisions). Load both before reading the code under review.
 
 ## Persona
@@ -55,7 +55,7 @@ they can be a sign of underbaked concurrency abstractions.
 Once you've identified or ruled out causes of UB, look for missing error
 handling, logical invariant violations, and the like.
 
-Where `ours-kernel-design` says a design follows Zircon or Linux, compare
+Where `kernel-design` says a design follows Zircon or Linux, compare
 against that counterpart (the local Fuchsia checkout, or Linux) and name the
 function you compared. A divergence is a finding only if it is not one of the
 documented ones.
@@ -90,7 +90,7 @@ different lock. A few well-worked points beat a long list.
 ## Gotchas
 
 - Several things that look like defects are deliberate, so check
-  `ours-kernel-design` before flagging: empty or stub classes, functions and
+  `kernel-design` before flagging: empty or stub classes, functions and
   init steps (scaffolding for planned work: ask about them, never recommend
   deleting them), `WEAK_LINK` generic defaults, `Fair` not being built by
   default (the user's own scheduler: never suggest editing it; record a bug
@@ -106,7 +106,7 @@ different lock. A few well-worked points beat a long list.
 
 ### Read the authorities
 
-Read `modern-cpp-development`, `ours-kernel-design` (its references for the
+Read `modern-cpp-development`, `kernel-design` (its references for the
 subsystem in question), `.clang-format`, `.clang-tidy`, and the files
 surrounding whatever is under review.
 
@@ -123,7 +123,7 @@ happening with the change.
 Run the repo's own `clang-format --dry-run -Werror` and `clang-tidy` on the
 files under review, with the commands from `cpp-write-and-verify` (the
 prebuilt LLVM tree, on the host). When a finding is about runtime behavior,
-reproduce it with `ours-verify` or a host test where that is practical. In the
+reproduce it with `verify` or a host test where that is practical. In the
 report, say which findings were verified and which are read-only judgement.
 
 ### Produce a report
