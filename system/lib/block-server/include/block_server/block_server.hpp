@@ -161,15 +161,19 @@ class BlockServer
                 "block-server: the driver's completion of a Read does not carry the blocks "
                 "its request asked for\n"};
             auto _ = ours::debug_write(LINE.data(), static_cast<u32>(LINE.size()));
-            auto _ = Base::close_client(slot.channel);
+            Base::mark_connection_dead(slot.channel);
             free_slot(slot);
             return;
         }
         auto const encoded = encode_reply(slot, status, data);
         if (encoded.is_err() || Base::reply(slot.channel, encoded.unwrap()) != ours::Status::Ok) {
             // A reply that cannot be written leaves its client waiting for
-            // good, so the connection ends, as the base's reply() documents.
-            auto _ = Base::close_client(slot.channel);
+            // good, so the connection ends. complete() runs outside the
+            // pump, whose Close answer the Loop never sees here -- the
+            // connection is marked dead instead, and its slot retires it at
+            // the next firing (the dead client's PeerClosed, already
+            // asserted, or the live client's next message).
+            Base::mark_connection_dead(slot.channel);
         }
         free_slot(slot);
     }
@@ -192,12 +196,14 @@ class BlockServer
         return derived()->start(index, data);
     }
 
-    /// Whether the parked channel still names the connection it parked on:
-    /// the client table holds the entry with this channel and generation.
+    /// Whether the parked channel still names a connection that can be
+    /// answered: the client table holds a live (not marked-dead) entry with
+    /// this channel and generation.
     [[nodiscard]]
     auto still_connected(Slot const &slot) const -> bool {
         for (auto const &client: m_storage->base.clients) {
-            if (client.channel == slot.channel && client.generation == slot.generation) {
+            if (client.channel == slot.channel && client.generation == slot.generation &&
+                !client.dead) {
                 return true;
             }
         }

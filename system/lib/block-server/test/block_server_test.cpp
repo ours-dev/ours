@@ -314,6 +314,45 @@ TEST_F(BlockServerTest, AFullDepthAnswersShouldWait) {
     EXPECT_EQ(m_device->in_flight(), usize{0});
 }
 
+// The cross-wiring interleaving the mark-dead fix pins: client 1 parks and
+// exits; the completion's reply fails, and the entry is marked dead -- NOT
+// freed, because its slot is still armed on the dead channel. Client 2
+// connects (a different entry, or the same one only after the stale packet
+// retires it), parks, and gets ITS OWN reply -- never client 1's drop, and
+// never destroyed by the stale packet that fired client 1's slot.
+TEST_F(BlockServerTest, ADeadClientLeaveOthersConnectionsAlone) {
+    auto const gone = connect_block();
+    send(gone, [](std::span<u8> bytes) {
+        return ours_block::encode_read(bytes, {.txid = 40, .lba = 1, .count = 1});
+    });
+    run();
+    ASSERT_EQ(m_device->in_flight(), usize{1});
+
+    auto _ = ours::handle_close(gone);
+    run();
+    m_device->finish(0, Status::Ok, std::array<u8, BLOCK_SIZE>{});
+    EXPECT_EQ(m_device->in_flight(), usize{0});
+
+    // Client 2 parks and is answered with its own completion, untouched by
+    // the stale packet that fires client 1's slot.
+    auto const second = connect_block();
+    send(second, [](std::span<u8> bytes) {
+        return ours_block::encode_read(bytes, {.txid = 41, .lba = 2, .count = 1});
+    });
+    run();
+    ASSERT_EQ(m_device->started.size(), usize{2});
+    m_device->finish(m_device->started.back().slot, Status::Ok, std::array<u8, BLOCK_SIZE>{'b'});
+    auto const message = read_message(second);
+    ASSERT_TRUE(message.has_value());
+    auto const answered = ours_block::decode_read_reply(as_message(*message), 41);
+    ASSERT_TRUE(answered.is_ok());
+    EXPECT_EQ(answered->status, Status::Ok);
+
+    // And client 1's slot retired without serving anything of client 2's:
+    // exactly one message was queued for client 2, and it is gone.
+    EXPECT_FALSE(read_message(second).has_value());
+}
+
 TEST_F(BlockServerTest, AClientGoneWhileParkedDropsItsReply) {
     auto const client = connect_block();
     send(client, [](std::span<u8> bytes) {

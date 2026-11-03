@@ -185,9 +185,11 @@ struct Connection {
     Operations rights = Operations::None;
     /// A file's: where Read and Write go on from.
     u64 seek = 0;
-    /// The root's: whether "." has been listed, and the DIRENT offset the
-    /// listing continues after -- entries at a greater offset only, the
-    /// item that failed to fit coming again.
+    /// The root's: whether "." has been listed, and the DIRENT offset one
+    /// past the last entry listed -- entries at or past that only, the
+    /// item that failed to fit coming again. (One past, not at: an entry
+    /// whose folded offset is 0 must not be swallowed by the initial
+    /// cursor of 0.)
     bool listed_dot = false;
     u64 next_offset = 0;
 };
@@ -628,7 +630,13 @@ auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsReques
             // children only: the scan walks the one tree past this
             // directory's key range, and other objects' items are not
             // entries here.
-            if (key.object != connection.object || key.offset <= connection.next_offset) {
+            // The cursor names the last entry listed, and the listing
+            // resumes strictly after it -- hence the strict <, and the +1
+            // on advance: an entry whose folded offset is exactly the
+            // cursor must never list again, and one whose folded offset is
+            // 0 must not be swallowed by the initial cursor of 0 (which is
+            // why the skip is strict, not <=).
+            if (key.object != connection.object || key.offset < connection.next_offset) {
                 return true;
             }
             auto const decoded = ours_btreefs::decode_dirent_value(value);
@@ -644,7 +652,7 @@ auto Filesystem::read_dirents(Connection &connection, ours_io::ReadDirentsReques
                 // cursor not having moved.
                 return false;
             }
-            connection.next_offset = key.offset;
+            connection.next_offset = key.offset + 1;
             return true;
         });
     if (walked != Status::Ok) {
@@ -694,6 +702,17 @@ auto open_below_dir(Connection &connection, ours_io::OpenRequest const &open) ->
     }
     auto const at_self = open.path == "." || open.path.empty();
     auto const at_root = connection.object == ROOT_OBJECT && (at_self || open.path == EXPOSED_NAME);
+    {
+        char f[18];
+        auto _ = ort::debug_line({"btreefs: DIAG rights ",
+                                  ort::hex(std::to_underlying(connection.rights), f), " flags ",
+                                  ort::hex(std::to_underlying(flags), f), " path ", open.path});
+    }
+    {
+        char f[18];
+        auto _ = ort::debug_line({"btreefs: DIAG open flags ",
+                                  ort::hex(std::to_underlying(flags), f), " path ", open.path});
+    }
     if (!at_self && !at_root && !holds(connection.rights, Operations::Traverse)) {
         refuse(open.object, Status::AccessDenied);
         return;
@@ -749,6 +768,17 @@ auto open_below_dir(Connection &connection, ours_io::OpenRequest const &open) ->
         }
         auto const is_dir = found->kind == ObjectKind::Directory;
         if (!is_dir && (flags & Flags::FileTruncate) != Flags::None) {
+            // Truncating destroys bytes, and costs the right that names
+            // writing them, in the open's own ask: the flag is not one of
+            // Operations, so an ask of r* | FileTruncate requests no Write
+            // right at all, and this gate refuses it the way Zircon's
+            // flag-to-right table does. (The connection's ceiling is the
+            // wrong place: an rw* view holds WriteBytes whatever the client
+            // meant.)
+            if (!holds(requested, Operations::WriteBytes)) {
+                refuse(open.object, Status::AccessDenied);
+                return;
+            }
             // O_TRUNC: the file opens empty. The blocks go back inside one
             // transaction with the size change, so a crash leaves the file
             // either whole or empty, never half.
@@ -812,6 +842,12 @@ auto Filesystem::unlink_at(u64 const directory, std::string_view const name) -> 
         }
     }
     while (found->kind == ObjectKind::File) {
+        // Each turn's copies go to the device before the next turn fills the
+        // cache again: an unbounded loop over one transaction otherwise
+        // exhausts it partway through a big file (docs/repairs/261103/btreefs.md).
+        if (auto const status = tx.checkpoint(); status != ours::Status::Ok) {
+            return status;
+        }
         // The file's first DATA item, one per turn: the walk starts at the
         // file's first block, skips the INODE item that sorts before the
         // DATA ones, and stops at the next object's items.
@@ -983,6 +1019,12 @@ auto handle(usize const index) -> loop::Action {
         if (request.is_err() || connection.target != Target::Directory) {
             forget(index);
             return loop::Action::Close;
+        }
+        // Unlinking mutates the directory's contents, and costs the same
+        // right creating in it does.
+        if (!holds(connection.rights, Operations::ModifyDirectory)) {
+            answer_status(connection.channel, ours_io::UNLINK, request->txid, Status::AccessDenied);
+            return loop::Action::Rearm;
         }
         // The path is relative to this directory: its components walk, the
         // last names what goes.

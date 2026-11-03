@@ -168,9 +168,15 @@ namespace {
                 continue;
             }
 
-            ASSERT(static_cast<usize>(gsi) <= MAX_GSI,
-                   "GSI {} of ISA IRQ {} is past the platform vectors", static_cast<u32>(gsi),
-                   u32(isa));
+            if (static_cast<usize>(gsi) > MAX_GSI) {
+                // The same answer the PCI loop below gives the identical
+                // condition: no line, left as the firmware left it. A
+                // firmware override naming a GSI past the platform vectors
+                // is the firmware's data, not a kernel invariant to die on.
+                log::warn("ISA IRQ {} is GSI {}, past the platform vectors; no line", u32(isa),
+                          static_cast<u32>(gsi));
+                continue;
+            }
             auto const vector = IrqVec(usize(IrqVec::PlatformIrqMin) + static_cast<usize>(gsi));
             apic_configure_isa_irq(isa, ApicDeliveryMode::Fixed, true,
                                    ApicDestinationMode::Physical, static_cast<u8>(bspid), vector);

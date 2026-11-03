@@ -1,7 +1,7 @@
 # irq-redesign: completed incremental delivery
 
 **Date**: 2026-11-03
-**Status**: Complete
+**Status**: Implemented
 
 ## Request
 

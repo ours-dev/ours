@@ -10,6 +10,9 @@
 //   - an evicted page is a hole: the next access raises a request against the
 //     page source, and a page supplied again reads as it did;
 //   - a page written is not reclaimable, and stays with what was written;
+//   - a page pinned and unpinned is written as far as the node knows: the device
+//     that held it may have changed it, so it is not reclaimable either, and
+//     keeps what the device wrote;
 //   - a page of a page source is mapped read-only even in a writable mapping,
 //     so that a write comes back to the node and is seen; an evicted page is
 //     taken out of the mappings;
@@ -307,6 +310,43 @@ namespace {
         if (aspace->destroy() != Status::Ok) {
             verdict(tally, false, "the address space is destroyed");
         }
+    }
+
+    /// A pin hands a page of a page source to a device that may write it, and
+    /// pin_range() takes the page through require_owned_page(), which marks it
+    /// written. The unpin has to keep that mark: filed as the source's content
+    /// again, the page would be evicted and what the device wrote lost.
+    auto check_unpin_keeps_the_write(Tally &tally) -> void {
+        CountingProvider *provider = nullptr;
+        auto vmo = make_vmo(2, &provider);
+        if (!vmo || !supply(*vmo, 0, 2)) {
+            verdict(tally, false, "a VMO of two supplied pages is made");
+            return;
+        }
+        auto const pinned = vmo->pin_range(0, P) == Status::Ok;
+        auto const page = filed_at(*vmo, 0).page;
+        verdict(tally,
+                pinned && page && filed_at(*vmo, 0).kind == Kind::Pinned &&
+                    filed_at(*vmo, 1).kind == Kind::Reclaimable,
+                "a page pinned is on the pinned queue, the page beside it stays reclaimable");
+        if (!page) {
+            return;
+        }
+
+        // The device writes the page while it holds the pin.
+        u64 const device = 0xde71'ce00'dead'beef;
+        *reinterpret_cast<u64 *>(mm::PhysMap::phys_to_virt(mm::frame_to_phys(page))) = device;
+
+        auto const unpinned = vmo->unpin_range(0, P) == Status::Ok;
+        verdict(tally, unpinned && filed_at(*vmo, 0).kind == Kind::Anonymous,
+                "a page unpinned is written, not reclaimable");
+
+        auto const freed = queues_of(*page).reclaim(100);
+        u64 back = 0;
+        verdict(tally,
+                freed == 1 && filed_at(*vmo, 0).page == page && !filed_at(*vmo, 1).page &&
+                    word_at(*vmo, 0, &back) && back == device,
+                "reclaim(100) evicts the page never pinned, and keeps what the device wrote");
     }
 
     struct Stress {
@@ -676,6 +716,7 @@ namespace {
         Tally tally;
         check_order_and_refetch(tally);
         check_mappings(tally);
+        check_unpin_keeps_the_write(tally);
         check_lifetime(tally);
         check_zero_dedup(tally);
         check_zero_mapped(tally);

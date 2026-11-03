@@ -197,6 +197,10 @@ class MappedMmio final {
         if (at != ours::Status::Ok) {
             return ustl::err(at);
         }
+        // The destructor unmaps through the same VMA the mapping was made
+        // in. (This line was lost once already: a fix script asserted after
+        // composing it and died before writing. The review caught it.)
+        mapped.m_vma = vma;
         return ustl::ok(std::move(mapped));
     }
 
@@ -312,6 +316,9 @@ class DmaRegion final {
                               ours::BtiPinOptions::Contiguous,
                           vmo, 0, bytes, &region.m_phys, 1, &region.m_pmt);
         if (pinned != ours::Status::Ok) {
+            // The region was never mapped: m_vma must go back to Invalid, or
+            // the destructor unmaps an address that is not ours.
+            region.m_vma = ours::Uandle::Invalid;
             auto _ = ours::handle_close(vmo);
             return ustl::err(pinned);
         }
@@ -324,6 +331,7 @@ class DmaRegion final {
         if (mapped != ours::Status::Ok) {
             auto _ = ours::pmt_unpin(region.m_pmt);
             region.m_pmt = ours::Uandle::Invalid;
+            region.m_vma = ours::Uandle::Invalid;
             return ustl::err(mapped);
         }
         return ustl::ok(std::move(region));
