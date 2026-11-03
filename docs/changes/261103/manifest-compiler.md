@@ -112,3 +112,46 @@ None. The user decided the naming scheme (mechanical mapping, over short names i
 - Why must the names header be generated from the scope alone rather than as a second output of the `.cm` compile?
 - Why is the fold-collision (`/NOTES` and `/notes`) refused instead of one shadowing the other?
 - Why is `UNDECLARED` the one `/svc` path routing_checks still spells as a literal?
+
+## routing_checks also takes its directory paths from the names header (2026-11-03)
+
+**Files**
+
+- `system/service/init/test/routing_checks/routing_checks.cpp` — `FILES`, `FILES_SUB`, `GHOST` and `FILES_FILE` come from `<component/names/routing_checks.hpp>` now, as the `/svc` constants already did.
+
+**Symptom**
+
+None — this closes the deliberately-not-done item of the entry above: four constants the names header already carried were still spelled as literals, so a path changed in routing_checks.cm could compile while the program opened a stale one.
+
+**Cause**
+
+The first conversion took only the `/svc` constants, on the reasoning that the `/files`-family names also assert what the sibling files serves. That was overcareful: a use's namespace path is this manifest's fact — what the sibling serves behind the entry is another manifest's business and another test's.
+
+**Change**
+
+The four aliases initialize from `component::names::routing_checks::USE_*`. `check_files_closed()` keeps its inline literals: its loops walk composed paths (`/files-denied/hello.txt` and friends), and converting one element of each literal list would read worse than the churn it saves.
+
+**Reference**
+
+See the entry above (D31).
+
+**Verification**
+
+`boot_check` on the branch (`out/component-compiler.x86`): dbg PASS 46 passed, rel PASS 44 passed 7/7 required with `routing_checks: passed`, host-tests 160 passed 0 failed.
+
+**Deliberately not done**
+
+The composed-path literals (`/denied/bin/routing_checks`, `/vfs-all/extra/...`, `/disk` and friends) stay hand-written: they are sub-paths under an entry or one-off expressions, not the use paths the header carries.
+
+**How it was found**
+
+None.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+- Why is a use's namespace path this manifest's fact even when the capability behind it comes from a sibling?
+- Why do the composed-path literals (`/files-denied/hello.txt`) stay hand-written?
