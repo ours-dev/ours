@@ -46,16 +46,36 @@ Zircon `VmCowPages::DecommitRange()` (`kernel/vm/vm_cow_pages.cc:4086`) and `Res
 Low: pager-backed VMOs are not pinned by any caller today.
 
 **Symptom**
-Latent, cannot be triggered today. `pin_range()` is meant to work on a VMO made by `VmCowPages::with_source()`: a page the source has not supplied makes `pin_range_locked()` answer ShouldWait, and the loop in `VmObjectPaged::pin_range()` waits and goes on from the page it stopped at. That loop, and the refiling of such a page as reclaimable when its last pin goes, have not run.
+Latent, cannot be triggered today. `pin_range()` is meant to work on a VMO made by `VmCowPages::with_source()`: a page the source has not supplied makes `pin_range_locked()` answer ShouldWait, and the loop in `VmObjectPaged::pin_range()` waits and goes on from the page it stopped at. That loop has not run. What a pin leaves behind is covered: a page of such a VMO is written once it has been pinned, and not reclaimable after the unpin (`pagereclaim.test`, `docs/changes/261103/mm.md`).
 
 **Cause**
 `vmopin.test` uses an anonymous VMO. A source-backed one needs the provider machinery of `pagesource.test` and `pagereclaim.test`.
 
 **Change**
-A case in `vmopin.test` that pins a source-backed range with a provider that supplies late, shows the pin completes after the wait, and shows the page reclaimable again after the unpin.
+A case in `vmopin.test` that pins a source-backed range with a provider that supplies late, and shows the pin completes after the wait.
 
 **Reference**
 None, this project's own design.
 
 **Acceptance**
-That case passes, and removing the `Fill::Content` refiling in `unpin_range_locked()` fails it.
+That case passes, and removing the wait-and-go-on in `VmObjectPaged::pin_range()` fails it.
+
+## 4. A read-only pin of a page-source page makes it unreclaimable for good
+
+**Severity**
+Low: a page that stays in memory when it could have been given back, and nothing pins a pager-backed VMO today.
+
+**Symptom**
+Latent, cannot be triggered today. A device that only reads a page of a pager-backed VMO holds a pin on it. When the pin goes, the page is filed as written (anonymous) and stays so, although nothing changed it: the reclaimer never offers it for eviction again, and the page source cannot be asked for it again.
+
+**Cause**
+`pin_range()` cannot tell a read pin from a write pin: it takes each page through `require_owned_page()`, which marks a page of a page source written, as a write through a mapping does. `unpin_range_locked()` keeps that mark (`docs/changes/261103/mm.md`), since a pin that was for writing is the case that must not lose data. A page has no clean/dirty bit of its own, only the queue it is on, and there is no write-back that would turn a written page clean again (`.agents/tasks/page-reclaim/DESIGN.md:27` puts dirty pager pages and their write-back off for later).
+
+**Change**
+Have `BtiDispatcher::pin()` pass whether any permission can write to `pin_range()`, and let a read-only pin take the page through `require_read_page()` and file it back as it was. That needs the page's pre-pin kind kept somewhere while it sits on the pinned queue, or a per-page dirty bit.
+
+**Reference**
+Zircon `VmCowPages::MoveToNotPinnedLocked()` (`kernel/vm/vm_cow_pages.cc:4761`): a page of a pager-backed VMO goes back to the reclaim queue if `is_page_clean()`, and to the dirty queue otherwise, so the page itself says what it was.
+
+**Acceptance**
+`pagereclaim.test` has a read-only pin and unpin of a page-source page that leaves the page reclaimable, and a write pin that does not.

@@ -309,7 +309,9 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// Undoes one pin of each page of [offset, offset + size). BadState, and no
     /// pin undone, if any page of the range holds none: unpinning what was not
     /// pinned is the caller's bug, and a count that wrapped would hold a page
-    /// for ever. A page whose last pin goes is filed again as its kind says.
+    /// for ever. A page whose last pin goes is filed again as its kind says,
+    /// and a page of a node with a page source as written, not reclaimable:
+    /// the pin handed it to a device that may have changed it.
     TA_REQUIRES(m_lock)
     auto unpin_range_locked(VirtAddr offset, usize size) -> Status;
 
@@ -503,18 +505,22 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     /// How a page came into this node, which picks its queue
     /// (file_page_locked()): with content of its own (supplied, copied,
-    /// wired), or committed in place of zero content.
+    /// wired), committed in place of zero content, or written: handed to
+    /// something that may change it, so that its content is no longer what the
+    /// page source holds.
     enum class Fill : u8 {
         Content,
         ZeroFork,
+        Written,
     };
 
     /// Files |page|, just put at |index| of this node, on its node's page
     /// queue for its kind, with the backlink to this node: pinned for a
-    /// pinned node, reclaimable for a node with a page source, and otherwise
-    /// anonymous, zero-fork or not by |fill|. Called with this node's lock
-    /// held, right after the page went into the page list, so that a page is
-    /// never in the list and on no queue while anyone else can look.
+    /// pinned node, reclaimable for a node with a page source unless |fill|
+    /// is Written, and otherwise anonymous, zero-fork or not by |fill|. Called
+    /// with this node's lock held, right after the page went into the page
+    /// list, so that a page is never in the list and on no queue while anyone
+    /// else can look.
     auto file_page_locked(VmPage *page, PgOff index, Fill fill) -> void;
 
     /// The pages in this node's list now belong to it: after it took another

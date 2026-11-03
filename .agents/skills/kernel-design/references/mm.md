@@ -112,6 +112,13 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   `require_owned_page()`, which files the page anonymous
   (`file_dirty_locked()`). Until a pager VMO can be written back, such a page is
   never evicted.
+- A pin counts as a write (2026-11-03): `pin_range_locked()` takes each page
+  through `require_owned_page()`, since a device may write it, and the queue is
+  the only record of "written". The pinned queue holds the page meanwhile, so
+  the last unpin files a page of a node with a page source as written
+  (`Fill::Written`), never as the source's content. A page pinned once is not
+  reclaimable again; a read-only pin that kept it clean needs a per-page bit
+  (`docs/repairs/261030/mm-pin.md` item 4).
 
 - Zero pages are deduplicated in leaf nodes only
   (`VmCowPages::dedup_zero_page()`):

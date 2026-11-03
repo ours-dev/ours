@@ -49,7 +49,7 @@ auto VmCowPages::file_page_locked(VmPage *const page, PgOff const index, Fill co
     auto &queues = queues_of(page);
     if (!!(m_flags & Flags::Pinned)) {
         queues.set_pinned(page, this, index);
-    } else if (m_page_source) {
+    } else if (m_page_source && Fill::Written != fill) {
         queues.set_reclaimable(page, this, index);
     } else if (Fill::ZeroFork == fill) {
         queues.set_anonymous_zero_fork(page, this, index);
@@ -1113,8 +1113,14 @@ auto VmCowPages::unpin_range_locked(VirtAddr const offset, usize const size) -> 
         if (page->pinned_count() == 0) {
             m_nr_pinned_pages -= 1;
             // Filed as its kind says, as when it was put here: a pinned node's
-            // pages go back on the pinned queue, a pager's become reclaimable.
-            file_page_locked(page, index, Fill::Content);
+            // pages go back on the pinned queue. A pager's page does not become
+            // reclaimable: the pin handed it to a device that may have written
+            // it, which is why pin_range_locked() took it through
+            // require_owned_page() and so marked it written. Only the pinned
+            // queue held that mark meanwhile, and an unpin that filed the page
+            // as the source's content would let the reclaimer evict what the
+            // device wrote and read the old content back.
+            file_page_locked(page, index, Fill::Written);
         }
     }
     return Status::Ok;
