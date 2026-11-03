@@ -1283,4 +1283,53 @@ TEST(BtreefsTransactions, ADoubleFreeInOneTransactionAnswersBadState) {
                     }),
               Status::BadState);
 }
+
+// --- The data blocks a partial write starts from. ---
+
+TEST(BtreefsDataBlock, ANewBlockStartsFromZerosNotTheDevicesOldBytes) {
+    // The device's copy of a free block is what it held before; the service's
+    // own buffer holds the last operation's bytes. Neither may reach a file.
+    auto fs = Mounted(64, 1);
+    fs.device.fill_from(u64{fs.volume.bitmap_first} + fs.volume.bitmap_blocks, 0xA5);
+    auto bytes = std::array<u8, BLOCK_BYTES>{};
+    bytes.fill(0x77);
+    ASSERT_EQ(ours_btreefs::data_block_to_patch(fs.device, 20, true, std::span{bytes}), Status::Ok);
+    for (auto const byte: bytes) {
+        ASSERT_EQ(byte, u8{0});
+    }
+}
+
+TEST(BtreefsDataBlock, AnExistingBlockStartsFromWhatItHolds) {
+    auto fs = Mounted(64, 1);
+    auto held = std::array<u8, BLOCK_BYTES>{};
+    for (auto at = usize{0}; at < BLOCK_BYTES; ++at) {
+        held[at] = static_cast<u8>(at * 7 + 3);
+    }
+    ASSERT_EQ(fs.device.write_block(20, held), Status::Ok);
+    auto bytes = std::array<u8, BLOCK_BYTES>{};
+    bytes.fill(0x77);
+    ASSERT_EQ(ours_btreefs::data_block_to_patch(fs.device, 20, false, std::span{bytes}),
+              Status::Ok);
+    EXPECT_EQ(bytes, held);
+}
+
+TEST(BtreefsDataBlock, ASpanOfTheWrongSizeIsInvArgs) {
+    auto fs = Mounted(64, 1);
+    auto bytes = std::array<u8, 100>{};
+    EXPECT_EQ(ours_btreefs::data_block_to_patch(fs.device, 20, true, std::span{bytes}),
+              Status::InvArgs);
+    EXPECT_EQ(ours_btreefs::data_block_to_patch(fs.device, 20, false, std::span{bytes}),
+              Status::InvArgs);
+}
+
+TEST(BtreefsDataBlock, AFailedReadOfAnExistingBlockAnswersTheDevicesStatus) {
+    // A block past the device's end: the fake device answers OutOfRange. A new
+    // block is not read at all, so it does not matter where it is.
+    auto fs = Mounted(64, 1);
+    auto bytes = std::array<u8, BLOCK_BYTES>{};
+    EXPECT_EQ(ours_btreefs::data_block_to_patch(fs.device, 100'000, false, std::span{bytes}),
+              Status::OutOfRange);
+    EXPECT_EQ(ours_btreefs::data_block_to_patch(fs.device, 100'000, true, std::span{bytes}),
+              Status::Ok);
+}
 } // namespace

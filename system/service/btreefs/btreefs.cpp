@@ -554,11 +554,14 @@ auto Filesystem::write_file(Connection &connection, ours_io::WriteRequest const 
                 return;
             }
         }
-        // A block written whole skips the read; a patch reads what is there
-        // first, so the bytes outside the write stay the file's.
+        // A block written whole skips the read; a patch starts from what is
+        // there, so the bytes outside the write stay the file's -- and from
+        // zeros for a block just made, which holds on the device whatever it
+        // held before.
         if (within != 0 || chunk != ours_btreefs::BLOCK_BYTES) {
-            if (auto const status = device().read_block(ours_btreefs::decode_data_value(m_item),
-                                                        std::span{m_block});
+            if (auto const status = ours_btreefs::data_block_to_patch(
+                    device(), ours_btreefs::decode_data_value(m_item), Status::NotFound == looked,
+                    std::span{m_block});
                 status != Status::Ok) {
                 answer_status(connection.channel, ours_io::WRITE, request.txid, status);
                 return;

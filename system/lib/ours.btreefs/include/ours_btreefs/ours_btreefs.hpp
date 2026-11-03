@@ -6,6 +6,7 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
+#include <algorithm>
 #include <array>
 #include <span>
 #include <string_view>
@@ -825,6 +826,25 @@ auto open(Device &device) -> ustl::Result<Volume, ours::Status> {
         }
     }
     return best;
+}
+
+/// The starting bytes, in |bytes|, of a write that covers only part of the data
+/// block |block|: what the block holds, so that the bytes outside the write stay
+/// the file's -- or zeros when |is_new|. A block just made holds, on the device,
+/// whatever it held before it was free, another file's content or the leftovers
+/// of an earlier volume, and a write that patches part of it must not make
+/// those bytes this file's.
+template <typename Device>
+auto data_block_to_patch(Device &device, u64 block, bool is_new, std::span<u8> bytes)
+    -> ours::Status {
+    if (bytes.size() != BLOCK_BYTES) {
+        return ours::Status::InvArgs;
+    }
+    if (is_new) {
+        std::ranges::fill(bytes, u8{0});
+        return ours::Status::Ok;
+    }
+    return device.read_block(block, bytes);
 }
 
 /// Finds |key| and copies its value into |value|, reading the committed

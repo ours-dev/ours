@@ -73,3 +73,65 @@ None
 - Why does a stale byte 3 turn an "empty" node into a full one of garbage, and why does the clamp make that worse rather than safe?
 - Why does `cached()` return the device's bytes for a block the transaction has just allocated, and why is that right for a block the tree already owns?
 - Why are both the header write and `fresh()` kept, when either one alone fixes the count?
+
+## Title: a partial write to a new data block starts from zeros, not from the bytes the block last held (2026-11-03)
+
+**Files**
+- `system/service/btreefs/btreefs.cpp` — `write_file()` asks `ours_btreefs::data_block_to_patch()` for the starting bytes of a patch, and says whether the block is new
+- `system/lib/ours.btreefs/include/ours_btreefs/ours_btreefs.hpp` — `data_block_to_patch()`, and the `<algorithm>` include
+- `system/lib/ours.btreefs/test/ours_btreefs_test.cpp` — four tests in `BtreefsDataBlock`
+- `docs/repairs/261103/btreefs.md` — the item for this change deleted; the two that remain are renumbered 1 and 2
+
+**Symptom**
+Found by reading, not run. One connection cannot reach it: a read clamps the seek position to the file's size, and a write leaves it at the end of what it wrote, so no connection reads past the end of a file it holds. Two connections can. Connection A holds a seek position of 5000 in a 5000-byte file. Connection B opens the file with `FileTruncate`, and the size drops to 0 while A's position stays 5000. A writes 5 bytes: block 1 has no item, so `write_file()` allocates a block for it, and since the write covers only part of the block it read the new block from the device and patched it. Bytes 0 to 903 of that block were whatever the block held before, the size became 5005, and `read_file()` returned those bytes as the file's content, though its comment says only a missing item reads as zeros. The dev disk image is zero-filled, so this appears only once a block has been freed and allocated again.
+
+**Cause**
+The same mistake as the node count in the entry above, on data blocks: a block just allocated was read from the device and used as if it were initialised, and the device's copy of a free block is whatever its last owner left, another file's content or the leftovers of an earlier volume.
+
+There is a second way to get it wrong, which is why the fix is not just "skip the read". The service keeps one `m_block` buffer for the lifetime of the filesystem and reuses it for every read and write. A new block patched without reading would start from `m_block` as the previous operation left it, which is a different file's bytes again. The starting point has to be zeros on purpose.
+
+**Change**
+For a block that is new (the lookup answered NotFound), the patch starts from zeros and the device is not asked; for a block that has an item, it starts from what the block holds, as before.
+
+```cpp
+// before: write_file()
+if (within != 0 || chunk != ours_btreefs::BLOCK_BYTES) {
+    if (auto const status = device().read_block(ours_btreefs::decode_data_value(m_item),
+                                                std::span{m_block});
+        status != Status::Ok) {
+
+// after
+if (within != 0 || chunk != ours_btreefs::BLOCK_BYTES) {
+    if (auto const status = ours_btreefs::data_block_to_patch(
+            device(), ours_btreefs::decode_data_value(m_item), Status::NotFound == looked,
+            std::span{m_block});
+        status != Status::Ok) {
+```
+
+The decision sits in a library function, not inline in the service, because the service has no host test: it is a program that needs a block device. In the library it can be run against the fake device the tree tests use. A block written whole still skips the read, since every byte of it is overwritten.
+
+**Reference**
+Linux `__block_write_begin_int()` (`fs/buffer.c`) zeroes the parts of a newly allocated buffer that lie outside the written range (`zero_user_segments()` when `buffer_new()`). From memory, not opened.
+
+**Verification**
+- Built, booted and tested in a clean worktree (`.worktrees/verify-btreefs-data`, HEAD `ca778e00` plus these three files).
+- `python3 .agents/skills/verify/scripts/boot_check.py`: build ok in 10.0 s; dbg PASS, shell finished at 5.5 s, 46 passed, 5 skipped, 0 failed; rel PASS, shell finished at 4.9 s, 44 passed, 8 skipped, 0 failed, 7/7 required; host-tests PASS, 163 passed. The four `BtreefsDataBlock` cases are in the log and pass.
+- Fail-first: with `is_new` ignored (the library function always reading the device), `BtreefsDataBlock.ANewBlockStartsFromZerosNotTheDevicesOldBytes` fails (a byte of `0xA5` where `0` is expected) and so does `AFailedReadOfAnExistingBlockAnswersTheDevicesStatus`, whose new block, on a device that cannot read it, now answers OutOfRange instead of Ok.
+- `scripts/format_cpp.py --check` is clean on the three files. `clang-tidy` was not run: no `compile_commands.json` under `out/` covers the host test target.
+- Not verified: the two-connection case itself, which was not run, and the call in `write_file()` that passes `Status::NotFound == looked`. That one line is covered by reading only: there is no host test of the service, and the standard boot has no disk. A boot with `DISK=` whose free blocks are not zero, and a client that makes the two-connection write, would cover it.
+
+**Deliberately not done**
+- The padding bytes of a reused `Value` and the unchecked `cached()` spans stay out; they are items 1 and 2 of `docs/repairs/261103/btreefs.md`, which the entry above numbered 2 and 3.
+- No test of the service itself, for the reason above.
+- No change to the read side. `read_file()` already answers zeros for a block with no item.
+
+**How it was found**
+By the completeness reviewer of the change in the entry above, who read `write_file()` for places where a block just allocated is read and trusted; the two-connection case is theirs. Nothing was run to confirm it.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why can one connection never read the stale bytes of a new block, and what does a second connection change?
+- Why is "skip the read for a new block" not enough, and what does `m_block` hold when the patch starts?
+- Why does the decision live in a library function when it is one `if` at one call site?
