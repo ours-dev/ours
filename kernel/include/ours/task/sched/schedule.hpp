@@ -11,10 +11,8 @@
 #include <ours/task/sched/run_queue.hpp>
 #include <ours/task/sched/types.hpp>
 
-#include <gktl/canary.hpp>
-#include <gktl/types.hpp>
+#include <ustl/dyn.hpp>
 #include <ustl/util/enum_bits.hpp>
-#include <ustl/util/noncopyable.hpp>
 
 namespace ours::task::sched {
 /// [[=bits::Enumask]]
@@ -74,171 +72,114 @@ enum class DequeueOptions {
 };
 USTL_ENABLE_ENUM_BITMASK(DequeueOptions);
 
-/// Schedule operation should be exclusively implemented for per discipline.
+/// What the scheduler asks of a discipline, as an interface in the sense of
+/// ustl::Dyn: a discipline is a plain class that has these member functions,
+/// with no base class and no virtual function, and the Scheduler reaches it
+/// through a ustl::Ref<Schedule> (Scheduler::schedule_of()).
 ///
-/// Every parameter here is named, and on the |RunQueue &| that is a
-/// requirement rather than a courtesy: a clang thread-safety attribute names
-/// an expression, and there is no expression for an unnamed parameter -- so
-/// `TA_REQUIRES(rq.lock())` cannot even be written on a hook declared
-/// `(RunQueue &, Thread *curr)`. Two of the eighteen entry points below say
-/// which lock they are called under; the rest are called under the same lock
-/// and said nothing, and the reason they said nothing is that they could not.
+/// Five methods are required, because no discipline can do without them:
+/// enqueue_thread, dequeue_thread, evaluate_next_thread, on_thread_tick and
+/// num_queued. Every other method is optional. A discipline without it gets the
+/// answer written beside the method below -- nothing, or a status -- once,
+/// where the method is declared, instead of in every discipline.
 ///
-/// So every hook names its parameters: the declaration is where the
-/// contract is read.
-class ISchedule {
-    using Self = ISchedule;
+/// Which lock an entry point is called under is on the discipline's own
+/// declaration: `TA_REQUIRES(rq.lock())` on those called under the run queue
+/// lock. The analysis does not check a call through the erased reference, so the
+/// check is made one step before it, in Scheduler::call_schedule(), which
+/// requires the lock itself. Every parameter named |rq| is the run queue whose
+/// lock that is: a clang thread-safety attribute names an expression, and there
+/// is no expression for an unnamed parameter.
 
-  public:
-    /// [Required] Insert |thread| to runqueue.
-    ///
-    /// Requires the runqueue lock of rq is been holding by caller.
-    ///
-    /// Return Status::Ok if enqueue action really happened.
-    TA_REQUIRES(rq.lock())
-    virtual auto enqueue_thread(RunQueue &rq, Thread *thread, EnqueueOptions options) -> Status = 0;
+/// [Required] Insert |thread| to runqueue.
+///
+/// Return Status::Ok if enqueue action really happened.
+USTL_DYN_MEMBER(EnqueueThread, enqueue_thread);
 
-    /// [Required] Remove |thread| from runqueue.
-    ///
-    /// Return Status::Ok if dequeue action really happened. Status::Delayed if delay
-    /// to dequeue.
-    TA_REQUIRES(rq.lock())
-    virtual auto dequeue_thread(RunQueue &rq, Thread *thread, DequeueOptions options) -> Status = 0;
+/// [Required] Remove |thread| from runqueue.
+///
+/// Return Status::Ok if dequeue action really happened. Status::Delayed if delay
+/// to dequeue.
+USTL_DYN_MEMBER(DequeueThread, dequeue_thread);
 
-    TA_REQUIRES(rq.lock())
-    virtual auto yield_thread(RunQueue &rq, Thread *curr) -> void {}
-    TA_REQUIRES(rq.lock())
-    virtual auto yield_to_thread(RunQueue &rq, Thread *curr, Thread *next) -> Status {
-        return Status::NotSupported;
-    }
+/// [Required] The thread that should run next on |rq|'s CPU, or null if this
+/// discipline has none.
+USTL_DYN_MEMBER(EvaluateNextThread, evaluate_next_thread);
 
-    /// Evaluate whether preempt the thread |curr| with given |thread| if needed.
-    ///
-    /// Return Status::Ok if able to preempt.
-    TA_REQUIRES(rq.lock())
-    virtual auto unpark_preempt(RunQueue &rq, Thread *curr, Thread *thread, UnparkOptions options)
-        -> Status {
-        return Status::Unimplemented;
-    }
+/// [Required] The scheduling clock ticked while |curr| ran; |queued| says
+/// whether it is on the run queue.
+USTL_DYN_MEMBER(OnThreadTick, on_thread_tick);
 
-    TA_REQUIRES(rq.lock())
-    virtual auto evaluate_next_thread(RunQueue &rq, Thread *curr) -> Thread * = 0;
-    TA_REQUIRES(rq.lock())
-    virtual auto put_prev_thread(RunQueue &rq, Thread *prev) -> void {}
-    TA_REQUIRES(rq.lock())
-    virtual auto set_next_thread(RunQueue &rq, Thread *next) -> void {}
+/// [Required] Number of threads queued on |rq|'s CPU for this discipline.
+///
+/// The RunQueue is the parameter every other entry point takes, and it is what
+/// says *which CPU* is being asked about. Without it the only implementation a
+/// discipline can write is "the CPU I happen to be running on" -- which is
+/// precisely the assumption that broke every cross-CPU wakeup, since
+/// Scheduler::do_unpark_thread() runs on the waker and manipulates the
+/// target's queues.
+USTL_DYN_MEMBER(NumQueued, num_queued);
 
-    /// [Optional] Update the scheduluing data of thread |curr|.
-    TA_REQUIRES(rq.lock())
-    virtual auto update_thread(RunQueue &rq, Thread *curr) -> void {}
+/// [Optional, does nothing] |curr| yields the CPU.
+USTL_DYN_MEMBER_OR(YieldThread, yield_thread, ustl::dyn::Ignore{});
 
-    virtual auto override_thread_base_profile(RunQueue &rq, Thread *thread,
-                                              BaseProfile const &profile) -> Status {
-        return Status::Unimplemented;
-    }
+/// [Optional, Status::NotSupported] |curr| yields to |next| in particular.
+USTL_DYN_MEMBER_OR(YieldToThread, yield_to_thread, ustl::dyn::Returns<Status::NotSupported>{});
 
-    virtual auto on_thread_init(RunQueue &rq, Thread *thread) -> void {}
-    virtual auto on_thread_dead(RunQueue &rq, Thread *thread) -> void {}
-    TA_REQUIRES(rq.lock())
-    virtual auto on_thread_unpark(RunQueue &rq, Thread *thread) -> void {}
+/// [Optional, Status::Unimplemented] Evaluate whether preempt the thread |curr|
+/// with given |thread|. Return Status::Ok if able to preempt.
+USTL_DYN_MEMBER_OR(UnparkPreempt, unpark_preempt, ustl::dyn::Returns<Status::Unimplemented>{});
 
-    virtual auto on_thread_tick(RunQueue &rq, Thread *curr, bool queued) -> void = 0;
+/// [Optional, does nothing] |prev| stops being the running thread.
+USTL_DYN_MEMBER_OR(PutPrevThread, put_prev_thread, ustl::dyn::Ignore{});
 
-    /// Number of threads queued on |rq|'s CPU for this schedule.
-    ///
-    /// The RunQueue is the parameter every other entry point here takes, and it
-    /// is what says *which CPU* is being asked about. Without it the only
-    /// implementation an ISchedule can write is "the CPU I happen to be
-    /// running on" -- which is precisely the assumption that broke every
-    /// cross-CPU wakeup, since Scheduler::do_unpark_thread() runs on the waker
-    /// and manipulates the target's queues.
-    [[nodiscard]]
-    TA_REQUIRES(rq.lock()) virtual auto num_queued(RunQueue &rq) const -> usize = 0;
+/// [Optional, does nothing] |next| becomes the running thread.
+USTL_DYN_MEMBER_OR(SetNextThread, set_next_thread, ustl::dyn::Ignore{});
 
-    /// [Optional] Attempts to assign a target CPU on which |thread| will run.
-    ///
-    /// Return `INVALID_CPU_NUM` if failed to assign.
-    virtual auto select_target_cpu(Thread *thread, CpuMask const &candidates) -> CpuNum {
-        return INVALID_CPU_NUM;
-    }
+/// [Optional, does nothing] Update the scheduluing data of thread |curr|.
+USTL_DYN_MEMBER_OR(UpdateThread, update_thread, ustl::dyn::Ignore{});
 
-    /// [Optional] Migrates |thread| onto new CPU specified by |cpunum|.
-    ///
-    /// Return `Status::Ok` if the migration was performed.
-    virtual auto migrate_thread(Thread *thread, CpuNum cpunum) -> Status {
-        return Status::Unsupported;
-    }
+/// [Optional, Status::Unimplemented] Replace the base profile of |thread|.
+USTL_DYN_MEMBER_OR(OverrideThreadBaseProfile, override_thread_base_profile,
+                   ustl::dyn::Returns<Status::Unimplemented>{});
 
-    /// Which discipline this schedule implements. Implemented once, by
-    /// `Schedule<Derived, Discipline>` below, from its own template
-    /// argument -- every concrete discipline gets it for free.
-    [[nodiscard]]
-    virtual auto discipline() const -> sched::Discipline = 0;
+/// [Optional, does nothing] |thread| was created, or is the thread a CPU booted
+/// on, and belongs to this discipline.
+USTL_DYN_MEMBER_OR(OnThreadInit, on_thread_init, ustl::dyn::Ignore{});
 
-  protected:
-    USTL_NO_MOVEABLE_AND_COPYABLE(ISchedule);
+/// [Optional, does nothing] |thread| is gone.
+USTL_DYN_MEMBER_OR(OnThreadDead, on_thread_dead, ustl::dyn::Ignore{});
 
-    /// Declaring the deleted copy/move members above suppresses the
-    /// implicit default constructor; disciplines are default-constructed
-    /// (see Schedule<>::INSTANCE), so bring it back explicitly.
-    ISchedule() = default;
+/// [Optional, does nothing] |thread| was just woken and enqueued.
+USTL_DYN_MEMBER_OR(OnThreadUnpark, on_thread_unpark, ustl::dyn::Ignore{});
 
-    virtual ~ISchedule() = default;
-};
+/// [Optional, INVALID_CPU_NUM] Attempts to assign a target CPU on which |thread|
+/// will run, among |candidates|. INVALID_CPU_NUM if it has no preference.
+USTL_DYN_MEMBER_OR(SelectTargetCpu, select_target_cpu, ustl::dyn::Returns<INVALID_CPU_NUM>{});
 
-/// One entry per registered discipline, collected by the linker into a
-/// single section (see `Schedule::REGISTRATION` below and the
-/// __schedules_start/__schedules_end block in //kernel/kernel.ld).
-/// `instance` is the discipline's one
-/// shared, stateless ISchedule object -- there's no "current CPU" to
-/// resolve, so this is a plain link-time-constant pointer, not a
-/// function. Scheduler::init() reads it once per CPU, at boot, on that
-/// CPU -- so collection order never matters: every entry carries its own
-/// `discipline`, and Scheduler::init() sorts them into an array indexed
-/// by discipline itself.
-struct ScheduleEntry {
-    sched::Discipline discipline;
-    ISchedule *instance;
-};
+/// [Optional, Status::Unsupported] Migrates |thread| onto new CPU specified by
+/// |cpunum|. Return Status::Ok if the migration was performed.
+USTL_DYN_MEMBER_OR(MigrateThread, migrate_thread, ustl::dyn::Returns<Status::Unsupported>{});
 
-/// CRTP base every concrete discipline (Fair, ...) derives from instead
-/// of ISchedule directly. `ISchedule` is stateless by design -- all
-/// per-CPU scheduling state belongs to the discipline's own per-CPU data
-/// (e.g. Fair's RunQueue, held by Scheduler and reached via
-/// `Scheduler::fair_run_queue()`), never to the schedule object itself.
-/// Because of that, `Derived` needs no per-CPU instance: one shared,
-/// stateless instance implements the algorithm for every CPU.
-template <typename Derived, sched::Discipline Discipline>
-class Schedule: public ISchedule {
-  public:
-    [[nodiscard]]
-    auto discipline() const -> sched::Discipline override final {
-        return Discipline;
-    }
-
-  private:
-    static inline Derived INSTANCE;
-
-    /// The registry entry. Two things about it are easy to get wrong, and
-    /// both were:
-    ///
-    /// The section is `.task.schedules`, not `.init.rodata.schedules`. It is
-    /// collected inside kernel.ld's `.init.rodata` output section, which also
-    /// ends in a `*(.init.rodata*)` catch-all -- a name under that prefix is
-    /// matched by the catch-all first and lands outside its own bounds.
-    ///
-    /// FORCE_USED is necessary but not sufficient: it keeps the compiler from
-    /// eliding the symbol, and says nothing to the linker. The kernel links
-    /// with --gc-sections and nothing names this object -- Scheduler::init()
-    /// only walks the section bounds -- so kernel.ld has to KEEP it too.
-    ///
-    /// A third trap lives in fair.cpp: a static data member of a class
-    /// template is instantiated only when odr-used, so each discipline needs
-    /// an explicit instantiation of its Schedule<> base.
-    LINK_SECTION(".task.schedules")
-    FORCE_USED
-    static inline ScheduleEntry const REGISTRATION = {Discipline, &INSTANCE};
-};
+using Schedule = ustl::Dyn<
+    ustl::Method<EnqueueThread, auto(RunQueue &, Thread *, EnqueueOptions)->Status>,
+    ustl::Method<DequeueThread, auto(RunQueue &, Thread *, DequeueOptions)->Status>,
+    ustl::Method<EvaluateNextThread, auto(RunQueue &, Thread *)->Thread *>,
+    ustl::Method<OnThreadTick, auto(RunQueue &, Thread *, bool)->void>,
+    ustl::Method<NumQueued, auto(RunQueue &)->usize>,
+    ustl::Method<YieldThread, auto(RunQueue &, Thread *)->void>,
+    ustl::Method<YieldToThread, auto(RunQueue &, Thread *, Thread *)->Status>,
+    ustl::Method<UnparkPreempt, auto(RunQueue &, Thread *, Thread *, UnparkOptions)->Status>,
+    ustl::Method<PutPrevThread, auto(RunQueue &, Thread *)->void>,
+    ustl::Method<SetNextThread, auto(RunQueue &, Thread *)->void>,
+    ustl::Method<UpdateThread, auto(RunQueue &, Thread *)->void>,
+    ustl::Method<OverrideThreadBaseProfile,
+                 auto(RunQueue &, Thread *, BaseProfile const &)->Status>,
+    ustl::Method<OnThreadInit, auto(RunQueue &, Thread *)->void>,
+    ustl::Method<OnThreadDead, auto(RunQueue &, Thread *)->void>,
+    ustl::Method<OnThreadUnpark, auto(RunQueue &, Thread *)->void>,
+    ustl::Method<SelectTargetCpu, auto(Thread *, CpuMask const &)->CpuNum>,
+    ustl::Method<MigrateThread, auto(Thread *, CpuNum)->Status>>;
 
 } // namespace ours::task::sched
 

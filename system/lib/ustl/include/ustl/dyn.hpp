@@ -59,8 +59,8 @@ namespace detail {
 
     template <typename Head, typename... Tail>
     struct FnList<Head, Tail...> {
-        constexpr FnList(Head const head_, Tail const... tail_) noexcept
-            : head(head_), tail(tail_...) {}
+        constexpr FnList(Head const first, Tail const... rest) noexcept
+            : head(first), tail(rest...) {}
 
         Head head;
         FnList<Tail...> tail;
@@ -226,6 +226,12 @@ class Ref<Dyn<Methods...>> final {
 /// `object.member(args...)`, and an object without such a member does not
 /// model an interface that has the method.
 ///
+/// The dispatch is exempt from the thread-safety analysis, and has to be: a
+/// lock a member requires is named by one of its arguments (`TA_REQUIRES(rq.lock())`),
+/// and the dispatch forwards those without knowing which is which. A caller
+/// that needs the check makes it before the erased call, in a function that
+/// has the argument by name.
+///
 /// A macro, because a dispatch has to name a member, which only a macro or a
 /// lambda per method can do, and the lambda's closure type could not be a
 /// template argument without a constant to hold it (the user's call,
@@ -233,6 +239,7 @@ class Ref<Dyn<Methods...>> final {
 #define USTL_DYN_MEMBER(Name, member)                                                              \
     struct Name {                                                                                  \
         template <typename Self, typename... Args>                                                 \
+        [[clang::no_thread_safety_analysis]]                                                       \
         static constexpr auto                                                                      \
         operator()(Self &self,                                                                     \
                    Args &&...args) noexcept(noexcept(self.member(std::forward<Args>(args)...)))    \
@@ -249,6 +256,7 @@ class Ref<Dyn<Methods...>> final {
 #define USTL_DYN_MEMBER_OR(Name, member, fallback)                                                 \
     struct Name {                                                                                  \
         template <typename Self, typename... Args>                                                 \
+        [[clang::no_thread_safety_analysis]]                                                       \
         static constexpr auto operator()([[maybe_unused]] Self &self,                              \
                                          [[maybe_unused]] Args &&...args) -> decltype(auto) {      \
             if constexpr (requires { self.member(std::forward<Args>(args)...); }) {                \

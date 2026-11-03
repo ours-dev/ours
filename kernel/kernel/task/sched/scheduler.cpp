@@ -8,7 +8,7 @@
 ///
 /// The queueing layer. It updates the scheduling clock (unless SkipClock),
 /// delegates the actual insertion/removal to the thread's own discipline via
-/// `ISchedule::enqueue_thread`/`dequeue_thread`, and -- only once the
+/// its `enqueue_thread`/`dequeue_thread`, and -- only once the
 /// discipline reports Status::Ok -- maintains this scheduler's aggregate
 /// accounting, `m_run_queue.m_num_queued_threads` and `m_run_queue.m_total_weight`.
 ///
@@ -86,8 +86,17 @@ using ours::sync::SpinLock;
 
 namespace ours::task::sched {
 namespace {
-    extern "C" ScheduleEntry const SCHEDULES_START[] LINK_NAME("__schedules_start");
-    extern "C" ScheduleEntry const SCHEDULES_END[] LINK_NAME("__schedules_end");
+    /// The discipline that occupies Discipline::Normal, chosen at build time
+    /// the way NormalRunQueue is.
+#if SCHED_NORMAL_DISCIPLINE_FAIR
+    using NormalSchedule = Fair;
+#else
+    using NormalSchedule = RoundRobin;
+#endif
+
+    /// The one object of it. A discipline keeps nothing of its own: everything
+    /// per CPU is in the RunQueue it is handed.
+    constinit NormalSchedule NORMAL_SCHEDULE;
 
     GKTL_COUNTER(SCHEDULE_IDLE_PAST, "schedule.idle_past");
     GKTL_COUNTER(SCHEDULE_PREEMPT_PAST, "schedule.preempt_past");
@@ -172,18 +181,11 @@ auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNu
         auto &self = Scheduler::Current::get(target_cpu);
         self.m_canary.verify<Self>();
 
-        // Bind the thread to its discipline first. This is the moment that
-        // binding belongs to -- the thread has just been created and has never
-        // been near a scheduler -- and until it happens the context's
-        // m_schedule is null. Reading it straight out, which is what this did,
-        // called through that null pointer: the CPU branched to address 0 and
-        // took an instruction-fetch fault there.
-        //
-        // set_schedule() also puts the lookup behind get_schedule()'s
-        // assertion, so a discipline with no registered ISchedule now says so
-        // by name instead of producing a wild call.
-        auto *const schedule = self.set_schedule(thread);
-        schedule->on_thread_init(self.m_run_queue, thread);
+        // The discipline is read off the thread and the schedule looked up by
+        // it, so nothing binds one to the other first and there is no pointer
+        // to call through before that happened.
+        call_schedule_unlocked<OnThreadInit>(thread->scheduling_entity().discipline(),
+                                             self.m_run_queue, thread);
     }
 }
 
@@ -203,10 +205,9 @@ auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
     context.m_curr_cpu = cpunum;
     context.m_last_cpu = cpunum;
 
-    // Bind it to its discipline exactly as on_thread_init() would; a thread
-    // that is already running is still a thread the discipline must know.
-    auto *const schedule = self.set_schedule(thread);
-    schedule->on_thread_init(self.m_run_queue, thread);
+    // The discipline is told of it exactly as on_thread_init() would tell it; a
+    // thread that is already running is still a thread the discipline must know.
+    call_schedule_unlocked<OnThreadInit>(context.discipline(), self.m_run_queue, thread);
 
     // Now the part no other path provides. The switch that would normally
     // install a current thread has not happened and never will for this one:
@@ -225,7 +226,7 @@ auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
 auto Scheduler::on_thread_dead(Thread *thread) -> void {
     [[maybe_unused]]
     auto &ctx = thread->scheduling_entity();
-    // se.schedule()->on_thread_dead(m_run_queue, thread);
+    // call_schedule_unlocked<OnThreadDead>(ctx.discipline(), m_run_queue, thread);
 }
 
 /// Unpark don't really cause entry into reschedule routine. It just
@@ -340,32 +341,6 @@ INIT_CODE
 auto Scheduler::init(CpuNum cpunum) -> void {
     new (this) Self();
 
-    auto const num_schedule = SCHEDULES_END - SCHEDULES_START;
-    DEBUG_ASSERT(num_schedule > 0);
-
-    // Two registrations claiming one policy slot is a silent overwrite: the
-    // array is indexed by Discipline, so the second entry replaces the first
-    // and the losing discipline simply never runs, with nothing said. Today
-    // both Fair and RoundRobin register Discipline::Normal and they are kept
-    // apart by a comment in BUILD.gn -- link them together and this is what
-    // happens.
-    //
-    // Giving every discipline its own slot in the linker script would make
-    // uniqueness structural and the check unnecessary. Flattening the
-    // registrations into an array indexed by an enum is what moves the
-    // obligation here.
-    //
-    // A plain assertion is enough despite init() running once per CPU from the
-    // BSP: the placement-new above value-initialises m_schedules, so every
-    // call starts from an empty array.
-    for (auto i = 0; i < num_schedule; ++i) {
-        auto const &entry = SCHEDULES_START[i];
-        auto const slot = static_cast<usize>(entry.discipline);
-        DEBUG_ASSERT(slot < m_schedules.size(), "a registered discipline is out of range");
-        DEBUG_ASSERT(!m_schedules[slot], "two disciplines registered the same policy slot");
-        m_schedules[slot] = entry.instance;
-    }
-
     m_run_queue.m_which_cpu = cpunum;
 }
 
@@ -374,7 +349,6 @@ auto Scheduler::assert_thread_in_scheduler(Thread *thread) -> void {
     auto &ctx = thread->scheduling_entity();
 
     DEBUG_ASSERT(ctx.curr_cpu() == m_run_queue.m_which_cpu);
-    DEBUG_ASSERT(ctx.schedule() == get_schedule(thread));
 }
 
 auto Scheduler::set_state(State state, bool on) -> void {
@@ -396,20 +370,15 @@ auto Scheduler::set_state(State state, bool on) -> void {
     }
 }
 
-auto Scheduler::set_schedule(Thread *thread) -> ISchedule * {
-    auto &so = thread->scheduling_entity();
-    so.m_schedule = get_schedule(thread);
-    return so.m_schedule;
-}
-
-auto Scheduler::get_schedule(Thread *thread) -> ISchedule * {
-    auto &ctx = thread->scheduling_entity();
-
-    auto *const schedule = m_schedules[static_cast<usize>(ctx.discipline())];
-    DEBUG_ASSERT(schedule, "No schedule registered for discipline[{}]",
-                 static_cast<usize>(ctx.discipline()));
-
-    return schedule;
+auto Scheduler::schedule_of(Discipline const discipline) -> ustl::Ref<Schedule> {
+    switch (discipline) {
+        case Discipline::Normal:
+            return ustl::Ref<Schedule>{NORMAL_SCHEDULE};
+        case Discipline::Deadline:
+        case Discipline::Count:
+            break;
+    }
+    return {};
 }
 
 // Takes the mask by reference and copies it, and hands nothing back.
@@ -528,26 +497,27 @@ auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
         return nominated;
     }
 
-    if (auto &ctx = curr->scheduling_entity();
-        ctx.discipline() == Discipline::Normal &&
-        ctx.schedule()->num_queued(m_run_queue) == m_run_queue.m_num_queued_threads) {
-        if (auto *const next = ctx.schedule()->evaluate_next_thread(m_run_queue, curr); next) {
+    if (auto const discipline = curr->scheduling_entity().discipline();
+        discipline == Discipline::Normal &&
+        call_schedule<NumQueued>(discipline, m_run_queue) == m_run_queue.m_num_queued_threads) {
+        if (auto *const next = call_schedule<EvaluateNextThread>(discipline, m_run_queue, curr);
+            next) {
             return next;
         }
     }
 
-    // m_schedules is indexed by Discipline and a slot is null when no
-    // discipline of that kind is registered -- Deadline has none today. The
-    // loop used to call through every slot regardless; that survived for as
-    // long as the first slot always had something to run, and died the first
-    // time a CPU ran out of work: a virtual call through a null ISchedule*
-    // reads its vtable from address 0, which the boot has left mapped, and
-    // jumps into the zero page. No fault, no message, just a CPU gone.
-    for (auto *const schedule: m_schedules) {
-        if (!schedule) {
+    // Every discipline in turn, in the order of Discipline. One that is not
+    // implemented -- Deadline has none today -- has an empty schedule and is
+    // skipped: calling it would trap, which a CPU that ran out of work reached
+    // once as a jump through a null pointer into the zero page, with no fault
+    // and no message.
+    for (auto index = usize{0}; index < NUM_DISCIPLINE; ++index) {
+        auto const discipline = static_cast<Discipline>(index);
+        if (!schedule_of(discipline)) {
             continue;
         }
-        if (auto *const next = schedule->evaluate_next_thread(m_run_queue, curr); next) {
+        if (auto *const next = call_schedule<EvaluateNextThread>(discipline, m_run_queue, curr);
+            next) {
             return next;
         }
     }
@@ -736,7 +706,7 @@ auto Scheduler::enqueue_thread(Thread *thread, EnqueueOptions options) -> Status
     }
 
     auto &so = thread->scheduling_entity();
-    auto status = so.schedule()->enqueue_thread(m_run_queue, thread, options);
+    auto status = call_schedule<EnqueueThread>(so.discipline(), m_run_queue, thread, options);
     if (Status::Ok != status) {
         return status;
     }
@@ -766,7 +736,7 @@ auto Scheduler::dequeue_thread(Thread *thread, DequeueOptions options) -> Status
     }
 
     auto &so = thread->scheduling_entity();
-    auto status = so.schedule()->dequeue_thread(m_run_queue, thread, options);
+    auto status = call_schedule<DequeueThread>(so.discipline(), m_run_queue, thread, options);
     if (Status::Ok != status) {
         return status;
     }
@@ -849,8 +819,6 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void 
     m_canary.verify<Self>();
 
     auto const enqueue_control = EnqueueOptions::WakeUp;
-    auto schedule = set_schedule(thread);
-
     Guard<SpinLock, IrqSave> guard{get_lock()};
 
     thread->set_state_ready();
@@ -861,7 +829,7 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void 
         unpark_preempt(thread, options);
     }
 
-    schedule->on_thread_unpark(m_run_queue, thread);
+    call_schedule<OnThreadUnpark>(thread->scheduling_entity().discipline(), m_run_queue, thread);
 }
 
 /// Asks whether the thread just inserted should preempt what the target CPU is
@@ -870,18 +838,22 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void 
 /// lock.
 auto Scheduler::unpark_preempt(Thread *thread, UnparkOptions options) -> void {
     auto const current_thread = m_run_queue.m_curr_thread;
-    auto const x_schedule = thread->scheduling_entity().schedule();
-    auto const y_schedule = current_thread->scheduling_entity().schedule();
+    auto const x_discipline = thread->scheduling_entity().discipline();
+    auto const y_discipline = current_thread->scheduling_entity().discipline();
 
     auto &preemption_state = current_thread->preemption_state();
-    if (x_schedule == y_schedule) {
-        // To the same schedule, preemption depends on schedule's internal implementation.
+    if (x_discipline == y_discipline) {
+        // To the same discipline, preemption depends on its internal implementation.
         // Fair answers Unimplemented today: a thread woken into the running
-        // thread's own schedule never preempts it and waits for its tick
+        // thread's own discipline never preempts it and waits for its tick
         // (docs/repairs/260917/kernel-task-sched.md, item 2). There is nothing
         // else in the answer to act on.
-        auto _ = x_schedule->unpark_preempt(m_run_queue, current_thread, thread, options);
-    } else if (x_schedule > y_schedule) {
+        auto _ = call_schedule<UnparkPreempt>(x_discipline, m_run_queue, current_thread, thread,
+                                              options);
+    } else if (x_discipline > y_discipline) {
+        // A later enumerator of Discipline outranks an earlier one: Deadline
+        // outranks Normal. This used to compare the addresses of the two
+        // disciplines' shared instances, whose order the linker decided.
         m_run_queue.mark_preempt_pending();
     }
 
@@ -897,15 +869,13 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
 
     auto &se = thread->scheduling_entity();
 
-    // Only ask the discipline if the thread has one. A thread reaches here
-    // once before it is bound to any -- on_thread_init() calls this on a
-    // context whose m_schedule is still null -- and reading through that
-    // pointer branched to address 0 and faulted on the instruction fetch.
-    // "No discipline yet" and "the discipline has no preference" want the
-    // same answer, and the fallback below already is that answer.
+    // Only ask a discipline that is implemented. "No discipline" and "the
+    // discipline has no preference" want the same answer, and the fallback below
+    // already is that answer.
     auto target_cpu = INVALID_CPU_NUM;
-    if (auto *const schedule = se.schedule()) {
-        target_cpu = schedule->select_target_cpu(thread, Cpu::online_mask());
+    if (schedule_of(se.discipline())) {
+        target_cpu =
+            call_schedule_unlocked<SelectTargetCpu>(se.discipline(), thread, Cpu::online_mask());
     }
     if (target_cpu != INVALID_CPU_NUM) {
         return target_cpu;
@@ -1119,7 +1089,7 @@ auto Scheduler::Current::yield_thread(Thread *current) -> void {
         Guard<SpinLock, IrqSave> guard{self.get_lock()};
 
         self.m_run_queue.m_clock_source.update_clock();
-        so.schedule()->yield_thread(self.m_run_queue, current);
+        self.call_schedule<YieldThread>(so.discipline(), self.m_run_queue, current);
         self.m_run_queue.m_clock_source.request_skip_next_clock_update();
     }
 
@@ -1139,11 +1109,12 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
     {
         Guard<SpinLock, IrqSave> guard{self.get_lock()};
 
-        if (curr_so.schedule() != next_so.schedule()) {
+        if (curr_so.discipline() != next_so.discipline()) {
             return Status::BadState;
         }
 
-        yielded = curr_so.schedule()->yield_to_thread(self.m_run_queue, curr, thread);
+        yielded =
+            self.call_schedule<YieldToThread>(curr_so.discipline(), self.m_run_queue, curr, thread);
         if (Status::Ok == yielded) {
             SCHEDULE_YIELD_PAST.add(1);
         }

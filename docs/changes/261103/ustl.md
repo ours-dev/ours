@@ -71,3 +71,38 @@ None
 - Where does a virtual call keep its table, where does a `Ref` keep it, and what does that change about the type being called?
 - Why is a dispatch declared as a type with a static call operator, and why does an optional method return `decltype(auto)` while a required one has a trailing return type?
 - Why did `requires { ref.call<Bump>(); }` fail to compile in the first version, and what two changes make it a plain `false`?
+
+## Title: the dispatch macros exempt the dispatch from the thread-safety analysis (2026-11-03)
+
+**Files**
+- `system/lib/ustl/include/ustl/dyn.hpp` — `[[clang::no_thread_safety_analysis]]` on the call operator `USTL_DYN_MEMBER` and `USTL_DYN_MEMBER_OR` write; the two `FnList` constructor parameters renamed `first` and `rest`
+
+**Symptom**
+The first scheduler built on `Dyn` failed to compile with eight errors, one per required method, such as `calling function 'enqueue_thread' requires holding SpinLock 'forward(args).m_rqlock'`, pointing at the macro-written dispatch.
+
+**Cause**
+A dispatch is a forwarding layer: it calls `self.member(std::forward<Args>(args)...)` and cannot know which argument names the lock that `member` requires (`TA_REQUIRES(rq.lock())`). As soon as a type's member carries that annotation, the analysis looks into the dispatch, finds no lock held there, and cannot match `rq.lock()` with `forward(args)`, so it reports every dispatch of an annotated member. There is nothing the dispatch could declare in general. The lock has to be checked before the erased call, in a function that has the argument by name. `clang-tidy` also flagged `head_` and `tail_`, parameter names with a trailing underscore, in the commit before.
+
+**Change**
+The macros put `[[clang::no_thread_safety_analysis]]` on the call operator, and say why in their comment. The check moved to the scheduler's `call_schedule<>()` (`docs/changes/261103/kernel-task-sched.md`). The parameters are `first` and `rest`.
+
+**Reference**
+None, this project's own design.
+
+**Verification**
+The scheduler change that needed it builds with `-Werror -Wthread-safety`; `dyn-test` passes; see `docs/changes/261103/kernel-task-sched.md`.
+
+**Deliberately not done**
+A parameter of the macro to say which argument is the lock. It would be a second, unchecked way to say what `TA_REQUIRES` says on the member.
+
+**How it was found**
+The build of the scheduler change; the eight errors named the dispatch.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why can a forwarding dispatch not carry the lock requirement of the member it calls?
+- Where does a caller of a `Ref` have to show it holds a lock, and why there?
+- What would a parameter naming the lock argument add, and what would it cost?
+

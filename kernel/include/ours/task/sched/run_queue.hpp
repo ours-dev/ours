@@ -72,7 +72,7 @@ class RunQueue {
     /// |m_which_cpu|, not add_pending()'s default. The default is the mask of
     /// the CPU *executing* the call, and a RunQueue is not always the running
     /// CPU's: Scheduler::do_unpark_thread() reaches into the target CPU's
-    /// RunQueue from the waker, and every ISchedule entry point is handed a
+    /// RunQueue from the waker, and every entry point of a discipline is handed a
     /// RunQueue that may be remote for the same reason. Left at the default, a
     /// cross-CPU wakeup marked the waker as needing to preempt and told the
     /// target nothing.
