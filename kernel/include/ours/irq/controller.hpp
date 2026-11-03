@@ -36,8 +36,8 @@ struct ControllerSource final {
 /// What the chip of every controller keeps to, whatever the architecture:
 ///   - Where the operations run. mask(), unmask() and configure() are called
 ///     under the line's lock, L1, from interrupt context or from a thread
-///     with interrupts off; issue_eoi() in interrupt context, under L1 unless
-///     the line is Permanent; trigger_mode() with L1 (the bind and the attach
+///     with interrupts off; issue_eoi() under L1 in interrupt context;
+///     trigger_mode() with L1 (the bind and the attach
 ///     that reads the mode call it so) or without it (irq::trigger_mode());
 ///     is_masked() without. So no operation takes a line lock, and the chip's
 ///     own lock is a leaf that is safe with interrupts off. None sleeps, and

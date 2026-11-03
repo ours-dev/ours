@@ -310,7 +310,7 @@ auto DescTable::is_masked(VIrqNum const virqnum) -> ktl::Result<bool> {
 }
 
 auto DescTable::is_kernel_owned(VIrqNum const virqnum) -> bool {
-    auto const *const desc = irqnum_to_desc(virqnum);
+    auto *const desc = irqnum_to_desc(virqnum);
     return desc != nullptr && desc->is_kernel_owned();
 }
 

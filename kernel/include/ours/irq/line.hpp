@@ -36,12 +36,9 @@ namespace ours::irq {
 /// attach or detach on its own line: it would spin on the lock its own dispatch
 /// holds.
 ///
-/// A Permanent line skips L1 when it dispatches. Its list and its flow are
-/// fixed for good once Permanent is set: attach() and configure() refuse
-/// everything from then on and detach() refuses its action, so there is
-/// nothing for the lock to keep out, and the kernel's own lines -- the timer
-/// above all, which fires on every tick -- are spared the lock on every
-/// interrupt.
+/// Every dispatch takes L1 through a lockdep Guard, including Permanent
+/// registrations. Permanent is a lifetime policy, not a second synchronization
+/// protocol. Callbacks run with interrupts and preemption disabled.
 ///
 /// A Oneshot line -- one whose action said Oneshot -- keeps one more fact
 /// under L1: whether it is held, masked at its controller because its action
@@ -100,8 +97,8 @@ class Line final {
     ///   0. check_revocable(): mark_dying() without the mark, for a caller
     ///      that wants to refuse before it marks anything.
     ///   1. mark_dying(): refuses a line a removal could not empty (AlreadyBound
-    ///      for a Permanent line, which dispatches without L1 so nothing can
-    ///      wait for it, and for a line with an action that has no cancel
+    ///      for a Permanent registration, which cannot be revoked, and for
+    ///      a line with a registration that has no cancel
     ///      hook), and otherwise marks it. From then on attach(), unmask() and
     ///      configure() answer NoResource, before they touch the chip; mask()
     ///      and finalize_oneshot() work as before. The caller undoes the marks
@@ -192,14 +189,9 @@ class Line final {
     [[nodiscard]]
     auto flow() -> Flow;
 
-    /// Whether an action that says Permanent holds the line, which is how the
-    /// kernel's own code holds one. Takes no lock: a line is Permanent for
-    /// good once it is, so a false can only be out of date by a line the kernel
-    /// takes at boot.
+    /// Whether the line is held for the kernel's lifetime. Takes L1.
     [[nodiscard]]
-    auto is_kernel_owned() const -> bool {
-        return is_permanent();
-    }
+    auto is_kernel_owned() -> bool;
 
   private:
     /// What the line is, as one word: the first three bits are what its
@@ -246,107 +238,51 @@ class Line final {
     TA_REQUIRES(m_lock)
     auto select_flow_locked(TriggerMode trigger) -> void;
 
-    /// Runs `flow` over `actions`, then ends the interrupt as `eoi` says,
-    /// through a guard held across the flow. The caller holds L1, or the
-    /// line is Permanent and neither the flow nor the list changes again.
-    auto run_flow(Flow flow, Registration::List &actions, Eoi eoi) -> IrqReturn;
-
-    /// The two flows, each one interrupt on the line, with the actions it
-    /// runs passed in, so the Permanent line's dispatch, which holds no L1,
-    /// runs the same code as every other. Neither ends the interrupt:
-    /// run_flow() does, once either has returned.
-    auto handle_edge(Registration::List &actions) -> IrqReturn;
-    auto handle_fasteoi(Registration::List &actions) -> IrqReturn;
-
-    /// handle_fasteoi() on a Oneshot line: masks the line, runs the action,
-    /// marks the line held if the action woke its thread, and unmasks it
-    /// unless it is held. A Oneshot line is never Permanent, so its dispatch
-    /// always holds L1.
+    /// Runs the selected controller flow while the line's state is guarded.
     TA_REQUIRES(m_lock)
-    auto handle_oneshot_locked(Registration::List &actions) -> IrqReturn;
-
-    /// Masks the line through its chip, for an interrupt that came in while
-    /// nobody was on it. For both flows, under L1.
+    auto run_flow(Flow flow, Registration::List &registrations, Eoi eoi) -> IrqReturn;
+    TA_REQUIRES(m_lock)
+    auto handle_edge(Registration::List &registrations) -> IrqReturn;
+    TA_REQUIRES(m_lock)
+    auto handle_fasteoi(Registration::List &registrations) -> IrqReturn;
+    TA_REQUIRES(m_lock)
+    auto handle_oneshot_locked(Registration::List &registrations) -> IrqReturn;
+    TA_REQUIRES(m_lock)
     auto mask_unclaimed() const -> void;
-
-    /// Read without L1, by handle_irq(), as is Oneshot on a Permanent line's
-    /// level flow. The acquire pairs with the release in attach() that sets
-    /// it, so a dispatch that sees Permanent also sees the action linked
-    /// before it.
-    [[nodiscard]]
-    auto is_permanent() const -> bool {
-        return !!(m_flags.load(std::memory_order_acquire) & LineFlags::Permanent);
-    }
 
     /// Whether a removal has marked the line. Under L1, like Held.
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto is_dying_locked() const -> bool {
-        return !!(m_flags.load(std::memory_order_relaxed) & LineFlags::Dying);
+        return !!(m_flags & LineFlags::Dying);
     }
 
     /// The reason mark_dying() would refuse the line, Ok if it would not.
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto revocable_locked() const -> Status;
 
-    /// Whether the line's action said Oneshot. Read by the level flow, under
-    /// L1, where a relaxed load sees the latest write, every write being
-    /// under L1 too; on a Permanent line, read without L1, it is never set.
     [[nodiscard]]
-    auto is_oneshot() const -> bool {
-        return !!(m_flags.load(std::memory_order_relaxed) & LineFlags::Oneshot);
+    TA_REQUIRES(m_lock) auto is_oneshot_locked() const -> bool {
+        return !!(m_flags & LineFlags::Oneshot);
     }
 
-    /// Held, which only L1's holder reads or writes. The bit shares the
-    /// atomic word with the facts read without L1, so the analysis cannot
-    /// guard it by the member; these two make it check every caller instead.
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto is_held_locked() const -> bool {
-        return !!(m_flags.load(std::memory_order_relaxed) & LineFlags::Held);
+        return !!(m_flags & LineFlags::Held);
     }
 
-    /// A release, like every other store to the word: an acquire load that
-    /// reads it, in is_permanent(), then also sees what the release that
-    /// published the line's action made visible before it.
     TA_REQUIRES(m_lock)
     auto set_held_locked(bool const held) -> void {
-        auto flags = m_flags.load(std::memory_order_relaxed);
         if (held) {
-            flags |= LineFlags::Held;
+            m_flags |= LineFlags::Held;
         } else {
-            flags &= ~LineFlags::Held;
+            m_flags &= ~LineFlags::Held;
         }
-        m_flags.store(flags, std::memory_order_release);
-    }
-
-    /// The list of a Permanent line, which handle_irq() walks without L1. Hidden
-    /// from the thread-safety analysis, which cannot know that a Permanent
-    /// line's list never changes again.
-    TA_NO_THREAD_SAFETY_ANALYSIS auto permanent_registrations() -> Registration::List & {
-        return m_registrations;
-    }
-
-    /// The flow of a Permanent line, which handle_irq() reads without L1, for
-    /// the same reason: configure() and attach() with a mode, the only
-    /// writers after init(), both refuse a Permanent line.
-    TA_NO_THREAD_SAFETY_ANALYSIS auto permanent_flow() const -> Flow {
-        return m_flow;
     }
 
     gktl::Canary m_canary;
     sync::SpinLock m_lock;
 
-    /// Every bit is written under `m_lock`, so one word holds them all: a
-    /// store under the lock never overwrites another CPU's bit. The word is
-    /// atomic only because handle_irq() reads Permanent without the lock,
-    /// and a Permanent line's flow reads Oneshot, never set there, without
-    /// it too; Shared and Held are read under the lock.
-    std::atomic<LineFlags> m_flags;
-
-    /// Written under `m_lock` by init(), configure() and attach() with a
-    /// mode; read under it by handle_irq(), or without it on a Permanent
-    /// line, where the release that publishes Permanent orders every write
-    /// before it. Beside `m_flags`, in the bytes the word leaves before the
-    /// next 8-byte member.
+    LineFlags m_flags TA_GUARDED(m_lock);
     Flow m_flow TA_GUARDED(m_lock) = Flow::Edge;
 
     /// Written by the constructor and, for its chip, once by init() before
@@ -354,8 +290,7 @@ class Line final {
     ControllerSource m_source;
     Registration::List m_registrations TA_GUARDED(m_lock);
 
-    /// Bumped by handle_irq(), with or without `m_lock` -- a Permanent line's
-    /// dispatch holds none -- so it is atomic. A statistic: relaxed.
+    /// A statistic read without taking L1; dispatch updates it under L1.
     std::atomic<u64> m_spurious{0};
 
     [[maybe_unused]]

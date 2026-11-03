@@ -4,7 +4,7 @@
 
 ## Scope and method
 
-Reviewed all six implementation files in `kernel/kernel/irq/`, all nine headers in `kernel/include/ours/irq/`, and the PC root handler, IO-APIC adapter, physical interrupt object, object ack/wait paths, and relevant kernel tests. The user's request is review followed by design; no implementation changes are authorized in this round.
+Reviewed all six implementation files in `kernel/kernel/irq/`, all nine headers in `kernel/include/ours/irq/`, and the PC root handler, IO-APIC adapter, physical interrupt object, object ack/wait paths, and relevant kernel tests. The original review preceded implementation. The user later authorized the full refactoring goal and suspended teaching exercises; current implementation evidence is tracked in STATUS.md.
 
 Authorities: `kernel-design` and its `references/task.md`, `modern-cpp-development`, `cpp-code-review`, `codebase-design`, `.clang-format`, `.clang-tidy`, and the accepted decisions in `irq-genirq`, `interrupt-system`, and `irq-multi-arch`. The line layer deliberately follows genirq; the user object protocol follows Zircon. An accepted simplification is not a defect merely because Linux has more machinery.
 
@@ -87,4 +87,4 @@ The module is shallow at these seams: several public types expose implementation
 
 1. Decide the object vocabulary and the domain owner's Interface. Record which existing decisions remain binding.
 2. Review the completion invariant with the user's written concurrency argument before selecting its mechanism.
-3. Approve concrete interfaces and acceptance tests before any implementation plan or C++ edit. The eventual implementation must land in independently verified commits; no rewrite has started.
+3. Design concrete interfaces and acceptance tests, then implement independently verified commits. The user authorized development after the original review; implementation progress is tracked in STATUS.md.

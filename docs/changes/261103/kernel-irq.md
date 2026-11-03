@@ -177,3 +177,46 @@ None. The user suspended teaching exercises and requested focused development.
 
 **Three questions you should be able to answer**
 None. Teaching exercises are suspended for this task.
+
+## Guard every line dispatch and remove the Permanent synchronization exception (2026-11-03)
+
+**Files**
+- `kernel/include/ours/irq/line.hpp` — guard the line flags and every flow helper with L1; delete the two permanent-dispatch analysis escapes.
+- `kernel/kernel/irq/line.cpp` — take lockdep::Guard with interrupts and preemption disabled for every dispatch; query kernel ownership under L1.
+- `kernel/kernel/irq/desc_table.cpp`, `kernel/include/ours/irq/controller.hpp`, `kernel/include/ours/irq/mod.hpp` — follow the unified guard contract.
+- `kernel/commands/irq_test.cpp` — observe a held spin lock and disabled preemption inside the Permanent callback.
+- `docs/repairs/261004/kernel-irq.md` — remove the fixed thread-context dispatch/preemption repair.
+
+**Symptom**
+Permanent lines bypassed the required Guard and reached the protected flow and callback list through TA_NO_THREAD_SAFETY_ANALYSIS helpers. Direct thread-context dispatch also depended on an external preemption scope if its handler woke a thread.
+
+**Cause**
+A lifetime policy had acquired a second synchronization protocol. Keeping the list immutable could justify a lockless read in isolation, but required atomic line flags, an extra publication argument and suppressed capability checks. This contradicted the user's explicit requirement that the subsystem use its normal safety guards. Callback lifetime, line state and thread-context rescheduling are simpler to verify under one guarded dispatch protocol.
+
+**Change**
+All line dispatch now begins with the same checked scope:
+
+```cpp
+Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_lock};
+auto const result = run_flow(m_flow, m_registrations, eoi);
+```
+
+The line flags are plain LineFlags annotated TA_GUARDED(m_lock); flow helpers require m_lock. permanent_registrations(), permanent_flow() and their analysis suppressions are deleted. Permanent still means exclusive ownership for the kernel's lifetime; it no longer changes synchronization. Guard releases L1 before restoring preemption, so a callback's wake cannot switch away holding the line.
+
+**Reference**
+None, this project's own invariant and the user's explicit guard requirement. This intentionally supersedes the older Permanent bypass recorded by irq-genirq. No alternative locking implementation or Guard wrapper was introduced.
+
+**Verification**
+All six changed C++ files ran the repository formatter and clang-tidy without new diagnostics on changed lines. The compiler's thread-safety checks cover every flow helper and line flag access. Both images boot and all 161 host tests pass. Nine kernel suites pass: irq.test 77 checks, irqcontroller.test 18, irqrevoke.test 37, irqregistry.test 66, irqdomain.test 87, irqrcu.test 34, interrupt.test 67, interruptline.test 78, and pinlines.test 28. The new Permanent callback check observes a held spin lock and preemption disabled. IRQ sources contain no TA_NO_THREAD_SAFETY_ANALYSIS. Existing tests also exercise detach, revocation, mask/unmask and concurrent domain readers. Performance was not measured; this is guard compliance, not a performance optimization.
+
+**Deliberately not done**
+The shared lockdep library's coarse fallback lock class remains tracked as kernel-irq repair item 2; this change uses the existing Guard and does not claim runtime lock-class validation is complete. Domain ownership and completion revalidation remain separate work.
+
+**How it was found**
+The guard acceptance audit identified the Permanent branch and two suppressed readers in Line. Reviewing the thread-context dispatch path showed that the line itself should own its callback preemption guarantee.
+
+**The user's prediction**
+None. The user suspended teaching exercises and requested development.
+
+**Three questions you should be able to answer**
+None. Teaching exercises are suspended for this task.

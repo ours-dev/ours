@@ -160,9 +160,7 @@ auto finalize_oneshot(VIrqNum virqnum, Registration const &action) -> void;
 ///
 /// It takes the line's lock, then the controller's register lock, as every
 /// other write of the line's mask does, so it lands wholly before or wholly
-/// after a dispatch of the line, and waits for one running on another CPU;
-/// a Permanent line's dispatch takes no line lock, so there it waits for
-/// none. The rules of finalize_oneshot() follow from that: never from a
+/// after a dispatch of the line, and waits for one running on another CPU. The rules of finalize_oneshot() follow from that: never from a
 /// handler of the same line, which would spin on its own dispatch, nor with
 /// a lock held that the line's handler takes, which would take the two locks
 /// the other way round from a dispatch, nor from a handler of another line:
@@ -302,9 +300,9 @@ auto root_table_for_test() -> DescTable *;
 /// handle_irq_generic(), without the end of interrupt, since no interrupt is
 /// in service to end. A line nobody is on is masked at its controller all the
 /// same, as a real interrupt would leave it. Answers what the actions
-/// answered, None if there is no such line. Preemption is the caller's: a
-/// dispatch whose handler wakes a thread needs it off, as interrupt context
-/// has it.
+/// answered, None if there is no such line. The read scope and line Guard
+/// keep preemption disabled through callbacks; the caller needs no extra
+/// preemption scope.
 [[nodiscard]]
 auto handle_irq_for_test(VIrqNum virqnum) -> IrqReturn;
 

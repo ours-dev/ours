@@ -72,7 +72,7 @@ Retain `interrupt_*`, InterruptDispatcher, and the Irq resource name. They descr
 
 ### Ownership and concurrency constraints
 
-The retained order is L1 (line) -> L2 (interrupt object), with controller register locks and the port interrupt queue taken only in their existing allowed places. Ack and wait must not add L2 -> L1. No handler may recursively enter a line control operation. Permanent registrations remain immutable and their dispatch remains outside L1.
+The retained order is L1 (line) -> L2 (interrupt object), with controller register locks and the port interrupt queue taken only in their existing allowed places. Ack and wait must not add L2 -> L1. No handler may recursively enter a line control operation. Permanent registrations remain immutable and now dispatch through the same L1 Guard as every other line. Lifetime policy does not select a synchronization protocol.
 
 Two different lifetimes remain explicit: detach protects the callback and its context; IRQ RCU protects the domain, mapping, and line storage. Neither substitutes for the other. Hiding the table does not remove either guarantee.
 

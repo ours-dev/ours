@@ -158,10 +158,13 @@ line's lock L1.
   are never called with L2 held, so there is no L2 -> L1 edge, nor from any
   line's handler: on their own line they would spin on its own dispatch,
   and on another they would hold two lines' L1, which have no order.
-- A Permanent line, such as the tick's, is the exception: it is dispatched
-  without L1, because its action list never changes once Permanent is set
-  and there is nothing for the lock to keep out. Its flow therefore reads
-  nothing L1 guards, and Oneshot together with Permanent is refused.
+- A Permanent registration, such as the legacy tick's, keeps its line for
+  the kernel's lifetime but uses the same L1 Guard as every other dispatch.
+  The user's explicit guard requirement of 2026-11-03 supersedes the older
+  lockless Permanent path: no analysis suppression may read the guarded
+  list or flow. LineFlags are plain state guarded by L1; only statistics
+  read outside L1 remain atomic. Dispatch also holds preemption off so its
+  callbacks may wake threads safely from a synthetic thread-context entry.
 - Inside the genirq model ours keeps rules of its own: detach clears held
   rather than waiting for the thread, because a user thread may never ack;
   `unmask()` leaves a held line masked and answers Ok, the finalize being

@@ -97,10 +97,8 @@ auto Line::attach(Registration &action) -> Status {
         return Status::BadState;
     }
 
-    // Only writers hold the lock, so under it a relaxed load sees the latest.
-    auto const flags = m_flags.load(std::memory_order_relaxed);
-    // A Permanent line takes nobody else, shared or not: its list is walked
-    // without the lock, which is only safe while nothing changes it.
+    auto const flags = m_flags;
+    // A Permanent registration owns the line for its entire lifetime.
     if (!!(flags & LineFlags::Permanent)) {
         return Status::AlreadyBound;
     }
@@ -163,7 +161,7 @@ auto Line::attach(Registration &action, ustl::Option<LineMode> const mode)
     // Only an empty line: its mode is about to be set or read for this
     // action, and the mode of a line others are on is theirs. A Permanent
     // line always has its action; the flag is tested for what it says.
-    auto const flags = m_flags.load(std::memory_order_relaxed);
+    auto const flags = m_flags;
     if (!!(flags & LineFlags::Permanent) || !m_registrations.empty()) {
         return ustl::err(Status::AlreadyBound);
     }
@@ -186,8 +184,7 @@ auto Line::attach(Registration &action, ustl::Option<LineMode> const mode)
 }
 
 /// Each refusal is a promise Oneshot could not keep:
-/// - Permanent: a Permanent line dispatches without L1, and held is kept
-///   under L1.
+/// - Permanent registrations are reserved for exclusive inline kernel work.
 /// - Shared: the line keeps one held bit, which records one thread's debt.
 ///   With two Oneshot actions on one line, the second one's finalize would
 ///   unmask the line while the first one's thread still owed its device a
@@ -240,9 +237,7 @@ auto Line::link_locked(Registration &action, LineFlags flags) -> void {
     if (action.is_oneshot()) {
         flags |= LineFlags::Oneshot;
     }
-    // Release, last: a dispatch that reads Permanent without the lock must
-    // find the action already linked.
-    m_flags.store(flags, std::memory_order_release);
+    m_flags = flags;
 }
 
 /// Taking the lock is the barrier. handle_irq() holds it while the handlers run,
@@ -271,9 +266,8 @@ auto Line::detach(Registration &action) -> Status {
         return Status::NotFound;
     }
 
-    auto flags = m_flags.load(std::memory_order_relaxed);
-    // A Permanent line dispatches without the lock, so taking it is no
-    // barrier there, and unlinking would race a dispatch walking the list.
+    auto flags = m_flags;
+    // Permanent registration is an explicit lifetime policy.
     if (!!(flags & LineFlags::Permanent)) {
         return Status::AlreadyBound;
     }
@@ -287,7 +281,7 @@ auto Line::detach(Registration &action) -> Status {
     if (emptied) {
         flags &= ~(LineFlags::Shared | LineFlags::Oneshot);
     }
-    m_flags.store(flags, std::memory_order_release);
+    m_flags = flags;
     if (emptied) {
         // Every line of the table has a chip that masks; only a line of a
         // test's own may have no chip at all.
@@ -323,7 +317,7 @@ auto Line::detach(Registration &action) -> Status {
 /// the line last, under this same lock.
 auto Line::finalize_oneshot(Registration const &action) -> void {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-    if (action.virqnum() != m_source.virqnum || !is_oneshot()) {
+    if (action.virqnum() != m_source.virqnum || !is_oneshot_locked()) {
         return;
     }
     set_held_locked(false);
@@ -388,24 +382,11 @@ namespace {
     };
 } // namespace
 
-/// IrqSave even though a real interrupt arrives with interrupts already off:
-/// it costs a flags save and restore, and lets a kernel test drive a dispatch
-/// from thread context through the very same path, with Skip.
-///
-/// The flow is read under the same hold of L1 that it runs under, so a
-/// configure() or an attach() that changes it lands wholly before this
-/// interrupt or wholly after. A Permanent line's flow runs without L1, like
-/// its actions; it reads only which flow the line runs, its list, its chip
-/// and, on the level flow, the Oneshot flag, which attach() never sets with
-/// Permanent, and none of them changes once Permanent is set.
+/// The Guard serializes state and callback lifetime on every line. Preemption
+/// stays off through callbacks even when a test dispatches from thread context.
 auto Line::handle_irq(Eoi const eoi) -> IrqReturn {
-    auto result = IrqReturn::None;
-    if (is_permanent()) {
-        result = run_flow(permanent_flow(), permanent_registrations(), eoi);
-    } else {
-        Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-        result = run_flow(m_flow, m_registrations, eoi);
-    }
+    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_lock};
+    auto const result = run_flow(m_flow, m_registrations, eoi);
 
     // An interrupt no action claimed is counted per line; WakeThread claims
     // it as Handled does. A line whose actions keep answering None is only
@@ -420,8 +401,7 @@ auto Line::handle_irq(Eoi const eoi) -> IrqReturn {
 /// The guard is constructed before the flow runs, so it is destroyed after
 /// the flow has returned: the end of interrupt comes after everything the
 /// flow does to the line -- the mask of a line nobody is on, the unmask of a
-/// Oneshot line that is not held -- and, on a line that is not Permanent,
-/// still inside the caller's hold of L1.
+/// Oneshot line that is not held -- inside the caller's hold of L1.
 auto Line::run_flow(Flow const flow, Registration::List &actions, Eoi const eoi) -> IrqReturn {
     EoiGuard const end_of_interrupt{m_source, eoi};
     switch (flow) {
@@ -483,10 +463,7 @@ auto Line::handle_fasteoi(Registration::List &actions) -> IrqReturn {
         mask_unclaimed();
         return IrqReturn::None;
     }
-    if (is_oneshot()) {
-        // check_registration() refuses Oneshot on a Permanent action, so a Oneshot
-        // line is dispatched under L1, and held, which L1 guards, may be read.
-        m_lock.assert_held();
+    if (is_oneshot_locked()) {
         return handle_oneshot_locked(actions);
     }
     return notify_all(actions);
@@ -600,7 +577,7 @@ auto Line::configure(TriggerMode const trigger, Polarity const polarity) -> Stat
     }
     // A Permanent line always has its action; the flag is tested for what
     // it says, not as a stand-in for the list.
-    auto const flags = m_flags.load(std::memory_order_relaxed);
+    auto const flags = m_flags;
     if (!!(flags & LineFlags::Permanent) || !m_registrations.empty()) {
         return Status::AlreadyBound;
     }
@@ -637,13 +614,10 @@ auto Line::is_masked() const -> ktl::Result<bool> {
     return ustl::ok(chip->is_masked(m_source));
 }
 
-/// Why a removal could not empty this line: a Permanent line dispatches
-/// without L1, so nothing can wait for a handler of it, and its owner is the
-/// kernel's own code, which holds it for good; and an action that gave no
-/// cancel hook has not agreed to be taken off, so its owner would never be
-/// told. Both are AlreadyBound, as an attach on such a line answers.
+/// Permanent registrations retain their line for the kernel's lifetime.
+/// Other registrations opt into revocation by supplying a cancel hook.
 auto Line::revocable_locked() const -> Status {
-    if (!!(m_flags.load(std::memory_order_relaxed) & LineFlags::Permanent)) {
+    if (!!(m_flags & LineFlags::Permanent)) {
         return Status::AlreadyBound;
     }
     for (auto const &action: m_registrations) {
@@ -667,8 +641,7 @@ auto Line::mark_dying() -> Status {
     if (auto const status = revocable_locked(); status != Status::Ok) {
         return status;
     }
-    m_flags.store(m_flags.load(std::memory_order_relaxed) | LineFlags::Dying,
-                  std::memory_order_release);
+    m_flags |= LineFlags::Dying;
     return Status::Ok;
 }
 
@@ -679,14 +652,11 @@ auto Line::has_registrations() -> bool {
 
 auto Line::unmark_dying() -> void {
     Guard<sync::SpinLock, IrqSave> const guard{m_lock};
-    m_flags.store(m_flags.load(std::memory_order_relaxed) & ~LineFlags::Dying,
-                  std::memory_order_release);
+    m_flags &= ~LineFlags::Dying;
 }
 
-/// IrqSaveAndPreemptDisable, not IrqSave as every dispatch of the line has
-/// it: a cancel hook may wake a thread, and the reschedule that asks for
-/// has to wait until L1 is dropped, as in a handler's context. A real
-/// interrupt has both off already; this is thread context.
+/// A revocation callback may wake a thread. The Guard defers its reschedule
+/// until L1 has been released, as the dispatch path does.
 ///
 /// The order within one action is the point. It is unlinked first, so no
 /// dispatch can reach it again, and the lock is held, so none is in flight;
@@ -703,10 +673,8 @@ auto Line::unmark_dying() -> void {
 /// masked last, through the chip, which the table's lines all have.
 auto Line::revoke() -> void {
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> const guard{m_lock};
-    auto flags = m_flags.load(std::memory_order_relaxed);
-    // Checked in the release image too: a line not marked may have an action
-    // that never agreed to be taken off, and a Permanent line's list is walked
-    // without this lock.
+    auto flags = m_flags;
+    // Revocation is only valid after every registration agreed to it.
     ASSERT(!!(flags & LineFlags::Dying), "line {} revoked before it was marked", m_source.virqnum);
     ASSERT(!(flags & LineFlags::Permanent), "line {} is Permanent and revoked", m_source.virqnum);
 
@@ -724,11 +692,16 @@ auto Line::revoke() -> void {
     }
 
     flags &= ~(LineFlags::Held | LineFlags::Shared | LineFlags::Oneshot);
-    m_flags.store(flags, std::memory_order_release);
+    m_flags = flags;
     auto const *const chip = m_source.chip;
     if (chip && chip->mask) {
         chip->mask(m_source);
     }
+}
+
+auto Line::is_kernel_owned() -> bool {
+    Guard<sync::SpinLock, IrqSave> const guard{m_lock};
+    return !!(m_flags & LineFlags::Permanent);
 }
 
 auto Line::flow() -> Flow {

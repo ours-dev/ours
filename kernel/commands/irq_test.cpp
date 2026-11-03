@@ -145,11 +145,17 @@ namespace {
     struct Probe {
         std::atomic<usize> calls{0};
         std::atomic<bool> in_flight{false};
+        std::atomic<usize> held_locks{0};
+        std::atomic<bool> preemption_disabled{false};
         usize hold_spins = 0;
     };
 
     auto probe_handler(VIrqNum, void *const context) -> irq::IrqReturn {
         auto &probe = *static_cast<Probe *>(context);
+        probe.held_locks.store(sync::SpinLock::num_held_cpu(), std::memory_order_relaxed);
+        probe.preemption_disabled.store(
+            !task::Thread::Current::preemption_state().is_preemption_enabled(),
+            std::memory_order_relaxed);
         probe.in_flight.store(true, std::memory_order_relaxed);
         for (usize k = 0; k < probe.hold_spins; ++k) {
             arch::spin_hint();
@@ -369,7 +375,11 @@ namespace {
         verdict(tally,
                 result == irq::IrqReturn::Handled && c->probe.calls.load() == 1 &&
                     c->other_probe.calls.load() == 0,
-                "its dispatch, without the lock, reaches the action");
+                "its guarded dispatch reaches the registration");
+        verdict(tally,
+                c->probe.held_locks.load(std::memory_order_relaxed) != 0 &&
+                    c->probe.preemption_disabled.load(std::memory_order_relaxed),
+                "Permanent dispatch holds a spin lock with preemption disabled");
         verdict(tally, bound == Status::Ok && eois == 1,
                 "and ends the interrupt through the line's chip, once");
     }

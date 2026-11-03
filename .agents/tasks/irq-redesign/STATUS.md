@@ -13,7 +13,7 @@ The preceding turn made authoritative progress by recording D1 and verifying the
 | Requirement | Required evidence | Current state |
 |---|---|---|
 | 1. No meaningless or redundant names, objects or methods | One role per public object; no old-name compatibility aliases; domain owns its source storage; no duplicated public control facade | Partial: Line, Registration, ControllerOps and ControllerSource migrated; domain consolidation remains |
-| 2. No evasion of required guards | Every mutable line path uses lockdep::Guard and checked TA_GUARDED/TA_REQUIRES; no suppressed permanent-dispatch read; lock-order argument and stress coverage | Incomplete: existing Permanent bypass remains to be removed |
+| 2. No evasion of required guards | Every mutable line path uses lockdep::Guard and checked TA_GUARDED/TA_REQUIRES; no suppressed permanent-dispatch read; lock-order argument and stress coverage | Implemented for live line state: all dispatches use Guard, all flow helpers require L1, flags are TA_GUARDED, and no IRQ analysis suppressions remain; final lock-order and stress audit still required |
 | 3. Independent reasoning | Each invariant and protocol justified from owned state, callers and controller behavior; references used for cross-checking rather than as authority for shape | Partial: review established the invariant inventory; final protocol argument remains |
 | 4. Responsible extension | Typed source and line identities; per-controller context; validated dispatch capability; safe dynamic domain removal; alternate-adapter contract tests | Incomplete: numeric types, capabilities and owning domain still required |
 | 5. Use C++ to remove mechanical repetition | Shared safe resolution of line control, explicit noncopyable ownership, constrained or constexpr validation where it enforces real rules | Incomplete: forwarding table and owning Span convention remain |
@@ -28,6 +28,8 @@ The preceding turn made authoritative progress by recording D1 and verifying the
 
 - Registration policy validation: both attach paths reject Permanent | Shared and unknown bits before state changes; irq.test now passes 76 checks, irqcontroller.test 18 and interruptline.test 78. Both images and 161 host tests pass.
 
+- Guarded dispatch: the Permanent callback observes a held spin lock and disabled preemption; irq.test passes 77 checks and all nine suites pass. The line flags are no longer atomic because all accesses use L1. Both boot images and 161 host tests pass.
+
 ## Current work
 
-Commit the verified registration-policy fix, then remove the unguarded Permanent path before consolidating domain ownership and closing the completion protocol. Naming is an initial migration, not a substitute for the full goal. Final completion requires auditing every ledger row against current source and current verification.
+Commit the verified uniform-Guard change, then consolidate the domain's owning mapping and line storage, hide raw table access and repeated controls, and close the completion protocol. Naming is an initial migration, not a substitute for the full goal. Final completion requires auditing every ledger row against current source and current verification.
