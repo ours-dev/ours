@@ -1,6 +1,6 @@
 source_set("irq") {
   sources = [
-    "init.cpp",
+    "entry.cpp",
     "domain.cpp",
     "domain_registry.cpp",
     "line.cpp",

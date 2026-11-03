@@ -1,5 +1,6 @@
 #include <ours/arch/apic.hpp>
 #include <ours/irq/domain.hpp>
+#include <ours/irq/entry.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/mod.hpp>
 #include <ours/platform/acpi.hpp>

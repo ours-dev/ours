@@ -9,10 +9,6 @@
 #include <ktl/result.hpp>
 #include <ustl/option.hpp>
 
-namespace arch {
-struct IrqFrame;
-}
-
 namespace ours::irq {
 class Registration;
 
@@ -110,42 +106,6 @@ auto root_source_exists_for_test(HIrqNum source) -> bool;
 auto revoke_line_for_test(VIrqNum id) -> Status;
 auto unmark_dying_for_test(VIrqNum id) -> void;
 
-/// The bookkeeping on entry to a trap, which arch calls once, before it
-/// dispatches: records the frame and raises the counts that keep this CPU from
-/// switching threads until the exit. Exceptions take it too, a page fault
-/// among them.
-auto handle_irq_preamble(::arch::IrqFrame *frame) -> void;
-
-/// The bookkeeping on exit from a trap, which arch calls once, after the
-/// dispatch. Answers whether the CPU should switch threads before returning
-/// to the interrupted context; the switch is arch's.
-auto handle_irq_postamble() -> bool;
-
-/// The function the root interrupt controller's driver gives arch. Arch calls
-/// it for an interrupt that comes through the root controller, after it has
-/// separated the causes it can tell apart without the controller (x86's
-/// vector, a RISC-V trap cause: the local timer and the inter-processor
-/// interrupts) and before the postamble. Where only the controller's own read
-/// tells them apart (an acknowledge read returns the processor-local
-/// interrupts too), the handler hands those back to arch. The handler finds
-/// out which interrupt it is in the way its controller allows (a vector, an
-/// acknowledge read, a claim), hands it to DomainEndpoint::dispatch(), and ends the
-/// interrupt itself if no line had it, since nothing else knows how.
-using RootHandler = auto (*)(::arch::IrqFrame *frame) -> void;
-
-/// Installs `handler` as the root handler. There is one for the kernel, and it
-/// is installed once, before the first interrupt of the root controller can be
-/// taken: the controller's driver does it when it starts, ahead of the
-/// instruction that enables interrupts. A second call is a kernel bug.
-auto set_root_handler(RootHandler handler) -> void;
-
-/// Calls the root handler, in interrupt context. An interrupt that arrives
-/// before one is installed is a kernel bug.
-auto handle_root_irq(::arch::IrqFrame *frame) -> void;
-
-/// Trap frame of the interrupt currently handled on this CPU, or nullptr
-/// outside interrupt context.
-auto current_frame() -> ::arch::IrqFrame *;
 } // namespace ours::irq
 
 #endif // OURS_IRQ_MOD_HPP

@@ -9,7 +9,7 @@
 #if defined(ARCH_X86)
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
-#include <ours/irq/mod.hpp>
+#include <ours/irq/entry.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/cfg.hpp>

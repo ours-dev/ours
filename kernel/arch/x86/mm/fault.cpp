@@ -70,7 +70,7 @@ namespace {
     /// What the exception entry itself has already added to the running
     /// thread's disable counts by the time this handler runs.
     ///
-    /// arch_handle_exception() calls irq::handle_irq_preamble() ahead of the
+    /// arch_handle_exception() calls irq::enter_trap() ahead of the
     /// dispatch, which does one disable_preemption() and one
     /// disable_eager_reschedule(). So every fault,
     /// including one taken by ring-3 code that had disabled nothing, arrives

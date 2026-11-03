@@ -33,3 +33,7 @@ Review the design and naming of kernel/irq, then design its replacement before i
 - `verify --out out/irq-design-review`: build succeeds, dbg and rel report PASS, host tests report PASS.
 - `kshell_run.py` on the same output: irq.test, irqchip.test, irqrevoke.test, irqregistry.test, interrupt.test and interruptline.test each report ok.
 - `lint_docs.py --changed` on the four task documents: no layout violations.
+
+### Final increment: separate entry bookkeeping and restore nested frames
+
+Move receiving-CPU entry state and root-handler publication into entry.hpp/entry.cpp, leaving mod.hpp/mod.cpp responsible for line controls. enter_trap returns the previous frame; leave_trap restores it before dropping disable counts. This preserves nested exception context without adding a parallel depth counter. Remove the two empty initialization stubs and the no-op call while retaining the real InitLevel::Irq hook dispatch. Validate a nested pair under disabled interrupts/preemption: inner exit restores outer frame and both disable counts, outer exit restores the original frame and counts. Run formatting/tidy, both images, host tests and all IRQ suites before the isolated commit.

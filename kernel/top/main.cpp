@@ -12,7 +12,6 @@
 #include <userabi/userboot.hpp>
 
 /// Init calls
-#include <ours/irq/init.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/init.hpp>
 #include <ours/phys/handoff.hpp>
@@ -131,9 +130,6 @@ auto start_kernel(PhysAddr handoff) -> void {
     mm::init_vmm();
     set_init_level(InitLevel::Vmm);
 
-    // TODO(SmallHuaZi): It seems like doing nothing. Consider to remove
-    // it or give it more thing to do.
-    irq::init();
     set_init_level(InitLevel::Irq);
 
     // After the Irq level and not before: the MADT hook that fills

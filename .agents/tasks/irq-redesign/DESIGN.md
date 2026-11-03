@@ -99,6 +99,12 @@ The public DomainEndpoint is controller-owned and noncopyable. It is registered 
 
 The directory owns Box<Entry>; each entry owns Box<Domain> and borrows its endpoint. Removing slots keep their entry until revocation, retraction and reader grace complete. Ownership is moved out and the slot freed atomically under the writer Guard; destruction runs outside the lock. Another writer never reads an entry already freed. The directory destructor requires quiescent users and does not dereference borrowed endpoints. Context and operations outlive successful unregistration; the endpoint outlives all delivery calls.
 
+### Trap entry and nesting
+
+Entry state has a different lifetime from domain storage. entry.hpp/entry.cpp own root-handler publication and the current CPU's frame plus scheduler disable-count transitions. Line control does not expose those operations. The caller enters with interrupts off, saves the previous frame returned by enter_trap, dispatches, then passes that previous frame to leave_trap before any reschedule or signal delivery. Nested entry naturally stores the outer frame on the current kernel stack; inner exit restores it, outer exit restores the original frame. There is no duplicate depth counter. NMI, double fault and machine check retain their separate architecture path.
+
+A depth counter plus one frame pointer was rejected because it can report nesting but cannot reconstruct the outer frame. An opaque heap context is unnecessary because the frame and previous-frame token already live on the kernel stack. A destructor that performs a reschedule was rejected because architecture code must schedule only after putting away the trap bookkeeping. The explicit leave operation returns whether the architecture caller should preempt.
+
 ### Public boundary
 
 The public objects are Registration, ControllerOps/ControllerSource and DomainEndpoint. Line, Domain and DomainRegistry are private implementation types. RegistrationOptions states immutable acquisition policy; only Line invokes handler, revocation and readiness callbacks. notify_locked requires L1, reached through the real Guard. A line starts empty from its source and kernel identity; attachment is the only policy authority. Unused name storage and allocation-only forwarding are removed. Mapping is irq_for_source(domain, source), source_for_irq(id), and registration.line_id(); there is no root-only alias. The unbound, invalid LAPIC table is retired because actual local interrupt routing is already architecture-owned.

@@ -69,6 +69,7 @@
 // host test target, and the barrier needs two CPUs and the real spin lock.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
+#include <ours/irq/entry.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/irq/registration.hpp>
 #include <ours/mm/gaf.hpp>
@@ -80,6 +81,8 @@
 #include <array>
 #include <atomic>
 
+#include <arch/auto_interrupt_disabler.hpp>
+#include <arch/interrupt.hpp>
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
@@ -1380,9 +1383,49 @@ namespace {
         verdict(tally, spurious == unhandled, "every unhandled dispatch counted as spurious");
     }
 
+    auto check_nested_entry(Tally &tally) -> void {
+        auto entered_outer = false;
+        auto entered_inner = false;
+        auto restored_outer = false;
+        auto restored_original = false;
+        {
+            arch::AutoInterruptDisabler const interrupts_off;
+            task::AutoPreemptDisabler const pinned;
+            auto &state = task::Thread::Current::preemption_state();
+            auto const preemption = state.preemption_disabled_count();
+            auto const eager = state.eager_resched_disabled_count();
+            auto *const original = irq::current_frame();
+            arch::IrqFrame outer{};
+            arch::IrqFrame inner{};
+            auto *const first = irq::enter_trap(&outer);
+            entered_outer = first == original && irq::current_frame() == &outer &&
+                            state.preemption_disabled_count() == preemption + 1 &&
+                            state.eager_resched_disabled_count() == eager + 1;
+            auto *const second = irq::enter_trap(&inner);
+            entered_inner = second == &outer && irq::current_frame() == &inner &&
+                            state.preemption_disabled_count() == preemption + 2 &&
+                            state.eager_resched_disabled_count() == eager + 2;
+            auto const inner_reschedule = irq::leave_trap(second);
+            restored_outer = !inner_reschedule && irq::current_frame() == &outer &&
+                             state.preemption_disabled_count() == preemption + 1 &&
+                             state.eager_resched_disabled_count() == eager + 1;
+            auto const outer_reschedule = irq::leave_trap(first);
+            restored_original = !outer_reschedule && irq::current_frame() == original &&
+                                state.preemption_disabled_count() == preemption &&
+                                state.eager_resched_disabled_count() == eager;
+        }
+        verdict(tally, entered_outer,
+                "outer trap publishes its frame and raises both disable counts");
+        verdict(tally, entered_inner,
+                "nested trap preserves the outer frame and nests both counts");
+        verdict(tally, restored_outer, "inner exit restores the outer frame and cannot preempt");
+        verdict(tally, restored_original, "outer exit restores the original frame and both counts");
+    }
+
     auto irq_test_command(int, char **) -> int {
         Tally tally;
 
+        check_nested_entry(tally);
         check_pit_line_is_taken(tally);
         check_permanent_line(tally);
         check_idle_line_repeatedly(tally);
