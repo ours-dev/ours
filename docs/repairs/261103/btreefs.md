@@ -24,48 +24,7 @@ None, this project's own design; the taken/dead lists already separate "durable 
 **Acceptance**
 `unlink` of a 256 KiB file passes in the host suite; `open(FileTruncate)` of one passes on the disked run.
 
-## 2. Unlink checks no rights at all: a read-only directory connection deletes files
-
-**Severity**
-High: wrong results, reachable today — fshost hands out narrowed views (`ro` exists exactly for this), and the ro view's clients can delete.
-
-**Symptom**
-`open("/vfs/disk", r*)` then `Unlink("f")` succeeds: the file is gone.
-
-**Cause**
-The UNLINK dispatch (`system/service/btreefs/btreefs.cpp:981-1006`) checks only the decode and `target == Directory`. Every other mutator gates: create paths check `holds(connection.rights, Operations::ModifyDirectory)` (`:706-710`), Read/Write check ReadBytes/WriteBytes, ReadDirents checks Enumerate. Unlink mutates the directory's contents and checks nothing — the right that names this operation (`ModifyDirectory`) is one line.
-
-**Change**
-`if (!holds(connection.rights, Operations::ModifyDirectory)) → AccessDenied`, before the walk. One line, matching the create path's gate; a routing_checks case (`/disk` through a read-only offer, Unlink answered AccessDenied) pins it.
-
-**Reference**
-Zircon's `Directory.Unlink` requires `Rights::MODIFY_DIRECTORY` (`fuchsia.io/Directory1.Unlink` requirements; `zx_dirbase`-era specs say the same).
-
-**Acceptance**
-The routing_checks case above; the existing rights tests stay green.
-
-
-## 3. `FileTruncate` on open truncates without any write right
-
-**Severity**
-High: data destruction from a read-only handle — the flag is not a right, and nothing intersects it.
-
-**Symptom**
-`open(file, r* | FileTruncate)` succeeds and the file is empty: every DATA item destroyed by a client holding only read.
-
-**Cause**
-The open path (`system/service/btreefs/btreefs.cpp:748-762`) applies `truncate_file` whenever the flag is set; the rights intersection at `:702` gates rights, not flags, and `FileTruncate` is a flag. Zircon requires write access for O_TRUNC (`fuchsia.io/Flags` right-flags table: `FILE_TRUNCATE` requires `WRITE_BYTES`).
-
-**Change**
-Before `truncate_file`: `holds(requested, Operations::WriteBytes)` or AccessDenied, mirroring Zircon's flag→right requirements table.
-
-**Reference**
-`fuchsia.io/Flags`'s right-flags table: `FILE_TRUNCATE` requires `WRITE_BYTES` (`sdk/fidl/fuchsia.io/io.fidl`).
-
-**Acceptance**
-`open(r* | FileTruncate)` on the disked run answers AccessDenied; `open(rw* | FileTruncate)` truncates.
-
-## 4. Nodes are trusted from the device: the entry count is never validated against capacity
+## 1. Nodes are trusted from the device: the entry count is never validated against capacity
 
 **Severity**
 Medium: latent, needs on-disk corruption (a flipped byte in a leaf's count field) — but the device is a real disk, the superblock is CRC'd and nodes are not, and the failure is memory corruption, not an error.
@@ -85,7 +44,7 @@ None, this project's own design; the block device's bytes were never promised to
 **Acceptance**
 A host test corrupts a count byte and every operation on the node answers `BadState`.
 
-## 5. `read_dirents`' cursor skip uses `<=`, so an entry whose folded hash is 0 is never listed
+## 2. `read_dirents`' cursor skip uses `<=`, so an entry whose folded hash is 0 is never listed
 
 **Severity**
 Low: probability ~2⁻⁵⁶ per name, but the file exists and is invisible in listings (findable by open).
@@ -105,7 +64,7 @@ None, this project's own design (the folded-offset listing cursor).
 **Acceptance**
 A host test with an entry whose folded offset is forced 0 lists it.
 
-## 6. The class-level commit-order contract contradicts the code, and `free_block`'s documented double-free detection cannot fire within one transaction
+## 3. The class-level commit-order contract contradicts the code, and `free_block`'s documented double-free detection cannot fire within one transaction
 
 **Severity**
 Low: documentation as bug. `ours_btreefs.hpp:53-56` says commit writes "the bitmap …, then the other superblock slot"; the code (`:556-591`) clears dead bits **after** the swap — the safe order, and `commit()`'s own comment states it. And `free_block`'s `BadState` double-free check reads the bitmap from the device, where a dead block's bit is still set until commit, so an intra-transaction double free appends a duplicate dead entry silently instead of answering BadState (benign at commit, but the documented detection does not exist).

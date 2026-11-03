@@ -906,4 +906,176 @@ TEST(BtreefsVolume, RefusesASlotWhoseCrcLies) {
     ASSERT_TRUE(reopened.is_ok());
     EXPECT_EQ(reopened->root, fs.volume.root);
 }
+
+// The unlink loop the component runs, against a 64-block file -- 256 KiB,
+// four times the size that exhausted the transaction's cache before
+// checkpoint() (docs/repairs/261103/btreefs.md item 1). The shape is the
+// service's own: scan, lookup, remove, free, per turn, one transaction.
+TEST(BtreefsTransactions, UnlinkOfABigFileRunsEveryRemoveInOneTransaction) {
+    constexpr auto FILE_BLOCKS = usize{64};
+    auto fs = Mounted(256, 1);
+
+    // The file: an INODE, and one DATA item per block, each block taken.
+    ASSERT_EQ(
+        apply(fs,
+              [&](auto &tx) -> Status {
+                  if (auto const status = ours_btreefs::insert(
+                          tx, key_of(1, ours_btreefs::ItemType::Inode, 0), value_of(FILE_BLOCKS));
+                      status != Status::Ok) {
+                      return status;
+                  }
+                  for (auto offset = u64{0}; offset < FILE_BLOCKS; ++offset) {
+                      auto const block = tx.alloc_block();
+                      if (block.is_err()) {
+                          return block.unwrap_err();
+                      }
+                      auto value = Value{};
+                      ours_btreefs::encode_data_value(value, block.unwrap());
+                      if (auto const status = ours_btreefs::insert(
+                              tx, key_of(1, ours_btreefs::ItemType::Data, offset), value);
+                          status != Status::Ok) {
+                          return status;
+                      }
+                      // 65 inserts in one transaction exceed the cache on
+                      // their own: the service's real path writes one block
+                      // per transaction, and this bulk create plays them
+                      // all, so it checkpoints too.
+                      if (auto const status = tx.checkpoint(); status != Status::Ok) {
+                          return status;
+                      }
+                  }
+                  return Status::Ok;
+              }),
+        Status::Ok);
+
+    // The unlink: every DATA item, then the INODE. The checkpoint is what
+    // the component's loop does; without it the transaction exhausted at
+    // roughly the 16th remove and answered NoResource.
+    ASSERT_EQ(
+        apply(fs,
+              [&](auto &tx) -> Status {
+                  while (true) {
+                      if (auto const status = tx.checkpoint(); status != Status::Ok) {
+                          return status;
+                      }
+                      auto block_key = Key{};
+                      auto seen = false;
+                      auto const walked = ours_btreefs::scan(
+                          tx, tx.volume(),
+                          {.object = 1, .type = ours_btreefs::ItemType::Data, .offset = 0},
+                          [&](Key const &key, Value const &) -> bool {
+                              if (key.object != 1) {
+                                  return false;
+                              }
+                              if (key.type != ours_btreefs::ItemType::Data) {
+                                  return true;
+                              }
+                              block_key = key;
+                              seen = true;
+                              return false;
+                          });
+                      if (walked != Status::Ok) {
+                          return walked;
+                      }
+                      if (!seen) {
+                          break;
+                      }
+                      auto item = Value{};
+                      if (auto const status =
+                              ours_btreefs::lookup(tx, tx.volume(), block_key, item);
+                          status != Status::Ok) {
+                          return status;
+                      }
+                      if (auto const status = ours_btreefs::remove(tx, block_key);
+                          status != Status::Ok) {
+                          return status;
+                      }
+                      if (auto const status = tx.free_block(ours_btreefs::decode_data_value(item));
+                          status != Status::Ok) {
+                          return status;
+                      }
+                  }
+                  if (auto const status =
+                          ours_btreefs::remove(tx, key_of(1, ours_btreefs::ItemType::Inode, 0));
+                      status != Status::Ok) {
+                      return status;
+                  }
+                  return Status::Ok;
+              }),
+        Status::Ok);
+
+    // The tree is whole after 64 removes: a fresh file's item inserts,
+    // reads back, and the volume's block count is what the format gave.
+    ASSERT_EQ(apply(fs,
+                    [&](auto &tx) -> Status {
+                        if (auto const status = ours_btreefs::insert(
+                                tx, key_of(2, ours_btreefs::ItemType::Inode, 0), value_of(1));
+                            status != Status::Ok) {
+                            return status;
+                        }
+                        return ours_btreefs::insert(tx, key_of(2, ours_btreefs::ItemType::Data, 0),
+                                                    value_of(77));
+                    }),
+              Status::Ok);
+    ASSERT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        auto item = Value{};
+                        return ours_btreefs::lookup(
+                            tx, tx.volume(), key_of(2, ours_btreefs::ItemType::Data, 0), item);
+                    }),
+              Status::Ok);
+}
+
+// The library's own truncate over one transaction, on a 64-block file: the
+// checkpoint at the top of each turn keeps the cache from exhausting.
+TEST(BtreefsTransactions, TruncateOfABigFileRunsEveryRemoveInOneTransaction) {
+    constexpr auto FILE_BLOCKS = usize{64};
+    auto fs = Mounted(256, 1);
+
+    ASSERT_EQ(
+        apply(fs,
+              [&](auto &tx) -> Status {
+                  if (auto const status = ours_btreefs::insert(
+                          tx, key_of(1, ours_btreefs::ItemType::Inode, 0), value_of(FILE_BLOCKS));
+                      status != Status::Ok) {
+                      return status;
+                  }
+                  for (auto offset = u64{0}; offset < FILE_BLOCKS; ++offset) {
+                      auto const block = tx.alloc_block();
+                      if (block.is_err()) {
+                          return block.unwrap_err();
+                      }
+                      auto value = Value{};
+                      ours_btreefs::encode_data_value(value, block.unwrap());
+                      if (auto const status = ours_btreefs::insert(
+                              tx, key_of(1, ours_btreefs::ItemType::Data, offset), value);
+                          status != Status::Ok) {
+                          return status;
+                      }
+                      if (auto const status = tx.checkpoint(); status != Status::Ok) {
+                          return status;
+                      }
+                  }
+                  return Status::Ok;
+              }),
+        Status::Ok);
+
+    ASSERT_EQ(apply(fs, [&](auto &tx) { return ours_btreefs::truncate(tx, 1, 0); }), Status::Ok);
+
+    // Empty as asked, and whole after: a fresh item inserts and reads back.
+    ASSERT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        auto item = Value{};
+                        auto const looked = ours_btreefs::lookup(
+                            tx, tx.volume(), key_of(1, ours_btreefs::ItemType::Data, 0), item);
+                        return looked == Status::NotFound ? Status::Ok : looked;
+                    }),
+              Status::Ok);
+    ASSERT_EQ(apply(fs,
+                    [&](auto &tx) {
+                        return ours_btreefs::insert(tx, key_of(2, ours_btreefs::ItemType::Data, 0),
+                                                    value_of(88));
+                    }),
+              Status::Ok);
+}
 } // namespace

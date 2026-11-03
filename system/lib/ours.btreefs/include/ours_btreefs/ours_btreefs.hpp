@@ -403,6 +403,29 @@ class Transaction final {
         m_dead_count = 0;
     }
 
+    /// Writes every cached block to the device and empties the cache, for a
+    /// caller whose one transaction runs a bounded operation many times --
+    /// unlink's per-block loop, truncate's -- and would otherwise fill the
+    /// cache with copies no later iteration reads. The taken and dead lists
+    /// stay: they are the transaction's durable intent, recorded for commit.
+    ///
+    /// Safe under the same crash discipline as commit(): the superblock has
+    /// not swapped, so the written blocks are unreferenced garbage if the
+    /// transaction dies -- leak, never corrosion -- and the bitmap bit is
+    /// set only by commit.
+    [[nodiscard]]
+    auto checkpoint() -> ours::Status {
+        for (auto index = usize{0}; index < m_cache_count; ++index) {
+            if (auto const status =
+                    m_device.write_block(m_cache[index].first, m_cache[index].second);
+                status != ours::Status::Ok) {
+                return status;
+            }
+        }
+        m_cache_count = 0;
+        return ours::Status::Ok;
+    }
+
     Transaction(Transaction const &) = delete;
     auto operator=(Transaction const &) -> Transaction & = delete;
 
@@ -594,7 +617,13 @@ class Transaction final {
     /// The superblock slots, the bitmap from the block past them.
     static constexpr auto SUPER_FIRST_BLOCK = u64{0};
     static constexpr auto SUPER_SECOND_BLOCK = u64{1};
-    static constexpr auto LISTS = usize{64};
+    /// The intent lists' bound: enough entries that every block of the
+    /// reference volume (256) can be taken AND marked dead in one
+    /// transaction -- a full-volume rewrite -- with room to spare. A
+    /// transaction beyond this many touched blocks answers NoResource;
+    /// sizing the lists from the volume at runtime wants the heap user
+    /// space does not have (docs/repairs/261103/btreefs.md item 1).
+    static constexpr auto LISTS = usize{512};
 
     /// The cache entry for |block|, made over |bytes|; the answer is the
     /// entry's own span, the one every later cached() answers.
@@ -1141,6 +1170,12 @@ namespace detail {
 template <typename Device>
 auto truncate(Transaction<Device> &tx, u64 object, u64 from_block) -> ours::Status {
     while (true) {
+        // Each turn's copies go to the device before the next turn fills the
+        // cache again: an unbounded loop over one transaction otherwise
+        // exhausts it partway through a big file (docs/repairs/261103/btreefs.md).
+        if (auto const status = tx.checkpoint(); status != ours::Status::Ok) {
+            return status;
+        }
         // The first DATA item at |from_block| or past: the walk starts
         // there, skips the INODE item sorting before the DATA ones, and
         // stops at the next object's items.
