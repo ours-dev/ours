@@ -514,3 +514,60 @@ None (predictions are paused)
 - Why is the leftmost thread of a deadline-ordered tree not the one with the smallest virtual time, and why does moving the zero to the weighted mean need no search?
 - Why do `avg_vruntime()` and `is_eligible()` take their sums from one function, and what did the test answer when they did not?
 - Why did moving the zero at every placement make the rounding of a term matter, when the old `min_vruntime_`, which never moved, could do without exactness, and why must the zero also move when a request is replenished?
+
+## Title: FairRunQueue visits its threads for the scheduler (2026-11-04)
+
+**Files**
+- `kernel/include/ours/task/sched/fair.hpp` — new `FairRunQueue::for_each()`
+- `docs/repairs/261103/kernel-task-sched.md` — item 4 is deleted (the number is kept); the header paragraph, item 13 (the walk joins its test) and item 17 (the offline walk meets delayed sleepers) are edited
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+With the Fair switch on, `RunQueue::for_each_thread()` did not compile: it calls `m_normal_queue.for_each(...)` and `FairRunQueue` had no such member. The error is reported at `run_queue.hpp:252`, so in every translation unit that includes the header with the switch on; it was the only diagnostic of `scheduler.cpp`, which instantiates the body in `Scheduler::Current::deactivate()`, and one of the two of `fair.cpp`. Fair is not built, so nothing was observable.
+
+**Cause**
+The framework asks every discipline's queue type for one walk, `for_each(visit)` with `visit(SchedEntity &) -> bool`, which a CPU going offline uses to find a queued thread that may run elsewhere (`Scheduler::Current::deactivate()`). `RrRunQueue` gained it on 2026-10-13 with CPU hotplug (`54203477`, `7a5e86db`), three weeks after the run queue's fields were sealed (`abe6f1d0`). Fair's queue was out of the build, so nothing compiled it against the new use.
+
+The contract in `run_queue.hpp` (`for_each_thread()`): every thread queued on the CPU, until `visit` answers false; no order is promised; the running thread is not queued and is not visited; under the run queue lock; and `visit` must not change the queues, because a thread it picks is moved once the walk is over. The last matters for an intrusive tree: erasing the node being visited, or any node, invalidates the iterator the loop holds. The one caller sets a pointer and returns false, and moves the thread after the walk, under the same guard. For Fair that means walking `queue_`, which holds the waiting threads, and not `current_`, which `sums()` counts in the mean while it is active but which is not in the tree. Under `SCHED_DELAY_DEQUEUE` (off) the tree also holds the sleepers whose dequeue was delayed, and the walk visits them (item 17).
+
+**Change**
+Before: none.
+
+```cpp
+// fair.hpp, FairRunQueue
+template <typename Visit>
+auto for_each(Visit &&visit) -> void {
+    for (auto &object: queue_) {
+        if (!visit(object)) {
+            return;
+        }
+    }
+}
+```
+The body has the shape of `RrRunQueue::for_each`. The order is the tree's, earliest virtual deadline first. The one caller does not need it: every round starts from the head again and takes the first thread that may go, so which threads move and when the loop ends do not depend on it. Which thread goes first does decide which lag each carries to its new CPU, which item 18 leaves unscaled anyway. No other form was considered; the walk is the member the framework's template asks for.
+
+**Reference**
+The walk is the framework's own: `RrRunQueue::for_each()` in `rr_run_queue.hpp`, which this one copies. For the job it serves, Zircon moves a CPU's threads away in `Scheduler::MigrateUnpinnedThreads()`, which builds a move list over its fair run queue with `CreateMoveList`; the run queue's lock and the visitor-then-move split here are this project's own design.
+
+**Verification**
+- `-fsyntax-only` on `fair.cpp` and `scheduler.cpp` with the Fair switch on: 1 and 0 diagnostics. The one left is `arm_preempt_timer` (item 12 of the repair file).
+- `python3 .agents/skills/verify/scripts/boot_check.py --out out/fair-lane`: build ok, dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (172 passed). `fair.hpp` is not in these images, so the boots show only that nothing else moved; the one edit after the run was a comment in `fair.hpp`.
+- Two independent read-only reviewers. Code: the real `FairRunQueue::for_each` was run on the host over the real `ustl` `MultiSet` of real `SchedEntity` values, with the real deadline comparator, and visited seven out-of-order keys in order, stopped at the first `false`, visited three equal keys once each, visited nothing on an empty queue and all 100 of a hundred, and did not visit a thread set with `set_current()`; three mutants of the walk failed the same checks (clang-tidy reports nothing on the added lines). Docs: every sentence of this entry against the code and the history. They found two false sentences (when `RrRunQueue` gained the walk, and that the default build never runs it), a contract quoted with an order it does not promise, a Reference that was too short, and the delayed sleepers that the walk would visit; all were corrected.
+- `scripts/format_cpp.py` and `scripts/lint_docs.py` are clean.
+- Fair was not linked, booted or run. The default build's boot runs `deactivate()` and `RunQueue::for_each_thread()` with `RrRunQueue::for_each` (through `hotplug.test`), which shows the caller's logic and not Fair's walk.
+
+**Deliberately not done**
+- A test of the walk in the build: it joins the host-style test of `FairRunQueue` (item 13), which needs Fair to compile first (item 12).
+- The `arm_preempt_timer` block (item 12), and a filter for delayed sleepers, which waits for a predicate on that state (item 17).
+- The "Hands off" rule for `fair.*` in `kernel-design` is unchanged: this edit is on the author's request and adds no EEVDF semantics.
+
+**How it was found**
+By the first syntax check of `scheduler.cpp` with the Fair switch on (`python3 scratchpad/fair_check.py kernel/kernel/task/sched/scheduler.cpp`, the check of the rename entry of 2026-11-03), which reported `for_each` as its one diagnostic. The author asked for it.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why is the running thread not visited, and where is it counted instead?
+- Why must the visitor not change the queue during the walk, and how does the one caller avoid the problem?
+- What does the walk's order decide for the caller, and what does it leave alone?

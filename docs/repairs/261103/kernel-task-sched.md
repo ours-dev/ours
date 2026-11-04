@@ -1,26 +1,6 @@
 # kernel-task-sched outstanding repairs
 
-Fair (`fair.hpp`, `fair.cpp`) is out of the build and is the author's. It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum) and the numbers are not reused, because the change records cite them (so the numbers are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, are at the end). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` has two diagnostics (items 4 and 12) and `scheduler.cpp` one (item 4); items 7 to 11 compile and are wrong or missing. Every claim below was read off the code, and the arithmetic was recomputed from the constants; none of it was run, because Fair does not build.
-
-## 4. `FairRunQueue` has no `for_each`
-
-**Severity**
-Medium: a compile error.
-
-**Symptom**
-`RunQueue::for_each_thread()` (`run_queue.hpp`) calls `m_normal_queue.for_each(visit)`; `RrRunQueue` has one (`visit(SchedEntity &) -> bool`) and `FairRunQueue` does not. It is the only diagnostic in `scheduler.cpp`.
-
-**Cause**
-The framework asks every discipline's queue for it after the run queue's fields were sealed. The contract is in `run_queue.hpp` (`for_each_thread()`): every queued thread is visited in the queue's order until `visit` answers false, and the running thread is not visited, so Fair's must walk `queue_` and not `current_`.
-
-**Change**
-Add `for_each` to `FairRunQueue` with the shape of `RrRunQueue::for_each`.
-
-**Reference**
-`rr_run_queue.hpp`.
-
-**Acceptance**
-No `for_each` diagnostic with the Fair switch on.
+Fair (`fair.hpp`, `fair.cpp`) is out of the build and is the author's. It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and item 4, `FairRunQueue::for_each`, was added on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, are at the end). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` has one diagnostic (item 12) and `scheduler.cpp` none; items 7 to 11 compile and are wrong or missing. Every claim below was read off the code, and the arithmetic was recomputed from the constants; none of it was run, because Fair does not build.
 
 ## 7. A thread that was never enqueued has a slice of zero
 
@@ -151,10 +131,10 @@ Low: a missing test. The weight fix is checked for its arithmetic only, so a wro
 `common.hpp` proves at compile time that `to_virtual_time()` is inversely proportional to the weight at every priority, that `MID_WEIGHT`'s clock reads real time, and the units of `weighted_offset()` against the weight sum. Nothing runs `FairRunQueue` or `Fair::update_thread()`, because Fair does not build, so no test shows that two threads of different weights receive CPU in the ratio of their weights.
 
 **Cause**
-The acceptance of the two fixed items was a host-style test of `FairRunQueue`. It cannot be written until Fair compiles (items 4 and 12).
+The acceptance of the two fixed items was a host-style test of `FairRunQueue`. It cannot be written until Fair compiles (item 12).
 
 **Change**
-Add the test when those are done: two threads that always want to run, at priorities 31 and 15, over a long window, with the ratio of the CPU time each was charged within a stated tolerance of the ratio of their weights (about 25.7); the eligibility case, where threads that have been served in proportion to their weights are all eligible and one that is ahead of the weighted average is not; one thread alone, which has a finite `vdeadline` one request ahead of its `vruntime` and a lag of zero through `lag_of()` at every priority; and a wakeup from another CPU, which leaves `weight_sum_` equal to the sum of the weights in the tree.
+Add the test when those are done: two threads that always want to run, at priorities 31 and 15, over a long window, with the ratio of the CPU time each was charged within a stated tolerance of the ratio of their weights (about 25.7); the eligibility case, where threads that have been served in proportion to their weights are all eligible and one that is ahead of the weighted average is not; one thread alone, which has a finite `vdeadline` one request ahead of its `vruntime` and a lag of zero through `lag_of()` at every priority; a wakeup from another CPU, which leaves `weight_sum_` equal to the sum of the weights in the tree; and the walk, which visits the waiting threads in deadline order, not the running one, and stops when the visitor answers false.
 
 **Reference**
 None, this project's own test.
@@ -194,7 +174,7 @@ Low to Medium: none of the paths is reachable today (Fair is off, `SCHED_DELAY_D
 `is_active()` says the thread is on this discipline's accounting, not that its node is in this CPU's tree, and nothing else records the second.
 
 **Change**
-The author's: a state that says "in this CPU's tree", or a check of the intrusive hook, and the delayed-dequeue wake needs a decision before the feature is enabled.
+The author's: a state that says "in this CPU's tree", or a check of the intrusive hook, and the delayed-dequeue wake needs a decision before the feature is enabled, and so does the offline walk, which would hand a delayed sleeper to `Scheduler::Current::deactivate()` (`deactivate_thread()` asserts the thread is not sleeping).
 
 **Reference**
 Linux EEVDF tracks `se->on_rq` and `cfs_rq->curr` separately for this (from memory, not checked). Its `reweight_entity()` takes the entity off the sums and puts it back around a weight change.

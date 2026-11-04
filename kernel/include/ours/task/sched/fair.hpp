@@ -108,6 +108,23 @@ class FairRunQueue {
         return queue_.end();
     }
 
+    /// Calls |visit| on every queued entity, from the earliest virtual deadline,
+    /// until it answers false: this queue's part of RunQueue::for_each_thread(),
+    /// which every discipline's queue type supplies. Under the run queue lock.
+    ///
+    /// The running thread is off the tree and is not visited, though it is in
+    /// the mean while it is active (`current_`, `sums()`). Under
+    /// SCHED_DELAY_DEQUEUE the tree also holds the sleepers whose dequeue was
+    /// delayed, and the walk visits them.
+    template <typename Visit>
+    auto for_each(Visit &&visit) -> void {
+        for (auto &object: queue_) {
+            if (!visit(object)) {
+                return;
+            }
+        }
+    }
+
     FORCE_INLINE
     auto num_queued() const -> usize {
         return m_num_queued;
