@@ -386,7 +386,8 @@ namespace {
         }
         {
             mm::VmPageSpliceList pages(1);
-            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero);
+            auto *const frame =
+                mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero).value_or(nullptr);
             auto held = frame != nullptr && pages.reserve(1) == Status::Ok &&
                         pages.append_page(0, frame) == Status::Ok;
             if (!held && frame != nullptr) {
@@ -427,7 +428,7 @@ namespace {
             return status;
         }
         for (u64 at = offset; at < offset + len; at += PAGE_SIZE) {
-            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL);
+            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL).value_or(nullptr);
             if (!frame) {
                 return Status::OutOfMem;
             }

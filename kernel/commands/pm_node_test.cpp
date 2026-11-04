@@ -663,25 +663,26 @@ namespace {
     auto check_address_helpers(Tally &tally) -> void {
         auto const flags = mm::ALLOC_KERNEL;
         auto addr = PhysAddr::Invalid;
-        auto *const frame = mm::alloc_frames(flags, &addr, 0);
-        verdict(tally, frame && addr == mm::frame_to_phys(frame),
+        auto const frame = mm::alloc_frames(flags, &addr);
+        verdict(tally, frame && addr == mm::frame_to_phys(*frame),
                 "allocation writes the physical address of the returned frame");
         if (frame) {
-            mm::free_frames(mm::frame_to_virt(frame), 0);
+            mm::free_frames(mm::frame_to_virt(*frame), 0);
         }
 
-        auto *const without_addr = mm::alloc_frames(flags, static_cast<PhysAddr *>(nullptr), 0);
-        verdict(tally, without_addr != nullptr, "the physical address output is optional");
+        auto const without_addr = mm::alloc_frames(flags, nullptr);
+        verdict(tally, !!without_addr, "the physical address output is optional");
         if (without_addr) {
-            mm::free_frames(without_addr, 0);
+            mm::free_frames(*without_addr, 0);
         }
 
         addr = PhysAddr::Invalid;
-        auto *const invalid = mm::alloc_frames(flags, &addr, MAX_FRAME_ORDER + 1);
-        verdict(tally, !invalid && addr == PhysAddr::Invalid,
-                "failed allocation preserves the physical address output");
+        auto const invalid = mm::alloc_frames(flags, &addr, MAX_FRAME_ORDER + 1);
+        verdict(tally,
+                !invalid && invalid.unwrap_err() == Status::InvArgs && addr == PhysAddr::Invalid,
+                "invalid order is reported and the physical address output is preserved");
         if (invalid) {
-            mm::free_frames(invalid, invalid->order());
+            mm::free_frames(*invalid, (*invalid)->order());
         }
     }
 
@@ -724,8 +725,8 @@ namespace {
         auto &state = task::Thread::Current::alloc_state();
 
         state.disable();
-        auto *const nodeless = mm::alloc_frames(mm::ALLOC_KERNEL, usize(0));
-        auto *const by_node = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, usize(0));
+        auto const nodeless = mm::alloc_frames(mm::ALLOC_KERNEL);
+        auto const by_node = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, 0);
         auto direct = PmNode::alloc_frames(mm::ALLOC_KERNEL);
         auto direct_home = PmNode::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL);
         auto const table = mm::alloc_page_table(PAGE_SIZE, PAGE_SIZE);
@@ -733,10 +734,12 @@ namespace {
         auto *const local_bytes = mm::get_frames<u8>(mm::current_node(), mm::ALLOC_KERNEL);
         state.enable();
 
-        auto *const after = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, usize(0));
-        verdict(tally, !nodeless && !by_node,
-                "a thread that disabled allocation is refused with or without a node");
-        verdict(tally, after != nullptr, "enabling it again lets the allocation through");
+        auto const after = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, 0);
+        verdict(tally,
+                !nodeless && nodeless.unwrap_err() == Status::AccessDenied && !by_node &&
+                    by_node.unwrap_err() == Status::AccessDenied,
+                "the facade reports AccessDenied with or without an explicit node");
+        verdict(tally, !!after, "enabling it again lets the allocation through");
         verdict(tally, table == PhysAddr{0}, "page-table allocation respects disabled allocation");
         if (table != PhysAddr{0}) {
             mm::free_page_table(table, PAGE_SIZE);
@@ -758,9 +761,9 @@ namespace {
         }
 
         // Freed even if the check above failed, so the test leaks nothing.
-        for (auto *const frame: {nodeless, by_node, after}) {
-            if (frame) {
-                mm::free_frames(frame, 0);
+        for (auto const &result: {nodeless, by_node, after}) {
+            if (result) {
+                mm::free_frames(*result, 0);
             }
         }
     }

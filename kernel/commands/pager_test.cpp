@@ -115,7 +115,7 @@ namespace {
             return status;
         }
         for (u64 at = offset; at < offset + len; at += P) {
-            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL);
+            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL).value_or(nullptr);
             if (!frame) {
                 return Status::OutOfMem;
             }

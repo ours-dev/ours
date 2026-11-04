@@ -145,7 +145,8 @@ namespace {
             return false;
         }
         for (usize i = 0; i < count; ++i) {
-            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero);
+            auto *const frame =
+                mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero).value_or(nullptr);
             if (!frame) {
                 return false;
             }
@@ -699,7 +700,7 @@ namespace {
         free = mm::approx_free_frame_count();
         set = use_levels(free + 40, free + 80, free + 100);
         auto const gave = set == Status::Ok && settle([&] { return more.nr_zero() < 64; });
-        auto const served = mm::try_alloc_frames(mm::ALLOC_USER_VMO, 0);
+        auto const served = mm::alloc_frames(mm::ALLOC_USER_VMO);
         auto const pressure = watchdog.pressure();
         verdict(tally, gave && pressure != mm::MemoryPressure::OutOfMemory && !!served,
                 "at OutOfMemory with pages to give, they are given back, and an allocation that "

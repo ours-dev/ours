@@ -211,3 +211,9 @@ request. `PmZone::take_block()` and `return_block()` own block transfer.
 `PmNode` completes zeroing outside the zone lock and compares the actual
 supplier with the captured initiator node for locality. Its static return
 path validates frames for both single and list release.
+
+`mm::alloc_frames()` is the result-returning interface for immediate block
+allocation and `Gaf::CanWait` pressure admission. `ShouldWait` lets the caller
+release its locks before waiting. `wait_for_frame_allocation()` serves the
+default-placement single-page wait. The static `PmNode` operations perform
+the physical transfer.

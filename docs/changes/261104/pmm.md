@@ -282,3 +282,47 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Unify block allocation and pressure admission (2026-11-04)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/pmm.hpp` exposes a result from each single-block allocation overload.
+- `kernel/mm/pmm.cpp` checks pressure in the common node-taking overload.
+- VM, heap, boot and test callers consume the result through the unified interface.
+
+**Symptom**
+
+Callers used separate names for the same block allocation. The raw-pointer form collapsed every failure into null, while `try_alloc_frames()` carried the pressure gate result.
+
+**Cause**
+
+The earlier split used a second name to expose `ShouldWait` without migrating the raw-pointer callers.
+
+**Change**
+
+`mm::alloc_frames()` returns `ktl::Result<PmFrame *>` for implicit and explicit home requests, including the optional physical-address output. A request with `Gaf::CanWait` checks the gate before passing the immediate allocation to `PmNode`. The address output is written after success. The VMO fault path releases its locks before calling the existing single-page wait, which retries through `alloc_frames()`.
+
+**Reference**
+
+Zircon `pmm_alloc_page()` reports status alongside a page result. This tree exposes both through `ktl::Result`.
+
+**Verification**
+
+Clang-format and clang-tidy checked 18 C++ files. Both dev images booted in the default and four-node NUMA configurations, and all 163 host tests passed. The nine targeted kernel regressions passed. The two-CPU, three-node run also passed the 69 PM node checks and 18 pressure checks. It verified `ShouldWait` across the block overloads, preservation of the address output, and propagation of `InvArgs` and `AccessDenied`.
+
+**Deliberately not done**
+
+The batch and fragment allocation contracts remain immediate.
+
+**How it was found**
+
+The interface review traced both block entries to the same `PmNode` operation and compared what each could report to its caller.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

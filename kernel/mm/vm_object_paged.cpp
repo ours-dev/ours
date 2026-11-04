@@ -191,10 +191,11 @@ auto VmObjectPaged::create_contiguous(Gaf const alloc_flags, usize const size, u
 
     // Zero, as every page a program can reach is: a device's buffer is not the
     // place for what the last owner of the frames left in them.
-    auto *const block = alloc_frames(alloc_flags | Gaf::Zero, order);
-    if (block == nullptr) {
+    auto const allocated = alloc_frames(alloc_flags | Gaf::Zero, order);
+    if (!allocated) {
         return Status::NoMemory;
     }
+    auto *const block = *allocated;
 
     // Each frame is its own from here, as if it had been allocated alone (the
     // way fill_block_locked() treats a large block): the tail goes back now,

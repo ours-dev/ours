@@ -715,7 +715,7 @@ auto VmCowPages::alloc_pages(usize order, VmPage **page, AnonymousPageRequest *r
         DEBUG_ASSERT(order == 0, "a wait gets one frame, and a block never waits");
         frame = request->take_frame();
     } else {
-        auto result = try_alloc_frames(alloc_flags, order);
+        auto result = alloc_frames(alloc_flags, order);
         if (!result) {
             auto const status = result.unwrap_err();
             if (Status::ShouldWait != status) {
@@ -757,7 +757,7 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
 
     // Through the gate like any page of this node, but never waiting for it:
     // turned away, the hole gets one page instead, and that page waits.
-    auto allocated = try_alloc_frames(m_alloc_flags | Gaf::Zero, ORDER);
+    auto allocated = alloc_frames(m_alloc_flags | Gaf::Zero, ORDER);
     if (!allocated) {
         return nullptr;
     }

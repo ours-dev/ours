@@ -193,10 +193,11 @@ namespace slab {
 
     auto create(MemCache *owner, void *node_cache, Gaf alloc_flags, usize order, usize size,
                 usize next_offset, NodeId nid) -> Slab * {
-        auto frame = mm::alloc_frames(nid, alloc_flags, order);
-        if (!frame) {
+        auto const allocated = mm::alloc_frames(nid, alloc_flags, order);
+        if (!allocated) {
             return nullptr;
         }
+        auto *const frame = *allocated;
 
         // Claim the fresh frame for the slab role: clears the payload and stamps
         // the tag in one step.

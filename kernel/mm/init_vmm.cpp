@@ -252,14 +252,14 @@ namespace {
         // reads ZERO_PAGE yet, so this went unnoticed until the first reader
         // -- a copy-on-write child answering a read of a hole -- would have
         // returned another owner's bytes as if they were zeros.
-        auto frame = alloc_frames(ALLOC_KERNEL | Gaf::Zero, usize(0));
+        auto const frame = alloc_frames(ALLOC_KERNEL | Gaf::Zero);
         if (!frame) {
             panic("Failed to allocate the zero page");
         }
         // Claim it for the VMM: the frame comes straight from the buddy
         // allocator, so this is a role *declaration*, not a query.
-        frame->become<page::VmmBody>();
-        ZERO_PAGE = frame;
+        (*frame)->become<page::VmmBody>();
+        ZERO_PAGE = *frame;
 
         // Checked rather than trusted, because a booted kernel is the only
         // evidence a change here can offer and nothing else looks at the page.

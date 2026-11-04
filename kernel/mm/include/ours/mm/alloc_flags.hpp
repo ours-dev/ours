@@ -16,10 +16,10 @@ enum class Gaf : u32 {
     /// direct reclaim. It does not make an allocation wait for memory.
     CanBlock = 7_bit,
 
-    /// try_alloc_frames() may answer ShouldWait under memory pressure. The
+    /// alloc_frames() may answer ShouldWait under memory pressure. The
     /// caller drops its locks before wait_for_frame_allocation(), which
-    /// retries for one page. Only the Result-returning entry accepts this
-    /// flag: a pointer cannot distinguish ShouldWait from allocation failure.
+    /// retries for one page. The mm::alloc_frames() block interface handles
+    /// admission and returns the outcome without sleeping.
     CanWait = 8_bit,
 
     /// Allocate only from the explicit node or the current CPU's node if

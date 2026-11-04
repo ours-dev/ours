@@ -240,7 +240,7 @@ inline auto PageProvider::is_queued(PageRequest const &request) -> bool {
 }
 
 /// A wait for a blank frame, raised when the PMM would not hand one to a VMO
-/// while free memory is short (try_alloc_frames() answered ShouldWait for an
+/// while free memory is short (alloc_frames() answered ShouldWait for an
 /// allocation with Gaf::CanWait).
 ///
 /// Unlike a PageRequest it asks no one for content: any frame will do, so

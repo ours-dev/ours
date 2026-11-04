@@ -103,7 +103,7 @@ namespace {
     auto shut_gate() -> bool {
         auto _ = mm::set_free_memory_signal(0, NO_BOUND, NO_BOUND, nullptr,
                                             mm::DelayedAllocations::Wait);
-        auto const delayed = mm::try_alloc_frames(WAITABLE, 0);
+        auto const delayed = mm::alloc_frames(WAITABLE);
         if (delayed) {
             mm::free_frames(*delayed, 0);
             return false;
@@ -164,19 +164,32 @@ namespace {
 
     auto check_gate(Tally &tally) -> void {
         open_gate();
-        auto served = mm::try_alloc_frames(WAITABLE, 0);
+        auto served = mm::alloc_frames(WAITABLE);
         verdict(tally, !!served, "with no delay level, a CanWait allocation is served");
         if (served) {
             mm::free_frames(*served, 0);
         }
 
         auto const shut = shut_gate();
-        auto plain = mm::try_alloc_frames(mm::ALLOC_USER, 0);
+        auto plain = mm::alloc_frames(mm::ALLOC_USER);
         verdict(tally, shut && !!plain,
                 "below the delay level a CanWait allocation answers ShouldWait, and one without "
                 "CanWait is served");
         if (plain) {
             mm::free_frames(*plain, 0);
+        }
+
+        auto const by_node = mm::alloc_frames(mm::current_node(), WAITABLE, 0);
+        auto address = PhysAddr::Invalid;
+        auto const with_address = mm::alloc_frames(WAITABLE, &address);
+        verdict(tally,
+                !by_node && by_node.unwrap_err() == Status::ShouldWait && !with_address &&
+                    with_address.unwrap_err() == Status::ShouldWait && address == PhysAddr::Invalid,
+                "block overloads share pressure admission and keep outputs on ShouldWait");
+        for (auto const &result: {by_node, with_address}) {
+            if (result) {
+                mm::free_frames(*result, 0);
+            }
         }
     }
 
@@ -212,7 +225,7 @@ namespace {
         auto const asleep = still_waiting(thread);
         refuse();
         auto const ended = finish(thread);
-        auto refused = mm::try_alloc_frames(WAITABLE, 0);
+        auto refused = mm::alloc_frames(WAITABLE);
         verdict(tally,
                 shut && asleep && ended && waiter.status == Status::OutOfMem &&
                     waiter.frame == nullptr && !refused && refused.unwrap_err() == Status::OutOfMem,
@@ -258,7 +271,7 @@ namespace {
             mm::set_free_memory_signal(0, 0, 0, &rejected, mm::DelayedAllocations::Wait);
         usize taken = 0;
         for (auto &frame: frames) {
-            auto result = mm::try_alloc_frames(mm::ALLOC_USER, 0);
+            auto result = mm::alloc_frames(mm::ALLOC_USER);
             if (!result) {
                 break;
             }
@@ -458,7 +471,7 @@ namespace {
         std::array<mm::PmFrame *, 2 * K> frames{};
         usize taken = 0;
         for (auto &frame: frames) {
-            auto result = mm::try_alloc_frames(mm::ALLOC_USER, 0);
+            auto result = mm::alloc_frames(mm::ALLOC_USER);
             if (!result) {
                 break;
             }
@@ -478,8 +491,8 @@ namespace {
         auto const oom_levels = at(now + K, now + 3 * K, now + 5 * K);
         auto const declared = oom_levels && watchdog.set_levels(*oom_levels) == Status::Ok &&
                               settles_at(MemoryPressure::OutOfMemory);
-        auto refused = mm::try_alloc_frames(WAITABLE, 0);
-        auto served = mm::try_alloc_frames(mm::ALLOC_USER, 0);
+        auto refused = mm::alloc_frames(WAITABLE);
+        auto served = mm::alloc_frames(mm::ALLOC_USER);
         verdict(tally, declared && !refused && refused.unwrap_err() == Status::OutOfMem && !!served,
                 "at OutOfMemory an allocation that could wait is refused, and one that could not "
                 "is served");
@@ -492,7 +505,7 @@ namespace {
 
         auto const restored = watchdog.set_levels(boot);
         auto const normal = restored == Status::Ok && settles_at(MemoryPressure::Normal);
-        auto waited = mm::try_alloc_frames(WAITABLE, 0);
+        auto waited = mm::alloc_frames(WAITABLE);
         verdict(tally, normal && !!waited,
                 "with the boot levels back, the pressure is Normal and an allocation that could "
                 "wait is served");

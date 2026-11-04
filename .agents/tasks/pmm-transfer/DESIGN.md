@@ -34,10 +34,10 @@ The resolved `AllocRequest` defines which zones may be attempted. A narrower nod
 
 Define a runtime operation as one public static `PmNode` allocation or return, including list and batch forms. Its internal block primitives handle ownership. After preparing a successful result or restoring staged blocks, call one private pressure check before returning, with no zone lock held. Internal rollback and per-block loops use the owner-directed primitive directly. Keep the pressure state in `FreeMemoryGate` and remove the facade's duplicate sampling when the common completion path takes over. The check can return immediately when no watcher is armed, including early boot.
 
-Keep admission and the wait protocol at `mm::try_alloc_frames()` and `wait_for_frame_allocation()`. A direct static request is immediate. An admission check can return `ShouldWait`, and the caller can then wait with a deadline after releasing its object lock. Reclaim remains a consumer of pressure signals. `VmCowPages` still validates a page-queue candidate under its own lock before returning a page to PMM.
+Keep admission and the wait protocol at `mm::alloc_frames()` and `wait_for_frame_allocation()`. A direct static request is immediate. An admission check can return `ShouldWait`, and the caller can then wait with a deadline after releasing its object lock. Reclaim remains a consumer of pressure signals. `VmCowPages` still validates a page-queue candidate under its own lock before returning a page to PMM.
 
 ```text
-mm::try_alloc_frames → FreeMemoryGate::admit → PmNode::alloc_frames
+mm::alloc_frames → FreeMemoryGate::admit → PmNode::alloc_frames
                                                  ↓
             AllocRequest → ZoneList::candidates → PmZone::take_block
                                                  ↓

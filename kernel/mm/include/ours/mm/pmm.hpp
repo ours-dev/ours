@@ -3,6 +3,7 @@
 #ifndef OURS_MM_PMM_HPP
 #define OURS_MM_PMM_HPP 1
 
+#include <ours/assert.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/init_stage.hpp>
@@ -116,12 +117,15 @@ constexpr auto get_order(usize n) -> usize {
     return ustl::countr_zero(ustl::bit_ceil(n));
 }
 
-/// Prefer to allocate a frame on the local node.
+/// Attempt a block allocation, starting on the local node. With CanWait,
+/// pressure can return ShouldWait. The caller releases its locks before waiting.
 [[nodiscard]]
-auto alloc_frames(Gaf, usize order = 0, NodeMask const & = node_online_mask()) -> PmFrame *;
+auto alloc_frames(Gaf, usize order = 0, NodeMask const & = node_online_mask())
+    -> ktl::Result<PmFrame *>;
 
+/// Write the frame's physical address on success when |addr| is supplied.
 [[nodiscard]]
-auto alloc_frames(Gaf, PhysAddr *addr, usize order = 0) -> PmFrame *;
+auto alloc_frames(Gaf, PhysAddr *addr, usize order = 0) -> ktl::Result<PmFrame *>;
 
 [[nodiscard]]
 auto alloc_frames_fragment(Gaf, usize, NodeMask const & = node_online_mask())
@@ -130,22 +134,24 @@ auto alloc_frames_fragment(Gaf, usize, NodeMask const & = node_online_mask())
 /// Allocate one power-of-two block large enough for the requested page count.
 FORCE_INLINE [[nodiscard]]
 inline auto alloc_frames_n(Gaf alloc_flags, usize nr_frames,
-                           NodeMask const &nodes = node_online_mask()) -> PmFrame * {
+                           NodeMask const &nodes = node_online_mask()) -> ktl::Result<PmFrame *> {
     return alloc_frames(alloc_flags, get_order(nr_frames), nodes);
 }
 
-/// Allocate the a frame on a specified node.
+/// Allocate an immediate list of single frames.
 [[nodiscard]]
 auto alloc_frames(NodeId, Gaf, PmFrame::List *, usize, NodeMask const & = node_online_mask())
     -> Status;
 
+/// The same block allocation protocol with an explicit home node.
 [[nodiscard]]
-auto alloc_frames(NodeId, Gaf, usize, NodeMask const & = node_online_mask()) -> PmFrame *;
+auto alloc_frames(NodeId, Gaf, usize, NodeMask const & = node_online_mask())
+    -> ktl::Result<PmFrame *>;
 
 /// Allocate one power-of-two block large enough for the requested page count.
 FORCE_INLINE [[nodiscard]]
 inline auto alloc_frames_n(NodeId nid, Gaf alloc_flags, usize nr_frames,
-                           NodeMask const &nodes = node_online_mask()) -> PmFrame * {
+                           NodeMask const &nodes = node_online_mask()) -> ktl::Result<PmFrame *> {
     return alloc_frames(nid, alloc_flags, get_order(nr_frames), nodes);
 }
 
@@ -154,8 +160,9 @@ template <typename T = u8>
 FORCE_INLINE
 auto get_frames(Gaf alloc_flags, usize order = 0, NodeMask const &nodes = node_online_mask())
     -> T * {
+    DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "use alloc_frames() to handle ShouldWait");
     if (auto frame = alloc_frames(alloc_flags, order, nodes)) {
-        return PhysMap::phys_to_virt<T>(frame_to_phys(frame));
+        return PhysMap::phys_to_virt<T>(frame_to_phys(*frame));
     }
 
     return nullptr;
@@ -174,8 +181,9 @@ template <typename T = u8>
 FORCE_INLINE
 auto get_frames(NodeId nid, Gaf alloc_flags, usize order = 0,
                 NodeMask const &nodes = node_online_mask()) -> T * {
+    DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "use alloc_frames() to handle ShouldWait");
     if (auto frame = alloc_frames(nid, alloc_flags, order, nodes)) {
-        return PhysMap::phys_to_virt<T>(frame_to_phys(frame));
+        return PhysMap::phys_to_virt<T>(frame_to_phys(*frame));
     }
 
     return nullptr;
@@ -257,7 +265,7 @@ auto free_frames(PmFrame::List *list) -> void;
 auto free_frame_count() -> usize;
 
 /// Free frames, summed from each zone's own counter without its lock: the
-/// count the gate of try_alloc_frames() and the free-memory signal compare
+/// count the allocation gate and the free-memory signal compare
 /// with their levels, and the one to set those levels from. It also counts
 /// the frames the per-CPU caches hold, which free_frame_count() does not, so
 /// the two differ by up to those caches. Stale by the time it returns, as
@@ -265,24 +273,10 @@ auto free_frame_count() -> usize;
 [[nodiscard]]
 auto approx_free_frame_count() -> usize;
 
-/// Like alloc_frames(), but says why it has no frame: OutOfMem, or, for a
-/// caller passing Gaf::CanWait, ShouldWait while free memory is short. Then
-/// the caller lets go of every lock it holds and waits for a frame in
-/// wait_for_frame_allocation(). A caller passing CanWait to any other
-/// allocation entry is a bug, since a null cannot say ShouldWait; a debug
-/// build asserts it.
-///
-/// "Short" is a gate, the delay level: a CanWait allocation that finds free
-/// memory below it shuts the gate, and the gate stays shut, however much
-/// memory comes back, until set_free_memory_signal() opens it. So it opens
-/// only once whoever watches memory has seen the shortage and acted on it,
-/// not each time a frame or two is freed and taken again.
-[[nodiscard]]
-auto try_alloc_frames(Gaf alloc_flags, usize order) -> ktl::Result<PmFrame *>;
-
 /// Sleeps until the gate opens and takes one frame for the caller, with
 /// |alloc_flags|, which carries CanWait. Called with no lock held, after
-/// try_alloc_frames() answered ShouldWait.
+/// alloc_frames(alloc_flags) answered ShouldWait for a single page with the
+/// default node selection.
 ///
 /// Waiters wake one at a time: each that gets its frame wakes the next, so
 /// an opening does not send every waiter after the same frames at once.
