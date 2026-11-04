@@ -15,7 +15,7 @@
 //   - the pages are one run (lookup_contiguous()), start on the alignment, and
 //     each is on the pinned queue, which the reclaimer never takes from;
 //   - they are zero (a fresh allocation: that the zero survives frames that
-//     held something is the allocator's AllocFlags::Zero, which this does not retest);
+//     held something is the allocator's Gaf::Zero, which this does not retest);
 //   - pin_range() and unpin_range() leave them on the pinned queue, and a BTI
 //     pin with Contiguous is Ok and answers the first page's address;
 //

@@ -80,11 +80,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// and what a mapping maps as one leaf.
     static constexpr usize BLOCK_SIZE = 2_mb;
 
-    static auto create(AllocFlags alloc_flags, usize size, ustl::Arc<VmCowPages> *out) -> Status;
+    static auto create(Gaf alloc_flags, usize size, ustl::Arc<VmCowPages> *out) -> Status;
 
     /// A node with no relatives of the kind |flags| says; only LargeBlocks is
     /// one a node with no relatives can be.
-    static auto create(AllocFlags alloc_flags, usize size, Flags flags, ustl::Arc<VmCowPages> *out)
+    static auto create(Gaf alloc_flags, usize size, Flags flags, ustl::Arc<VmCowPages> *out)
         -> Status;
 
     /// A node of |size| bytes with no relatives whose pages come from |src|:
@@ -95,7 +95,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// Such a node has no children: create_child() and create_clone_locked()
     /// refuse it with NotSupported, because a lookup from a child stops at the
     /// root without asking the root's source.
-    static auto with_source(ustl::Arc<PageSource> src, AllocFlags alloc_flags, usize size,
+    static auto with_source(ustl::Arc<PageSource> src, Gaf alloc_flags, usize size,
                             ustl::Arc<VmCowPages> *out) -> Status;
 
     /// A node of |size| bytes hanging under |parent|, in the parent's tree.
@@ -491,13 +491,13 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// parameter, not made here, because making one can fail and a constructor
     /// cannot say so. |parent| is empty for a node that hangs under nothing;
     /// create_child() clamps |parent_limit| before it gets here.
-    VmCowPages(AllocFlags alloc_flags, usize size, ustl::Arc<HierarchyState> hierarchy,
+    VmCowPages(Gaf alloc_flags, usize size, ustl::Arc<HierarchyState> hierarchy,
                ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit, Flags flags);
 
     ~VmCowPages();
 
     /// A zeroed frame of |order| for this node, with its flags. A node that can
-    /// wait (AllocFlags::CanWait) may be told to while free memory is short: then
+    /// wait (Gaf::CanWait) may be told to while free memory is short: then
     /// |request| is raised and this answers ShouldWait, and the call retried
     /// after the wait takes the frame the request got. Without a |request|,
     /// from a caller that holds locks it cannot let go of, the same answer is
@@ -678,12 +678,12 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// create(), create_child() and the clone do not each spell out the cache
     /// call and its OutOfMem. The node is not linked onto any list: that is
     /// the caller's, under the lock.
-    static auto make_node(AllocFlags alloc_flags, usize size, ustl::Arc<HierarchyState> hierarchy,
+    static auto make_node(Gaf alloc_flags, usize size, ustl::Arc<HierarchyState> hierarchy,
                           ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit,
                           Flags flags, ustl::Arc<VmCowPages> *out) -> Status;
 
     /// When no page sources exists, it will be used in frame allocation request.
-    AllocFlags m_alloc_flags;
+    Gaf m_alloc_flags;
     /// Page list that operates within the virtual memory range of the VMO, from [0, N).
     VmPageList m_pages;
     ustl::Arc<PageSource> m_page_source;

@@ -167,12 +167,12 @@ This repo has three library tiers, not one flat "the STL":
 
 ### Memory allocation & ownership
 
-1. Raw heap allocation uses heap::kmalloc(size, AllocFlags[, NodeId]) and
+1. Raw heap allocation uses heap::kmalloc(size, Gaf[, NodeId]) and
    heap::kfree(ptr), declared in `kernel/lib/heap/include/heap/kmalloc.hpp`.
    The allocator is backed by MemCache/ObjectCache. Requests larger than
    KMALLOC_MAX_SIZE use heap::vmalloc/vfree; the kernel allocation-flag
    operator new routes by size. Keep allocation requirements explicit through
-   AllocFlags.
+   Gaf.
 
 1. Placement-new with an allocation-flag argument is the kernel object-
    allocation idiom: `new (alloc_flags) T(...)` or `new (alloc_flags) T[n]()`.

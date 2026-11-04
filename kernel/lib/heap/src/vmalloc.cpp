@@ -102,7 +102,7 @@ auto init_vmalloc() -> void {
               VMALLOC_SIZE / PAGE_SIZE);
 }
 
-auto vmalloc(usize const size, AllocFlags const alloc_flags) -> void * {
+auto vmalloc(usize const size, Gaf const alloc_flags) -> void * {
     if (size == 0) {
         return nullptr;
     }

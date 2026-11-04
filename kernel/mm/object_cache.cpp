@@ -187,11 +187,11 @@ namespace slab {
         return Status::Ok;
     }
 
-    auto allocate(Slab *slab, AllocFlags alloc_flags) -> void * {
+    auto allocate(Slab *slab, Gaf alloc_flags) -> void * {
         return get_object(slab);
     }
 
-    auto create(MemCache *owner, void *node_cache, AllocFlags alloc_flags, usize order, usize size,
+    auto create(MemCache *owner, void *node_cache, Gaf alloc_flags, usize order, usize size,
                 usize next_offset, NodeId nid) -> Slab * {
         auto frame = mm::alloc_frames(nid, alloc_flags, order);
         if (!frame) {
@@ -608,7 +608,7 @@ auto MemCache::create_boot(Self &self, char const *name, usize size, usize align
     return cache->init(name, size, align, options);
 }
 
-auto MemCache::allocate(AllocFlags alloc_flags, NodeId nid, CpuCache *cache) -> void * {
+auto MemCache::allocate(Gaf alloc_flags, NodeId nid, CpuCache *cache) -> void * {
     DEBUG_ASSERT(nid < MAX_NODES, "caller must resolve 'no preference' first");
 
     auto *const node_cache = m_node_caches[nid];
@@ -659,7 +659,7 @@ auto MemCache::allocate(AllocFlags alloc_flags, NodeId nid, CpuCache *cache) -> 
     return object;
 }
 
-auto MemCache::allocate(AllocFlags alloc_flags, NodeId nid) -> void * {
+auto MemCache::allocate(Gaf alloc_flags, NodeId nid) -> void * {
     task::AutoPreemptDisabler preempt_disabler{};
 
     // MAX_NODES is how a caller spells "no preference": it is this

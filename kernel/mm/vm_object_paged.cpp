@@ -63,7 +63,7 @@ auto VmObjectPaged::change_cow_range_locked(u64 const cow_offset, u64 const len,
     change_range_locked(first - m_cow_offset, last - first, change);
 }
 
-auto VmObjectPaged::create(AllocFlags alloc_flags, usize size, VmoFlags vmof,
+auto VmObjectPaged::create(Gaf alloc_flags, usize size, VmoFlags vmof,
                            ustl::Arc<VmObjectPaged> *out) -> Status {
     // Check vmof
     auto cow_flags = VmCowPages::Flags::None;
@@ -118,7 +118,7 @@ auto VmObjectPaged::create(AllocFlags alloc_flags, usize size, VmoFlags vmof,
     return Status::Ok;
 }
 
-auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, AllocFlags const alloc_flags,
+auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const alloc_flags,
                                 usize const size, VmoFlags const vmof,
                                 ustl::Arc<VmObjectPaged> *const out) -> Status {
     DEBUG_ASSERT(source);
@@ -148,14 +148,13 @@ auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, AllocFlags const a
     return Status::Ok;
 }
 
-auto VmObjectPaged::create_contiguous(AllocFlags const alloc_flags, usize const size,
-                                      usize alignment_log2, Flags const vmof,
-                                      ustl::Arc<VmObjectPaged> *const out) -> Status {
+auto VmObjectPaged::create_contiguous(Gaf const alloc_flags, usize const size, usize alignment_log2,
+                                      Flags const vmof, ustl::Arc<VmObjectPaged> *const out)
+    -> Status {
     // A block is taken in one go, with no lock held across a wait to give it up
     // for: CanWait is for callers that sleep until a frame is free, and this
     // one answers NoMemory instead.
-    DEBUG_ASSERT(!(alloc_flags & AllocFlags::CanWait),
-                 "create_contiguous() does not wait for memory");
+    DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "create_contiguous() does not wait for memory");
     if (size == 0 || !!(vmof & (VmoFlags::Lazy | VmoFlags::LargePages))) {
         return Status::InvArgs;
     }
@@ -192,7 +191,7 @@ auto VmObjectPaged::create_contiguous(AllocFlags const alloc_flags, usize const 
 
     // Zero, as every page a program can reach is: a device's buffer is not the
     // place for what the last owner of the frames left in them.
-    auto *const block = alloc_frames(alloc_flags | AllocFlags::Zero, order);
+    auto *const block = alloc_frames(alloc_flags | Gaf::Zero, order);
     if (block == nullptr) {
         return Status::NoMemory;
     }
@@ -240,7 +239,7 @@ auto VmObjectPaged::create_contiguous(AllocFlags const alloc_flags, usize const 
     return Status::Ok;
 }
 
-auto VmObjectPaged::create_from_wired_pages(AllocFlags const alloc_flags, PhysAddr const base,
+auto VmObjectPaged::create_from_wired_pages(Gaf const alloc_flags, PhysAddr const base,
                                             usize const size, ustl::Arc<VmObjectPaged> *const out)
     -> Status {
     if (size == 0 || !ustl::is_aligned(base, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {

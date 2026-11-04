@@ -161,7 +161,7 @@ auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_to
               min + delta + delta);
 }
 
-auto PmZone::finish_allocation(PmFrame *frame, AllocFlags alloc_flags, usize order) -> void {
+auto PmZone::finish_allocation(PmFrame *frame, Gaf alloc_flags, usize order) -> void {
     m_free_frames -= usize{1} << order;
 }
 
@@ -181,7 +181,7 @@ auto PmZone::alloc_frames(AllocRequest const &request) -> ustl::Option<PmFrame &
     return alloc_frame(request.flags(), request.order());
 }
 
-auto PmZone::alloc_frame(AllocFlags alloc_flags, usize order) -> ustl::Option<PmFrame &> {
+auto PmZone::alloc_frame(Gaf alloc_flags, usize order) -> ustl::Option<PmFrame &> {
     ustl::Option<PmFrame &> taken{ustl::NONE};
     if (is_order_within_pcpu_cache_limit(order)) {
         taken = m_frame_cache.with_current(
@@ -202,7 +202,7 @@ auto PmZone::alloc_frame(AllocFlags alloc_flags, usize order) -> ustl::Option<Pm
     }
 
     auto &frame = taken.value();
-    if (!!(AllocFlags::Zero & alloc_flags)) {
+    if (!!(Gaf::Zero & alloc_flags)) {
         std::fill_n(frame_to_virt<isize>(&frame), (usize{1} << order) * PAGE_SIZE / sizeof(usize),
                     0);
     }

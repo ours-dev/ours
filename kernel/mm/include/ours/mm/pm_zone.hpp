@@ -139,7 +139,7 @@ class PmZone {
     ///     1) |request.order()| must be lesser than `MAX_FRAME_ORDER`.
     auto alloc_frames(AllocRequest const &request) -> ustl::Option<PmFrame &>;
 
-    auto alloc_frame(AllocFlags alloc_flags, usize order) -> ustl::Option<PmFrame &>;
+    auto alloc_frame(Gaf alloc_flags, usize order) -> ustl::Option<PmFrame &>;
 
     auto free_frame(PmFrame *frame, usize order) -> void;
 
@@ -304,7 +304,7 @@ class PmZone {
         return order < MAX_PCPU_CACHE_ORDER;
     }
 
-    auto finish_allocation(PmFrame *frame, AllocFlags alloc_flags, usize order) -> void;
+    auto finish_allocation(PmFrame *frame, Gaf alloc_flags, usize order) -> void;
 
     /// Scales this zone's three watermarks out of the machine-wide reserve.
     ///

@@ -33,10 +33,10 @@
 /// block, so they must not be used from an interrupt handler or with a spin
 /// lock held. Below it they behave exactly as they always have.
 [[nodiscard]]
-auto operator new(usize size, ours::mm::AllocFlags alloc_flags) noexcept -> void *;
+auto operator new(usize size, ours::mm::Gaf alloc_flags) noexcept -> void *;
 
 [[nodiscard]]
-auto operator new[](usize size, ours::mm::AllocFlags alloc_flags) noexcept -> void *;
+auto operator new[](usize size, ours::mm::Gaf alloc_flags) noexcept -> void *;
 
 /// The node-affine forms. Only kmalloc honours the node hint; a request large
 /// enough to reach vmalloc is served from wherever the buddy allocator has
@@ -44,12 +44,10 @@ auto operator new[](usize size, ours::mm::AllocFlags alloc_flags) noexcept -> vo
 /// frames and pinning all of them to one node would be a much stronger
 /// promise than the caller asked for.
 [[nodiscard]]
-auto operator new(usize size, ours::mm::AllocFlags alloc_flags, ours::NodeId nid) noexcept
-    -> void *;
+auto operator new(usize size, ours::mm::Gaf alloc_flags, ours::NodeId nid) noexcept -> void *;
 
 [[nodiscard]]
-auto operator new[](usize size, ours::mm::AllocFlags alloc_flags, ours::NodeId nid) noexcept
-    -> void *;
+auto operator new[](usize size, ours::mm::Gaf alloc_flags, ours::NodeId nid) noexcept -> void *;
 
 /// Deallocation routes on the address, not the size.
 ///

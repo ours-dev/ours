@@ -9,7 +9,7 @@
 
 namespace heap {
 using ours::VirtAddr;
-using ours::mm::AllocFlags;
+using ours::mm::Gaf;
 
 /// The window vmalloc hands addresses out of, as a pair of constants rather
 /// than as something the allocator is told at run time: is_vmalloc_addr()
@@ -51,7 +51,7 @@ auto init_vmalloc() -> void;
 /// caller has to test the pointer anyway, and `operator new` has nowhere to
 /// put a status.
 ///
-/// The memory is NOT zeroed unless |alloc_flags| carries AllocFlags::Zero. Pass it when the
+/// The memory is NOT zeroed unless |alloc_flags| carries Gaf::Zero. Pass it when the
 /// contents matter; the pages come straight from the buddy allocator and hold
 /// whatever the last owner left.
 ///
@@ -60,7 +60,7 @@ auto init_vmalloc() -> void;
 /// contract than kmalloc()'s, and `operator new` inherits it above the size
 /// threshold -- see the note in new.cpp.
 [[nodiscard]]
-auto vmalloc(usize size, AllocFlags alloc_flags) -> void *;
+auto vmalloc(usize size, Gaf alloc_flags) -> void *;
 
 /// Returns a pointer vmalloc() handed out. nullptr is accepted and ignored,
 /// as free() has always been allowed to be.

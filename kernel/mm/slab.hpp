@@ -23,7 +23,7 @@ namespace slab {
     ///
     /// |size| is the object stride and |next_offset| where inside an object
     /// the free-list pointer lives; both come from the owner's layout.
-    auto create(MemCache *owner, void *node_cache, AllocFlags alloc_flags, usize order, usize size,
+    auto create(MemCache *owner, void *node_cache, Gaf alloc_flags, usize order, usize size,
                 usize next_offset, NodeId nid) -> Slab *;
 
     /// Hands the frame back to the buddy allocator.
@@ -32,7 +32,7 @@ namespace slab {
     auto init(Slab *slab, MemCache *owner, void *node_cache, usize size, usize next_offset)
         -> Status;
 
-    auto allocate(Slab *slab, AllocFlags alloc_flags) -> void *;
+    auto allocate(Slab *slab, Gaf alloc_flags) -> void *;
 
     /// Pops one object off the free list, or null if the slab is full.
     auto get_object(Slab *slab) -> void *;

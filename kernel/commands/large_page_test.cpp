@@ -494,7 +494,7 @@ namespace {
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
 
-        auto *const block = mm::alloc_frames(mm::ALLOC_KERNEL | mm::AllocFlags::Zero, ORDER);
+        auto *const block = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero, ORDER);
         if (block == nullptr) {
             log::error("largepage.test: no 2 MiB block to map");
             return 1;

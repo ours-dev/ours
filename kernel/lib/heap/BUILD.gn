@@ -24,7 +24,7 @@ cpp_interface("headers") {
   # The mm headers arrive as an include-path config, not as a target dep, and
   # that is load-bearing: //kernel/mm:headers has to depend on *this* target so
   # that every mm translation unit can say `new (alloc_flags)`, and a target dep
-  # in both directions is a cycle GN refuses. Only AllocFlags and PAGE_SIZE are
+  # in both directions is a cycle GN refuses. Only Gaf and PAGE_SIZE are
   # needed here, so the path is enough.
   public_configs = [ "//kernel/mm:headers.config" ]
   public_deps = [

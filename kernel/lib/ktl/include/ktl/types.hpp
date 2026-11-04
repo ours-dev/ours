@@ -13,7 +13,7 @@ using ours::NodeId;
 using ours::Status;
 using ours::VIrqNum;
 
-using ours::mm::AllocFlags;
+using ours::mm::Gaf;
 } // namespace ktl
 
 #endif // #ifndef KTL_TYPES_HPP

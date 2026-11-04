@@ -69,7 +69,7 @@ NUMA=1 python3 scripts/kshell_run.py --out out/numa.x86 pmnode.test
 ```
 
 A four-node boot is the only way to exercise the fallback order, a node's hard
-affinity, `AllocFlags::ThisNode` and the per-node watermarks at all: with
+affinity, `Gaf::ThisNode` and the per-node watermarks at all: with
 `MAX_NODES` at 1 every one of those passes by having nothing to distinguish.
 It is not part of the standard check, so run it by hand after a change to any
 of them.

@@ -10,10 +10,10 @@ namespace heap {
 /// Spelled through ours::mm rather than through ktl's aliases for those same
 /// types: ktl depends on //kernel/mm:headers, and this library depends on mm
 /// too, so taking the alias would put ktl on the path between them for no
-/// reason. The types are identical either way -- ktl::AllocFlags *is*
-/// ours::mm::AllocFlags -- so nothing at a call site changes.
+/// reason. The types are identical either way -- ktl::Gaf *is*
+/// ours::mm::Gaf -- so nothing at a call site changes.
 using ours::NodeId;
-using ours::mm::AllocFlags;
+using ours::mm::Gaf;
 
 /// The size-class ladder, and with it the largest request kmalloc can serve.
 ///
@@ -30,9 +30,9 @@ inline constexpr auto KMALLOC_MAX_SIZE = usize{1} << (KMALLOC_NUM_CACHES - 1 + K
 
 auto init_kmalloc() -> void;
 
-auto kmalloc(usize size, AllocFlags alloc_flags) -> void *;
+auto kmalloc(usize size, Gaf alloc_flags) -> void *;
 
-auto kmalloc(usize size, AllocFlags alloc_flags, NodeId nid) -> void *;
+auto kmalloc(usize size, Gaf alloc_flags, NodeId nid) -> void *;
 
 auto kfree(void *object) -> void;
 

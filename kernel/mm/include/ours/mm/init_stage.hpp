@@ -25,7 +25,7 @@ enum class InitStage {
     /// sits CpuLocal::init(), and alloc_page_table() read the combined stage as
     /// "the buddy is not up yet" and went to EarlyMem -- for memory the buddy
     /// already had. Every page table taken in that window was handed out twice,
-    /// and the second taker (a per-CPU unit allocated with AllocFlags::Zero) zeroed a
+    /// and the second taker (a per-CPU unit allocated with Gaf::Zero) zeroed a
     /// live leaf table.
     Pmm,
 

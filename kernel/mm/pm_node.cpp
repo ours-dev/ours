@@ -25,9 +25,9 @@ namespace {
     GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
     GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
 
-    auto apply_thread_policy(AllocFlags &alloc_flags) -> Status {
+    auto apply_thread_policy(Gaf &alloc_flags) -> Status {
         if constexpr (MEMORY_ALLOCATION_POLICY) {
-            if (!!(alloc_flags & AllocFlags::ThisNode)) {
+            if (!!(alloc_flags & Gaf::ThisNode)) {
                 return Status::Ok;
             }
             using Kind = AllocPolicy::Kind;
@@ -62,7 +62,7 @@ namespace {
 
     /// Resolve the implicit home after applying the thread-default policy.
     /// An explicit home bypasses this step, as in the public pmm interface.
-    auto local_node_for(AllocFlags &alloc_flags) -> ktl::Result<NodeId> {
+    auto local_node_for(Gaf &alloc_flags) -> ktl::Result<NodeId> {
         if (auto const status = apply_thread_policy(alloc_flags); Status::Ok != status) {
             return ustl::err(status);
         }
@@ -150,7 +150,7 @@ PmNode::PmNode(NodeId nid)
     , m_page_queues() {}
 
 auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
-    // The fallback order, not this node's zones by type: AllocFlags::ThisNode is
+    // The fallback order, not this node's zones by type: Gaf::ThisNode is
     // honoured by the request's node mask, which resolve_request() has already
     // narrowed, so the candidate list is the same either way and the filter
     // does the restricting. The walk that was deleted with ZoneIterator chose
@@ -176,7 +176,7 @@ auto PmNode::alloc_frames_postamble(PmFrame *frame, AllocRequest const &request)
     }
 }
 
-auto PmNode::alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &fallback)
+auto PmNode::alloc_frames(Gaf alloc_flags, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
     auto const home = local_node_for(alloc_flags);
     if (!home) {
@@ -185,8 +185,8 @@ auto PmNode::alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &f
     return alloc_frames(*home, alloc_flags, order, fallback);
 }
 
-auto PmNode::alloc_frames(NodeId const nid, AllocFlags alloc_flags, usize order,
-                          NodeMask const &fallback) -> ktl::Result<PmFrame *> {
+auto PmNode::alloc_frames(NodeId const nid, Gaf alloc_flags, usize order, NodeMask const &fallback)
+    -> ktl::Result<PmFrame *> {
     if (nid >= MAX_NODES) {
         return alloc_frames(alloc_flags, order, fallback);
     }
@@ -225,7 +225,7 @@ auto PmNode::alloc_frames(NodeId const nid, AllocFlags alloc_flags, usize order,
     // One value, built once, read by every layer below. It replaces a
     // MemoryAllocationContext filled by a preamble that could only answer Ok,
     // and an AllocationOptions derived by a mapping that answered with the
-    // empty set for every AllocFlags.
+    // empty set for every Gaf.
     auto const request =
         resolve_request(alloc_flags, order, fallback, Origin{.node = nid, .cpu = Cpu::id()});
 
@@ -238,11 +238,11 @@ auto PmNode::alloc_frames(NodeId const nid, AllocFlags alloc_flags, usize order,
     // a step of an allocation that has already failed.
     //
     // What stood here was a loop over two stubs that both returned null, so a
-    // caller carrying AllocFlags::CanBlock -- which is every ALLOC_KERNEL
+    // caller carrying Gaf::CanBlock -- which is every ALLOC_KERNEL
     // allocation -- spun in it rather than being refused. The loop could not
     // have helped even with the stubs filled in from here: its retry asked the
     // same zones the same question with the same arguments, because nothing
-    // between the caller's AllocFlags and the zones differed on a second pass.
+    // between the caller's Gaf and the zones differed on a second pass.
     //
     // A relaxed retry is a real thing and this is where it goes when it
     // exists: an attempt that lets a caller dip below a zone's high watermark
@@ -268,7 +268,7 @@ auto PmNode::alloc_frames(NodeId const nid, AllocFlags alloc_flags, usize order,
     return ustl::ok(frame);
 }
 
-auto PmNode::alloc_frames_fragment(AllocFlags alloc_flags, usize n, NodeMask const &fallback)
+auto PmNode::alloc_frames_fragment(Gaf alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
     auto const home = local_node_for(alloc_flags);
     if (!home) {
@@ -277,7 +277,7 @@ auto PmNode::alloc_frames_fragment(AllocFlags alloc_flags, usize n, NodeMask con
     return alloc_frames_fragment(*home, alloc_flags, n, fallback);
 }
 
-auto PmNode::alloc_frames_fragment(NodeId const nid, AllocFlags alloc_flags, usize n,
+auto PmNode::alloc_frames_fragment(NodeId const nid, Gaf alloc_flags, usize n,
                                    NodeMask const &fallback) -> ktl::Result<PmFrame::List> {
     if (nid >= MAX_NODES) {
         return alloc_frames_fragment(alloc_flags, n, fallback);
@@ -306,7 +306,7 @@ auto PmNode::alloc_frames_fragment(NodeId const nid, AllocFlags alloc_flags, usi
     return ustl::ok(ustl::move(list));
 }
 
-auto PmNode::alloc_frames_bulk(AllocFlags alloc_flags, usize n, NodeMask const &fallback)
+auto PmNode::alloc_frames_bulk(Gaf alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
     auto const home = local_node_for(alloc_flags);
     if (!home) {
@@ -315,8 +315,8 @@ auto PmNode::alloc_frames_bulk(AllocFlags alloc_flags, usize n, NodeMask const &
     return alloc_frames_bulk(*home, alloc_flags, n, fallback);
 }
 
-auto PmNode::alloc_frames_bulk(NodeId const nid, AllocFlags alloc_flags, usize n,
-                               NodeMask const &fallback) -> ktl::Result<PmFrame::List> {
+auto PmNode::alloc_frames_bulk(NodeId const nid, Gaf alloc_flags, usize n, NodeMask const &fallback)
+    -> ktl::Result<PmFrame::List> {
     if (nid >= MAX_NODES) {
         return alloc_frames_bulk(alloc_flags, n, fallback);
     }

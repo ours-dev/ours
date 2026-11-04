@@ -38,7 +38,7 @@ auto approx_free_frame_count() -> usize {
 
 namespace {
     /// The gate in front of the allocations that can wait (try_alloc_frames()
-    /// with AllocFlags::CanWait), and the signal for whoever watches free memory
+    /// with Gaf::CanWait), and the signal for whoever watches free memory
     /// (set_free_memory_signal()). It lives here, above PmNode, because every
     /// allocation and free of a frame comes through this file, and the node
     /// below keeps no policy of its own about who waits.
@@ -188,11 +188,10 @@ namespace {
     /// The entries that answer a bare pointer or a Status cannot say
     /// ShouldWait, so a CanWait reaching one of them would be served past the
     /// gate without anyone noticing.
-    auto assert_cannot_wait(AllocFlags const alloc_flags) -> void {
-        DEBUG_ASSERT(
-            !(alloc_flags & AllocFlags::CanWait),
-            "AllocFlags::CanWait goes through try_alloc_frames(), the entry that can answer "
-            "ShouldWait");
+    auto assert_cannot_wait(Gaf const alloc_flags) -> void {
+        DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait),
+                     "Gaf::CanWait goes through try_alloc_frames(), the entry that can answer "
+                     "ShouldWait");
     }
 } // namespace
 
@@ -245,8 +244,7 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
         // (applied by PmNode). The AllocState
         // counter applies either way: PmNode::alloc_frames() checks it for
         // every caller.
-        auto *frame =
-            alloc_frames(node, ALLOC_KERNEL | AllocFlags::Zero, get_order(size / PAGE_SIZE));
+        auto *frame = alloc_frames(node, ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE));
         if (!frame) {
             return PhysAddr{0};
         }
@@ -258,7 +256,7 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
         return frame_to_phys(frame);
     }
 
-    // Zeroed by hand: the boot allocator has no notion of AllocFlags, and a page table
+    // Zeroed by hand: the boot allocator has no notion of Gaf, and a page table
     // whose unused entries are leftover bytes is a set of mappings nobody made.
     auto *table = EarlyMem::allocate<u8>(size, alignment, node, bootmem::MemoryType::PageTable);
     if (!table) {
@@ -300,23 +298,22 @@ auto free_frame_count() -> usize {
     return total;
 }
 
-auto try_alloc_frames(AllocFlags const alloc_flags, usize const order) -> ktl::Result<PmFrame *> {
-    if (!!(alloc_flags & AllocFlags::CanWait)) {
+auto try_alloc_frames(Gaf const alloc_flags, usize const order) -> ktl::Result<PmFrame *> {
+    if (!!(alloc_flags & Gaf::CanWait)) {
         if (auto const status = GATE.admit(); Status::Ok != status) {
             return ustl::err(status);
         }
     }
     // The gate is this layer's: the node below never sees CanWait.
-    auto plain = alloc_flags & ~AllocFlags::CanWait;
+    auto plain = alloc_flags & ~Gaf::CanWait;
     auto result = PmNode::alloc_frames(plain, order, node_online_mask());
     GATE.check_signal();
     return result;
 }
 
-auto wait_for_frame_allocation(AllocFlags const alloc_flags, time::Deadline const &deadline,
+auto wait_for_frame_allocation(Gaf const alloc_flags, time::Deadline const &deadline,
                                bool const interruptible) -> ktl::Result<PmFrame *> {
-    DEBUG_ASSERT(!!(alloc_flags & AllocFlags::CanWait),
-                 "a wait for a frame by a caller that cannot wait");
+    DEBUG_ASSERT(!!(alloc_flags & Gaf::CanWait), "a wait for a frame by a caller that cannot wait");
     if (auto const status = GATE.wait_for_opening(deadline, interruptible); Status::Ok != status) {
         return ustl::err(status);
     }
@@ -370,7 +367,7 @@ auto node_possible_mask() -> NodeMask const & {
     return PmNode::node_possible_mask();
 }
 
-auto alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &fallback) -> PmFrame * {
+auto alloc_frames(Gaf alloc_flags, usize order, NodeMask const &fallback) -> PmFrame * {
     assert_cannot_wait(alloc_flags);
     auto result = PmNode::alloc_frames(alloc_flags, order, fallback);
     GATE.check_signal();
@@ -381,7 +378,7 @@ auto alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &fallback)
     return *result;
 }
 
-auto alloc_frames(AllocFlags alloc_flags, PhysAddr *addr, usize order) -> PmFrame * {
+auto alloc_frames(Gaf alloc_flags, PhysAddr *addr, usize order) -> PmFrame * {
     auto *const frame = alloc_frames(alloc_flags, order, node_online_mask());
     if (frame && addr) {
         *addr = frame_to_phys(frame);
@@ -389,7 +386,7 @@ auto alloc_frames(AllocFlags alloc_flags, PhysAddr *addr, usize order) -> PmFram
     return frame;
 }
 
-auto alloc_frames_fragment(AllocFlags alloc_flags, usize n, NodeMask const &fallback)
+auto alloc_frames_fragment(Gaf alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
     assert_cannot_wait(alloc_flags);
     auto result = PmNode::alloc_frames_fragment(alloc_flags, n, fallback);
@@ -400,8 +397,8 @@ auto alloc_frames_fragment(AllocFlags alloc_flags, usize n, NodeMask const &fall
     return ustl::move(result);
 }
 
-auto alloc_frames(NodeId nid, AllocFlags alloc_flags, PmFrame::List *list, usize n,
-                  NodeMask const &nodes) -> Status {
+auto alloc_frames(NodeId nid, Gaf alloc_flags, PmFrame::List *list, usize n, NodeMask const &nodes)
+    -> Status {
     assert_cannot_wait(alloc_flags);
     auto result = PmNode::alloc_frames_bulk(nid, alloc_flags, n, nodes);
     GATE.check_signal();
@@ -415,8 +412,7 @@ auto alloc_frames(NodeId nid, AllocFlags alloc_flags, PmFrame::List *list, usize
     return Status::Ok;
 }
 
-auto alloc_frames(NodeId nid, AllocFlags alloc_flags, usize order, NodeMask const &nodes)
-    -> PmFrame * {
+auto alloc_frames(NodeId nid, Gaf alloc_flags, usize order, NodeMask const &nodes) -> PmFrame * {
     assert_cannot_wait(alloc_flags);
     auto result = PmNode::alloc_frames(nid, alloc_flags, order, nodes);
     GATE.check_signal();

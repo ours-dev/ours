@@ -65,10 +65,9 @@ AnonymousPageRequest::~AnonymousPageRequest() {
     }
 }
 
-auto AnonymousPageRequest::make_active(AllocFlags const alloc_flags) -> void {
+auto AnonymousPageRequest::make_active(Gaf const alloc_flags) -> void {
     DEBUG_ASSERT(!m_frame, "raised while it still holds the frame of the last wait");
-    DEBUG_ASSERT(!!(alloc_flags & AllocFlags::CanWait),
-                 "raised for an allocation that cannot wait");
+    DEBUG_ASSERT(!!(alloc_flags & Gaf::CanWait), "raised for an allocation that cannot wait");
     m_active = true;
     m_alloc_flags = alloc_flags;
 }

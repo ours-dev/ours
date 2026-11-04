@@ -145,7 +145,7 @@ namespace {
             return false;
         }
         for (usize i = 0; i < count; ++i) {
-            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::AllocFlags::Zero);
+            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero);
             if (!frame) {
                 return false;
             }

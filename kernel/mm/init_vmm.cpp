@@ -244,7 +244,7 @@ namespace {
             entrol_preset_vma(PRESET_VMAS[i]);
         }
 
-        // AllocFlags::Zero is asked for by name: ALLOC_KERNEL does not imply it (only
+        // Gaf::Zero is asked for by name: ALLOC_KERNEL does not imply it (only
         // ALLOC_USER does), and the buddy allocator hands back the
         // frame as the previous owner left it. A page whose whole job is to
         // stand in for "nothing has been written here" and which is not zero
@@ -252,7 +252,7 @@ namespace {
         // reads ZERO_PAGE yet, so this went unnoticed until the first reader
         // -- a copy-on-write child answering a read of a hole -- would have
         // returned another owner's bytes as if they were zeros.
-        auto frame = alloc_frames(ALLOC_KERNEL | AllocFlags::Zero, usize(0));
+        auto frame = alloc_frames(ALLOC_KERNEL | Gaf::Zero, usize(0));
         if (!frame) {
             panic("Failed to allocate the zero page");
         }

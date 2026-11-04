@@ -215,7 +215,7 @@ class BootOptions final {
 
     /// `kernel.oom.outofmemory-mb=<MiB>`: below this much free memory the
     /// memory watchdog declares OutOfMemory, and an allocation that could
-    /// wait (AllocFlags::CanWait) is refused instead (//kernel/mm,
+    /// wait (Gaf::CanWait) is refused instead (//kernel/mm,
     /// memory_watchdog.hpp). DEFAULT_OOM_OUT_OF_MEMORY_MB when absent.
     [[nodiscard]]
     auto oom_out_of_memory_mb() const -> u32 {

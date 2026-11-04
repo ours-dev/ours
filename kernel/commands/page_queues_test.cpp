@@ -205,7 +205,7 @@ namespace {
         mm::VmPageSpliceList pages(2);
         auto supplied = pages.reserve(2) == Status::Ok;
         for (usize i = 0; supplied && i < 2; ++i) {
-            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::AllocFlags::Zero);
+            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero);
             supplied = frame && pages.append_page(i, frame) == Status::Ok;
         }
         if (!supplied || vmo->supply_pages(0, 2 * P, &pages, mm::VmObject::SupplyOption::Default) !=

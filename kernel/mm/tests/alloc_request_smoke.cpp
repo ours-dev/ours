@@ -7,7 +7,7 @@
 /// request through a pure function -- everything it needs is an argument,
 /// including the calling CPU.
 ///
-/// AllocFlags::ThisNode restricts the allowed set to the home node.
+/// Gaf::ThisNode restricts the allowed set to the home node.
 /// If the caller's mask excludes it, the request has no candidates.
 ///
 /// Built with MM_NUMA=1, which enables multi-node masks for this host test.
@@ -24,8 +24,8 @@ namespace {
 using ours::CpuNum;
 using ours::NodeId;
 using ours::NodeMask;
-using ours::mm::AllocFlags;
 using ours::mm::AllocRequest;
+using ours::mm::Gaf;
 using ours::mm::Origin;
 using ours::mm::resolve_request;
 
@@ -57,10 +57,9 @@ auto mask_of(NodeId const a, NodeId const b) -> NodeMask {
 
 auto carried_through() -> void {
     auto const nodes = mask_of(HOME, OTHER);
-    auto const request = resolve_request(AllocFlags::Zero, 4, nodes, HERE);
+    auto const request = resolve_request(Gaf::Zero, 4, nodes, HERE);
 
-    check(request.flags() == AllocFlags::Zero,
-          "the caller's alloc_flags reaches the request unchanged");
+    check(request.flags() == Gaf::Zero, "the caller's alloc_flags reaches the request unchanged");
     check(request.order() == 4, "the order reaches the request");
     check(request.home_node() == HOME, "the home node is the one the caller named");
     check(request.initiator() == CPU, "the initiator is the CPU passed in, not one read");
@@ -68,7 +67,7 @@ auto carried_through() -> void {
 
 auto without_this_node() -> void {
     auto const nodes = mask_of(HOME, OTHER);
-    auto const request = resolve_request(AllocFlags::Zero, 0, nodes, HERE);
+    auto const request = resolve_request(Gaf::Zero, 0, nodes, HERE);
 
     check(request.allowed_nodes().test(HOME) && request.allowed_nodes().test(OTHER),
           "without ThisNode the caller's whole mask is allowed");
@@ -76,7 +75,7 @@ auto without_this_node() -> void {
 
 auto with_this_node_including_home() -> void {
     auto const nodes = mask_of(HOME, OTHER);
-    auto const request = resolve_request(AllocFlags::ThisNode, 0, nodes, HERE);
+    auto const request = resolve_request(Gaf::ThisNode, 0, nodes, HERE);
 
     check(request.allowed_nodes().test(HOME), "ThisNode keeps the home node");
     check(!request.allowed_nodes().test(OTHER),
@@ -86,7 +85,7 @@ auto with_this_node_including_home() -> void {
 auto with_this_node_excluding_home() -> void {
     NodeMask nodes;
     nodes.set(OTHER);
-    auto const request = resolve_request(AllocFlags::ThisNode, 0, nodes, HERE);
+    auto const request = resolve_request(Gaf::ThisNode, 0, nodes, HERE);
 
     check(!request.allowed_nodes().any(),
           "ThisNode leaves no candidates when the mask excludes the home node");
@@ -94,7 +93,7 @@ auto with_this_node_excluding_home() -> void {
 
 auto empty_mask_stays_empty() -> void {
     NodeMask const nodes;
-    auto const request = resolve_request(AllocFlags::ThisNode, 0, nodes, HERE);
+    auto const request = resolve_request(Gaf::ThisNode, 0, nodes, HERE);
 
     check(!request.allowed_nodes().any(),
           "an empty mask stays empty: resolving does not invent a node to allow");

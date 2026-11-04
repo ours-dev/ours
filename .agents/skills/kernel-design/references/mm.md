@@ -199,7 +199,7 @@ interface selects a home node and walks permitted fallback zones. Retain the
 implicit-local and explicit-home calling forms and existing restrictions.
 This supersedes the separate FrameAllocator class in the earlier proposal.
 
-`AllocFlags::ThisNode` follows Linux's `__GFP_THISNODE` placement contract.
+`Gaf::ThisNode` follows Linux's `__GFP_THISNODE` placement contract.
 A request may use only its explicit home node or, for implicit allocation,
 the current CPU's node. The resolver intersects the caller's allowed mask with
 that node, so an excluded or exhausted home yields allocation failure. The

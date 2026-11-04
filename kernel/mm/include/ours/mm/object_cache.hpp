@@ -27,7 +27,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     /// Only what some caller passes. Dma and Dma32, Merge, Reclaim and Alias
     /// went because none did: there are no DMA zones to ask for, nothing
     /// merges caches (and merging, if it comes, is a default to opt out of,
-    /// not a flag to opt in to), and Reclaim mapped to a AllocFlags that would have
+    /// not a flag to opt in to), and Reclaim mapped to a Gaf that would have
     /// made slab refills block, where all it should say is how to group
     /// reclaimable objects.
     /// RedZone and Poison went with the layout they reserved room in: nothing
@@ -53,7 +53,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     static auto create_boot(Self &self, char const *name, usize size, usize align, Option)
         -> Status;
 
-    auto allocate(AllocFlags alloc_flags, NodeId nid = MAX_NODES) -> void *;
+    auto allocate(Gaf alloc_flags, NodeId nid = MAX_NODES) -> void *;
 
     auto free(void *) -> void;
 
@@ -81,7 +81,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
 
     auto compute_layout(usize size) -> Status;
 
-    auto allocate(AllocFlags alloc_flags, NodeId nid, CpuCache *cc) -> void *;
+    auto allocate(Gaf alloc_flags, NodeId nid, CpuCache *cc) -> void *;
 
     gktl::Canary m_canary;
     char const *m_name;
@@ -104,7 +104,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     u16 m_min_num_objects;
     u16 m_min_order;
 
-    AllocFlags m_alloc_flags;
+    Gaf m_alloc_flags;
 
     CpuLocal::PerCpu<CpuCache> m_cpu_caches;
     std::array<NodeCache *, MAX_NODES> m_node_caches;
@@ -209,7 +209,7 @@ class ObjectCache::Instance {
     /// Hands back uninitialized storage for one T, for the two-phase callers
     /// that construct it themselves later (Thread::spawn_etc placement-news
     /// into what Thread::spawn allocated here). Prefer get() otherwise.
-    static auto allocate(AllocFlags alloc_flags, NodeId nid = MAX_NODES) -> T * {
+    static auto allocate(Gaf alloc_flags, NodeId nid = MAX_NODES) -> T * {
         DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
         return static_cast<T *>(CACHE->allocate(alloc_flags, nid));
     }
@@ -222,7 +222,7 @@ class ObjectCache::Instance {
     }
 
     template <typename... Args>
-    static auto get(AllocFlags alloc_flags, Args &&...args) -> T * {
+    static auto get(Gaf alloc_flags, Args &&...args) -> T * {
         DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
 
         auto *const storage = CACHE->allocate(alloc_flags, MAX_NODES);
@@ -233,7 +233,7 @@ class ObjectCache::Instance {
     }
 
     template <typename... Args>
-    static auto get(AllocFlags alloc_flags, NodeId nid, Args &&...args) -> T * {
+    static auto get(Gaf alloc_flags, NodeId nid, Args &&...args) -> T * {
         DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
 
         auto *const storage = CACHE->allocate(alloc_flags, nid);

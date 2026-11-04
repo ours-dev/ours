@@ -174,3 +174,51 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Restore the Gaf type name (2026-11-04)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/alloc_flags.hpp` declares `Gaf`.
+- The PMM, VM, heap and KTL interfaces and tests use the renamed type.
+
+**Symptom**
+
+The frame-allocation flag type was named `AllocFlags`.
+
+**Cause**
+
+The earlier allocation vocabulary change had renamed the historical `Gaf`
+enum. The user chose to restore that name.
+
+**Change**
+
+`enum class Gaf : u32` replaces `enum class AllocFlags : u32`. The typed
+PMM, VM and heap entry points take `Gaf`, including the heap placement-new
+overloads and the type exported by KTL.
+
+**Reference**
+
+The name comes from this tree's original frame-allocation interface.
+
+**Verification**
+
+Clang-format and clang-tidy checked the 38 edited C++ files. The default
+and four-node NUMA dev images booted, and all 163 host tests passed.
+The memory-only NUMA regression completed all 69 checks.
+
+**Deliberately not done**
+
+The change is scoped to the type name and its references.
+
+**How it was found**
+
+None.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

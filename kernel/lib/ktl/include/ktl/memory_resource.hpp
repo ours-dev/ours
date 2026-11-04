@@ -30,7 +30,7 @@ class KernelMemoryResource final: public ustl::collections::MemoryResource {
     /// to go through a different allocator.
     static constexpr std::size_t MAX_ALIGNMENT = alignof(std::max_align_t);
 
-    explicit KernelMemoryResource(ours::mm::AllocFlags alloc_flags) noexcept
+    explicit KernelMemoryResource(ours::mm::Gaf alloc_flags) noexcept
         : m_alloc_flags(alloc_flags) {}
 
   protected:
@@ -42,7 +42,7 @@ class KernelMemoryResource final: public ustl::collections::MemoryResource {
         -> void override;
 
   private:
-    ours::mm::AllocFlags m_alloc_flags;
+    ours::mm::Gaf m_alloc_flags;
 };
 
 /// The heap-backed resource every kernel container defaults to. Installed as

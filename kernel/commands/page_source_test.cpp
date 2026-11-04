@@ -386,7 +386,7 @@ namespace {
         }
         {
             mm::VmPageSpliceList pages(1);
-            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::AllocFlags::Zero);
+            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero);
             auto held = frame != nullptr && pages.reserve(1) == Status::Ok &&
                         pages.append_page(0, frame) == Status::Ok;
             if (!held && frame != nullptr) {

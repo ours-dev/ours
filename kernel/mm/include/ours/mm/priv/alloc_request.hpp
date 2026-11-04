@@ -51,15 +51,15 @@ struct Origin {
 /// The only way to build an AllocRequest from nothing, which is what makes
 /// "resolved" true of every request that exists: see the class below.
 [[nodiscard]]
-inline auto resolve_request(AllocFlags alloc_flags, usize order, NodeMask const &fallback,
-                            Origin origin) -> AllocRequest;
+inline auto resolve_request(Gaf alloc_flags, usize order, NodeMask const &fallback, Origin origin)
+    -> AllocRequest;
 
 /// One allocation, resolved: what the caller asked for and what the allocator
 /// worked out from it.
 ///
 /// Built once, by resolve_request(), and read -- never written -- by every
 /// layer below. That is the whole point of it. The walk, the zones and the
-/// postamble used to be handed four parameters: an `AllocFlags`, an `order`, an
+/// postamble used to be handed four parameters: an `Gaf`, an `order`, an
 /// `AllocationOptions` and a `MemoryAllocationContext`. Three of those were
 /// views of one thing and the fourth was an option set that was always empty,
 /// so each layer re-derived from them whatever it needed.
@@ -83,7 +83,7 @@ class AllocRequest final {
     /// What the caller asked for, unchanged.
     [[nodiscard]]
     FORCE_INLINE
-    constexpr auto flags() const -> AllocFlags {
+    constexpr auto flags() const -> Gaf {
         return m_alloc_flags;
     }
 
@@ -100,7 +100,7 @@ class AllocRequest final {
     /// Never empty for a request that can succeed: an unset NodeMask answers
     /// false for every node, so the zone walk would reject everything.
     ///
-    /// `AllocFlags::ThisNode` intersects the caller's mask with the home node.
+    /// `Gaf::ThisNode` intersects the caller's mask with the home node.
     /// A mask that excludes the home node leaves no eligible zones.
     [[nodiscard]]
     FORCE_INLINE
@@ -132,7 +132,7 @@ class AllocRequest final {
     /// caller treat them as one thing unifies them by pretending the
     /// difference away, and the difference is the only reason zones exist.
     ///
-    /// Every caller gets the whole range today because no AllocFlags bit names a
+    /// Every caller gets the whole range today because no Gaf bit names a
     /// zone -- the Dma, Dma32 and Movable bits that once did were never passed
     /// by anyone and are gone. What this changes is that the range is a value
     /// on the request, set in one place, rather than a constant pair written
@@ -184,12 +184,12 @@ class AllocRequest final {
     /// with_* methods above, both of which start from a request that was
     /// resolved -- so there is no path to an AllocRequest whose fields were
     /// never worked out from a caller's ask.
-    friend auto resolve_request(AllocFlags alloc_flags, usize order, NodeMask const &fallback,
+    friend auto resolve_request(Gaf alloc_flags, usize order, NodeMask const &fallback,
                                 Origin origin) -> AllocRequest;
 
-    constexpr AllocRequest(AllocFlags const alloc_flags, usize const order,
-                           NodeMask const &allowed_nodes, Origin const origin,
-                           ZoneType const lowest_zone, ZoneType const highest_zone)
+    constexpr AllocRequest(Gaf const alloc_flags, usize const order, NodeMask const &allowed_nodes,
+                           Origin const origin, ZoneType const lowest_zone,
+                           ZoneType const highest_zone)
         : m_alloc_flags(alloc_flags)
         , m_order(order)
         , m_allowed_nodes(allowed_nodes)
@@ -197,7 +197,7 @@ class AllocRequest final {
         , m_lowest_zone(lowest_zone)
         , m_highest_zone(highest_zone) {}
 
-    AllocFlags m_alloc_flags;
+    Gaf m_alloc_flags;
     usize m_order;
     NodeMask m_allowed_nodes;
 
@@ -212,10 +212,10 @@ class AllocRequest final {
 };
 
 FORCE_INLINE
-inline auto resolve_request(AllocFlags const alloc_flags, usize const order,
-                            NodeMask const &fallback, Origin const origin) -> AllocRequest {
+inline auto resolve_request(Gaf const alloc_flags, usize const order, NodeMask const &fallback,
+                            Origin const origin) -> AllocRequest {
     auto allowed = fallback;
-    if (!!(alloc_flags & AllocFlags::ThisNode)) {
+    if (!!(alloc_flags & Gaf::ThisNode)) {
         allowed &= NodeMask::of(origin.node);
     }
 
@@ -224,7 +224,7 @@ inline auto resolve_request(AllocFlags const alloc_flags, usize const order,
         order,
         allowed,
         origin,
-        // No AllocFlags bit names a zone, so every allocation may use Dma through
+        // No Gaf bit names a zone, so every allocation may use Dma through
         // Normal. Movable and Dynamic are above the bound deliberately: a
         // caller that has not said it can take movable memory must not be
         // given it.

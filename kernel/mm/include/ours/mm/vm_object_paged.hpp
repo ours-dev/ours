@@ -30,8 +30,8 @@ class VmObjectPaged: public VmObject {
     static_assert(MAX_SIZE % PAGE_SIZE == 0);
     static_assert(MAX_SIZE + PAGE_SIZE > MAX_SIZE, "a page more than MAX_SIZE must not wrap");
 
-    static auto create(AllocFlags alloc_flags, usize size, Flags vmof,
-                       ustl::Arc<VmObjectPaged> *out) -> Status;
+    static auto create(Gaf alloc_flags, usize size, Flags vmof, ustl::Arc<VmObjectPaged> *out)
+        -> Status;
 
     /// A VMO of |size| bytes, rounded up to whole pages, whose pages are one run
     /// of physical memory starting on a multiple of 2^|alignment_log2| bytes,
@@ -58,8 +58,8 @@ class VmObjectPaged: public VmObject {
     /// |alloc_flags| must not carry CanWait: the call answers NoMemory where a caller
     /// that waits would sleep. The run can be anywhere in memory; nothing here
     /// limits it to what a device with a 32-bit address can reach.
-    static auto create_contiguous(AllocFlags alloc_flags, usize size, usize alignment_log2,
-                                  Flags vmof, ustl::Arc<VmObjectPaged> *out) -> Status;
+    static auto create_contiguous(Gaf alloc_flags, usize size, usize alignment_log2, Flags vmof,
+                                  ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// A VMO of |size| bytes whose pages come from |source| rather than being
     /// zero: a fault on a page nobody has supplied raises a request against the
@@ -70,8 +70,8 @@ class VmObjectPaged: public VmObject {
     /// until the provider supplies it. So Pinned, which promises that no access
     /// faults, is InvArgs. On any failure the source is closed, as the VMO
     /// would have closed it.
-    static auto with_source(ustl::Arc<PageSource> source, AllocFlags alloc_flags, usize size,
-                            Flags vmof, ustl::Arc<VmObjectPaged> *out) -> Status;
+    static auto with_source(ustl::Arc<PageSource> source, Gaf alloc_flags, usize size, Flags vmof,
+                            ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// A VMO that takes over |size| bytes of frames at |base|, reserved since
     /// boot, as its own pages: no allocation and no copy, and when the VMO
@@ -89,7 +89,7 @@ class VmObjectPaged: public VmObject {
     /// |alloc_flags| is what the VMO allocates with afterwards -- a copy-on-write
     /// clone of it inherits it -- so a VMO user space can reach takes the user
     /// class, as create()'s callers choose theirs.
-    static auto create_from_wired_pages(AllocFlags alloc_flags, PhysAddr base, usize size,
+    static auto create_from_wired_pages(Gaf alloc_flags, PhysAddr base, usize size,
                                         ustl::Arc<VmObjectPaged> *out) -> Status;
 
     ///

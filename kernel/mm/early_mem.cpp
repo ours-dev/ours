@@ -154,7 +154,7 @@ static auto free_unused_memory() -> void {
 /// same frames, and the loser is whoever allocated first: the frame gets handed
 /// out a second time and written over. That is not theory. alloc_page_table()
 /// used to run in exactly that window and take page tables from here; the next
-/// per-CPU unit allocated with AllocFlags::Zero landed on a live leaf table and blanked
+/// per-CPU unit allocated with Gaf::Zero landed on a live leaf table and blanked
 /// it, and the boot died several thousand instructions later writing to a
 /// virtual address whose PTE had evaporated (see docs/changes/260925/mm.md).
 ///

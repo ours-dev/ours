@@ -21,7 +21,7 @@
 ///     exactly once, never the node itself, nearest first.
 ///   - ZoneSelector, which every allocation now walks: its three filters
 ///     (holes in the by-type array, the request's node mask, the request's
-///     zone-type range in both directions) and AllocFlags::ThisNode, which is served
+///     zone-type range in both directions) and Gaf::ThisNode, which is served
 ///     by resolve_request() narrowing the mask rather than by switching lists.
 ///     These cases were written against ZoneIterator and AllocationContext,
 ///     which were on no allocation path and are gone; they test the real one
@@ -284,7 +284,7 @@ namespace {
     }
 
     /// A request over every online node, which each case then narrows.
-    auto request_for(PmNode &node, mm::AllocFlags const alloc_flags) -> mm::AllocRequest {
+    auto request_for(PmNode &node, mm::Gaf const alloc_flags) -> mm::AllocRequest {
         return mm::resolve_request(alloc_flags, 0, PmNode::node_online_mask(),
                                    mm::Origin{.node = node.nid(), .cpu = Cpu::id()});
     }
@@ -355,12 +355,12 @@ namespace {
         verdict(tally, lower_ok && above == list->fallback().size() - dma_count,
                 "ZoneSelector's lower bound keeps a caller off the zones below it");
 
-        // AllocFlags::ThisNode, through the path that serves it: resolve_request()
+        // Gaf::ThisNode, through the path that serves it: resolve_request()
         // narrows the request's node mask, so the selector over the whole
         // fallback order yields this node's zones and no others. The walk this
         // replaced switched between two candidate lists instead, which is a
         // second mechanism for the same intent.
-        auto const this_node = request_for(node, mm::ALLOC_KERNEL | mm::AllocFlags::ThisNode);
+        auto const this_node = request_for(node, mm::ALLOC_KERNEL | mm::Gaf::ThisNode);
         mm::ZoneSelector const local_walk{list->fallback(), this_node};
         auto this_node_ok = true;
         usize local_selected = 0;
@@ -373,7 +373,7 @@ namespace {
         log::info("pmnode.test:   ThisNode selected {} of {} zone(s) in the fallback order",
                   local_selected, list->fallback().size());
         verdict(tally, this_node_ok && local_selected == local_count,
-                "AllocFlags::ThisNode narrows the request's node mask, and the selector "
+                "Gaf::ThisNode narrows the request's node mask, and the selector "
                 "honours it");
     }
 
@@ -446,7 +446,7 @@ namespace {
                 PmNode::free_frames(*result, (*result)->order());
             }
         };
-        auto const alloc_flags = mm::ALLOC_KERNEL | mm::AllocFlags::Zero;
+        auto const alloc_flags = mm::ALLOC_KERNEL | mm::Gaf::Zero;
         auto const nid = mm::current_node();
 
         auto implicit = PmNode::alloc_frames(alloc_flags);
@@ -454,11 +454,11 @@ namespace {
                 "static allocation needs no node instance");
         release(implicit);
 
-        auto local = PmNode::alloc_frames(alloc_flags | mm::AllocFlags::ThisNode);
+        auto local = PmNode::alloc_frames(alloc_flags | mm::Gaf::ThisNode);
         verdict(tally, local && *local, "ThisNode also accepts the implicit home");
         release(local);
 
-        auto explicit_home = PmNode::alloc_frames(nid, alloc_flags | mm::AllocFlags::ThisNode);
+        auto explicit_home = PmNode::alloc_frames(nid, alloc_flags | mm::Gaf::ThisNode);
         verdict(tally, explicit_home && *explicit_home && (*explicit_home)->nid() == nid,
                 "static allocation honors an explicit home and ThisNode");
         release(explicit_home);
@@ -477,7 +477,7 @@ namespace {
         remote_nodes.set(nid, false);
         if (remote_nodes.any()) {
             auto pinned =
-                PmNode::alloc_frames(nid, alloc_flags | mm::AllocFlags::ThisNode, 0, remote_nodes);
+                PmNode::alloc_frames(nid, alloc_flags | mm::Gaf::ThisNode, 0, remote_nodes);
             verdict(tally, !pinned && pinned.unwrap_err() == Status::OutOfMem,
                     "ThisNode fails when the allowed mask excludes the requested node");
             release(pinned);
@@ -560,7 +560,7 @@ namespace {
     }
 
     auto check_exhausted_node(Tally &tally, NodeId const nid) -> void {
-        auto const flags = mm::ALLOC_KERNEL | mm::AllocFlags::ThisNode;
+        auto const flags = mm::ALLOC_KERNEL | mm::Gaf::ThisNode;
         auto const mask = NodeMask::of(nid);
         auto const reserved = PmNode::alloc_frames(nid, flags, 0, mask);
         if (!reserved) {
@@ -686,13 +686,12 @@ namespace {
             verdict(tally, ok, name);
         };
 
-        auto const alloc_flags = mm::ALLOC_KERNEL | mm::AllocFlags::Zero;
+        auto const alloc_flags = mm::ALLOC_KERNEL | mm::Gaf::Zero;
         check(mm::get_frames_n<u8>(alloc_flags, 3), MAX_NODES,
               "get_frames_n() returns a usable zeroed block of at least three pages");
         auto const nid = mm::current_node();
-        check(
-            mm::get_frames_n<u8>(nid, alloc_flags | mm::AllocFlags::ThisNode, 3, NodeMask::of(nid)),
-            nid, "node-specific get_frames_n() honors the node and rounds the count");
+        check(mm::get_frames_n<u8>(nid, alloc_flags | mm::Gaf::ThisNode, 3, NodeMask::of(nid)), nid,
+              "node-specific get_frames_n() honors the node and rounds the count");
     }
 
     auto check_disabled_allocation(Tally &tally) -> void {

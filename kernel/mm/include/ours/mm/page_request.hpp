@@ -241,7 +241,7 @@ inline auto PageProvider::is_queued(PageRequest const &request) -> bool {
 
 /// A wait for a blank frame, raised when the PMM would not hand one to a VMO
 /// while free memory is short (try_alloc_frames() answered ShouldWait for an
-/// allocation with AllocFlags::CanWait).
+/// allocation with Gaf::CanWait).
 ///
 /// Unlike a PageRequest it asks no one for content: any frame will do, so
 /// it has no offset, no source and no provider, and two of them never merge.
@@ -266,7 +266,7 @@ class AnonymousPageRequest {
 
     /// Raises the request: the next wait() waits for a frame allocated with
     /// |alloc_flags|, the flags of the allocation that was turned away.
-    auto make_active(AllocFlags alloc_flags) -> void;
+    auto make_active(Gaf alloc_flags) -> void;
 
     [[nodiscard]]
     auto is_active() const -> bool {
@@ -296,7 +296,7 @@ class AnonymousPageRequest {
 
   private:
     bool m_active = false;
-    AllocFlags m_alloc_flags = AllocFlags{};
+    Gaf m_alloc_flags = Gaf{};
     PmFrame *m_frame = nullptr;
 };
 
