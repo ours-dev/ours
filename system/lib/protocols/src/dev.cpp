@@ -106,8 +106,9 @@ auto decode_publish(Message const message) -> ustl::Result<PublishRequest, Statu
     }
     auto directory = wire::decode_handle(message, HANDLE_OFFSET, 0);
     if (directory.is_err()) {
-        return ustl::err(directory.unwrap_err());
+        return ustl::err(Status::InvArgs);
     }
+
     return ustl::ok(PublishRequest{
         .txid = header->txid,
         .klass = klass,
@@ -147,7 +148,9 @@ auto decode_publish_reply(Message const message, u32 const txid)
         // The bare status form: a refusal names nothing.
         return ustl::ok(PublishReply{.status = status.unwrap(), .name = {}});
     }
-    if (message.bytes.size() < REPLY_NAME_OFFSET) {
+    // The Ok reply carries the name and nothing else: no handle rides with
+    // it, and one that does is not this protocol's reply.
+    if (message.bytes.size() < REPLY_NAME_OFFSET || !message.handles.empty()) {
         return ustl::err(Status::InvArgs);
     }
     auto const name_size = wire::load<u32>(message.bytes, REPLY_NAME_SIZE_OFFSET);

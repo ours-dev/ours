@@ -161,6 +161,88 @@ TEST(OursDevPublish, Refusals) {
               Status::InvArgs);
 }
 
+TEST(OursDevPublish, BoundsAcceptedExactly) {
+    auto buffer = Buffer{};
+    // Each string at its exact bound is a legal publish: the refusal is one
+    // over, not at.
+    auto full_class = std::string(prot::dev::MAX_CLASS_LENGTH, 'c');
+    auto full_name = std::string(prot::dev::MAX_NODE_NAME, 'n');
+    auto full_protocol = std::string(prot::dev::MAX_PROTOCOL_NAME, 'p');
+    buffer.handles[0] = DIRECTORY;
+    auto const request = prot::dev::encode_publish(buffer.bytes, buffer.handles,
+                                                   {.txid = TXID,
+                                                    .klass = full_class,
+                                                    .name = full_name,
+                                                    .protocol = full_protocol,
+                                                    .directory = DIRECTORY});
+    ASSERT_TRUE(request.is_ok());
+    auto const decoded = prot::dev::decode_publish(buffer.view(request.unwrap().bytes.size()));
+    ASSERT_TRUE(decoded.is_ok());
+    EXPECT_EQ(decoded->klass.size(), prot::dev::MAX_CLASS_LENGTH);
+    EXPECT_EQ(decoded->name.size(), prot::dev::MAX_NODE_NAME);
+    EXPECT_EQ(decoded->protocol.size(), prot::dev::MAX_PROTOCOL_NAME);
+}
+
+TEST(OursDevPublish, ThreeStringsBackToBack) {
+    auto buffer = Buffer{};
+    auto handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
+    auto const request = prot::dev::encode_publish(
+        buffer.bytes, handles,
+        {.txid = TXID, .klass = "ab", .name = "cde", .protocol = "fghij", .directory = DIRECTORY});
+    ASSERT_TRUE(request.is_ok());
+    // class@36, name@38, protocol@41 -- the arithmetic the decoder repeats.
+    auto const bytes = request.unwrap().bytes;
+    EXPECT_EQ(request.unwrap().bytes.size(), usize{36 + 2 + 3 + 5});
+    EXPECT_EQ((std::string_view{reinterpret_cast<char const *>(bytes.data()) + 36, 2}), "ab");
+    EXPECT_EQ((std::string_view{reinterpret_cast<char const *>(bytes.data()) + 38, 3}), "cde");
+    EXPECT_EQ((std::string_view{reinterpret_cast<char const *>(bytes.data()) + 41, 5}), "fghij");
+}
+
+TEST(OursDevPublish, SmallBufferRefused) {
+    auto handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
+    auto tiny = std::array<u8, 32>{};
+    EXPECT_EQ((prot::dev::encode_publish(tiny, handles,
+                                         {.txid = TXID,
+                                          .klass = "block",
+                                          .name = "000",
+                                          .protocol = "ours.block.Block",
+                                          .directory = DIRECTORY})
+                   .unwrap_err()),
+              Status::BufferTooSmall);
+}
+
+TEST(OursDevPublish, ReplyRefusals) {
+    auto buffer = Buffer{};
+    // An Ok reply carrying the granted name and a handle is not this
+    // protocol's reply: the name rides alone.
+    auto const reply =
+        prot::dev::encode_publish_reply(buffer.bytes, TXID, {.status = Status::Ok, .name = "001"});
+    ASSERT_TRUE(reply.is_ok());
+    auto with_handle = wire::Message{.bytes = std::span{buffer.bytes}.first(reply->bytes.size()),
+                                     .handles = std::span{buffer.handles}.first(1)};
+    EXPECT_EQ(prot::dev::decode_publish_reply(with_handle, TXID).unwrap_err(), Status::InvArgs);
+    // A granted name past the bound is refused by the encoder itself: the
+    // registry cannot grant what the codec cannot say.
+    auto long_name = std::string(prot::dev::MAX_NODE_NAME + 1, 'x');
+    EXPECT_EQ((prot::dev::encode_publish_reply(buffer.bytes, TXID,
+                                               {.status = Status::Ok, .name = long_name})
+                   .unwrap_err()),
+              Status::InvArgs);
+    // An Ok reply naming nothing is malformed too: the registry always
+    // grants a name.
+    auto const empty = prot::dev::encode_publish_reply(
+        buffer.bytes, TXID, {.status = Status::Ok, .name = std::string_view{}});
+    EXPECT_TRUE(empty.is_err());
+    // The wrong txid is not this conversation's reply.
+    auto const right =
+        prot::dev::encode_publish_reply(buffer.bytes, TXID, {.status = Status::Ok, .name = "000"});
+    ASSERT_TRUE(right.is_ok());
+    auto right_message =
+        wire::Message{.bytes = std::span{buffer.bytes}.first(right->bytes.size()), .handles = {}};
+    EXPECT_EQ(prot::dev::decode_publish_reply(right_message, TXID + 1).unwrap_err(),
+              Status::InvArgs);
+}
+
 TEST(OursDevPublish, DecodeRefusals) {
     auto buffer = Buffer{};
     auto const request = prot::dev::encode_publish(buffer.bytes, buffer.handles,

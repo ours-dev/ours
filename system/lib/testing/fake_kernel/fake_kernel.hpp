@@ -61,6 +61,12 @@ class Kernel final {
     [[nodiscard]]
     auto is_open(ours::Uandle handle) const -> bool;
 
+    /// Whether |handle|'s peer end is gone -- closed, or |handle| itself no
+    /// longer open. This is the PeerClosed a real kernel asserts on the
+    /// survivor of a channel pair, which a synchronous waiter reads.
+    [[nodiscard]]
+    auto peer_closed(ours::Uandle handle) const -> bool;
+
     /// How many messages are queued on the channel end |handle|.
     [[nodiscard]]
     auto queued_messages(ours::Uandle handle) const -> usize;

@@ -84,6 +84,10 @@ group("default") {
     # purpose, from bytes alone.
     "//system/lib/protocols:tests($host_toolchain)",
 
+    # The device registry's core: the grant rule, the mount pool, the
+    # refusals, and the leaf forward, on the fake kernel.
+    "//system/service/device-registry:tests($host_toolchain)",
+
     # ours.gpt's parser: the CRC-32's known answer, the header and entry
     # parses and their refusals, and whole tables read through a fake reader.
     "//system/lib/ours.gpt:tests($host_toolchain)",

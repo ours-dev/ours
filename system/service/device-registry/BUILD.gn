@@ -65,3 +65,12 @@ if (!is_host_toolchain) {
     }
   }
 }
+
+# The core's host tests, wired into //:default: the grant rule, the mount
+# pool, the refusals, and the leaf forward, on the fake kernel.
+if (is_host_toolchain) {
+  group("tests") {
+    testonly = true
+    public_deps = [ "test:registry($host_toolchain)" ]
+  }
+}

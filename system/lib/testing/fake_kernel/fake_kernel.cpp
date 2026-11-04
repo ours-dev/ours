@@ -27,6 +27,17 @@ auto Kernel::is_open(ours::Uandle const handle) const -> bool {
     return m_objects.contains(handle);
 }
 
+auto Kernel::peer_closed(ours::Uandle const handle) const -> bool {
+    if (!is_open(handle)) {
+        return true;
+    }
+    auto const found = m_objects.find(handle);
+    if (found == m_objects.end()) {
+        return true;
+    }
+    return found->second.peer == ours::Uandle::Invalid;
+}
+
 auto Kernel::queued_messages(ours::Uandle const handle) const -> usize {
     return m_objects.at(handle).messages.size();
 }
