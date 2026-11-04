@@ -106,7 +106,7 @@ class DevClientTest: public testing::Test {
     }
 
     auto pump() -> void {
-        if (fake::kernel().queued_messages(ends_[1]) == 0) {
+        if (!fake::kernel().is_open(ends_[1]) || fake::kernel().queued_messages(ends_[1]) == 0) {
             return;
         }
         auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
@@ -125,6 +125,17 @@ class DevClientTest: public testing::Test {
         auto const header =
             wire::decode_header(std::span{bytes}.first(num_bytes), wire::Direction::ToServer);
         ASSERT_TRUE(header.is_ok());
+        // The un-publish's reply is the status form: Ok from this provider.
+        if (header->ordinal == prot::dev::UNPUBLISH.ordinal) {
+            auto const reply = prot::dev::encode_unpublish_reply(reply_, header->txid,
+                                                                 {.status = unpublish_status_});
+            ASSERT_TRUE(reply.is_ok());
+            EXPECT_EQ(ours::channel_write(ends_[1], ours::ChannelWriteOptions::None,
+                                          reply->bytes.data(),
+                                          static_cast<u32>(reply->bytes.size()), nullptr, 0),
+                      Status::Ok);
+            return;
+        }
         auto const length = publish_reply(reply_, header->txid, malformed_, granted_name_);
         EXPECT_EQ(ours::channel_write(ends_[1], ours::ChannelWriteOptions::None, reply_.data(),
                                       static_cast<u32>(length), nullptr, 0),
@@ -133,6 +144,7 @@ class DevClientTest: public testing::Test {
 
     std::array<Uandle, 2> ends_{};
     bool malformed_ = false;
+    Status unpublish_status_ = Status::Ok;
     std::string_view granted_name_ = "000";
     std::array<u8, wire::MAX_MESSAGE_BYTES> reply_{};
 };
@@ -189,4 +201,26 @@ TEST_F(DevClientTest, OversizedProtocolRefusedBeforeWire) {
     auto protocol = std::string(prot::dev::MAX_PROTOCOL_NAME + 1, 'p');
     EXPECT_EQ(client.publish("block", "000", protocol, DIRECTORY, granted), Status::InvArgs);
     EXPECT_EQ(fake::kernel().queued_messages(ends_[1]), 0U);
+}
+
+/// The typed un-publish: Ok, NotFound, and the dead connection's
+/// PeerClosed, through the same channel the publish used.
+TEST_F(DevClientTest, UnpublishRoundTrip) {
+    auto client = prot::dev::Client{ends_[0]};
+    EXPECT_EQ(client.unpublish("block", "000"), Status::Ok);
+}
+
+TEST_F(DevClientTest, UnpublishUnknownNameReadsNotFound) {
+    unpublish_status_ = Status::NotFound;
+    auto client = prot::dev::Client{ends_[0]};
+    EXPECT_EQ(client.unpublish("block", "042"), Status::NotFound);
+}
+
+TEST_F(DevClientTest, UnpublishOnDeadConnectionReadsPeerClosed) {
+    auto client = prot::dev::Client{ends_[0]};
+    // The provider goes away between two calls: the second reads the peer
+    // gone, whatever the first answered.
+    EXPECT_EQ(client.unpublish("block", "000"), Status::Ok);
+    EXPECT_EQ(ours::handle_close(ends_[1]), Status::Ok);
+    EXPECT_EQ(client.unpublish("block", "000"), Status::PeerClosed);
 }
