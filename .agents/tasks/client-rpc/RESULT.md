@@ -36,6 +36,12 @@
 
 ## Found along the way
 
+- **The final verify caught a real leak**: the conduct/call restructure had
+  dropped the success path's handle-close (only the epitaph and bad-header
+  paths closed); StrayHandleClosed failed on the fresh build and passed at
+  the round's own commit on a stale binary. Fixed in 9f1f50a6 — one close
+  on the path every reply takes. Two verify-matters lessons in one round.
+
 - The dangling-view bug (above) — caught by on-target verification, not
   by the host suites, which passed on dead-frame luck.
 - The migration agent's halt was the round's save: it refused to migrate
