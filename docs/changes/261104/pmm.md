@@ -413,3 +413,50 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Reclaim on an eligible node after a single-page allocation miss (2026-11-04)
+
+**Files**
+
+- `kernel/mm/pm_node.cpp` records an eligible zone below High when an order-zero attempt cannot obtain a frame.
+- `kernel/mm/pmm.cpp` reports the shortage at operation completion.
+- `kernel/mm/memory_reclaimer.cpp` coalesces shortages, rechecks current stock and walks only the target node.
+- `kernel/commands/page_reclaim_test.cpp` exercises the local shortage while global pressure is Normal.
+
+**Symptom**
+
+A request restricted to a depleted node can fail while free memory on the rest of the machine keeps the global watchdog at Normal.
+
+**Cause**
+
+The global watchdog observes total free memory and requests a global walk. It has no information about the eligible zones of a failed allocation.
+
+**Change**
+
+An exhausted order-zero walk records its first eligible depleted zone. At completion the pressure observer queues that zone for the background reclaimer. The worker combines pending zones by node and samples each zone before deriving its deficit against High. It uses the existing zero-page and clean-pager reclaim logic with a singleton node mask. An ordinary caller can retry after inventory becomes available.
+
+**Reference**
+
+This tree's zone watermarks and per-node page queues provide the target. Global pressure and its reclaim path continue to use the full online-node mask.
+
+**Verification**
+
+The opt-in `pagereclaim.test --target-node` exhausts a memory-only node while the machine remains above its global pressure thresholds. A strict allocation fails, the background reclaimer evicts that node's pager page, and a strict retry obtains a frame from the same node. The other node's pager page stays resident.
+
+The default and NUMA debug and release images booted. All 163 host tests passed, as did the default pager and pressure tests and the two-CPU, three-node PM node and zone regressions.
+
+**Deliberately not done**
+
+The reclaim walk is scoped to a node. Admission and waiting still use the global gate, and requests for larger blocks use the existing buddy path.
+
+**How it was found**
+
+Compared the set of zones an allocation could use with the machine-wide count the watchdog samples.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

@@ -217,3 +217,12 @@ allocation and `Gaf::CanWait` pressure admission. `ShouldWait` lets the caller
 release its locks before waiting. `wait_for_frame_allocation()` serves the
 default-placement single-page wait. The static `PmNode` operations perform
 the physical transfer.
+
+Buddy transfers and their free-count deltas share the zone lock. Public
+static node allocation and return operations observe pressure once after
+completion, with staged blocks restored before observation on error.
+
+A failed order-zero walk may report an eligible zone below High. The
+background reclaimer resamples queued zones and walks the selected node's
+page queues. Admission and waits use the global gate. The node-scoped
+reclaim request is advisory and preserves the immediate allocation result.

@@ -161,16 +161,21 @@ auto PmNode::alloc_frames(Gaf alloc_flags, usize order, NodeMask const &fallback
 
 auto PmNode::alloc_frames(NodeId const nid, Gaf alloc_flags, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
-    auto observation = gktl::defer(observe_pressure);
+    PmZone const *depleted_zone = nullptr;
+    auto observation = gktl::defer([&depleted_zone] { observe_pressure(depleted_zone); });
     auto const home = resolve_home(nid, alloc_flags);
     if (!home) {
         return ustl::err(home.unwrap_err());
     }
-    return (*home)->take_block(alloc_flags, order, fallback);
+    auto result = (*home)->take_block(alloc_flags, order, fallback, &depleted_zone);
+    if (result) {
+        depleted_zone = nullptr;
+    }
+    return result;
 }
 
-auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
-    -> ktl::Result<PmFrame *> {
+auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback,
+                        PmZone const **depleted_zone) -> ktl::Result<PmFrame *> {
     m_canary.verify<Self>();
 
     // Whether the calling thread may allocate at all: a thread that has
@@ -207,6 +212,10 @@ auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
     for (auto &zone: m_zone_list.candidates(request)) {
         auto const block = zone.take_block(request.order());
         if (!block) {
+            if (order == 0 && depleted_zone && !*depleted_zone &&
+                zone.free_frames() < zone.watermark(PmZone::WaterMark::High)) {
+                *depleted_zone = &zone;
+            }
             continue;
         }
 
@@ -233,7 +242,7 @@ auto PmNode::alloc_frames_fragment(Gaf alloc_flags, usize n, NodeMask const &fal
 
 auto PmNode::alloc_frames_fragment(NodeId const nid, Gaf alloc_flags, usize n,
                                    NodeMask const &fallback) -> ktl::Result<PmFrame::List> {
-    auto observation = gktl::defer(observe_pressure);
+    auto observation = gktl::defer([] { observe_pressure(); });
     auto const home = resolve_home(nid, alloc_flags);
     if (!home) {
         return ustl::err(home.unwrap_err());
@@ -267,7 +276,7 @@ auto PmNode::alloc_frames_bulk(Gaf alloc_flags, usize n, NodeMask const &fallbac
 
 auto PmNode::alloc_frames_bulk(NodeId const nid, Gaf alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
-    auto observation = gktl::defer(observe_pressure);
+    auto observation = gktl::defer([] { observe_pressure(); });
     auto const home = resolve_home(nid, alloc_flags);
     if (!home) {
         return ustl::err(home.unwrap_err());

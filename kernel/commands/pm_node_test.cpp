@@ -43,6 +43,7 @@
 #include <ours/cpu.hpp>
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/node_placement.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -714,6 +715,7 @@ namespace {
         for (NodeId nid = 0; nid < MAX_NODES; ++nid) {
             if (nid != home && PmNode::node_memory_mask().test(nid) &&
                 !mm::node_work_cpus(nid).any()) {
+                mm::MemoryReclaimer::Pause pause{mm::MemoryReclaimer::get()};
                 check_exhausted_node(tally, nid);
                 return;
             }

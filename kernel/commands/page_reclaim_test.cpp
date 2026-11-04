@@ -60,6 +60,7 @@
 #include <ours/task/thread.hpp>
 
 #include <atomic>
+#include <string_view>
 
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
@@ -139,14 +140,18 @@ namespace {
 
     /// Supplies |count| pages from page |first| of |vmo|, each filled with its
     /// pattern.
-    auto supply(mm::VmObjectPaged &vmo, usize const first, usize const count) -> bool {
+    auto supply(mm::VmObjectPaged &vmo, usize const first, usize const count,
+                NodeId const nid = NodeId{MAX_NODES}) -> bool {
         mm::VmPageSpliceList pages(count);
         if (pages.reserve(count) != Status::Ok) {
             return false;
         }
+        auto flags = mm::ALLOC_KERNEL | mm::Gaf::Zero;
+        if (nid < MAX_NODES) {
+            flags |= mm::Gaf::ThisNode;
+        }
         for (usize i = 0; i < count; ++i) {
-            auto *const frame =
-                mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero).value_or(nullptr);
+            auto *const frame = mm::alloc_frames(nid, flags, 0).value_or(nullptr);
             if (!frame) {
                 return false;
             }
@@ -713,8 +718,74 @@ namespace {
         settle([&] { return watchdog.pressure() == mm::MemoryPressure::Normal; });
     }
 
-    auto pagereclaim_test_command(int, char **) -> int {
+    auto check_targeted_reclaim(Tally &tally) -> void {
+        auto const local = mm::current_node();
+        NodeId remote = MAX_NODES;
+        for (NodeId nid = 0; nid < MAX_NODES; ++nid) {
+            if (nid != local && mm::PmNode::node_memory_mask().test(nid) &&
+                !mm::node_work_cpus(nid).any()) {
+                remote = nid;
+                break;
+            }
+        }
+        if (remote == MAX_NODES) {
+            verdict(tally, false, "targeted reclaim needs a memory-only node");
+            return;
+        }
+
+        CountingProvider *local_provider = nullptr;
+        CountingProvider *remote_provider = nullptr;
+        auto local_vmo = make_vmo(1, &local_provider);
+        auto remote_vmo = make_vmo(1, &remote_provider);
+        if (!local_vmo || !remote_vmo || !supply(*local_vmo, 0, 1, local) ||
+            !supply(*remote_vmo, 0, 1, remote)) {
+            verdict(tally, false, "prepare one reclaimable pager page on each node");
+            return;
+        }
+
+        mm::PmFrame::List held;
+        mm::PmNode::node(remote)->zone_list()->for_each_local_zone([&held](mm::PmZone &zone) {
+            for (usize order = MAX_FRAME_ORDER + 1; order != 0; --order) {
+                while (auto block = zone.take_block(order - 1)) {
+                    held.push_back(block.value());
+                }
+            }
+        });
+
+        auto const levels = mm::MemoryWatchdog::get().levels();
+        auto const globally_normal =
+            levels.pressure_at(mm::approx_free_frame_count()) == mm::MemoryPressure::Normal;
+        auto const missed = mm::alloc_frames(remote, mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0);
+        auto const exhausted = !missed && missed.unwrap_err() == Status::OutOfMem;
+        if (missed) {
+            mm::free_frames(*missed, 0);
+        }
+        auto const evicted = settle([&] { return remote_vmo->committed_pages(0, P) == 0; });
+        auto const kept_local = local_vmo->committed_pages(0, P) == 1;
+        bool retried = false;
+        if (evicted) {
+            auto const recovered =
+                mm::alloc_frames(remote, mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0);
+            if (recovered) {
+                retried = (*recovered)->nid() == remote;
+                mm::free_frames(*recovered, 0);
+            }
+        }
+        mm::free_frames(&held);
+        verdict(
+            tally, globally_normal && exhausted && evicted && retried && kept_local,
+            "a node-only shortage reclaims and resupplies a page without evicting the other node");
+    }
+
+    auto pagereclaim_test_command(int argc, char **argv) -> int {
+        if (argc > 2 || (argc == 2 && std::string_view(argv[1]) != "--target-node")) {
+            log::error("usage: pagereclaim.test [--target-node]");
+            return 1;
+        }
         Tally tally;
+        if (argc == 2) {
+            check_targeted_reclaim(tally);
+        }
         check_order_and_refetch(tally);
         check_mappings(tally);
         check_unpin_keeps_the_write(tally);

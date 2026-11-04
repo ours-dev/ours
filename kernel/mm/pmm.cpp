@@ -2,6 +2,7 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/node_placement.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
@@ -186,8 +187,11 @@ namespace {
 
 } // namespace
 
-auto PmNode::observe_pressure() -> void {
+auto PmNode::observe_pressure(PmZone const *depleted_zone) -> void {
     GATE.check_signal();
+    if (depleted_zone) {
+        MemoryReclaimer::get().request(*depleted_zone);
+    }
 }
 
 auto num_nodes() -> usize {
