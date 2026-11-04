@@ -173,7 +173,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// byte range. The notification completes under the tree lock before the
     /// caller changes the page slots or releases frames.
     TA_REQUIRES(m_lock)
-    auto operate_range_locked(u64 offset, u64 len, RangeOp op) -> void;
+    auto operate_range_locked(usize offset, usize len, RangeOp op) -> void;
 
     /// What reclaim_page() or dedup_zero_page() did.
     enum class ReclaimResult : u8 {
@@ -355,7 +355,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// NotSupported for a node with a page source: its pages are the source's
     /// content, not the caller's to move.
     TA_REQUIRES(m_lock)
-    auto take_pages_locked(u64 offset, u64 len, VmPageSpliceList *pages) -> Status;
+    auto take_pages_locked(usize offset, usize len, VmPageSpliceList *pages) -> Status;
 
     FORCE_INLINE
     auto size_locked() const -> usize {

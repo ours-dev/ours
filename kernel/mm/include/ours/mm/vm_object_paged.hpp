@@ -252,7 +252,7 @@ class VmObjectPaged: public VmObject {
     /// |cow_offset| and |size| are the window of |cowpages| this object is:
     /// 0 and the pages' size for an object created on its own pages, a range
     /// inside them for a slice.
-    VmObjectPaged(Flags vmof, ustl::Arc<VmCowPages> cowpages, u64 cow_offset, usize size);
+    VmObjectPaged(Flags vmof, ustl::Arc<VmCowPages> cowpages, usize cow_offset, usize size);
     ~VmObjectPaged() override;
 
   private:
@@ -298,7 +298,7 @@ class VmObjectPaged: public VmObject {
     /// Propagate the node's notification through every view of its pages.
     /// Called on the representative with the shared tree lock held.
     TA_REQUIRES(m_lock)
-    auto operate_views_locked(u64 cow_offset, u64 len, RangeOp op) -> void;
+    auto operate_views_locked(usize cow_offset, usize len, RangeOp op) -> void;
 
     ustl::Arc<VmCowPages> m_cow_pages;
 
@@ -307,7 +307,7 @@ class VmObjectPaged: public VmObject {
     /// check through the second. The window lives on the object, not on the
     /// pages, because a slice shares one VmCowPages with the object it was cut
     /// from.
-    u64 const m_cow_offset;
+    usize const m_cow_offset;
     usize const m_size;
 
     /// A non-owning list of the other views, held by the representative.

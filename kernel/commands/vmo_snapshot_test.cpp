@@ -251,7 +251,8 @@ namespace {
     }
 
     TA_NO_THREAD_SAFETY_ANALYSIS
-    auto remove_write(ustl::Arc<mm::VmObjectPaged> &vmo, u64 const offset, u64 const len) -> void {
+    auto remove_write(ustl::Arc<mm::VmObjectPaged> &vmo, usize const offset, usize const len)
+        -> void {
         Guard guard{vmo->lock()};
         vmo->operate_range_locked(offset, len, mm::RangeOp::RemoveWrite);
     }
@@ -351,7 +352,7 @@ namespace {
                 "a mapping with no entries is left with none");
 
         // The whole object, with a length that reaches the end of the address space.
-        remove_write(vmo, 0, ~u64{0});
+        remove_write(vmo, 0, ~usize{0});
         verdict(tally,
                 !is_writable(aspace, RW_AT) && !is_writable(aspace, RW_AT + PAGE_SIZE) &&
                     !is_writable(aspace, RW_AT + 2 * PAGE_SIZE) && is_readable(aspace, RW_AT) &&
@@ -623,8 +624,8 @@ namespace {
     }
 
     TA_NO_THREAD_SAFETY_ANALYSIS
-    auto operate_cow_range(ustl::Arc<mm::VmCowPages> const &cow, u64 const offset, u64 const len,
-                           mm::RangeOp const op) -> void {
+    auto operate_cow_range(ustl::Arc<mm::VmCowPages> const &cow, usize const offset,
+                           usize const len, mm::RangeOp const op) -> void {
         Guard guard{const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->lock()};
         const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->operate_range_locked(offset, len, op);
     }
@@ -694,7 +695,7 @@ namespace {
         verdict(tally, is_writable(aspace, FIRST_AT),
                 "and not from a slice that does not show that page");
 
-        operate_cow_range(cow, 0, ~u64{0}, mm::RangeOp::RemoveWrite);
+        operate_cow_range(cow, 0, ~usize{0}, mm::RangeOp::RemoveWrite);
         verdict(tally,
                 !is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
                     !is_writable(aspace, SLICE_AT + PAGE_SIZE) && !is_writable(aspace, FIRST_AT),
@@ -716,7 +717,7 @@ namespace {
                 aspace->soft_fault(WHOLE_AT + 2 * PAGE_SIZE, mm::VmfCause::Absent) == Status::Ok &&
                     present(WHOLE_AT + 2 * PAGE_SIZE),
                 "the mapping still allows the page: a read maps it again");
-        operate_cow_range(cow, 0, ~u64{0}, mm::RangeOp::Unmap);
+        operate_cow_range(cow, 0, ~usize{0}, mm::RangeOp::Unmap);
         verdict(tally,
                 !present(WHOLE_AT) && !present(WHOLE_AT + PAGE_SIZE) &&
                     !present(WHOLE_AT + 2 * PAGE_SIZE) && !present(SLICE_AT) && !present(FIRST_AT),

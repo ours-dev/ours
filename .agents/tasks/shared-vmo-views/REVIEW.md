@@ -46,3 +46,12 @@ overflow behavior. Each view still intersects the original range and
 translates the result using its own offset. Clang-tidy found no issues on
 the changed lines. The snapshot suite passed 247 checks in both
 configurations, including the case where only a peer overlaps the range.
+
+## Follow-up on notification offset types
+
+The notification path now carries object-relative byte offsets as `usize`.
+The slice constructor converts its checked offset after establishing that
+the slice fits inside the parent window. Both intersections cap the range
+end before addition. The snapshot suite covers whole-range invalidation
+and handoff to a view with a disjoint window. The default and NUMA runs
+passed, and clang-tidy reported no diagnostics on changed lines.

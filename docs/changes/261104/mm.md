@@ -348,3 +348,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Use usize for COW range notifications (2026-11-04)
+
+**Files**
+
+- `kernel/mm/vm_cow_pages.cpp`, `vm_object_paged.cpp`, `vm_object.cpp`, `vm_mapping.cpp` and their headers carry the range through the notification.
+- The snapshot and large-page suites use the same type in their notification helpers.
+
+**Symptom**
+
+Range notifications used fixed-width integers for object-relative byte offsets and lengths. VMO sizes and mapping offsets use `usize`.
+
+**Cause**
+
+The notification signatures retained the older `u64` spelling. The range describes bytes in an object, including bytes that may have no physical backing at the time of notification.
+
+**Change**
+
+The notification carries `usize offset, usize len` through COW, the VMO views and the mapping. The view window also stores its starting offset as `usize`. At both intersections, the end is computed as `offset + std::min(len, ~usize{0} - offset)`.
+
+**Reference**
+
+Zircon's `VmObjectPaged::RangeChangeUpdateLocked` similarly interprets its input as an object-relative range. The `usize` spelling follows this project's VMO convention.
+
+**Verification**
+
+Clang-format and LLVM 23 clang-tidy checked all ten C++ files. Both dev images booted and 163 host tests passed in each configuration. The targeted kernel suites passed 296 checks in default and 268 in four-node NUMA.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user noticed the fixed-width type while tracing notification propagation.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

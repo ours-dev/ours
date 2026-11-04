@@ -541,8 +541,8 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     return first_failure;
 }
 
-auto VmMapping::operate_range_locked_object(u64 const vmo_offset, u64 const len, RangeOp const op)
-    -> void {
+auto VmMapping::operate_range_locked_object(usize const vmo_offset, usize const len,
+                                            RangeOp const op) -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(m_vmo);
     m_vmo->lock().assert_held();
@@ -550,12 +550,9 @@ auto VmMapping::operate_range_locked_object(u64 const vmo_offset, u64 const len,
     // The part of the range this mapping shows, in the object's bytes and then
     // as addresses. |len| may reach the end of the address space, so the end is
     // clamped rather than added.
-    u64 end = vmo_offset + len;
-    if (len > ~u64{0} - vmo_offset) {
-        end = ~u64{0};
-    }
-    u64 const first = std::max<u64>(vmo_offset, m_vmo_ofs);
-    u64 const last = std::min<u64>(end, m_vmo_ofs + m_size);
+    auto const end = vmo_offset + std::min(len, ~usize{0} - vmo_offset);
+    auto const first = std::max(vmo_offset, m_vmo_ofs);
+    auto const last = std::min(end, m_vmo_ofs + m_size);
     if (first >= last) {
         return;
     }

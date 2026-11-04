@@ -130,7 +130,7 @@ class VmMapping final: public VmAreaOrMapping {
     ///
     /// A failure would leave a shared page writable, or an entry to a frame
     /// the object no longer has, and cannot be undone, so it stops the kernel.
-    auto operate_range_locked_object(u64 vmo_offset, u64 len, RangeOp op) -> void;
+    auto operate_range_locked_object(usize vmo_offset, usize len, RangeOp op) -> void;
 
     /// Gives a present entry a permission an access needs and it lacks; see the
     /// definition. Part of page_fault(), split out for its length.

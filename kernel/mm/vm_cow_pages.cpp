@@ -91,7 +91,7 @@ auto VmCowPages::reclaim_page(PgOff const index, VmPage *const page) -> ReclaimR
     // must leave no mapping behind. No fault can map the page again until the
     // lock is let go, since every fault takes it to find the page, and by
     // then the slot is a hole.
-    operate_range_locked(u64(index) << PAGE_SHIFT, PAGE_SIZE, RangeOp::Unmap);
+    operate_range_locked(usize(index) << PAGE_SHIFT, PAGE_SIZE, RangeOp::Unmap);
 
     [[maybe_unused]]
     auto *const removed = m_pages.remove_page(index);
@@ -129,7 +129,7 @@ auto VmCowPages::dedup_zero_page(PgOff const index, VmPage *const page) -> Recla
 
     // The page looks zero. Take Write from every mapping, and look again: it
     // cannot change from here, so what is seen now is what will be freed.
-    auto const offset = u64(index) << PAGE_SHIFT;
+    auto const offset = usize(index) << PAGE_SHIFT;
     operate_range_locked(offset, PAGE_SIZE, RangeOp::RemoveWrite);
     if (!is_zero_filled(page)) {
         return leave();
@@ -262,7 +262,8 @@ VmCowPages::~VmCowPages() {
     m_pages.drain_owned([](VmPage *const page) { free_page(page); });
 }
 
-auto VmCowPages::operate_range_locked(u64 const offset, u64 const len, RangeOp const op) -> void {
+auto VmCowPages::operate_range_locked(usize const offset, usize const len, RangeOp const op)
+    -> void {
     if (auto *const representative = m_representative) {
         representative->lock().assert_held();
         representative->operate_views_locked(offset, len, op);
@@ -907,8 +908,8 @@ auto VmCowPages::page_source_owner_id() const -> ustl::Option<u64> {
     return m_page_source->owner_id();
 }
 
-auto VmCowPages::take_pages_locked(u64 const offset, u64 const len, VmPageSpliceList *const pages)
-    -> Status {
+auto VmCowPages::take_pages_locked(usize const offset, usize const len,
+                                   VmPageSpliceList *const pages) -> Status {
     DEBUG_ASSERT(ustl::is_aligned(offset, PAGE_SIZE) && ustl::is_aligned(len, PAGE_SIZE));
     DEBUG_ASSERT(offset <= m_size && len <= m_size - offset, "the range is past the node's end");
     DEBUG_ASSERT(pages->is_fresh() && pages->nr_pages() == len / PAGE_SIZE,

@@ -228,7 +228,8 @@ namespace {
     /// Unmaps [offset, offset + len) of |vmo|'s pages from every mapping of
     /// every object over them: the walk take_pages() makes.
     TA_NO_THREAD_SAFETY_ANALYSIS
-    auto unmap_through_node(mm::VmObjectPaged const &vmo, u64 const offset, u64 const len) -> void {
+    auto unmap_through_node(mm::VmObjectPaged const &vmo, usize const offset, usize const len)
+        -> void {
         auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
         Guard guard{node->lock()};
         node->operate_range_locked(offset, len, mm::RangeOp::Unmap);

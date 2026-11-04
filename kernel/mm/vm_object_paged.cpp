@@ -23,7 +23,7 @@ using ustl::round_up;
 namespace ours::mm {
 using VmoPagedCache = ObjectCache::Instance<VmObjectPaged>;
 
-VmObjectPaged::VmObjectPaged(VmoFlags vmof, ustl::Arc<VmCowPages> cowpages, u64 const cow_offset,
+VmObjectPaged::VmObjectPaged(VmoFlags vmof, ustl::Arc<VmCowPages> cowpages, usize const cow_offset,
                              usize const size)
     : Base(gktl::magic<Self>(), Type::Paged, vmof, cowpages->lock())
     , m_cow_pages(ustl::move(cowpages))
@@ -67,15 +67,15 @@ VmObjectPaged::~VmObjectPaged() {
     }
 }
 
-auto VmObjectPaged::operate_views_locked(u64 const cow_offset, u64 const len, RangeOp const op)
+auto VmObjectPaged::operate_views_locked(usize const cow_offset, usize const len, RangeOp const op)
     -> void {
-    auto const end = cow_offset + std::min<u64>(len, ~u64{0} - cow_offset);
+    auto const end = cow_offset + std::min(len, ~usize{0} - cow_offset);
     // Each view clips the original range independently, even when the
     // representative's own window does not overlap it.
     auto const notify = [cow_offset, end, op](VmObjectPaged &view) -> void {
         view.lock().assert_held();
-        auto const first = std::max<u64>(cow_offset, view.m_cow_offset);
-        auto const last = std::min<u64>(end, view.m_cow_offset + view.m_size);
+        auto const first = std::max(cow_offset, view.m_cow_offset);
+        auto const last = std::min(end, view.m_cow_offset + view.m_size);
         if (first < last) {
             view.operate_range_locked(first - view.m_cow_offset, last - first, op);
         }
@@ -324,8 +324,8 @@ auto VmObjectPaged::create_slice(u64 const offset, u64 const size,
         return Status::InvArgs;
     }
 
-    auto child =
-        VmoPagedCache::get(ALLOC_KERNEL, m_flags, m_cow_pages, m_cow_offset + offset, usize(size));
+    auto child = VmoPagedCache::get(ALLOC_KERNEL, m_flags, m_cow_pages,
+                                    m_cow_offset + usize(offset), usize(size));
     if (!child) {
         return Status::OutOfMem;
     }
@@ -365,7 +365,7 @@ auto VmObjectPaged::create_clone(u64 const offset, u64 const size,
     // pages, under that lock. If it cannot be made the clone goes with |pages|,
     // and this object's pages stay as the clone left them, which is consistent:
     // the hidden node is merged away when the clone that hung under it is gone.
-    auto child = VmoPagedCache::get(ALLOC_KERNEL, m_flags, ustl::move(pages), u64{0}, usize(size));
+    auto child = VmoPagedCache::get(ALLOC_KERNEL, m_flags, ustl::move(pages), 0, usize(size));
     if (!child) {
         return Status::OutOfMem;
     }
