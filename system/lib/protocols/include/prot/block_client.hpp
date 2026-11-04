@@ -49,10 +49,9 @@ class Client final {
     [[nodiscard]]
     auto get_info() -> ustl::Result<Geometry, ours::Status> {
         auto const txid = m_channel.next_txid();
+        // The status form always fits the buffer and the txid is always in
+        // range: the encode cannot refuse.
         auto const request = encode_get_info(m_request, {.txid = txid});
-        if (request.is_err()) {
-            return ustl::err(request.unwrap_err());
-        }
         auto reply = m_channel.call(request.unwrap());
         if (reply.is_err()) {
             return ustl::err(reply.unwrap_err());
@@ -106,14 +105,12 @@ class Client final {
             return ours::Status::InvArgs;
         }
         auto const txid = m_channel.next_txid();
+        // The size guard above refused everything the codec would refuse.
         auto const request =
             encode_write(m_request, {.txid = txid,
                                      .lba = lba,
                                      .count = static_cast<u32>(data.size() / BLOCK_SIZE),
                                      .data = data});
-        if (request.is_err()) {
-            return request.unwrap_err();
-        }
         auto reply = m_channel.call(request.unwrap());
         if (reply.is_err()) {
             return reply.unwrap_err();

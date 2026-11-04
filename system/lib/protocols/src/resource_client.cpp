@@ -22,10 +22,9 @@ auto get(Uandle const connection, Protocol const &protocol) -> ustl::Result<Uand
     // The one request on this connection, so any txid will do.
     constexpr auto TXID = u32{1};
     std::array<u8, wire::STATUS_FORM_SIZE> request_bytes{};
+    // The request always fits the buffer and the txid is fixed: the encode
+    // cannot refuse.
     auto const request = encode_get(request_bytes, protocol, {.txid = TXID});
-    if (request.is_err()) {
-        return ustl::err(request.unwrap_err());
-    }
     // The pipeline, handles intact: the resource is the reply's payload.
     // The reply lands in this frame's buffers -- a view of the pipeline's
     // own stack would die at its return.

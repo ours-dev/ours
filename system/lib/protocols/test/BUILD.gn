@@ -37,7 +37,10 @@ executable("block_client") {
 # ours.acpi's typed client, over the fake kernel: the test plays the Route
 # provider inside the fixture's pump -- both round trips, the epitaph, the
 # stray handle on a reply refused with the handle closed, the other method's
-# reply caught as InvArgs, and the silent close reading PeerClosed.
+# reply caught as InvArgs, and the silent close reading PeerClosed. The
+# /svc overloads walk a fake /svc bound into the real namespace: its
+# namespace table links on the host, and the Tree+LoopServer behind the
+# bound directory is the ioservice suite's.
 executable("acpi_client") {
   testonly = true
   sources = [
@@ -46,6 +49,8 @@ executable("acpi_client") {
   ]
   deps = [
     "//system/lib/fsio:headers",
+    "//system/lib/fsio:namespace",
+    "//system/lib/ioservice:loop_server",
     "//system/lib/protocols",
     "//system/lib/rpc:headers",
     "//system/lib/testing/fake_kernel",
@@ -100,7 +105,10 @@ executable("resource") {
 # resource provider inside the fixture's pump -- the Get answered with a
 # handle that survives for the caller, the reply's failure status arriving
 # as itself, the epitaph (Ok reading as the connection closing), the
-# malformed reply and its stray handle closed, and the silent close.
+# malformed reply and its stray handle closed, and the silent close. The
+# /svc overload walks a fake /svc bound into the real namespace: its
+# namespace table links on the host, and the Tree+LoopServer behind the
+# bound directory is the ioservice suite's.
 executable("resource_client") {
   testonly = true
   sources = [
@@ -109,6 +117,8 @@ executable("resource_client") {
   ]
   deps = [
     "//system/lib/fsio:headers",
+    "//system/lib/fsio:namespace",
+    "//system/lib/ioservice:loop_server",
     "//system/lib/protocols",
     "//system/lib/rpc:headers",
     "//system/lib/testing/fake_kernel",
@@ -148,6 +158,21 @@ executable("fshost") {
 # ours.fshost's typed client, over the fake kernel: the test plays the
 # Admin provider inside the fixture's pump -- the Mount's name and handle
 # arriving as sent, and each answer reading as itself.
+executable("dev_client") {
+  testonly = true
+  sources = [ "dev_client_test.cpp" ]
+  deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
 executable("fshost_client") {
   testonly = true
   sources = [ "fshost_client_test.cpp" ]

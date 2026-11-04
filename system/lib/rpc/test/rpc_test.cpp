@@ -76,6 +76,8 @@ enum class Mode {
     ReplyWithStrayHandle,
     Epitaph,
     Silent,
+    TooBigReply,
+    Garbage,
 };
 
 /// A channel pair, the client end first.
@@ -178,6 +180,26 @@ class RpcTest: public testing::Test {
                 // No answer: just the peer's death.
                 EXPECT_EQ(ours::handle_close(ends_[1]), Status::Ok);
                 return;
+            case Mode::TooBigReply: {
+                // A reply larger than the read takes: the read refuses.
+                auto const reply = reply_bytes(txid);
+                auto big = std::vector<u8>(wire::MAX_MESSAGE_BYTES + 1024, 0xAA);
+                std::copy(reply.begin(), reply.end(), big.begin());
+                EXPECT_EQ(ours::channel_write(ends_[1], ours::ChannelWriteOptions::None, big.data(),
+                                              static_cast<u32>(big.size()), nullptr, 0),
+                          Status::Ok);
+                return;
+            }
+            case Mode::Garbage: {
+                // Bytes that are not a message: the header's magic is wrong.
+                auto garbage = std::array<u8, 32>{};
+                garbage.fill(0x5A);
+                EXPECT_EQ(ours::channel_write(ends_[1], ours::ChannelWriteOptions::None,
+                                              garbage.data(), static_cast<u32>(garbage.size()),
+                                              nullptr, 0),
+                          Status::Ok);
+                return;
+            }
         }
     }
 
@@ -269,4 +291,70 @@ TEST_F(RpcTest, StrayHandleClosed) {
     auto const answered = client.call(wire::Message{.bytes = bytes, .handles = {}});
     ASSERT_TRUE(answered.is_ok());
     EXPECT_FALSE(fake::kernel().is_open(stray_));
+}
+
+/// A reply larger than the read takes: the read refuses, and the failure is
+/// the call's.
+TEST_F(RpcTest, TooBigReplyReadsBufferTooSmall) {
+    mode_ = Mode::TooBigReply;
+    auto client = rpc::Channel{ends_[0]};
+    auto bytes = std::array<u8, wire::STATUS_FORM_SIZE>{};
+    wire::store(bytes, 0,
+                wire::Header{.txid = client.next_txid(),
+                             .direction = wire::Direction::ToServer,
+                             .reserved = {},
+                             .magic = wire::MAGIC,
+                             .ordinal = 7});
+    EXPECT_EQ(client.call(wire::Message{.bytes = bytes, .handles = {}}).unwrap_err(),
+              Status::BufferTooSmall);
+}
+
+/// Bytes that decode as nothing: call names the message unreadable.
+TEST_F(RpcTest, GarbageReplyReadsBadState) {
+    mode_ = Mode::Garbage;
+    auto client = rpc::Channel{ends_[0]};
+    auto bytes = std::array<u8, wire::STATUS_FORM_SIZE>{};
+    wire::store(bytes, 0,
+                wire::Header{.txid = client.next_txid(),
+                             .direction = wire::Direction::ToServer,
+                             .reserved = {},
+                             .magic = wire::MAGIC,
+                             .ordinal = 7});
+    EXPECT_EQ(client.call(wire::Message{.bytes = bytes, .handles = {}}).unwrap_err(),
+              Status::BadState);
+}
+
+/// A write that fails for a reason other than the peer's death -- here a
+/// channel whose own handle is gone -- is the failure, un-translated.
+TEST_F(RpcTest, DeadChannelWriteIsTheFailure) {
+    // The peer is alive; the channel itself is what died.
+    auto const ends = channel();
+    EXPECT_EQ(ours::handle_close(ends[0]), Status::Ok);
+    auto client = rpc::Channel{ends[0]};
+    auto bytes = std::array<u8, wire::STATUS_FORM_SIZE>{};
+    wire::store(bytes, 0,
+                wire::Header{.txid = client.next_txid(),
+                             .direction = wire::Direction::ToServer,
+                             .reserved = {},
+                             .magic = wire::MAGIC,
+                             .ordinal = 7});
+    EXPECT_EQ(client.call(wire::Message{.bytes = bytes, .handles = {}}).unwrap_err(),
+              Status::BadHandle);
+}
+
+/// A live provider that never answers: the wait gives up with TimeOut.
+TEST_F(RpcTest, SilentButAliveReadsTimeOut) {
+    // The pump answers nothing, and the peer stays open: the only exit is
+    // the wait's own bound.
+    WAIT_PUMP = [] {};
+    auto client = rpc::Channel{ends_[0]};
+    auto bytes = std::array<u8, wire::STATUS_FORM_SIZE>{};
+    wire::store(bytes, 0,
+                wire::Header{.txid = client.next_txid(),
+                             .direction = wire::Direction::ToServer,
+                             .reserved = {},
+                             .magic = wire::MAGIC,
+                             .ordinal = 7});
+    EXPECT_EQ(client.call(wire::Message{.bytes = bytes, .handles = {}}).unwrap_err(),
+              Status::TimeOut);
 }

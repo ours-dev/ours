@@ -129,19 +129,15 @@ class MountHandler final: public ioservice::Handler {
     /// Open that was never written leaves a handle to close.
     auto connect(Uandle const channel) -> void override {
         auto handles = std::array{channel};
+        // The forward's path was built at mount time to fit this mount's
+        // own scratch, so the encode cannot fail; unwrap says so.
         auto const encoded =
             prot::io::encode_open(mount->scratch, handles,
                                   prot::io::OpenRequest{.flags = prot::io::Flags::ProtocolService,
                                                         .path = mount->forward,
                                                         .object = channel});
-        if (encoded.is_err()) {
-            // The path is this mount's own, built to fit the scratch at
-            // mount time, so this is the buffer's own bug.
-            report("cannot encode a leaf's Open", encoded.unwrap_err());
-            auto _ = ours::handle_close(channel);
-            return;
-        }
-        if (auto const written = write(mount->directory, encoded.unwrap()); written != Status::Ok) {
+        auto const written = write(mount->directory, encoded.unwrap());
+        if (written != Status::Ok) {
             // The publisher is gone; the mount stays -- the tree's nodes are
             // never removed -- and its next Open answers the same way. The
             // client reads PEER_CLOSED on its entry: the Open's handle went
@@ -242,9 +238,64 @@ class Core final {
         return m_mounts;
     }
 
+    /// The class directories made on demand, each with name storage of its
+    /// own: the tree views a node's name for the program's life, and a
+    /// mount slot is recycled on a failed publish -- a name that lived in
+    /// the slot would rename the node behind the next publish's back.
+    /// Every mount a distinct class, plus the pre-laid block: eight entries.
+    [[nodiscard]]
+    auto find_class(std::string_view const klass) const -> ustl::Option<ioservice::NodeId> {
+        for (auto const &entry: m_classes) {
+            if (entry.used && std::string_view{entry.storage.data()} == klass) {
+                return ustl::some(entry.node);
+            }
+        }
+        return ustl::NONE;
+    }
+
+    /// Reserves an arena entry for |klass| (a no-op when the name is
+    /// already there) and returns the view a tree node must be created
+    /// with: node creation stores views, and this storage outlives every
+    /// mount slot's reuse. A free slot means a free entry -- free_slot()
+    /// was checked before the class is named.
+    auto class_name(std::string_view const klass) -> std::string_view {
+        for (auto &entry: m_classes) {
+            if (entry.used && std::string_view{entry.storage.data()} == klass) {
+                return entry.name;
+            }
+        }
+        for (auto &entry: m_classes) {
+            if (!entry.used) {
+                std::memcpy(entry.storage.data(), klass.data(), klass.size());
+                entry.name = std::string_view{entry.storage.data(), klass.size()};
+                entry.used = true;
+                return entry.name;
+            }
+        }
+        return klass;
+    }
+
+    /// Binds |node|, the directory just created from class_name()'s view,
+    /// to its arena entry.
+    auto record_class(std::string_view const klass, ioservice::NodeId const node) -> void {
+        for (auto &entry: m_classes) {
+            if (entry.used && std::string_view{entry.storage.data()} == klass) {
+                entry.node = node;
+                return;
+            }
+        }
+    }
+
   private:
+    struct ClassName {
+        std::array<char, prot::dev::MAX_CLASS_LENGTH> storage{};
+        std::string_view name;
+        ioservice::NodeId node = ioservice::detail::NO_NODE;
+        bool used = false;
+    };
     std::array<Mount, MAX_MOUNTS> m_mounts{};
     std::array<MountHandler, MAX_MOUNTS> m_handlers{};
+    std::array<ClassName, MAX_MOUNTS> m_classes{};
 };
 
 /// What the dev tree keeps: the tree's nodes, one connection per consumer
@@ -448,18 +499,20 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
 
         // The class directory, made on the first mount of its kind: block/
         // is laid out at startup, the rest grow here, named out of the
-        // mount's own storage.
+        // class arena -- storage that outlives the mount slot, which a
+        // failed publish recycles and the next publish overwrites.
         auto class_dir = m_class;
         auto const found = m_tree->lookup(m_class, mount.klass);
         if (found.is_ok()) {
             class_dir = found.unwrap();
         } else {
-            auto made = m_tree->add_directory(m_class, mount.klass);
+            auto made = m_tree->add_directory(m_class, m_core->class_name(mount.klass));
             if (made.is_err()) {
                 reclaim(mount);
                 auto _ = ours::handle_close(request.directory);
                 return answer(channel, request.txid, {.status = made.unwrap_err(), .name = {}});
             }
+            m_core->record_class(mount.klass, made.unwrap());
             class_dir = made.unwrap();
         }
 

@@ -95,6 +95,7 @@ group("tests") {
   public_deps = [
     "test:block($host_toolchain)",
     "test:block_client($host_toolchain)",
+    "test:dev_client($host_toolchain)",
     "test:dev($host_toolchain)",
     "test:fshost($host_toolchain)",
     "test:fshost_client($host_toolchain)",

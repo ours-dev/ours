@@ -17,9 +17,10 @@
 // with its report on the console, the subdirs dev/class and dev/class/block
 // listing their own entries, the ninth dev/ bind refused with the epitaph,
 // a publish past the tree's nodes refused NoResource with its mount slot
-// back, and the client's own refusals -- a class past its bound answered
-// before any I/O and a publish on a connection already gone reading
-// PeerClosed.
+// back, a publisher gone before its answer still mounted and the registry
+// serving on, and the client's own refusals -- a class past its bound
+// answered before any I/O and a publish on a connection already gone
+// reading PeerClosed.
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
 
@@ -624,6 +625,26 @@ TEST_F(RegistryTest, TreeNodeExhaustionRefusesThePublish) {
     run();
     EXPECT_FALSE(mounts()[6].used);
     EXPECT_FALSE(mounts()[7].used);
+
+    // The refused classes' directories keep their names: a failed publish
+    // recycles its mount slot, and a name that lived in the slot would
+    // rename the node behind the next publish's back -- the phantom this
+    // case exists to catch. The class directory lists c0..c5, each once.
+    auto const tree_ends = channel();
+    EXPECT_EQ(open_on_directory("dev/class",
+                                prot::io::Flags::ProtocolDirectory | prot::io::PERM_READABLE,
+                                tree_ends[1]),
+              Status::Ok);
+    run();
+    auto const names = list_directory(tree_ends[0]);
+    // Nine: ".", block, and c0..c6 -- c6's directory was created before its
+    // service node was refused, and an empty class is harmless by design.
+    EXPECT_EQ(names.size(), usize{NEW_CLASSES + 3});
+    // The refused c6 and c7 name nothing: c6's directory keeps its own
+    // name (no phantom rename from the recycled slot), and c7 never made a
+    // directory at all.
+    EXPECT_EQ(std::count(names.begin(), names.end(), "c6"), 1U);
+    EXPECT_EQ(std::count(names.begin(), names.end(), "c7"), 0U);
 }
 
 /// A class past its bound is refused by the codec before any I/O: InvArgs,
@@ -652,4 +673,58 @@ TEST_F(RegistryTest, PublishOnClosedConnectionReadsPeerClosed) {
     auto granted = std::array<char, 8>{};
     auto const spare = channel();
     EXPECT_EQ(client.publish("block", "000", BLOCK, spare[0], granted), Status::PeerClosed);
+}
+
+/// A publisher that closes its own end right after its Publish, before the
+/// pump runs: the request still reads and the mount still happens -- the
+/// mounted-from report says so, and the mount keeps the directory handle it
+/// took -- and the answer's write then fails on the dead peer, which is
+/// what ends the connection. The registry lives on: the next publish is
+/// answered, the taken name behind it.
+TEST_F(RegistryTest, PublishThenCloseEarlyStillMountsAndKeepsServing) {
+    auto publisher = make_publisher();
+    auto const ends = channel();
+    EXPECT_EQ(open_on_directory("svc/ours.dev.Registry", prot::io::Flags::ProtocolService, ends[1]),
+              Status::Ok);
+    run();
+    // The Publish, raw on the connection, as MalformedPublishClosesConnection
+    // makes it: the codec's own encoder, a real directory handle riding.
+    auto handles = std::array<Uandle, 1>{publisher.mount};
+    auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+    auto const built = prot::dev::encode_publish(bytes, handles,
+                                                 {.txid = 1,
+                                                  .klass = "block",
+                                                  .name = "000",
+                                                  .protocol = BLOCK,
+                                                  .directory = publisher.mount});
+    ASSERT_TRUE(built.is_ok());
+    // The build stamped the fresh handle value into handles[0]; the write
+    // carries it.
+    EXPECT_EQ(ours::channel_write(ends[0], ours::ChannelWriteOptions::None, bytes.data(),
+                                  static_cast<u32>(built->bytes.size()), handles.data(), 1),
+              Status::Ok);
+    // Gone before the pump runs: the answer has no reader to reach.
+    EXPECT_EQ(ours::handle_close(ends[0]), Status::Ok);
+    run();
+
+    // The mount happened all the same, and keeps what it took.
+    auto mounted = false;
+    for (auto const &line: fake::kernel().debug_writes()) {
+        if (line.find(" mounted from a publisher") != std::string::npos) {
+            mounted = true;
+        }
+    }
+    EXPECT_TRUE(mounted);
+    ASSERT_EQ(mounts()[0].used, true);
+    EXPECT_EQ(mounts()[0].klass, "block");
+    EXPECT_EQ(mounts()[0].directory, publisher.mount);
+
+    // The registry answered the next publish as if nothing had happened,
+    // the taken proposal granted the class's next number.
+    auto granted = std::array<char, 8>{};
+    auto second = make_publisher();
+    EXPECT_EQ(publish("block", "000", BLOCK, second.mount, granted), Status::Ok);
+    EXPECT_STREQ(granted.data(), "001");
+    run();
+    ASSERT_EQ(mounts()[1].used, true);
 }

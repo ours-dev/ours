@@ -10,9 +10,13 @@
 // the directory handle riding the message, a taken name answering
 // AlreadyExists as itself, a provider's failure status arriving as itself,
 // the epitaph a provider closes with standing in for the failure, and the
-// peer gone without one reading PeerClosed. The directory handle is one
-// per mount -- a transferred handle cannot be sent twice -- so each case
-// mounts through its own.
+// peer gone without one reading PeerClosed. The refusals the client makes
+// or takes without a provider's answer are pinned too: a name longer than
+// what encode_mount accepts refused before any message leaves, a reply that
+// is no message at all reading BadState from the pipeline, and a reply to
+// another request's txid refused by the reply-status check as InvArgs. The
+// directory handle is one per mount -- a transferred handle cannot be sent
+// twice -- so each case mounts through its own.
 #include <prot/fshost_client.hpp>
 
 #include <array>
@@ -71,12 +75,16 @@ using ours::Uandle;
 constexpr auto NAME = std::string_view{"data"};
 
 /// One test's provider: the pump reads the Mount off the server end and
-/// answers the status per the mode. Epitaph closes with the epitaph after
-/// reading the request; Silent closes without answering.
+/// answers the status per the mode. Garbage answers bytes that are not a
+/// message (the header's magic is wrong); WrongTxid answers a well-formed
+/// reply carrying another request's txid; Epitaph closes with the epitaph
+/// after reading the request; Silent closes without answering.
 enum class Mode {
     Ok,
     AlreadyExists,
     NoResource,
+    Garbage,
+    WrongTxid,
     Epitaph,
     Silent,
 };
@@ -145,6 +153,27 @@ class OursFshostClient: public testing::Test {
                 }
                 auto const reply =
                     prot::fshost::encode_mount_reply(m_reply_scratch, txid, answered);
+                ASSERT_TRUE(reply.is_ok());
+                write_reply(*reply);
+                return;
+            }
+            case Mode::Garbage: {
+                // Bytes that are not a message: the header's magic is
+                // wrong (rpc_test's Garbage mode).
+                auto garbage = std::array<u8, 32>{};
+                garbage.fill(0x5A);
+                EXPECT_EQ(ours::channel_write(m_ends[1], ours::ChannelWriteOptions::None,
+                                              garbage.data(), static_cast<u32>(garbage.size()),
+                                              nullptr, 0),
+                          Status::Ok);
+                return;
+            }
+            case Mode::WrongTxid: {
+                // A well-formed reply, but to another request: the txid is
+                // what tells them apart, and the mismatch is what the
+                // client's reply-status check refuses.
+                auto const reply =
+                    prot::fshost::encode_mount_reply(m_reply_scratch, txid + 1, Status::Ok);
                 ASSERT_TRUE(reply.is_ok());
                 write_reply(*reply);
                 return;
@@ -227,4 +256,37 @@ TEST_F(OursFshostClient, SilentCloseReadsPeerClosed) {
     auto const directory = channel();
     m_directory = directory[0];
     EXPECT_EQ(client.mount(directory[0], NAME), Status::PeerClosed);
+}
+
+/// A name longer than what encode_mount accepts is refused before any
+/// message leaves: the client hands the mount to the codec, the codec
+/// refuses, and the provider is not consulted.
+TEST_F(OursFshostClient, OverlongNameRefusedBeforeAnyIO) {
+    auto client = prot::fshost::Client{m_ends[0]};
+    auto const overlong = std::array<char, prot::fshost::MAX_NAME_BYTES + 1>{};
+    auto const name = std::string_view{overlong.data(), overlong.size()};
+    auto const directory = channel();
+    EXPECT_EQ(client.mount(directory[0], name), Status::InvArgs);
+    EXPECT_EQ(fake::kernel().queued_messages(m_ends[1]), usize{0});
+}
+
+/// A reply that is not a message at all -- the header's magic is wrong --
+/// is refused by the pipeline before the status is asked of it: the call
+/// reads BadState, what rpc_test's Garbage mode leaves standing.
+TEST_F(OursFshostClient, GarbageReplyReadsBadState) {
+    m_mode = Mode::Garbage;
+    auto client = prot::fshost::Client{m_ends[0]};
+    auto const directory = channel();
+    m_directory = directory[0];
+    EXPECT_EQ(client.mount(directory[0], NAME), Status::BadState);
+}
+
+/// A well-formed reply to another request's txid: the reply-status check
+/// refuses the mismatch, and the call reads InvArgs rather than the reply.
+TEST_F(OursFshostClient, WrongTxidReplyReadsInvArgs) {
+    m_mode = Mode::WrongTxid;
+    auto client = prot::fshost::Client{m_ends[0]};
+    auto const directory = channel();
+    m_directory = directory[0];
+    EXPECT_EQ(client.mount(directory[0], NAME), Status::InvArgs);
 }

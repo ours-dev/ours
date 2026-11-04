@@ -67,10 +67,8 @@ namespace {
     /// the use's name.
     auto connect_route() -> ustl::Result<Uandle, Status> {
         constexpr auto SVC = std::string_view{"/svc/"};
+        static_assert(SVC.size() + ROUTE_NAME.size() <= 64, "the route path always fits");
         std::array<char, 64> path_bytes{};
-        if (SVC.size() + ROUTE_NAME.size() > path_bytes.size()) {
-            return ustl::err(Status::InvArgs);
-        }
         std::ranges::copy(ROUTE_NAME, std::ranges::copy(SVC, path_bytes.begin()).out);
         auto const path = std::string_view{path_bytes.data(), SVC.size() + ROUTE_NAME.size()};
 
@@ -91,10 +89,8 @@ namespace {
 
 auto isa_irq(Uandle const connection, u32 const isa_irq) -> ustl::Result<IsaIrqReply, Status> {
     std::array<u8, REQUEST_ROOM> request_bytes{};
+    // The request always fits and the txid is fixed: the encode cannot refuse.
     auto const request = encode_isa_irq(request_bytes, {.txid = TXID, .isa_irq = isa_irq});
-    if (request.is_err()) {
-        return ustl::err(request.unwrap_err());
-    }
     std::array<u8, REPLY_ROOM> reply_bytes{};
     auto const length = exchange(connection, request.unwrap(), reply_bytes);
     if (length.is_err()) {
@@ -113,10 +109,8 @@ auto isa_irq(Uandle const connection, u32 const isa_irq) -> ustl::Result<IsaIrqR
 
 auto ecam_base(Uandle const connection, u16 const segment) -> ustl::Result<EcamBaseReply, Status> {
     std::array<u8, REQUEST_ROOM> request_bytes{};
+    // The request always fits and the txid is fixed: the encode cannot refuse.
     auto const request = encode_ecam_base(request_bytes, {.txid = TXID, .segment = segment});
-    if (request.is_err()) {
-        return ustl::err(request.unwrap_err());
-    }
     std::array<u8, REPLY_ROOM> reply_bytes{};
     auto const length = exchange(connection, request.unwrap(), reply_bytes);
     if (length.is_err()) {
