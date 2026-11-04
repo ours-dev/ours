@@ -15,6 +15,20 @@ executable("block") {
   visibility = [ "*" ]
 }
 
+# ours.dev: Publish's round trip, the strings' back-to-back layout, and the
+# refusals -- separators, NULs, the bounds, a missing handle, a body off by
+# one byte.
+executable("dev") {
+  testonly = true
+  sources = [ "dev_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
 # ours.io: every request and reply of the subset, written, read back and
 # broken on purpose.
 executable("io") {

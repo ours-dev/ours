@@ -19,6 +19,7 @@ source_set("protocols") {
   sources = [
     "src/acpi.cpp",
     "src/block.cpp",
+    "src/dev.cpp",
     "src/fshost.cpp",
     "src/io.cpp",
     "src/process.cpp",
@@ -41,6 +42,7 @@ cpp_interface("headers") {
   public = [
     "include/prot/acpi.hpp",
     "include/prot/block.hpp",
+    "include/prot/dev.hpp",
     "include/prot/fshost.hpp",
     "include/prot/io.hpp",
     "include/prot/process.hpp",
@@ -88,6 +90,7 @@ group("tests") {
   testonly = true
   public_deps = [
     "test:block($host_toolchain)",
+    "test:dev($host_toolchain)",
     "test:fshost($host_toolchain)",
     "test:io($host_toolchain)",
     "test:process($host_toolchain)",
