@@ -24,19 +24,24 @@
 #include <ustl/util/move.hpp>
 
 namespace ours::mm {
-/// Options for creating a mapping. The ModeMask bits select one policy:
-/// zero for Lazy, Resident to install existing pages, or Commit to obtain
-/// owned pages and install them. Resident and Commit cannot be combined.
-/// Sealed is independent of the policy. The creation entry rejects unknown
-/// bits and passes only the selected mode to VmMapping::map(), which
-/// accepts Resident or Commit for immediate installation.
 enum class MapOptions : u8 {
+    /// Register the mapping and defer page-table installation.
     Lazy = 0,
+
+    /// Install entries for existing pages and leave holes to fault.
     Resident = 0_bit,
+
+    /// Obtain owned pages for the entire range and install their entries.
     Commit = 1_bit,
+
+    /// Reject unmap and protect requests. Can be combined with any mode.
     Sealed = 2_bit,
 
+    /// Select the installation mode. Creation accepts at most one mode bit.
+    /// Explicit installation requires exactly one.
     ModeMask = Resident | Commit,
+
+    /// Mask of known bits. Creation rejects any bits outside this mask.
     ValidMask = ModeMask | Sealed,
 };
 USTL_ENABLE_ENUM_BITMASK(MapOptions);

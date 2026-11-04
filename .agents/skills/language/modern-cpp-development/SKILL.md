@@ -69,6 +69,10 @@ Activate (satisfy any of the following criteria):
 
 1. Always prefer `enum class` over traditional `enum` for better type safety and scoping. Enum constants are `CamelCase` (`.clang-tidy`'s `EnumConstantCase`), e.g. `Status::Ok`, `AllocationDirection::TopDown` — not `SCREAMING_SNAKE_CASE`.
 
+1. When documenting an enum, put each variant's explanation directly above
+   that variant and leave a blank line between variants (user decision,
+   2026-11-04). Keep any type-level comment focused on the shared contract.
+
 1. **`std::to_underlying` converts an enumerator, never
    `static_cast<Underlying>`** (the user's rule, 2026-10-28). The cast names a
    type the enum already knows, so it keeps compiling after the enum's base
