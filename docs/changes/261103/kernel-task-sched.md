@@ -175,3 +175,63 @@ None
 - Why does `deadline()` renamed to `virtual_deadline()` compile, and what does Fair then do that it did not before?
 - Why are there 23 diagnostics, then 5, and why is `for_each` in neither count?
 - Why is `fair_schedule()` defined in `fair.cpp` and only declared in `scheduler.hpp`?
+
+## Title: Fair's run-queue order and deadline test read the virtual clock (2026-11-03)
+
+**Files**
+- `kernel/include/ours/task/sched/fair.hpp` — `Lesser` orders `FairRunQueue` by `virtual_deadline()`
+- `kernel/kernel/task/sched/fair.cpp` — `Fair::update_thread()` tests `m_fair.vruntime >= virtual_deadline()`
+- `docs/repairs/261103/kernel-task-sched.md` — the `deadline()` item is deleted, and what the check of it found is added: twelve items in all
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+None observable: Fair is still not built. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, the syntax check of `fair.cpp` goes from 23 diagnostics to 5 and that of `scheduler.cpp` from 3 to 1, and none of the five distinct ones that remain mentions `deadline` (they are `FairRunQueue::for_each`, three calls of `fair_run_queue()` and `arm_preempt_timer`, items 4, 5 and 12 of the repair file; `for_each` is the one in `scheduler.cpp` too).
+
+**Cause**
+**The two lines that called `deadline()` could not be renamed, because they sat on the border between two clocks and the name only said which accessor.** A thread has three numbers in Fair: `exec_runtime` (real time on a CPU, from 0), `vruntime` (virtual time: each charge adds `calc_weighted_time(elapsed, weight)`, and its starting value comes from the queue's average) and `vdeadline` (a reading on the `vruntime` clock: some `vruntime` plus one request, or more after a yield). The framework's `deadline()` returned a field nothing wrote, and was replaced by `virtual_deadline()`, which returns `vdeadline` (2ed56f1b). The preemption test was `deadline() <= exec_runtime()`, so the obvious rename, `virtual_deadline() <= exec_runtime()`, compares a reading on one clock with a reading on the other. Its outcome is then decided by the offset between the clocks, not by whether the request is spent. Read off the code, with the constants recomputed:
+
+| Situation | `virtual_deadline() <= exec_runtime()` |
+|---|---|
+| The offset `vruntime - exec_runtime` is zero | fires after one (weighted) request, by accident |
+| A peer that has run 10 ms is queued when T, of `MID_WEIGHT`, is placed | T's `vdeadline` is about 274 ms, so it fires after about 274 ms of execution, not 64 ms (at the default priority 15: about 262 ms, against a weighted request of 52 ms) |
+| T is alone in an empty tree | `vruntime` and `vdeadline` saturate at the maximum (item 6 of the repair file), so it never fires |
+| The offset is at most minus one request | fires on every charge |
+
+The author chose, out of three readings, the one in which both operands are on the virtual clock. `vdeadline` is built as `vruntime` plus a request (a yield adds one more), so whatever `vruntime` started from cancels in `vruntime >= vdeadline`, and the test holds when about one request of real time has been charged since `vdeadline` was last set (about, because the weight scaling rounds). The exception is a start that saturates (item 6 of the repair file): `vruntime` and `vdeadline` are then both the maximum and the test holds on every charge. The weight cancels too, while a thread's weight stays constant, because the same factor scales the charge and the request.
+
+**Change**
+```cpp
+// fair.hpp, FairRunQueue
+return x.virtual_deadline() < y.virtual_deadline();   // was x.deadline() < y.deadline()
+
+// fair.cpp, Fair::update_thread()
+if (ctx.m_fair.vruntime >= ctx.virtual_deadline()) {  // was ctx.deadline() <= ctx.exec_runtime()
+```
+
+The ordering needed no choice: `virtual_deadline()` is what WaitQueue already orders by, and the comment on `evaluate_next_thread()` says "the earliest virtual deadline". The choice was the test. Nothing delivers a tick (item 8 of the repair file), so at the end of a slice the test is reached in `put_prev_thread()`, after the pick: `mark_preempt_pending()` is redundant there, and the replenish is what it does. Were a tick delivered, `on_thread_tick()` would reach it first, and `mark_preempt_pending()` would be what asks for the reschedule.
+
+Rejected: `remaining_slice() <= 0`, which does not depend on the clock but is not what the algorithm states, and after a replenish does not restart the slice (read, not checked); and the real clock, which means rewriting the three `vdeadline = vruntime + ...` writers onto `exec_runtime`, after which `vdeadline` is not virtual and a weight only scales the request, so shares are no longer proportional.
+
+**Reference**
+Linux EEVDF, `update_deadline()` in `kernel/sched/fair.c`: it returns while `vruntime` is before the deadline, and otherwise sets `deadline = vruntime + calc_delta_fair(slice)` (and asks for a reschedule when more than one task is runnable: from memory, not checked). A reviewer read it in the first 100 kB of upstream master on 2026-11-03. That the tree is ordered by the deadline is from memory, not checked.
+
+**Verification**
+- Four independent read-only checks, each asked to refute one claim, all with file and line: the mixed clocks (partly: the lone thread never fires, which I had not said), the consistency of the new test (partly), the direction of the weight (holds) and what else uses the real clock (partly). Corrections taken in: the test is not exact to the nanosecond; `yield_thread()` writes `vdeadline +=`, not `vruntime + request`; and a pick restarts the request (item 9).
+- `python3 .agents/skills/verify/scripts/boot_check.py --out out/fair-lane`: build ok, dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (164 passed). Fair is not in these images, so this shows only that nothing else moved.
+- `-fsyntax-only` on `fair.cpp` and `scheduler.cpp` with the kernel's flags and the Fair switch on: 5 and 1 diagnostics, listed above. Fair was not linked, booted or run, and the numbers in the table and in the repair file are arithmetic on the constants, not measurements.
+- `scripts/format_cpp.py --check` is clean on both files. `clang-tidy` was not run: `fair.cpp` is not in the compile database.
+
+**Deliberately not done**
+- The four sites that read `exec_runtime()` where `vruntime` belongs, the direction of the weight and the scale of the average: items 1 to 3 of the repair file. This decision makes them mandatory before Fair is enabled; it does not make them part of this change.
+- `for_each`, the three helpers, the `arm_preempt_timer` block, the tick, and the rest of the repair file.
+
+**How it was found**
+By the first item of the previous entry. The author asked for it first, and chose the reading from three options set out with the check's findings.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why does `vruntime >= vdeadline` not depend on where `vruntime` started, and `vdeadline <= exec_runtime` does?
+- Why is this test unchanged by the wrong direction of the weight (item 1) while the order of the tree is not?
+- After `set_next_object()` rewrites `vdeadline` at every pick, which events can make the test fire, and which cannot?

@@ -109,8 +109,10 @@ class FairRunQueue {
   private:
     auto calc_weighted_time(SchedEntity &object) const -> SchedDuration;
 
+    /// Earliest virtual deadline first; the pick takes the first eligible one
+    /// (Fair::evaluate_next_thread()).
     using Lesser = decltype([](SchedEntity const &x, SchedEntity const &y) noexcept {
-        return x.deadline() < y.deadline();
+        return x.virtual_deadline() < y.virtual_deadline();
     });
     using Queue = ustl::collections::intrusive::MultiSet<
         SchedEntity, ustl::collections::intrusive::ValueTraits<SchedEntity::RunQueueTraits<>>,

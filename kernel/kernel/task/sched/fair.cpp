@@ -206,7 +206,14 @@ auto Fair::update_thread(RunQueue &runtime, Thread *curr) -> void {
     ctx.m_exec_runtime += elapsed;
     ctx.m_fair.vruntime += calc_weighted_time(elapsed, ctx.weight());
 
-    if (ctx.deadline() <= ctx.exec_runtime()) {
+    // Both sides are read on the virtual clock: vdeadline is some vruntime plus
+    // one or more requests, so whatever offset vruntime started from cancels, and
+    // the test holds once about one request of real time has been charged since
+    // vdeadline was last set (about, because the weight scaling rounds). A start
+    // that saturates both is the exception, see docs/repairs/261103/kernel-task-sched.md.
+    // exec_runtime() is the other clock, which does not start where vruntime does
+    // and is not scaled by the weight.
+    if (ctx.m_fair.vruntime >= ctx.virtual_deadline()) {
         // Note it has completely consumed it's request, ctx there is an occassion to preempt.
         runtime.mark_preempt_pending();
 
