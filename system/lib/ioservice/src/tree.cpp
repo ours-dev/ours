@@ -15,6 +15,13 @@ namespace {
         return std::to_underlying(id);
     }
 
+    /// Whether a walk stops at a node of |kind|: what lies below it is not
+    /// this tree's. A Subtree node's belongs to the program, a Handler
+    /// node's to the NodeHandler, a remote entry's to the server that owns it.
+    auto ends_walk(NodeKind const kind) -> bool {
+        return kind == NodeKind::Subtree || kind == NodeKind::Handler || kind == NodeKind::Remote;
+    }
+
     /// Splits a path into its segments, one at a time. The caller has checked
     /// the path with is_valid_path() first, or checks each segment itself.
     class Segments final {
@@ -199,6 +206,15 @@ auto Tree::add_subtree(NodeId const parent, std::string_view const name, u64 con
     return add_child(parent, node);
 }
 
+auto Tree::add_handler(NodeId const parent, std::string_view const name, u64 const value)
+    -> ustl::Result<NodeId, Status> {
+    auto node = Node{};
+    node.m_kind = NodeKind::Handler;
+    node.m_name = name;
+    node.m_value = value;
+    return add_child(parent, node);
+}
+
 auto Tree::add_remote(NodeId const parent, std::string_view const name, ours::Uandle const channel)
     -> ustl::Result<NodeId, Status> {
     auto node = Node{};
@@ -214,11 +230,11 @@ auto Tree::lookup(NodeId const directory, std::string_view const path) const
     if (resolved.is_err()) {
         return ustl::err(resolved.unwrap_err());
     }
-    // resolve() stops at a Subtree node or a remote entry, with the path's
-    // rest. This walk is over the nodes of this tree, and neither has any
-    // below it that are: a path that goes on past one goes through a node
-    // that is not a directory. One that ends on it, rest ".", names the
-    // node.
+    // resolve() stops at a Subtree node, a Handler node or a remote entry,
+    // with the path's rest. This walk is over the nodes of this tree, and
+    // none of them has any below it that are: a path that goes on past one
+    // goes through a node that is not a directory. One that ends on it, rest
+    // ".", names the node.
     if (!resolved->rest.empty() && resolved->rest != ".") {
         return ustl::err(Status::NotDir);
     }
@@ -244,14 +260,14 @@ auto Tree::resolve(NodeId const directory, std::string_view const path) const
     // One segment at a time from |directory|: with no ".." in a valid path,
     // the walk can only go down, so it never leaves the subtree it started
     // in, which is what makes a connection's node its ceiling. A Subtree
-    // node or a remote entry ends the walk where it stands, the rest of the
-    // path left for the program or for the server that owns the remote's
-    // subtree.
+    // node, a Handler node or a remote entry ends the walk where it stands,
+    // the rest of the path left for the program, for the handler or for the
+    // server that owns the remote's subtree.
     auto current = directory;
     auto rest = path;
     while (!rest.empty()) {
         auto const &node = m_nodes[index_of(current)];
-        if (node.m_kind == NodeKind::Subtree || node.m_kind == NodeKind::Remote) {
+        if (ends_walk(node.m_kind)) {
             return ustl::ok(Resolved{.node = current, .rest = rest});
         }
         if (node.m_kind != NodeKind::Directory) {
@@ -270,11 +286,11 @@ auto Tree::resolve(NodeId const directory, std::string_view const path) const
             rest.remove_prefix(slash + 1);
         }
     }
-    // A path that ends on a Subtree node or a remote entry names the node
-    // itself: "." says so, so the program's or the remote's own server opens
-    // it as its root.
+    // A path that ends on a Subtree node, a Handler node or a remote entry
+    // names the node itself: "." says so, so the program's, the handler's or
+    // the remote's own server opens it as its root.
     auto const &last = m_nodes[index_of(current)];
-    if (last.m_kind == NodeKind::Subtree || last.m_kind == NodeKind::Remote) {
+    if (ends_walk(last.m_kind)) {
         return ustl::ok(Resolved{.node = current, .rest = "."});
     }
     return ustl::ok(Resolved{.node = current, .rest = {}});
@@ -314,6 +330,14 @@ auto Tree::service(NodeId const node) const -> ustl::Option<u64> {
 auto Tree::subtree(NodeId const node) const -> ustl::Option<u64> {
     auto const *const found = get(node);
     if (found == nullptr || found->m_kind != NodeKind::Subtree) {
+        return ustl::NONE;
+    }
+    return ustl::some(found->m_value);
+}
+
+auto Tree::handler(NodeId const node) const -> ustl::Option<u64> {
+    auto const *const found = get(node);
+    if (found == nullptr || found->m_kind != NodeKind::Handler) {
         return ustl::NONE;
     }
     return ustl::some(found->m_value);

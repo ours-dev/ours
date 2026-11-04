@@ -212,6 +212,19 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
             }
             return loop::Action::Rearm;
         }
+        case Action::Pending: {
+            // A NodeHandler answered Pending. A LoopServer gives its Server no
+            // handler, so no Open reaches one and nothing answers Pending
+            // here; the glue that suspends the slot and resumes it after
+            // Server::complete() is the next step. Were one to arrive anyway,
+            // the connection could never be ended, so it goes, with the Open's
+            // server end it held.
+            auto const held = m_server.release(connection);
+            if (held != Uandle::Invalid) {
+                auto _ = ours::handle_close(held);
+            }
+            return loop::Action::Close;
+        }
         case Action::Forward: {
             // An Open that reached a remote entry: the message is the Open
             // the remote is to serve, the handle it carries the request's
