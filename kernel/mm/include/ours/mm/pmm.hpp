@@ -127,9 +127,10 @@ auto alloc_frames(AllocFlags, PhysAddr *addr, usize order = 0) -> PmFrame *;
 auto alloc_frames_fragment(AllocFlags, usize, NodeMask const & = node_online_mask())
     -> ktl::Result<PmFrame::List>;
 
+/// Allocate one power-of-two block large enough for the requested page count.
 FORCE_INLINE [[nodiscard]]
-inline auto alloc_frame_n(AllocFlags alloc_flags, usize nr_frames,
-                          NodeMask const &nodes = node_online_mask()) -> PmFrame * {
+inline auto alloc_frames_n(AllocFlags alloc_flags, usize nr_frames,
+                           NodeMask const &nodes = node_online_mask()) -> PmFrame * {
     return alloc_frames(alloc_flags, get_order(nr_frames), nodes);
 }
 
@@ -141,9 +142,10 @@ auto alloc_frames(NodeId, AllocFlags, PmFrame::List *, usize, NodeMask const & =
 [[nodiscard]]
 auto alloc_frames(NodeId, AllocFlags, usize, NodeMask const & = node_online_mask()) -> PmFrame *;
 
+/// Allocate one power-of-two block large enough for the requested page count.
 FORCE_INLINE [[nodiscard]]
-inline auto alloc_frame_n(NodeId nid, AllocFlags alloc_flags, usize nr_frames,
-                          NodeMask const &nodes = node_online_mask()) -> PmFrame * {
+inline auto alloc_frames_n(NodeId nid, AllocFlags alloc_flags, usize nr_frames,
+                           NodeMask const &nodes = node_online_mask()) -> PmFrame * {
     return alloc_frames(nid, alloc_flags, get_order(nr_frames), nodes);
 }
 
@@ -162,9 +164,9 @@ auto get_frames(AllocFlags alloc_flags, usize order = 0, NodeMask const &nodes =
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
 FORCE_INLINE
-auto get_frames_n(AllocFlags alloc_flags, usize nr_frame,
+auto get_frames_n(AllocFlags alloc_flags, usize nr_frames,
                   NodeMask const &nodes = node_online_mask()) -> T * {
-    return get_frames<T>(alloc_flags, get_order(nr_frame), nodes);
+    return get_frames<T>(alloc_flags, get_order(nr_frames), nodes);
 }
 
 template <typename T = u8>
@@ -182,9 +184,9 @@ auto get_frames(NodeId nid, AllocFlags alloc_flags, usize order = 0,
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
 FORCE_INLINE
-auto get_frame_n(NodeId nid, AllocFlags alloc_flags, usize nr_frame,
-                 NodeMask const &nodes = node_online_mask()) -> T * {
-    return get_frame<T>(nid, alloc_flags, get_order(nr_frame), nodes);
+auto get_frames_n(NodeId nid, AllocFlags alloc_flags, usize nr_frames,
+                  NodeMask const &nodes = node_online_mask()) -> T * {
+    return get_frames<T>(nid, alloc_flags, get_order(nr_frames), nodes);
 }
 
 /// A fresh, zeroed page-table page, from whichever allocator is up.

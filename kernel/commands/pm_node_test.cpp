@@ -29,6 +29,8 @@
 ///   - contains(). Declared for a long time and defined only recently.
 ///   - Fragment and bulk allocation. alloc_frames_fragment() used to loop for
 ///     ever on an even page count.
+///   - Count helpers. Both direct-map overloads round three pages up to a
+///     usable, zeroed four-page block, including the node-specific template.
 ///   - AllocState. A thread that disabled allocation must be
 ///     refused on the node-less path and on the path that names a node alike.
 ///
@@ -45,6 +47,8 @@
 #include <ours/mm/priv/zone_selector.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/task/thread.hpp>
+
+#include <algorithm>
 
 #include <gktl/command.hpp>
 #include <logz4/log.hpp>
@@ -432,6 +436,42 @@ namespace {
         verdict(tally, bulk_ok && frames == 4, "alloc_frames_bulk() returns n single frames");
     }
 
+    auto check_count_helpers(Tally &tally) -> void {
+        auto const check = [&tally](u8 *const bytes, NodeId const expected_node,
+                                    char const *const name) {
+            if (!bytes) {
+                verdict(tally, false, name);
+                return;
+            }
+
+            auto *const frame = mm::virt_to_frame(bytes);
+            auto const order = frame->order();
+            auto ok = order == 2;
+            if (ok) {
+                constexpr auto NR_FRAMES = usize{4};
+                constexpr auto SIZE = NR_FRAMES * PAGE_SIZE;
+                ok = mm::frame_to_pfn(frame) % NR_FRAMES == 0 &&
+                     std::all_of(bytes, bytes + SIZE, [](u8 const value) { return value == 0; });
+                if (expected_node < MAX_NODES) {
+                    ok = ok && frame->nid() == expected_node;
+                }
+                bytes[SIZE - 1] = 0x5a;
+            }
+
+            // Release the actual allocation even if its geometry was wrong.
+            mm::free_frames(frame, order);
+            verdict(tally, ok, name);
+        };
+
+        auto const alloc_flags = mm::ALLOC_KERNEL | mm::AllocFlags::Zero;
+        check(mm::get_frames_n<u8>(alloc_flags, 3), MAX_NODES,
+              "get_frames_n() returns a usable zeroed block of at least three pages");
+        auto const nid = mm::current_node();
+        check(
+            mm::get_frames_n<u8>(nid, alloc_flags | mm::AllocFlags::ThisNode, 3, NodeMask::of(nid)),
+            nid, "node-specific get_frames_n() honors the node and rounds the count");
+    }
+
     auto check_disabled_allocation(Tally &tally) -> void {
         auto &state = task::Thread::Current::alloc_state();
 
@@ -465,6 +505,7 @@ namespace {
             check_contains(tally, node);
         });
         check_fragment_and_bulk(tally);
+        check_count_helpers(tally);
         check_disabled_allocation(tally);
 
         if (tally.failed != 0) {
