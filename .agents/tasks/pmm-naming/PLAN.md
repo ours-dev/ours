@@ -19,7 +19,8 @@ The user asked to refactor PMM after reviewing its responsibilities, then emphas
 1. Rename Gaf/header, allocation presets, parameters, members, and request accessor to the AllocFlags vocabulary. Rename the unused DirectReclaim hint to CanBlock without adding a consumer or changing its bit. Format/tidy every touched C++ file, build/boot both disked dev images, and run all host tests before the naming commit.
 2. Rename MemoryAllocationPolicy/State, headers, and thread accessors to AllocPolicy/State. Preserve enablement, policy behavior, and locking. Repeat required source and build/boot checks, then commit independently.
 3. Unify the minimum-count helper names as alloc_frames_n/get_frames_n, fix the node-specific helper's nonexistent call, and cover the real public helper through the existing pmnode kernel test. Verify formatting/tidy, both images, host tests, and relevant PMM/VMO/pressure kernel suites, then commit.
-4. Record delivered commits and verification in RESULT.md. Keep unimplemented architectural proposals explicitly Proposed.
+4. Repair the explicit PhysAddr conversion omitted at the SRAT boundary, discovered by the additional NUMA build, in its own commit. Verify four-node boot/PMM tests and compare any NUMA33 failure with the pre-refactor source.
+5. Record delivered commits and verification in RESULT.md. Keep unimplemented architectural proposals explicitly Proposed.
 
 ## Files
 

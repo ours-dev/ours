@@ -14,7 +14,9 @@ Phase 2: all nine touched C++ files passed formatting and clang-tidy with zero n
 
 Phase 3: formatting and clang-tidy passed on both touched files with no new diagnostics. A compile probe using the real PMM flags failed before the node-specific helper fix with undeclared get_frame, then compiled after the fix. Both disked development images and all 163 host tests passed again. Ten kernel suites passed: pmnode (23 checks, including both new direct-map cases), pmzone, vmocontig, vmopin, vmosnapshot, pager, pagereclaim, mempressure, vmaddress, and bti. Logs: helper-verify.log, public_api_before/after.log, and kernel-tests.log under /tmp/pmm-naming-checks.
 
-The extra NUMA build exposed an existing strong-address boundary omission in kernel/arch/x86/mm/srat.cpp: a raw u64 is passed to EarlyMem::set_node(PhysAddr, ...). The naming changes do not touch that line. NUMA validation remains pending a separate minimal boundary fix; it is not reported as passed.
+The extra NUMA build exposed an existing strong-address boundary omission in kernel/arch/x86/mm/srat.cpp: a raw u64 is passed to EarlyMem::set_node(PhysAddr, ...). The naming changes do not touch that line. That boundary fix was validated separately: clang-tidy under the actual NUMA flags has no new diagnostics, and both four-node images plus all 163 host tests pass. The four-node PMM, zone, contiguous-VMO, and pressure kernel suites pass (59/9/16/15 checks).
+
+The additional NUMA33 check is not a pass: both images finish booting but fail the first vmalloc single-page self-check. LLDB confirmed map_bulk returns NoMemory before any page is mapped. A pre-refactor f7b22de4 source snapshot with only the same SRAT cast reproduces the identical failure, confirming it is not introduced by this naming slice. The unresolved cause is recorded in docs/repairs/261104/mm.md; no watermark, mapping, or self-test behavior was changed to hide it.
 
 ## What is done well
 
@@ -41,5 +43,6 @@ None requested.
 
 ## Suggested follow-up order
 
-1. Fix the explicit PhysAddr conversion at the SRAT input boundary separately, then finish the four-node NUMA build/boot and PMM coverage.
-2. Record final validation and keep the larger responsibility design explicitly Proposed.
+1. Keep the naming changes and SRAT boundary repair as separate commits.
+2. Follow docs/repairs/261104/mm.md for the independent NUMA33 vmalloc failure.
+3. Keep the larger responsibility decomposition explicitly Proposed.

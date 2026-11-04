@@ -69,7 +69,8 @@ namespace {
                     return;
                 }
 
-                failure = mm::EarlyMem::set_node(region.base, region.size, NodeId{region.domain});
+                failure = mm::EarlyMem::set_node(PhysAddr{region.base}, region.size,
+                                                 NodeId{region.domain});
                 if (failure != Status::Ok) {
                     log::error("numa: [0x{:X}, 0x{:X}) would not move to node {} ({})", region.base,
                                region.base + region.size, region.domain, to_string(failure));
