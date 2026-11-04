@@ -14,7 +14,7 @@ auto PageTable::init_mmu(Flags const flags) -> Status {
     // from somewhere else than the tables it roots is one change away from
     // being freed to the wrong allocator.
     auto const phys = allocate_table();
-    if (!phys) {
+    if (phys == PhysAddr{}) {
         return Status::NoMemory;
     }
 
@@ -169,7 +169,7 @@ auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags, usize 
 /// the kernel's, shared by every address space: freeing them would pull the
 /// kernel out from under every CPU. Checked, not assumed.
 auto PageTable::destroy(VirtAddr const base, VirtAddr const end) -> TableTeardown {
-    DEBUG_ASSERT(m_pgd_phys != 0, "destroying a page table that has no root");
+    DEBUG_ASSERT(m_pgd_phys != PhysAddr{0}, "destroying a page table that has no root");
     DEBUG_ASSERT(base < end, "an empty range to destroy");
 
     auto const first = ::page_tables::index(top_level(), base);
@@ -181,7 +181,7 @@ auto PageTable::destroy(VirtAddr const base, VirtAddr const end) -> TableTeardow
     auto result = free_tables(first, last);
     free_table(m_pgd_phys);
     result.tables += 1;
-    m_pgd_phys = 0;
+    m_pgd_phys = PhysAddr{};
     return result;
 }
 

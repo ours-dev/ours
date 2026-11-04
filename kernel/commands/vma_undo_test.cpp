@@ -115,7 +115,7 @@ namespace {
         -> void {
         object::KernelHandle<object::VmaDispatcher> first;
         auto rights = Rights::None;
-        VirtAddr first_at = 0;
+        VirtAddr first_at{};
         verdict(tally,
                 region.allocate(VmOptions::None, 0, PAGE_SIZE, first, rights, first_at) ==
                     Status::Ok,
@@ -129,7 +129,7 @@ namespace {
         verdict(tally, region.unmap(first_at, PAGE_SIZE, OpChildren::Yes) == Status::Ok,
                 "another holder of the parent destroys it");
         object::KernelHandle<object::VmaDispatcher> second;
-        VirtAddr second_at = 0;
+        VirtAddr second_at{};
         verdict(tally,
                 region.allocate(VmOptions::None, 0, PAGE_SIZE, second, rights, second_at) ==
                         Status::Ok &&

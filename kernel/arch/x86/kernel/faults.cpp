@@ -1,7 +1,7 @@
 #include <ours/arch/apic.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/faults.hpp>
-#include <ours/irq/mod.hpp>
+#include <ours/irq/entry.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/platform/init.hpp>
@@ -24,7 +24,7 @@ namespace {
     /// of the lockup detector's dump, so the two read alike.
     auto log_registers(arch::IrqFrame const &frame) -> void {
         log::error("  rip={:#x} (+{:#x})  cs={:#x}  rsp={:#x}", frame.rip,
-                   frame.rip - VirtAddr(mm::IMAGE_START), frame.cs, frame.usp);
+                   frame.rip - reinterpret_cast<usize>(mm::IMAGE_START), frame.cs, frame.usp);
         log::error("  rax={:#x}  rbx={:#x}  rcx={:#x}  rdx={:#x}", frame.ax, frame.bx, frame.cx,
                    frame.dx);
         log::error("  rsi={:#x}  rdi={:#x}  rbp={:#x}", frame.si, frame.di, frame.bp);
@@ -130,8 +130,8 @@ namespace {
             .type = type,
             .vector_name = arch::to_string(frame->vector),
             .error_code = frame->error_code,
-            .ip = frame->ip,
-            .sp = frame->usp,
+            .ip = VirtAddr{frame->ip},
+            .sp = VirtAddr{frame->usp},
             .fault_address = fault_address,
             .synth_code = 0,
             .synth_data = 0,
@@ -149,7 +149,7 @@ namespace {
             // CR2 first, before anything that could itself fault and replace
             // it: interrupts are still off here, and the handler below may
             // well take a fault of its own while it looks for the page.
-            auto const cr2 = Cr2::read().get<Cr2::Address>();
+            auto const cr2 = VirtAddr{Cr2::read().get<Cr2::Address>()};
             if (x86_handle_page_fault(frame, cr2) == Status::Ok) {
                 return false;
             }
@@ -166,7 +166,7 @@ namespace {
         // below. The switch below is what ring 0 gets.
         if (is_from_uspace(frame)) {
             if (auto const type = user_exception_type(vector)) {
-                *user_exception = make_user_exception(*type, frame, 0);
+                *user_exception = make_user_exception(*type, frame, VirtAddr{});
                 return true;
             }
         }
@@ -324,7 +324,7 @@ namespace {
         // stack (percpu.hpp reserves DEBUG_BREAK_STACK) would break it, and
         // this is where that would show.
         auto const &stack = Thread::Current::get()->kernel_stack();
-        auto const where = reinterpret_cast<VirtAddr>(frame);
+        auto const where = VirtAddr{reinterpret_cast<usize>(frame)};
         DEBUG_ASSERT(where >= stack.base() && where < stack.top(),
                      "exception frame {:#x} is not on the thread's kernel stack", where);
 
@@ -421,9 +421,9 @@ extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
     auto const from_user = is_from_uspace(frame);
 
     task::ExceptionContext user_exception{};
-    irq::handle_irq_preamble(frame);
+    auto *const previous_frame = irq::enter_trap(frame);
     auto const raised = x86_dispatch_exception(vector, frame, &user_exception);
-    auto const need_preempt = irq::handle_irq_postamble();
+    auto const need_preempt = irq::leave_trap(previous_frame);
 
     // The order is: finish the interrupt, then preempt, then signals. Signals
     // come last because the next change to them lets a pending Kill exit the

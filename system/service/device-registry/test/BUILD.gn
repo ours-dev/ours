@@ -1,0 +1,20 @@
+# Host-side tests. These link googletest and run on the build machine: the
+# registry's core -- the grant rule, the mount pool, the refusals, and the
+# leaf forward -- driven on a real Loop over the fake kernel, the test
+# playing the publishers and the tree-walking client.
+executable("registry") {
+  testonly = true
+  sources = [ "registry_test.cpp" ]
+  deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/ioservice:loop_server",
+    "//system/lib/ioservice:outgoing",
+    "//system/lib/loop",
+    "//system/lib/protocols",
+    "//system/lib/server",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

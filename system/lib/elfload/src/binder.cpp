@@ -170,10 +170,10 @@ auto Binder::bind(Diagnostics const &diagnostics, Bytes const file, Image const 
     // is no longer one (see Image::writer), and with a single region the
     // translation was never more than this subtraction.
     auto store = [&importer](u64 const r_offset, u64 const value) -> Status {
-        if (r_offset < importer.image_base) {
+        if (ours::VirtAddr{r_offset} < importer.image_base) {
             return Status::OutOfRange;
         }
-        auto const at = r_offset - importer.image_base;
+        auto const at = ours::VirtAddr{r_offset} - importer.image_base;
         if (at > importer.span || importer.span - at < sizeof(value)) {
             return Status::OutOfRange;
         }

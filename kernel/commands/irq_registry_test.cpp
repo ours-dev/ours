@@ -25,8 +25,8 @@
 //     table it began with gone before it ends. This needs two CPUs.
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/irq/action.hpp>
-#include <ours/irq/domain_registry.hpp>
+#include <ours/irq/mod.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/status.hpp>
 #include <ours/task/irq_rcu.hpp>
@@ -41,14 +41,16 @@
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <kernel/kernel/irq/domain_registry.hpp>
+#include <kernel/kernel/irq/line_access.hpp>
 #include <logz4/log.hpp>
 #include <ustl/views/span.hpp>
 
 namespace ours {
 namespace {
+    using irq::DomainEndpoint;
     using irq::DomainId;
     using irq::DomainRegistry;
-    using irq::DomainSlot;
     using task::IrqRcuReadGuard;
     using task::Thread;
 
@@ -81,19 +83,21 @@ namespace {
         verdict(tally, got == want, name);
     }
 
-    auto no_op(irq::Data const &) -> void {}
+    auto no_op(irq::ControllerSource const &) -> void {}
 
-    constexpr irq::Chip CHIP = {
+    constexpr irq::ControllerOps CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = no_op,
         .unmask = no_op,
         .issue_eoi = no_op,
-        .name = "irq-registry-test",
     };
 
     /// A chip that cannot end an interrupt.
-    constexpr irq::Chip NO_EOI_CHIP = {
+    constexpr irq::ControllerOps NO_EOI_CHIP = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
         .mask = no_op,
-        .name = "irq-registry-test",
     };
 
     auto hooked_handler(VIrqNum, void *) -> irq::IrqReturn {
@@ -103,10 +107,13 @@ namespace {
     auto hooked_cancel(VIrqNum, void *context) -> void;
 
     struct Hooked {
-        Hooked(irq::IrqFlags const flags, irq::IrqCancel const cancel)
-            : action(&hooked_handler, this, flags, "irq-registry-test", cancel) {}
+        Hooked(irq::RegistrationOptions const flags, irq::IrqRevocationHandler const cancel)
+            : action({.handle = &hooked_handler,
+                      .revoke = cancel,
+                      .ready = [](void *) -> bool { return true; }},
+                     this, flags) {}
 
-        irq::Action action;
+        irq::Registration action;
         std::atomic<u32> told{0};
     };
 
@@ -114,9 +121,9 @@ namespace {
         static_cast<Hooked *>(context)->told.fetch_add(1, std::memory_order_relaxed);
     }
 
-    constexpr std::array<HIrqNum, 4> FOUR{0, 1, 2, 3};
-    constexpr std::array<HIrqNum, 2> TWO{0, 1};
-    constexpr std::array<HIrqNum, 1> ONE{0};
+    constexpr std::array<HIrqNum, 4> FOUR{HIrqNum{0}, HIrqNum{1}, HIrqNum{2}, HIrqNum{3}};
+    constexpr std::array<HIrqNum, 2> TWO{HIrqNum{0}, HIrqNum{1}};
+    constexpr std::array<HIrqNum, 1> ONE{HIrqNum{0}};
 
     auto span(auto const &numbers) -> ustl::views::Span<HIrqNum const> {
         return ustl::views::Span<HIrqNum const>(numbers);
@@ -130,18 +137,17 @@ namespace {
 
     /// The virq of (id, hirqnum) and the owner of a virq, each in a read of
     /// its own.
-    auto virq_in(DomainRegistry const &registry, DomainId const id, HIrqNum const hirqnum)
-        -> VIrqNum {
+    auto virq_in(DomainRegistry const &registry, DomainId const id, u32 const hirqnum) -> VIrqNum {
         IrqRcuReadGuard const guard;
-        return registry.virq_of(id, hirqnum, guard);
+        return registry.irq_for_source(id, HIrqNum{hirqnum}, guard);
     }
 
-    auto owner_of(DomainRegistry const &registry, VIrqNum const virq) -> irq::DescTable * {
+    auto owner_of(DomainRegistry const &registry, auto const virq) -> irq::Domain * {
         IrqRcuReadGuard const guard;
-        return registry.table_of(virq, guard);
+        return registry.domain_for(static_cast<VIrqNum>(virq), guard);
     }
 
-    auto find_in(DomainRegistry const &registry, DomainId const id) -> irq::DescTable * {
+    auto find_in(DomainRegistry const &registry, DomainId const id) -> irq::Domain * {
         IrqRcuReadGuard const guard;
         return registry.find(id, guard);
     }
@@ -152,15 +158,108 @@ namespace {
         auto _ = registry.unregister_domain(id);
     }
 
-    auto slot_holds(DomainSlot const &slot, irq::DescTable const *const table) -> bool {
-        arch::AutoInterruptDisabler const off;
-        return slot.table_with_irqs_off() == table;
+    auto slot_holds(DomainEndpoint const &slot, irq::Domain const *const table) -> bool {
+        IrqRcuReadGuard const guard;
+        return DomainRegistry::published_domain(slot, guard) == table;
+    }
+
+    struct ControllerInstance {
+        u32 masks = 0;
+        u32 unmasks = 0;
+        u32 ended = 0;
+        u32 handled = 0;
+        VIrqNum observed = VIrqNum::Invalid;
+    };
+
+    constexpr irq::ControllerOps INSTANCE_OPS = {
+        .protocol = irq::DispatchProtocol::Eoi,
+        .masking = irq::Masking::Synchronous,
+        .mask =
+            [](irq::ControllerSource const &source) {
+                ++static_cast<ControllerInstance *>(source.context)->masks;
+            },
+        .unmask =
+            [](irq::ControllerSource const &source) {
+                ++static_cast<ControllerInstance *>(source.context)->unmasks;
+            },
+        .issue_eoi =
+            [](irq::ControllerSource const &source) {
+                ++static_cast<ControllerInstance *>(source.context)->ended;
+            },
+    };
+
+    auto check_public_endpoints(Tally &tally) -> void {
+        constexpr auto A = DomainId{0x7f00};
+        constexpr auto B = DomainId{0x7f01};
+        ControllerInstance a;
+        ControllerInstance b;
+        DomainEndpoint endpoint_a;
+        DomainEndpoint endpoint_b;
+        verdict(tally, endpoint_a.dispatch(HIrqNum{0}).is_none(),
+                "an unpublished endpoint finds no source");
+        auto const first = irq::register_domain(A, span(ONE), INSTANCE_OPS, endpoint_a, &a);
+        auto const second = irq::register_domain(B, span(ONE), INSTANCE_OPS, endpoint_b, &b);
+        answered(tally, first, Status::Ok, "public registration publishes the first instance");
+        answered(tally, second, Status::Ok, "public registration publishes the second instance");
+        if (first != Status::Ok || second != Status::Ok) {
+            if (first == Status::Ok) {
+                auto _ = irq::unregister_domain(A);
+            }
+            if (second == Status::Ok) {
+                auto _ = irq::unregister_domain(B);
+            }
+            return;
+        }
+        auto const line_a = irq::irq_for_source(A, HIrqNum{0});
+        auto const line_b = irq::irq_for_source(B, HIrqNum{0});
+        verdict(tally, line_a != line_b && line_a != VIrqNum::Invalid && line_b != VIrqNum::Invalid,
+                "overlapping controller sources get distinct kernel identities");
+        constexpr auto HANDLE = [](VIrqNum const line, void *const context) -> irq::IrqReturn {
+            auto &instance = *static_cast<ControllerInstance *>(context);
+            ++instance.handled;
+            instance.observed = line;
+            return irq::IrqReturn::Handled;
+        };
+        irq::Registration registration_a({.handle = HANDLE}, &a, irq::RegistrationOptions::None);
+        irq::Registration registration_b({.handle = HANDLE}, &b, irq::RegistrationOptions::None);
+        answered(tally, irq::attach(line_a, registration_a), Status::Ok, "attach to instance A");
+        answered(tally, irq::attach(line_b, registration_b), Status::Ok, "attach to instance B");
+        auto const result_a = endpoint_a.dispatch(HIrqNum{0});
+        verdict(tally,
+                result_a.is_some() && *result_a == irq::IrqReturn::Handled && a.handled == 1 &&
+                    a.observed == line_a && a.ended == 1 && b.handled == 0 && b.ended == 0,
+                "endpoint A dispatches and ends only instance A");
+        auto const result_b = endpoint_b.dispatch(HIrqNum{0});
+        verdict(tally,
+                result_b.is_some() && *result_b == irq::IrqReturn::Handled && b.handled == 1 &&
+                    b.observed == line_b && b.ended == 1,
+                "endpoint B dispatches and ends only instance B");
+        verdict(tally, endpoint_a.dispatch(HIrqNum{99}).is_none() && a.ended == 1,
+                "an unknown source leaves root completion to the caller");
+        auto const a_masks = a.masks;
+        auto const b_masks = b.masks;
+        answered(tally, irq::mask(line_a), Status::Ok, "mask resolves the owning domain");
+        verdict(tally, a.masks == a_masks + 1 && b.masks == b_masks,
+                "mask reaches the correct controller context");
+        auto const b_unmasks = b.unmasks;
+        answered(tally, irq::unmask(line_b), Status::Ok, "unmask resolves the other domain");
+        verdict(tally, b.unmasks == b_unmasks + 1, "unmask reaches the other controller context");
+        answered(tally, irq::detach(registration_a), Status::Ok, "detach instance A");
+        answered(tally, irq::unregister_domain(A), Status::Ok, "remove the first public domain");
+        verdict(tally,
+                endpoint_a.dispatch(HIrqNum{0}).is_none() &&
+                    irq::mask(line_a) == Status::NoResource,
+                "withdrawal retracts its endpoint and control lookup");
+        verdict(tally, endpoint_b.dispatch(HIrqNum{0}).is_some() && b.handled == 2 && b.ended == 2,
+                "the other endpoint survives independent removal");
+        answered(tally, irq::detach(registration_b), Status::Ok, "detach instance B");
+        answered(tally, irq::unregister_domain(B), Status::Ok, "remove the second public domain");
     }
 
     auto check_registration(Tally &tally) -> void {
         DomainRegistry registry;
-        DomainSlot slot_a;
-        DomainSlot slot_b;
+        DomainEndpoint slot_a;
+        DomainEndpoint slot_b;
         auto const first = registry.register_domain(DomainId{1}, span(FOUR), CHIP, slot_a);
         auto const second = registry.register_domain(DomainId{2}, span(FOUR), CHIP, slot_b);
         answered(tally, first, Status::Ok, "a domain is registered");
@@ -168,10 +267,10 @@ namespace {
 
         auto const a0 = virq_in(registry, DomainId{1}, 0);
         auto const b0 = virq_in(registry, DomainId{2}, 0);
-        verdict(tally, a0 == 32, "the first domain gets the virqs a lone domain gets");
+        verdict(tally, a0 == VIrqNum{32}, "the first domain gets the virqs a lone domain gets");
         verdict(tally,
-                b0 == 64 && virq_in(registry, DomainId{2}, 3) == 67 &&
-                    virq_in(registry, DomainId{1}, 3) == 35,
+                b0 == VIrqNum{64} && virq_in(registry, DomainId{2}, 3) == VIrqNum{67} &&
+                    virq_in(registry, DomainId{1}, 3) == VIrqNum{35},
                 "and the second a block above it, so the same pin has two different virqs");
 
         auto *const table_a = find_in(registry, DomainId{1});
@@ -185,11 +284,11 @@ namespace {
         verdict(tally,
                 owner_of(registry, 36) == nullptr && owner_of(registry, 63) == nullptr &&
                     owner_of(registry, 68) == nullptr && owner_of(registry, 0) == nullptr &&
-                    owner_of(registry, irq::INVALID_V_IRQ_NUM) == nullptr,
+                    owner_of(registry, static_cast<u32>(VIrqNum::Invalid)) == nullptr,
                 "and the hole between the blocks, past them, and the invalid number find none");
         verdict(tally,
-                virq_in(registry, DomainId{9}, 0) == irq::INVALID_V_IRQ_NUM &&
-                    virq_in(registry, DomainId{1}, 99) == irq::INVALID_V_IRQ_NUM,
+                virq_in(registry, DomainId{9}, 0) == VIrqNum::Invalid &&
+                    virq_in(registry, DomainId{1}, 99) == VIrqNum::Invalid,
                 "interrupt_map's lookup finds no virq for an unknown domain or pin");
         verdict(tally, slot_holds(slot_a, table_a) && slot_holds(slot_b, table_b),
                 "the slot a root handler holds has its domain's table");
@@ -199,11 +298,11 @@ namespace {
 
     auto check_registration_refused(Tally &tally) -> void {
         DomainRegistry registry;
-        DomainSlot slot;
-        DomainSlot other;
+        DomainEndpoint slot;
+        DomainEndpoint other;
         constexpr std::array<HIrqNum, 0> NONE{};
-        constexpr std::array<HIrqNum, 2> WITH_INVALID{1, irq::INVALID_H_IRQ_NUM};
-        constexpr std::array<HIrqNum, 2> TWICE{1, 1};
+        constexpr std::array<HIrqNum, 2> WITH_INVALID{HIrqNum{1}, HIrqNum::Invalid};
+        constexpr std::array<HIrqNum, 2> TWICE{HIrqNum{1}, HIrqNum{1}};
 
         answered(tally, registry.register_domain(DomainId::Invalid, span(TWO), CHIP, slot),
                  Status::InvArgs, "the Invalid id is refused");
@@ -217,7 +316,7 @@ namespace {
                  Status::AlreadyExists, "a number given twice is refused");
         verdict(tally,
                 find_in(registry, DomainId{1}) == nullptr &&
-                    virq_in(registry, DomainId{1}, 1) == irq::INVALID_V_IRQ_NUM,
+                    virq_in(registry, DomainId{1}, 1) == VIrqNum::Invalid,
                 "and none of them keeps anything");
 
         answered(tally, registry.register_domain(DomainId{1}, span(TWO), CHIP, slot), Status::Ok,
@@ -230,7 +329,7 @@ namespace {
                  Status::AlreadyExists, "an id in use is refused");
 
         // The registry holds CAPACITY domains: one is registered; fill it.
-        std::array<DomainSlot, DomainRegistry::CAPACITY> slots;
+        std::array<DomainEndpoint, DomainRegistry::CAPACITY> slots;
         auto filled = true;
         for (usize i = 0; i + 1 < DomainRegistry::CAPACITY; ++i) {
             filled &= registry.register_domain(DomainId{static_cast<u32>(10 + i)}, span(ONE), CHIP,
@@ -249,9 +348,9 @@ namespace {
 
     auto check_unregistration(Tally &tally) -> void {
         DomainRegistry registry;
-        DomainSlot root_slot;
-        DomainSlot slot_a;
-        DomainSlot slot_b;
+        DomainEndpoint root_slot;
+        DomainEndpoint slot_a;
+        DomainEndpoint slot_b;
         auto const ready =
             registry.register_domain(DomainId::Root, span(TWO), CHIP, root_slot) == Status::Ok &&
             registry.register_domain(DomainId{1}, span(FOUR), CHIP, slot_a) == Status::Ok &&
@@ -272,7 +371,7 @@ namespace {
         verdict(tally,
                 find_in(registry, DomainId{2}) == nullptr &&
                     owner_of(registry, before) == nullptr &&
-                    virq_in(registry, DomainId{2}, 0) == irq::INVALID_V_IRQ_NUM &&
+                    virq_in(registry, DomainId{2}, 0) == VIrqNum::Invalid &&
                     slot_holds(slot_b, nullptr),
                 "its lookups and its slot find nothing");
         verdict(tally,
@@ -285,7 +384,8 @@ namespace {
                  "its id is registered again");
         auto const after = virq_in(registry, DomainId{2}, 0);
         verdict(tally,
-                after != before && after >= before + FOUR.size() &&
+                after != before &&
+                    after >= static_cast<VIrqNum>(static_cast<u32>(before) + FOUR.size()) &&
                     owner_of(registry, before) == nullptr,
                 "in a block above everything given out; the dead block stays dead");
         drop(registry, DomainId{1});
@@ -293,14 +393,14 @@ namespace {
 
         // Over and over: the place and the id come back every time, and the
         // blocks only go up.
-        DomainSlot slot_c;
+        DomainEndpoint slot_c;
         auto rose = true;
         auto each_ok = true;
         auto last = VIrqNum{0};
         for (u32 round = 0; round < 3 * DomainRegistry::CAPACITY; ++round) {
             each_ok &= registry.register_domain(DomainId{5}, span(TWO), CHIP, slot_c) == Status::Ok;
             auto const first = virq_in(registry, DomainId{5}, 0);
-            rose &= first != irq::INVALID_V_IRQ_NUM && first > last;
+            rose &= first != VIrqNum::Invalid && first > last;
             last = first;
             each_ok &= registry.unregister_domain(DomainId{5}) == Status::Ok;
         }
@@ -311,12 +411,12 @@ namespace {
 
     /// Hardware numbers with holes, as a controller with pins missing has.
     auto check_sparse(Tally &tally) -> void {
-        constexpr std::array<HIrqNum, 3> SPARSE{0, 5, 9};
-        constexpr std::array<HIrqNum, 2> FAR{0, 40};
+        constexpr std::array<HIrqNum, 3> SPARSE{HIrqNum{0}, HIrqNum{5}, HIrqNum{9}};
+        constexpr std::array<HIrqNum, 2> FAR{HIrqNum{0}, HIrqNum{40}};
         DomainRegistry registry;
-        DomainSlot slot_a;
-        DomainSlot slot_b;
-        DomainSlot slot_c;
+        DomainEndpoint slot_a;
+        DomainEndpoint slot_b;
+        DomainEndpoint slot_c;
         auto const ready =
             registry.register_domain(DomainId{1}, span(SPARSE), CHIP, slot_a) == Status::Ok;
         verdict(tally, ready, "a domain over hardware numbers 0, 5 and 9");
@@ -326,10 +426,12 @@ namespace {
         auto const first = virq_in(registry, DomainId{1}, 0);
         verdict(
             tally,
-            virq_in(registry, DomainId{1}, 5) == first + 1 &&
-                virq_in(registry, DomainId{1}, 9) == first + 2 &&
-                virq_in(registry, DomainId{1}, 3) == irq::INVALID_V_IRQ_NUM &&
-                owner_of(registry, first + 3) == nullptr,
+            virq_in(registry, DomainId{1}, 5) ==
+                    static_cast<VIrqNum>(static_cast<u32>(first) + 1) &&
+                virq_in(registry, DomainId{1}, 9) ==
+                    static_cast<VIrqNum>(static_cast<u32>(first) + 2) &&
+                virq_in(registry, DomainId{1}, 3) == VIrqNum::Invalid &&
+                owner_of(registry, static_cast<VIrqNum>(static_cast<u32>(first) + 3)) == nullptr,
             "has consecutive virqs for its pins, none for the pins it lacks, and none past them");
 
         answered(tally, registry.unregister_domain(DomainId{1}), Status::Ok, "and is removed");
@@ -337,12 +439,14 @@ namespace {
                  "another domain with a far pin is registered after it");
         auto const second = virq_in(registry, DomainId{2}, 0);
         verdict(tally,
-                second >= first + SPARSE.size() && owner_of(registry, first) == nullptr &&
-                    owner_of(registry, second) != nullptr,
+                second >= static_cast<VIrqNum>(static_cast<u32>(first) + SPARSE.size()) &&
+                    owner_of(registry, first) == nullptr && owner_of(registry, second) != nullptr,
                 "in a block above the dead one, which still finds no table");
         answered(tally, registry.register_domain(DomainId{3}, span(SPARSE), CHIP, slot_c),
                  Status::Ok, "and a third like the first");
-        verdict(tally, virq_in(registry, DomainId{3}, 0) >= second + 2,
+        verdict(tally,
+                virq_in(registry, DomainId{3}, 0) >=
+                    static_cast<VIrqNum>(static_cast<u32>(second) + 2),
                 "above the second's block again");
         drop(registry, DomainId{2});
         drop(registry, DomainId{3});
@@ -350,14 +454,14 @@ namespace {
 
     auto check_removal_refused(Tally &tally) -> void {
         DomainRegistry registry;
-        DomainSlot hookless_slot;
+        DomainEndpoint hookless_slot;
 
         // A Permanent line: the domain, its registry, its slot and its owner
         // are leaked, one set per run, as the action can never come off.
         auto *const permanent =
-            new (mm::GAF_KERNEL) Hooked(irq::IrqFlags::Permanent, &hooked_cancel);
+            new (mm::GAF_KERNEL) Hooked(irq::RegistrationOptions::Permanent, &hooked_cancel);
         auto *const permanent_registry = new (mm::GAF_KERNEL) DomainRegistry();
-        auto *const leaked_slot = new (mm::GAF_KERNEL) DomainSlot();
+        auto *const leaked_slot = new (mm::GAF_KERNEL) DomainEndpoint();
         if (permanent == nullptr || permanent_registry == nullptr || leaked_slot == nullptr) {
             verdict(tally, false, "allocate the Permanent domain");
             return;
@@ -369,36 +473,51 @@ namespace {
         auto const virq1 = virq_in(*permanent_registry, DomainId{1}, 1);
         auto attached = Status::NotFound;
         if (table != nullptr) {
-            attached = table->attach(virq1, permanent->action);
+            attached = irq::with_line(*table, virq1, [&](irq::Line &resolved) {
+                return resolved.attach(permanent->action);
+            });
         }
         verdict(tally, registered == Status::Ok && attached == Status::Ok,
                 "a domain with a Permanent action on one line");
         answered(tally, permanent_registry->unregister_domain(DomainId{1}), Status::AlreadyBound,
                  "is not removed");
-        Hooked probe(irq::IrqFlags::None, &hooked_cancel);
+        Hooked probe(irq::RegistrationOptions::None, &hooked_cancel);
         verdict(tally,
                 find_in(*permanent_registry, DomainId{1}) == table && permanent->told.load() == 0 &&
-                    table->unmask(virq0) == Status::Ok &&
-                    table->attach(virq0, probe.action) == Status::Ok,
+                    irq::with_line(*table, virq0,
+                                   [&](irq::Line &resolved) { return resolved.unmask(); }) ==
+                        Status::Ok &&
+                    irq::with_line(*table, virq0,
+                                   [&](irq::Line &resolved) {
+                                       return resolved.attach(probe.action);
+                                   }) == Status::Ok,
                 "and works as before: no mark is left on its other line, and nothing was told");
         auto _ = table->detach(probe.action); // Clean-up; the check above is the result.
 
         // An action with no cancel hook.
-        Hooked hookless(irq::IrqFlags::None, nullptr);
-        Hooked hooked(irq::IrqFlags::None, &hooked_cancel);
+        Hooked hookless(irq::RegistrationOptions::None, nullptr);
+        Hooked hooked(irq::RegistrationOptions::None, &hooked_cancel);
         auto const ok =
             registry.register_domain(DomainId{1}, span(TWO), CHIP, hookless_slot) == Status::Ok;
         auto *const second = find_in(registry, DomainId{1});
         auto const v0 = virq_in(registry, DomainId{1}, 0);
         auto const v1 = virq_in(registry, DomainId{1}, 1);
-        auto const both = ok && second->attach(v0, hooked.action) == Status::Ok &&
-                          second->attach(v1, hookless.action) == Status::Ok;
+        auto const both = ok &&
+                          irq::with_line(*second, v0,
+                                         [&](irq::Line &resolved) {
+                                             return resolved.attach(hooked.action);
+                                         }) == Status::Ok &&
+                          irq::with_line(*second, v1, [&](irq::Line &resolved) {
+                              return resolved.attach(hookless.action);
+                          }) == Status::Ok;
         verdict(tally, both, "a domain with an action with a hook and one without");
         answered(tally, registry.unregister_domain(DomainId{1}), Status::AlreadyBound,
                  "is not removed either");
         verdict(tally,
                 hooked.told.load() == 0 && hooked.action.is_attached() &&
-                    second->unmask(v0) == Status::Ok,
+                    irq::with_line(*second, v0,
+                                   [&](irq::Line &resolved) { return resolved.unmask(); }) ==
+                        Status::Ok,
                 "its hooked action is left on its line, untold, and the line unmasks");
         auto const dropped = second->detach(hookless.action);
         answered(tally, registry.unregister_domain(DomainId{1}), Status::Ok,
@@ -412,19 +531,21 @@ namespace {
     /// the last line refuses all.
     auto check_removal_tells_every_line(Tally &tally) -> void {
         DomainRegistry registry;
-        DomainSlot slot;
-        Hooked one(irq::IrqFlags::None, &hooked_cancel);
-        Hooked two(irq::IrqFlags::None, &hooked_cancel);
-        Hooked three(irq::IrqFlags::None, &hooked_cancel);
-        Hooked four(irq::IrqFlags::None, nullptr);
+        DomainEndpoint slot;
+        Hooked one(irq::RegistrationOptions::None, &hooked_cancel);
+        Hooked two(irq::RegistrationOptions::None, &hooked_cancel);
+        Hooked three(irq::RegistrationOptions::None, &hooked_cancel);
+        Hooked four(irq::RegistrationOptions::None, nullptr);
         Hooked *const all[] = {&one, &two, &three, &four};
 
         auto ready = registry.register_domain(DomainId{1}, span(FOUR), CHIP, slot) == Status::Ok;
         auto *const table = find_in(registry, DomainId{1});
         ready &= table != nullptr;
         for (usize pin = 0; ready && pin < FOUR.size(); ++pin) {
-            ready &= table->attach(virq_in(registry, DomainId{1}, static_cast<HIrqNum>(pin)),
-                                   all[pin]->action) == Status::Ok;
+            ready &= irq::with_line(*table, virq_in(registry, DomainId{1}, static_cast<u32>(pin)),
+                                    [&](irq::Line &resolved) {
+                                        return resolved.attach(all[pin]->action);
+                                    }) == Status::Ok;
         }
         verdict(tally, ready, "an action on each of four lines, the last without a hook");
         if (!ready) {
@@ -490,8 +611,8 @@ namespace {
 
     auto check_removing(Tally &tally, CpuNum const reader_cpu, CpuNum const remover_cpu) -> void {
         auto *const registry = new (mm::GAF_KERNEL) DomainRegistry();
-        auto *const slot = new (mm::GAF_KERNEL) DomainSlot();
-        auto *const spare = new (mm::GAF_KERNEL) DomainSlot();
+        auto *const slot = new (mm::GAF_KERNEL) DomainEndpoint();
+        auto *const spare = new (mm::GAF_KERNEL) DomainEndpoint();
         if (registry == nullptr || slot == nullptr || spare == nullptr ||
             registry->register_domain(DomainId{1}, span(TWO), CHIP, *slot) != Status::Ok) {
             verdict(tally, false, "make the domain being removed");
@@ -546,7 +667,7 @@ namespace {
     struct Writer {
         DomainRegistry *registry = nullptr;
         DomainId id = DomainId::Invalid;
-        DomainSlot slot;
+        DomainEndpoint slot;
         std::atomic<u32> failures{0};
         VIrqNum firsts[WRITER_ROUNDS]{};
     };
@@ -600,10 +721,11 @@ namespace {
             for (u32 j = i + 1; j < 2 * WRITER_ROUNDS; ++j) {
                 auto const x = WRITERS[i / WRITER_ROUNDS].firsts[i % WRITER_ROUNDS];
                 auto const y = WRITERS[j / WRITER_ROUNDS].firsts[j % WRITER_ROUNDS];
-                if (x == 0 || y == 0) {
+                if (x == VIrqNum{0} || y == VIrqNum{0}) {
                     continue;
                 }
-                if (x < y + 2 && y < x + 2) {
+                if (x < static_cast<VIrqNum>(static_cast<u32>(y) + 2) &&
+                    y < static_cast<VIrqNum>(static_cast<u32>(x) + 2)) {
                     overlaps += 1;
                 }
             }
@@ -623,8 +745,8 @@ namespace {
     /// freed and made again, has another.
     struct Stress {
         DomainRegistry registry;
-        DomainSlot slot;
-        std::atomic<VIrqNum> probe{irq::INVALID_V_IRQ_NUM};
+        DomainEndpoint slot;
+        std::atomic<VIrqNum> probe{VIrqNum::Invalid};
         std::atomic<bool> stop{false};
         std::atomic<u64> seen[MAX_CPU]{};
         /// Looks that began with the table registered and ended with it
@@ -637,19 +759,19 @@ namespace {
     auto look_once(CpuNum const cpu) -> bool {
         IrqRcuReadGuard const guard;
         auto const virq = STRESS->probe.load(std::memory_order_acquire);
-        auto *const table = STRESS->registry.table_of(virq, guard);
+        auto *const table = STRESS->registry.domain_for(virq, guard);
         if (table == nullptr) {
             return false;
         }
-        auto const first = table->first_virq();
+        auto const first = table->first_id();
         STRESS->seen[cpu].fetch_add(1, std::memory_order_relaxed);
         for (u32 i = 0; i < LOOK_FOR; ++i) {
             // The slot a root handler reads, when it holds a table, holds this
             // one: the removal retracts it before the grace period, never
             // after, and a new domain's cannot be published under this guard.
-            auto *const from_slot = STRESS->slot.table_with_irqs_off();
-            if (table->is_destroyed() || table->first_virq() != first ||
-                table->hwirq_of(virq) == irq::INVALID_H_IRQ_NUM ||
+            auto *const from_slot = DomainRegistry::published_domain(STRESS->slot, guard);
+            if (table->is_destroyed() || table->first_id() != first ||
+                table->source_for_irq(virq) == HIrqNum::Invalid ||
                 (from_slot != nullptr && from_slot != table)) {
                 STRESS->broken[cpu].fetch_add(1, std::memory_order_relaxed);
                 break;
@@ -750,6 +872,7 @@ namespace {
     auto irq_registry_test_command(int, char **) -> int {
         Tally tally;
 
+        check_public_endpoints(tally);
         check_registration(tally);
         check_registration_refused(tally);
         check_unregistration(tally);

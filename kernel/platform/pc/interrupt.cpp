@@ -1,5 +1,6 @@
 #include <ours/arch/apic.hpp>
-#include <ours/irq/domain_registry.hpp>
+#include <ours/irq/domain.hpp>
+#include <ours/irq/entry.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/mod.hpp>
 #include <ours/platform/acpi.hpp>
@@ -57,11 +58,9 @@ namespace {
         return object;
     }
 
-    /// The slot the machine's directory publishes the root domain's table
-    /// into, and that the handler below reads it from. Static storage, as the
-    /// registry's contract for a slot asks: the handler reads it for every
-    /// interrupt, and the root domain is never taken away.
-    irq::DomainSlot ROOT_SLOT;
+    /// Static controller entry for the root domain. It owns the reader scope
+    /// for each dispatch; the platform never borrows domain storage.
+    irq::DomainEndpoint ROOT_ENDPOINT;
 
     /// The root handler of a PC, installed by platform_init_apic(). Every pin
     /// of every IO-APIC was programmed with vector PlatformIrqMin + GSI, so
@@ -76,15 +75,9 @@ namespace {
     /// good.
     auto handle_root_interrupt(arch::IrqFrame *const frame) -> void {
         DEBUG_ASSERT(frame->vector >= arch::IrqVec::PlatformIrqMin);
-        auto const gsi = static_cast<HIrqNum>(frame->vector) -
-                         static_cast<HIrqNum>(arch::IrqVec::PlatformIrqMin);
-        // The table of the domain this handler serves, as init_lines()
-        // published it: one acquire load, and no read of the directory on the
-        // interrupt path. It is null only before the lines are built, which no
-        // interrupt can see -- interrupts are enabled below, after
-        // init_lines() -- and never after: the root domain is not removable.
-        auto *const table = ROOT_SLOT.table_with_irqs_off();
-        if (!irq::handle_irq_generic(table, gsi)) {
+        auto const gsi = static_cast<HIrqNum>(static_cast<u32>(frame->vector) -
+                                              static_cast<u32>(arch::IrqVec::PlatformIrqMin));
+        if (ROOT_ENDPOINT.dispatch(gsi).is_none()) {
             apic_issue_eoi();
         }
     }
@@ -107,10 +100,8 @@ namespace {
         for (auto const &entry: acpi::entries<acpi::madt::IoApicEntry>(*madt)) {
             auto slot = io_apics.emplace_back();
             ASSERT(slot, "Out of memory while collecting IO-APICs from the MADT");
-            slot.unwrap()->init(entry.io_apic_address,
-                                mm::phys_to_pfn(PhysAddr(entry.io_apic_address)),
-                                entry.global_irq_base);
-            platform::reserve_kernel_mmio(entry.io_apic_address, PAGE_SIZE);
+            slot.unwrap()->init(PhysAddr{entry.io_apic_address}, VirtAddr{}, entry.global_irq_base);
+            platform::reserve_kernel_mmio(PhysAddr{entry.io_apic_address}, PAGE_SIZE);
         }
 
         ktl::Vec<arch::IoApicIsaOverride> io_apic_isa_overrides;
@@ -166,20 +157,27 @@ namespace {
 
             auto const gsi = apic_io_isa_to_global(isa);
             // Two ISA lines on one GSI would program one entry twice and be
-            // one line, which init_lines() refuses. The first keeps the GSI.
+            // one line, which register_domain() refuses. The first keeps the GSI.
             // Mapping the overrides first would instead let a line moved onto
             // a pin beat the line whose own number it is; on QEMU the only
             // such pair is ISA 0 and 2, which the check above settles the
             // same way.
             if (is_programmed(gsi)) {
                 log::warn("ISA IRQ {} shares GSI {} with an earlier ISA line; not programmed",
-                          u32(isa), gsi);
+                          u32(isa), static_cast<u32>(gsi));
                 continue;
             }
 
-            ASSERT(gsi <= MAX_GSI, "GSI {} of ISA IRQ {} is past the platform vectors", gsi,
-                   u32(isa));
-            auto const vector = IrqVec(usize(IrqVec::PlatformIrqMin) + gsi);
+            if (static_cast<usize>(gsi) > MAX_GSI) {
+                // The same answer the PCI loop below gives the identical
+                // condition: no line, left as the firmware left it. A
+                // firmware override naming a GSI past the platform vectors
+                // is the firmware's data, not a kernel invariant to die on.
+                log::warn("ISA IRQ {} is GSI {}, past the platform vectors; no line", u32(isa),
+                          static_cast<u32>(gsi));
+                continue;
+            }
+            auto const vector = IrqVec(usize(IrqVec::PlatformIrqMin) + static_cast<usize>(gsi));
             apic_configure_isa_irq(isa, ApicDeliveryMode::Fixed, true,
                                    ApicDestinationMode::Physical, static_cast<u8>(bspid), vector);
             remember(gsi);
@@ -199,13 +197,13 @@ namespace {
                     continue;
                 }
 
-                if (gsi > MAX_GSI) {
+                if (static_cast<usize>(gsi) > MAX_GSI) {
                     log::warn("IO-APIC[{}] pin {} is GSI {}, past the platform vectors; no line",
-                              ioapic.id(), pin, gsi);
+                              ioapic.id(), pin, static_cast<u32>(gsi));
                     continue;
                 }
 
-                auto const vector = IrqVec(usize(IrqVec::PlatformIrqMin) + gsi);
+                auto const vector = IrqVec(usize(IrqVec::PlatformIrqMin) + static_cast<usize>(gsi));
                 apic_configure_irq(gsi, ApicTriggerMode::Level, ApicInterruptPolarity::ActiveLow,
                                    ApicDeliveryMode::Fixed, true, ApicDestinationMode::Physical,
                                    static_cast<u8>(bspid), vector);
@@ -221,8 +219,9 @@ namespace {
         // masks and unmasks its line through the irq layer, and the chip
         // takes the IO-APIC register lock; no driver touches the IO-APIC. The
         // lines are the machine's root domain, and their table is published
-        // into ROOT_SLOT, which the handler above reads for every interrupt.
-        auto const status = irq::init_lines(ustl::views::Span(gsis), io_apic_chip(), ROOT_SLOT);
+        // through ROOT_ENDPOINT, which the handler above dispatches through.
+        auto const status = irq::register_domain(irq::DomainId::Root, ustl::views::Span(gsis),
+                                                 io_apic_controller(), ROOT_ENDPOINT);
         ASSERT(Status::Ok == status, "Failed to build the interrupt lines: {}", to_string(status));
 
         // The root controller's driver gives arch its handler now, with the
@@ -249,8 +248,9 @@ namespace {
 /// would hand out the timer's line under a second name.
 auto platform::isa_irq_line(u32 const isa_irq) -> VIrqNum {
     if (isa_irq >= arch::NUM_ISA_IRQS || isa_irq == ISA_IRQ_PIC2) {
-        return irq::INVALID_V_IRQ_NUM;
+        return VIrqNum::Invalid;
     }
-    return irq::virq_of_hwirq(apic_io_isa_to_global(static_cast<u8>(isa_irq)));
+    return irq::irq_for_source(irq::DomainId::Root,
+                               apic_io_isa_to_global(static_cast<u8>(isa_irq)));
 }
 } // namespace ours

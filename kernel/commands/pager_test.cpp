@@ -131,7 +131,7 @@ namespace {
 
     /// A load from |va| by a thread of its own, which may sleep in the fault.
     struct Access {
-        VirtAddr va = 0;
+        VirtAddr va{};
         u64 value = 0;
         Status status = Status::InternalError;
     };
@@ -234,9 +234,9 @@ namespace {
 
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_with_vmo(
-            mm::VmPlacement::anywhere(), 4 * P, 0, rw, mm::VmaFlags::PermMask,
-            ustl::Arc<mm::VmObject>(pager.vmo), mm::VmMapOption::None, "pager.test");
+        auto mapping = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
+                                          ustl::Arc<mm::VmObject>(pager.vmo), mm::VmMapOption::None,
+                                          "pager.test");
         if (mapping.is_err()) {
             verdict(tally, false, "the VMO is mapped");
             return;
@@ -311,9 +311,9 @@ namespace {
         }
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_with_vmo(
-            mm::VmPlacement::anywhere(), P, 0, rw, mm::VmaFlags::PermMask,
-            ustl::Arc<mm::VmObject>(pager.vmo), mm::VmMapOption::None, "pager.test overtime");
+        auto mapping = root->map_with_vmo(VirtAddr::Anywhere, P, 0, rw, mm::VmaFlags::PermMask,
+                                          ustl::Arc<mm::VmObject>(pager.vmo), mm::VmMapOption::None,
+                                          "pager.test overtime");
         if (mapping.is_err()) {
             verdict(tally, false, "the VMO with the short overtime is mapped");
             return;
@@ -541,9 +541,9 @@ namespace {
             auto vmo = made.vmo.dispatcher()->vmo();
             auto root = aspace.root_vma();
             auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-            auto mapping = root->map_with_vmo(mm::VmPlacement::anywhere(), 2 * P, 0, rw,
-                                              mm::VmaFlags::PermMask, vmo, mm::VmMapOption::None,
-                                              "pager.test pager first");
+            auto mapping =
+                root->map_with_vmo(VirtAddr::Anywhere, 2 * P, 0, rw, mm::VmaFlags::PermMask, vmo,
+                                   mm::VmMapOption::None, "pager.test pager first");
             if (mapping.is_err()) {
                 verdict(tally, false, "the VMO that outlives its pager is mapped");
                 return;

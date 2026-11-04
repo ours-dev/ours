@@ -29,6 +29,6 @@ user_executable("profile") {
   deps = [
     "//system/lib/eftl:headers",
     "//system/lib/fsio",
-    "//system/lib/ours.resource:client",
+    "//system/lib/protocols:client",
   ]
 }

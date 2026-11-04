@@ -289,7 +289,7 @@ auto Outgoing::connect(u64 const service, Uandle const channel) -> void {
     m_storage->handlers[service].service->connect(channel);
 }
 
-auto Outgoing::subtree(u64 const value, std::string_view const rest, ours_io::Flags const flags,
+auto Outgoing::subtree(u64 const value, std::string_view const rest, prot::io::Flags const flags,
                        Uandle const channel) -> void {
     // An Open that walked to a Subtree node: its handler owns the channel
     // from here, as a service node's does. The value is an index add_subtree()

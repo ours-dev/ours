@@ -3,16 +3,17 @@
 #ifndef IOSERVICE_OUTGOING_HPP
 #define IOSERVICE_OUTGOING_HPP 1
 
-#include <array>
-#include <string_view>
-
 #include <ioservice/loop_server.hpp>
 #include <ioservice/server.hpp>
 #include <ioservice/tree.hpp>
+
+#include <array>
+#include <string_view>
+
 #include <loop/loop.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <wire/wire.hpp>
 
 /// The provider side of a component (component-framework design,
@@ -128,7 +129,7 @@ class SubtreeHandler {
     /// serves it, forwards it, answers it with an epitaph and closes it, or
     /// closes it. No connection of the outgoing directory was made for it. It
     /// runs inside a Loop callback, so it may add() slots but must not wait.
-    virtual auto open(std::string_view rest, ours_io::Flags flags, ours::Uandle channel)
+    virtual auto open(std::string_view rest, prot::io::Flags flags, ours::Uandle channel)
         -> void = 0;
 
   protected:
@@ -183,11 +184,11 @@ class Outgoing final: private LoopServer::Delegate {
     /// be run only if it was added executable, so no right reaches anything
     /// it should not; whoever opens it is held to its own Open's rights.
     static constexpr auto OUTGOING_RIGHTS =
-        ours_io::Operations::Connect | ours_io::Operations::ReadBytes |
-        ours_io::Operations::WriteBytes | ours_io::Operations::Execute |
-        ours_io::Operations::GetAttributes | ours_io::Operations::UpdateAttributes |
-        ours_io::Operations::Enumerate | ours_io::Operations::Traverse |
-        ours_io::Operations::ModifyDirectory;
+        prot::io::Operations::Connect | prot::io::Operations::ReadBytes |
+        prot::io::Operations::WriteBytes | prot::io::Operations::Execute |
+        prot::io::Operations::GetAttributes | prot::io::Operations::UpdateAttributes |
+        prot::io::Operations::Enumerate | prot::io::Operations::Traverse |
+        prot::io::Operations::ModifyDirectory;
 
     /// One place of the handler table: the handler a node's value indexes.
     /// Whichever call added the node set exactly one of the two pointers, a
@@ -380,7 +381,7 @@ class Outgoing final: private LoopServer::Delegate {
     /// Hands |channel|, the request's, to the subtree handler added as
     /// |value|, the value its Subtree node was added with, with the rest of
     /// the Open's path and its flags.
-    auto subtree(u64 value, std::string_view rest, ours_io::Flags flags, ours::Uandle channel)
+    auto subtree(u64 value, std::string_view rest, prot::io::Flags flags, ours::Uandle channel)
         -> void override;
 
     /// Writes the one line that says an Open of |path| was refused with

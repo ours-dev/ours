@@ -70,7 +70,7 @@ namespace {
     /// What the exception entry itself has already added to the running
     /// thread's disable counts by the time this handler runs.
     ///
-    /// arch_handle_exception() calls irq::handle_irq_preamble() ahead of the
+    /// arch_handle_exception() calls irq::enter_trap() ahead of the
     /// dispatch, which does one disable_preemption() and one
     /// disable_eager_reschedule(). So every fault,
     /// including one taken by ring-3 code that had disabled nothing, arrives
@@ -224,7 +224,7 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
         auto const resume = task::X86Thread::current_user_copy()->resume;
         if ((resume & UserCopyState::RUN_FAULT_HANDLER) == 0) {
             frame->ip = resume | UserCopyState::RUN_FAULT_HANDLER;
-            frame->dx = addr;
+            frame->dx = std::to_underlying(addr);
             frame->cx = static_cast<usize>(cause);
             return Status::Ok;
         }

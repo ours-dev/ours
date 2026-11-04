@@ -39,12 +39,12 @@ struct InterruptStack {
 
     FORCE_INLINE
     auto base() -> VirtAddr {
-        return reinterpret_cast<VirtAddr>(stack);
+        return VirtAddr{reinterpret_cast<usize>(stack)};
     }
 
     FORCE_INLINE
     auto top() -> VirtAddr {
-        return reinterpret_cast<VirtAddr>(stack + INTR_STACK_SIZE);
+        return VirtAddr{reinterpret_cast<usize>(stack + INTR_STACK_SIZE)};
     }
 
     u8 stack[INTR_STACK_SIZE];
@@ -133,7 +133,7 @@ struct PACKED X86Tss {
     FORCE_INLINE
     auto set_ist(u8 slot, VirtAddr top) -> void {
         DEBUG_ASSERT(slot >= 1 && slot <= NUM_IST_SLOTS, "Invalid IST slot: {}", slot);
-        ist[slot - 1] = top;
+        ist[slot - 1] = std::to_underlying(top);
     }
 
     constexpr static u8 NUM_IST_SLOTS = 7;

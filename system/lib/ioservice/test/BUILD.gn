@@ -8,8 +8,8 @@ executable("ioservice") {
     "tree_test.cpp",
   ]
   deps = [
-    "//system/lib/ours.io",
     "//system/lib/ioservice",
+    "//system/lib/protocols",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]

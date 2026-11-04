@@ -1,7 +1,7 @@
 #include <ours/arch/apic.hpp>
 #include <ours/arch/x86/feature.hpp>
 #include <ours/cpu.hpp>
-#include <ours/irq/chip.hpp>
+#include <ours/irq/controller.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_mapping.hpp>
@@ -107,16 +107,6 @@ arch::XApic *XAPIC;
 auto apic_issue_eoi() -> void {
     XAPIC_STORAGE.issue_eoi();
 }
-
-[[maybe_unused]]
-irq::Chip XAPIC_CHIP{
-    .mask = [](irq::Data const &data) -> void { XAPIC_STORAGE.mask(arch::XApicRegType::LvtLint0); },
-    .unmask = [](irq::Data const &data) -> void {
-        XAPIC_STORAGE.unmask(arch::XApicRegType::LvtLint0);
-    },
-    .issue_ack = [](irq::Data const &data) -> void { XAPIC_STORAGE.issue_eoi(); },
-    .name = "XApic",
-};
 
 /// This is the local APIC timer event device for non-deadline TSC devices.
 /// Rated lower than the PIT's 110, and that is fine: it is per-CPU, and
@@ -855,7 +845,7 @@ auto init_local_apic() -> void {
     //
     // We map it to the same 4K region for all the local APICs.
     auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_phys(
-        arch::APIC_PHYS_BASE, mm::VmPlacement::anywhere(), PAGE_SIZE,
+        arch::APIC_PHYS_BASE, VirtAddr::Anywhere, PAGE_SIZE,
         // `Discache` is required to prevent
         mm::MmuFlags::Discache | mm::MmuFlags::Readable | mm::MmuFlags::Writable,
         mm::VmMapOption::Populate | mm::VmMapOption::Pinned, "Local-APIC");

@@ -31,10 +31,10 @@
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/startup.hpp>
-#include <ours_io/ours_io.hpp>
-#include <ours_process/ours_process.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/io.hpp>
+#include <prot/process.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 #include <ustl/option.hpp>
 #include <wire/wire.hpp>
 
@@ -1543,7 +1543,7 @@ auto check_port_observer_limit() -> void {
 /// Where this shell's namespace has the root's Launcher on dev: its /svc,
 /// where every protocol use lives (design D3).
 constexpr std::string_view LAUNCHER_PATH{"/svc/ours.process.Launcher"};
-static_assert(LAUNCHER_PATH.ends_with(ours_process::LAUNCHER_NAME));
+static_assert(LAUNCHER_PATH.ends_with(prot::process::LAUNCHER_NAME));
 
 /// routing_checks in this shell's namespace on dev: /boot/ and its install
 /// name (programs.hpp), so that no program name is spelled here. The program
@@ -1718,11 +1718,11 @@ auto connect_launcher() -> ustl::Result<ours::Uandle, ours::Status> {
 /// A VMO of routing_checks' file without Execute: File.GetBackingMemory with
 /// READ alone, on a connection opened without EXECUTE.
 auto readable_vmo() -> ustl::Result<ours::Uandle, ours::Status> {
-    auto const file = fsio::open(routing_checks_path(), ours_io::Flags::PermReadBytes);
+    auto const file = fsio::open(routing_checks_path(), prot::io::Flags::PermReadBytes);
     if (file.is_err()) {
         return ustl::err(file.unwrap_err());
     }
-    auto const vmo = fsio::get_backing_memory(file.unwrap(), ours_io::VmoFlags::Read);
+    auto const vmo = fsio::get_backing_memory(file.unwrap(), prot::io::VmoFlags::Read);
     auto _ = ours::handle_close(file.unwrap());
     return vmo;
 }
@@ -1745,7 +1745,7 @@ auto launch_answer(ours::Uandle const launcher, ours::Uandle const executable,
     constexpr auto TXID = u32{1};
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<ours::Uandle, 2> handles{};
-    auto const request = ours_process::encode_launch(
+    auto const request = prot::process::encode_launch(
         bytes, handles,
         {.txid = TXID, .info = {.executable = executable, .job = launch_job, .name = "refused"}});
     if (request.is_err()) {
@@ -1766,7 +1766,7 @@ auto launch_answer(ours::Uandle const launcher, ours::Uandle const executable,
     if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
         return *epitaph;
     }
-    auto const decoded = ours_process::decode_launch_reply(reply.message(), TXID);
+    auto const decoded = prot::process::decode_launch_reply(reply.message(), TXID);
     if (decoded.is_err()) {
         return Status::InvArgs;
     }
@@ -1779,7 +1779,7 @@ auto launch_answer(ours::Uandle const launcher, ours::Uandle const executable,
 /// argument. One-way: the answer is the write's.
 auto add_handles(ours::Uandle const launcher, ours::Uandle const job, usize const count,
                  ours::HandleType const first_type) -> ours::Status {
-    std::array<ours_process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
+    std::array<prot::process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
     auto const close_made = [&infos](usize const made) {
         for (auto index = usize{0}; index < made; ++index) {
             auto _ = ours::handle_close(infos[index].handle);
@@ -1801,7 +1801,7 @@ auto add_handles(ours::Uandle const launcher, ours::Uandle const job, usize cons
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> handles{};
     auto const request =
-        ours_process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
+        prot::process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
     if (request.is_err()) {
         close_made(count);
         return request.unwrap_err();
@@ -1987,10 +1987,10 @@ auto check_vfs(bool const component) -> void {
 
     // The mount point stands in its parent's listing as a directory.
     auto const vfs =
-        fsio::open("/vfs", ours_io::Flags::ProtocolDirectory | ours_io::Flags::PermEnumerate);
+        fsio::open("/vfs", prot::io::Flags::ProtocolDirectory | prot::io::Flags::PermEnumerate);
     ok &= expect("shell: open(/vfs) = ", status_of(vfs), Status::Ok);
     if (vfs.is_ok()) {
-        std::array<u8, ours_io::MAX_BUF> buffer{};
+        std::array<u8, prot::io::MAX_BUF> buffer{};
         auto found = false;
         for (;;) {
             auto const read = fsio::read_dirents(vfs.unwrap(), buffer);
@@ -1998,11 +1998,11 @@ auto check_vfs(bool const component) -> void {
                 read.unwrap() == 0) {
                 break;
             }
-            auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+            auto reader = prot::io::DirentReader(std::span{buffer}.first(read.unwrap()));
             for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
                 auto const &dirent = next.unwrap().value();
                 found = found ||
-                        (dirent.name == "boot" && dirent.type == ours_io::DirentType::Directory);
+                        (dirent.name == "boot" && dirent.type == prot::io::DirentType::Directory);
             }
         }
         if (!found) {
@@ -2015,7 +2015,7 @@ auto check_vfs(bool const component) -> void {
     }
 
     // Through the mount point: this program's own file, two servers away.
-    auto const file = fsio::open("/vfs/boot/bin/shell", ours_io::Flags::PermReadBytes);
+    auto const file = fsio::open("/vfs/boot/bin/shell", prot::io::Flags::PermReadBytes);
     ok &= expect("shell: open(/vfs/boot/bin/shell) = ", status_of(file), Status::Ok);
     if (file.is_ok()) {
         std::array<u8, 4> magic{};
@@ -2041,7 +2041,7 @@ auto check_vfs(bool const component) -> void {
     // fshost forwarding every step.
     constexpr std::string_view TEXT{"written through /vfs/tmp"};
     auto const made =
-        fsio::open("/vfs/tmp/hello", ours_io::PERM_WRITABLE | ours_io::Flags::FlagMaybeCreate);
+        fsio::open("/vfs/tmp/hello", prot::io::PERM_WRITABLE | prot::io::Flags::FlagMaybeCreate);
     ok &= expect("shell: open(/vfs/tmp/hello, maybe_create) = ", status_of(made), Status::Ok);
     if (made.is_ok()) {
         auto const written =
@@ -2052,7 +2052,7 @@ auto check_vfs(bool const component) -> void {
     } else {
         ok = false;
     }
-    auto const read_back = fsio::open("/vfs/tmp/hello", ours_io::Flags::PermReadBytes);
+    auto const read_back = fsio::open("/vfs/tmp/hello", prot::io::Flags::PermReadBytes);
     ok &= expect("shell: open(/vfs/tmp/hello, read) = ", status_of(read_back), Status::Ok);
     if (read_back.is_ok()) {
         std::array<u8, 32> buffer{};
@@ -4644,19 +4644,19 @@ auto check_vma_map(ours::Uandle const vma, ours::Uandle const bootfs, ours::Uand
                  Status::Ok);
 
     // Read-only, from vmo_offset = one page: the mapping starts at page 2.
-    ours::VirtAddr at = 0;
+    ours::VirtAddr at{};
     ok &= expect("shell: vma_map(R, vmo_offset = page 2) = ",
                  ours::vma_map(vma, R, 0, vmo, PAGE, PAGE, &at), Status::Ok);
-    if (at != 0) {
+    if (at != ours::VirtAddr{0}) {
         auto const *const bytes = reinterpret_cast<u8 const volatile *>(at);
         u8 got[4] = {bytes[0], bytes[1], bytes[2], bytes[3]};
         ok &= same_bytes(second, got, sizeof(got));
     }
 
     // Read-write: a store through the mapping is what vmo_read finds.
-    ours::VirtAddr rw = 0;
+    ours::VirtAddr rw{};
     ok &= expect("shell: vma_map(RW) = ", ours::vma_map(vma, RW, 0, vmo, 0, PAGE, &rw), Status::Ok);
-    if (rw != 0) {
+    if (rw != ours::VirtAddr{0}) {
         *reinterpret_cast<u8 volatile *>(rw + 16) = 0x77;
         u8 back = 0;
         ok &=
@@ -4670,11 +4670,11 @@ auto check_vma_map(ours::Uandle const vma, ours::Uandle const bootfs, ours::Uand
     ok &= expect("shell: vmo_create_child(Slice, page 2) = ",
                  ours::vmo_create_child(vmo, ours::VmoChildOptions::Slice, PAGE, PAGE, &slice),
                  Status::Ok);
-    ours::VirtAddr sliced = 0;
+    ours::VirtAddr sliced{};
     ok &=
         expect("shell: vma_map(R, the slice) = ", ours::vma_map(vma, R, 0, slice, 0, PAGE, &sliced),
                Status::Ok);
-    if (sliced != 0) {
+    if (sliced != ours::VirtAddr{0}) {
         ok &= *reinterpret_cast<u8 const volatile *>(sliced) == second[0];
     }
     ok &= expect("shell: vma_map(R, 2 pages of a 1-page slice) = ",
@@ -4682,7 +4682,7 @@ auto check_vma_map(ours::Uandle const vma, ours::Uandle const bootfs, ours::Uand
     ok &= expect("shell: close(slice) = ", ours::handle_close(slice), Status::Ok);
 
     // The protection.
-    ours::VirtAddr refused = 0;
+    ours::VirtAddr refused{};
     ok &= expect("shell: vma_map(W without R) = ",
                  ours::vma_map(vma, VmOptions::PermWrite, 0, vmo, 0, PAGE, &refused),
                  Status::InvArgs);
@@ -4750,10 +4750,10 @@ auto check_vma_map(ours::Uandle const vma, ours::Uandle const bootfs, ours::Uand
                      ours::handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
         ok &= expect("shell: vmo_replace_as_executable(the copy) = ",
                      ours::vmo_replace_as_executable(copy, vmex, &executable), Status::Ok);
-        ours::VirtAddr code = 0;
+        ours::VirtAddr code{};
         ok &= expect("shell: vma_map(RX, the executable BootFS) = ",
                      ours::vma_map(vma, RX, 0, executable, 0, PAGE, &code), Status::Ok);
-        if (code != 0) {
+        if (code != ours::VirtAddr{0}) {
             bootfs::Header header{};
             auto const *const bytes = reinterpret_cast<u8 const volatile *>(code);
             auto *const out = reinterpret_cast<u8 *>(&header);
@@ -4782,7 +4782,7 @@ auto check_vma_map(ours::Uandle const vma, ours::Uandle const bootfs, ours::Uand
                      ours::vmo_write(plain, first, 0, sizeof(first)), Status::Ok);
         ok &= expect("shell: vmo_replace_as_executable(it) = ",
                      ours::vmo_replace_as_executable(plain, vmex, &executable), Status::Ok);
-        ours::VirtAddr code = 0;
+        ours::VirtAddr code{};
         ok &= expect("shell: vma_map(RX, the executable VMO) = ",
                      ours::vma_map(vma, RX, 0, executable, 0, PAGE, &code), Status::Ok);
         ok &= expect("shell: vmo_create_child(the executable VMO, SnapshotFull) = ",
@@ -4791,10 +4791,10 @@ auto check_vma_map(ours::Uandle const vma, ours::Uandle const bootfs, ours::Uand
                      Status::Ok);
         ok &= expect("shell: vma_map(RX, its snapshot) = ",
                      ours::vma_map(vma, RX, 0, snapshot, 0, PAGE, &refused), Status::AccessDenied);
-        ours::VirtAddr data = 0;
+        ours::VirtAddr data{};
         ok &= expect("shell: vma_map(RW, its snapshot) = ",
                      ours::vma_map(vma, RW, 0, snapshot, 0, PAGE, &data), Status::Ok);
-        if (data != 0 && code != 0) {
+        if (data != ours::VirtAddr{0} && code != ours::VirtAddr{0}) {
             auto *const mine = reinterpret_cast<u8 volatile *>(data);
             auto const *const theirs = reinterpret_cast<u8 const volatile *>(code);
             ok &= mine[0] == first[0];
@@ -4876,13 +4876,13 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
     }
 
     ours::Uandle guard = ours::Uandle::Invalid;
-    ours::VirtAddr at = 0;
+    ours::VirtAddr at{};
     ok &= expect("shell: vma_allocate(Specific, 1 page) = ",
                  ours::vma_allocate(vma, VmOptions::Specific, SPOT, PAGE, &guard, &at), Status::Ok);
     // Where the root region starts, so that an address the kernel chose can be
     // turned back into an offset for a Specific request.
     auto const root_base = at - SPOT;
-    ours::VirtAddr mapped = 0;
+    ours::VirtAddr mapped{};
     ok &=
         expect("shell: vma_map(Specific, over the guard) = ",
                ours::vma_map(vma, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
@@ -4895,7 +4895,7 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
                ours::vma_map(vma, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
 
     // The same guard, placed by the kernel.
-    ours::VirtAddr guard_at = 0;
+    ours::VirtAddr guard_at{};
     ok &= expect("shell: vma_allocate(no CanMap bit, anywhere, 1 page) = ",
                  ours::vma_allocate(vma, VmOptions::None, 0, PAGE, &guard, &guard_at), Status::Ok);
     ok &= expect("shell: vma_map(Specific, over the kernel-placed guard) = ",
@@ -4909,11 +4909,11 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
     constexpr auto CAN_MAP_RW_SPECIFIC =
         VmOptions::CanMapRead | VmOptions::CanMapWrite | VmOptions::CanMapSpecific;
     ours::Uandle region = ours::Uandle::Invalid;
-    ours::VirtAddr region_at = 0;
+    ours::VirtAddr region_at{};
     ok &= expect(
         "shell: vma_allocate(CanMapRead | CanMapWrite | CanMapSpecific, anywhere, 2 pages) = ",
         ours::vma_allocate(vma, CAN_MAP_RW_SPECIFIC, 0, 2 * PAGE, &region, &region_at), Status::Ok);
-    if (region_at == 0 || region_at % PAGE != 0) {
+    if (region_at == ours::VirtAddr{0} || std::to_underlying(region_at) % PAGE != 0) {
         auto _ = ort::debug_line("shell: the sub-region is not at a page boundary");
         ok = false;
     }
@@ -4943,7 +4943,7 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
         expect("shell: vma_map(R, Specific, past the sub-region's end) = ",
                ours::vma_map(region, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped), Status::InvArgs);
     ours::Uandle nested = ours::Uandle::Invalid;
-    ours::VirtAddr nested_at = 0;
+    ours::VirtAddr nested_at{};
     ok &= expect("shell: vma_allocate(CanMapExecute, inside a sub-region without it) = ",
                  ours::vma_allocate(region, VmOptions::CanMapRead | VmOptions::CanMapExecute, 0,
                                     PAGE, &nested, &nested_at),
@@ -4957,7 +4957,7 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
     // does the root's. One made with CanMapRead alone gets a handle without
     // Write, and its mappings can be no more than readable.
     ours::Uandle read_only = ours::Uandle::Invalid;
-    ours::VirtAddr read_only_at = 0;
+    ours::VirtAddr read_only_at{};
     ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 1 page) = ",
                  ours::vma_allocate(vma, VmOptions::CanMapRead, 0, PAGE, &read_only, &read_only_at),
                  Status::Ok);
@@ -4973,7 +4973,7 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
     // parent; and, with page 0 taken, a mapping on page 1, the top, after
     // which the region is full and the next one is refused.
     ours::Uandle outer = ours::Uandle::Invalid;
-    ours::VirtAddr outer_at = 0;
+    ours::VirtAddr outer_at{};
     ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 2 pages) = ",
                  ours::vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &outer, &outer_at),
                  Status::Ok);
@@ -5003,7 +5003,7 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
     // place chosen in it: that sub-region itself landed where the kernel put
     // it, so the choice fixes only where things lie inside it.
     ours::Uandle plain = ours::Uandle::Invalid;
-    ours::VirtAddr plain_at = 0;
+    ours::VirtAddr plain_at{};
     ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 2 pages) = ",
                  ours::vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &plain, &plain_at),
                  Status::Ok);
@@ -5015,7 +5015,7 @@ auto check_vma_allocate(ours::Uandle const vma) -> void {
                  ours::vma_map(plain, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped),
                  Status::AccessDenied);
     ours::Uandle inner = ours::Uandle::Invalid;
-    ours::VirtAddr inner_at = 0;
+    ours::VirtAddr inner_at{};
     ok &= expect("shell: vma_allocate(Specific, into a sub-region without CanMapSpecific) = ",
                  ours::vma_allocate(plain, VmOptions::Specific, 0, PAGE, &inner, &inner_at),
                  Status::AccessDenied);
@@ -5620,7 +5620,7 @@ auto check_thread_start(ours::Uandle const vma) -> void {
     auto stack = ours::Uandle::Invalid;
     auto here = ours::Uandle::Invalid;
     auto there = ours::Uandle::Invalid;
-    ours::VirtAddr stack_at = 0;
+    ours::VirtAddr stack_at{};
     if (!expect("shell: thread_create(this process) = ",
                 ours::thread_create(ort::process_self(), "second", sizeof("second") - 1,
                                     ours::ThreadCreateOptions::None, &thread),
@@ -5639,7 +5639,7 @@ auto check_thread_start(ours::Uandle const vma) -> void {
                 auto _ = ours::handle_close(handle);
             }
         }
-        if (stack_at != 0) {
+        if (stack_at != ours::VirtAddr{0}) {
             auto _ = ours::vma_unmap(vma, stack_at, STACK_SIZE);
         }
         auto _ = ort::debug_line("shell: thread_start checks FAILED");
@@ -5650,10 +5650,10 @@ auto check_thread_start(ours::Uandle const vma) -> void {
     // The mapping holds the VMO.
     ok &= expect("shell: close(the stack's VMO) = ", ours::handle_close(stack), Status::Ok);
 
-    auto const entry = reinterpret_cast<ours::VirtAddr>(&second_thread);
+    auto const entry = ours::VirtAddr{reinterpret_cast<usize>(&second_thread)};
     // As a launcher sets a first thread's: 16-byte aligned, less the return
     // address a call would have pushed (SysV).
-    auto const sp = ((stack_at + STACK_SIZE) & ~ours::VirtAddr{15}) - 8;
+    auto const sp = ours::VirtAddr{std::to_underlying(stack_at + STACK_SIZE) & ~15_usize} - 8;
     auto const channel = static_cast<usize>(static_cast<u32>(there));
 
     // The handle, and the entry.
@@ -5725,7 +5725,7 @@ auto check_thread_start(ours::Uandle const vma) -> void {
 /// runs on.
 struct SecondThread {
     ours::Uandle thread = ours::Uandle::Invalid;
-    ours::VirtAddr stack_at = 0;
+    ours::VirtAddr stack_at{};
 };
 
 constexpr auto SECOND_STACK_SIZE = u64{4 * 4096};
@@ -5766,9 +5766,10 @@ auto make_second_thread(ours::Uandle const vma, SecondThread *const out) -> bool
 /// address a call would have pushed (SysV).
 auto start_second_thread(SecondThread const &second, void (*const entry)(usize, usize),
                          usize const arg1, usize const arg2) -> ours::Status {
-    auto const sp = ((second.stack_at + SECOND_STACK_SIZE) & ~ours::VirtAddr{15}) - 8;
-    return ours::thread_start(second.thread, reinterpret_cast<ours::VirtAddr>(entry), sp, arg1,
-                              arg2);
+    auto const sp =
+        ours::VirtAddr{std::to_underlying(second.stack_at + SECOND_STACK_SIZE) & ~15_usize} - 8;
+    return ours::thread_start(second.thread, ours::VirtAddr{reinterpret_cast<usize>(entry)}, sp,
+                              arg1, arg2);
 }
 
 /// Closes an ended |second| and unmaps its stack.
@@ -6325,7 +6326,7 @@ auto check_pager(ours::Uandle const vma) -> void {
                  ours::pager_create_vmo(pager, ours::VmoOptions::None, port, KEY, ~u64{0}, &vmo),
                  Status::OutOfRange);
 
-    ours::VirtAddr at = 0;
+    ours::VirtAddr at{};
     SecondThread second;
     if (!expect("shell: pager_create_vmo = ",
                 ours::pager_create_vmo(pager, ours::VmoOptions::None, port, KEY, VMO_SIZE, &vmo),
@@ -6335,7 +6336,7 @@ auto check_pager(ours::Uandle const vma) -> void {
                               0, VMO_SIZE, &at),
                 Status::Ok) ||
         !make_second_thread(vma, &second)) {
-        if (at != 0) {
+        if (at != ours::VirtAddr{0}) {
             auto _ = ours::vma_unmap(vma, at, VMO_SIZE);
         }
         close_all();
@@ -6346,7 +6347,8 @@ auto check_pager(ours::Uandle const vma) -> void {
     // The fault, and the pager's answer to it.
     auto const channel = static_cast<usize>(static_cast<u32>(there));
     ok &= expect("shell: thread_start(a reader of the pager VMO) = ",
-                 start_second_thread(second, &pager_reader, channel, at), Status::Ok);
+                 start_second_thread(second, &pager_reader, channel, std::to_underlying(at)),
+                 Status::Ok);
     ours::PortPacket packet{};
     ok &= expect("shell: port_wait(the page request) = ",
                  ours::port_wait(port, ours::INSTANT_INFINITE, &packet), Status::Ok);
@@ -6900,7 +6902,7 @@ auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
         {"shell: the vDSO is ", ort::decimal(static_cast<u32>(whole / PAGE), pages_text),
          " page(s), its code at page ", ort::decimal(static_cast<u32>(code / PAGE), code_text)});
 
-    ours::VirtAddr at = 0;
+    ours::VirtAddr at{};
     ok &= expect("shell: vma_map(vdso, RW, sealed) = ",
                  ours::vma_map(p_vma, SEALED_RW, 0, vdso, code, code_size, &at),
                  Status::AccessDenied);
@@ -6926,7 +6928,7 @@ auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
     ok &= expect("shell: vma_map(vdso code, RX, sealed) = ",
                  ours::vma_map(p_vma, SEALED_RX, 0, vdso, code, code_size, &at), Status::Ok);
 
-    ours::VirtAddr again = 0;
+    ours::VirtAddr again{};
     ok &= expect("shell: vma_map(vdso code) a second time = ",
                  ours::vma_map(p_vma, SEALED_RX, 0, vdso, code, code_size, &again),
                  Status::AccessDenied);
@@ -6984,7 +6986,8 @@ auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
         ours::thread_create(s, "first", sizeof("first") - 1, ours::ThreadCreateOptions::None, &t),
         Status::Ok);
     ok &= expect("shell: process_start(the vDSO's code undone, a slice mapped, no vDSO) = ",
-                 ours::process_start(s, t, 0x400000, 0x500000, ours::Uandle::Invalid, 0),
+                 ours::process_start(s, t, ours::VirtAddr{0x400000}, ours::VirtAddr{0x500000},
+                                     ours::Uandle::Invalid, 0),
                  Status::BadState);
     ok &= expect("shell: close(the thread) = ", ours::handle_close(t), Status::Ok);
 
@@ -7040,8 +7043,8 @@ auto check_unmap_sealed(ours::Uandle const job, ours::Uandle const vdso) -> bool
     // The vDSO, laid out as a launcher lays it out: the image read-only and its
     // code at its offset, read and execute, and sealed, which the kernel
     // insists on.
-    ours::VirtAddr at = 0;
-    ours::VirtAddr code_at = 0;
+    ours::VirtAddr at{};
+    ours::VirtAddr code_at{};
     if (ok) {
         ok &= expect("shell: vma_map(the vDSO before its code, R) = ",
                      ours::vma_map(region, SPECIFIC_R, IMAGE, vdso, 0, code, &at), Status::Ok);
@@ -7056,7 +7059,7 @@ auto check_unmap_sealed(ours::Uandle const job, ours::Uandle const vdso) -> bool
                          Status::Ok);
         }
     }
-    if (code_at != 0) {
+    if (code_at != ours::VirtAddr{0}) {
         auto const image_at = code_at - code;
         ok &= expect("shell: vma_unmap(the vDSO's whole image) = ",
                      ours::vma_unmap(region, image_at, whole), Status::AccessDenied);
@@ -7075,9 +7078,9 @@ auto check_unmap_sealed(ours::Uandle const job, ours::Uandle const vdso) -> bool
     // An ordinary sealed mapping of two pages, an unsealed page on each side.
     // Any range that touches it is refused whole, before anything is torn
     // down: the page below is still there after three refusals that covered it.
-    ours::VirtAddr below = 0;
-    ours::VirtAddr sealed = 0;
-    ours::VirtAddr above = 0;
+    ours::VirtAddr below{};
+    ours::VirtAddr sealed{};
+    ours::VirtAddr above{};
     if (ok) {
         ok &= expect("shell: vma_map(R, Specific, the page below) = ",
                      ours::vma_map(region, SPECIFIC_R, ROW, plain, 0, PAGE, &below), Status::Ok);
@@ -7088,7 +7091,7 @@ auto check_unmap_sealed(ours::Uandle const job, ours::Uandle const vdso) -> bool
                      ours::vma_map(region, SPECIFIC_R, ROW + 3 * PAGE, plain, 0, PAGE, &above),
                      Status::Ok);
     }
-    if (below != 0 && sealed != 0 && above != 0) {
+    if (below != ours::VirtAddr{0} && sealed != ours::VirtAddr{0} && above != ours::VirtAddr{0}) {
         ok &= expect("shell: vma_unmap(the sealed mapping's second page) = ",
                      ours::vma_unmap(region, sealed + PAGE, PAGE), Status::AccessDenied);
         ok &= expect("shell: vma_unmap(the page below and the sealed mapping's first) = ",
@@ -7111,7 +7114,7 @@ auto check_unmap_sealed(ours::Uandle const job, ours::Uandle const vdso) -> bool
     // take the mapping with it, so that is refused as well, and the sub-region
     // goes on taking mappings.
     ours::Uandle holder = ours::Uandle::Invalid;
-    ours::VirtAddr holder_at = 0;
+    ours::VirtAddr holder_at{};
     if (ok) {
         ok &= expect("shell: vma_allocate(Specific, 2 pages) = ",
                      ours::vma_allocate(region, SUB_REGION, HOLDER, 2 * PAGE, &holder, &holder_at),
@@ -7200,10 +7203,10 @@ auto check_vma_unmap(ours::Uandle const vma, ours::Uandle const job, ours::Uandl
 
     // Whole: the first load puts the page in the TLB, and the load after the
     // range is mapped again must not find it there.
-    ours::VirtAddr first = 0;
+    ours::VirtAddr first{};
     ok &= expect("shell: vma_map(R, Specific) = ",
                  ours::vma_map(vma, SPECIFIC_R, SPOT, one, 0, PAGE, &first), Status::Ok);
-    if (!ok || first == 0) {
+    if (!ok || first == ours::VirtAddr{0}) {
         auto _ = ort::debug_line("shell: vma_unmap checks FAILED");
         return;
     }
@@ -7214,7 +7217,7 @@ auto check_vma_unmap(ours::Uandle const vma, ours::Uandle const job, ours::Uandl
     ok &=
         expect("shell: vma_unmap(the same range, now empty) = ", ours::vma_unmap(vma, first, PAGE),
                Status::Ok);
-    ours::VirtAddr again = 0;
+    ours::VirtAddr again{};
     ok &= expect("shell: vma_map(R, Specific, the same place) = ",
                  ours::vma_map(vma, SPECIFIC_R, SPOT, three, 0, PAGE, &again), Status::Ok);
     if (again != first) {
@@ -7228,7 +7231,7 @@ auto check_vma_unmap(ours::Uandle const vma, ours::Uandle const job, ours::Uandl
 
     // Part: the pages inside the range go and the rest stays. The mapping
     // keeps its range until all of it is gone, and then the whole is free.
-    ours::VirtAddr pages = 0;
+    ours::VirtAddr pages{};
     ok &= expect("shell: vma_map(R, Specific, 3 pages) = ",
                  ours::vma_map(vma, SPECIFIC_R, TRIMMED, three, 0, 3 * PAGE, &pages), Status::Ok);
     if (pages == root_base + TRIMMED) {
@@ -7254,12 +7257,12 @@ auto check_vma_unmap(ours::Uandle const vma, ours::Uandle const job, ours::Uandl
     // A sub-region: what its own handle reaches, and what the root's may do
     // to it.
     ours::Uandle region = ours::Uandle::Invalid;
-    ours::VirtAddr region_at = 0;
+    ours::VirtAddr region_at{};
     ok &= expect("shell: vma_allocate(Specific, 2 pages) = ",
                  ours::vma_allocate(vma, SUB_REGION, REGION, 2 * PAGE, &region, &region_at),
                  Status::Ok);
     if (region_at == root_base + REGION) {
-        ours::VirtAddr inner = 0;
+        ours::VirtAddr inner{};
         ok &= expect("shell: vma_map(R, page 0 of the sub-region) = ",
                      ours::vma_map(region, SPECIFIC_R, 0, one, 0, PAGE, &inner), Status::Ok);
         ok &= expect("shell: vma_unmap(the sub-region, past its end) = ",
@@ -7290,14 +7293,14 @@ auto check_vma_unmap(ours::Uandle const vma, ours::Uandle const job, ours::Uandl
         ok &= expect("shell: vma_unmap(the whole sub-region) = ",
                      ours::vma_unmap(vma, region_at, 2 * PAGE), Status::Ok);
 
-        ours::VirtAddr refused = 0;
+        ours::VirtAddr refused{};
         ok &=
             expect("shell: vma_map(into the destroyed sub-region) = ",
                    ours::vma_map(region, SPECIFIC_R, 0, one, 0, PAGE, &refused), Status::BadState);
         ok &= expect("shell: vma_unmap(in the destroyed sub-region) = ",
                      ours::vma_unmap(region, region_at, PAGE), Status::BadState);
         ours::Uandle reserved = ours::Uandle::Invalid;
-        ours::VirtAddr reserved_at = 0;
+        ours::VirtAddr reserved_at{};
         ok &= expect("shell: vma_allocate(Specific, where the sub-region was) = ",
                      ours::vma_allocate(vma, SUB_REGION, REGION, 2 * PAGE, &reserved, &reserved_at),
                      Status::Ok);
@@ -7521,7 +7524,9 @@ struct LoopLog {
 /// channel end |handle|. on_signals() reads one message and answers Rearm,
 /// however many more are queued (I4); once nothing is readable, which here
 /// means the peer has gone, it answers Close and leaves the closing to the
-/// Loop (I3).
+/// Loop (I3). When |suspend_next| is set, its next call reads the message and
+/// answers Suspend instead, once: a connection that took a request whose
+/// reply is not ready.
 struct LoopClient final: loop::Waiter {
     LoopClient(char const client_name, ours::Uandle const client_handle, LoopLog *const client_log)
         : name{client_name}, handle{client_handle}, log{client_log} {}
@@ -7529,6 +7534,7 @@ struct LoopClient final: loop::Waiter {
     char name;
     ours::Uandle handle;
     LoopLog *log;
+    bool suspend_next = false;
 
     auto on_signals(ours::Signals const observed) -> loop::Action override {
         log->push(name);
@@ -7541,6 +7547,10 @@ struct LoopClient final: loop::Waiter {
                                static_cast<u32>(message.size()), 0, &actual,
                                nullptr) != ours::Status::Ok) {
             return loop::Action::Close;
+        }
+        if (suspend_next) {
+            suspend_next = false;
+            return loop::Action::Suspend;
         }
         return loop::Action::Rearm;
     }
@@ -7600,13 +7610,17 @@ auto check_loop() -> void {
     auto c1 = Uandle::Invalid;
     auto d0 = Uandle::Invalid;
     auto d1 = Uandle::Invalid;
+    auto e0 = Uandle::Invalid;
+    auto e1 = Uandle::Invalid;
     channel(a0, a1);
     channel(b0, b1);
     channel(c0, c1);
     channel(d0, d1);
+    channel(e0, e1);
     auto a = LoopClient{'a', a1, &log};
     auto b = LoopClient{'b', b1, &log};
     auto c = LoopClient{'c', c1, &log};
+    auto e = LoopClient{'e', e1, &log};
     {
         auto dispatch = loop::Loop{port, slots};
         // The Loop owns what add() accepted; what it refused is closed here.
@@ -7660,9 +7674,28 @@ auto check_loop() -> void {
             expect("shell: loop run(forged packets, then c) = ", dispatch.run(0), Status::TimeOut);
         served(log, "abaabc");
 
-        // The Loop closes a1, c1 and the port as it goes.
+        // 5. A slot that suspends. e takes a message and answers Suspend, so
+        //    it stays in use with nothing armed; the message that arrives
+        //    next is not delivered. resume() arms it, and then, and only then,
+        //    the message is delivered. A second resume() finds the slot armed.
+        e.suspend_next = true;
+        add(e, Key{2, 0});
+        send(e0, 1);
+        ok &= expect("shell: loop run(e suspends) = ", dispatch.run(0), Status::TimeOut);
+        served(log, "abaabce");
+        send(e0, 1);
+        ok &= expect("shell: loop run(e's message while suspended) = ", dispatch.run(0),
+                     Status::TimeOut);
+        served(log, "abaabce");
+        ok &= expect("shell: loop resume(e) = ", dispatch.resume(Key{2, 0}), Status::Ok);
+        ok &=
+            expect("shell: loop resume(e again) = ", dispatch.resume(Key{2, 0}), Status::BadState);
+        ok &= expect("shell: loop run(e resumed) = ", dispatch.run(0), Status::TimeOut);
+        served(log, "abaabcee");
+
+        // The Loop closes a1, c1, e1 and the port as it goes.
     }
-    for (auto const handle: {a0, c0, d0, d1, forger}) {
+    for (auto const handle: {a0, c0, d0, d1, e0, forger}) {
         ok &= ours::handle_close(handle) == Status::Ok;
     }
 
@@ -8340,14 +8373,16 @@ auto check_process_read_memory() -> void {
 
     u8 bytes[64] = {};
     usize actual = 0;
-    ok &=
-        expect("shell: process_read_memory(self, ELF header) = ",
-               ours::process_read_memory(self, found.header->base, bytes, 4, &actual), Status::Ok);
+    ok &= expect(
+        "shell: process_read_memory(self, ELF header) = ",
+        ours::process_read_memory(self, ours::VirtAddr{found.header->base}, bytes, 4, &actual),
+        Status::Ok);
     check(actual == 4 && bytes[0] == 0x7f && bytes[1] == 'E' && bytes[2] == 'L' && bytes[3] == 'F',
           "the mapping at offset 0 does not start with the ELF magic");
 
     ok &= expect("shell: process_read_memory(self, this function) = ",
-                 ours::process_read_memory(self, here, bytes, 16, &actual), Status::Ok);
+                 ours::process_read_memory(self, ours::VirtAddr{here}, bytes, 16, &actual),
+                 Status::Ok);
     check(actual == 16 && std::memcmp(bytes, reinterpret_cast<void const *>(here), 16) == 0,
           "this function's bytes do not read back as they are");
 
@@ -8359,27 +8394,30 @@ auto check_process_read_memory() -> void {
         continued = continued || (MAPS[i].base == end &&
                                   MAPS[i].u.mapping.vmo_koid == found.code->u.mapping.vmo_koid);
     }
-    ok &= expect("shell: process_read_memory(self, across the code's end) = ",
-                 ours::process_read_memory(self, end - 16, bytes, sizeof(bytes), &actual),
-                 Status::Ok);
+    ok &= expect(
+        "shell: process_read_memory(self, across the code's end) = ",
+        ours::process_read_memory(self, ours::VirtAddr{end - 16}, bytes, sizeof(bytes), &actual),
+        Status::Ok);
     check(continued || actual == 16, "a read is not cut at its mapping's end");
 
-    ok &=
-        expect("shell: process_read_memory(self, address 0) = ",
-               ours::process_read_memory(self, 0, bytes, sizeof(bytes), &actual), Status::NotFound);
+    ok &= expect("shell: process_read_memory(self, address 0) = ",
+                 ours::process_read_memory(self, ours::VirtAddr{0}, bytes, sizeof(bytes), &actual),
+                 Status::NotFound);
     ok &= expect("shell: process_read_memory(self, 0 bytes) = ",
-                 ours::process_read_memory(self, here, bytes, 0, &actual), Status::InvArgs);
-    ok &= expect(
-        "shell: process_read_memory(self, past the limit) = ",
-        ours::process_read_memory(self, here, bytes, ours::MAX_PROCESS_READ_MEMORY + 1, &actual),
-        Status::InvArgs);
+                 ours::process_read_memory(self, ours::VirtAddr{here}, bytes, 0, &actual),
+                 Status::InvArgs);
+    ok &= expect("shell: process_read_memory(self, past the limit) = ",
+                 ours::process_read_memory(self, ours::VirtAddr{here}, bytes,
+                                           ours::MAX_PROCESS_READ_MEMORY + 1, &actual),
+                 Status::InvArgs);
 
     auto reader = ours::Uandle::Invalid;
     ok &=
         expect("shell: handle_duplicate(self, without Write) = ",
                ours::handle_duplicate(self, Rights::Transfer | Rights::Read, &reader), Status::Ok);
     ok &= expect("shell: process_read_memory(without Write) = ",
-                 ours::process_read_memory(reader, here, bytes, 16, &actual), Status::AccessDenied);
+                 ours::process_read_memory(reader, ours::VirtAddr{here}, bytes, 16, &actual),
+                 Status::AccessDenied);
     auto _ = ours::handle_close(reader);
 
     auto a = ours::Uandle::Invalid;
@@ -8387,7 +8425,8 @@ auto check_process_read_memory() -> void {
     ok &= expect("shell: channel_create = ",
                  ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok);
     ok &= expect("shell: process_read_memory(a channel) = ",
-                 ours::process_read_memory(a, here, bytes, 16, &actual), Status::BadType);
+                 ours::process_read_memory(a, ours::VirtAddr{here}, bytes, 16, &actual),
+                 Status::BadType);
     auto _ = ours::handle_close(a);
     auto _ = ours::handle_close(b);
 
@@ -8541,7 +8580,7 @@ auto check_root_job(bool const component, ours::Uandle const job) -> void {
         auto _ = ort::debug_line("shell: root job checks skipped (no namespace)");
         return;
     }
-    auto const fetched = ours_resource::get(ours_resource::ROOT_JOB_PROTOCOL);
+    auto const fetched = prot::resource::get(prot::resource::ROOT_JOB_PROTOCOL);
     auto ok = expect("shell: ours.kernel.RootJob Get = ", status_of(fetched), Status::Ok);
     if (fetched.is_ok()) {
         auto const root = fetched.unwrap();
@@ -8636,6 +8675,6 @@ auto run(Inputs const &inputs) -> void {
     check_resources(inputs.irq, inputs.ioport, inputs.vmex, inputs.component);
     check_vma_map(inputs.vma, inputs.bootfs, inputs.vmex);
     check_vma_allocate(inputs.vma);
-    check_libc(static_cast<u8>(ort::vdso_base() >> 20));
+    check_libc(static_cast<u8>(std::to_underlying(ort::vdso_base()) >> 20));
 }
 } // namespace shell::tests

@@ -46,10 +46,12 @@ using ours::Uandle;
 
 constexpr auto MESSAGES = Signals::Readable | Signals::PeerClosed;
 
-// A slot is {handle 4, signals 4, Waiter pointer 8, generation 4 and 4 of
-// padding}: 24 bytes on a target with 8-byte pointers, which every target of
-// the project has. The function and the context it held before the Waiter,
-// two pointers, made it 32. The root's table is LOOP_SLOTS of them
+// A slot is {handle 4, signals 4, Waiter pointer 8, generation 4, flags 1 and
+// 3 of padding}: 24 bytes on a target with 8-byte pointers, which every target
+// of the project has. The flags byte sits in what was 4 bytes of padding after
+// the generation, so the slot that can be suspended is no bigger than the one
+// that could not. The function and the context it held before the Waiter, two
+// pointers, made it 32. The root's table is LOOP_SLOTS of them
 // (system/service/init/pools.hpp), so a byte added to a slot is paid that
 // many times; this fails if one is.
 static_assert(sizeof(void *) == 8);
@@ -64,6 +66,10 @@ enum class Answer : u8 {
     /// Answer Close at once, whatever was observed and with any message
     /// unread.
     Close,
+
+    /// Read one message, if one is queued, and answer Suspend: a connection
+    /// that took a request whose reply is not ready.
+    Suspend,
 };
 
 /// One slot's Waiter: what its on_signals() does and what it saw.
@@ -113,6 +119,12 @@ struct Client final: loop::Waiter {
         }
         if (answer == Answer::Close) {
             return Action::Close;
+        }
+        if (answer == Answer::Suspend) {
+            if ((signals & Signals::Readable) != Signals::None) {
+                auto _ = fake::kernel().read(handle);
+            }
+            return Action::Suspend;
         }
         if ((signals & Signals::Readable) != Signals::None) {
             // One message per call (I4), whatever else is queued.
@@ -209,6 +221,28 @@ class LoopTest: public ::testing::Test {
         // The slot is free, in a new life.
         Client c;
         EXPECT_EQ(add(c, 'c'), (Key{0, 1}));
+    }
+
+    /// Adds |client|, has it take one message and answer Suspend, and checks
+    /// what a Suspend is: the slot in use, its handle open, the Waiter called
+    /// once, and nothing else done -- no wait armed, no handle closed. Returns
+    /// the slot's key. The client keeps the answer Suspend; a test changes it
+    /// before the slot is resumed to have the next call do something else.
+    auto add_suspended(Client &client, char const name) -> Key {
+        client.answer = Answer::Suspend;
+        auto const key = add(client, name);
+        auto const waits_before = fake::kernel().waits().size();
+        auto const closes_before = fake::kernel().closes().size();
+        auto const calls_before = client.observed.size();
+        fake::kernel().write(client.handle, 1);
+        EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+        EXPECT_EQ(client.observed.size(), calls_before + 1);
+        EXPECT_EQ(fake::kernel().waits().size(), waits_before);
+        EXPECT_EQ(fake::kernel().armed_on(client.handle), 0U);
+        EXPECT_EQ(fake::kernel().queued_on(m_port), 0U);
+        EXPECT_TRUE(fake::kernel().is_open(client.handle));
+        EXPECT_EQ(fake::kernel().closes().size(), closes_before);
+        return key;
     }
 
     std::array<loop::Slot, SLOTS> m_slots{};
@@ -717,5 +751,421 @@ TEST_F(LoopTest, RunClosesOnlyTheSlotWhoseWaiterAnswersClose) {
     EXPECT_EQ(closes[0].handle, b.handle);
     EXPECT_EQ(fake::kernel().armed_on(a.handle), 1U);
     EXPECT_TRUE(fake::kernel().is_open(a.handle));
+}
+// --- Suspend and resume: a slot in use with nothing armed. ---
+
+// Step 3 for Suspend: nothing is armed, closed or queued; the slot stays in
+// use with its handle open. What the object asserts meanwhile stays in the
+// object: the Waiter is not called for a message that arrives, and nothing
+// is queued on the port for it.
+TEST_F(LoopTest, RunLeavesASuspendedSlotInUseWithNothingArmed) {
+    Client a;
+    add_suspended(a, 'a');
+    EXPECT_EQ(m_log, "a");
+
+    fake::kernel().write(a.handle, 1);
+    EXPECT_EQ(fake::kernel().queued_on(m_port), 0U);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "a");
+    EXPECT_EQ(a.observed.size(), 1U);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 0U);
+    EXPECT_TRUE(fake::kernel().is_open(a.handle));
+}
+
+// The key is still the slot's: Suspend bumps no generation, so the key add()
+// handed out names the suspended slot, and resume() takes it.
+TEST_F(LoopTest, RunKeepsTheKeyOfASuspendedSlotValid) {
+    Client a;
+    auto const key = add_suspended(a, 'a');
+    EXPECT_EQ(key, (Key{0, 0}));
+    EXPECT_EQ(m_loop.resume(key), Status::Ok);
+}
+
+// resume() arms the same wait: the same handle, port, key and signals, once.
+// Nothing is called until the wait fires.
+TEST_F(LoopTest, ResumeArmsTheWaitUnderTheSameKeyAndSignals) {
+    Client a;
+    auto const key = add_suspended(a, 'a');
+    auto const waits_before = fake::kernel().waits().size();
+
+    EXPECT_EQ(m_loop.resume(key), Status::Ok);
+    auto const &waits = fake::kernel().waits();
+    ASSERT_EQ(waits.size(), waits_before + 1);
+    EXPECT_EQ(waits.back().handle, a.handle);
+    EXPECT_EQ(waits.back().port, m_port);
+    EXPECT_EQ(waits.back().key, key.raw());
+    EXPECT_EQ(waits.back().signals, MESSAGES);
+    EXPECT_EQ(waits.back().status, Status::Ok);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 1U);
+    EXPECT_EQ(fake::kernel().queued_on(m_port), 0U);
+    EXPECT_EQ(m_log, "a");
+}
+
+// The message that arrived while the slot was suspended is delivered once it
+// is resumed, behind the packet that was already queued (I4): the wait is
+// level-triggered, so it queues its packet when it is armed.
+TEST_F(LoopTest, ResumeDeliversTheWaitingMessageBehindThePacketsAlreadyQueued) {
+    Client a;
+    Client b;
+    auto const key = add_suspended(a, 'a');
+    add(b, 'b');
+    fake::kernel().write(a.handle, 1);
+    fake::kernel().write(b.handle, 1);
+    a.answer = Answer::Serve;
+
+    EXPECT_EQ(m_loop.resume(key), Status::Ok);
+    EXPECT_EQ(fake::kernel().queued_on(m_port), 2U);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "aba");
+    EXPECT_EQ(a.observed.back(), Signals::Readable | Signals::Writable);
+    // a read it and was armed again, as any Waiter that answers Rearm.
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 1U);
+}
+
+// The use the design has in mind: another slot's Waiter, whose work is what
+// the suspended connection waited for, resumes it from its own on_signals().
+TEST_F(LoopTest, ResumeFromAnotherWaitersOnSignalsArmsTheSlot) {
+    Client a;
+    Client b;
+    auto const key = add_suspended(a, 'a');
+    add(b, 'b');
+    fake::kernel().write(a.handle, 1);
+    a.answer = Answer::Serve;
+    auto resumed = Status::BadHandle;
+    b.during = [&] { resumed = m_loop.resume(key); };
+    fake::kernel().write(b.handle, 1);
+
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(resumed, Status::Ok);
+    EXPECT_EQ(m_log, "aba");
+}
+
+// A peer that went while the slot was suspended is not seen until it is
+// resumed, and is then seen as PeerClosed alone: the message was read before
+// the Suspend. A Waiter that serves answers Close for it, as for any closed
+// peer, and the Loop closes the handle and frees the slot.
+TEST_F(LoopTest, ResumeShowsAPeerThatClosedWhileSuspendedAsPeerClosedAlone) {
+    Client a;
+    auto const key = add_suspended(a, 'a');
+    fake::kernel().close_peer(a.handle);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "a");
+    a.answer = Answer::Serve;
+
+    EXPECT_EQ(m_loop.resume(key), Status::Ok);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "aa");
+    EXPECT_EQ(a.observed.back(), Signals::PeerClosed);
+    auto const &closes = fake::kernel().closes();
+    ASSERT_EQ(closes.size(), 1U);
+    EXPECT_EQ(closes[0].handle, a.handle);
+    Client b;
+    EXPECT_EQ(add(b, 'b'), (Key{0, 1}));
+}
+
+// resume() from inside the on_signals() that is about to answer Suspend: the
+// slot is in use and in the key's life, but the Loop marks it suspended only
+// once on_signals() has returned, so it answers BadState and changes nothing.
+// The Suspend then goes through, and the slot is resumable.
+TEST_F(LoopTest, ResumeInsideTheWaiterThatSuspendsAnswersBadState) {
+    Client a;
+    a.answer = Answer::Suspend;
+    auto const key = add(a, 'a');
+    auto inside = Status::Ok;
+    auto waits_inside = usize{0};
+    a.during = [&] {
+        inside = m_loop.resume(key);
+        waits_inside = fake::kernel().waits().size();
+    };
+    fake::kernel().write(a.handle, 1);
+
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(inside, Status::BadState);
+    // Only add()'s wait: the failed resume() armed nothing, and the Suspend
+    // after it armed nothing either.
+    EXPECT_EQ(waits_inside, 1U);
+    EXPECT_EQ(fake::kernel().waits().size(), 1U);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 0U);
+    EXPECT_EQ(m_log, "a");
+    a.during = nullptr;
+    a.answer = Answer::Serve;
+    EXPECT_EQ(m_loop.resume(key), Status::Ok);
+}
+
+// An armed slot, whether its wait is waiting or its packet is queued, is not
+// suspended: BadState, and no second wait.
+TEST_F(LoopTest, ResumeAnswersBadStateForASlotThatIsArmed) {
+    Client a;
+    auto const key = add(a, 'a');
+    EXPECT_EQ(m_loop.resume(key), Status::BadState);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 1U);
+    EXPECT_EQ(fake::kernel().waits().size(), 1U);
+
+    // Its packet queued, not yet taken.
+    fake::kernel().write(a.handle, 1);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 0U);
+    EXPECT_EQ(fake::kernel().queued_on(m_port), 1U);
+    EXPECT_EQ(m_loop.resume(key), Status::BadState);
+    EXPECT_EQ(fake::kernel().queued_on(m_port), 1U);
+    EXPECT_EQ(fake::kernel().waits().size(), 1U);
+
+    // The packet was taken once and the Waiter called once.
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "a");
+    EXPECT_EQ(fake::kernel().waits().size(), 2U);
+}
+
+// A second resume() finds the slot armed: BadState, and the wait is armed
+// once. Once the Waiter has answered Close and the slot is free, the same key
+// is NotFound.
+TEST_F(LoopTest, ResumeAnswersBadStateForASecondResumeThenNotFoundOnceClosed) {
+    Client a;
+    auto const key = add_suspended(a, 'a');
+    auto const waits_before = fake::kernel().waits().size();
+
+    EXPECT_EQ(m_loop.resume(key), Status::Ok);
+    EXPECT_EQ(m_loop.resume(key), Status::BadState);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 1U);
+    EXPECT_EQ(fake::kernel().waits().size(), waits_before + 1);
+
+    a.answer = Answer::Close;
+    fake::kernel().write(a.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "aa");
+    EXPECT_EQ(m_loop.resume(key), Status::NotFound);
+    EXPECT_EQ(fake::kernel().waits().size(), waits_before + 1);
+}
+
+// NotFound: the key names no slot in use in its life. Nothing changes, and a
+// slot that is in use is not disturbed by a key that only looks like it.
+TEST_F(LoopTest, ResumeAnswersNotFoundForAKeyThatNamesNoSlotInUse) {
+    Client closed;
+    Client live;
+    closed.answer = Answer::Close;
+    auto const closed_key = add(closed, 'c');
+    add(live, 'l');
+    fake::kernel().write(closed.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    ASSERT_EQ(m_log, "c");
+    auto const waits_before = fake::kernel().waits().size();
+    auto const closes_before = fake::kernel().closes().size();
+
+    for (auto const stale: {
+             closed_key,          // a slot closed since the key was handed out
+             Key{0, 1},           // the same slot, free, in the life it has not had
+             Key{2, 0},           // a slot never used
+             Key{SLOTS, 0},       // the first index past the table
+             Key{0xFFFF'FFFF, 0}, // far past it
+         }) {
+        EXPECT_EQ(m_loop.resume(stale), Status::NotFound);
+    }
+    EXPECT_EQ(fake::kernel().waits().size(), waits_before);
+    EXPECT_EQ(fake::kernel().closes().size(), closes_before);
+    EXPECT_EQ(fake::kernel().armed_on(live.handle), 1U);
+    // The free slot is still free, in the life the failed resume()s left it.
+    Client next;
+    EXPECT_EQ(add(next, 'n'), (Key{0, 1}));
+}
+
+// NotFound for the old key of a reused slot, and the new life is left alone:
+// it is suspended, nothing is armed for it, and its own key still resumes it.
+TEST_F(LoopTest, ResumeAnswersNotFoundForTheOldKeyOfAReusedSlot) {
+    Client first;
+    auto const old_key = add_suspended(first, 'f');
+    fake::kernel().close_peer(first.handle);
+    first.answer = Answer::Serve;
+    EXPECT_EQ(m_loop.resume(old_key), Status::Ok);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    ASSERT_EQ(m_log, "ff");
+
+    Client second;
+    auto const new_key = add_suspended(second, 's');
+    ASSERT_EQ(old_key, (Key{0, 0}));
+    ASSERT_EQ(new_key, (Key{0, 1}));
+    auto const waits_before = fake::kernel().waits().size();
+
+    EXPECT_EQ(m_loop.resume(old_key), Status::NotFound);
+    EXPECT_EQ(fake::kernel().waits().size(), waits_before);
+    EXPECT_EQ(fake::kernel().armed_on(second.handle), 0U);
+    EXPECT_EQ(m_loop.resume(new_key), Status::Ok);
+}
+
+// A refused arm at resume() is a re-arm that failed: the handle is closed, the
+// generation bumped, the slot freed, the Waiter told once with the cause --
+// before resume() returns -- and resume() answers the cause.
+TEST_F(LoopTest, ResumeFreesTheSlotAndTellsTheWaiterWhenTheArmIsRefused) {
+    Client a;
+    auto const key = add_suspended(a, 'a');
+    auto const waits_before = fake::kernel().waits().size();
+    fake::kernel().fail_next_wait_async(Status::NoMemory);
+
+    EXPECT_EQ(m_loop.resume(key), Status::NoMemory);
+    // Told already, before run() was called, and once.
+    EXPECT_EQ(m_log, "a!a");
+    EXPECT_EQ(a.rearm_failures, (std::vector<Status>{Status::NoMemory}));
+    // The handle was closed, by the Loop, before the Waiter was told.
+    EXPECT_FALSE(a.open_when_told);
+    EXPECT_EQ(a.closes_when_told, 1U);
+    auto const &closes = fake::kernel().closes();
+    ASSERT_EQ(closes.size(), 1U);
+    EXPECT_EQ(closes[0].handle, a.handle);
+    EXPECT_EQ(closes[0].status, Status::Ok);
+    // The refused wait is the only one made, and nothing is armed or queued.
+    auto const &waits = fake::kernel().waits();
+    ASSERT_EQ(waits.size(), waits_before + 1);
+    EXPECT_EQ(waits.back().status, Status::NoMemory);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 0U);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "a!a");
+
+    // The generation was bumped: the old key is stale, and the slot is free
+    // in its next life.
+    EXPECT_EQ(m_loop.resume(key), Status::NotFound);
+    Client b;
+    EXPECT_EQ(add(b, 'b'), (Key{0, 1}));
+}
+
+// The slot is free before the Waiter is told, so it may add() from
+// on_rearm_failed(), the slot it was told about included, even in a table
+// that is otherwise full.
+TEST_F(LoopTest, ResumeLetsTheWaiterAddFromOnRearmFailed) {
+    Client a;
+    Client replacement;
+    std::array<Client, SLOTS - 1> others;
+    auto const key = add_suspended(a, 'a');
+    for (auto &other: others) {
+        add(other, 'x');
+    }
+    auto replacement_key = Key{0xFFFF'FFFF, 0xFFFF'FFFF};
+    a.during_rearm_failed = [&] { replacement_key = add(replacement, 'n'); };
+    fake::kernel().fail_next_wait_async(Status::NoMemory);
+
+    EXPECT_EQ(m_loop.resume(key), Status::NoMemory);
+    EXPECT_EQ(replacement_key, (Key{0, 1}));
+    EXPECT_EQ(fake::kernel().armed_on(replacement.handle), 1U);
+    EXPECT_EQ(m_loop.resume(key), Status::NotFound);
+}
+
+// A suspended slot is in use, so add() never takes it: with the table full,
+// one of whose slots is suspended, add() answers NoResource and leaves the
+// handle with the caller, and a slot freed later is taken before the
+// suspended one, which keeps its life.
+TEST_F(LoopTest, AddNeverTakesASuspendedSlot) {
+    std::array<Client, SLOTS> clients;
+    add(clients[0], 'x');
+    add(clients[1], 'x');
+    auto const key = add_suspended(clients[2], 's');
+    add(clients[3], 'x');
+    ASSERT_EQ(key, (Key{2, 0}));
+
+    auto const spare = fake::kernel().make_object();
+    Client latecomer;
+    auto const full = m_loop.add(spare, MESSAGES, latecomer);
+    ASSERT_TRUE(full.is_err());
+    EXPECT_EQ(full.unwrap_err(), Status::NoResource);
+    EXPECT_TRUE(fake::kernel().is_open(spare));
+
+    // Slot 0 is freed; the lowest free slot is 0, not the suspended 2.
+    clients[0].answer = Answer::Close;
+    fake::kernel().write(clients[0].handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    Client next;
+    EXPECT_EQ(add(next, 'n'), (Key{0, 1}));
+    auto const full_again = m_loop.add(spare, MESSAGES, latecomer);
+    ASSERT_TRUE(full_again.is_err());
+    EXPECT_EQ(full_again.unwrap_err(), Status::NoResource);
+    EXPECT_EQ(m_loop.resume(key), Status::Ok);
+}
+
+// The destructor closes a suspended slot's handle like any other, then the
+// port, and calls and tells no Waiter.
+TEST(Loop, ClosesTheHandleOfASuspendedSlotWhenItGoes) {
+    fake::kernel().reset();
+    auto const port = fake::kernel().make_port();
+    auto const handle = fake::kernel().make_object();
+    auto log = std::string{};
+    Client suspended;
+    suspended.name = 's';
+    suspended.handle = handle;
+    suspended.log = &log;
+    suspended.answer = Answer::Suspend;
+    {
+        std::array<loop::Slot, 2> slots{};
+        loop::Loop scoped{port, slots};
+        ASSERT_TRUE(scoped.add(handle, MESSAGES, suspended).is_ok());
+        fake::kernel().write(handle, 1);
+        EXPECT_EQ(scoped.run(0), Status::TimeOut);
+        EXPECT_TRUE(fake::kernel().closes().empty());
+        EXPECT_TRUE(fake::kernel().is_open(handle));
+    }
+    auto const &closes = fake::kernel().closes();
+    ASSERT_EQ(closes.size(), 2U);
+    EXPECT_EQ(closes[0].handle, handle);
+    EXPECT_EQ(closes[0].status, Status::Ok);
+    EXPECT_EQ(closes[1].handle, port);
+    EXPECT_EQ(log, "s");
+    EXPECT_TRUE(suspended.rearm_failures.empty());
+}
+
+// Step 1: a packet that names a suspended slot is dropped. No wait of the
+// Loop's is armed for one, so only a forged packet can; it calls no Waiter,
+// arms nothing and closes nothing, and the slot is as it was.
+TEST_F(LoopTest, RunDropsAPacketThatNamesASuspendedSlot) {
+    Client a;
+    Client b;
+    auto const key = add_suspended(a, 'a');
+    add(b, 'b');
+    auto const waits_before = fake::kernel().waits().size();
+    auto const closes_before = fake::kernel().closes().size();
+    fake::kernel().queue(m_port, signal_packet(key));
+    // Behind it, a packet that is b's.
+    fake::kernel().write(b.handle, 1);
+
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "ab");
+    EXPECT_EQ(a.observed.size(), 1U);
+    // b's re-arm is the only wait made.
+    EXPECT_EQ(fake::kernel().waits().size(), waits_before + 1);
+    EXPECT_EQ(fake::kernel().closes().size(), closes_before);
+    EXPECT_EQ(fake::kernel().queued_on(m_port), 0U);
+    EXPECT_EQ(fake::kernel().armed_on(a.handle), 0U);
+    // Still suspended, and resumable once.
+    EXPECT_EQ(m_loop.resume(key), Status::Ok);
+    EXPECT_EQ(m_loop.resume(key), Status::BadState);
+}
+
+// Waiters that answer only Rearm and Close are served as they always were,
+// beside a slot that is suspended: the Rearm is armed again, the Close closes
+// and frees its slot, and the suspended slot is neither called nor closed.
+TEST_F(LoopTest, RunServesRearmAndCloseWaitersAsBeforeBesideASuspendedSlot) {
+    Client suspended;
+    Client rearmed;
+    Client closed;
+    suspended.answer = Answer::Suspend;
+    closed.answer = Answer::Close;
+    auto const suspended_key = add(suspended, 's');
+    add(rearmed, 'r');
+    add(closed, 'c');
+    fake::kernel().write(suspended.handle, 1);
+    fake::kernel().write(rearmed.handle, 1);
+    fake::kernel().write(closed.handle, 1);
+
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "src");
+    EXPECT_EQ(fake::kernel().armed_on(rearmed.handle), 1U);
+    EXPECT_EQ(fake::kernel().armed_on(suspended.handle), 0U);
+    auto const &closes = fake::kernel().closes();
+    ASSERT_EQ(closes.size(), 1U);
+    EXPECT_EQ(closes[0].handle, closed.handle);
+    Client next;
+    EXPECT_EQ(add(next, 'n'), (Key{2, 1}));
+
+    // The rest of the table is served in turns while the slot stays
+    // suspended.
+    fake::kernel().write(rearmed.handle, 2);
+    fake::kernel().write(suspended.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "srcrr");
+    EXPECT_EQ(m_loop.resume(suspended_key), Status::Ok);
 }
 } // namespace

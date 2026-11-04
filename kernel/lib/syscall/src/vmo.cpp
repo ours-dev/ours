@@ -53,7 +53,8 @@ auto vmo_create(u64 const size, VmoOptions const options,
 /// all is the object's to say (VmoDispatcher::create_physical()).
 auto vmo_create_physical(ours::Uandle const resource, PhysAddr const paddr, usize const size,
                          user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
-    if (auto const status = object::validate_ranged_resource(resource, RsrcKind::MmIo, paddr, size);
+    if (auto const status = object::validate_ranged_resource(resource, RsrcKind::MmIo,
+                                                             std::to_underlying(paddr), size);
         status != Status::Ok) {
         return status;
     }

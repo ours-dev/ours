@@ -10,9 +10,9 @@ namespace {
     using ours::Rights;
     using ours::Status;
     using ours::Uandle;
-    using ours_io::Flags;
-    using ours_io::Operations;
-    using ours_io::VmoFlags;
+    using prot::io::Flags;
+    using prot::io::Operations;
+    using prot::io::VmoFlags;
 
     /// Every right ours.io defines (Operations). The rights a request asks
     /// for are read straight out of its flags: the PERM_* bits share
@@ -65,7 +65,7 @@ namespace {
     // protocol bit at all accepts whatever the node is.
 
     auto names_no_protocol(Flags const flags) -> bool {
-        return !any_of(flags, ours_io::MASK_KNOWN_PROTOCOLS);
+        return !any_of(flags, prot::io::MASK_KNOWN_PROTOCOLS);
     }
 
     auto allows_directory(Flags const flags) -> bool {
@@ -80,23 +80,23 @@ namespace {
         return any_of(flags, Flags::ProtocolSymlink) || names_no_protocol(flags);
     }
 
-    auto dirent_type(NodeKind const kind) -> ours_io::DirentType {
+    auto dirent_type(NodeKind const kind) -> prot::io::DirentType {
         switch (kind) {
             case NodeKind::Directory:
-                return ours_io::DirentType::Directory;
+                return prot::io::DirentType::Directory;
             case NodeKind::File:
-                return ours_io::DirentType::File;
+                return prot::io::DirentType::File;
             case NodeKind::Service:
-                return ours_io::DirentType::Service;
+                return prot::io::DirentType::Service;
             case NodeKind::Remote:
                 // A mount point stands in for the directory the remote
                 // serves.
             case NodeKind::Subtree:
                 // A client lists the program's own tree as a directory: it
                 // is what an Open of the node makes.
-                return ours_io::DirentType::Directory;
+                return prot::io::DirentType::Directory;
         }
-        return ours_io::DirentType::Unknown;
+        return prot::io::DirentType::Unknown;
     }
 
     /// The epitaph on a refused Open's or Clone's channel.
@@ -239,7 +239,7 @@ auto Server::open_connection(Uandle const channel, NodeId const node, Operations
     return ustl::ok(Outcome{.action = Action::Bind, .handle = channel, .connection = *id});
 }
 
-auto Server::open(Connection const &connection, ours_io::OpenRequest const &request,
+auto Server::open(Connection const &connection, prot::io::OpenRequest const &request,
                   ReplyBuffer &out) -> ustl::Result<Outcome, Status> {
     auto const flags = request.flags;
     auto const requested = rights_of(flags);
@@ -288,8 +288,8 @@ auto Server::open(Connection const &connection, ours_io::OpenRequest const &requ
         // subset of this connection's by check 3 -- and the remote judges
         // the rest its own way.
         auto const forwarded =
-            ours_io::encode_open(out.bytes, out.handles,
-                                 {.flags = flags, .path = found->rest, .object = request.object});
+            prot::io::encode_open(out.bytes, out.handles,
+                                  {.flags = flags, .path = found->rest, .object = request.object});
         if (forwarded.is_err()) {
             // Neither refusal reason can arise -- the path passed check 1 and
             // the buffer holds a whole message -- but a failed encoding
@@ -383,7 +383,7 @@ auto Server::open(Connection const &connection, ours_io::OpenRequest const &requ
 
     // A service. It takes no rights and no other flag; the channel stops
     // being ours.io here.
-    if (any_of(flags & ours_io::MASK_KNOWN_PROTOCOLS, ~Flags::ProtocolService)) {
+    if (any_of(flags & prot::io::MASK_KNOWN_PROTOCOLS, ~Flags::ProtocolService)) {
         if (allows_directory(flags)) {
             return ustl::err(Status::NotDir);
         }
@@ -409,24 +409,25 @@ auto Server::open(Connection const &connection, ours_io::OpenRequest const &requ
     });
 }
 
-auto Server::read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &request,
+auto Server::read_dirents(Connection &connection, prot::io::ReadDirentsRequest const &request,
                           ReplyBuffer &out) -> ustl::Result<wire::Message, Status> {
     if (!holds(connection.m_rights, Operations::Enumerate)) {
         return ustl::err(Status::AccessDenied);
     }
     // More than a reply can carry: OutOfRange, as Read answers for its own
     // limit.
-    if (request.max_bytes > ours_io::MAX_BUF) {
+    if (request.max_bytes > prot::io::MAX_BUF) {
         return ustl::err(Status::OutOfRange);
     }
 
     // The entries are packed straight into the reply, where the encoder
     // leaves them: no copy.
-    auto writer = ours_io::DirentWriter(ours_io::reply_payload(out.bytes).first(request.max_bytes));
+    auto writer =
+        prot::io::DirentWriter(prot::io::reply_payload(out.bytes).first(request.max_bytes));
     if (connection.m_phase == Connection::DirentPhase::Dot) {
-        auto const dot = ours_io::Dirent{
-            .ino = ours_io::INO_UNKNOWN,
-            .type = ours_io::DirentType::Directory,
+        auto const dot = prot::io::Dirent{
+            .ino = prot::io::INO_UNKNOWN,
+            .type = prot::io::DirentType::Directory,
             .name = ".",
         };
         if (writer.append(dot) != Status::Ok) {
@@ -437,8 +438,8 @@ auto Server::read_dirents(Connection &connection, ours_io::ReadDirentsRequest co
     }
     while (connection.m_next_entry.is_some()) {
         auto const entry = *connection.m_next_entry;
-        auto const dirent = ours_io::Dirent{
-            .ino = ours_io::INO_UNKNOWN,
+        auto const dirent = prot::io::Dirent{
+            .ino = prot::io::INO_UNKNOWN,
             .type = dirent_type(*m_tree->kind(entry)),
             .name = m_tree->name(entry),
         };
@@ -453,16 +454,16 @@ auto Server::read_dirents(Connection &connection, ours_io::ReadDirentsRequest co
         }
         connection.m_next_entry = m_tree->next_sibling(entry);
     }
-    return ours_io::encode_read_dirents_reply(out.bytes, request.txid,
-                                              {.status = Status::Ok, .dirents = writer.written()});
+    return prot::io::encode_read_dirents_reply(out.bytes, request.txid,
+                                               {.status = Status::Ok, .dirents = writer.written()});
 }
 
-auto Server::read(Connection &connection, ours_io::ReadRequest const &request, ReplyBuffer &out)
+auto Server::read(Connection &connection, prot::io::ReadRequest const &request, ReplyBuffer &out)
     -> ustl::Result<wire::Message, Status> {
     if (!holds(connection.m_rights, Operations::ReadBytes)) {
         return ustl::err(Status::BadHandle);
     }
-    if (request.count > ours_io::MAX_TRANSFER_SIZE) {
+    if (request.count > prot::io::MAX_TRANSFER_SIZE) {
         return ustl::err(Status::OutOfRange);
     }
     // Copied from the program's own view of the file into the reply: the
@@ -471,15 +472,15 @@ auto Server::read(Connection &connection, ours_io::ReadRequest const &request, R
     auto const bytes = m_tree->file(connection.m_node)->bytes;
     auto const offset = std::min<u64>(connection.m_seek, bytes.size());
     auto const size = std::min<u64>(request.count, bytes.size() - offset);
-    auto const payload = ours_io::reply_payload(out.bytes).first(size);
+    auto const payload = prot::io::reply_payload(out.bytes).first(size);
     std::ranges::copy(bytes.subspan(offset, size), payload.begin());
     connection.m_seek = offset + size;
-    return ours_io::encode_read_reply(out.bytes, request.txid,
-                                      {.status = Status::Ok, .data = payload});
+    return prot::io::encode_read_reply(out.bytes, request.txid,
+                                       {.status = Status::Ok, .data = payload});
 }
 
 auto Server::get_backing_memory(Connection const &connection,
-                                ours_io::GetBackingMemoryRequest const &request, ReplyBuffer &out)
+                                prot::io::GetBackingMemoryRequest const &request, ReplyBuffer &out)
     -> ustl::Result<wire::Message, Status> {
     auto const flags = request.flags;
     // What the VMO may do is what the connection may do.
@@ -520,8 +521,8 @@ auto Server::get_backing_memory(Connection const &connection,
     // Cannot fail with a valid handle: the txid passed the decoder and |out|
     // holds a whole message and a handle. Were it to, the duplicate would
     // stay in this process, since nothing here can close it.
-    return ours_io::encode_get_backing_memory_reply(out.bytes, out.handles, request.txid,
-                                                    {.status = Status::Ok, .vmo = vmo});
+    return prot::io::encode_get_backing_memory_reply(out.bytes, out.handles, request.txid,
+                                                     {.status = Status::Ok, .vmo = vmo});
 }
 
 auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyBuffer &out)
@@ -554,21 +555,21 @@ auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyB
     };
 
     // Node: every connection.
-    if (ordinal == ours_io::CLOSE.ordinal) {
-        auto const request = ours_io::decode_close(message);
+    if (ordinal == prot::io::CLOSE.ordinal) {
+        auto const request = prot::io::decode_close(message);
         if (request.is_err()) {
             return drop(id);
         }
         auto const reply =
-            ours_io::encode_close_reply(out.bytes, request->txid, {.status = Status::Ok});
+            prot::io::encode_close_reply(out.bytes, request->txid, {.status = Status::Ok});
         release(id);
         if (reply.is_err()) {
             return Outcome{.action = Action::Drop};
         }
         return Outcome{.action = Action::ReplyAndClose, .message = reply.unwrap()};
     }
-    if (ordinal == ours_io::CLONE.ordinal) {
-        auto const request = ours_io::decode_clone(message);
+    if (ordinal == prot::io::CLONE.ordinal) {
+        auto const request = prot::io::decode_clone(message);
         if (request.is_err()) {
             return drop(id);
         }
@@ -581,8 +582,8 @@ auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyB
     }
 
     if (*m_tree->kind(connection->m_node) == NodeKind::Directory) {
-        if (ordinal == ours_io::OPEN.ordinal) {
-            auto const request = ours_io::decode_open(message);
+        if (ordinal == prot::io::OPEN.ordinal) {
+            auto const request = prot::io::decode_open(message);
             if (request.is_err()) {
                 return drop(id);
             }
@@ -592,28 +593,28 @@ auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyB
             }
             return opened.unwrap();
         }
-        if (ordinal == ours_io::READ_DIRENTS.ordinal) {
-            auto const request = ours_io::decode_read_dirents(message);
+        if (ordinal == prot::io::READ_DIRENTS.ordinal) {
+            auto const request = prot::io::decode_read_dirents(message);
             if (request.is_err()) {
                 return drop(id);
             }
-            return answer(ours_io::READ_DIRENTS, request->txid,
+            return answer(prot::io::READ_DIRENTS, request->txid,
                           read_dirents(*connection, request.unwrap(), out));
         }
     } else {
-        if (ordinal == ours_io::READ.ordinal) {
-            auto const request = ours_io::decode_read(message);
+        if (ordinal == prot::io::READ.ordinal) {
+            auto const request = prot::io::decode_read(message);
             if (request.is_err()) {
                 return drop(id);
             }
-            return answer(ours_io::READ, request->txid, read(*connection, request.unwrap(), out));
+            return answer(prot::io::READ, request->txid, read(*connection, request.unwrap(), out));
         }
-        if (ordinal == ours_io::GET_BACKING_MEMORY.ordinal) {
-            auto const request = ours_io::decode_get_backing_memory(message);
+        if (ordinal == prot::io::GET_BACKING_MEMORY.ordinal) {
+            auto const request = prot::io::decode_get_backing_memory(message);
             if (request.is_err()) {
                 return drop(id);
             }
-            return answer(ours_io::GET_BACKING_MEMORY, request->txid,
+            return answer(prot::io::GET_BACKING_MEMORY, request->txid,
                           get_backing_memory(*connection, request.unwrap(), out));
         }
     }

@@ -19,8 +19,8 @@
 #include <elfload/diagnostics.hpp>
 #include <launch/launch.hpp>
 #include <ort/debug.hpp>
-#include <ours_process/ours_process.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/process.hpp>
+#include <prot/resource.hpp>
 
 namespace init {
 namespace {
@@ -74,15 +74,15 @@ namespace {
     // build here, not at a boot where a route to it fails. connect() finds
     // the server of a built-in by comparing the name route() returns with
     // these constants, so these are the names that comparison depends on.
-    static_assert(has_protocol_builtin(ours_process::LAUNCHER_NAME));
-    static_assert(has_protocol_builtin(ours_resource::DEBUG_PROTOCOL.name));
-    static_assert(has_protocol_builtin(ours_resource::SAMPLING_PROTOCOL.name));
-    static_assert(has_protocol_builtin(ours_resource::IRQ_PROTOCOL.name));
-    static_assert(has_protocol_builtin(ours_resource::IOPORT_PROTOCOL.name));
-    static_assert(has_protocol_builtin(ours_resource::MMIO_PROTOCOL.name));
-    static_assert(has_protocol_builtin(ours_resource::IOMMU_PROTOCOL.name));
-    static_assert(has_protocol_builtin(ours_resource::ACPI_PROTOCOL.name));
-    static_assert(has_protocol_builtin(ours_resource::ROOT_JOB_PROTOCOL.name));
+    static_assert(has_protocol_builtin(prot::process::LAUNCHER_NAME));
+    static_assert(has_protocol_builtin(prot::resource::DEBUG_PROTOCOL.name));
+    static_assert(has_protocol_builtin(prot::resource::SAMPLING_PROTOCOL.name));
+    static_assert(has_protocol_builtin(prot::resource::IRQ_PROTOCOL.name));
+    static_assert(has_protocol_builtin(prot::resource::IOPORT_PROTOCOL.name));
+    static_assert(has_protocol_builtin(prot::resource::MMIO_PROTOCOL.name));
+    static_assert(has_protocol_builtin(prot::resource::IOMMU_PROTOCOL.name));
+    static_assert(has_protocol_builtin(prot::resource::ACPI_PROTOCOL.name));
+    static_assert(has_protocol_builtin(prot::resource::ROOT_JOB_PROTOCOL.name));
 
     /// Where every protocol use lives in the namespace (D3): a component's
     /// /svc, whose entries are the uses' names.
@@ -96,7 +96,7 @@ namespace {
     /// The rights a /svc directory is served with: r*, which holds CONNECT,
     /// what opening a protocol entry needs, and TRAVERSE, and grants nothing
     /// that could write.
-    constexpr auto SVC_RIGHTS = ours_io::R_STAR_DIR;
+    constexpr auto SVC_RIGHTS = prot::io::R_STAR_DIR;
 
     /// The value a /svc service node is added with, and connect() takes back
     /// apart: which instance of the pool, and which of its uses.
@@ -123,27 +123,27 @@ namespace {
     // A route's rights are ours.io's Operations by their wire values
     // (component/format.hpp), which is what a connection holds.
     static_assert(std::to_underlying(component::Rights::RStarDir) ==
-                  std::to_underlying(ours_io::R_STAR_DIR));
+                  std::to_underlying(prot::io::R_STAR_DIR));
     static_assert(std::to_underlying(component::Rights::RxStarDir) ==
-                  std::to_underlying(ours_io::RX_STAR_DIR));
+                  std::to_underlying(prot::io::RX_STAR_DIR));
     static_assert(std::to_underlying(component::Rights::All) == 0x1FF);
 
-    auto to_operations(component::Rights const rights) -> ours_io::Operations {
-        return static_cast<ours_io::Operations>(std::to_underlying(rights));
+    auto to_operations(component::Rights const rights) -> prot::io::Operations {
+        return static_cast<prot::io::Operations>(std::to_underlying(rights));
     }
 
     /// The permission bits of an Open that ask for |rights|: a right is the
     /// same bit in a connection's Operations and in an Open's Flags
-    /// (<ours_io/ours_io.hpp>), which is how the provider's server turns the
+    /// (<prot/io.hpp>), which is how the provider's server turns the
     /// flags it receives back into the rights of the connection it makes.
-    constexpr auto to_flags(component::Rights const rights) -> ours_io::Flags {
-        return static_cast<ours_io::Flags>(std::to_underlying(rights));
+    constexpr auto to_flags(component::Rights const rights) -> prot::io::Flags {
+        return static_cast<prot::io::Flags>(std::to_underlying(rights));
     }
 
-    static_assert(to_flags(component::Rights::RStarDir) == ours_io::PERM_READABLE);
+    static_assert(to_flags(component::Rights::RStarDir) == prot::io::PERM_READABLE);
     static_assert(to_flags(component::Rights::All) ==
-                  (ours_io::MASK_KNOWN_PERMISSIONS &
-                   ~(ours_io::Flags::PermInheritWrite | ours_io::Flags::PermInheritExecute)));
+                  (prot::io::MASK_KNOWN_PERMISSIONS &
+                   ~(prot::io::Flags::PermInheritWrite | prot::io::Flags::PermInheritExecute)));
 
     /// An instance's moniker for the log: its names from the root down,
     /// joined with '/', and "." for the root.
@@ -845,23 +845,23 @@ auto Realm::connect(u64 const service, Uandle const channel) -> void {
     // route that reached a resource protocol is all it takes to be handed
     // that resource.
     auto status = Status::NotFound;
-    if (routed->name == ours_process::LAUNCHER_NAME) {
+    if (routed->name == prot::process::LAUNCHER_NAME) {
         status = m_builtins.launcher->bind(channel);
-    } else if (routed->name == ours_resource::DEBUG_PROTOCOL.name) {
+    } else if (routed->name == prot::resource::DEBUG_PROTOCOL.name) {
         status = m_builtins.debug_resource->bind(channel);
-    } else if (routed->name == ours_resource::SAMPLING_PROTOCOL.name) {
+    } else if (routed->name == prot::resource::SAMPLING_PROTOCOL.name) {
         status = m_builtins.sampling_resource->bind(channel);
-    } else if (routed->name == ours_resource::IRQ_PROTOCOL.name) {
+    } else if (routed->name == prot::resource::IRQ_PROTOCOL.name) {
         status = m_builtins.irq_resource->bind(channel);
-    } else if (routed->name == ours_resource::IOPORT_PROTOCOL.name) {
+    } else if (routed->name == prot::resource::IOPORT_PROTOCOL.name) {
         status = m_builtins.ioport_resource->bind(channel);
-    } else if (routed->name == ours_resource::MMIO_PROTOCOL.name) {
+    } else if (routed->name == prot::resource::MMIO_PROTOCOL.name) {
         status = m_builtins.mmio_resource->bind(channel);
-    } else if (routed->name == ours_resource::IOMMU_PROTOCOL.name) {
+    } else if (routed->name == prot::resource::IOMMU_PROTOCOL.name) {
         status = m_builtins.iommu_resource->bind(channel);
-    } else if (routed->name == ours_resource::ACPI_PROTOCOL.name) {
+    } else if (routed->name == prot::resource::ACPI_PROTOCOL.name) {
         status = m_builtins.acpi->bind(channel);
-    } else if (routed->name == ours_resource::ROOT_JOB_PROTOCOL.name) {
+    } else if (routed->name == prot::resource::ROOT_JOB_PROTOCOL.name) {
         status = m_builtins.root_job->bind(channel);
     }
     if (status != Status::Ok) {
@@ -894,16 +894,16 @@ auto Realm::provider_serves(Instance const &consumer, component::Use const &use,
 }
 
 auto Realm::write_open(Instance const &provider, std::string_view const name,
-                       ours_io::Flags const flags, std::string_view const path, Uandle const object)
-    -> void {
+                       prot::io::Flags const flags, std::string_view const path,
+                       Uandle const object) -> void {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 1> handles{};
-    auto const encoded = ours_io::encode_open(bytes, handles,
-                                              ours_io::OpenRequest{
-                                                  .flags = flags,
-                                                  .path = path,
-                                                  .object = object,
-                                              });
+    auto const encoded = prot::io::encode_open(bytes, handles,
+                                               prot::io::OpenRequest{
+                                                   .flags = flags,
+                                                   .path = path,
+                                                   .object = object,
+                                               });
     if (encoded.is_err()) {
         close_with_epitaph(object, encoded.unwrap_err());
         return;
@@ -932,14 +932,14 @@ auto Realm::forward(Instance const &consumer, component::Use const &use, Instanc
     // svc/<name> in its outgoing directory. A provider not started yet --
     // a later sibling -- finds the Open queued on the server end it gets at
     // its start, as resolve() arranged.
-    std::array<char, OUTGOING_SVC_PREFIX.size() + ours_io::MAX_NAME_LENGTH> path_bytes{};
-    if (name.size() > ours_io::MAX_NAME_LENGTH) {
+    std::array<char, OUTGOING_SVC_PREFIX.size() + prot::io::MAX_NAME_LENGTH> path_bytes{};
+    if (name.size() > prot::io::MAX_NAME_LENGTH) {
         close_with_epitaph(channel, Status::NotFound);
         return;
     }
     std::memcpy(path_bytes.data(), OUTGOING_SVC_PREFIX.data(), OUTGOING_SVC_PREFIX.size());
     std::memcpy(path_bytes.data() + OUTGOING_SVC_PREFIX.size(), name.data(), name.size());
-    write_open(provider, name, ours_io::Flags::ProtocolService,
+    write_open(provider, name, prot::io::Flags::ProtocolService,
                {path_bytes.data(), OUTGOING_SVC_PREFIX.size() + name.size()}, channel);
 }
 
@@ -976,7 +976,7 @@ auto Realm::forward_directory(Instance const &consumer, component::Use const &us
     // one Open; the buffer is fixed, so the length is checked here as well.
     auto const declared = routed.path.substr(1);
     auto const subdir = routed.subdir.view();
-    std::array<char, ours_io::MAX_PATH_LENGTH> path_bytes{};
+    std::array<char, prot::io::MAX_PATH_LENGTH> path_bytes{};
     auto length = declared.size();
     if (!subdir.empty()) {
         length += 1 + subdir.size();
@@ -995,7 +995,7 @@ auto Realm::forward_directory(Instance const &consumer, component::Use const &us
     // server makes the connection with exactly these: PROTOCOL_DIRECTORY
     // makes a file or a service at the path answer NotDir instead of being
     // opened as one.
-    write_open(provider, routed.name, to_flags(*routed.rights) | ours_io::Flags::ProtocolDirectory,
+    write_open(provider, routed.name, to_flags(*routed.rights) | prot::io::Flags::ProtocolDirectory,
                {path_bytes.data(), length}, server);
 }
 

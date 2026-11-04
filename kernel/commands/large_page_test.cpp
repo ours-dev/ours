@@ -147,7 +147,7 @@ namespace {
             return false;
         }
         auto const base = mm::frame_to_phys(head);
-        if (base % LARGE != 0) {
+        if (std::to_underlying(base) % LARGE != 0) {
             return false;
         }
         for (usize i = 0; i < PAGES_PER_BLOCK; ++i) {
@@ -246,8 +246,8 @@ namespace {
         if (!make_large(size + offset, out)) {
             return {};
         }
-        auto mapped = root.map_with_vmo(mm::VmPlacement::at(va), size, offset, rw,
-                                        mm::VmaFlags::PermMask, *out, option, "largepage.test");
+        auto mapped = root.map_with_vmo(va, size, offset, rw, mm::VmaFlags::PermMask, *out, option,
+                                        "largepage.test");
         if (mapped.is_err()) {
             return {};
         }
@@ -283,7 +283,7 @@ namespace {
             auto const leaf = fault_at(*aspace, a + 5 * PAGE_SIZE, WRITE);
             verdict(tally,
                     leaf.present && leaf.size == LARGE && writable(leaf) &&
-                        (leaf.pa - 5 * PAGE_SIZE) % LARGE == 0,
+                        std::to_underlying((leaf.pa - 5 * PAGE_SIZE)) % LARGE == 0,
                     "a write fault in a large-page object maps its 2 MiB as one writable leaf");
 
             auto const second = a + LARGE;
@@ -327,8 +327,8 @@ namespace {
         auto const populate =
             mm::VmObjectPaged::create(mm::GAF_USER, 2 * LARGE, mm::VmoFlags::LargePages,
                                       &populated) == Status::Ok &&
-            root.map_with_vmo(mm::VmPlacement::at(c), 2 * LARGE, 0, rw, mm::VmaFlags::PermMask,
-                              populated, mm::VmMapOption::Populate, "largepage.test populate")
+            root.map_with_vmo(c, 2 * LARGE, 0, rw, mm::VmaFlags::PermMask, populated,
+                              mm::VmMapOption::Populate, "largepage.test populate")
                 .is_ok();
         auto const p0 = translate(*aspace, c);
         auto const p1 = translate(*aspace, c + LARGE + 9 * PAGE_SIZE);
@@ -355,15 +355,15 @@ namespace {
         if (make_large(LARGE, &origin) &&
             origin->write(&word, 3 * PAGE_SIZE, sizeof(word)) == Status::Ok &&
             origin->create_clone(0, LARGE, &clone) == Status::Ok &&
-            root.map_with_vmo(mm::VmPlacement::at(d), LARGE, 0, rw, mm::VmaFlags::PermMask, clone,
-                              mm::VmMapOption::None, "largepage.test clone")
+            root.map_with_vmo(d, LARGE, 0, rw, mm::VmaFlags::PermMask, clone, mm::VmMapOption::None,
+                              "largepage.test clone")
                 .is_ok()) {
             shared = fault_at(*aspace, d + 9 * PAGE_SIZE, READ);
             shared.pa -= 9 * PAGE_SIZE;
         }
         verdict(tally,
                 shared.present && shared.size == LARGE && !writable(shared) &&
-                    shared.pa % LARGE == 0,
+                    std::to_underlying(shared.pa) % LARGE == 0,
                 "a read of a clone maps the shared block as one read-only leaf");
         auto written = Translation{};
         if (shared.present) {
@@ -391,7 +391,7 @@ namespace {
             origin2->write(&word, 5 * PAGE_SIZE, sizeof(word)) == Status::Ok &&
             origin2->create_clone(0, LARGE, &clone2) == Status::Ok &&
             origin2->write(&word, 0, sizeof(word)) == Status::Ok &&
-            root.map_with_vmo(mm::VmPlacement::at(e), LARGE, 0, rw, mm::VmaFlags::PermMask, clone2,
+            root.map_with_vmo(e, LARGE, 0, rw, mm::VmaFlags::PermMask, clone2,
                               mm::VmMapOption::None, "largepage.test migrate")
                 .is_ok()) {
             took = fault_at(*aspace, e, WRITE);
@@ -441,9 +441,9 @@ namespace {
             if (!make_large(size + offset, out)) {
                 return placed;
             }
-            auto mapped = root.map_with_vmo(mm::VmPlacement::anywhere(), size, offset, rw,
-                                            mm::VmaFlags::PermMask, *out, mm::VmMapOption::None,
-                                            "largepage.test anywhere");
+            auto mapped =
+                root.map_with_vmo(VirtAddr::Anywhere, size, offset, rw, mm::VmaFlags::PermMask,
+                                  *out, mm::VmMapOption::None, "largepage.test anywhere");
             if (mapped.is_ok()) {
                 placed = mapped.unwrap();
             }
@@ -456,7 +456,7 @@ namespace {
         auto const spacer =
             mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &spacer_vmo) ==
                 Status::Ok &&
-            root.map_with_vmo(mm::VmPlacement::anywhere(), PAGE_SIZE, 0, rw, mm::VmaFlags::PermMask,
+            root.map_with_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, rw, mm::VmaFlags::PermMask,
                               spacer_vmo, mm::VmMapOption::None, "largepage.test spacer")
                 .is_ok();
         ustl::Arc<mm::VmObjectPaged> at_zero;
@@ -466,8 +466,8 @@ namespace {
             zero_leaf = fault_at(*aspace, zero->base() + 5 * PAGE_SIZE, WRITE);
         }
         verdict(tally,
-                spacer && zero && zero->base() % LARGE == 0 && zero_leaf.present &&
-                    zero_leaf.size == LARGE,
+                spacer && zero && std::to_underlying(zero->base()) % LARGE == 0 &&
+                    zero_leaf.present && zero_leaf.size == LARGE,
                 "placed by the VMM at offset 0, the mapping starts on a block boundary, and a "
                 "fault maps a leaf");
         ustl::Arc<mm::VmObjectPaged> at_page;
@@ -478,8 +478,8 @@ namespace {
                 fault_at(*aspace, page->base() + (LARGE - PAGE_SIZE) + 5 * PAGE_SIZE, WRITE);
         }
         verdict(tally,
-                page && page->base() % LARGE == PAGE_SIZE && page_leaf.present &&
-                    page_leaf.size == LARGE,
+                page && std::to_underlying(page->base()) % LARGE == PAGE_SIZE &&
+                    page_leaf.present && page_leaf.size == LARGE,
                 "placed by the VMM at offset 4 KiB, it starts 4 KiB past a boundary, and its "
                 "window at object offset 2 MiB maps a leaf");
 

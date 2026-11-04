@@ -236,14 +236,14 @@ auto arch_deactivate_cpu(CpuNum const cpu) -> Status {
 auto arch_activate_cpu(CpuNum const cpu) -> Status {
     auto *const idler = task::Thread::Current::get(cpu);
     DEBUG_ASSERT(idler != nullptr && idler->is_idle_thread());
-    auto const trampoline =
-        prepare_bootstrap_area(cpu, idler->kernel_stack().top(), reinterpret_cast<VirtAddr>(idler));
+    auto const trampoline = prepare_bootstrap_area(cpu, idler->kernel_stack().top(),
+                                                   VirtAddr{reinterpret_cast<usize>(idler)});
 
     if (!apic_try_send_ipi_unicast(cpu, arch::IrqVec(), ApicDeliveryMode::Init)) {
         return Status::BadState;
     }
     auto _ = task::Thread::Current::sleep_for(INIT_TO_STARTUP, task::Interruptible::No);
-    if (!send_startup(cpu, arch::IrqVec(trampoline >> PAGE_SHIFT))) {
+    if (!send_startup(cpu, arch::IrqVec(std::to_underlying(trampoline) >> PAGE_SHIFT))) {
         return Status::BadState;
     }
     return Status::Ok;
@@ -329,7 +329,7 @@ auto x86_bring_aps(CpuMask targets) -> void {
 
     BootstrapData *bootstrap_data;
     auto const trampoline = make_bootstrap_area(&bootstrap_data);
-    DEBUG_ASSERT(trampoline < 1_mb);
+    DEBUG_ASSERT(trampoline < PhysAddr{1_mb});
 
     auto const now = time::SteadyClock::now();
     log::trace("CPU[0]-time={}ns", now.time_since_epoch().count());
@@ -338,7 +338,7 @@ auto x86_bring_aps(CpuMask targets) -> void {
     [[maybe_unused]]
     auto const slept = Thread::Current::sleep_for(INIT_TO_STARTUP, task::Interruptible::No);
     DEBUG_ASSERT(Status::Ok == slept);
-    auto const vec = arch::IrqVec(trampoline >> PAGE_SHIFT);
+    auto const vec = arch::IrqVec(std::to_underlying(trampoline) >> PAGE_SHIFT);
 
     targets.for_each([bootstrap_data, vec](CpuNum cpu) {
         log::trace("Attempt to wake up CPU[{}]", cpu);
@@ -354,7 +354,7 @@ auto x86_bring_aps(CpuMask targets) -> void {
         // reaches this line again.
         bootstrap_data->cpunum = cpu;
         bootstrap_data->stack_top = initial_stack;
-        bootstrap_data->thread = reinterpret_cast<VirtAddr>(current_thread);
+        bootstrap_data->thread = VirtAddr{reinterpret_cast<usize>(current_thread)};
 
         if (!send_startup(cpu, vec)) {
             log::error("CPU[{}] did not accept the startup IPI; carrying on without it", cpu);

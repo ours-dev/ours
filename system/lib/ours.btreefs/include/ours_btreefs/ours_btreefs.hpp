@@ -6,6 +6,7 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
+#include <algorithm>
 #include <array>
 #include <span>
 #include <string_view>
@@ -52,10 +53,12 @@
 /// freed by the change go on the dead list too, their bits left alone;
 /// blocks taken are on the taken list, their bits left alone. commit()
 /// then does one thing in a fixed order: write the cached blocks, then
-/// the bitmap (taken bits set, dead bits cleared), then the other
-/// superblock slot with the next generation. Until that last write the
-/// disk holds the committed tree and its bitmap, whole and consistent --
-/// a crash is a dropped rehearsal, not a repair. Dropping the transaction
+/// the bitmap (taken bits set, dead bits cleared), and last the other
+/// superblock slot with the next generation -- the swap is the commit
+/// point, and it is LAST, after the bitmap the new tree's blocks need: a
+/// crash before the swap is a dropped rehearsal (the dead bits unset, a
+/// leak of this transaction's blocks, never a corruption), a crash after
+/// it finds the new tree whole. Dropping the transaction
 /// without committing is exactly that, on purpose.
 ///
 /// One thread touches a volume (the Loop serializes a server's messages),
@@ -199,9 +202,18 @@ namespace detail {
     /// caller's buffer -- and the invariants are its: the count is read and
     /// kept current here, the slot arithmetic is private, and no caller sees an
     /// offset. A node read from the device constructs plainly; a fresh one
-    /// comes from leaf() or internal() over the caller's zeroed block.
+    /// comes from leaf() or internal(), which write its whole header, so that
+    /// it starts empty whatever bytes the block held.
     class Node final {
       public:
+        /// The node over |bytes|, whose count is read from the block and
+        /// then clamped to the node's capacity: the bytes are the device's,
+        /// the superblock's CRC covers none of them, and a flipped byte in
+        /// the count field would otherwise drive the slot arithmetic --
+        /// upper_bound's probes, insert's memmove -- past the 4 KiB span.
+        /// A clamped node behaves as if it held exactly capacity() entries;
+        /// the tree's own writes never produce one, so meeting one means
+        /// the block was corrupted on the device.
         explicit Node(std::span<u8> bytes);
 
         static auto leaf(std::span<u8> bytes) -> Node;
@@ -376,7 +388,7 @@ auto decode_data_value(Value const &value) -> u64;
 ///
 /// The cache is a fixed array of blocks with a linear look-up, sized for
 /// one operation's copies: the path down (at most 16 levels), the split's
-/// siblings, the rebalance's. An operation past that is BadState, not a
+/// siblings, the rebalance's. An operation past that is NoResource, not a
 /// wrong answer.
 ///
 /// Dropping the transaction without commit() is the crash rehearsal: the
@@ -403,6 +415,29 @@ class Transaction final {
         m_dead_count = 0;
     }
 
+    /// Writes every cached block to the device and empties the cache, for a
+    /// caller whose one transaction runs a bounded operation many times --
+    /// unlink's per-block loop, truncate's -- and would otherwise fill the
+    /// cache with copies no later iteration reads. The taken and dead lists
+    /// stay: they are the transaction's durable intent, recorded for commit.
+    ///
+    /// Safe under the same crash discipline as commit(): the superblock has
+    /// not swapped, so the written blocks are unreferenced garbage if the
+    /// transaction dies -- leak, never corrosion -- and the bitmap bit is
+    /// set only by commit.
+    [[nodiscard]]
+    auto checkpoint() -> ours::Status {
+        for (auto index = usize{0}; index < m_cache_count; ++index) {
+            if (auto const status =
+                    m_device.write_block(m_cache[index].first, m_cache[index].second);
+                status != ours::Status::Ok) {
+                return status;
+            }
+        }
+        m_cache_count = 0;
+        return ours::Status::Ok;
+    }
+
     Transaction(Transaction const &) = delete;
     auto operator=(Transaction const &) -> Transaction & = delete;
 
@@ -414,7 +449,9 @@ class Transaction final {
     }
 
     /// The block's bytes, the transaction's own state: a copy this
-    /// transaction made if it holds one, the device's bytes otherwise.
+    /// transaction made if it holds one, the device's bytes otherwise. Not for
+    /// building a new node on a block just allocated: the device's copy of that
+    /// is what its last owner left, and fresh() is the way.
     [[nodiscard]]
     auto cached(u64 block) -> std::span<u8> {
         if (auto const at = find(block); at < m_cache_count) {
@@ -426,6 +463,28 @@ class Transaction final {
             return {};
         }
         return take(block, bytes);
+    }
+
+    /// The bytes of a block this transaction has just taken, for a new node to
+    /// be built on: zeroed, and not read from the device, whose copy is
+    /// whatever the block held before it was free. InvArgs for a block this
+    /// transaction has not taken, which may be live: the committed tree's, or a
+    /// copy on the walk's path. NoResource when the cache is full.
+    [[nodiscard]]
+    auto fresh(u64 block) -> ustl::Result<std::span<u8>, ours::Status> {
+        if (!taken_this(block)) {
+            return ustl::err(ours::Status::InvArgs);
+        }
+        auto const zeros = std::array<u8, BLOCK_BYTES>{};
+        if (auto const at = find(block); at < m_cache_count) {
+            m_cache[at].second = zeros;
+            return ustl::ok(std::span<u8>{m_cache[at].second});
+        }
+        auto const bytes = take(block, zeros);
+        if (bytes.empty()) {
+            return ustl::err(ours::Status::NoResource);
+        }
+        return ustl::ok(bytes);
     }
 
     /// The block's bytes as the transaction sees them, copied out: the
@@ -513,14 +572,21 @@ class Transaction final {
         }
         // A block this transaction took is unborn: it leaves the taken list
         // and the cache, free again without ever having touched the bitmap.
-        // Anything else was the committed tree's; freeing it twice is the
-        // caller's error, BadState as the allocator has always answered.
         for (auto index = usize{0}; index < m_taken_count; ++index) {
             if (m_taken[index] == block) {
                 m_taken[index] = m_taken[m_taken_count - 1];
                 m_taken_count -= 1;
                 drop(block);
                 return ours::Status::Ok;
+            }
+        }
+        // A block the committed tree owns that this transaction already
+        // freed is on the dead list: freeing it twice is the caller's
+        // error, BadState -- the device's bit is still set until commit, so
+        // the bitmap cannot tell, and the dead list can.
+        for (auto index = usize{0}; index < m_dead_count; ++index) {
+            if (m_dead[index] == block) {
+                return ours::Status::BadState;
             }
         }
         auto bits = std::array<u8, BLOCK_BYTES>{};
@@ -594,7 +660,13 @@ class Transaction final {
     /// The superblock slots, the bitmap from the block past them.
     static constexpr auto SUPER_FIRST_BLOCK = u64{0};
     static constexpr auto SUPER_SECOND_BLOCK = u64{1};
-    static constexpr auto LISTS = usize{64};
+    /// The intent lists' bound: enough entries that every block of the
+    /// reference volume (256) can be taken AND marked dead in one
+    /// transaction -- a full-volume rewrite -- with room to spare. A
+    /// transaction beyond this many touched blocks answers NoResource;
+    /// sizing the lists from the volume at runtime wants the heap user
+    /// space does not have (docs/repairs/261103/btreefs.md item 1).
+    static constexpr auto LISTS = usize{512};
 
     /// The cache entry for |block|, made over |bytes|; the answer is the
     /// entry's own span, the one every later cached() answers.
@@ -756,6 +828,25 @@ auto open(Device &device) -> ustl::Result<Volume, ours::Status> {
     return best;
 }
 
+/// The starting bytes, in |bytes|, of a write that covers only part of the data
+/// block |block|: what the block holds, so that the bytes outside the write stay
+/// the file's -- or zeros when |is_new|. A block just made holds, on the device,
+/// whatever it held before it was free, another file's content or the leftovers
+/// of an earlier volume, and a write that patches part of it must not make
+/// those bytes this file's.
+template <typename Device>
+auto data_block_to_patch(Device &device, u64 block, bool is_new, std::span<u8> bytes)
+    -> ours::Status {
+    if (bytes.size() != BLOCK_BYTES) {
+        return ours::Status::InvArgs;
+    }
+    if (is_new) {
+        std::ranges::fill(bytes, u8{0});
+        return ours::Status::Ok;
+    }
+    return device.read_block(block, bytes);
+}
+
 /// Finds |key| and copies its value into |value|, reading the committed
 /// tree. NotFound when no item carries it -- an empty volume included.
 template <typename Device>
@@ -896,7 +987,11 @@ auto insert(Transaction<Device> &tx, Key const &key, Value const &value) -> ours
         if (leaf.is_err()) {
             return leaf.unwrap_err();
         }
-        detail::Node::leaf(tx.cached(leaf.unwrap()));
+        auto const first = tx.fresh(leaf.unwrap());
+        if (first.is_err()) {
+            return first.unwrap_err();
+        }
+        detail::Node::leaf(first.unwrap());
         volume.root = leaf.unwrap();
         volume.height = 1;
     }
@@ -944,7 +1039,11 @@ auto insert(Transaction<Device> &tx, Key const &key, Value const &value) -> ours
     if (right_block.is_err()) {
         return right_block.unwrap_err();
     }
-    auto right = detail::Node::leaf(tx.cached(right_block.unwrap()));
+    auto const right_bytes = tx.fresh(right_block.unwrap());
+    if (right_bytes.is_err()) {
+        return right_bytes.unwrap_err();
+    }
+    auto right = detail::Node::leaf(right_bytes.unwrap());
     auto const separator = right.take_upper_half(leaf);
     if (key < separator) {
         leaf.insert_leaf(leaf.upper_bound(key), key, value);
@@ -973,7 +1072,11 @@ auto insert(Transaction<Device> &tx, Key const &key, Value const &value) -> ours
         if (right_node_block.is_err()) {
             return right_node_block.unwrap_err();
         }
-        auto right_node = detail::Node::internal(tx.cached(right_node_block.unwrap()));
+        auto const right_node_bytes = tx.fresh(right_node_block.unwrap());
+        if (right_node_bytes.is_err()) {
+            return right_node_bytes.unwrap_err();
+        }
+        auto right_node = detail::Node::internal(right_node_bytes.unwrap());
         auto const mid = right_node.take_upper_half_internal(node);
         if (up_key < mid) {
             node.insert_child(node.upper_bound(up_key), up_key, up_child);
@@ -988,7 +1091,11 @@ auto insert(Transaction<Device> &tx, Key const &key, Value const &value) -> ours
     if (new_root.is_err()) {
         return new_root.unwrap_err();
     }
-    auto root_node = detail::Node::internal(tx.cached(new_root.unwrap()));
+    auto const root_bytes = tx.fresh(new_root.unwrap());
+    if (root_bytes.is_err()) {
+        return root_bytes.unwrap_err();
+    }
+    auto root_node = detail::Node::internal(root_bytes.unwrap());
     root_node.insert_child(0, up_key, up_child);
     // The new root's first child is the copied root, the pair's left side.
     root_node.set_child(0, path[0]);
@@ -1141,6 +1248,12 @@ namespace detail {
 template <typename Device>
 auto truncate(Transaction<Device> &tx, u64 object, u64 from_block) -> ours::Status {
     while (true) {
+        // Each turn's copies go to the device before the next turn fills the
+        // cache again: an unbounded loop over one transaction otherwise
+        // exhausts it partway through a big file (docs/repairs/261103/btreefs.md).
+        if (auto const status = tx.checkpoint(); status != ours::Status::Ok) {
+            return status;
+        }
         // The first DATA item at |from_block| or past: the walk starts
         // there, skips the INODE item sorting before the DATA ones, and
         // stops at the next object's items.

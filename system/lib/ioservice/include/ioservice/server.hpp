@@ -12,7 +12,7 @@
 #include <ours/rights.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
@@ -147,7 +147,7 @@ struct Outcome {
     /// so it holds until the program reads its next message.
     std::string_view rest = {};
     /// Subtree: the Open's flags, unchanged.
-    ours_io::Flags flags = ours_io::Flags::None;
+    prot::io::Flags flags = prot::io::Flags::None;
 };
 
 /// One connection, as a Server's table holds it (design "ioservice connection").
@@ -172,7 +172,7 @@ class Connection final {
     /// closes it. Invalid marks a free slot.
     ours::Uandle m_channel = ours::Uandle::Invalid;
     NodeId m_node = {};
-    ours_io::Operations m_rights = ours_io::Operations::None;
+    prot::io::Operations m_rights = prot::io::Operations::None;
     /// A file's: where Read goes on from.
     u64 m_seek = 0;
     /// A directory's: where ReadDirents goes on from. In Entries, none means
@@ -206,7 +206,7 @@ class Server final {
     ///   - NotDir when |directory| is not a directory;
     ///   - NoResource when every connection is in use.
     [[nodiscard]]
-    auto bind(ours::Uandle channel, NodeId directory, ours_io::Operations rights)
+    auto bind(ours::Uandle channel, NodeId directory, prot::io::Operations rights)
         -> ustl::Result<ConnectionId, ours::Status>;
 
     /// Handles one message that arrived on |connection|'s channel and says
@@ -230,7 +230,7 @@ class Server final {
 
     /// The rights |connection| holds; none for a stale id.
     [[nodiscard]]
-    auto rights(ConnectionId connection) const -> ustl::Option<ours_io::Operations>;
+    auto rights(ConnectionId connection) const -> ustl::Option<prot::io::Operations>;
 
     /// The node |connection| is a connection to; none for a stale id.
     [[nodiscard]]
@@ -246,7 +246,7 @@ class Server final {
     /// A free slot made into a connection to |node|; none when every slot is
     /// in use.
     [[nodiscard]]
-    auto allocate(ours::Uandle channel, NodeId node, ours_io::Operations rights)
+    auto allocate(ours::Uandle channel, NodeId node, prot::io::Operations rights)
         -> ustl::Option<ConnectionId>;
 
     /// Releases |id| and answers Drop.
@@ -256,7 +256,7 @@ class Server final {
     /// A new connection to |node| on |channel|, the request's: Bind, or
     /// NoResource when every connection is in use.
     [[nodiscard]]
-    auto open_connection(ours::Uandle channel, NodeId node, ours_io::Operations rights)
+    auto open_connection(ours::Uandle channel, NodeId node, prot::io::Operations rights)
         -> ustl::Result<Outcome, ours::Status>;
 
     /// Open's checks, in their fixed order, then the node's own. A target
@@ -265,20 +265,20 @@ class Server final {
     /// answers Action::Subtree, once the checks that come before the node
     /// have passed.
     [[nodiscard]]
-    auto open(Connection const &connection, ours_io::OpenRequest const &request, ReplyBuffer &out)
+    auto open(Connection const &connection, prot::io::OpenRequest const &request, ReplyBuffer &out)
         -> ustl::Result<Outcome, ours::Status>;
 
     [[nodiscard]]
-    auto read_dirents(Connection &connection, ours_io::ReadDirentsRequest const &request,
+    auto read_dirents(Connection &connection, prot::io::ReadDirentsRequest const &request,
                       ReplyBuffer &out) -> ustl::Result<wire::Message, ours::Status>;
 
     [[nodiscard]]
-    auto read(Connection &connection, ours_io::ReadRequest const &request, ReplyBuffer &out)
+    auto read(Connection &connection, prot::io::ReadRequest const &request, ReplyBuffer &out)
         -> ustl::Result<wire::Message, ours::Status>;
 
     [[nodiscard]]
     auto get_backing_memory(Connection const &connection,
-                            ours_io::GetBackingMemoryRequest const &request, ReplyBuffer &out)
+                            prot::io::GetBackingMemoryRequest const &request, ReplyBuffer &out)
         -> ustl::Result<wire::Message, ours::Status>;
 
     Tree const *m_tree;

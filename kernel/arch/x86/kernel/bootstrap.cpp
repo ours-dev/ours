@@ -22,7 +22,7 @@ extern "C" u8 const DEBUG_SYMBOL2[] LINK_NAME("__debug_symbol2");
 extern "C" u8 const DEBUG_SYMBOL3[] LINK_NAME("__debug_symbol3");
 extern "C" u8 const DEBUG_SYMBOL4[] LINK_NAME("__debug_symbol4");
 
-static PhysAddr BOOTSTRAP16_BUFFER_BASE = 0;
+static PhysAddr BOOTSTRAP16_BUFFER_BASE{};
 
 #ifdef CONFIG_CPU_HOTPLUG
 /// The data page of the trampoline, once make_bootstrap_area() has built it,
@@ -70,12 +70,12 @@ namespace {
         // 0x40, inside it only because the structure is small: at 64 bytes
         // it would have stepped a whole page and failed the ASSERT below.
         auto *const gdt_start =
-            reinterpret_cast<u8 *>(ustl::round_up(reinterpret_cast<VirtAddr>(data + 1), 16));
+            reinterpret_cast<u8 *>(ustl::round_up(VirtAddr{reinterpret_cast<usize>(data + 1)}, 16));
         ASSERT(gdt_start + GDT_SIZE <= area + PAGE_SIZE * 2);
         memcpy(gdt_start, x86_get_gdt(), GDT_SIZE);
         // Inside the buffer, which set_bootstrap16_buffer() keeps below
         // 64 KiB, so the 32-bit base below cannot truncate it.
-        auto const gdt_base = BOOTSTRAP16_BUFFER_BASE + static_cast<PhysAddr>(gdt_start - area);
+        auto const gdt_base = BOOTSTRAP16_BUFFER_BASE + usize(gdt_start - area);
         data->gdtr_limit = static_cast<u16>(GDT_SIZE - 1);
         data->gdtr_base = static_cast<u32>(gdt_base);
 
@@ -96,7 +96,7 @@ INIT_CODE
 auto set_bootstrap16_buffer(PhysAddr base) -> void {
     using ustl::is_aligned;
     ASSERT(is_aligned(base, PAGE_SIZE));
-    ASSERT(base <= 64_kb - MIN_BOOTSTRAP16_BUFFER_SIZE);
+    ASSERT(base <= PhysAddr{64_kb - MIN_BOOTSTRAP16_BUFFER_SIZE});
 
     BOOTSTRAP16_BUFFER_BASE = base;
 }
@@ -104,7 +104,7 @@ auto set_bootstrap16_buffer(PhysAddr base) -> void {
 INIT_CODE
 auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     DEBUG_ASSERT(data);
-    DEBUG_ASSERT(BOOTSTRAP16_BUFFER_BASE, "There is no a given bootstrap area");
+    DEBUG_ASSERT(BOOTSTRAP16_BUFFER_BASE != PhysAddr{}, "There is no a given bootstrap area");
 
     auto const area_size = BOOTSTRAP_AREA_END - BOOTSTRAP_AREA_START;
     ASSERT(area_size >= 0 && static_cast<usize>(area_size) <= PAGE_SIZE);
@@ -120,11 +120,10 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
 
     bootstrap_data->lond_mode_cs = X86_GDT_KERNEL_CODE64;
     auto const long_mode_phys_entry =
-        BOOTSTRAP16_BUFFER_BASE +
-        static_cast<PhysAddr>(X86_AP_ENTER_LONG_MODE - BOOTSTRAP_AREA_START);
+        BOOTSTRAP16_BUFFER_BASE + usize(X86_AP_ENTER_LONG_MODE - BOOTSTRAP_AREA_START);
     ASSERT(long_mode_phys_entry <= MAX_BOOTSTRAP_PHYSICAL_ADDRESS);
     bootstrap_data->long_mode_phys_entry = static_cast<u32>(long_mode_phys_entry);
-    bootstrap_data->long_mode_virt_entry = VirtAddr(x86_start_nonboot_cpu);
+    bootstrap_data->long_mode_virt_entry = VirtAddr{reinterpret_cast<usize>(x86_start_nonboot_cpu)};
 
     log::trace("Bootstrap long code phys base=0x{:X}", bootstrap_data->long_mode_phys_entry);
     log::trace("Bootstrap long mode code virt base=0x{:X}", bootstrap_data->long_mode_virt_entry);
@@ -141,7 +140,8 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     BOOTSTRAP_DATA = bootstrap_data;
 #endif // #ifdef CONFIG_CPU_HOTPLUG
 
-    log::trace("Bootstrap16 data at v:0x{:X}, p:0x{:X}", VirtAddr(bootstrap_data),
+    log::trace("Bootstrap16 data at v:0x{:X}, p:0x{:X}",
+               VirtAddr{reinterpret_cast<usize>(bootstrap_data)},
                mm::PhysMap::virt_to_phys(bootstrap_data));
 
     // One identity map is all the trampoline needs once paging is on: its
@@ -150,8 +150,8 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     // replaced physload's identity map, and x86_setup_mmu() cleared what
     // replaced it -- so the buffer is mapped back here.
     auto const status = mm::VmAspace::kernel_aspace()->arch_aspace().map(
-        BOOTSTRAP16_BUFFER_BASE, BOOTSTRAP16_BUFFER_BASE, MIN_BOOTSTRAP16_BUFFER_SIZE >> PAGE_SHIFT,
-        mm::MmuFlags::PermMask | mm::MmuFlags::Discache,
+        VirtAddr{std::to_underlying(BOOTSTRAP16_BUFFER_BASE)}, BOOTSTRAP16_BUFFER_BASE,
+        MIN_BOOTSTRAP16_BUFFER_SIZE >> PAGE_SHIFT, mm::MmuFlags::PermMask | mm::MmuFlags::Discache,
         mm::ArchMapOptions::ErrorIfExisting | mm::ArchMapOptions::UndoOnFailure, nullptr);
     ASSERT(Status::Ok == status);
 
@@ -172,13 +172,14 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
 
 INIT_CODE
 static auto init_bootstrap16_buffer() -> void {
-    if (BOOTSTRAP16_BUFFER_BASE) {
+    if (BOOTSTRAP16_BUFFER_BASE != PhysAddr{}) {
         // Avoid confliction.
         return;
     }
 
-    auto buffer = mm::EarlyMem::allocate(MIN_BOOTSTRAP16_BUFFER_SIZE, PAGE_SIZE, 0, 64_kb,
-                                         bootmem::ANY_NODE, bootmem::MemoryType::Transient);
+    auto buffer =
+        mm::EarlyMem::allocate(MIN_BOOTSTRAP16_BUFFER_SIZE, PAGE_SIZE, PhysAddr{}, PhysAddr{64_kb},
+                               bootmem::ANY_NODE, bootmem::MemoryType::Transient);
     ASSERT(buffer, "Failed to allocate APs's bootstrap buffer");
 
     set_bootstrap16_buffer(mm::PhysMap::virt_to_phys(buffer));

@@ -31,7 +31,7 @@ namespace {
 } // namespace
 
 ResourceServer::ResourceServer(Storage &storage, loop::Loop &loop,
-                               ours_resource::Protocol const &protocol, Uandle const resource)
+                               prot::resource::Protocol const &protocol, Uandle const resource)
     : m_storage(&storage), m_loop(&loop), m_protocol(protocol), m_resource(resource) {}
 
 auto ResourceConnection::on_signals(Signals const observed) -> loop::Action {
@@ -100,7 +100,7 @@ auto ResourceServer::handle(ResourceConnection &connection, Signals const observ
     // well-formed Get of this server's protocol -- a reply, another ordinal,
     // another protocol's Get, a Get with handles -- closes the connection
     // without an epitaph, and every handle it brought.
-    auto const request = ours_resource::decode_get(message, m_protocol);
+    auto const request = prot::resource::decode_get(message, m_protocol);
     if (request.is_err()) {
         close_all(message.handles);
         return release();
@@ -110,15 +110,15 @@ auto ResourceServer::handle(ResourceConnection &connection, Signals const observ
     // cannot -- the root was started without one, say -- the reply's status
     // says why.
     auto resource = Uandle::Invalid;
-    auto reply = ours_resource::GetReply{.status = Status::Ok};
+    auto reply = prot::resource::GetReply{.status = Status::Ok};
     if (auto const status = ours::handle_duplicate(m_resource, ours::Rights::SameRights, &resource);
         status != Status::Ok) {
         reply.status = status;
     } else {
         reply.resource = resource;
     }
-    auto const encoded = ours_resource::encode_get_reply(storage.reply_bytes, storage.reply_handles,
-                                                         m_protocol, request->txid, reply);
+    auto const encoded = prot::resource::encode_get_reply(
+        storage.reply_bytes, storage.reply_handles, m_protocol, request->txid, reply);
     if (encoded.is_err()) {
         // Cannot happen: the txid passed the decoder, and the buffers hold
         // either form. Were it to, the client would wait for good.

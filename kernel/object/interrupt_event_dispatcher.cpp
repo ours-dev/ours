@@ -12,7 +12,12 @@ namespace ours::object {
 InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line)
     : Base(Flags::None)
     , m_line(line)
-    , m_action(&Self::on_interrupt, this, irq::IrqFlags::Oneshot, "interrupt", &Self::on_revoked) {}
+    , m_registration({.handle = &Self::on_interrupt,
+                      .revoke = &Self::on_revoked,
+                      .ready = [](void *const context) -> bool {
+                          return static_cast<Self *>(context)->deferred_work_complete();
+                      }},
+                     this, irq::RegistrationOptions::Oneshot) {}
 
 /// The order is what keeps a failure from touching a line that is not the
 /// object's. Nothing is made or programmed until the options are known to be
@@ -38,7 +43,7 @@ InterruptEventDispatcher::InterruptEventDispatcher(VIrqNum const line)
 /// after each interrupt, or an edge line it asked for held masked until
 /// each ack.
 auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const out,
-                                      Rights *const rights, u32 const line,
+                                      Rights *const rights, VIrqNum const line,
                                       InterruptOptions const options) -> Status {
     // Only what names a physical line and how it signals: Virtual is the
     // other kind's, and nothing else exists.
@@ -72,7 +77,7 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
 
     // The line is the number the irq layer names it by, which is what every
     // step below, and the object, use.
-    auto const virqnum = static_cast<VIrqNum>(line);
+    auto const virqnum = line;
 
     // A line the kernel holds for its own use is refused as such, not as one
     // another program holds (AlreadyBound, below): a program can never have
@@ -89,7 +94,7 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
     // AlreadyBound here is the line's owner refusing, before the mode is
     // touched: the object goes with |self|, without destroy(), and the owner
     // keeps its line, and its mode, as they were.
-    if (auto const trigger = irq::attach(virqnum, self->m_action, mode); trigger.is_err()) {
+    if (auto const trigger = irq::attach(virqnum, self->m_registration, mode); trigger.is_err()) {
         return trigger.unwrap_err();
     }
     // The one unmask the object makes itself, to start the line; every later
@@ -105,7 +110,7 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
         // object already; or a controller that lacks the unmask. Either way
         // the detach keeps the object from being freed with its action on the
         // line, and waits for a removal that has the object still.
-        auto _ = irq::detach(self->m_action);
+        auto _ = irq::detach(self->m_registration);
         return status;
     }
 
@@ -146,7 +151,7 @@ auto InterruptEventDispatcher::on_revoked(VIrqNum, void *const context) -> void 
 /// line for it, and a late finalize must not unmask a line the next owner has
 /// not started.
 auto InterruptEventDispatcher::unmask_interrupt() -> void {
-    irq::finalize_oneshot(m_line, m_action);
+    irq::finalize_oneshot(m_line, m_registration);
 }
 
 /// The barrier: irq::detach() returns once no handler of the line runs on
@@ -159,8 +164,8 @@ auto InterruptEventDispatcher::unmask_interrupt() -> void {
 /// while this destroy is waiting on its lock answers NotFound too.
 auto InterruptEventDispatcher::unregister_interrupt_handler() -> void {
     [[maybe_unused]]
-    auto const status = irq::detach(m_action);
+    auto const status = irq::detach(m_registration);
     DEBUG_ASSERT(Status::Ok == status || Status::NotFound == status,
-                 "detaching from line {} answered {}", m_line, to_string(status));
+                 "detaching from line {} answered {}", static_cast<u32>(m_line), to_string(status));
 }
 } // namespace ours::object

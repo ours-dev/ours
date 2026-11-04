@@ -82,6 +82,15 @@ class ProtocolServer: public ioservice::Handler {
         /// generation) together name the connection, the value alone does
         /// not.
         u32 generation = 0;
+        /// Set by mark_connection_dead() when a deferred reply's write
+        /// failed: the connection is ending, but the entry stays taken --
+        /// clearing it here would free it while its slot is still armed,
+        /// and the next Open would reuse an entry another slot points at.
+        /// The slot's own next firing (the dead client's PeerClosed, or the
+        /// live client's next message) runs serve_client(), which sees the
+        /// flag and goes through release(), and the entry is free only
+        /// then, with its slot retired the Loop's way.
+        bool dead = false;
 
       private:
         auto on_signals(ours::Signals const observed) -> loop::Action override {
@@ -144,6 +153,9 @@ class ProtocolServer: public ioservice::Handler {
 
     /// Ends the client |channel|'s connection: its entry is freed, and the
     /// returned Close makes the Loop close the channel and free the slot.
+    /// Only for a caller inside the pump, whose returned Action the Loop
+    /// sees; a deferred reply's failure cannot propagate here -- it marks
+    /// the connection dead instead (mark_connection_dead()).
     auto close_client(ours::Uandle const channel) -> loop::Action {
         for (auto &client: m_storage->clients) {
             if (client.channel != channel) {
@@ -153,6 +165,23 @@ class ProtocolServer: public ioservice::Handler {
             break;
         }
         return loop::Action::Close;
+    }
+
+    /// Marks the connection |channel| names as ending, for a deferred reply
+    /// whose write failed -- a caller outside the pump, whose answer the
+    /// Loop never sees. The entry stays taken: the slot is still armed, and
+    /// freeing it here would let the next Open reuse an entry another slot
+    /// points at. The slot's own next firing -- the dead client's
+    /// PeerClosed, or the live client's next message -- carries the flag
+    /// into serve_client(), which retires the connection the Loop's way.
+    auto mark_connection_dead(ours::Uandle const channel) -> void {
+        for (auto &client: m_storage->clients) {
+            if (client.channel != channel) {
+                continue;
+            }
+            client.dead = true;
+            return;
+        }
     }
 
     /// Where the derived server builds a reply.
@@ -198,6 +227,14 @@ class ProtocolServer: public ioservice::Handler {
     /// the connection ends without an epitaph, the handles it brought closed
     /// with it.
     auto serve_client(Client &client, ours::Signals const observed) -> loop::Action {
+        if (client.dead) {
+            // A deferred reply marked this connection ending; its slot
+            // fires now -- the dead client's PeerClosed, or the live
+            // client's next message -- and this is where the connection
+            // actually ends, the Loop's way.
+            client.dead = false;
+            return release(client);
+        }
         if (!(observed & ours::Signals::Readable)) {
             return release(client);
         }

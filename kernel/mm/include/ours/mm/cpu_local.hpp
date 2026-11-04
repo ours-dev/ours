@@ -97,7 +97,7 @@ class CpuLocal {
     FORCE_INLINE
     static auto resolve(VirtAddr handle, CpuNum cpu) -> VirtAddr {
         DEBUG_ASSERT(Self::holds(handle), "Resolving a handle that names nothing");
-        return handle + VirtAddr(Self::offset_of(cpu));
+        return handle + usize(Self::offset_of(cpu));
     }
 
     /// Points the boot CPU at the linker-provided section so that `CPU_LOCAL`
@@ -126,14 +126,14 @@ class CpuLocal {
     FORCE_INLINE
     static auto read(T &t) -> T {
         static_assert(sizeof(t) <= sizeof(usize));
-        return ArchCpuLocal::read<T>(reinterpret_cast<VirtAddr>(&t));
+        return ArchCpuLocal::read<T>(VirtAddr{reinterpret_cast<usize>(&t)});
     }
 
     template <typename T>
     FORCE_INLINE
     static auto write(T &t, T value) -> void {
         static_assert(sizeof(t) <= sizeof(usize));
-        return ArchCpuLocal::write<T>(reinterpret_cast<VirtAddr>(&t), value);
+        return ArchCpuLocal::write<T>(VirtAddr{reinterpret_cast<usize>(&t)}, value);
     }
 
     /// Takes the address of a CPU_LOCAL variable's *template* copy and returns

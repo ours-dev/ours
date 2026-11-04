@@ -3,13 +3,25 @@
 ## Scheduler
 
 - Fair (`kernel/kernel/task/sched/fair.*`) is the user's own design and out of
-  the build. Bring-up runs on a simple round-robin `ISchedule`. Do not edit
+  the build. Bring-up runs on a simple round-robin discipline. Do not edit
   Fair at all; a refactor whose value depends on changing fair.cpp must be put
   to the user, not carried out. In the generic scheduler machinery
   (`scheduler.cpp`, `context.hpp`, `scheduler_inline.hpp`), ask before any fix
   beyond a plain seeding or ordering defect.
 - The framework around the algorithm may be restructured boldly; what the user
   protects is the scheduling algorithm, not the size of a change.
+- A discipline is a plain class with no base class and no virtual function,
+  reached through a `ustl::Ref<Schedule>` (`ustl/dyn.hpp`; the user's call of
+  2026-11-03, design in `.agents/tasks/sched-facade/DESIGN.md`).
+  `Scheduler::schedule_of(Discipline)` is a `switch` over the closed enum, and
+  a discipline that is not implemented (Deadline today) is an empty reference
+  that traps. Five methods are required (`enqueue_thread`, `dequeue_thread`,
+  `evaluate_next_thread`, `on_thread_tick`, `num_queued`); the others are
+  optional and their defaults sit beside them in `schedule.hpp`. The thread-
+  safety analysis cannot follow an erased call, so `Scheduler::call_schedule<>`
+  carries `TA_REQUIRES(get_lock())` and a discipline declares
+  `TA_REQUIRES(rq.lock())` on its own functions. One discipline outranks
+  another if its enumerator is later (Deadline over Normal), not by address.
 - Numerics follow Zircon: weights and times are `ffl::Fixed`
   (`SchedWeight` is `ffl::Fixed<int64_t, 10>`, a fraction in (0, 1]). No Linux
   integer weights, no `wmult` reciprocal table. Read
@@ -69,111 +81,93 @@ later. The lock order on that path is L1 (line) -> L2 (interrupt object) ->
 {LI (IO-APIC), L3}; L3 is never held with the port's Mutex. Any other
 interrupt-context producer still goes through a Dpc.
 
-## Interrupt lines: kernel/irq follows genirq
+## Interrupt lines: owned domains and explicit controller contracts
 
-`kernel/irq` is modelled on Linux's genirq, not on Zircon's interrupt
-manager: a deliberate Linux exception, the user's call of 2026-10-05 (D1 (b),
-D2 (a) and D6 (a) in `.agents/tasks/irq-genirq/DESIGN.md`, which names each
-counterpart). The code reached it step by step (the DESIGN's Staging, all
-eight steps landed by 2026-10-07): the interrupt objects write no mask, their
-action says Oneshot and a level line's flow masks it, and every write of a
-line's mask, `irq::mask()` and `irq::unmask()` included, is made under the
-line's lock L1.
+The line owns masking and deferred holding: the deliberate genirq-derived
+exception chosen on 2026-10-05. The accepted 2026-11-03 rewrite is specified in
+`docs/design/261103/irq-redesign.md`. The user selected object model B,
+suspended learning exercises and retained the HIrqNum/VIrqNum spelling. The
+reference kernels identify useful roles; they do not prescribe our object
+shape or synchronization protocol.
 
-- A line the kernel holds for its own use is one an action that says
-  Permanent is on (the legacy timer's; `irq::is_kernel_owned()`). A kernel
-  driver that takes a line for its own uses a Permanent action, and so keeps
-  programs off it: `interrupt_map` and `interrupt_create` answer AccessDenied
-  for it, where a line an interrupt object holds is AlreadyBound until the
-  object goes. A Permanent action cannot be Oneshot or Shared and is never
-  detached, so it fits a line the kernel keeps for good and no other. The
-  answer is the assistant's choice, left to it by the user (2026-11-01,
-  irq-multi-arch D4b), and covers the answer only; the marker is the
-  project's own earlier design.
-- Three words, kept apart (the user kept the `interrupt_*` names, "保留吧",
-  2026-11-01, irq-multi-arch D11; the other two are the line layer's own):
-  `interrupt` is the object a thread waits on and acks, and its calls
-  (`interrupt_create`, `interrupt_wait`, ...), which a virtual one has with no
-  line; `Irq` is the kind of resource that grants lines; `irq`, `virq` and
-  `hwirq` are the line layer and its numbers.
-- A line is an `irq::Desc` (lock L1, its flow, its actions, the Oneshot flag
-  and one held bit) in a flat table built once. A requester is an
-  `irq::Action`; the controller is a stateless `irq::Chip`, seen through
-  `irq::Data`. The names are genirq's roles in this scaffold's short style.
-- A line has two numbers: a hardware number (on x86 the GSI), and the
-  kernel's own, its virq, which is what everything outside the interrupt
-  entry names it by -- an action, an interrupt object, a user program through
-  `interrupt_create` (the user's decision of 2026-10-31, interrupt-system D1
-  and D3: a user program never handles a GSI). `irq::Domain` maps one to the
-  other, a linear domain of two arrays built once and read without a lock;
-  virqs are consecutive in the order of the hardware numbers, from the first
-  multiple of 32 past the highest one, so no virq equals any hardware number.
-  The table is indexed by hardware number, so the interrupt path, which has
-  that number from the root handler, needs no lookup; a control call (`attach`,
-  `mask`, `configure`, ...) turns the virq into the hardware number first.
-  Anything that needs the vector of a line (a test raising it by IPI) asks
-  for the hardware number, never `PlatformIrqMin + virq`.
-- Each line runs a flow handler, `handle_fasteoi` for a level line or
-  `handle_edge`, chosen from the trigger mode when the table is built and
-  re-chosen under L1 by `configure()` and attach. The flow sends the one EOI
-  per vector, through the chip, after the actions; the root controller's
-  handler, which its driver installs with `irq::set_root_handler()` and arch
-  calls for every interrupt that comes through the root controller, sends it
-  for an interrupt no line has (the user's decision of 2026-11-01,
-  irq-multi-arch D3 (c); until then arch sent it).
-- ONESHOT belongs to the line: `handle_fasteoi` masks a Oneshot line before
-  its actions and leaves it masked while held is set; `finalize_oneshot`
-  clears held and unmasks. A Oneshot action never shares, as well as never
-  being Permanent: one held bit records one thread's debt, so a second
-  Oneshot action's finalize would unmask the first one's line.
-- The interrupt object is the threaded handler. Its action says Oneshot and
-  its handler always returns WakeThread, Destroyed included, so a level line
-  stays masked until the detach. Its ack, or the wait that serves as one,
-  calls the finalize after dropping L2 and only once the debt is cleared:
-  an ack that sends the next packet leaves the object owed an ack again,
-  and finalizing there would unmask a level line before it is acked. It
-  keeps its four virtuals, with `mask_interrupt()` empty, and keeps NEEDACK,
-  coalescing, port delivery and timestamps: a user-visible protocol, and
-  kernel/irq knows no ports.
-- The kernel may take a line away from the object (the removal of its
-  domain, irq-multi-arch D19): the action carries a cancel hook, which runs
-  under L1 with preemption off after the action is unlinked and destroys the
-  object from the line's side (`line_revoked()`); the line number in the
-  action is cleared last, with a release store, and that store is what lets
-  the owner's detach answer NotFound and the object be freed. So every
-  `destroy()` runs the detach, also one on an object destroyed already, and
-  a line marked dying answers NoResource to attach, unmask and configure.
-- L1 stays held across the handlers, as Zircon runs its handler under the
-  entry lock, and detach taking L1 is the barrier: no INPROGRESS flag, no
-  synchronize spin. Finalize, `mask()` and `unmask()` take L1 then LI and
-  are never called with L2 held, so there is no L2 -> L1 edge, nor from any
-  line's handler: on their own line they would spin on its own dispatch,
-  and on another they would hold two lines' L1, which have no order.
-- A Permanent line, such as the tick's, is the exception: it is dispatched
-  without L1, because its action list never changes once Permanent is set
-  and there is nothing for the lock to keep out. Its flow therefore reads
-  nothing L1 guards, and Oneshot together with Permanent is refused.
-- Inside the genirq model ours keeps rules of its own: detach clears held
-  rather than waiting for the thread, because a user thread may never ack;
-  `unmask()` leaves a held line masked and answers Ok, the finalize being
-  the one unmask of a held line; and the pin's IO-APIC entry is the only
-  record of its mask, with no software Masked bit.
+- Public Registration owns immutable callbacks/context/RegistrationOptions;
+  the caller retains its stable address through detach and drains its own
+  completion calls before reuse or destruction. Only Line invokes callbacks.
+  Shared, Permanent and Oneshot combinations and unknown bits are validated
+  before occupancy or hardware changes. Permanent never shares or detaches.
+- Line, Domain and DomainRegistry are private. Line owns mutable occupancy,
+  Held/Dying and cached trigger under L1. Domain owns transactional maps and
+  boxed Lines. The directory owns domains and coordinates publication,
+  revocation, IRQ RCU grace and reclamation. No public storage pointer escapes.
+- DomainEndpoint is the controller-owned entry. dispatch(source) holds its own
+  IRQ RCU reader scope over lookup and flow. Some means the source was found
+  and completed, even if unclaimed; None leaves unmatched EOI to the root.
+  Controllers stop delivery before removal and retain ops/context through it.
+- HIrqNum and VIrqNum are separate scoped u32 types, with no implicit numeric
+  or cross-conversion. The user retained these names; do not reintroduce
+  primitive aliases. irq_for_source(domain, source) always names its domain;
+  source_for_irq(id) recovers the local source. Syscall wire values remain
+  u32 and convert at the ABI boundary. Vectors are a third distinct type.
+- Each domain assigns consecutive kernel ids from an aligned block above its
+  local hardware range and the global allocation floor. Ids are never reused.
+  Root is permanent; other domains can be revoked and removed. The directory
+  keeps ownership through Removing and the reader grace period, then moves
+  it out under its Guard and destroys outside the writer lock.
+- Ordinary controls share with_line, a structural C++ operation that owns
+  lookup, status propagation and the complete reader scope. There is no
+  second public storage/control facade or virtual resolver hierarchy.
+- Every dispatch uses the same real L1 Guard, Permanent included, with
+  interrupts and preemption disabled. The 2026-11-03 guard requirement
+  supersedes the earlier lockless Permanent path. Mutable line facts are
+  TA_GUARDED and helpers TA_REQUIRES; no analysis escape is permitted.
+  Statistics read outside L1 are atomic.
+- L1 stays held across callbacks; detach taking it is the callback barrier.
+  Orders are L1 -> LI for controller registers or L1 -> object L2 -> port/wait
+  internals. Owners release L2 before line control. No callback controls any
+  line: two line locks have no order. Named runtime lockdep classes still
+  depend on unfinished library infrastructure; do not bypass its Guard.
+- Held records deferred line work, while owner debt stays under its own L2.
+  Completion takes L1, validates attachment and calls bounded readiness under
+  L2 before clearing Held/unmasking. Physical owner readiness is Idle/Waiting,
+  not Triggered/NeedAck/Destroyed. This prevents an old ack reopening newer
+  work without tokens or duplicate debt. Ack/wait drop L2 before completion.
+- A level Oneshot line masks before notification and remains masked on
+  WakeThread; unmask leaves Held intact. Edge delivery coalesces at the object
+  and does not hold the line. Detach/revocation clears Held and masks; it does
+  not wait for a user thread that may never ack. User lines stay exclusive.
+- ControllerOps declares Eoi or AckEoi independently of Edge/Level. Unknown,
+  missing or unused handshake hooks fail binding. EOI occurs once on the
+  receiving CPU after line-state updates, including unclaimed/held sources.
+  Synthetic dispatch issues neither ACK nor EOI. AckEoi is for a known source
+  retaining in-service state until EOI; claim-token/mask-before-ACK protocols
+  need their own declaration and tests, not a silently reused trigger label.
+- Deferred registration additionally requires Masking::Synchronous and
+  mask/unmask hooks. Pointer presence cannot promise hardware completion.
+  IO-APIC declares Eoi and synchronous masking. Per-instance context supports
+  overlapping hardware numbers without global controller state.
+- The interrupt object remains the deferred handler: Oneshot, WakeThread,
+  existing NeedAck/coalescing/port/timestamp behavior, and the four object
+  hooks. The line is the only mask-state writer; its IO-APIC entry remains the
+  only mask-bit record. No in-kernel IRQ threads, disable depth or replay
+  machine are implied by these interfaces.
+- Revocation marks every line with rollback on refusal, unlinks callbacks
+  under L1 with preemption off, then publishes the detached binding last
+  with release ordering. Object destroy always detaches, including after a
+  line-side revocation, so it drains the callback before freeing storage.
+- entry.hpp/entry.cpp own the root-handler publication and regular trap
+  bookkeeping. enter_trap saves the prior CPU frame on the trap stack and
+  raises both scheduler disable counts. leave_trap restores frame/counts
+  before architecture preempts or delivers signals. Nested exit restores
+  the outer frame. NMI, double fault and machine check remain separate.
+- Actual startup is the platform InitLevel::Irq hook. Empty generic/arch IRQ
+  init calls and the unbound invalid LAPIC controller table are retired.
+  Local APIC fixed vectors retain their architecture-owned handling.
 
-The reason: Zircon makes the mask a property of the object kind. That leaves
-the level mask two writers, the object and the flow for a line with no action,
-and the object writes the controller without L1, so kernel/irq can keep no
-line state. With the mask a property of the line's flow it has one writer,
-while what user space sees is unchanged: a level line stays masked until the
-ack, an edge line is only coalesced. The four virtuals keep Zircon's
-in-device MSI mask open.
-
-Not taken from genirq: in-kernel interrupt threads (a kernel driver defers
-with a Dpc), disable depth, lazy disable and resend, and Linux's sparse
-descriptor tree and radix-tree domain: a linear domain and a flat table are
-enough while every pin is known at boot, and the lookup that has to become
-dynamic first, virq to descriptor, does so when MSI makes lines at run time
-(`.agents/tasks/interrupt-system/DESIGN.md`, Alternatives). User lines stay
-exclusive.
+Controller adapters, contexts, endpoints and registration storage have explicit
+borrowed lifetimes; no new ownership manager hides a missing lifetime rule.
+Future hardware must state its real handshake/masking contract and demonstrate
+it with adapter tests. Performance changes require the separate measurement
+workflow; no speedup is claimed for this rewrite.
 
 ## Small concurrent state
 

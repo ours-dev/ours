@@ -66,9 +66,8 @@
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/interrupt.hpp>
-#include <ours/irq/action.hpp>
-#include <ours/irq/chip.hpp>
-#include <ours/irq/desc_table.hpp>
+#include <ours/irq/controller.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/object/handle.hpp>
@@ -90,6 +89,8 @@
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <kernel/kernel/irq/domain.hpp>
+#include <kernel/kernel/irq/line_access.hpp>
 #include <logz4/log.hpp>
 #include <ustl/views/span.hpp>
 
@@ -313,7 +314,11 @@ namespace {
     /// The hook: holds the first wait on HELD_WAITER's object, after it has
     /// claimed the wait and before it parks, until the test thread lets it
     /// go. It sleeps rather than spins, so the waiter's CPU stays free.
-    auto hold_before_park(InterruptDispatcher &interrupt) -> void {
+    auto hold_before_park(InterruptDispatcher &interrupt,
+                          InterruptDispatcher::InterleavePoint const point) -> void {
+        if (point != InterruptDispatcher::InterleavePoint::BeforePark) {
+            return;
+        }
         auto *const waiter = HELD_WAITER.load(std::memory_order_acquire);
         if (waiter == nullptr || waiter->target != &interrupt ||
             waiter->held.exchange(true, std::memory_order_acq_rel)) {
@@ -360,9 +365,9 @@ namespace {
         auto &interrupt = *waiter->interrupt.dispatcher();
         waiter->target = &interrupt;
         HELD_WAITER.store(waiter, std::memory_order_release);
-        InterruptDispatcher::set_before_park_hook_for_test(hold_before_park);
+        InterruptDispatcher::set_interleave_hook_for_test(hold_before_park);
         auto const unhook = [] {
-            InterruptDispatcher::set_before_park_hook_for_test(nullptr);
+            InterruptDispatcher::set_interleave_hook_for_test(nullptr);
             HELD_WAITER.store(nullptr, std::memory_order_release);
         };
 
@@ -921,13 +926,14 @@ namespace {
       public:
         RecordingInterrupt()
             : InterruptDispatcher(Flags::None)
-            , action(&RecordingInterrupt::on_event, this, irq::IrqFlags::None, "interrupt.test",
-                     &RecordingInterrupt::on_cancel) {}
+            , action({.handle = &RecordingInterrupt::on_event,
+                      .revoke = &RecordingInterrupt::on_cancel},
+                     this, irq::RegistrationOptions::None) {}
 
         using InterruptDispatcher::line_revoked;
 
-        irq::DescTable *table = nullptr;
-        irq::Action action;
+        irq::Domain *table = nullptr;
+        irq::Registration action;
         std::atomic<u32> detaches{0};
         /// The hook has told the object, and waits for the gate.
         std::atomic<bool> hooked{false};
@@ -1003,8 +1009,8 @@ namespace {
 
     /// What the chain case's two threads need.
     struct Chain {
-        irq::DescTable *table = nullptr;
-        VIrqNum virq = irq::INVALID_V_IRQ_NUM;
+        irq::Domain *table = nullptr;
+        VIrqNum virq = VIrqNum::Invalid;
         RecordingInterrupt *object = nullptr;
         std::atomic<bool> destroy_returned{false};
         std::atomic<bool> hook_done_at_return{false};
@@ -1054,12 +1060,15 @@ namespace {
         self->set_cpu_affinity_hard(CpuMask::of(cpus[0]));
         auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
 
-        auto *const table = new (mm::GAF_KERNEL) irq::DescTable();
+        auto *const table = new (mm::GAF_KERNEL) irq::Domain();
         auto *const object = new (mm::GAF_KERNEL) RecordingInterrupt();
         std::array<HIrqNum, 1> const numbers{HIrqNum{9}};
-        constexpr irq::Chip NO_OP_CHIP = {.mask = [](irq::Data const &) -> void {},
-                                          .issue_eoi = [](irq::Data const &) -> void {},
-                                          .name = "interrupt-test"};
+        constexpr irq::ControllerOps NO_OP_CHIP = {
+            .protocol = irq::DispatchProtocol::Eoi,
+            .masking = irq::Masking::Synchronous,
+            .mask = [](irq::ControllerSource const &) -> void {},
+            .issue_eoi = [](irq::ControllerSource const &) -> void {},
+        };
         if (table == nullptr || object == nullptr ||
             table->init(ustl::views::Span<HIrqNum const>(numbers), NO_OP_CHIP) != Status::Ok) {
             verdict(tally, false, "make the chain case's line table and object");
@@ -1068,13 +1077,15 @@ namespace {
         }
         object->table = table;
         CHAIN.table = table;
-        CHAIN.virq = table->virq_of(HIrqNum{9});
+        CHAIN.virq = table->irq_for_source(HIrqNum{9});
         CHAIN.object = object;
         CHAIN.destroy_returned.store(false, std::memory_order_relaxed);
         CHAIN.hook_done_at_return.store(false, std::memory_order_relaxed);
         CHAIN.destroy_status.store(Status::BadState, std::memory_order_relaxed);
 
-        auto const attached = table->attach(CHAIN.virq, object->action) == Status::Ok;
+        auto const attached = irq::with_line(*table, CHAIN.virq, [&](irq::Line &resolved) {
+                                  return resolved.attach(object->action);
+                              }) == Status::Ok;
         auto *const remover =
             Thread::spawn("interrupt.test/revoke", chain_remover, nullptr, task::DEFAULT_PRIORITY);
         if (!attached || remover == nullptr) {

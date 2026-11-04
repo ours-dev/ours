@@ -1,5 +1,7 @@
 # kernel/task/sched 框架重构：目标形状（2026-09-18）
 
+**Superseded in part, 2026-11-03.** The `ISchedule` seam, `Schedule<>`, `ScheduleEntry` and the `.task.schedules` registry that section 3 keeps were replaced by `ustl::Dyn` and a `switch` over `Discipline` (`.agents/tasks/sched-facade/DESIGN.md`, `docs/changes/261103/kernel-task-sched.md`). The premise that `Discipline` will grow stands. The tables of section 5 were applied to `fair.hpp` and `fair.cpp` on 2026-11-03, except for the items that need the author's decision (`.agents/tasks/sched-facade/DESIGN.md`, `docs/changes/261103/kernel-task-sched.md`).
+
 前提由作者定下：**`Discipline` 会长大**。所以 `ISchedule` 挣得起它的抽象开销，
 目标是把已经选定的那条路（Linux 的 `sched_class` 模型）走完，而不是退回 Zircon 的
 单调度器形态。

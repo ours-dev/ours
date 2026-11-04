@@ -13,22 +13,22 @@ using namespace arch;
 
 namespace ours::task {
 namespace {
-    auto swap_gsbase_and_fsbase(usize new_gsbase, usize new_fsbase, usize *old_gs_base,
-                                usize *old_fs_base) -> void {
+    auto swap_gsbase_and_fsbase(VirtAddr new_gsbase, VirtAddr new_fsbase, VirtAddr *old_gs_base,
+                                VirtAddr *old_fs_base) -> void {
         if (FEATURE_HAS_FSGSBASE) {
-            *old_fs_base = read_fsbase<usize>();
+            *old_fs_base = VirtAddr{read_fsbase<usize>()};
         } else {
-            *old_fs_base = MsrIo::read<usize>(MsrRegAddr::IA32FsBase);
+            *old_fs_base = VirtAddr{MsrIo::read<usize>(MsrRegAddr::IA32FsBase)};
         }
 
         if (FEATURE_HAS_FSGSBASE) {
             write_fsbase(new_fsbase);
             *old_gs_base = exchange_gsbase_after_swap(new_gsbase);
         } else {
-            MsrIo::write(MsrRegAddr::IA32FsBase, new_fsbase);
+            MsrIo::write(MsrRegAddr::IA32FsBase, std::to_underlying(new_fsbase));
 
-            *old_gs_base = MsrIo::read<usize>(MsrRegAddr::IA32KernelGsBase);
-            MsrIo::write(MsrRegAddr::IA32KernelGsBase, new_gsbase);
+            *old_gs_base = VirtAddr{MsrIo::read<usize>(MsrRegAddr::IA32KernelGsBase)};
+            MsrIo::write(MsrRegAddr::IA32KernelGsBase, std::to_underlying(new_gsbase));
         }
     }
 } // namespace
@@ -75,11 +75,11 @@ auto X86Thread::init(VirtAddr entry_point) -> void {
     frame--;
     memset(frame, 0, sizeof(*frame));
 
-    frame->rip = entry_point;
-    m_sp = reinterpret_cast<VirtAddr>(frame);
+    frame->rip = std::to_underlying(entry_point);
+    m_sp = VirtAddr{reinterpret_cast<usize>(frame)};
 
-    m_fs_base = 0;
-    m_gs_base = 0;
+    m_fs_base = VirtAddr{};
+    m_gs_base = VirtAddr{};
 }
 
 } // namespace ours::task

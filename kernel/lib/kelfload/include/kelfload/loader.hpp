@@ -31,10 +31,10 @@ struct ImageVmo {
 
     /// That lowest p_vaddr, page-aligned: the image address the VMO's offset 0
     /// stands for.
-    ours::VirtAddr image_base = 0;
+    ours::VirtAddr image_base{};
 
     /// e_entry, relative to image_base.
-    ours::VirtAddr entry_offset = 0;
+    usize entry_offset = 0;
 };
 
 /// Places ELF images into one user address space.

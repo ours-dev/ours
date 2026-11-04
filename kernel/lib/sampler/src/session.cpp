@@ -12,7 +12,7 @@
 #include <ours/cpu.hpp>
 #include <ours/cpu_hotplug_hook.hpp>
 #include <ours/ipi_service.hpp>
-#include <ours/irq/mod.hpp>
+#include <ours/irq/entry.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>

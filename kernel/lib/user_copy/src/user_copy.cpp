@@ -14,7 +14,7 @@ auto is_user_range(ours::VirtAddr const addr, usize const size) -> bool {
     // USER_ASPACE_BASE and by the non-canonical gap above the 2^47 split, and
     // an access into the gap is a #GP rather than a page fault -- a crash no
     // range check further down would have caught.
-    return is_within(addr, size, USER_ASPACE_BASE, USER_ASPACE_SIZE);
+    return is_within(addr, size, ours::USER_ASPACE_BASE, ours::USER_ASPACE_SIZE);
 }
 
 auto copy_from_user(void *const dst, ours::VirtAddr const src, usize const size) -> ours::Status {

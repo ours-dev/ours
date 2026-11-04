@@ -102,7 +102,7 @@ auto Loader::load(Bytes const bytes, char const *const name, ImageVmo &out) -> S
     // placed where the caller says. `memsz` and not `filesz`: the
     // difference between them is .bss, which occupies address space but
     // occupies no bytes in the file.
-    auto lowest = ~VirtAddr(0);
+    auto lowest = VirtAddr{~0_usize};
     auto highest = VirtAddr(0);
     for (auto index = u16(0); index < header.phnum; ++index) {
         Elf64ProgramHeader phdr{};

@@ -21,7 +21,7 @@ cpp_interface("headers") {
   public = [ "include/block_server/block_server.hpp" ]
   public_deps = [
     "//system/lib/loop:headers",
-    "//system/lib/ours.block",
+    "//system/lib/protocols",
     "//system/lib/server",
     "//system/lib/ustl:headers",
     "//system/lib/wire:headers",

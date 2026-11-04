@@ -27,7 +27,7 @@
 #include <loop/loop.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <wire/wire.hpp>
 
 // How gtest prints a status in a failure: by name, found by argument-
@@ -142,10 +142,10 @@ class BlockServerTest: public testing::Test {
         auto const ends = channel();
         std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
         std::array<Uandle, 1> handles{};
-        auto const encoded = ours_io::encode_open(bytes, handles,
-                                                  {.flags = ours_io::Flags::ProtocolService,
-                                                   .path = "svc/ours.block.Block",
-                                                   .object = ends[1]});
+        auto const encoded = prot::io::encode_open(bytes, handles,
+                                                   {.flags = prot::io::Flags::ProtocolService,
+                                                    .path = "svc/ours.block.Block",
+                                                    .object = ends[1]});
         EXPECT_TRUE(encoded.is_ok());
         auto const message = encoded.unwrap();
         EXPECT_EQ(ours::channel_write(m_directory, ours::ChannelWriteOptions::None,
@@ -204,12 +204,12 @@ class BlockServerTest: public testing::Test {
 TEST_F(BlockServerTest, GetInfoAnswersFromTheGeometry) {
     auto const client = connect_block();
     send(client,
-         [](std::span<u8> bytes) { return ours_block::encode_get_info(bytes, {.txid = 7}); });
+         [](std::span<u8> bytes) { return prot::block::encode_get_info(bytes, {.txid = 7}); });
     run();
 
     auto const message = read_message(client);
     ASSERT_TRUE(message.has_value());
-    auto const answered = ours_block::decode_get_info_reply(as_message(*message), 7);
+    auto const answered = prot::block::decode_get_info_reply(as_message(*message), 7);
     ASSERT_TRUE(answered.is_ok());
     EXPECT_EQ(answered->status, Status::Ok);
     EXPECT_EQ(answered->block_size, u32{BLOCK_SIZE});
@@ -220,7 +220,7 @@ TEST_F(BlockServerTest, GetInfoAnswersFromTheGeometry) {
 TEST_F(BlockServerTest, ReadParksInASlotAndCompletesWithTheData) {
     auto const client = connect_block();
     send(client, [](std::span<u8> bytes) {
-        return ours_block::encode_read(bytes, {.txid = 9, .lba = 100, .count = READ_BLOCKS});
+        return prot::block::encode_read(bytes, {.txid = 9, .lba = 100, .count = READ_BLOCKS});
     });
     run();
 
@@ -238,7 +238,7 @@ TEST_F(BlockServerTest, ReadParksInASlotAndCompletesWithTheData) {
 
     auto const message = read_message(client);
     ASSERT_TRUE(message.has_value());
-    auto const answered = ours_block::decode_read_reply(as_message(*message), 9);
+    auto const answered = prot::block::decode_read_reply(as_message(*message), 9);
     ASSERT_TRUE(answered.is_ok());
     EXPECT_EQ(answered->status, Status::Ok);
     ASSERT_EQ(answered->data.size(), usize{data.size()});
@@ -250,7 +250,7 @@ TEST_F(BlockServerTest, WriteHandsItsBlocksToStart) {
     auto const client = connect_block();
     auto const blocks = std::array<u8, BLOCK_SIZE>{'x'};
     send(client, [&](std::span<u8> bytes) {
-        return ours_block::encode_write(bytes, {.txid = 11, .lba = 5, .count = 1, .data = blocks});
+        return prot::block::encode_write(bytes, {.txid = 11, .lba = 5, .count = 1, .data = blocks});
     });
     run();
 
@@ -263,7 +263,7 @@ TEST_F(BlockServerTest, WriteHandsItsBlocksToStart) {
     m_device->finish(0, Status::Ok);
     auto const message = read_message(client);
     ASSERT_TRUE(message.has_value());
-    auto const answered = ours_block::decode_write_reply(as_message(*message), 11);
+    auto const answered = prot::block::decode_write_reply(as_message(*message), 11);
     ASSERT_TRUE(answered.is_ok());
     EXPECT_EQ(answered->status, Status::Ok);
     EXPECT_EQ(m_device->in_flight(), usize{0});
@@ -273,10 +273,10 @@ TEST_F(BlockServerTest, AFullDepthAnswersShouldWait) {
     auto const first = connect_block();
     auto const second = connect_block();
     send(first, [](std::span<u8> bytes) {
-        return ours_block::encode_read(bytes, {.txid = 1, .lba = 10, .count = 1});
+        return prot::block::encode_read(bytes, {.txid = 1, .lba = 10, .count = 1});
     });
     send(second, [](std::span<u8> bytes) {
-        return ours_block::encode_read(bytes, {.txid = 2, .lba = 20, .count = 1});
+        return prot::block::encode_read(bytes, {.txid = 2, .lba = 20, .count = 1});
     });
     run();
     ASSERT_EQ(m_device->in_flight(), usize{MAX_INFLIGHT});
@@ -285,12 +285,12 @@ TEST_F(BlockServerTest, AFullDepthAnswersShouldWait) {
     // reply form, and the connection stays.
     auto const blocks = std::array<u8, BLOCK_SIZE>{};
     send(first, [&](std::span<u8> bytes) {
-        return ours_block::encode_write(bytes, {.txid = 3, .lba = 30, .count = 1, .data = blocks});
+        return prot::block::encode_write(bytes, {.txid = 3, .lba = 30, .count = 1, .data = blocks});
     });
     run();
     auto const refused = read_message(first);
     ASSERT_TRUE(refused.has_value());
-    auto const refused_status = ours_block::decode_write_reply(as_message(*refused), 3);
+    auto const refused_status = prot::block::decode_write_reply(as_message(*refused), 3);
     ASSERT_TRUE(refused_status.is_ok());
     EXPECT_EQ(refused_status->status, Status::ShouldWait);
     EXPECT_EQ(m_device->in_flight(), usize{MAX_INFLIGHT});
@@ -305,8 +305,8 @@ TEST_F(BlockServerTest, AFullDepthAnswersShouldWait) {
     auto const second_reply = read_message(second);
     ASSERT_TRUE(first_reply.has_value());
     ASSERT_TRUE(second_reply.has_value());
-    auto const first_answer = ours_block::decode_read_reply(as_message(*first_reply), 1);
-    auto const second_answer = ours_block::decode_read_reply(as_message(*second_reply), 2);
+    auto const first_answer = prot::block::decode_read_reply(as_message(*first_reply), 1);
+    auto const second_answer = prot::block::decode_read_reply(as_message(*second_reply), 2);
     ASSERT_TRUE(first_answer.is_ok());
     ASSERT_TRUE(second_answer.is_ok());
     EXPECT_EQ(first_answer->status, Status::Ok);
@@ -314,10 +314,49 @@ TEST_F(BlockServerTest, AFullDepthAnswersShouldWait) {
     EXPECT_EQ(m_device->in_flight(), usize{0});
 }
 
+// The cross-wiring interleaving the mark-dead fix pins: client 1 parks and
+// exits; the completion's reply fails, and the entry is marked dead -- NOT
+// freed, because its slot is still armed on the dead channel. Client 2
+// connects (a different entry, or the same one only after the stale packet
+// retires it), parks, and gets ITS OWN reply -- never client 1's drop, and
+// never destroyed by the stale packet that fired client 1's slot.
+TEST_F(BlockServerTest, ADeadClientLeaveOthersConnectionsAlone) {
+    auto const gone = connect_block();
+    send(gone, [](std::span<u8> bytes) {
+        return prot::block::encode_read(bytes, {.txid = 40, .lba = 1, .count = 1});
+    });
+    run();
+    ASSERT_EQ(m_device->in_flight(), usize{1});
+
+    auto _ = ours::handle_close(gone);
+    run();
+    m_device->finish(0, Status::Ok, std::array<u8, BLOCK_SIZE>{});
+    EXPECT_EQ(m_device->in_flight(), usize{0});
+
+    // Client 2 parks and is answered with its own completion, untouched by
+    // the stale packet that fires client 1's slot.
+    auto const second = connect_block();
+    send(second, [](std::span<u8> bytes) {
+        return prot::block::encode_read(bytes, {.txid = 41, .lba = 2, .count = 1});
+    });
+    run();
+    ASSERT_EQ(m_device->started.size(), usize{2});
+    m_device->finish(m_device->started.back().slot, Status::Ok, std::array<u8, BLOCK_SIZE>{'b'});
+    auto const message = read_message(second);
+    ASSERT_TRUE(message.has_value());
+    auto const answered = prot::block::decode_read_reply(as_message(*message), 41);
+    ASSERT_TRUE(answered.is_ok());
+    EXPECT_EQ(answered->status, Status::Ok);
+
+    // And client 1's slot retired without serving anything of client 2's:
+    // exactly one message was queued for client 2, and it is gone.
+    EXPECT_FALSE(read_message(second).has_value());
+}
+
 TEST_F(BlockServerTest, AClientGoneWhileParkedDropsItsReply) {
     auto const client = connect_block();
     send(client, [](std::span<u8> bytes) {
-        return ours_block::encode_read(bytes, {.txid = 5, .lba = 1, .count = 1});
+        return prot::block::encode_read(bytes, {.txid = 5, .lba = 1, .count = 1});
     });
     run();
     ASSERT_EQ(m_device->in_flight(), usize{1});
@@ -336,11 +375,11 @@ TEST_F(BlockServerTest, AClientGoneWhileParkedDropsItsReply) {
     // And the server takes a new client as if nothing had happened.
     auto const again = connect_block();
     send(again,
-         [](std::span<u8> bytes) { return ours_block::encode_get_info(bytes, {.txid = 6}); });
+         [](std::span<u8> bytes) { return prot::block::encode_get_info(bytes, {.txid = 6}); });
     run();
     auto const message = read_message(again);
     ASSERT_TRUE(message.has_value());
-    auto const answered = ours_block::decode_get_info_reply(as_message(*message), 6);
+    auto const answered = prot::block::decode_get_info_reply(as_message(*message), 6);
     ASSERT_TRUE(answered.is_ok());
     EXPECT_EQ(answered->status, Status::Ok);
 }
@@ -348,7 +387,7 @@ TEST_F(BlockServerTest, AClientGoneWhileParkedDropsItsReply) {
 TEST_F(BlockServerTest, ACompletionBeforeAReconnectedEntryIsDropped) {
     auto const client = connect_block();
     send(client, [](std::span<u8> bytes) {
-        return ours_block::encode_read(bytes, {.txid = 8, .lba = 1, .count = 1});
+        return prot::block::encode_read(bytes, {.txid = 8, .lba = 1, .count = 1});
     });
     run();
     ASSERT_EQ(m_device->in_flight(), usize{1});
@@ -368,11 +407,11 @@ TEST_F(BlockServerTest, ACompletionBeforeAReconnectedEntryIsDropped) {
 
     // And the successor is served normally.
     send(successor,
-         [](std::span<u8> bytes) { return ours_block::encode_get_info(bytes, {.txid = 21}); });
+         [](std::span<u8> bytes) { return prot::block::encode_get_info(bytes, {.txid = 21}); });
     run();
     auto const message = read_message(successor);
     ASSERT_TRUE(message.has_value());
-    auto const answered = ours_block::decode_get_info_reply(as_message(*message), 21);
+    auto const answered = prot::block::decode_get_info_reply(as_message(*message), 21);
     ASSERT_TRUE(answered.is_ok());
     EXPECT_EQ(answered->status, Status::Ok);
 }
@@ -381,13 +420,13 @@ TEST_F(BlockServerTest, ARefusedStartAnswersTheStatusInline) {
     auto const client = connect_block();
     m_device->start_status = Status::BadState;
     send(client, [](std::span<u8> bytes) {
-        return ours_block::encode_read(bytes, {.txid = 12, .lba = 2, .count = 1});
+        return prot::block::encode_read(bytes, {.txid = 12, .lba = 2, .count = 1});
     });
     run();
 
     auto const message = read_message(client);
     ASSERT_TRUE(message.has_value());
-    auto const answered = ours_block::decode_read_reply(as_message(*message), 12);
+    auto const answered = prot::block::decode_read_reply(as_message(*message), 12);
     ASSERT_TRUE(answered.is_ok());
     EXPECT_EQ(answered->status, Status::BadState);
     EXPECT_EQ(m_device->in_flight(), usize{0});
@@ -395,11 +434,11 @@ TEST_F(BlockServerTest, ARefusedStartAnswersTheStatusInline) {
     // The connection stays: the next request goes through.
     m_device->start_status = Status::Ok;
     send(client,
-         [](std::span<u8> bytes) { return ours_block::encode_get_info(bytes, {.txid = 13}); });
+         [](std::span<u8> bytes) { return prot::block::encode_get_info(bytes, {.txid = 13}); });
     run();
     auto const info = read_message(client);
     ASSERT_TRUE(info.has_value());
-    auto const answered_info = ours_block::decode_get_info_reply(as_message(*info), 13);
+    auto const answered_info = prot::block::decode_get_info_reply(as_message(*info), 13);
     ASSERT_TRUE(answered_info.is_ok());
     EXPECT_EQ(answered_info->status, Status::Ok);
 }
@@ -408,7 +447,7 @@ TEST_F(BlockServerTest, AnUnknownOrdinalClosesWithoutAnEpitaph) {
     auto const client = connect_block();
     // A GetInfo whose ordinal is patched to one this server does not speak.
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_block::encode_get_info(bytes, {.txid = 14});
+    auto const encoded = prot::block::encode_get_info(bytes, {.txid = 14});
     ASSERT_TRUE(encoded.is_ok());
     auto patched = bytes;
     patched[8] = 0xEF;
@@ -435,12 +474,13 @@ TEST_F(BlockServerTest, AnUnknownOrdinalClosesWithoutAnEpitaph) {
 
 TEST_F(BlockServerTest, CloseAnswersThenEnds) {
     auto const client = connect_block();
-    send(client, [](std::span<u8> bytes) { return ours_block::encode_close(bytes, {.txid = 15}); });
+    send(client,
+         [](std::span<u8> bytes) { return prot::block::encode_close(bytes, {.txid = 15}); });
     run();
 
     auto const message = read_message(client);
     ASSERT_TRUE(message.has_value());
-    auto const answered = ours_io::decode_close_reply(as_message(*message), 15);
+    auto const answered = prot::io::decode_close_reply(as_message(*message), 15);
     ASSERT_TRUE(answered.is_ok());
     EXPECT_EQ(answered->status, Status::Ok);
 }

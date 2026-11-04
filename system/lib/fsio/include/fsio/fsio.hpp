@@ -10,7 +10,7 @@
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <ustl/result.hpp>
 
 /// The calls a program makes through its namespace to reach its files and
@@ -19,7 +19,7 @@
 /// cleaned by <fsio/path.hpp>; this part makes system calls, so it exists in
 /// user programs only.
 ///
-/// Every call speaks ours.io (<ours_io/ours_io.hpp>) on a channel and blocks
+/// Every call speaks ours.io (<prot/io.hpp>) on a channel and blocks
 /// the calling thread until the reply comes. A process has one thread, so
 /// nothing here is locked, and one call is outstanding at a time.
 ///
@@ -73,11 +73,11 @@ auto install() -> ours::Status;
 /// same status from there. Without an epitaph, or with an Ok one, the
 /// answer is PeerClosed, recorded the same way.
 [[nodiscard]]
-auto open(std::string_view path, ours_io::Flags flags, ours::Uandle object) -> ours::Status;
+auto open(std::string_view path, prot::io::Flags flags, ours::Uandle object) -> ours::Status;
 
 /// open() on a new channel, returning the client end: the caller owns it.
 [[nodiscard]]
-auto open(std::string_view path, ours_io::Flags flags) -> ustl::Result<ours::Uandle, ours::Status>;
+auto open(std::string_view path, prot::io::Flags flags) -> ustl::Result<ours::Uandle, ours::Status>;
 
 /// Opens |path| relative to the directory connection |dir| -- the |dir|
 /// handle's own "." as the starting directory, the path never touching this
@@ -86,7 +86,7 @@ auto open(std::string_view path, ours_io::Flags flags) -> ustl::Result<ours::Uan
 /// being reachable from here. The flags, the checks and the answer are the
 /// namespace open's.
 [[nodiscard]]
-auto open(ours::Uandle dir, std::string_view path, ours_io::Flags flags)
+auto open(ours::Uandle dir, std::string_view path, prot::io::Flags flags)
     -> ustl::Result<ours::Uandle, ours::Status>;
 
 /// Connects |server| to the protocol at |path|, such as
@@ -160,7 +160,7 @@ auto spawn(ours::Uandle job, std::string_view path, std::span<std::string_view c
     -> ustl::Result<ours::Uandle, ours::Status>;
 
 /// One File.Read on |file|: up to buffer.size() bytes, at most
-/// ours_io::MAX_TRANSFER_SIZE, from the connection's seek offset, which
+/// prot::io::MAX_TRANSFER_SIZE, from the connection's seek offset, which
 /// moves past them. Returns how many came, 0 at the end of the file; fewer
 /// than asked for is not an error, so a caller that wants more calls again.
 ///
@@ -176,15 +176,15 @@ auto read(ours::Uandle file, std::span<u8> buffer) -> ustl::Result<usize, ours::
 
 /// One File.Write on |file|: |data| at the file's seek offset, which moves
 /// past what was written. Returns how many bytes were written, at most
-/// ours_io::MAX_TRANSFER_SIZE. Errors as read(); AccessDenied from a server
+/// prot::io::MAX_TRANSFER_SIZE. Errors as read(); AccessDenied from a server
 /// the file was not opened writable on.
 [[nodiscard]]
 auto write(ours::Uandle file, std::span<u8 const> data) -> ustl::Result<usize, ours::Status>;
 
 /// One Directory.ReadDirents on |directory|: as many whole entries as fit in
-/// buffer.size() bytes, at most ours_io::MAX_BUF, from the directory's
+/// buffer.size() bytes, at most prot::io::MAX_BUF, from the directory's
 /// cursor, which moves past them. Returns how many bytes were filled, 0 once
-/// every entry has been read; ours_io::DirentReader reads them back.
+/// every entry has been read; prot::io::DirentReader reads them back.
 /// Errors as read(); BufferTooSmall from the server when the next entry
 /// alone does not fit.
 [[nodiscard]]
@@ -195,6 +195,12 @@ auto read_dirents(ours::Uandle directory, std::span<u8> buffer)
 /// what it named. NotFound when nothing carries the name.
 auto unlink(std::string_view path) -> ours::Status;
 
+/// Directory.Unlink on |name| under the directory |dir| names -- the
+/// handle form of unlink(path), for a caller already holding the parent:
+/// the message goes on that connection, whose rights gate it as any other.
+/// NotFound when nothing carries the name.
+auto unlink_at(ours::Uandle dir, std::string_view name) -> ours::Status;
+
 /// Sets this process's working directory to |path| -- absolute, or relative
 /// to the working directory already set -- with |flags| as the working
 /// directory's rights: a relative open later may ask no more than chdir
@@ -204,7 +210,7 @@ auto unlink(std::string_view path) -> ours::Status;
 /// under the working directory. A ".." that would climb above the working
 /// directory is BadPath -- a directory handle has no above. The working
 /// directory is per process and not inherited by spawned processes.
-auto chdir(std::string_view path, ours_io::Flags flags) -> ours::Status;
+auto chdir(std::string_view path, prot::io::Flags flags) -> ours::Status;
 
 /// Sets this process's working directory to |path| -- absolute, or relative
 /// to the working directory already set. From a successful chdir() on,
@@ -217,7 +223,7 @@ auto chdir(std::string_view path) -> ours::Status;
 /// Lists the directory |path| into |out| as packed ours.io dirents -- the
 /// whole listing in one call: opens |path|, reads entries until the
 /// directory runs out, closes. The "." entry is left out; walk |out| with
-/// ours_io::DirentReader. BufferTooSmall when |out| cannot hold the
+/// prot::io::DirentReader. BufferTooSmall when |out| cannot hold the
 /// listing; other errors as open() and read_dirents() answer them.
 [[nodiscard]]
 auto list(std::string_view path, std::span<u8> out) -> ustl::Result<usize, ours::Status>;
@@ -231,7 +237,7 @@ auto list(std::string_view path, std::span<u8> out) -> ustl::Result<usize, ours:
 /// under the working directory. A ".." that would climb above the working
 /// directory is BadPath -- a directory handle has no above. The working
 /// directory is per process and not inherited by spawned processes.
-auto chdir(std::string_view path, ours_io::Flags flags) -> ours::Status;
+auto chdir(std::string_view path, prot::io::Flags flags) -> ours::Status;
 
 /// File.GetBackingMemory on |file|: a VMO of the file's contents with the
 /// rights |flags| ask for, which the caller owns. To run a program, ask for
@@ -239,7 +245,7 @@ auto chdir(std::string_view path, ours_io::Flags flags) -> ours::Status;
 /// unless the file is executable and the connection holds EXECUTE. Errors as
 /// read().
 [[nodiscard]]
-auto get_backing_memory(ours::Uandle file, ours_io::VmoFlags flags)
+auto get_backing_memory(ours::Uandle file, prot::io::VmoFlags flags)
     -> ustl::Result<ours::Uandle, ours::Status>;
 
 /// Node.Close on |node|, then closes |node| itself, whatever the answer, so

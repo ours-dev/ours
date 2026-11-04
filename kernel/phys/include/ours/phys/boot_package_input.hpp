@@ -30,18 +30,18 @@ class BootPackageInput final {
 
     [[nodiscard]]
     static auto from(PhysAddr const base, usize const size) -> Result {
-        if (base == 0 || size == 0) {
+        if (base == PhysAddr{0} || size == 0) {
             return ustl::err(Status::InvArgs);
         }
         // Multiboot already refuses an unaligned module (multiboot::View::
         // module()), so this cannot fire through the one boot path there is;
         // it is said here because the whole-page reservation below depends
         // on it, whatever loads the image.
-        if (base % PAGE_SIZE != 0) {
+        if (std::to_underlying(base) % PAGE_SIZE != 0) {
             return ustl::err(Status::InvArgs);
         }
         if (size > std::numeric_limits<usize>::max() - (PAGE_SIZE - 1) ||
-            base > std::numeric_limits<PhysAddr>::max() - ustl::round_up(size, PAGE_SIZE)) {
+            base > PhysAddr{~0_usize} - ustl::round_up(size, PAGE_SIZE)) {
             return ustl::err(Status::OutOfRange);
         }
         return ustl::ok(BootPackageInput(base, size));

@@ -4,7 +4,7 @@
 #define OURS_OBJECT_INTERRUPT_EVENT_DISPATCHER_HPP 1
 
 #include <ours/interrupt.hpp>
-#include <ours/irq/action.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
@@ -16,7 +16,7 @@ namespace ours::object {
 ///
 /// The objects:
 ///   - m_line, the line, fixed at creation.
-///   - m_action, the object's place on the line: the irq layer calls its
+///   - m_registration, the object's place on the line: the irq layer calls its
 ///     handler, in interrupt context and under the line's lock (L1), with the
 ///     object as the context, and the handler hands the interrupt to
 ///     handle_interrupt(). The action is the object's own, so attaching it
@@ -73,7 +73,7 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     /// irq::attach() answers; NotSupported when ModeDefault asks a controller
     /// that cannot say how its line signals; NoMemory.
     [[nodiscard]]
-    static auto create(KernelHandle<InterruptDispatcher> *out, Rights *rights, u32 line,
+    static auto create(KernelHandle<InterruptDispatcher> *out, Rights *rights, VIrqNum line,
                        InterruptOptions options) -> Status;
 
   private:
@@ -98,7 +98,7 @@ class InterruptEventDispatcher final: public InterruptDispatcher {
     auto unregister_interrupt_handler() -> void override;
 
     VIrqNum const m_line;
-    irq::Action m_action;
+    irq::Registration m_registration;
 };
 } // namespace ours::object
 

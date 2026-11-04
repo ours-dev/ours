@@ -1,6 +1,5 @@
 #include <ours/arch/mp.hpp>
 #include <ours/cpu.hpp>
-#include <ours/irq/init.hpp>
 #include <ours/mm/init.hpp>
 #include <ours/platform/acpi.hpp>
 #include <ours/platform/init.hpp>

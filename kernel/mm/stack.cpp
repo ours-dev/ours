@@ -8,12 +8,12 @@
 namespace ours::mm {
 // This is relative with the boot stack, so marked INIT_DATA
 extern "C" INIT_DATA
-VirtAddr KERNEL_STACK_BOTTOM = 0;
+VirtAddr KERNEL_STACK_BOTTOM{};
 
 extern "C" INIT_DATA
 usize KERNEL_STACK_SIZE = 0;
 
-Stack::Stack() : m_stack(), m_base(0), m_size(0) {}
+Stack::Stack() : m_stack(), m_base{}, m_size(0) {}
 
 auto Stack::init_first() -> void {
     m_base = KERNEL_STACK_BOTTOM;
@@ -33,10 +33,9 @@ auto Stack::init(usize size) -> Status {
     DEBUG_ASSERT(rvma);
 
     ustl::Arc<VmMapping> mapping;
-    status = rvma->create_mapping(VmPlacement::anywhere(), size, 0,
-                                  MmuFlags::Readable | MmuFlags::Writable, VmaFlags::PermMask, vmo,
-                                  "k-stack-mapping", VmMapOption::Pinned | VmMapOption::Populate,
-                                  &mapping);
+    status = rvma->create_mapping(
+        VirtAddr::Anywhere, size, 0, MmuFlags::Readable | MmuFlags::Writable, VmaFlags::PermMask,
+        vmo, "k-stack-mapping", VmMapOption::Pinned | VmMapOption::Populate, &mapping);
     if (Status::Ok != status) {
         log::trace("Failed to allocate a VmMapping, size={}, reason={}", size, to_string(status));
         return status;

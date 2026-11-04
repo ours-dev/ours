@@ -1,5 +1,33 @@
 # Memory management
 
+## Strong address types (user decision, 2026-11-03)
+
+The user explicitly prefers distinct strong VirtAddr and PhysAddr types in
+`system/public/ours/types.hpp`, in the enum-class form they drafted, because
+they need address type safety. Preserve that intent. Do not replace them with
+primitive aliases merely to make an unrelated integration compile. The user
+subsequently requested removing VmPlacement and completing both address
+migrations in this task (2026-11-03). Address plus/minus a byte offset
+preserves the domain; subtracting two addresses in one domain yields a byte
+offset. Addresses do not implicitly convert to integers or each other, and two
+addresses cannot be added. Machine encodings and ABI records convert
+explicitly. VirtAddr reserves the top sixteen numeric values for special
+requests: Invalid is all ones and Anywhere is one below it. Zero remains a
+concrete address. The kernel virtual layout excludes the page containing these
+values.
+
+VmArea creation interfaces now take VirtAddr directly: Anywhere requests a
+free spot, while zero and other concrete addresses request fixed placement.
+Invalid and unassigned reserved values fail with InvArgs before alignment.
+Fixed placement still requires CanMapSpecific and refuses overlaps with
+AlreadyExists. VmAspace creation rejects any range intersecting the reserved
+values, so automatic placement cannot return one.
+
+Address constants use the global `_va` and `_pa` literal suffixes in
+`system/public/ours/types.hpp` (user request, 2026-11-03). Like the integer
+suffixes in prelude.hpp, they are available without a namespace import and
+produce the corresponding scoped address type in constant expressions.
+
 ## Bring-up order
 
 physboot hands the memory layout over through OBI; a temporary allocator and
@@ -41,9 +69,10 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
 ## VmObject
 
 - Offsets in the `VmObject` interface (`read`, `write`, `commit_range` and
-  their helpers) are byte offsets typed `VirtAddr`, never page offsets typed
-  `PgOff`, because `VmObjectPhysical` need not be page aligned. Resolve any
-  mismatch toward `VirtAddr`.
+  their helpers) are byte offsets typed `usize`, never virtual addresses or
+  page offsets: an object has no virtual address, and `VmObjectPhysical` need
+  not be page aligned. This supersedes the earlier `VirtAddr` spelling now
+  that VirtAddr is a distinct strong type (2026-11-03).
 - Never use a bounce page between user memory and a kernel object. Copy
   directly between the VMO page (through the physmap) and the user buffer while
   holding the VMO lock, using the `*_capture_faults` user copy. On a fault:
@@ -102,6 +131,13 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   `require_owned_page()`, which files the page anonymous
   (`file_dirty_locked()`). Until a pager VMO can be written back, such a page is
   never evicted.
+- A pin counts as a write (2026-11-03): `pin_range_locked()` takes each page
+  through `require_owned_page()`, since a device may write it, and the queue is
+  the only record of "written". The pinned queue holds the page meanwhile, so
+  the last unpin files a page of a node with a page source as written
+  (`Fill::Written`), never as the source's content. A page pinned once is not
+  reclaimable again; a read-only pin that kept it clean needs a per-page bit
+  (`docs/repairs/261030/mm-pin.md` item 4).
 
 - Zero pages are deduplicated in leaf nodes only
   (`VmCowPages::dedup_zero_page()`):

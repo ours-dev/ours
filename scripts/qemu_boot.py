@@ -188,6 +188,18 @@ def disk_args(disk: str) -> list[str]:
             "-device", "virtio-blk-pci,drive=d0"]
 
 
+def nvme_args(nvme_disk: str) -> list[str]:
+    """The QEMU arguments that attach the raw file |nvme_disk| behind QEMU's
+    NVMe controller, as the second block peripheral (the driver polls its
+    completion queue; the device's interrupt pin is never unmasked)."""
+    path = Path(nvme_disk).resolve()
+    if not path.is_file():
+        die(f"NVME_DISK={nvme_disk} is not a file")
+    name = str(path).replace(",", ",,")
+    return ["-drive", f"file={name},if=none,id=nvme0,format=raw,snapshot=on",
+            "-device", "nvme,drive=nvme0,serial=ours0"]
+
+
 def numa_args(mem: int, nodes: int, smp: int, designed: bool) -> list[str]:
     node_mem, remainder = divmod(mem, nodes)
     if remainder:
@@ -275,6 +287,7 @@ def main(argv: list[str]) -> int:
     # baseline.
     qemu = ROOT / "prebuilt/qemu/bin/qemu-system-x86_64"
     disk = os.environ.get("DISK")
+    nvme_disk = os.environ.get("NVME_DISK")
     cmd = [
         str(qemu),
         "-M", "q35", "-cpu", os.environ.get("CPU", "Nehalem"),
@@ -286,6 +299,7 @@ def main(argv: list[str]) -> int:
         "-drive", f"if=pflash,format=raw,unit=1,file={work}/vars.fd",
         "-drive", f"format=raw,file={esp_img}",
         *(disk_args(disk) if disk else []),
+        *(nvme_args(nvme_disk) if nvme_disk else []),
         "-serial", "mon:stdio",
         *argv,
     ]

@@ -2,8 +2,8 @@
 #include <ours/arch/time.hpp>
 #include <ours/assert.hpp>
 #include <ours/driver/i8253.hpp>
-#include <ours/irq/action.hpp>
 #include <ours/irq/mod.hpp>
+#include <ours/irq/registration.hpp>
 #include <ours/platform/isa.hpp>
 #include <ours/time/clock_event_device.hpp>
 
@@ -61,8 +61,8 @@ namespace {
     /// The line's action, owned here for the kernel's lifetime: the line is
     /// Permanent, so nothing ever detaches it.
     // NOLINTNEXTLINE(readability-identifier-naming): UPPER_CASE, as above.
-    constinit irq::Action LEGACY_TIMER_ACTION{&timer_interrupt, &LEGACY_TIMER,
-                                              irq::IrqFlags::Permanent, "IRQ-Timer"};
+    constinit irq::Registration LEGACY_TIMER_ACTION{
+        {.handle = &timer_interrupt}, &LEGACY_TIMER, irq::RegistrationOptions::Permanent};
 } // namespace
 
 auto global_clock_event() -> ClockEventDevice * {
@@ -94,14 +94,16 @@ auto arch_time_init() -> void {
     auto const line = platform::isa_irq_line(ISA_IRQ_PIT);
     auto const attached = irq::attach(line, LEGACY_TIMER_ACTION);
     if (Status::Ok != attached) {
-        log::error("Failed to attach the legacy timer to line {}: {}", line, to_string(attached));
+        log::error("Failed to attach the legacy timer to line {}: {}", static_cast<u32>(line),
+                   to_string(attached));
         return;
     }
 
     // The line was just attached, so it exists and has the IO-APIC's chip.
     [[maybe_unused]]
     auto const unmasked = irq::unmask(line);
-    DEBUG_ASSERT(Status::Ok == unmasked, "unmasking line {}: {}", line, to_string(unmasked));
+    DEBUG_ASSERT(Status::Ok == unmasked, "unmasking line {}: {}", static_cast<u32>(line),
+                 to_string(unmasked));
 }
 GKTL_INIT_HOOK(InitTimerDevice, arch_time_init, gktl::InitLevel::Irq + 1);
 

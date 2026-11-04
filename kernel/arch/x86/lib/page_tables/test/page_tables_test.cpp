@@ -38,7 +38,7 @@ struct alignas(4 * KB) Table {
 class Arena {
   public:
     auto make() -> PhysAddr {
-        return reinterpret_cast<PhysAddr>(m_tables.emplace_back().entries.data());
+        return PhysAddr{reinterpret_cast<usize>(m_tables.emplace_back().entries.data())};
     }
 
   private:
@@ -60,7 +60,7 @@ class HostDeposits {
     auto withdraw(PhysAddr const owner) -> PhysAddr {
         auto &held = m_held[owner];
         if (held.empty()) {
-            ADD_FAILURE() << "no table set aside with " << std::hex << owner;
+            ADD_FAILURE() << "no table set aside with " << std::hex << std::to_underlying(owner);
             return m_arena->make();
         }
         auto const table = held.back();
@@ -249,7 +249,7 @@ class HostTable final: public page_tables::X86PageTableImpl<HostTable> {
 
     auto allocate_table() -> PhysAddr {
         if (m_allocations_left == 0) {
-            return 0;
+            return PhysAddr{0};
         }
         m_allocations_left -= 1;
         return m_arena.make();
@@ -267,7 +267,7 @@ using Engine =
     arch::paging::Paging<arch::paging::PagingDispatcher<PageTableLevel::PageMapLevel4>::Type>;
 
 auto identity(PhysAddr const pa) -> VirtAddr {
-    return pa;
+    return VirtAddr{std::to_underlying(pa)};
 }
 
 /// What the kernel's PageTable made of the engine's result.
@@ -289,40 +289,42 @@ auto status_of(ustl::Result<T, arch::paging::MapError> const &result) -> Status 
 
 TEST(Query, NothingMappedIsNone) {
     HostTable table;
-    EXPECT_TRUE(table.query(0x40'0000).is_none());
+    EXPECT_TRUE(table.query(VirtAddr{0x40'0000}).is_none());
 }
 
 TEST(Query, AFourKibLeafTranslatesTheOffsetWithinIt) {
     HostTable table;
-    table.leaf(0x40'1000, PageTableLevel::PageTable, 0x1234'5000, USER_RWX);
+    table.leaf(VirtAddr{0x40'1000}, PageTableLevel::PageTable, PhysAddr{0x1234'5000}, USER_RWX);
 
-    auto const found = table.query(0x40'1abc);
+    auto const found = table.query(VirtAddr{0x40'1abc});
     ASSERT_TRUE(found.is_some());
-    EXPECT_EQ(found.value().phys, 0x1234'5abcU);
+    EXPECT_EQ(found.value().phys, PhysAddr{0x1234'5abcU});
     EXPECT_EQ(found.value().size, 4 * KB);
     EXPECT_EQ(found.value().flags, MmuFlags::Present | USER_RWX);
 }
 
 TEST(Query, ANeighbourInTheSameTableIsNone) {
     HostTable table;
-    table.leaf(0x40'1000, PageTableLevel::PageTable, 0x1234'5000, USER_RWX);
-    EXPECT_TRUE(table.query(0x40'2000).is_none());
+    table.leaf(VirtAddr{0x40'1000}, PageTableLevel::PageTable, PhysAddr{0x1234'5000}, USER_RWX);
+    EXPECT_TRUE(table.query(VirtAddr{0x40'2000}).is_none());
 }
 
 TEST(Query, LargeLeavesTranslateTheOffsetWithinThem) {
     HostTable table;
-    table.leaf(0x20'0000, PageTableLevel::PageDirectory, 0x8000'0000, MmuFlags::Readable);
-    table.leaf(0x80'0000'0000, PageTableLevel::PageDirectoryPointerTable, 0x1'0000'0000, RWX);
+    table.leaf(VirtAddr{0x20'0000}, PageTableLevel::PageDirectory, PhysAddr{0x8000'0000},
+               MmuFlags::Readable);
+    table.leaf(VirtAddr{0x80'0000'0000}, PageTableLevel::PageDirectoryPointerTable,
+               PhysAddr{0x1'0000'0000}, RWX);
 
-    auto const two_mib = table.query(0x20'0000 + 0x1'2345);
+    auto const two_mib = table.query(VirtAddr{0x20'0000} + 0x1'2345);
     ASSERT_TRUE(two_mib.is_some());
-    EXPECT_EQ(two_mib.value().phys, 0x8000'0000U + 0x1'2345);
+    EXPECT_EQ(two_mib.value().phys, PhysAddr{0x8000'0000U + 0x1'2345});
     EXPECT_EQ(two_mib.value().size, 2 * MB);
     EXPECT_EQ(two_mib.value().flags, MmuFlags::Present | MmuFlags::Readable);
 
-    auto const one_gib = table.query(0x80'0000'0000 + 0x1234'5678);
+    auto const one_gib = table.query(VirtAddr{0x80'0000'0000 + 0x1234'5678});
     ASSERT_TRUE(one_gib.is_some());
-    EXPECT_EQ(one_gib.value().phys, 0x1'0000'0000U + 0x1234'5678);
+    EXPECT_EQ(one_gib.value().phys, PhysAddr{0x1'0000'0000U + 0x1234'5678});
     EXPECT_EQ(one_gib.value().size, 1 * GB);
 }
 
@@ -331,75 +333,79 @@ TEST(Query, LargeLeavesTranslateTheOffsetWithinThem) {
 /// returned before it moved here is what it returns now.
 TEST(Query, AgreesWithTheEngine) {
     HostTable table;
-    table.leaf(0x40'0000, PageTableLevel::PageTable, 0x10'0000, USER_RWX);
-    table.leaf(0x40'1000, PageTableLevel::PageTable, 0x30'0000, MmuFlags::User);
-    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, RWX);
-    table.leaf(0xc0'0000'0000, PageTableLevel::PageDirectoryPointerTable, 0x8000'0000, {});
+    table.leaf(VirtAddr{0x40'0000}, PageTableLevel::PageTable, PhysAddr{0x10'0000}, USER_RWX);
+    table.leaf(VirtAddr{0x40'1000}, PageTableLevel::PageTable, PhysAddr{0x30'0000}, MmuFlags::User);
+    table.leaf(VirtAddr{0x60'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4000'0000}, RWX);
+    table.leaf(VirtAddr{0xc0'0000'0000}, PageTableLevel::PageDirectoryPointerTable,
+               PhysAddr{0x8000'0000}, {});
 
-    for (VirtAddr const va:
+    for (auto const raw_va:
          {0x0UL, 0x40'0000UL, 0x40'0fffUL, 0x40'1800UL, 0x40'2000UL, 0x60'0000UL, 0x7f'ffffUL,
           0x80'0000UL, 0xc0'0000'0000UL, 0xc0'3fff'ffffUL, 0xc0'4000'0000UL}) {
+        auto const va = VirtAddr{raw_va};
         auto const engine = Engine::query(table.root_phys(), identity, va);
         auto const ours = table.query(va);
-        ASSERT_EQ(engine.is_some(), ours.is_some()) << std::hex << va;
+        ASSERT_EQ(engine.is_some(), ours.is_some()) << std::hex << std::to_underlying(va);
         if (ours.is_some()) {
-            EXPECT_EQ(engine.value().phys, ours.value().phys) << std::hex << va;
-            EXPECT_EQ(engine.value().size, ours.value().size) << std::hex << va;
-            EXPECT_EQ(engine.value().flags, ours.value().flags) << std::hex << va;
+            EXPECT_EQ(engine.value().phys, ours.value().phys) << std::hex << std::to_underlying(va);
+            EXPECT_EQ(engine.value().size, ours.value().size) << std::hex << std::to_underlying(va);
+            EXPECT_EQ(engine.value().flags, ours.value().flags)
+                << std::hex << std::to_underlying(va);
         }
     }
 }
 
 TEST(Unmap, ClearsTheRangeAndNothingElse) {
     HostTable table;
-    table.small_leaves(0x40'0000, 0x10'0000, 8, USER_RWX);
+    table.small_leaves(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 8, USER_RWX);
 
-    EXPECT_EQ(table.unmap(0x40'2000, 4), Status::Ok);
+    EXPECT_EQ(table.unmap(VirtAddr{0x40'2000}, 4), Status::Ok);
     for (usize i = 0; i < 8; ++i) {
-        auto const mapped = table.query(0x40'0000 + i * PAGE_SIZE).is_some();
+        auto const mapped = table.query(VirtAddr{0x40'0000 + i * PAGE_SIZE}).is_some();
         EXPECT_EQ(mapped, i < 2 || i >= 6) << i;
     }
 }
 
 TEST(Unmap, CrossesATableBoundary) {
     HostTable table;
-    table.small_leaves(0x1f'e000, 0x10'0000, 4, USER_RWX);
+    table.small_leaves(VirtAddr{0x1f'e000}, PhysAddr{0x10'0000}, 4, USER_RWX);
 
-    EXPECT_EQ(table.unmap(0x1f'f000, 2), Status::Ok);
-    EXPECT_TRUE(table.query(0x1f'e000).is_some());
-    EXPECT_TRUE(table.query(0x1f'f000).is_none());
-    EXPECT_TRUE(table.query(0x20'0000).is_none());
-    EXPECT_TRUE(table.query(0x20'1000).is_some());
+    EXPECT_EQ(table.unmap(VirtAddr{0x1f'f000}, 2), Status::Ok);
+    EXPECT_TRUE(table.query(VirtAddr{0x1f'e000}).is_some());
+    EXPECT_TRUE(table.query(VirtAddr{0x1f'f000}).is_none());
+    EXPECT_TRUE(table.query(VirtAddr{0x20'0000}).is_none());
+    EXPECT_TRUE(table.query(VirtAddr{0x20'1000}).is_some());
 }
 
 TEST(Unmap, AHoleIsPassedOver) {
     HostTable table;
-    table.leaf(0x7f'f000, PageTableLevel::PageTable, 0x10'0000, USER_RWX);
-    EXPECT_EQ(table.unmap(0, 0x800), Status::Ok);
-    EXPECT_TRUE(table.query(0x7f'f000).is_none());
+    table.leaf(VirtAddr{0x7f'f000}, PageTableLevel::PageTable, PhysAddr{0x10'0000}, USER_RWX);
+    EXPECT_EQ(table.unmap(VirtAddr{0}, 0x800), Status::Ok);
+    EXPECT_TRUE(table.query(VirtAddr{0x7f'f000}).is_none());
 }
 
 TEST(Unmap, AWholeLargeLeafGivesItsTableBack) {
     HostTable table(true);
-    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, USER_RWX);
+    table.leaf(VirtAddr{0x60'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4000'0000}, USER_RWX);
     ASSERT_EQ(table.deposits().held(), 1U);
 
-    EXPECT_EQ(table.unmap(0x60'0000, 512), Status::Ok);
-    EXPECT_TRUE(table.query(0x60'0000).is_none());
+    EXPECT_EQ(table.unmap(VirtAddr{0x60'0000}, 512), Status::Ok);
+    EXPECT_TRUE(table.query(VirtAddr{0x60'0000}).is_none());
     EXPECT_EQ(table.deposits().held(), 0U);
 }
 
 TEST(Unmap, PartOfALargeLeafSplitsItIntoItsTable) {
     HostTable table(true);
-    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, USER_RWX);
+    table.leaf(VirtAddr{0x60'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4000'0000}, USER_RWX);
 
-    EXPECT_EQ(table.unmap(0x60'1000, 1), Status::Ok);
+    EXPECT_EQ(table.unmap(VirtAddr{0x60'1000}, 1), Status::Ok);
     EXPECT_EQ(table.deposits().held(), 0U);
-    EXPECT_TRUE(table.query(0x60'1000).is_none());
-    for (VirtAddr const va: {0x60'0000UL, 0x60'2000UL, 0x7f'f000UL}) {
+    EXPECT_TRUE(table.query(VirtAddr{0x60'1000}).is_none());
+    for (auto const raw_va: {0x60'0000UL, 0x60'2000UL, 0x7f'f000UL}) {
+        auto const va = VirtAddr{raw_va};
         auto const found = table.query(va);
-        ASSERT_TRUE(found.is_some()) << std::hex << va;
-        EXPECT_EQ(found.value().phys, 0x4000'0000U + (va - 0x60'0000));
+        ASSERT_TRUE(found.is_some()) << std::hex << std::to_underlying(va);
+        EXPECT_EQ(found.value().phys, PhysAddr{0x4000'0000U + (va - VirtAddr{0x60'0000})});
         EXPECT_EQ(found.value().size, 4 * KB);
         EXPECT_EQ(found.value().flags, MmuFlags::Present | USER_RWX);
     }
@@ -407,43 +413,44 @@ TEST(Unmap, PartOfALargeLeafSplitsItIntoItsTable) {
 
 TEST(Unmap, PartOfALargeLeafWithoutDepositsIsInvArgs) {
     HostTable table;
-    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, RWX);
+    table.leaf(VirtAddr{0x60'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4000'0000}, RWX);
 
-    EXPECT_EQ(table.unmap(0x60'1000, 1), Status::InvArgs);
-    auto const found = table.query(0x60'1000);
+    EXPECT_EQ(table.unmap(VirtAddr{0x60'1000}, 1), Status::InvArgs);
+    auto const found = table.query(VirtAddr{0x60'1000});
     ASSERT_TRUE(found.is_some());
     EXPECT_EQ(found.value().size, 2 * MB);
 }
 
 TEST(Unmap, ARangeThatIsNotAlignedOrWrapsIsInvArgs) {
     HostTable table;
-    EXPECT_EQ(table.unmap(0x40'0800, 1), Status::InvArgs);
-    EXPECT_EQ(table.unmap(~VirtAddr{0} - 0xfff, 2), Status::InvArgs);
-    EXPECT_EQ(table.unmap(0x40'0000, 0), Status::Ok);
+    EXPECT_EQ(table.unmap(VirtAddr{0x40'0800}, 1), Status::InvArgs);
+    EXPECT_EQ(table.unmap(VirtAddr{~0_usize} - 0xfff, 2), Status::InvArgs);
+    EXPECT_EQ(table.unmap(VirtAddr{0x40'0000}, 0), Status::Ok);
 }
 
 TEST(Protect, TakesPermissionsAwayAndNeverGivesOne) {
     HostTable table;
-    table.leaf(0x40'0000, PageTableLevel::PageTable, 0x10'0000, USER_RWX);
-    table.leaf(0x40'1000, PageTableLevel::PageTable, 0x11'0000,
+    table.leaf(VirtAddr{0x40'0000}, PageTableLevel::PageTable, PhysAddr{0x10'0000}, USER_RWX);
+    table.leaf(VirtAddr{0x40'1000}, PageTableLevel::PageTable, PhysAddr{0x11'0000},
                MmuFlags::User | MmuFlags::Readable);
 
-    EXPECT_EQ(table.protect(0x40'0000, 2, MmuFlags::Readable | MmuFlags::Writable), Status::Ok);
-    EXPECT_EQ(table.query(0x40'0000).value().flags,
+    EXPECT_EQ(table.protect(VirtAddr{0x40'0000}, 2, MmuFlags::Readable | MmuFlags::Writable),
+              Status::Ok);
+    EXPECT_EQ(table.query(VirtAddr{0x40'0000}).value().flags,
               MmuFlags::Present | MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable);
-    EXPECT_EQ(table.query(0x40'1000).value().flags,
+    EXPECT_EQ(table.query(VirtAddr{0x40'1000}).value().flags,
               MmuFlags::Present | MmuFlags::User | MmuFlags::Readable);
 }
 
 TEST(Protect, PartOfALargeLeafSplitsItAndNarrowsOnlyThatPart) {
     HostTable table(true);
-    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, USER_RWX);
+    table.leaf(VirtAddr{0x60'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4000'0000}, USER_RWX);
 
-    EXPECT_EQ(table.protect(0x7f'f000, 1, MmuFlags::Readable), Status::Ok);
-    EXPECT_EQ(table.query(0x7f'f000).value().flags,
+    EXPECT_EQ(table.protect(VirtAddr{0x7f'f000}, 1, MmuFlags::Readable), Status::Ok);
+    EXPECT_EQ(table.query(VirtAddr{0x7f'f000}).value().flags,
               MmuFlags::Present | MmuFlags::User | MmuFlags::Readable);
-    EXPECT_EQ(table.query(0x7f'e000).value().flags, MmuFlags::Present | USER_RWX);
-    EXPECT_EQ(table.query(0x7f'e000).value().size, 4 * KB);
+    EXPECT_EQ(table.query(VirtAddr{0x7f'e000}).value().flags, MmuFlags::Present | USER_RWX);
+    EXPECT_EQ(table.query(VirtAddr{0x7f'e000}).value().size, 4 * KB);
 }
 
 /// What a harvest asked about, in order.
@@ -456,43 +463,44 @@ struct Visited {
 
 TEST(HarvestAccessed, ClearsTheBitOfEveryLeafItIsToldToAndNoOtherBit) {
     HostTable table;
-    table.small_leaves(0x40'0000, 0x10'0000, 2, USER_RWX);
-    auto const before = table.leaf_entry(0x40'1000);
+    table.small_leaves(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 2, USER_RWX);
+    auto const before = table.leaf_entry(VirtAddr{0x40'1000});
     ASSERT_NE(before & MmuFormat::ACCESSED, 0U);
 
     std::vector<Visited> visited;
     auto visit = [&visited](PhysAddr const phys, usize const size) {
         visited.push_back({phys, size});
-        return phys == 0x10'1000;
+        return phys == PhysAddr{0x10'1000};
     };
     usize cleared = 0;
-    EXPECT_EQ(table.harvest_accessed(0x40'0000, 2, visit, &cleared), Status::Ok);
+    EXPECT_EQ(table.harvest_accessed(VirtAddr{0x40'0000}, 2, visit, &cleared), Status::Ok);
     EXPECT_EQ(cleared, 1U);
-    EXPECT_EQ(visited, (std::vector<Visited>{{0x10'0000, 4 * KB}, {0x10'1000, 4 * KB}}));
-    EXPECT_EQ(table.leaf_entry(0x40'1000), before & ~MmuFormat::ACCESSED);
-    EXPECT_NE(table.leaf_entry(0x40'0000) & MmuFormat::ACCESSED, 0U);
+    EXPECT_EQ(visited,
+              (std::vector<Visited>{{PhysAddr{0x10'0000}, 4 * KB}, {PhysAddr{0x10'1000}, 4 * KB}}));
+    EXPECT_EQ(table.leaf_entry(VirtAddr{0x40'1000}), before & ~MmuFormat::ACCESSED);
+    EXPECT_NE(table.leaf_entry(VirtAddr{0x40'0000}) & MmuFormat::ACCESSED, 0U);
 }
 
 TEST(HarvestAccessed, ALeafWithoutTheBitIsNotAskedAbout) {
     HostTable table;
-    table.small_leaves(0x40'0000, 0x10'0000, 2, USER_RWX);
+    table.small_leaves(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 2, USER_RWX);
     auto take_all = [](PhysAddr, usize) { return true; };
     usize cleared = 0;
-    ASSERT_EQ(table.harvest_accessed(0x40'0000, 1, take_all, &cleared), Status::Ok);
+    ASSERT_EQ(table.harvest_accessed(VirtAddr{0x40'0000}, 1, take_all, &cleared), Status::Ok);
 
     usize asked = 0;
     auto count = [&asked](PhysAddr, usize) {
         asked += 1;
         return true;
     };
-    EXPECT_EQ(table.harvest_accessed(0x40'0000, 2, count, &cleared), Status::Ok);
+    EXPECT_EQ(table.harvest_accessed(VirtAddr{0x40'0000}, 2, count, &cleared), Status::Ok);
     EXPECT_EQ(asked, 1U);
     EXPECT_EQ(cleared, 1U);
 }
 
 TEST(HarvestAccessed, ALargeLeafIsAskedAboutOnceWithItsSize) {
     HostTable table(true);
-    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, USER_RWX);
+    table.leaf(VirtAddr{0x60'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4000'0000}, USER_RWX);
 
     std::vector<Visited> visited;
     auto visit = [&visited](PhysAddr const phys, usize const size) {
@@ -500,11 +508,11 @@ TEST(HarvestAccessed, ALargeLeafIsAskedAboutOnceWithItsSize) {
         return true;
     };
     usize cleared = 0;
-    EXPECT_EQ(table.harvest_accessed(0x60'0000, 512, visit, &cleared), Status::Ok);
-    EXPECT_EQ(visited, (std::vector<Visited>{{0x4000'0000, 2 * MB}}));
+    EXPECT_EQ(table.harvest_accessed(VirtAddr{0x60'0000}, 512, visit, &cleared), Status::Ok);
+    EXPECT_EQ(visited, (std::vector<Visited>{{PhysAddr{0x4000'0000}, 2 * MB}}));
     EXPECT_EQ(cleared, 1U);
-    EXPECT_EQ(table.leaf_entry(0x60'0000) & MmuFormat::ACCESSED, 0U);
-    EXPECT_EQ(table.query(0x60'0000).value().size, 2 * MB);
+    EXPECT_EQ(table.leaf_entry(VirtAddr{0x60'0000}) & MmuFormat::ACCESSED, 0U);
+    EXPECT_EQ(table.query(VirtAddr{0x60'0000}).value().size, 2 * MB);
 }
 
 /// The same tables and the same calls, one run by the paging engine and one
@@ -517,10 +525,13 @@ TEST(UnmapAndProtect, AgreeWithTheEngine) {
         HostTable engine(splits);
         HostTable ours(splits);
         for (auto *table: {&engine, &ours}) {
-            table->small_leaves(0x40'0000, 0x10'0000, 32, USER_RWX);
-            table->leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, USER_RWX);
-            table->leaf(0x80'0000, PageTableLevel::PageDirectory, 0x4020'0000, RWX);
-            table->leaf(0xa0'0000, PageTableLevel::PageDirectory, 0x4040'0000, USER_RWX);
+            table->small_leaves(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 32, USER_RWX);
+            table->leaf(VirtAddr{0x60'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4000'0000},
+                        USER_RWX);
+            table->leaf(VirtAddr{0x80'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4020'0000},
+                        RWX);
+            table->leaf(VirtAddr{0xa0'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4040'0000},
+                        USER_RWX);
         }
 
         struct Call {
@@ -530,12 +541,16 @@ TEST(UnmapAndProtect, AgreeWithTheEngine) {
             MmuFlags flags;
         };
         auto const calls = std::array{
-            Call{.unmap = true, .va = 0x40'3000, .n = 4, .flags = {}},
-            Call{.unmap = false, .va = 0x40'f000, .n = 0x200, .flags = MmuFlags::Readable},
-            Call{.unmap = true, .va = 0x80'1000, .n = 2, .flags = {}},
-            Call{.unmap = true, .va = 0xa0'0000, .n = 512, .flags = {}},
-            Call{.unmap = false, .va = 0x7f'0000, .n = 0x20, .flags = MmuFlags::Executable},
-            Call{.unmap = true, .va = 0x3f'f000, .n = 0x300, .flags = {}},
+            Call{.unmap = true, .va = VirtAddr{0x40'3000}, .n = 4, .flags = {}},
+            Call{
+                .unmap = false, .va = VirtAddr{0x40'f000}, .n = 0x200, .flags = MmuFlags::Readable},
+            Call{.unmap = true, .va = VirtAddr{0x80'1000}, .n = 2, .flags = {}},
+            Call{.unmap = true, .va = VirtAddr{0xa0'0000}, .n = 512, .flags = {}},
+            Call{.unmap = false,
+                 .va = VirtAddr{0x7f'0000},
+                 .n = 0x20,
+                 .flags = MmuFlags::Executable},
+            Call{.unmap = true, .va = VirtAddr{0x3f'f000}, .n = 0x300, .flags = {}},
         };
         for (auto const &call: calls) {
             auto const expected = [&] {
@@ -560,12 +575,13 @@ TEST(UnmapAndProtect, AgreeWithTheEngine) {
                 }
                 return ours.protect(call.va, call.n, call.flags);
             }();
-            EXPECT_EQ(expected, actual) << std::hex << call.va << " splits " << splits;
+            EXPECT_EQ(expected, actual)
+                << std::hex << std::to_underlying(call.va) << " splits " << splits;
         }
 
-        for (VirtAddr va = 0x3f'0000; va < 0xc0'0000; va += PAGE_SIZE) {
+        for (VirtAddr va{0x3f'0000}; va < VirtAddr{0xc0'0000}; va += PAGE_SIZE) {
             ASSERT_EQ(engine.leaf_entry(va), ours.leaf_entry(va))
-                << std::hex << va << " splits " << splits;
+                << std::hex << std::to_underlying(va) << " splits " << splits;
         }
         EXPECT_EQ(engine.deposits().held(), ours.deposits().held()) << "splits " << splits;
     }
@@ -593,7 +609,7 @@ auto leaf_size(HostTable const &table, VirtAddr const va) -> usize {
 auto phys(HostTable const &table, VirtAddr const va) -> PhysAddr {
     auto const found = table.query(va);
     if (found.is_none()) {
-        return 0;
+        return PhysAddr{};
     }
     return found.value().phys;
 }
@@ -603,78 +619,88 @@ TEST(Map, TakesTheLargestLeafEachStepAllows) {
     usize mapped = 0;
     // From a page before a 2 MiB boundary to a page after the next but one,
     // with the frames at the same offset from a 2 MiB boundary.
-    EXPECT_EQ(table.map(0x3f'f000, 0x13f'f000, 1 + 1024 + 1, USER_RWX, ERROR_UNDO, &mapped),
+    EXPECT_EQ(table.map(VirtAddr{0x3f'f000}, PhysAddr{0x13f'f000}, 1 + 1024 + 1, USER_RWX,
+                        ERROR_UNDO, &mapped),
               Status::Ok);
     EXPECT_EQ(mapped, 1026U);
-    EXPECT_EQ(leaf_size(table, 0x3f'f000), 4 * KB);
-    EXPECT_EQ(leaf_size(table, 0x40'0000), 2 * MB);
-    EXPECT_EQ(leaf_size(table, 0x60'0000), 2 * MB);
-    EXPECT_EQ(leaf_size(table, 0x80'0000), 4 * KB);
-    EXPECT_EQ(phys(table, 0x61'2345), 0x161'2345U);
-    EXPECT_EQ(table.query(0x80'0000).value().flags, MmuFlags::Present | USER_RWX);
+    EXPECT_EQ(leaf_size(table, VirtAddr{0x3f'f000}), 4 * KB);
+    EXPECT_EQ(leaf_size(table, VirtAddr{0x40'0000}), 2 * MB);
+    EXPECT_EQ(leaf_size(table, VirtAddr{0x60'0000}), 2 * MB);
+    EXPECT_EQ(leaf_size(table, VirtAddr{0x80'0000}), 4 * KB);
+    EXPECT_EQ(phys(table, VirtAddr{0x61'2345}), PhysAddr{0x161'2345U});
+    EXPECT_EQ(table.query(VirtAddr{0x80'0000}).value().flags, MmuFlags::Present | USER_RWX);
 }
 
 TEST(Map, AGibRangeIsOneLeafWithoutDepositsAndTwoMibLeavesWith) {
     HostTable plain;
-    EXPECT_EQ(plain.map(1 * GB, 2 * GB, GB / PAGE_SIZE, RWX, ERROR_UNDO, nullptr), Status::Ok);
-    EXPECT_EQ(leaf_size(plain, 1 * GB + 5 * MB), 1 * GB);
+    EXPECT_EQ(
+        plain.map(VirtAddr{1 * GB}, PhysAddr{2 * GB}, GB / PAGE_SIZE, RWX, ERROR_UNDO, nullptr),
+        Status::Ok);
+    EXPECT_EQ(leaf_size(plain, VirtAddr{1 * GB + 5 * MB}), 1 * GB);
 
     HostTable splits(true);
-    EXPECT_EQ(splits.map(1 * GB, 2 * GB, GB / PAGE_SIZE, RWX, ERROR_UNDO, nullptr), Status::Ok);
-    EXPECT_EQ(leaf_size(splits, 1 * GB + 5 * MB), 2 * MB);
+    EXPECT_EQ(
+        splits.map(VirtAddr{1 * GB}, PhysAddr{2 * GB}, GB / PAGE_SIZE, RWX, ERROR_UNDO, nullptr),
+        Status::Ok);
+    EXPECT_EQ(leaf_size(splits, VirtAddr{1 * GB + 5 * MB}), 2 * MB);
     EXPECT_EQ(splits.deposits().held(), 512U);
 }
 
 TEST(Map, ErrorIfExistingKeepSaysHowFarItGot) {
     HostTable table;
-    table.leaf(0x40'2000, PageTableLevel::PageTable, 0x99'0000, USER_RWX);
+    table.leaf(VirtAddr{0x40'2000}, PageTableLevel::PageTable, PhysAddr{0x99'0000}, USER_RWX);
     usize mapped = 0;
-    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 4, USER_RWX, ERROR_KEEP, &mapped),
+    EXPECT_EQ(table.map(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 4, USER_RWX, ERROR_KEEP, &mapped),
               Status::AlreadyExists);
     EXPECT_EQ(mapped, 2U);
-    EXPECT_EQ(phys(table, 0x40'1000), 0x10'1000U);
-    EXPECT_EQ(phys(table, 0x40'2000), 0x99'0000U);
-    EXPECT_TRUE(table.query(0x40'3000).is_none());
+    EXPECT_EQ(phys(table, VirtAddr{0x40'1000}), PhysAddr{0x10'1000U});
+    EXPECT_EQ(phys(table, VirtAddr{0x40'2000}), PhysAddr{0x99'0000U});
+    EXPECT_TRUE(table.query(VirtAddr{0x40'3000}).is_none());
 }
 
 TEST(Map, ErrorIfExistingUndoLeavesNothingOfTheCall) {
     HostTable table;
-    table.leaf(0x40'2000, PageTableLevel::PageTable, 0x99'0000, USER_RWX);
+    table.leaf(VirtAddr{0x40'2000}, PageTableLevel::PageTable, PhysAddr{0x99'0000}, USER_RWX);
     usize mapped = 7;
-    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 4, USER_RWX, ERROR_UNDO, &mapped),
+    EXPECT_EQ(table.map(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 4, USER_RWX, ERROR_UNDO, &mapped),
               Status::AlreadyExists);
     EXPECT_EQ(mapped, 0U);
-    EXPECT_TRUE(table.query(0x40'0000).is_none());
-    EXPECT_TRUE(table.query(0x40'1000).is_none());
-    EXPECT_EQ(phys(table, 0x40'2000), 0x99'0000U);
+    EXPECT_TRUE(table.query(VirtAddr{0x40'0000}).is_none());
+    EXPECT_TRUE(table.query(VirtAddr{0x40'1000}).is_none());
+    EXPECT_EQ(phys(table, VirtAddr{0x40'2000}), PhysAddr{0x99'0000U});
 }
 
 TEST(Map, SkipIfExistingMapsAroundWhatIsThere) {
     HostTable table;
-    table.leaf(0x40'2000, PageTableLevel::PageTable, 0x99'0000, USER_RWX);
+    table.leaf(VirtAddr{0x40'2000}, PageTableLevel::PageTable, PhysAddr{0x99'0000}, USER_RWX);
     usize mapped = 0;
-    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 4, USER_RWX, SKIP_UNDO, &mapped), Status::Ok);
+    EXPECT_EQ(table.map(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 4, USER_RWX, SKIP_UNDO, &mapped),
+              Status::Ok);
     EXPECT_EQ(mapped, 4U);
-    EXPECT_EQ(phys(table, 0x40'2000), 0x99'0000U);
-    EXPECT_EQ(phys(table, 0x40'3000), 0x10'3000U);
+    EXPECT_EQ(phys(table, VirtAddr{0x40'2000}), PhysAddr{0x99'0000U});
+    EXPECT_EQ(phys(table, VirtAddr{0x40'3000}), PhysAddr{0x10'3000U});
 }
 
 TEST(Map, OverwriteIfExistingWritesOver) {
     HostTable table;
-    table.leaf(0x40'2000, PageTableLevel::PageTable, 0x99'0000, MmuFlags::Readable);
-    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 4, USER_RWX, OVERWRITE_UNDO, nullptr), Status::Ok);
-    EXPECT_EQ(phys(table, 0x40'2000), 0x10'2000U);
-    EXPECT_EQ(table.query(0x40'2000).value().flags, MmuFlags::Present | USER_RWX);
+    table.leaf(VirtAddr{0x40'2000}, PageTableLevel::PageTable, PhysAddr{0x99'0000},
+               MmuFlags::Readable);
+    EXPECT_EQ(
+        table.map(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 4, USER_RWX, OVERWRITE_UNDO, nullptr),
+        Status::Ok);
+    EXPECT_EQ(phys(table, VirtAddr{0x40'2000}), PhysAddr{0x10'2000U});
+    EXPECT_EQ(table.query(VirtAddr{0x40'2000}).value().flags, MmuFlags::Present | USER_RWX);
 }
 
 TEST(Map, OverwriteSplitsALargeLeafItCoversInPart) {
     HostTable table(true);
-    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, USER_RWX);
-    EXPECT_EQ(table.map(0x60'1000, 0x10'0000, 1, RWX, OVERWRITE_UNDO, nullptr), Status::Ok);
+    table.leaf(VirtAddr{0x60'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4000'0000}, USER_RWX);
+    EXPECT_EQ(table.map(VirtAddr{0x60'1000}, PhysAddr{0x10'0000}, 1, RWX, OVERWRITE_UNDO, nullptr),
+              Status::Ok);
     EXPECT_EQ(table.deposits().held(), 0U);
-    EXPECT_EQ(phys(table, 0x60'1000), 0x10'0000U);
-    EXPECT_EQ(phys(table, 0x60'2000), 0x4000'2000U);
-    EXPECT_EQ(leaf_size(table, 0x60'2000), 4 * KB);
+    EXPECT_EQ(phys(table, VirtAddr{0x60'1000}), PhysAddr{0x10'0000U});
+    EXPECT_EQ(phys(table, VirtAddr{0x60'2000}), PhysAddr{0x4000'2000U});
+    EXPECT_EQ(leaf_size(table, VirtAddr{0x60'2000}), 4 * KB);
 }
 
 TEST(Map, NoMemoryPartWayIsUndoneOrKept) {
@@ -683,15 +709,17 @@ TEST(Map, NoMemoryPartWayIsUndoneOrKept) {
     HostTable undo;
     undo.fail_allocations_after(3);
     usize mapped = 7;
-    EXPECT_EQ(undo.map(0x1f'f000, 0x10'0000, 2, RWX, ERROR_UNDO, &mapped), Status::NoMemory);
+    EXPECT_EQ(undo.map(VirtAddr{0x1f'f000}, PhysAddr{0x10'0000}, 2, RWX, ERROR_UNDO, &mapped),
+              Status::NoMemory);
     EXPECT_EQ(mapped, 0U);
-    EXPECT_TRUE(undo.query(0x1f'f000).is_none());
+    EXPECT_TRUE(undo.query(VirtAddr{0x1f'f000}).is_none());
 
     HostTable keep;
     keep.fail_allocations_after(3);
-    EXPECT_EQ(keep.map(0x1f'f000, 0x10'0000, 2, RWX, ERROR_KEEP, &mapped), Status::NoMemory);
+    EXPECT_EQ(keep.map(VirtAddr{0x1f'f000}, PhysAddr{0x10'0000}, 2, RWX, ERROR_KEEP, &mapped),
+              Status::NoMemory);
     EXPECT_EQ(mapped, 1U);
-    EXPECT_EQ(phys(keep, 0x1f'f000), 0x10'0000U);
+    EXPECT_EQ(phys(keep, VirtAddr{0x1f'f000}), PhysAddr{0x10'0000U});
 }
 
 TEST(Map, AskingForWhatCannotBeIsInvArgs) {
@@ -699,38 +727,45 @@ TEST(Map, AskingForWhatCannotBeIsInvArgs) {
     auto const both = arch::paging::MapOptions::ErrorIfExisting |
                       arch::paging::MapOptions::SkipIfExisting |
                       arch::paging::MapOptions::UndoOnFailure;
-    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 1, RWX, both, nullptr), Status::InvArgs);
-    EXPECT_EQ(table.map(0x40'0800, 0x10'0000, 1, RWX, ERROR_UNDO, nullptr), Status::InvArgs);
-    EXPECT_EQ(table.map(0x40'0000, 0x10'0800, 1, RWX, ERROR_UNDO, nullptr), Status::InvArgs);
-    EXPECT_EQ(table.map(0x40'0000, PhysAddr{1} << 52, 1, RWX, ERROR_UNDO, nullptr),
+    EXPECT_EQ(table.map(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 1, RWX, both, nullptr),
               Status::InvArgs);
-    EXPECT_EQ(table.map(0x40'0000, 0x10'0000, 0, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    EXPECT_EQ(table.map(VirtAddr{0x40'0800}, PhysAddr{0x10'0000}, 1, RWX, ERROR_UNDO, nullptr),
+              Status::InvArgs);
+    EXPECT_EQ(table.map(VirtAddr{0x40'0000}, PhysAddr{0x10'0800}, 1, RWX, ERROR_UNDO, nullptr),
+              Status::InvArgs);
+    EXPECT_EQ(table.map(VirtAddr{0x40'0000}, PhysAddr{1_usize << 52}, 1, RWX, ERROR_UNDO, nullptr),
+              Status::InvArgs);
+    EXPECT_EQ(table.map(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 0, RWX, ERROR_UNDO, nullptr),
+              Status::Ok);
 }
 
 TEST(MapFrames, MapsEachPageToItsOwnFrame) {
     HostTable table;
-    auto const frames = std::array<PhysAddr, 4>{0xa0'0000, 0x50'0000, 0x30'0000, 0x70'0000};
+    auto const frames = std::array<PhysAddr, 4>{PhysAddr{0xa0'0000}, PhysAddr{0x50'0000},
+                                                PhysAddr{0x30'0000}, PhysAddr{0x70'0000}};
     usize mapped = 0;
-    EXPECT_EQ(table.map_frames(0x1f'e000, frames.data(), 4, USER_RWX, ERROR_UNDO, &mapped),
-              Status::Ok);
+    EXPECT_EQ(
+        table.map_frames(VirtAddr{0x1f'e000}, frames.data(), 4, USER_RWX, ERROR_UNDO, &mapped),
+        Status::Ok);
     EXPECT_EQ(mapped, 4U);
     for (usize i = 0; i < 4; ++i) {
-        EXPECT_EQ(phys(table, 0x1f'e000 + i * PAGE_SIZE), frames[i]) << i;
-        EXPECT_EQ(leaf_size(table, 0x1f'e000 + i * PAGE_SIZE), 4 * KB) << i;
+        EXPECT_EQ(phys(table, VirtAddr{0x1f'e000 + i * PAGE_SIZE}), frames[i]) << i;
+        EXPECT_EQ(leaf_size(table, VirtAddr{0x1f'e000 + i * PAGE_SIZE}), 4 * KB) << i;
     }
 }
 
 TEST(MapFrames, SkipStepsOverALargeLeafAndItsFrames) {
     HostTable table;
-    table.leaf(0x60'0000, PageTableLevel::PageDirectory, 0x4000'0000, RWX);
+    table.leaf(VirtAddr{0x60'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4000'0000}, RWX);
     std::vector<PhysAddr> frames(514);
     for (usize i = 0; i < frames.size(); ++i) {
-        frames[i] = 0x1'0000'0000 + i * 2 * PAGE_SIZE;
+        frames[i] = PhysAddr{0x1'0000'0000 + i * 2 * PAGE_SIZE};
     }
-    EXPECT_EQ(table.map_frames(0x5f'f000, frames.data(), 514, RWX, SKIP_UNDO, nullptr), Status::Ok);
-    EXPECT_EQ(phys(table, 0x5f'f000), frames[0]);
-    EXPECT_EQ(phys(table, 0x60'0000), 0x4000'0000U);
-    EXPECT_EQ(phys(table, 0x80'0000), frames[513]);
+    EXPECT_EQ(table.map_frames(VirtAddr{0x5f'f000}, frames.data(), 514, RWX, SKIP_UNDO, nullptr),
+              Status::Ok);
+    EXPECT_EQ(phys(table, VirtAddr{0x5f'f000}), frames[0]);
+    EXPECT_EQ(phys(table, VirtAddr{0x60'0000}), PhysAddr{0x4000'0000U});
+    EXPECT_EQ(phys(table, VirtAddr{0x80'0000}), frames[513]);
 }
 
 /// The same tables and the same maps, one run by the paging engine and one by
@@ -741,12 +776,13 @@ TEST(Map, AgreesWithTheEngine) {
         HostTable engine(splits);
         HostTable ours(splits);
         for (auto *table: {&engine, &ours}) {
-            table->small_leaves(0x40'4000, 0x99'0000, 2, MmuFlags::Readable);
-            table->leaf(0x80'0000, PageTableLevel::PageDirectory, 0x4020'0000, RWX);
+            table->small_leaves(VirtAddr{0x40'4000}, PhysAddr{0x99'0000}, 2, MmuFlags::Readable);
+            table->leaf(VirtAddr{0x80'0000}, PageTableLevel::PageDirectory, PhysAddr{0x4020'0000},
+                        RWX);
         }
         std::vector<PhysAddr> frames(40);
         for (usize i = 0; i < frames.size(); ++i) {
-            frames[i] = 0x7000'0000 + (frames.size() - i) * PAGE_SIZE;
+            frames[i] = PhysAddr{0x7000'0000 + (frames.size() - i) * PAGE_SIZE};
         }
 
         struct Call {
@@ -756,26 +792,42 @@ TEST(Map, AgreesWithTheEngine) {
             arch::paging::MapOptions options;
         };
         auto const calls = std::array{
-            Call{.va = 0x40'0000, .pa = 0x10'0000, .n = 8, .options = ERROR_KEEP},
-            Call{.va = 0x40'0000, .pa = 0x10'0000, .n = 8, .options = SKIP_UNDO},
-            Call{.va = 0x40'2000, .pa = 0x20'0000, .n = 4, .options = OVERWRITE_UNDO},
-            Call{.va = 0x3f'f000, .pa = 0x5ff'f000, .n = 0x402, .options = ERROR_UNDO},
-            Call{.va = 0x7f'e000, .pa = 0, .n = 40, .options = SKIP_UNDO},
-            Call{.va = 0x80'4000, .pa = 0x30'0000, .n = 2, .options = OVERWRITE_UNDO},
-            Call{.va = 0x1'0000'0000, .pa = 0x1'0000'0000, .n = 0x40001, .options = ERROR_UNDO},
-            Call{.va = 0x7f'e000, .pa = 0, .n = 40, .options = ERROR_UNDO},
+            Call{.va = VirtAddr{0x40'0000},
+                 .pa = PhysAddr{0x10'0000},
+                 .n = 8,
+                 .options = ERROR_KEEP},
+            Call{
+                .va = VirtAddr{0x40'0000}, .pa = PhysAddr{0x10'0000}, .n = 8, .options = SKIP_UNDO},
+            Call{.va = VirtAddr{0x40'2000},
+                 .pa = PhysAddr{0x20'0000},
+                 .n = 4,
+                 .options = OVERWRITE_UNDO},
+            Call{.va = VirtAddr{0x3f'f000},
+                 .pa = PhysAddr{0x5ff'f000},
+                 .n = 0x402,
+                 .options = ERROR_UNDO},
+            Call{.va = VirtAddr{0x7f'e000}, .pa = PhysAddr{}, .n = 40, .options = SKIP_UNDO},
+            Call{.va = VirtAddr{0x80'4000},
+                 .pa = PhysAddr{0x30'0000},
+                 .n = 2,
+                 .options = OVERWRITE_UNDO},
+            Call{.va = VirtAddr{0x1'0000'0000},
+                 .pa = PhysAddr{0x1'0000'0000},
+                 .n = 0x40001,
+                 .options = ERROR_UNDO},
+            Call{.va = VirtAddr{0x7f'e000}, .pa = PhysAddr{}, .n = 40, .options = ERROR_UNDO},
         };
         auto const allocator = engine.allocator();
         for (auto const &call: calls) {
             usize engine_mapped = 0;
             auto const expected = [&] {
                 auto const flags = USER_RWX;
-                if (call.pa == 0 && splits) {
+                if (call.pa == PhysAddr{} && splits) {
                     return status_of(Engine::map_frames(
                         engine.root_phys(), identity, allocator, engine.deposits(), call.va,
                         frames.data(), call.n, flags, call.options, &engine_mapped));
                 }
-                if (call.pa == 0) {
+                if (call.pa == PhysAddr{}) {
                     return status_of(Engine::map_frames(
                         engine.root_phys(), identity, allocator, arch::paging::NoDeposits{},
                         call.va, frames.data(), call.n, flags, call.options, &engine_mapped));
@@ -790,23 +842,25 @@ TEST(Map, AgreesWithTheEngine) {
             }();
             usize ours_mapped = 0;
             auto const actual = [&] {
-                if (call.pa == 0) {
+                if (call.pa == PhysAddr{}) {
                     return ours.map_frames(call.va, frames.data(), call.n, USER_RWX, call.options,
                                            &ours_mapped);
                 }
                 return ours.map(call.va, call.pa, call.n, USER_RWX, call.options, &ours_mapped);
             }();
-            EXPECT_EQ(expected, actual) << std::hex << call.va << " splits " << splits;
-            EXPECT_EQ(engine_mapped, ours_mapped) << std::hex << call.va << " splits " << splits;
+            EXPECT_EQ(expected, actual)
+                << std::hex << std::to_underlying(call.va) << " splits " << splits;
+            EXPECT_EQ(engine_mapped, ours_mapped)
+                << std::hex << std::to_underlying(call.va) << " splits " << splits;
         }
 
-        for (VirtAddr va = 0x3f'0000; va < 0xc0'0000; va += PAGE_SIZE) {
+        for (VirtAddr va{0x3f'0000}; va < VirtAddr{0xc0'0000}; va += PAGE_SIZE) {
             ASSERT_EQ(engine.leaf_entry(va), ours.leaf_entry(va))
-                << std::hex << va << " splits " << splits;
+                << std::hex << std::to_underlying(va) << " splits " << splits;
         }
-        for (VirtAddr va = 0x1'0000'0000; va < 0x1'4000'2000; va += 2 * MB) {
+        for (VirtAddr va{0x1'0000'0000}; va < VirtAddr{0x1'4000'2000}; va += 2 * MB) {
             ASSERT_EQ(engine.leaf_entry(va), ours.leaf_entry(va))
-                << std::hex << va << " splits " << splits;
+                << std::hex << std::to_underlying(va) << " splits " << splits;
         }
         EXPECT_EQ(engine.deposits().held(), ours.deposits().held()) << "splits " << splits;
     }
@@ -814,40 +868,48 @@ TEST(Map, AgreesWithTheEngine) {
 
 TEST(SecondLevelEmpty, IsWhetherA2MibLeafCouldGoThere) {
     HostTable table(true);
-    ASSERT_EQ(table.map(0x40'0000, 0x10'0000, 1, RWX, ERROR_UNDO, nullptr), Status::Ok);
-    ASSERT_EQ(table.map(0x60'0000, 0x4000'0000, 512, RWX, ERROR_UNDO, nullptr), Status::Ok);
-    table.leaf(1 * GB, PageTableLevel::PageDirectoryPointerTable, 2 * GB, RWX);
+    ASSERT_EQ(table.map(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 1, RWX, ERROR_UNDO, nullptr),
+              Status::Ok);
+    ASSERT_EQ(table.map(VirtAddr{0x60'0000}, PhysAddr{0x4000'0000}, 512, RWX, ERROR_UNDO, nullptr),
+              Status::Ok);
+    table.leaf(VirtAddr{1 * GB}, PageTableLevel::PageDirectoryPointerTable, PhysAddr{2 * GB}, RWX);
 
-    EXPECT_FALSE(table.second_level_empty(0x41'0000)); // a table there
-    EXPECT_FALSE(table.second_level_empty(0x60'0000)); // a 2 MiB leaf
-    EXPECT_TRUE(table.second_level_empty(0x80'0000));
-    EXPECT_FALSE(table.second_level_empty(1 * GB + 4 * MB)); // under a 1 GiB leaf
-    EXPECT_TRUE(table.second_level_empty(0x80'0000'0000));   // no table at all
+    EXPECT_FALSE(table.second_level_empty(VirtAddr{0x41'0000})); // a table there
+    EXPECT_FALSE(table.second_level_empty(VirtAddr{0x60'0000})); // a 2 MiB leaf
+    EXPECT_TRUE(table.second_level_empty(VirtAddr{0x80'0000}));
+    EXPECT_FALSE(table.second_level_empty(VirtAddr{1 * GB + 4 * MB})); // under a 1 GiB leaf
+    EXPECT_TRUE(table.second_level_empty(VirtAddr{0x80'0000'0000}));   // no table at all
 
     // A table emptied by an unmap is still a table.
-    ASSERT_EQ(table.unmap(0x40'0000, 1), Status::Ok);
-    EXPECT_FALSE(table.second_level_empty(0x40'0000));
+    ASSERT_EQ(table.unmap(VirtAddr{0x40'0000}, 1), Status::Ok);
+    EXPECT_FALSE(table.second_level_empty(VirtAddr{0x40'0000}));
 }
 
 TEST(SecondLevelEmpty, AgreesWithTheEngine) {
     HostTable table(true);
-    ASSERT_EQ(table.map(0x40'0000, 0x10'0000, 1, RWX, ERROR_UNDO, nullptr), Status::Ok);
-    ASSERT_EQ(table.map(0x60'0000, 0x4000'0000, 512, RWX, ERROR_UNDO, nullptr), Status::Ok);
-    table.leaf(1 * GB, PageTableLevel::PageDirectoryPointerTable, 2 * GB, RWX);
-    for (VirtAddr va = 0; va < 2 * GB; va += 2 * MB) {
+    ASSERT_EQ(table.map(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 1, RWX, ERROR_UNDO, nullptr),
+              Status::Ok);
+    ASSERT_EQ(table.map(VirtAddr{0x60'0000}, PhysAddr{0x4000'0000}, 512, RWX, ERROR_UNDO, nullptr),
+              Status::Ok);
+    table.leaf(VirtAddr{1 * GB}, PageTableLevel::PageDirectoryPointerTable, PhysAddr{2 * GB}, RWX);
+    for (VirtAddr va{}; va < VirtAddr{2 * GB}; va += 2 * MB) {
         EXPECT_EQ(Engine::second_level_empty(table.root_phys(), identity, va),
                   table.second_level_empty(va))
-            << std::hex << va;
+            << std::hex << std::to_underlying(va);
     }
 }
 
 /// Maps, into |table|, what the teardown tests free: 4 KiB leaves under three
 /// tables of the last level, one 2 MiB leaf, and one leaf past 2 GiB.
 auto fill_for_teardown(HostTable &table) -> void {
-    ASSERT_EQ(table.map(0x40'0000, 0x10'0000, 2, RWX, ERROR_UNDO, nullptr), Status::Ok);
-    ASSERT_EQ(table.map(0x60'0000, 0x4000'0000, 512, RWX, ERROR_UNDO, nullptr), Status::Ok);
-    ASSERT_EQ(table.map(0x80'1000, 0x20'0000, 1, RWX, ERROR_UNDO, nullptr), Status::Ok);
-    ASSERT_EQ(table.map(2 * GB, 0x30'0000, 1, RWX, ERROR_UNDO, nullptr), Status::Ok);
+    ASSERT_EQ(table.map(VirtAddr{0x40'0000}, PhysAddr{0x10'0000}, 2, RWX, ERROR_UNDO, nullptr),
+              Status::Ok);
+    ASSERT_EQ(table.map(VirtAddr{0x60'0000}, PhysAddr{0x4000'0000}, 512, RWX, ERROR_UNDO, nullptr),
+              Status::Ok);
+    ASSERT_EQ(table.map(VirtAddr{0x80'1000}, PhysAddr{0x20'0000}, 1, RWX, ERROR_UNDO, nullptr),
+              Status::Ok);
+    ASSERT_EQ(table.map(VirtAddr{2 * GB}, PhysAddr{0x30'0000}, 1, RWX, ERROR_UNDO, nullptr),
+              Status::Ok);
 }
 
 TEST(FreeTables, GivesEveryTableBackAndCountsTheLeaves) {

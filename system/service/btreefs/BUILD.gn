@@ -29,11 +29,9 @@ user_executable("btreefs") {
     "//system/lib/fsio",
     "//system/lib/ioservice",
     "//system/lib/loop",
-    "//system/lib/ours.block",
-    "//system/lib/ours.block:client",
+    "//system/lib/protocols:client",
     "//system/lib/ours.btreefs",
     "//system/lib/ours.gpt",
-    "//system/lib/ours.io",
     "//system/lib/wire",
   ]
 }

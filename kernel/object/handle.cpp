@@ -147,7 +147,7 @@ namespace {
         /// Spectre V1.
         [[nodiscard]]
         auto lookup(u32 const base_value) -> Handle * {
-            static_assert(USER_ASPACE_BASE == 2_mb,
+            static_assert(USER_ASPACE_BASE == VirtAddr{2_mb},
                           "a failed lookup's null result is touched speculatively; see above");
             auto const index =
                 arch::confine_array_index(base_value & HANDLE_INDEX_MASK, HANDLE_ARENA_SLOTS);

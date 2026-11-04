@@ -234,8 +234,9 @@ class RunQueueState {
 /// right answer is there, it is Fair's to give; what the framework can do is
 /// stop offering the two of them from the same bag.
 ///
-/// Nothing outside `fair.*` reads these. `SchedEntity::deadline()` is the one
-/// exception and exists for Fair's own run-queue comparator.
+/// Nothing outside `fair.*` reads these except through two accessors,
+/// `virtual_deadline()` (Fair's run-queue comparator and the wait queue's key)
+/// and `vruntime()` (Fair's run queue).
 ///
 /// SchedEntity holds one such sub-struct per discipline that has private
 /// per-thread state, each owned by the discipline that reads it.
@@ -301,14 +302,10 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
 
   public:
     /// Every member, in declaration order. The six after m_profile used to be
-    /// left out, so a fresh context carried indeterminate values for them --
-    /// `m_schedule` among them, and that one is dereferenced. It read as null
-    /// in practice only because a Thread comes out of a zeroing allocator;
-    /// that is luck, not a guarantee, and it is not something to rely on.
-    ///
-    /// `m_schedule` stays null until a Scheduler binds the thread to its
-    /// discipline in Scheduler::set_schedule(). Nothing may call through it
-    /// before that.
+    /// left out, so a fresh context carried indeterminate values for them.
+    /// That read as zero in practice only because a Thread comes out of a
+    /// zeroing allocator; that is luck, not a guarantee, and it is not
+    /// something to rely on.
     SchedEntity(BaseProfile profile)
         : m_affinity()
         , m_runqueue_state()
@@ -329,7 +326,6 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
         , m_last_cpu()
         , m_curr_cpu()
         , m_wake_cpu()
-        , m_schedule(nullptr)
         , m_exec_runtime()
         , m_prev_exec_runtime()
         , m_fair()
@@ -374,18 +370,31 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
         return m_fair.vdeadline;
     }
 
+    /// This thread's virtual clock, the one Fair's run queue measures its
+    /// average, lag and eligibility on: the real time it has been charged,
+    /// scaled by its weight (`to_virtual_time()`), from the queue's average
+    /// less the lag it carried when it was last placed (`avg_vruntime() - vlag`,
+    /// `Fair::adjust_vlag()`).
+    ///
+    /// An accessor because `FairRunQueue` is not a friend, for the reason
+    /// `virtual_deadline()` is one. It is not comparable with `exec_runtime()`:
+    /// that starts at zero and is not scaled by the weight.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto vruntime() const -> SchedDuration {
+        return m_fair.vruntime;
+    }
+
     /// Execution time charged to this thread so far -- real time on a CPU, not
     /// any discipline's virtual time.
     ///
     /// The `exec_` is load bearing. Plain `runtime()` used to sit beside a
     /// per-CPU object called `Runtime` that had nothing to do with it, and it
-    /// still sits beside Fair's `vruntime`, which is the same quantity
-    /// measured in virtual time. Every one of this accessor's callers is in
-    /// `fair.*`, and every one of them uses it where the virtual quantity is
-    /// what the surrounding arithmetic means -- `avg_vruntime() - runtime()`,
-    /// `runtime() < min_vruntime_`. Whether that is right is Fair's to say;
-    /// the name at least stops the framework from implying the two are
-    /// interchangeable.
+    /// still sits beside Fair's `vruntime()`, which is the same quantity
+    /// measured in virtual time. The two are not comparable: this one starts at
+    /// zero and is not scaled by the weight, so arithmetic on Fair's virtual
+    /// clock reads `vruntime()`. The name at least stops the framework from
+    /// implying they are interchangeable.
     FORCE_INLINE
     auto exec_runtime() const -> SchedDuration {
         return m_exec_runtime;
@@ -432,11 +441,6 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
     }
 
     FORCE_INLINE
-    auto schedule() -> ISchedule * {
-        return m_schedule;
-    }
-
-    FORCE_INLINE
     auto runqueue_state() -> RunQueueState & {
         return m_runqueue_state;
     }
@@ -472,7 +476,6 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
     CpuNum m_last_cpu;
     CpuNum m_curr_cpu;
     CpuNum m_wake_cpu;
-    ISchedule *m_schedule;
 
     /// The framework's own accounting: how long this thread has run, and where
     /// the current slice started counting from. Every discipline charges time

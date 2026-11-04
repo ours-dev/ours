@@ -15,14 +15,14 @@
 #include <ours/signals.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
-#include <ours_process/ours_process.hpp>
+#include <prot/process.hpp>
 #include <wire/wire.hpp>
 
 namespace fsio {
 namespace {
     using ours::Status;
     using ours::Uandle;
-    using ours_io::Flags;
+    using prot::io::Flags;
 
     /// The process's namespace. constinit: nothing runs a user program's
     /// dynamic initialisers (//system/lib/ort, src/start.cpp).
@@ -205,7 +205,7 @@ namespace {
     /// Where spawn() finds the Launcher: the protocol's name under /svc,
     /// where every protocol use lives (design D3).
     constexpr auto LAUNCHER_PATH = std::string_view{"/svc/ours.process.Launcher"};
-    static_assert(LAUNCHER_PATH.ends_with(ours_process::LAUNCHER_NAME));
+    static_assert(LAUNCHER_PATH.ends_with(prot::process::LAUNCHER_NAME));
 
     /// One handle a call made or was given, closed when it goes out of scope
     /// unless it was handed on: the many ways out of spawn() each leave
@@ -347,12 +347,12 @@ auto send_open(Uandle const directory, std::string_view const path, Flags const 
                Uandle const object) -> Status {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 1> handles{};
-    auto const encoded = ours_io::encode_open(bytes, handles,
-                                              ours_io::OpenRequest{
-                                                  .flags = flags,
-                                                  .path = path,
-                                                  .object = object,
-                                              });
+    auto const encoded = prot::io::encode_open(bytes, handles,
+                                               prot::io::OpenRequest{
+                                                   .flags = flags,
+                                                   .path = path,
+                                                   .object = object,
+                                               });
     if (encoded.is_err()) {
         return encoded.unwrap_err();
     }
@@ -496,7 +496,7 @@ auto export_namespace(std::span<ExportedEntry> const out) -> ustl::Result<usize,
         std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
         std::array<Uandle, 1> handles{};
         auto const encoded =
-            ours_io::encode_clone(bytes, handles, ours_io::CloneRequest{.request = server});
+            prot::io::encode_clone(bytes, handles, prot::io::CloneRequest{.request = server});
         if (encoded.is_err()) {
             auto _ = ours::handle_close(server);
             return fail(encoded.unwrap_err());
@@ -540,8 +540,8 @@ auto spawn(Uandle const job, std::string_view const path,
         return ustl::err(file.unwrap_err());
     }
     auto const vmo =
-        get_backing_memory(file.unwrap(), ours_io::VmoFlags::Read | ours_io::VmoFlags::Execute |
-                                              ours_io::VmoFlags::PrivateClone);
+        get_backing_memory(file.unwrap(), prot::io::VmoFlags::Read | prot::io::VmoFlags::Execute |
+                                              prot::io::VmoFlags::PrivateClone);
     auto _ = ours::handle_close(file.unwrap());
     if (vmo.is_err()) {
         return ustl::err(vmo.unwrap_err());
@@ -565,7 +565,7 @@ auto spawn(Uandle const job, std::string_view const path,
     //    arguments, the handles, the namespace.
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, wire::MAX_MESSAGE_HANDLES> handles{};
-    auto const args = ours_process::encode_add_args(bytes, argv);
+    auto const args = prot::process::encode_add_args(bytes, argv);
     if (args.is_err()) {
         return ustl::err(args.unwrap_err());
     }
@@ -579,11 +579,11 @@ auto spawn(Uandle const job, std::string_view const path,
         return ustl::err(job_default.unwrap_err());
     }
     Owned job_handle(job_default.unwrap());
-    auto const infos = std::array{ours_process::HandleInfo{
+    auto const infos = std::array{prot::process::HandleInfo{
         .handle = job_handle.get(),
         .id = ours::handle_info(ours::HandleType::JobDefault, 0),
     }};
-    auto const added = ours_process::encode_add_handles(bytes, handles, infos);
+    auto const added = prot::process::encode_add_handles(bytes, handles, infos);
     if (added.is_err()) {
         return ustl::err(added.unwrap_err());
     }
@@ -601,12 +601,12 @@ auto spawn(Uandle const job, std::string_view const path,
     }
     auto const count = exported.unwrap();
     if (count != 0) {
-        std::array<ours_process::NameInfo, MAX_BINDINGS> names{};
+        std::array<prot::process::NameInfo, MAX_BINDINGS> names{};
         for (auto index = usize{0}; index < count; ++index) {
             names[index] = {.path = entries[index].path, .directory = entries[index].directory};
         }
         auto const named =
-            ours_process::encode_add_names(bytes, handles, std::span{names}.first(count));
+            prot::process::encode_add_names(bytes, handles, std::span{names}.first(count));
         if (named.is_err()) {
             close_entries(std::span{entries}.first(count));
             return ustl::err(named.unwrap_err());
@@ -625,9 +625,9 @@ auto spawn(Uandle const job, std::string_view const path,
     Owned launch_job_handle(launch_job.unwrap());
     auto const name = argv[0].substr(0, std::min(argv[0].size(), ours::MAX_NAME_LEN - 1));
     auto const txid = next_txid();
-    auto const launch = ours_process::encode_launch(
+    auto const launch = prot::process::encode_launch(
         bytes, handles,
-        ours_process::LaunchRequest{
+        prot::process::LaunchRequest{
             .txid = txid,
             .info = {.executable = executable.get(), .job = launch_job_handle.get(), .name = name},
         });
@@ -644,7 +644,7 @@ auto spawn(Uandle const job, std::string_view const path,
     if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
         return ustl::err(*closed);
     }
-    auto const decoded = ours_process::decode_launch_reply(reply.message(), txid);
+    auto const decoded = prot::process::decode_launch_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return ustl::err(Status::InvArgs);
     }
@@ -656,11 +656,11 @@ auto spawn(Uandle const job, std::string_view const path,
 }
 
 auto read(Uandle const file, std::span<u8> const buffer) -> ustl::Result<usize, Status> {
-    auto const count = std::min(buffer.size(), ours_io::MAX_TRANSFER_SIZE);
+    auto const count = std::min(buffer.size(), prot::io::MAX_TRANSFER_SIZE);
     auto const txid = next_txid();
     SmallRequest bytes{};
     auto const request =
-        ours_io::encode_read(bytes, ours_io::ReadRequest{.txid = txid, .count = count});
+        prot::io::encode_read(bytes, prot::io::ReadRequest{.txid = txid, .count = count});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
@@ -671,7 +671,7 @@ auto read(Uandle const file, std::span<u8> const buffer) -> ustl::Result<usize, 
     if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
         return ustl::err(*closed);
     }
-    auto const decoded = ours_io::decode_read_reply(reply.message(), txid);
+    auto const decoded = prot::io::decode_read_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return ustl::err(Status::InvArgs);
     }
@@ -687,7 +687,7 @@ auto write(Uandle const file, std::span<u8 const> const data) -> ustl::Result<us
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     auto const txid = next_txid();
     auto const request =
-        ours_io::encode_write(bytes, ours_io::WriteRequest{.txid = txid, .data = data});
+        prot::io::encode_write(bytes, prot::io::WriteRequest{.txid = txid, .data = data});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
@@ -698,7 +698,7 @@ auto write(Uandle const file, std::span<u8 const> const data) -> ustl::Result<us
     if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
         return ustl::err(*closed);
     }
-    auto const decoded = ours_io::decode_write_reply(reply.message(), txid);
+    auto const decoded = prot::io::decode_write_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return ustl::err(Status::InvArgs);
     }
@@ -746,7 +746,7 @@ auto unlink(std::string_view const path) -> ours::Status {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     auto const txid = next_txid();
     auto const request =
-        ours_io::encode_unlink(bytes, ours_io::UnlinkRequest{.txid = txid, .path = name});
+        prot::io::encode_unlink(bytes, prot::io::UnlinkRequest{.txid = txid, .path = name});
     if (request.is_err()) {
         auto _ = ours::handle_close(parent.unwrap());
         return request.unwrap_err();
@@ -760,7 +760,7 @@ auto unlink(std::string_view const path) -> ours::Status {
         auto _ = ours::handle_close(parent.unwrap());
         return *closed;
     }
-    auto const decoded = wire::decode_reply_status(reply.message(), ours_io::UNLINK, txid);
+    auto const decoded = wire::decode_reply_status(reply.message(), prot::io::UNLINK, txid);
     if (decoded.is_err()) {
         auto _ = ours::handle_close(parent.unwrap());
         return Status::InvArgs;
@@ -769,7 +769,32 @@ auto unlink(std::string_view const path) -> ours::Status {
     return decoded.unwrap();
 }
 
-auto chdir(std::string_view const path, ours_io::Flags const flags) -> Status {
+auto unlink_at(ours::Uandle const dir, std::string_view const name) -> ours::Status {
+    if (name.empty() || name == "." || name == "..") {
+        return Status::BadPath;
+    }
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const txid = next_txid();
+    auto const request =
+        prot::io::encode_unlink(bytes, prot::io::UnlinkRequest{.txid = txid, .path = name});
+    if (request.is_err()) {
+        return request.unwrap_err();
+    }
+    Incoming reply;
+    if (auto const status = call(dir, request.unwrap(), reply); status != Status::Ok) {
+        return status;
+    }
+    if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+        return *closed;
+    }
+    auto const decoded = wire::decode_reply_status(reply.message(), prot::io::UNLINK, txid);
+    if (decoded.is_err()) {
+        return Status::InvArgs;
+    }
+    return decoded.unwrap();
+}
+
+auto chdir(std::string_view const path, prot::io::Flags const flags) -> Status {
     // The open itself resolves absolute paths through the namespace and
     // relative ones against the working directory -- so a relative chdir
     // naturally lands under the current one. |flags| become the working
@@ -787,11 +812,11 @@ auto chdir(std::string_view const path, ours_io::Flags const flags) -> Status {
 
 auto read_dirents(Uandle const directory, std::span<u8> const buffer)
     -> ustl::Result<usize, Status> {
-    auto const max_bytes = std::min(buffer.size(), ours_io::MAX_BUF);
+    auto const max_bytes = std::min(buffer.size(), prot::io::MAX_BUF);
     auto const txid = next_txid();
     SmallRequest bytes{};
-    auto const request = ours_io::encode_read_dirents(
-        bytes, ours_io::ReadDirentsRequest{.txid = txid, .max_bytes = max_bytes});
+    auto const request = prot::io::encode_read_dirents(
+        bytes, prot::io::ReadDirentsRequest{.txid = txid, .max_bytes = max_bytes});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
@@ -802,7 +827,7 @@ auto read_dirents(Uandle const directory, std::span<u8> const buffer)
     if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
         return ustl::err(*closed);
     }
-    auto const decoded = ours_io::decode_read_dirents_reply(reply.message(), txid);
+    auto const decoded = prot::io::decode_read_dirents_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return ustl::err(Status::InvArgs);
     }
@@ -813,7 +838,7 @@ auto read_dirents(Uandle const directory, std::span<u8> const buffer)
 }
 
 auto list(std::string_view const path, std::span<u8> const out) -> ustl::Result<usize, Status> {
-    auto const dir = open(path, ours_io::PERM_READABLE);
+    auto const dir = open(path, prot::io::PERM_READABLE);
     if (dir.is_err()) {
         return ustl::err(dir.unwrap_err());
     }
@@ -821,7 +846,7 @@ auto list(std::string_view const path, std::span<u8> const out) -> ustl::Result<
     // a 512-byte page always makes progress, and the message buffer's full
     // size is far past what this thread's stack carries.
     auto page = std::array<u8, 512>{};
-    auto writer = ours_io::DirentWriter(out);
+    auto writer = prot::io::DirentWriter(out);
     auto done = false;
     while (!done) {
         auto const read = read_dirents(dir.unwrap(), page);
@@ -832,7 +857,7 @@ auto list(std::string_view const path, std::span<u8> const out) -> ustl::Result<
         if (read.unwrap() == 0) {
             done = true;
         }
-        auto reader = ours_io::DirentReader(std::span{page}.first(read.unwrap()));
+        auto reader = prot::io::DirentReader(std::span{page}.first(read.unwrap()));
         while (!done) {
             auto const entry = reader.next();
             if (entry.is_err()) {
@@ -858,12 +883,12 @@ auto list(std::string_view const path, std::span<u8> const out) -> ustl::Result<
     return ustl::ok(writer.written().size());
 }
 
-auto get_backing_memory(Uandle const file, ours_io::VmoFlags const flags)
+auto get_backing_memory(Uandle const file, prot::io::VmoFlags const flags)
     -> ustl::Result<Uandle, Status> {
     auto const txid = next_txid();
     SmallRequest bytes{};
-    auto const request = ours_io::encode_get_backing_memory(
-        bytes, ours_io::GetBackingMemoryRequest{.txid = txid, .flags = flags});
+    auto const request = prot::io::encode_get_backing_memory(
+        bytes, prot::io::GetBackingMemoryRequest{.txid = txid, .flags = flags});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
@@ -874,7 +899,7 @@ auto get_backing_memory(Uandle const file, ours_io::VmoFlags const flags)
     if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
         return ustl::err(*closed);
     }
-    auto const decoded = ours_io::decode_get_backing_memory_reply(reply.message(), txid);
+    auto const decoded = prot::io::decode_get_backing_memory_reply(reply.message(), txid);
     if (decoded.is_err()) {
         return ustl::err(Status::InvArgs);
     }
@@ -889,7 +914,7 @@ auto close(Uandle const node) -> Status {
     auto const answer = [node]() -> Status {
         auto const txid = next_txid();
         SmallRequest bytes{};
-        auto const request = ours_io::encode_close(bytes, ours_io::CloseRequest{.txid = txid});
+        auto const request = prot::io::encode_close(bytes, prot::io::CloseRequest{.txid = txid});
         if (request.is_err()) {
             return request.unwrap_err();
         }
@@ -900,7 +925,7 @@ auto close(Uandle const node) -> Status {
         if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
             return *closed;
         }
-        auto const decoded = ours_io::decode_close_reply(reply.message(), txid);
+        auto const decoded = prot::io::decode_close_reply(reply.message(), txid);
         if (decoded.is_err()) {
             return Status::InvArgs;
         }

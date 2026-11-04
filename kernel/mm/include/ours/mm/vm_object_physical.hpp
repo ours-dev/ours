@@ -15,8 +15,7 @@ class VmObjectPhysical: public VmObject {
     static auto create(PhysAddr pa, usize size, Flags flags, ustl::Arc<Self> *out) -> Status;
 
     ///
-    virtual auto commit_range(VirtAddr offset, usize size, CommitOptions option)
-        -> Status override {
+    auto commit_range(usize offset, usize size, CommitOptions option) -> Status override {
         m_canary.verify<Self>();
 
         if (!check_range(offset, size)) {
@@ -34,7 +33,7 @@ class VmObjectPhysical: public VmObject {
     /// its byte at |offset|. The same range checks as lookup_range(); a window
     /// that does not start on a page can still be asked for a run of its own
     /// bytes, so the alignment the paged object demands is not asked here.
-    auto lookup_contiguous(VirtAddr offset, usize size, PhysAddr *out) -> Status override {
+    auto lookup_contiguous(usize offset, usize size, PhysAddr *out) -> Status override {
         if (!size) {
             return Status::InvArgs;
         }

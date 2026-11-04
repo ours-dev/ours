@@ -28,7 +28,7 @@ struct ImageWriter {
 /// what lets the binding half be tested without a kernel around it.
 struct Image {
     /// Where the image starts in the address space it was mapped into.
-    ours::VirtAddr base = 0;
+    ours::VirtAddr base{};
 
     /// How much address space it covers, from the lowest p_vaddr any PT_LOAD
     /// claims to the highest, rounded out to whole pages.
@@ -36,7 +36,7 @@ struct Image {
 
     /// e_entry, moved to wherever the image landed. The first instruction of a
     /// program; meaningless for an image nothing jumps to, such as the vDSO.
-    ours::VirtAddr entry = 0;
+    ours::VirtAddr entry{};
 
     /// How to write into the same bytes, for the relocations.
     ///
@@ -57,7 +57,7 @@ struct Image {
     /// The lowest p_vaddr the ELF claims, which is the origin every address in
     /// its headers and dynamic tables is relative to. `base - image_base` is
     /// the load bias.
-    ours::VirtAddr image_base = 0;
+    ours::VirtAddr image_base{};
 };
 } // namespace elfload
 

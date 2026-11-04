@@ -126,13 +126,14 @@ auto reserved_overlap_is_never_allocatable() -> void {
     auto available_size = usize{0};
     auto const status = fixture.memory().visit(
         {
-            .lower = 0x1000,
-            .upper = 0x9000,
+            .lower = ours::PhysAddr{0x1000},
+            .upper = ours::PhysAddr{0x9000},
             .node = bootmem::ANY_NODE,
             .view = MemoryView::Free,
         },
         [&available_size](MemoryRegion const range) {
-            require(range.range.end() <= 0x4000 || range.range.base >= 0x6000);
+            require(range.range.end() <= ours::PhysAddr{0x4000} ||
+                    range.range.base >= ours::PhysAddr{0x6000});
             available_size += range.range.size;
             return true;
         });

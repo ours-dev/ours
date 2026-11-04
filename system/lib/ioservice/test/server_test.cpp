@@ -15,7 +15,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <wire/wire.hpp>
 
 namespace {
@@ -26,9 +26,9 @@ using ioservice::Outcome;
 using ours::Rights;
 using ours::Status;
 using ours::Uandle;
-using ours_io::Flags;
-using ours_io::Operations;
-using ours_io::VmoFlags;
+using prot::io::Flags;
+using prot::io::Operations;
+using prot::io::VmoFlags;
 
 constexpr auto FILL = u8{0xCC};
 constexpr auto TXID = u32{5};
@@ -82,7 +82,7 @@ auto text_of(std::span<u8 const> const bytes) -> std::string {
 struct Listing {
     Status status;
     std::vector<std::string> names;
-    std::vector<ours_io::DirentType> types;
+    std::vector<prot::io::DirentType> types;
 };
 
 /// The tree every test serves:
@@ -141,8 +141,8 @@ class IoserviceServer: public testing::Test {
     auto open(ConnectionId const connection, std::string_view const path, Flags const flags,
               Uandle const object = OBJECT) -> Outcome {
         return dispatch(connection,
-                        ours_io::encode_open(m_bytes, m_handles,
-                                             {.flags = flags, .path = path, .object = object}));
+                        prot::io::encode_open(m_bytes, m_handles,
+                                              {.flags = flags, .path = path, .object = object}));
     }
 
     /// An Open that must succeed with a new connection.
@@ -173,11 +173,11 @@ class IoserviceServer: public testing::Test {
         return status.unwrap();
     }
 
-    auto read(ConnectionId const connection, u64 const count) -> ours_io::ReadReply {
+    auto read(ConnectionId const connection, u64 const count) -> prot::io::ReadReply {
         auto const outcome =
-            dispatch(connection, ours_io::encode_read(m_bytes, {.txid = TXID, .count = count}));
+            dispatch(connection, prot::io::encode_read(m_bytes, {.txid = TXID, .count = count}));
         EXPECT_EQ(outcome.action, Action::Reply);
-        auto const reply = ours_io::decode_read_reply(outcome.message, TXID);
+        auto const reply = prot::io::decode_read_reply(outcome.message, TXID);
         EXPECT_TRUE(reply.is_ok());
         if (reply.is_err()) {
             return {.status = Status::InternalError};
@@ -186,20 +186,20 @@ class IoserviceServer: public testing::Test {
     }
 
     auto read_dirents(ConnectionId const connection, u64 const max_bytes) -> Listing {
-        auto const outcome =
-            dispatch(connection,
-                     ours_io::encode_read_dirents(m_bytes, {.txid = TXID, .max_bytes = max_bytes}));
+        auto const outcome = dispatch(
+            connection,
+            prot::io::encode_read_dirents(m_bytes, {.txid = TXID, .max_bytes = max_bytes}));
         EXPECT_EQ(outcome.action, Action::Reply);
-        auto const reply = ours_io::decode_read_dirents_reply(outcome.message, TXID);
+        auto const reply = prot::io::decode_read_dirents_reply(outcome.message, TXID);
         EXPECT_TRUE(reply.is_ok());
         if (reply.is_err()) {
             return {.status = Status::InternalError, .names = {}, .types = {}};
         }
         auto listing = Listing{.status = reply->status, .names = {}, .types = {}};
-        auto reader = ours_io::DirentReader(reply->dirents);
+        auto reader = prot::io::DirentReader(reply->dirents);
         for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
             auto const &dirent = next.unwrap().value();
-            EXPECT_EQ(dirent.ino, ours_io::INO_UNKNOWN);
+            EXPECT_EQ(dirent.ino, prot::io::INO_UNKNOWN);
             listing.names.emplace_back(dirent.name);
             listing.types.push_back(dirent.type);
         }
@@ -207,12 +207,12 @@ class IoserviceServer: public testing::Test {
     }
 
     auto get_backing_memory(ConnectionId const connection, VmoFlags const flags)
-        -> ours_io::GetBackingMemoryReply {
+        -> prot::io::GetBackingMemoryReply {
         auto const outcome =
             dispatch(connection,
-                     ours_io::encode_get_backing_memory(m_bytes, {.txid = TXID, .flags = flags}));
+                     prot::io::encode_get_backing_memory(m_bytes, {.txid = TXID, .flags = flags}));
         EXPECT_EQ(outcome.action, Action::Reply);
-        auto const reply = ours_io::decode_get_backing_memory_reply(outcome.message, TXID);
+        auto const reply = prot::io::decode_get_backing_memory_reply(outcome.message, TXID);
         EXPECT_TRUE(reply.is_ok());
         if (reply.is_err()) {
             return {.status = Status::InternalError};
@@ -223,14 +223,14 @@ class IoserviceServer: public testing::Test {
     /// What a ReadDirents on |connection| comes to, for an id that may be
     /// stale.
     auto read_dirents_outcome(ConnectionId const connection) -> Action {
-        return dispatch(connection, ours_io::encode_read_dirents(
-                                        m_bytes, {.txid = TXID, .max_bytes = ours_io::MAX_BUF}))
+        return dispatch(connection, prot::io::encode_read_dirents(
+                                        m_bytes, {.txid = TXID, .max_bytes = prot::io::MAX_BUF}))
             .action;
     }
 
     auto clone(ConnectionId const connection, Uandle const request) -> Outcome {
         return dispatch(connection,
-                        ours_io::encode_clone(m_bytes, m_handles, {.request = request}));
+                        prot::io::encode_clone(m_bytes, m_handles, {.request = request}));
     }
 
     template <typename T>
@@ -289,10 +289,10 @@ TEST_F(IoserviceServer, OpenNeedsTraverseExceptForDot) {
 }
 
 TEST_F(IoserviceServer, OpenChecksRightsBeforeTheTree) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "nope", Flags::PermWriteBytes), Status::AccessDenied);
     EXPECT_EQ(refused(root, "bin", Flags::PermModifyDirectory), Status::AccessDenied);
-    EXPECT_EQ(refused(root, "nope", ours_io::PERM_READABLE), Status::NotFound);
+    EXPECT_EQ(refused(root, "nope", prot::io::PERM_READABLE), Status::NotFound);
 }
 
 TEST_F(IoserviceServer, OpenChecksConnectForProtocolService) {
@@ -301,18 +301,18 @@ TEST_F(IoserviceServer, OpenChecksConnectForProtocolService) {
     // Before the lookup: a missing name answers the same.
     EXPECT_EQ(refused(no_connect, "nope", Flags::ProtocolService), Status::AccessDenied);
 
-    auto const svc = bind(m_svc, ours_io::R_STAR_DIR);
+    auto const svc = bind(m_svc, prot::io::R_STAR_DIR);
     EXPECT_EQ(refused(svc, "nope", Flags::ProtocolService), Status::NotFound);
 }
 
 TEST_F(IoserviceServer, OpenRefusesToCreate) {
     // MODIFY_DIRECTORY first. With it the answer is still NotSupported,
     // before the tree is looked at.
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "new", Flags::FlagMaybeCreate | Flags::ProtocolFile),
               Status::AccessDenied);
 
-    auto const writable = bind(m_root, ours_io::RX_STAR_DIR | Operations::ModifyDirectory);
+    auto const writable = bind(m_root, prot::io::RX_STAR_DIR | Operations::ModifyDirectory);
     EXPECT_EQ(refused(writable, "new", Flags::FlagMaybeCreate | Flags::ProtocolFile),
               Status::NotSupported);
     EXPECT_EQ(refused(writable, "bin", Flags::FlagMustCreate | Flags::ProtocolDirectory),
@@ -322,21 +322,21 @@ TEST_F(IoserviceServer, OpenRefusesToCreate) {
 }
 
 TEST_F(IoserviceServer, OpenRefusesWhatTheDesignCut) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "bin", Flags::ProtocolNode), Status::NotSupported);
     EXPECT_EQ(refused(root, "bin", Flags::FlagSendRepresentation), Status::NotSupported);
     EXPECT_EQ(refused(root, "nope", Flags::FlagSendRepresentation), Status::NotSupported);
 }
 
 TEST_F(IoserviceServer, OpenLookupFailures) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "nope", Flags::None), Status::NotFound);
     EXPECT_EQ(refused(root, "bin/nope", Flags::None), Status::NotFound);
     EXPECT_EQ(refused(root, "config/readme/more", Flags::None), Status::NotDir);
 }
 
 TEST_F(IoserviceServer, OpenMatchesTheProtocolAskedFor) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "bin", Flags::ProtocolFile), Status::NotFile);
     EXPECT_EQ(refused(root, "bin", Flags::ProtocolService), Status::BadType);
     EXPECT_EQ(refused(root, "config/readme", Flags::ProtocolDirectory), Status::NotDir);
@@ -351,7 +351,7 @@ TEST_F(IoserviceServer, OpenMatchesTheProtocolAskedFor) {
 }
 
 TEST_F(IoserviceServer, OpenRefusesFileFlagsThatDoNotApply) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
     EXPECT_EQ(refused(root, "bin", Flags::FileAppend), Status::InvArgs);
     EXPECT_EQ(refused(root, "bin", Flags::FileTruncate), Status::InvArgs);
     // Truncating needs WRITE_BYTES in the same request.
@@ -364,22 +364,22 @@ TEST_F(IoserviceServer, OpenRefusesFileFlagsThatDoNotApply) {
 // --- Rights ------------------------------------------------------------------
 
 TEST_F(IoserviceServer, FileRightsShrinkToWhatTheFileProtocolUses) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
     // PERM_READABLE also asks for CONNECT, ENUMERATE and TRAVERSE, which a
     // file has no use for: they are dropped, not refused (design D21).
-    auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
+    auto const readme = opened(root, "config/readme", prot::io::PERM_READABLE);
     EXPECT_EQ(held(m_server.rights(readme)), Operations::ReadBytes | Operations::GetAttributes);
     // A directory keeps all it asked for: they bound what is opened below.
-    auto const bin = opened(root, "bin", ours_io::PERM_READABLE);
-    EXPECT_EQ(held(m_server.rights(bin)), ours_io::R_STAR_DIR);
+    auto const bin = opened(root, "bin", prot::io::PERM_READABLE);
+    EXPECT_EQ(held(m_server.rights(bin)), prot::io::R_STAR_DIR);
     // The inherit flags are cut and ignored: the connection gets exactly the
     // rights the request names.
-    auto const config = opened(root, "config", ours_io::PERM_READABLE | Flags::PermInheritExecute);
-    EXPECT_EQ(held(m_server.rights(config)), ours_io::R_STAR_DIR);
+    auto const config = opened(root, "config", prot::io::PERM_READABLE | Flags::PermInheritExecute);
+    EXPECT_EQ(held(m_server.rights(config)), prot::io::R_STAR_DIR);
 }
 
 TEST_F(IoserviceServer, ExecuteNeedsAnExecutableFile) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
     auto const rx = Flags::PermReadBytes | Flags::PermExecute;
     EXPECT_EQ(refused(root, "config/readme", rx), Status::AccessDenied);
     auto const x = opened(root, "bin/x", rx);
@@ -387,37 +387,37 @@ TEST_F(IoserviceServer, ExecuteNeedsAnExecutableFile) {
 
     // Nor more than the connection holds: a directory opened without
     // EXECUTE is a ceiling for the files under it.
-    auto const bin = opened(root, "bin", ours_io::PERM_READABLE);
+    auto const bin = opened(root, "bin", prot::io::PERM_READABLE);
     EXPECT_EQ(refused(bin, "x", rx), Status::AccessDenied);
-    auto const readable = bind(m_root, ours_io::R_STAR_DIR);
+    auto const readable = bind(m_root, prot::io::R_STAR_DIR);
     EXPECT_EQ(refused(readable, "bin/x", rx), Status::AccessDenied);
 }
 
 TEST_F(IoserviceServer, WritingIsRefusedOnFiles) {
-    auto const root = bind(m_root, ours_io::RW_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RW_STAR_DIR);
     EXPECT_EQ(refused(root, "config/readme", Flags::PermWriteBytes), Status::AccessDenied);
 }
 
 // --- ReadDirents ---------------------------------------------------------------
 
 TEST_F(IoserviceServer, ReadDirentsListsDotFirstThenNameOrder) {
-    using ours_io::DirentType;
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
-    auto const listing = read_dirents(root, ours_io::MAX_BUF);
+    using prot::io::DirentType;
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    auto const listing = read_dirents(root, prot::io::MAX_BUF);
     EXPECT_EQ(listing.status, Status::Ok);
     EXPECT_EQ(listing.names, (std::vector<std::string>{".", "bin", "config"}));
     EXPECT_EQ(listing.types, (std::vector<DirentType>{DirentType::Directory, DirentType::Directory,
                                                       DirentType::Directory}));
     // The end is an empty Ok.
-    auto const end = read_dirents(root, ours_io::MAX_BUF);
+    auto const end = read_dirents(root, prot::io::MAX_BUF);
     EXPECT_EQ(end.status, Status::Ok);
     EXPECT_TRUE(end.names.empty());
 
-    auto const bin = opened(root, "bin", ours_io::PERM_READABLE);
-    EXPECT_EQ(read_dirents(bin, ours_io::MAX_BUF).types,
+    auto const bin = opened(root, "bin", prot::io::PERM_READABLE);
+    EXPECT_EQ(read_dirents(bin, prot::io::MAX_BUF).types,
               (std::vector<DirentType>{DirentType::Directory, DirentType::File}));
-    auto const svc = bind(m_svc, ours_io::R_STAR_DIR);
-    auto const services = read_dirents(svc, ours_io::MAX_BUF);
+    auto const svc = bind(m_svc, prot::io::R_STAR_DIR);
+    auto const services = read_dirents(svc, prot::io::MAX_BUF);
     EXPECT_EQ(services.names, (std::vector<std::string>{".", "echo"}));
     EXPECT_EQ(services.types,
               (std::vector<DirentType>{DirentType::Directory, DirentType::Service}));
@@ -425,7 +425,7 @@ TEST_F(IoserviceServer, ReadDirentsListsDotFirstThenNameOrder) {
 
 TEST_F(IoserviceServer, ReadDirentsBufferTooSmall) {
     // An entry is 10 bytes and its name: "." 11, "bin" 13, "config" 16.
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
     EXPECT_EQ(read_dirents(root, 10).status, Status::BufferTooSmall);
     EXPECT_EQ(read_dirents(root, 0).status, Status::BufferTooSmall);
     EXPECT_EQ(read_dirents(root, 11).names, (std::vector<std::string>{"."}));
@@ -441,22 +441,22 @@ TEST_F(IoserviceServer, ReadDirentsBufferTooSmall) {
 
 TEST_F(IoserviceServer, ReadDirentsNeedsEnumerate) {
     auto const root = bind(m_root, Operations::Traverse | Operations::Connect);
-    EXPECT_EQ(read_dirents(root, ours_io::MAX_BUF).status, Status::AccessDenied);
+    EXPECT_EQ(read_dirents(root, prot::io::MAX_BUF).status, Status::AccessDenied);
 }
 
 TEST_F(IoserviceServer, ReadDirentsAboveTheLimitIsOutOfRange) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
-    EXPECT_EQ(read_dirents(root, ours_io::MAX_BUF + 1).status, Status::OutOfRange);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    EXPECT_EQ(read_dirents(root, prot::io::MAX_BUF + 1).status, Status::OutOfRange);
     EXPECT_EQ(read_dirents(root, ~u64{0}).status, Status::OutOfRange);
     // Nothing moved.
-    EXPECT_EQ(read_dirents(root, ours_io::MAX_BUF).names.front(), ".");
+    EXPECT_EQ(read_dirents(root, prot::io::MAX_BUF).names.front(), ".");
 }
 
 // --- Read ----------------------------------------------------------------------
 
 TEST_F(IoserviceServer, ReadMovesTheSeekToTheEnd) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
-    auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    auto const readme = opened(root, "config/readme", prot::io::PERM_READABLE);
     auto const first = read(readme, 5);
     EXPECT_EQ(first.status, Status::Ok);
     EXPECT_EQ(text_of(first.data), "hello");
@@ -468,14 +468,14 @@ TEST_F(IoserviceServer, ReadMovesTheSeekToTheEnd) {
 }
 
 TEST_F(IoserviceServer, ReadAboveTheTransferLimitIsOutOfRange) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
-    auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
-    EXPECT_EQ(read(readme, ours_io::MAX_TRANSFER_SIZE + 1).status, Status::OutOfRange);
-    EXPECT_EQ(text_of(read(readme, ours_io::MAX_TRANSFER_SIZE).data), README);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    auto const readme = opened(root, "config/readme", prot::io::PERM_READABLE);
+    EXPECT_EQ(read(readme, prot::io::MAX_TRANSFER_SIZE + 1).status, Status::OutOfRange);
+    EXPECT_EQ(text_of(read(readme, prot::io::MAX_TRANSFER_SIZE).data), README);
 }
 
 TEST_F(IoserviceServer, ReadNeedsReadBytes) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
     auto const readme = opened(root, "config/readme", Flags::PermGetAttributes);
     EXPECT_EQ(read(readme, 5).status, Status::BadHandle);
 }
@@ -483,7 +483,7 @@ TEST_F(IoserviceServer, ReadNeedsReadBytes) {
 // --- GetBackingMemory --------------------------------------------------------
 
 TEST_F(IoserviceServer, BackingMemoryRightsFollowTheFlags) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
     auto const x = opened(root, "bin/x", Flags::PermReadBytes);
     auto const readable = Rights::Basic | Rights::Map | Rights::GetProperty | Rights::Read;
 
@@ -501,7 +501,7 @@ TEST_F(IoserviceServer, BackingMemoryRightsFollowTheFlags) {
 }
 
 TEST_F(IoserviceServer, BackingMemoryExecuteNeedsTheConnectionsExecute) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
     auto const executable =
         Rights::Basic | Rights::Map | Rights::GetProperty | Rights::Read | Rights::Execute;
     // The flags fsio's spawn sends for an executable (design D12).
@@ -519,8 +519,8 @@ TEST_F(IoserviceServer, BackingMemoryExecuteNeedsTheConnectionsExecute) {
 }
 
 TEST_F(IoserviceServer, BackingMemoryRefusals) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
-    auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
+    auto const readme = opened(root, "config/readme", prot::io::PERM_READABLE);
     EXPECT_EQ(get_backing_memory(readme, VmoFlags::PrivateClone | VmoFlags::SharedBuffer).status,
               Status::InvArgs);
     EXPECT_EQ(get_backing_memory(readme, VmoFlags::Read | VmoFlags::Write).status,
@@ -531,8 +531,8 @@ TEST_F(IoserviceServer, BackingMemoryRefusals) {
 }
 
 TEST_F(IoserviceServer, BackingMemoryPassesTheDuplicateFailureOn) {
-    auto const root = bind(m_root, ours_io::RX_STAR_DIR);
-    auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
+    auto const root = bind(m_root, prot::io::RX_STAR_DIR);
+    auto const readme = opened(root, "config/readme", prot::io::PERM_READABLE);
     duplicates().answer = Status::NoResource;
     auto const reply = get_backing_memory(readme, VmoFlags::Read);
     EXPECT_EQ(reply.status, Status::NoResource);
@@ -542,8 +542,8 @@ TEST_F(IoserviceServer, BackingMemoryPassesTheDuplicateFailureOn) {
 // --- Clone and Close -----------------------------------------------------------
 
 TEST_F(IoserviceServer, CloneKeepsTheRightsAndStartsOver) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
-    auto const readme = opened(root, "config/readme", ours_io::PERM_READABLE);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    auto const readme = opened(root, "config/readme", prot::io::PERM_READABLE);
     EXPECT_EQ(text_of(read(readme, 5).data), "hello");
 
     auto const outcome = clone(readme, OTHER_OBJECT);
@@ -556,19 +556,19 @@ TEST_F(IoserviceServer, CloneKeepsTheRightsAndStartsOver) {
     EXPECT_EQ(text_of(read(readme, 2).data), ", ");
 
     // A directory's clone lists from "." again.
-    EXPECT_EQ(read_dirents(root, ours_io::MAX_BUF).names.size(), 3u);
+    EXPECT_EQ(read_dirents(root, prot::io::MAX_BUF).names.size(), 3u);
     m_server.release(copy);
     auto const root_copy = clone(root, OTHER_OBJECT);
     ASSERT_EQ(root_copy.action, Action::Bind);
-    EXPECT_EQ(held(m_server.rights(root_copy.connection)), ours_io::R_STAR_DIR);
-    EXPECT_EQ(read_dirents(root_copy.connection, ours_io::MAX_BUF).names.front(), ".");
+    EXPECT_EQ(held(m_server.rights(root_copy.connection)), prot::io::R_STAR_DIR);
+    EXPECT_EQ(read_dirents(root_copy.connection, prot::io::MAX_BUF).names.front(), ".");
 }
 
 TEST_F(IoserviceServer, CloseAnswersThenReleases) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
-    auto const outcome = dispatch(root, ours_io::encode_close(m_bytes, {.txid = TXID}));
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    auto const outcome = dispatch(root, prot::io::encode_close(m_bytes, {.txid = TXID}));
     EXPECT_EQ(outcome.action, Action::ReplyAndClose);
-    auto const reply = ours_io::decode_close_reply(outcome.message, TXID);
+    auto const reply = prot::io::decode_close_reply(outcome.message, TXID);
     ASSERT_TRUE(reply.is_ok());
     EXPECT_EQ(reply->status, Status::Ok);
     // The id is stale now, and anything sent on it is dropped.
@@ -577,12 +577,13 @@ TEST_F(IoserviceServer, CloseAnswersThenReleases) {
 }
 
 TEST_F(IoserviceServer, AFullTableRefusesWithNoResource) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
     for (auto count = 1; count < 4; ++count) {
-        bind(m_root, ours_io::R_STAR_DIR);
+        bind(m_root, prot::io::R_STAR_DIR);
     }
-    EXPECT_EQ(m_server.bind(CHANNEL, m_root, ours_io::R_STAR_DIR).unwrap_err(), Status::NoResource);
-    EXPECT_EQ(refused(root, "bin", ours_io::PERM_READABLE), Status::NoResource);
+    EXPECT_EQ(m_server.bind(CHANNEL, m_root, prot::io::R_STAR_DIR).unwrap_err(),
+              Status::NoResource);
+    EXPECT_EQ(refused(root, "bin", prot::io::PERM_READABLE), Status::NoResource);
     auto const cloned = clone(root, OBJECT);
     EXPECT_EQ(cloned.action, Action::Refuse);
     EXPECT_EQ(epitaph(cloned), Status::NoResource);
@@ -590,14 +591,14 @@ TEST_F(IoserviceServer, AFullTableRefusesWithNoResource) {
     // Releasing one frees its slot under a new generation: the old id stays
     // stale even though its slot serves again.
     m_server.release(root);
-    auto const again = bind(m_root, ours_io::R_STAR_DIR);
+    auto const again = bind(m_root, prot::io::R_STAR_DIR);
     EXPECT_EQ(again.index, root.index);
     EXPECT_NE(again.generation, root.generation);
     EXPECT_TRUE(m_server.channel(root).is_none());
 }
 
 TEST_F(IoserviceServer, ARefusedOpenSaysWhatItAskedForAndWhy) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
 
     // The status the epitaph carries, and the path as it was asked for.
     auto const missing = open(root, "bin/nope", Flags::None);
@@ -624,9 +625,9 @@ TEST_F(IoserviceServer, ARefusedOpenSaysWhatItAskedForAndWhy) {
 }
 
 TEST_F(IoserviceServer, ARefusedCloneAsksForNoPath) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
     for (auto count = 1; count < 4; ++count) {
-        bind(m_root, ours_io::R_STAR_DIR);
+        bind(m_root, prot::io::R_STAR_DIR);
     }
     auto const cloned = clone(root, OBJECT);
     ASSERT_EQ(cloned.action, Action::Refuse);
@@ -638,7 +639,7 @@ TEST_F(IoserviceServer, ARefusedCloneAsksForNoPath) {
 // --- Services ------------------------------------------------------------------
 
 TEST_F(IoserviceServer, OpeningAServiceHandsTheChannelBack) {
-    auto const svc = bind(m_svc, ours_io::R_STAR_DIR);
+    auto const svc = bind(m_svc, prot::io::R_STAR_DIR);
     for (auto const flags: {Flags::ProtocolService, Flags::None}) {
         auto const outcome = open(svc, "echo", flags);
         EXPECT_EQ(outcome.action, Action::Connect);
@@ -648,7 +649,7 @@ TEST_F(IoserviceServer, OpeningAServiceHandsTheChannelBack) {
 }
 
 TEST_F(IoserviceServer, AServiceTakesNoOtherFlags) {
-    auto const svc = bind(m_svc, ours_io::R_STAR_DIR);
+    auto const svc = bind(m_svc, prot::io::R_STAR_DIR);
     EXPECT_EQ(refused(svc, "echo", Flags::ProtocolService | Flags::PermConnect), Status::InvArgs);
     EXPECT_EQ(refused(svc, "echo", Flags::ProtocolService | static_cast<Flags>(u64{1} << 62)),
               Status::InvArgs);
@@ -680,15 +681,15 @@ TEST_F(IoserviceServer, MalformedMessagesDropTheConnection) {
     };
 
     auto const read_bytes =
-        bytes_of_message(ours_io::encode_read(m_bytes, {.txid = TXID, .count = 1}));
+        bytes_of_message(prot::io::encode_read(m_bytes, {.txid = TXID, .count = 1}));
     auto reply_bytes = read_bytes;
     reply_bytes[4] = u8{1}; // the direction: ToClient
     auto unknown_bytes = read_bytes;
     wire::store(std::span{unknown_bytes}, 8, u64{0x1234'5678});
-    auto const open_bytes = bytes_of_message(ours_io::encode_open(
+    auto const open_bytes = bytes_of_message(prot::io::encode_open(
         m_bytes, m_handles, {.flags = Flags::None, .path = "x", .object = OBJECT}));
     auto const dirents_bytes =
-        bytes_of_message(ours_io::encode_read_dirents(m_bytes, {.txid = TXID, .max_bytes = 100}));
+        bytes_of_message(prot::io::encode_read_dirents(m_bytes, {.txid = TXID, .max_bytes = 100}));
     auto no_txid_bytes = dirents_bytes;
     wire::store(std::span{no_txid_bytes}, 0, u32{0});
 
@@ -704,10 +705,10 @@ TEST_F(IoserviceServer, MalformedMessagesDropTheConnection) {
     };
 
     for (auto const &test: cases) {
-        auto const root = bind(m_root, ours_io::RX_STAR_DIR | Operations::Execute);
+        auto const root = bind(m_root, prot::io::RX_STAR_DIR | Operations::Execute);
         auto connection = root;
         if (test.node != m_root) {
-            connection = opened(root, "config/readme", ours_io::PERM_READABLE);
+            connection = opened(root, "config/readme", prot::io::PERM_READABLE);
         }
         auto const outcome = m_server.dispatch(
             connection, wire::Message{.bytes = test.bytes, .handles = test.handles}, m_out);
@@ -718,20 +719,20 @@ TEST_F(IoserviceServer, MalformedMessagesDropTheConnection) {
 }
 
 TEST_F(IoserviceServer, AStaleIdIsDropped) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
     m_server.release(root);
     EXPECT_EQ(read_dirents_outcome(root), Action::Drop);
     EXPECT_EQ(read_dirents_outcome(ConnectionId{.index = 99, .generation = 0}), Action::Drop);
     // Releasing it again changes nothing.
     m_server.release(root);
-    auto const next = bind(m_root, ours_io::R_STAR_DIR);
+    auto const next = bind(m_root, prot::io::R_STAR_DIR);
     EXPECT_EQ(next.generation, root.generation + 1);
 }
 
 TEST_F(IoserviceServer, GenerationZeroNamesNoConnection) {
     // A slot's first connection has generation 1, so an id nobody filled in,
     // {0, 0}, does not name the connection in slot 0 even while it is live.
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
     EXPECT_EQ(root.index, 0U);
     EXPECT_EQ(root.generation, ioservice::FIRST_GENERATION);
     EXPECT_TRUE(m_server.channel(ConnectionId{}).is_none());
@@ -743,28 +744,28 @@ TEST_F(IoserviceServer, GenerationZeroNamesNoConnection) {
 // --- bind ------------------------------------------------------------------------
 
 TEST_F(IoserviceServer, BindRefusals) {
-    EXPECT_EQ(m_server.bind(Uandle::Invalid, m_root, ours_io::R_STAR_DIR).unwrap_err(),
+    EXPECT_EQ(m_server.bind(Uandle::Invalid, m_root, prot::io::R_STAR_DIR).unwrap_err(),
               Status::InvArgs);
-    EXPECT_EQ(m_server.bind(CHANNEL, NodeId{15}, ours_io::R_STAR_DIR).unwrap_err(),
+    EXPECT_EQ(m_server.bind(CHANNEL, NodeId{15}, prot::io::R_STAR_DIR).unwrap_err(),
               Status::InvArgs);
     EXPECT_EQ(m_server.bind(CHANNEL, m_root, static_cast<Operations>(u64{0x200})).unwrap_err(),
               Status::InvArgs);
-    EXPECT_EQ(m_server.bind(CHANNEL, m_readme, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
-    EXPECT_EQ(m_server.bind(CHANNEL, m_echo, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_server.bind(CHANNEL, m_readme, prot::io::R_STAR_DIR).unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_server.bind(CHANNEL, m_echo, prot::io::R_STAR_DIR).unwrap_err(), Status::NotDir);
     // A remote entry is not one of this server's directories either: what it
     // stands for is another server's to bind.
-    EXPECT_EQ(m_server.bind(CHANNEL, m_boot, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_server.bind(CHANNEL, m_boot, prot::io::R_STAR_DIR).unwrap_err(), Status::NotDir);
 }
 
 // --- Open: forwarding through a remote entry --------------------------------------
 
 TEST_F(IoserviceServer, OpenThroughARemoteEntryForwardsTheRestOfThePath) {
-    auto const mount = bind(m_mount, ours_io::RX_STAR_DIR);
+    auto const mount = bind(m_mount, prot::io::RX_STAR_DIR);
     auto const outcome =
         open(mount, "mnt/boot/config/readme", Flags::PermReadBytes | Flags::PermGetAttributes);
     EXPECT_EQ(outcome.action, Action::Forward);
     EXPECT_EQ(outcome.forward_channel, REMOTE);
-    auto const forwarded = ours_io::decode_open(outcome.message);
+    auto const forwarded = prot::io::decode_open(outcome.message);
     ASSERT_TRUE(forwarded.is_ok());
     EXPECT_EQ(forwarded->path, "config/readme");
     EXPECT_EQ(forwarded->flags, Flags::PermReadBytes | Flags::PermGetAttributes);
@@ -772,11 +773,11 @@ TEST_F(IoserviceServer, OpenThroughARemoteEntryForwardsTheRestOfThePath) {
 }
 
 TEST_F(IoserviceServer, OpenOfTheMountPointItselfForwardsDot) {
-    auto const mount = bind(m_mount, ours_io::RX_STAR_DIR);
+    auto const mount = bind(m_mount, prot::io::RX_STAR_DIR);
     auto const outcome = open(mount, "mnt/boot", Flags::PermReadBytes);
     EXPECT_EQ(outcome.action, Action::Forward);
     EXPECT_EQ(outcome.forward_channel, REMOTE);
-    auto const forwarded = ours_io::decode_open(outcome.message);
+    auto const forwarded = prot::io::decode_open(outcome.message);
     ASSERT_TRUE(forwarded.is_ok());
     EXPECT_EQ(forwarded->path, ".");
     EXPECT_EQ(forwarded->object, OBJECT);
@@ -786,11 +787,11 @@ TEST_F(IoserviceServer, OpenThroughARemoteEntryCarriesCreationFlags) {
     // A local target refuses to create (OpenRefusesToCreate); a remote one
     // is for the server that owns the subtree to judge, so the flags pass
     // through unchanged.
-    auto const mount = bind(m_mount, ours_io::RW_STAR_DIR);
-    auto const flags = ours_io::PERM_WRITABLE | Flags::FlagMaybeCreate;
+    auto const mount = bind(m_mount, prot::io::RW_STAR_DIR);
+    auto const flags = prot::io::PERM_WRITABLE | Flags::FlagMaybeCreate;
     auto const outcome = open(mount, "mnt/boot/new", flags);
     EXPECT_EQ(outcome.action, Action::Forward);
-    auto const forwarded = ours_io::decode_open(outcome.message);
+    auto const forwarded = prot::io::decode_open(outcome.message);
     ASSERT_TRUE(forwarded.is_ok());
     EXPECT_EQ(forwarded->flags, flags);
 }
@@ -798,27 +799,27 @@ TEST_F(IoserviceServer, OpenThroughARemoteEntryCarriesCreationFlags) {
 TEST_F(IoserviceServer, OpenThroughARemoteEntryStillChecksRightsFirst) {
     // Check 3 runs before anything is forwarded: a mount point is no way
     // around a connection's ceiling.
-    auto const mount = bind(m_mount, ours_io::R_STAR_DIR);
+    auto const mount = bind(m_mount, prot::io::R_STAR_DIR);
     EXPECT_EQ(refused(mount, "mnt/boot/new", Flags::PermWriteBytes), Status::AccessDenied);
 }
 
 TEST_F(IoserviceServer, LocalCreationIsStillRefusedBesideTheMount) {
-    auto const mount = bind(m_mount, ours_io::RW_STAR_DIR);
-    EXPECT_EQ(refused(mount, "mnt/new", ours_io::PERM_WRITABLE | Flags::FlagMaybeCreate),
+    auto const mount = bind(m_mount, prot::io::RW_STAR_DIR);
+    EXPECT_EQ(refused(mount, "mnt/new", prot::io::PERM_WRITABLE | Flags::FlagMaybeCreate),
               Status::NotSupported);
 }
 
 TEST_F(IoserviceServer, AMountPointListsAsADirectory) {
-    auto const mount = bind(m_mount, ours_io::R_STAR_DIR);
+    auto const mount = bind(m_mount, prot::io::R_STAR_DIR);
     auto const mnt = opened(mount, "mnt", Flags::PermEnumerate);
-    auto const listing = read_dirents(mnt, ours_io::MAX_BUF);
+    auto const listing = read_dirents(mnt, prot::io::MAX_BUF);
     EXPECT_EQ(listing.status, Status::Ok);
     // "." first, then the mount point standing in for the directory the
     // remote serves.
     ASSERT_EQ(listing.names.size(), 2U);
     EXPECT_EQ(listing.names[0], ".");
     EXPECT_EQ(listing.names[1], "boot");
-    EXPECT_EQ(listing.types[1], ours_io::DirentType::Directory);
+    EXPECT_EQ(listing.types[1], prot::io::DirentType::Directory);
 }
 // --- Subtree nodes -------------------------------------------------------------------
 
@@ -859,30 +860,30 @@ class IoserviceServerSubtree: public IoserviceServer {
 };
 
 TEST_F(IoserviceServerSubtree, AnOpenThatWalksToASubtreeNodeIsHandedToTheProgram) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
 
     // The value, the rest of the path after the node, and the channel; and
     // the node itself is where the walk ended, so "." is its rest.
-    EXPECT_EQ(handed_over(root, "mnt/fs", ours_io::PERM_READABLE).rest, ".");
-    EXPECT_EQ(handed_over(root, "mnt/fs/a", ours_io::PERM_READABLE).rest, "a");
-    EXPECT_EQ(handed_over(root, "mnt/fs/a/b/c", ours_io::PERM_READABLE).rest, "a/b/c");
+    EXPECT_EQ(handed_over(root, "mnt/fs", prot::io::PERM_READABLE).rest, ".");
+    EXPECT_EQ(handed_over(root, "mnt/fs/a", prot::io::PERM_READABLE).rest, "a");
+    EXPECT_EQ(handed_over(root, "mnt/fs/a/b/c", prot::io::PERM_READABLE).rest, "a/b/c");
 
     // From a connection further down, the path starts there.
-    auto const mnt = opened(root, "mnt", Flags::ProtocolDirectory | ours_io::PERM_READABLE);
-    EXPECT_EQ(handed_over(mnt, "fs/x/y", ours_io::PERM_READABLE).rest, "x/y");
-    EXPECT_EQ(handed_over(mnt, "fs", ours_io::PERM_READABLE).rest, ".");
+    auto const mnt = opened(root, "mnt", Flags::ProtocolDirectory | prot::io::PERM_READABLE);
+    EXPECT_EQ(handed_over(mnt, "fs/x/y", prot::io::PERM_READABLE).rest, "x/y");
+    EXPECT_EQ(handed_over(mnt, "fs", prot::io::PERM_READABLE).rest, ".");
 }
 
 TEST_F(IoserviceServerSubtree, TheProgramGetsTheFlagsAsTheClientSentThem) {
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
     // Whatever the client asked for, within what the connection holds, is
     // passed on whole: the protocol bits the node would not judge, the file
     // flags that a directory refuses, a bit nobody defines. The flags are the
     // program's tree's to judge, for what it is.
     for (auto const flags: {
              Flags::None,
-             ours_io::PERM_READABLE,
-             Flags::ProtocolDirectory | ours_io::PERM_READABLE,
+             prot::io::PERM_READABLE,
+             Flags::ProtocolDirectory | prot::io::PERM_READABLE,
              Flags::ProtocolFile | Flags::PermReadBytes,
              Flags::ProtocolSymlink,
              Flags::ProtocolService,
@@ -897,18 +898,18 @@ TEST_F(IoserviceServerSubtree, TheProgramGetsTheFlagsAsTheClientSentThem) {
 TEST_F(IoserviceServerSubtree, AnOpenOfASubtreeNodeMakesNoConnection) {
     // Four slots, one taken by |root|. Were an Open to take one for the
     // channel it hands over, the fourth would find the table full.
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
     for (auto count = 0; count < 12; ++count) {
-        EXPECT_EQ(handed_over(root, "mnt/fs/x", ours_io::PERM_READABLE).action, Action::Subtree);
+        EXPECT_EQ(handed_over(root, "mnt/fs/x", prot::io::PERM_READABLE).action, Action::Subtree);
     }
-    bind(m_root, ours_io::R_STAR_DIR);
-    bind(m_root, ours_io::R_STAR_DIR);
-    bind(m_root, ours_io::R_STAR_DIR);
+    bind(m_root, prot::io::R_STAR_DIR);
+    bind(m_root, prot::io::R_STAR_DIR);
+    bind(m_root, prot::io::R_STAR_DIR);
     // The table is now full of connections that were bound, and an Open of a
     // directory finds it so; the Subtree Open still reaches the program,
     // since it asks for no slot.
-    EXPECT_EQ(refused(root, "mnt", ours_io::PERM_READABLE), Status::NoResource);
-    EXPECT_EQ(handed_over(root, "mnt/fs/x", ours_io::PERM_READABLE).action, Action::Subtree);
+    EXPECT_EQ(refused(root, "mnt", prot::io::PERM_READABLE), Status::NoResource);
+    EXPECT_EQ(handed_over(root, "mnt/fs/x", prot::io::PERM_READABLE).action, Action::Subtree);
 }
 
 TEST_F(IoserviceServerSubtree, TheConnectionsOwnChecksRunBeforeTheProgramIsAsked) {
@@ -922,47 +923,47 @@ TEST_F(IoserviceServerSubtree, TheConnectionsOwnChecksRunBeforeTheProgramIsAsked
         Flags flags;
         Status expected;
     };
-    constexpr auto SERVED = ours_io::PERM_READABLE;
+    constexpr auto SERVED = prot::io::PERM_READABLE;
     for (auto const &c: {
              // 1. The path's syntax, whatever the node would have been.
-             Case{"a leading slash", ours_io::R_STAR_DIR, "/mnt/fs/x", SERVED, Status::BadPath},
-             Case{"a dot-dot after the node", ours_io::R_STAR_DIR, "mnt/fs/../x", SERVED,
+             Case{"a leading slash", prot::io::R_STAR_DIR, "/mnt/fs/x", SERVED, Status::BadPath},
+             Case{"a dot-dot after the node", prot::io::R_STAR_DIR, "mnt/fs/../x", SERVED,
                   Status::BadPath},
-             Case{"an empty segment after the node", ours_io::R_STAR_DIR, "mnt/fs//x", SERVED,
+             Case{"an empty segment after the node", prot::io::R_STAR_DIR, "mnt/fs//x", SERVED,
                   Status::BadPath},
-             Case{"a trailing slash", ours_io::R_STAR_DIR, "mnt/fs/", SERVED, Status::BadPath},
-             Case{"an empty path", ours_io::R_STAR_DIR, "", SERVED, Status::BadPath},
+             Case{"a trailing slash", prot::io::R_STAR_DIR, "mnt/fs/", SERVED, Status::BadPath},
+             Case{"an empty path", prot::io::R_STAR_DIR, "", SERVED, Status::BadPath},
              // 2. Going below the directory needs TRAVERSE.
              Case{"no traverse",
                   Operations::Connect | Operations::Enumerate | Operations::ReadBytes, "mnt/fs/x",
                   Flags::PermReadBytes, Status::AccessDenied},
              // 3. Rights are a subset of the connection's.
-             Case{"write on a reader", ours_io::R_STAR_DIR, "mnt/fs/x",
+             Case{"write on a reader", prot::io::R_STAR_DIR, "mnt/fs/x",
                   Flags::PermReadBytes | Flags::PermWriteBytes, Status::AccessDenied},
-             Case{"modify on a reader", ours_io::R_STAR_DIR, "mnt/fs/x", Flags::PermModifyDirectory,
-                  Status::AccessDenied},
-             Case{"execute on a reader", ours_io::R_STAR_DIR, "mnt/fs", Flags::PermExecute,
+             Case{"modify on a reader", prot::io::R_STAR_DIR, "mnt/fs/x",
+                  Flags::PermModifyDirectory, Status::AccessDenied},
+             Case{"execute on a reader", prot::io::R_STAR_DIR, "mnt/fs", Flags::PermExecute,
                   Status::AccessDenied},
              // 4. Connecting needs CONNECT.
              Case{"service without connect",
                   Operations::Enumerate | Operations::Traverse | Operations::ReadBytes, "mnt/fs/x",
                   Flags::ProtocolService, Status::AccessDenied},
              // 6. Creating, and what the design cut.
-             Case{"create without modify", ours_io::R_STAR_DIR, "mnt/fs/new",
+             Case{"create without modify", prot::io::R_STAR_DIR, "mnt/fs/new",
                   Flags::FlagMaybeCreate | Flags::ProtocolFile, Status::AccessDenied},
-             Case{"create with modify", ours_io::R_STAR_DIR | Operations::ModifyDirectory,
+             Case{"create with modify", prot::io::R_STAR_DIR | Operations::ModifyDirectory,
                   "mnt/fs/new", Flags::FlagMustCreate | Flags::ProtocolFile | Flags::PermReadBytes,
                   Status::NotSupported},
-             Case{"a node-only connection", ours_io::R_STAR_DIR, "mnt/fs/x", Flags::ProtocolNode,
+             Case{"a node-only connection", prot::io::R_STAR_DIR, "mnt/fs/x", Flags::ProtocolNode,
                   Status::NotSupported},
-             Case{"a representation event", ours_io::R_STAR_DIR, "mnt/fs",
+             Case{"a representation event", prot::io::R_STAR_DIR, "mnt/fs",
                   Flags::FlagSendRepresentation, Status::NotSupported},
              // 8. The walk to the node.
-             Case{"a name missing before the node", ours_io::R_STAR_DIR, "nope/fs/x", SERVED,
+             Case{"a name missing before the node", prot::io::R_STAR_DIR, "nope/fs/x", SERVED,
                   Status::NotFound},
-             Case{"a name missing next to the node", ours_io::R_STAR_DIR, "mnt/nope/x", SERVED,
+             Case{"a name missing next to the node", prot::io::R_STAR_DIR, "mnt/nope/x", SERVED,
                   Status::NotFound},
-             Case{"a file before the node", ours_io::R_STAR_DIR, "mnt/note/fs/x", SERVED,
+             Case{"a file before the node", prot::io::R_STAR_DIR, "mnt/note/fs/x", SERVED,
                   Status::NotDir},
          }) {
         auto const connection = bind(m_root, c.held);
@@ -974,7 +975,7 @@ TEST_F(IoserviceServerSubtree, TheConnectionsOwnChecksRunBeforeTheProgramIsAsked
 TEST_F(IoserviceServerSubtree, ARefusalIsReportedForTheWholePathAsAskedFor) {
     // The Open that never reached the program says what it asked for, as any
     // refused Open does.
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
     auto const outcome = open(root, "mnt/fs/x", Flags::PermWriteBytes);
     ASSERT_EQ(outcome.action, Action::Refuse);
     EXPECT_EQ(outcome.status, Status::AccessDenied);
@@ -983,25 +984,25 @@ TEST_F(IoserviceServerSubtree, ARefusalIsReportedForTheWholePathAsAskedFor) {
 }
 
 TEST_F(IoserviceServerSubtree, ASubtreeNodeIsListedAsADirectory) {
-    auto const mnt = bind(m_mnt, ours_io::R_STAR_DIR);
-    auto const listing = read_dirents(mnt, ours_io::MAX_BUF);
+    auto const mnt = bind(m_mnt, prot::io::R_STAR_DIR);
+    auto const listing = read_dirents(mnt, prot::io::MAX_BUF);
     EXPECT_EQ(listing.status, Status::Ok);
     EXPECT_EQ(listing.names, (std::vector<std::string>{".", "fs", "note"}));
-    EXPECT_EQ(listing.types, (std::vector<ours_io::DirentType>{ours_io::DirentType::Directory,
-                                                               ours_io::DirentType::Directory,
-                                                               ours_io::DirentType::File}));
+    EXPECT_EQ(listing.types, (std::vector<prot::io::DirentType>{prot::io::DirentType::Directory,
+                                                                prot::io::DirentType::Directory,
+                                                                prot::io::DirentType::File}));
 }
 
 TEST_F(IoserviceServerSubtree, NoConnectionIsBoundToASubtreeNode) {
-    EXPECT_EQ(m_server.bind(CHANNEL, m_fs, ours_io::R_STAR_DIR).unwrap_err(), Status::NotDir);
+    EXPECT_EQ(m_server.bind(CHANNEL, m_fs, prot::io::R_STAR_DIR).unwrap_err(), Status::NotDir);
 }
 
 TEST_F(IoserviceServerSubtree, ThePathOfAnOpenThatMissesTheNodeIsNotHandedOver) {
     // A sibling of the node, and a file next to it, are this tree's own.
-    auto const root = bind(m_root, ours_io::R_STAR_DIR);
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
     auto const note = open(root, "mnt/note", Flags::ProtocolFile | Flags::PermReadBytes);
     EXPECT_EQ(note.action, Action::Bind);
-    auto const mnt = open(root, "mnt", Flags::ProtocolDirectory | ours_io::PERM_READABLE);
+    auto const mnt = open(root, "mnt", Flags::ProtocolDirectory | prot::io::PERM_READABLE);
     EXPECT_EQ(mnt.action, Action::Bind);
 }
 } // namespace

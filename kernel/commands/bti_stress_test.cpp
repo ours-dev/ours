@@ -72,7 +72,7 @@ namespace {
     struct Slot {
         object::KernelHandle<object::PmtDispatcher> handle;
         ustl::Arc<object::PmtDispatcher> token;
-        PhysAddr expected = 0;
+        PhysAddr expected{};
     };
 
     enum class Role : u32 {
@@ -123,7 +123,7 @@ namespace {
     auto phys_of(mm::VmObjectPaged &vmo, usize const index) -> PhysAddr {
         auto pa = PhysAddr{0};
         if (vmo.lookup_contiguous(index * P, P, &pa) != Status::Ok) {
-            return 0;
+            return PhysAddr{0};
         }
         return pa;
     }
@@ -168,7 +168,8 @@ namespace {
                         object::PmtDispatcher::Address where{};
                         auto const status = slot.token->query_address(0, P, where);
                         if (status == Status::Ok) {
-                            if (where.address != slot.expected || where.size != P) {
+                            if (where.address != std::to_underlying(slot.expected) ||
+                                where.size != P) {
                                 state.violations.fetch_add(1, std::memory_order_relaxed);
                             }
                         } else if (status != Status::BadState) {

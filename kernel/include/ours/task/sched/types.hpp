@@ -84,7 +84,6 @@ USTL_ENABLE_ENUM_BITMASK(UnparkOptions);
 
 class RunQueue;
 class Scheduler;
-class ISchedule;
 class Fair;
 class RoundRobin;
 

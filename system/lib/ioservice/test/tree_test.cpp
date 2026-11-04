@@ -13,7 +13,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 
 namespace {
 using ioservice::NodeId;
@@ -55,7 +55,7 @@ TEST(IoserviceName, Valid) {
     for (auto const name: {"a", "bin", "...", ".hidden", "a b", "\xff"}) {
         EXPECT_TRUE(ioservice::is_valid_name(name)) << name;
     }
-    EXPECT_TRUE(ioservice::is_valid_name(std::string(ours_io::MAX_NAME_LENGTH, 'n')));
+    EXPECT_TRUE(ioservice::is_valid_name(std::string(prot::io::MAX_NAME_LENGTH, 'n')));
 }
 
 TEST(IoserviceName, Invalid) {
@@ -63,7 +63,7 @@ TEST(IoserviceName, Invalid) {
         EXPECT_FALSE(ioservice::is_valid_name(name)) << name;
     }
     EXPECT_FALSE(ioservice::is_valid_name(std::string_view{"a\0b", 3}));
-    EXPECT_FALSE(ioservice::is_valid_name(std::string(ours_io::MAX_NAME_LENGTH + 1, 'n')));
+    EXPECT_FALSE(ioservice::is_valid_name(std::string(prot::io::MAX_NAME_LENGTH + 1, 'n')));
 }
 
 TEST(IoservicePath, Valid) {
@@ -73,11 +73,11 @@ TEST(IoservicePath, Valid) {
     // MAX_PATH_LENGTH bytes, every segment a valid name.
     auto longest = std::string{};
     // Room is left for one more byte after the last '/'.
-    while (longest.size() + 3 <= ours_io::MAX_PATH_LENGTH) {
+    while (longest.size() + 3 <= prot::io::MAX_PATH_LENGTH) {
         longest += "a/";
     }
-    longest += std::string(ours_io::MAX_PATH_LENGTH - longest.size(), 'a');
-    ASSERT_EQ(longest.size(), ours_io::MAX_PATH_LENGTH);
+    longest += std::string(prot::io::MAX_PATH_LENGTH - longest.size(), 'a');
+    ASSERT_EQ(longest.size(), prot::io::MAX_PATH_LENGTH);
     EXPECT_TRUE(ioservice::is_valid_path(longest));
     EXPECT_FALSE(ioservice::is_valid_path(longest + "a"));
 }

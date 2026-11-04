@@ -154,8 +154,18 @@ component_manifest("root.cm") {
       startup = "eager"
     },
     {
+      name = "device-registry"
+      manifest = "//system/service/device-registry:device-registry.cm"
+      startup = "eager"
+    },
+    {
       name = "virtio-blk"
       manifest = "//system/driver/virtio-blk:virtio-blk.cm"
+      startup = "eager"
+    },
+    {
+      name = "nvme"
+      manifest = "//system/driver/nvme:nvme.cm"
       startup = "eager"
     },
   ]
@@ -311,26 +321,30 @@ component_manifest("root.cm") {
       },
 
       # The root of the physical address space, to routing_checks -- it reads
-      # what the resource is and probes the host bridge -- and to the block
-      # device driver, whose windows onto its device come through it.
+      # what the resource is and probes the host bridge -- to the block
+      # device driver, whose windows onto its device come through it, and to
+      # the NVMe driver, whose register file is an MMIO BAR.
       {
         protocol = [ "ours.resource.Mmio" ]
         from = "parent"
         to = [
           "#routing_checks",
           "#virtio-blk",
+          "#nvme",
         ]
       },
 
       # The IOMMU resource, to routing_checks -- which makes an IOMMU, a BTI
       # and pins with it, as a bus driver would -- and to the block device
-      # driver, whose rings and buffers the device reaches through its pins.
+      # driver, whose rings and buffers the device reaches through its pins,
+      # and to the NVMe driver, whose queues are pinned the same way.
       {
         protocol = [ "ours.resource.Iommu" ]
         from = "parent"
         to = [
           "#routing_checks",
           "#virtio-blk",
+          "#nvme",
         ]
       },
 
@@ -341,6 +355,39 @@ component_manifest("root.cm") {
         protocol = "ours.block.Block"
         from = "#virtio-blk"
         to = [ "#routing_checks" ]
+      },
+
+      # The NVMe driver's protocol, the same one the virtio driver speaks,
+      # under the name that says which disk answers: both components expose
+      # ours.block.Block, and a root offer names each connection's device.
+      {
+        protocol = "ours.block.Block"
+        from = "#nvme"
+        to = [ "#routing_checks" ]
+        as = "ours.block.Nvme"
+      },
+
+      # The device registry's publish protocol, to the drivers that put their
+      # devices in its tree. Publishing is the one power it grants: naming a
+      # class and a number, and handing over the server end of a directory.
+      {
+        protocol = "ours.dev.Registry"
+        from = "#device-registry"
+        to = [
+          "#virtio-blk",
+          "#nvme",
+          "#routing_checks",
+        ]
+      },
+
+      # The device tree itself, to routing_checks, which enumerates it and
+      # opens the leaves it finds: r* is enumerate and read, what a tree walk
+      # needs, and no more.
+      {
+        directory = "dev"
+        from = "#device-registry"
+        to = [ "#routing_checks" ]
+        rights = [ "r*" ]
       },
 
       # The machine's ACPI tables, to the route service, which answers from
@@ -357,14 +404,17 @@ component_manifest("root.cm") {
 
       # The route service's protocol, from the child that exposes it, to
       # routing_checks, which asks it every ISA number and the ECAM window and
-      # checks the answers against what QEMU's tables say, and to pc-ps2, which
-      # asks it which GSI the keyboard's ISA IRQ arrives on.
+      # checks the answers against what QEMU's tables say, to pc-ps2, which
+      # asks it which GSI the keyboard's ISA IRQ arrives on, and to
+      # virtio-blk, which asks it where the ECAM window is.
       {
         protocol = [ "ours.acpi.Route" ]
         from = "#acpi-route"
         to = [
           "#routing_checks",
           "#pc-ps2",
+          "#virtio-blk",
+          "#nvme",
         ]
       },
 

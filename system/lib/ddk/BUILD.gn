@@ -1,0 +1,38 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# The runtime helpers every userspace driver restates by hand: the resource
+# ladder as an object whose destructor unwinds, startup handles answered with
+# a line and a status, the MMIO window mapped and unmapped, the DMA chain
+# torn down in the order that keeps the kernel from quarantining what was
+# pinned, and the interrupt idiom map -> create -> close-the-root. The
+# alignment rule: helpers consume handles their caller holds; only Resources
+# acquires, through a getter a host test can replace.
+source_set("ddk") {
+  sources = [ "src/ddk.cpp" ]
+  public_deps = [ ":headers" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/ddk/ddk.hpp" ]
+  public_deps = [
+    "//system/lib/loop:headers",
+    "//system/lib/ort:headers",
+    "//system/lib/protocols",
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [ "test:ddk($host_toolchain)" ]
+}

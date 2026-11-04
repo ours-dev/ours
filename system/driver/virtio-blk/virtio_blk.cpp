@@ -65,15 +65,20 @@
 #include <cstdint>
 
 #include <block_server/block_server.hpp>
+#include <ddk/ddk.hpp>
+#include <fsio/fsio.hpp>
 #include <ioservice/outgoing.hpp>
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
-#include <ours_block/ours_block.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/acpi_client.hpp>
+#include <prot/block.hpp>
+#include <prot/dev.hpp>
+#include <prot/dev_client.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 #include <server/server.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
@@ -83,14 +88,7 @@ using ours::Signals;
 using ours::Status;
 using ours::Uandle;
 
-/// The ECAM base on q35 with OVMF (SeaBIOS would be 0xB0000000). Userspace
-/// cannot read ACPI's MCFG table, so the firmware's choice is a fact of the
-/// image, spelled here and wrong nowhere else.
-constexpr auto ECAM_BASE = ours::PhysAddr{0xE000'0000};
-
-/// One bus of configuration space, and the registers the enumeration reads,
-/// in bytes from a function's base.
-constexpr auto BUS_BYTES = usize{1 << 20};
+/// The registers the enumeration reads, in bytes from a function's base.
 constexpr auto CFG_VENDOR_ID = usize{0x00};
 constexpr auto CFG_DEVICE_ID = usize{0x02};
 constexpr auto CFG_BAR_0 = usize{0x10};
@@ -155,7 +153,7 @@ constexpr auto MAX_INFLIGHT = usize{1};
 constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS;
 
 static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
-static_assert(DATA_OFFSET + ours_block::MAX_READ_BLOCKS * SECTOR + 1 <= REGION_BYTES);
+static_assert(DATA_OFFSET + prot::block::MAX_READ_BLOCKS * SECTOR + 1 <= REGION_BYTES);
 
 /// Configuration space as this driver sees it: a mapped window plus the
 /// offset of one function in it.
@@ -182,24 +180,6 @@ auto to_function_offset(u8 const device) -> usize {
     return usize{device} << 15;
 }
 
-/// Maps [paddr, paddr + size) into this process with the MmIo root, through a
-/// physical VMO and the startup VMA. Uncached, as every mapping of a physical
-/// VMO is.
-auto map_mmio(Uandle const vma, Uandle const mmio_resource, ours::PhysAddr const paddr,
-              usize const size, ours::VirtAddr *out) -> Status {
-    auto window = Uandle::Invalid;
-    if (auto const status = ours::vmo_create_physical(mmio_resource, paddr, size, &window);
-        status != Status::Ok) {
-        return status;
-    }
-    auto const mapped = ours::vma_map(vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite,
-                                      0, window, 0, size, out);
-    // The mapping holds no reference to the VMO once made, so the handle goes
-    // either way: the window's lifetime is the mapping's now.
-    auto _ = ours::handle_close(window);
-    return mapped;
-}
-
 /// The legacy registers, at |base| in this process's I/O space. One field
 /// each, at one offset, with one width -- the shape the modern common config
 /// lacks on this build.
@@ -220,7 +200,7 @@ class LegacyRegs final {
 
     /// QUEUE_PFN: the ring's physical address, named by page frame.
     auto set_queue_pfn(ours::PhysAddr const paddr) const -> void {
-        out32(0x08, static_cast<u32>(paddr >> 12));
+        out32(0x08, static_cast<u32>(std::to_underlying(paddr) >> 12));
     }
 
     /// QUEUE_NUM: the depth the device runs this queue at, read as its
@@ -371,14 +351,14 @@ class Device final {
             *reinterpret_cast<volatile u16 *>(bytes + index * 16 + field) = value;
         };
         // desc[0]: the header, read by the device, chained to desc[1].
-        put64(0, 0, buf_base);
+        put64(0, 0, std::to_underlying(buf_base));
         put32(0, 8, HEADER);
         put16(0, 12, DESC_NEXT);
         put16(0, 14, 1);
         // desc[1]: the blocks, chained to desc[2]. A write's data flows
         // toward the device, so the WRITE flag -- what the device writes --
         // is on only for a read.
-        put64(1, 0, buf_base + HEADER);
+        put64(1, 0, std::to_underlying(buf_base + HEADER));
         put32(1, 8, static_cast<u32>(count * SECTOR));
         put16(1, 12, DESC_NEXT | (write ? u16{0} : DESC_WRITE));
         put16(1, 14, 2);
@@ -387,7 +367,7 @@ class Device final {
         // drop the HEADER and the device writes the status one header's
         // width into the data's tail, and the byte read back at the true
         // status slot is whatever the region held before.
-        put64(2, 0, buf_base + HEADER + count * SECTOR);
+        put64(2, 0, std::to_underlying(buf_base + HEADER + count * SECTOR));
         put32(2, 8, 1);
         put16(2, 12, DESC_WRITE);
         put16(2, 14, 0);
@@ -471,7 +451,7 @@ class VirtioBlockServer final
     /// the geometry is what setup read from the device.
     [[nodiscard]]
     auto geometry() const -> block_server::Geometry {
-        return {.block_size = ours_block::BLOCK_SIZE, .blocks = m_device->blocks()};
+        return {.block_size = prot::block::BLOCK_SIZE, .blocks = m_device->blocks()};
     }
 
     /// The library's hand-off: run the parked request against the device,
@@ -518,59 +498,72 @@ constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 } // namespace
 
 auto main(int, char **) -> int {
-    auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
-    if (vma == Uandle::Invalid) {
-        auto _ = ort::debug_line("virtio-blk: started without VmaRoot");
+    // The route service's client connects through fsio, so the namespace is
+    // installed first.
+    if (auto const installed = fsio::install(); installed != Status::Ok) {
+        auto _ = ort::debug_line(
+            {"virtio-blk: cannot install its namespace: ", ours::to_string(installed)});
         return 1;
     }
-    auto const directory_request = ort::take_startup_handle(ours::HandleType::DirectoryRequest, 0);
-    if (directory_request == Uandle::Invalid) {
-        auto _ = ort::debug_line("virtio-blk: started without a DirectoryRequest handle");
+
+    // Every root this driver asks for, with the ladder's destructor closing
+    // whatever is still held on any early return below.
+    ddk::Resources resources;
+
+    auto const vma = ddk::startup_handle(ours::HandleType::VmaRoot, "VmaRoot");
+    if (vma.is_err()) {
         return 1;
     }
-    auto const mmio_resource = ours_resource::get(ours_resource::MMIO_PROTOCOL);
+    auto const directory_request =
+        ddk::startup_handle(ours::HandleType::DirectoryRequest, "a DirectoryRequest handle");
+    if (directory_request.is_err()) {
+        return 1;
+    }
+
+    auto const mmio_resource = resources.take(ddk::Kind::Mmio);
     if (mmio_resource.is_err()) {
         auto _ = ort::debug_line(
             {"virtio-blk: no MmIo resource: ", ours::to_string(mmio_resource.unwrap_err())});
         return 1;
     }
-    auto const ioport_resource = ours_resource::get(ours_resource::IOPORT_PROTOCOL);
+    auto const ioport_resource = resources.take(ddk::Kind::Ioport);
     if (ioport_resource.is_err()) {
         auto _ = ort::debug_line(
             {"virtio-blk: no Ioport resource: ", ours::to_string(ioport_resource.unwrap_err())});
-        auto _ = ours::handle_close(mmio_resource.unwrap());
         return 1;
     }
-    auto const iommu_resource = ours_resource::get(ours_resource::IOMMU_PROTOCOL);
+    auto const iommu_resource = resources.take(ddk::Kind::Iommu);
     if (iommu_resource.is_err()) {
         auto _ = ort::debug_line(
             {"virtio-blk: no Iommu resource: ", ours::to_string(iommu_resource.unwrap_err())});
-        auto _ = ours::handle_close(ioport_resource.unwrap());
-        auto _ = ours::handle_close(mmio_resource.unwrap());
         return 1;
     }
-    auto const irq_resource = ours_resource::get(ours_resource::IRQ_PROTOCOL);
+    auto const irq_resource = resources.take(ddk::Kind::Irq);
     if (irq_resource.is_err()) {
         auto _ = ort::debug_line(
             {"virtio-blk: no Irq resource: ", ours::to_string(irq_resource.unwrap_err())});
-        auto _ = ours::handle_close(iommu_resource.unwrap());
-        auto _ = ours::handle_close(ioport_resource.unwrap());
-        auto _ = ours::handle_close(mmio_resource.unwrap());
+        return 1;
+    }
+
+    // The enumeration window's base is the firmware's to name: the route
+    // service reads it from the MCFG table, and this driver asks instead of
+    // carrying a chipset constant.
+    auto const ecam = prot::acpi::ecam_base(0);
+    if (ecam.is_err()) {
+        auto _ = ort::debug_line({"virtio-blk: no ECAM base from the route service: ",
+                                  ours::to_string(ecam.unwrap_err())});
         return 1;
     }
 
     // Bus 0 of the ECAM, one window for the whole enumeration.
-    auto config_base = ours::VirtAddr{0};
-    if (auto const status =
-            map_mmio(vma, mmio_resource.unwrap(), ECAM_BASE, BUS_BYTES, &config_base);
-        status != Status::Ok) {
-        auto _ =
-            ort::debug_line({"virtio-blk: cannot map the ECAM window: ", ours::to_string(status)});
-        auto _ = ours::handle_close(iommu_resource.unwrap());
-        auto _ = ours::handle_close(ioport_resource.unwrap());
-        auto _ = ours::handle_close(mmio_resource.unwrap());
+    auto ecam_window = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(),
+                                            ours::PhysAddr{ecam->address}, usize{ecam->size});
+    if (ecam_window.is_err()) {
+        auto _ = ort::debug_line({"virtio-blk: cannot map the ECAM window: ",
+                                  ours::to_string(ecam_window.unwrap_err())});
         return 1;
     }
+    auto const config_base = ecam_window->addr();
 
     // The block device, and the I/O base its legacy BAR names.
     auto device_offset = usize{0};
@@ -597,16 +590,17 @@ auto main(int, char **) -> int {
         device_offset = to_function_offset(device);
         io_base = static_cast<u16>(bar0 & 0xFFFC);
     }
-    auto _ = ours::vma_unmap(vma, config_base, BUS_BYTES);
-    auto _ = ours::handle_close(mmio_resource.unwrap());
+    {
+        // The enumeration is over: the window goes, and with it the MmIo
+        // root's last use, which goes back to the pool.
+        auto window = std::move(ecam_window).unwrap();
+    }
+    resources.drop(mmio_resource.unwrap());
     if (device_offset == 0) {
         // A boot without the device attached is an answer, not a failure: the
         // boot check runs on images whose QEMU carries no disk. The routes to
         // this component's protocol answer NotFound while it is gone.
         auto _ = ort::debug_line("virtio-blk: no virtio block device on bus 0");
-        auto _ = ours::handle_close(irq_resource.unwrap());
-        auto _ = ours::handle_close(iommu_resource.unwrap());
-        auto _ = ours::handle_close(ioport_resource.unwrap());
         return 0;
     }
 
@@ -615,84 +609,35 @@ auto main(int, char **) -> int {
     if (auto const status = ours::port_create(ours::PortCreateOptions::None, &port);
         status != Status::Ok) {
         auto _ = ort::debug_line({"virtio-blk: cannot make its port: ", ours::to_string(status)});
-        auto _ = ours::handle_close(iommu_resource.unwrap());
-        auto _ = ours::handle_close(ioport_resource.unwrap());
         return 1;
     }
     loop::Loop loop(port, SLOT_STORAGE);
 
-    // Everything the device owns, and the one place that puts it down. An
-    // error path past the pin must stop the device and observe it stopped
-    // before unpinning, or the kernel quarantines the memory.
-    Uandle iommu = Uandle::Invalid;
-    Uandle bti = Uandle::Invalid;
-    Uandle region_vmo = Uandle::Invalid;
-    Uandle region_pmt = Uandle::Invalid;
-    Uandle interrupt = Uandle::Invalid;
-    // Whether the root of the interrupt lines is still held: it is closed
-    // once the line is taken, and a second close of a value the kernel may
-    // have handed out again is not a no-op to risk.
-    bool irq_root_held = true;
-    ours::VirtAddr region_map = ours::VirtAddr{0};
-    auto fail = [&](Status const status) -> int {
-        if (region_pmt != Uandle::Invalid) {
-            auto _ = ours::pmt_unpin(region_pmt);
-        }
-        if (region_map != ours::VirtAddr{0}) {
-            auto _ = ours::vma_unmap(vma, region_map, REGION_BYTES);
-        }
-        if (region_vmo != Uandle::Invalid) {
-            auto _ = ours::handle_close(region_vmo);
-        }
-        if (bti != Uandle::Invalid) {
-            auto _ = ours::handle_close(bti);
-        }
-        if (iommu != Uandle::Invalid) {
-            auto _ = ours::handle_close(iommu);
-        }
-        if (interrupt != Uandle::Invalid) {
-            auto _ = ours::handle_close(interrupt);
-        }
-        if (irq_root_held) {
-            irq_root_held = false;
-            auto _ = ours::handle_close(irq_resource.unwrap());
-        }
-        auto _ = ours::handle_close(iommu_resource.unwrap());
-        auto _ = ours::handle_close(ioport_resource.unwrap());
-        auto _ = ort::debug_line({"virtio-blk: failed: ", ours::to_string(status)});
-        return 1;
-    };
-
     if (auto const status = ours::ioports_request(ioport_resource.unwrap(), io_base, 0x80);
         status != Status::Ok) {
-        return fail(status);
+        auto _ =
+            ort::debug_line({"virtio-blk: cannot take its I/O ports: ", ours::to_string(status)});
+        return 1;
     }
     auto const regs = LegacyRegs{io_base};
 
     // The device's interrupt line. On this machine's chipset a function at
     // root-bus slot S, pin P, is wired to GSI 20 + ((S + P) & 3), and QEMU
     // adds the disk's virtio-blk as the first PCI function, slot 3 pin A:
-    // GSI 23. The firmware's tables name the same wiring, and the route
-    // service planned for them will name the line from those instead of this
+    // GSI 23. A PciIrq method on the route service, planned with the driver
+    // manager, will name the line from the firmware's tables instead of this
     // constant. PCI INTx is level and active low, which ModeLevelLow says.
-    // ACPI's numbering is the root domain's, which interrupt_map resolves
-    // from.
-    auto line_number = u32{0};
-    if (auto const status = ours::interrupt_map(irq_resource.unwrap(), ours::ROOT_INTERRUPT_DOMAIN,
-                                                GSI_DISK, &line_number);
-        status != Status::Ok) {
-        return fail(status);
+    // take() maps, creates, and closes the root on success -- the line is
+    // held by the interrupt object from here, and the root goes back to the
+    // pool for the next driver.
+    auto interrupt = ddk::irq::take(irq_resource.unwrap(), ours::ROOT_INTERRUPT_DOMAIN, GSI_DISK,
+                                    ours::InterruptOptions::ModeLevelLow);
+    if (interrupt.is_err()) {
+        auto _ = ort::debug_line({"virtio-blk: cannot take its interrupt line: ",
+                                  ours::to_string(interrupt.unwrap_err())});
+        return 1;
     }
-    if (auto const status = ours::interrupt_create(
-            irq_resource.unwrap(), line_number, ours::InterruptOptions::ModeLevelLow, &interrupt);
-        status != Status::Ok) {
-        return fail(status);
-    }
-    // The root is only the means of mapping and taking: the line is held now,
-    // and nothing else is asked of the root. Closing it lets the next driver
-    // reach the resource, as the keyboard's driver does with its line.
-    irq_root_held = false;
-    auto _ = ours::handle_close(irq_resource.unwrap());
+    resources.drop(irq_resource.unwrap());
 
     // Bring-up, in the order the legacy specification fixes.
     regs.set_status(0);
@@ -710,7 +655,8 @@ auto main(int, char **) -> int {
     regs.select_queue(0);
     auto const queue_max = regs.queue_num();
     if (queue_max == 0) {
-        return fail(Status::OutOfRange);
+        auto _ = ort::debug_line("virtio-blk: the device names no queue");
+        return 1;
     }
     // The legacy depth is the driver's to choose, within the device's
     // maximum: written back before the ring is registered, so the device
@@ -718,61 +664,106 @@ auto main(int, char **) -> int {
     // them out with.
     regs.set_queue_num(static_cast<u16>(LEGACY_QUEUE_NUM));
 
-    if (auto const status =
-            ours::iommu_create(iommu_resource.unwrap(), ours::IommuType::Stub, nullptr, 0, &iommu);
-        status != Status::Ok) {
-        return fail(status);
+    // The DMA ring: one contiguous run of pages, made into a BTI and a
+    // pinned, mapped region. The kit objects' destructors undo each step in
+    // the order that answers the kernel's pin discipline on any early return
+    // below.
+    auto bti = ddk::Bti::create(iommu_resource.unwrap());
+    if (bti.is_err()) {
+        auto _ = ort::debug_line(
+            {"virtio-blk: cannot make its BTI: ", ours::to_string(bti.unwrap_err())});
+        return 1;
     }
-    if (auto const status = ours::bti_create(iommu, 0, 0, &bti); status != Status::Ok) {
-        return fail(status);
+    resources.drop(iommu_resource.unwrap());
+    auto region = ddk::DmaRegion::allocate(vma.unwrap(), bti->handle(), REGION_BYTES);
+    if (region.is_err()) {
+        auto _ = ort::debug_line(
+            {"virtio-blk: cannot make its DMA region: ", ours::to_string(region.unwrap_err())});
+        return 1;
     }
-    if (auto const status = ours::vmo_create_contiguous(bti, REGION_BYTES, 0, &region_vmo);
-        status != Status::Ok) {
-        return fail(status);
-    }
-    auto region_phys = ours::PhysAddr{0};
-    if (auto const status =
-            ours::bti_pin(bti,
-                          ours::BtiPinOptions::PermRead | ours::BtiPinOptions::PermWrite |
-                              ours::BtiPinOptions::Contiguous,
-                          region_vmo, 0, REGION_BYTES, &region_phys, 1, &region_pmt);
-        status != Status::Ok) {
-        return fail(status);
-    }
-    if (auto const status =
-            ours::vma_map(vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite, 0,
-                          region_vmo, 0, REGION_BYTES, &region_map);
-        status != Status::Ok) {
-        return fail(status);
-    }
+    auto const region_phys = region->phys();
+    auto const region_map = region->virt();
     regs.set_queue_pfn(region_phys);
     {
         char phys_text[18];
-        auto _ = ort::debug_line({"virtio-blk: region at ", ort::hex(region_phys, phys_text)});
+        auto _ = ort::debug_line(
+            {"virtio-blk: region at ", ort::hex(std::to_underlying(region_phys), phys_text)});
     }
 
     // The device is told the driver is ready, and may now be served.
     regs.set_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK | STATUS_DRIVER_OK);
 
-    // The server, over the device.
+    // The server, over the device. The kit objects and the storages outlive
+    // the Loop.
     auto &storage = *SERVER_STORAGE.init();
     auto &device = *DEVICE_STORAGE.init();
-    device.init(io_base, region_map, region_phys, interrupt);
+    device.init(io_base, region_map, region_phys, interrupt.unwrap());
     VirtioBlockServer server(storage, loop, device, region_map);
 
     auto &outgoing_storage = *OUTGOING_STORAGE.init();
     ioservice::Outgoing outgoing(outgoing_storage, loop);
-    if (auto const status = outgoing.add_protocol(ours_block::BLOCK_NAME, server);
+    if (auto const status = outgoing.add_protocol(prot::block::BLOCK_NAME, server);
         status != Status::Ok) {
-        return fail(status);
+        auto _ =
+            ort::debug_line({"virtio-blk: cannot serve its protocol: ", ours::to_string(status)});
+        return 1;
     }
-    if (auto const status = outgoing.serve(directory_request); status != Status::Ok) {
-        return fail(status);
+    if (auto const status = outgoing.serve(directory_request.unwrap()); status != Status::Ok) {
+        auto _ = ort::debug_line(
+            {"virtio-blk: cannot serve its outgoing directory: ", ours::to_string(status)});
+        return 1;
+    }
+
+    // The device, published into the registry's tree (the device-namespace
+    // round): a second server end of this outgoing serves the mount, so the
+    // registry's forwards reach the same block service; the publish names the
+    // leaf's class and number and the protocol a client's open of it carries.
+    // A failure to publish is logged and not fatal -- the disk still serves
+    // its /svc route; the tree merely shows one device fewer.
+    {
+        auto mount = Uandle::Invalid;
+        auto mount_server = Uandle::Invalid;
+        auto registry_client = Uandle::Invalid;
+        auto registry_server = Uandle::Invalid;
+        if (auto const made =
+                ours::channel_create(ours::ChannelCreateOptions::None, &mount_server, &mount);
+            made != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot make its mount channel: ", ours::to_string(made)});
+        } else if (auto const made = ours::channel_create(ours::ChannelCreateOptions::None,
+                                                          &registry_client, &registry_server);
+                   made != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot make its registry channel: ", ours::to_string(made)});
+        } else if (auto const status = outgoing.serve(mount_server); status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot serve its mount channel: ", ours::to_string(status)});
+        } else if (auto const status = fsio::connect(prot::dev::REGISTRY_PATH, registry_server);
+                   status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot reach the device registry: ", ours::to_string(status)});
+        } else {
+            // The driver proposes "000"; the registry grants it or the class's
+            // lowest free number, and the reply's name is what the leaf
+            // answers as. One attempt: the mount handle goes with the
+            // message, and a retry would need a fresh pair.
+            prot::dev::Client registry{registry_client};
+            auto granted = std::array<char, 8>{};
+            auto const published = registry.publish("block", "000", prot::block::BLOCK_NAME, mount,
+                                                    std::span<char>{granted});
+            if (published == Status::Ok) {
+                auto _ = ort::debug_line({"virtio-blk: its device is in the tree as block/",
+                                          std::string_view{granted.data()}});
+            } else {
+                auto _ = ort::debug_line(
+                    {"virtio-blk: its publish answered ", ours::to_string(published)});
+            }
+        }
     }
 
     // Stop ends the program from inside an on_signals(); run() comes back
     // only when the port itself fails.
-    auto _ = ort::debug_line({"virtio-blk: serving ", ours_block::BLOCK_NAME});
+    auto _ = ort::debug_line({"virtio-blk: serving ", prot::block::BLOCK_NAME});
     auto _ = ort::debug_line(
         {"virtio-blk: its Loop stopped: ", ours::to_string(loop.run(ours::INSTANT_INFINITE))});
     return 1;

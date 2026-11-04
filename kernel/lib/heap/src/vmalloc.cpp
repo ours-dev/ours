@@ -89,12 +89,11 @@ auto init_vmalloc() -> void {
 
     // At a fixed base, because is_vmalloc_addr() has to be a compile-time
     // range test -- that is what `operator delete` routes on. Reserved as a
-    // sub-area rather than left to anywhere() for the same reason: the window
+    // sub-area rather than left to VirtAddr::Anywhere for the same reason: the window
     // must be exactly where the constants say it is.
     auto const status = ours::mm::VmAspace::kernel_aspace()->root_vma()->create_subvma(
-        ours::mm::VmPlacement::at(VMALLOC_BASE), VMALLOC_SIZE,
-        ours::mm::VmaFlags::Read | ours::mm::VmaFlags::Write, "k:vmalloc",
-        ours::mm::VmMapOption::None, &WINDOW);
+        VMALLOC_BASE, VMALLOC_SIZE, ours::mm::VmaFlags::Read | ours::mm::VmaFlags::Write,
+        "k:vmalloc", ours::mm::VmMapOption::None, &WINDOW);
     ASSERT(Status::Ok == status, "Failed to reserve the vmalloc window");
 
     NR_BUSY = 0;
@@ -146,7 +145,7 @@ auto vmalloc(usize const size, Gaf const gaf) -> void * {
     // range would come back live with no page tables behind it. Committing the
     // VMO, installing the entries, and destroying the half-built mapping when
     // either fails all live in map_with_vmo().
-    auto mapping = WINDOW->map_with_vmo(ours::mm::VmPlacement::anywhere(), rounded, 0, MMU_FLAGS,
+    auto mapping = WINDOW->map_with_vmo(VirtAddr::Anywhere, rounded, 0, MMU_FLAGS,
                                         ours::mm::VmaFlags::PermMask, vmo,
                                         ours::mm::VmMapOption::Populate, "vmalloc");
     if (mapping.is_err()) {
@@ -166,7 +165,7 @@ auto vfree(void *const pointer) -> void {
         return;
     }
 
-    auto const base = ours::VirtAddr(pointer);
+    auto const base = ours::VirtAddr{reinterpret_cast<usize>(pointer)};
     DEBUG_ASSERT(is_vmalloc_addr(pointer), "vfree() on an address outside the vmalloc window");
 
     Guard guard{LOCK};
@@ -241,7 +240,7 @@ auto vmalloc_self_test() -> void {
     check(one != nullptr, "one-page allocation");
     if (one) {
         check(is_vmalloc_addr(one), "the result is inside the window");
-        check(ours::VirtAddr(one) % PAGE_SIZE == 0, "the result is page aligned");
+        check(reinterpret_cast<usize>(one) % PAGE_SIZE == 0, "the result is page aligned");
         for (auto index = usize{0}; index < PAGE_SIZE; ++index) {
             one[index] = u8(index);
         }

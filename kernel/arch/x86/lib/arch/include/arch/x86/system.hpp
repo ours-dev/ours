@@ -130,8 +130,9 @@ class Cr3: public SysReg<Cr3, detail::Cr3Layout> {
     // when nothing calls this overload (e.g. logic-only unit tests built
     // for a non-x86 host, where ARCH_X86_SYSREG never specializes it).
     template <typename Int = PhysAddr>
+        requires std::is_same_v<Int, PhysAddr>
     static auto write(Int value) noexcept -> void {
-        Base::write(from_value(static_cast<PhysAddr>(value)));
+        Base::write(from_value(std::to_underlying(value)));
     }
 };
 ARCH_X86_SYSREG(Cr3, "cr3");
