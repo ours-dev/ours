@@ -37,3 +37,12 @@ None requested.
 ## Suggested follow-up order
 
 None.
+
+## Follow-up on local range clipping
+
+The local lambda runs synchronously under the shared tree lock for the
+representative and each peer. Saturating the end once preserves the previous
+overflow behavior. Each view still intersects the original range and
+translates the result using its own offset. Clang-tidy found no issues on
+the changed lines. The snapshot suite passed 247 checks in both
+configurations, including the case where only a peer overlaps the range.

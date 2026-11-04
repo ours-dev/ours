@@ -300,11 +300,6 @@ class VmObjectPaged: public VmObject {
     TA_REQUIRES(m_lock)
     auto operate_views_locked(u64 cow_offset, u64 len, RangeOp op) -> void;
 
-    /// Intersect a range in COW coordinates with this view and translate it
-    /// into VMO coordinates before notifying its mappings.
-    TA_REQUIRES(m_lock)
-    auto operate_cow_range_locked(u64 cow_offset, u64 len, RangeOp op) -> void;
-
     ustl::Arc<VmCowPages> m_cow_pages;
 
     /// Where this object's byte 0 sits in m_cow_pages, and how many bytes it

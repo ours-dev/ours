@@ -305,3 +305,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Keep view range clipping local to propagation (2026-11-04)
+
+**Files**
+
+- `kernel/mm/vm_object_paged.cpp` shares clipping within the view traversal.
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp` drops the private method declaration.
+
+**Symptom**
+
+The VMO declared a separate method for a step used only within its view traversal.
+
+**Cause**
+
+The representative and the peer views both need to intersect the original range with their own window. Both call sites belong to the same operation.
+
+**Change**
+
+`operate_views_locked` replaces the two calls to `operate_cow_range_locked` with `notify(*this)` and `notify(view)`. The local lambda clips and translates the range for each view. The saturated end of the original range is computed once.
+
+**Reference**
+
+None. The representative and peer views are traversed together in this project.
+
+**Verification**
+
+Clang-format and LLVM 23 clang-tidy checked both changed C++ files. The debug and release images booted and 163 host tests passed in each of the default and four-node NUMA configurations. The targeted kernel suites passed 372 checks in default and 268 in NUMA, including 247 snapshot checks in each.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+A symbol search found both uses of the private method inside `operate_views_locked`.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

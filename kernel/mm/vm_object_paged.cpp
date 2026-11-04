@@ -69,28 +69,21 @@ VmObjectPaged::~VmObjectPaged() {
 
 auto VmObjectPaged::operate_views_locked(u64 const cow_offset, u64 const len, RangeOp const op)
     -> void {
-    operate_cow_range_locked(cow_offset, len, op);
-    // A successor may have a narrower or disjoint window from the other
-    // views. Each view intersects the original range independently.
-    for (auto &view: m_views) {
+    auto const end = cow_offset + std::min<u64>(len, ~u64{0} - cow_offset);
+    // Each view clips the original range independently, even when the
+    // representative's own window does not overlap it.
+    auto const notify = [cow_offset, end, op](VmObjectPaged &view) -> void {
         view.lock().assert_held();
-        view.operate_cow_range_locked(cow_offset, len, op);
+        auto const first = std::max<u64>(cow_offset, view.m_cow_offset);
+        auto const last = std::min<u64>(end, view.m_cow_offset + view.m_size);
+        if (first < last) {
+            view.operate_range_locked(first - view.m_cow_offset, last - first, op);
+        }
+    };
+    notify(*this);
+    for (auto &view: m_views) {
+        notify(view);
     }
-}
-
-auto VmObjectPaged::operate_cow_range_locked(u64 const cow_offset, u64 const len, RangeOp const op)
-    -> void {
-    // This object shows [m_cow_offset, m_cow_offset + m_size) of the pages.
-    u64 end = cow_offset + len;
-    if (len > ~u64{0} - cow_offset) {
-        end = ~u64{0};
-    }
-    u64 const first = std::max<u64>(cow_offset, m_cow_offset);
-    u64 const last = std::min<u64>(end, m_cow_offset + m_size);
-    if (first >= last) {
-        return;
-    }
-    operate_range_locked(first - m_cow_offset, last - first, op);
 }
 
 auto VmObjectPaged::create(Gaf alloc_flags, usize size, VmoFlags vmof,
