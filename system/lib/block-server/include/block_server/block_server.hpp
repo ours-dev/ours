@@ -11,7 +11,7 @@
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
-#include <ours_block/ours_block.hpp>
+#include <prot/block.hpp>
 #include <server/server.hpp>
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
@@ -77,7 +77,7 @@ struct Geometry {
 /// callbacks run while a request is parked and a shared reply buffer would
 /// be overwritten.
 inline constexpr auto REPLY_BYTES =
-    usize{20 + ours_block::MAX_READ_BLOCKS * ours_block::BLOCK_SIZE};
+    usize{20 + prot::block::MAX_READ_BLOCKS * prot::block::BLOCK_SIZE};
 static_assert(REPLY_BYTES <= wire::MAX_MESSAGE_BYTES);
 
 /// One parked request: what `start()` reads and what `complete()` answers
@@ -154,7 +154,7 @@ class BlockServer
             return;
         }
         if (slot.op == Op::Read && status == ours::Status::Ok &&
-            data.size() != usize{slot.count} * ours_block::BLOCK_SIZE) {
+            data.size() != usize{slot.count} * prot::block::BLOCK_SIZE) {
             // The driver's bug, said the one way a user-space library says
             // anything: the debug console.
             constexpr auto LINE = std::string_view{
@@ -226,9 +226,9 @@ class BlockServer
                             ours::Status const status, std::span<u8 const> const data)
         -> ustl::Result<wire::Message, ours::Status> {
         if (op == Op::Read) {
-            return ours_block::encode_read_reply(bytes, txid, {.status = status, .data = data});
+            return prot::block::encode_read_reply(bytes, txid, {.status = status, .data = data});
         }
-        return ours_block::encode_write_reply(bytes, txid, {.status = status});
+        return prot::block::encode_write_reply(bytes, txid, {.status = status});
     }
 
   public:
@@ -237,27 +237,27 @@ class BlockServer
     /// ours.block's contract states.
     auto on_message(ours::Uandle const channel, wire::Header const header, wire::Message &&message)
         -> loop::Action {
-        if (header.ordinal == ours_block::CLOSE.ordinal) {
-            auto const request = ours_block::decode_close(message);
+        if (header.ordinal == prot::block::CLOSE.ordinal) {
+            auto const request = prot::block::decode_close(message);
             if (request.is_err()) {
                 Base::close_handles(message);
                 return Base::close_client(channel);
             }
-            auto const answer = ours_block::encode_close_reply(Base::reply_buffer(), request->txid,
-                                                               {.status = ours::Status::Ok});
+            auto const answer = prot::block::encode_close_reply(Base::reply_buffer(), request->txid,
+                                                                {.status = ours::Status::Ok});
             if (answer.is_err() || Base::reply(channel, answer.unwrap()) != ours::Status::Ok) {
                 return Base::close_client(channel);
             }
             return Base::close_client(channel);
         }
-        if (header.ordinal == ours_block::GET_INFO.ordinal) {
-            auto const request = ours_block::decode_get_info(message);
+        if (header.ordinal == prot::block::GET_INFO.ordinal) {
+            auto const request = prot::block::decode_get_info(message);
             if (request.is_err()) {
                 Base::close_handles(message);
                 return Base::close_client(channel);
             }
             auto const geo = geometry();
-            auto const answer = ours_block::encode_get_info_reply(
+            auto const answer = prot::block::encode_get_info_reply(
                 Base::reply_buffer(), request->txid,
                 {.status = ours::Status::Ok, .block_size = geo.block_size, .blocks = geo.blocks});
             if (answer.is_err() || Base::reply(channel, answer.unwrap()) != ours::Status::Ok) {
@@ -265,16 +265,16 @@ class BlockServer
             }
             return loop::Action::Rearm;
         }
-        if (header.ordinal == ours_block::READ.ordinal) {
-            auto const request = ours_block::decode_read(message);
+        if (header.ordinal == prot::block::READ.ordinal) {
+            auto const request = prot::block::decode_read(message);
             if (request.is_err()) {
                 Base::close_handles(message);
                 return Base::close_client(channel);
             }
             return park(channel, Op::Read, request->txid, request->lba, request->count, {});
         }
-        if (header.ordinal == ours_block::WRITE.ordinal) {
-            auto const request = ours_block::decode_write(message);
+        if (header.ordinal == prot::block::WRITE.ordinal) {
+            auto const request = prot::block::decode_write(message);
             if (request.is_err()) {
                 Base::close_handles(message);
                 return Base::close_client(channel);

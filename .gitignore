@@ -60,6 +60,7 @@ MODULE.bazel.lock
 !/.claude/settings.json
 .reasonix
 .zcode
+.mimosa
 .mypy_cache
 __pycache__/
 *.pyc

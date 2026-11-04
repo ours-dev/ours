@@ -31,9 +31,7 @@ user_executable("virtio-blk") {
     "//system/lib/ioservice:outgoing",
     "//system/lib/server",
     "//system/lib/loop",
-    "//system/lib/ours.acpi:client",
-    "//system/lib/ours.block",
-    "//system/lib/ours.resource:client",
+    "//system/lib/protocols:client",
     "//system/lib/ustl",
     "//system/lib/wire",
   ]
@@ -58,6 +56,9 @@ component_manifest("virtio-blk.cm") {
       },
       {
         protocol = "ours.acpi.Route"
+      },
+      {
+        protocol = "ours.dev.Registry"
       },
     ]
     capabilities = [

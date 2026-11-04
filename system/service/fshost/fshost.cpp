@@ -47,7 +47,7 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
-#include <ours_fshost/ours_fshost.hpp>
+#include <prot/fshost.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
 
@@ -86,7 +86,7 @@ constexpr auto SVC_NAME = std::string_view{"svc"};
 /// may ask, the rights root.cm offers them with -- rx* for the BootFS mount,
 /// w* for the writable one. A wider offer needs a wider ceiling here first,
 /// and check 3 of the Open refuses the difference.
-constexpr auto SERVED_RIGHTS = ours_io::RX_STAR_DIR | ours_io::W_STAR_DIR;
+constexpr auto SERVED_RIGHTS = prot::io::RX_STAR_DIR | prot::io::W_STAR_DIR;
 
 /// How many nodes the tree has room for: the root, the two views, the two
 /// mount points of `all`, `ro`'s boot, the disk's mount when it exists, and
@@ -192,7 +192,7 @@ constinit Report REPORT;
 /// Answers |status| for |txid| on the admin channel, the status form.
 auto answer_admin(u32 const txid, Status const status) -> void {
     std::array<u8, wire::STATUS_FORM_SIZE> bytes{};
-    auto const encoded = ours_fshost::encode_mount_reply(bytes, txid, status);
+    auto const encoded = prot::fshost::encode_mount_reply(bytes, txid, status);
     if (encoded.is_ok()) {
         auto _ = ours::channel_write(ADMIN_CHANNEL, ours::ChannelWriteOptions::None,
                                      encoded->bytes.data(), static_cast<u32>(encoded->bytes.size()),
@@ -224,7 +224,7 @@ auto serve_admin() -> loop::Action {
         ADMIN_CHANNEL = Uandle::Invalid;
         return loop::Action::Close;
     }
-    auto const request = ours_fshost::decode_mount(message);
+    auto const request = prot::fshost::decode_mount(message);
     if (request.is_err()) {
         answer_admin(header->txid, request.unwrap_err());
         return loop::Action::Rearm;
@@ -318,7 +318,7 @@ auto main(int, char **) -> int {
     // The admin protocol lives in the tree's own svc directory, a service
     // node whose Opens come to the delegate with ADMIN_SERVICE.
     auto const svc = tree.add_directory(root, SVC_NAME).unwrap();
-    auto const admin_node = tree.add_service(svc, ours_fshost::ADMIN_NAME, ADMIN_SERVICE);
+    auto const admin_node = tree.add_service(svc, prot::fshost::ADMIN_NAME, ADMIN_SERVICE);
     if (admin_node.is_err()) {
         auto _ = ort::debug_line(
             {"fshost: cannot add the admin node: ", ours::to_string(admin_node.unwrap_err())});

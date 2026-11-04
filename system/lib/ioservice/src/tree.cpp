@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <utility>
 
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 
 namespace ioservice {
 namespace {
@@ -57,7 +57,7 @@ namespace {
 } // namespace
 
 auto is_valid_name(std::string_view const name) -> bool {
-    if (name.empty() || name.size() > ours_io::MAX_NAME_LENGTH || name == "." || name == "..") {
+    if (name.empty() || name.size() > prot::io::MAX_NAME_LENGTH || name == "." || name == "..") {
         return false;
     }
     // A NUL would end the name for any C reader of it, so two programs could
@@ -70,7 +70,7 @@ auto is_valid_path(std::string_view const path) -> bool {
     if (path == ".") {
         return true;
     }
-    if (path.size() > ours_io::MAX_PATH_LENGTH) {
+    if (path.size() > prot::io::MAX_PATH_LENGTH) {
         return false;
     }
     // An empty path, a leading or trailing '/' and "//" all show up as an

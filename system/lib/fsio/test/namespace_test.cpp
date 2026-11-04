@@ -113,7 +113,7 @@ TEST(Namespace, ResolveAboveAMountPointIsNotSupported) {
 
 TEST(Namespace, ResolveChecksEveryNameLength) {
     auto const ns = component();
-    auto const longest = std::string(ours_io::MAX_NAME_LENGTH, 'n');
+    auto const longest = std::string(prot::io::MAX_NAME_LENGTH, 'n');
     EXPECT_EQ(resolved(ns, "/boot/" + longest), at(BOOT, longest));
     EXPECT_EQ(resolved(ns, "/boot/" + longest + "n"), "BadPath");
     EXPECT_EQ(resolved(ns, "/" + longest + "n"), "BadPath");
@@ -148,7 +148,7 @@ TEST(Namespace, BindRefusesBadArguments) {
     EXPECT_EQ(ns.bind("", OTHER), Status::InvArgs);
     EXPECT_EQ(ns.bind("./data", OTHER), Status::InvArgs);
 
-    auto const longest = std::string(ours_io::MAX_NAME_LENGTH, 'n');
+    auto const longest = std::string(prot::io::MAX_NAME_LENGTH, 'n');
     EXPECT_EQ(ns.bind("/data/" + longest + "n", OTHER), Status::BadPath);
     EXPECT_EQ(ns.bind("/data/" + longest, OTHER), Status::Ok);
     EXPECT_EQ(ns.size(), 3U);
@@ -264,11 +264,11 @@ TEST(Namespace, UnbindInTheMiddleKeepsTheOthers) {
 
     // What was freed can be bound again, up to the capacity.
     Namespace full;
-    auto const big = "/" + std::string(ours_io::MAX_NAME_LENGTH, 'x');
+    auto const big = "/" + std::string(prot::io::MAX_NAME_LENGTH, 'x');
     ASSERT_EQ(full.bind(big, BOOT), Status::Ok);
-    ASSERT_EQ(full.bind("/" + std::string(ours_io::MAX_NAME_LENGTH, 'y'), SVC), Status::Ok);
-    ASSERT_EQ(full.bind("/" + std::string(ours_io::MAX_NAME_LENGTH, 'z'), OTHER), Status::Ok);
-    auto const last = "/" + std::string(ours_io::MAX_NAME_LENGTH - 1, 'w');
+    ASSERT_EQ(full.bind("/" + std::string(prot::io::MAX_NAME_LENGTH, 'y'), SVC), Status::Ok);
+    ASSERT_EQ(full.bind("/" + std::string(prot::io::MAX_NAME_LENGTH, 'z'), OTHER), Status::Ok);
+    auto const last = "/" + std::string(prot::io::MAX_NAME_LENGTH - 1, 'w');
     ASSERT_EQ(full.bind(last, Uandle{0x4003}), Status::Ok);
     EXPECT_EQ(full.bind("/v", Uandle{0x5003}), Status::NoResource);
     ASSERT_TRUE(full.unbind(big).is_ok());
@@ -287,7 +287,7 @@ TEST(Namespace, UnbindRefusals) {
     };
     EXPECT_EQ(status(std::string(fsio::MAX_PATH_LENGTH + 1, '/')), Status::BadPath);
     EXPECT_EQ(status("boot"), Status::InvArgs);
-    EXPECT_EQ(status("/" + std::string(ours_io::MAX_NAME_LENGTH + 1, 'n')), Status::BadPath);
+    EXPECT_EQ(status("/" + std::string(prot::io::MAX_NAME_LENGTH + 1, 'n')), Status::BadPath);
     // Nothing there, below a mount point, above one, and the root.
     EXPECT_EQ(status("/data"), Status::NotFound);
     EXPECT_EQ(status("/boot/bin"), Status::NotFound);

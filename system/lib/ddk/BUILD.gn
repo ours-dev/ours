@@ -24,7 +24,7 @@ cpp_interface("headers") {
   public_deps = [
     "//system/lib/loop:headers",
     "//system/lib/ort:headers",
-    "//system/lib/ours.resource",
+    "//system/lib/protocols",
     "//system/lib/ustl:headers",
     "//system/lib/wire:headers",
     "//system/public",

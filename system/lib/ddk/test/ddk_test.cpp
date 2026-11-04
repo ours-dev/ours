@@ -50,7 +50,7 @@ using ours::Uandle;
 usize CALLS = 0;
 usize FAIL_AT = 0;
 
-auto fake_get(ours_resource::Protocol const &) -> ustl::Result<Uandle, Status> {
+auto fake_get(prot::resource::Protocol const &) -> ustl::Result<Uandle, Status> {
     CALLS += 1;
     if (FAIL_AT != 0 && CALLS == FAIL_AT) {
         return ustl::err(Status::NoMemory);

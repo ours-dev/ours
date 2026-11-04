@@ -160,7 +160,7 @@ auto BootServer::file(std::string_view const path) const
 }
 
 auto BootServer::serve(Uandle const channel, std::string_view const subdir,
-                       ours_io::Operations const rights) -> Status {
+                       prot::io::Operations const rights) -> Status {
     auto node = m_root;
     if (!subdir.empty()) {
         auto const found = m_tree.lookup(m_root, subdir);
@@ -173,7 +173,7 @@ auto BootServer::serve(Uandle const channel, std::string_view const subdir,
 }
 
 auto BootServer::serve(Uandle const channel, ioservice::NodeId const directory,
-                       ours_io::Operations const rights) -> Status {
+                       prot::io::Operations const rights) -> Status {
     return m_server.serve(channel, directory, rights);
 }
 

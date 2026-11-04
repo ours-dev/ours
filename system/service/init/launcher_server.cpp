@@ -11,7 +11,7 @@
 
 #include <launch/launch.hpp>
 #include <ort/debug.hpp>
-#include <ours_process/ours_process.hpp>
+#include <prot/process.hpp>
 
 namespace init {
 namespace {
@@ -145,7 +145,7 @@ auto LauncherServer::handle(LauncherConnection &connection, Signals const observ
         }
     }
 
-    auto const encoded = ours_process::encode_launch_reply(
+    auto const encoded = prot::process::encode_launch_reply(
         storage.reply_bytes, storage.reply_handles, received.txid, received.reply);
     if (encoded.is_err()) {
         // Cannot happen: the txid passed the decoder, and the buffers hold

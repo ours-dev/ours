@@ -79,7 +79,7 @@ class Namespace final {
     ///   BadHandle      |directory| is Uandle::Invalid;
     ///   InvArgs        |path| is not absolute;
     ///   BadPath        one of its names is longer than
-    ///                  ours_io::MAX_NAME_LENGTH;
+    ///                  prot::io::MAX_NAME_LENGTH;
     ///   AlreadyExists  |path| is bound already; or other paths are bound
     ///                  below it, so it is already a node made to hold
     ///                  them, unless |path| is "/";
@@ -101,7 +101,7 @@ class Namespace final {
     ///   BadPath   clean_path() refused |path|;
     ///   InvArgs   |path| is not absolute;
     ///   BadPath   one of its names is longer than
-    ///             ours_io::MAX_NAME_LENGTH, or "/" is bound and |path| is
+    ///             prot::io::MAX_NAME_LENGTH, or "/" is bound and |path| is
     ///             not "/": the walk starts at a root that is a mount
     ///             point, which it does not look into;
     ///   NotFound  nothing is bound at exactly |path|, whether |path| lies
@@ -116,7 +116,7 @@ class Namespace final {
     ///   NotFound      |path| is not absolute: there is no working directory
     ///                 to start from;
     ///   BadPath       one of its names is longer than
-    ///                 ours_io::MAX_NAME_LENGTH;
+    ///                 prot::io::MAX_NAME_LENGTH;
     ///   NotSupported  no bound path is |path| or above it, but |path| is
     ///                 "/" or some are below it: |path| names one of the
     ///                 nodes made to hold mount points, the root among them,

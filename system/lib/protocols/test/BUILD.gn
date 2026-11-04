@@ -1,0 +1,95 @@
+# The protocols library's host tests. These link googletest and run on the
+# build machine: the codecs work on bytes and handle values alone, so every
+# message can be written, read back and broken on purpose without a kernel.
+
+# ours.block: round trips for both methods, and the refusals a closed
+# protocol's decoders owe.
+executable("block") {
+  testonly = true
+  sources = [ "block_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.dev: Publish's round trip, the strings' back-to-back layout, and the
+# refusals -- separators, NULs, the bounds, a missing handle, a body off by
+# one byte.
+executable("dev") {
+  testonly = true
+  sources = [ "dev_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.io: every request and reply of the subset, written, read back and
+# broken on purpose.
+executable("io") {
+  testonly = true
+  sources = [ "io_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.resource: each protocol's Get and its reply, and one protocol's
+# messages refused by another's decoders.
+executable("resource") {
+  testonly = true
+  sources = [ "resource_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.acpi: each method's request and reply, and one method's messages
+# refused by the other's decoders.
+executable("acpi") {
+  testonly = true
+  sources = [ "acpi_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.fshost: the admin codec's Mount request, its refusals, and the reply's
+# status form.
+executable("fshost") {
+  testonly = true
+  sources = [ "fshost_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.process: every Launcher message and the Launch reply, written, read
+# back and broken on purpose.
+executable("process") {
+  testonly = true
+  sources = [ "process_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

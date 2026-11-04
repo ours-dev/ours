@@ -57,8 +57,8 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 
 namespace {
 /// Records each CPU keeps. At the kernel's 100 Hz tick, more than half a
@@ -400,13 +400,13 @@ auto main(int argc, char **argv) -> int {
         return 1;
     }
 
-    auto const fetched = ours_resource::get(ours_resource::SAMPLING_PROTOCOL);
+    auto const fetched = prot::resource::get(prot::resource::SAMPLING_PROTOCOL);
     if (fetched.is_err()) {
         report("getting the Sampling resource from /svc", fetched.unwrap_err());
         return 1;
     }
     auto const resource = fetched.unwrap();
-    auto const root_fetched = ours_resource::get(ours_resource::ROOT_JOB_PROTOCOL);
+    auto const root_fetched = prot::resource::get(prot::resource::ROOT_JOB_PROTOCOL);
     if (root_fetched.is_err()) {
         report("getting the root job from /svc", root_fetched.unwrap_err());
         return 1;
