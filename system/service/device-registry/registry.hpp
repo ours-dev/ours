@@ -199,7 +199,10 @@ class Core final {
             mount.name = stored(mount.name_storage, proposal);
             return;
         }
-        for (auto value = u32{0}; value < MAX_MOUNTS + 1; ++value) {
+        // At most MAX_MOUNTS names are taken in the class, and candidates
+        // 000..MAX_MOUNTS are MAX_MOUNTS+1: one of them is free, so this
+        // scan always stores and returns -- there is no tail to fall out of.
+        for (auto value = u32{0};; value = value + 1) {
             auto const number = std::array<char, 3>{{static_cast<char>('0' + value / 100),
                                                      static_cast<char>('0' + (value / 10) % 10),
                                                      static_cast<char>('0' + value % 10)}};
@@ -208,9 +211,6 @@ class Core final {
                 return;
             }
         }
-        // Structurally unreachable -- a free slot means a free number -- and
-        // the next line says what a bug here would mount as.
-        mount.name = stored(mount.name_storage, proposal);
     }
 
     /// The mount |index|'s handler, placed for a mount taken at |index|: the
@@ -238,33 +238,19 @@ class Core final {
         return m_mounts;
     }
 
-    /// The class directories made on demand, each with name storage of its
-    /// own: the tree views a node's name for the program's life, and a
-    /// mount slot is recycled on a failed publish -- a name that lived in
-    /// the slot would rename the node behind the next publish's back.
-    /// Every mount a distinct class, plus the pre-laid block: eight entries.
-    [[nodiscard]]
-    auto find_class(std::string_view const klass) const -> ustl::Option<ioservice::NodeId> {
-        for (auto const &entry: m_classes) {
-            if (entry.used && std::string_view{entry.storage.data()} == klass) {
-                return ustl::some(entry.node);
-            }
-        }
-        return ustl::NONE;
-    }
-
     /// Reserves an arena entry for |klass| (a no-op when the name is
     /// already there) and returns the view a tree node must be created
     /// with: node creation stores views, and this storage outlives every
     /// mount slot's reuse. A free slot means a free entry -- free_slot()
     /// was checked before the class is named.
     auto class_name(std::string_view const klass) -> std::string_view {
+        // Called only when the tree lookup missed and a mount slot is free:
+        // a free slot means a free arena entry, so this scan always reserves
+        // and returns -- there is no tail to fall out of.
         for (auto &entry: m_classes) {
             if (entry.used && std::string_view{entry.storage.data()} == klass) {
                 return entry.name;
             }
-        }
-        for (auto &entry: m_classes) {
             if (!entry.used) {
                 std::memcpy(entry.storage.data(), klass.data(), klass.size());
                 entry.name = std::string_view{entry.storage.data(), klass.size()};
@@ -272,6 +258,8 @@ class Core final {
                 return entry.name;
             }
         }
+        // Structurally unreachable: called only after a lookup miss with a
+        // free slot in hand. A bug here names the node after the proposal.
         return klass;
     }
 
@@ -341,20 +329,14 @@ class DevSubtree final: public ioservice::SubtreeHandler, private ioservice::Loo
     /// demand by the mount that names it first. Ok, or what failed.
     [[nodiscard]]
     auto build() -> Status {
+        // The layout takes three of TREE_NODES, a bound the constant's
+        // static_assert pins: the allocations cannot refuse, and unwrap
+        // says so.
         auto root = m_tree.add_root();
-        if (root.is_err()) {
-            return root.unwrap_err();
-        }
         m_root = root.unwrap();
         auto class_dir = m_tree.add_directory(m_root, "class");
-        if (class_dir.is_err()) {
-            return class_dir.unwrap_err();
-        }
         m_class = class_dir.unwrap();
         auto block = m_tree.add_directory(m_class, "block");
-        if (block.is_err()) {
-            return block.unwrap_err();
-        }
         m_block = block.unwrap();
         return Status::Ok;
     }
