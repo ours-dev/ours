@@ -15,6 +15,10 @@
 
 ## Verification
 
+- The review round (0c77b3f3): the core extracted to registry.hpp and driven
+  on the fake kernel -- 9 registry tests + 8 dev codec tests (13 new), the
+  strictness fix, fake_kernel's peer_closed; full verify green after.
+
 - Dual-disk (the verdict image): both leaves mounted (`block/000` from nvme,
   `block/001` from virtio-blk — the grant rule naming both), GetInfo through
   each answering 131072 blocks, `routing_checks: passed` 7/7, the virtio
