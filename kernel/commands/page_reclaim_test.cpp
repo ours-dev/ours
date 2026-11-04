@@ -180,12 +180,9 @@ namespace {
         auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
         Guard guard{node->lock()};
         auto cursor = node->make_cursor(index * P, P);
-        if (!cursor) {
-            return {};
-        }
         // Looking is not using.
-        cursor->disable_mark_accessed();
-        auto const found = cursor->maybe_page();
+        cursor.disable_mark_accessed();
+        auto const found = cursor.maybe_page();
         if (found.is_none()) {
             return {};
         }
@@ -218,7 +215,7 @@ namespace {
         Guard guard{node->lock()};
         auto cursor = node->make_cursor(index * P, P);
         mm::MultiPageRequest request;
-        auto const read = cursor->require_page(false, 1, &request);
+        auto const read = cursor.require_page(false, 1, &request);
         return read.is_err() && read.unwrap_err() == Status::ShouldWait;
     }
 

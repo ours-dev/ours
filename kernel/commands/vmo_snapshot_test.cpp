@@ -97,11 +97,8 @@ namespace {
     auto lookup(Node &node, bool const will_write, usize const page_index) -> ktl::Result<Found> {
         Guard guard{node->lock()};
         auto cursor = node->make_cursor(page_index * PAGE_SIZE, PAGE_SIZE);
-        if (!cursor) {
-            return ktl::err(cursor.unwrap_err());
-        }
         mm::MultiPageRequest request;
-        return cursor->require_page(will_write, 1, &request);
+        return cursor.require_page(will_write, 1, &request);
     }
 
     TA_NO_THREAD_SAFETY_ANALYSIS

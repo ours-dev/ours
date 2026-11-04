@@ -215,7 +215,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         return m_attachments.size();
     }
 
-    /// Makes |change| to the page tables of every mapping, of every object
+    /// Applies |op| to the page tables of every mapping, of every object
     /// over these pages, of [offset, offset + len) of them (offsets in this
     /// node's bytes, which each object translates into its own): a clone takes
     /// Write away from the node it clones, since the pages are about to be
@@ -281,41 +281,6 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         return m_children.size();
     }
 
-    /// Makes every page of [offset, offset + size) the node's own, from the
-    /// start, and says in |nr_commited| how many it got through. ShouldWait
-    /// when a page source has to supply one first: the request for it is
-    /// raised in |request|, which the caller waits on with this lock let go
-    /// and then calls again from the page it stopped at.
-    TA_REQUIRES(m_lock)
-    auto commit_range_locked(usize offset, usize size, MultiPageRequest *request,
-                             usize *nr_commited) -> Status;
-
-    /// Makes every page of [offset, offset + size) the node's own, as
-    /// commit_range_locked() does, and pins each one, from the start: a pinned
-    /// page stays where it is, in this node and in the same frame, until every
-    /// pin on it is undone. A page that is pinned is filed as pinned, and not
-    /// reclaimable.
-    ///
-    /// Counted: a page pinned twice needs two unpins. A page that already holds
-    /// 255 pins is NoResource. |nr_pinned| is how many pages from the start of
-    /// the range were pinned, whatever the answer: ShouldWait when a page source
-    /// has to supply a page first, the request raised in |request| as for
-    /// commit_range_locked(), and the caller calls again from the page it
-    /// stopped at; any other error leaves those pages pinned, for the caller
-    /// to undo with unpin_range_locked() or to go on from.
-    TA_REQUIRES(m_lock)
-    auto pin_range_locked(usize offset, usize size, MultiPageRequest *request, usize *nr_pinned)
-        -> Status;
-
-    /// Undoes one pin of each page of [offset, offset + size). BadState, and no
-    /// pin undone, if any page of the range holds none: unpinning what was not
-    /// pinned is the caller's bug, and a count that wrapped would hold a page
-    /// for ever. A page whose last pin goes is filed again as its kind says,
-    /// and a page of a node with a page source as written, not reclaimable:
-    /// the pin handed it to a device that may have changed it.
-    TA_REQUIRES(m_lock)
-    auto unpin_range_locked(usize offset, usize size) -> Status;
-
     /// How many pages of this node are pinned.
     TA_REQUIRES(m_lock)
     auto nr_pinned_pages_locked() const -> usize {
@@ -323,7 +288,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     }
 
     TA_REQUIRES(m_lock)
-    auto make_cursor(usize offset, usize size) -> ustl::Result<Cursor, Status>;
+    auto make_cursor(usize offset, usize size) -> Cursor;
 
     /// One 2 MiB block as this node sees it: where its frames start, and
     /// whether the node may write them.
@@ -449,6 +414,29 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     }
 
   private:
+    friend class VmObjectPaged;
+
+    enum class CommitMode : u8 {
+        Owned,
+        Pin,
+    };
+
+    /// Materializes the node's own pages in order and optionally pins each one.
+    /// |nr_done| counts the completed prefix, including on error. On ShouldWait
+    /// the caller drops the lock, waits on |request| and resumes after that prefix.
+    TA_REQUIRES(m_lock)
+    auto commit_range_locked(usize offset, usize size, CommitMode mode, MultiPageRequest &request,
+                             usize &nr_done) -> Status;
+
+    /// Undoes one pin of each page of [offset, offset + size). BadState, and no
+    /// pin undone, if any page of the range holds none: unpinning what was not
+    /// pinned is the caller's bug, and a count that wrapped would hold a page
+    /// for ever. A page whose last pin goes is filed again as its kind says,
+    /// and a page of a node with a page source as written, not reclaimable:
+    /// the pin handed it to a device that may have changed it.
+    TA_REQUIRES(m_lock)
+    auto unpin_range_locked(usize offset, usize size) -> Status;
+
     /// The lock of one whole tree of VmCowPages, held by every node in it.
     ///
     /// A node cannot own the tree's mutex, because any node can die first:
@@ -795,7 +783,6 @@ class VmCowPages::Cursor {
         bool writable;
     };
 
-    Cursor(VmCowPages *owner, usize offset, usize size);
     ~Cursor() = default;
 
     /// Hand back the page for the offset the cursor sits on, then step past it.
@@ -819,7 +806,6 @@ class VmCowPages::Cursor {
     /// risk recursing into reclaim and faulting again.
     auto require_page(bool will_write, usize nr_pages, MultiPageRequest *request)
         -> ktl::Result<RequireResult>;
-    auto require_read_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<RequireResult>;
     auto require_owned_page(usize nr_pages, MultiPageRequest *request)
         -> ktl::Result<RequireResult>;
 
@@ -844,10 +830,13 @@ class VmCowPages::Cursor {
         m_mark_accessed = false;
     }
 
+  private:
+    friend class VmCowPages;
+
+    Cursor(VmCowPages *owner, usize offset, usize size);
+    auto require_read_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<RequireResult>;
     auto create_read_request(usize nr_pages, PageRequest *request) -> Status;
     auto create_dirty_request(usize nr_pages, PageRequest *request) -> Status;
-
-  private:
     auto convert_reference_to_page(AnonymousPageRequest *request) -> Status;
 
     /// Marks |result|'s page used, unless disable_mark_accessed() said not to,
@@ -860,10 +849,6 @@ class VmCowPages::Cursor {
 
     [[nodiscard]]
     auto is_type_reference() const -> bool;
-    [[nodiscard]]
-    auto is_type_page() const -> bool;
-    [[nodiscard]]
-    auto is_type_zero() const -> bool;
 
     /// The page index the cursor currently sits on.
     [[nodiscard]]

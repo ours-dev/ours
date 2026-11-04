@@ -350,67 +350,56 @@ auto VmObjectPaged::create_clone(u64 const offset, u64 const size,
     return Status::Ok;
 }
 
-FORCE_INLINE
-auto VmObjectPaged::commit_range_internal(usize offset, usize size, CommitOptions option)
-    -> Status {
-    if (!!(option & CommitOptions::Pin)) {
-        if (!size) {
-            return Status::InvArgs;
-        }
-    }
-
-    if (!size) {
-        return Status::Ok;
-    }
-
-    // One call commits as much of the range as it can. It stops early only
-    // with ShouldWait, when a page source has to supply a page first: the
-    // request is waited on with the lock let go, since the provider supplies
-    // under this same lock, and the next call starts at the first page not yet
-    // committed. Without that advance the loop would only repeat itself. (A
-    // loop once called it for the whole range once per page, so a VMO of n
-    // pages cost n^2 lookups.)
-    //
-    // Raised under the lock, waited on outside it, as in copy_page_by_page().
+auto VmObjectPaged::commit_range_internal(usize const offset, usize const size,
+                                          VmCowPages::CommitMode const mode) -> Status {
     MultiPageRequest request;
     usize done = 0;
+    auto status = Status::Ok;
     while (done < size) {
         {
             Guard guard{m_lock};
-            // The whole range, offset included, and written so that it cannot
-            // wrap: this used to compare |size| alone against the object's
-            // size, so a range starting anywhere but 0 was admitted however
-            // far it ran past the end. Rechecked each time the lock is
-            // retaken, since the size is only known while it is held.
+            // Recheck the whole range after each wait, with the lock held.
             if (size > m_size || offset > m_size - size) {
-                return Status::OutOfRange;
+                status = Status::OutOfRange;
+                break;
             }
 
-            usize nr_committed = 0;
+            usize nr_done = 0;
             assert_cow_pages_locked();
-            auto const status = m_cow_pages->commit_range_locked(
-                m_cow_offset + offset + done, size - done, &request, &nr_committed);
-            done += nr_committed * PAGE_SIZE;
+            status = m_cow_pages->commit_range_locked(m_cow_offset + offset + done, size - done,
+                                                      mode, request, nr_done);
+            done += nr_done * PAGE_SIZE;
             if (Status::ShouldWait != status) {
-                return status;
+                break;
             }
         }
 
-        // Suspendable, as copy_page_by_page()'s wait is, for the same reason.
-        // A wait that ends without the page fails the commit with its status;
-        // the pages committed before it stay.
-        if (auto const status = request.wait(true); Status::Ok != status) {
-            return status;
+        status = request.wait(true);
+        if (Status::Ok != status) {
+            break;
         }
     }
-    return Status::Ok;
+
+    if (mode == VmCowPages::CommitMode::Pin && Status::Ok != status && done != 0) {
+        // A failed pin releases this call's pins. The materialized pages stay.
+        Guard guard{m_lock};
+        assert_cow_pages_locked();
+        [[maybe_unused]]
+        auto const undone = m_cow_pages->unpin_range_locked(m_cow_offset + offset, done);
+        DEBUG_ASSERT(Status::Ok == undone, "pages this call pinned were not pinned");
+    }
+    return status;
 }
 
-auto VmObjectPaged::commit_range(usize offset, usize size, CommitOptions option) -> Status {
+auto VmObjectPaged::commit_range(usize const offset, usize const size, CommitOptions const option)
+    -> Status {
     m_canary.verify<Self>();
 
     log::trace("VMO Commit Action: [ofs: {:X}, size: {:X}]", offset, size);
-    return commit_range_internal(offset, size, option);
+    if (size == 0) {
+        return !!(option & CommitOptions::Pin) ? Status::InvArgs : Status::Ok;
+    }
+    return commit_range_internal(offset, size, VmCowPages::CommitMode::Owned);
 }
 
 auto VmObjectPaged::decommit(usize offset, usize size) -> Status {
@@ -425,50 +414,7 @@ auto VmObjectPaged::pin_range(usize const offset, usize const size) -> Status {
     if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
         return Status::InvArgs;
     }
-
-    // One call pins as much as it can and stops early only with ShouldWait, as
-    // commit_range_internal() does: the request is waited on with the lock let
-    // go, and the next call starts at the first page not yet pinned. The pages
-    // pinned meanwhile stay pinned, which is what makes the wait safe.
-    MultiPageRequest request;
-    usize done = 0;
-    auto status = Status::Ok;
-    while (done < size) {
-        {
-            Guard guard{m_lock};
-            // Rechecked each time the lock is retaken, written so that it cannot
-            // wrap, as commit_range_internal() does.
-            if (size > m_size || offset > m_size - size) {
-                status = Status::OutOfRange;
-                break;
-            }
-
-            usize nr_pinned = 0;
-            assert_cow_pages_locked();
-            status = m_cow_pages->pin_range_locked(m_cow_offset + offset + done, size - done,
-                                                   &request, &nr_pinned);
-            done += nr_pinned * PAGE_SIZE;
-            if (Status::ShouldWait != status) {
-                break;
-            }
-        }
-
-        // Suspendable, as the commit's wait is.
-        status = request.wait(true);
-        if (Status::Ok != status) {
-            break;
-        }
-    }
-
-    if (Status::Ok != status && done != 0) {
-        // Whole or not at all: what was pinned before the failure is let go.
-        Guard guard{m_lock};
-        assert_cow_pages_locked();
-        [[maybe_unused]]
-        auto const undone = m_cow_pages->unpin_range_locked(m_cow_offset + offset, done);
-        DEBUG_ASSERT(Status::Ok == undone, "pages this call pinned were not pinned");
-    }
-    return status;
+    return commit_range_internal(offset, size, VmCowPages::CommitMode::Pin);
 }
 
 auto VmObjectPaged::unpin_range(usize const offset, usize const size) -> Status {
@@ -501,16 +447,13 @@ auto VmObjectPaged::lookup_contiguous(usize const offset, usize const size, Phys
 
     assert_cow_pages_locked();
     auto cursor = m_cow_pages->make_cursor(m_cow_offset + offset, size);
-    if (!cursor) {
-        return cursor.unwrap_err();
-    }
     // Looking is not using: the answer is about where the pages are, and an
     // access through the physmap that this is not.
-    cursor->disable_mark_accessed();
+    cursor.disable_mark_accessed();
 
     auto first = PhysAddr{0};
     for (usize at = 0; at < size; at += PAGE_SIZE) {
-        auto const found = cursor->maybe_page();
+        auto const found = cursor.maybe_page();
         if (found.is_none()) {
             return Status::BadState;
         }
@@ -663,9 +606,6 @@ auto VmObjectPaged::copy_page_by_page(usize const offset, usize const size, bool
             assert_cow_pages_locked();
             auto cursor =
                 m_cow_pages->make_cursor(m_cow_offset + first_page, end_page - first_page);
-            if (!cursor) {
-                return cursor.unwrap_err();
-            }
 
             while (done < size) {
                 auto const at = offset + done;
@@ -677,7 +617,7 @@ auto VmObjectPaged::copy_page_by_page(usize const offset, usize const size, bool
                 // an anonymous VMO both commit a zeroed page where there was
                 // none, so a read of a never-written page reads zero (see
                 // VmCowPages::Cursor).
-                auto page = cursor->require_page(will_write, 1, &request);
+                auto page = cursor.require_page(will_write, 1, &request);
                 if (!page) {
                     if (Status::ShouldWait == page.unwrap_err()) {
                         must_wait = true;

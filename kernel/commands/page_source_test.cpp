@@ -368,7 +368,7 @@ namespace {
         {
             auto cursor = node->make_cursor(P, P);
             mm::MultiPageRequest request;
-            auto const read = cursor->require_page(false, 1, &request);
+            auto const read = cursor.require_page(false, 1, &request);
             verdict(tally,
                     read && read->page == mm::get_zero_page() && !read->writable &&
                         provider.nr_sent() == 0 && node->nr_pages_locked() == 0,
@@ -378,7 +378,7 @@ namespace {
             // Withdrawn when |request| goes, at the end of the block.
             auto cursor = node->make_cursor(0, 3 * P);
             mm::MultiPageRequest request;
-            auto const read = cursor->require_page(false, 3, &request);
+            auto const read = cursor.require_page(false, 3, &request);
             verdict(tally,
                     read.is_err() && read.unwrap_err() == Status::ShouldWait &&
                         is(provider.take(), 0, P),
@@ -396,7 +396,7 @@ namespace {
             auto const supplied = held && node->supply_pages_locked(P, P, &pages) == Status::Ok;
             auto cursor = node->make_cursor(P, P);
             mm::MultiPageRequest request;
-            auto const read = cursor->require_page(false, 1, &request);
+            auto const read = cursor.require_page(false, 1, &request);
             verdict(tally,
                     supplied && read && read->page == mm::get_zero_page() &&
                         node->nr_pages_locked() == 0,
@@ -405,7 +405,7 @@ namespace {
         {
             auto cursor = node->make_cursor(P, P);
             mm::MultiPageRequest request;
-            auto const written = cursor->require_page(true, 1, &request);
+            auto const written = cursor.require_page(true, 1, &request);
             verdict(tally,
                     written && written->writable && written->page != mm::get_zero_page() &&
                         is_zero(written->page) && node->nr_pages_locked() == 1 &&

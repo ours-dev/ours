@@ -177,7 +177,7 @@ class VmObjectPaged: public VmObject {
     auto source_owner_id() const -> ustl::Option<u64> override;
 
     /// A page nobody has written reads as zero. Reading it commits a zeroed
-    /// page, as a fault would (VmCowPages::Cursor::require_read_page()). In a
+    /// page, as a fault would (VmCowPages::Cursor::require_page()). In a
     /// VMO made by with_source() there is no such page: the read waits until
     /// the provider supplies it, and fails if the provider fails it. The same
     /// holds for write(), read_user() and write_user().
@@ -227,7 +227,7 @@ class VmObjectPaged: public VmObject {
             return ustl::err(Status::OutOfRange);
         }
         assert_cow_pages_locked();
-        return m_cow_pages->make_cursor(m_cow_offset + offset, size);
+        return ustl::ok(m_cow_pages->make_cursor(m_cow_offset + offset, size));
     }
 
     /// Whether this object's 2 MiB at |offset| are one block of its pages; see
@@ -273,7 +273,7 @@ class VmObjectPaged: public VmObject {
         m_cow_pages->lock().assert_held();
     }
 
-    auto commit_range_internal(usize offset, usize size, CommitOptions option) -> Status;
+    auto commit_range_internal(usize offset, usize size, VmCowPages::CommitMode mode) -> Status;
 
     /// Moves |chunk| bytes between |page| and the caller's buffer at |done|,
     /// and says whether a user-side fault stopped it. |page| is writable even

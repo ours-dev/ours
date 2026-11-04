@@ -89,12 +89,9 @@ namespace {
         auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
         Guard guard{node->lock()};
         auto cursor = node->make_cursor(offset, P);
-        if (!cursor) {
-            return {};
-        }
         // Looking is not using: the checks read a page's age after this.
-        cursor->disable_mark_accessed();
-        auto const found = cursor->maybe_page();
+        cursor.disable_mark_accessed();
+        auto const found = cursor.maybe_page();
         if (found.is_none()) {
             return {};
         }

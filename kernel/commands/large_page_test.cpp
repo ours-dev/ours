@@ -116,11 +116,8 @@ namespace {
     auto touch(Node &node, usize const index, bool const write) -> mm::VmPage * {
         Guard guard{node->lock()};
         auto cursor = node->make_cursor(index * PAGE_SIZE, PAGE_SIZE);
-        if (!cursor) {
-            return nullptr;
-        }
         mm::MultiPageRequest request;
-        auto found = cursor->require_page(write, 1, &request);
+        auto found = cursor.require_page(write, 1, &request);
         if (!found) {
             return nullptr;
         }
