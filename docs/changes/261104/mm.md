@@ -391,3 +391,45 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Name the VMM range notification range_change (2026-11-04)
+
+**Files**
+
+- The COW, VMO and mapping methods in `kernel/mm` and their callers in the snapshot and large-page tests.
+
+**Symptom**
+
+The notification methods used the `operate_range` name.
+
+**Cause**
+
+The old name emphasized the operation applied to a range. These methods are the path that propagates a range change to page tables.
+
+**Change**
+
+`operate_range_locked` becomes `range_change_locked` in COW and VMO. The mapping endpoint is `range_change_locked_object`. `RangeOp` still describes what the notification requests.
+
+**Reference**
+
+Zircon's `VmObjectPaged::RangeChangeUpdateLocked` uses the same range-change vocabulary for the VMO notification.
+
+**Verification**
+
+Clang-format and clang-tidy checked the ten C++ files with no diagnostics on changed lines. The debug and release dev images booted. All 163 host tests passed, along with 247 snapshot checks and 28 large-page checks.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user asked to restore the range-change naming.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

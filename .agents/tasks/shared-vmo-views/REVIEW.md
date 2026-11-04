@@ -55,3 +55,7 @@ the slice fits inside the parent window. Both intersections cap the range
 end before addition. The snapshot suite covers whole-range invalidation
 and handoff to a view with a disjoint window. The default and NUMA runs
 passed, and clang-tidy reported no diagnostics on changed lines.
+
+## Follow-up on range change naming
+
+The C++ diff changes only the range notification symbol, its references and formatting. The debug and release boots, all 163 host tests, 247 snapshot checks and 28 large-page checks passed.

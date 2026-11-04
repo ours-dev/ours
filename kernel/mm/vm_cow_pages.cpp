@@ -91,7 +91,7 @@ auto VmCowPages::reclaim_page(PgOff const index, VmPage *const page) -> ReclaimR
     // must leave no mapping behind. No fault can map the page again until the
     // lock is let go, since every fault takes it to find the page, and by
     // then the slot is a hole.
-    operate_range_locked(usize(index) << PAGE_SHIFT, PAGE_SIZE, RangeOp::Unmap);
+    range_change_locked(usize(index) << PAGE_SHIFT, PAGE_SIZE, RangeOp::Unmap);
 
     [[maybe_unused]]
     auto *const removed = m_pages.remove_page(index);
@@ -130,14 +130,14 @@ auto VmCowPages::dedup_zero_page(PgOff const index, VmPage *const page) -> Recla
     // The page looks zero. Take Write from every mapping, and look again: it
     // cannot change from here, so what is seen now is what will be freed.
     auto const offset = usize(index) << PAGE_SHIFT;
-    operate_range_locked(offset, PAGE_SIZE, RangeOp::RemoveWrite);
+    range_change_locked(offset, PAGE_SIZE, RangeOp::RemoveWrite);
     if (!is_zero_filled(page)) {
         return leave();
     }
 
     // The entries go before the frame does, as in reclaim_page(), and the slot
     // keeps the content as a marker, which allocates nothing.
-    operate_range_locked(offset, PAGE_SIZE, RangeOp::Unmap);
+    range_change_locked(offset, PAGE_SIZE, RangeOp::Unmap);
     [[maybe_unused]]
     auto *const taken = m_pages.replace_page_with_zero_marker(index);
     DEBUG_ASSERT(taken == page, "the page at {} left the list under the lock", index);
@@ -262,7 +262,7 @@ VmCowPages::~VmCowPages() {
     m_pages.drain_owned([](VmPage *const page) { free_page(page); });
 }
 
-auto VmCowPages::operate_range_locked(usize const offset, usize const len, RangeOp const op)
+auto VmCowPages::range_change_locked(usize const offset, usize const len, RangeOp const op)
     -> void {
     if (auto *const representative = m_representative) {
         representative->lock().assert_held();
@@ -622,7 +622,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
         // shared, of every object over this node: a writable entry left over a
         // page that another node is about to see would write to all of them.
         // Under the lock, so no fault can map a page writable in between.
-        operate_range_locked(0, m_size, RangeOp::RemoveWrite);
+        range_change_locked(0, m_size, RangeOp::RemoveWrite);
 
         hidden_node->m_parent = m_parent;
         hidden_node->m_parent_offset = m_parent_offset;
@@ -939,7 +939,7 @@ auto VmCowPages::take_pages_locked(usize const offset, usize const len,
     // reachable through a mapping of it. Harmless if a step below fails: the
     // pages fault back in. No fault can map one again until this returns,
     // since every fault takes this lock to find a page.
-    operate_range_locked(offset, len, RangeOp::Unmap);
+    range_change_locked(offset, len, RangeOp::Unmap);
 
     // A page this node sees through an ancestor is made its own, the way a
     // write makes it. Only then is it the node's to hand over: the ancestor's

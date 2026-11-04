@@ -541,8 +541,8 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     return first_failure;
 }
 
-auto VmMapping::operate_range_locked_object(usize const vmo_offset, usize const len,
-                                            RangeOp const op) -> void {
+auto VmMapping::range_change_locked_object(usize const vmo_offset, usize const len,
+                                           RangeOp const op) -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(m_vmo);
     m_vmo->lock().assert_held();
@@ -868,7 +868,7 @@ auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existin
             // |existing| was read before this lock was taken, and a frame leaves
             // the object only under it, after every entry for it is unmapped;
             // Write is taken off entries the same way (a clone's
-            // operate_range_locked()). So the entry is read again now that the
+            // range_change_locked()). So the entry is read again now that the
             // lock is held. One that is gone, or names another frame, is not the
             // one this fault saw: the access retries, and finds what is there now.
             // Mapping |existing| again would map a frame the object no longer has.

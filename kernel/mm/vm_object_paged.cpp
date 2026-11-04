@@ -77,7 +77,7 @@ auto VmObjectPaged::operate_views_locked(usize const cow_offset, usize const len
         auto const first = std::max(cow_offset, view.m_cow_offset);
         auto const last = std::min(end, view.m_cow_offset + view.m_size);
         if (first < last) {
-            view.operate_range_locked(first - view.m_cow_offset, last - first, op);
+            view.range_change_locked(first - view.m_cow_offset, last - first, op);
         }
     };
     notify(*this);

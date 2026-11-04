@@ -113,7 +113,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// aligned, and a hidden node cannot be cloned: BadState.
     ///
     /// Write is taken from every mapping of the pages that move, through the
-    /// objects registered over this node (operate_range_locked()), since the
+    /// objects registered over this node (range_change_locked()), since the
     /// pages become shared and a writable mapping would write to all of their
     /// viewers. What this cannot check, because pinning is the object's and not
     /// the pages', is that none of them is pinned: the object that calls this
@@ -173,7 +173,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// byte range. The notification completes under the tree lock before the
     /// caller changes the page slots or releases frames.
     TA_REQUIRES(m_lock)
-    auto operate_range_locked(usize offset, usize len, RangeOp op) -> void;
+    auto range_change_locked(usize offset, usize len, RangeOp op) -> void;
 
     /// What reclaim_page() or dedup_zero_page() did.
     enum class ReclaimResult : u8 {
@@ -334,7 +334,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// |pages|, a fresh list as long as the range, at the same places, and
     /// leaves the range reading zero: each page and zero marker moves, and an
     /// offset with neither is a gap. First the range is unmapped from every
-    /// mapping of every object over the node (operate_range_locked()), since a
+    /// mapping of every object over the node (range_change_locked()), since a
     /// frame that leaves has to leave no entry behind.
     ///
     /// In a copy-on-write tree, a page this node only sees through an

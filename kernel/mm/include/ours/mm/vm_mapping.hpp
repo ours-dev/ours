@@ -113,7 +113,7 @@ class VmMapping final: public VmAreaOrMapping {
 
     /// Applies |op| to the page tables of the part of this mapping that
     /// shows [vmo_offset, vmo_offset + len) of its object; see
-    /// VmObject::operate_range_locked(). Called with the object's lock held and
+    /// VmObject::range_change_locked(). Called with the object's lock held and
     /// without the address space's.
     ///
     /// Only the page tables change. The record of what the mapping allows
@@ -130,7 +130,7 @@ class VmMapping final: public VmAreaOrMapping {
     ///
     /// A failure would leave a shared page writable, or an entry to a frame
     /// the object no longer has, and cannot be undone, so it stops the kernel.
-    auto operate_range_locked_object(usize vmo_offset, usize len, RangeOp op) -> void;
+    auto range_change_locked_object(usize vmo_offset, usize len, RangeOp op) -> void;
 
     /// Gives a present entry a permission an access needs and it lacks; see the
     /// definition. Part of page_fault(), split out for its length.

@@ -254,7 +254,7 @@ namespace {
     auto remove_write(ustl::Arc<mm::VmObjectPaged> &vmo, usize const offset, usize const len)
         -> void {
         Guard guard{vmo->lock()};
-        vmo->operate_range_locked(offset, len, mm::RangeOp::RemoveWrite);
+        vmo->range_change_locked(offset, len, mm::RangeOp::RemoveWrite);
     }
 
     // Removing Write from the page tables of the mappings of an object, from the
@@ -627,7 +627,7 @@ namespace {
     auto operate_cow_range(ustl::Arc<mm::VmCowPages> const &cow, usize const offset,
                            usize const len, mm::RangeOp const op) -> void {
         Guard guard{const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->lock()};
-        const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->operate_range_locked(offset, len, op);
+        const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->range_change_locked(offset, len, op);
     }
 
     // Objects over the same pages: a slice shares its parent's pages and has its own

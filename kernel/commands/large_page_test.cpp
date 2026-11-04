@@ -232,7 +232,7 @@ namespace {
         -> void {
         auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
         Guard guard{node->lock()};
-        node->operate_range_locked(offset, len, mm::RangeOp::Unmap);
+        node->range_change_locked(offset, len, mm::RangeOp::Unmap);
     }
 
     /// A large-page object of |size| bytes, mapped read-write at |va| from

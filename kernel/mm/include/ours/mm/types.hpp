@@ -119,7 +119,7 @@ class VmPageSpliceList;
 
 /// What an operation on a range of a node's pages does to the page tables of
 /// every mapping of them, of every object over the node
-/// (VmCowPages::operate_range_locked()). Done under the node's lock, so that
+/// (VmCowPages::range_change_locked()). Done under the node's lock, so that
 /// no fault can map the pages again before the operation is over.
 enum class RangeOp : u8 {
     /// Write comes off the entries, which keep Read and Execute; the mappings'
