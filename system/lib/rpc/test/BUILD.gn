@@ -1,0 +1,15 @@
+# The rpc core's host tests, over the fake kernel: the pipeline's own
+# behaviors, the test playing the provider inside the fixture's pump.
+executable("rpc") {
+  testonly = true
+  sources = [ "rpc_test.cpp" ]
+  deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

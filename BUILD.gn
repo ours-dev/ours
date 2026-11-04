@@ -88,6 +88,10 @@ group("default") {
     # refusals, and the leaf forward, on the fake kernel.
     "//system/service/device-registry:tests($host_toolchain)",
 
+    # The rpc core: call round trip, epitaph translation, peer-closed, the
+    # txid wrap, the stray handle, on the fake kernel.
+    "//system/lib/rpc:tests($host_toolchain)",
+
     # ours.gpt's parser: the CRC-32's known answer, the header and entry
     # parses and their refusals, and whole tables read through a fake reader.
     "//system/lib/ours.gpt:tests($host_toolchain)",

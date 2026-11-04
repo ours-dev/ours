@@ -12,6 +12,7 @@ executable("registry") {
     "//system/lib/ioservice:outgoing",
     "//system/lib/loop",
     "//system/lib/protocols",
+    "//system/lib/rpc:headers",
     "//system/lib/server",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",

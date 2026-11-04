@@ -13,7 +13,14 @@
 // open reaching its publisher as an Open of svc/<protocol>, an open of the
 // tree's dev/ node under a path no use can name refused NotFound, and the
 // client's granted-name span, filled and NUL-terminated, BufferTooSmall
-// when it does not fit.
+// when it does not fit, a forward to a dead publisher reading PeerClosed
+// with its report on the console, the subdirs dev/class and dev/class/block
+// listing their own entries, the ninth dev/ bind refused with the epitaph,
+// a publish past the tree's nodes refused NoResource with its mount slot
+// back, a publisher gone before its answer still mounted and the registry
+// serving on, and the client's own refusals -- a class past its bound
+// answered before any I/O and a publish on a connection already gone
+// reading PeerClosed.
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
 
@@ -22,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -31,6 +39,8 @@
 #include <loop/loop.hpp>
 #include <prot/block.hpp>
 #include <prot/dev_client.hpp>
+#include <prot/io.hpp>
+#include <rpc/rpc.hpp>
 #include <wire/wire.hpp>
 
 // How gtest prints a status in a failure: by name, found by argument-
@@ -104,6 +114,8 @@ constexpr auto BLOCK = std::string_view{"ours.block.Block"};
 /// The decided sizes, used as numbers: a constant changed by mistake fails
 /// the tests instead of moving them.
 constexpr auto MAX_MOUNTS = usize{8};
+constexpr auto MAX_TREE_CONNECTIONS = usize{8};
+constexpr auto TREE_NODES = usize{16};
 
 /// A publisher whose outgoing records the channels leaf forwards bring: the
 /// test's stand-in for a block driver, minus the hardware.
@@ -158,11 +170,12 @@ class RegistryTest: public testing::Test {
         return {client, server};
     }
 
-    /// An Open of |path| with |flags|, carrying |object|, written on the
-    /// outgoing directory -- how the root forwards an Open, and how every
-    /// connection this test makes is made. The loop runs the routing.
-    auto open_on_directory(std::string_view const path, prot::io::Flags const flags,
-                           Uandle const object) -> Status {
+    /// An Open of |path| with |flags|, carrying |object|, written on
+    /// |connection| -- how a bound connection's opens of the tree's subdirs
+    /// and leaves are made, and, for the outgoing directory, how the root
+    /// forwards an Open. The loop runs the routing.
+    auto open_on(Uandle const connection, std::string_view const path, prot::io::Flags const flags,
+                 Uandle const object) -> Status {
         auto handles = std::array{object};
         auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
         auto const open =
@@ -172,19 +185,68 @@ class RegistryTest: public testing::Test {
         }
         auto const message = wire::Message{.bytes = std::span{bytes}.first(open->bytes.size()),
                                            .handles = std::span{handles}.first(1)};
-        return ours::channel_write(m_directory, ours::ChannelWriteOptions::None,
+        return ours::channel_write(connection, ours::ChannelWriteOptions::None,
                                    message.bytes.data(), static_cast<u32>(message.bytes.size()),
                                    message.handles.data(), 1);
     }
 
+    /// An Open of |path| with |flags|, carrying |object|, written on the
+    /// outgoing directory -- how every connection from the namespace is made.
+    auto open_on_directory(std::string_view const path, prot::io::Flags const flags,
+                           Uandle const object) -> Status {
+        return open_on(m_directory, path, flags, object);
+    }
+
+    /// The names one ReadDirents on |connection| lists, "." included: the
+    /// request asks for as much as a reply carries, so one answer holds the
+    /// whole listing. The client's wait pumps the Loop, which answers it.
+    auto list_directory(Uandle const connection) -> std::vector<std::string> {
+        auto request_bytes = std::array<u8, wire::HEADER_SIZE + sizeof(u64)>{};
+        auto const request = prot::io::encode_read_dirents(
+            request_bytes, {.txid = 1, .max_bytes = prot::io::MAX_BUF});
+        EXPECT_TRUE(request.is_ok());
+        if (request.is_err()) {
+            return {};
+        }
+        auto reply_bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+        auto reply_handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
+        auto const answered =
+            rpc::conduct(connection, request.unwrap(), reply_bytes, reply_handles);
+        EXPECT_TRUE(answered.is_ok());
+        if (answered.is_err()) {
+            return {};
+        }
+        auto const reply = prot::io::decode_read_dirents_reply(*answered, 1);
+        EXPECT_TRUE(reply.is_ok());
+        if (reply.is_err()) {
+            return {};
+        }
+        auto names = std::vector<std::string>{};
+        auto reader = prot::io::DirentReader{reply->dirents};
+        while (true) {
+            auto const entry = reader.next();
+            EXPECT_TRUE(entry.is_ok());
+            if (entry.is_err()) {
+                break;
+            }
+            if (entry.unwrap().is_none()) {
+                break;
+            }
+            names.emplace_back(entry.unwrap()->name);
+        }
+        return names;
+    }
+
     /// A publisher: its outgoing with the recording handler served on one
-    /// end, the other end the mount handle a publish carries. The handler is
-    /// on the heap; the recording runs past the test step that made it.
+    /// end, the other end the mount handle a publish carries, and the served
+    /// end recorded so a test can take the outgoing down. The handler is on
+    /// the heap; the recording runs past the test step that made it.
     struct Publisher {
         std::unique_ptr<ioservice::Outgoing::Storage> storage;
         std::unique_ptr<RecordingHandler> handler;
         std::unique_ptr<ioservice::Outgoing> outgoing;
         Uandle mount = Uandle::Invalid;
+        Uandle served = Uandle::Invalid;
     };
 
     auto make_publisher() -> Publisher {
@@ -196,6 +258,7 @@ class RegistryTest: public testing::Test {
         auto const ends = channel();
         EXPECT_EQ(publisher.outgoing->serve(ends[1]), Status::Ok);
         publisher.mount = ends[0];
+        publisher.served = ends[1];
         return publisher;
     }
 
@@ -425,4 +488,243 @@ TEST_F(RegistryTest, GrantedSpanFilledAndBounded) {
     auto second = make_publisher();
     EXPECT_EQ(publish("block", "000", BLOCK, second.mount, fit), Status::Ok);
     EXPECT_STREQ(fit.data(), "001");
+}
+
+/// A leaf's open forwarded to a publisher whose outgoing has died: the
+/// write fails, the failure report runs, nothing reaches the publisher, and
+/// the leaf-open's client end reads PeerClosed -- the Open's handle went
+/// with the refused write, consumed by the kernel either way.
+TEST_F(RegistryTest, ForwardToDeadPublisherReadsPeerClosed) {
+    auto publisher = make_publisher();
+    auto granted = std::array<char, 8>{};
+    EXPECT_EQ(publish("block", "000", BLOCK, publisher.mount, granted), Status::Ok);
+    run();
+
+    // The publisher's outgoing goes away: its serving end closes, and the
+    // mount's directory end loses its peer.
+    EXPECT_EQ(ours::handle_close(publisher.served), Status::Ok);
+
+    // The walk to the leaf, as LeafOpenReachesPublisher makes it.
+    auto const tree_ends = channel();
+    EXPECT_EQ(open_on_directory("dev", prot::io::Flags::ProtocolDirectory | prot::io::PERM_READABLE,
+                                tree_ends[1]),
+              Status::Ok);
+    run();
+    auto const leaf_ends = channel();
+    EXPECT_EQ(
+        open_on(tree_ends[0], "class/block/000", prot::io::Flags::ProtocolService, leaf_ends[1]),
+        Status::Ok);
+    run();
+
+    // Nothing arrived: the forward died on its write, and the report says
+    // so on the debug console.
+    ASSERT_TRUE(publisher.handler->forwarded.empty());
+    auto reported = false;
+    for (auto const &line: fake::kernel().debug_writes()) {
+        if (line.find("cannot forward a leaf's Open") != std::string::npos) {
+            reported = true;
+        }
+    }
+    EXPECT_TRUE(reported);
+    auto observed = ours::Signals::None;
+    EXPECT_EQ(ours::object_wait_one(leaf_ends[0],
+                                    ours::Signals::Readable | ours::Signals::PeerClosed,
+                                    ours::INSTANT_INFINITE, &observed),
+              Status::Ok);
+    EXPECT_FALSE(!(observed & ours::Signals::PeerClosed));
+}
+
+/// The subdirs a use's namespace entry can name, bound like the root: each
+/// lists its own entries through the bound connection -- class/ its class
+/// directories, class/block/ the mounted leaves.
+TEST_F(RegistryTest, SubdirBindsListTheirEntries) {
+    auto publisher = make_publisher();
+    auto granted = std::array<char, 8>{};
+    EXPECT_EQ(publish("block", "000", BLOCK, publisher.mount, granted), Status::Ok);
+    run();
+
+    auto const class_ends = channel();
+    EXPECT_EQ(open_on_directory("dev/class",
+                                prot::io::Flags::ProtocolDirectory | prot::io::PERM_READABLE,
+                                class_ends[1]),
+              Status::Ok);
+    run();
+    auto const listed = list_directory(class_ends[0]);
+    ASSERT_EQ(listed.size(), 2u);
+    EXPECT_EQ(listed[0], ".");
+    EXPECT_EQ(listed[1], "block");
+
+    auto const block_ends = channel();
+    EXPECT_EQ(open_on_directory("dev/class/block",
+                                prot::io::Flags::ProtocolDirectory | prot::io::PERM_READABLE,
+                                block_ends[1]),
+              Status::Ok);
+    run();
+    auto const leaves = list_directory(block_ends[0]);
+    ASSERT_EQ(leaves.size(), 2u);
+    EXPECT_EQ(leaves[0], ".");
+    EXPECT_EQ(leaves[1], "000");
+}
+
+/// The tree's connection table full: the ninth dev/ bind is refused, and
+/// its client end reads the epitaph naming NoResource.
+TEST_F(RegistryTest, TreeConnectionExhaustionRefusesTheNinth) {
+    auto held = std::array<std::array<Uandle, 2>, MAX_TREE_CONNECTIONS + 1>{};
+    for (auto index = usize{0}; index < MAX_TREE_CONNECTIONS + 1; ++index) {
+        held[index] = channel();
+        EXPECT_EQ(open_on_directory("dev",
+                                    prot::io::Flags::ProtocolDirectory | prot::io::PERM_READABLE,
+                                    held[index][1]),
+                  Status::Ok);
+    }
+    run();
+    // The first eight binds hold the table; the ninth's server end carries
+    // the refusal's epitaph and went with it.
+    auto const ninth = held[MAX_TREE_CONNECTIONS][0];
+    auto observed = ours::Signals::None;
+    EXPECT_EQ(ours::object_wait_one(ninth, ours::Signals::Readable | ours::Signals::PeerClosed,
+                                    ours::INSTANT_INFINITE, &observed),
+              Status::Ok);
+    EXPECT_FALSE(!(observed & ours::Signals::Readable));
+    auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+    auto handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
+    auto num_bytes = u32{0};
+    auto num_handles = u32{0};
+    EXPECT_EQ(ours::channel_read(ninth, ours::ChannelReadOptions::None, bytes.data(),
+                                 handles.data(), static_cast<u32>(bytes.size()),
+                                 static_cast<u32>(handles.size()), &num_bytes, &num_handles),
+              Status::Ok);
+    auto const message = wire::Message{.bytes = std::span{bytes}.first(num_bytes), .handles = {}};
+    auto const epitaph = wire::decode_epitaph(message);
+    ASSERT_TRUE(epitaph.is_ok());
+    EXPECT_EQ(epitaph.unwrap(), Status::NoResource);
+}
+
+/// The tree's nodes full: class directories and service nodes one pool,
+/// three of them spent on the layout, two to every class a publish makes --
+/// six classes fit, and every publish past them is refused NoResource, the
+/// refused publish's mount slot coming back with the answer.
+TEST_F(RegistryTest, TreeNodeExhaustionRefusesThePublish) {
+    constexpr auto NEW_CLASSES = usize{(TREE_NODES - 3) / 2};
+    auto publishers = std::array<Publisher, MAX_MOUNTS>{};
+    auto granted = std::array<char, 8>{};
+    for (auto index = usize{0}; index < MAX_MOUNTS; ++index) {
+        publishers[index] = make_publisher();
+        auto const klass = std::array<char, 2>{'c', static_cast<char>('0' + index)};
+        auto const status = publish(std::string_view{klass.data(), klass.size()}, "000", "ours.x.Y",
+                                    publishers[index].mount, granted);
+        if (index < NEW_CLASSES) {
+            EXPECT_EQ(status, Status::Ok);
+        } else {
+            EXPECT_EQ(status, Status::NoResource);
+        }
+    }
+    // The two refusals spent no mount: the six grants hold their slots and
+    // the last two stand free for the next publish, the tree's nodes being
+    // the exhausted pool, not the mounts.
+    run();
+    EXPECT_FALSE(mounts()[6].used);
+    EXPECT_FALSE(mounts()[7].used);
+
+    // The refused classes' directories keep their names: a failed publish
+    // recycles its mount slot, and a name that lived in the slot would
+    // rename the node behind the next publish's back -- the phantom this
+    // case exists to catch. The class directory lists c0..c5, each once.
+    auto const tree_ends = channel();
+    EXPECT_EQ(open_on_directory("dev/class",
+                                prot::io::Flags::ProtocolDirectory | prot::io::PERM_READABLE,
+                                tree_ends[1]),
+              Status::Ok);
+    run();
+    auto const names = list_directory(tree_ends[0]);
+    // Nine: ".", block, and c0..c6 -- c6's directory was created before its
+    // service node was refused, and an empty class is harmless by design.
+    EXPECT_EQ(names.size(), usize{NEW_CLASSES + 3});
+    // The refused c6 and c7 name nothing: c6's directory keeps its own
+    // name (no phantom rename from the recycled slot), and c7 never made a
+    // directory at all.
+    EXPECT_EQ(std::count(names.begin(), names.end(), "c6"), 1U);
+    EXPECT_EQ(std::count(names.begin(), names.end(), "c7"), 0U);
+}
+
+/// A class past its bound is refused by the codec before any I/O: InvArgs,
+/// and the connection lives on -- the same client's next publish goes
+/// through.
+TEST_F(RegistryTest, OverlongClassRefusedBeforeAnyIO) {
+    auto publisher = make_publisher();
+    auto const overlong = std::string(200, 'a');
+    auto granted = std::array<char, 8>{};
+    auto client = prot::dev::Client{connect_registry()};
+    EXPECT_EQ(client.publish(overlong, "000", BLOCK, publisher.mount, granted), Status::InvArgs);
+    EXPECT_EQ(client.publish("block", "000", BLOCK, publisher.mount, granted), Status::Ok);
+    EXPECT_STREQ(granted.data(), "000");
+}
+
+/// A publish on a connection whose server end died before the registry ever
+/// took it: the write reads PeerClosed and that is the publish's answer.
+TEST_F(RegistryTest, PublishOnClosedConnectionReadsPeerClosed) {
+    auto const ends = channel();
+    // The Open is written but never dispatched, so the server end is still
+    // the test's to close -- the connection it names never comes to be.
+    EXPECT_EQ(open_on_directory("svc/ours.dev.Registry", prot::io::Flags::ProtocolService, ends[1]),
+              Status::Ok);
+    EXPECT_EQ(ours::handle_close(ends[1]), Status::Ok);
+    auto client = prot::dev::Client{ends[0]};
+    auto granted = std::array<char, 8>{};
+    auto const spare = channel();
+    EXPECT_EQ(client.publish("block", "000", BLOCK, spare[0], granted), Status::PeerClosed);
+}
+
+/// A publisher that closes its own end right after its Publish, before the
+/// pump runs: the request still reads and the mount still happens -- the
+/// mounted-from report says so, and the mount keeps the directory handle it
+/// took -- and the answer's write then fails on the dead peer, which is
+/// what ends the connection. The registry lives on: the next publish is
+/// answered, the taken name behind it.
+TEST_F(RegistryTest, PublishThenCloseEarlyStillMountsAndKeepsServing) {
+    auto publisher = make_publisher();
+    auto const ends = channel();
+    EXPECT_EQ(open_on_directory("svc/ours.dev.Registry", prot::io::Flags::ProtocolService, ends[1]),
+              Status::Ok);
+    run();
+    // The Publish, raw on the connection, as MalformedPublishClosesConnection
+    // makes it: the codec's own encoder, a real directory handle riding.
+    auto handles = std::array<Uandle, 1>{publisher.mount};
+    auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+    auto const built = prot::dev::encode_publish(bytes, handles,
+                                                 {.txid = 1,
+                                                  .klass = "block",
+                                                  .name = "000",
+                                                  .protocol = BLOCK,
+                                                  .directory = publisher.mount});
+    ASSERT_TRUE(built.is_ok());
+    // The build stamped the fresh handle value into handles[0]; the write
+    // carries it.
+    EXPECT_EQ(ours::channel_write(ends[0], ours::ChannelWriteOptions::None, bytes.data(),
+                                  static_cast<u32>(built->bytes.size()), handles.data(), 1),
+              Status::Ok);
+    // Gone before the pump runs: the answer has no reader to reach.
+    EXPECT_EQ(ours::handle_close(ends[0]), Status::Ok);
+    run();
+
+    // The mount happened all the same, and keeps what it took.
+    auto mounted = false;
+    for (auto const &line: fake::kernel().debug_writes()) {
+        if (line.find(" mounted from a publisher") != std::string::npos) {
+            mounted = true;
+        }
+    }
+    EXPECT_TRUE(mounted);
+    ASSERT_EQ(mounts()[0].used, true);
+    EXPECT_EQ(mounts()[0].klass, "block");
+    EXPECT_EQ(mounts()[0].directory, publisher.mount);
+
+    // The registry answered the next publish as if nothing had happened,
+    // the taken proposal granted the class's next number.
+    auto granted = std::array<char, 8>{};
+    auto second = make_publisher();
+    EXPECT_EQ(publish("block", "000", BLOCK, second.mount, granted), Status::Ok);
+    EXPECT_STREQ(granted.data(), "001");
+    run();
+    ASSERT_EQ(mounts()[1].used, true);
 }

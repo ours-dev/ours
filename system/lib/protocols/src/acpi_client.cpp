@@ -11,6 +11,7 @@
 #include <ours/signals.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
+#include <rpc/rpc.hpp>
 #include <wire/wire.hpp>
 
 namespace prot::acpi {
@@ -27,77 +28,47 @@ namespace {
     constexpr auto REPLY_ROOM = usize{48};
 
     /// Writes |request| on |connection| and reads the one message that answers
-    /// it into |reply|: the message's length, or why not. A message that is an
+    /// it into |reply|: the message's length, or why not. The pipeline is
+    /// rpc::conduct's -- handles intact, epitaphs untranslated -- and this
+    /// family's contract goes on top: a reply carries no handle, and an
     /// epitaph is its status.
     auto exchange(Uandle const connection, wire::Message const request, std::span<u8> const reply)
         -> ustl::Result<usize, Status> {
-        // A write that finds the connection closed is not the answer: the
-        // epitaph the route closed it with is, and it is still there to read.
-        if (auto const written = ours::channel_write(
-                connection, ours::ChannelWriteOptions::None, request.bytes.data(),
-                static_cast<u32>(request.bytes.size()), nullptr, 0);
-            written != Status::Ok && written != Status::PeerClosed) {
-            return ustl::err(written);
+        // Room for one handle all the same, so that a message that brings
+        // one is read, and its handle closed, and then refused.
+        auto handles = std::array<Uandle, 1>{};
+        auto const message = rpc::conduct(connection, request, reply, handles);
+        if (message.is_err()) {
+            return ustl::err(message.unwrap_err());
         }
-        auto observed = ours::Signals::None;
-        if (auto const status = ours::object_wait_one(
-                connection, ours::Signals::Readable | ours::Signals::PeerClosed,
-                ours::INSTANT_INFINITE, &observed);
-            status != Status::Ok) {
-            return ustl::err(status);
+        for (auto const handle: message->handles) {
+            auto _ = ours::handle_close(handle);
         }
-        if (!(observed & ours::Signals::Readable)) {
-            return ustl::err(Status::PeerClosed);
-        }
-
-        // A reply carries no handle. Room for one all the same, so that a
-        // message that brings one is read, and its handle closed, and then
-        // refused.
-        std::array<Uandle, 1> handles{};
-        auto num_bytes = u32{0};
-        auto num_handles = u32{0};
-        if (auto const status =
-                ours::channel_read(connection, ours::ChannelReadOptions::None, reply.data(),
-                                   handles.data(), static_cast<u32>(reply.size()),
-                                   static_cast<u32>(handles.size()), &num_bytes, &num_handles);
-            status != Status::Ok) {
-            return ustl::err(status);
-        }
-        for (auto index = u32{0}; index < num_handles; ++index) {
-            auto _ = ours::handle_close(handles[index]);
-        }
-        if (num_handles != 0) {
+        if (!message->handles.empty()) {
             return ustl::err(Status::InvArgs);
         }
 
-        auto const message = wire::Message{.bytes = reply.first(num_bytes), .handles = {}};
-        if (auto const header = wire::decode_header(message.bytes, wire::Direction::ToClient);
-            header.is_ok() && wire::is_epitaph(header.unwrap())) {
-            auto const epitaph = wire::decode_epitaph(message);
+        auto const header = wire::decode_header(message->bytes, wire::Direction::ToClient);
+        if (header.is_ok() && wire::is_epitaph(header.unwrap())) {
+            auto const epitaph = wire::decode_epitaph(*message);
             if (epitaph.is_err()) {
                 return ustl::err(Status::InvArgs);
             }
             // An Ok epitaph says nothing about why; it reads as the connection
             // closing, as fsio reads one.
-            if (epitaph.unwrap() == Status::Ok) {
-                return ustl::err(Status::PeerClosed);
-            }
-            return ustl::err(epitaph.unwrap());
+            return ustl::err(epitaph.unwrap() == Status::Ok ? Status::PeerClosed
+                                                            : epitaph.unwrap());
         }
-        return ustl::ok(usize{num_bytes});
+        return ustl::ok(message->bytes.size());
     }
 
-    /// One call: a connection of its own to the route service, |request|
-    /// written to it, and the answer read into |reply|; the connection closes
-    /// after.
-    auto call(wire::Message const request, std::span<u8> const reply)
-        -> ustl::Result<usize, Status> {
-        // Every protocol use lives in /svc, under the use's name.
+    /// A connection of this process's own to the route service, from /svc:
+    /// the client end, or why not. Every protocol use lives in /svc, under
+    /// the use's name.
+    auto connect_route() -> ustl::Result<Uandle, Status> {
         constexpr auto SVC = std::string_view{"/svc/"};
+        static_assert(SVC.size() + ROUTE_NAME.size() <= 64, "the route path always fits");
         std::array<char, 64> path_bytes{};
-        if (SVC.size() + ROUTE_NAME.size() > path_bytes.size()) {
-            return ustl::err(Status::InvArgs);
-        }
         std::ranges::copy(ROUTE_NAME, std::ranges::copy(SVC, path_bytes.begin()).out);
         auto const path = std::string_view{path_bytes.data(), SVC.size() + ROUTE_NAME.size()};
 
@@ -112,20 +83,16 @@ namespace {
             auto _ = ours::handle_close(client);
             return ustl::err(status);
         }
-        auto const length = exchange(client, request, reply);
-        auto _ = ours::handle_close(client);
-        return length;
+        return ustl::ok(client);
     }
 } // namespace
 
-auto isa_irq(u32 const isa_irq) -> ustl::Result<IsaIrqReply, Status> {
+auto isa_irq(Uandle const connection, u32 const isa_irq) -> ustl::Result<IsaIrqReply, Status> {
     std::array<u8, REQUEST_ROOM> request_bytes{};
+    // The request always fits and the txid is fixed: the encode cannot refuse.
     auto const request = encode_isa_irq(request_bytes, {.txid = TXID, .isa_irq = isa_irq});
-    if (request.is_err()) {
-        return ustl::err(request.unwrap_err());
-    }
     std::array<u8, REPLY_ROOM> reply_bytes{};
-    auto const length = call(request.unwrap(), reply_bytes);
+    auto const length = exchange(connection, request.unwrap(), reply_bytes);
     if (length.is_err()) {
         return ustl::err(length.unwrap_err());
     }
@@ -140,14 +107,12 @@ auto isa_irq(u32 const isa_irq) -> ustl::Result<IsaIrqReply, Status> {
     return ustl::ok(reply.unwrap());
 }
 
-auto ecam_base(u16 const segment) -> ustl::Result<EcamBaseReply, Status> {
+auto ecam_base(Uandle const connection, u16 const segment) -> ustl::Result<EcamBaseReply, Status> {
     std::array<u8, REQUEST_ROOM> request_bytes{};
+    // The request always fits and the txid is fixed: the encode cannot refuse.
     auto const request = encode_ecam_base(request_bytes, {.txid = TXID, .segment = segment});
-    if (request.is_err()) {
-        return ustl::err(request.unwrap_err());
-    }
     std::array<u8, REPLY_ROOM> reply_bytes{};
-    auto const length = call(request.unwrap(), reply_bytes);
+    auto const length = exchange(connection, request.unwrap(), reply_bytes);
     if (length.is_err()) {
         return ustl::err(length.unwrap_err());
     }
@@ -160,5 +125,27 @@ auto ecam_base(u16 const segment) -> ustl::Result<EcamBaseReply, Status> {
         return ustl::err(reply->status);
     }
     return ustl::ok(reply.unwrap());
+}
+
+auto isa_irq(u32 const isa_irq) -> ustl::Result<IsaIrqReply, Status> {
+    auto const connection = connect_route();
+    if (connection.is_err()) {
+        return ustl::err(connection.unwrap_err());
+    }
+    // The parameter shares the function's name, so the call on the fresh
+    // connection is spelled qualified.
+    auto const reply = prot::acpi::isa_irq(connection.unwrap(), isa_irq);
+    auto _ = ours::handle_close(connection.unwrap());
+    return reply;
+}
+
+auto ecam_base(u16 const segment) -> ustl::Result<EcamBaseReply, Status> {
+    auto const connection = connect_route();
+    if (connection.is_err()) {
+        return ustl::err(connection.unwrap_err());
+    }
+    auto const reply = ecam_base(connection.unwrap(), segment);
+    auto _ = ours::handle_close(connection.unwrap());
+    return reply;
 }
 } // namespace prot::acpi

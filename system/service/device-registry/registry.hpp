@@ -129,19 +129,15 @@ class MountHandler final: public ioservice::Handler {
     /// Open that was never written leaves a handle to close.
     auto connect(Uandle const channel) -> void override {
         auto handles = std::array{channel};
+        // The forward's path was built at mount time to fit this mount's
+        // own scratch, so the encode cannot fail; unwrap says so.
         auto const encoded =
             prot::io::encode_open(mount->scratch, handles,
                                   prot::io::OpenRequest{.flags = prot::io::Flags::ProtocolService,
                                                         .path = mount->forward,
                                                         .object = channel});
-        if (encoded.is_err()) {
-            // The path is this mount's own, built to fit the scratch at
-            // mount time, so this is the buffer's own bug.
-            report("cannot encode a leaf's Open", encoded.unwrap_err());
-            auto _ = ours::handle_close(channel);
-            return;
-        }
-        if (auto const written = write(mount->directory, encoded.unwrap()); written != Status::Ok) {
+        auto const written = write(mount->directory, encoded.unwrap());
+        if (written != Status::Ok) {
             // The publisher is gone; the mount stays -- the tree's nodes are
             // never removed -- and its next Open answers the same way. The
             // client reads PEER_CLOSED on its entry: the Open's handle went
@@ -194,25 +190,27 @@ class Core final {
     /// Grants the mount its name: the proposal when no live mount of the
     /// class holds it, otherwise the class's lowest free three-digit number
     /// ("000", "001", ...), written into |mount|'s own storage -- the tree
-    /// views it from here on. False when no number is free, which the mount
-    /// bound (eight slots) reaches long before a thousand names do.
+    /// views it from here on. Always grants: a free number exists whenever
+    /// a free slot does, because eight mounts hold at most eight names and
+    /// the scan reaches nine.
     auto grant_name(Mount &mount, std::string_view const klass, std::string_view const proposal)
-        -> bool {
+        -> void {
         if (!name_taken(klass, proposal)) {
             mount.name = stored(mount.name_storage, proposal);
-            return true;
+            return;
         }
-        for (auto value = u32{0}; value <= 999; ++value) {
+        // At most MAX_MOUNTS names are taken in the class, and candidates
+        // 000..MAX_MOUNTS are MAX_MOUNTS+1: one of them is free, so this
+        // scan always stores and returns -- there is no tail to fall out of.
+        for (auto value = u32{0};; value = value + 1) {
             auto const number = std::array<char, 3>{{static_cast<char>('0' + value / 100),
                                                      static_cast<char>('0' + (value / 10) % 10),
                                                      static_cast<char>('0' + value % 10)}};
-            auto const candidate = std::string_view{number.data(), number.size()};
-            if (!name_taken(klass, candidate)) {
-                mount.name = stored(mount.name_storage, candidate);
-                return true;
+            if (!name_taken(klass, std::string_view{number.data(), number.size()})) {
+                mount.name = stored(mount.name_storage, std::string_view{number.data(), 3});
+                return;
             }
         }
-        return false;
     }
 
     /// The mount |index|'s handler, placed for a mount taken at |index|: the
@@ -240,9 +238,52 @@ class Core final {
         return m_mounts;
     }
 
+    /// Reserves an arena entry for |klass| (a no-op when the name is
+    /// already there) and returns the view a tree node must be created
+    /// with: node creation stores views, and this storage outlives every
+    /// mount slot's reuse. A free slot means a free entry -- free_slot()
+    /// was checked before the class is named.
+    auto class_name(std::string_view const klass) -> std::string_view {
+        // Called only when the tree lookup missed and a mount slot is free:
+        // a free slot means a free arena entry, so this scan always reserves
+        // and returns -- there is no tail to fall out of.
+        for (auto &entry: m_classes) {
+            if (entry.used && std::string_view{entry.storage.data()} == klass) {
+                return entry.name;
+            }
+            if (!entry.used) {
+                std::memcpy(entry.storage.data(), klass.data(), klass.size());
+                entry.name = std::string_view{entry.storage.data(), klass.size()};
+                entry.used = true;
+                return entry.name;
+            }
+        }
+        // Structurally unreachable: called only after a lookup miss with a
+        // free slot in hand. A bug here names the node after the proposal.
+        return klass;
+    }
+
+    /// Binds |node|, the directory just created from class_name()'s view,
+    /// to its arena entry.
+    auto record_class(std::string_view const klass, ioservice::NodeId const node) -> void {
+        for (auto &entry: m_classes) {
+            if (entry.used && std::string_view{entry.storage.data()} == klass) {
+                entry.node = node;
+                return;
+            }
+        }
+    }
+
   private:
+    struct ClassName {
+        std::array<char, prot::dev::MAX_CLASS_LENGTH> storage{};
+        std::string_view name;
+        ioservice::NodeId node = ioservice::detail::NO_NODE;
+        bool used = false;
+    };
     std::array<Mount, MAX_MOUNTS> m_mounts{};
     std::array<MountHandler, MAX_MOUNTS> m_handlers{};
+    std::array<ClassName, MAX_MOUNTS> m_classes{};
 };
 
 /// What the dev tree keeps: the tree's nodes, one connection per consumer
@@ -288,20 +329,14 @@ class DevSubtree final: public ioservice::SubtreeHandler, private ioservice::Loo
     /// demand by the mount that names it first. Ok, or what failed.
     [[nodiscard]]
     auto build() -> Status {
+        // The layout takes three of TREE_NODES, a bound the constant's
+        // static_assert pins: the allocations cannot refuse, and unwrap
+        // says so.
         auto root = m_tree.add_root();
-        if (root.is_err()) {
-            return root.unwrap_err();
-        }
         m_root = root.unwrap();
         auto class_dir = m_tree.add_directory(m_root, "class");
-        if (class_dir.is_err()) {
-            return class_dir.unwrap_err();
-        }
         m_class = class_dir.unwrap();
         auto block = m_tree.add_directory(m_class, "block");
-        if (block.is_err()) {
-            return block.unwrap_err();
-        }
         m_block = block.unwrap();
         return Status::Ok;
     }
@@ -435,10 +470,7 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
             return answer(channel, request.txid, {.status = Status::NoResource, .name = {}});
         }
         auto &mount = m_core->mounts()[*slot];
-        if (!m_core->grant_name(mount, request.klass, request.name)) {
-            auto _ = ours::handle_close(request.directory);
-            return answer(channel, request.txid, {.status = Status::NoResource, .name = {}});
-        }
+        m_core->grant_name(mount, request.klass, request.name);
         mount.klass = stored(mount.klass_storage, request.klass);
         mount.protocol = stored(mount.protocol_storage, request.protocol);
         std::memcpy(mount.forward_storage.data(), FORWARD_PREFIX.data(), FORWARD_PREFIX.size());
@@ -449,18 +481,20 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
 
         // The class directory, made on the first mount of its kind: block/
         // is laid out at startup, the rest grow here, named out of the
-        // mount's own storage.
+        // class arena -- storage that outlives the mount slot, which a
+        // failed publish recycles and the next publish overwrites.
         auto class_dir = m_class;
         auto const found = m_tree->lookup(m_class, mount.klass);
         if (found.is_ok()) {
             class_dir = found.unwrap();
         } else {
-            auto made = m_tree->add_directory(m_class, mount.klass);
+            auto made = m_tree->add_directory(m_class, m_core->class_name(mount.klass));
             if (made.is_err()) {
                 reclaim(mount);
                 auto _ = ours::handle_close(request.directory);
                 return answer(channel, request.txid, {.status = made.unwrap_err(), .name = {}});
             }
+            m_core->record_class(mount.klass, made.unwrap());
             class_dir = made.unwrap();
         }
 
