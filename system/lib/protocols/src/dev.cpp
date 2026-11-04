@@ -34,7 +34,7 @@ namespace {
     /// and the protocol becomes a path segment in the forward, so it may not
     /// carry one either.
     [[nodiscard]]
-    auto well_formed(std::string_view const text, usize const bound) -> bool {
+    auto is_well_formed(std::string_view const text, usize const bound) -> bool {
         if (text.empty() || text.size() > bound) {
             return false;
         }
@@ -49,15 +49,14 @@ namespace {
 
 auto encode_publish(std::span<u8> const bytes, std::span<Uandle> const handles,
                     PublishRequest const &request) -> Encoded {
-    if (!well_formed(request.klass, MAX_CLASS_LENGTH) ||
-        !well_formed(request.name, MAX_NODE_NAME) ||
-        !well_formed(request.protocol, MAX_PROTOCOL_NAME)) {
+    if (!is_well_formed(request.kind, MAX_CLASS_NAME) ||
+        !is_well_formed(request.name, MAX_NODE_NAME) ||
+        !is_well_formed(request.protocol, MAX_PROTOCOL_NAME)) {
         return ustl::err(Status::InvArgs);
     }
-    auto started = wire::start_request(bytes,
-                                       STRINGS_OFFSET + request.klass.size() + request.name.size() +
-                                           request.protocol.size(),
-                                       PUBLISH, request.txid);
+    auto started = wire::start_request(
+        bytes, STRINGS_OFFSET + request.kind.size() + request.name.size() + request.protocol.size(),
+        PUBLISH, request.txid);
     if (started.is_err()) {
         return ustl::err(started.unwrap_err());
     }
@@ -67,11 +66,11 @@ auto encode_publish(std::span<u8> const bytes, std::span<Uandle> const handles,
         status != Status::Ok) {
         return ustl::err(status);
     }
-    wire::store(message, CLASS_SIZE_OFFSET, static_cast<u32>(request.klass.size()));
+    wire::store(message, CLASS_SIZE_OFFSET, static_cast<u32>(request.kind.size()));
     wire::store(message, NAME_SIZE_OFFSET, static_cast<u32>(request.name.size()));
     wire::store(message, PROTOCOL_SIZE_OFFSET, static_cast<u32>(request.protocol.size()));
     auto at = STRINGS_OFFSET;
-    for (auto const text: {request.klass, request.name, request.protocol}) {
+    for (auto const text: {request.kind, request.name, request.protocol}) {
         if (!text.empty()) {
             std::memcpy(message.data() + at, text.data(), text.size());
         }
@@ -91,17 +90,17 @@ auto decode_publish(Message const message) -> ustl::Result<PublishRequest, Statu
     auto const class_size = wire::load<u32>(message.bytes, CLASS_SIZE_OFFSET);
     auto const name_size = wire::load<u32>(message.bytes, NAME_SIZE_OFFSET);
     auto const protocol_size = wire::load<u32>(message.bytes, PROTOCOL_SIZE_OFFSET);
-    if (class_size > MAX_CLASS_LENGTH || name_size > MAX_NODE_NAME ||
+    if (class_size > MAX_CLASS_NAME || name_size > MAX_NODE_NAME ||
         protocol_size > MAX_PROTOCOL_NAME ||
         message.bytes.size() != STRINGS_OFFSET + class_size + name_size + protocol_size) {
         return ustl::err(Status::InvArgs);
     }
-    auto klass = chars(message.bytes.subspan(STRINGS_OFFSET, class_size));
+    auto kind = chars(message.bytes.subspan(STRINGS_OFFSET, class_size));
     auto name = chars(message.bytes.subspan(STRINGS_OFFSET + class_size, name_size));
     auto protocol =
         chars(message.bytes.subspan(STRINGS_OFFSET + class_size + name_size, protocol_size));
-    if (!well_formed(klass, MAX_CLASS_LENGTH) || !well_formed(name, MAX_NODE_NAME) ||
-        !well_formed(protocol, MAX_PROTOCOL_NAME)) {
+    if (!is_well_formed(kind, MAX_CLASS_NAME) || !is_well_formed(name, MAX_NODE_NAME) ||
+        !is_well_formed(protocol, MAX_PROTOCOL_NAME)) {
         return ustl::err(Status::InvArgs);
     }
     auto directory = wire::decode_handle(message, HANDLE_OFFSET, 0);
@@ -111,7 +110,7 @@ auto decode_publish(Message const message) -> ustl::Result<PublishRequest, Statu
 
     return ustl::ok(PublishRequest{
         .txid = header->txid,
-        .klass = klass,
+        .kind = kind,
         .name = name,
         .protocol = protocol,
         .directory = directory.unwrap(),

@@ -88,7 +88,7 @@ static_assert(to_operations(prot::io::PERM_READABLE) == prot::io::R_STAR_DIR);
 /// arrays, which are static storage and never move -- the pool is never
 /// copied, and a mount, once taken, holds its slot for the program's life.
 struct Mount {
-    std::array<char, prot::dev::MAX_CLASS_LENGTH> klass_storage{};
+    std::array<char, prot::dev::MAX_CLASS_NAME> klass_storage{};
     std::array<char, prot::dev::MAX_NODE_NAME> name_storage{};
     std::array<char, prot::dev::MAX_PROTOCOL_NAME> protocol_storage{};
     /// The forward's path, "svc/" plus the protocol, built once at mount
@@ -100,7 +100,7 @@ struct Mount {
     static constexpr auto SCRATCH_SIZE =
         usize{32} + FORWARD_PREFIX.size() + prot::dev::MAX_PROTOCOL_NAME;
     std::array<u8, SCRATCH_SIZE> scratch{};
-    std::string_view klass;
+    std::string_view kind;
     std::string_view name;
     std::string_view protocol;
     std::string_view forward;
@@ -165,11 +165,11 @@ class Core final {
     Core(Core const &) = delete;
     auto operator=(Core const &) -> Core & = delete;
 
-    /// Whether a live mount of |klass| already holds |name|.
+    /// Whether a live mount of |kind| already holds |name|.
     [[nodiscard]]
-    auto name_taken(std::string_view const klass, std::string_view const name) const -> bool {
+    auto is_name_taken(std::string_view const kind, std::string_view const name) const -> bool {
         for (auto const &mount: m_mounts) {
-            if (mount.used && mount.klass == klass && mount.name == name) {
+            if (mount.used && mount.kind == kind && mount.name == name) {
                 return true;
             }
         }
@@ -193,9 +193,9 @@ class Core final {
     /// views it from here on. Always grants: a free number exists whenever
     /// a free slot does, because eight mounts hold at most eight names and
     /// the scan reaches nine.
-    auto grant_name(Mount &mount, std::string_view const klass, std::string_view const proposal)
+    auto grant_name(Mount &mount, std::string_view const kind, std::string_view const proposal)
         -> void {
-        if (!name_taken(klass, proposal)) {
+        if (!is_name_taken(kind, proposal)) {
             mount.name = stored(mount.name_storage, proposal);
             return;
         }
@@ -206,7 +206,7 @@ class Core final {
             auto const number = std::array<char, 3>{{static_cast<char>('0' + value / 100),
                                                      static_cast<char>('0' + (value / 10) % 10),
                                                      static_cast<char>('0' + value % 10)}};
-            if (!name_taken(klass, std::string_view{number.data(), number.size()})) {
+            if (!is_name_taken(kind, std::string_view{number.data(), number.size()})) {
                 mount.name = stored(mount.name_storage, std::string_view{number.data(), 3});
                 return;
             }
@@ -238,36 +238,36 @@ class Core final {
         return m_mounts;
     }
 
-    /// Reserves an arena entry for |klass| (a no-op when the name is
+    /// Reserves an arena entry for |kind| (a no-op when the name is
     /// already there) and returns the view a tree node must be created
     /// with: node creation stores views, and this storage outlives every
     /// mount slot's reuse. A free slot means a free entry -- free_slot()
     /// was checked before the class is named.
-    auto class_name(std::string_view const klass) -> std::string_view {
+    auto class_name(std::string_view const kind) -> std::string_view {
         // Called only when the tree lookup missed and a mount slot is free:
         // a free slot means a free arena entry, so this scan always reserves
         // and returns -- there is no tail to fall out of.
         for (auto &entry: m_classes) {
-            if (entry.used && std::string_view{entry.storage.data()} == klass) {
+            if (entry.used && std::string_view{entry.storage.data()} == kind) {
                 return entry.name;
             }
             if (!entry.used) {
-                std::memcpy(entry.storage.data(), klass.data(), klass.size());
-                entry.name = std::string_view{entry.storage.data(), klass.size()};
+                std::memcpy(entry.storage.data(), kind.data(), kind.size());
+                entry.name = std::string_view{entry.storage.data(), kind.size()};
                 entry.used = true;
                 return entry.name;
             }
         }
         // Structurally unreachable: called only after a lookup miss with a
         // free slot in hand. A bug here names the node after the proposal.
-        return klass;
+        return kind;
     }
 
     /// Binds |node|, the directory just created from class_name()'s view,
     /// to its arena entry.
-    auto record_class(std::string_view const klass, ioservice::NodeId const node) -> void {
+    auto record_class(std::string_view const kind, ioservice::NodeId const node) -> void {
         for (auto &entry: m_classes) {
-            if (entry.used && std::string_view{entry.storage.data()} == klass) {
+            if (entry.used && std::string_view{entry.storage.data()} == kind) {
                 entry.node = node;
                 return;
             }
@@ -275,15 +275,15 @@ class Core final {
     }
 
   private:
-    struct ClassName {
-        std::array<char, prot::dev::MAX_CLASS_LENGTH> storage{};
+    struct ClassDir {
+        std::array<char, prot::dev::MAX_CLASS_NAME> storage{};
         std::string_view name;
         ioservice::NodeId node = ioservice::detail::NO_NODE;
         bool used = false;
     };
     std::array<Mount, MAX_MOUNTS> m_mounts{};
     std::array<MountHandler, MAX_MOUNTS> m_handlers{};
-    std::array<ClassName, MAX_MOUNTS> m_classes{};
+    std::array<ClassDir, MAX_MOUNTS> m_classes{};
 };
 
 /// What the dev tree keeps: the tree's nodes, one connection per consumer
@@ -470,8 +470,8 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
             return answer(channel, request.txid, {.status = Status::NoResource, .name = {}});
         }
         auto &mount = m_core->mounts()[*slot];
-        m_core->grant_name(mount, request.klass, request.name);
-        mount.klass = stored(mount.klass_storage, request.klass);
+        m_core->grant_name(mount, request.kind, request.name);
+        mount.kind = stored(mount.klass_storage, request.kind);
         mount.protocol = stored(mount.protocol_storage, request.protocol);
         std::memcpy(mount.forward_storage.data(), FORWARD_PREFIX.data(), FORWARD_PREFIX.size());
         std::memcpy(mount.forward_storage.data() + FORWARD_PREFIX.size(), mount.protocol.data(),
@@ -484,17 +484,17 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
         // class arena -- storage that outlives the mount slot, which a
         // failed publish recycles and the next publish overwrites.
         auto class_dir = m_class;
-        auto const found = m_tree->lookup(m_class, mount.klass);
+        auto const found = m_tree->lookup(m_class, mount.kind);
         if (found.is_ok()) {
             class_dir = found.unwrap();
         } else {
-            auto made = m_tree->add_directory(m_class, m_core->class_name(mount.klass));
+            auto made = m_tree->add_directory(m_class, m_core->class_name(mount.kind));
             if (made.is_err()) {
                 reclaim(mount);
                 auto _ = ours::handle_close(request.directory);
                 return answer(channel, request.txid, {.status = made.unwrap_err(), .name = {}});
             }
-            m_core->record_class(mount.klass, made.unwrap());
+            m_core->record_class(mount.kind, made.unwrap());
             class_dir = made.unwrap();
         }
 
@@ -518,7 +518,7 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
         mount.used = true;
         m_core->place_handler(*slot, mount);
         auto _ = ort::debug_line(
-            {"device-registry: ", mount.klass, "/", mount.name, " mounted from a publisher"});
+            {"device-registry: ", mount.kind, "/", mount.name, " mounted from a publisher"});
         return answer(channel, request.txid, {.status = Status::Ok, .name = mount.name});
     }
 

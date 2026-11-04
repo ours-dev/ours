@@ -39,7 +39,7 @@ TEST(OursDevPublish, RoundTrip) {
     auto buffer = Buffer{};
     auto const request = prot::dev::encode_publish(buffer.bytes, buffer.handles,
                                                    {.txid = TXID,
-                                                    .klass = "block",
+                                                    .kind = "block",
                                                     .name = "000",
                                                     .protocol = "ours.block.Block",
                                                     .directory = DIRECTORY});
@@ -49,7 +49,7 @@ TEST(OursDevPublish, RoundTrip) {
     auto const decoded = prot::dev::decode_publish(message);
     ASSERT_TRUE(decoded.is_ok());
     EXPECT_EQ(decoded->txid, TXID);
-    EXPECT_EQ(decoded->klass, "block");
+    EXPECT_EQ(decoded->kind, "block");
     EXPECT_EQ(decoded->name, "000");
     EXPECT_EQ(decoded->directory, DIRECTORY);
 
@@ -76,7 +76,7 @@ TEST(OursDevPublish, StringsViewTheMessage) {
     auto buffer = Buffer{};
     auto const request = prot::dev::encode_publish(buffer.bytes, buffer.handles,
                                                    {.txid = TXID,
-                                                    .klass = "block",
+                                                    .kind = "block",
                                                     .name = "001",
                                                     .protocol = "ours.block.Block",
                                                     .directory = DIRECTORY});
@@ -99,7 +99,7 @@ TEST(OursDevPublish, Refusals) {
     // so a separator would name a location, not a node.
     EXPECT_EQ((prot::dev::encode_publish(buffer.bytes, handles,
                                          {.txid = TXID,
-                                          .klass = "block/../svc",
+                                          .kind = "block/../svc",
                                           .name = "000",
                                           .protocol = "ours.block.Block",
                                           .directory = DIRECTORY})
@@ -107,7 +107,7 @@ TEST(OursDevPublish, Refusals) {
               Status::InvArgs);
     EXPECT_EQ((prot::dev::encode_publish(buffer.bytes, handles,
                                          {.txid = TXID,
-                                          .klass = "block",
+                                          .kind = "block",
                                           .name = "0/0",
                                           .protocol = "ours.block.Block",
                                           .directory = DIRECTORY})
@@ -116,17 +116,17 @@ TEST(OursDevPublish, Refusals) {
     // A NUL is a path's end, same refusal.
     EXPECT_EQ((prot::dev::encode_publish(buffer.bytes, handles,
                                          {.txid = TXID,
-                                          .klass = std::string_view{"blo\0k", 5},
+                                          .kind = std::string_view{"blo\0k", 5},
                                           .name = "000",
                                           .protocol = "ours.block.Block",
                                           .directory = DIRECTORY})
                    .unwrap_err()),
               Status::InvArgs);
     // The bounds, each by one over.
-    auto long_class = std::string(prot::dev::MAX_CLASS_LENGTH + 1, 'x');
+    auto long_class = std::string(prot::dev::MAX_CLASS_NAME + 1, 'x');
     EXPECT_EQ((prot::dev::encode_publish(buffer.bytes, handles,
                                          {.txid = TXID,
-                                          .klass = long_class,
+                                          .kind = long_class,
                                           .name = "000",
                                           .protocol = "ours.block.Block",
                                           .directory = DIRECTORY})
@@ -135,7 +135,7 @@ TEST(OursDevPublish, Refusals) {
     auto long_name = std::string(prot::dev::MAX_NODE_NAME + 1, 'x');
     EXPECT_EQ((prot::dev::encode_publish(buffer.bytes, handles,
                                          {.txid = TXID,
-                                          .klass = "block",
+                                          .kind = "block",
                                           .name = long_name,
                                           .protocol = "ours.block.Block",
                                           .directory = DIRECTORY})
@@ -144,7 +144,7 @@ TEST(OursDevPublish, Refusals) {
     // No handle, no publish.
     EXPECT_EQ((prot::dev::encode_publish(buffer.bytes, handles,
                                          {.txid = TXID,
-                                          .klass = "block",
+                                          .kind = "block",
                                           .name = "000",
                                           .protocol = "ours.block.Block",
                                           .directory = Uandle::Invalid})
@@ -153,7 +153,7 @@ TEST(OursDevPublish, Refusals) {
     // An empty name decodes as nothing to mount.
     EXPECT_EQ((prot::dev::encode_publish(buffer.bytes, handles,
                                          {.txid = TXID,
-                                          .klass = "block",
+                                          .kind = "block",
                                           .name = "",
                                           .protocol = "ours.block.Block",
                                           .directory = DIRECTORY})
@@ -165,20 +165,20 @@ TEST(OursDevPublish, BoundsAcceptedExactly) {
     auto buffer = Buffer{};
     // Each string at its exact bound is a legal publish: the refusal is one
     // over, not at.
-    auto full_class = std::string(prot::dev::MAX_CLASS_LENGTH, 'c');
+    auto full_class = std::string(prot::dev::MAX_CLASS_NAME, 'c');
     auto full_name = std::string(prot::dev::MAX_NODE_NAME, 'n');
     auto full_protocol = std::string(prot::dev::MAX_PROTOCOL_NAME, 'p');
     buffer.handles[0] = DIRECTORY;
     auto const request = prot::dev::encode_publish(buffer.bytes, buffer.handles,
                                                    {.txid = TXID,
-                                                    .klass = full_class,
+                                                    .kind = full_class,
                                                     .name = full_name,
                                                     .protocol = full_protocol,
                                                     .directory = DIRECTORY});
     ASSERT_TRUE(request.is_ok());
     auto const decoded = prot::dev::decode_publish(buffer.view(request.unwrap().bytes.size()));
     ASSERT_TRUE(decoded.is_ok());
-    EXPECT_EQ(decoded->klass.size(), prot::dev::MAX_CLASS_LENGTH);
+    EXPECT_EQ(decoded->kind.size(), prot::dev::MAX_CLASS_NAME);
     EXPECT_EQ(decoded->name.size(), prot::dev::MAX_NODE_NAME);
     EXPECT_EQ(decoded->protocol.size(), prot::dev::MAX_PROTOCOL_NAME);
 }
@@ -188,7 +188,7 @@ TEST(OursDevPublish, ThreeStringsBackToBack) {
     auto handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
     auto const request = prot::dev::encode_publish(
         buffer.bytes, handles,
-        {.txid = TXID, .klass = "ab", .name = "cde", .protocol = "fghij", .directory = DIRECTORY});
+        {.txid = TXID, .kind = "ab", .name = "cde", .protocol = "fghij", .directory = DIRECTORY});
     ASSERT_TRUE(request.is_ok());
     // class@36, name@38, protocol@41 -- the arithmetic the decoder repeats.
     auto const bytes = request.unwrap().bytes;
@@ -203,7 +203,7 @@ TEST(OursDevPublish, SmallBufferRefused) {
     auto tiny = std::array<u8, 32>{};
     EXPECT_EQ((prot::dev::encode_publish(tiny, handles,
                                          {.txid = TXID,
-                                          .klass = "block",
+                                          .kind = "block",
                                           .name = "000",
                                           .protocol = "ours.block.Block",
                                           .directory = DIRECTORY})
@@ -247,7 +247,7 @@ TEST(OursDevPublish, DecodeRefusals) {
     auto buffer = Buffer{};
     auto const request = prot::dev::encode_publish(buffer.bytes, buffer.handles,
                                                    {.txid = TXID,
-                                                    .klass = "block",
+                                                    .kind = "block",
                                                     .name = "000",
                                                     .protocol = "ours.block.Block",
                                                     .directory = DIRECTORY});
