@@ -194,25 +194,27 @@ class Core final {
     /// Grants the mount its name: the proposal when no live mount of the
     /// class holds it, otherwise the class's lowest free three-digit number
     /// ("000", "001", ...), written into |mount|'s own storage -- the tree
-    /// views it from here on. False when no number is free, which the mount
-    /// bound (eight slots) reaches long before a thousand names do.
+    /// views it from here on. Always grants: a free number exists whenever
+    /// a free slot does, because eight mounts hold at most eight names and
+    /// the scan reaches nine.
     auto grant_name(Mount &mount, std::string_view const klass, std::string_view const proposal)
-        -> bool {
+        -> void {
         if (!name_taken(klass, proposal)) {
             mount.name = stored(mount.name_storage, proposal);
-            return true;
+            return;
         }
-        for (auto value = u32{0}; value <= 999; ++value) {
+        for (auto value = u32{0}; value < MAX_MOUNTS + 1; ++value) {
             auto const number = std::array<char, 3>{{static_cast<char>('0' + value / 100),
                                                      static_cast<char>('0' + (value / 10) % 10),
                                                      static_cast<char>('0' + value % 10)}};
-            auto const candidate = std::string_view{number.data(), number.size()};
-            if (!name_taken(klass, candidate)) {
-                mount.name = stored(mount.name_storage, candidate);
-                return true;
+            if (!name_taken(klass, std::string_view{number.data(), number.size()})) {
+                mount.name = stored(mount.name_storage, std::string_view{number.data(), 3});
+                return;
             }
         }
-        return false;
+        // Structurally unreachable -- a free slot means a free number -- and
+        // the next line says what a bug here would mount as.
+        mount.name = stored(mount.name_storage, proposal);
     }
 
     /// The mount |index|'s handler, placed for a mount taken at |index|: the
@@ -435,10 +437,7 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
             return answer(channel, request.txid, {.status = Status::NoResource, .name = {}});
         }
         auto &mount = m_core->mounts()[*slot];
-        if (!m_core->grant_name(mount, request.klass, request.name)) {
-            auto _ = ours::handle_close(request.directory);
-            return answer(channel, request.txid, {.status = Status::NoResource, .name = {}});
-        }
+        m_core->grant_name(mount, request.klass, request.name);
         mount.klass = stored(mount.klass_storage, request.klass);
         mount.protocol = stored(mount.protocol_storage, request.protocol);
         std::memcpy(mount.forward_storage.data(), FORWARD_PREFIX.data(), FORWARD_PREFIX.size());

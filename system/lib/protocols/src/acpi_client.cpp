@@ -62,12 +62,10 @@ namespace {
         return ustl::ok(message->bytes.size());
     }
 
-    /// One call: a connection of its own to the route service, |request|
-    /// written to it, and the answer read into |reply|; the connection closes
-    /// after.
-    auto call(wire::Message const request, std::span<u8> const reply)
-        -> ustl::Result<usize, Status> {
-        // Every protocol use lives in /svc, under the use's name.
+    /// A connection of this process's own to the route service, from /svc:
+    /// the client end, or why not. Every protocol use lives in /svc, under
+    /// the use's name.
+    auto connect_route() -> ustl::Result<Uandle, Status> {
         constexpr auto SVC = std::string_view{"/svc/"};
         std::array<char, 64> path_bytes{};
         if (SVC.size() + ROUTE_NAME.size() > path_bytes.size()) {
@@ -87,20 +85,18 @@ namespace {
             auto _ = ours::handle_close(client);
             return ustl::err(status);
         }
-        auto const length = exchange(client, request, reply);
-        auto _ = ours::handle_close(client);
-        return length;
+        return ustl::ok(client);
     }
 } // namespace
 
-auto isa_irq(u32 const isa_irq) -> ustl::Result<IsaIrqReply, Status> {
+auto isa_irq(Uandle const connection, u32 const isa_irq) -> ustl::Result<IsaIrqReply, Status> {
     std::array<u8, REQUEST_ROOM> request_bytes{};
     auto const request = encode_isa_irq(request_bytes, {.txid = TXID, .isa_irq = isa_irq});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
     std::array<u8, REPLY_ROOM> reply_bytes{};
-    auto const length = call(request.unwrap(), reply_bytes);
+    auto const length = exchange(connection, request.unwrap(), reply_bytes);
     if (length.is_err()) {
         return ustl::err(length.unwrap_err());
     }
@@ -115,14 +111,14 @@ auto isa_irq(u32 const isa_irq) -> ustl::Result<IsaIrqReply, Status> {
     return ustl::ok(reply.unwrap());
 }
 
-auto ecam_base(u16 const segment) -> ustl::Result<EcamBaseReply, Status> {
+auto ecam_base(Uandle const connection, u16 const segment) -> ustl::Result<EcamBaseReply, Status> {
     std::array<u8, REQUEST_ROOM> request_bytes{};
     auto const request = encode_ecam_base(request_bytes, {.txid = TXID, .segment = segment});
     if (request.is_err()) {
         return ustl::err(request.unwrap_err());
     }
     std::array<u8, REPLY_ROOM> reply_bytes{};
-    auto const length = call(request.unwrap(), reply_bytes);
+    auto const length = exchange(connection, request.unwrap(), reply_bytes);
     if (length.is_err()) {
         return ustl::err(length.unwrap_err());
     }
@@ -135,5 +131,27 @@ auto ecam_base(u16 const segment) -> ustl::Result<EcamBaseReply, Status> {
         return ustl::err(reply->status);
     }
     return ustl::ok(reply.unwrap());
+}
+
+auto isa_irq(u32 const isa_irq) -> ustl::Result<IsaIrqReply, Status> {
+    auto const connection = connect_route();
+    if (connection.is_err()) {
+        return ustl::err(connection.unwrap_err());
+    }
+    // The parameter shares the function's name, so the call on the fresh
+    // connection is spelled qualified.
+    auto const reply = prot::acpi::isa_irq(connection.unwrap(), isa_irq);
+    auto _ = ours::handle_close(connection.unwrap());
+    return reply;
+}
+
+auto ecam_base(u16 const segment) -> ustl::Result<EcamBaseReply, Status> {
+    auto const connection = connect_route();
+    if (connection.is_err()) {
+        return ustl::err(connection.unwrap_err());
+    }
+    auto const reply = ecam_base(connection.unwrap(), segment);
+    auto _ = ours::handle_close(connection.unwrap());
+    return reply;
 }
 } // namespace prot::acpi

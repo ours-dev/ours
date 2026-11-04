@@ -15,6 +15,47 @@ executable("block") {
   visibility = [ "*" ]
 }
 
+# ours.block's typed client, over the fake kernel: the test plays the Block
+# provider inside the fixture's pump, answering the codec's requests per
+# mode -- the round trips, the client-side refusals, the short reply, the
+# epitaph, the silent close, and the reply to another request's txid.
+executable("block_client") {
+  testonly = true
+  sources = [ "block_client_test.cpp" ]
+  deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.acpi's typed client, over the fake kernel: the test plays the Route
+# provider inside the fixture's pump -- both round trips, the epitaph, the
+# stray handle on a reply refused with the handle closed, the other method's
+# reply caught as InvArgs, and the silent close reading PeerClosed.
+executable("acpi_client") {
+  testonly = true
+  sources = [
+    "../src/acpi_client.cpp",
+    "acpi_client_test.cpp",
+  ]
+  deps = [
+    "//system/lib/fsio:headers",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
 # ours.dev: Publish's round trip, the strings' back-to-back layout, and the
 # refusals -- separators, NULs, the bounds, a missing handle, a body off by
 # one byte.
@@ -55,6 +96,29 @@ executable("resource") {
   visibility = [ "*" ]
 }
 
+# ours.resource's typed client, over the fake kernel: the test plays the
+# resource provider inside the fixture's pump -- the Get answered with a
+# handle that survives for the caller, the reply's failure status arriving
+# as itself, the epitaph (Ok reading as the connection closing), the
+# malformed reply and its stray handle closed, and the silent close.
+executable("resource_client") {
+  testonly = true
+  sources = [
+    "../src/resource_client.cpp",
+    "resource_client_test.cpp",
+  ]
+  deps = [
+    "//system/lib/fsio:headers",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
 # ours.acpi: each method's request and reply, and one method's messages
 # refused by the other's decoders.
 executable("acpi") {
@@ -75,6 +139,24 @@ executable("fshost") {
   sources = [ "fshost_test.cpp" ]
   deps = [
     "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.fshost's typed client, over the fake kernel: the test plays the
+# Admin provider inside the fixture's pump -- the Mount's name and handle
+# arriving as sent, and each answer reading as itself.
+executable("fshost_client") {
+  testonly = true
+  sources = [ "fshost_client_test.cpp" ]
+  deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]
