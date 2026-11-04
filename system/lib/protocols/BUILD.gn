@@ -81,7 +81,10 @@ if (!is_host_toolchain && toolchain_environment == "user") {
       "include/prot/dev_client.hpp",
       "include/prot/resource_client.hpp",
     ]
-    public_deps = [ ":headers" ]
+    public_deps = [
+      ":headers",
+      "//system/lib/rpc:headers",
+    ]
     visibility = [ ":*" ]
   }
 }

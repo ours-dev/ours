@@ -11,7 +11,7 @@
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ours/vdso.hpp>
+#include <rpc/rpc.hpp>
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
 
@@ -45,24 +45,19 @@ class Client final {
     Client(Client const &) = delete;
     auto operator=(Client const &) -> Client & = delete;
 
-    ~Client() {
-        if (m_channel != ours::Uandle::Invalid) {
-            auto _ = ours::handle_close(m_channel);
-        }
-    }
-
     /// The device's geometry, or the failure the provider answered.
     [[nodiscard]]
     auto get_info() -> ustl::Result<Geometry, ours::Status> {
-        auto const request = encode_get_info(m_request, {.txid = next_txid()});
+        auto const txid = m_channel.next_txid();
+        auto const request = encode_get_info(m_request, {.txid = txid});
         if (request.is_err()) {
             return ustl::err(request.unwrap_err());
         }
-        auto reply = receive(request.unwrap());
+        auto reply = m_channel.call(request.unwrap());
         if (reply.is_err()) {
             return ustl::err(reply.unwrap_err());
         }
-        auto const answered = decode_get_info_reply(*reply, m_txid);
+        auto const answered = decode_get_info_reply(*reply, txid);
         if (answered.is_err()) {
             return ustl::err(answered.unwrap_err());
         }
@@ -80,16 +75,16 @@ class Client final {
         if (out.size() < usize{count} * BLOCK_SIZE) {
             return ours::Status::BufferTooSmall;
         }
-        auto const request =
-            encode_read(m_request, {.txid = next_txid(), .lba = lba, .count = count});
+        auto const txid = m_channel.next_txid();
+        auto const request = encode_read(m_request, {.txid = txid, .lba = lba, .count = count});
         if (request.is_err()) {
             return request.unwrap_err();
         }
-        auto reply = receive(request.unwrap());
+        auto reply = m_channel.call(request.unwrap());
         if (reply.is_err()) {
             return reply.unwrap_err();
         }
-        auto const answered = decode_read_reply(*reply, m_txid);
+        auto const answered = decode_read_reply(*reply, txid);
         if (answered.is_err()) {
             return answered.unwrap_err();
         }
@@ -110,19 +105,20 @@ class Client final {
             data.size() > MAX_READ_BLOCKS * BLOCK_SIZE) {
             return ours::Status::InvArgs;
         }
+        auto const txid = m_channel.next_txid();
         auto const request =
-            encode_write(m_request, {.txid = next_txid(),
+            encode_write(m_request, {.txid = txid,
                                      .lba = lba,
                                      .count = static_cast<u32>(data.size() / BLOCK_SIZE),
                                      .data = data});
         if (request.is_err()) {
             return request.unwrap_err();
         }
-        auto reply = receive(request.unwrap());
+        auto reply = m_channel.call(request.unwrap());
         if (reply.is_err()) {
             return reply.unwrap_err();
         }
-        auto const answered = decode_write_reply(*reply, m_txid);
+        auto const answered = decode_write_reply(*reply, txid);
         if (answered.is_err()) {
             return answered.unwrap_err();
         }
@@ -140,67 +136,8 @@ class Client final {
     }
 
   private:
-    /// Sends |request| and reads the reply, an epitaph's status standing in
-    /// for a failure the provider closed the connection with.
-    [[nodiscard]]
-    auto receive(wire::Message const request) -> ustl::Result<wire::Message, ours::Status> {
-        if (auto const written = ours::channel_write(
-                m_channel, ours::ChannelWriteOptions::None, request.bytes.data(),
-                static_cast<u32>(request.bytes.size()), request.handles.data(),
-                static_cast<u32>(request.handles.size()));
-            written != ours::Status::Ok) {
-            return ustl::err(written);
-        }
-        auto observed = ours::Signals::None;
-        if (auto const waited = ours::object_wait_one(
-                m_channel, ours::Signals::Readable | ours::Signals::PeerClosed,
-                ours::INSTANT_INFINITE, &observed);
-            waited != ours::Status::Ok) {
-            return ustl::err(waited);
-        }
-        if (!(observed & ours::Signals::Readable)) {
-            return ustl::err(ours::Status::PeerClosed);
-        }
-        auto num_bytes = u32{0};
-        auto num_handles = u32{0};
-        if (auto const read = ours::channel_read(
-                m_channel, ours::ChannelReadOptions::None, m_reply.data(), m_reply_handles.data(),
-                static_cast<u32>(m_reply.size()), static_cast<u32>(m_reply_handles.size()),
-                &num_bytes, &num_handles);
-            read != ours::Status::Ok) {
-            return ustl::err(read);
-        }
-        for (auto index = u32{0}; index < num_handles; ++index) {
-            if (m_reply_handles[index] != ours::Uandle::Invalid) {
-                auto _ = ours::handle_close(m_reply_handles[index]);
-            }
-        }
-        auto const message =
-            wire::Message{.bytes = std::span{m_reply}.first(num_bytes), .handles = {}};
-        // A provider that refused the connection closed it with an epitaph,
-        // which is a message like any other until it is asked what it is:
-        // its status is the call's failure, not a reply to decode.
-        auto const header = wire::decode_header(message.bytes, wire::Direction::ToClient);
-        if (header.is_err()) {
-            return ustl::err(ours::Status::BadState);
-        }
-        if (wire::is_epitaph(header.unwrap())) {
-            auto const epitaph = wire::decode_epitaph(message);
-            return ustl::err(epitaph.is_err() ? ours::Status::BadState : epitaph.unwrap());
-        }
-        return ustl::ok(message);
-    }
-
-    auto next_txid() -> u32 {
-        m_txid = m_txid % wire::MAX_TXID + 1;
-        return m_txid;
-    }
-
-    ours::Uandle m_channel;
-    u32 m_txid = 0;
+    rpc::Channel m_channel;
     std::array<u8, wire::MAX_MESSAGE_BYTES> m_request{};
-    std::array<u8, wire::MAX_MESSAGE_BYTES> m_reply{};
-    std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> m_reply_handles{};
 };
 } // namespace prot::block
 

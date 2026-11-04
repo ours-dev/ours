@@ -27,6 +27,48 @@
 /// the caller serializes, which one Loop thread makes true.
 namespace rpc {
 
+/// The pipeline over |channel|, which the caller owns: send, wait, read,
+/// and return the message -- handles intact, any epitaph untranslated
+/// (messages, not verdicts). The reply lands in |reply_bytes| and
+/// |reply_handles|, the caller's: a view of the pipeline's own stack would
+/// die at the return, which is the one shape this must not have. A write
+/// that finds the connection closed is not the end -- an epitaph queued
+/// before the peer died is still there to read, so PeerClosed falls
+/// through to the read, and what comes back names itself.
+[[nodiscard]]
+inline auto conduct(ours::Uandle const channel, wire::Message const &request,
+                    std::span<u8> const reply_bytes, std::span<ours::Uandle> const reply_handles)
+    -> ustl::Result<wire::Message, ours::Status> {
+    if (auto const written =
+            ours::channel_write(channel, ours::ChannelWriteOptions::None, request.bytes.data(),
+                                static_cast<u32>(request.bytes.size()), request.handles.data(),
+                                static_cast<u32>(request.handles.size()));
+        written != ours::Status::Ok && written != ours::Status::PeerClosed) {
+        return ustl::err(written);
+    }
+    auto observed = ours::Signals::None;
+    if (auto const waited =
+            ours::object_wait_one(channel, ours::Signals::Readable | ours::Signals::PeerClosed,
+                                  ours::INSTANT_INFINITE, &observed);
+        waited != ours::Status::Ok) {
+        return ustl::err(waited);
+    }
+    if (!(observed & ours::Signals::Readable)) {
+        return ustl::err(ours::Status::PeerClosed);
+    }
+    auto num_bytes = u32{0};
+    auto num_handles = u32{0};
+    if (auto const read =
+            ours::channel_read(channel, ours::ChannelReadOptions::None, reply_bytes.data(),
+                               reply_handles.data(), static_cast<u32>(reply_bytes.size()),
+                               static_cast<u32>(reply_handles.size()), &num_bytes, &num_handles);
+        read != ours::Status::Ok) {
+        return ustl::err(read);
+    }
+    return ustl::ok(wire::Message{.bytes = reply_bytes.first(num_bytes),
+                                  .handles = reply_handles.first(num_handles)});
+}
+
 /// The channel a typed client conducts over. Takes ownership of the Uandle
 /// it is given (closing it when it dies, as the clients' destructors did).
 class Channel final {
@@ -51,70 +93,45 @@ class Channel final {
     }
 
     /// Sends |request| and reads the reply. Ok carries the message, whose
-    /// bytes view this channel's buffer and are valid until the next call;
-    /// Err is the failure -- the provider's epitaph status standing in for
-    /// a connection it closed without answering, the wait's or the write's
-    /// own otherwise. A reply's stray handles are closed here: no typed
-    /// client of a no-handle reply family ever sees one.
+    /// bytes view this call's buffer and are valid until the next call; Err
+    /// is the failure -- the provider's epitaph status standing in for a
+    /// connection it closed without answering, the wait's or the write's
+    /// own otherwise. A reply's handles are closed here: the families that
+    /// conduct() directly are the ones whose replies carry something.
     [[nodiscard]]
-    auto call(wire::Message const request) -> ustl::Result<wire::Message, ours::Status> {
-        if (auto const written = ours::channel_write(
-                m_channel, ours::ChannelWriteOptions::None, request.bytes.data(),
-                static_cast<u32>(request.bytes.size()), request.handles.data(),
-                static_cast<u32>(request.handles.size()));
-            written != ours::Status::Ok) {
-            return ustl::err(written);
+    auto call(wire::Message const &request) -> ustl::Result<wire::Message, ours::Status> {
+        auto answered = conduct(m_channel, request, m_reply, m_handles);
+        if (answered.is_err()) {
+            return answered;
         }
-        auto observed = ours::Signals::None;
-        if (auto const waited = ours::object_wait_one(
-                m_channel, ours::Signals::Readable | ours::Signals::PeerClosed,
-                ours::INSTANT_INFINITE, &observed);
-            waited != ours::Status::Ok) {
-            return ustl::err(waited);
-        }
-        if (!(observed & ours::Signals::Readable)) {
-            return ustl::err(ours::Status::PeerClosed);
-        }
-        auto num_bytes = u32{0};
-        auto num_handles = u32{0};
-        if (auto const read =
-                ours::channel_read(m_channel, ours::ChannelReadOptions::None, m_reply.data(),
-                                   m_handles.data(), static_cast<u32>(m_reply.size()),
-                                   static_cast<u32>(m_handles.size()), &num_bytes, &num_handles);
-            read != ours::Status::Ok) {
-            return ustl::err(read);
-        }
-        for (auto index = u32{0}; index < num_handles; ++index) {
-            if (m_handles[index] != ours::Uandle::Invalid) {
-                auto _ = ours::handle_close(m_handles[index]);
+        auto &message = *answered;
+        auto const close_handles = [&message] {
+            for (auto const handle: message.handles) {
+                auto _ = ours::handle_close(handle);
             }
-        }
-        auto const message =
-            wire::Message{.bytes = std::span{m_reply}.first(num_bytes), .handles = {}};
+        };
         // A provider that refused the connection closed it with an epitaph,
         // which is a message like any other until it is asked what it is:
         // its status is the call's failure, not a reply to decode.
         auto const header = wire::decode_header(message.bytes, wire::Direction::ToClient);
         if (header.is_err()) {
+            close_handles();
             return ustl::err(ours::Status::BadState);
         }
         if (wire::is_epitaph(header.unwrap())) {
+            close_handles();
             auto const epitaph = wire::decode_epitaph(message);
             return ustl::err(epitaph.is_err() ? ours::Status::BadState : epitaph.unwrap());
         }
-        return ustl::ok(message);
-    }
-
-    /// The reply buffer, for a family whose encoder reads what it answers
-    /// from: the same bytes call() fills.
-    [[nodiscard]]
-    auto reply_buffer() -> std::span<u8> {
-        return m_reply;
+        message.handles = {};
+        return answered;
     }
 
   private:
     ours::Uandle m_channel;
     u32 m_txid = 0;
+    /// The reply's storage: call()'s message views these, valid until the
+    /// next call on this channel.
     std::array<u8, wire::MAX_MESSAGE_BYTES> m_reply{};
     std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> m_handles{};
 };
