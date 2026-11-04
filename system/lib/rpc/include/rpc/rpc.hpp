@@ -13,7 +13,7 @@
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
 
-/// The call pipeline a two-way protocol client conducts, as an object: one
+/// The call pipeline a two-way protocol client exchanges over, as an object: one
 /// rpc::Channel owns a connected channel, sends its requests, waits, reads
 /// the reply, and hands back either the message or the failure -- the
 /// epitaph a provider closed the connection with standing in for one.
@@ -36,8 +36,8 @@ namespace rpc {
 /// before the peer died is still there to read, so PeerClosed falls
 /// through to the read, and what comes back names itself.
 [[nodiscard]]
-inline auto conduct(ours::Uandle const channel, wire::Message const &request,
-                    std::span<u8> const reply_bytes, std::span<ours::Uandle> const reply_handles)
+inline auto exchange(ours::Uandle const channel, wire::Message const &request,
+                     std::span<u8> const reply_bytes, std::span<ours::Uandle> const reply_handles)
     -> ustl::Result<wire::Message, ours::Status> {
     if (auto const written =
             ours::channel_write(channel, ours::ChannelWriteOptions::None, request.bytes.data(),
@@ -69,7 +69,7 @@ inline auto conduct(ours::Uandle const channel, wire::Message const &request,
                                   .handles = reply_handles.first(num_handles)});
 }
 
-/// The channel a typed client conducts over. Takes ownership of the Uandle
+/// The channel a typed client exchanges over. Takes ownership of the Uandle
 /// it is given (closing it when it dies, as the clients' destructors did).
 class Channel final {
   public:
@@ -97,10 +97,10 @@ class Channel final {
     /// is the failure -- the provider's epitaph status standing in for a
     /// connection it closed without answering, the wait's or the write's
     /// own otherwise. A reply's handles are closed here: the families that
-    /// conduct() directly are the ones whose replies carry something.
+    /// exchange() directly are the ones whose replies carry something.
     [[nodiscard]]
     auto call(wire::Message const &request) -> ustl::Result<wire::Message, ours::Status> {
-        auto answered = conduct(m_channel, request, m_reply, m_handles);
+        auto answered = exchange(m_channel, request, m_reply, m_handles);
         if (answered.is_err()) {
             return answered;
         }
@@ -124,7 +124,7 @@ class Channel final {
             return ustl::err(epitaph.is_err() ? ours::Status::BadState : epitaph.unwrap());
         }
         // The success path closes too: a family whose reply carries a
-        // payload handle conducts directly and takes it from conduct's
+        // payload handle exchanges directly and takes it from exchange's
         // return -- call()'s contract is that its caller never sees one.
         close_handles();
         message.handles = {};

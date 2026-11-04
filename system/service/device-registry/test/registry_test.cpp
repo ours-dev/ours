@@ -211,7 +211,7 @@ class RegistryTest: public testing::Test {
         auto reply_bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
         auto reply_handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
         auto const answered =
-            rpc::conduct(connection, request.unwrap(), reply_bytes, reply_handles);
+            rpc::exchange(connection, request.unwrap(), reply_bytes, reply_handles);
         EXPECT_TRUE(answered.is_ok());
         if (answered.is_err()) {
             return {};
@@ -276,11 +276,11 @@ class RegistryTest: public testing::Test {
 
     /// Publishes through a fresh registry connection, returns the codec's
     /// status, and fills |granted| with the granted name.
-    auto publish(std::string_view const klass, std::string_view const name,
+    auto publish(std::string_view const kind, std::string_view const name,
                  std::string_view const protocol, Uandle const mount, std::span<char> granted)
         -> Status {
         auto client = prot::dev::Client{connect_registry()};
-        return client.publish(klass, name, protocol, mount, granted);
+        return client.publish(kind, name, protocol, mount, granted);
     }
 
     /// The mounts, for the assertions.
@@ -311,7 +311,7 @@ TEST_F(RegistryTest, ProposalGrantedAsProposed) {
     EXPECT_STREQ(granted.data(), "000");
     run();
     ASSERT_EQ(mounts()[0].used, true);
-    EXPECT_EQ(mounts()[0].klass, "block");
+    EXPECT_EQ(mounts()[0].kind, "block");
     EXPECT_EQ(mounts()[0].name, "000");
 }
 
@@ -343,7 +343,7 @@ TEST_F(RegistryTest, ClassesNameSeparately) {
     EXPECT_EQ(publish("input", "000", "ours.input.Device", input.mount, granted), Status::Ok);
     EXPECT_STREQ(granted.data(), "000");
     run();
-    EXPECT_EQ(mounts()[1].klass, "input");
+    EXPECT_EQ(mounts()[1].kind, "input");
 }
 
 /// The mount pool's exhaustion answers NoResource, and the refused
@@ -371,7 +371,7 @@ TEST_F(RegistryTest, MalformedPublishClosesConnection) {
     auto bytes = std::array<u8, 64>{};
     auto const built = prot::dev::encode_publish(
         bytes, handles,
-        {.txid = 1, .klass = "block", .name = "000", .protocol = BLOCK, .directory = ends[1]});
+        {.txid = 1, .kind = "block", .name = "000", .protocol = BLOCK, .directory = ends[1]});
     ASSERT_TRUE(built.is_ok());
     auto message = wire::Message{.bytes = std::span{bytes}.first(built->bytes.size() - 1),
                                  .handles = std::span{handles}.first(1)};
@@ -610,8 +610,8 @@ TEST_F(RegistryTest, TreeNodeExhaustionRefusesThePublish) {
     auto granted = std::array<char, 8>{};
     for (auto index = usize{0}; index < MAX_MOUNTS; ++index) {
         publishers[index] = make_publisher();
-        auto const klass = std::array<char, 2>{'c', static_cast<char>('0' + index)};
-        auto const status = publish(std::string_view{klass.data(), klass.size()}, "000", "ours.x.Y",
+        auto const kind = std::array<char, 2>{'c', static_cast<char>('0' + index)};
+        auto const status = publish(std::string_view{kind.data(), kind.size()}, "000", "ours.x.Y",
                                     publishers[index].mount, granted);
         if (index < NEW_CLASSES) {
             EXPECT_EQ(status, Status::Ok);
@@ -693,7 +693,7 @@ TEST_F(RegistryTest, PublishThenCloseEarlyStillMountsAndKeepsServing) {
     auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
     auto const built = prot::dev::encode_publish(bytes, handles,
                                                  {.txid = 1,
-                                                  .klass = "block",
+                                                  .kind = "block",
                                                   .name = "000",
                                                   .protocol = BLOCK,
                                                   .directory = publisher.mount});
@@ -716,7 +716,7 @@ TEST_F(RegistryTest, PublishThenCloseEarlyStillMountsAndKeepsServing) {
     }
     EXPECT_TRUE(mounted);
     ASSERT_EQ(mounts()[0].used, true);
-    EXPECT_EQ(mounts()[0].klass, "block");
+    EXPECT_EQ(mounts()[0].kind, "block");
     EXPECT_EQ(mounts()[0].directory, publisher.mount);
 
     // The registry answered the next publish as if nothing had happened,

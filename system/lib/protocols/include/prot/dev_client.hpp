@@ -44,7 +44,7 @@ class Client final {
     Client(Client const &) = delete;
     auto operator=(Client const &) -> Client & = delete;
 
-    /// Publishes one device: |klass| is the tree section the leaf sits in
+    /// Publishes one device: |kind| is the tree section the leaf sits in
     /// ("block"), |name| the proposed node name ("000"), |protocol| the wire
     /// name a client's open of the leaf speaks ("ours.block.Block"), and
     /// |directory| the server end opens of the leaf forward into. The
@@ -54,13 +54,13 @@ class Client final {
     /// name and its NUL do not fit. The transferred |directory| cannot be
     /// sent twice, so a failed publish takes a fresh channel to retry.
     [[nodiscard]]
-    auto publish(std::string_view const klass, std::string_view const name,
+    auto publish(std::string_view const kind, std::string_view const name,
                  std::string_view const protocol, ours::Uandle const directory,
                  std::span<char> granted) -> ours::Status {
         auto const txid = m_channel.next_txid();
         auto const request = encode_publish(m_request, m_request_handles,
                                             {.txid = txid,
-                                             .klass = klass,
+                                             .kind = kind,
                                              .name = name,
                                              .protocol = protocol,
                                              .directory = directory});

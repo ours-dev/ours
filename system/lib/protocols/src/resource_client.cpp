@@ -30,7 +30,7 @@ auto get(Uandle const connection, Protocol const &protocol) -> ustl::Result<Uand
     // own stack would die at its return.
     auto reply_bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
     auto reply_handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
-    auto const message = rpc::conduct(connection, request.unwrap(), reply_bytes, reply_handles);
+    auto const message = rpc::exchange(connection, request.unwrap(), reply_bytes, reply_handles);
     if (message.is_err()) {
         return ustl::err(message.unwrap_err());
     }

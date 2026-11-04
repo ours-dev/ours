@@ -207,7 +207,7 @@ static_assert(sizeof(CqEntry) == 16);
 /// Whether the completion |dw3| names: the status field, the phase bit
 /// aside, is zero exactly when the command succeeded.
 [[nodiscard]]
-constexpr auto command_ok(u32 const dw3) -> bool {
+constexpr auto is_command_ok(u32 const dw3) -> bool {
     return (dw3 & 0xFFFE'0000u) == 0;
 }
 
@@ -506,7 +506,7 @@ class NvmeBlockServer final
         // Success is the whole status field clear -- its position the
         // device's own encoding, which a failure here says on the console
         // instead of this driver guessing wrong about.
-        if (!command_ok(cqe.word3)) {
+        if (!is_command_ok(cqe.word3)) {
             char status_text[18];
             auto _ = ort::debug_line(
                 {"nvme: the device failed a command, DW3 ", ort::hex(cqe.word3, status_text)});
@@ -704,7 +704,7 @@ auto main(int, char **) -> int {
             auto _ = ort::debug_line("nvme: Identify timed out");
             return 1;
         }
-        if (!command_ok(cqe.word3)) {
+        if (!is_command_ok(cqe.word3)) {
             auto _ = ort::debug_line("nvme: Identify failed");
             return 1;
         }
@@ -735,7 +735,7 @@ auto main(int, char **) -> int {
             auto _ = ort::debug_line("nvme: Create I/O CQ timed out");
             return 1;
         }
-        if (!command_ok(cqe.word3)) {
+        if (!is_command_ok(cqe.word3)) {
             char status_text[18];
             auto _ = ort::debug_line(
                 {"nvme: Create I/O CQ failed, DW3 ", ort::hex(cqe.word3, status_text)});
@@ -750,7 +750,7 @@ auto main(int, char **) -> int {
             auto _ = ort::debug_line("nvme: Create I/O SQ timed out");
             return 1;
         }
-        if (!command_ok(cqe.word3)) {
+        if (!is_command_ok(cqe.word3)) {
             char status_text[18];
             auto _ = ort::debug_line(
                 {"nvme: Create I/O SQ failed, DW3 ", ort::hex(cqe.word3, status_text)});

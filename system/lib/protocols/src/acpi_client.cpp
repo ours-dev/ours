@@ -29,7 +29,7 @@ namespace {
 
     /// Writes |request| on |connection| and reads the one message that answers
     /// it into |reply|: the message's length, or why not. The pipeline is
-    /// rpc::conduct's -- handles intact, epitaphs untranslated -- and this
+    /// rpc::exchange's -- handles intact, epitaphs untranslated -- and this
     /// family's contract goes on top: a reply carries no handle, and an
     /// epitaph is its status.
     auto exchange(Uandle const connection, wire::Message const request, std::span<u8> const reply)
@@ -37,7 +37,7 @@ namespace {
         // Room for one handle all the same, so that a message that brings
         // one is read, and its handle closed, and then refused.
         auto handles = std::array<Uandle, 1>{};
-        auto const message = rpc::conduct(connection, request, reply, handles);
+        auto const message = rpc::exchange(connection, request, reply, handles);
         if (message.is_err()) {
             return ustl::err(message.unwrap_err());
         }

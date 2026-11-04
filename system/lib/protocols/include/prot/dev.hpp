@@ -47,7 +47,7 @@ inline constexpr auto REGISTRY_NAME = std::string_view{"ours.dev.Registry"};
 inline constexpr auto REGISTRY_PATH = std::string_view{"/svc/ours.dev.Registry"};
 
 /// The longest class name: one word, no separators.
-inline constexpr auto MAX_CLASS_LENGTH = usize{64};
+inline constexpr auto MAX_CLASS_NAME = usize{64};
 
 /// The longest node name a driver gives its device ("000").
 inline constexpr auto MAX_NODE_NAME = usize{64};
@@ -59,12 +59,12 @@ inline constexpr auto MAX_PROTOCOL_NAME = usize{128};
 /// The method: two-way, so the publisher learns the mount happened.
 inline constexpr auto PUBLISH = wire::method("ours.dev/Registry.Publish", wire::MethodKind::TwoWay);
 
-/// The publish. |klass| is the protocol family the leaf speaks ("block"),
+/// The publish. |kind| is the protocol family the leaf speaks ("block"),
 /// |name| the driver's own numbering of the device, and |directory| the
 /// server end opens of the leaf forward into.
 struct PublishRequest {
     u32 txid;
-    std::string_view klass;
+    std::string_view kind;
     std::string_view name;
     std::string_view protocol;
     ours::Uandle directory;
