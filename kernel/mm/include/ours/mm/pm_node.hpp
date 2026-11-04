@@ -245,8 +245,20 @@ class PmNode {
     /// after the handoff, with nothing else running.
     static auto setup_watermarks() -> void;
 
+    /// Allocate across the permitted nodes, starting from the implicit local
+    /// node or the explicit home node. ThisNode narrows the permitted mask
+    /// through resolve_request(); an explicit node is otherwise a preference.
+    /// The pmm facade owns pressure admission and the wait protocol.
     [[nodiscard]]
-    auto alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &fallback)
+    static auto alloc_frames(AllocFlags alloc_flags, usize order = 0,
+                             NodeMask const &fallback = node_online_mask())
+        -> ustl::Result<PmFrame *, Status>;
+
+    /// A home id outside the node table selects the implicit form, matching
+    /// the existing public pmm interface. An absent in-range node is invalid.
+    [[nodiscard]]
+    static auto alloc_frames(NodeId home, AllocFlags alloc_flags, usize order = 0,
+                             NodeMask const &fallback = node_online_mask())
         -> ustl::Result<PmFrame *, Status>;
 
     /// Allocates exactly |n| pages as a list of blocks, one per set bit of |n|:
@@ -269,14 +281,26 @@ class PmNode {
     ///                 representation of |n|, with sizes corresponding to 2^bit_position.
     ///   - On failure: An error Status indicating the reason for allocation failure.
     [[nodiscard]]
-    auto alloc_frames_fragment(AllocFlags alloc_flags, usize n, NodeMask const &fallback)
+    static auto alloc_frames_fragment(AllocFlags alloc_flags, usize n,
+                                      NodeMask const &fallback = node_online_mask())
+        -> ustl::Result<PmFrame::List, Status>;
+
+    [[nodiscard]]
+    static auto alloc_frames_fragment(NodeId home, AllocFlags alloc_flags, usize n,
+                                      NodeMask const &fallback = node_online_mask())
         -> ustl::Result<PmFrame::List, Status>;
 
     /// Allocate a number of order-0 pages to a frame list.
     ///
     /// Return the frame list.
     [[nodiscard]]
-    auto alloc_frames_bulk(AllocFlags alloc_flags, usize n, NodeMask const &fallback)
+    static auto alloc_frames_bulk(AllocFlags alloc_flags, usize n,
+                                  NodeMask const &fallback = node_online_mask())
+        -> ustl::Result<PmFrame::List, Status>;
+
+    [[nodiscard]]
+    static auto alloc_frames_bulk(NodeId home, AllocFlags alloc_flags, usize n,
+                                  NodeMask const &fallback = node_online_mask())
         -> ustl::Result<PmFrame::List, Status>;
 
     /// Free a frame.

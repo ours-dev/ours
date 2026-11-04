@@ -29,6 +29,8 @@
 ///   - contains(). Declared for a long time and defined only recently.
 ///   - Fragment and bulk allocation. alloc_frames_fragment() used to loop for
 ///     ever on an even page count.
+///   - Static allocation. Direct class calls honor node restrictions, errors,
+///     and allocation-disable state, and release without a node instance.
 ///   - Count helpers. Both direct-map overloads round three pages up to a
 ///     usable, zeroed four-page block, including the node-specific template.
 ///   - AllocState. A thread that disabled allocation must be
@@ -436,6 +438,47 @@ namespace {
         verdict(tally, bulk_ok && frames == 4, "alloc_frames_bulk() returns n single frames");
     }
 
+    auto check_static_allocation(Tally &tally) -> void {
+        auto const release = [](ktl::Result<PmFrame *> const &result) {
+            if (result && *result) {
+                PmNode::free_frames(*result, (*result)->order());
+            }
+        };
+        auto const alloc_flags = mm::ALLOC_KERNEL | mm::AllocFlags::Zero;
+        auto const nid = mm::current_node();
+
+        auto implicit = PmNode::alloc_frames(alloc_flags);
+        verdict(tally, implicit && *implicit && (*implicit)->order() == 0,
+                "static allocation needs no node instance");
+        release(implicit);
+
+        auto explicit_home = PmNode::alloc_frames(nid, alloc_flags | mm::AllocFlags::ThisNode);
+        verdict(tally, explicit_home && *explicit_home && (*explicit_home)->nid() == nid,
+                "static allocation honors an explicit home and ThisNode");
+        release(explicit_home);
+
+        auto empty = PmNode::alloc_frames(nid, alloc_flags, 0, NodeMask{});
+        verdict(tally, !empty && empty.unwrap_err() == Status::OutOfMem,
+                "static allocation cannot escape an empty allowed-node set");
+        release(empty);
+
+        auto oversized = PmNode::alloc_frames(nid, alloc_flags, MAX_FRAME_ORDER + 1);
+        verdict(tally, !oversized && oversized.unwrap_err() == Status::InvArgs,
+                "static allocation rejects an order past the maximum");
+        release(oversized);
+
+        auto remote_nodes = PmNode::node_memory_mask();
+        remote_nodes.set(nid, false);
+        if (remote_nodes.any()) {
+            auto remote = PmNode::alloc_frames(nid, alloc_flags, 0, remote_nodes);
+            verdict(tally, remote && *remote && remote_nodes.test((*remote)->nid()),
+                    "static allocation reaches another node permitted by the mask");
+            release(remote);
+        } else {
+            log::info("pmnode.test: skip  cross-node allocation needs multiple memory nodes");
+        }
+    }
+
     auto check_count_helpers(Tally &tally) -> void {
         auto const check = [&tally](u8 *const bytes, NodeId const expected_node,
                                     char const *const name) {
@@ -478,12 +521,23 @@ namespace {
         state.disable();
         auto *const nodeless = mm::alloc_frames(mm::ALLOC_KERNEL, usize(0));
         auto *const by_node = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, usize(0));
+        auto direct = PmNode::alloc_frames(mm::ALLOC_KERNEL);
+        auto direct_home = PmNode::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL);
         state.enable();
 
         auto *const after = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, usize(0));
         verdict(tally, !nodeless && !by_node,
                 "a thread that disabled allocation is refused with or without a node");
         verdict(tally, after != nullptr, "enabling it again lets the allocation through");
+        verdict(tally,
+                !direct && direct.unwrap_err() == Status::AccessDenied && !direct_home &&
+                    direct_home.unwrap_err() == Status::AccessDenied,
+                "static allocation enforces the thread's disabled state with or without a home");
+        for (auto const &result: {direct, direct_home}) {
+            if (result && *result) {
+                PmNode::free_frames(*result, (*result)->order());
+            }
+        }
 
         // Freed even if the check above failed, so the test leaks nothing.
         for (auto *const frame: {nodeless, by_node, after}) {
@@ -506,6 +560,7 @@ namespace {
         });
         check_fragment_and_bulk(tally);
         check_count_helpers(tally);
+        check_static_allocation(tally);
         check_disabled_allocation(tally);
 
         if (tally.failed != 0) {

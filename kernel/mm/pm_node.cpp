@@ -25,6 +25,51 @@ namespace {
     GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
     GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
 
+    auto apply_thread_policy(AllocFlags &alloc_flags) -> Status {
+        if constexpr (MEMORY_ALLOCATION_POLICY) {
+            using Kind = AllocPolicy::Kind;
+
+            // The thread's resource lock covers reading the policy and nothing
+            // more: it is what another thread takes to replace it. It used to be
+            // held by every node-less allocation entry around the whole
+            // allocation, slow path included -- a spin lock with interrupts off,
+            // held across a path that could reschedule(). Copying the Arc out is
+            // all that needs it.
+            auto const policy = [] {
+                auto *const thread = task::Thread::Current::get();
+                Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
+                return thread->alloc_state().get_policy();
+            }();
+            if (policy) {
+                switch (policy->kind()) {
+                    case Kind::Bind:
+                        break;
+                    case Kind::Interleave:
+                        break;
+                    case Kind::Preferred:
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        return Status::Ok;
+    }
+
+    /// Resolve the implicit home after applying the thread-default policy.
+    /// An explicit home bypasses this step, as in the public pmm interface.
+    auto local_node_for(AllocFlags &alloc_flags) -> ktl::Result<NodeId> {
+        if (auto const status = apply_thread_policy(alloc_flags); Status::Ok != status) {
+            return ustl::err(status);
+        }
+        auto *const local_node = NodePlacement::local_node();
+        if (!local_node) {
+            return ustl::err(Status::BadState);
+        }
+        return ustl::ok(local_node->nid());
+    }
+
 } // namespace
 
 /// Chains the zones of every node in |order| behind this node's own, in the
@@ -130,7 +175,23 @@ auto PmNode::alloc_frames_postamble(PmFrame *frame, AllocRequest const &request)
 
 auto PmNode::alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
-    m_canary.verify<Self>();
+    auto const home = local_node_for(alloc_flags);
+    if (!home) {
+        return ustl::err(home.unwrap_err());
+    }
+    return alloc_frames(*home, alloc_flags, order, fallback);
+}
+
+auto PmNode::alloc_frames(NodeId const nid, AllocFlags alloc_flags, usize order,
+                          NodeMask const &fallback) -> ktl::Result<PmFrame *> {
+    if (nid >= MAX_NODES) {
+        return alloc_frames(alloc_flags, order, fallback);
+    }
+    auto *const home = Self::node(nid);
+    if (!home) {
+        return ustl::err(Status::InvArgs);
+    }
+    home->m_canary.verify<Self>();
 
     // Whether the calling thread may allocate at all: a thread that has
     // disabled allocation (AllocState::disable()) is refused here,
@@ -163,7 +224,7 @@ auto PmNode::alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &f
     // and an AllocationOptions derived by a mapping that answered with the
     // empty set for every AllocFlags.
     auto const request =
-        resolve_request(alloc_flags, order, fallback, Origin{.node = m_id, .cpu = Cpu::id()});
+        resolve_request(alloc_flags, order, fallback, Origin{.node = nid, .cpu = Cpu::id()});
 
     // The only attempt. Nothing reclaims on this path, by design: taking
     // frames back means reaching into whatever holds them -- VMO pages, the
@@ -184,7 +245,7 @@ auto PmNode::alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &f
     // exists: an attempt that lets a caller dip below a zone's high watermark
     // will carry a different mark on the request, and so have a reason to be a
     // step rather than a repeat.
-    auto *const frame = get_frame_from_zone_list(request);
+    auto *const frame = home->get_frame_from_zone_list(request);
     if (!frame) {
         // The zone walk answers with a plain pointer, null on failure, so this
         // is where that becomes the error the public interface promises.
@@ -200,13 +261,27 @@ auto PmNode::alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &f
         return ustl::err(Status::OutOfMem);
     }
 
-    alloc_frames_postamble(frame, request);
+    home->alloc_frames_postamble(frame, request);
     return ustl::ok(frame);
 }
 
 auto PmNode::alloc_frames_fragment(AllocFlags alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
+    auto const home = local_node_for(alloc_flags);
+    if (!home) {
+        return ustl::err(home.unwrap_err());
+    }
+    return alloc_frames_fragment(*home, alloc_flags, n, fallback);
+}
 
+auto PmNode::alloc_frames_fragment(NodeId const nid, AllocFlags alloc_flags, usize n,
+                                   NodeMask const &fallback) -> ktl::Result<PmFrame::List> {
+    if (nid >= MAX_NODES) {
+        return alloc_frames_fragment(alloc_flags, n, fallback);
+    }
+    if (!Self::node(nid)) {
+        return ustl::err(Status::InvArgs);
+    }
     PmFrame::List list;
     // One bit of |n| per step, whether or not it is set. The shift used to
     // sit inside the branch that allocates, so the first clear bit was never
@@ -217,7 +292,7 @@ auto PmNode::alloc_frames_fragment(AllocFlags alloc_flags, usize n, NodeMask con
             continue;
         }
 
-        if (auto frame = this->alloc_frames(alloc_flags, order, fallback)) {
+        if (auto frame = alloc_frames(nid, alloc_flags, order, fallback)) {
             list.push_back(*frame.unwrap());
         } else {
             free_frames(&list);
@@ -228,12 +303,26 @@ auto PmNode::alloc_frames_fragment(AllocFlags alloc_flags, usize n, NodeMask con
     return ustl::ok(ustl::move(list));
 }
 
-auto PmNode::alloc_frames_bulk(AllocFlags flags, usize n, NodeMask const &fallback)
+auto PmNode::alloc_frames_bulk(AllocFlags alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
+    auto const home = local_node_for(alloc_flags);
+    if (!home) {
+        return ustl::err(home.unwrap_err());
+    }
+    return alloc_frames_bulk(*home, alloc_flags, n, fallback);
+}
 
+auto PmNode::alloc_frames_bulk(NodeId const nid, AllocFlags alloc_flags, usize n,
+                               NodeMask const &fallback) -> ktl::Result<PmFrame::List> {
+    if (nid >= MAX_NODES) {
+        return alloc_frames_bulk(alloc_flags, n, fallback);
+    }
+    if (!Self::node(nid)) {
+        return ustl::err(Status::InvArgs);
+    }
     PmFrame::List list;
     for (usize i = 0; i < n; ++i) {
-        if (auto frame = this->alloc_frames(flags, 0, fallback)) {
+        if (auto frame = alloc_frames(nid, alloc_flags, 0, fallback)) {
             list.push_back(*frame.unwrap());
         } else {
             free_frames(&list);

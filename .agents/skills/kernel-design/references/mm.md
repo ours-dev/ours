@@ -189,3 +189,12 @@ ProtectionRanges, ZoneList, ZoneSelector, VmCowPages::Cursor, and
 VmObject::Builder. Consolidate terminology rather than mechanically adding
 prefixes or role suffixes. Specific PMM helper renames remain design
 proposals, not accepted implementation decisions.
+
+## PmNode allocation interface (user decision, 2026-11-04)
+
+PmFrame, PmZone, and PmNode are the principal PMM resource models. The user
+selected PmNode::alloc_frames and PmNode::free_frames as static operations
+across nodes. Node instances retain their resource state; the static allocation
+interface selects a home node and walks permitted fallback zones. Retain the
+implicit-local and explicit-home calling forms and existing restrictions.
+This supersedes the separate FrameAllocator class in the earlier proposal.
