@@ -7,13 +7,10 @@
 /// request through a pure function -- everything it needs is an argument,
 /// including the calling CPU.
 ///
-/// What is worth pinning is the AllocFlags::ThisNode rule, because it is a
-/// restriction and not a preference and the difference is easy to get
-/// backwards: it narrows the allowed set to the home node only when the
-/// caller's mask already includes that node, and a mask that leaves the home
-/// node out keeps its own nodes untouched.
+/// AllocFlags::HomeIfAllowed narrows the allowed set to the home node when
+/// the caller's mask includes it. A mask that excludes it keeps its nodes.
 ///
-/// Built with OURS_CONFIG_NUMA=1, which the target sets for this test alone.
+/// Built with MM_NUMA=1, which enables multi-node masks for this host test.
 /// The default build has MAX_NODES == 1, and with one node every case
 /// below collapses into the same one: the caller's mask, the home node and the
 /// result are all {0}, so the narrowing cannot be observed either way. The
@@ -69,37 +66,37 @@ auto carried_through() -> void {
     check(request.initiator() == CPU, "the initiator is the CPU passed in, not one read");
 }
 
-auto without_this_node() -> void {
+auto without_home_if_allowed() -> void {
     auto const nodes = mask_of(HOME, OTHER);
     auto const request = resolve_request(AllocFlags::Zero, 0, nodes, HERE);
 
     check(request.allowed_nodes().test(HOME) && request.allowed_nodes().test(OTHER),
-          "without ThisNode the caller's whole mask is allowed");
+          "without HomeIfAllowed the caller's whole mask is allowed");
 }
 
-auto with_this_node_including_home() -> void {
+auto with_home_if_allowed_including_home() -> void {
     auto const nodes = mask_of(HOME, OTHER);
-    auto const request = resolve_request(AllocFlags::ThisNode, 0, nodes, HERE);
+    auto const request = resolve_request(AllocFlags::HomeIfAllowed, 0, nodes, HERE);
 
-    check(request.allowed_nodes().test(HOME), "ThisNode keeps the home node");
+    check(request.allowed_nodes().test(HOME), "HomeIfAllowed keeps the home node");
     check(!request.allowed_nodes().test(OTHER),
-          "ThisNode drops every other node: a restriction, not a preference");
+          "HomeIfAllowed restricts allocation to the allowed home node");
 }
 
-auto with_this_node_excluding_home() -> void {
+auto with_home_if_allowed_excluding_home() -> void {
     NodeMask nodes;
     nodes.set(OTHER);
-    auto const request = resolve_request(AllocFlags::ThisNode, 0, nodes, HERE);
+    auto const request = resolve_request(AllocFlags::HomeIfAllowed, 0, nodes, HERE);
 
     check(!request.allowed_nodes().test(HOME),
-          "a mask without the home node does not gain it from ThisNode");
+          "a mask without the home node does not gain it from HomeIfAllowed");
     check(request.allowed_nodes().test(OTHER),
           "a mask without the home node keeps its own nodes rather than emptying");
 }
 
 auto empty_mask_stays_empty() -> void {
     NodeMask const nodes;
-    auto const request = resolve_request(AllocFlags::ThisNode, 0, nodes, HERE);
+    auto const request = resolve_request(AllocFlags::HomeIfAllowed, 0, nodes, HERE);
 
     check(!request.allowed_nodes().any(),
           "an empty mask stays empty: resolving does not invent a node to allow");
@@ -109,9 +106,9 @@ auto empty_mask_stays_empty() -> void {
 
 auto main() -> int {
     carried_through();
-    without_this_node();
-    with_this_node_including_home();
-    with_this_node_excluding_home();
+    without_home_if_allowed();
+    with_home_if_allowed_including_home();
+    with_home_if_allowed_excluding_home();
     empty_mask_stays_empty();
 
     if (FAILURES != 0) {

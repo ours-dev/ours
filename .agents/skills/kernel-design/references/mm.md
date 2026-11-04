@@ -198,3 +198,8 @@ across nodes. Node instances retain their resource state; the static allocation
 interface selects a home node and walks permitted fallback zones. Retain the
 implicit-local and explicit-home calling forms and existing restrictions.
 This supersedes the separate FrameAllocator class in the earlier proposal.
+
+`AllocFlags::HomeIfAllowed` restricts the walk to the home node when the
+allowed mask includes it. If the mask excludes that node, the resolver uses
+the supplied mask. Linux's `__GFP_THISNODE` instead requires allocation from
+the requested node without fallback.

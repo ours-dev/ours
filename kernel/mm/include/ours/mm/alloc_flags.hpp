@@ -22,11 +22,10 @@ enum class AllocFlags : u32 {
     /// flag: a pointer cannot distinguish ShouldWait from allocation failure.
     CanWait = 8_bit,
 
-    /// Restrict allocation to the starting node when the caller's allowed
-    /// mask includes it. Otherwise retain that mask, as resolve_request()
-    /// specifies. No preset carries this flag; ordinary allocation is
-    /// already local-first and may fall back to other nodes.
-    ThisNode = 9_bit,
+    /// If the allowed mask includes the home node, use only that node, even
+    /// when it has no suitable frames. Otherwise use the caller's mask as given.
+    /// The home is the explicit node or, if omitted, the current CPU's node.
+    HomeIfAllowed = 9_bit,
 
     /// Return zeroed memory on success.
     Zero = 10_bit,

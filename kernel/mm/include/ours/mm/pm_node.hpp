@@ -246,8 +246,8 @@ class PmNode {
     static auto setup_watermarks() -> void;
 
     /// Allocate across the permitted nodes, starting from the implicit local
-    /// node or the explicit home node. ThisNode narrows the permitted mask
-    /// through resolve_request(); an explicit node is otherwise a preference.
+    /// node or the explicit home node. HomeIfAllowed pins the walk to the
+    /// home node when it appears in the permitted mask.
     /// The pmm facade owns pressure admission and the wait protocol.
     [[nodiscard]]
     static auto alloc_frames(AllocFlags alloc_flags, usize order = 0,

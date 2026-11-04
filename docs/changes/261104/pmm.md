@@ -65,3 +65,54 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Rename the conditional home-node allocation flag (2026-11-04)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/alloc_flags.hpp` and `kernel/mm/include/ours/mm/priv/alloc_request.hpp` name the flag and describe its mask rule.
+- The PMM allocation comments, kernel tests and host request tests use the same name.
+
+**Symptom**
+
+`ThisNode` reads as an unconditional node restriction at the call site.
+
+**Cause**
+
+The allocation resolver intersects the allowed mask with the home node and uses
+the intersection only when it contains that node.
+
+**Change**
+
+Rename the flag to `AllocFlags::HomeIfAllowed`. The flag still occupies bit 9.
+When the mask includes the home node, that node is the sole candidate. When
+the mask excludes it, the resolver uses the caller's mask.
+
+**Reference**
+
+Linux documents `__GFP_THISNODE` as enforcing the requested node without
+fallback. The conditional mask rule in this tree has its own name.
+
+**Verification**
+
+The host request test exercises masks that include and exclude the home node.
+All 163 host tests passed. Both QEMU dev images booted in the default and
+four-node NUMA configurations. The remote exhaustion case passed with
+`NUMA=3 SMP=2`. Clang-tidy completed on the six touched C++ files.
+
+**Deliberately not done**
+
+Changes to placement policy are outside this rename.
+
+**How it was found**
+
+The PMM coverage review identified the mask-excludes-home case in the
+existing host test.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

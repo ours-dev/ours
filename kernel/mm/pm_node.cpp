@@ -147,7 +147,7 @@ PmNode::PmNode(NodeId nid)
     , m_page_queues() {}
 
 auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
-    // The fallback order, not this node's zones by type: AllocFlags::ThisNode is
+    // The fallback order, not this node's zones by type: AllocFlags::HomeIfAllowed is
     // honoured by the request's node mask, which resolve_request() has already
     // narrowed, so the candidate list is the same either way and the filter
     // does the restricting. The walk that was deleted with ZoneIterator chose
