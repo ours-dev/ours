@@ -161,12 +161,14 @@ constexpr auto BLOCK = component::names::routing_checks::USE_SVC_OURS_BLOCK_BLOC
 constexpr auto NVME = component::names::routing_checks::USE_SVC_OURS_BLOCK_NVME;
 
 /// The directories the sibling files provides that open, each at the path its
-/// use in routing_checks.cm gives it. /files-denied and /files-wide are the
-/// two whose entry the root closed, and check_files_closed() names them.
-constexpr auto FILES = std::string_view{"/files"};
-constexpr auto FILES_SUB = std::string_view{"/files-sub"};
-constexpr auto GHOST = std::string_view{"/ghost"};
-constexpr auto FILES_FILE = std::string_view{"/files-file"};
+/// use in routing_checks.cm gives it: the constants the manifest target
+/// writes (component/names/routing_checks.hpp), like the /svc ones above.
+/// /files-denied and /files-wide are the two whose entry the root closed, and
+/// check_files_closed() names them.
+constexpr auto FILES = component::names::routing_checks::USE_FILES;
+constexpr auto FILES_SUB = component::names::routing_checks::USE_FILES_SUB;
+constexpr auto GHOST = component::names::routing_checks::USE_GHOST;
+constexpr auto FILES_FILE = component::names::routing_checks::USE_FILES_FILE;
 /// The service node inside /files that makes files exit when it is connected
 /// to (examples/files/files_server.cpp): a connect() through the entry, whose
 /// r* holds CONNECT.
