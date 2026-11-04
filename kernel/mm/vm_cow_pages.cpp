@@ -527,7 +527,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
                                      ustl::Arc<VmCowPages> *const out) -> Status {
     m_lock.assert_held();
 
-    if (is_hidden()) {
+    if (is_hidden() || !!(m_flags & Flags::Pinned)) {
         return Status::BadState;
     }
     // Not yet: see create_child().
@@ -916,6 +916,9 @@ auto VmCowPages::take_pages_locked(usize const offset, usize const len,
                  "the list is not a fresh one of the range's length");
     DEBUG_ASSERT(!is_hidden(), "a hidden node is no object's to take from");
 
+    if (!!(m_flags & Flags::Pinned)) {
+        return Status::BadState;
+    }
     if (m_page_source) {
         return Status::NotSupported;
     }

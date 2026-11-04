@@ -343,10 +343,6 @@ auto VmObjectPaged::create_clone(u64 const offset, u64 const size,
     if (offset > m_size || size > MAX_SIZE) {
         return Status::InvArgs;
     }
-    if (!!(m_flags & Flags::Pinned)) {
-        return Status::BadState;
-    }
-
     ustl::Arc<VmCowPages> pages;
     {
         Guard guard{m_lock};
@@ -505,13 +501,6 @@ auto VmObjectPaged::take_pages(usize const offset, usize const size, VmPageSplic
     if (size > m_size || offset > m_size - size) {
         return Status::OutOfRange;
     }
-    // Checked here and not by the node, as the clone checks it: pinning is the
-    // object's (VmoFlags::Pinned), and the kernel's mappings of a pinned
-    // object rely on its pages staying where they are.
-    if (!!(m_flags & Flags::Pinned)) {
-        return Status::BadState;
-    }
-
     assert_cow_pages_locked();
     return m_cow_pages->take_pages_locked(m_cow_offset + offset, size, pages);
 }

@@ -564,3 +564,47 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Enforce permanent residency in the COW node (2026-11-04)
+
+**Files**
+
+- `kernel/mm/vm_cow_pages.cpp` checks permanent residency before clone and transfer.
+- `kernel/mm/vm_object_paged.cpp` validates and translates the view window.
+- `kernel/commands/vmo_contiguous_test.cpp` exercises both direct COW entries.
+
+**Symptom**
+
+A permanently resident node refused frame removal only when the operation passed through its VMO.
+
+**Cause**
+
+The COW node knew its frames were permanently resident for queue classification. The VMO independently checked its construction flag before calling the COW mutations.
+
+**Change**
+
+The node checks `Flags::Pinned` before modifying its page tree. The VMO translates the request. Counted pins still prevent clone or removal according to their existing range contracts.
+
+**Reference**
+
+Zircon `VmCowPages::CreateCloneLocked` checks counted pins at the backing mutation. Permanent residency is this repository's additional node policy.
+
+**Verification**
+
+Changed lines passed clang-format and clang-tidy. Both development images and all 163 host tests passed. The contiguous, pin, page-source and snapshot suites passed 18, 28, 76 and 259 checks.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The ownership review traced the permanent flag through queue classification, clone and transfer.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

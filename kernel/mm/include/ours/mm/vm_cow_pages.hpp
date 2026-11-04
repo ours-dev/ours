@@ -40,9 +40,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         /// or when the allocator has no block, gets one page as any node's.
         LargeBlocks = 1_bit,
 
-        /// The pages of a pinned VMO (VmoFlags::Pinned): filed on the pinned
-        /// queue, never reclaimed. The VMO is what is pinned, but it is the
-        /// node that files its pages, so the node is told.
+        /// Permanent residency for this node. Its frames stay on the pinned
+        /// queue and cannot leave through cloning or page transfer.
         Pinned = 2_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
@@ -117,7 +116,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// pages become shared and a writable mapping would write to all of their
     /// viewers. What this cannot check, because pinning is the object's and not
     /// the pages', is that none of them is pinned: the object that calls this
-    /// has to check that, and answer BadState for a pinned page.
+    /// has to check that, and answer BadState for a pinned node or page.
     ///
     /// The lock is taken by the caller, who has the answer to both anyway.
     ///
@@ -354,6 +353,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     ///
     /// NotSupported for a node with a page source: its pages are the source's
     /// content, not the caller's to move.
+    /// BadState for a permanently pinned node or a counted pin in the range.
     TA_REQUIRES(m_lock)
     auto take_pages_locked(usize offset, usize len, VmPageSpliceList *pages) -> Status;
 

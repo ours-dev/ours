@@ -65,3 +65,7 @@ The bounds check runs after placement normalizes the size and before the mapping
 ## Mapping lifecycle repair
 
 A failed tree insertion leaves the active state clear and returns before registration with the VMO. Both factories release the unpublished object. The duplicate mapping regression exercises this error and checks the original lookup result. Both development images booted, and the seal, snapshot and large-page suites passed.
+
+## Permanent residency repair
+
+The COW node rejects clone and transfer before it changes slots. The VMO still validates and translates the requested window. The contiguous VMO suite exercised the node directly and checked that a rejected transfer left the splice list fresh.

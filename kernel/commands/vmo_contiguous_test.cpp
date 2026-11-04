@@ -34,6 +34,7 @@
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_object_paged.hpp>
+#include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/object/bti_dispatcher.hpp>
 #include <ours/object/iommu_dispatcher.hpp>
 #include <ours/object/pmt_dispatcher.hpp>
@@ -198,6 +199,21 @@ namespace {
                     make(2 * P, 0, &vmo) == Status::Ok &&
                         vmo->create_clone(0, 2 * P, &clone) == Status::BadState && !clone,
                     "a snapshot of the memory is refused: it would move the pages the device has");
+            if (vmo) {
+                auto backing = vmo->cow_pages();
+                auto *const node = backing.as_ptr_mut();
+                ustl::Arc<mm::VmCowPages> clone_pages;
+                mm::VmPageSpliceList transferred(1);
+                Guard guard{node->lock()};
+                verdict(tally,
+                        node->create_clone_locked(0, P, 2 * P, &clone_pages) == Status::BadState &&
+                            !clone_pages,
+                        "the COW node rejects a clone of permanently resident frames");
+                verdict(tally,
+                        node->take_pages_locked(0, P, &transferred) == Status::BadState &&
+                            transferred.is_fresh(),
+                        "the COW node rejects a transfer before consuming the splice list");
+            }
         }
 
         // ---- the pinned queue through a pin
