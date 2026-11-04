@@ -34,10 +34,8 @@ class Observer {
 /// FairRunQueue itself -- all of Fair's per-CPU state -- is declared in
 /// fair.hpp and held directly by the per-CPU RunQueue.
 
-/// The offset is read off exec_runtime(), real time, where the virtual clock
-/// belongs: item 3 of docs/repairs/261103/kernel-task-sched.md.
 auto FairRunQueue::term_of(SchedEntity &object) const -> SchedDuration {
-    return weighted_offset(object.exec_runtime() - min_vruntime_, object.weight());
+    return weighted_offset(object.vruntime() - min_vruntime_, object.weight());
 }
 
 auto FairRunQueue::dequeue_object(SchedEntity &object) -> void {
@@ -64,8 +62,8 @@ auto FairRunQueue::enqueue_object(SchedEntity &object) -> void {
 ///     RelativeWeightedOwnedVirtualTimeSum -= Delta * TotalWeight
 auto FairRunQueue::update_min_vruntime(SchedEntity &current) -> void {
     SchedDuration min_vruntime;
-    if (current.exec_runtime() < min_vruntime_) {
-        min_vruntime = current.exec_runtime();
+    if (current.vruntime() < min_vruntime_) {
+        min_vruntime = current.vruntime();
     } else {
         min_vruntime = min_vruntime_;
     }
@@ -154,7 +152,7 @@ auto Fair::is_object_eligible(SchedEntity const &object) const -> bool {
     auto const total_vruntime = rq.total_vruntime();
     auto const weight_sum = rq.total_weight();
 
-    return total_vruntime >= ((object.exec_runtime() - rq.min_vruntime()) * weight_sum);
+    return total_vruntime >= ((object.vruntime() - rq.min_vruntime()) * weight_sum);
 }
 
 auto Fair::adjust_vlag(RunQueue &runtime, SchedEntity &ctx) -> void {

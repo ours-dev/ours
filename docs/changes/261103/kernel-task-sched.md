@@ -329,3 +329,79 @@ None
 - Why must a heavier thread's virtual clock run slower, and what does an EEVDF pick do with two clocks that read the same?
 - What unit does `total_vruntime_` have, and why does dividing the term by `MID_WEIGHT` make the mean 21 times too large whatever the weights are?
 - A default thread has priority 15 and the anchor is priority 16. What does that do to its `vruntime`, and why does it leave its share against a priority-17 thread unchanged?
+
+## Title: Fair's average, lag and eligibility read the virtual clock, not real time (2026-11-03)
+
+**Files**
+- `kernel/include/ours/task/sched/sched_entity.hpp` — new `SchedEntity::vruntime()`, beside `virtual_deadline()`; the comments of `exec_runtime()` and of `FairState` are brought up to date
+- `kernel/include/ours/task/sched/fair.hpp` — `FairRunQueue::lag_of()` reads `vruntime()`
+- `kernel/kernel/task/sched/fair.cpp` — `FairRunQueue::term_of()`, `FairRunQueue::update_min_vruntime()` and `Fair::is_object_eligible()` read `vruntime()`; the comment over `term_of()` that pointed at this item is gone
+- `docs/repairs/261103/kernel-task-sched.md` — item 3 is deleted (the number is kept), the references to it are cut, items 16 and 17 are added and item 6 gets one more consequence
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+Latent, cannot be triggered today: Fair is not built (items 4, 5 and 12 of the repair file). Once it is, and the queue's weighted mean covers every runnable thread, the running one included (item 6), the algebra is this. A priority-31 thread A and a default thread B (weights 1.0 and 0.0389) both always want to run. A is eligible when its offset is at most the weighted mean, and `wA*oA + wB*oB >= oA*(wA+wB)` reduces to `oB >= oA`; B's test reduces to `oA >= oB`. The weights cancel. On the real clock that keeps the pair within about one request of equal *real* time, 1 : 1, whatever the priorities; on the virtual clock, within about one request of equal *virtual* time, which is 25.7 : 1 in real time. With more than two threads the weights do not cancel in each test, but the stationary point is the same: nobody ahead, all clocks equal.
+
+In the code as it is the mean at a pick covers the waiting threads only: `current_` is never written, and `pick_next_thread()` runs before `put_prev_thread()` (`Scheduler::evaluate_next_thread()`), so the running thread is off the tree. A pair then alternates 1 : 1 on either clock, and this change alone does not make shares follow weights. It is necessary for that and not sufficient (items 6 and 16).
+
+**Cause**
+**The run queue measured fairness on a clock that is not the one the weights act on.** A thread carries two numbers. `exec_runtime` is real time on a CPU, from zero, not scaled. `vruntime` is virtual time: real time divided by the weight in units of `MID_WEIGHT` (`to_virtual_time()`), starting from the queue's average less the lag the thread carried (`Fair::adjust_vlag()`). Four places that mean the virtual quantity read the first: `lag_of()` (`avg_vruntime() - exec_runtime()`), `term_of()` (a thread's term of the weighted sum), `update_min_vruntime()` (`exec_runtime() < min_vruntime_`) and `is_object_eligible()`. The comment on `exec_runtime()` had pointed at the pattern, with two of the expressions; the review of 2026-11-03 found all four.
+
+Eligibility gates `Fair::evaluate_next_thread()`: only an eligible thread can be chosen there, whatever its deadline. Before this change the weight reached the deadline and the request only through `to_virtual_time()` (the rate `vruntime` advances at and the size of the request), so it decided who won among the eligible threads. It entered the mean too, but a mean of real times has equal real time as its stationary point whatever the weights, so it could not change the long-run split. On the virtual clock it now acts on eligibility as well.
+
+It also placed threads on the wrong origin. `update_vlag()` stored `avg_vruntime() - exec_runtime()`, and `avg_vruntime()` was a mean of `exec_runtime` values, so `adjust_vlag()` computed `vruntime = avg_vruntime() - vlag` entirely on the real clock and stored the result in `vruntime`, the variable `update_thread()` advances in virtual time. On an unchanged average a re-placed thread got `vruntime = exec_runtime`, while a priority-31 thread's `vruntime` had been accruing 21 times slower than real time (a default thread's, 1.225 times faster), so one dequeue and enqueue took the first one's virtual clock to about 21 times its value.
+
+**Change**
+Four reads, one accessor (abbreviated):
+
+```cpp
+// sched_entity.hpp
+[[nodiscard]] auto vruntime() const -> SchedDuration { return m_fair.vruntime; }
+
+// fair.hpp, lag_of()
+return avg_vruntime() - object.exec_runtime();                 // was
+return avg_vruntime() - object.vruntime();                     // now
+
+// fair.cpp, FairRunQueue::term_of()
+weighted_offset(object.exec_runtime() - min_vruntime_, ...)    // was
+weighted_offset(object.vruntime() - min_vruntime_, ...)        // now
+
+// fair.cpp, FairRunQueue::update_min_vruntime()
+if (current.exec_runtime() < min_vruntime_) { min_vruntime = current.exec_runtime(); }   // was
+if (current.vruntime() < min_vruntime_) { min_vruntime = current.vruntime(); }           // now
+
+// fair.cpp, Fair::is_object_eligible()
+(object.exec_runtime() - rq.min_vruntime()) * weight_sum       // was
+(object.vruntime() - rq.min_vruntime()) * weight_sum           // now
+```
+
+The real-time uses stay: the charge in `update_thread()`, `m_prev_exec_runtime` in `set_next_object()`, `remaining_slice()` and the NOHZ block (item 12) use `m_exec_runtime` directly. After this nothing calls `exec_runtime()`; it is kept, with its comment brought up to date, not deleted.
+
+`FairRunQueue` is not a friend of `SchedEntity`, so three of the four sites needed a way to read the field; `is_object_eligible()` is a member of `Fair`, which is a friend, and uses the accessor so that all four read alike. Chosen: a read-only accessor, the way `virtual_deadline()` is one. Rejected: `friend class FairRunQueue`, which would open every private member of `SchedEntity` (the profile, the slice, the queue hooks, `m_exec_runtime`) to a class that needs one number. The choice was the implementer's; it was not put to the author.
+
+The queue keeps `total_vruntime_` and `weight_sum_` equal to the sums of `term_of()` and `weight()` over the threads in the tree, at the current `min_vruntime_`. So a thread's `vruntime` and weight must not change while it is in the tree, and `min_vruntime_` may move only through `update_min_vruntime()`, which re-bases the sum (item 15 on the rounding). On every path called today that holds: `update_thread()` charges the thread it is given, which is the running thread, off the tree since `set_next_object()`, and `adjust_vlag()` runs on a thread that is not in the tree. Exceptions, read and not run: `override_thread_base_profile()` charges a queued thread before taking it off the tree (item 11, no caller); `adjust_vlag()` is the one writer `exec_runtime` did not have, and a delayed dequeue (`SCHED_DELAY_DEQUEUE`, off) leaves the thread in the tree, where a later wake would run it; tree membership is taken from `is_active()` throughout (item 17).
+
+**Reference**
+Linux EEVDF keeps one clock, `se->vruntime`, read through `entity_key()` by `avg_vruntime()`, `sum_w_vruntime_add()`, `vruntime_eligible()` and `update_zero_vruntime()` (`kernel/sched/fair.c` in the local checkout `~/Workspaces/projects/linux`, v7.2-rc5; the names were confirmed there by a reviewer). Zircon has no per-thread virtual runtime: a search of `scheduler.cc`, `scheduler.h` and `scheduler_state.h` and of `zircon/kernel` finds neither `vruntime` nor `virtual_time`.
+
+**Verification**
+- `python3 .agents/skills/verify/scripts/boot_check.py --out out/fair-lane`, run on the final code: build ok (51.3 s, a full rebuild, because `sched_entity.hpp` is included almost everywhere), dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (166 passed; two more than the previous entry, from commits other sessions merged into the branch in between). Fair is not in these images, so the boots show only that nothing else moved.
+- `-fsyntax-only` on `fair.cpp` and `scheduler.cpp` with the Fair switch on: still 5 and 1 diagnostics, the same ones (items 4, 5 and 12 of the repair file); a search finds no call of `exec_runtime()` in `kernel/` or `system/`.
+- `scripts/format_cpp.py` and `scripts/lint_docs.py` are clean. `clang-tidy -p out/fair-lane` on `rr.cpp` reports nothing on the changed lines of `sched_entity.hpp`, nor in `fair.hpp` or `common.hpp` (older diagnostics in `sched_entity.hpp` remain).
+- Three independent read-only reviewers (the eligibility algebra and the tree invariant, with a rational-arithmetic model of the queue; the C++ diff; a fact-check of these documents). They showed that the first draft described an idealised queue as if it were the code, and found items 16 and 17, a wrong placement account, a wrong invariant paragraph and a dozen smaller errors; all were corrected.
+- Fair was not linked, booted or run. The algebra in the Symptom is on paper and a model, and no test shows it (item 13).
+
+**Deliberately not done**
+- Fair still cannot work: `min_vruntime_` never advances, `current_` is never written and the first thread of an empty queue is placed on a saturated average (item 6), and the eligibility test is not ready for a running thread in the average (item 16). A consequence of this change until item 6 is fixed: the first thread's term is now about `weight * MAX` where it was 0, so the average is about the maximum while that thread is in the tree and a thread enqueued meanwhile is placed near it. It is recorded in item 6.
+- `exec_runtime()` is not deleted, and the real-time uses are not moved onto it.
+
+**How it was found**
+By the review of 2026-11-03 that produced the repair file, and from the comment on `exec_runtime()`. The decision of the same day to compare `vruntime` with `vdeadline` made the item mandatory. The author asked for it; the "Hands off" rule for `fair.*` in `kernel-design` is unchanged. That the weights cancel when the offsets are real times is the algebra above, worked out for this entry and checked by a reviewer's model.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why do the weights cancel in the eligibility test when the offsets are real times, and what does the test keep equal on the virtual clock?
+- Why did placing a thread on `avg_vruntime() - vlag` put a priority-31 thread about 21 times too far along when both were on the real clock?
+- Why must a thread's `vruntime` not change while it is in the tree, and which call breaks that today?

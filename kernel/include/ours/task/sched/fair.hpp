@@ -42,7 +42,7 @@ class FairRunQueue {
     /// Returns the lag of |object| relative to this runqueue.
     FORCE_INLINE
     auto lag_of(SchedEntity &object) -> SchedDuration {
-        return avg_vruntime() - object.exec_runtime();
+        return avg_vruntime() - object.vruntime();
     }
 
     FORCE_INLINE
