@@ -5,10 +5,12 @@ description: Settled design decisions for the ours kernel that the code alone do
 
 # ours kernel design rules
 
-The kernel is largely a reimplementation of Zircon, often keeping Zircon's
-names, with a few deliberate Linux-derived exceptions. The code shows what
-exists; these files record what was decided and why, so a decision does not
-get "fixed" back into a default.
+The kernel is largely a reimplementation of Zircon with a few deliberate
+Linux-derived exceptions. Use Zircon to understand subsystem behavior and
+terminology. For names, follow the Rust-based conventions in
+[modern-cpp-development](../language/modern-cpp-development/SKILL.md), with
+Zircon as a secondary reference. These files record the project's decisions
+and their rationale.
 
 ## Before designing anything
 

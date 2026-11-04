@@ -29,6 +29,13 @@ Activate (satisfy any of the following criteria):
 
 ### General style
 
+1. Follow Rust naming conventions as the default for project interfaces
+   (user decision, 2026-11-04). Use `UpperCamelCase` for types and enum
+   variants and `snake_case` for functions. Treat Zircon as a secondary
+   reference for domain vocabulary where the interface semantics match.
+   Preserve established local spellings such as `VmObjectPaged::with_source()`
+   and `VmCowPages::with_source()`.
+
 1. Naming first. When a change could improve naming, types, or interfaces, do the naming. A wrong name misleads every future reader and costs nothing to correct, whereas an awkward interface at least describes itself honestly. Treat a stale or inaccurate name as a defect rather than a cosmetic issue: a `ClockSource *` called `CLKEVT`, an `m_priority` that is really a rating, a misspelled `entroll`. Naming corrections belong early in a multi-step repair, not in a tidy-up pass at the end that gets dropped for being cosmetic.
 
 1. Const-first principle: In all contexts, every definition of a variable, function, function parameter, or template parameter should be qualified with one of __const__, __constexpr__, __constinit__, or __consteval__, unless the object needs to be mutable. Each of the three has one job and they are not interchangeable — see "Constants and configuration" below for which to reach for.

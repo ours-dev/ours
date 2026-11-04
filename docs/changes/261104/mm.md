@@ -173,3 +173,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Restore with_source and record the naming precedence (2026-11-04)
+
+**Files**
+
+- The paged VMO and COW node factories and their callers.
+- The kernel design and C++ style skills.
+
+**Symptom**
+
+The previous factory rename replaced the established `with_source()` spelling with Zircon's name.
+
+**Cause**
+
+The rename treated the reference implementation's spelling as the project's first choice.
+
+**Change**
+
+Restore `with_source()` at both layers and at their call sites. Apply Rust naming conventions as the project's default and use Zircon as a secondary reference for names.
+
+**Reference**
+
+The user's naming decision on 2026-11-04.
+
+**Verification**
+
+The restored kernel sources match the tree before the rename. Clang-format and clang-tidy checked all nine C++ files. Both dev images, all 163 host tests and the targeted pager and reclaim suites passed in the default and four-node NUMA configurations.
+
+**Deliberately not done**
+
+The code change is scoped to restoring this factory name.
+
+**How it was found**
+
+The user asked to retain `with_source()` and specified which naming convention takes precedence.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

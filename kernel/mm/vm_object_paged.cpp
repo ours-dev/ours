@@ -118,9 +118,9 @@ auto VmObjectPaged::create(Gaf alloc_flags, usize size, VmoFlags vmof,
     return Status::Ok;
 }
 
-auto VmObjectPaged::create_external(ustl::Arc<PageSource> source, Gaf const alloc_flags,
-                                    usize const size, VmoFlags const vmof,
-                                    ustl::Arc<VmObjectPaged> *const out) -> Status {
+auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const alloc_flags,
+                                usize const size, VmoFlags const vmof,
+                                ustl::Arc<VmObjectPaged> *const out) -> Status {
     DEBUG_ASSERT(source);
 
     if (!!(vmof & VmoFlags::Pinned) || !ustl::is_aligned(size, PAGE_SIZE)) {
@@ -133,7 +133,7 @@ auto VmObjectPaged::create_external(ustl::Arc<PageSource> source, Gaf const allo
     // reference is the one left to close it with. Once they exist they own
     // the source, and close it when they die.
     ustl::Arc<VmCowPages> cow_pages;
-    if (auto const status = VmCowPages::create_external(source, alloc_flags, size, &cow_pages);
+    if (auto const status = VmCowPages::with_source(source, alloc_flags, size, &cow_pages);
         Status::Ok != status) {
         source->close();
         return status;
