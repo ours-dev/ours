@@ -123,6 +123,10 @@ class Channel final {
             auto const epitaph = wire::decode_epitaph(message);
             return ustl::err(epitaph.is_err() ? ours::Status::BadState : epitaph.unwrap());
         }
+        // The success path closes too: a family whose reply carries a
+        // payload handle conducts directly and takes it from conduct's
+        // return -- call()'s contract is that its caller never sees one.
+        close_handles();
         message.handles = {};
         return answered;
     }
