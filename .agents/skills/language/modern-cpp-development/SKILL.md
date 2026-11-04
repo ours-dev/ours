@@ -167,9 +167,21 @@ This repo has three library tiers, not one flat "the STL":
 
 ### Memory allocation & ownership
 
-1. Dynamic allocation goes through `ktl::kmalloc(size, Gaf gaf[, NnId nid])` / `ktl::kfree(ptr)` (`kernel/lib/ktl/include/ktl/kmalloc.hpp`), backed by a slab/object-cache allocator (`kernel/mm/include/ours/mm/object-cache.hpp`). Never call a bare freestanding allocator without a `Gaf` flag.
+1. Raw heap allocation uses heap::kmalloc(size, AllocFlags[, NodeId]) and
+   heap::kfree(ptr), declared in `kernel/lib/heap/include/heap/kmalloc.hpp`.
+   The allocator is backed by MemCache/ObjectCache. Requests larger than
+   KMALLOC_MAX_SIZE use heap::vmalloc/vfree; the kernel allocation-flag
+   operator new routes by size. Keep allocation requirements explicit through
+   AllocFlags.
 
-1. Placement-new with an allocation-flag argument is the kernel's `new` idiom: `new (gaf) T(...)` / `new (gaf) T[n]()`, backed by `operator new(usize, ktl::Gaf)` (`kernel/lib/ktl/new.cpp:6-8`). Pick a `Gaf` (`kernel/mm/include/ours/mm/gaf.hpp`) that matches the allocation's real constraints (DMA-capable, NUMA node, zeroing) instead of defaulting to a generic flag without checking what's available — e.g. `kernel/lib/ktl/include/ktl/allocator.hpp:26` uses `new (ours::mem::kGafKernel) Element[n]()`.
+1. Placement-new with an allocation-flag argument is the kernel object-
+   allocation idiom: `new (alloc_flags) T(...)` or `new (alloc_flags) T[n]()`.
+   Declarations are in `kernel/lib/heap/include/heap/new.hpp` and
+   implementation in `kernel/lib/heap/src/new.cpp`. Select implemented flags
+   from `kernel/mm/include/ours/mm/alloc_flags.hpp`; for example,
+   `ktl::Allocator` uses `new (ours::mm::ALLOC_KERNEL) Element[n]()`. CanWait
+   belongs to the PMM Result/ShouldWait protocol, not a heap-pointer return.
+   CanBlock describes the caller context and does not enable direct reclaim.
 
 1. Ownership vocabulary (see also "Ownership" under General style): raw pointer for non-owning access; `ustl::Rc<T>` (single-threaded refcounting, the default) for single-owner-domain sharing; `ustl::Arc<T>` (`= Rc<T, ustl::sync::ThreadSafePolicy>`) when the object crosses CPUs; `ustl::Weak<T>` for a non-owning handle that shouldn't keep the object alive. `ustl::RefCounted<T, Policy>` (`system/lib/ustl/include/ustl/rc.hpp`) is the CRTP mixin that gives a type `retain()`/`release()` — e.g. `class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy>` with `ustl::Arc<VmArea> m_root_vma;` (`kernel/mm/include/ours/mm/vm_aspace.hpp:23,112`). Mixing policies is a compile error by design (a `static_assert` in `Rc`'s constructor checks the object's actual threading policy) — don't force-cast around it; pick the right pointer type instead.
 
@@ -377,7 +389,8 @@ Repo-internal (ground truth for the rules above — prefer re-reading these over
 - `system/public/ours/assert.hpp`, `system/public/ours/panic.hpp` — assertions and fatal errors.
 - `system/public/ours/compiler.hpp` — thread-safety annotation macros.
 - `system/lib/ustl/include/ustl/rc.hpp` — `RefCounted`/`Rc`/`Arc`/`Weak`.
-- `kernel/lib/ktl/include/ktl/kmalloc.hpp`, `kernel/lib/ktl/new.cpp`, `kernel/mm/include/ours/mm/gaf.hpp` — allocation.
+- `kernel/lib/heap/include/heap/kmalloc.hpp`, `kernel/lib/heap/src/new.cpp`,
+  `kernel/mm/include/ours/mm/alloc_flags.hpp` — allocation.
 - `kernel/lib/gktl/include/gktl/canary.hpp` — corruption-detection canaries.
 - `kernel/mm/include/ours/mm/vm_aspace.hpp`, `kernel/arch/x86/mm/include/ours/mm/arch-vm-aspace.hpp` — the build-time arch-selection pattern.
 - `.clang-tidy`, `.clang-format` — naming and formatting rules this skill must stay consistent with.

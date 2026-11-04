@@ -43,6 +43,6 @@ None requested.
 
 ## Suggested follow-up order
 
-1. Keep the naming changes and SRAT boundary repair as separate commits.
+1. The naming changes and SRAT boundary repair are separate commits; see RESULT.md for hashes and evidence.
 2. Follow docs/repairs/261104/mm.md for the independent NUMA33 vmalloc failure.
 3. Keep the larger responsibility decomposition explicitly Proposed.

@@ -181,3 +181,11 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
 
 The object allocator is "cache": `MemCache`, `ObjectCache`,
 `object_cache.cpp`. "Slab" names only the internal page-level unit.
+
+The user clarified on 2026-11-04 that Pm/Vm prefixes mark principal memory
+models and are not mandatory on every helper. Prefer the repository's existing
+concrete helper names and containing-object context: PageQueues,
+ProtectionRanges, ZoneList, ZoneSelector, VmCowPages::Cursor, and
+VmObject::Builder. Consolidate terminology rather than mechanically adding
+prefixes or role suffixes. Specific PMM helper renames remain design
+proposals, not accepted implementation decisions.
