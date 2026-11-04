@@ -119,6 +119,7 @@
 #include <prot/block.hpp>
 #include <prot/block_client.hpp>
 #include <prot/fshost.hpp>
+#include <prot/fshost_client.hpp>
 #include <prot/io.hpp>
 #include <prot/process.hpp>
 #include <prot/resource.hpp>
@@ -1854,8 +1855,7 @@ auto check_undeclared() -> void {
 /// renaming offer and echo's expose, then Stop, then a route to echo that
 /// answers NotFound, as one to a component that has exited does (D23).
 
-auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE_BYTES> &bytes,
-                       Incoming &reply) -> void;
+auto check_block_write(prot::block::Client &client) -> void;
 
 /// The block device through its protocol, when the image carries a disk:
 /// GetInfo names a 512-byte block size, and Read brings block 0 back, whose
@@ -1871,32 +1871,14 @@ auto check_block() -> void {
     // NotFound (an epitaph on this connection, or the connection closed
     // outright), and the check skips -- the images boot_check boots carry no
     // disk. Anything else is the disk's to answer.
-    auto const txid = next_txid();
-    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const info = prot::block::encode_get_info(bytes, {.txid = txid});
-    if (!expect("Block.GetInfo", status_of(info), Status::Ok)) {
-        return;
-    }
-    Incoming reply;
-    auto const answered = call(connection, info.unwrap(), reply);
-    if (answered == Status::PeerClosed || answered == Status::NotFound) {
+    auto client = prot::block::Client{connection};
+    auto geometry = client.get_info();
+    if (geometry.is_err() && (geometry.unwrap_err() == Status::PeerClosed ||
+                              geometry.unwrap_err() == Status::NotFound)) {
         auto _ = ort::debug_line("routing_checks: no block device, skipped");
         return;
     }
-    if (!expect("Block.GetInfo", answered, Status::Ok)) {
-        return;
-    }
-    if (auto const epitaph = wire::decode_epitaph(reply.message()); epitaph.is_ok()) {
-        if (epitaph.unwrap() == Status::NotFound) {
-            auto _ = ort::debug_line("routing_checks: no block device, skipped");
-            return;
-        }
-        fail("Block.GetInfo: the route answered with an epitaph");
-        return;
-    }
-    auto const geometry = prot::block::decode_get_info_reply(reply.message(), txid);
-    if (!expect("Block.GetInfo's reply", status_of(geometry), Status::Ok) ||
-        !expect("Block.GetInfo's status", geometry->status, Status::Ok)) {
+    if (!expect("Block.GetInfo", status_of(geometry), Status::Ok)) {
         return;
     }
     BLOCK_DEVICE_SEEN = true;
@@ -1905,26 +1887,12 @@ auto check_block() -> void {
         return;
     }
 
-    auto const read_txid = next_txid();
-    auto const read = prot::block::encode_read(bytes, {.txid = read_txid, .lba = 0, .count = 1});
-    if (!expect("Block.Read", status_of(read), Status::Ok)) {
+    auto block = std::array<u8, prot::block::BLOCK_SIZE>{};
+    if (!expect("Block.Read", client.read(0, 1, block), Status::Ok)) {
         return;
     }
-    if (!expect("Block.Read", call(connection, read.unwrap(), reply), Status::Ok)) {
-        return;
-    }
-    auto const block = prot::block::decode_read_reply(reply.message(), read_txid);
-    if (!expect("Block.Read's reply", status_of(block), Status::Ok) ||
-        !expect("Block.Read's status", block->status, Status::Ok)) {
-        return;
-    }
-    if (block->data.size() != prot::block::BLOCK_SIZE) {
-        fail("Block.Read: the block is not 512 bytes");
-        return;
-    }
-    if (block->data[0] == 'O' && block->data[1] == 'U' && block->data[2] == 'R' &&
-        block->data[3] == 'S') {
-        check_block_write(connection, bytes, reply);
+    if (block[0] == 'O' && block[1] == 'O' && block[2] == 'U' && block[3] == 'R') {
+        check_block_write(client);
         return;
     }
 
@@ -1932,24 +1900,15 @@ auto check_block() -> void {
     // MBR, and check_gpt() takes that shape: one probe of LBA 1 says which
     // disk this is. The plain checks stop here; the write check below runs
     // on either shape.
-    auto const probe_txid = next_txid();
-    auto const probe = prot::block::encode_read(bytes, {.txid = probe_txid, .lba = 1, .count = 1});
-    if (!expect("Block.Read", status_of(probe), Status::Ok)) {
-        return;
-    }
-    if (!expect("Block.Read", call(connection, probe.unwrap(), reply), Status::Ok)) {
-        return;
-    }
-    auto const lba1 = prot::block::decode_read_reply(reply.message(), probe_txid);
-    if (!expect("Block.Read's reply", status_of(lba1), Status::Ok) ||
-        !expect("Block.Read's status", lba1->status, Status::Ok)) {
+    auto lba1 = std::array<u8, prot::block::BLOCK_SIZE>{};
+    if (!expect("Block.Read(lba 1)", client.read(1, 1, lba1), Status::Ok)) {
         return;
     }
     constexpr auto GPT_SIGNATURE = std::string_view{"EFI PART"};
-    if (std::string_view{reinterpret_cast<char const *>(lba1->data.data()), GPT_SIGNATURE.size()} ==
+    if (std::string_view{reinterpret_cast<char const *>(lba1.data()), GPT_SIGNATURE.size()} ==
         GPT_SIGNATURE) {
         auto _ = ort::debug_line("routing_checks: a GPT disk, plain checks skipped");
-        check_block_write(connection, bytes, reply);
+        check_block_write(client);
         return;
     }
     fail("Block.Read: block 0 does not start with the disk's magic");
@@ -1961,45 +1920,22 @@ auto check_block() -> void {
 /// back over its two blocks, the one before it untouched. LBA 1000 sits
 /// below the first partition a GPT image names and above the plain image's
 /// magic, so neither shape minds the traffic.
-auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE_BYTES> &bytes,
-                       Incoming &reply) -> void {
+auto check_block_write(prot::block::Client &client) -> void {
     constexpr auto SCRATCH_LBA = u64{1000};
     std::array<u8, prot::block::BLOCK_SIZE> pattern{};
     pattern.fill(0xA5);
     constexpr auto MARK = std::string_view{"virtio-blk write check"};
     std::copy(MARK.begin(), MARK.end(), pattern.begin());
 
-    auto const write_txid = next_txid();
-    auto const write = prot::block::encode_write(
-        bytes, {.txid = write_txid, .lba = SCRATCH_LBA, .count = 1, .data = pattern});
-    if (!expect("Block.Write", status_of(write), Status::Ok)) {
-        return;
-    }
-    if (!expect("Block.Write", call(connection, write.unwrap(), reply), Status::Ok)) {
-        return;
-    }
-    auto const write_status =
-        wire::decode_reply_status(reply.message(), prot::block::WRITE, write_txid);
-    if (!expect("Block.Write's reply", status_of(write_status), Status::Ok) ||
-        !expect("Block.Write's status", write_status.unwrap(), Status::Ok)) {
+    if (!expect("Block.Write", client.write(SCRATCH_LBA, pattern), Status::Ok)) {
         return;
     }
 
     // Two blocks from one short of the scratch: block 999 is zeros (never
-    // written), block 1000 the pattern. Where the first differing byte falls
-    // -- at 512+496 (per-block) or 496 (per-buffer) -- says which.
-    auto const verify_txid = next_txid();
-    auto const verify =
-        prot::block::encode_read(bytes, {.txid = verify_txid, .lba = SCRATCH_LBA - 1, .count = 2});
-    if (!expect("Block.Read(scratch)", status_of(verify), Status::Ok)) {
-        return;
-    }
-    if (!expect("Block.Read(scratch)", call(connection, verify.unwrap(), reply), Status::Ok)) {
-        return;
-    }
-    auto const read_back = prot::block::decode_read_reply(reply.message(), verify_txid);
-    if (!expect("Block.Read(scratch)'s reply", status_of(read_back), Status::Ok) ||
-        !expect("Block.Read(scratch)'s status", read_back->status, Status::Ok)) {
+    // written), block 1000 the pattern. Where the first differing byte
+    // falls -- at 512+496 (per-block) or 496 (per-buffer) -- says which.
+    auto read_back = std::array<u8, prot::block::BLOCK_SIZE * 2>{};
+    if (!expect("Block.Read(scratch)", client.read(SCRATCH_LBA - 1, 2, read_back), Status::Ok)) {
         return;
     }
     constexpr auto PATTERN_BYTES = usize{prot::block::BLOCK_SIZE};
@@ -2008,33 +1944,31 @@ auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE
         return index >= PATTERN_BYTES ? pattern[index - PATTERN_BYTES] : u8{0};
     };
     ustl::Option<usize> first_bad = ustl::NONE;
-    for (auto index = usize{0}; index < read_back->data.size(); ++index) {
-        if (read_back->data[index] != want(index)) {
+    for (auto index = usize{0}; index < read_back.size(); ++index) {
+        if (read_back[index] != want(index)) {
             first_bad = ustl::some(index);
             break;
         }
     }
     if (first_bad.is_none()) {
-        expect("close", fsio::close(connection), Status::Ok);
         return;
     }
     char at_text[10];
     auto _ = ort::debug_line({"routing_checks: first differing byte at ",
                               ort::decimal(static_cast<u32>(*first_bad), at_text)});
-    // The tail of the data, as the reply carries it: the last 16 bytes of
+    // The tail of the data, as the reply carried it: the last 16 bytes of
     // the pattern block, and the four before them.
     auto hex = std::array<char, 4 * 20 + 1>{};
     auto at = usize{0};
     for (auto index = usize{1004}; index < 1024; ++index) {
         constexpr auto DIGITS = "0123456789ABCDEF";
-        hex[at] = DIGITS[read_back->data[index] >> 4];
-        hex[at + 1] = DIGITS[read_back->data[index] & 0xF];
+        hex[at] = DIGITS[read_back[index] >> 4];
+        hex[at + 1] = DIGITS[read_back[index] & 0xF];
         at += 2;
     }
     hex[at] = 0;
     auto _ = ort::debug_line({"virtio-blk: reply data [1004..1024): ", hex.data()});
     fail("Block.Write: the scratch block does not read back the pattern");
-    expect("close", fsio::close(connection), Status::Ok);
 }
 
 /// The device tree (the device-namespace round): the class directory is
@@ -2495,45 +2429,21 @@ auto check_disk() -> void {
         auto _ = ours::handle_close(admin);
         return;
     }
-    auto mount_txid = next_txid();
-    auto mount_bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
-    auto mount_handles = std::array<Uandle, 1>{disk_dir.unwrap()};
-    auto const mount_request =
-        prot::fshost::encode_mount(mount_bytes, mount_handles,
-                                   {.txid = mount_txid, .handle = disk_dir.unwrap(), .name = NAME});
-    if (!expect("Admin.Mount encode", status_of(mount_request), Status::Ok)) {
-        auto _ = ours::handle_close(disk_dir.unwrap());
-        auto _ = ours::handle_close(admin);
-        return;
+    // The typed client's mount: the directory handle goes with the
+    // message, the reply is the status. Ok on a fresh tree; AlreadyExists
+    // when this process's earlier run mounted it -- fshost is resident,
+    // its tree outlives the check. The handle moved with the message; the
+    // tree holds the mount now.
+    {
+        prot::fshost::Client fshost{admin};
+        auto const mounted = fshost.mount(disk_dir.unwrap(), NAME);
+        if (mounted != Status::Ok && mounted != Status::AlreadyExists) {
+            expect("Admin.Mount", mounted, Status::Ok);
+            auto _ = ours::handle_close(disk_dir.unwrap());
+            return;
+        }
     }
-    auto mount_reply = Incoming{};
-    if (!expect("Admin.Mount", call(admin, mount_request.unwrap(), mount_reply), Status::Ok)) {
-        auto _ = ours::handle_close(disk_dir.unwrap());
-        auto _ = ours::handle_close(admin);
-        return;
-    }
-    if (auto const epitaph = mount_reply.epitaph(); epitaph.is_some()) {
-        expect("Admin.Mount", *epitaph, Status::Ok);
-        auto _ = ours::handle_close(disk_dir.unwrap());
-        auto _ = ours::handle_close(admin);
-        return;
-    }
-    auto const mount_status =
-        wire::decode_reply_status(mount_reply.message(), prot::fshost::MOUNT, mount_txid);
-    if (!expect("Admin.Mount reply", status_of(mount_status), Status::Ok)) {
-        auto _ = ours::handle_close(disk_dir.unwrap());
-        auto _ = ours::handle_close(admin);
-        return;
-    }
-    // Ok on a fresh tree; AlreadyExists when this process's earlier run
-    // mounted it -- fshost is resident, its tree outlives the check.
-    if (mount_status.unwrap() != Status::Ok && mount_status.unwrap() != Status::AlreadyExists) {
-        expect("Admin.Mount reply", mount_status.unwrap(), Status::Ok);
-        auto _ = ours::handle_close(disk_dir.unwrap());
-        auto _ = ours::handle_close(admin);
-        return;
-    }
-    // The handle moved with the message; the tree holds the mount now.
+    auto _ = ours::handle_close(admin);
 
     // Files through the mounted path: create, write, and read back through
     // a fresh open -- and the same bytes through the disk's own name, one
