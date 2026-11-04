@@ -107,6 +107,9 @@ struct Mount {
     /// The server end of the publisher's outgoing, or of the part of it the
     /// driver published. Invalid while the slot is free.
     Uandle directory = Uandle::Invalid;
+    /// The service node the tree was given for this mount: remove_service's
+    /// argument when the mount goes.
+    ioservice::NodeId node = ioservice::detail::NO_NODE;
     bool used = false;
 };
 
@@ -452,6 +455,14 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
             }
             return publish(channel, *request);
         }
+        if (header.ordinal == prot::dev::UNPUBLISH.ordinal) {
+            auto request = prot::dev::decode_unpublish(message);
+            if (request.is_err()) {
+                Base::close_handles(message);
+                return Base::close_client(channel);
+            }
+            return unpublish(channel, *request);
+        }
         Base::close_handles(message);
         return Base::close_client(channel);
     }
@@ -502,6 +513,9 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
         // its value is the mount's index plus one, what the tree's delegate
         // indexes the handlers by.
         auto const node = m_tree->add_service(class_dir, mount.name, *slot + 1);
+        if (node.is_ok()) {
+            mount.node = node.unwrap();
+        }
         if (node.is_err()) {
             // A class directory made above stays: a node, once added, is
             // never removed, and an empty class is harmless.
@@ -520,6 +534,45 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
         auto _ = ort::debug_line(
             {"device-registry: ", mount.kind, "/", mount.name, " mounted from a publisher"});
         return answer(channel, request.txid, {.status = Status::Ok, .name = mount.name});
+    }
+
+    /// Unpublish: the mount found by its granted kind and name, the leaf
+    /// taken back out of the tree, the directory handle closed, the slot
+    /// free. NotFound when the registry holds no such mount -- the one
+    /// answer that changes nothing.
+    auto unpublish(Uandle const channel, prot::dev::UnpublishRequest const &request)
+        -> loop::Action {
+        for (auto index = usize{0}; index < MAX_MOUNTS; ++index) {
+            auto &mount = m_core->mounts()[index];
+            if (!mount.used || mount.kind != request.kind || mount.name != request.name) {
+                continue;
+            }
+            auto const removed = m_tree->remove_service(mount.node);
+            if (removed != Status::Ok) {
+                // The node is the tree's own bookkeeping of a mount it was
+                // told about; failing to remove it is this program's bug.
+                report("cannot remove a leaf's node", removed);
+            }
+            auto _ = ours::handle_close(mount.directory);
+            reclaim(mount);
+            auto _ = ort::debug_line(
+                {"device-registry: ", request.kind, "/", request.name, " unpublished"});
+            return answer_unpublish(channel, request.txid, Status::Ok);
+        }
+        return answer_unpublish(channel, request.txid, Status::NotFound);
+    }
+
+    /// Answers |channel|'s Unpublish: the reply is the status form, whatever
+    /// the status. A reply that cannot be built or written ends the
+    /// connection.
+    auto answer_unpublish(Uandle const channel, u32 const txid, Status const status)
+        -> loop::Action {
+        auto const encoded =
+            prot::dev::encode_unpublish_reply(Base::reply_buffer(), txid, {.status = status});
+        if (encoded.is_err() || Base::reply(channel, encoded.unwrap()) != Status::Ok) {
+            return Base::close_client(channel);
+        }
+        return loop::Action::Rearm;
     }
 
     /// Answers |channel|'s Publish with |reply|: the granted name on Ok, the

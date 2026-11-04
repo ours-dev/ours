@@ -162,4 +162,71 @@ auto decode_publish_reply(Message const message, u32 const txid)
         .name = chars(message.bytes.subspan(REPLY_NAME_OFFSET, name_size)),
     });
 }
+
+// Registry.Unpublish: the two string sizes, then the two strings. The
+// strings name a leaf exactly as its publish granted it, so they carry the
+// same shape checks.
+constexpr auto UNPUBLISH_KIND_SIZE_OFFSET = usize{20};
+constexpr auto UNPUBLISH_NAME_SIZE_OFFSET = usize{24};
+constexpr auto UNPUBLISH_STRINGS_OFFSET = usize{28};
+
+auto encode_unpublish(std::span<u8> const bytes, UnpublishRequest const &request) -> Encoded {
+    if (!is_well_formed(request.kind, MAX_CLASS_NAME) ||
+        !is_well_formed(request.name, MAX_NODE_NAME)) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto started = wire::start_request(
+        bytes, UNPUBLISH_STRINGS_OFFSET + request.kind.size() + request.name.size(), UNPUBLISH,
+        request.txid);
+    if (started.is_err()) {
+        return ustl::err(started.unwrap_err());
+    }
+    auto const message = started.unwrap();
+    wire::store(message, UNPUBLISH_KIND_SIZE_OFFSET, static_cast<u32>(request.kind.size()));
+    wire::store(message, UNPUBLISH_NAME_SIZE_OFFSET, static_cast<u32>(request.name.size()));
+    auto at = UNPUBLISH_STRINGS_OFFSET;
+    for (auto const text: {request.kind, request.name}) {
+        if (!text.empty()) {
+            std::memcpy(message.data() + at, text.data(), text.size());
+        }
+        at += text.size();
+    }
+    return ustl::ok(Message{.bytes = message, .handles = {}});
+}
+
+auto decode_unpublish(Message const message) -> ustl::Result<UnpublishRequest, Status> {
+    auto header = wire::decode_request_header(message, UNPUBLISH);
+    if (header.is_err()) {
+        return ustl::err(header.unwrap_err());
+    }
+    if (message.bytes.size() < UNPUBLISH_STRINGS_OFFSET || !message.handles.empty()) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto const kind_size = wire::load<u32>(message.bytes, UNPUBLISH_KIND_SIZE_OFFSET);
+    auto const name_size = wire::load<u32>(message.bytes, UNPUBLISH_NAME_SIZE_OFFSET);
+    if (kind_size > MAX_CLASS_NAME || name_size > MAX_NODE_NAME ||
+        message.bytes.size() != UNPUBLISH_STRINGS_OFFSET + kind_size + name_size) {
+        return ustl::err(Status::InvArgs);
+    }
+    auto kind = chars(message.bytes.subspan(UNPUBLISH_STRINGS_OFFSET, kind_size));
+    auto name = chars(message.bytes.subspan(UNPUBLISH_STRINGS_OFFSET + kind_size, name_size));
+    if (!is_well_formed(kind, MAX_CLASS_NAME) || !is_well_formed(name, MAX_NODE_NAME)) {
+        return ustl::err(Status::InvArgs);
+    }
+    return ustl::ok(UnpublishRequest{.txid = header->txid, .kind = kind, .name = name});
+}
+
+auto encode_unpublish_reply(std::span<u8> const bytes, u32 const txid, UnpublishReply const &reply)
+    -> Encoded {
+    return wire::encode_status_reply(bytes, UNPUBLISH, txid, reply.status);
+}
+
+auto decode_unpublish_reply(Message const message, u32 const txid)
+    -> ustl::Result<UnpublishReply, Status> {
+    auto status = wire::decode_reply_status(message, UNPUBLISH, txid);
+    if (status.is_err()) {
+        return ustl::err(status.unwrap_err());
+    }
+    return ustl::ok(UnpublishReply{.status = status.unwrap()});
+}
 } // namespace prot::dev

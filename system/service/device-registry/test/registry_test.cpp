@@ -237,6 +237,35 @@ class RegistryTest: public testing::Test {
         return names;
     }
 
+    /// The raw unpublish: encodes the request over one exchange on
+    /// |connection| and reads the reply's status. The typed client's
+    /// unpublish arrives with the client-framework step; the registry's
+    /// own behavior is what this exercises.
+    auto raw_unpublish(Uandle const connection, std::string_view const kind,
+                       std::string_view const name) -> Status {
+        auto request_bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+        auto const request =
+            prot::dev::encode_unpublish(request_bytes, {.txid = 1, .kind = kind, .name = name});
+        EXPECT_TRUE(request.is_ok());
+        if (request.is_err()) {
+            return request.unwrap_err();
+        }
+        auto reply_bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+        auto reply_handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
+        auto const answered =
+            rpc::exchange(connection, request.unwrap(), reply_bytes, reply_handles);
+        EXPECT_TRUE(answered.is_ok());
+        if (answered.is_err()) {
+            return answered.unwrap_err();
+        }
+        auto const reply = prot::dev::decode_unpublish_reply(*answered, 1);
+        EXPECT_TRUE(reply.is_ok());
+        if (reply.is_err()) {
+            return reply.unwrap_err();
+        }
+        return reply->status;
+    }
+
     /// A publisher: its outgoing with the recording handler served on one
     /// end, the other end the mount handle a publish carries, and the served
     /// end recorded so a test can take the outgoing down. The handler is on
@@ -727,4 +756,120 @@ TEST_F(RegistryTest, PublishThenCloseEarlyStillMountsAndKeepsServing) {
     EXPECT_STREQ(granted.data(), "001");
     run();
     ASSERT_EQ(mounts()[1].used, true);
+}
+
+/// Unpublish: the leaf leaves the tree, the listing shrinks, and the same
+/// slot and name take a fresh publish. This is the hot-unplug round's own
+/// contract, exercised through the raw protocol (the typed client's
+/// unpublish is step 4).
+TEST_F(RegistryTest, UnpublishTakesTheLeafBackOut) {
+    auto publisher = make_publisher();
+    auto granted = std::array<char, 8>{};
+    EXPECT_EQ(publish("block", "000", BLOCK, publisher.mount, granted), Status::Ok);
+    run();
+
+    // The leaf is there: an open of class/block/000 finds it.
+    auto const tree_ends = channel();
+    EXPECT_EQ(open_on_directory("dev/class/block",
+                                prot::io::Flags::ProtocolDirectory | prot::io::PERM_READABLE,
+                                tree_ends[1]),
+              Status::Ok);
+    run();
+    auto names = list_directory(tree_ends[0]);
+    ASSERT_EQ(names.size(), usize{2}); // "." and "000"
+    EXPECT_EQ(std::count(names.begin(), names.end(), "000"), 1U);
+
+    // The un-publish, through the same connection shape the client uses.
+    auto unpublish_ends = channel();
+    EXPECT_EQ(open_on_directory("svc/ours.dev.Registry", prot::io::Flags::ProtocolService,
+                                unpublish_ends[1]),
+              Status::Ok);
+    run();
+    EXPECT_EQ(raw_unpublish(unpublish_ends[0], "block", "000"), Status::Ok);
+    run();
+
+    // The leaf is gone: a FRESH listing connection holds "." alone (the
+    // first connection's readdir cursor is spent), and an open of the leaf
+    // misses.
+    auto const after_ends = channel();
+    EXPECT_EQ(open_on_directory("dev/class/block",
+                                prot::io::Flags::ProtocolDirectory | prot::io::PERM_READABLE,
+                                after_ends[1]),
+              Status::Ok);
+    run();
+    names = list_directory(after_ends[0]);
+    EXPECT_EQ(names.size(), usize{1});
+    EXPECT_EQ(std::count(names.begin(), names.end(), "000"), 0U);
+    auto const gone = channel();
+    EXPECT_EQ(open_on_directory("dev/class/block",
+                                prot::io::Flags::ProtocolDirectory | prot::io::PERM_READABLE,
+                                gone[1]),
+              Status::Ok);
+    run();
+    // An open of the removed name, relative to the directory connection:
+    // the walk misses, and the refusal is an epitaph on the OBJECT end --
+    // the Open is one-way, nothing comes back on the request channel.
+    auto leaf_object = Uandle::Invalid;
+    auto leaf_server = Uandle::Invalid;
+    EXPECT_EQ(ours::channel_create(ours::ChannelCreateOptions::None, &leaf_object, &leaf_server),
+              Status::Ok);
+    EXPECT_EQ(open_on(gone[0], "000", prot::io::Flags::ProtocolService, leaf_server), Status::Ok);
+    run();
+    auto observed = ours::Signals::None;
+    EXPECT_EQ(ours::object_wait_one(leaf_object,
+                                    ours::Signals::Readable | ours::Signals::PeerClosed,
+                                    ours::INSTANT_INFINITE, &observed),
+              Status::Ok);
+    ASSERT_FALSE(!(observed & ours::Signals::Readable));
+    auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
+    auto read_handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
+    auto num_bytes = u32{0};
+    auto num_handles = u32{0};
+    EXPECT_EQ(ours::channel_read(leaf_object, ours::ChannelReadOptions::None, bytes.data(),
+                                 read_handles.data(), static_cast<u32>(bytes.size()),
+                                 static_cast<u32>(read_handles.size()), &num_bytes, &num_handles),
+              Status::Ok);
+    for (auto index = u32{0}; index < num_handles; ++index) {
+        auto _ = ours::handle_close(read_handles[index]);
+    }
+    auto const message = wire::Message{.bytes = std::span{bytes}.first(num_bytes), .handles = {}};
+    auto const epitaph = wire::decode_epitaph(message);
+    ASSERT_TRUE(epitaph.is_ok());
+    EXPECT_EQ(epitaph.unwrap(), Status::NotFound);
+    // The Open's object end: the server consumed and closed it on the
+    // refusal, so the pair is half-gone once this read drained the epitaph.
+    EXPECT_FALSE(fake::kernel().is_open(leaf_server));
+    EXPECT_TRUE(fake::kernel().is_open(leaf_object));
+}
+
+/// Unpublish of a name the registry does not hold: NotFound, and the
+/// connection lives on.
+TEST_F(RegistryTest, UnpublishUnknownNameReadsNotFound) {
+    auto publisher = make_publisher();
+    auto granted = std::array<char, 8>{};
+    EXPECT_EQ(publish("block", "000", BLOCK, publisher.mount, granted), Status::Ok);
+
+    auto unknown = connect_registry();
+    EXPECT_EQ(raw_unpublish(unknown, "block", "042"), Status::NotFound);
+    // The refused un-publish changed nothing: the mount is untouched.
+    run();
+    EXPECT_TRUE(mounts()[0].used);
+}
+
+/// Unpublish frees the slot and the name: the same kind and name take a
+/// fresh publish, with no phantom of the old leaf anywhere.
+TEST_F(RegistryTest, UnpublishedNameTakesAFreshPublish) {
+    auto first = make_publisher();
+    auto granted = std::array<char, 8>{};
+    EXPECT_EQ(publish("block", "000", BLOCK, first.mount, granted), Status::Ok);
+
+    auto client = connect_registry();
+    EXPECT_EQ(raw_unpublish(client, "block", "000"), Status::Ok);
+
+    auto second = make_publisher();
+    EXPECT_EQ(publish("block", "000", BLOCK, second.mount, granted), Status::Ok);
+    EXPECT_STREQ(granted.data(), "000");
+    run();
+    EXPECT_TRUE(mounts()[0].used);
+    EXPECT_EQ(mounts()[0].name, "000");
 }
