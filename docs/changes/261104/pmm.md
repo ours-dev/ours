@@ -326,3 +326,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Commit zone inventory and its count under the same lock (2026-11-04)
+
+**Files**
+
+- `kernel/mm/pm_zone.cpp` updates the atomic count with the buddy mutation under the IRQ-save zone lock.
+- `kernel/commands/pm_node_test.cpp` exercises the counter on an isolated one-page inventory from two CPUs.
+
+**Symptom**
+
+A pressure reader can observe a wrapped unsigned count while a zone is empty.
+
+**Cause**
+
+The return used to publish the block in the buddy and release the lock before adding to the count. A concurrent withdrawal could remove the returned block and subtract from zero before the return recorded its increment.
+
+**Change**
+
+Withdrawals and returns apply their count deltas in the same critical section as the buddy operation. Pressure sampling keeps its lock-free view of each zone's count.
+
+**Reference**
+
+Zircon `PmmNode::alloc_page()` removes the free page and decrements the count with the same lock token.
+
+**Verification**
+
+The default and four-node NUMA dev images booted and all 163 host tests passed. On two CPUs with a memory-only node, the free count stayed within the zone's one available page during concurrent transfers and agreed with the buddy walk afterwards. PM node, zone, and pressure commands passed.
+
+**Deliberately not done**
+
+The unfinished per-CPU cache has a separate future accounting contract.
+
+**How it was found**
+
+Traced the release of the zone lock against the order of the atomic count updates.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

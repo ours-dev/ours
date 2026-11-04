@@ -49,9 +49,11 @@
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/priv/zone_selector.hpp>
 #include <ours/node_mask.hpp>
+#include <ours/sync/event.hpp>
 #include <ours/task/thread.hpp>
 
 #include <algorithm>
+#include <array>
 #include <string_view>
 
 #include <arch/auto_interrupt_disabler.hpp>
@@ -589,6 +591,61 @@ namespace {
         return counted_local;
     }
 
+    auto check_zone_inventory(PmZone &zone) -> bool {
+        struct Trial {
+            PmZone &zone;
+            sync::Event start;
+        } trial{.zone = zone, .start = {}};
+
+        auto const exercise = [](void *arg) -> i32 {
+            auto &state = *static_cast<Trial *>(arg);
+            if (state.start.wait(time::Deadline::infinite()) != Status::Ok) {
+                return 1;
+            }
+            constexpr auto ITERATIONS = usize{8192};
+            for (usize i = 0; i < ITERATIONS; ++i) {
+                auto const block = state.zone.take_block(0);
+                auto const count = state.zone.free_frames();
+                if (block) {
+                    state.zone.return_block(&block.value(), 0);
+                }
+                if (count > 1 || state.zone.free_frames() > 1) {
+                    return 1;
+                }
+            }
+            return 0;
+        };
+
+        std::array<task::Thread *, 2> workers{};
+        usize started = 0;
+        for (CpuNum cpu = 0; cpu < MAX_CPU && started < workers.size(); ++cpu) {
+            if (!Cpu::is_online(cpu)) {
+                continue;
+            }
+            auto *const worker =
+                task::Thread::spawn("pmnode-inventory", exercise, &trial, task::DEFAULT_PRIORITY);
+            if (!worker) {
+                break;
+            }
+            worker->set_cpu_affinity_hard(CpuMask::of(cpu));
+            auto _ = worker->resume();
+            workers[started++] = worker;
+        }
+        trial.start.signal();
+
+        auto ok = started == workers.size();
+        for (auto *const worker: workers) {
+            if (worker) {
+                i32 retcode = 0;
+                if (worker->join(&retcode, time::Deadline::infinite()) != Status::Ok ||
+                    retcode != 0) {
+                    ok = false;
+                }
+            }
+        }
+        return ok && zone.free_frames() == 1 && zone.count_free_frames() == 1;
+    }
+
     auto check_exhausted_node(Tally &tally, NodeId const nid) -> void {
         auto const flags = mm::ALLOC_KERNEL | mm::Gaf::ThisNode;
         auto const mask = NodeMask::of(nid);
@@ -616,6 +673,10 @@ namespace {
         auto const drained = zone && zone->count_free_frames() == 0 && zone->free_frames() == 0 &&
                              !zone->watermark_ok(0, PmZone::WaterMark::Min);
         PmNode::free_frames(last, 0);
+        if (Cpu::num_online_cpus() >= 2) {
+            verdict(tally, drained && check_zone_inventory(*zone),
+                    "two CPUs keep an exhausted zone's free count within its one-page inventory");
+        }
         auto bulk = PmNode::alloc_frames_bulk(nid, flags, 2, mask);
         auto const rejected = !bulk && bulk.unwrap_err() == Status::OutOfMem;
         if (bulk) {

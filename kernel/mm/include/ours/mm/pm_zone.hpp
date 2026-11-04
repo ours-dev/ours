@@ -321,15 +321,8 @@ class PmZone {
     //!	    present_frames_ = spanned_frames_ - absent_frames_(pages in holes).
     std::atomic<usize> m_present_frames;
 
-    /// Frames this zone can hand out, maintained on both sides of the buddy:
-    /// down in take_block(), up in return_block().
-    ///
-    /// It starts at zero and grows as the handoff releases frames into the
-    /// buddy, so it cannot go negative: a frame has to be freed in before it
-    /// can be allocated out. It carried the name m_managed_frames and the
-    /// comment of a constant total -- present minus reserved -- which it never
-    /// was; that total is managed_frames(), computed from the two counters
-    /// that do hold it.
+    /// Free frames. Buddy mutations and their count deltas share the zone
+    /// lock. The atomic snapshot can be read without acquiring the lock.
     std::atomic<usize> m_free_frames;
 
     std::atomic<usize> m_spanned_frames;

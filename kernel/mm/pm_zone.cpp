@@ -174,17 +174,17 @@ auto PmZone::take_block(usize order) -> ustl::Option<PmFrame &> {
         return ustl::NONE;
     }
 
-    ustl::Option<PmFrame &> taken{ustl::NONE};
     if (is_order_within_pcpu_cache_limit(order)) {
-        taken = m_frame_cache.with_current(
+        auto const cached = m_frame_cache.with_current(
             [](PcpuCache &cache) { return ustl::Option<PmFrame &>{ustl::NONE}; });
+        if (cached) {
+            m_free_frames -= usize{1} << order;
+            return cached;
+        }
     }
 
-    if (!taken) {
-        ZoneGuard guard{m_lock};
-        taken = m_buddy.allocate(order);
-    }
-
+    ZoneGuard guard{m_lock};
+    auto const taken = m_buddy.allocate(order);
     if (taken) {
         m_free_frames -= usize{1} << order;
     }
@@ -226,14 +226,13 @@ auto PmZone::return_block(PmFrame *frame, usize order) -> void {
         m_frame_cache.with_current([](PcpuCache &cache) {
             // Here no pcpu cache.
         });
-    } else {
-        // The buddy finds the partners from the freed descriptor and its pfn,
-        // never from a zone-wide base. Read before the lock: the memmap does
-        // not change under a frame the caller holds.
-        auto const pfn = frame_to_pfn(frame);
-        ZoneGuard guard{m_lock};
-        m_buddy.release(frame, pfn, order);
+        m_free_frames += usize{1} << order;
+        return;
     }
+
+    auto const pfn = frame_to_pfn(frame);
+    ZoneGuard guard{m_lock};
+    m_buddy.release(frame, pfn, order);
     m_free_frames += usize{1} << order;
 }
 } // namespace ours::mm
