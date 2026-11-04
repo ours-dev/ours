@@ -213,6 +213,8 @@ VmCowPages::VmCowPages(Gaf alloc_flags, usize size, ustl::Arc<HierarchyState> hi
 /// A node with no parent is on no list. Its own list of children is empty by
 /// now, since each child held a reference to it.
 VmCowPages::~VmCowPages() {
+    DEBUG_ASSERT(m_representative == nullptr, "a COW node still has a VMO view");
+
     // Closed before the pages go, so the provider stops being asked for pages
     // of a node that is going away, and every thread still waiting on one is
     // woken: its retry finds the source detached, or the mapping gone.
@@ -261,10 +263,9 @@ VmCowPages::~VmCowPages() {
 }
 
 auto VmCowPages::operate_range_locked(u64 const offset, u64 const len, RangeOp const op) -> void {
-    for (auto &attachment: m_attachments) {
-        // The object's lock is this node's, one mutex under two names.
-        attachment.m_owner->lock().assert_held();
-        attachment.m_owner->operate_cow_range_locked(offset, len, op);
+    if (auto *const representative = m_representative) {
+        representative->lock().assert_held();
+        representative->operate_views_locked(offset, len, op);
     }
 }
 

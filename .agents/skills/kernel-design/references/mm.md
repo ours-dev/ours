@@ -80,6 +80,16 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   from the progress made. Reference: Zircon's
   `VmObjectPaged::ReadUser()`/`WriteUser()`.
 
+## COW range notifications (user decision, 2026-11-04)
+
+A COW node decides the range and timing of page-table invalidation and
+synchronously notifies one representative VMO under the tree lock. The
+representative holds a flat list of other views over the same node. Each
+view clips the original range against its own window and updates its
+mappings. A slice joins its backing node's view group regardless of its
+creation parent. The representative hands off the list under the tree lock
+before destruction. Page movement or release follows the notification.
+
 ## Private VMM flags (user decision, 2026-11-04)
 
 A private flags word can include mutually exclusive bits when the owning

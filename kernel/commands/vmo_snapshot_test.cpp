@@ -623,12 +623,6 @@ namespace {
     }
 
     TA_NO_THREAD_SAFETY_ANALYSIS
-    auto nr_attached(ustl::Arc<mm::VmCowPages> const &cow) -> usize {
-        Guard guard{const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->lock()};
-        return cow->nr_attached_locked();
-    }
-
-    TA_NO_THREAD_SAFETY_ANALYSIS
     auto operate_cow_range(ustl::Arc<mm::VmCowPages> const &cow, u64 const offset, u64 const len,
                            mm::RangeOp const op) -> void {
         Guard guard{const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->lock()};
@@ -637,13 +631,13 @@ namespace {
 
     // Objects over the same pages: a slice shares its parent's pages and has its own
     // mappings, and an operation on the pages reaches all of them.
-    auto check_attachments(Tally &tally) -> void {
+    auto check_shared_views(Tally &tally) -> void {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
                                                      mm::VmasKind::User, mm::VmasFlags::None,
-                                                     "vmosnapshot.test attach", &aspace);
+                                                     "vmosnapshot.test views", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the attachment checks is made");
+            verdict(tally, false, "an address space for the shared view checks is made");
             return;
         }
         auto root = aspace->root_vma();
@@ -659,24 +653,22 @@ namespace {
         auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE, COMMITTED,
                                                     &whole) == Status::Ok &&
                           whole->create_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok &&
-                          whole->create_slice(0, PAGE_SIZE, &gone) == Status::Ok;
-        verdict(tally, made, "an object, a slice of its last two pages, and a slice of its first");
+                          slice->create_slice(0, PAGE_SIZE, &gone) == Status::Ok;
+        verdict(tally, made, "an object, a slice and a nested slice are made");
         if (!made) {
             return;
         }
         auto const cow = whole->cow_pages();
-        verdict(tally,
-                slice->cow_pages() == cow && gone->cow_pages() == cow && nr_attached(cow) == 3,
-                "all three are over the same pages, and the pages know all three");
+        verdict(tally, slice->cow_pages() == cow && gone->cow_pages() == cow,
+                "nested slices share the original COW node");
         gone = nullptr;
-        verdict(tally, nr_attached(cow) == 2, "an object that dies is off the list of the pages");
 
         auto whole_map = root->map_with_vmo(WHOLE_AT, 3 * PAGE_SIZE, 0, rw, PERMS, whole,
-                                            mm::MapOptions::Resident, "attach whole");
+                                            mm::MapOptions::Resident, "whole view");
         auto slice_map = root->map_with_vmo(SLICE_AT, 2 * PAGE_SIZE, 0, rw, PERMS, slice,
-                                            mm::MapOptions::Resident, "attach slice");
+                                            mm::MapOptions::Resident, "last two pages");
         // A slice of the first page, mapped too: it is over the pages but shows none the
-        // operation below is about, and it is made and dropped while the mappings live.
+        // first operation is about.
         ustl::Arc<mm::VmObjectPaged> first;
         auto const first_made = whole->create_slice(0, PAGE_SIZE, &first) == Status::Ok;
         verdict(tally, first_made, "a slice of the first page is made");
@@ -684,7 +676,7 @@ namespace {
             return;
         }
         auto first_map = root->map_with_vmo(FIRST_AT, PAGE_SIZE, 0, rw, PERMS, first,
-                                            mm::MapOptions::Resident, "attach first");
+                                            mm::MapOptions::Resident, "first page");
         verdict(tally, whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok(),
                 "the object and both slices are mapped");
         if (!(whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok())) {
@@ -730,8 +722,36 @@ namespace {
                     !present(WHOLE_AT + 2 * PAGE_SIZE) && !present(SLICE_AT) && !present(FIRST_AT),
                 "the whole range unmaps every mapping of every object over the pages");
 
+        auto const removed_whole = root->unmap(WHOLE_AT, 3 * PAGE_SIZE);
+        verdict(tally, removed_whole == Status::Ok, "the original view is unmapped");
+        if (removed_whole == Status::Ok) {
+            whole = nullptr;
+
+            // The first slice takes over the list, but its window starts at
+            // page 1. It must still notify the other slice about page 0.
+            auto const refaulted =
+                aspace->soft_fault(SLICE_AT, mm::VmfCause::Absent) == Status::Ok &&
+                aspace->soft_fault(FIRST_AT, mm::VmfCause::Absent) == Status::Ok &&
+                present(SLICE_AT) && present(FIRST_AT);
+            operate_cow_range(cow, 0, PAGE_SIZE, mm::RangeOp::Unmap);
+            verdict(tally, refaulted && present(SLICE_AT) && !present(FIRST_AT),
+                    "the successor forwards notifications outside its own window");
+
+            auto const removed_slice = root->unmap(SLICE_AT, 2 * PAGE_SIZE);
+            verdict(tally, removed_slice == Status::Ok, "the successor is unmapped");
+            if (removed_slice == Status::Ok) {
+                slice = nullptr;
+                auto const refaulted_first =
+                    aspace->soft_fault(FIRST_AT, mm::VmfCause::Absent) == Status::Ok &&
+                    present(FIRST_AT);
+                operate_cow_range(cow, 0, PAGE_SIZE, mm::RangeOp::Unmap);
+                verdict(tally, refaulted_first && !present(FIRST_AT),
+                        "the last view receives notifications after a second handoff");
+            }
+        }
+
         verdict(tally, aspace->destroy() == Status::Ok,
-                "the address space of the attachment checks is destroyed");
+                "the address space of the shared view checks is destroyed");
     }
 
     auto holds_bytes(Node &node, u8 const (&bytes)[4]) -> bool {
@@ -2265,7 +2285,7 @@ namespace {
         check_remove_write(tally);
         check_narrowing_protect(tally);
         check_widen_reads_entry_again(tally);
-        check_attachments(tally);
+        check_shared_views(tally);
         check_clone_of_mapped_object(tally);
         check_zero_markers(tally);
         check_create_clone(tally);

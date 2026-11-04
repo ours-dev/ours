@@ -23,33 +23,6 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
   public:
     class Cursor;
 
-    /// One VmObjectPaged over these pages, as the node knows it. A member of the
-    /// object, which registers it with the node it is over and takes it off
-    /// again when it dies, both under the tree's lock.
-    ///
-    /// The node has to know its objects because an operation on the pages has to
-    /// reach every mapping of them, and the mappings belong to the objects: a
-    /// slice shares its parent's pages and has a list of mappings of its own,
-    /// so a single back pointer to one object would not do. This is composition
-    /// and not a base class of the object, so that the node's header need not
-    /// know the object's.
-    class Attachment {
-        using Self = Attachment;
-
-      public:
-        explicit Attachment(VmObjectPaged *owner) : m_owner(owner) {}
-        USTL_NO_MOVEABLE_AND_COPYABLE(Attachment);
-
-      private:
-        friend class VmCowPages;
-
-        VmObjectPaged *const m_owner;
-
-        ustl::collections::intrusive::ListMemberHook<> m_hook;
-        USTL_DECLARE_HOOK_OPTION(Self, m_hook, Options);
-        USTL_DECLARE_LIST(Self, List, Options);
-    };
-
     /// What kind of node this is, fixed when it is made. A group of flags and
     /// not a bool for each, because a node will have more of them, and each new
     /// bool would have to be threaded through every factory by hand.
@@ -196,33 +169,9 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
                                    static_cast<PgOff>(((offset + len - 1) >> PAGE_SHIFT) + 1));
     }
 
-    /// Registers and takes off an object over these pages; see Attachment.
-    TA_REQUIRES(m_lock)
-    auto attach_locked(Attachment &attachment) -> void {
-        m_attachments.push_back(attachment);
-    }
-
-    TA_REQUIRES(m_lock)
-    auto detach_locked(Attachment &attachment) -> void {
-        if (attachment.m_hook.is_linked()) {
-            m_attachments.erase(attachment);
-        }
-    }
-
-    /// How many objects are over these pages.
-    [[nodiscard]]
-    TA_REQUIRES(m_lock) auto nr_attached_locked() const -> usize {
-        return m_attachments.size();
-    }
-
-    /// Applies |op| to the page tables of every mapping, of every object
-    /// over these pages, of [offset, offset + len) of them (offsets in this
-    /// node's bytes, which each object translates into its own): a clone takes
-    /// Write away from the node it clones, since the pages are about to be
-    /// shared, and take_pages() unmaps what it takes. See RangeOp.
-    ///
-    /// Every object over the node is reached, a slice included: a slice
-    /// shares the pages and has mappings of its own (see Attachment).
+    /// Notify the representative VMO of a page-table operation in this node's
+    /// byte range. The notification completes under the tree lock before the
+    /// caller changes the page slots or releases frames.
     TA_REQUIRES(m_lock)
     auto operate_range_locked(u64 offset, u64 len, RangeOp op) -> void;
 
@@ -744,9 +693,9 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// node can see.
     ChildList m_children TA_GUARDED(m_lock);
 
-    /// The objects over these pages. Under the tree's lock. Empty for a hidden
-    /// node, which is no object's.
-    Attachment::List m_attachments TA_GUARDED(m_lock);
+    /// Non-owning representative of the VMO views over this node, or null
+    /// when there are no views. VmObjectPaged maintains it under the tree lock.
+    VmObjectPaged *m_representative TA_GUARDED(m_lock) = nullptr;
 
     /// How many of this node's pages hold a pin (pinned_count above zero), kept
     /// beside the pages so that the operations a pin forbids, a clone above all,

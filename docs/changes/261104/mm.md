@@ -261,3 +261,47 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Route COW range notifications through the representative VMO (2026-11-04)
+
+**Files**
+
+- `kernel/mm/vm_cow_pages.cpp` sends the synchronous range notification.
+- `kernel/mm/vm_object_paged.cpp` owns view registration, handoff and traversal.
+- `kernel/commands/vmo_snapshot_test.cpp` verifies notifications after handoff.
+
+**Symptom**
+
+The COW node owned a list of attachments solely to forward range operations to the VMO layer.
+
+**Cause**
+
+The node owned both the page mutation and enumeration of the views that display its pages. The views and their mappings already belonged to the VMO layer.
+
+**Change**
+
+Each node holds a non-owning pointer to one representative VMO. That VMO holds the non-owning list of the other views over the node. Destruction hands the list to a surviving view under the shared lock, or clears the pointer when the last view leaves. Each view clips the original notification independently. COW waits for the synchronous propagation before moving or freeing pages.
+
+**Reference**
+
+Zircon's `VmCowPages::RangeChangeUpdateLocked`, `VmObjectPaged::RangeChangeUpdateLocked` and `VmObjectPaged::~VmObjectPaged`.
+
+**Verification**
+
+Clang-format and LLVM 23 clang-tidy checked all five C++ files. Both dev images booted and all 163 host tests passed in the default and four-node NUMA configurations. The kernel suites passed 459 checks in default and 395 in NUMA. The snapshot suite exercises a successor whose window excludes the target page and a second handoff.
+
+**Deliberately not done**
+
+The change is scoped to direct views of one COW node.
+
+**How it was found**
+
+The user chose to keep the COW node as the source of the notification and the VMO as the owner of its propagation.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

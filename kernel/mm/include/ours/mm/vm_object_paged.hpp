@@ -8,6 +8,7 @@
 #include <ours/sync/mutex.hpp>
 
 #include <logz4/log.hpp>
+#include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/function.hpp>
 #include <ustl/result.hpp>
 
@@ -294,10 +295,13 @@ class VmObjectPaged: public VmObject {
     auto copy_page_by_page(usize offset, usize size, bool will_write, CopyPage const &copy)
         -> Status;
 
-    /// Applies |op| to the page tables of this object's mappings of the part
-    /// of [cow_offset, cow_offset + len) of the pages that it shows, given in
-    /// the pages' bytes and translated into this object's. Called by the node,
-    /// for each object over it: VmCowPages::operate_range_locked().
+    /// Propagate the node's notification through every view of its pages.
+    /// Called on the representative with the shared tree lock held.
+    TA_REQUIRES(m_lock)
+    auto operate_views_locked(u64 cow_offset, u64 len, RangeOp op) -> void;
+
+    /// Intersect a range in COW coordinates with this view and translate it
+    /// into VMO coordinates before notifying its mappings.
     TA_REQUIRES(m_lock)
     auto operate_cow_range_locked(u64 cow_offset, u64 len, RangeOp op) -> void;
 
@@ -311,10 +315,12 @@ class VmObjectPaged: public VmObject {
     u64 const m_cow_offset;
     usize const m_size;
 
-    /// How the pages know this object is over them, so that an operation on
-    /// the pages can reach this object's mappings. Registered when the object
-    /// is made and taken off when it dies.
-    VmCowPages::Attachment m_attachment;
+    /// A non-owning list of the other views, held by the representative.
+    /// All members refer to the same COW node and share m_lock.
+    ustl::collections::intrusive::ListMemberHook<> m_view_hook;
+    USTL_DECLARE_HOOK_OPTION(Self, m_view_hook, ViewOption);
+    USTL_DECLARE_LIST(Self, ViewList, ViewOption);
+    ViewList m_views TA_GUARDED(m_lock);
 };
 
 } // namespace ours::mm

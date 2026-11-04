@@ -28,24 +28,54 @@ VmObjectPaged::VmObjectPaged(VmoFlags vmof, ustl::Arc<VmCowPages> cowpages, u64 
     : Base(gktl::magic<Self>(), Type::Paged, vmof, cowpages->lock())
     , m_cow_pages(ustl::move(cowpages))
     , m_cow_offset(cow_offset)
-    , m_size(size)
-    , m_attachment(this) {
-    // Registered with the pages, under their lock, so that an operation on the
-    // pages can reach this object's mappings. Not yet reachable by anyone else,
-    // so nothing can be missed between the two.
-    Guard guard{m_cow_pages->lock()};
-    m_cow_pages->lock().assert_held();
-    m_cow_pages->attach_locked(m_attachment);
+    , m_size(size) {
+    Guard guard{m_lock};
+    assert_cow_pages_locked();
+    auto *const representative = m_cow_pages->m_representative;
+    if (representative == nullptr) {
+        m_cow_pages->m_representative = this;
+        return;
+    }
+
+    representative->lock().assert_held();
+    representative->m_views.push_back(*this);
 }
 
-/// Off the pages' list before anything of this object is gone, under the same
-/// lock: an operation on the pages that is walking the list holds it, so it
-/// never sees an object half destroyed. The reference to the pages is released
-/// after this body, outside the lock, as the last reference to a node must be.
 VmObjectPaged::~VmObjectPaged() {
-    Guard guard{m_cow_pages->lock()};
-    m_cow_pages->lock().assert_held();
-    m_cow_pages->detach_locked(m_attachment);
+    // The view leaves the group before its members are destroyed. The COW
+    // reference drops after the guard, so the node can take its lock on death.
+    Guard guard{m_lock};
+    assert_cow_pages_locked();
+
+    auto *const representative = m_cow_pages->m_representative;
+    DEBUG_ASSERT(representative);
+    if (representative != this) {
+        representative->lock().assert_held();
+        representative->m_views.erase(*this);
+        return;
+    }
+
+    if (auto next = m_views.front()) {
+        auto &successor = next.value();
+        m_views.pop_front();
+        successor.lock().assert_held();
+        DEBUG_ASSERT(successor.m_views.empty());
+        successor.m_views.swap(m_views);
+        m_cow_pages->m_representative = &successor;
+    } else {
+        m_cow_pages->m_representative = nullptr;
+    }
+}
+
+auto VmObjectPaged::operate_views_locked(u64 const cow_offset, u64 const len, RangeOp const op)
+    -> void {
+    operate_cow_range_locked(cow_offset, len, op);
+    // A successor may have a narrower or disjoint window from the other
+    // views. Each view intersects the original range independently.
+    for (auto &view: m_views) {
+        view.lock().assert_held();
+        view.operate_cow_range_locked(cow_offset, len, op);
+    }
 }
 
 auto VmObjectPaged::operate_cow_range_locked(u64 const cow_offset, u64 const len, RangeOp const op)
@@ -283,8 +313,8 @@ auto VmObjectPaged::create_from_wired_pages(Gaf const alloc_flags, PhysAddr cons
 
 /// No lock is taken: everything read here -- the window and the pages it
 /// sits on -- is fixed when the parent is built, and the child only adds a
-/// reference to the pages. The lock would be needed to link the child into
-/// the parent's list of children, which is not kept (nothing yet walks it).
+/// reference to the pages. Its constructor registers the view under the
+/// shared lock.
 ///
 /// The child keeps the parent's flags. For a Pinned parent every page of the
 /// window is already committed, and stays so; for a Lazy one the child
