@@ -133,7 +133,7 @@ auto PmNode::alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &f
     m_canary.verify<Self>();
 
     // Whether the calling thread may allocate at all: a thread that has
-    // disabled allocation (MemoryAllocationState::disable()) is refused here,
+    // disabled allocation (AllocState::disable()) is refused here,
     // whichever way it asked. This is the one function every frame
     // allocation reaches -- the node-less entries in pmm.cpp, the ones naming
     // a node directly, and the bulk and fragment loops once per step -- so the
@@ -150,7 +150,7 @@ auto PmNode::alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &f
     //
     // Thread::Current is always there by now: task::init_early() makes the
     // boot thread current before the PMM exists.
-    if (!task::Thread::Current::memory_allocation_state().is_enabled()) {
+    if (!task::Thread::Current::alloc_state().is_enabled()) {
         return ustl::err(Status::AccessDenied);
     }
 

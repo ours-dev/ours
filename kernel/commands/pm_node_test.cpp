@@ -29,7 +29,7 @@
 ///   - contains(). Declared for a long time and defined only recently.
 ///   - Fragment and bulk allocation. alloc_frames_fragment() used to loop for
 ///     ever on an even page count.
-///   - MemoryAllocationState. A thread that disabled allocation must be
+///   - AllocState. A thread that disabled allocation must be
 ///     refused on the node-less path and on the path that names a node alike.
 ///
 /// A kshell command rather than a host test for the same reason usercopy.test
@@ -433,7 +433,7 @@ namespace {
     }
 
     auto check_disabled_allocation(Tally &tally) -> void {
-        auto &state = task::Thread::Current::memory_allocation_state();
+        auto &state = task::Thread::Current::alloc_state();
 
         state.disable();
         auto *const nodeless = mm::alloc_frames(mm::ALLOC_KERNEL, usize(0));

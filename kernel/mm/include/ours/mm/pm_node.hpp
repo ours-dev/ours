@@ -10,8 +10,8 @@
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_zone.hpp>
+#include <ours/mm/priv/alloc_policy.hpp>
 #include <ours/mm/priv/alloc_request.hpp>
-#include <ours/mm/priv/memory_allocation_policy.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
 
@@ -404,7 +404,7 @@ class PmNode {
     PageQueues m_page_queues;
 
     [[no_unique_address]]
-    MemoryAllocationPolicy m_node_policy;
+    AllocPolicy m_node_policy;
 
     constexpr static usize NUM_STATES = std::to_underlying(State::NumStates);
     static std::array<NodeMask, NUM_STATES> STATES;

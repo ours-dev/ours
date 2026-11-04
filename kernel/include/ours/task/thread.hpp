@@ -10,8 +10,8 @@
 #include <ours/chrono.hpp>
 #include <ours/compiler.hpp>
 #include <ours/cpu_mask.hpp>
+#include <ours/mm/alloc_state.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <ours/mm/memory_allocation_state.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/stack.hpp>
 #include <ours/mm/types.hpp>
@@ -435,8 +435,8 @@ namespace task {
         }
 
         FORCE_INLINE
-        auto memory_allocation_state() -> mm::MemoryAllocationState & {
-            return m_memory_allocation_state;
+        auto alloc_state() -> mm::AllocState & {
+            return m_alloc_state;
         }
 
         /// The slot logz4 keeps this thread's current log domain in; see
@@ -673,7 +673,7 @@ namespace task {
         /// thread lock to put it under: the event is the handshake.
         TaskState m_task_state;
         WaiterState m_waiter_state;
-        mm::MemoryAllocationState m_memory_allocation_state;
+        mm::AllocState m_alloc_state;
 
         /// The logz4::LogDomain scope this thread is in, or null: what every
         /// line it logs through the free functions is attributed to.
@@ -824,8 +824,8 @@ namespace task {
         }
 
         FORCE_INLINE
-        static auto memory_allocation_state() -> mm::MemoryAllocationState & {
-            return Thread::Current::get()->memory_allocation_state();
+        static auto alloc_state() -> mm::AllocState & {
+            return Thread::Current::get()->alloc_state();
         }
 
         FORCE_INLINE

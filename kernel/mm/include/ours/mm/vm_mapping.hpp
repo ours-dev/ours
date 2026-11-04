@@ -3,7 +3,7 @@
 #ifndef OURS_MM_VM_MAPPING_HPP
 #define OURS_MM_VM_MAPPING_HPP 1
 
-#include <ours/mm/priv/memory_allocation_policy.hpp>
+#include <ours/mm/priv/alloc_policy.hpp>
 #include <ours/mm/protection_ranges.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_area_or_mapping.hpp>
@@ -173,11 +173,11 @@ class VmMapping final: public VmAreaOrMapping {
 
     ustl::Arc<VmObject> m_vmo;
     usize m_vmo_ofs;
-    // TODO: m_policy (MemoryAllocationPolicy) is stored but never read by
+    // TODO: m_policy (AllocPolicy) is stored but never read by
     // any code path.  It is intended to guide NUMA / page-coloring
     // decisions during commit — either implement the integration or remove
     // the field to avoid dead weight.
-    ustl::Arc<MemoryAllocationPolicy> m_policy;
+    ustl::Arc<AllocPolicy> m_policy;
     ProtectionRanges m_protection_ranges;
     ustl::collections::intrusive::ListMemberHook<> m_list_hook;
     USTL_DECLARE_HOOK_OPTION(Self, m_list_hook, VmoListOption);

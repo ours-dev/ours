@@ -243,7 +243,7 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
         // bootmem::ANY_NODE is >= MAX_NODES, which this overload forwards to
         // the node-less one, so "no preference" -- every in-tree caller today --
         // behaves exactly as before, the thread's NUMA policy included
-        // (apply_thread_policy() below). The MemoryAllocationState
+        // (apply_thread_policy() below). The AllocState
         // counter applies either way: PmNode::alloc_frames() checks it for
         // every caller.
         auto *frame =
@@ -387,7 +387,7 @@ auto node_possible_mask() -> NodeMask const & {
 /// PmNode::alloc_frames() for every caller.
 static auto apply_thread_policy(AllocFlags &alloc_flags) -> Status {
     if constexpr (MEMORY_ALLOCATION_POLICY) {
-        using Kind = MemoryAllocationPolicy::Kind;
+        using Kind = AllocPolicy::Kind;
 
         // The thread's resource lock covers reading the policy and nothing
         // more: it is what another thread takes to replace it. It used to be
@@ -398,7 +398,7 @@ static auto apply_thread_policy(AllocFlags &alloc_flags) -> Status {
         auto const policy = [] {
             auto *const thread = task::Thread::Current::get();
             Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
-            return thread->memory_allocation_state().get_policy();
+            return thread->alloc_state().get_policy();
         }();
         if (policy) {
             switch (policy->kind()) {

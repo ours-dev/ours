@@ -4,11 +4,13 @@
 
 ## Scope and method
 
-Phase 1 reviews the AllocFlags/header, preset, parameter/member, and request-accessor rename across active kernel, heap, VMO, object, benchmark, and host-test consumers. Read kernel-design, modern-cpp-development, cpp-write-and-verify, and local format/tidy configuration. Flags retain their original values; CanBlock is the former unused DirectReclaim hint. Later policy/state and helper slices will update this report separately.
+Phase 1 reviews the AllocFlags/header, preset, parameter/member, and request-accessor rename across active kernel, heap, VMO, object, benchmark, and host-test consumers. Read kernel-design, modern-cpp-development, cpp-write-and-verify, and local format/tidy configuration. Flags retain their original values; CanBlock is the former unused DirectReclaim hint. Phase 2 also covers AllocPolicy/AllocState, their headers, and thread accessors. The helper slice remains separate.
 
 Ran changed-line clang-format, GN formatting, and real LLVM 23 clang-tidy on all 109 touched C++ files with the actual out/vm-address flags. Captured pre-change diagnostics for 108 files and normalized renamed identifiers/paths when comparing: zero new diagnostics. The additional benchmark caller has no diagnostics on its edited line. The boot-options header was checked with its real kernel/top/boot_options.cpp flags because automatic header inference chose an incomplete include context.
 
 Built the complete default graph, then booted both disked dev images with a QEMU snapshot overlay: dbg 46 passed / 5 skipped, rel 44 passed / 8 skipped and 7/7 required. All 163 host test executables passed. Logs: /tmp/pmm-naming-checks/flags-build.log, flags-verify.log, and flags-before/flags-after.
+
+Phase 2: all nine touched C++ files passed formatting and clang-tidy with zero new diagnostics against their own before snapshot. The default graph built in 24.7 seconds; disked dbg/rel checks and all 163 host test executables passed with the same shell counts. The policy switch, disable counter, object layout, and locking are unchanged. Logs are /tmp/pmm-naming-checks/state-verify.log and state-before/state-after.
 
 ## What is done well
 
@@ -18,11 +20,11 @@ Built the complete default graph, then booted both disked dev images with a QEMU
 
 ## High severity
 
-None found in phase 1.
+None found in phases 1 and 2.
 
 ## Medium severity
 
-None introduced by phase 1. Existing watermark admission, policy enablement, and shared-policy scaffolding remain separate architectural work.
+None introduced by phases 1 and 2. Existing watermark admission, policy enablement, and shared-policy scaffolding remain separate architectural work.
 
 ## Minor and style
 
@@ -35,6 +37,5 @@ None requested.
 
 ## Suggested follow-up order
 
-1. Migrate AllocPolicy/AllocState and their headers/thread accessors with unchanged locking and policy behavior.
-2. Unify alloc_frames_n/get_frames_n and exercise both direct-map count-helper overloads through the production PMM route.
-3. Record final validation and keep the larger responsibility design explicitly Proposed.
+1. Unify alloc_frames_n/get_frames_n and exercise both direct-map count-helper overloads through the production PMM route.
+2. Record final validation and keep the larger responsibility design explicitly Proposed.
