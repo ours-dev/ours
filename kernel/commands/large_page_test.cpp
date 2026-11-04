@@ -237,7 +237,7 @@ namespace {
     /// A large-page object of |size| bytes, mapped read-write at |va| from
     /// |offset| on, into |out|; null when either step failed.
     auto map_large(mm::VmArea &root, VirtAddr const va, usize const size, u64 const offset,
-                   mm::VmMapOption const option, ustl::Arc<mm::VmObjectPaged> *const out)
+                   mm::MapOptions const option, ustl::Arc<mm::VmObjectPaged> *const out)
         -> ustl::Arc<mm::VmMapping> {
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         if (!make_large(size + offset, out)) {
@@ -276,7 +276,7 @@ namespace {
         // page read-only gets one small entry; a leaf protected in part splits.
         ustl::Arc<mm::VmObjectPaged> plain;
         auto const a = at(128);
-        if (auto mapping = map_large(root, a, 2 * LARGE, 0, mm::VmMapOption::None, &plain)) {
+        if (auto mapping = map_large(root, a, 2 * LARGE, 0, mm::MapOptions::Lazy, &plain)) {
             auto const leaf = fault_at(*aspace, a + 5 * PAGE_SIZE, WRITE);
             verdict(tally,
                     leaf.present && leaf.size == LARGE && writable(leaf) &&
@@ -309,7 +309,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> shifted;
         auto const b = at(256);
         auto off = Translation{};
-        if (map_large(root, b, 2 * LARGE, PAGE_SIZE, mm::VmMapOption::None, &shifted)) {
+        if (map_large(root, b, 2 * LARGE, PAGE_SIZE, mm::MapOptions::Lazy, &shifted)) {
             off = fault_at(*aspace, b + 5 * PAGE_SIZE, WRITE);
         }
         verdict(tally, off.present && off.size == PAGE_SIZE,
@@ -325,7 +325,7 @@ namespace {
             mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * LARGE, mm::VmoFlags::LargePages,
                                       &populated) == Status::Ok &&
             root.map_with_vmo(c, 2 * LARGE, 0, rw, mm::VmaFlags::PermMask, populated,
-                              mm::VmMapOption::Populate, "largepage.test populate")
+                              mm::MapOptions::Resident, "largepage.test populate")
                 .is_ok();
         auto const p0 = translate(*aspace, c);
         auto const p1 = translate(*aspace, c + LARGE + 9 * PAGE_SIZE);
@@ -352,7 +352,7 @@ namespace {
         if (make_large(LARGE, &origin) &&
             origin->write(&word, 3 * PAGE_SIZE, sizeof(word)) == Status::Ok &&
             origin->create_clone(0, LARGE, &clone) == Status::Ok &&
-            root.map_with_vmo(d, LARGE, 0, rw, mm::VmaFlags::PermMask, clone, mm::VmMapOption::None,
+            root.map_with_vmo(d, LARGE, 0, rw, mm::VmaFlags::PermMask, clone, mm::MapOptions::Lazy,
                               "largepage.test clone")
                 .is_ok()) {
             shared = fault_at(*aspace, d + 9 * PAGE_SIZE, READ);
@@ -388,8 +388,8 @@ namespace {
             origin2->write(&word, 5 * PAGE_SIZE, sizeof(word)) == Status::Ok &&
             origin2->create_clone(0, LARGE, &clone2) == Status::Ok &&
             origin2->write(&word, 0, sizeof(word)) == Status::Ok &&
-            root.map_with_vmo(e, LARGE, 0, rw, mm::VmaFlags::PermMask, clone2,
-                              mm::VmMapOption::None, "largepage.test migrate")
+            root.map_with_vmo(e, LARGE, 0, rw, mm::VmaFlags::PermMask, clone2, mm::MapOptions::Lazy,
+                              "largepage.test migrate")
                 .is_ok()) {
             took = fault_at(*aspace, e, WRITE);
         }
@@ -406,7 +406,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> walked;
         auto const f = at(768);
         auto whole = Translation{};
-        if (map_large(root, f, LARGE, 0, mm::VmMapOption::None, &walked)) {
+        if (map_large(root, f, LARGE, 0, mm::MapOptions::Lazy, &walked)) {
             whole = fault_at(*aspace, f, WRITE);
         }
         auto const held_with_leaf = mm::PageTableDeposits::nr_held();
@@ -440,7 +440,7 @@ namespace {
             }
             auto mapped =
                 root.map_with_vmo(VirtAddr::Anywhere, size, offset, rw, mm::VmaFlags::PermMask,
-                                  *out, mm::VmMapOption::None, "largepage.test anywhere");
+                                  *out, mm::MapOptions::Lazy, "largepage.test anywhere");
             if (mapped.is_ok()) {
                 placed = mapped.unwrap();
             }
@@ -454,7 +454,7 @@ namespace {
             mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &spacer_vmo) ==
                 Status::Ok &&
             root.map_with_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, rw, mm::VmaFlags::PermMask,
-                              spacer_vmo, mm::VmMapOption::None, "largepage.test spacer")
+                              spacer_vmo, mm::MapOptions::Lazy, "largepage.test spacer")
                 .is_ok();
         ustl::Arc<mm::VmObjectPaged> at_zero;
         auto const zero = anywhere(2 * LARGE, 0, &at_zero);

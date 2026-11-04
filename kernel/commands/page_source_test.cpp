@@ -584,7 +584,7 @@ namespace {
         auto buffer = aspace.root_vma()->map_anon(VirtAddr::Anywhere, P,
                                                   mm::MmuFlags::Readable | mm::MmuFlags::Writable |
                                                       mm::MmuFlags::User,
-                                                  mm::VmMapOption::None, "pagesource.test buffer");
+                                                  mm::MapOptions::Lazy, "pagesource.test buffer");
         if (buffer.is_err()) {
             log::error("pagesource.test: could not map the buffer: {}",
                        to_string(buffer.unwrap_err()));
@@ -654,7 +654,7 @@ namespace {
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto mapping = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, flags,
                                           mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
-                                          mm::VmMapOption::None, "pagesource.test");
+                                          mm::MapOptions::Lazy, "pagesource.test");
         if (mapping.is_err()) {
             log::error("pagesource.test: could not map the VMO: {}",
                        to_string(mapping.unwrap_err()));
@@ -783,7 +783,7 @@ namespace {
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto mapping = root->map_with_vmo(VirtAddr::Anywhere, 2 * P, 0, flags,
                                           mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
-                                          mm::VmMapOption::Populate, "pagesource.test populate");
+                                          mm::MapOptions::Resident, "pagesource.test populate");
         verdict(tally, mapping.is_ok(), "a populate mapping of it is made");
         if (mapping.is_err()) {
             return;
@@ -852,7 +852,7 @@ namespace {
                               aux->write(&words[1], 3 * P, sizeof(u64)) == Status::Ok &&
                               mark_zero(*aux, 1);
         auto aux_map = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
-                                          ustl::Arc<mm::VmObject>(aux), mm::VmMapOption::Populate,
+                                          ustl::Arc<mm::VmObject>(aux), mm::MapOptions::Resident,
                                           "pagesource.test aux");
         PhysAddr frame0{};
         auto const aux_ready =
@@ -867,7 +867,7 @@ namespace {
                                            &dst) == Status::Ok &&
             supply(*dst, 3 * P, P) == Status::Ok;
         auto dst_map = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
-                                          ustl::Arc<mm::VmObject>(dst), mm::VmMapOption::None,
+                                          ustl::Arc<mm::VmObject>(dst), mm::MapOptions::Lazy,
                                           "pagesource.test dst");
         if (!aux_ready || !dst_made || dst_map.is_err()) {
             verdict(tally, false, "an object with a source, page 3 supplied, is mapped");
@@ -978,7 +978,7 @@ namespace {
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto mapping = root->map_with_vmo(VirtAddr::Anywhere, 3 * P, 0, rw, mm::VmaFlags::PermMask,
-                                          ustl::Arc<mm::VmObject>(vmo), mm::VmMapOption::None,
+                                          ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Lazy,
                                           "pagesource.test detach");
         if (mapping.is_err()) {
             verdict(tally, false, "the VMO to detach is mapped");

@@ -105,9 +105,8 @@ auto x86_setup_gdt() -> void {
         mm::virt_to_phys(VirtAddr{reinterpret_cast<usize>(PGDT)}),
         VirtAddr::Anywhere, // Wherever the VMM has room
         PAGE_SIZE,
-        mm::MmuFlags::Readable,                              // Read only
-        mm::VmMapOption::Populate | mm::VmMapOption::Pinned, // Disable swapping out.
-        "k:GDT");
+        mm::MmuFlags::Readable, // Read only
+        mm::MapOptions::Resident | mm::MapOptions::Sealed, "k:GDT");
     ASSERT(result, "Failed to create readonly GDT");
 
     PGDT = reinterpret_cast<decltype(PGDT)>((*result)->base());

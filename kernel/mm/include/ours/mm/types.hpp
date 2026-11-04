@@ -22,9 +22,8 @@ namespace ours::mm {
 // `ours::arch` had not been declared yet at this point in the file. That is
 // not something an include order should be load-bearing for.
 using ::arch::paging::HarvestOptions;
-/// The page table's own choices for a map, under another name in mm: mm's
-/// MapOptions (vm_mapping.hpp) is what VmMapping::map()'s callers choose, in
-/// mm's terms, and only mm's own code talks to the page table.
+/// The page table's insertion and rollback options. The VMM's MapOptions
+/// governs mapping creation and the choice of pages to install.
 using ArchMapOptions = ::arch::paging::MapOptions;
 using ::arch::paging::MmuFlags;
 using ::arch::paging::UnmapOptions;

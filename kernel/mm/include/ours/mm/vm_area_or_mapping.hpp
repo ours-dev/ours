@@ -24,48 +24,31 @@
 #include <ustl/util/move.hpp>
 
 namespace ours::mm {
-/// What a caller asks of ONE operation that creates a mapping: options of the
-/// call, not properties of the result.
-///
-/// It is kept apart from VmaFlags on purpose, and the line between them is
-/// this: a VmMapOption is a request, a VmaFlags is what the object is. Some
-/// requests leave nothing behind -- Commit means "populate the pages now" and
-/// is gone once it has been done -- so they have no flag to become. Others
-/// outlive the call: Pinned and Sealed are asked for here and, at creation
-/// (VmArea::create_mapping()), become VmaFlags::Pinned and VmaFlags::Sealed on
-/// the mapping. The same word on both sides is that translation, not a
-/// duplicate: "make it sealed" and "it is sealed" are different statements.
-///
-/// One set of flags for both would also work; this project keeps the request
-/// and the state apart. The ABI has a third vocabulary, ours::VmOptions, for
-/// the same reason at another boundary.
-enum class VmMapOption {
-    // For semenatics, no any effects.
-    None,
-    /// Fill the page tables in when the mapping is made, rather than leaving
-    /// each page to the first access that faults on it. Only that: it maps what
-    /// the object has, and does not ask the object for pages of its own, which
-    /// on a copy-on-write clone would copy every shared page. The ABI's
-    /// ours::VmOptions::MapRange is what becomes it. It was called Commit,
-    /// which is the name of the other thing.
-    Populate = 0_bit,
-    Pinned = 1_bit,
-
-    /// The mapping is immutable from the moment it exists: nothing may unmap
-    /// it, change its protection, or destroy it with its parent. See
-    /// VmaFlags::Sealed.
+/// Options for creating a mapping. The ModeMask bits select one policy:
+/// zero for Lazy, Resident to install existing pages, or Commit to obtain
+/// owned pages and install them. Resident and Commit cannot be combined.
+/// Sealed is independent of the policy. The creation entry rejects unknown
+/// bits and passes only the selected mode to VmMapping::map(), which
+/// accepts Resident or Commit for immediate installation.
+enum class MapOptions : u8 {
+    Lazy = 0,
+    Resident = 0_bit,
+    Commit = 1_bit,
     Sealed = 2_bit,
+
+    ModeMask = Resident | Commit,
+    ValidMask = ModeMask | Sealed,
 };
-USTL_ENABLE_ENUM_BITMASK(VmMapOption);
+USTL_ENABLE_ENUM_BITMASK(MapOptions);
 
 /// What a VMA -- an area or a mapping -- IS: its attributes and state, stored on
 /// the object and true for as long as it lives. The permissions it allows
 /// (which a mapping's protection may never exceed), whether it is active,
 /// pinned or sealed, what kind of thing it is.
 ///
-/// Not what a caller asked of a call: that is VmMapOption, and a request that
+/// Not what a caller asked of a call: that is MapOptions, and a request that
 /// outlives the call is translated into a flag here at creation. See
-/// VmMapOption.
+/// MapOptions.
 enum class VmaFlags : u32 {
     // For semantics, no any actual effects.
     None,
@@ -85,7 +68,7 @@ enum class VmaFlags : u32 {
     Anonymous = 0x40000,
     Mergeable = 0x80000,
 
-    // Set once, when a mapping is created with VmMapOption::Sealed, and never
+    // Set once, when a mapping is created with MapOptions::Sealed, and never
     // cleared: an unmap, protect or destroy that meets a sealed mapping is
     // refused (AccessDenied) whole, without touching anything else in its
     // range. The address space's own teardown is not such an operation; it
@@ -509,11 +492,6 @@ class VmAreaOrMapping::Builder {
         return *this;
     }
 
-    auto set_option(VmMapOption option) -> Self & {
-        m_option = option;
-        return *this;
-    }
-
     auto set_mmuf(MmuFlags mmuf) -> Self & {
         m_mmuf = mmuf;
         return *this;
@@ -529,7 +507,6 @@ class VmAreaOrMapping::Builder {
     usize m_size{};
     VmaFlags m_vmaf{};
     MmuFlags m_mmuf{};
-    VmMapOption m_option{};
     VmArea *m_parent{};
     ustl::Arc<VmAspace> *m_aspace{};
     char const *m_name{};

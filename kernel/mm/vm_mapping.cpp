@@ -254,7 +254,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOpti
     DEBUG_ASSERT(ustl::is_aligned(base, PAGE_SIZE));
     DEBUG_ASSERT(ustl::is_aligned(size, PAGE_SIZE));
 
-    bool const commit = !!(options & MapOptions::Commit);
+    bool const commit = options == MapOptions::Commit;
     constexpr static auto MAX_BATCH_PAGES = 32;
 
     // The cursor is positioned in the VMO's own byte space, not in the address
@@ -413,8 +413,12 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size) -
 }
 
 /// Do check arguments and dispatch the request to correct sub-routine for different VmObjects.
-auto VmMapping::map(VirtAddr base, usize size, MapOptions options) -> Status {
+auto VmMapping::map(VirtAddr base, usize size, MapOptions const mode) -> Status {
     m_canary.verify<Self>();
+
+    if (mode != MapOptions::Resident && mode != MapOptions::Commit) {
+        return Status::InvArgs;
+    }
 
     // The address space lock, as protect() and unmap() take it. Without it a
     // map() raced them over the page tables and m_protection_ranges, and a
@@ -441,7 +445,7 @@ auto VmMapping::map(VirtAddr base, usize size, MapOptions options) -> Status {
     }
 
     if (auto paged = as<VmObjectPaged>(m_vmo.as_ptr_mut())) {
-        return map_paged(paged, base, size, options);
+        return map_paged(paged, base, size, mode);
     } else if (auto physical = as<VmObjectPhysical>(m_vmo.as_ptr_mut())) {
         return map_physical(physical, base, size);
     }
@@ -469,6 +473,10 @@ auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
 
     if (!validate_mmuflags(mmuf)) {
         return Status::InvArgs;
+    }
+
+    if (is_sealed()) {
+        return Status::AccessDenied;
     }
 
     return protect_locked(base, size, mmuf);
@@ -604,6 +612,10 @@ auto VmMapping::unmap(VirtAddr base, usize size, UnmapOptions options) -> Status
     base = ustl::round_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvArgs;
+    }
+
+    if (is_sealed()) {
+        return Status::AccessDenied;
     }
 
     return unmap_locked(base, size, options);

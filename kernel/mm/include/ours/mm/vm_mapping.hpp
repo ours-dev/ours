@@ -18,24 +18,6 @@
 #include <ustl/util/pair.hpp>
 
 namespace ours::mm {
-/// What VmMapping::map() does with a page the object does not have, in mm's
-/// own terms. The page table's choices (ArchMapOptions) are not a caller's to
-/// make: an entry already there is always an error, since a range map() fills
-/// is one nobody has mapped yet, and whether a block goes in as a 2 MiB leaf
-/// is the mapping's decision (map_block_locked()).
-enum class MapOptions : u8 {
-    /// Map the pages the object has -- its own, or ones it sees through an
-    /// ancestor, read-only -- and leave the rest to fault. Nothing is
-    /// allocated and no page source is asked. What a Populate mapping does.
-    None = 0,
-    /// Make every page the object's own first, then map it: a hole gets a
-    /// page, a page seen through an ancestor is copied, and a page source is
-    /// asked, which fails the map rather than wait. For the kernel's own
-    /// mappings, whose pages must be there before anything touches them.
-    Commit = 0_bit,
-};
-USTL_ENABLE_ENUM_BITMASK(MapOptions);
-
 /// VmMapping is the representation of a or a group of area which has been mapped in
 /// virtual memory address space.
 ///
@@ -61,7 +43,10 @@ class VmMapping final: public VmAreaOrMapping {
     /// VmArea::unmap_locked() converted the wrong way, subtracting the base
     /// before calling the absolute unmap_locked() and silently naming a range
     /// at the bottom of the address space.
-    auto map(VirtAddr base, usize size, MapOptions options) -> Status;
+    /// Installs page-table entries in this active mapping. Resident uses
+    /// existing pages. Commit obtains owned pages for the whole range.
+    /// Only these two modes are accepted by this operation.
+    auto map(VirtAddr base, usize size, MapOptions mode) -> Status;
 
     auto protect(VirtAddr base, usize size, MmuFlags) -> Status;
 

@@ -248,7 +248,7 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
                 phys_aligned, VirtAddr::Anywhere, PAGE_SIZE,
                 // `Discache` is required to prevent
                 mm::MmuFlags::Discache | mm::MmuFlags::Readable | mm::MmuFlags::Writable,
-                mm::VmMapOption::Populate | mm::VmMapOption::Pinned, "IO-APIC");
+                mm::MapOptions::Resident | mm::MapOptions::Sealed, "IO-APIC");
             DEBUG_ASSERT(result, "Failed to initialize IO-APIC");
 
             mmio_virt = (*result)->base() + (phys - phys_aligned);

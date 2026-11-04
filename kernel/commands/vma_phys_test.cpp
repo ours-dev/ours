@@ -79,7 +79,7 @@ namespace {
 
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_phys(phys, VirtAddr::Anywhere, 2 * P, rw, mm::VmMapOption::None,
+        auto mapping = root->map_phys(phys, VirtAddr::Anywhere, 2 * P, rw, mm::MapOptions::Lazy,
                                       "vmaphys.test");
         if (mapping.is_err()) {
             verdict(tally, false, "the two frames are mapped as a physical object");
@@ -94,7 +94,7 @@ namespace {
         verdict(tally, root->protect(base + P, P, ro) == Status::Ok,
                 "its second page is made read-only: two protection regions");
 
-        verdict(tally, mapping.unwrap()->map(base, 2 * P, mm::MapOptions::None) == Status::Ok,
+        verdict(tally, mapping.unwrap()->map(base, 2 * P, mm::MapOptions::Resident) == Status::Ok,
                 "map() over both regions is Ok");
         auto const first = entry_at(aspace, base);
         auto const second = entry_at(aspace, base + P);
@@ -153,8 +153,8 @@ namespace {
         *reinterpret_cast<u64 *>(mm::PhysMap::phys_to_virt(second_pa)) = SECOND;
 
         auto root = aspace.root_vma();
-        auto mapping = root->map_phys(first_pa, VirtAddr::Anywhere, P, RW,
-                                      mm::VmMapOption::Populate, "vmaphys.test overwrite");
+        auto mapping = root->map_phys(first_pa, VirtAddr::Anywhere, P, RW, mm::MapOptions::Resident,
+                                      "vmaphys.test overwrite");
         if (mapping.is_err()) {
             verdict(tally, false, "the first frame is mapped, populated");
             mm::free_frames(first, 0);

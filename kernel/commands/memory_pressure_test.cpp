@@ -384,7 +384,7 @@ namespace {
         if (made) {
             auto mapping = aspace->root_vma()->map_with_vmo(
                 VirtAddr::Anywhere, 3 * P, 0, rw, mm::VmaFlags::PermMask,
-                ustl::Arc<mm::VmObject>(vmo), mm::VmMapOption::None, "mempressure.test");
+                ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Lazy, "mempressure.test");
             if (mapping.is_ok()) {
                 base = mapping.unwrap()->base();
             }

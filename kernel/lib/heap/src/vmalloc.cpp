@@ -93,7 +93,7 @@ auto init_vmalloc() -> void {
     // must be exactly where the constants say it is.
     auto const status = ours::mm::VmAspace::kernel_aspace()->root_vma()->create_subvma(
         VMALLOC_BASE, VMALLOC_SIZE, ours::mm::VmaFlags::Read | ours::mm::VmaFlags::Write,
-        "k:vmalloc", ours::mm::VmMapOption::None, &WINDOW);
+        "k:vmalloc", &WINDOW);
     ASSERT(Status::Ok == status, "Failed to reserve the vmalloc window");
 
     NR_BUSY = 0;
@@ -141,14 +141,11 @@ auto vmalloc(usize const size, Gaf const alloc_flags) -> void * {
     }
     vmo->set_name("vmalloc");
 
-    // map_with_vmo(), not create_mapping(). create_mapping() builds the mapping
-    // object and stops there, accepting a VmMapOption it never acts on, so the
-    // range would come back live with no page tables behind it. Committing the
-    // VMO, installing the entries, and destroying the half-built mapping when
-    // either fails all live in map_with_vmo().
+    // The pinned VMO already owns its pages. Install those pages now so
+    // kernel accesses to this allocation never need to fault them in.
     auto mapping = WINDOW->map_with_vmo(VirtAddr::Anywhere, rounded, 0, MMU_FLAGS,
                                         ours::mm::VmaFlags::PermMask, vmo,
-                                        ours::mm::VmMapOption::Populate, "vmalloc");
+                                        ours::mm::MapOptions::Resident, "vmalloc");
     if (mapping.is_err()) {
         // The VMO's last reference goes with this return, and ~VmCowPages
         // gives its pages back -- which is only true since that destructor

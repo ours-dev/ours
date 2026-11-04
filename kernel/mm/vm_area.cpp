@@ -14,6 +14,13 @@
 #include <ustl/mem/align.hpp>
 
 namespace ours::mm {
+namespace {
+    constexpr auto valid_map_options(MapOptions const options) -> bool {
+        return !(options & ~MapOptions::ValidMask) &&
+               (options & MapOptions::ModeMask) != MapOptions::ModeMask;
+    }
+} // namespace
+
 using VmaCache = ObjectCache::Instance<
     VmArea,
     ObjectCache::Option::AddInitHook<"VmaCache", ObjectCache::Flags::Folio, gktl::InitLevel::Heap>>;
@@ -77,7 +84,7 @@ auto VmArea::alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr 
 }
 
 auto VmArea::create_subvma(VirtAddr where, usize requested_size, VmaFlags vmaf, char const *name,
-                           VmMapOption option, ustl::Arc<VmArea> *out) -> Status {
+                           ustl::Arc<VmArea> *out) -> Status {
     m_canary.verify<Self>();
 
     // The new area's allowance, which may narrow this one's but never widen
@@ -112,7 +119,6 @@ auto VmArea::create_subvma(VirtAddr where, usize requested_size, VmaFlags vmaf, 
     auto const status = Builder(&m_aspace, vmaf, size)
                             .set_parent(this)
                             .set_base(base)
-                            .set_option(option)
                             .set_name(name)
                             .build(&aom);
 
@@ -126,7 +132,7 @@ auto VmArea::create_subvma(VirtAddr where, usize requested_size, VmaFlags vmaf, 
 
 auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs, MmuFlags mmuf,
                             VmaFlags ceiling, ustl::Arc<VmObject> vmo, char const *name,
-                            VmMapOption option, ustl::Arc<VmMapping> *out) -> Status {
+                            MapOptions option, ustl::Arc<VmMapping> *out) -> Status {
     m_canary.verify<Self>();
 
     // What this area permits, asked of the protection the mapping is being
@@ -175,7 +181,7 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
     // Nor does a mapping take the area's CanMapSpecific: it is a rule about
     // what goes into an area, and nothing goes into a mapping.
     auto vmaf = (m_vmaf & ~(VmaFlags::PermMask | VmaFlags::CanMapSpecific)) | allowed;
-    if (!!(option & VmMapOption::Sealed)) {
+    if (!!(option & MapOptions::Sealed)) {
         vmaf |= VmaFlags::Sealed;
     }
     ustl::Arc<VmAreaOrMapping> out_aom;
@@ -192,7 +198,6 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
                             .set_vmo_offset(vmo_ofs)
                             .set_name(name)
                             .set_mmuf(mmuf)
-                            .set_option(option)
                             .build(&out_aom);
 
     if (Status::Ok != status) {
@@ -287,8 +292,12 @@ auto VmArea::create_subaom_preamble(VirtAddr where, usize size,
 }
 
 auto VmArea::map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags mmuf,
-                      VmMapOption options, char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
+                      MapOptions options, char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
+
+    if (!valid_map_options(options)) {
+        return ustl::err(Status::InvArgs);
+    }
 
     DEBUG_ASSERT(ustl::is_aligned(phys_base, PAGE_SIZE));
     size = ustl::round_up(size, PAGE_SIZE);
@@ -305,9 +314,13 @@ auto VmArea::map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags m
     return map_with_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
 }
 
-auto VmArea::map_anon(VirtAddr where, usize size, MmuFlags mmuf, VmMapOption options,
+auto VmArea::map_anon(VirtAddr where, usize size, MmuFlags mmuf, MapOptions options,
                       char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
+
+    if (!valid_map_options(options)) {
+        return ustl::err(Status::InvArgs);
+    }
 
     size = ustl::round_up(size, PAGE_SIZE);
     if (!size) {
@@ -324,32 +337,24 @@ auto VmArea::map_anon(VirtAddr where, usize size, MmuFlags mmuf, VmMapOption opt
 }
 
 auto VmArea::map_with_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
-                          ustl::Arc<VmObject> vmo, VmMapOption option, char const *name)
+                          ustl::Arc<VmObject> vmo, MapOptions option, char const *name)
     -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
+    if (!valid_map_options(option)) {
+        return ustl::err(Status::InvArgs);
+    }
+
+    auto const mode = option & MapOptions::ModeMask;
     ustl::Arc<VmMapping> mapping;
-    auto status = create_mapping(where, size, vmo_ofs, mmuf, ceiling, vmo, name, option, &mapping);
+    auto status = create_mapping(where, size, vmo_ofs, mmuf, ceiling, ustl::move(vmo), name,
+                                 option & MapOptions::Sealed, &mapping);
     if (Status::Ok != status) {
         return ustl::err(status);
     }
 
-    // Populate: fill the page tables in now, with what the object has. Only
-    // that. It used to commit the object first (commit_range()), which asks for
-    // every page to be the object's own: the same pages as mapping them for a
-    // node with no ancestors, but for a copy-on-write clone it copies every
-    // shared page of the window at the moment of mapping. map() without
-    // MapOptions::Commit maps the pages the object has -- the node's own
-    // writable, pages it only sees read-only -- and leaves a page that is not
-    // there to fault: a write faults and copies then, one page at a time, and a
-    // page a source has not supplied is asked for by a fault, which can wait
-    // for it, not by this, which holds the address space's lock.
-    //
-    // The kernel's own populated mappings lose nothing: a stack and vmalloc's
-    // memory are Pinned objects, committed when they were made, and the rest
-    // map physical objects, whose pages are always there.
-    if (!!(VmMapOption::Populate & option)) {
-        status = mapping->map(mapping->base(), size, MapOptions::None);
+    if (mode != MapOptions::Lazy) {
+        status = mapping->map(mapping->base(), mapping->size(), mode);
 
         if (Status::Ok != status) {
             // The mapping is already live by this point: create_mapping() ends

@@ -110,9 +110,9 @@ namespace {
         [[maybe_unused]]
         // CanMapSpecific: reserve() below records the mapping at the area's
         // own base, a place chosen for it, which only such an area takes.
-        auto status = root_vma->create_subvma(phys_vma.base, phys_vma.size,
-                                              phys_vma.vmaf | VmaFlags::CanMapSpecific,
-                                              phys_vma.name, VmMapOption::None, &vma);
+        auto status =
+            root_vma->create_subvma(phys_vma.base, phys_vma.size,
+                                    phys_vma.vmaf | VmaFlags::CanMapSpecific, phys_vma.name, &vma);
         DEBUG_ASSERT(Status::Ok == status);
 
         if (PhysVma::Backing::AddressSpace == phys_vma.backing) {

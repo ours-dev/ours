@@ -265,7 +265,7 @@ namespace {
 
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto scratch = root->map_anon(VirtAddr::Anywhere, 3 * PAGE_SIZE, flags,
-                                      mm::VmMapOption::None, "usercopy.test buffers");
+                                      mm::MapOptions::Lazy, "usercopy.test buffers");
         if (scratch.is_err()) {
             log::error("usercopy.test: could not map the VMO test buffers: {}",
                        static_cast<int>(scratch.unwrap_err()));
@@ -342,7 +342,7 @@ namespace {
         {
             auto self = root->map_with_vmo(VirtAddr::Anywhere, 2 * PAGE_SIZE, 0, flags,
                                            mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
-                                           mm::VmMapOption::None, "usercopy.test self");
+                                           mm::MapOptions::Lazy, "usercopy.test self");
             if (self.is_err()) {
                 log::error("usercopy.test: could not map the VMO: {}",
                            static_cast<int>(self.unwrap_err()));
@@ -402,7 +402,7 @@ namespace {
         auto root = aspace->root_vma();
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto mapping = root->map_anon(VirtAddr::Anywhere, 3 * PAGE_SIZE, flags,
-                                      mm::VmMapOption::None, "usercopy.test");
+                                      mm::MapOptions::Lazy, "usercopy.test");
         if (mapping.is_err()) {
             log::error("usercopy.test: could not map the scratch pages: {}",
                        static_cast<int>(mapping.unwrap_err()));

@@ -216,3 +216,48 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Use one MapOptions word across mapping creation and installation (2026-11-04)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp` defines the modes and valid bit masks.
+- `kernel/mm/vm_area.cpp` validates creation and dispatches immediate installation.
+- `kernel/mm/vm_mapping.cpp` checks installation modes and enforces the seal on direct changes.
+- The dispatcher, kernel mappings and tests use the shared options.
+
+**Symptom**
+
+Mapping creation and page-table installation had different options and both used None for different behavior. The old mapping-level Pinned option was recorded by the builder without being consumed.
+
+**Cause**
+
+The options mixed the choice of which pages to install with attributes of the mapping being created.
+
+**Change**
+
+One scoped bitmask selects Lazy, Resident or Commit with ModeMask. ValidMask rejects unknown bits. Resident and Commit are exclusive. Creation consumes Sealed and passes only the selected mode to immediate installation. The kernel stack uses Commit at creation. Persistent device and descriptor mappings use Resident with Sealed, which ordinary unmap and protect enforce.
+
+**Reference**
+
+Zircon separates mapping creation from page-table installation through `VmAddressRegion::CreateVmMapping` and `VmMapping::MapRange`. The shared bitmask follows the user's choice.
+
+**Verification**
+
+Clang-format and LLVM 23 clang-tidy checked 27 C++ files. Both QEMU dev images and all 163 host tests passed in the default and four-node NUMA configurations. The default kernel suites passed 475 checks and the NUMA suites passed 364. Regression checks cover invalid options, the absence of side effects on rejection, Commit with Sealed and direct operations on sealed mappings.
+
+**Deliberately not done**
+
+The public ABI continues to express immediate installation through MapRange. The new bitmask is a VMM interface.
+
+**How it was found**
+
+The user asked to combine the VMM mapping option types and use masks to validate the resulting word.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

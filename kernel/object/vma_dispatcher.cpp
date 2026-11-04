@@ -220,10 +220,10 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     if (!!(options & VmOptions::CanMapExecute)) {
         ceiling |= mm::VmaFlags::Exec;
     }
-    auto populate =
-        !!(options & VmOptions::MapRange) ? mm::VmMapOption::Populate : mm::VmMapOption::None;
+    auto map_options =
+        !!(options & VmOptions::MapRange) ? mm::MapOptions::Resident : mm::MapOptions::Lazy;
     if (!!(options & VmOptions::Sealed)) {
-        populate |= mm::VmMapOption::Sealed;
+        map_options |= mm::MapOptions::Sealed;
     }
     // A physical VMO's window is installed in full when the mapping is made,
     // whether or not the caller asked: there is no later moment at which a page
@@ -240,19 +240,10 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     // a frame mapped uncached under one address and cached under another is
     // a conflict the CPU does not define.
     if (vmo.is_physical()) {
-        populate |= mm::VmMapOption::Populate;
+        map_options |= mm::MapOptions::Resident;
         mmuf |= mm::MmuFlags::Discache;
     }
 
-    // map_with_vmo(), not create_mapping(). create_mapping() builds the
-    // mapping object and stops there: it accepts a VmMapOption and never acts
-    // on Commit, so the mapping comes back live with no page tables installed.
-    // Written against it, userboot's image mapped "successfully" and then took
-    // a not-present instruction fetch on its very first instruction
-    // (error_code=0x14, rip=0x201270, cs=0x33). Committing the range,
-    // installing the PTEs, and unwinding correctly when that fails is
-    // map_with_vmo's job, and none of it is worth reproducing here.
-    //
     // The VMO Arc is copied rather than moved: mapping does not consume a VMO,
     // which is the point of it being a separate object -- the handle the
     // caller holds goes on naming the same memory afterwards.
@@ -264,8 +255,8 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     if (registers_vdso && !m_vma->aspace()->claim_vdso()) {
         return ktl::err(Status::AccessDenied);
     }
-    auto mapping =
-        m_vma->map_with_vmo(where, rounded, vmo_offset, mmuf, ceiling, vmo.vmo(), populate, name);
+    auto mapping = m_vma->map_with_vmo(where, rounded, vmo_offset, mmuf, ceiling, vmo.vmo(),
+                                       map_options, name);
     if (mapping.is_err()) {
         if (registers_vdso) {
             m_vma->aspace()->release_vdso();
@@ -358,8 +349,7 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
 
     // mm places it, and refuses a range that is taken or runs off this region.
     ustl::Arc<mm::VmArea> child;
-    if (auto const status = m_vma->create_subvma(where, rounded, allows, "vma_allocate",
-                                                 mm::VmMapOption::None, &child);
+    if (auto const status = m_vma->create_subvma(where, rounded, allows, "vma_allocate", &child);
         Status::Ok != status) {
         return status;
     }

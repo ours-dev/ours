@@ -292,7 +292,7 @@ namespace {
         auto mapping = root->map_with_vmo(
             VirtAddr::Anywhere, 2 * P, 0,
             mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
-            mm::VmaFlags::PermMask, vmo, mm::VmMapOption::Populate, "pagereclaim.test");
+            mm::VmaFlags::PermMask, vmo, mm::MapOptions::Resident, "pagereclaim.test");
         auto const page = filed_at(*vmo, 1).page;
         if (mapping.is_err() || !page) {
             verdict(tally, false, "the VMO is mapped");
@@ -490,7 +490,7 @@ namespace {
         auto mapping = root->map_with_vmo(
             VirtAddr::Anywhere, 2 * P, 0,
             mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
-            mm::VmaFlags::PermMask, vmo, mm::VmMapOption::Populate, "pagereclaim.test");
+            mm::VmaFlags::PermMask, vmo, mm::MapOptions::Resident, "pagereclaim.test");
         auto const page = filed_at(*vmo, 0).page;
         if (mapping.is_err() || !page) {
             verdict(tally, false, "the VMO is mapped");
@@ -559,7 +559,7 @@ namespace {
         auto mapping = root->map_with_vmo(
             VirtAddr::Anywhere, RACE_PAGES * P, 0,
             mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
-            mm::VmaFlags::PermMask, vmo, mm::VmMapOption::None, "pagereclaim.test");
+            mm::VmaFlags::PermMask, vmo, mm::MapOptions::Lazy, "pagereclaim.test");
         Race race;
         if (mapping.is_err()) {
             verdict(tally, false, "the VMO is mapped for the race");

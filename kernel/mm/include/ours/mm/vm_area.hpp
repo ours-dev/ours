@@ -80,28 +80,13 @@ class VmArea final: public VmAreaOrMapping {
     /// Internally the *_locked helpers were already absolute, so the
     /// conversions did not buy anything even inside the class.
 
-    /// Create a mapping at |where|, or choose a free spot for VirtAddr::Anywhere.
-    /// Zero is a concrete address. Other reserved values are InvArgs, and an
-    /// occupied fixed range is AlreadyExists; nothing is replaced.
-    ///
-    /// |mmuf| is the protection the pages get now; |ceiling| is what a later
-    /// protect() may ever raise them to, as far as this area allows -- the
-    /// mapping keeps `ceiling & permissions()`. A caller with nothing to add
-    /// passes VmaFlags::PermMask and gets this area's own allowance, which is
-    /// what every mapping got before a ceiling could be asked for. |mmuf|
-    /// must fit inside the result (InvArgs otherwise). A mapping is a leaf,
-    /// so its ceiling is its own and handed on to nobody.
-    auto create_mapping(VirtAddr where, usize size, usize vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
-                        ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
-                        ustl::Arc<VmMapping> *out) -> Status;
-
-    /// Create a sub-VMA at |where|, with the same placement rules as create_mapping().
+    /// Create a sub-VMA at |where|, with the same placement rules as map_with_vmo().
     ///
     /// |vmaf| is the new area's allowance, and it may narrow this area's but
     /// never widen it. Narrowing is the point: it is the ceiling every
     /// protect() under the new area is checked against.
     auto create_subvma(VirtAddr where, usize size, VmaFlags vmaf, char const *name,
-                       VmMapOption option, ustl::Arc<Self> *out) -> Status;
+                       ustl::Arc<Self> *out) -> Status;
 
     /// The two coarse-grained ways to get memory mapped into this area. They
     /// differ in what backs the mapping, which is what their names say: a
@@ -115,40 +100,33 @@ class VmArea final: public VmAreaOrMapping {
     /// of them took. Two axes were spelt as one, and neither was spelt as
     /// itself.
     ///
-    /// With |VmMapOption::Populate| the mapping is populated immediately rather
+    /// With |MapOptions::Resident| the mapping is populated immediately rather
     /// than left for a page fault to resolve.
 
     /// Map |size| bytes of physical memory starting at |phys_base|.
-    auto map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags, VmMapOption,
+    auto map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags, MapOptions,
                   char const *name) -> ktl::Result<ustl::Arc<VmMapping>>;
 
     /// Map |size| bytes of anonymous memory.
-    auto map_anon(VirtAddr where, usize size, MmuFlags, VmMapOption, char const *name)
+    auto map_anon(VirtAddr where, usize size, MmuFlags, MapOptions, char const *name)
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
-    /// Map |size| bytes of a VMO the caller already has.
+    /// Map |size| bytes of an existing VMO, starting at its byte offset |vmo_ofs|.
+    /// VirtAddr::Anywhere chooses a free range. Zero is a concrete address.
+    /// Other reserved values are InvArgs and an occupied range is AlreadyExists.
     ///
-    /// The general form the two above are special cases of -- they differ only
-    /// in which kind of VmObject they build before calling this. It was
-    /// protected, which made sense while it was only their shared helper, and
-    /// stopped making sense the moment anything wanted to map memory it had
-    /// obtained separately: that is the shape of every vma_map system call,
-    /// and it is what //kernel/object's VmaDispatcher::map() needs.
+    /// |mmuf| is the initial protection. The mapping retains the permission
+    /// ceiling |ceiling & permissions()| for later protect() calls.
     ///
-    /// Note what this does that create_mapping() does not: create_mapping()
-    /// accepts a VmMapOption and never acts on Commit, so a caller that used
-    /// it directly got a live mapping with no pages installed, and faulted on
-    /// first touch. Honouring Commit -- and unwinding correctly when it fails
-    /// -- lives here.
-    ///
-    /// |vmo_ofs| is where in the object the mapping starts, and Commit
-    /// commits from there; |ceiling| is create_mapping()'s.
+    /// The mapping is registered before the selected mode installs entries.
+    /// Lazy registers it for demand faults. A failed immediate installation
+    /// tears the mapping down before returning its error.
     auto map_with_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
-                      ustl::Arc<VmObject> vmo, VmMapOption option, char const *name)
+                      ustl::Arc<VmObject> vmo, MapOptions option, char const *name)
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
     /// Tear down everything mapped in [base, base + size). AccessDenied, with
-    /// nothing torn down, if a sealed mapping (VmMapOption::Sealed) overlaps
+    /// nothing torn down, if a sealed mapping (MapOptions::Sealed) overlaps
     /// the range. A sub-area wholly inside the range is destroyed when
     /// |op_children| allows it and refuses the whole call (InvArgs) when it
     /// does not; one only partly inside always refuses it. BadState once this
@@ -287,6 +265,11 @@ class VmArea final: public VmAreaOrMapping {
     virtual auto destroy() -> Status override;
 
   private:
+    /// Registers a mapping and leaves page-table installation to the caller.
+    auto create_mapping(VirtAddr where, usize size, usize vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
+                        ustl::Arc<VmObject> vmo, char const *name, MapOptions option,
+                        ustl::Arc<VmMapping> *out) -> Status;
+
     // ObjectCache::Instance placement-news T; VmArea's constructor stays
     // protected otherwise.
     template <typename, typename...>

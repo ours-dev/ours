@@ -88,6 +88,18 @@ transition that enforces them on the enum. Expose named operations, and
 update the word under one synchronization discipline. PageSource replaces
 Detached with Closed under its source lock. Both stop new page requests.
 
+## Mapping options (user decision, 2026-11-04)
+
+The VMM uses one scoped MapOptions bitmask. ModeMask selects Lazy when
+zero, Resident for existing pages, or Commit for owned pages. Creation
+rejects conflicting modes and unknown bits before registration. Sealed
+combines with any one mode. Explicit installation accepts only Resident
+or Commit. The user ABI translates MapRange to Resident.
+
+Use Sealed for mappings whose address and permissions must survive ordinary
+unmap and protect requests. Use VMO pinning to express physical residency.
+The kernel still tears down sealed mappings during address-space destruction.
+
 ## Page aging (decided 2026-10-25, built 2026-10-30)
 
 - Recent use of a page is recorded in two ways. The hardware sets the A bit

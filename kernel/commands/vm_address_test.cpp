@@ -32,7 +32,7 @@ namespace {
         auto root = aspace.root_vma();
         auto const map = [&vmo](mm::VmArea &area, VirtAddr const where) {
             return area.map_with_vmo(where, PAGE_SIZE, 0, mm::MmuFlags::Readable,
-                                     mm::VmaFlags::PermMask, vmo, mm::VmMapOption::None,
+                                     mm::VmaFlags::PermMask, vmo, mm::MapOptions::Lazy,
                                      "vmaddress.test");
         };
         auto const zero = map(*root, VirtAddr{});
@@ -49,8 +49,7 @@ namespace {
 
         ustl::Arc<mm::VmArea> restricted;
         tally.check(root->create_subvma(VirtAddr::Anywhere, PAGE_SIZE, mm::VmaFlags::PermMask,
-                                        "vmaddress.test restricted", mm::VmMapOption::None,
-                                        &restricted) == Status::Ok,
+                                        "vmaddress.test restricted", &restricted) == Status::Ok,
                     "Anywhere also places a sub-area");
         if (restricted) {
             auto const fixed = map(*restricted, restricted->base());
@@ -71,8 +70,7 @@ namespace {
                         "an unknown reserved address cannot become an aligned mapping");
             ustl::Arc<mm::VmArea> area;
             tally.check(root->create_subvma(reserved, PAGE_SIZE, mm::VmaFlags::PermMask,
-                                            "vmaddress.test invalid", mm::VmMapOption::None,
-                                            &area) == Status::InvArgs &&
+                                            "vmaddress.test invalid", &area) == Status::InvArgs &&
                             !area,
                         "an unknown reserved address cannot place a sub-area");
         }

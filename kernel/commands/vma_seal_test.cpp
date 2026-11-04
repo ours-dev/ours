@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `vmaseal.test`: a sealed mapping (VmMapOption::Sealed) refuses to be
+// `vmaseal.test`: a sealed mapping (MapOptions::Sealed) refuses to be
 // unmapped or have its protection changed, and only that one.
 //
 // Why a console command: the refusals live in mm::VmArea::unmap() and
@@ -97,13 +97,12 @@ namespace {
 
         auto sealed =
             root->map_with_vmo(SEALED, 2 * PAGE_SIZE, 0, flags, PERMS, make_vmo(2 * PAGE_SIZE),
-                               mm::VmMapOption::Sealed, "vmaseal.test sealed");
+                               mm::MapOptions::Sealed, "vmaseal.test sealed");
         auto plain = root->map_with_vmo(PLAIN, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
-                                        mm::VmMapOption::None, "vmaseal.test plain");
+                                        mm::MapOptions::Lazy, "vmaseal.test plain");
         ustl::Arc<mm::VmArea> area;
-        auto const area_status =
-            root->create_subvma(AREA, 4 * PAGE_SIZE, PERMS | mm::VmaFlags::CanMapSpecific,
-                                "vmaseal.test area", mm::VmMapOption::None, &area);
+        auto const area_status = root->create_subvma(
+            AREA, 4 * PAGE_SIZE, PERMS | mm::VmaFlags::CanMapSpecific, "vmaseal.test area", &area);
         verdict(tally, sealed.is_ok() && plain.is_ok() && area_status == Status::Ok,
                 "the mappings and the sub-area are made");
         if (tally.failed != 0) {
@@ -112,7 +111,7 @@ namespace {
         }
         auto inside =
             area->map_with_vmo(AREA + PAGE_SIZE, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
-                               mm::VmMapOption::Sealed, "vmaseal.test inside");
+                               mm::MapOptions::Sealed, "vmaseal.test inside");
         verdict(tally, inside.is_ok(), "a sealed mapping is made inside the sub-area");
 
         verdict(tally, root->unmap(SEALED, 2 * PAGE_SIZE) == Status::AccessDenied,
@@ -123,6 +122,12 @@ namespace {
                 root->protect(SEALED, 2 * PAGE_SIZE, mm::MmuFlags::Readable | mm::MmuFlags::User) ==
                     Status::AccessDenied,
                 "protect of a sealed mapping is AccessDenied");
+        verdict(tally,
+                sealed.unwrap()->unmap(SEALED, PAGE_SIZE, mm::UnmapOptions::None) ==
+                    Status::AccessDenied,
+                "unmap through the sealed mapping is AccessDenied");
+        verdict(tally, sealed.unwrap()->protect(SEALED, PAGE_SIZE, flags) == Status::AccessDenied,
+                "protect through the sealed mapping is AccessDenied");
 
         // From the last page of SEALED through PLAIN.
         verdict(tally, root->unmap(SEALED + PAGE_SIZE, 2 * PAGE_SIZE) == Status::AccessDenied,
