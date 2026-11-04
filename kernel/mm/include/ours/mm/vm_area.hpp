@@ -112,6 +112,7 @@ class VmArea final: public VmAreaOrMapping {
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
     /// Map |size| bytes of an existing VMO, starting at its byte offset |vmo_ofs|.
+    /// The offset is page-aligned and the rounded window must fit in the VMO.
     /// VirtAddr::Anywhere chooses a free range. Zero is a concrete address.
     /// Other reserved values are InvArgs and an occupied range is AlreadyExists.
     ///

@@ -57,3 +57,7 @@ None.
 ## Frame replacement repair
 
 The copy and zero materialization paths invalidate under the existing shared lock before returning a new frame to the caller. The prefaulted alias cases exercise mapped writes, direct writes, a local marker and an inherited hole. Both development images and the snapshot, page-source and reclaim suites passed.
+
+## Mapping window repair
+
+The bounds check runs after placement normalizes the size and before the mapping is linked. The regression exercises every mapping mode and then maps a valid window at the same address. The ordinary and boot reservation paths both passed their verification.

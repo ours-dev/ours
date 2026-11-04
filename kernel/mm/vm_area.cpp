@@ -135,6 +135,10 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
                             MapOptions option, ustl::Arc<VmMapping> *out) -> Status {
     m_canary.verify<Self>();
 
+    if (!vmo || !ustl::is_aligned(vmo_ofs, PAGE_SIZE)) {
+        return Status::InvArgs;
+    }
+
     // What this area permits, asked of the protection the mapping is being
     // created with. Nothing asked it before: the preamble's check was handed
     // m_vmaf and so compared this area against itself, and |mmuf| went
@@ -170,6 +174,10 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
     }
 
     auto const [base, size] = *result;
+    auto const vmo_size = vmo->size();
+    if (size > vmo_size || vmo_ofs > vmo_size - size) {
+        return Status::OutOfRange;
+    }
 
     // A mapping's VmaFlags are the ceiling a later protect() is checked
     // against: this area's own flags, with the permission bits narrowed to

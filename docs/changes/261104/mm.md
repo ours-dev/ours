@@ -476,3 +476,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Check the VMO window before registering a mapping (2026-11-04)
+
+**Files**
+
+- `kernel/mm/vm_area.cpp` validates the page-aligned object offset and normalized length before registration.
+- `kernel/commands/vmo_snapshot_test.cpp` exercises rejected windows and reuse of the address in all modes.
+
+**Symptom**
+
+A Lazy mapping starting at the end of its VMO could register successfully and fail later at fault time.
+
+**Cause**
+
+Only the user dispatcher and the paged cursor validated object bounds. Lazy creation did not construct a cursor.
+
+**Change**
+
+The ordinary creation path requires an aligned offset and rejects `size > vmo_size || vmo_ofs > vmo_size - size` before linking. Boot reservation enters separately through its existing `reserve()` path.
+
+**Reference**
+
+Zircon `VmAddressRegion::CreateVmMapping` validates the offset and overflow at creation. The object bounds follow this repository's user mapping contract.
+
+**Verification**
+
+Changed lines passed clang-format and clang-tidy. Both development images booted and 163 host tests passed. Snapshot, physical VMO, large-page and sealed mapping suites passed 259, 6, 28 and 15 checks.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+A QEMU probe attempted to register one page starting just beyond the last VMO page with Lazy.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

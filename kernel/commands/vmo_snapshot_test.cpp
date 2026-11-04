@@ -1281,6 +1281,21 @@ namespace {
         if (lazy_made) {
             constexpr auto CHECK_AT = LAZY_AT + 4 * PAGE_SIZE;
             constexpr auto UNKNOWN = static_cast<mm::MapOptions>(7_bit);
+            for (auto const mode:
+                 {mm::MapOptions::Lazy, mm::MapOptions::Resident, mm::MapOptions::Commit}) {
+                auto const outside = root->map_with_vmo(CHECK_AT, PAGE_SIZE, 3 * PAGE_SIZE, rw,
+                                                        PERMS, lazy, mode, "outside VMO");
+                auto const crosses = root->map_with_vmo(CHECK_AT, PAGE_SIZE + 1, 2 * PAGE_SIZE, rw,
+                                                        PERMS, lazy, mode, "past VMO end");
+                verdict(tally,
+                        outside.is_err() && outside.unwrap_err() == Status::OutOfRange &&
+                            crosses.is_err() && crosses.unwrap_err() == Status::OutOfRange,
+                        "every map mode rejects an invalid VMO window before registration");
+            }
+            auto const unaligned = root->map_with_vmo(CHECK_AT, PAGE_SIZE, 1, rw, PERMS, lazy,
+                                                      mm::MapOptions::Lazy, "unaligned VMO");
+            verdict(tally, unaligned.is_err() && unaligned.unwrap_err() == Status::InvArgs,
+                    "a VMO byte offset must be page-aligned");
             auto const conflicting = root->map_with_vmo(
                 CHECK_AT, PAGE_SIZE, PAGE_SIZE, rw, PERMS, lazy,
                 mm::MapOptions::Resident | mm::MapOptions::Commit, "conflicting map modes");
