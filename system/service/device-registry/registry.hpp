@@ -139,14 +139,44 @@ class MountHandler final: public ioservice::Handler {
                                   prot::io::OpenRequest{.flags = prot::io::Flags::ProtocolService,
                                                         .path = mount->forward,
                                                         .object = channel});
-        auto const written = write(mount->directory, encoded.unwrap());
-        if (written != Status::Ok) {
-            // The publisher is gone; the mount stays -- the tree's nodes are
-            // never removed -- and its next Open answers the same way. The
-            // client reads PEER_CLOSED on its entry: the Open's handle went
-            // with the refused write, consumed by the kernel either way.
-            report("cannot forward a leaf's Open", written);
-        }
+        // The death watcher guarantees the mount is alive and the
+        // publisher's end alive through any dispatch: the PeerClosed packet
+        // is queued at the death, and the mount is taken out before a later
+        // Open is dispatched. The write therefore succeeds; the status is
+        // dropped with the one-shot connect.
+        auto _ = write(mount->directory, encoded.unwrap());
+    }
+};
+
+/// What the death watcher calls: the registry side of a mount's death. The
+/// registry removes the leaf and frees the mount; the watcher's own slot
+/// and the dead directory handle are the Action::Close's to end.
+class MountDeathSink {
+  public:
+    virtual auto publisher_gone(usize index) -> void = 0;
+
+  protected:
+    MountDeathSink() = default;
+};
+
+/// One mount's death watcher: a PeerClosed-only wait on the published
+/// directory, armed for as long as the mount lives. A publisher's exit
+/// asserts PeerClosed on the registry's end, and the watcher answers
+/// Close -- which ends the dead handle and the slot with it.
+class MountWatcher final: public loop::Waiter {
+  public:
+    constexpr MountWatcher() = default;
+
+    /// The mount this watcher guards, and the sink its death reports to.
+    usize index = 0;
+    MountDeathSink *sink = nullptr;
+
+    /// Any observation on this wait is the mount's death: only PeerClosed
+    /// is armed. The unmount runs first -- the tree node goes, the slot
+    /// frees -- and Close ends the dead handle and this watcher's slot.
+    auto on_signals(ours::Signals const) -> loop::Action override {
+        sink->publisher_gone(index);
+        return loop::Action::Close;
     }
 };
 
@@ -223,6 +253,16 @@ class Core final {
         new (&m_handlers[index]) MountHandler(&mount);
     }
 
+    /// The mount |index|'s death watcher, placed with its handler: the sink
+    /// is the registry server, the index this mount's.
+    auto place_watcher(usize const index, MountDeathSink &sink) -> MountWatcher & {
+        auto &watcher = m_watchers[index];
+        watcher = MountWatcher{};
+        watcher.index = index;
+        watcher.sink = &sink;
+        return watcher;
+    }
+
     /// Where an Open of a leaf lands: |service| is the value the service
     /// node was added with, the mount's index plus one. A value that names
     /// no live mount closes the channel, which no client that walked the
@@ -251,9 +291,6 @@ class Core final {
         // a free slot means a free arena entry, so this scan always reserves
         // and returns -- there is no tail to fall out of.
         for (auto &entry: m_classes) {
-            if (entry.used && std::string_view{entry.storage.data()} == kind) {
-                return entry.name;
-            }
             if (!entry.used) {
                 std::memcpy(entry.storage.data(), kind.data(), kind.size());
                 entry.name = std::string_view{entry.storage.data(), kind.size()};
@@ -286,6 +323,7 @@ class Core final {
     };
     std::array<Mount, MAX_MOUNTS> m_mounts{};
     std::array<MountHandler, MAX_MOUNTS> m_handlers{};
+    std::array<MountWatcher, MAX_MOUNTS> m_watchers{};
     std::array<ClassDir, MAX_MOUNTS> m_classes{};
 };
 
@@ -422,7 +460,8 @@ class DevSubtree final: public ioservice::SubtreeHandler, private ioservice::Loo
 /// the mount taken, the granted name answered -- on the protocol server
 /// base's pump, one client per channel an Open of svc/ours.dev.Registry
 /// brought.
-class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CLIENTS> {
+class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CLIENTS>,
+                            public MountDeathSink {
   public:
     using Storage = typename server::ProtocolServer<RegistryServer, MAX_CLIENTS>::Storage;
 
@@ -432,6 +471,8 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
     RegistryServer(Storage &storage, loop::Loop &loop, Core &core, ioservice::Tree &tree,
                    ioservice::NodeId const class_node)
         : server::ProtocolServer<RegistryServer, MAX_CLIENTS>(storage, loop)
+        , MountDeathSink()
+        , m_loop(&loop)
         , m_core(&core)
         , m_tree(&tree)
         , m_class(class_node) {}
@@ -525,21 +566,31 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
         }
 
         // Mounted: the directory is the mount's and the handler takes its
-        // place in the pool, by the index the node was added with. A publish
-        // mounted but unanswerable below keeps the mount -- the device
-        // answers either way, and the attempt is spent.
+        // place in the pool, by the index the node was added with. The
+        // death watcher is armed on the directory: the publisher's exit
+        // takes the leaf back out.
         mount.directory = request.directory;
         mount.used = true;
         m_core->place_handler(*slot, mount);
+        auto const watched = m_loop->add(mount.directory, ours::Signals::PeerClosed,
+                                         m_core->place_watcher(*slot, *this));
+        if (watched.is_err()) {
+            // No watcher seat: the mount serves, but a publisher's exit
+            // leaves its leaf in the tree until the registry restarts. Said
+            // on the console, not refused -- the device answers either way.
+            report("cannot watch a mount's publisher", watched.unwrap_err());
+        }
+
         auto _ = ort::debug_line(
             {"device-registry: ", mount.kind, "/", mount.name, " mounted from a publisher"});
         return answer(channel, request.txid, {.status = Status::Ok, .name = mount.name});
     }
 
     /// Unpublish: the mount found by its granted kind and name, the leaf
-    /// taken back out of the tree, the directory handle closed, the slot
-    /// free. NotFound when the registry holds no such mount -- the one
-    /// answer that changes nothing.
+    /// taken back out of the tree, the slot free. The directory handle
+    /// stays with its death watcher (the Loop owns the slot): it closes
+    /// when the publisher exits, whatever comes first. NotFound when the
+    /// registry holds no such mount -- the one answer that changes nothing.
     auto unpublish(Uandle const channel, prot::dev::UnpublishRequest const &request)
         -> loop::Action {
         for (auto index = usize{0}; index < MAX_MOUNTS; ++index) {
@@ -553,7 +604,9 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
                 // told about; failing to remove it is this program's bug.
                 report("cannot remove a leaf's node", removed);
             }
-            auto _ = ours::handle_close(mount.directory);
+            // The directory handle stays with its death watcher (the Loop
+            // owns the slot): it closes when the publisher exits, whatever
+            // comes first. The slot is free from here.
             reclaim(mount);
             auto _ = ort::debug_line(
                 {"device-registry: ", request.kind, "/", request.name, " unpublished"});
@@ -591,9 +644,30 @@ class RegistryServer final: public server::ProtocolServer<RegistryServer, MAX_CL
     /// its slot's strings are the next publish's to overwrite.
     static auto reclaim(Mount &mount) -> void {
         mount.directory = Uandle::Invalid;
+        mount.node = ioservice::detail::NO_NODE;
         mount.used = false;
     }
 
+    /// The death watcher's report: the publisher of the mount |index| is
+    /// gone. The leaf leaves the tree and the slot frees; the dead
+    /// directory handle and the watcher's slot are the answering Close's to
+    /// end. An index whose mount is already free is a double report -- the
+    /// explicit unmount raced the death -- and frees nothing twice.
+    auto publisher_gone(usize const index) -> void override {
+        auto &mount = m_core->mounts()[index];
+        if (!mount.used) {
+            return;
+        }
+        auto const removed = m_tree->remove_service(mount.node);
+        if (removed != Status::Ok) {
+            report("cannot remove a dead mount's leaf", removed);
+        }
+        reclaim(mount);
+        auto _ = ort::debug_line("device-registry: a mount's publisher is gone; the leaf left "
+                                 "the tree");
+    }
+
+    loop::Loop *m_loop;
     Core *m_core;
     ioservice::Tree *m_tree;
     ioservice::NodeId m_class;
