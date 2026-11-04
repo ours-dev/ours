@@ -179,6 +179,11 @@ component_manifest("routing_checks.cm") {
           "w*",
         ]
       },
+      {
+        directory = "dev"
+        path = "/dev"
+        rights = [ "r*" ]
+      },
     ]
   }
 }

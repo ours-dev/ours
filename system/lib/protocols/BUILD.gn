@@ -78,6 +78,7 @@ if (!is_host_toolchain && toolchain_environment == "user") {
     public = [
       "include/prot/acpi_client.hpp",
       "include/prot/block_client.hpp",
+      "include/prot/dev_client.hpp",
       "include/prot/resource_client.hpp",
     ]
     public_deps = [ ":headers" ]

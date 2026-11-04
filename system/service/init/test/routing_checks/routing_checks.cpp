@@ -218,6 +218,9 @@ constinit u32 TXID_COUNTER = 1;
 /// the same for the second disk, whose suite runs on its own connection.
 constinit bool BLOCK_DEVICE_SEEN = false;
 constinit bool NVME_DEVICE_SEEN = false;
+/// How many leaves the device tree answered GetInfo through, the verdict
+/// line's count for the round that introduced the tree.
+constinit u32 DEV_TREE_LEAVES = 0;
 constinit bool DISK_CHECKS_RAN = false;
 
 auto next_txid() -> u32 {
@@ -2031,6 +2034,111 @@ auto check_block_write(Uandle const connection, std::array<u8, wire::MAX_MESSAGE
     expect("close", fsio::close(connection), Status::Ok);
 }
 
+/// The device tree (the device-namespace round): the class directory is
+/// listed, every leaf found there is opened, and GetInfo answers through
+/// each -- the same protocol whichever driver published the leaf, which is
+/// the round's point. The count of leaves is returned, so the caller can
+/// say what the machine carried; an empty or missing tree is a count of
+/// zero and a skip line, not a failure -- the images without disks carry
+/// no devices.
+auto check_dev_tree() -> u32 {
+    constexpr auto CLASS_DIR = std::string_view{"/dev/class/block"};
+    auto const dir = fsio::open(CLASS_DIR, Flags::PermReadBytes | Flags::PermEnumerate);
+    if (dir.is_err()) {
+        auto _ = ort::debug_line(
+            {"routing_checks: no device tree (", ours::to_string(status_of(dir)), "), skipped"});
+        return 0;
+    }
+    auto listing = std::array<u8, 512>{};
+    auto const listed = fsio::read_dirents(dir.unwrap(), listing);
+    if (!expect("/dev/class/block listing", status_of(listed), Status::Ok)) {
+        auto _ = fsio::close(dir.unwrap());
+        return 0;
+    }
+    auto leaves = std::array<std::array<char, 8>, 8>{};
+    auto leaf_count = u32{0};
+    auto reader = prot::io::DirentReader(std::span{listing}.first(listed.unwrap()));
+    while (true) {
+        auto const entry = reader.next();
+        if (entry.is_err() || entry->is_none()) {
+            break;
+        }
+        auto const &name = (*entry)->name;
+        // The "." a listing opens with, and the bound: one leaf per attached
+        // disk, and the array holds what this image can attach.
+        if (name == "." || leaf_count == leaves.size()) {
+            continue;
+        }
+        auto &slot = leaves[leaf_count];
+        if (name.size() >= slot.size()) {
+            fail("/dev/class/block: a leaf name past the bound");
+            continue;
+        }
+        std::memcpy(slot.data(), name.data(), name.size());
+        slot[name.size()] = 0;
+        leaf_count += 1;
+    }
+    expect("close", fsio::close(dir.unwrap()), Status::Ok);
+
+    // Each leaf answers GetInfo through the one block protocol.
+    for (auto index = u32{0}; index < leaf_count; ++index) {
+        auto path = std::array<char, 32>{};
+        auto at = usize{0};
+        for (auto const c: CLASS_DIR) {
+            path[at++] = c;
+        }
+        path[at++] = '/';
+        for (auto const c: std::string_view{leaves[index].data()}) {
+            path[at++] = c;
+        }
+        auto leaf = Uandle::Invalid;
+        auto leaf_server = Uandle::Invalid;
+        if (auto const made =
+                ours::channel_create(ours::ChannelCreateOptions::None, &leaf, &leaf_server);
+            made != Status::Ok) {
+            fail("a leaf's channel");
+            continue;
+        }
+        // A leaf is a service node: the open is ProtocolService, which
+        // fsio::connect spells, and the server end is consumed whatever the
+        // answer.
+        if (!expect("a leaf's open", fsio::connect(std::string_view{path.data(), at}, leaf_server),
+                    Status::Ok)) {
+            auto _ = ours::handle_close(leaf);
+            continue;
+        }
+        auto const txid = next_txid();
+        std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+        auto const info = prot::block::encode_get_info(bytes, {.txid = txid});
+        if (!expect("a leaf's GetInfo", status_of(info), Status::Ok)) {
+            auto _ = fsio::close(leaf);
+            continue;
+        }
+        Incoming reply;
+        if (!expect("a leaf's GetInfo", call(leaf, info.unwrap(), reply), Status::Ok)) {
+            auto _ = fsio::close(leaf);
+            continue;
+        }
+        auto const geometry = prot::block::decode_get_info_reply(reply.message(), txid);
+        if (!expect("a leaf's GetInfo's reply", status_of(geometry), Status::Ok) ||
+            !expect("a leaf's GetInfo's status", geometry->status, Status::Ok)) {
+            auto _ = fsio::close(leaf);
+            continue;
+        }
+        if (geometry->block_size != prot::block::BLOCK_SIZE) {
+            fail("a leaf's block size is not 512");
+            auto _ = fsio::close(leaf);
+            continue;
+        }
+        char blocks_text[10];
+        auto _ = ort::debug_line(
+            {"routing_checks: the tree answers block/", std::string_view{leaves[index].data()},
+             " with ", ort::decimal(static_cast<u32>(geometry->blocks), blocks_text), " blocks"});
+        expect("close", fsio::close(leaf), Status::Ok);
+    }
+    return leaf_count;
+}
+
 /// The NVMe disk through its protocol, when the image carries one: GetInfo
 /// names a 512-byte block and a namespace with blocks in it, and a pattern
 /// written to the scratch LBA 5 reads back over it and its untouched
@@ -3116,8 +3224,8 @@ auto main(int argc, char **argv) -> int {
         auto _ = ort::debug_line("routing_checks: FAILED");
         return 1;
     }
-    if (auto const bound = fsio::installed_namespace().size(); bound != 14) {
-        fail("the namespace does not hold the manifest's thirteen directory uses and /svc");
+    if (auto const bound = fsio::installed_namespace().size(); bound != 15) {
+        fail("the namespace does not hold the manifest's fourteen directory uses and /svc");
     }
     check_process_self("object_get_info(process_self())");
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
@@ -3163,6 +3271,7 @@ auto main(int argc, char **argv) -> int {
     check_cwd();
     check_block();
     check_nvme();
+    DEV_TREE_LEAVES = check_dev_tree();
     check_gpt();
     check_disk();
     check_echo();
@@ -3189,6 +3298,14 @@ auto main(int argc, char **argv) -> int {
         // The second disk's suite, the same signal for the NVMe connection:
         // a boot with the disk attached can demand this line absent.
         auto _ = ort::debug_line("routing_checks: nvme checks not run (no nvme device)");
+    }
+    {
+        // The device tree's own signal, in the same shape: a boot with disks
+        // attached can demand this line absent, and its count names what the
+        // tree carried.
+        char leaves_text[10];
+        auto _ = ort::debug_line({"routing_checks: the device tree carried ",
+                                  ort::decimal(DEV_TREE_LEAVES, leaves_text), " leaf(s)"});
     }
     return 0;
 }

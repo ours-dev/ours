@@ -75,6 +75,8 @@
 #include <ort/startup.hpp>
 #include <prot/acpi_client.hpp>
 #include <prot/block.hpp>
+#include <prot/dev.hpp>
+#include <prot/dev_client.hpp>
 #include <prot/resource.hpp>
 #include <prot/resource_client.hpp>
 #include <server/server.hpp>
@@ -709,6 +711,53 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line(
             {"virtio-blk: cannot serve its outgoing directory: ", ours::to_string(status)});
         return 1;
+    }
+
+    // The device, published into the registry's tree (the device-namespace
+    // round): a second server end of this outgoing serves the mount, so the
+    // registry's forwards reach the same block service; the publish names the
+    // leaf's class and number and the protocol a client's open of it carries.
+    // A failure to publish is logged and not fatal -- the disk still serves
+    // its /svc route; the tree merely shows one device fewer.
+    {
+        auto mount = Uandle::Invalid;
+        auto mount_server = Uandle::Invalid;
+        auto registry_client = Uandle::Invalid;
+        auto registry_server = Uandle::Invalid;
+        if (auto const made =
+                ours::channel_create(ours::ChannelCreateOptions::None, &mount_server, &mount);
+            made != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot make its mount channel: ", ours::to_string(made)});
+        } else if (auto const made = ours::channel_create(ours::ChannelCreateOptions::None,
+                                                          &registry_client, &registry_server);
+                   made != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot make its registry channel: ", ours::to_string(made)});
+        } else if (auto const status = outgoing.serve(mount_server); status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot serve its mount channel: ", ours::to_string(status)});
+        } else if (auto const status = fsio::connect(prot::dev::REGISTRY_PATH, registry_server);
+                   status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot reach the device registry: ", ours::to_string(status)});
+        } else {
+            // The driver proposes "000"; the registry grants it or the class's
+            // lowest free number, and the reply's name is what the leaf
+            // answers as. One attempt: the mount handle goes with the
+            // message, and a retry would need a fresh pair.
+            prot::dev::Client registry{registry_client};
+            auto granted = std::array<char, 8>{};
+            auto const published = registry.publish("block", "000", prot::block::BLOCK_NAME, mount,
+                                                    std::span<char>{granted});
+            if (published == Status::Ok) {
+                auto _ = ort::debug_line({"virtio-blk: its device is in the tree as block/",
+                                          std::string_view{granted.data()}});
+            } else {
+                auto _ = ort::debug_line(
+                    {"virtio-blk: its publish answered ", ours::to_string(published)});
+            }
+        }
     }
 
     // Stop ends the program from inside an on_signals(); run() comes back

@@ -57,6 +57,9 @@ component_manifest("virtio-blk.cm") {
       {
         protocol = "ours.acpi.Route"
       },
+      {
+        protocol = "ours.dev.Registry"
+      },
     ]
     capabilities = [
       {
