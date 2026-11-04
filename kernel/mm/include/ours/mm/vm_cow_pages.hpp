@@ -140,7 +140,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// aligned, and a hidden node cannot be cloned: BadState.
     ///
     /// Write is taken from every mapping of the pages that move, through the
-    /// objects registered over this node (change_range_locked()), since the
+    /// objects registered over this node (operate_range_locked()), since the
     /// pages become shared and a writable mapping would write to all of their
     /// viewers. What this cannot check, because pinning is the object's and not
     /// the pages', is that none of them is pinned: the object that calls this
@@ -219,12 +219,12 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// over these pages, of [offset, offset + len) of them (offsets in this
     /// node's bytes, which each object translates into its own): a clone takes
     /// Write away from the node it clones, since the pages are about to be
-    /// shared, and take_pages() unmaps what it takes. See RangeChange.
+    /// shared, and take_pages() unmaps what it takes. See RangeOp.
     ///
     /// Every object over the node is reached, a slice included: a slice
     /// shares the pages and has mappings of its own (see Attachment).
     TA_REQUIRES(m_lock)
-    auto change_range_locked(u64 offset, u64 len, RangeChange change) -> void;
+    auto operate_range_locked(u64 offset, u64 len, RangeOp op) -> void;
 
     /// What reclaim_page() or dedup_zero_page() did.
     enum class ReclaimResult : u8 {
@@ -420,7 +420,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// |pages|, a fresh list as long as the range, at the same places, and
     /// leaves the range reading zero: each page and zero marker moves, and an
     /// offset with neither is a gap. First the range is unmapped from every
-    /// mapping of every object over the node (change_range_locked()), since a
+    /// mapping of every object over the node (operate_range_locked()), since a
     /// frame that leaves has to leave no entry behind.
     ///
     /// In a copy-on-write tree, a page this node only sees through an

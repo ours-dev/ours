@@ -294,12 +294,12 @@ class VmObjectPaged: public VmObject {
     auto copy_page_by_page(usize offset, usize size, bool will_write, CopyPage const &copy)
         -> Status;
 
-    /// Makes |change| to the page tables of this object's mappings of the part
+    /// Applies |op| to the page tables of this object's mappings of the part
     /// of [cow_offset, cow_offset + len) of the pages that it shows, given in
     /// the pages' bytes and translated into this object's. Called by the node,
-    /// for each object over it: VmCowPages::change_range_locked().
+    /// for each object over it: VmCowPages::operate_range_locked().
     TA_REQUIRES(m_lock)
-    auto change_cow_range_locked(u64 cow_offset, u64 len, RangeChange change) -> void;
+    auto operate_cow_range_locked(u64 cow_offset, u64 len, RangeOp op) -> void;
 
     ustl::Arc<VmCowPages> m_cow_pages;
 

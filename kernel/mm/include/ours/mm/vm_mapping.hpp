@@ -126,9 +126,9 @@ class VmMapping final: public VmAreaOrMapping {
     TA_REQUIRES(get_lock())
     auto protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status;
 
-    /// Makes |change| to the page tables of the part of this mapping that
+    /// Applies |op| to the page tables of the part of this mapping that
     /// shows [vmo_offset, vmo_offset + len) of its object; see
-    /// VmObject::change_range_locked(). Called with the object's lock held and
+    /// VmObject::operate_range_locked(). Called with the object's lock held and
     /// without the address space's.
     ///
     /// Only the page tables change. The record of what the mapping allows
@@ -145,7 +145,7 @@ class VmMapping final: public VmAreaOrMapping {
     ///
     /// A failure would leave a shared page writable, or an entry to a frame
     /// the object no longer has, and cannot be undone, so it stops the kernel.
-    auto change_range_locked_object(u64 vmo_offset, u64 len, RangeChange change) -> void;
+    auto operate_range_locked_object(u64 vmo_offset, u64 len, RangeOp op) -> void;
 
     /// Gives a present entry a permission an access needs and it lacks; see the
     /// definition. Part of page_fault(), split out for its length.

@@ -120,9 +120,9 @@ class VmPageSpliceList;
 
 /// What an operation on a range of a node's pages does to the page tables of
 /// every mapping of them, of every object over the node
-/// (VmCowPages::change_range_locked()). Done under the node's lock, so that
+/// (VmCowPages::operate_range_locked()). Done under the node's lock, so that
 /// no fault can map the pages again before the operation is over.
-enum class RangeChange : u8 {
+enum class RangeOp : u8 {
     /// Write comes off the entries, which keep Read and Execute; the mappings'
     /// records keep Write, so that a write faults and is resolved. For pages
     /// about to be shared: a clone.

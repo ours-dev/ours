@@ -256,7 +256,7 @@ namespace {
     TA_NO_THREAD_SAFETY_ANALYSIS
     auto remove_write(ustl::Arc<mm::VmObjectPaged> &vmo, u64 const offset, u64 const len) -> void {
         Guard guard{vmo->lock()};
-        vmo->change_range_locked(offset, len, mm::RangeChange::RemoveWrite);
+        vmo->operate_range_locked(offset, len, mm::RangeOp::RemoveWrite);
     }
 
     // Removing Write from the page tables of the mappings of an object, from the
@@ -632,10 +632,10 @@ namespace {
     }
 
     TA_NO_THREAD_SAFETY_ANALYSIS
-    auto cow_change(ustl::Arc<mm::VmCowPages> const &cow, u64 const offset, u64 const len,
-                    mm::RangeChange const change) -> void {
+    auto operate_cow_range(ustl::Arc<mm::VmCowPages> const &cow, u64 const offset, u64 const len,
+                           mm::RangeOp const op) -> void {
         Guard guard{const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->lock()};
-        const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->change_range_locked(offset, len, change);
+        const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->operate_range_locked(offset, len, op);
     }
 
     // Objects over the same pages: a slice shares its parent's pages and has its own
@@ -695,7 +695,7 @@ namespace {
         }
 
         // The pages' second page: the object's page 1, the slice's page 0.
-        cow_change(cow, PAGE_SIZE, PAGE_SIZE, mm::RangeChange::RemoveWrite);
+        operate_cow_range(cow, PAGE_SIZE, PAGE_SIZE, mm::RangeOp::RemoveWrite);
         verdict(tally,
                 is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + PAGE_SIZE) &&
                     is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
@@ -705,7 +705,7 @@ namespace {
         verdict(tally, is_writable(aspace, FIRST_AT),
                 "and not from a slice that does not show that page");
 
-        cow_change(cow, 0, ~u64{0}, mm::RangeChange::RemoveWrite);
+        operate_cow_range(cow, 0, ~u64{0}, mm::RangeOp::RemoveWrite);
         verdict(tally,
                 !is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
                     !is_writable(aspace, SLICE_AT + PAGE_SIZE) && !is_writable(aspace, FIRST_AT),
@@ -716,7 +716,7 @@ namespace {
         auto const present = [&aspace](VirtAddr const va) {
             return pte_flags(aspace, va).is_some();
         };
-        cow_change(cow, 2 * PAGE_SIZE, PAGE_SIZE, mm::RangeChange::Unmap);
+        operate_cow_range(cow, 2 * PAGE_SIZE, PAGE_SIZE, mm::RangeOp::Unmap);
         verdict(tally,
                 !present(WHOLE_AT + 2 * PAGE_SIZE) && !present(SLICE_AT + PAGE_SIZE) &&
                     present(WHOLE_AT) && present(WHOLE_AT + PAGE_SIZE) && present(SLICE_AT) &&
@@ -727,7 +727,7 @@ namespace {
                 aspace->soft_fault(WHOLE_AT + 2 * PAGE_SIZE, mm::VmfCause::Absent) == Status::Ok &&
                     present(WHOLE_AT + 2 * PAGE_SIZE),
                 "the mapping still allows the page: a read maps it again");
-        cow_change(cow, 0, ~u64{0}, mm::RangeChange::Unmap);
+        operate_cow_range(cow, 0, ~u64{0}, mm::RangeOp::Unmap);
         verdict(tally,
                 !present(WHOLE_AT) && !present(WHOLE_AT + PAGE_SIZE) &&
                     !present(WHOLE_AT + 2 * PAGE_SIZE) && !present(SLICE_AT) && !present(FIRST_AT),
