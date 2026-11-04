@@ -13,6 +13,7 @@
 #include <algorithm>
 
 #include <gktl/counter.hpp>
+#include <gktl/defer.hpp>
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
 #include <numa/topology.hpp>
@@ -59,17 +60,22 @@ namespace {
         return Status::Ok;
     }
 
-    /// Resolve the implicit home after applying the thread-default policy.
-    /// An explicit home bypasses this step, as in the public pmm interface.
-    auto local_node_for(Gaf &alloc_flags) -> ktl::Result<NodeId> {
+    auto resolve_home(NodeId nid, Gaf &alloc_flags) -> ktl::Result<PmNode *> {
+        if (nid < MAX_NODES) {
+            if (auto *const node = PmNode::node(nid)) {
+                return ustl::ok(node);
+            }
+            return ustl::err(Status::InvArgs);
+        }
+
         if (auto const status = apply_thread_policy(alloc_flags); Status::Ok != status) {
             return ustl::err(status);
         }
-        auto *const local_node = NodePlacement::local_node();
-        if (!local_node) {
+        auto *const node = NodePlacement::local_node();
+        if (!node) {
             return ustl::err(Status::BadState);
         }
-        return ustl::ok(local_node->nid());
+        return ustl::ok(node);
     }
 
 } // namespace
@@ -150,23 +156,22 @@ PmNode::PmNode(NodeId nid)
 
 auto PmNode::alloc_frames(Gaf alloc_flags, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
-    auto const home = local_node_for(alloc_flags);
-    if (!home) {
-        return ustl::err(home.unwrap_err());
-    }
-    return alloc_frames(*home, alloc_flags, order, fallback);
+    return alloc_frames(NodeId{MAX_NODES}, alloc_flags, order, fallback);
 }
 
 auto PmNode::alloc_frames(NodeId const nid, Gaf alloc_flags, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
-    if (nid >= MAX_NODES) {
-        return alloc_frames(alloc_flags, order, fallback);
-    }
-    auto *const home = Self::node(nid);
+    auto observation = gktl::defer(observe_pressure);
+    auto const home = resolve_home(nid, alloc_flags);
     if (!home) {
-        return ustl::err(Status::InvArgs);
+        return ustl::err(home.unwrap_err());
     }
-    home->m_canary.verify<Self>();
+    return (*home)->take_block(alloc_flags, order, fallback);
+}
+
+auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
+    -> ktl::Result<PmFrame *> {
+    m_canary.verify<Self>();
 
     // Whether the calling thread may allocate at all: a thread that has
     // disabled allocation (AllocState::disable()) is refused here,
@@ -197,9 +202,9 @@ auto PmNode::alloc_frames(NodeId const nid, Gaf alloc_flags, usize order, NodeMa
     auto const initiator = Cpu::id();
     auto const initiator_node = NodePlacement::node_of(initiator);
     auto const request =
-        resolve_request(alloc_flags, order, fallback, Origin{.node = nid, .cpu = initiator});
+        resolve_request(alloc_flags, order, fallback, Origin{.node = m_id, .cpu = initiator});
 
-    for (auto &zone: home->m_zone_list.candidates(request)) {
+    for (auto &zone: m_zone_list.candidates(request)) {
         auto const block = zone.take_block(request.order());
         if (!block) {
             continue;
@@ -223,22 +228,18 @@ auto PmNode::alloc_frames(NodeId const nid, Gaf alloc_flags, usize order, NodeMa
 
 auto PmNode::alloc_frames_fragment(Gaf alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
-    auto const home = local_node_for(alloc_flags);
-    if (!home) {
-        return ustl::err(home.unwrap_err());
-    }
-    return alloc_frames_fragment(*home, alloc_flags, n, fallback);
+    return alloc_frames_fragment(NodeId{MAX_NODES}, alloc_flags, n, fallback);
 }
 
 auto PmNode::alloc_frames_fragment(NodeId const nid, Gaf alloc_flags, usize n,
                                    NodeMask const &fallback) -> ktl::Result<PmFrame::List> {
-    if (nid >= MAX_NODES) {
-        return alloc_frames_fragment(alloc_flags, n, fallback);
-    }
-    if (!Self::node(nid)) {
-        return ustl::err(Status::InvArgs);
+    auto observation = gktl::defer(observe_pressure);
+    auto const home = resolve_home(nid, alloc_flags);
+    if (!home) {
+        return ustl::err(home.unwrap_err());
     }
     PmFrame::List list;
+    auto rollback = gktl::defer([&list] { return_blocks(list); });
     // One bit of |n| per step, whether or not it is set. The shift used to
     // sit inside the branch that allocates, so the first clear bit was never
     // shifted out: `continue` bumped the order and tested the same bit again,
@@ -248,48 +249,44 @@ auto PmNode::alloc_frames_fragment(NodeId const nid, Gaf alloc_flags, usize n,
             continue;
         }
 
-        if (auto frame = alloc_frames(nid, alloc_flags, order, fallback)) {
+        if (auto frame = (*home)->take_block(alloc_flags, order, fallback)) {
             list.push_back(*frame.unwrap());
         } else {
-            free_frames(&list);
             return ustl::err(frame.unwrap_err());
         }
     }
 
+    rollback.cancel();
     return ustl::ok(ustl::move(list));
 }
 
 auto PmNode::alloc_frames_bulk(Gaf alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
-    auto const home = local_node_for(alloc_flags);
-    if (!home) {
-        return ustl::err(home.unwrap_err());
-    }
-    return alloc_frames_bulk(*home, alloc_flags, n, fallback);
+    return alloc_frames_bulk(NodeId{MAX_NODES}, alloc_flags, n, fallback);
 }
 
 auto PmNode::alloc_frames_bulk(NodeId const nid, Gaf alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
-    if (nid >= MAX_NODES) {
-        return alloc_frames_bulk(alloc_flags, n, fallback);
-    }
-    if (!Self::node(nid)) {
-        return ustl::err(Status::InvArgs);
+    auto observation = gktl::defer(observe_pressure);
+    auto const home = resolve_home(nid, alloc_flags);
+    if (!home) {
+        return ustl::err(home.unwrap_err());
     }
     PmFrame::List list;
+    auto rollback = gktl::defer([&list] { return_blocks(list); });
     for (usize i = 0; i < n; ++i) {
-        if (auto frame = alloc_frames(nid, alloc_flags, 0, fallback)) {
+        if (auto frame = (*home)->take_block(alloc_flags, 0, fallback)) {
             list.push_back(*frame.unwrap());
         } else {
-            free_frames(&list);
             return ustl::err(frame.unwrap_err());
         }
     }
 
+    rollback.cancel();
     return ustl::ok(ustl::move(list));
 }
 
-auto PmNode::free_frames(PmFrame *frame, usize order) -> void {
+auto PmNode::return_block(PmFrame *frame, usize order) -> void {
     DEBUG_ASSERT(frame, "");
     // The runtime half of the guard in early_mem.cpp's free_frames_phys_range():
     // a reserved frame reaches the buddy only through unwire_frame(). Nothing
@@ -307,8 +304,18 @@ auto PmNode::free_frames(PmFrame *frame, usize order) -> void {
     zone->return_block(frame, order);
 }
 
+auto PmNode::return_blocks(PmFrame::List &list) -> void {
+    list.clear_and_dispose([](PmFrame *frame) noexcept { return_block(frame, frame->order()); });
+}
+
+auto PmNode::free_frames(PmFrame *frame, usize order) -> void {
+    return_block(frame, order);
+    observe_pressure();
+}
+
 auto PmNode::free_frames(PmFrame::List *list) -> void {
-    list->clear_and_dispose([](PmFrame *frame) noexcept { free_frames(frame, frame->order()); });
+    return_blocks(*list);
+    observe_pressure();
 }
 
 auto PmNode::contains(usize const order, ZoneType const type) -> bool {

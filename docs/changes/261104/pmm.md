@@ -369,3 +369,47 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Sample pressure at the end of a PMM operation (2026-11-04)
+
+**Files**
+
+- `kernel/mm/pm_node.cpp` separates internal transfers from completed allocation and return operations.
+- `kernel/mm/pmm.cpp` supplies the private pressure observation point.
+- `kernel/commands/memory_pressure_test.cpp` checks direct operations and rollback under an armed watcher.
+
+**Symptom**
+
+The facade sampled pressure after allocation or return. Direct static node operations could complete the same changes without notifying the watcher.
+
+**Cause**
+
+Pressure sampling was tied to the caller's entry rather than the completed physical operation. The batch paths also called the single-block operation for each withdrawal.
+
+**Change**
+
+Static node operations sample once at completion. Batch operations withdraw privately and use `gktl::defer` to restore staged blocks before the completion sample. The facade still applies pressure admission for `Gaf::CanWait`.
+
+**Reference**
+
+This tree's memory-pressure gate owns observation and waiting.
+
+**Verification**
+
+The two dev images booted in both configurations, with all 163 host tests passing. In the default and memory-only NUMA runs, direct batch allocation and list return signalled the watcher, and partial fragment rollback produced no threshold notification. The memory-pressure and reclaim regression commands passed.
+
+**Deliberately not done**
+
+Selection of the node for reclaim is a separate increment.
+
+**How it was found**
+
+Compared the facade and static paths to the same zone mutations and followed the rollback of a multi-block request.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

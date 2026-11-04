@@ -39,9 +39,8 @@ auto approx_free_frame_count() -> usize {
 namespace {
     /// The gate in front of the allocations that can wait (alloc_frames()
     /// with Gaf::CanWait), and the signal for whoever watches free memory
-    /// (set_free_memory_signal()). It lives here, above PmNode, because every
-    /// allocation and free of a frame comes through this file, and the node
-    /// below keeps no policy of its own about who waits.
+    /// (set_free_memory_signal()). The facade owns admission. PmNode samples
+    /// the watcher's bounds at the end of an allocation or return.
     ///
     /// Every allocation and free asks it something, so what they read takes
     /// no lock: atomics, each loaded on its own. The event that wakes waiters
@@ -186,6 +185,10 @@ namespace {
     }
 
 } // namespace
+
+auto PmNode::observe_pressure() -> void {
+    GATE.check_signal();
+}
 
 auto num_nodes() -> usize {
     return PmNode::num_nodes();
@@ -365,7 +368,6 @@ auto alloc_frames_fragment(Gaf alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
     DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "fragment allocation is immediate");
     auto result = PmNode::alloc_frames_fragment(alloc_flags, n, fallback);
-    GATE.check_signal();
     if (!result) {
         log::trace("Failed to allocate frame with reason: {}", to_string(result.unwrap_err()));
     }
@@ -376,7 +378,6 @@ auto alloc_frames(NodeId nid, Gaf alloc_flags, PmFrame::List *list, usize n, Nod
     -> Status {
     DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "batch allocation is immediate");
     auto result = PmNode::alloc_frames_bulk(nid, alloc_flags, n, nodes);
-    GATE.check_signal();
     if (!result) {
         log::trace("Failed to allocate {} frames with reason: {}", n,
                    to_string(result.unwrap_err()));
@@ -394,20 +395,16 @@ auto alloc_frames(NodeId nid, Gaf alloc_flags, usize order, NodeMask const &node
             return ustl::err(status);
         }
     }
-    auto result = PmNode::alloc_frames(nid, alloc_flags & ~Gaf::CanWait, order, nodes);
-    GATE.check_signal();
-    return result;
+    return PmNode::alloc_frames(nid, alloc_flags & ~Gaf::CanWait, order, nodes);
 }
 
 auto free_frames(PmFrame *frame, usize order) -> void {
     log::trace("Free frame({:X}, {})", frame_to_phys(frame), order);
     PmNode::free_frames(frame, order);
-    GATE.check_signal();
 }
 
 auto free_frames(PmFrame::List *list) -> void {
     PmNode::free_frames(list);
-    GATE.check_signal();
 }
 
 auto unwire_frame(PmFrame *const frame) -> void {

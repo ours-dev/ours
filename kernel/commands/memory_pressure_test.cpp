@@ -33,6 +33,7 @@
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/memory_watchdog.hpp>
+#include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
@@ -259,8 +260,6 @@ namespace {
     auto check_signal(Tally &tally) -> void {
         sync::Event watched;
         sync::Event rejected;
-        std::array<mm::PmFrame *, NR_CROSSING> frames{};
-
         // Free memory pushed below the lower bound by allocations.
         auto const before = mm::approx_free_frame_count();
         auto const armed_low = mm::set_free_memory_signal(before - MARGIN, NO_BOUND, 0, &watched,
@@ -269,30 +268,33 @@ namespace {
                                                           mm::DelayedAllocations::Wait);
         auto const stale_high =
             mm::set_free_memory_signal(0, 0, 0, &rejected, mm::DelayedAllocations::Wait);
-        usize taken = 0;
-        for (auto &frame: frames) {
-            auto result = mm::alloc_frames(mm::ALLOC_USER);
-            if (!result) {
-                break;
-            }
-            frame = *result;
-            taken += 1;
+        // The first fragment crosses the lower bound before the second fails.
+        constexpr auto ROLLBACK = NR_CROSSING | (usize{1} << (MAX_FRAME_ORDER + 1));
+        auto rolled_back = mm::PmNode::alloc_frames_fragment(mm::ALLOC_KERNEL, ROLLBACK);
+        auto const invalid = !rolled_back && rolled_back.unwrap_err() == Status::InvArgs;
+        if (rolled_back) {
+            mm::PmNode::free_frames(&*rolled_back);
         }
+        auto const quiet = watched.wait(deadline_after(SETTLE)) == Status::TimeOut;
+        verdict(tally, armed_low && invalid && quiet,
+                "a partial withdrawal is rolled back before pressure is sampled");
+
+        auto batch = mm::PmNode::alloc_frames_bulk(mm::ALLOC_USER, NR_CROSSING);
         auto const low = watched.wait(deadline_after(SETTLE)) == Status::Ok;
-        verdict(tally, armed_low && taken == NR_CROSSING && low,
-                "an allocation that takes free memory below the lower bound signals the event");
+        verdict(tally, armed_low && batch && batch->size() == NR_CROSSING && low,
+                "a direct PmNode batch below the lower bound signals the event");
         watched.unsignal();
 
         // And above the upper bound by frees.
         auto const during = mm::approx_free_frame_count();
         auto const armed_high = mm::set_free_memory_signal(0, during + MARGIN, 0, &watched,
                                                            mm::DelayedAllocations::Wait);
-        for (usize i = 0; i < taken; ++i) {
-            mm::free_frames(frames[i], 0);
+        if (batch) {
+            mm::PmNode::free_frames(&*batch);
         }
         auto const high = watched.wait(deadline_after(SETTLE)) == Status::Ok;
         verdict(tally, armed_high && high,
-                "a free that takes free memory above the upper bound signals the event");
+                "a direct PmNode list return above the upper bound signals the event");
         open_gate();
         verdict(tally, !stale_low && !stale_high && low,
                 "stale bounds are rejected without replacing the armed event");
