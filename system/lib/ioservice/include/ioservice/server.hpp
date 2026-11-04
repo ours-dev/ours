@@ -124,7 +124,9 @@ struct Entries {
 
 /// What an operation of a NodeHandler comes to: the operation's payload, or
 /// the status that refused it. So a result is a status plus the payload, and
-/// Ok is never carried without it.
+/// Ok is never carried without it. A status that ours::Status does not name (a
+/// value from Status::MaxCount up) cannot be sent; it is the handler's bug, and
+/// the client is told InternalError in its place.
 using OpenResult = ustl::Result<Opened, ours::Status>;
 /// The bytes a Read returns. They are the handler's, and must stay as they are
 /// until the Server call that received them returns; the Server copies them
@@ -291,6 +293,15 @@ enum class Action : u8 {
     /// bug sends one). If |handle| is valid, it is the server end of an Open
     /// that was pending on the connection, which nothing will answer now:
     /// close it as well.
+    ///
+    /// Only dispatch() answers Drop, and only because it runs in the
+    /// connection's own callback: that is the one place a connection may be
+    /// released. complete() runs in the handler's own Waiter, while the
+    /// connection's Loop slot is still suspended, so it never releases a
+    /// connection and never answers Drop, whatever the handler's result: an
+    /// index freed there can be taken by a new connection before the old slot
+    /// is resumed, and the slot's late packet would then be handled as the new
+    /// connection's.
     Drop,
     /// |handle|, the request's channel, is now the channel of the connection
     /// |connection|: wait on it. If the program cannot (its Loop is full),
@@ -512,6 +523,19 @@ class Server final {
     /// connection) is answered with an epitaph on the Open's server end, and
     /// the handler's cookie is released.
     ///
+    /// A result that is wrong in a way the handler cannot be told of is
+    /// answered with a status, and the connection stays: too many bytes or
+    /// dirents, an invalid VMO and an error status that ours::Status does not
+    /// name (a value from Status::MaxCount up) are all InternalError, as a
+    /// status reply, or an epitaph for an Open. complete() never releases the
+    /// connection, whatever it is given, and so never answers Drop: it runs in
+    /// the handler's own Waiter and not in the connection's callback, the one
+    /// place a connection is released (see Action::Drop). A reply that could
+    /// not be built at all would be refused with the codec's status, with the
+    /// request ended and the connection alive and nothing written; that cannot
+    /// happen, since the txid is a decoded request's and |out| holds a whole
+    /// message, and is the shape so that no failure can release.
+    ///
     /// Refused, with the connection and the request exactly as they were and
     /// nothing written to |out|:
     ///   - NotFound when |ticket| names no pending request: its connection is
@@ -699,8 +723,17 @@ class Server final {
     auto claim(Ticket ticket, Connection::Waiting op) -> ustl::Result<Connection *, ours::Status>;
 
     /// The answer to a two-way request of |method|: |handled|'s reply, or the
-    /// status form of its failure. The connection is dropped when even that
-    /// cannot be built.
+    /// status form of its failure. Err only when even that cannot be built
+    /// (the codec's status): nothing releases the connection here, so that
+    /// complete() can use it.
+    [[nodiscard]]
+    auto reply_or_status(wire::Method const &method, u32 txid,
+                         ustl::Result<Outcome, ours::Status> const &handled, ReplyBuffer &out)
+        -> ustl::Result<Outcome, ours::Status>;
+
+    /// reply_or_status() for dispatch(), which runs in the connection's own
+    /// callback: the connection is dropped when even a status cannot be
+    /// built. complete() never calls it.
     [[nodiscard]]
     auto answer(ConnectionId id, wire::Method const &method, u32 txid,
                 ustl::Result<Outcome, ours::Status> const &handled, ReplyBuffer &out) -> Outcome;
