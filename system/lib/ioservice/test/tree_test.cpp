@@ -6,6 +6,7 @@
 #include <ioservice/tree.hpp>
 
 #include <array>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -50,6 +51,21 @@ auto children(Tree const &tree, NodeId const directory) -> std::vector<std::stri
     }
     return names;
 }
+
+/// The id of |directory|'s child named |name|, over the public walk: the
+/// test's stand-in for find_child, which is private.
+auto child_named(Tree const &tree, NodeId const directory, std::string_view const name)
+    -> std::optional<NodeId> {
+    for (auto child = tree.first_child(directory); child.is_some();
+         child = tree.next_sibling(*child)) {
+        if (tree.name(*child) == name) {
+            return *child;
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace
 
 TEST(IoserviceName, Valid) {
     for (auto const name: {"a", "bin", "...", ".hidden", "a b", "\xff"}) {
@@ -736,4 +752,73 @@ TEST(IoservicePrintablePath, ABufferTooSmallForTheEllipsisIsJustCut) {
     auto none = std::array<char, 0>{};
     EXPECT_EQ(ioservice::printable_path("abcdef", none), "");
 }
+
+/// remove_service: the device registry's hot-unplug primitive. The cases
+/// pin what the tree promises after a removal -- the node unlinked from its
+/// directory's list, lookups missing it, the slot retired rather than
+/// reused, directories untouchable -- and what it refuses.
+namespace {
+/// A small tree for the removal cases: root, a class directory, and two
+/// services in it, the shape the device registry lays out.
+auto removal_tree(Tree &tree) -> NodeId {
+    auto root = tree.add_root();
+    EXPECT_TRUE(root.is_ok());
+    auto block = tree.add_directory(*root, "block");
+    EXPECT_TRUE(block.is_ok());
+    auto first = tree.add_service(*block, "000", 1);
+    EXPECT_TRUE(first.is_ok());
+    auto second = tree.add_service(*block, "001", 2);
+    EXPECT_TRUE(second.is_ok());
+    return *block;
+}
 } // namespace
+
+TEST(IoserviceTree, RemoveServiceUnlinksIt) {
+    auto nodes = std::array<ioservice::Node, 8>{};
+    auto tree = Tree{nodes};
+    auto const block = removal_tree(tree);
+
+    auto const first = *child_named(tree, block, "000");
+    EXPECT_EQ(tree.remove_service(first), Status::Ok);
+    EXPECT_EQ(children(tree, block), std::vector<std::string_view>{"001"});
+    // The lookups miss, and the walk stops at the directory.
+    EXPECT_EQ(child_named(tree, block, "000"), std::nullopt);
+    EXPECT_TRUE(tree.resolve(block, "000").is_err());
+}
+
+TEST(IoserviceTree, RemoveServiceRetiresTheSlot) {
+    auto nodes = std::array<ioservice::Node, 8>{};
+    auto tree = Tree{nodes};
+    auto const block = removal_tree(tree);
+    auto const first = *child_named(tree, block, "000");
+    auto const room_before = tree.available();
+
+    EXPECT_EQ(tree.remove_service(first), Status::Ok);
+    // The slot is retired, not reused: the room is unchanged, and a later
+    // add spends fresh storage on new nodes, never on the retired id.
+    EXPECT_EQ(tree.available(), room_before);
+    // And a fresh add lands after the survivors, not in the retired slot:
+    // the children keep their order and the retired id never renames.
+    EXPECT_EQ(tree.add_service(block, "002", 3).is_ok(), true);
+    EXPECT_EQ(children(tree, block), std::vector<std::string_view>({"001", "002"}));
+    EXPECT_FALSE(tree.service(first).is_some());
+}
+
+TEST(IoserviceTree, RemoveServiceRefusals) {
+    auto nodes = std::array<ioservice::Node, 8>{};
+    auto tree = Tree{nodes};
+    auto const block = removal_tree(tree);
+    auto const root = NodeId{0};
+
+    // A directory stays for the tree's life.
+    EXPECT_EQ(tree.remove_service(block), Status::InvArgs);
+    // An id that is not a node of this tree.
+    EXPECT_EQ(tree.remove_service(NodeId{0x7FFF'0000}), Status::NotFound);
+    // Removing twice: the first unlink is the only one, and the second
+    // names a retired node -- refused as not-a-service, not NotFound.
+    auto const first = *child_named(tree, block, "000");
+    EXPECT_EQ(tree.remove_service(first), Status::Ok);
+    EXPECT_EQ(tree.remove_service(first), Status::InvArgs);
+    // The root is a directory like any other.
+    EXPECT_EQ(tree.remove_service(root), Status::InvArgs);
+}
