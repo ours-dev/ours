@@ -103,11 +103,25 @@ namespace {
         return prot::io::DirentType::Unknown;
     }
 
+    /// The status a client is told when the handler refuses with |status|. The
+    /// wire carries only the statuses ours::Status names, so a handler that
+    /// refuses with a value past the last one (its own bug, like returning more
+    /// bytes than it was asked for) is answered InternalError, as the core
+    /// answers every other misbehaviour of a handler. Left as it was, no reply
+    /// or epitaph could be built for it, and the request, which the handler has
+    /// already ended, would have no way left to be answered.
+    auto handler_refusal(Status const status) -> Status {
+        if (std::to_underlying(status) >= std::to_underlying(Status::MaxCount)) {
+            return Status::InternalError;
+        }
+        return status;
+    }
+
     /// The epitaph on a refused Open's or Clone's channel.
     auto refuse(Uandle const handle, Status const status, ReplyBuffer &out) -> Outcome {
         // Cannot fail: the buffer holds a whole message, and every status
-        // passed here is one ours::Status names. unwrap() would trap if it
-        // did.
+        // passed here is one ours::Status names, the core's own or the
+        // handler's through handler_refusal(). unwrap() would trap if it did.
         auto const epitaph = wire::encode_epitaph(out.bytes, status).unwrap();
         return Outcome{
             .action = Action::Refuse, .message = epitaph, .handle = handle, .status = status};
@@ -391,7 +405,7 @@ auto Server::clone(Connection const &connection, Uandle const channel)
     if (cookie.is_err()) {
         // Never announced, so the handler is not told it ended.
         free_slot(*id);
-        return ustl::err(cookie.unwrap_err());
+        return ustl::err(handler_refusal(cookie.unwrap_err()));
     }
     auto &slot = m_connections[id->index];
     slot.m_role = connection.m_role;
@@ -449,7 +463,7 @@ auto Server::ask_open(ConnectionId const id, Connection &connection, NodeId cons
 auto Server::finish_open(NodeId const node, Flags const flags, Uandle const channel,
                          OpenResult const &result) -> ustl::Result<Outcome, Status> {
     if (result.is_err()) {
-        return ustl::err(result.unwrap_err());
+        return ustl::err(handler_refusal(result.unwrap_err()));
     }
     auto const opened = result.unwrap();
     auto const requested = rights_of(flags);
@@ -756,7 +770,7 @@ auto Server::finish_read(Connection &connection, u32 const txid, u64 const count
                          ReadResult const &result, ReplyBuffer &out)
     -> ustl::Result<Outcome, Status> {
     if (result.is_err()) {
-        return ustl::err(result.unwrap_err());
+        return ustl::err(handler_refusal(result.unwrap_err()));
     }
     auto const bytes = result.unwrap();
     // The handler may return fewer bytes than asked, never more: the request
@@ -797,7 +811,7 @@ auto Server::finish_read_dirents(Connection &connection, u32 const txid, u64 con
         // alone, the cursor stays and the entry is sent first next time, as
         // for a tree. Without a "." to send, the client is told.
         if (!dot || result.unwrap_err() != Status::BufferTooSmall) {
-            return ustl::err(result.unwrap_err());
+            return ustl::err(handler_refusal(result.unwrap_err()));
         }
     } else {
         entries = result.unwrap();
@@ -834,7 +848,7 @@ auto Server::finish_read_dirents(Connection &connection, u32 const txid, u64 con
 auto Server::finish_backing_memory(u32 const txid, VmoResult const &result, ReplyBuffer &out)
     -> ustl::Result<Outcome, Status> {
     if (result.is_err()) {
-        return ustl::err(result.unwrap_err());
+        return ustl::err(handler_refusal(result.unwrap_err()));
     }
     // The handle goes into the reply and from there to the client; the reply
     // refuses an invalid one, which would be the handler's bug.
@@ -938,18 +952,31 @@ auto Server::claim(Ticket const ticket, Connection::Waiting const op)
     return ustl::ok(connection);
 }
 
-auto Server::answer(ConnectionId const id, wire::Method const &method, u32 const txid,
-                    ustl::Result<Outcome, Status> const &handled, ReplyBuffer &out) -> Outcome {
+auto Server::reply_or_status(wire::Method const &method, u32 const txid,
+                             ustl::Result<Outcome, Status> const &handled, ReplyBuffer &out)
+    -> ustl::Result<Outcome, Status> {
     // A two-way method's answer: its Ok reply as it was built, or the status
     // form of its failure.
     if (handled.is_ok()) {
-        return handled.unwrap();
+        return ustl::ok(handled.unwrap());
     }
     auto const encoded = wire::encode_status_reply(out.bytes, method, txid, handled.unwrap_err());
     if (encoded.is_err()) {
+        return ustl::err(encoded.unwrap_err());
+    }
+    return ustl::ok(Outcome{.action = Action::Reply, .message = encoded.unwrap()});
+}
+
+auto Server::answer(ConnectionId const id, wire::Method const &method, u32 const txid,
+                    ustl::Result<Outcome, Status> const &handled, ReplyBuffer &out) -> Outcome {
+    // Only dispatch() asks: it runs in the connection's own callback, the one
+    // place a connection is released from. complete() never does, and so never
+    // calls this.
+    auto const answered = reply_or_status(method, txid, handled, out);
+    if (answered.is_err()) {
         return drop(id);
     }
-    return Outcome{.action = Action::Reply, .message = encoded.unwrap()};
+    return answered.unwrap();
 }
 
 auto Server::complete(Ticket const ticket, OpenResult const &result, ReplyBuffer &out)
@@ -968,8 +995,10 @@ auto Server::complete(Ticket const ticket, OpenResult const &result, ReplyBuffer
         return ustl::ok(finished.unwrap());
     }
     // Answered the way any other refused Open is: an epitaph on the server end
-    // the Server held. No path: the Open's bytes are gone, so a refusal that
-    // came late is not reported to the delegate.
+    // the Server held, for the status finish_open() made of the handler's
+    // (InternalError for one the epitaph cannot carry), and the connection the
+    // Open came on is not touched. No path: the Open's bytes are gone, so a
+    // refusal that came late is not reported to the delegate.
     return ustl::ok(refuse(request.held, finished.unwrap_err(), out));
 }
 
@@ -981,9 +1010,11 @@ auto Server::complete(Ticket const ticket, ReadResult const &result, ReplyBuffer
     }
     auto &connection = *claimed.unwrap();
     auto const request = end_request(connection);
-    return ustl::ok(answer(ticket.connection, prot::io::READ, request.txid,
+    // Never answer(): this runs in the handler's own Waiter, and a connection
+    // is released only from its own callback (see reply_or_status()).
+    return reply_or_status(prot::io::READ, request.txid,
                            finish_read(connection, request.txid, request.argument, result, out),
-                           out));
+                           out);
 }
 
 auto Server::complete(Ticket const ticket, EntriesResult const &result, ReplyBuffer &out)
@@ -994,9 +1025,9 @@ auto Server::complete(Ticket const ticket, EntriesResult const &result, ReplyBuf
     }
     auto &connection = *claimed.unwrap();
     auto const request = end_request(connection);
-    return ustl::ok(
-        answer(ticket.connection, prot::io::READ_DIRENTS, request.txid,
-               finish_read_dirents(connection, request.txid, request.argument, result, out), out));
+    return reply_or_status(
+        prot::io::READ_DIRENTS, request.txid,
+        finish_read_dirents(connection, request.txid, request.argument, result, out), out);
 }
 
 auto Server::complete(Ticket const ticket, VmoResult const &result, ReplyBuffer &out)
@@ -1007,8 +1038,8 @@ auto Server::complete(Ticket const ticket, VmoResult const &result, ReplyBuffer 
     }
     auto &connection = *claimed.unwrap();
     auto const request = end_request(connection);
-    return ustl::ok(answer(ticket.connection, prot::io::GET_BACKING_MEMORY, request.txid,
-                           finish_backing_memory(request.txid, result, out), out));
+    return reply_or_status(prot::io::GET_BACKING_MEMORY, request.txid,
+                           finish_backing_memory(request.txid, result, out), out);
 }
 
 auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyBuffer &out)

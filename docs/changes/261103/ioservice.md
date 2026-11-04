@@ -137,3 +137,113 @@ None.
 1. A ticket is the connection's id and a serial that every request bumps, the ones answered at once too. What does `complete()` compare, and which two stale tickets does the serial catch that the generation of the id does not?
 2. A refused `complete()` takes nothing from its result. Who closes a VMO handle in it, who releases the cookie of an `Opened` in it, and why can the core not do either?
 3. Why does the handler get the cursor and the byte limit while the `.` entry stays with the core, and what does the reply look like when the first entry after `.` does not fit?
+
+## Title: Server::complete answers a status it cannot encode instead of releasing the connection (2026-11-04)
+
+**Files**
+- `system/lib/ioservice/src/server.cpp` — `handler_refusal()`: a status the handler refuses with that `ours::Status` does not name becomes `InternalError`, applied where the core takes a handler's error status (`finish_open`, `finish_read`, `finish_read_dirents`, `finish_backing_memory`, and `clone`'s cookie). `answer()` is split: `reply_or_status()` builds the reply or the status form and returns a `Result`; `answer()` (for `dispatch()`) still drops the connection when even that fails; the three non-Open `complete()` overloads call `reply_or_status()` and never `answer()`
+- `system/lib/ioservice/include/ioservice/server.hpp` — the doc comments of `Action::Drop`, `Server::complete()`, `OpenResult` and the private `answer()` / `reply_or_status()`
+- `system/lib/ioservice/test/server_test.cpp` — 6 tests more (138 to 144): one per `complete()` overload and one that runs with both kinds of handler; the fake handler gets a `refusal` hook
+- `system/lib/ioservice/README.md`, `.agents/tasks/directory-capability-step8/RESULT.md` — the claim that `complete()` may answer `Drop`, corrected
+
+**Symptom**
+Found by an independent review of the step 8 commit (`3564dc20`), and confirmed by three reviewers who tried to refute it. A `NodeHandler` that completes a Read, ReadDirents or GetBackingMemory with an error status that `ours::Status` does not name (a value from `Status::MaxCount` up) makes `Server::complete()` release the connection from inside the handler's own Waiter, answer `Drop`, and leave the connection's Loop slot suspended. The next `Bind` takes the freed index and rewrites the `Binding` that the suspended slot also points at; when the program `resume()`s the old slot its packet is handled as the new connection's, and the PEER_CLOSED of the old client releases a live connection and its cookie. For an Open the same status did something else, found while checking: `refuse()` ends in `wire::encode_epitaph(...).unwrap()`, which traps, so the program died. Both need a handler with a bug, but the core already turns the other bugs of a handler (too many bytes, too many dirents, an invalid VMO, a promised ticket that is another) into `InternalError`, and this one must not be the exception.
+
+**Cause**
+Two mistakes that need each other.
+
+1. **A release outside the connection's own callback races with the reuse of its index.** The design (`.agents/tasks/directory-capability/DESIGN.md`, "When the client goes away while the request is pending", rule 4) says a connection is released only by its own callback, or by `on_rearm_failed` after the Loop freed the slot, because a `Binding` is one per connection index and is registered again only after the Loop has freed the slot. The step 8 code kept the rule for `complete()`'s success path and broke it on one failure path: the three non-Open overloads ended in `answer()`, which for a reply it cannot encode calls `drop(id)`, which calls `release(id)`. In `dispatch()` that is harmless, because `dispatch()` is the connection's own callback. In `complete()` it is not: `complete()` runs in the handler's Waiter while the slot is suspended, and the result said `Ok(Outcome{Drop})`, so the program had no reason to treat the connection as anything but already gone. The step 8 note that "the connection is already released by the core, so it must be resumed" is not enough: the `resume()` happens after the handler's Waiter returns, and any `Bind` in between takes the lowest free index, which is the one just freed (`allocate()` scans from 0).
+2. **A status the handler returns was trusted to be encodable.** `wire::encode_status_reply()` and `encode_epitaph()` refuse a status `ours::Status` does not name (`names_a_status`, `value < Status::MaxCount`), because a peer's status is a plain u32 on the wire and the receiver switches over the enum. The core read the handler's `Status` and passed it on as if only the core could have made it. So the only way `answer()` could fail, which nobody had thought of as a way to fail at all, was reachable from a handler. For the Open the same trust sat in `refuse()`, whose comment said "every status passed here is one ours::Status names" and whose `unwrap()` made the comment a trap.
+
+The fix for the first mistake alone (make `complete()` return an error and not release) would leave a client hanging for a reply the core could not build. The fix for the second alone (sanitise) would leave a path in `complete()` that can release if a different encode failure is ever added. Both are made.
+
+**Change**
+The status a client is told is made at the one place the core reads a handler's error, so `dispatch()`'s `Done` and `complete()`'s `Pending` give the same reply:
+
+```cpp
+// before: finish_read, finish_read_dirents, finish_backing_memory, finish_open
+if (result.is_err()) {
+    return ustl::err(result.unwrap_err());
+}
+
+// after
+if (result.is_err()) {
+    return ustl::err(handler_refusal(result.unwrap_err()));
+}
+
+auto handler_refusal(Status const status) -> Status {
+    if (std::to_underlying(status) >= std::to_underlying(Status::MaxCount)) {
+        return Status::InternalError;
+    }
+    return status;
+}
+```
+
+`InternalError` is the status the core already answers for a handler that returns too many bytes or dirents, an invalid VMO or a ticket it was not given, so there is one fallback and a client sees one thing for "the handler is broken". The same call is made on `clone()`'s refusal, where `refuse()` would have trapped the same way.
+
+`complete()` can no longer reach a release, by construction and not only by the argument above:
+
+```cpp
+// before: the three non-Open overloads
+return ustl::ok(answer(ticket.connection, prot::io::READ, request.txid, finish_read(...), out));
+
+// after
+return reply_or_status(prot::io::READ, request.txid, finish_read(...), out);
+
+auto Server::reply_or_status(...) -> ustl::Result<Outcome, Status>;   // Err only if the status form cannot be built
+auto Server::answer(...) -> Outcome;   // dispatch() only: reply_or_status(), and drop(id) on an Err
+```
+
+Whether `reply_or_status()` can still fail from `complete()`: the method is two-way, the txid is the decoded request's (it passed `decode_request_header`, which is the check `encode_status_reply` repeats), the `ReplyBuffer` holds a whole message, and the status is now one the codec names. So it cannot, and there is no test for the branch. If it ever could, `complete()` returns the codec's status (`InvArgs` or `BufferTooSmall`), the request is ended, the connection is alive and nothing is written, which `Server::complete()`'s comment says. The Open overload already did not release: it refuses with an epitaph on the server end it held, and the connection the Open came on is untouched; what was wrong there was the trap, which `handler_refusal()` removes. `dispatch()` keeps `answer()`'s `drop(id)` for an encode failure, and a handler's unnamed status no longer reaches it: `dispatch()` with a `Done` that carries one now answers `InternalError` instead of dropping (and the Open, instead of trapping).
+
+Rejected: a distinct fallback status (nothing for a client to do with it), returning `Err` from `complete()` for an unnamed status (the handler cannot do anything with it, and the client would wait for a reply that nothing sends), and a `wire::names_a_status()` exported from the codec (a second library to change for a comparison against `Status::MaxCount`, whose own comment says it is the bound).
+
+**Reference**
+None, this project's own design: the Loop's `Binding` per connection index and the rule that a connection is released only by its own callback are decisions of `.agents/tasks/directory-capability/DESIGN.md` (rule 4 of "When the client goes away while the request is pending"). The shape of the fix is the one the core already used for the other handler bugs (`finish_read`'s `InternalError` for more bytes than asked).
+
+**Verification**
+- Baseline measured first, at `dd73ea94`, with `boot_check.py --out out/dc-step8fix` in the worktree the change was made in; the final tree with the same command:
+
+  | | Baseline | Now |
+  |---|---|---|
+  | dbg | PASS, 46 passed, 5 skipped, 0 failed, 0 error lines | the same |
+  | rel | PASS, 44 passed, 8 skipped, 0 failed, 7 of 7 required, 0 error lines | the same |
+  | host tests | PASS, 172 passed (executables), 0 failed | the same |
+
+  (the baseline moved from 166 to 172 executables since step 8; the change adds none)
+- Host: `ioservice` 144 tests (was 138), `loop_server` 32 and `outgoing` 63, unchanged. The new ones: for each of Read, ReadDirents, GetBackingMemory (a Pending request completed by `complete()` with each of four unnamed statuses: `Status::MaxCount`, one past it, 1000 and 0xFFFFFFFF) the reply is a status reply carrying `InternalError`; the connection is alive; the handler was not told it ended; a `bind()` afterwards takes another index than the connection's; the connection then serves the next request (a Read from offset 0, a listing from `.`, a VMO); and `release()` from its own callback tells the handler once. For the Open the Outcome is `Refuse` with an epitaph carrying `InternalError` on the held server end, and the directory connection it came on is kept and serves the next Open and ReadDirents. The sixth runs for a handler that answers at once and for one that is completed: all four operations and a Clone refused with each unnamed status, nothing released, the connections serving afterwards.
+- **Mutation**, the new tests run one at a time (`--gtest_filter`), then the whole binary; the script is in the session scratchpad, the tree was compared with a copy after the run and was identical:
+
+  | Mutation | Read | ReadDirents | GetBackingMemory | Open | both-handlers test (2) | whole binary |
+  |---|---|---|---|---|---|---|
+  | `server.cpp` as it was at `HEAD` | fail | fail | fail | trap | trap, trap | trap |
+  | `finish_read` passes the status on | fail | | | | fail, fail | 3 failed |
+  | `finish_read_dirents` passes it on | | fail | | | fail, fail | 3 failed |
+  | `finish_backing_memory` passes it on | | | fail | | fail, fail | 3 failed |
+  | `finish_open` passes it on | | | | trap | trap, trap | trap |
+  | `clone` passes the cookie's status on | | | | | trap, trap | trap |
+  | `complete(Read)` through `answer()`, `finish_read` passes it on (the defect, one overload) | fail | | | | fail, fail | 3 failed |
+  | the same for `complete(ReadDirents)` | | fail | | | fail, fail | 3 failed |
+  | the same for `complete(GetBackingMemory)` | | | fail | | fail, fail | 3 failed |
+  | the fallback is `BadState` | fail | fail | fail | fail | fail, fail | 6 failed |
+  | `Status::MaxCount` itself let through | fail | fail | fail | trap | trap, trap | trap |
+
+  A blank cell passed. The traps are the `unwrap()` of `refuse()`, which ends the test binary and not one test (each was run alone, so the others are known). The step 8 mutation records stand: no existing test changed.
+- clang-tidy (`prebuilt/clang/llvm-23`, `-p out/dc-step8fix`, headers of `system/lib/ioservice` included) on `server.cpp` and `server_test.cpp`: no diagnostic. `format_cpp.py --check` clean on the three C++ files; `lint_docs.py --changed` clean.
+
+**Deliberately not done**
+- `answer()`'s `drop(id)` for a reply that cannot be encoded stays in `dispatch()`: it is the connection's own callback, where a release is right, and the case is unreachable now. It was not turned into a trap.
+- `LoopServer` is untouched: it still gives its `Server` no handler, and the `Drop` case of its `handle()` is right for `dispatch()`. Step 9's glue for `complete()` can rely on never being handed `Drop` (RESULT.md says so).
+- `Syscalls::handle_duplicate`'s status in `get_backing_memory()` (the tree's file) is not sanitised: it is the program's function, a kernel status, and only `dispatch()` reads it.
+- A test of the `Err` branch of `reply_or_status()` in `complete()`: it needs a txid or a buffer the core never builds.
+
+**How it was found**
+An independent review of `3564dc20` read `complete()` against the design's rule 4 and traced `answer()` from the three overloads: `drop(id)` calls `release(id)`, and `release()` frees the index and calls the handler. Three skeptics tried to refute it by finding a reason `answer()` could not fail from there, and found instead that `encode_status_reply` fails for any status `ours::Status` does not name, and that `names_a_status` is the bound. Checking the Open overload for the same flaw found the trap in `refuse()`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. `dispatch()` and `complete()` both ended in `answer()`, which drops the connection when it cannot build a reply. Why is that right in one and wrong in the other, and what does the Loop do with the index between the release and the `resume()`?
+2. Why does the fix make the status safe where the core reads the handler's error instead of making `complete()` return an error for it, and which client would wait for ever under the second choice?
+3. A refused Open is an epitaph on the server end the core held. Why did the same unnamed status trap there and release here, and what is it about `unwrap()` on `encode_epitaph` that made a comment the only guard?

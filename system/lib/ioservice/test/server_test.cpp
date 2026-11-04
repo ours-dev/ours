@@ -15,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -60,6 +61,16 @@ constexpr auto VMO_README = Uandle{0x2002};
 constexpr auto DUPLICATE = Uandle{0x3001};
 constexpr auto REMOTE = Uandle{0x4001};
 constexpr auto ECHO = u64{7};
+
+/// Values ours::Status does not name: the one past the last status, the next,
+/// and two far past it. A handler that refuses with one has a bug of its own,
+/// and none can be written on the wire.
+constexpr auto UNNAMED = std::array<Status, 4>{
+    Status::MaxCount,
+    static_cast<Status>(std::to_underlying(Status::MaxCount) + 1),
+    static_cast<Status>(1000),
+    static_cast<Status>(0xFFFF'FFFF),
+};
 
 constexpr auto README = std::string_view{"hello, world"};
 constexpr auto X_CONTENTS = std::string_view{"\x7f"
@@ -274,7 +285,9 @@ class FakeFs final: public ioservice::NodeHandler {
                             Ticket const ticket) -> Answer<VmoResult> override {
         vmos.push_back({value, cookie, flags, ticket});
         auto result = VmoResult{ustl::ok(DUPLICATE)};
-        if (!live.contains(cookie)) {
+        if (refusal != Status::Ok) {
+            result = ustl::err(refusal);
+        } else if (!live.contains(cookie)) {
             result = ustl::err(Status::BadHandle);
         } else if (fault == Fault::ReturnsAnInvalidVmo) {
             result = ustl::ok(Uandle::Invalid);
@@ -337,6 +350,10 @@ class FakeFs final: public ioservice::NodeHandler {
     /// A Read the handler fails with this status when not Ok.
     Status read_error = Status::Ok;
     Status clone_error = Status::Ok;
+    /// When not Ok, every Open, Read, ReadDirents and GetBackingMemory is
+    /// refused with this status, which may be a value ours::Status does not
+    /// name. An Open it refuses makes no object.
+    Status refusal = Status::Ok;
     /// For Fault::CompletesInsideTheCall: where the call completes its own
     /// ticket.
     ioservice::Server *server = nullptr;
@@ -384,6 +401,9 @@ class FakeFs final: public ioservice::NodeHandler {
 
     auto open_entry(ustl::Option<u64> const directory, std::string_view const path,
                     Flags const flags) -> OpenResult {
+        if (refusal != Status::Ok) {
+            return ustl::err(refusal);
+        }
         auto full = std::string{};
         if (directory.is_some()) {
             auto const found = live.find(*directory);
@@ -419,6 +439,9 @@ class FakeFs final: public ioservice::NodeHandler {
     }
 
     auto read_file(u64 const cookie, u64 const offset, u64 const count) -> ReadResult {
+        if (refusal != Status::Ok) {
+            return ustl::err(refusal);
+        }
         if (read_error != Status::Ok) {
             return ustl::err(read_error);
         }
@@ -460,6 +483,9 @@ class FakeFs final: public ioservice::NodeHandler {
     }
 
     auto list(u64 const cookie, u64 const cursor, u64 const max_bytes) -> EntriesResult {
+        if (refusal != Status::Ok) {
+            return ustl::err(refusal);
+        }
         auto const found = live.find(cookie);
         if (found == live.end()) {
             ++bad_calls;
@@ -2030,6 +2056,51 @@ TEST_P(IoserviceServerHandler, AHandlerThatMisbehavesGetsAnInternalErrorAndNothi
     EXPECT_EQ(get_backing_memory(readme, VmoFlags::Read).vmo, DUPLICATE);
 }
 
+TEST_P(IoserviceServerHandler,
+       AStatusTheCodecCannotNameIsAnsweredInternalErrorAndTheConnectionStays) {
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    auto const readme = opened(root, "fs/config/readme", prot::io::PERM_READABLE);
+    auto const fs = handler_root(root);
+    auto const live = m_fs.live.size();
+
+    // A refusal the wire cannot carry is the handler's bug, answered as every
+    // other bug of its is: InternalError, as a status reply, and as an epitaph
+    // for an Open. Whether the handler answered at once or the request was
+    // ended by complete() makes no difference, and in neither does the
+    // connection go.
+    for (auto const unnamed: UNNAMED) {
+        m_fs.refusal = unnamed;
+        EXPECT_EQ(refused(fs, "config", Flags::ProtocolDirectory | prot::io::PERM_READABLE),
+                  Status::InternalError);
+        EXPECT_EQ(read(readme, 5).status, Status::InternalError);
+        EXPECT_EQ(read_dirents(fs, 100).status, Status::InternalError);
+        EXPECT_EQ(get_backing_memory(readme, VmoFlags::Read).status, Status::InternalError);
+        m_fs.refusal = Status::Ok;
+
+        // A Clone the handler refuses is an epitaph on the request's channel,
+        // and the status in it is one the wire can carry as well.
+        m_fs.clone_error = unnamed;
+        auto const cloned = clone(readme, OBJECT);
+        EXPECT_EQ(cloned.action, Action::Refuse);
+        EXPECT_EQ(cloned.status, Status::InternalError);
+        EXPECT_EQ(epitaph(cloned), Status::InternalError);
+        m_fs.clone_error = Status::Ok;
+
+        EXPECT_EQ(held(m_server.channel(readme)), OBJECT);
+        EXPECT_EQ(held(m_server.channel(fs)), OBJECT);
+        EXPECT_TRUE(m_fs.releases.empty());
+        EXPECT_EQ(m_fs.live.size(), live);
+    }
+
+    // Both connections serve what comes next, from where they were.
+    EXPECT_EQ(text_of(read(readme, 5).data), "hello");
+    EXPECT_EQ(read_dirents(fs, 100).names, (std::vector<std::string>{".", "bin", "config"}));
+    EXPECT_EQ(get_backing_memory(readme, VmoFlags::Read).vmo, DUPLICATE);
+    opened(fs, "config", Flags::ProtocolDirectory | prot::io::PERM_READABLE);
+    EXPECT_EQ(m_fs.bad_releases, 0u);
+    EXPECT_EQ(m_fs.bad_calls, 0u);
+}
+
 TEST_F(IoserviceServerHandlerNode, AHandlerNodeIsListedAsADirectoryAndBindsNoConnection) {
     auto const root = bind(m_root, prot::io::R_STAR_DIR);
     auto const listing = read_dirents(root, prot::io::MAX_BUF);
@@ -2124,6 +2195,49 @@ class IoserviceServerPending: public IoserviceServerHandlerNode {
 
     auto readme_bytes(std::string_view const text) -> ReadResult {
         return ReadResult{ustl::ok(bytes_of(text))};
+    }
+
+    /// A directory connection to the handler's root, opened while no operation
+    /// waits.
+    auto handler_directory(ConnectionId const root) -> ConnectionId {
+        auto const pend = std::exchange(m_fs.pend, u8{0});
+        auto const directory = handler_root(root);
+        m_fs.pend = pend;
+        return directory;
+    }
+
+    /// A ReadDirents that must be left waiting.
+    auto send_read_dirents(ConnectionId const connection, u64 const max_bytes) -> Ticket {
+        auto const encoded =
+            prot::io::encode_read_dirents(m_bytes, {.txid = TXID, .max_bytes = max_bytes});
+        auto const outcome = send(connection, encoded.unwrap());
+        EXPECT_EQ(outcome.action, Action::Pending);
+        EXPECT_FALSE(m_fs.listings.empty());
+        return m_fs.listings.back().ticket;
+    }
+
+    /// A GetBackingMemory that must be left waiting.
+    auto send_get_backing_memory(ConnectionId const connection, VmoFlags const flags) -> Ticket {
+        auto const encoded =
+            prot::io::encode_get_backing_memory(m_bytes, {.txid = TXID, .flags = flags});
+        auto const outcome = send(connection, encoded.unwrap());
+        EXPECT_EQ(outcome.action, Action::Pending);
+        EXPECT_FALSE(m_fs.vmos.empty());
+        return m_fs.vmos.back().ticket;
+    }
+
+    /// The connection a completion left alone: it is alive, the handler was
+    /// not told it ended, and its index is not free for another connection to
+    /// take. That last is what a release from complete() would break, since
+    /// the Loop slot of the connection is still suspended and its Binding is
+    /// the index's.
+    auto expect_kept(ConnectionId const connection) -> void {
+        EXPECT_TRUE(m_server.channel(connection).is_some());
+        EXPECT_TRUE(m_fs.releases.empty());
+        auto const other = m_server.bind(CHANNEL, m_root, prot::io::R_STAR_DIR);
+        ASSERT_TRUE(other.is_ok());
+        EXPECT_NE(other->index, connection.index);
+        m_server.release(*other);
     }
 
     /// Fills the shared buffer with marks, so that a call that touches it shows.
@@ -2637,5 +2751,141 @@ TEST_F(IoserviceServerPending, ReleaseIsCalledOnceForAConnectionThatEndsWhilePen
     EXPECT_EQ(m_fs.releases.size(), 1u);
     EXPECT_TRUE(m_fs.live.empty());
     EXPECT_EQ(m_fs.bad_releases, 0u);
+}
+
+// --- A completion the wire cannot carry ---------------------------------------------------
+//
+// complete() runs in the handler's own Waiter, while the connection's Loop slot
+// is suspended. A connection is released only from its own callback: one freed
+// here would hand its index, and the Binding that goes with it, to the next
+// connection, and the slot's late packet would be handled as that connection's.
+// So whatever the handler completes with, complete() answers and the connection
+// stays.
+
+TEST_F(IoserviceServerPending, AReadCompletedWithAnUnnamedStatusIsAnsweredAndTheConnectionStays) {
+    m_fs.pend = PEND_READ;
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    auto const readme = readme_file(root);
+
+    for (auto const unnamed: UNNAMED) {
+        auto const ticket = send_read(readme, 5);
+        auto const completed = m_server.complete(ticket, ReadResult{ustl::err(unnamed)}, m_out);
+        ASSERT_TRUE(completed.is_ok());
+        EXPECT_EQ(completed->action, Action::Reply);
+        EXPECT_EQ(reply_of(soft(completed)).status, Status::InternalError);
+        expect_kept(readme);
+    }
+
+    // It reads again, from where it was.
+    auto const next = send_read(readme, 5);
+    auto const completed = m_server.complete(next, readme_bytes("hello"), m_out);
+    EXPECT_EQ(text_of(reply_of(soft(completed)).data), "hello");
+    EXPECT_EQ(m_fs.reads.back().offset, 0u);
+
+    // And it ends from its own callback, once.
+    m_server.release(readme);
+    EXPECT_EQ(m_fs.releases.size(), 1u);
+}
+
+TEST_F(IoserviceServerPending,
+       AReadDirentsCompletedWithAnUnnamedStatusIsAnsweredAndTheConnectionStays) {
+    m_fs.pend = PEND_DIRENTS;
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    auto const fs = handler_directory(root);
+
+    for (auto const unnamed: UNNAMED) {
+        auto const ticket = send_read_dirents(fs, 100);
+        auto const completed = m_server.complete(ticket, EntriesResult{ustl::err(unnamed)}, m_out);
+        ASSERT_TRUE(completed.is_ok());
+        EXPECT_EQ(completed->action, Action::Reply);
+        auto const reply = prot::io::decode_read_dirents_reply(completed->message, TXID);
+        ASSERT_TRUE(reply.is_ok());
+        EXPECT_EQ(reply->status, Status::InternalError);
+        expect_kept(fs);
+    }
+
+    // The listing starts at "." still, and goes on.
+    auto const next = send_read_dirents(fs, 100);
+    auto const completed = m_fs.complete(m_server, m_out, next);
+    ASSERT_TRUE(completed.is_ok());
+    auto const reply = prot::io::decode_read_dirents_reply(completed->message, TXID);
+    ASSERT_TRUE(reply.is_ok());
+    EXPECT_EQ(reply->status, Status::Ok);
+    auto names = std::vector<std::string>{};
+    auto reader = prot::io::DirentReader(reply->dirents);
+    for (auto entry = reader.next(); entry.is_ok() && entry->is_some(); entry = reader.next()) {
+        names.emplace_back(entry.unwrap().value().name);
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{".", "bin", "config"}));
+
+    m_server.release(fs);
+    EXPECT_EQ(m_fs.releases.size(), 1u);
+}
+
+TEST_F(IoserviceServerPending,
+       AGetBackingMemoryCompletedWithAnUnnamedStatusIsAnsweredAndTheConnectionStays) {
+    m_fs.pend = PEND_VMO;
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    auto const readme = readme_file(root);
+
+    for (auto const unnamed: UNNAMED) {
+        auto const ticket = send_get_backing_memory(readme, VmoFlags::Read);
+        auto const completed = m_server.complete(ticket, VmoResult{ustl::err(unnamed)}, m_out);
+        ASSERT_TRUE(completed.is_ok());
+        EXPECT_EQ(completed->action, Action::Reply);
+        auto const reply = prot::io::decode_get_backing_memory_reply(completed->message, TXID);
+        ASSERT_TRUE(reply.is_ok());
+        EXPECT_EQ(reply->status, Status::InternalError);
+        expect_kept(readme);
+    }
+
+    // It hands out its VMO still.
+    auto const next = send_get_backing_memory(readme, VmoFlags::Read);
+    auto const completed = m_fs.complete(m_server, m_out, next);
+    ASSERT_TRUE(completed.is_ok());
+    auto const reply = prot::io::decode_get_backing_memory_reply(completed->message, TXID);
+    ASSERT_TRUE(reply.is_ok());
+    EXPECT_EQ(reply->status, Status::Ok);
+    EXPECT_EQ(reply->vmo, DUPLICATE);
+
+    m_server.release(readme);
+    EXPECT_EQ(m_fs.releases.size(), 1u);
+}
+
+TEST_F(IoserviceServerPending, AnOpenCompletedWithAnUnnamedStatusIsRefusedAndTheConnectionStays) {
+    m_fs.pend = PEND_OPEN;
+    auto const root = bind(m_root, prot::io::R_STAR_DIR);
+    auto const flags = Flags::ProtocolDirectory | prot::io::PERM_READABLE;
+
+    for (auto const unnamed: UNNAMED) {
+        auto const ticket = send_open(root, "fs/config", flags);
+        auto const completed = m_server.complete(ticket, OpenResult{ustl::err(unnamed)}, m_out);
+        // The Open's server end gets the epitaph a refused Open gets, with the
+        // status the wire can carry in place of the handler's.
+        ASSERT_TRUE(completed.is_ok());
+        EXPECT_EQ(completed->action, Action::Refuse);
+        EXPECT_EQ(completed->handle, OBJECT);
+        EXPECT_EQ(completed->status, Status::InternalError);
+        EXPECT_EQ(epitaph(soft(completed)), Status::InternalError);
+        EXPECT_TRUE(completed->path.is_none());
+        // The connection the Open came on is as it was, and is not the
+        // handler's, so it has nothing to be told.
+        expect_kept(root);
+    }
+
+    // It opens again, and reads again.
+    auto const next = send_open(root, "fs/config", flags);
+    auto const completed = m_fs.complete(m_server, m_out, next);
+    ASSERT_TRUE(completed.is_ok());
+    EXPECT_EQ(completed->action, Action::Bind);
+    EXPECT_EQ(completed->handle, OBJECT);
+    EXPECT_EQ(
+        m_server
+            .dispatch(
+                root,
+                prot::io::encode_read_dirents(m_bytes, {.txid = TXID, .max_bytes = 20}).unwrap(),
+                m_out)
+            .action,
+        Action::Reply);
 }
 } // namespace
