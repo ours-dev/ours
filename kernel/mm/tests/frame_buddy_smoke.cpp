@@ -71,7 +71,8 @@ auto test_exhaust_and_coalesce() -> int {
     FrameBuddy buddy(0, NUM_FRAMES);
 
     buddy.release(&frames[0], 0, ORDER);
-    if (check(buddy.free_count(ORDER) == 1, "populate creates one order-8 block")) {
+    if (check(!buddy.empty(ORDER) && buddy.free_count(ORDER) == 1,
+              "populate creates one order-8 block")) {
         return 1;
     }
 
@@ -85,7 +86,7 @@ auto test_exhaust_and_coalesce() -> int {
         }
         got.push_back(&frame.value());
     }
-    if (check(buddy.allocate(0).is_none(), "no frames remain after drain")) {
+    if (check(buddy.allocate(0).is_none() && buddy.empty(ORDER), "no frames remain after drain")) {
         return 1;
     }
 
@@ -111,6 +112,30 @@ auto test_upper_buddy_merge() -> int {
     buddy.release(b, pfn_in(frames.get(), b, 0), 0);
     buddy.release(a, pfn_in(frames.get(), a, 0), 0);
     return check(buddy.free_count(1) == 1, "upper-buddy release merges into order-1 block");
+}
+
+auto check_foreign_buddy(ZoneType zone, ours::NodeId nid, char const *what) -> int {
+    auto frames = make_frames(2);
+    frames[1].init(zone, 0, nid);
+    FrameBuddy local(0, 2);
+    FrameBuddy foreign(0, 2);
+    foreign.release(&frames[1], 1, 0);
+    local.release(&frames[0], 0, 0);
+
+    auto const left = local.allocate(0);
+    auto const right = foreign.allocate(0);
+    return check(left && &left.value() == &frames[0] && right && &right.value() == &frames[1],
+                 what);
+}
+
+auto test_different_orders() -> int {
+    auto frames = make_frames(4);
+    FrameBuddy buddy(0, 4);
+    // PFN 1 is still in use, so PFN 0 cannot coalesce with the upper pair.
+    buddy.release(&frames[0], 0, 0);
+    buddy.release(&frames[2], 2, 1);
+    return check(buddy.free_count(0) == 1 && buddy.free_count(1) == 1 && buddy.empty(2),
+                 "a free partner of a different order cannot coalesce");
 }
 
 auto test_split_shapes() -> int {
@@ -239,6 +264,18 @@ auto main() -> int {
         return rc;
     }
     if (auto rc = test_upper_buddy_merge(); rc != 0) {
+        return rc;
+    }
+    if (auto rc = check_foreign_buddy(ZoneType::Dma, 0, "buddies in different zones stay separate");
+        rc != 0) {
+        return rc;
+    }
+    if (auto rc =
+            check_foreign_buddy(ZoneType::Normal, 1, "buddies on different nodes stay separate");
+        rc != 0) {
+        return rc;
+    }
+    if (auto rc = test_different_orders(); rc != 0) {
         return rc;
     }
     if (auto rc = test_split_shapes(); rc != 0) {

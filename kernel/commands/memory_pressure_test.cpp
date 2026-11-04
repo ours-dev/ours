@@ -227,14 +227,35 @@ namespace {
         open_gate();
     }
 
+    auto check_timeout(Tally &tally) -> void {
+        auto const shut = shut_gate();
+        auto const deadline = deadline_after(SETTLE);
+        auto result = mm::wait_for_frame_allocation(WAITABLE, deadline, true);
+        if (!result && result.unwrap_err() == Status::ShouldWait) {
+            // Closing the gate can leave a wakeup from its previous opening.
+            result = mm::wait_for_frame_allocation(WAITABLE, deadline, true);
+        }
+        open_gate();
+        verdict(tally, shut && !result && result.unwrap_err() == Status::TimeOut,
+                "an interruptible allocation wait times out while the gate stays shut");
+        if (result) {
+            mm::free_frames(*result, 0);
+        }
+    }
+
     auto check_signal(Tally &tally) -> void {
         sync::Event watched;
+        sync::Event rejected;
         std::array<mm::PmFrame *, NR_CROSSING> frames{};
 
         // Free memory pushed below the lower bound by allocations.
         auto const before = mm::approx_free_frame_count();
         auto const armed_low = mm::set_free_memory_signal(before - MARGIN, NO_BOUND, 0, &watched,
                                                           mm::DelayedAllocations::Wait);
+        auto const stale_low = mm::set_free_memory_signal(NO_BOUND, NO_BOUND, 0, &rejected,
+                                                          mm::DelayedAllocations::Wait);
+        auto const stale_high =
+            mm::set_free_memory_signal(0, 0, 0, &rejected, mm::DelayedAllocations::Wait);
         usize taken = 0;
         for (auto &frame: frames) {
             auto result = mm::try_alloc_frames(mm::ALLOC_USER, 0);
@@ -260,6 +281,8 @@ namespace {
         verdict(tally, armed_high && high,
                 "a free that takes free memory above the upper bound signals the event");
         open_gate();
+        verdict(tally, !stale_low && !stale_high && low,
+                "stale bounds are rejected without replacing the armed event");
     }
 
     /// One use of a user VMO's page, by a thread of its own: it sleeps while
@@ -486,6 +509,7 @@ namespace {
             check_gate(tally);
             check_waiter(tally);
             check_refusal(tally);
+            check_timeout(tally);
             check_signal(tally);
             check_vmo(tally);
             open_gate();

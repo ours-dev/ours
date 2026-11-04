@@ -8,6 +8,7 @@
 
 executable("frame-buddy-smoke") {
   testonly = true
+  defines = [ "MM_NUMA=1" ]
   sources = [
     "frame_buddy_smoke.cpp",
     "//kernel/mm/frame_buddy.cpp",
