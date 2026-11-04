@@ -460,3 +460,47 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Type the PMM shortage and pending request states (2026-11-04)
+
+**Files**
+
+- `kernel/mm/pm_node.cpp` returns a typed block failure with an optional depleted zone.
+- `kernel/mm/memory_reclaimer.cpp` uses per-zone `Idle` and `Pending` states.
+- `kernel/mm/pm_zone.cpp` takes the returned block by reference.
+
+**Symptom**
+
+The block attempt reported a failure through its result and a second pointer output. Pending reclaim requests were encoded through integer masks.
+
+**Cause**
+
+The code represented optional data and queue transitions through their storage instead of the allocation and reclaim types.
+
+**Change**
+
+The internal `Result<PmFrame *, BlockFailure>` keeps the error status and optional zone together. Reclaim producers and the worker exchange `RequestState` for the actual zone. A return to a zone requires a frame reference.
+
+**Reference**
+
+This uses the tree's `ustl::Result`, `ustl::Option` and scoped-enum conventions.
+
+**Verification**
+
+Clang-format and clang-tidy checked all nine changed C++ files. Both dev images booted in the default and NUMA configurations and all 163 host tests passed. The memory-only NUMA run passed targeted reclaim, all 70 PM node checks, the zone tests and all 19 pressure checks.
+
+**Deliberately not done**
+
+The change is scoped to the PMM internals and their direct tests.
+
+**How it was found**
+
+The user asked to represent states with enums and remove C-style interfaces from the recent PMM work.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

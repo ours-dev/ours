@@ -608,7 +608,7 @@ namespace {
                 auto const block = state.zone.take_block(0);
                 auto const count = state.zone.free_frames();
                 if (block) {
-                    state.zone.return_block(&block.value(), 0);
+                    state.zone.return_block(block.value(), 0);
                 }
                 if (count > 1 || state.zone.free_frames() > 1) {
                     return 1;

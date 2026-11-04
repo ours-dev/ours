@@ -221,7 +221,7 @@ auto PmZone::contains(usize order) -> bool {
     return false;
 }
 
-auto PmZone::return_block(PmFrame *frame, usize order) -> void {
+auto PmZone::return_block(PmFrame &frame, usize order) -> void {
     if (is_order_within_pcpu_cache_limit(order)) {
         m_frame_cache.with_current([](PcpuCache &cache) {
             // Here no pcpu cache.
@@ -230,9 +230,9 @@ auto PmZone::return_block(PmFrame *frame, usize order) -> void {
         return;
     }
 
-    auto const pfn = frame_to_pfn(frame);
+    auto const pfn = frame_to_pfn(&frame);
     ZoneGuard guard{m_lock};
-    m_buddy.release(frame, pfn, order);
+    m_buddy.release(&frame, pfn, order);
     m_free_frames += usize{1} << order;
 }
 } // namespace ours::mm

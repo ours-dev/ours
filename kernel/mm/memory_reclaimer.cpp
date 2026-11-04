@@ -48,10 +48,8 @@ auto MemoryReclaimer::request(PmZone const &zone) -> void {
     if (!m_started.load(std::memory_order_acquire) || paused()) {
         return;
     }
-    auto const bit = usize{1} << std::to_underlying(zone.zone_type());
-    auto const pending =
-        m_pending_zones[zone.which_node()].fetch_or(bit, std::memory_order_acq_rel);
-    if ((pending & bit) == 0) {
+    auto &request = m_zone_requests[zone.which_node()][std::to_underlying(zone.zone_type())];
+    if (request.exchange(RequestState::Pending, std::memory_order_acq_rel) == RequestState::Idle) {
         m_signal.signal();
     }
 }
@@ -90,27 +88,25 @@ auto MemoryReclaimer::reclaim(usize const frames, NodeMask const &nodes) -> usiz
 }
 
 auto MemoryReclaimer::reclaim_node_requests() -> void {
-    PmNode::for_each_nid(PmNode::State::Memory, [this](NodeId nid) {
-        auto const zones = m_pending_zones[nid].exchange(0, std::memory_order_acq_rel);
-        if (zones == 0) {
-            return;
-        }
-
+    PmNode::for_each_node(PmNode::State::Memory, [this](PmNode &node) {
+        auto &requests = m_zone_requests[node.nid()];
         usize wanted = 0;
-        for (usize type = 0; type < NR_ZONES_PER_NODE; ++type) {
-            if ((zones & (usize{1} << type)) == 0) {
-                continue;
+        node.zone_list()->for_each_local_zone([&requests, &wanted](PmZone const &zone) {
+            auto &request = requests[std::to_underlying(zone.zone_type())];
+            if (request.exchange(RequestState::Idle, std::memory_order_acq_rel) ==
+                RequestState::Idle) {
+                return;
             }
-            auto const &zone = *PmZone::at(nid, ZoneType(type));
             auto const free = zone.free_frames();
             auto const high = zone.watermark(PmZone::WaterMark::High);
             if (free < high) {
                 wanted += high - free;
             }
-        }
+        });
         if (wanted != 0) {
-            auto const freed = reclaim(wanted, NodeMask::of(nid));
-            log::debug("mm: node {} gave back {} of {} frames requested", nid, freed, wanted);
+            auto const freed = reclaim(wanted, NodeMask::of(node.nid()));
+            log::debug("mm: node {} gave back {} of {} frames requested", node.nid(), freed,
+                       wanted);
         }
     });
 }

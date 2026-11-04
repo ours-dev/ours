@@ -187,7 +187,7 @@ namespace {
 
 } // namespace
 
-auto PmNode::observe_pressure(PmZone const *depleted_zone) -> void {
+auto PmNode::observe_pressure(ustl::Option<PmZone const &> depleted_zone) -> void {
     GATE.check_signal();
     if (depleted_zone) {
         MemoryReclaimer::get().request(*depleted_zone);

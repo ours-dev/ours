@@ -3,6 +3,7 @@
 #ifndef OURS_MM_MEMORY_RECLAIMER_HPP
 #define OURS_MM_MEMORY_RECLAIMER_HPP 1
 
+#include <ours/mm/types.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
@@ -82,6 +83,11 @@ class MemoryReclaimer {
     };
 
   private:
+    enum class RequestState : u8 {
+        Idle,
+        Pending,
+    };
+
     MemoryReclaimer() = default;
 
     /// The thread: sleeps until a request, then reclaims what was asked.
@@ -102,8 +108,9 @@ class MemoryReclaimer {
     /// What has been asked and not yet taken by the thread.
     std::atomic<usize> m_wanted{0};
 
-    /// One bit per zone type on each node, coalesced until the worker samples it.
-    std::array<std::atomic<usize>, MAX_NODES> m_pending_zones{};
+    /// One pending request per zone, coalesced until the worker samples it.
+    std::array<std::array<std::atomic<RequestState>, NR_ZONES_PER_NODE>, MAX_NODES>
+        m_zone_requests{};
 
     std::atomic<bool> m_started{false};
 

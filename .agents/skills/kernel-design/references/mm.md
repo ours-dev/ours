@@ -226,3 +226,7 @@ A failed order-zero walk may report an eligible zone below High. The
 background reclaimer resamples queued zones and walks the selected node's
 page queues. Admission and waits use the global gate. The node-scoped
 reclaim request is advisory and preserves the immediate allocation result.
+
+A block attempt carries its optional depleted zone in its typed failure.
+The reclaimer stores Idle and Pending as per-zone enum states. Owner-directed
+block return requires a frame reference at the zone boundary.

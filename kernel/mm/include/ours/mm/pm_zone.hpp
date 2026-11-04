@@ -127,7 +127,7 @@ class PmZone {
     auto take_block(usize order) -> ustl::Option<PmFrame &>;
 
     /// Return a block owned by this zone.
-    auto return_block(PmFrame *frame, usize order) -> void;
+    auto return_block(PmFrame &frame, usize order) -> void;
 
     /// How many frames this zone could hand out right now, counted out of the
     /// buddy's free lists under the zone lock.

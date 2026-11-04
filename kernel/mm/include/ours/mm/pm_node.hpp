@@ -28,6 +28,7 @@
 #include <ustl/function/invoke.hpp>
 #include <ustl/iterator/traits.hpp>
 #include <ustl/mem/address_of.hpp>
+#include <ustl/option.hpp>
 #include <ustl/result.hpp>
 #include <ustl/traits/is_invocable.hpp>
 #include <ustl/traits/is_same.hpp>
@@ -395,15 +396,20 @@ class PmNode {
     ///     1). Range [start, end) is sorted by address.
     auto init() -> Status;
 
-    auto take_block(Gaf alloc_flags, usize order, NodeMask const &fallback,
-                    PmZone const **depleted_zone = nullptr) -> ktl::Result<PmFrame *>;
+    struct BlockFailure {
+        Status status;
+        ustl::Option<PmZone const &> depleted_zone = ustl::NONE;
+    };
 
-    static auto return_block(PmFrame *frame, usize order) -> void;
+    auto take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
+        -> ustl::Result<PmFrame *, BlockFailure>;
+
+    static auto return_block(PmFrame &frame, usize order) -> void;
 
     static auto return_blocks(PmFrame::List &list) -> void;
 
     /// Sample pressure once after a complete allocation or return.
-    static auto observe_pressure(PmZone const *depleted_zone = nullptr) -> void;
+    static auto observe_pressure(ustl::Option<PmZone const &> depleted_zone = ustl::NONE) -> void;
 
     [[no_unique_address]]
     gktl::Canary m_canary;

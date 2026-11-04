@@ -161,21 +161,23 @@ auto PmNode::alloc_frames(Gaf alloc_flags, usize order, NodeMask const &fallback
 
 auto PmNode::alloc_frames(NodeId const nid, Gaf alloc_flags, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
-    PmZone const *depleted_zone = nullptr;
-    auto observation = gktl::defer([&depleted_zone] { observe_pressure(depleted_zone); });
     auto const home = resolve_home(nid, alloc_flags);
     if (!home) {
+        observe_pressure();
         return ustl::err(home.unwrap_err());
     }
-    auto result = (*home)->take_block(alloc_flags, order, fallback, &depleted_zone);
-    if (result) {
-        depleted_zone = nullptr;
+    auto const result = (*home)->take_block(alloc_flags, order, fallback);
+    if (!result) {
+        auto const &failure = result.error();
+        observe_pressure(failure.depleted_zone);
+        return ustl::err(failure.status);
     }
-    return result;
+    observe_pressure();
+    return ustl::ok(*result);
 }
 
-auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback,
-                        PmZone const **depleted_zone) -> ktl::Result<PmFrame *> {
+auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
+    -> ustl::Result<PmFrame *, BlockFailure> {
     m_canary.verify<Self>();
 
     // Whether the calling thread may allocate at all: a thread that has
@@ -197,11 +199,11 @@ auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback,
     // Thread::Current is always there by now: task::init_early() makes the
     // boot thread current before the PMM exists.
     if (!task::Thread::Current::alloc_state().is_enabled()) {
-        return ustl::err(Status::AccessDenied);
+        return ustl::err(BlockFailure{.status = Status::AccessDenied});
     }
 
     if (order > MAX_FRAME_ORDER) {
-        return ustl::err(Status::InvArgs);
+        return ustl::err(BlockFailure{.status = Status::InvArgs});
     }
 
     auto const initiator = Cpu::id();
@@ -209,12 +211,13 @@ auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback,
     auto const request =
         resolve_request(alloc_flags, order, fallback, Origin{.node = m_id, .cpu = initiator});
 
+    ustl::Option<PmZone const &> depleted_zone;
     for (auto &zone: m_zone_list.candidates(request)) {
         auto const block = zone.take_block(request.order());
         if (!block) {
-            if (order == 0 && depleted_zone && !*depleted_zone &&
+            if (order == 0 && !depleted_zone &&
                 zone.free_frames() < zone.watermark(PmZone::WaterMark::High)) {
-                *depleted_zone = &zone;
+                depleted_zone = ustl::some_ref(zone);
             }
             continue;
         }
@@ -232,7 +235,7 @@ auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback,
         return ustl::ok(frame);
     }
 
-    return ustl::err(Status::OutOfMem);
+    return ustl::err(BlockFailure{.status = Status::OutOfMem, .depleted_zone = depleted_zone});
 }
 
 auto PmNode::alloc_frames_fragment(Gaf alloc_flags, usize n, NodeMask const &fallback)
@@ -261,7 +264,7 @@ auto PmNode::alloc_frames_fragment(NodeId const nid, Gaf alloc_flags, usize n,
         if (auto frame = (*home)->take_block(alloc_flags, order, fallback)) {
             list.push_back(*frame.unwrap());
         } else {
-            return ustl::err(frame.unwrap_err());
+            return ustl::err(frame.error().status);
         }
     }
 
@@ -287,7 +290,7 @@ auto PmNode::alloc_frames_bulk(NodeId const nid, Gaf alloc_flags, usize n, NodeM
         if (auto frame = (*home)->take_block(alloc_flags, 0, fallback)) {
             list.push_back(*frame.unwrap());
         } else {
-            return ustl::err(frame.unwrap_err());
+            return ustl::err(frame.error().status);
         }
     }
 
@@ -295,30 +298,31 @@ auto PmNode::alloc_frames_bulk(NodeId const nid, Gaf alloc_flags, usize n, NodeM
     return ustl::ok(ustl::move(list));
 }
 
-auto PmNode::return_block(PmFrame *frame, usize order) -> void {
-    DEBUG_ASSERT(frame, "");
+auto PmNode::return_block(PmFrame &frame, usize order) -> void {
     // The runtime half of the guard in early_mem.cpp's free_frames_phys_range():
     // a reserved frame reaches the buddy only through unwire_frame(). Nothing
     // else on this path looks at the frame, so without this a reserved frame
     // would be handed out again still flagged and still counted.
-    DEBUG_ASSERT(!(frame->flags() & page::Flags::Reserved),
-                 "frame {:#x} is reserved; unwire_frame() it before freeing", frame_to_phys(frame));
-    DEBUG_ASSERT(!frame->is_role(page::Role::Vmm) || 0 == frame->page_queue(),
-                 "frame {:#x} is freed while still on a page queue", frame_to_phys(frame));
+    DEBUG_ASSERT(!(frame.flags() & page::Flags::Reserved),
+                 "frame {:#x} is reserved; unwire_frame() it before freeing",
+                 frame_to_phys(&frame));
+    DEBUG_ASSERT(!frame.is_role(page::Role::Vmm) || 0 == frame.page_queue(),
+                 "frame {:#x} is freed while still on a page queue", frame_to_phys(&frame));
     // The frame says its node and its type, and the table has the zone; the
     // node itself is not needed.
-    auto *const zone = PmZone::at(frame->nid(), frame->zone());
-    DEBUG_ASSERT(zone, "frame {:#x} is in no zone", frame_to_phys(frame));
+    auto *const zone = PmZone::at(frame.nid(), frame.zone());
+    DEBUG_ASSERT(zone, "frame {:#x} is in no zone", frame_to_phys(&frame));
 
     zone->return_block(frame, order);
 }
 
 auto PmNode::return_blocks(PmFrame::List &list) -> void {
-    list.clear_and_dispose([](PmFrame *frame) noexcept { return_block(frame, frame->order()); });
+    list.clear_and_dispose([](PmFrame *frame) noexcept { return_block(*frame, frame->order()); });
 }
 
 auto PmNode::free_frames(PmFrame *frame, usize order) -> void {
-    return_block(frame, order);
+    DEBUG_ASSERT(frame, "free requires a frame");
+    return_block(*frame, order);
     observe_pressure();
 }
 
