@@ -287,6 +287,15 @@ auto VmAspace::set_vdso(ustl::Arc<VmMapping> mapping) -> void {
     }
 }
 
+auto VmAspace::on_mapping_destroyed_locked(VmMapping &mapping) -> void {
+    if (m_last_fault.as_ptr() == &mapping) {
+        m_last_fault = {};
+    }
+    if (m_vdso_mapping.as_ptr() == &mapping) {
+        withdraw_vdso_locked();
+    }
+}
+
 /// The size alone goes to zero, and the base stays. vdso_contains() loads
 /// the size first, so a reader that loaded the old size just before this
 /// store then loads a base, and that must be one written together with that
@@ -299,8 +308,7 @@ auto VmAspace::set_vdso(ustl::Arc<VmMapping> mapping) -> void {
 /// set_vdso() writes under the same lock, and nothing new can be mapped where
 /// the code was until this lock is released, whose release orders the store
 /// before that. The reference let go of here is not the mapping's last:
-/// VmMapping::destroy(), the one caller, runs while its parent's set still
-/// holds one.
+/// the mapping teardown holds its own reference throughout.
 auto VmAspace::withdraw_vdso_locked() -> void {
     m_vdso_code_size.store(0, std::memory_order_relaxed);
     m_flags &= ~Flags::Vdso;

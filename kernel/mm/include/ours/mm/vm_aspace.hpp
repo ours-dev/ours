@@ -267,6 +267,10 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status;
 
+    /// Withdraws the address space's references before the mapping removes its pages.
+    TA_REQUIRES(m_lock)
+    auto on_mapping_destroyed_locked(VmMapping &mapping) -> void;
+
     /// Undoes set_vdso() and claim_vdso() together, for VmMapping::destroy()
     /// when the mapping going is the registered one: no range is accepted
     /// any more, the claim is free again, and the mapping is let go of. See

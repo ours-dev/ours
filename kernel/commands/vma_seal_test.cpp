@@ -109,6 +109,24 @@ namespace {
             log::error("vmaseal.test: FAILED -- setup");
             return 1;
         }
+        ustl::Arc<mm::VmMapping> duplicate;
+        {
+            Guard guard{root->get_lock()};
+            auto const status = mm::VmMapping::create(root.as_ptr_mut(), PLAIN, PAGE_SIZE, PERMS,
+                                                      make_vmo(PAGE_SIZE), 0, flags,
+                                                      "duplicate mapping", &duplicate);
+            verdict(tally, status == Status::AlreadyExists && !duplicate,
+                    "failed tree insertion does not publish a mapping");
+        }
+        verdict(tally,
+                root->reserve(SEALED + PAGE_SIZE, PAGE_SIZE, flags, "overlap") ==
+                    Status::AlreadyExists,
+                "adopting existing entries cannot overlap a linked mapping");
+        ustl::Arc<mm::VmMapping> found;
+        verdict(tally,
+                aspace->find_mapping(PLAIN, &found) == Status::Ok &&
+                    found.as_ptr() == plain->as_ptr(),
+                "the original mapping survives the rejected insertion");
         auto inside =
             area->map_with_vmo(AREA + PAGE_SIZE, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
                                mm::MapOptions::Sealed, "vmaseal.test inside");

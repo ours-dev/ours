@@ -152,7 +152,7 @@ class VmMapping final: public VmAreaOrMapping {
         -> ustl::Option<ustl::Pair<Status, usize>>;
 
     TA_REQUIRES(get_lock())
-    virtual auto activate() -> Status override;
+    auto activate() -> Status;
     TA_REQUIRES(get_lock())
     virtual auto destroy() -> Status override;
 

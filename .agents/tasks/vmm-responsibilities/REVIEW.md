@@ -61,3 +61,7 @@ The copy and zero materialization paths invalidate under the existing shared loc
 ## Mapping window repair
 
 The bounds check runs after placement normalizes the size and before the mapping is linked. The regression exercises every mapping mode and then maps a valid window at the same address. The ordinary and boot reservation paths both passed their verification.
+
+## Mapping lifecycle repair
+
+A failed tree insertion leaves the active state clear and returns before registration with the VMO. Both factories release the unpublished object. The duplicate mapping regression exercises this error and checks the original lookup result. Both development images booted, and the seal, snapshot and large-page suites passed.

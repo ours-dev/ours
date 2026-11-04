@@ -46,10 +46,8 @@ enum class MapOptions : u8 {
 };
 USTL_ENABLE_ENUM_BITMASK(MapOptions);
 
-/// What a VMA -- an area or a mapping -- IS: its attributes and state, stored on
-/// the object and true for as long as it lives. The permissions it allows
-/// (which a mapping's protection may never exceed), whether it is active,
-/// pinned or sealed, what kind of thing it is.
+/// An area's or mapping's attributes, fixed at construction. They describe
+/// its permission ceiling, kind, and restrictions such as sealing.
 ///
 /// Not what a caller asked of a call: that is MapOptions, and a request that
 /// outlives the call is translated into a flag here at creation. See
@@ -65,8 +63,6 @@ enum class VmaFlags : u32 {
     Share = 3_bit,
     PermMask = Write | Read | Exec | Share,
 
-    // States
-    Active = 0x10000,
     Pinned = 0x20000,
 
     // Features.
@@ -179,8 +175,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
 
     /// What this area allows mappings under it, or what this mapping's
     /// protection may ever be raised to: the ceiling, as permission bits.
-    /// Read without the aspace lock: the permission bits are fixed when the
-    /// object is built, and only the state bits (Active) change after.
+    /// Read without the aspace lock because the attributes are immutable.
     [[nodiscard]]
     FORCE_INLINE
     auto permissions() const -> VmaFlags {
@@ -195,7 +190,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     [[nodiscard]]
     FORCE_INLINE
     auto is_active() const -> bool {
-        return !!(m_vmaf & VmaFlags::Active);
+        return m_state == State::Active;
     }
 
     FORCE_INLINE
@@ -427,11 +422,8 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
 
     FORCE_INLINE
     auto mark_active() -> void {
-        m_vmaf |= VmaFlags::Active;
+        m_state = State::Active;
     }
-
-    TA_REQUIRES(get_lock())
-    virtual auto activate() -> Status;
 
     /// This routine by default just remove itself.
     TA_REQUIRES(get_lock())
@@ -446,9 +438,20 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     char const *m_name;
     VirtAddr m_base;
     usize m_size;
-    VmaFlags m_vmaf;
+    VmaFlags const m_vmaf;
     VmArea *m_parent;
     ustl::Arc<VmAspace> m_aspace;
+
+  private:
+    enum class State : u8 {
+        /// Constructed but unpublished, or removed from the address space.
+        Inactive,
+
+        /// Registered with every index required by this node.
+        Active,
+    };
+
+    State m_state = State::Inactive;
 };
 
 /// Areas are held by pointer: the tree allocates only its own node storage,

@@ -519,3 +519,48 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Publish mappings only after registration succeeds (2026-11-04)
+
+**Files**
+
+- `kernel/mm/vm_area.cpp` owns child registration and removal.
+- `kernel/mm/vm_mapping.cpp` propagates registration failure and activates after both registrations.
+- `kernel/mm/vm_aspace.cpp` withdraws its own references on mapping teardown.
+- `kernel/commands/vma_seal_test.cpp` exercises duplicate insertion and overlapping reservations.
+
+**Symptom**
+
+Failed insertion could return an active mapping or sub-area absent from address lookup. Mapping teardown also decremented an unused count that reservation never incremented.
+
+**Cause**
+
+Activation marked the node active before insertion, and both factories discarded insertion errors. The lifecycle bit shared a mutable word with the permission ceiling, which callers read without the address-space lock. Teardown also reached into two address-space indexes.
+
+**Change**
+
+`link_child_locked` returns the tree result. The factories release unpublished storage on failure. Mapping activation sets its lifecycle state after both registrations. The permission ceiling is immutable, and active checks that can race teardown run under the address-space lock. Removal checks object identity. The address space clears its own indexes when notified by teardown.
+
+**Reference**
+
+Zircon `VmMapping::ActivateLocked` and `VmAddressRegion::Activate`.
+
+**Verification**
+
+Changed lines passed clang-format and clang-tidy. Both development images booted and 163 host tests passed. Seal, snapshot and large-page suites passed 18, 259 and 28 checks. A duplicate exercises registration failure without exhausting kernel memory.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The ownership review followed the result from `VmaSet::insert` to both creation paths and traced references through destruction.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

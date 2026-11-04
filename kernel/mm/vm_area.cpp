@@ -44,7 +44,6 @@ GKTL_INIT_HOOK(VmaCacheInit, init_vma_cache, gktl::InitLevel::Heap);
 VmArea::VmArea(VirtAddr base, usize size, VmaFlags vmaf, Self *parent, VmAspace *aspace,
                char const *name)
     : Base(gktl::magic<Self>(), base, size, vmaf, parent, aspace, name)
-    , m_num_mappings()
     , m_subvmas() {}
 
 auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *parent,
@@ -56,19 +55,14 @@ auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *par
     if (!self) {
         return Status::OutOfMem;
     }
-    if (!parent) {
-        // A root VMA has no parent so just mark it active.
-        self->mark_active();
-    } else {
-        // Created under the parent's lock, which is this area's too: both
-        // live in one address space. Asserted, because the analysis does not
-        // follow the lock from create_subvma() through Builder to here.
-        self->get_lock().assert_held();
-        // FIXME: an insert that fails (OutOfMem) leaves the area active and
-        // unlinked; it should unwind instead. docs/repairs/261002/mm.md,
-        // item 2.
-        auto _ = self->activate();
+    if (parent) {
+        parent->get_lock().assert_held();
+        if (auto const status = parent->link_child_locked(*self); Status::Ok != status) {
+            VmaCache::put(self);
+            return status;
+        }
     }
+    self->mark_active();
 
     *out = ustl::Arc<VmArea>::adopt(self);
     return Status::Ok;
@@ -212,9 +206,21 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
         return status;
     }
     *out = ustl::downcast<VmMapping>(ustl::move(out_aom));
-    m_num_mappings += 1;
-
     return Status::Ok;
+}
+
+auto VmArea::link_child_locked(VmAreaOrMapping &child) -> Status {
+    DEBUG_ASSERT(child.m_parent == this);
+    if (!is_active()) {
+        return Status::BadState;
+    }
+    return m_subvmas.insert(child);
+}
+
+auto VmArea::unlink_child_locked(VmAreaOrMapping &child) -> void {
+    DEBUG_ASSERT(child.m_parent == this);
+    child.m_parent = nullptr;
+    m_subvmas.erase(child);
 }
 
 /// Picks where a new child goes. Called with the address space lock held, and
@@ -605,6 +611,7 @@ auto VmArea::unmap_locked(VirtAddr base, usize size, VmAreaOpChildren const op_c
 /// does, and a nested area recurses.
 auto VmArea::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     m_canary.verify<Self>();
+    Guard guard{get_lock()};
 
     if (!is_active()) {
         return Status::BadState;
@@ -625,8 +632,6 @@ auto VmArea::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     if (!validate_mmuflags(mmuf)) {
         return Status::InvArgs;
     }
-
-    Guard guard{get_lock()};
 
     // Ask before doing. A protect that fails halfway would leave the first
     // children rewritten and the rest untouched, with nothing in the return
@@ -817,6 +822,9 @@ auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const 
         if (!(m_vmaf & VmaFlags::CanMapSpecific)) {
             return Status::AccessDenied;
         }
+        if (m_subvmas.has_range(aligned_base, size)) {
+            return Status::AlreadyExists;
+        }
         status = VmMapping::create(this, aligned_base, size, m_vmaf & ~VmaFlags::CanMapSpecific,
                                    ustl::move(vmo), 0, mmuf, name, &mapping);
     }
@@ -895,7 +903,6 @@ auto VmArea::destroy() -> Status {
         curr = parent ? ustl::adopt<Self, ustl::sync::ThreadSafePolicy>(parent) : ustl::Arc<Self>();
     }
 
-    m_num_mappings = 0;
     return first_error;
 }
 

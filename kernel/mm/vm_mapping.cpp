@@ -148,9 +148,10 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
     // Created under the parent area's lock, which is the new mapping's too.
     // Asserted, because the analysis does not follow it through Builder.
     mapping->get_lock().assert_held();
-    // FIXME: the same unwinding is missing as below. docs/repairs/260908/heap.md,
-    // item 4.
-    auto _ = mapping->activate();
+    if (status = mapping->activate(); Status::Ok != status) {
+        VmMappingCache::put(mapping);
+        return status;
+    }
 
     *out = ustl::Arc<Self>::adopt(mapping);
     return Status::Ok;
@@ -159,10 +160,10 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
 auto VmMapping::activate() -> Status {
     m_canary.verify<Self>();
 
-    // FIXME: an insert that fails (OutOfMem) leaves this mapping unlinked yet
-    // answered Ok, and the VMO's list takes it below all the same.
-    // docs/repairs/260908/heap.md, item 4.
-    auto _ = Base::activate();
+    m_parent->get_lock().assert_held();
+    if (auto const status = m_parent->link_child_locked(*this); Status::Ok != status) {
+        return status;
+    }
 
     // Note when a mapping was added into a VMO's mapping list, the inside counter
     // has not been increased implicitly. It is required to pay attention to manually
@@ -172,6 +173,7 @@ auto VmMapping::activate() -> Status {
     // VmObject::add_mapping().
     Guard guard{m_vmo->lock()};
     m_vmo->add_mapping(*this);
+    mark_active();
 
     return Status::Ok;
 }
@@ -180,35 +182,13 @@ auto VmMapping::destroy() -> Status {
     m_canary.verify<Self>();
 
     // Once only. Everything below undoes something activate() did exactly
-    // once -- the VMO's list, the parent's count and set -- so a second pass
-    // would unlink a node that is no longer linked and count the parent down
-    // twice.
+    // once, so a second pass would remove an already unlinked node.
     if (!is_active()) {
         return Status::BadState;
     }
 
-    // The address space's last-fault cache may be this mapping, and it holds
-    // a reference: left there, it would keep the mapping -- and through it the
-    // VMO and the address space itself -- alive after the mapping is gone,
-    // and hand the next fault in this range a mapping that no longer covers
-    // anything. Cleared first, because clearing it is right whatever happens
-    // below.
-    if (m_aspace->m_last_fault.as_ptr() == this) {
-        m_aspace->m_last_fault = {};
-    }
-
-    // The address space's vDSO, if this mapping is the one registered as it:
-    // the registration goes with the mapping, before the pages do, so that
-    // the range a system call is accepted from never outlives the code it
-    // was registered for. Under this lock nothing new can be mapped where the
-    // code is until both are gone. Only one caller gets here with a
-    // registered mapping: the undo of the vma_map that registered it, which
-    // could not report the address (VmArea::destroy_child()). The mapping is
-    // sealed, so no unmap reaches it, and the address space's teardown takes
-    // it out of m_vdso_mapping before destroying anything.
-    if (m_aspace->m_vdso_mapping.as_ptr() == this) {
-        m_aspace->withdraw_vdso_locked();
-    }
+    m_aspace->get_lock().assert_held();
+    m_aspace->on_mapping_destroyed_locked(*this);
 
     // Take the mapping out of the page tables first, but do not let a failure
     // here abandon the bookkeeping below. This used to return early, which left
@@ -234,9 +214,6 @@ auto VmMapping::destroy() -> Status {
             m_vmo->remove_mapping(*this);
         }
         m_vmo = {};
-    }
-    if (m_parent) {
-        m_parent->m_num_mappings -= 1;
     }
     // Unlinking cannot fail: VmAreaOrMapping::destroy() answers only Ok.
     auto _ = Base::destroy();
@@ -455,6 +432,7 @@ auto VmMapping::map(VirtAddr base, usize size, MapOptions const mode) -> Status 
 
 auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     m_canary.verify<Self>();
+    Guard guard{get_lock()};
 
     if (!is_active()) {
         return Status::BadState;
@@ -465,7 +443,6 @@ auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
         return Status::InvArgs;
     }
 
-    Guard guard{get_lock()};
     base = ustl::round_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvArgs;
@@ -595,6 +572,7 @@ auto VmMapping::range_change_locked_object(usize const vmo_offset, usize const l
 
 auto VmMapping::unmap(VirtAddr base, usize size, UnmapOptions options) -> Status {
     m_canary.verify<Self>();
+    Guard guard{get_lock()};
 
     if (!is_active()) {
         return Status::BadState;
@@ -605,7 +583,6 @@ auto VmMapping::unmap(VirtAddr base, usize size, UnmapOptions options) -> Status
         return Status::InvArgs;
     }
 
-    Guard guard{get_lock()};
     base = ustl::round_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvArgs;

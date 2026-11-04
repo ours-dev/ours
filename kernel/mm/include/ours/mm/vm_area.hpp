@@ -283,7 +283,12 @@ class VmArea final: public VmAreaOrMapping {
     // For Enumerator's VmArea overload, which reaches m_subvmas.
     friend class VmaSet;
 
-    usize m_num_mappings;
+    TA_REQUIRES(get_lock())
+    auto link_child_locked(VmAreaOrMapping &child) -> Status;
+
+    TA_REQUIRES(get_lock())
+    auto unlink_child_locked(VmAreaOrMapping &child) -> void;
+
     VmaSet m_subvmas;
 };
 
