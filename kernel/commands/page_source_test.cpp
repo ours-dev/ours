@@ -356,7 +356,8 @@ namespace {
         Rig rig;
         ustl::Arc<mm::VmCowPages> node;
         if (make_rig(&rig) != Status::Ok ||
-            mm::VmCowPages::with_source(rig.source, mm::ALLOC_USER, 3 * P, &node) != Status::Ok) {
+            mm::VmCowPages::create_external(rig.source, mm::ALLOC_USER, 3 * P, &node) !=
+                Status::Ok) {
             verdict(tally, false, "a node with a source is made for the marker checks");
             return;
         }
@@ -642,8 +643,8 @@ namespace {
         // Pages 0 to 3 are mapped and faulted on; 4 to 6 are reached through
         // the VMO's own copies only.
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 9 * P,
-                                                               mm::VmoFlags::Lazy, &vmo);
+        if (auto const status = mm::VmObjectPaged::create_external(rig.source, mm::ALLOC_USER,
+                                                                   9 * P, mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
             log::error("pagesource.test: could not make the VMO: {}", to_string(status));
             tally.failed += 1;
@@ -767,8 +768,8 @@ namespace {
         auto &provider = *rig.provider;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 2 * P,
-                                                               mm::VmoFlags::Lazy, &vmo);
+        if (auto const status = mm::VmObjectPaged::create_external(rig.source, mm::ALLOC_USER,
+                                                                   2 * P, mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
             log::error("pagesource.test: could not make the VMO to populate: {}",
                        to_string(status));
@@ -863,8 +864,8 @@ namespace {
         // The object with a source: page 3 supplied already, page 2 waited on.
         ustl::Arc<mm::VmObjectPaged> dst;
         auto const dst_made =
-            mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 4 * P, mm::VmoFlags::Lazy,
-                                           &dst) == Status::Ok &&
+            mm::VmObjectPaged::create_external(rig.source, mm::ALLOC_USER, 4 * P,
+                                               mm::VmoFlags::Lazy, &dst) == Status::Ok &&
             supply(*dst, 3 * P, P) == Status::Ok;
         auto dst_map = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
                                           ustl::Arc<mm::VmObject>(dst), mm::VmMapOption::None,
@@ -950,8 +951,8 @@ namespace {
         auto &provider = *rig.provider;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 3 * P,
-                                                               mm::VmoFlags::Lazy, &vmo);
+        if (auto const status = mm::VmObjectPaged::create_external(rig.source, mm::ALLOC_USER,
+                                                                   3 * P, mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
             log::error("pagesource.test: could not make the VMO to detach: {}", to_string(status));
             tally.failed += 1;

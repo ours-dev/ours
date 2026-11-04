@@ -437,8 +437,8 @@ auto VmCowPages::create(Gaf const alloc_flags, usize const size, Flags const fla
                      out);
 }
 
-auto VmCowPages::with_source(ustl::Arc<PageSource> src, Gaf const alloc_flags, usize const size,
-                             ustl::Arc<VmCowPages> *const out) -> Status {
+auto VmCowPages::create_external(ustl::Arc<PageSource> src, Gaf const alloc_flags, usize const size,
+                                 ustl::Arc<VmCowPages> *const out) -> Status {
     DEBUG_ASSERT(src);
 
     ustl::Arc<VmCowPages> node;

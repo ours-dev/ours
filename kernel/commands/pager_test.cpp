@@ -210,8 +210,8 @@ namespace {
         }
         out->proxy = proxy.downgrade();
         out->source = source.downgrade();
-        return mm::VmObjectPaged::with_source(source, mm::ALLOC_USER, pages * P, mm::VmoFlags::Lazy,
-                                              &out->vmo) == Status::Ok;
+        return mm::VmObjectPaged::create_external(source, mm::ALLOC_USER, pages * P,
+                                                  mm::VmoFlags::Lazy, &out->vmo) == Status::Ok;
     }
 
     /// Both halves of the cycle are gone: neither the proxy nor its source is

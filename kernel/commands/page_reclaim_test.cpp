@@ -131,8 +131,8 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> vmo;
         if (mm::PageSource::create(ustl::Arc<mm::PageProvider>::adopt(made), &source) !=
                 Status::Ok ||
-            mm::VmObjectPaged::with_source(source, mm::ALLOC_USER, nr_pages * P, mm::VmoFlags::Lazy,
-                                           &vmo) != Status::Ok) {
+            mm::VmObjectPaged::create_external(source, mm::ALLOC_USER, nr_pages * P,
+                                               mm::VmoFlags::Lazy, &vmo) != Status::Ok) {
             return {};
         }
         return vmo;

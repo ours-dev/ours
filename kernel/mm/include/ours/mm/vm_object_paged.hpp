@@ -64,14 +64,14 @@ class VmObjectPaged: public VmObject {
     /// A VMO of |size| bytes whose pages come from |source| rather than being
     /// zero: a fault on a page nobody has supplied raises a request against the
     /// source and sleeps until the provider supplies it (supply_pages()). See
-    /// VmCowPages::with_source().
+    /// VmCowPages::create_external().
     ///
     /// Nothing is committed, whatever |vmof| says: there is nothing to commit
     /// until the provider supplies it. So Pinned, which promises that no access
     /// faults, is InvArgs. On any failure the source is closed, as the VMO
     /// would have closed it.
-    static auto with_source(ustl::Arc<PageSource> source, Gaf alloc_flags, usize size, Flags vmof,
-                            ustl::Arc<VmObjectPaged> *out) -> Status;
+    static auto create_external(ustl::Arc<PageSource> source, Gaf alloc_flags, usize size,
+                                Flags vmof, ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// A VMO that takes over |size| bytes of frames at |base|, reserved since
     /// boot, as its own pages: no allocation and no copy, and when the VMO
@@ -161,7 +161,7 @@ class VmObjectPaged: public VmObject {
     auto take_pages(usize, usize, VmPageSpliceList *) -> Status override;
 
     /// Puts the slots of |pages| at [offset, offset + size) of an object made
-    /// by with_source(), and wakes the faults waiting on them (see
+    /// by create_external(), and wakes the faults waiting on them (see
     /// VmCowPages::supply_pages_locked()). Page aligned, an unread list of
     /// size / PAGE_SIZE slots, InvArgs otherwise; OutOfRange past the end.
     /// Only SupplyOption::AutoRelease: a slot already full keeps what it has
@@ -178,7 +178,7 @@ class VmObjectPaged: public VmObject {
 
     /// A page nobody has written reads as zero. Reading it commits a zeroed
     /// page, as a fault would (VmCowPages::Cursor::require_page()). In a
-    /// VMO made by with_source() there is no such page: the read waits until
+    /// VMO made by create_external() there is no such page: the read waits until
     /// the provider supplies it, and fails if the provider fails it. The same
     /// holds for write(), read_user() and write_user().
     auto read(void *out, usize offset, usize size) -> Status override;

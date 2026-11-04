@@ -95,8 +95,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// Such a node has no children: create_child() and create_clone_locked()
     /// refuse it with NotSupported, because a lookup from a child stops at the
     /// root without asking the root's source.
-    static auto with_source(ustl::Arc<PageSource> src, Gaf alloc_flags, usize size,
-                            ustl::Arc<VmCowPages> *out) -> Status;
+    static auto create_external(ustl::Arc<PageSource> src, Gaf alloc_flags, usize size,
+                                ustl::Arc<VmCowPages> *out) -> Status;
 
     /// A node of |size| bytes hanging under |parent|, in the parent's tree.
     ///

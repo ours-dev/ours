@@ -131,3 +131,45 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Name the external VMO factory create_external (2026-11-04)
+
+**Files**
+
+- The paged VMO and COW node factories, pager dispatcher and their test callers.
+
+**Symptom**
+
+The `with_source()` name was inconsistent with the other VMO factory names.
+
+**Cause**
+
+The factory described its argument without naming the creation operation.
+
+**Change**
+
+`with_source()` becomes `create_external()` at both layers and at their call sites.
+
+**Reference**
+
+Zircon's `VmObjectPaged::CreateExternal` and `VmCowPages::CreateExternal`.
+
+**Verification**
+
+Clang-format and clang-tidy checked all nine C++ files. Both dev images booted and all 163 host tests passed in the default and four-node NUMA configurations. The targeted pager, page source, queue and reclaim suites passed 132 checks in default and 120 in NUMA.
+
+**Deliberately not done**
+
+The change covers the external factory name.
+
+**How it was found**
+
+The user asked to align this factory with the Zircon vocabulary.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.
