@@ -54,7 +54,7 @@ auto PmtDispatcher::run_at_locked(BtiDispatcher::Pin &pin, u64 const offset, u64
         status = pin.vmo->lookup_contiguous(pin.offset + offset, length, &first);
     }
     if (status == Status::Ok) {
-        out = {.address = first, .size = length};
+        out = {.address = std::to_underlying(first), .size = length};
         return Status::Ok;
     }
     if (status == Status::BadState) {
@@ -103,7 +103,7 @@ auto PmtDispatcher::query_pieces(u64 const piece_size, u64 const first_piece,
         if (run.size < length) {
             return Status::InternalError;
         }
-        out[at] = run.address;
+        out[at] = PhysAddr{run.address};
     }
     return Status::Ok;
 }

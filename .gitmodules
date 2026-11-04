@@ -7,9 +7,6 @@
 [submodule "system/lib/bits"]
 	path = system/lib/bits
 	url = git@github.com:ours-dev/bits.git
-[submodule "system/lib/boost.container"]
-	path = system/lib/boost.container
-	url = https://github.com/boostorg/container.git
 [submodule "vendor/cxxopt"]
 	path = vendor/cxxopt
 	url = https://github.com/jarro2783/cxxopts.git

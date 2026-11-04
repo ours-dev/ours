@@ -111,7 +111,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 
 规则：
 - **命名**：对象层和 ABI 统一叫 Vma（`VmaDispatcher`、`ours_vma_*`、`RIGHTS_DEFAULT_VMA`、`HandleType::VmaRoot`、`ObjectType::Vma`），与 mm 的 `VmArea` 同名同义，不用 Zircon 的 Vmar（用户决定，2026-09-28）。数值（句柄类型 0x04、对象类型 18、选项位）仍照 Zircon。
-- **dispatcher 签名不再暴露 mm 类型**：`VmaDispatcher::map(VmOptions, usize vma_offset, VmoDispatcher &, u64 vmo_offset, usize length, char const *name) -> Result<VirtAddr>`（K21a 落地，2026-09-28）。照 Zircon 的 `VmAddressRegionDispatcher::Map()`，不收 rights：系统调用把两边句柄的 rights 换成 CanMap* 位，dispatcher 把 CanMap* 存成映射上限；内核调用方没有句柄，直接写出它要的 Perm* 和 CanMap*。翻译成 MmuFlags/VmPlacement 的工作在 dispatcher 内完成。偏移一律是字节偏移。
+- **dispatcher 签名不再暴露 mm 类型**：`VmaDispatcher::map(VmOptions, usize vma_offset, VmoDispatcher &, u64 vmo_offset, usize length, char const *name) -> Result<VirtAddr>`（K21a 落地，2026-09-28）。照 Zircon 的 `VmAddressRegionDispatcher::Map()`，不收 rights：系统调用把两边句柄的 rights 换成 CanMap* 位，dispatcher 把 CanMap* 存成映射上限；内核调用方没有句柄，直接写出它要的 Perm* 和 CanMap*。翻译成 MmuFlags 和 VirtAddr（含 VirtAddr::Anywhere）的工作在 dispatcher 内完成。偏移一律是字节偏移。
 - **提交策略**：用户的 `vmo_create` 一律按需提交（Lazy）；`create_paged(Pinned)` 只留给内核内部使用（userboot 的栈、vDSO、BootFS）。
 - **映射上限**：`vma_map` 从第一天起就保存 per-mapping 上限，即 vma rights ∩ vmo rights ∩ 区域的 CanMap*。`vma_protect` 必须和这个上限在同一个提交里上线。今天 `vm_area.cpp:136-143` 直接拿区域的 `m_vmaf` 当上限，只读 BootFS 会因此被 protect 成可写。
 - **W^X**：系统调用层拒绝 PermWrite+PermExecute 的映射；launcher 为每个 PT_LOAD 建一个 VMO，按 p_flags 映射。`RIGHTS_DEFAULT_VMO` 不带 Execute，可执行句柄只能经 `vmo_replace_as_executable` 用 vmex 换出（K19）。 **Extended 2026-10-03:** `VmaDispatcher::map()` refuses it too, for every caller, so the kernel's own mappings are held to W^X as a program's are; the kernel's loader maps every image by segment, RELRO read-only, as the launcher does.
@@ -586,7 +586,7 @@ P1 的前置：
 | 64 KiB 消息 | ipc | 推迟到 P1-D | 要等 BufferChain；vmalloc 有区间数限制，vfree 没有 shootdown |
 | exception channel、thread_read_state | task | 推迟到 P2 | init 用 TERMINATED、ProcessInfo 的 retcode 加内核打印的故障报告就能监督；异常通道是给调试器和崩溃报告器的 |
 | SuspendToken、Profile、JobPolicy、job_set_critical 系统调用 | task | P2 | 服务于调试、安全加固、实时性 |
-| Vma 的 CanMapSpecific / SpecificOverwrite | memory | P2 | `VmPlacement::at` 遇到已占用地址一律拒绝。CanMapSpecific done 2026-10-02: the user chose Zircon's rule over accepting the bit unenforced or deferring it (`docs/changes/261002/object.md`); SpecificOverwrite stays P2 |
+| Vma 的 CanMapSpecific / SpecificOverwrite | memory | P2 | 固定 VirtAddr 遇到已占用地址一律拒绝。CanMapSpecific done 2026-10-02: the user chose Zircon's rule over accepting the bit unenforced or deferring it (`docs/changes/261002/object.md`); SpecificOverwrite stays P2 |
 | 在 ABI 里给 Profile 预留 Deadline 字段 | task | 否决（暂不进 ABI） | 调度器还没有这些参数，不预留可能写错的字段 |
 | 删除 ProcessDispatcher 的进程树成员 | task | 暂缓 | 可能是预留的脚手架，先问主人 |
 | 用 vdso_only 属性或隐藏符号当安全边界 | object_model、resource | 否决 | 精确的 sysret 校验落地之前，跳进桩就能陷入 |

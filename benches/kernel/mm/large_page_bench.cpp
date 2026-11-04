@@ -99,7 +99,7 @@ namespace {
             }
             auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
             auto mapped = m_aspace->root_vma()->map_with_vmo(
-                mm::VmPlacement::anywhere(), SIZE, 0, rw, mm::VmaFlags::PermMask, m_vmo,
+                VirtAddr::Anywhere, SIZE, 0, rw, mm::VmaFlags::PermMask, m_vmo,
                 mm::VmMapOption::None, "largepage.bench");
             if (mapped.is_err()) {
                 return mapped.unwrap_err();
@@ -143,7 +143,7 @@ namespace {
         ustl::Arc<mm::VmAspace> m_aspace;
         mm::VmAspace *m_previous = nullptr;
         ustl::Arc<mm::VmObjectPaged> m_vmo;
-        VirtAddr m_base = 0;
+        VirtAddr m_base = VirtAddr{0};
     };
 
     /// Writes a byte at every |stride| bytes of the mapping, and adds the
@@ -174,7 +174,7 @@ namespace {
     /// or by a page table of 4 KiB entries.
     auto count_windows(Scratch &scratch, Numbers &numbers) -> void {
         for (usize window = 0; window < WINDOWS; ++window) {
-            PhysAddr pa = 0;
+            PhysAddr pa{};
             mm::MmuFlags flags{};
             usize size = 0;
             auto const va = scratch.base() + window * LARGE;

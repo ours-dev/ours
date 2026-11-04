@@ -11,7 +11,7 @@ namespace ours::phys {
 /// A retained physical payload.  `present` distinguishes an absent
 /// item from an explicitly present zero-length payload.
 struct PackagePayloadHandoff {
-    PhysAddr base = 0;
+    PhysAddr base{};
     usize size = 0;
     bool present = false;
     u8 reserved[sizeof(usize) - 1] = {};
@@ -22,9 +22,9 @@ struct PackagePayloadHandoff {
             return false;
         }
         if (!present) {
-            return base == 0 && size == 0;
+            return base == PhysAddr{0} && size == 0;
         }
-        return base != 0 && size <= std::numeric_limits<PhysAddr>::max() - base;
+        return base != PhysAddr{0} && size <= PhysAddr{~0_usize} - base;
     }
 
     [[nodiscard]]
@@ -32,7 +32,7 @@ struct PackagePayloadHandoff {
         if (!valid()) {
             return false;
         }
-        if (range_size > std::numeric_limits<PhysAddr>::max() - range_base) {
+        if (range_size > PhysAddr{~0_usize} - range_base) {
             return false;
         }
         if (!present) {

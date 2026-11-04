@@ -146,7 +146,7 @@ auto validate_ranged_resource(ResourceDispatcher const &resource, RsrcKind const
 
     // The same for MmIo, and for the same reason: the root covers all the
     // physical address space, the kernel's own memory and devices included.
-    if (kind == RsrcKind::MmIo && platform::touches_kernel_physical(base, size)) {
+    if (kind == RsrcKind::MmIo && platform::touches_kernel_physical(PhysAddr{base}, size)) {
         return Status::AccessDenied;
     }
     return Status::Ok;

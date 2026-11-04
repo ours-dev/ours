@@ -19,6 +19,7 @@
 #include <format>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace ours {
 /// Where a failed ASSERT ends: each environment defines it. The kernel and
@@ -75,7 +76,8 @@ namespace detail {
     /// as nothing at all: an assertion printed "Assertion failed on " and
     /// stopped, with the condition it had just failed on missing. A pointer or
     /// a string_view formats correctly, so decay the array to a string_view on
-    /// the way in. Everything else is forwarded untouched.
+    /// the way in. Enums without a formatter use their underlying integers;
+    /// everything else is forwarded untouched.
     ///
     /// ustl::fmt::decay_format_arg() is the same function, and logz4 uses it
     /// for the same reason. It is not shared with this file: panic.hpp lives
@@ -89,6 +91,8 @@ namespace detail {
         using Bare = std::remove_cvref_t<T>;
         if constexpr (std::is_array_v<Bare> && std::is_same_v<std::remove_extent_t<Bare>, char>) {
             return std::string_view(value);
+        } else if constexpr (std::is_enum_v<Bare> && !std::formattable<Bare, char>) {
+            return std::to_underlying(value);
         } else {
             return static_cast<T &&>(value);
         }

@@ -71,7 +71,7 @@ class VmArea final: public VmAreaOrMapping {
     /// wrong: VmArea::unmap_locked() handed VmMapping::unmap_locked() an
     /// offset where it wanted an address, and create_mapping() passed its VMA
     /// offset as the VMO offset. Neither could be seen at the call site,
-    /// because both spellings are a bare u64.
+    /// because both spellings were a bare u64.
     ///
     /// The one offset that stays an offset is |vmo_ofs|: it indexes into the
     /// object, which has no address of its own. Keeping exactly one offset in
@@ -80,7 +80,9 @@ class VmArea final: public VmAreaOrMapping {
     /// Internally the *_locked helpers were already absolute, so the
     /// conversions did not buy anything even inside the class.
 
-    /// Create a mapping of |size| bytes where |where| says.
+    /// Create a mapping at |where|, or choose a free spot for VirtAddr::Anywhere.
+    /// Zero is a concrete address. Other reserved values are InvArgs, and an
+    /// occupied fixed range is AlreadyExists; nothing is replaced.
     ///
     /// |mmuf| is the protection the pages get now; |ceiling| is what a later
     /// protect() may ever raise them to, as far as this area allows -- the
@@ -89,16 +91,16 @@ class VmArea final: public VmAreaOrMapping {
     /// what every mapping got before a ceiling could be asked for. |mmuf|
     /// must fit inside the result (InvArgs otherwise). A mapping is a leaf,
     /// so its ceiling is its own and handed on to nobody.
-    auto create_mapping(VmPlacement where, usize size, usize vmo_ofs, MmuFlags mmuf,
-                        VmaFlags ceiling, ustl::Arc<VmObject> vmo, char const *name,
-                        VmMapOption option, ustl::Arc<VmMapping> *out) -> Status;
+    auto create_mapping(VirtAddr where, usize size, usize vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
+                        ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
+                        ustl::Arc<VmMapping> *out) -> Status;
 
-    /// Create a sub-VMA of |size| bytes where |where| says.
+    /// Create a sub-VMA at |where|, with the same placement rules as create_mapping().
     ///
     /// |vmaf| is the new area's allowance, and it may narrow this area's but
     /// never widen it. Narrowing is the point: it is the ceiling every
     /// protect() under the new area is checked against.
-    auto create_subvma(VmPlacement where, usize size, VmaFlags vmaf, char const *name,
+    auto create_subvma(VirtAddr where, usize size, VmaFlags vmaf, char const *name,
                        VmMapOption option, ustl::Arc<Self> *out) -> Status;
 
     /// The two coarse-grained ways to get memory mapped into this area. They
@@ -117,11 +119,11 @@ class VmArea final: public VmAreaOrMapping {
     /// than left for a page fault to resolve.
 
     /// Map |size| bytes of physical memory starting at |phys_base|.
-    auto map_phys(PhysAddr phys_base, VmPlacement where, usize size, MmuFlags, VmMapOption,
+    auto map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags, VmMapOption,
                   char const *name) -> ktl::Result<ustl::Arc<VmMapping>>;
 
     /// Map |size| bytes of anonymous memory.
-    auto map_anon(VmPlacement where, usize size, MmuFlags, VmMapOption, char const *name)
+    auto map_anon(VirtAddr where, usize size, MmuFlags, VmMapOption, char const *name)
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
     /// Map |size| bytes of a VMO the caller already has.
@@ -141,7 +143,7 @@ class VmArea final: public VmAreaOrMapping {
     ///
     /// |vmo_ofs| is where in the object the mapping starts, and Commit
     /// commits from there; |ceiling| is create_mapping()'s.
-    auto map_with_vmo(VmPlacement where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
+    auto map_with_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
                       ustl::Arc<VmObject> vmo, VmMapOption option, char const *name)
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
@@ -250,7 +252,7 @@ class VmArea final: public VmAreaOrMapping {
     /// the object can be mapped as one leaf (decision D6 of
     /// .agents/tasks/large-pages). A child placed by its creator ignores it.
     TA_REQUIRES(get_lock())
-    auto create_subaom_preamble(VmPlacement where, usize size,
+    auto create_subaom_preamble(VirtAddr where, usize size,
                                 ustl::Option<usize> block_phase = ustl::NONE)
         -> ktl::Result<ustl::Pair<VirtAddr, usize>>;
 

@@ -57,13 +57,13 @@ struct ArchCpuLocal {
     template <typename Integer>
     FORCE_INLINE
     static auto read(VirtAddr handle) -> Integer {
-        return ::arch::read_gs_offset<Integer>(handle);
+        return ::arch::read_gs_offset<Integer>(std::to_underlying(handle));
     }
 
     template <typename Integer>
     FORCE_INLINE
     static auto write(VirtAddr handle, Integer value) -> void {
-        ::arch::write_gs_offset<Integer>(handle, value);
+        ::arch::write_gs_offset<Integer>(std::to_underlying(handle), value);
     }
 };
 

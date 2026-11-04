@@ -108,8 +108,8 @@ auto MemoryProvisioner::detect(obi::ContainerView const &package,
 }
 
 auto MemoryProvisioner::reserve_boot_image() -> void {
-    auto const phys_start = PhysAddr(PHYS_LOAD_START);
-    auto const phys_end = PhysAddr(PHYS_LOAD_END);
+    auto const phys_start = PhysAddr{reinterpret_cast<usize>(PHYS_LOAD_START)};
+    auto const phys_end = PhysAddr{reinterpret_cast<usize>(PHYS_LOAD_END)};
     auto const image = bootmem::Range::from(phys_start, phys_end - phys_start);
     if (image.is_err() ||
         m_memory.reserve(image.unwrap(), bootmem::MemoryType::PhysImage) != Status::Ok) {

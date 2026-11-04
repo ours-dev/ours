@@ -9,6 +9,7 @@ cpp_interface("headers") {
     "include/ustl/bit.hpp",
     "include/ustl/bitset.hpp",
     "include/ustl/box.hpp",
+    "include/ustl/dyn.hpp",
     "include/ustl/chrono/duration.hpp",
     "include/ustl/io/direct_memory.hpp",
     "include/ustl/io/binary_reader.hpp",
@@ -219,6 +220,12 @@ executable("rc-doc-examples-test") {
 executable("function-test") {
   testonly = true
   sources = [ "test/function_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("dyn-test") {
+  testonly = true
+  sources = [ "test/dyn_test.cpp" ]
   deps = [ ":headers" ]
 }
 
@@ -727,6 +734,7 @@ group("tests") {
     ":circular-slist-algorithms-test",
     ":common-slist-algorithms-headers-test",
     ":common-slist-algorithms-test",
+    ":dyn-test",
     ":enum-bits-test",
     ":foundation-headers-test",
     ":foundation-test",

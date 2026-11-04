@@ -69,7 +69,8 @@ namespace {
         if (process == nullptr) {
             return false;
         }
-        return process->vdso_contains(frame->ip - arch::SYSCALL_INSN_SIZE, arch::SYSCALL_INSN_SIZE);
+        return process->vdso_contains(VirtAddr{frame->ip - arch::SYSCALL_INSN_SIZE},
+                                      arch::SYSCALL_INSN_SIZE);
     }
 
     /// The answer to a trap that did not come through the vDSO: the process
@@ -89,7 +90,7 @@ namespace {
         // no process to kill for it.
         auto *const thread = object::ThreadDispatcher::current();
         ASSERT(thread, "a trap from a kernel thread at {:#x}", frame->ip);
-        thread->on_bad_syscall(frame->ax, frame->ip, frame->sp);
+        thread->on_bad_syscall(frame->ax, VirtAddr{frame->ip}, VirtAddr{frame->sp});
 
         // BadSyscall, not AccessDenied (design 4.5): AccessDenied is what a
         // handle lacking a right answers, and a program has to be able to tell

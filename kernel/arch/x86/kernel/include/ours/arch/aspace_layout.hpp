@@ -3,12 +3,18 @@
 #ifndef OURS_ARCH_ASPACE_LAYOUT_HPP
 #define OURS_ARCH_ASPACE_LAYOUT_HPP 1
 
-#define KERNEL_ASPACE_BASE 0xffffff8000000000UL
-#define KERNEL_ASPACE_SIZE 0x8000000000UL // 512 GiB
+#include <ours/mm/cfg.hpp>
+#include <ours/types.hpp>
 
-#define ARCH_PHYSMAP_PHYS_BASE 0
-#define ARCH_PHYSMAP_VIRT_BASE KERNEL_ASPACE_BASE
-#define ARCH_PHYSMAP_SIZE 0x800000000UL // 32 GiB
+namespace ours {
+
+inline constexpr auto KERNEL_ASPACE_BASE = VirtAddr{0xffffff8000000000UL};
+inline constexpr auto KERNEL_ASPACE_SIZE = usize{
+    0x8000000000UL - PAGE_SIZE}; // Leave the page containing reserved virtual values unmapped.
+
+inline constexpr auto ARCH_PHYSMAP_PHYS_BASE = PhysAddr{0};
+inline constexpr auto ARCH_PHYSMAP_VIRT_BASE = VirtAddr{KERNEL_ASPACE_BASE};
+inline constexpr auto ARCH_PHYSMAP_SIZE = usize{0x800000000UL}; // 32 GiB
 
 /// Virtual window per-CPU chunks may be placed in, taken from the gap between
 /// the physmap and the kernel image.
@@ -19,16 +25,17 @@
 /// large contiguous allocation, and lets each unit be backed from its own NUMA
 /// node -- so an architecture with no address space to spare simply reports
 /// `ArchCpuLocal::HAS_RESERVED_WINDOW == false` and does without.
-#define ARCH_CPU_LOCAL_VIRT_BASE (KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE)
-#define ARCH_CPU_LOCAL_CHUNK_SLOT 0x200000UL // 2 MiB
-#define ARCH_CPU_LOCAL_SIZE 0x4000000UL      // 64 MiB
+inline constexpr auto ARCH_CPU_LOCAL_VIRT_BASE = VirtAddr{KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE};
+inline constexpr auto ARCH_CPU_LOCAL_CHUNK_SLOT = usize{0x200000UL}; // 2 MiB
+inline constexpr auto ARCH_CPU_LOCAL_SIZE = usize{0x4000000UL};      // 64 MiB
 
-#define KERNEL_LOAD_BASE (KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE + 0x40000000UL) // 1 GiB
+inline constexpr auto KERNEL_LOAD_BASE =
+    VirtAddr{KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE + 0x40000000UL}; // 1 GiB
 
 /// The window mm::vmalloc() carves virtually-contiguous kernel allocations
 /// from.  Backed page by page from wherever the buddy allocator has room, so
 /// unlike the physmap there is no relationship at all between an address in
-/// here and a physical one -- PhysMap::virt_to_phys() answers zero for it.
+/// here and a physical one -- PhysMap::virt_to_phys() answers Invalid for it.
 ///
 /// Above the kernel image rather than in the gap below it, and that is a
 /// constraint rather than a preference: the gap between the per-CPU window
@@ -44,8 +51,9 @@
 /// tell a vmalloc pointer from a kmalloc one -- ktl::kfree() resolves its
 /// pointer through the physmap and cannot be asked about an address outside
 /// it.
-#define ARCH_VMALLOC_VIRT_BASE (KERNEL_ASPACE_BASE + 0x1000000000UL) // 64 GiB
-#define ARCH_VMALLOC_SIZE 0x100000000UL                              // 4 GiB
+inline constexpr auto ARCH_VMALLOC_VIRT_BASE =
+    VirtAddr{KERNEL_ASPACE_BASE + 0x1000000000UL};              // 64 GiB
+inline constexpr auto ARCH_VMALLOC_SIZE = usize{0x100000000UL}; // 4 GiB
 
 /// The user half of the canonical address space.
 ///
@@ -72,8 +80,9 @@
 /// 0x8000'0000'0000 -- non-canonical, which on Intel faults in ring 0 on the
 /// user's stack and %gs (see arch_is_valid_user_pc()). With the page unmappable
 /// no instruction can end there, so syscall.S returns without checking.
-#define USER_ASPACE_BASE 0x200000UL // 2 MiB
-#define USER_ASPACE_SIZE ((1UL << 47) - PAGE_SIZE - USER_ASPACE_BASE)
+inline constexpr auto USER_ASPACE_BASE = VirtAddr{0x200000UL}; // 2 MiB
+inline constexpr auto USER_ASPACE_SIZE =
+    usize{(1UL << 47) - PAGE_SIZE - std::to_underlying(USER_ASPACE_BASE)};
 
 /// The "restricted" sub-range, for address spaces that must stay within a
 /// smaller window than the full user half: the lower half of it,
@@ -81,6 +90,9 @@
 ///
 /// It was 0, which made ProcessDispatcher's PRIVATE_ASPACE_SIZE zero too --
 /// a private range of no bytes at all.
-#define USER_ASPACE_RESTRICTED_SIZE ((1UL << 46) - USER_ASPACE_BASE)
+inline constexpr auto USER_ASPACE_RESTRICTED_SIZE =
+    usize{(1UL << 46) - std::to_underlying(USER_ASPACE_BASE)};
+
+} // namespace ours
 
 #endif // #ifndef OURS_ARCH_ASPACE_LAYOUT_HPP

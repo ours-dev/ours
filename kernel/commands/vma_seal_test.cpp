@@ -94,16 +94,15 @@ namespace {
 
         Tally tally;
 
-        auto sealed = root->map_with_vmo(mm::VmPlacement::at(SEALED), 2 * PAGE_SIZE, 0, flags,
-                                         PERMS, make_vmo(2 * PAGE_SIZE), mm::VmMapOption::Sealed,
-                                         "vmaseal.test sealed");
-        auto plain =
-            root->map_with_vmo(mm::VmPlacement::at(PLAIN), PAGE_SIZE, 0, flags, PERMS,
-                               make_vmo(PAGE_SIZE), mm::VmMapOption::None, "vmaseal.test plain");
+        auto sealed =
+            root->map_with_vmo(SEALED, 2 * PAGE_SIZE, 0, flags, PERMS, make_vmo(2 * PAGE_SIZE),
+                               mm::VmMapOption::Sealed, "vmaseal.test sealed");
+        auto plain = root->map_with_vmo(PLAIN, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
+                                        mm::VmMapOption::None, "vmaseal.test plain");
         ustl::Arc<mm::VmArea> area;
-        auto const area_status = root->create_subvma(
-            mm::VmPlacement::at(AREA), 4 * PAGE_SIZE, PERMS | mm::VmaFlags::CanMapSpecific,
-            "vmaseal.test area", mm::VmMapOption::None, &area);
+        auto const area_status =
+            root->create_subvma(AREA, 4 * PAGE_SIZE, PERMS | mm::VmaFlags::CanMapSpecific,
+                                "vmaseal.test area", mm::VmMapOption::None, &area);
         verdict(tally, sealed.is_ok() && plain.is_ok() && area_status == Status::Ok,
                 "the mappings and the sub-area are made");
         if (tally.failed != 0) {
@@ -111,8 +110,8 @@ namespace {
             return 1;
         }
         auto inside =
-            area->map_with_vmo(mm::VmPlacement::at(AREA + PAGE_SIZE), PAGE_SIZE, 0, flags, PERMS,
-                               make_vmo(PAGE_SIZE), mm::VmMapOption::Sealed, "vmaseal.test inside");
+            area->map_with_vmo(AREA + PAGE_SIZE, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
+                               mm::VmMapOption::Sealed, "vmaseal.test inside");
         verdict(tally, inside.is_ok(), "a sealed mapping is made inside the sub-area");
 
         verdict(tally, root->unmap(SEALED, 2 * PAGE_SIZE) == Status::AccessDenied,

@@ -10,7 +10,7 @@ namespace {
     /// CPU's it is: the one that owns the RunQueue the entry point was handed.
     ///
     /// It used to be `Scheduler::Current::get()`, the *running* CPU's, on the
-    /// stated assumption that "every ISchedule entry point runs on the CPU
+    /// stated assumption that "every entry point of a discipline runs on the CPU
     /// whose RunQueue it was handed". That is not true and cannot be made true:
     /// Scheduler::do_unpark_thread() deliberately runs on the waking CPU and
     /// inserts into the target CPU's run queue under the target's lock, which
@@ -174,18 +174,12 @@ auto RoundRobin::on_thread_init(RunQueue &rq, Thread *thread) -> void {
     }
 }
 
-/// Pure virtual in ISchedule, so it has to exist; nothing calls it. A slice
+/// Required of every discipline, so it has to exist; nothing calls it. A slice
 /// ends at the CPU's preemption deadline, not on a tick.
 auto RoundRobin::on_thread_tick(RunQueue &, Thread *, bool) -> void {}
 
 auto RoundRobin::num_queued(RunQueue &rq) const -> usize {
     return rq.queue<Discipline::Normal>().num_queued();
 }
-
-/// Required, not decorative -- see the identical block at the end of fair.cpp:
-/// without an explicit instantiation the Schedule<> base's static
-/// REGISTRATION member is never emitted, the linker collects nothing into
-/// .task.schedules, and Scheduler::init() finds no discipline at all.
-template class Schedule<RoundRobin, Discipline::Normal>;
 
 } // namespace ours::task::sched

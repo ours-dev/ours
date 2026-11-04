@@ -7,67 +7,57 @@
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/types.hpp>
 
+#include <ustl/mem/align.hpp>
+
 namespace ours::mm {
 /// The `PhysMap` represents a region of the kernel where all of useful physical memory
 /// is mapped in one large chunk. It's up to the individual architecture to decide
 /// how much to map but it's usually a fairly large chunk at the base of the kernel
 /// address space.
 struct PhysMap {
-    constexpr static PhysAddr PHYS_BASE = ARCH_PHYSMAP_PHYS_BASE;
+    static constexpr auto PHYS_BASE = PhysAddr{ARCH_PHYSMAP_PHYS_BASE};
+    static constexpr auto VIRT_BASE = VirtAddr{ARCH_PHYSMAP_VIRT_BASE};
+    static constexpr usize SIZE = ARCH_PHYSMAP_SIZE;
+    static_assert(ustl::is_aligned(VIRT_BASE, MAX_PAGE_SIZE));
 
-    constexpr static VirtAddr VIRT_BASE = ARCH_PHYSMAP_VIRT_BASE;
-    static_assert(!(VIRT_BASE & ((MAX_PAGE_SIZE)-1)), "");
+    static constexpr auto is_valid_phys_addr(PhysAddr const addr) -> bool {
+        return addr >= PHYS_BASE && addr - PHYS_BASE < SIZE;
+    }
 
-    constexpr static usize SIZE = ARCH_PHYSMAP_SIZE;
-
-    template <typename T>
-    FORCE_INLINE
-    constexpr static auto is_valid_phys_addr(T phys_addr) -> bool {
-        static_assert(sizeof(usize) == sizeof(T));
-        return PHYS_BASE <= reinterpret_cast<PhysAddr>(phys_addr) &&
-               reinterpret_cast<PhysAddr>(phys_addr) - PHYS_BASE < SIZE;
+    static constexpr auto is_valid_virt_addr(VirtAddr const addr) -> bool {
+        return addr >= VIRT_BASE && addr - VIRT_BASE < SIZE;
     }
 
     template <typename T>
-    FORCE_INLINE
-    constexpr static auto is_valid_virt_addr(T virt_addr) -> bool {
-        static_assert(sizeof(usize) == sizeof(T));
-        return VIRT_BASE <= reinterpret_cast<VirtAddr>(virt_addr) &&
-               reinterpret_cast<VirtAddr>(virt_addr) - VIRT_BASE < SIZE;
+    static auto is_valid_virt_addr(T *const ptr) -> bool {
+        return is_valid_virt_addr(VirtAddr{reinterpret_cast<usize>(ptr)});
     }
 
-    template <typename T>
-    FORCE_INLINE
-    constexpr static auto phys_to_virt(T phys_addr) -> VirtAddr {
-        static_assert(sizeof(usize) == sizeof(T));
-        if (PhysMap::is_valid_phys_addr(phys_addr)) {
-            return VirtAddr(VIRT_BASE + (phys_addr - PHYS_BASE));
+    static constexpr auto phys_to_virt(PhysAddr const addr) -> VirtAddr {
+        if (is_valid_phys_addr(addr)) {
+            return VIRT_BASE + (addr - PHYS_BASE);
         }
-        return VirtAddr();
-    }
-
-    template <typename U, typename T>
-    FORCE_INLINE
-    constexpr static auto phys_to_virt(T phys_addr) -> U * {
-        static_assert(sizeof(usize) == sizeof(T));
-        return reinterpret_cast<U *>(PhysMap::phys_to_virt(phys_addr));
+        return VirtAddr::Invalid;
     }
 
     template <typename T>
-    FORCE_INLINE
-    constexpr static auto virt_to_phys(T virt_addr) -> PhysAddr {
-        static_assert(sizeof(usize) == sizeof(T));
-        if (PhysMap::is_valid_virt_addr(virt_addr)) {
-            return PhysAddr(PHYS_BASE + (reinterpret_cast<VirtAddr>(virt_addr) - VIRT_BASE));
+    static auto phys_to_virt(PhysAddr const addr) -> T * {
+        if (!is_valid_phys_addr(addr)) {
+            return nullptr;
         }
-        return PhysAddr();
+        return reinterpret_cast<T *>(std::to_underlying(phys_to_virt(addr)));
     }
 
-    template <typename U, typename T>
-    FORCE_INLINE
-    constexpr static auto virt_to_phys(T virt_addr) -> U * {
-        static_assert(sizeof(usize) == sizeof(T));
-        return reinterpret_cast<U *>(PhysMap::virt_to_phys(virt_addr));
+    static constexpr auto virt_to_phys(VirtAddr const addr) -> PhysAddr {
+        if (is_valid_virt_addr(addr)) {
+            return PHYS_BASE + (addr - VIRT_BASE);
+        }
+        return PhysAddr::Invalid;
+    }
+
+    template <typename T>
+    static auto virt_to_phys(T *const ptr) -> PhysAddr {
+        return virt_to_phys(VirtAddr{reinterpret_cast<usize>(ptr)});
     }
 };
 

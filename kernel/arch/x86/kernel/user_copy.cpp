@@ -27,10 +27,10 @@ static_assert(sizeof(X86UserCopyRet) == 16 && offsetof(X86UserCopyRet, cause) ==
 // The copy itself, in user_copy.S: one routine per SMAP setting, so that the
 // stac/clac window is written out and holds the copy and nothing else. See the
 // file's header for how a fault gets back here, and for what |resume_mask| does.
-extern "C" auto x86_user_copy(void *dst, void const *src, usize len, ours::VirtAddr *resume,
-                              ours::VirtAddr resume_mask) -> X86UserCopyRet;
-extern "C" auto x86_user_copy_smap(void *dst, void const *src, usize len, ours::VirtAddr *resume,
-                                   ours::VirtAddr resume_mask) -> X86UserCopyRet;
+extern "C" auto x86_user_copy(void *dst, void const *src, usize len, usize *resume,
+                              usize resume_mask) -> X86UserCopyRet;
+extern "C" auto x86_user_copy_smap(void *dst, void const *src, usize len, usize *resume,
+                                   usize resume_mask) -> X86UserCopyRet;
 
 namespace ours {
 namespace {
@@ -39,15 +39,15 @@ namespace {
     /// The two resume masks. Resolving leaves the exit's address untouched;
     /// capturing clears RUN_FAULT_HANDLER in it, which the page-fault handler
     /// reads as "hand this fault back, do not resolve it".
-    constexpr VirtAddr RESOLVE_FAULTS = ~VirtAddr(0);
-    constexpr VirtAddr CAPTURE_FAULTS = ~UserCopyState::RUN_FAULT_HANDLER;
+    constexpr usize RESOLVE_FAULTS = ~0_usize;
+    constexpr usize CAPTURE_FAULTS = ~UserCopyState::RUN_FAULT_HANDLER;
 
     // The flag rides in the exit's address, and the handler recovers the
     // address by setting the bit again. That is only lossless if every address
     // the exit can have -- every kernel address -- already has it set. The
     // kernel's half starts at KERNEL_ASPACE_BASE and runs to the top of the
     // address space, so checking the base is enough.
-    static_assert((KERNEL_ASPACE_BASE & UserCopyState::RUN_FAULT_HANDLER) != 0,
+    static_assert((std::to_underlying(KERNEL_ASPACE_BASE) & UserCopyState::RUN_FAULT_HANDLER) != 0,
                   "RUN_FAULT_HANDLER must be set in every kernel address");
 
     /// The variant this CPU can run -- the plain one where stac/clac would be
@@ -57,7 +57,7 @@ namespace {
     /// the range check admitted, which is the only range a fault may be
     /// resumed from.
     auto copy(void *const dst, void const *const src, usize const size, VirtAddr const user,
-              VirtAddr const resume_mask) -> X86UserCopyRet {
+              usize const resume_mask) -> X86UserCopyRet {
         auto &state = *task::X86Thread::current_user_copy();
         // Set means a copy is already in progress on this thread and this one
         // was entered from inside it -- from a fault handler, say. The inner
@@ -83,7 +83,7 @@ namespace {
                                 ? x86_user_copy_smap(dst, src, size, &state.resume, resume_mask)
                                 : x86_user_copy(dst, src, size, &state.resume, resume_mask);
 
-        state.user_base = 0;
+        state.user_base = VirtAddr{};
         state.user_size = 0;
 
         // Both exits of the copy close the window; the fault exit is the one

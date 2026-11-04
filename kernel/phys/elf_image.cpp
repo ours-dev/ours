@@ -97,7 +97,7 @@ auto ElfImage::allows_symbolic_tables() const -> bool {
 }
 
 auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
-    if (phys_addr > std::numeric_limits<PhysAddr>::max() - size()) {
+    if (phys_addr > PhysAddr{~0_usize} - size()) {
         return ustl::err(Status::OutOfRange);
     }
 
@@ -111,7 +111,7 @@ auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
             segment.content.size() != segment.file_size) {
             return ustl::err(Status::InvArgs);
         }
-        if (phys_addr > std::numeric_limits<PhysAddr>::max() - region.image_offset) {
+        if (phys_addr > PhysAddr{~0_usize} - region.image_offset) {
             return ustl::err(Status::OutOfRange);
         }
 
@@ -120,8 +120,9 @@ auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
             return ustl::err(Status::InvArgs);
         }
         auto const destination_address = phys_addr + region.image_offset;
-        if (alignment.value() > 1 && (destination_address % alignment.value()) !=
-                                         (region.virtual_start % alignment.value())) {
+        if (alignment.value() > 1 &&
+            (std::to_underlying(destination_address) % alignment.value()) !=
+                (region.virtual_start % alignment.value())) {
             return ustl::err(Status::InvArgs);
         }
 
@@ -136,8 +137,7 @@ auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
     }
 
     auto const entry_offset = m_load_plan.entry_offset();
-    if (entry_offset.is_none() ||
-        phys_addr > std::numeric_limits<PhysAddr>::max() - entry_offset.value()) {
+    if (entry_offset.is_none() || phys_addr > PhysAddr{~0_usize} - entry_offset.value()) {
         return ustl::err(Status::OutOfRange);
     }
     m_pa_load = phys_addr;
@@ -166,7 +166,7 @@ auto ElfImage::relocate(usize load_address) -> Status {
         return Status::InvArgs;
     }
 
-    m_va_load = load_address;
+    m_va_load = VirtAddr{load_address};
     return Status::Ok;
 }
 
@@ -344,7 +344,7 @@ auto ElfImage::relocate_and_bind(usize const load_address, SymbolBinder const &b
 }
 
 auto ElfImage::section(std::string_view const name) const -> std::span<u8 const> {
-    if (m_binary.is_none() || m_pa_load == 0) {
+    if (m_binary.is_none() || m_pa_load == PhysAddr{0}) {
         return {};
     }
 

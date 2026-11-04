@@ -23,7 +23,7 @@ auto arch_init_memory(Aspace *aspace) -> void {
     auto mem = global_bootmem();
 
     // VGA text memory is usable in neither memory-discovery path.
-    auto const vga = bootmem::Range::from(0xB0000, 0x10000);
+    auto const vga = bootmem::Range::from(PhysAddr{0xB0000}, 0x10000);
     if (vga.is_err() ||
         mem->reserve(vga.unwrap(), bootmem::MemoryType::Peripheral) != Status::Ok) {
         panic("Failed to reserve VGA memory");

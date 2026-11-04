@@ -144,8 +144,8 @@ namespace {
         // kernel's own virtual addresses would mean nothing.
         constexpr auto PHYSMAP_MMU_FLAGS =
             MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Present;
-        auto const physmap =
-            aspace->map(KERNEL_ASPACE_BASE, ARCH_PHYSMAP_SIZE / PAGE_SIZE, 0, PHYSMAP_MMU_FLAGS);
+        auto const physmap = aspace->map(KERNEL_ASPACE_BASE, ARCH_PHYSMAP_SIZE / PAGE_SIZE,
+                                         PhysAddr{0}, PHYSMAP_MMU_FLAGS);
         if (physmap.is_err()) {
             panic("Failed to map physmap area");
         }
@@ -215,7 +215,7 @@ auto physboot_init(PhysLoadHandoff const &handoff) -> void {
         kaslr_offset = gen_load_bias(1_gb);
     }
     auto const load_base = VirtAddr(KERNEL_LOAD_BASE + kaslr_offset);
-    if (auto const status = image.relocate(load_base); status != Status::Ok) {
+    if (auto const status = image.relocate(std::to_underlying(load_base)); status != Status::Ok) {
         panic("Failed to relocate the kernel image: {}", static_cast<u32>(status));
     }
 

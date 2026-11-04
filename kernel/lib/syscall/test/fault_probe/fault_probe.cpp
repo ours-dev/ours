@@ -99,7 +99,7 @@ auto pf_exec_vdso_data(ours::VirtAddr const vdso_base) -> void {
 /// write. While the kernel mapped a program as one range, read, write and
 /// execute, it went through.
 auto pf_write_text(ours::VirtAddr) -> void {
-    auto const code = reinterpret_cast<ours::VirtAddr>(&pf_write_text);
+    auto const code = ours::VirtAddr{reinterpret_cast<usize>(&pf_write_text)};
     __asm__ volatile("movb (%0), %%al\n\t"
                      "movb %%al, (%0)"
                      :
@@ -117,7 +117,7 @@ u8 RET_IN_DATA[] = {0xC3};
 /// the kernel mapped a program as one range, read, write and execute, the
 /// `ret` ran and the probe returned.
 auto pf_exec_data(ours::VirtAddr) -> void {
-    auto code = reinterpret_cast<ours::VirtAddr>(RET_IN_DATA);
+    auto code = ours::VirtAddr{reinterpret_cast<usize>(RET_IN_DATA)};
     // From here the compiler knows nothing of where |code| points: what is
     // called is whatever is there, not a call through a pointer to an object,
     // which it could take for undefined behaviour and drop.
@@ -159,7 +159,7 @@ constexpr char RODATA_BYTES[] = "read only";
 /// protection comes from the program header alone, with no RELRO to narrow
 /// it afterwards.
 auto pf_write_rodata(ours::VirtAddr) -> void {
-    auto const bytes = reinterpret_cast<ours::VirtAddr>(&RODATA_BYTES[0]);
+    auto const bytes = ours::VirtAddr{reinterpret_cast<usize>(&RODATA_BYTES[0])};
     __asm__ volatile("movb (%0), %%al\n\t"
                      "movb %%al, (%0)"
                      :

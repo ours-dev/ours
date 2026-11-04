@@ -326,6 +326,13 @@ function only when there is no state to guard.
 
 1. Macros remain the sanctioned tool for cross-cutting declarative annotations C++ has no other syntax for: invariants (`ASSERT`/`DEBUG_ASSERT`), thread-safety capabilities (`TA_*`), and intrusive-container hook boilerplate (`USTL_DECLARE_LIST`/`USTL_DECLARE_HOOK_OPTION`). Reuse the existing ones — don't write a parallel macro that does the same job under a different name.
 
+1. One more pair of macros is sanctioned, the user's call of 2026-11-03:
+   `USTL_DYN_MEMBER` and `USTL_DYN_MEMBER_OR` (`ustl/dyn.hpp`) declare the
+   dispatch of one method of a `ustl::Dyn` interface, because naming a
+   member is the one thing a template cannot do. They declare a struct and
+   nothing else; a dispatch with logic of its own is a hand-written struct
+   with a static call operator.
+
 1. C++26 reflection (`std::meta`) is *not* an established alternative to macros in this codebase yet, despite what "annotations after c++26" might suggest. `kernel/lib/gktl/include/gktl/dyn.hpp` and `gktl/experiment.hpp` are explicitly-named exploratory sketches — one doesn't even compile as written — and nothing else in the repo includes either file. Don't build new features on top of them, and don't present them to the user as a supported pattern; if a task genuinely seems to call for that direction, ask the user first rather than extending the sketch unprompted.
 
 ### Headers

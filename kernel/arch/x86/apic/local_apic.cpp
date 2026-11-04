@@ -845,7 +845,7 @@ auto init_local_apic() -> void {
     //
     // We map it to the same 4K region for all the local APICs.
     auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_phys(
-        arch::APIC_PHYS_BASE, mm::VmPlacement::anywhere(), PAGE_SIZE,
+        arch::APIC_PHYS_BASE, VirtAddr::Anywhere, PAGE_SIZE,
         // `Discache` is required to prevent
         mm::MmuFlags::Discache | mm::MmuFlags::Readable | mm::MmuFlags::Writable,
         mm::VmMapOption::Populate | mm::VmMapOption::Pinned, "Local-APIC");

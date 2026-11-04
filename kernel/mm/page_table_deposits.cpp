@@ -35,7 +35,7 @@ namespace {
 
 auto PageTableDeposits::reserve(PhysAddr const owner) -> bool {
     auto const table = alloc_page_table(PAGE_SIZE, PAGE_SIZE);
-    if (table == 0) {
+    if (table == PhysAddr{0}) {
         return false;
     }
     auto &body = body_of(owner);

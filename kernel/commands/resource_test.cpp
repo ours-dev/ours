@@ -236,7 +236,8 @@ namespace {
     auto lies_in(ustl::views::Span<platform::MmioRange const> const ranges, u64 const address)
         -> bool {
         return std::ranges::any_of(ranges, [&](platform::MmioRange const &range) {
-            return address >= range.base && address - range.base < range.size;
+            return address >= std::to_underlying(range.base) &&
+                   address - std::to_underlying(range.base) < range.size;
         });
     }
 
@@ -251,10 +252,10 @@ namespace {
     auto page_above_everything() -> u64 {
         auto top = u64{0};
         for (auto const &range: platform::kernel_ram()) {
-            top = std::max<u64>(top, range.base + range.size);
+            top = std::max<u64>(top, std::to_underlying(range.base) + range.size);
         }
         for (auto const &range: platform::kernel_mmio()) {
-            top = std::max<u64>(top, range.base + range.size);
+            top = std::max<u64>(top, std::to_underlying(range.base) + range.size);
         }
         return ustl::round_up(top, u64{PAGE_SIZE});
     }
@@ -301,8 +302,8 @@ namespace {
         log::info("resource.test:   {} runs of RAM, {} devices of the kernel's own", ram.size(),
                   devices.size());
         for (auto const &range: devices) {
-            log::info("resource.test:   device [{:#x}, {:#x})", range.base,
-                      range.base + range.size);
+            log::info("resource.test:   device [{:#x}, {:#x})", std::to_underlying(range.base),
+                      std::to_underlying(range.base) + range.size);
         }
         verdict(tally, !ram.empty(), "the kernel holds a copy of the RAM map");
         verdict(tally, !devices.empty(), "the platform names devices of its own");
@@ -320,10 +321,12 @@ namespace {
 
         auto whole_pages = true;
         for (auto const &range: ram) {
-            whole_pages = whole_pages && range.base % PAGE_SIZE == 0 && range.size % PAGE_SIZE == 0;
+            whole_pages = whole_pages && std::to_underlying(range.base) % PAGE_SIZE == 0 &&
+                          range.size % PAGE_SIZE == 0;
         }
         for (auto const &range: devices) {
-            whole_pages = whole_pages && range.base % PAGE_SIZE == 0 && range.size % PAGE_SIZE == 0;
+            whole_pages = whole_pages && std::to_underlying(range.base) % PAGE_SIZE == 0 &&
+                          range.size % PAGE_SIZE == 0;
         }
         verdict(tally, whole_pages, "every run is whole pages");
     }
@@ -359,7 +362,7 @@ namespace {
 
         auto ram_denied = usize{0};
         for (auto const &range: platform::kernel_ram()) {
-            if (refuses_around(resource, range.base, range.size)) {
+            if (refuses_around(resource, std::to_underlying(range.base), range.size)) {
                 ram_denied += 1;
             }
         }
@@ -368,7 +371,7 @@ namespace {
 
         auto device_denied = usize{0};
         for (auto const &range: platform::kernel_mmio()) {
-            if (refuses_around(resource, range.base, range.size)) {
+            if (refuses_around(resource, std::to_underlying(range.base), range.size)) {
                 device_denied += 1;
             }
         }
@@ -380,13 +383,16 @@ namespace {
         // as a byte the two disagree on.
         auto edges_agree = true;
         auto const probe = [&](platform::MmioRange const &range) {
-            if (range.base != 0) {
-                edges_agree = agrees_at(resource, range.base - 1) && edges_agree;
+            if (std::to_underlying(range.base) != 0) {
+                edges_agree =
+                    agrees_at(resource, std::to_underlying(range.base) - 1) && edges_agree;
             }
-            edges_agree = agrees_at(resource, range.base) && edges_agree;
-            edges_agree = agrees_at(resource, range.base + range.size - 1) && edges_agree;
-            if (range.base + range.size < space) {
-                edges_agree = agrees_at(resource, range.base + range.size) && edges_agree;
+            edges_agree = agrees_at(resource, std::to_underlying(range.base)) && edges_agree;
+            edges_agree =
+                agrees_at(resource, std::to_underlying(range.base) + range.size - 1) && edges_agree;
+            if (std::to_underlying(range.base) + range.size < space) {
+                edges_agree =
+                    agrees_at(resource, std::to_underlying(range.base) + range.size) && edges_agree;
             }
         };
         std::ranges::for_each(platform::kernel_ram(), probe);
@@ -395,7 +401,8 @@ namespace {
         if (!platform::kernel_ram().empty()) {
             answered(tally,
                      validate_ranged_resource(resource, RsrcKind::MmIo,
-                                              platform::kernel_ram()[0].base, 0),
+                                              std::to_underlying(platform::kernel_ram()[0].base),
+                                              0),
                      Status::Ok, "an empty request inside RAM grants nothing and touches nothing");
         }
 
@@ -407,7 +414,8 @@ namespace {
             return;
         }
         answered(tally,
-                 validate_ranged_resource(resource, RsrcKind::MmIo, mm::frame_to_phys(frame), page),
+                 validate_ranged_resource(resource, RsrcKind::MmIo,
+                                          std::to_underlying(mm::frame_to_phys(frame)), page),
                  Status::AccessDenied, "the root refuses a frame the page allocator handed out");
         mm::free_frames(frame, 0);
     }
@@ -438,12 +446,14 @@ namespace {
         auto const ram = platform::kernel_ram();
         if (!ram.empty()) {
             KernelHandle<ResourceDispatcher> over_ram;
-            answered(tally, mint(&over_ram, RsrcKind::MmIo, ram[0].base, ram[0].size, "ram"),
+            answered(tally,
+                     mint(&over_ram, RsrcKind::MmIo, std::to_underlying(ram[0].base), ram[0].size,
+                          "ram"),
                      Status::Ok, "mint a range over RAM");
             if (over_ram.dispatcher()) {
                 answered(tally,
                          validate_ranged_resource(*over_ram.dispatcher(), RsrcKind::MmIo,
-                                                  ram[0].base, 1),
+                                                  std::to_underlying(ram[0].base), 1),
                          Status::AccessDenied, "a range over RAM does not grant it");
             }
         }
@@ -453,12 +463,13 @@ namespace {
         if (!devices.empty()) {
             KernelHandle<ResourceDispatcher> over_device;
             answered(tally,
-                     mint(&over_device, RsrcKind::MmIo, devices[0].base, devices[0].size, "device"),
+                     mint(&over_device, RsrcKind::MmIo, std::to_underlying(devices[0].base),
+                          devices[0].size, "device"),
                      Status::Ok, "mint a range over a device of the kernel's");
             if (over_device.dispatcher()) {
                 answered(tally,
                          validate_ranged_resource(*over_device.dispatcher(), RsrcKind::MmIo,
-                                                  devices[0].base, 1),
+                                                  std::to_underlying(devices[0].base), 1),
                          Status::AccessDenied, "a range over a device does not grant it");
             }
         }

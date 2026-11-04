@@ -49,7 +49,7 @@ auto VmCowPages::file_page_locked(VmPage *const page, PgOff const index, Fill co
     auto &queues = queues_of(page);
     if (!!(m_flags & Flags::Pinned)) {
         queues.set_pinned(page, this, index);
-    } else if (m_page_source) {
+    } else if (m_page_source && Fill::Written != fill) {
         queues.set_reclaimable(page, this, index);
     } else if (Fill::ZeroFork == fill) {
         queues.set_anonymous_zero_fork(page, this, index);
@@ -655,7 +655,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
     return Status::Ok;
 }
 
-auto VmCowPages::make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor, Status> {
+auto VmCowPages::make_cursor(usize offset, usize size) -> ustl::Result<Cursor, Status> {
     return ustl::ok(Cursor(this, offset, size));
 }
 
@@ -1015,7 +1015,7 @@ auto VmCowPages::shows_ancestor_page_locked(u64 const offset) -> bool {
     return m_parent->find_content(offset + m_parent_offset).page != nullptr;
 }
 
-auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, MultiPageRequest *const request,
+auto VmCowPages::commit_range_locked(usize offset, usize size, MultiPageRequest *const request,
                                      usize *nr_commited) -> Status {
     if (!size) {
         return Status::InvArgs;
@@ -1050,7 +1050,7 @@ auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, MultiPageReque
     return status;
 }
 
-auto VmCowPages::pin_range_locked(VirtAddr const offset, usize const size,
+auto VmCowPages::pin_range_locked(usize const offset, usize const size,
                                   MultiPageRequest *const request, usize *const nr_pinned)
     -> Status {
     *nr_pinned = 0;
@@ -1090,7 +1090,7 @@ auto VmCowPages::pin_range_locked(VirtAddr const offset, usize const size,
     return Status::Ok;
 }
 
-auto VmCowPages::unpin_range_locked(VirtAddr const offset, usize const size) -> Status {
+auto VmCowPages::unpin_range_locked(usize const offset, usize const size) -> Status {
     if (!size) {
         return Status::InvArgs;
     }
@@ -1113,8 +1113,14 @@ auto VmCowPages::unpin_range_locked(VirtAddr const offset, usize const size) -> 
         if (page->pinned_count() == 0) {
             m_nr_pinned_pages -= 1;
             // Filed as its kind says, as when it was put here: a pinned node's
-            // pages go back on the pinned queue, a pager's become reclaimable.
-            file_page_locked(page, index, Fill::Content);
+            // pages go back on the pinned queue. A pager's page does not become
+            // reclaimable: the pin handed it to a device that may have written
+            // it, which is why pin_range_locked() took it through
+            // require_owned_page() and so marked it written. Only the pinned
+            // queue held that mark meanwhile, and an unpin that filed the page
+            // as the source's content would let the reclaimer evict what the
+            // device wrote and read the old content back.
+            file_page_locked(page, index, Fill::Written);
         }
     }
     return Status::Ok;
@@ -1191,7 +1197,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
 
 /// The followings are in class VmCowPages::Cursor.
 
-VmCowPages::Cursor::Cursor(VmCowPages *target, VirtAddr offset, usize size)
+VmCowPages::Cursor::Cursor(VmCowPages *target, usize offset, usize size)
     // Initializer order follows the member declaration order in the header.
     : m_target(target), m_offset(offset), m_end(offset + size), m_mark_accessed(true) {}
 

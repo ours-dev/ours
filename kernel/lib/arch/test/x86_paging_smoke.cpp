@@ -16,9 +16,9 @@ struct PageTablePool {
 
     auto allocate(usize size, usize alignment) -> ours::PhysAddr {
         if (size != PAGE_SIZE || alignment != PAGE_SIZE || next == 4) {
-            return 0;
+            return ours::PhysAddr{0};
         }
-        return reinterpret_cast<ours::PhysAddr>(tables[next++]);
+        return ours::PhysAddr{reinterpret_cast<usize>(tables[next++])};
     }
 };
 
@@ -27,7 +27,7 @@ constexpr auto FRESH = MapOptions::ErrorIfExisting | MapOptions::UndoOnFailure;
 
 struct IdentityPhysToVirt {
     auto operator()(ours::PhysAddr address) const -> ours::VirtAddr {
-        return address;
+        return ours::VirtAddr{std::to_underlying(address)};
     }
 };
 
@@ -40,13 +40,13 @@ auto verify_mapping(ours::VirtAddr virtual_address, ours::PhysAddr physical_addr
     };
 
     auto const flags = MmuFlags::Present | MmuFlags::Writable | MmuFlags::Executable;
-    auto result = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+    auto result = PageMap::map(ours::PhysAddr{reinterpret_cast<usize>(root)}, IdentityPhysToVirt{},
                                allocator, virtual_address, physical_address, pages, flags, FRESH);
     if (result.is_err()) {
         return false;
     }
 
-    auto query = PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+    auto query = PageMap::query(ours::PhysAddr{reinterpret_cast<usize>(root)}, IdentityPhysToVirt{},
                                 virtual_address);
     // x86 page tables have no read-disable bit: every present mapping reads
     // back as readable, regardless of whether callers named that implied bit.
@@ -63,13 +63,14 @@ auto verify_empty_and_invalid_ranges() -> bool {
     };
     auto const flags = MmuFlags::Present | MmuFlags::Writable;
 
-    auto empty = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
-                              allocator, 0, 0, 0, flags, FRESH);
+    auto empty = PageMap::map(ours::PhysAddr{reinterpret_cast<usize>(root)}, IdentityPhysToVirt{},
+                              allocator, ours::VirtAddr{0}, ours::PhysAddr{0}, 0, flags, FRESH);
     if (empty.is_err() || pool.next != 0) {
         return false;
     }
-    auto unaligned = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
-                                  allocator, 1, 0, 1, flags, FRESH);
+    auto unaligned =
+        PageMap::map(ours::PhysAddr{reinterpret_cast<usize>(root)}, IdentityPhysToVirt{}, allocator,
+                     ours::VirtAddr{1}, ours::PhysAddr{0}, 1, flags, FRESH);
     return unaligned.is_err() && unaligned.error() == MapError::InvArgs;
 }
 
@@ -79,23 +80,24 @@ auto verify_unmapping_removes_an_existing_mapping() -> bool {
     auto allocator = [&pool](usize size, usize alignment) {
         return pool.allocate(size, alignment);
     };
-    auto const virtual_address = 4_mb;
-    auto const physical_address = 6_mb;
+    auto const virtual_address = ours::VirtAddr{4_mb};
+    auto const physical_address = ours::PhysAddr{6_mb};
     auto const flags = MmuFlags::Present | MmuFlags::Writable;
 
-    auto const mapped = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
-                                     allocator, virtual_address, physical_address, 1, flags, FRESH);
+    auto const mapped =
+        PageMap::map(ours::PhysAddr{reinterpret_cast<usize>(root)}, IdentityPhysToVirt{}, allocator,
+                     virtual_address, physical_address, 1, flags, FRESH);
     if (mapped.is_err()) {
         return false;
     }
 
-    auto const unmapped = PageMap::unmap(reinterpret_cast<ours::PhysAddr>(root),
+    auto const unmapped = PageMap::unmap(ours::PhysAddr{reinterpret_cast<usize>(root)},
                                          IdentityPhysToVirt{}, virtual_address, 1);
     if (unmapped.is_err() || unmapped.unwrap() != 1) {
         return false;
     }
 
-    return !PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+    return !PageMap::query(ours::PhysAddr{reinterpret_cast<usize>(root)}, IdentityPhysToVirt{},
                            virtual_address);
 }
 
@@ -105,13 +107,13 @@ auto verify_protection_updates_an_existing_mapping() -> bool {
     auto allocator = [&pool](usize size, usize alignment) {
         return pool.allocate(size, alignment);
     };
-    auto const virtual_address = 8_mb;
-    auto const physical_address = 10_mb;
+    auto const virtual_address = ours::VirtAddr{8_mb};
+    auto const physical_address = ours::PhysAddr{10_mb};
     auto const initial_flags =
         MmuFlags::Present | MmuFlags::Writable | MmuFlags::User | MmuFlags::Executable;
 
     auto const mapped =
-        PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
+        PageMap::map(ours::PhysAddr{reinterpret_cast<usize>(root)}, IdentityPhysToVirt{}, allocator,
                      virtual_address, physical_address, 1, initial_flags, FRESH);
     if (mapped.is_err()) {
         return false;
@@ -119,14 +121,14 @@ auto verify_protection_updates_an_existing_mapping() -> bool {
 
     auto const final_flags = MmuFlags::Present | MmuFlags::Readable | MmuFlags::User;
     auto const protected_pages =
-        PageMap::protect(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+        PageMap::protect(ours::PhysAddr{reinterpret_cast<usize>(root)}, IdentityPhysToVirt{},
                          virtual_address, 1, final_flags);
     if (protected_pages.is_err() || protected_pages.unwrap() != 1) {
         return false;
     }
 
-    auto const query = PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
-                                      virtual_address);
+    auto const query = PageMap::query(ours::PhysAddr{reinterpret_cast<usize>(root)},
+                                      IdentityPhysToVirt{}, virtual_address);
     return query && query.value().phys == physical_address && query.value().flags == final_flags;
 }
 
@@ -136,20 +138,20 @@ auto verify_large_mapping_query_includes_page_offset() -> bool {
     auto allocator = [&pool](usize size, usize alignment) {
         return pool.allocate(size, alignment);
     };
-    auto const virtual_address = 16_mb;
-    auto const physical_address = 18_mb;
+    auto const virtual_address = ours::VirtAddr{16_mb};
+    auto const physical_address = ours::PhysAddr{18_mb};
     auto const flags = MmuFlags::Present | MmuFlags::Writable;
 
     auto const mapped =
-        PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
+        PageMap::map(ours::PhysAddr{reinterpret_cast<usize>(root)}, IdentityPhysToVirt{}, allocator,
                      virtual_address, physical_address, 2_mb / PAGE_SIZE, flags, FRESH);
     if (mapped.is_err()) {
         return false;
     }
 
     auto const offset = PAGE_SIZE * 7;
-    auto const query = PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
-                                      virtual_address + offset);
+    auto const query = PageMap::query(ours::PhysAddr{reinterpret_cast<usize>(root)},
+                                      IdentityPhysToVirt{}, virtual_address + offset);
     return query && query.value().size == 2_mb && query.value().phys == physical_address + offset;
 }
 
@@ -184,10 +186,10 @@ struct DepositPool {
             if (held[i] && owners[i] == owner) {
                 held[i] = false;
                 withdrawn += 1;
-                return reinterpret_cast<ours::PhysAddr>(tables[i]);
+                return ours::PhysAddr{reinterpret_cast<usize>(tables[i])};
             }
         }
-        return 0;
+        return ours::PhysAddr{0};
     }
 
     auto discard(ours::PhysAddr const owner) -> void {
@@ -225,8 +227,8 @@ static_assert(TableDeposits<DepositPool>);
 /// A root, its table pool and a deposit pool, with a 2 MiB leaf of |flags|
 /// mapped at LEAF_VA to LEAF_PA.
 struct LeafFixture {
-    static constexpr ours::VirtAddr LEAF_VA = 16_mb;
-    static constexpr ours::PhysAddr LEAF_PA = 18_mb;
+    static constexpr auto LEAF_VA = ours::VirtAddr{16_mb};
+    static constexpr auto LEAF_PA = ours::PhysAddr{18_mb};
 
     alignas(PAGE_SIZE) unsigned char root[PAGE_SIZE] = {};
     PageTablePool pool;
@@ -234,7 +236,7 @@ struct LeafFixture {
 
     [[nodiscard]]
     auto table() -> ours::PhysAddr {
-        return reinterpret_cast<ours::PhysAddr>(root);
+        return ours::PhysAddr{reinterpret_cast<usize>(root)};
     }
 
     [[nodiscard]]
@@ -401,7 +403,7 @@ struct OptionsFixture {
 
     [[nodiscard]]
     auto table() -> ours::PhysAddr {
-        return reinterpret_cast<ours::PhysAddr>(root);
+        return ours::PhysAddr{reinterpret_cast<usize>(root)};
     }
 
     auto map(ours::VirtAddr const va, ours::PhysAddr const pa, usize const n,
@@ -428,7 +430,7 @@ struct OptionsFixture {
 /// Options that are not one bit of each group are refused before anything
 /// is mapped.
 auto verify_invalid_options_refused() -> bool {
-    constexpr ours::VirtAddr VA = 4_mb;
+    constexpr auto VA = ours::VirtAddr{4_mb};
     OptionsFixture fixture;
     MapOptions const invalid[] = {
         MapOptions{},
@@ -439,7 +441,7 @@ auto verify_invalid_options_refused() -> bool {
         MapOptions::SkipIfExisting | MapOptions::OverwriteIfExisting | MapOptions::KeepOnFailure,
     };
     for (auto const options: invalid) {
-        auto const result = fixture.map(VA, 6_mb, 1, options);
+        auto const result = fixture.map(VA, ours::PhysAddr{6_mb}, 1, options);
         if (!result.is_err() || result.error() != MapError::InvArgs) {
             return false;
         }
@@ -450,52 +452,55 @@ auto verify_invalid_options_refused() -> bool {
 /// Page 2 of four is mapped already. Error stops there; Undo takes pages 0
 /// and 1 back, and the page that was there stays.
 auto verify_error_undo_leaves_nothing() -> bool {
-    constexpr ours::VirtAddr VA = 4_mb;
+    constexpr auto VA = ours::VirtAddr{4_mb};
     OptionsFixture fixture;
-    if (fixture.map(VA + 2 * PAGE_SIZE, 10_mb, 1, FRESH).is_err()) {
+    if (fixture.map(VA + 2 * PAGE_SIZE, ours::PhysAddr{10_mb}, 1, FRESH).is_err()) {
         return false;
     }
     usize mapped = ~usize{0};
-    auto const result = fixture.map(VA, 6_mb, 4, FRESH, &mapped);
+    auto const result = fixture.map(VA, ours::PhysAddr{6_mb}, 4, FRESH, &mapped);
     auto const kept = fixture.frame(VA + 2 * PAGE_SIZE);
     return result.is_err() && result.error() == MapError::Existent && mapped == 0 &&
-           !fixture.frame(VA) && !fixture.frame(VA + PAGE_SIZE) && kept && *kept == 10_mb &&
-           !fixture.frame(VA + 3 * PAGE_SIZE);
+           !fixture.frame(VA) && !fixture.frame(VA + PAGE_SIZE) && kept &&
+           *kept == ours::PhysAddr{10_mb} && !fixture.frame(VA + 3 * PAGE_SIZE);
 }
 
 /// The same with Keep: pages 0 and 1 stay mapped, and the call says so.
 auto verify_error_keep_says_how_far() -> bool {
-    constexpr ours::VirtAddr VA = 4_mb;
+    constexpr auto VA = ours::VirtAddr{4_mb};
     OptionsFixture fixture;
-    if (fixture.map(VA + 2 * PAGE_SIZE, 10_mb, 1, FRESH).is_err()) {
+    if (fixture.map(VA + 2 * PAGE_SIZE, ours::PhysAddr{10_mb}, 1, FRESH).is_err()) {
         return false;
     }
     usize mapped = 0;
     auto const result =
-        fixture.map(VA, 6_mb, 4, MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure, &mapped);
+        fixture.map(VA, ours::PhysAddr{6_mb}, 4,
+                    MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure, &mapped);
     auto const first = fixture.frame(VA);
     auto const second = fixture.frame(VA + PAGE_SIZE);
     auto const kept = fixture.frame(VA + 2 * PAGE_SIZE);
     return result.is_err() && result.error() == MapError::Existent && mapped == 2 && first &&
-           *first == 6_mb && second && *second == 6_mb + PAGE_SIZE && kept && *kept == 10_mb &&
+           *first == ours::PhysAddr{6_mb} && second &&
+           *second == ours::PhysAddr{6_mb} + PAGE_SIZE && kept && *kept == ours::PhysAddr{10_mb} &&
            !fixture.frame(VA + 3 * PAGE_SIZE);
 }
 
 /// Skip maps around the page that is there and leaves it as it was.
 auto verify_skip_leaves_existing_page() -> bool {
-    constexpr ours::VirtAddr VA = 4_mb;
+    constexpr auto VA = ours::VirtAddr{4_mb};
     OptionsFixture fixture;
-    if (fixture.map(VA + 2 * PAGE_SIZE, 10_mb, 1, FRESH).is_err()) {
+    if (fixture.map(VA + 2 * PAGE_SIZE, ours::PhysAddr{10_mb}, 1, FRESH).is_err()) {
         return false;
     }
     usize mapped = 0;
     auto const result =
-        fixture.map(VA, 6_mb, 4, MapOptions::SkipIfExisting | MapOptions::UndoOnFailure, &mapped);
+        fixture.map(VA, ours::PhysAddr{6_mb}, 4,
+                    MapOptions::SkipIfExisting | MapOptions::UndoOnFailure, &mapped);
     auto const first = fixture.frame(VA);
     auto const kept = fixture.frame(VA + 2 * PAGE_SIZE);
     auto const last = fixture.frame(VA + 3 * PAGE_SIZE);
-    return result.is_ok() && mapped == 4 && first && *first == 6_mb && kept && *kept == 10_mb &&
-           last && *last == 6_mb + 3 * PAGE_SIZE;
+    return result.is_ok() && mapped == 4 && first && *first == ours::PhysAddr{6_mb} && kept &&
+           *kept == ours::PhysAddr{10_mb} && last && *last == ours::PhysAddr{6_mb} + 3 * PAGE_SIZE;
 }
 
 /// Skip steps over a whole 2 MiB leaf in one go: the page before it and the
@@ -511,15 +516,17 @@ auto verify_skip_steps_over_a_leaf() -> bool {
     constexpr auto BEFORE = LeafFixture::LEAF_VA - PAGE_SIZE;
     constexpr auto PAGES = 2_mb / PAGE_SIZE + 2;
     usize mapped = 0;
-    auto const result = PageMap::map(
-        fixture.table(), IdentityPhysToVirt{}, allocator, fixture.deposits, BEFORE, 30_mb, PAGES,
-        USER_RW, MapOptions::SkipIfExisting | MapOptions::UndoOnFailure, &mapped);
+    auto const result =
+        PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, fixture.deposits, BEFORE,
+                     ours::PhysAddr{30_mb}, PAGES, USER_RW,
+                     MapOptions::SkipIfExisting | MapOptions::UndoOnFailure, &mapped);
     auto const before = PageMap::query(fixture.table(), IdentityPhysToVirt{}, BEFORE);
     auto const after =
         PageMap::query(fixture.table(), IdentityPhysToVirt{}, LeafFixture::LEAF_VA + 2_mb);
     auto const leaf = fixture.query(7);
-    return result.is_ok() && mapped == PAGES && before && before.value().phys == 30_mb && after &&
-           after.value().phys == 30_mb + (PAGES - 1) * PAGE_SIZE && leaf &&
+    return result.is_ok() && mapped == PAGES && before &&
+           before.value().phys == ours::PhysAddr{30_mb} && after &&
+           after.value().phys == ours::PhysAddr{30_mb} + (PAGES - 1) * PAGE_SIZE && leaf &&
            leaf.value().size == 2_mb && leaf.value().phys == LeafFixture::LEAF_PA + 7 * PAGE_SIZE;
 }
 
@@ -527,8 +534,8 @@ auto verify_skip_steps_over_a_leaf() -> bool {
 /// final-level table for each 2 MiB it touches; the pool runs out at the
 /// third. VA is one page before a 2 MiB boundary, so the call gets through
 /// that page and the next 512 before it fails.
-constexpr ours::VirtAddr NOMEM_VA = 2_mb - PAGE_SIZE;
-constexpr ours::PhysAddr NOMEM_PA = PAGE_SIZE;
+constexpr auto NOMEM_VA = ours::VirtAddr{2_mb - PAGE_SIZE};
+constexpr auto NOMEM_PA = ours::PhysAddr{PAGE_SIZE};
 constexpr usize NOMEM_PAGES = 1 + 3 * (2_mb / PAGE_SIZE);
 
 /// Undo after running out takes back the 513 pages it had mapped.
@@ -537,7 +544,7 @@ auto verify_nomem_undo_leaves_nothing() -> bool {
     usize mapped = ~usize{0};
     auto const result = fixture.map(NOMEM_VA, NOMEM_PA, NOMEM_PAGES, FRESH, &mapped);
     return result.is_err() && result.error() == MapError::NoMem && mapped == 0 &&
-           !fixture.frame(NOMEM_VA) && !fixture.frame(2_mb + 5 * PAGE_SIZE);
+           !fixture.frame(NOMEM_VA) && !fixture.frame(ours::VirtAddr{2_mb + 5 * PAGE_SIZE});
 }
 
 /// Keep after running out leaves them, and says it got through 513.
@@ -547,31 +554,31 @@ auto verify_nomem_keep_says_how_far() -> bool {
     auto const result =
         fixture.map(NOMEM_VA, NOMEM_PA, NOMEM_PAGES,
                     MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure, &mapped);
-    auto const inside = fixture.frame(2_mb + 5 * PAGE_SIZE);
+    auto const inside = fixture.frame(ours::VirtAddr{2_mb + 5 * PAGE_SIZE});
     return result.is_err() && result.error() == MapError::NoMem && mapped == 1 + 2_mb / PAGE_SIZE &&
            fixture.frame(NOMEM_VA) && inside && *inside == NOMEM_PA + 6 * PAGE_SIZE &&
-           !fixture.frame(4_mb);
+           !fixture.frame(ours::VirtAddr{4_mb});
 }
 
 constexpr auto OVERWRITE = MapOptions::OverwriteIfExisting | MapOptions::UndoOnFailure;
 
 /// Overwrite writes a page over with another frame and other permissions.
 auto verify_overwrite_replaces_a_page() -> bool {
-    constexpr ours::VirtAddr VA = 4_mb;
+    constexpr auto VA = ours::VirtAddr{4_mb};
     constexpr auto READ_ONLY = MmuFlags::Present | MmuFlags::User;
     OptionsFixture fixture;
     auto allocator = [&fixture](usize size, usize alignment) {
         return fixture.pool.allocate(size, alignment);
     };
-    if (PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, VA, 6_mb, 1, READ_ONLY,
-                     FRESH)
+    if (PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, VA, ours::PhysAddr{6_mb}, 1,
+                     READ_ONLY, FRESH)
             .is_err()) {
         return false;
     }
     usize mapped = 0;
-    auto const result = fixture.map(VA, 10_mb, 1, OVERWRITE, &mapped);
+    auto const result = fixture.map(VA, ours::PhysAddr{10_mb}, 1, OVERWRITE, &mapped);
     auto const after = PageMap::query(fixture.table(), IdentityPhysToVirt{}, VA);
-    return result.is_ok() && mapped == 1 && after && after.value().phys == 10_mb &&
+    return result.is_ok() && mapped == 1 && after && after.value().phys == ours::PhysAddr{10_mb} &&
            after.value().flags == USER_RW_READ;
 }
 
@@ -586,11 +593,12 @@ auto verify_overwrite_inside_a_leaf_splits() -> bool {
         return fixture.pool.allocate(size, alignment);
     };
     auto const tables_before = fixture.pool.next;
-    auto const result =
-        PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, fixture.deposits,
-                     LeafFixture::LEAF_VA + 7 * PAGE_SIZE, 30_mb, 1, USER_RW, OVERWRITE);
+    auto const result = PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator,
+                                     fixture.deposits, LeafFixture::LEAF_VA + 7 * PAGE_SIZE,
+                                     ours::PhysAddr{30_mb}, 1, USER_RW, OVERWRITE);
     auto const page = fixture.query(7);
-    return result.is_ok() && page && page.value().size == PAGE_SIZE && page.value().phys == 30_mb &&
+    return result.is_ok() && page && page.value().size == PAGE_SIZE &&
+           page.value().phys == ours::PhysAddr{30_mb} &&
            fixture.small_entries_except(7, USER_RW_READ) && fixture.deposits.withdrawn == 1 &&
            fixture.pool.next == tables_before;
 }
@@ -605,13 +613,14 @@ auto verify_overwrite_of_a_whole_leaf_stays_a_leaf() -> bool {
     auto allocator = [&fixture](usize size, usize alignment) {
         return fixture.pool.allocate(size, alignment);
     };
-    auto const result =
-        PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, fixture.deposits,
-                     LeafFixture::LEAF_VA, 32_mb, 2_mb / PAGE_SIZE, USER_RW, OVERWRITE);
+    auto const result = PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator,
+                                     fixture.deposits, LeafFixture::LEAF_VA, ours::PhysAddr{32_mb},
+                                     2_mb / PAGE_SIZE, USER_RW, OVERWRITE);
     auto const page = fixture.query(7);
     return result.is_ok() && page && page.value().size == 2_mb &&
-           page.value().phys == 32_mb + 7 * PAGE_SIZE && fixture.deposits.nr_held() == 1 &&
-           fixture.deposits.withdrawn == 0 && fixture.deposits.reserved == 1;
+           page.value().phys == ours::PhysAddr{32_mb} + 7 * PAGE_SIZE &&
+           fixture.deposits.nr_held() == 1 && fixture.deposits.withdrawn == 0 &&
+           fixture.deposits.reserved == 1;
 }
 
 /// A 2 MiB aligned run written over a table of small entries goes into the
@@ -626,13 +635,14 @@ auto verify_overwrite_over_small_entries_keeps_the_table() -> bool {
     auto allocator = [&fixture](usize size, usize alignment) {
         return fixture.pool.allocate(size, alignment);
     };
-    auto const result =
-        PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator, fixture.deposits,
-                     LeafFixture::LEAF_VA, 32_mb, 2_mb / PAGE_SIZE, USER_RW, OVERWRITE);
+    auto const result = PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator,
+                                     fixture.deposits, LeafFixture::LEAF_VA, ours::PhysAddr{32_mb},
+                                     2_mb / PAGE_SIZE, USER_RW, OVERWRITE);
     auto const first = fixture.query(0);
     auto const last = fixture.query(2_mb / PAGE_SIZE - 1);
     return result.is_ok() && first && first.value().size == PAGE_SIZE &&
-           first.value().phys == 32_mb && last && last.value().phys == 32_mb + 2_mb - PAGE_SIZE &&
+           first.value().phys == ours::PhysAddr{32_mb} && last &&
+           last.value().phys == ours::PhysAddr{32_mb} + 2_mb - PAGE_SIZE &&
            fixture.deposits.reserved == 0;
 }
 
@@ -648,9 +658,9 @@ auto verify_overwrite_without_deposits_refuses_part() -> bool {
             .is_err()) {
         return false;
     }
-    auto const result =
-        PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator,
-                     LeafFixture::LEAF_VA + PAGE_SIZE, 30_mb, 1, USER_RW, OVERWRITE);
+    auto const result = PageMap::map(fixture.table(), IdentityPhysToVirt{}, allocator,
+                                     LeafFixture::LEAF_VA + PAGE_SIZE, ours::PhysAddr{30_mb}, 1,
+                                     USER_RW, OVERWRITE);
     auto const leaf = fixture.query(1);
     return result.is_err() && result.error() == MapError::InvArgs && leaf &&
            leaf.value().size == 2_mb && leaf.value().phys == LeafFixture::LEAF_PA + PAGE_SIZE;
@@ -685,12 +695,13 @@ auto verify_unmap_across_two_leaves_splits_both() -> bool {
 /// map_frames() of frames that are not contiguous maps each page to its own
 /// frame, in one call.
 auto verify_map_frames_maps_each_page() -> bool {
-    constexpr ours::VirtAddr VA = 4_mb;
+    constexpr auto VA = ours::VirtAddr{4_mb};
     OptionsFixture fixture;
     auto allocator = [&fixture](usize size, usize alignment) {
         return fixture.pool.allocate(size, alignment);
     };
-    ours::PhysAddr frames[] = {10_mb, 20_mb, 6_mb, 30_mb};
+    ours::PhysAddr frames[] = {ours::PhysAddr{10_mb}, ours::PhysAddr{20_mb}, ours::PhysAddr{6_mb},
+                               ours::PhysAddr{30_mb}};
     usize mapped = 0;
     auto const result = PageMap::map_frames(fixture.table(), IdentityPhysToVirt{}, allocator,
                                             NoDeposits{}, VA, frames, 4, USER_RW, FRESH, &mapped);
@@ -709,13 +720,14 @@ auto verify_map_frames_maps_each_page() -> bool {
 /// map_frames() over a page that is there: Error with Undo leaves nothing of
 /// the call, Error with Keep says it got through two, and Skip maps around it.
 auto verify_map_frames_honours_its_options() -> bool {
-    constexpr ours::VirtAddr VA = 4_mb;
-    ours::PhysAddr frames[] = {10_mb, 20_mb, 6_mb, 30_mb};
+    constexpr auto VA = ours::VirtAddr{4_mb};
+    ours::PhysAddr frames[] = {ours::PhysAddr{10_mb}, ours::PhysAddr{20_mb}, ours::PhysAddr{6_mb},
+                               ours::PhysAddr{30_mb}};
     auto const run = [&](MapOptions const options, usize *mapped, OptionsFixture &fixture) {
         auto allocator = [&fixture](usize size, usize alignment) {
             return fixture.pool.allocate(size, alignment);
         };
-        if (fixture.map(VA + 2 * PAGE_SIZE, 40_mb, 1, FRESH).is_err()) {
+        if (fixture.map(VA + 2 * PAGE_SIZE, ours::PhysAddr{40_mb}, 1, FRESH).is_err()) {
             return ustl::Result<void, MapError>(ustl::err(MapError::NoMem));
         }
         return PageMap::map_frames(fixture.table(), IdentityPhysToVirt{}, allocator, NoDeposits{},
@@ -727,7 +739,7 @@ auto verify_map_frames_honours_its_options() -> bool {
     auto const failed = run(FRESH, &undone, undo);
     auto const kept_there = undo.frame(VA + 2 * PAGE_SIZE);
     if (!failed.is_err() || failed.error() != MapError::Existent || undone != 0 || undo.frame(VA) ||
-        !kept_there || *kept_there != 40_mb) {
+        !kept_there || *kept_there != ours::PhysAddr{40_mb}) {
         return false;
     }
 
@@ -735,7 +747,7 @@ auto verify_map_frames_honours_its_options() -> bool {
     usize got = 0;
     auto const kept = run(MapOptions::ErrorIfExisting | MapOptions::KeepOnFailure, &got, keep);
     auto const second = keep.frame(VA + PAGE_SIZE);
-    if (!kept.is_err() || got != 2 || !second || *second != 20_mb ||
+    if (!kept.is_err() || got != 2 || !second || *second != ours::PhysAddr{20_mb} ||
         keep.frame(VA + 3 * PAGE_SIZE)) {
         return false;
     }
@@ -745,18 +757,19 @@ auto verify_map_frames_honours_its_options() -> bool {
     auto const skipped = run(MapOptions::SkipIfExisting | MapOptions::UndoOnFailure, &all, skip);
     auto const left = skip.frame(VA + 2 * PAGE_SIZE);
     auto const last = skip.frame(VA + 3 * PAGE_SIZE);
-    return skipped.is_ok() && all == 4 && left && *left == 40_mb && last && *last == 30_mb;
+    return skipped.is_ok() && all == 4 && left && *left == ours::PhysAddr{40_mb} && last &&
+           *last == ours::PhysAddr{30_mb};
 }
 } // namespace
 
 auto main() -> int {
-    if (!verify_mapping(2_mb, 2_mb, 1, PAGE_SIZE)) {
+    if (!verify_mapping(ours::VirtAddr{2_mb}, ours::PhysAddr{2_mb}, 1, PAGE_SIZE)) {
         return 1;
     }
-    if (!verify_mapping(2_mb, 2_mb, 2_mb / PAGE_SIZE, 2_mb)) {
+    if (!verify_mapping(ours::VirtAddr{2_mb}, ours::PhysAddr{2_mb}, 2_mb / PAGE_SIZE, 2_mb)) {
         return 2;
     }
-    if (!verify_mapping(0, 0, 1, PAGE_SIZE)) {
+    if (!verify_mapping(ours::VirtAddr{0}, ours::PhysAddr{0}, 1, PAGE_SIZE)) {
         return 3;
     }
     if (!verify_empty_and_invalid_ranges()) {

@@ -301,14 +301,10 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
 
   public:
     /// Every member, in declaration order. The six after m_profile used to be
-    /// left out, so a fresh context carried indeterminate values for them --
-    /// `m_schedule` among them, and that one is dereferenced. It read as null
-    /// in practice only because a Thread comes out of a zeroing allocator;
-    /// that is luck, not a guarantee, and it is not something to rely on.
-    ///
-    /// `m_schedule` stays null until a Scheduler binds the thread to its
-    /// discipline in Scheduler::set_schedule(). Nothing may call through it
-    /// before that.
+    /// left out, so a fresh context carried indeterminate values for them.
+    /// That read as zero in practice only because a Thread comes out of a
+    /// zeroing allocator; that is luck, not a guarantee, and it is not
+    /// something to rely on.
     SchedEntity(BaseProfile profile)
         : m_affinity()
         , m_runqueue_state()
@@ -329,7 +325,6 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
         , m_last_cpu()
         , m_curr_cpu()
         , m_wake_cpu()
-        , m_schedule(nullptr)
         , m_exec_runtime()
         , m_prev_exec_runtime()
         , m_fair()
@@ -432,11 +427,6 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
     }
 
     FORCE_INLINE
-    auto schedule() -> ISchedule * {
-        return m_schedule;
-    }
-
-    FORCE_INLINE
     auto runqueue_state() -> RunQueueState & {
         return m_runqueue_state;
     }
@@ -472,7 +462,6 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
     CpuNum m_last_cpu;
     CpuNum m_curr_cpu;
     CpuNum m_wake_cpu;
-    ISchedule *m_schedule;
 
     /// The framework's own accounting: how long this thread has run, and where
     /// the current slice started counting from. Every discipline charges time

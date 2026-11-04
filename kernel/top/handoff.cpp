@@ -46,7 +46,7 @@ namespace {
 } // namespace
 
 auto setup_handoff(PhysAddr const handoff_phys) -> void {
-    if (handoff_phys == 0 || !handoff_fits_physmap(handoff_phys)) {
+    if (handoff_phys == PhysAddr{0} || !handoff_fits_physmap(handoff_phys)) {
         panic("Kernel handoff is outside the physmap");
     }
 

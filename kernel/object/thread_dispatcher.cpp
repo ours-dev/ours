@@ -453,7 +453,7 @@ auto ThreadDispatcher::on_policy_exception(task::PolicyCode const code, u64 cons
         .error_code = 0,
         .ip = ip,
         .sp = sp,
-        .fault_address = 0,
+        .fault_address = VirtAddr{0},
         .synth_code = static_cast<u32>(code),
         .synth_data = data,
         // Raised from inside a system call: there is no exception frame, and

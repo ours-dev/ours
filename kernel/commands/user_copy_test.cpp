@@ -127,7 +127,7 @@ namespace {
         // there is nothing a caller could resolve.
         {
             u64 kernel_word = 0;
-            auto const kernel_va = reinterpret_cast<VirtAddr>(&kernel_word);
+            auto const kernel_va = VirtAddr{reinterpret_cast<usize>(&kernel_word)};
             auto const r = user_copy::copy_to_user_capture_faults(kernel_va, &PATTERN, 8);
             show("kernel address", r);
             verdict(tally, refused_without_fault(r), "a kernel address is refused, no fault");
@@ -264,7 +264,7 @@ namespace {
         }
 
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto scratch = root->map_anon(mm::VmPlacement::anywhere(), 3 * PAGE_SIZE, flags,
+        auto scratch = root->map_anon(VirtAddr::Anywhere, 3 * PAGE_SIZE, flags,
                                       mm::VmMapOption::None, "usercopy.test buffers");
         if (scratch.is_err()) {
             log::error("usercopy.test: could not map the VMO test buffers: {}",
@@ -340,7 +340,7 @@ namespace {
         // the lock dropped. A regression here shows up as a command that never
         // finishes.
         {
-            auto self = root->map_with_vmo(mm::VmPlacement::anywhere(), 2 * PAGE_SIZE, 0, flags,
+            auto self = root->map_with_vmo(VirtAddr::Anywhere, 2 * PAGE_SIZE, 0, flags,
                                            mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
                                            mm::VmMapOption::None, "usercopy.test self");
             if (self.is_err()) {
@@ -401,7 +401,7 @@ namespace {
         // and mapping and unmapping change it.
         auto root = aspace->root_vma();
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_anon(mm::VmPlacement::anywhere(), 3 * PAGE_SIZE, flags,
+        auto mapping = root->map_anon(VirtAddr::Anywhere, 3 * PAGE_SIZE, flags,
                                       mm::VmMapOption::None, "usercopy.test");
         if (mapping.is_err()) {
             log::error("usercopy.test: could not map the scratch pages: {}",

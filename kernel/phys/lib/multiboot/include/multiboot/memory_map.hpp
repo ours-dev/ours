@@ -17,11 +17,11 @@ using ours::PhysAddr;
 [[nodiscard]]
 inline auto apply_memory_map(View::MemoryMap const &map, bootmem::PhysicalMemory &memory)
     -> Status {
-    auto const native_address = [](u64 const value) -> ustl::Result<PhysAddr, Status> {
-        if (value > std::numeric_limits<PhysAddr>::max()) {
+    auto const native_address = [](u64 const value) -> ustl::Result<usize, Status> {
+        if (value > ~0_usize) {
             return ustl::err(Status::OutOfRange);
         }
-        return ustl::ok(static_cast<PhysAddr>(value));
+        return ustl::ok(static_cast<usize>(value));
     };
 
     auto has_available_memory = false;
@@ -37,7 +37,7 @@ inline auto apply_memory_map(View::MemoryMap const &map, bootmem::PhysicalMemory
         if (base.is_err() || size.is_err()) {
             return Status::OutOfRange;
         }
-        auto const range = bootmem::Range::from(base.unwrap(), size.unwrap());
+        auto const range = bootmem::Range::from(PhysAddr{base.unwrap()}, size.unwrap());
         if (range.is_err()) {
             return range.unwrap_err();
         }
@@ -60,7 +60,7 @@ inline auto apply_memory_map(View::MemoryMap const &map, bootmem::PhysicalMemory
         if (base.is_err() || size.is_err()) {
             return Status::OutOfRange;
         }
-        auto const range = bootmem::Range::from(base.unwrap(), size.unwrap());
+        auto const range = bootmem::Range::from(PhysAddr{base.unwrap()}, size.unwrap());
         if (range.is_err()) {
             return range.unwrap_err();
         }

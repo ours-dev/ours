@@ -3,13 +3,25 @@
 ## Scheduler
 
 - Fair (`kernel/kernel/task/sched/fair.*`) is the user's own design and out of
-  the build. Bring-up runs on a simple round-robin `ISchedule`. Do not edit
+  the build. Bring-up runs on a simple round-robin discipline. Do not edit
   Fair at all; a refactor whose value depends on changing fair.cpp must be put
   to the user, not carried out. In the generic scheduler machinery
   (`scheduler.cpp`, `context.hpp`, `scheduler_inline.hpp`), ask before any fix
   beyond a plain seeding or ordering defect.
 - The framework around the algorithm may be restructured boldly; what the user
   protects is the scheduling algorithm, not the size of a change.
+- A discipline is a plain class with no base class and no virtual function,
+  reached through a `ustl::Ref<Schedule>` (`ustl/dyn.hpp`; the user's call of
+  2026-11-03, design in `.agents/tasks/sched-facade/DESIGN.md`).
+  `Scheduler::schedule_of(Discipline)` is a `switch` over the closed enum, and
+  a discipline that is not implemented (Deadline today) is an empty reference
+  that traps. Five methods are required (`enqueue_thread`, `dequeue_thread`,
+  `evaluate_next_thread`, `on_thread_tick`, `num_queued`); the others are
+  optional and their defaults sit beside them in `schedule.hpp`. The thread-
+  safety analysis cannot follow an erased call, so `Scheduler::call_schedule<>`
+  carries `TA_REQUIRES(get_lock())` and a discipline declares
+  `TA_REQUIRES(rq.lock())` on its own functions. One discipline outranks
+  another if its enumerator is later (Deadline over Normal), not by address.
 - Numerics follow Zircon: weights and times are `ffl::Fixed`
   (`SchedWeight` is `ffl::Fixed<int64_t, 10>`, a fraction in (0, 1]). No Linux
   integer weights, no `wmult` reciprocal table. Read

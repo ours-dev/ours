@@ -231,7 +231,7 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
         IOAPICS[i] = ioapics[i];
 
         // Then need we create MMIO for per IoApic
-        VirtAddr mmio_virt = 0;
+        VirtAddr mmio_virt = VirtAddr::Invalid;
         for (auto j = usize{0}; j < i; ++j) {
             if (IOAPICS[i].phys_base() == IOAPICS[j].phys_base()) {
                 mmio_virt = IOAPICS[j].virt_base();
@@ -239,13 +239,13 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
         }
 
         // If no other shared IO-APICs, we have to create a new mapping for it.
-        if (!mmio_virt) {
+        if (mmio_virt == VirtAddr::Invalid) {
             auto const phys = IOAPICS[i].phys_base();
             auto const phys_aligned = ustl::round_down(phys, PAGE_SIZE);
 
             auto rvma = mm::VmAspace::kernel_aspace()->root_vma();
             auto result = rvma->map_phys(
-                phys_aligned, mm::VmPlacement::anywhere(), PAGE_SIZE,
+                phys_aligned, VirtAddr::Anywhere, PAGE_SIZE,
                 // `Discache` is required to prevent
                 mm::MmuFlags::Discache | mm::MmuFlags::Readable | mm::MmuFlags::Writable,
                 mm::VmMapOption::Populate | mm::VmMapOption::Pinned, "IO-APIC");

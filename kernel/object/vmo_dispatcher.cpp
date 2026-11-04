@@ -228,7 +228,7 @@ auto VmoDispatcher::create_physical(PhysAddr const base, usize const size,
     if (size == 0 || !ustl::is_aligned(base, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
     }
-    if (base > std::numeric_limits<PhysAddr>::max() - size) {
+    if (base > PhysAddr{~0_usize} - size) {
         return Status::OutOfRange;
     }
 
@@ -276,7 +276,7 @@ auto VmoDispatcher::read_user(user_copy::UserOutPtr<u8> const out, u64 const off
         // be read says NotSupported for an empty read too. |out| is never
         // looked at: a paged VMO answers a zero-byte read with Ok before
         // anything else (mm::VmObjectPaged::copy_page_by_page()).
-        return m_vmo->read_user(out, VirtAddr(offset), 0);
+        return m_vmo->read_user(out, offset, 0);
     }
 
     // The whole buffer, before the first page is read: reading a page nobody
@@ -286,7 +286,7 @@ auto VmoDispatcher::read_user(user_copy::UserOutPtr<u8> const out, u64 const off
         return Status::InvArgs;
     }
 
-    return m_vmo->read_user(out, VirtAddr(offset), length);
+    return m_vmo->read_user(out, offset, length);
 }
 
 /// read_user()'s mirror, check for check and in the same order, so that a
@@ -302,7 +302,7 @@ auto VmoDispatcher::write_user(user_copy::UserInPtr<u8 const> const in, u64 cons
     if (length == 0) {
         // Asked of the VMO, as read_user() does, so that one which cannot be
         // written says NotSupported for an empty write too.
-        return m_vmo->write_user(in, VirtAddr(offset), 0);
+        return m_vmo->write_user(in, offset, 0);
     }
 
     // The whole buffer first: writing commits the pages it lands on, and a
@@ -311,6 +311,6 @@ auto VmoDispatcher::write_user(user_copy::UserInPtr<u8 const> const in, u64 cons
         return Status::InvArgs;
     }
 
-    return m_vmo->write_user(in, VirtAddr(offset), length);
+    return m_vmo->write_user(in, offset, length);
 }
 } // namespace ours::object

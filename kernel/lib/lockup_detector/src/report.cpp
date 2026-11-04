@@ -202,7 +202,8 @@ namespace {
             return;
         }
         auto const &stack = thread->kernel_stack();
-        auto window = sampler::StackWindow::on_stack(frame.sp(), stack.base(), stack.top());
+        auto window = sampler::StackWindow::on_stack(frame.sp(), std::to_underlying(stack.base()),
+                                                     std::to_underlying(stack.top()));
         if (window.empty()) {
             return;
         }

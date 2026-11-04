@@ -30,16 +30,14 @@ namespace ours::mm {
 /// init_memmap_range() stamps it whichever model is in effect. So the pure
 /// arithmetic lives here rather than beside the section table.
 
-template <typename T>
 FORCE_INLINE
-constexpr auto phys_to_secnum(T phys_addr) -> SecNum {
-    static_assert(sizeof(T) == sizeof(PhysAddr));
-    return reinterpret_cast<PhysAddr>(phys_addr) >> SECTION_SHIFT;
+constexpr auto phys_to_secnum(PhysAddr const phys_addr) -> SecNum {
+    return std::to_underlying(phys_addr) >> SECTION_SHIFT;
 }
 
 FORCE_INLINE
 constexpr auto secnum_to_phys(SecNum secnum) -> PhysAddr {
-    return secnum << SECTION_SHIFT;
+    return PhysAddr{secnum << SECTION_SHIFT};
 }
 
 FORCE_INLINE

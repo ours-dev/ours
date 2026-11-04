@@ -76,7 +76,7 @@ auto VmArea::alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr 
     return m_subvmas.find_spot(size, align, lower_limit, upper_limit);
 }
 
-auto VmArea::create_subvma(VmPlacement where, usize requested_size, VmaFlags vmaf, char const *name,
+auto VmArea::create_subvma(VirtAddr where, usize requested_size, VmaFlags vmaf, char const *name,
                            VmMapOption option, ustl::Arc<VmArea> *out) -> Status {
     m_canary.verify<Self>();
 
@@ -124,7 +124,7 @@ auto VmArea::create_subvma(VmPlacement where, usize requested_size, VmaFlags vma
     return Status::Ok;
 }
 
-auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_ofs, MmuFlags mmuf,
+auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs, MmuFlags mmuf,
                             VmaFlags ceiling, ustl::Arc<VmObject> vmo, char const *name,
                             VmMapOption option, ustl::Arc<VmMapping> *out) -> Status {
     m_canary.verify<Self>();
@@ -212,12 +212,17 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
 /// all, so two threads creating in one area could pick the same spot, and
 /// their inserts wrote the set concurrently. The address space lock now
 /// covers the whole span, from this search to that insert.
-auto VmArea::create_subaom_preamble(VmPlacement where, usize size,
+auto VmArea::create_subaom_preamble(VirtAddr where, usize size,
                                     ustl::Option<usize> const block_phase)
     -> ktl::Result<ustl::Pair<VirtAddr, usize>> {
     if (!is_active()) {
         // Operate an illegal VMA.
         return ktl::err(Status::BadState);
+    }
+
+    // Interpret special values before alignment can turn them into an address.
+    if (where != VirtAddr::Anywhere && where >= VIRT_ADDR_RESERVED_BASE) {
+        return ktl::err(Status::InvArgs);
     }
 
     // Round the size on its own first: the two branches below disagree about
@@ -228,15 +233,8 @@ auto VmArea::create_subaom_preamble(VmPlacement where, usize size,
         return ktl::err(Status::InvArgs);
     }
 
-    if (!where.is_fixed()) {
-        // The VMM places it. Nothing of the caller's is consulted, and there
-        // is nothing to consult: anywhere() carries no address. This is what
-        // the old shape could not say -- a caller with no opinion had to write
-        // one down anyway, as a null pointer or a literal 0, and 0 is also a
-        // legitimate offset naming the start of this area. On the kernel root
-        // VMA that start is the physmap base, which is how the local APIC's
-        // MMIO came to be mapped on top of the physmap.
-        //
+    if (where == VirtAddr::Anywhere) {
+        // Anywhere is a reserved address value; zero is a concrete address.
         // A mapping of an object that takes blocks goes |block_phase| past a
         // block boundary, in a spot that much longer: its addresses then agree
         // with its object's offsets modulo a block. Only addresses are spent
@@ -250,7 +248,6 @@ auto VmArea::create_subaom_preamble(VmPlacement where, usize size,
             }
         }
 
-        // FIXME(SmallHuaZi) (base_ + size_) may causes an overflow error.
         auto const spot = alloc_spot(size_aligned, PAGE_SIZE, m_base, m_base + m_size - 1);
         if (!spot) {
             return ktl::err(spot.unwrap_err());
@@ -258,7 +255,7 @@ auto VmArea::create_subaom_preamble(VmPlacement where, usize size,
         return ktl::ok(ustl::make_pair(*spot, size_aligned));
     }
 
-    auto const [base_aligned, aligned] = resolve_page_range(where.base(), size);
+    auto const [base_aligned, aligned] = resolve_page_range(where, size);
     if (!aligned) {
         return ktl::err(Status::InvArgs);
     }
@@ -280,8 +277,8 @@ auto VmArea::create_subaom_preamble(VmPlacement where, usize size,
     // compiled out, *fell through* and created a second area overlapping the
     // first -- VmaSet::insert() only notices a collision when the bases match
     // exactly, so a partial overlap went in silently. Refusing is the only
-    // answer the VMM can currently back up; replacement gets its own named
-    // constructor on VmPlacement when someone implements it.
+    // answer the VMM can currently back up. A future replacement operation
+    // needs an explicit request of its own.
     if (m_subvmas.has_range(base_aligned, aligned)) {
         return ktl::err(Status::AlreadyExists);
     }
@@ -289,7 +286,7 @@ auto VmArea::create_subaom_preamble(VmPlacement where, usize size,
     return ktl::ok(ustl::make_pair(base_aligned, aligned));
 }
 
-auto VmArea::map_phys(PhysAddr phys_base, VmPlacement where, usize size, MmuFlags mmuf,
+auto VmArea::map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags mmuf,
                       VmMapOption options, char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
@@ -308,7 +305,7 @@ auto VmArea::map_phys(PhysAddr phys_base, VmPlacement where, usize size, MmuFlag
     return map_with_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
 }
 
-auto VmArea::map_anon(VmPlacement where, usize size, MmuFlags mmuf, VmMapOption options,
+auto VmArea::map_anon(VirtAddr where, usize size, MmuFlags mmuf, VmMapOption options,
                       char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
@@ -326,9 +323,9 @@ auto VmArea::map_anon(VmPlacement where, usize size, MmuFlags mmuf, VmMapOption 
     return map_with_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
 }
 
-auto VmArea::map_with_vmo(VmPlacement where, usize size, u64 vmo_ofs, MmuFlags mmuf,
-                          VmaFlags ceiling, ustl::Arc<VmObject> vmo, VmMapOption option,
-                          char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
+auto VmArea::map_with_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
+                          ustl::Arc<VmObject> vmo, VmMapOption option, char const *name)
+    -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
     ustl::Arc<VmMapping> mapping;

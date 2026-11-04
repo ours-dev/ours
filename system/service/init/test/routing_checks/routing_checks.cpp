@@ -1011,7 +1011,7 @@ auto check_physical_vmo(Uandle const vma, Uandle const mmio) -> void {
     expect("vmo_create_physical(a size of 0)", ours::vmo_create_physical(mmio, ECAM_BASE, 0, &none),
            Status::InvArgs);
     expect("vmo_create_physical(a window past the top of the space)",
-           ours::vmo_create_physical(mmio, ~ours::PhysAddr{0} & ~(PAGE - 1), 2 * PAGE, &none),
+           ours::vmo_create_physical(mmio, ours::PhysAddr{~0_usize & ~(PAGE - 1)}, 2 * PAGE, &none),
            Status::OutOfRange);
     expect("vmo_create_physical(no resource)",
            ours::vmo_create_physical(Uandle::Invalid, ECAM_BASE, PAGE, &none), Status::BadHandle);
@@ -1270,7 +1270,8 @@ auto check_pin_addresses(Uandle const bti, Uandle const vmo) -> void {
 
     auto sound = true;
     for (auto at = usize{0}; at < DMA_PAGES; ++at) {
-        sound = sound && first[at] != 0 && first[at] % PAGE == 0;
+        sound =
+            sound && first[at] != ours::PhysAddr{0} && std::to_underlying(first[at]) % PAGE == 0;
         for (auto other = at + 1; other < DMA_PAGES; ++other) {
             sound = sound && first[at] != first[other];
         }
@@ -1464,7 +1465,7 @@ auto check_contiguous_vmo(Uandle const bti) -> void {
             expect("pmt_unpin(page by page)", ours::pmt_unpin(by_page), Status::Ok);
         } else {
             // Nothing to compare the next pin's address with.
-            pages[0] = ~ours::PhysAddr{0};
+            pages[0] = ours::PhysAddr::Invalid;
         }
         if (expect("bti_pin(the contiguous VMO, Contiguous)",
                    ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, vmo, 0, 3 * PAGE,
@@ -1488,7 +1489,7 @@ auto check_contiguous_vmo(Uandle const bti) -> void {
                    ours::bti_pin(bti, RW | ours::BtiPinOptions::Contiguous, aligned, 0, 2 * PAGE,
                                  one.data(), 1, &pin),
                    Status::Ok)) {
-            if (one[0] % SIXTY_FOUR_KIB != 0) {
+            if (std::to_underlying(one[0]) % SIXTY_FOUR_KIB != 0) {
                 fail("a contiguous VMO asked to start on 64 KiB does not");
             }
             expect("pmt_unpin(the aligned VMO)", ours::pmt_unpin(pin), Status::Ok);
@@ -3201,7 +3202,7 @@ auto check_acpi_route() -> void {
     auto const window = prot::acpi::ecam_base(0);
     if (expect("Route.EcamBase(0)", window.is_ok() ? Status::Ok : window.unwrap_err(),
                Status::Ok)) {
-        if (window->address != ECAM_BASE) {
+        if (ours::PhysAddr{window->address} != ECAM_BASE) {
             fail("Route.EcamBase(0) is not where QEMU's configuration space is");
         }
         if (window->last_bus < window->first_bus ||

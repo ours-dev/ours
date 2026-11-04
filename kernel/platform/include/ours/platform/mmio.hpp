@@ -10,7 +10,7 @@
 namespace ours::platform {
 /// A run of physical addresses, [base, base + size).
 struct MmioRange {
-    u64 base;
+    PhysAddr base;
     u64 size;
 };
 
@@ -27,7 +27,7 @@ struct MmioRange {
 /// stop the boot: the ones past the end cannot be recorded, so
 /// touches_kernel_physical() answers yes for every address from then on, and
 /// no MmIo resource grants anything.
-auto reserve_kernel_mmio(u64 base, u64 size) -> void;
+auto reserve_kernel_mmio(PhysAddr base, u64 size) -> void;
 
 /// The device registers the platform has reserved so far, in the order it
 /// reserved them and in whole pages. A platform that maps no device of its own
@@ -59,7 +59,7 @@ auto kernel_ram() -> ustl::views::Span<MmioRange const>;
 /// checked that the request lies inside the physical address space, so
 /// base + size cannot overflow.
 [[nodiscard]]
-auto touches_kernel_physical(u64 base, u64 size) -> bool;
+auto touches_kernel_physical(PhysAddr base, u64 size) -> bool;
 } // namespace ours::platform
 
 #endif // #ifndef OURS_PLATFORM_MMIO_HPP

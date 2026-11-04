@@ -260,6 +260,10 @@ class Controller final {
     auto admin_cq_phys() const -> ours::PhysAddr {
         return m_dma_phys + SLICE_ADMIN_CQ;
     }
+    /// The Identify page, the geometry command's target.
+    auto identify_phys() const -> ours::PhysAddr {
+        return m_dma_phys + SLICE_IDENTIFY;
+    }
     [[nodiscard]]
     auto admin_sq() const -> ours::VirtAddr {
         return m_dma_virt + SLICE_ADMIN_SQ;
@@ -486,7 +490,7 @@ class NvmeBlockServer final
         auto entry = SqEntry{};
         entry.opcode = data.empty() ? IO_READ : IO_WRITE;
         entry.nsid = NSID;
-        entry.prp1 = m_controller->data_phys();
+        entry.prp1 = std::to_underlying(m_controller->data_phys());
         // SLBA, the first block, is 64 bits over CDW10 and CDW11; NLB, the
         // count, is zero-based.
         entry.cdw10 = static_cast<u32>(parked.lba);
@@ -572,8 +576,8 @@ auto main(int, char **) -> int {
 
     // The whole window: every bus the firmware named, walked function page
     // by function page.
-    auto ecam_window = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(), ecam->address,
-                                            usize{ecam->size});
+    auto ecam_window = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(),
+                                            ours::PhysAddr{ecam->address}, usize{ecam->size});
     if (ecam_window.is_err()) {
         auto _ = ort::debug_line(
             {"nvme: cannot map the ECAM window: ", ours::to_string(ecam_window.unwrap_err())});
@@ -583,7 +587,7 @@ auto main(int, char **) -> int {
 
     // The controller, by class: base 01h mass storage, subclass 08h NVM.
     auto device_offset = usize{0};
-    u64 bar0_phys = 0;
+    auto bar0_phys = ours::PhysAddr{0};
     for (auto device = u8{0}; device < 32 && device_offset == 0; ++device) {
         auto const cfg = Config{config_base, usize{device} << DEVICE_SHIFT};
         auto const vendor = cfg.read16(CFG_VENDOR_ID);
@@ -602,7 +606,8 @@ auto main(int, char **) -> int {
             continue;
         }
         device_offset = device << DEVICE_SHIFT;
-        bar0_phys = (u64{cfg.read32(CFG_BAR_0_HIGH)} << 32) | u64{bar_low & ~u32{0xF}};
+        bar0_phys =
+            ours::PhysAddr{(u64{cfg.read32(CFG_BAR_0_HIGH)} << 32) | u64{bar_low & ~u32{0xF}}};
         // The device's own DMA (queue fetch, completions) needs bus master
         // and the memory-space decode both set in the command register: a
         // boot firmware that probed the device and gave up may have left
@@ -621,8 +626,7 @@ auto main(int, char **) -> int {
     }
 
     // The controller's register file, mapped uncached.
-    auto bar0 = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(),
-                                     ours::PhysAddr{bar0_phys}, 16 * PAGE);
+    auto bar0 = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(), bar0_phys, 16 * PAGE);
     if (bar0.is_err()) {
         auto _ = ort::debug_line({"nvme: cannot map BAR0: ", ours::to_string(bar0.unwrap_err())});
         return 1;
@@ -662,8 +666,8 @@ auto main(int, char **) -> int {
     // The admin queues: base addresses must be page-aligned at least, and
     // the region's slices are page-aligned.
     regs.write32(NVME_AQA, AQA_ACQS_FIELD | AQA_ASQS_FIELD);
-    regs.write64(NVME_ASQ, dma->phys() + SLICE_ADMIN_SQ);
-    regs.write64(NVME_ACQ, dma->phys() + SLICE_ADMIN_CQ);
+    regs.write64(NVME_ASQ, std::to_underlying(controller.admin_sq_phys()));
+    regs.write64(NVME_ACQ, std::to_underlying(controller.admin_cq_phys()));
 
     // The I/O queue entry sizes, then enable.
     auto const cc_sizes = static_cast<u32>(CC_IOSQES_VALUE | CC_IOCQES_VALUE);
@@ -694,7 +698,7 @@ auto main(int, char **) -> int {
         auto entry = SqEntry{};
         entry.opcode = ADMIN_IDENTIFY;
         entry.nsid = NSID;
-        entry.prp1 = dma->phys() + SLICE_IDENTIFY;
+        entry.prp1 = std::to_underlying(controller.identify_phys());
         entry.cdw10 = CNS_IDENTIFY_NAMESPACE;
         if (!admin.submit(entry, 0, cqe)) {
             auto _ = ort::debug_line("nvme: Identify timed out");
@@ -724,7 +728,7 @@ auto main(int, char **) -> int {
     {
         auto entry = SqEntry{};
         entry.opcode = ADMIN_CREATE_IO_CQ;
-        entry.prp1 = dma->phys() + SLICE_IO_CQ;
+        entry.prp1 = std::to_underlying(controller.io_cq_phys());
         entry.cdw10 = static_cast<u32>(IO_QUEUE_ENTRIES) << 16 | QID_IO;
         entry.cdw11 = 0x1 /* physically contiguous */;
         if (!admin.submit(entry, 1, cqe)) {
@@ -739,7 +743,7 @@ auto main(int, char **) -> int {
         }
         entry = SqEntry{};
         entry.opcode = ADMIN_CREATE_IO_SQ;
-        entry.prp1 = dma->phys() + SLICE_IO_SQ;
+        entry.prp1 = std::to_underlying(controller.io_sq_phys());
         entry.cdw10 = static_cast<u32>(IO_QUEUE_ENTRIES) << 16 | QID_IO;
         entry.cdw11 = 0x1 /* physically contiguous */ | u32{QID_IO} << 16;
         if (!admin.submit(entry, 2, cqe)) {

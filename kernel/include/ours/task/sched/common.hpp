@@ -189,6 +189,110 @@ constexpr auto priority_to_weight(usize priority) -> Weight {
     return PRIORITY_TO_WEIGHT_MAP[priority];
 }
 
+/// The virtual time a thread of |weight| is charged for |real| of CPU time.
+///
+/// The Fair discipline hands out equal virtual time, and virtual time is real
+/// time divided by weight: a heavier thread's clock runs slower, so equal
+/// clocks mean it was given more real time. The scale is anchored at
+/// MID_WEIGHT, the weight whose clock reads real time. DEFAULT_PRIORITY is one
+/// step below the priority MID_WEIGHT belongs to, so a default thread's clock
+/// runs 1.225 times as fast as the wall clock.
+///
+/// Divides where `weighted_offset()` multiplies. They are not interchangeable
+/// and the two used to be one function, `calc_weighted_time()`: a heavier
+/// thread then earned virtual time faster, and so was given less CPU, not more.
+[[nodiscard]]
+FORCE_INLINE
+constexpr auto to_virtual_time(SchedDuration const real, Weight const weight) -> SchedDuration {
+    DEBUG_ASSERT(weight > Weight{0});
+    if (weight == MID_WEIGHT) {
+        return real;
+    }
+
+    return real / (weight / MID_WEIGHT);
+}
+
+/// A thread's term in the run queue's weighted sum: |offset|, how far its
+/// virtual time stands from the queue's minimum, times its weight.
+///
+/// The sum of these over the queue divided by the sum of the weights is the
+/// weighted mean offset, which is what makes a thread eligible or not. The unit
+/// is weight times time, so it is never converted back with `to_virtual_time()`.
+/// Each term is rounded to the nearest nanosecond, not truncated: the terms are
+/// summed, and a truncation errs the same way every time.
+[[nodiscard]]
+FORCE_INLINE
+constexpr auto weighted_offset(SchedDuration const offset, Weight const weight) -> SchedDuration {
+    return offset * weight;
+}
+
+/// MID_WEIGHT's clock reads real time.
+static_assert(to_virtual_time(SchedDuration{1'000'000}, MID_WEIGHT) == SchedDuration{1'000'000});
+
+/// A clock runs inversely to its weight, at every priority and from a
+/// millisecond to eleven days (a conversion that narrows its intermediate fails
+/// the large ones): virtual time times weight is the same for the same real
+/// time, up to the conversion's error. That is the rate kept in sixteen
+/// fractional bits, 1/2539 of itself at worst, and the quotient's truncation;
+/// the bound is 1/2048 of the expected product and a nanosecond. Multiplying
+/// instead of dividing fails it by the square of `weight / MID_WEIGHT`.
+static_assert(
+    [] {
+        constexpr SchedDuration REALS[] = {
+            SchedDuration{1'000'000},
+            SchedDuration{1'000'000'000'000},
+            SchedDuration{1'000'000'000'000'000},
+        };
+        for (auto const real: REALS) {
+            auto const expected = weighted_offset(real, MID_WEIGHT);
+            for (usize i = 0; i < NUM_PRIORITIES; ++i) {
+                auto const weight = PRIORITY_TO_WEIGHT_MAP[i];
+                auto const virtual_time = to_virtual_time(real, weight);
+                auto const deviation = weighted_offset(virtual_time, weight) - expected;
+                if (deviation.absolute() > expected / i64{2048} + SchedDuration{1}) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }(),
+    "a thread's virtual time is not inversely proportional to its weight");
+
+/// The heaviest thread's clock runs about 21 times slower than MID_WEIGHT's
+/// and the lightest's about 26 times faster, which is the whole span of the
+/// table seen from its middle. A default thread's runs 1.225 times as fast.
+static_assert(to_virtual_time(SchedDuration{1'000'000}, MAX_WEIGHT) < SchedDuration{50'000});
+static_assert(to_virtual_time(SchedDuration{1'000'000}, MAX_WEIGHT) > SchedDuration{45'000});
+static_assert(to_virtual_time(SchedDuration{1'000'000}, MIN_WEIGHT) > SchedDuration{25'000'000});
+static_assert(to_virtual_time(SchedDuration{1'000'000}, MIN_WEIGHT) < SchedDuration{26'000'000});
+static_assert(to_virtual_time(SchedDuration{1'000'000}, priority_to_weight(DEFAULT_PRIORITY)) >
+              SchedDuration{1'200'000});
+static_assert(to_virtual_time(SchedDuration{1'000'000}, priority_to_weight(DEFAULT_PRIORITY)) <
+              SchedDuration{1'250'000});
+
+/// A term is rounded to the nearest nanosecond: half of 3 is 2, not 1.
+static_assert(weighted_offset(SchedDuration{3}, Weight::from_ratio(1, 2)) == SchedDuration{2});
+
+/// The units of `weighted_offset()` against the weight sum: two MID_WEIGHT
+/// threads whose offsets are 100 ms and 0 average to 50 ms, and only the one
+/// ahead of the average fails the eligibility test `sum >= offset * weight_sum`.
+/// The earlier helper, `calc_weighted_time()`, divided the term by MID_WEIGHT as
+/// well and answered about 1050 ms, which made both eligible.
+static_assert(
+    [] {
+        constexpr auto AHEAD = SchedDuration{100'000'000};
+        constexpr auto BEHIND = SchedDuration{0};
+        constexpr auto SUM =
+            weighted_offset(AHEAD, MID_WEIGHT) + weighted_offset(BEHIND, MID_WEIGHT);
+        constexpr auto WEIGHT_SUM = MID_WEIGHT + MID_WEIGHT;
+
+        auto const mean = SUM / WEIGHT_SUM;
+        auto const error = (mean - SchedDuration{50'000'000}).absolute();
+        return error <= SchedDuration{16} && SUM >= BEHIND * WEIGHT_SUM &&
+               !(SUM >= AHEAD * WEIGHT_SUM);
+    }(),
+    "the weighted sum does not average the offsets of its threads");
+
 } // namespace ours::task::sched
 
 #endif // #ifndef OURS_TASK_SCHED_COMMON_HPP

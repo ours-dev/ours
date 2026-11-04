@@ -58,6 +58,4 @@ delta 就失真。
 - `RunQueue::avg_vruntime()` 对空队列除零（`weight_sum_ == 0`）；Linux `avg_vruntime()`
   有 `if (load)` 守卫。
 - `RunQueue::current_` 全代码没有写入点。
-- `calc_weighted_time()` 的 `weight / MID_WEIGHT` 是整数除法，低于中权重的线程（含
-  `IDLE_PRIORITY`）结果恒为 0。Linux 用 `calc_delta_fair()` 的定点逆权重。
 - `Fair::on_thread_init()` / `on_thread_dead()` 丢弃 `Runtime &`，取的是**运行** CPU 的调度器。

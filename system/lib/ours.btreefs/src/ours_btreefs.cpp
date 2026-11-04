@@ -5,6 +5,8 @@
 // layout and its slot surgery, the superblock's fields, and the three
 // values' codecs. The operations are templates over the block device and
 // live in the header, where they ask the node and never touch an offset.
+#include <algorithm>
+
 #include <cstring>
 
 #include <ours_btreefs/ours_btreefs.hpp>
@@ -131,15 +133,17 @@ namespace detail {
         }
     }
 
+    // The whole header is zeroed, then the flag set: the bytes under a new node
+    // are not known to be zero, and a count or a chain link left from whatever
+    // the block held before would be read as the node's own.
     auto Node::leaf(std::span<u8> bytes) -> Node {
+        std::ranges::fill(bytes.first(SLOTS_OFFSET), u8{0});
         bytes[LEAF_FLAG_OFFSET] = LEAF_FLAG;
-        bytes[COUNT_OFFSET] = 0;
         return Node{bytes};
     }
 
     auto Node::internal(std::span<u8> bytes) -> Node {
-        bytes[LEAF_FLAG_OFFSET] = 0;
-        bytes[COUNT_OFFSET] = 0;
+        std::ranges::fill(bytes.first(SLOTS_OFFSET), u8{0});
         return Node{bytes};
     }
 

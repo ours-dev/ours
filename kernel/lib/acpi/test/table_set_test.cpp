@@ -359,7 +359,8 @@ auto test_x_dsdt_wins_over_dsdt() -> void {
     Machine both;
     add_dsdt(both, 16, 0x11);
     add_dsdt(both, 32, 0x22);
-    add_fadt(both, sizeof(acpi::Fadt), u32(both.unlisted_phys(0)), both.unlisted_phys(1));
+    add_fadt(both, sizeof(acpi::Fadt), u32(both.unlisted_phys(0)),
+             std::to_underlying(both.unlisted_phys(1)));
     both.finish();
     auto const *dsdt = dsdt_of(both);
     require(dsdt != nullptr);

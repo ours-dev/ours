@@ -35,7 +35,7 @@ constexpr auto page_size(PageTableLevel const level) -> usize {
 
 /// The entry of a table at |level| that |va| falls under.
 constexpr auto index(PageTableLevel const level, VirtAddr const va) -> usize {
-    return (va >> shift(level)) & (X86_MAX_PTES - 1);
+    return (std::to_underlying(va) >> shift(level)) & (X86_MAX_PTES - 1);
 }
 
 /// The level of the tables an entry at |level| points to.
@@ -65,7 +65,7 @@ constexpr auto is_leaf(PageTableLevel const level, PteVal const entry) -> bool {
 /// The physical address an entry holds: the table it points to, or the
 /// memory a leaf maps.
 constexpr auto address(PteVal const entry) -> PhysAddr {
-    return entry & X86_PG_FRAME;
+    return PhysAddr{entry & X86_PG_FRAME};
 }
 
 /// One entry of a table, as the walks read and write it. A type of its own,
@@ -88,7 +88,7 @@ struct Mapping {
 };
 
 /// The highest physical address x86 can name: 52 bits.
-constexpr PhysAddr MAX_PHYS_ADDR = (PhysAddr{1} << 52) - 1;
+constexpr PhysAddr MAX_PHYS_ADDR = PhysAddr{(1_usize << 52) - 1};
 
 /// Whether a leaf may be written at |level|, an upper one: 2 MiB and 1 GiB
 /// leaves exist, 512 GiB ones do not.
@@ -216,7 +216,7 @@ class X86PageTableImpl {
             if (is_leaf(level, entry)) {
                 auto const size = page_size(level);
                 return ustl::Option<Mapping>(Mapping{
-                    .phys = address(entry) + (va & (size - 1)),
+                    .phys = address(entry) + (std::to_underlying(va) & (size - 1)),
                     .size = size,
                     .flags = Format::to_mmu_flags(entry, level),
                 });
@@ -351,7 +351,7 @@ class X86PageTableImpl {
         if (n == 0) {
             return ours::Status::Ok;
         }
-        if (!range_is_valid(va, n) || pa % PAGE_SIZE != 0) {
+        if (!range_is_valid(va, n) || std::to_underlying(pa) % PAGE_SIZE != 0) {
             return ours::Status::InvArgs;
         }
         auto const size = n * PAGE_SIZE;
@@ -380,7 +380,8 @@ class X86PageTableImpl {
             return ours::Status::InvArgs;
         }
         for (usize i = 0; i < n; ++i) {
-            if (frames[i] % PAGE_SIZE != 0 || frames[i] > MAX_PHYS_ADDR - (PAGE_SIZE - 1)) {
+            if (std::to_underlying(frames[i]) % PAGE_SIZE != 0 ||
+                frames[i] > MAX_PHYS_ADDR - (PAGE_SIZE - 1)) {
                 return ours::Status::InvArgs;
             }
         }
@@ -450,10 +451,10 @@ class X86PageTableImpl {
     /// Whether [va, va + n pages) is page aligned and does not wrap.
     [[nodiscard]]
     static constexpr auto range_is_valid(VirtAddr const va, usize const n) -> bool {
-        if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
+        if (std::to_underlying(va) % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
             return false;
         }
-        return n * PAGE_SIZE - 1 <= (~VirtAddr{0}) - va;
+        return n * PAGE_SIZE - 1 <= VirtAddr{~0_usize} - va;
     }
 
     /// Walks the range at |cursor| below the table at |table|, which is at
@@ -491,7 +492,7 @@ class X86PageTableImpl {
                  ++at) {
                 auto &entry = entries[at];
                 // The part of the range under this entry.
-                auto const offset = cursor.va & (size - 1);
+                auto const offset = std::to_underlying(cursor.va) & (size - 1);
                 auto step = size - offset;
                 if (step > cursor.remaining) {
                     step = cursor.remaining;
@@ -603,14 +604,15 @@ class X86PageTableImpl {
                 // Whether a leaf of this level's size would go here: the rest
                 // of the run is that long, and both addresses are aligned to
                 // it.
-                auto const fits = size <= cursor.run_left() && (cursor.pa() & (size - 1)) == 0 &&
-                                  (cursor.va & (size - 1)) == 0;
+                auto const fits = size <= cursor.run_left() &&
+                                  (std::to_underlying(cursor.pa()) & (size - 1)) == 0 &&
+                                  (std::to_underlying(cursor.va) & (size - 1)) == 0;
 
                 if (is_present(entry.value) && is_leaf(Level, entry.value)) {
                     if (!!(options & MapOptions::SkipIfExisting)) {
                         // The rest of the leaf that is there, as far as the
                         // range goes, stays as it is.
-                        auto step = size - (cursor.va & (size - 1));
+                        auto step = size - (std::to_underlying(cursor.va) & (size - 1));
                         if (step > cursor.remaining) {
                             step = cursor.remaining;
                         }
@@ -637,7 +639,7 @@ class X86PageTableImpl {
                         continue;
                     }
                     auto const below = derived().allocate_table();
-                    if (below == 0) {
+                    if (below == PhysAddr{0}) {
                         return ours::Status::NoMemory;
                     }
                     entry.value = Format::table_entry(below);

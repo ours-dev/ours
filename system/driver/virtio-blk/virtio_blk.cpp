@@ -200,7 +200,7 @@ class LegacyRegs final {
 
     /// QUEUE_PFN: the ring's physical address, named by page frame.
     auto set_queue_pfn(ours::PhysAddr const paddr) const -> void {
-        out32(0x08, static_cast<u32>(paddr >> 12));
+        out32(0x08, static_cast<u32>(std::to_underlying(paddr) >> 12));
     }
 
     /// QUEUE_NUM: the depth the device runs this queue at, read as its
@@ -351,14 +351,14 @@ class Device final {
             *reinterpret_cast<volatile u16 *>(bytes + index * 16 + field) = value;
         };
         // desc[0]: the header, read by the device, chained to desc[1].
-        put64(0, 0, buf_base);
+        put64(0, 0, std::to_underlying(buf_base));
         put32(0, 8, HEADER);
         put16(0, 12, DESC_NEXT);
         put16(0, 14, 1);
         // desc[1]: the blocks, chained to desc[2]. A write's data flows
         // toward the device, so the WRITE flag -- what the device writes --
         // is on only for a read.
-        put64(1, 0, buf_base + HEADER);
+        put64(1, 0, std::to_underlying(buf_base + HEADER));
         put32(1, 8, static_cast<u32>(count * SECTOR));
         put16(1, 12, DESC_NEXT | (write ? u16{0} : DESC_WRITE));
         put16(1, 14, 2);
@@ -367,7 +367,7 @@ class Device final {
         // drop the HEADER and the device writes the status one header's
         // width into the data's tail, and the byte read back at the true
         // status slot is whatever the region held before.
-        put64(2, 0, buf_base + HEADER + count * SECTOR);
+        put64(2, 0, std::to_underlying(buf_base + HEADER + count * SECTOR));
         put32(2, 8, 1);
         put16(2, 12, DESC_WRITE);
         put16(2, 14, 0);
@@ -556,8 +556,8 @@ auto main(int, char **) -> int {
     }
 
     // Bus 0 of the ECAM, one window for the whole enumeration.
-    auto ecam_window = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(), ecam->address,
-                                            usize{ecam->size});
+    auto ecam_window = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(),
+                                            ours::PhysAddr{ecam->address}, usize{ecam->size});
     if (ecam_window.is_err()) {
         auto _ = ort::debug_line({"virtio-blk: cannot map the ECAM window: ",
                                   ours::to_string(ecam_window.unwrap_err())});
@@ -686,7 +686,8 @@ auto main(int, char **) -> int {
     regs.set_queue_pfn(region_phys);
     {
         char phys_text[18];
-        auto _ = ort::debug_line({"virtio-blk: region at ", ort::hex(region_phys, phys_text)});
+        auto _ = ort::debug_line(
+            {"virtio-blk: region at ", ort::hex(std::to_underlying(region_phys), phys_text)});
     }
 
     // The device is told the driver is ready, and may now be served.

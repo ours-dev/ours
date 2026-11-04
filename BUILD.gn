@@ -181,6 +181,7 @@ group("default") {
     # anything at all.
     "//kernel/phys/lib/bootshim:tests",
     "//kernel/phys/lib/multiboot:tests",
+    "//kernel/phys/lib/bootmem:tests",
 
     # The C library's byte loops -- mem* and strlen, shared by the kernel and
     # user programs -- called by their ours::libc names, so that the host's
