@@ -44,22 +44,15 @@ namespace prot::acpi {
 /// route service serves it under in its outgoing directory's svc/.
 inline constexpr auto ROUTE_NAME = std::string_view{"ours.acpi.Route"};
 
-// The methods, each declared beside the selector its ordinal is hashed from.
-// wire/test/ordinals_test.py recomputes the ordinals from the selectors.
+// The methods: wire::method hashes each selector at compile time, so a
+// method's number follows from its name and is never typed.
 
 /// The GSI of an ISA interrupt (Route.IsaIrq).
-inline constexpr auto ISA_IRQ = wire::Method{
-    .selector = "ours.acpi/Route.IsaIrq",
-    .ordinal = 0x1785'1769'243e'80ff,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto ISA_IRQ = wire::method("ours.acpi/Route.IsaIrq", wire::MethodKind::TwoWay);
 
 /// The configuration space of a PCI segment (Route.EcamBase).
-inline constexpr auto ECAM_BASE = wire::Method{
-    .selector = "ours.acpi/Route.EcamBase",
-    .ordinal = 0x64f7'3165'540e'cd7d,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto ECAM_BASE =
+    wire::method("ours.acpi/Route.EcamBase", wire::MethodKind::TwoWay);
 
 /// How an interrupt signals. The values are ABI and never change.
 enum class Trigger : u8 {

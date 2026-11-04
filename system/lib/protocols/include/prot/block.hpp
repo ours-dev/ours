@@ -57,39 +57,23 @@ inline constexpr auto BLOCK_SIZE = u32{512};
 /// Write's request data, must fit a channel message.
 inline constexpr auto MAX_READ_BLOCKS = usize{7};
 
-// The methods, each declared beside the selector its ordinal is hashed from.
-// wire/test/ordinals_test.py recomputes the ordinals from the selectors.
+// The methods: wire::method hashes each selector at compile time, so a
+// method's number follows from its name and is never typed.
 
 /// Answers with the device's geometry (Block.GetInfo).
-inline constexpr auto GET_INFO = wire::Method{
-    .selector = "ours.block/Block.GetInfo",
-    .ordinal = 0x3605'3f7a'5455'1371,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto GET_INFO = wire::method("ours.block/Block.GetInfo", wire::MethodKind::TwoWay);
 
 /// Answers Ok and ends the connection (ours.io/Node.Close): the client's
 /// fsio::close sends it, and a server that closes without answering leaves
 /// the client's close reading PeerClosed.
-inline constexpr auto CLOSE = wire::Method{
-    .selector = "ours.io/Node.Close",
-    .ordinal = 0x67bf'e5a2'cd64'acda,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto CLOSE = wire::method("ours.io/Node.Close", wire::MethodKind::TwoWay);
 
 /// Reads |count| blocks starting at |lba| (Block.Read).
-inline constexpr auto READ = wire::Method{
-    .selector = "ours.block/Block.Read",
-    .ordinal = 0x4694'd3e4'398f'ba3d,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto READ = wire::method("ours.block/Block.Read", wire::MethodKind::TwoWay);
 
 /// Writes |count| blocks starting at |lba| (Block.Write), the data in the
 /// request body behind the count.
-inline constexpr auto WRITE = wire::Method{
-    .selector = "ours.block/Block.Write",
-    .ordinal = 0x3bfa'6a1c'c8cf'9490,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto WRITE = wire::method("ours.block/Block.Write", wire::MethodKind::TwoWay);
 
 struct CloseRequest {
     u32 txid;

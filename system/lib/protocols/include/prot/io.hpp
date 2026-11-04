@@ -208,11 +208,7 @@ inline constexpr auto CLONE = wire::method("ours.io/Cloneable.Clone", wire::Meth
 inline constexpr auto READ = wire::method("ours.io/File.Read", wire::MethodKind::TwoWay);
 
 /// Writes |data| at the seek offset and moves it by what was written.
-inline constexpr auto WRITE = wire::Method{
-    .selector = "ours.io/File.Write",
-    .ordinal = 0x1df7'133e'63c2'a0c4,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto WRITE = wire::method("ours.io/File.Write", wire::MethodKind::TwoWay);
 
 /// A VMO of the file's contents, with the rights |flags| ask for.
 inline constexpr auto GET_BACKING_MEMORY =
@@ -231,11 +227,7 @@ static_assert(wire::all_distinct(OPEN, CLOSE, CLONE, READ, GET_BACKING_MEMORY, R
 /// Removes the entry |path| names from the directory (Directory.Unlink):
 /// the name goes, and with it what it named. Refusing is the status form
 /// (NotFound the usual); answering Ok means gone.
-inline constexpr auto UNLINK = wire::Method{
-    .selector = "ours.io/Directory.Unlink",
-    .ordinal = 0x2d57'15bc'1a78'ebb4,
-    .kind = wire::MethodKind::TwoWay,
-};
+inline constexpr auto UNLINK = wire::method("ours.io/Directory.Unlink", wire::MethodKind::TwoWay);
 
 /// Directory.Open. |path| points into the message it was decoded from.
 struct OpenRequest {

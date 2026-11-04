@@ -37,13 +37,8 @@ inline constexpr auto ADMIN_NAME = std::string_view{"ours.fshost.Admin"};
 /// in what they accept.
 inline constexpr auto MAX_NAME_BYTES = usize{255};
 
-/// Admin.Mount, the ordinal hashed from its selector
-/// (wire/test/ordinals_test.py recomputes it).
-inline constexpr auto MOUNT = wire::Method{
-    .selector = "ours.fshost/Admin.Mount",
-    .ordinal = 0x0647'133c'3d77'7ec9,
-    .kind = wire::MethodKind::TwoWay,
-};
+/// Admin.Mount: wire::method hashes the selector at compile time.
+inline constexpr auto MOUNT = wire::method("ours.fshost/Admin.Mount", wire::MethodKind::TwoWay);
 
 struct MountRequest {
     u32 txid;
