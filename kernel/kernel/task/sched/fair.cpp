@@ -31,11 +31,11 @@ class Observer {
     static auto copy(SchedEntity &from, SchedEntity &to) -> void;
 };
 
-/// FairRunQueue itself -- all of Fair's per-CPU state -- is declared in
-/// fair.hpp and held directly by the per-CPU RunQueue.
+// FairRunQueue itself -- all of Fair's per-CPU state -- is declared in
+// fair.hpp and held directly by the per-CPU RunQueue.
 
-auto FairRunQueue::term_of(SchedEntity &object) const -> SchedDuration {
-    return weighted_offset(object.vruntime() - min_vruntime_, object.weight());
+auto FairRunQueue::term_of(SchedEntity &object) const -> WeightedTime {
+    return weighted_offset(object.vruntime() - zero_vruntime_, object.weight());
 }
 
 auto FairRunQueue::dequeue_object(SchedEntity &object) -> void {
@@ -52,36 +52,77 @@ auto FairRunQueue::enqueue_object(SchedEntity &object) -> void {
     total_vruntime_ += term_of(object);
 }
 
-/// RelativeWeightedOwnedVirtualTime(i) = WeightedOwnedVirtualTime(i) - MinimalOwnedVirtualTime;
+auto FairRunQueue::sums() const -> Sums {
+    auto terms = Sums{total_vruntime_, weight_sum_};
+    if (current_ && current_->runqueue_state().is_active()) {
+        terms.total += term_of(*current_);
+        terms.weight += current_->weight();
+    }
+    return terms;
+}
+
+/// RelativeWeightedOwnedVirtualTime(i) = Weight(i) * (OwnedVirtualTime(i) - ZeroVirtualTime);
 /// RelativeWeightedOwnedVirtualTimeSum = \Sum RelativeWeightedOwnedVirtualTime(i)
-/// WeightedOwnedVirtualTimeSum = RelativeWeightedOwnedVirtualTimeSum + MinimalOwnedVirtualTime * NumTasks
+/// WeightedOwnedVirtualTimeSum = RelativeWeightedOwnedVirtualTimeSum + ZeroVirtualTime * TotalWeight
 ///
-/// If MinimalOwnedVirtualTime will be plus Delta, then
-///     RelativeWeightedOwnedVirtualTime(i) -= Delta
+/// If ZeroVirtualTime will be plus Delta, then
+///     RelativeWeightedOwnedVirtualTime(i) -= Weight(i) * Delta
 /// ctx that
 ///     RelativeWeightedOwnedVirtualTimeSum -= Delta * TotalWeight
-auto FairRunQueue::update_min_vruntime(SchedEntity &current) -> void {
-    SchedDuration min_vruntime;
-    if (current.vruntime() < min_vruntime_) {
-        min_vruntime = current.vruntime();
-    } else {
-        min_vruntime = min_vruntime_;
+///
+/// The sum here is the tree's alone, so it is moved by the tree's weight. The
+/// running thread's term is not stored: sums() takes it from its vruntime at
+/// the zero of the moment.
+///
+/// Nothing in the tree has to be searched for: it is ordered by deadline, so its
+/// leftmost is not the thread with the smallest virtual time, and the weighted
+/// mean is already in the two sums.
+auto FairRunQueue::update_zero_vruntime(SchedDuration const delta) -> void {
+    total_vruntime_ -= weighted_offset(delta, weight_sum_);
+    zero_vruntime_ += delta;
+}
+
+auto FairRunQueue::recenter() -> void {
+    auto const terms = sums();
+    if (terms.weight == Weight{0}) {
+        return;
     }
 
-    // TODO(SmallHuaZi) To figure out the problem that need to search in runqueue
-    // for a potential minimal vruntime.
+    update_zero_vruntime(weighted_mean_offset(terms.total, terms.weight));
+}
 
-    if (auto delta = min_vruntime - min_vruntime_; delta > SchedDuration{0}) {
-        min_vruntime_ = min_vruntime; // min_vruntime_ + delta
-        total_vruntime_ -= delta * weight_sum_;
-    }
+auto FairRunQueue::avg_vruntime() -> SchedDuration {
+    recenter();
+    return zero_vruntime_;
+}
+
+/// First, `IdealServiceVirtualTime` is same to all task.
+///
+/// Lag(i) = IdealServiceTime - OwnedServiceTime(i)
+///        = Weight(i) * (IdealServiceVirtualTime - OwnedServiceVirtualTime(i))
+///
+/// Out of \Sum Lag(i) = \Sum Weight(i) * (`IdealServiceVirtualTime` - OwnedServiceVirtualTime(i))
+///                    = \Sum Weight(i) * (`IdealServiceVirtualTime` - OwnedServiceVirtualTime(i))
+///                    = TotalWeight * `IdealServiceVirtualTime` - \Sum Weight(i) * OwnedServiceVirtualTime(i)
+///                    = TotalWeight * `IdealServiceVirtualTime` - WeightedOwnedVirtualTimeSum
+///                    = 0
+/// ctx `IdealServiceVirtualTime` = WeightedOwnedVirtualTimeSum / TotalWeight
+///                              = WeightedAverageOwnedVirtualTime
+///
+/// When the lag of a task is greater than or equal to zero, it is eligible,
+/// otherwise ineligible.
+///
+/// The code tests it as `WeightedOwnedVirtualTimeSum >= Weight * (OwnedVirtualTime(i)
+/// - ZeroVirtualTime)` with TotalWeight in the place of Weight, the running thread
+/// counted in the sum and in the weight, without the division.
+auto FairRunQueue::is_eligible(SchedEntity const &object) const -> bool {
+    auto const terms = sums();
+    return offset_is_eligible(terms.total, terms.weight, object.vruntime() - zero_vruntime_);
 }
 
 /// Stateless: implements the EEVDF algorithm only. All per-CPU state lives
 /// in FairRunQueue (fair.hpp), held by the per-CPU RunQueue -- one shared Fair
 /// instance serves every CPU, fetching the queue from the RunQueue it is handed.
-/// Three helpers below still reach for the calling CPU's queue instead; see
-/// docs/changes/261103/kernel-task-sched.md.
 class Fair final {
     using Self = Fair;
 
@@ -122,38 +163,12 @@ class Fair final {
   private:
     auto try_to_delay_dequeue(RunQueue &, SchedEntity &, DequeueOptions) -> bool;
 
-    auto is_object_eligible(SchedEntity const &) const -> bool;
-
     auto adjust_vlag(RunQueue &runtime, SchedEntity &object) -> void;
 
-    auto update_vlag(SchedEntity &) -> void;
+    auto update_vlag(RunQueue &runtime, SchedEntity &object) -> void;
 
-    auto set_next_object(SchedEntity &object) -> void;
+    auto set_next_object(RunQueue &runtime, SchedEntity &object) -> void;
 };
-
-/// First, `IdealServiceVirtualTime` is same to all task.
-///
-/// Lag(i) = IdealServiceTime - OwnedServiceTime(i)
-///        = Weight(i) * (IdealServiceVirtualTime - OwnedServiceVirtualTime(i))
-///
-/// Out of \Sum Lag(i) = \Sum Weight(i) * (`IdealServiceVirtualTime` - OwnedServiceVirtualTime(i))
-///                    = \Sum Weight(i) * (`IdealServiceVirtualTime` - OwnedServiceVirtualTime(i))
-///                    = TotalWeight * `IdealServiceVirtualTime` - \Sum Weight(i) * OwnedServiceVirtualTime(i)
-///                    = TotalWeight * `IdealServiceVirtualTime` - WeightedOwnedVirtualTimeSum
-///                    = 0
-/// ctx `IdealServiceVirtualTime` = WeightedOwnedVirtualTimeSum / TotalWeight
-///                              = WeightedAverageOwnedVirtualTime
-///
-/// When the lag of a task is greater than or equal to zero, it is eligible,
-/// otherwise ineligible.
-FORCE_INLINE
-auto Fair::is_object_eligible(SchedEntity const &object) const -> bool {
-    auto &rq = Scheduler::Current::get().fair_run_queue();
-    auto const total_vruntime = rq.total_vruntime();
-    auto const weight_sum = rq.total_weight();
-
-    return total_vruntime >= ((object.vruntime() - rq.min_vruntime()) * weight_sum);
-}
 
 auto Fair::adjust_vlag(RunQueue &runtime, SchedEntity &ctx) -> void {
     auto ideal_vruntime = runtime.queue<Discipline::Normal>().avg_vruntime();
@@ -175,8 +190,8 @@ auto Fair::adjust_vlag(RunQueue &runtime, SchedEntity &ctx) -> void {
 }
 
 FORCE_INLINE
-auto Fair::update_vlag(SchedEntity &object) -> void {
-    object.m_fair.vlag = Scheduler::Current::get().fair_run_queue().lag_of(object);
+auto Fair::update_vlag(RunQueue &runtime, SchedEntity &object) -> void {
+    object.m_fair.vlag = runtime.queue<Discipline::Normal>().lag_of(object);
 }
 
 auto Fair::update_thread(RunQueue &runtime, Thread *curr) -> void {
@@ -196,8 +211,7 @@ auto Fair::update_thread(RunQueue &runtime, Thread *curr) -> void {
     // Both sides are read on the virtual clock: vdeadline is some vruntime plus
     // one or more requests, so whatever offset vruntime started from cancels, and
     // the test holds once about one request of real time has been charged since
-    // vdeadline was last set (about, because the weight scaling truncates). A start
-    // that saturates both is the exception, see docs/repairs/261103/kernel-task-sched.md.
+    // vdeadline was last set (about, because the weight scaling truncates).
     // exec_runtime() is the other clock, which does not start where vruntime does
     // and is not scaled by the weight.
     if (ctx.m_fair.vruntime >= ctx.virtual_deadline()) {
@@ -206,6 +220,10 @@ auto Fair::update_thread(RunQueue &runtime, Thread *curr) -> void {
 
         ctx.m_fair.vdeadline =
             ctx.m_fair.vruntime + to_virtual_time(ctx.m_timeslice.length(), ctx.weight());
+
+        // A thread that is only ever re-picked reaches no placement or lag, and its
+        // offset from the zero would grow with its clock until it saturates.
+        runtime.queue<Discipline::Normal>().recenter();
     }
 }
 
@@ -217,7 +235,8 @@ auto Fair::try_to_delay_dequeue(RunQueue &runtime, SchedEntity &ctx, DequeueOpti
     }
 
     auto delayable = !!(DequeueOptions::Sleep & options);
-    if (sched::has_feature(Feature::DelayDequeue) && delayable && !is_object_eligible(ctx)) {
+    if (sched::has_feature(Feature::DelayDequeue) && delayable &&
+        !runtime.queue<Discipline::Normal>().is_eligible(ctx)) {
         return true;
     }
 
@@ -239,7 +258,7 @@ auto Fair::dequeue_thread(RunQueue &runtime, Thread *thread, DequeueOptions opti
         }
     }
 
-    update_vlag(ctx);
+    update_vlag(runtime, ctx);
     if (!is_current_thread) {
         rq.dequeue_object(ctx);
         rq.dec_queued();
@@ -325,7 +344,7 @@ auto Fair::evaluate_next_thread(RunQueue &runtime, Thread *curr) -> Thread * {
     rq.verify();
     auto iter = rq.begin();
     for (auto const last = rq.end(); iter != last; ++iter) {
-        if (is_object_eligible(*iter)) {
+        if (rq.is_eligible(*iter)) {
             break;
         }
     }
@@ -344,15 +363,20 @@ auto Fair::put_prev_thread(RunQueue &runtime, Thread *prev) -> void {
     auto &ctx = prev->scheduling_entity();
 
     // The thread |prev| was not been deactivated via Scheduler::deactivate_thread().
-    // Therefore now it is still on our runqueue.
-    if (ctx.runqueue_state().is_active()) {
+    // Therefore now it is still on our runqueue. It is charged while it is still
+    // the running thread, so the mean the charge may recenter on counts it.
+    auto const active = ctx.runqueue_state().is_active();
+    if (active) {
         update_thread(runtime, prev);
+    }
+    rq.clear_current();
+    if (active) {
         rq.enqueue_object(ctx);
     }
 }
 
-auto Fair::set_next_object(SchedEntity &ctx) -> void {
-    auto &rq = Scheduler::Current::get().fair_run_queue();
+auto Fair::set_next_object(RunQueue &runtime, SchedEntity &ctx) -> void {
+    auto &rq = runtime.queue<Discipline::Normal>();
     rq.verify();
 
     // The next object may not be on queue, ctx it demands us to check as the following to
@@ -360,6 +384,7 @@ auto Fair::set_next_object(SchedEntity &ctx) -> void {
     if (ctx.runqueue_state().is_active()) {
         rq.dequeue_object(ctx);
     }
+    rq.set_current(ctx);
 
     ctx.m_prev_exec_runtime = ctx.m_exec_runtime;
     ctx.m_fair.vdeadline =
@@ -370,7 +395,7 @@ auto Fair::set_next_thread(RunQueue &runtime, Thread *next) -> void {
     runtime.queue<Discipline::Normal>().verify();
 
     auto &ctx = next->scheduling_entity();
-    set_next_object(ctx);
+    set_next_object(runtime, ctx);
 
     if constexpr (SCHED_NOHZ) {
         // When configured NOHZ, need we to manuaully reset the preemption time point.
@@ -459,7 +484,7 @@ auto Fair::override_thread_base_profile(RunQueue &runtime, Thread *thread,
     auto const queued = ctx.runqueue_state().is_active();
     if (queued) {
         update_thread(runtime, thread);
-        update_vlag(ctx);
+        update_vlag(runtime, ctx);
         rq.dequeue_object(ctx);
         rq.dec_queued();
     }

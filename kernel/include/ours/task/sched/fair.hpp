@@ -37,7 +37,36 @@ class FairRunQueue {
 
     auto dequeue_object(SchedEntity &object) -> void;
 
-    auto update_min_vruntime(SchedEntity &object) -> void;
+    /// |object| is the thread now running on this CPU. It is off the tree, and
+    /// part of the average for as long as it is active (`sums()`).
+    FORCE_INLINE
+    auto set_current(SchedEntity &object) -> void {
+        current_ = &object;
+    }
+
+    /// The running thread is going back to the tree, or has stopped wanting
+    /// to run.
+    FORCE_INLINE
+    auto clear_current() -> void {
+        current_ = nullptr;
+    }
+
+    /// The weighted mean of the virtual times of everything that wants to run
+    /// here, the running thread included. It is the point of the queue at which
+    /// a thread owes nothing and is owed nothing, and a thread is placed on it
+    /// less the lag it carried.
+    ///
+    /// Moves the queue's zero to the mean on the way (`recenter()`), which is
+    /// why it is not const. An empty queue has no mean and answers its zero.
+    auto avg_vruntime() -> SchedDuration;
+
+    /// Moves the zero to the weighted mean. The sums are valid for any zero, but
+    /// an offset converts into `WeightedTime` only up to about 39 hours, so the
+    /// zero has to follow the threads: it is moved at every placement and lag
+    /// (`avg_vruntime()`) and whenever a request is replenished
+    /// (`Fair::update_thread()`), which is what keeps a thread that is only ever
+    /// re-picked from running away from it.
+    auto recenter() -> void;
 
     /// Returns the lag of |object| relative to this runqueue.
     FORCE_INLINE
@@ -45,35 +74,28 @@ class FairRunQueue {
         return avg_vruntime() - object.vruntime();
     }
 
+    /// Whether |object| is owed service: its lag is not negative.
+    ///
+    /// The sum and the weights it is tested against are `sums()`, the same pair
+    /// `avg_vruntime()` uses, so the running thread is in both.
+    [[nodiscard]]
+    auto is_eligible(SchedEntity const &object) const -> bool;
+
+    /// The weights of what is in the mean: the tree and the running thread.
     FORCE_INLINE
     auto total_weight() const -> Weight {
-        if (current_ && current_->runqueue_state().is_active()) {
-            return weight_sum_ + current_->weight();
-        }
-        return weight_sum_;
+        return sums().weight;
+    }
+
+    /// The weighted sum of what is in the mean: the tree and the running thread.
+    FORCE_INLINE
+    auto total_vruntime() const -> WeightedTime {
+        return sums().total;
     }
 
     FORCE_INLINE
-    auto total_vruntime() const -> SchedDuration {
-        return total_vruntime_;
-    }
-
-    FORCE_INLINE
-    auto min_vruntime() const -> SchedDuration {
-        return min_vruntime_;
-    }
-
-    FORCE_INLINE
-    auto avg_vruntime() const -> SchedDuration {
-        auto total_vruntime = total_vruntime_;
-        auto weight_sum = weight_sum_;
-
-        if (current_ && current_->runqueue_state().is_active()) {
-            weight_sum += current_->weight();
-            total_vruntime += term_of(*current_);
-        }
-
-        return min_vruntime_ + total_vruntime / weight_sum;
+    auto zero_vruntime() const -> SchedDuration {
+        return zero_vruntime_;
     }
 
     FORCE_INLINE
@@ -107,8 +129,20 @@ class FairRunQueue {
     }
 
   private:
-    /// |object|'s term in total_vruntime_, see sched::weighted_offset().
-    auto term_of(SchedEntity &object) const -> SchedDuration;
+    /// The weighted sum and the weights of what is in the mean: the tree, and
+    /// the running thread while it is active.
+    struct Sums {
+        WeightedTime total;
+        Weight weight;
+    };
+    [[nodiscard]]
+    auto sums() const -> Sums;
+
+    /// |object|'s term in the weighted sum, see sched::weighted_offset().
+    auto term_of(SchedEntity &object) const -> WeightedTime;
+
+    /// Moves the zero by |delta|, and the sum of the tree with it.
+    auto update_zero_vruntime(SchedDuration const delta) -> void;
 
     /// Earliest virtual deadline first; the pick takes the first eligible one
     /// (Fair::evaluate_next_thread()).
@@ -121,10 +155,16 @@ class FairRunQueue {
 
     gktl::Canary m_canary{this};
     Queue queue_;
-    SchedEntity *current_;
+    /// The thread running on this CPU if it is one of Fair's. Not in `queue_`.
+    SchedEntity *current_ = nullptr;
+    /// The weights of what is in `queue_`.
     Weight weight_sum_;
-    SchedDuration total_vruntime_;
-    SchedDuration min_vruntime_;
+    /// `weight * (vruntime - zero_vruntime_)` summed over what is in `queue_`.
+    WeightedTime total_vruntime_;
+    /// The point the offsets are taken from. A thread's term is its distance
+    /// from it, so any value would do for the sums; keeping it at the mean
+    /// keeps them small.
+    SchedDuration zero_vruntime_;
     usize m_num_queued = 0;
 };
 

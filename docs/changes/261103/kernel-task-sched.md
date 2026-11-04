@@ -405,3 +405,112 @@ None
 - Why do the weights cancel in the eligibility test when the offsets are real times, and what does the test keep equal on the virtual clock?
 - Why did placing a thread on `avg_vruntime() - vlag` put a priority-31 thread about 21 times too far along when both were on the real clock?
 - Why must a thread's `vruntime` not change while it is in the tree, and which call breaks that today?
+
+## Title: Fair's queue has a zero at the weighted mean, a running thread, and one eligibility test (2026-11-04)
+
+**Files**
+- `kernel/include/ours/task/sched/types.hpp` — new `WeightedTime`, `ffl::Fixed<i64, 16>`, the unit of the weighted sum (the same type as `Weight`)
+- `kernel/include/ours/task/sched/common.hpp` — `weighted_offset()` returns it, exactly; new `weighted_mean_offset()` (rounded down) and `offset_is_eligible()`; the `static_assert`s follow
+- `kernel/include/ours/task/sched/fair.hpp` — `FairRunQueue`: `min_vruntime_` is `zero_vruntime_`; `current_` starts null and has `set_current()` and `clear_current()`; `avg_vruntime()` is no longer const and is defined in `fair.cpp`; new `recenter()`, `is_eligible()` and the private `sums()`; `total_weight()` and `total_vruntime()` forward to `sums()` and so include the running thread, and `total_vruntime()` returns `WeightedTime`
+- `kernel/kernel/task/sched/fair.cpp` — the queue's methods; `update_min_vruntime()` became `update_zero_vruntime()` and its TODO is gone; the author's derivation above it now reads `Weight(i) * (... - ZeroVirtualTime)` and `ZeroVirtualTime * TotalWeight`; `Fair::is_object_eligible()` is gone, its derivation comment moved to `is_eligible()`; `update_vlag()` and `set_next_object()` take the `RunQueue` they are handed; `update_thread()` recenters when a request is replenished, and loses its sentence about a saturating start; `put_prev_thread()` charges, then clears `current_`, then enqueues; the `Fair` class comment about the three helpers is gone
+- `docs/repairs/261103/kernel-task-sched.md` — items 5, 6, 15 and 16 are deleted (the numbers are kept); items 8, 13 and 17 are extended and item 18 is new
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+None observable: Fair is still not built. With the Fair switch on, the syntax check of `fair.cpp` goes from 5 diagnostics to 2 (`for_each` and `arm_preempt_timer`, items 4 and 12), the three `fair_run_queue()` ones being gone. By hand: the first thread of an empty queue was placed on `min_vruntime_ + total / 0`, and `Fixed::operator/` answers its maximum on a zero divisor, so its `vruntime` and `vdeadline` were saturated; and a pair of always-runnable threads alternated 1 : 1 whatever their weights, because the running thread was in neither the mean nor the eligibility test. A model of the finished queue that two reviewers ran gives the shares the weights ask for: 25.69 : 1 for priorities 31 and 15 at the code's 64 ms slice (25.71 expected), and the right split for three threads.
+
+**Cause**
+Five defects of one queue, which only make sense together.
+
+1. **The empty queue.** `avg_vruntime()` divided by the weight sum without looking at it. With nothing in the tree, and `current_` unwritten, that is zero, and the answer saturates.
+2. **`current_` had no writer.** `total_weight()` and `avg_vruntime()` add the running thread when `current_` is set and active, and it never was, so the mean at a pick covered the waiting threads only. `Scheduler::evaluate_next_thread()` picks before `put_prev_thread()`, so the running thread is off the tree at the pick. A lone waiter is trivially eligible and a pair alternates 1 : 1, on either clock (the previous entry's Symptom).
+3. **The eligibility test used two different sums.** `avg_vruntime()` added the running thread's weight and its term; `is_object_eligible()` took `total_vruntime()`, the tree's sum alone, against `total_weight()`, which includes the running thread. With `current_` set the numerator would cover the tree and the denominator the tree and the running thread: for a running priority-31 thread A and a waiting default thread B the test is `wB*oB >= oB*(wB+wA)`, true only for `oB <= 0`. A rational model of the queue that a reviewer ran gave A no further slice after its first one. `term_of()` is private to `FairRunQueue`, so `Fair` could not add the term itself; the pair has to come from one place.
+4. **`min_vruntime_` could not advance.** `update_min_vruntime()` took the smaller of the running thread's clock and `min_vruntime_`, so its `delta > 0` test was never true, and it had no caller. Its own TODO says why it was left: the smallest virtual time of the tree has to be searched for. The tree is ordered by virtual deadline, so its leftmost is not the smallest: with A at `v=50, d=60` and B at `v=10, d=90`, the leftmost is A and the smallest `v` is B's.
+5. **Three helpers reached for the calling CPU's queue.** `is_object_eligible()`, `update_vlag()` and `set_next_object()` called `Scheduler::Current::get().fair_run_queue()`, which no longer exists, and would have used the wrong queue on a wakeup from another CPU. Writing `current_` and moving the zero both mutate the queue, so they needed the right one.
+
+**Change**
+The author chose the zero (a decision card, 2026-11-03): the weighted mean, not the smallest virtual time. Every offset is a distance from the zero, so the sums are valid for any value of it; the mean is already in the two sums, so moving the zero there costs `total -= delta * weight_sum; zero += delta`, with no search. Options set out and not taken: a scan of the tree for the minimum (a new O(n) walk at each placement) and an augmented tree (heavier, a change to `ustl`).
+
+Before (abbreviated):
+
+```cpp
+// fair.hpp
+auto avg_vruntime() const -> SchedDuration {
+    auto total_vruntime = total_vruntime_; auto weight_sum = weight_sum_;
+    if (current_ && current_->runqueue_state().is_active()) { weight_sum += current_->weight(); total_vruntime += term_of(*current_); }
+    return min_vruntime_ + total_vruntime / weight_sum;                // no guard for weight_sum == 0
+}
+// fair.cpp
+update_min_vruntime(current):  min = (current.vruntime() < min_vruntime_) ? current.vruntime() : min_vruntime_;
+                               if (min - min_vruntime_ > 0) { min_vruntime_ = min; total_vruntime_ -= delta * weight_sum_; }   // never true
+Fair::is_object_eligible(object):  rq = Scheduler::Current::get().fair_run_queue();
+    return rq.total_vruntime() >= (object.vruntime() - rq.min_vruntime()) * rq.total_weight();   // tree sum, full weight
+```
+
+After:
+
+```cpp
+auto FairRunQueue::sums() const -> Sums {            // the one pair
+    auto terms = Sums{total_vruntime_, weight_sum_}; // the tree
+    if (current_ && current_->runqueue_state().is_active()) {
+        terms.total += term_of(*current_);           // and the running thread
+        terms.weight += current_->weight();
+    }
+    return terms;
+}
+auto FairRunQueue::update_zero_vruntime(SchedDuration const delta) -> void {
+    total_vruntime_ -= weighted_offset(delta, weight_sum_);   // the tree's sum, the tree's weight
+    zero_vruntime_ += delta;
+}
+auto FairRunQueue::recenter() -> void {
+    auto const terms = sums();
+    if (terms.weight == Weight{0}) { return; }                // an empty queue has no mean
+    update_zero_vruntime(weighted_mean_offset(terms.total, terms.weight));
+}
+auto FairRunQueue::avg_vruntime() -> SchedDuration { recenter(); return zero_vruntime_; }   // an empty queue's mean is its zero
+auto FairRunQueue::is_eligible(SchedEntity const &object) const -> bool {
+    auto const terms = sums();
+    return offset_is_eligible(terms.total, terms.weight, object.vruntime() - zero_vruntime_);
+}
+```
+
+`avg_vruntime()` and `is_eligible()` both take `sums()`, so the running thread is in both or in neither and the mismatch cannot return. `set_next_object()` calls `rq.set_current(ctx)` after taking the thread off the tree; `put_prev_thread()` charges the thread, then clears `current_`, then enqueues it. The empty queue answers its zero, so the first thread is placed at `zero - 0`, finite, a request ahead of its `vruntime`; a lone running thread is the mean (its own term over its own weight), and its lag is exactly zero.
+
+**The zero has to follow the threads.** A reviewer found that the first version moved the zero only inside `avg_vruntime()`, which only a placement or a lag reaches. A thread that is only ever re-picked reaches neither, and its offset from the zero grows with its clock, 25.8 times real time at priority 0, until `WeightedTime` saturates, about 1.5 h of CPU at priority 0 and 32 h at the default priority; past that the sums stop adding up and the shares of unequal weights collapse in the model. `Fair::update_thread()` now calls `recenter()` where a request is replenished, at O(1): a thread's offset then grows by at most one request between two moves. The limit is 39 h divided by the sum of the weights, since `update_zero_vruntime()` and the eligibility test multiply an offset by it.
+
+**The mean is rounded down.** `weighted_mean_offset()` floors to the nanosecond, so a thread placed at `avg_vruntime()` with no lag is eligible: the test compares against the exact mean, and a mean rounded up could sit half a nanosecond ahead of it. Two threads at 0 and 1 ns have a mean of 0.5; rounding up put the zero at 1 and the newcomer failed its own test.
+
+**The sum had to become exact.** Moving the zero at every placement is a rounding hazard the old `min_vruntime_` never ran into, because that one never moved. Each term was a `SchedDuration`, whole nanoseconds, rounded to nearest, and a move subtracted one rounded product from a sum of others, so the sum drifted from the sum of its terms by up to half a nanosecond per term per move; the division by a small weight sum then multiplied it (repair item 15, now deleted). A term is now a `WeightedTime`, a nanosecond count times the weight's raw value, which is a whole number of its units: no rounding, so add, subtract and move are exact. The cost is the range: a time converts into it up to about 39 hours (2^47 ns) and saturates beyond. `WeightedTime` is the same type as `Weight`; the sum and the weight it divides by can be swapped without a diagnostic.
+
+Three helpers took the `RunQueue` they were handed: `update_vlag(runtime, ctx)`, `set_next_object(runtime, ctx)`, and the eligibility test, which is now `runtime.queue<Discipline::Normal>().is_eligible(...)` at its two callers. That closes repair item 5 without a separate change; it was not separable from writing `current_` and moving the zero on the right queue.
+
+`update_min_vruntime()` was rewritten and renamed, not deleted. The author's derivation of the sum above it is kept with "Minimal" read as "Zero", and corrected: its first line was unweighted and its sum line said `NumTasks` where the sum is over `TotalWeight`. `min_vruntime()` is `zero_vruntime()`. The accessors `total_weight()`, `total_vruntime()` and `zero_vruntime()` have no caller; they are kept.
+
+The `static_assert`s added in `common.hpp`: a term is exact (half of 3 is 1.5); a lone thread is its own mean at every priority, for positive and negative offsets, and is eligible, the test being `>=`; the mean is rounded down (0 and 1 give 0, -1 and 0 give -1, and a thread placed there is eligible); the two-`MID_WEIGHT` example is exact (the mean is 50 ms, no tolerance); a running priority-31 thread at 10 ms and a waiting default thread at 5 ms, with the sum over both: the waiting one is eligible and the running one is not, and with the sum over the waiting one only, the waiting one is not; and the conversion over eleven days, which a 64-bit intermediate gets wrong. The proportionality test over every priority now runs for 1 ms and 1000 s: the real time of eleven days itself (1e15 ns) exceeds the 39 hours that `WeightedTime` holds, at every weight.
+
+**Reference**
+Linux EEVDF (`kernel/sched/fair.c`, local checkout `~/Workspaces/projects/linux`, v7.2-rc5 plus 31 commits; the bodies were read there). `update_zero_vruntime()` (line 759): `sum_w_vruntime -= sum_weight * delta; zero_vruntime += delta`. `avg_vruntime()` (780) moves the zero to the average on every call, returns the zero when there is neither weight nor `curr`, and takes `curr`'s own `vruntime` as the average when it is alone; its comment says it is called from `place_entity()`, `update_entity_lag()` and `update_deadline()`, the last at slice expiry, which `recenter()` in `update_thread()` follows; and it biases to the left so that `avg_vruntime() + 0` is eligible, which the floor follows. `vruntime_eligible()` (894) adds `curr` to both the sum and the load. The lag bound is `entity_lag()`. Its sum is an exact integer sum (a `PARANOID_AVG` feature path aside); the exactness here is `WeightedTime`.
+
+**Verification**
+- `python3 .agents/skills/verify/scripts/boot_check.py --out out/fair-lane`, run on the final code: build ok, dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (172 passed; more than the previous entry's 166, from commits other sessions merged into the branch in between). Fair is not in these images, so the boots show only that nothing else moved.
+- `-fsyntax-only` on `fair.cpp` and `scheduler.cpp` with the Fair switch on: 2 and 1 diagnostics (`run_queue.hpp:252` `for_each`, item 4, and `fair.cpp` `arm_preempt_timer`, item 12). The `static_assert`s in `common.hpp`, which run in every translation unit, pass.
+- Mutation test of the new `static_assert`s by hand: 8 mutants (eligibility with `>`, with a nanosecond-rounded product, ignoring the weight sum; the mean rounded or truncated instead of floored; a term rounded to a nanosecond; a sum without the weight; the old `MID_WEIGHT` division in the term) were all killed once the lone-thread assert also tested eligibility at the mean; the first run let the two eligibility mutants survive.
+- Four independent read-only reviewers, run twice because the first run hit the usage limit; the third of them, numerics, hit it again and returned nothing, and its mutation tests were done by hand (above) and its differential test is the queue-logic reviewer's. Queue logic: an exact-integer Python translation of the queue checked against the compiled header on 9788 random inputs (0 mismatches) and fuzzed over 277,336 operations (the rebase invariant held exactly, an empty tree had total 0 and weight 0, the eligibility answers were unchanged by rebases), the `current_` lifecycle traced through every path of `fair.cpp` and `scheduler.cpp`, and the shares simulated: 25.69 : 1 and 25.71 : 1 for priorities 31 and 15 at 64 and 8 ms slices. Code: the diff, the removed names, style and clang-tidy (nothing on the changed lines of `common.hpp` or `types.hpp`). Docs: every sentence of this entry against the code and the Linux checkout. Together they found the zero that did not follow a re-picked thread, the mean that rounded up, a self-contradictory derivation comment, a wrong clause in a `static_assert` comment, repair items for the pick-before-charge order, the `Pi::common()` weight change, the double count through `current_` and the unscaled lag (items 8, 17, 18), and about twenty smaller errors in the first draft of this entry; all were corrected.
+- `scripts/format_cpp.py` and `scripts/lint_docs.py` (also on the whole file) are clean.
+- Fair was not linked, booted or run. The queue's behaviour is read and modelled, not run, and no test runs it (item 13).
+
+**Deliberately not done**
+- The tests of item 13, now also for the finite first deadline, the lone thread's lag through `lag_of()` and a wakeup from another CPU; a faster conversion (item 14); tree membership by `is_active()`, a running thread overridden or reweighted (item 17); the stub that should scale the carried lag (item 18).
+- Fair still does not compile: `for_each` (item 4) and the `arm_preempt_timer` block (item 12). The pick still reads the running thread uncharged (item 8).
+- Linux's lag bound (`entity_lag()`).
+
+**How it was found**
+By the review of 2026-11-03 that produced the repair file, and by the reviewers of the previous entry: one showed that the mean at a pick leaves the running thread out, another that the test's two sums disagree once it is in. The four reviewers of this entry found that the zero must also follow a thread that is only re-picked, that the mean must round down, and that the first draft overstated what the exact sum covers. The author asked for items 6 and 16 and chose the zero; folding item 15 in, closing item 5, and the recentering at the replenish were forced by that choice and are the implementer's.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why is the leftmost thread of a deadline-ordered tree not the one with the smallest virtual time, and why does moving the zero to the weighted mean need no search?
+- Why do `avg_vruntime()` and `is_eligible()` take their sums from one function, and what did the test answer when they did not?
+- Why did moving the zero at every placement make the rounding of a term matter, when the old `min_vruntime_`, which never moved, could do without exactness, and why must the zero also move when a request is replenished?

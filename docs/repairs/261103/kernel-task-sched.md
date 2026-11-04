@@ -1,6 +1,6 @@
 # kernel-task-sched outstanding repairs
 
-Fair (`fair.hpp`, `fair.cpp`) is out of the build and is the author's. It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average and the clock the run queue reads were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2 and 3 are gone and the numbers are not reused, because the change records cite them (so the numbering starts at 4, and items 13 to 17, which those fixes left open, are at the end). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` has five diagnostics (items 4, 5 and 12) and `scheduler.cpp` one (item 4); items 6 to 11 compile and are wrong or missing. Every claim below was read off the code, and the arithmetic was recomputed from the constants; none of it was run, because Fair does not build.
+Fair (`fair.hpp`, `fair.cpp`) is out of the build and is the author's. It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum) and the numbers are not reused, because the change records cite them (so the numbers are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, are at the end). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` has two diagnostics (items 4 and 12) and `scheduler.cpp` one (item 4); items 7 to 11 compile and are wrong or missing. Every claim below was read off the code, and the arithmetic was recomputed from the constants; none of it was run, because Fair does not build.
 
 ## 4. `FairRunQueue` has no `for_each`
 
@@ -21,46 +21,6 @@ Add `for_each` to `FairRunQueue` with the shape of `RrRunQueue::for_each`.
 
 **Acceptance**
 No `for_each` diagnostic with the Fair switch on.
-
-## 5. Three helpers reach for the calling CPU's queue
-
-**Severity**
-Medium: wrong across CPUs once Fair runs, and the half-converted file mixes two queues in one call chain.
-
-**Symptom**
-`is_object_eligible()`, `update_vlag()` and `set_next_object()` call `Scheduler::Current::get().fair_run_queue()`, which no longer exists. The helpers are called from `dequeue_thread()` and `override_thread_base_profile()` (`update_vlag()`), from `evaluate_next_thread()` and `try_to_delay_dequeue()` (`is_object_eligible()`) and from `set_next_thread()` (`set_next_object()`). All but `try_to_delay_dequeue()`, which takes a `RunQueue &` and ignores it, use the queue of the `RunQueue` they were handed.
-
-**Cause**
-The helpers have no `RunQueue` parameter. The framework hands a discipline the run queue of the CPU it is working on, and a wakeup runs on the waker's CPU against the target's queue; the "calling CPU's queue" is the accident `rr.cpp` records.
-
-**Change**
-The callers pass the queue they have to the three helpers.
-
-**Reference**
-`rr.cpp`, the comment at the top of the file (in the anonymous namespace), which says why the queue has to come from the `RunQueue` the entry point was handed.
-
-**Acceptance**
-No `fair_run_queue` diagnostic; a cross-CPU wakeup test of Fair, which does not exist yet.
-
-## 6. `min_vruntime_` never advances, `current_` is never written, and an empty tree divides by zero
-
-**Severity**
-Medium: the average is anchored at zero for the life of the queue and never includes the running thread.
-
-**Symptom**
-`FairRunQueue::update_min_vruntime()` has no caller, so `min_vruntime_` stays at zero; and it could not advance it if it were called: it takes the smaller of the running thread's clock and `min_vruntime_`, so its `delta > 0` test is never true. `current_` has no writer, so `total_weight()` and `avg_vruntime()` never add the running thread. With an empty tree `weight_sum_` is zero, `Fixed::operator/` answers its maximum on a zero divisor, and `adjust_vlag()` stores a saturated `vruntime` and `vdeadline` for the first thread. Since the run queue reads `vruntime` (2026-11-03) its term is also about `weight * MAX` (exactly the maximum at priority 31, 3.9 % of it at the default priority), where it was 0 when the term read `exec_runtime`, so `avg_vruntime()` is about the maximum while that thread is in the tree and a thread enqueued meanwhile is placed near it. It then sorts after every other thread, and because both sit at the maximum `vruntime >= vdeadline` holds on every charge: a preemption request each time, and a replenish that changes nothing. Under the comparison against real time that the rename alone would have given, the same thread would never have expired.
-
-**Cause**
-The function has no caller and its body only ever lowers the minimum (the TODO in it says the search of the run queue is missing); `current_` was declared and never written; the empty tree was not considered.
-
-**Change**
-The author's: make `update_min_vruntime()` take the larger of `min_vruntime_` and the smaller of the running thread's `vruntime` and the leftmost of the tree, and call it where the running thread is charged; set `current_` in `set_next_object()` and clear it in `put_prev_thread()`; and place the first thread on the average of an empty queue by some rule (its own start, or zero lag).
-
-**Reference**
-Linux EEVDF, `update_zero_vruntime()` and `place_entity()`.
-
-**Acceptance**
-A host-style test of `FairRunQueue`: one thread alone has a finite `vdeadline` one request ahead of its `vruntime`.
 
 ## 7. A thread that was never enqueued has a slice of zero
 
@@ -88,13 +48,13 @@ A boot with Fair on in which the idle threads are not marked preempt-pending on 
 Medium: it compiles, and changes what Fair does under the tickless scheduler.
 
 **Symptom**
-Nothing calls `Fair::on_thread_tick()` (`RoundRobin`'s is empty), so `update_thread()` and its deadline test run only from `enqueue_thread()`, `dequeue_thread()`, `put_prev_thread()`, `yield_thread()` and `yield_to_thread()` (and from `override_thread_base_profile()`, which nothing calls). `UpdateThread`, `OverrideThreadBaseProfile` and `MigrateThread` of the interface also have no caller, and `OnThreadDead`'s call is commented out. At the end of a slice the test is reached inside `put_prev_thread()`, after the pick, where `mark_preempt_pending()` is redundant (the pending bit is consumed in `reschedule_common()`) and the replenish is what matters.
+Nothing calls `Fair::on_thread_tick()` (`RoundRobin`'s is empty), so `update_thread()` and its deadline test run only from `enqueue_thread()`, `dequeue_thread()`, `put_prev_thread()`, `yield_thread()` and `yield_to_thread()` (and from `override_thread_base_profile()`, which nothing calls). `UpdateThread`, `OverrideThreadBaseProfile` and `MigrateThread` of the interface also have no caller, and `OnThreadDead`'s call is commented out. At the end of a slice the test is reached inside `put_prev_thread()`, after the pick, where `mark_preempt_pending()` is redundant (the pending bit is consumed in `reschedule_common()`) and the replenish is what matters. The same order means the pick reads the running thread's `vruntime` before it is charged, up to one slice old, for the mean and for the eligibility of the waiting threads. A model of the queue that a reviewer ran on 2026-11-04 leaves the long-run shares unchanged (25.69 against 25.71 for priorities 31 and 15) but doubles the worst short-term service error (121 ms against 61 ms) and makes an equal-weight pair run two-slice bursts.
 
 **Cause**
 A slice now ends at the CPU's preemption deadline, a slot in its `TimerQueue`, and nothing ticks (`kernel-design`, references/task.md, Time). Fair was written for a tick that charged the running thread and asked for preemption. `on_thread_tick()` also calls `add_pending()` with its default, which names the executing CPU rather than the run queue's (`run_queue.hpp`: say `mark_preempt_pending()`).
 
 **Change**
-The author decides how Fair ends a slice: from the deadline the framework sets, as it does now through `put_prev_thread()`, or by charging at another point.
+The author decides how Fair ends a slice: from the deadline the framework sets, as it does now through `put_prev_thread()`, or by charging at another point. Charging the running thread at the top of `evaluate_next_thread()` also removes the stale read at the pick.
 
 **Reference**
 None, this project's own design.
@@ -191,10 +151,10 @@ Low: a missing test. The weight fix is checked for its arithmetic only, so a wro
 `common.hpp` proves at compile time that `to_virtual_time()` is inversely proportional to the weight at every priority, that `MID_WEIGHT`'s clock reads real time, and the units of `weighted_offset()` against the weight sum. Nothing runs `FairRunQueue` or `Fair::update_thread()`, because Fair does not build, so no test shows that two threads of different weights receive CPU in the ratio of their weights.
 
 **Cause**
-The acceptance of the two fixed items was a host-style test of `FairRunQueue`. It cannot be written until Fair compiles (items 4, 5 and 12) and its average includes the running thread, `min_vruntime_` advances and a first thread is placed on a finite average (items 6 and 16).
+The acceptance of the two fixed items was a host-style test of `FairRunQueue`. It cannot be written until Fair compiles (items 4 and 12).
 
 **Change**
-Add the test when those are done: two threads that always want to run, at priorities 31 and 15, over a long window, with the ratio of the CPU time each was charged within a stated tolerance of the ratio of their weights (about 25.7); and the eligibility case, where threads that have been served in proportion to their weights are all eligible and one that is ahead of the weighted average is not.
+Add the test when those are done: two threads that always want to run, at priorities 31 and 15, over a long window, with the ratio of the CPU time each was charged within a stated tolerance of the ratio of their weights (about 25.7); the eligibility case, where threads that have been served in proportion to their weights are all eligible and one that is ahead of the weighted average is not; one thread alone, which has a finite `vdeadline` one request ahead of its `vruntime` and a lag of zero through `lag_of()` at every priority; and a wakeup from another CPU, which leaves `weight_sum_` equal to the sum of the weights in the tree.
 
 **Reference**
 None, this project's own test.
@@ -222,53 +182,13 @@ Linux `calc_delta_fair()` and `__calc_delta()` replace the division with a multi
 **Acceptance**
 A report in `docs/perf/` with the raw samples of the baseline and of each stage.
 
-## 15. The weighted sum is kept in whole nanoseconds
-
-**Severity**
-Low: the error is tens to hundreds of nanoseconds against slices of milliseconds, and Fair does not build.
-
-**Symptom**
-`total_vruntime_` is a `SchedDuration`, whole nanoseconds, and each `weighted_offset()` term is rounded to the nearest one when `offset * weight` is formed. `avg_vruntime()` divides the sum by `weight_sum_`, which is a small fraction of one (0.0476 for a single `MID_WEIGHT` thread, 0.00185 for a priority-0 thread), so the half nanosecond comes back multiplied by `1 / weight_sum_`: up to about 11 ns for one `MID_WEIGHT` thread, 13 ns for a default thread and 271 ns for one priority-0 thread. A lone thread's lag, `avg_vruntime() - vruntime`, is that noise instead of zero. `is_object_eligible()` compares `total_vruntime >= offset * weight_sum` without a division, and for one thread both sides are the same product, so it is not affected. The sum is also changed by `update_min_vruntime()` (`total_vruntime_ -= delta * weight_sum_`) and `dequeue_object()` subtracts a term recomputed against a `min_vruntime_` that may have moved since the enqueue, so independent roundings can make the sum drift from the sum of its terms.
-
-**Cause**
-`SchedDuration` has no fractional bits and `ffl::Fixed::operator*` answers in the left operand's format, so the product loses the weight's sixteen fractional bits at once. The acceptance depends on items 13 and 6: an empty tree saturates the average (item 6).
-
-**Change**
-Keep the sum in a format with fractional bits and round once, when the mean is formed; `update_min_vruntime()` and `is_object_eligible()`, which also multiply a time by a weight, change in step. Only worth doing if the noise shows in a measurement; the range of the wider format (for `Fixed<i64, 16>` about 39 hours of offset) has to be checked against the largest sum first.
-
-**Reference**
-Linux `sum_w_vruntime_add()` accumulates the exact product of `key * weight` with integer weights and rounds once, in `avg_vruntime()` (names confirmed by a reviewer in a local Linux checkout; the bodies are from memory, not checked).
-
-**Acceptance**
-In the test of item 13, the lag of a lone thread is zero at every priority.
-
-## 16. `is_object_eligible()` tests the tree's sum against a weight sum that includes the running thread
-
-**Severity**
-Medium: wrong as soon as `current_` is written (item 6), which that item asks for; not reachable today, because `current_` has no writer.
-
-**Symptom**
-`avg_vruntime()` adds both `current_->weight()` and `term_of(*current_)` when `current_` is set. `is_object_eligible()` reads `rq.total_vruntime()`, the tree's sum alone, and `rq.total_weight()`, the tree's weight plus the running thread's. With `current_` set the numerator sums over the tree and the denominator over the tree and the running thread. For a priority-31 thread A running and a default thread B waiting, B's test becomes `wB * oB >= oB * (wB + wA)`, which holds only for `oB <= 0`. A rational model of the queue that a reviewer ran on 2026-11-03 gave A no further slice after its first one and B 255.9 s against A's 0.1 s; with the running thread's term added to the numerator it gave 0.9625 / 0.0375 on the virtual clock. Read and modelled, not run.
-
-**Cause**
-The test was written against a queue that does not yet have a running thread in it. `term_of()` is private to `FairRunQueue`, so `Fair` cannot add the term itself.
-
-**Change**
-The author's: test against the same pair as `avg_vruntime()`, adding `term_of(*current_)` along with the weight, which moves the test into `FairRunQueue`. Done with item 6.
-
-**Reference**
-Linux EEVDF, `vruntime_eligible()` adds the running entity's contribution to both the sum and the load (from memory, not checked).
-
-**Acceptance**
-The test of item 13 with `current_` written: the shares of two always-runnable threads follow their weights.
-
 ## 17. Tree membership is taken from `is_active()`
 
 **Severity**
 Low to Medium: none of the paths is reachable today (Fair is off, `SCHED_DELAY_DEQUEUE` is off, nothing calls `override_thread_base_profile()`), and each corrupts the run queue's sums once it is.
 
 **Symptom**
-`put_prev_thread()`, `set_next_object()` and `override_thread_base_profile()` use `runqueue_state().is_active()` for "this thread is in the tree", but it is also true of the running thread and of a thread queued on another CPU. (a) `Fair::yield_to_thread()` accepts any active thread and `pick_next_thread()` returns the nomination without `evaluate_next_thread()`; `set_next_object()` then calls `dequeue_object()` on this CPU's tree for a node that may be in no tree or in another CPU's, which corrupts `weight_sum_` and `total_vruntime_`. (b) A delayed dequeue returns `Status::Delayed` and leaves the thread active and in the tree; `put_prev_thread()` inserts it again, and a later wake runs `adjust_vlag()` on it, rewriting `vruntime` while it is in the tree, and then `enqueue_object()` a second time. `adjust_vlag()` is the one writer of the clock that `exec_runtime` did not have, so the new clock is safe only for a thread that is out of the tree. (c) Called on the running thread, `override_thread_base_profile()` would erase a node that is not in the tree (item 11 has the charge).
+`put_prev_thread()`, `set_next_object()` and `override_thread_base_profile()` use `runqueue_state().is_active()` for "this thread is in the tree", but it is also true of the running thread and of a thread queued on another CPU. (a) `Fair::yield_to_thread()` accepts any active thread and `pick_next_thread()` returns the nomination without `evaluate_next_thread()`; `set_next_object()` then calls `dequeue_object()` on this CPU's tree for a node that may be in no tree or in another CPU's, which corrupts `weight_sum_` and `total_vruntime_`, and `set_current()` then points `current_` at a thread that is not running here, which `sums()` adds. (b) A delayed dequeue returns `Status::Delayed` and leaves the thread active and in the tree; `put_prev_thread()` inserts it again, and a later wake runs `adjust_vlag()` on it, rewriting `vruntime` while it is in the tree, and then `enqueue_object()` a second time. `adjust_vlag()` is the one writer of the clock that `exec_runtime` did not have, so the new clock is safe only for a thread that is out of the tree. (c) Called on the running thread, `override_thread_base_profile()` would erase a node that is not in the tree (item 11 has the charge) and then insert it, leaving `current_` set: the thread is in `sums()` twice. (d) `Scheduler::Pi::common()` on a running thread calls `put_prev_thread()`, which inserts it with its old weight, changes the effective profile, and calls `set_next_thread()`, which removes it with the new one: `weight_sum_` and `total_vruntime_` end wrong by the difference. A model with the weight changed from 0.0389 to a larger one left `weight_sum_` negative. Nothing calls `Pi::common()` and `recompute_effective_profile()` has no definition.
 
 **Cause**
 `is_active()` says the thread is on this discipline's accounting, not that its node is in this CPU's tree, and nothing else records the second.
@@ -277,7 +197,27 @@ Low to Medium: none of the paths is reachable today (Fair is off, `SCHED_DELAY_D
 The author's: a state that says "in this CPU's tree", or a check of the intrusive hook, and the delayed-dequeue wake needs a decision before the feature is enabled.
 
 **Reference**
-Linux EEVDF tracks `se->on_rq` and `cfs_rq->curr` separately for this (from memory, not checked).
+Linux EEVDF tracks `se->on_rq` and `cfs_rq->curr` separately for this (from memory, not checked). Its `reweight_entity()` takes the entity off the sums and puts it back around a weight change.
 
 **Acceptance**
-A test that nominates a thread queued on another CPU, and one that wakes a delayed thread, both leave `weight_sum_` equal to the sum of the weights in the tree.
+A test that nominates a thread queued on another CPU, and one that wakes a delayed thread, both leave `weight_sum_` equal to the sum of the weights in the tree, and a profile change on a running thread does too.
+
+## 18. The lag a thread carries is not rescaled when it is placed
+
+**Severity**
+Low: the effect is a fraction of a request of service, and Fair does not build.
+
+**Symptom**
+`Fair::adjust_vlag()` places a thread at `avg_vruntime() - vlag`, and the block meant to adjust `vlag` (`if (vlag != SchedDuration{0}) { // Adjust the vlag. }`) is empty. The lag was measured against the mean with the thread in it (`update_vlag()` before the dequeue) and is applied against the mean without it, which is shifted toward the other threads: a thread that left with a lag of -6.1 ms beside one equal-weight thread comes back with -3.1 ms, exactly `W / (W + w)` of it, in a model that a reviewer ran on 2026-11-04. Read and modelled, not run.
+
+**Cause**
+The stub was left for the author. The mean moves when the thread joins, so the lag in terms of the new mean is the old one scaled by `(W + w) / W`.
+
+**Change**
+The author's: scale `vlag` by `(W + w) / W` before applying it, with `W` the weight of what is in the mean, as the reference does, and bound it by a lag limit.
+
+**Reference**
+Linux EEVDF, `place_entity()` (`lag *= (load + weight) / load`) and `entity_lag()` for the bound (`kernel/sched/fair.c`, local checkout, v7.2-rc5 plus 31 commits; the formula is from memory).
+
+**Acceptance**
+In the test of item 13, a thread that leaves and returns while the others run is placed at the lag it left with, within a nanosecond.
