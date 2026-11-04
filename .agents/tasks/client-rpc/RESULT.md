@@ -54,3 +54,19 @@
   client), echo (deliberately wire-probed).
 - The IDL/generator path — deferred by the user's sequencing; rpc::Channel
   is its prototype.
+
+## The coverage bar (2026-11-04, fa2623e5 + 2e80ee83)
+
+The merge gate's measurement (llvm-cov over the host suites via
+scripts/cov_host.py) drove the last closures, and caught a latent defect:
+the class directories' names viewed the mount slot's storage, so a failed
+publish recycled the slot and renamed the node behind the tree's back.
+Class names moved into Core's arena; the exhaustion suite pins the names.
+The arena and the grant scan were restructured into guaranteed-exit loops,
+build()'s provably-unreachable guards unwrapped, and 42 test cases added
+across seven suites.
+
+Final per-file line coverage: rpc.hpp 100, dev_client.hpp 100,
+fshost_client.hpp 100, acpi_client.cpp 97.9, registry.hpp 97.3,
+block_client.hpp 97.1, resource_client.cpp 97.0. Dual-disk verify green
+throughout.
