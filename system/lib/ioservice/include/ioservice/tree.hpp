@@ -12,7 +12,7 @@
 #include <ustl/result.hpp>
 
 /// The nodes an ioservice::Server serves (component-framework design,
-/// "ioservice"): the four node kinds ours needs, kept in storage the program
+/// "ioservice"): the node kinds ours needs, kept in storage the program
 /// provides.
 ///
 /// A tree is built by the program that serves it, never by a client: the
@@ -32,9 +32,9 @@ namespace detail {
     inline constexpr auto NO_NODE = NodeId{0xFFFF'FFFF};
 } // namespace detail
 
-/// The five kinds of node: a pseudo-directory, a file backed by a VMO, a
-/// service, a directory whose subtree another server owns, and a place the
-/// program serves itself.
+/// The six kinds of node: a pseudo-directory, a file backed by a VMO, a
+/// service, a directory whose subtree another server owns, a place the
+/// program serves itself, and a place whose content a NodeHandler answers.
 enum class NodeKind : u8 {
     /// A pseudo-directory: named children, in name order.
     Directory,
@@ -55,6 +55,16 @@ enum class NodeKind : u8 {
     /// below it, and a walk stops at it (Tree::resolve()). To a client that
     /// lists the directory it is in, it is a directory.
     Subtree,
+    /// A place whose content a NodeHandler answers (<ioservice/server.hpp>),
+    /// for a filesystem that cannot hold its files in a tree of nodes. An
+    /// Open that walks to it goes to the handler, with the part of its path
+    /// after the node and the value given to add_handler(), after the Open's
+    /// own checks have run; the server makes the connection the handler opens
+    /// and keeps the protocol on it (rights, cursors, replies). To the tree it
+    /// is a leaf: nothing is added below it, and a walk stops at it
+    /// (Tree::resolve()). To a client that lists the directory it is in, it is
+    /// a directory.
+    Handler,
 };
 
 /// What a File node serves. Nothing here is owned by the tree: the program
@@ -93,7 +103,7 @@ class Node final {
     NodeId m_first_child = detail::NO_NODE;
     NodeId m_next_sibling = detail::NO_NODE;
     VmoFile m_file = {};
-    /// A Service's or a Subtree's: the value the program gave it.
+    /// A Service's, a Subtree's or a Handler's: the value the program gave it.
     u64 m_value = 0;
     /// A Remote node's: this process's end of the connection to the server
     /// that owns the subtree.
@@ -104,12 +114,12 @@ class Node final {
 /// left of the path.
 struct Resolved {
     NodeId node;
-    /// What is left of the path when the walk stopped at a Subtree node or a
-    /// remote entry: the segments after the node, joined by '/', a valid
-    /// ours.io path. "." when the path ended on the node itself, so that it
-    /// is always something an Open can be handed on with. Empty when the
-    /// walk ended on any other node, so |rest| is non-empty exactly when
-    /// |node| is a Subtree node or a remote entry.
+    /// What is left of the path when the walk stopped at a Subtree node, a
+    /// Handler node or a remote entry: the segments after the node, joined by
+    /// '/', a valid ours.io path. "." when the path ended on the node itself,
+    /// so that it is always something an Open can be handed on with. Empty
+    /// when the walk ended on any other node, so |rest| is non-empty exactly
+    /// when |node| is a Subtree node, a Handler node or a remote entry.
     /// A view of the path that was resolved (or of a literal, for "."), valid
     /// for as long as that path is.
     std::string_view rest;
@@ -181,30 +191,40 @@ class Tree final {
     auto add_subtree(NodeId parent, std::string_view name, u64 value)
         -> ustl::Result<NodeId, ours::Status>;
 
+    /// Adds a Handler node named |name| to |parent|, refused as above. |value|
+    /// is what the program chooses to tell its Handler nodes apart by: the
+    /// NodeHandler is told it on every call, so that one handler can serve
+    /// several nodes. Nothing can be added below the node, as for a Subtree
+    /// node.
+    [[nodiscard]]
+    auto add_handler(NodeId parent, std::string_view name, u64 value)
+        -> ustl::Result<NodeId, ours::Status>;
+
     /// The node |path| names under the directory |directory|, walked one
     /// segment at a time from that node, never by joining strings, so that a
     /// path cannot leave the subtree it starts in. "." is |directory| itself.
-    /// A remote entry is a leaf here: a path that goes on below one is
-    /// refused with NotDir, its subtree belonging to the server that owns it.
+    /// A remote entry, a Subtree node and a Handler node are leaves here: a
+    /// path that goes on below one is refused with NotDir, what is below
+    /// belonging to the server, the program or the handler that owns it.
     /// Refused with:
     ///   - BadPath when |path| is not a valid ours.io path
     ///     (is_valid_path);
     ///   - InvArgs when |directory| is not a node of this tree;
     ///   - NotDir when |directory|, or a segment before the last, is not a
-    ///     directory (a Subtree node is not one);
+    ///     directory (a Subtree node and a Handler node are not ones);
     ///   - NotFound when a segment does not exist.
     [[nodiscard]]
     auto lookup(NodeId directory, std::string_view path) const
         -> ustl::Result<NodeId, ours::Status>;
 
     /// lookup() for a client's Open: the same walk, which stops at the first
-    /// Subtree node or remote entry it meets, the last segment's included,
-    /// because what lies below either is not this tree's -- the program's or
-    /// the remote server's. Then the answer is the node and the rest of
-    /// |path| (Resolved::rest), and no segment after the node is looked at,
-    /// so it may not exist. A walk that meets neither ends where lookup()
-    /// does, with an empty rest. Refused as lookup() is, up to the point the
-    /// walk stops.
+    /// Subtree node, Handler node or remote entry it meets, the last
+    /// segment's included, because what lies below any of them is not this
+    /// tree's -- the program's, the handler's or the remote server's. Then
+    /// the answer is the node and the rest of |path| (Resolved::rest), and no
+    /// segment after the node is looked at, so it may not exist. A walk that
+    /// meets none ends where lookup() does, with an empty rest. Refused as
+    /// lookup() is, up to the point the walk stops.
     [[nodiscard]]
     auto resolve(NodeId directory, std::string_view path) const
         -> ustl::Result<Resolved, ours::Status>;
@@ -236,6 +256,11 @@ class Tree final {
     /// Subtree node.
     [[nodiscard]]
     auto subtree(NodeId node) const -> ustl::Option<u64>;
+
+    /// The value the Handler |node| was added with; none when it is not a
+    /// Handler node.
+    [[nodiscard]]
+    auto handler(NodeId node) const -> ustl::Option<u64>;
 
     /// How many more nodes the storage has room for: what is left before an
     /// add answers NoResource. A caller that has to add several nodes or none
