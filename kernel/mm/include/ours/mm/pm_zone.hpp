@@ -4,10 +4,8 @@
 #define OURS_MM_PM_ZONE_HPP 1
 
 #include <ours/lockdep.hpp>
-#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/pm_frame.hpp>
-#include <ours/mm/priv/alloc_request.hpp>
 #include <ours/mm/priv/frame_buddy.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -124,24 +122,12 @@ class PmZone {
     [[nodiscard]]
     auto contains(usize order) -> bool;
 
-    /// A block of 2^|request.order()| frames for |request|, or none when this
-    /// zone cannot serve it.
-    ///
-    /// An Option and not a pointer because a zone failing to serve an
-    /// allocation is the ordinary case the walk is built around -- it is why
-    /// there is a fallback order at all -- and the caller has to handle it on
-    /// every call. Null for "nothing" is the shape that let a null travel
-    /// inside `ustl::ok()` as far as the frame-list loops; `ktl::Result` stays
-    /// where it belongs, at the public interface in pmm.hpp, where a caller
-    /// distinguishes one failure from another. Here there is one.
-    ///
-    /// Assumptions:
-    ///     1) |request.order()| must be lesser than `MAX_FRAME_ORDER`.
-    auto alloc_frames(AllocRequest const &request) -> ustl::Option<PmFrame &>;
+    /// Withdraw a block of 2^|order| frames, or none if the zone cannot serve it.
+    [[nodiscard]]
+    auto take_block(usize order) -> ustl::Option<PmFrame &>;
 
-    auto alloc_frame(Gaf alloc_flags, usize order) -> ustl::Option<PmFrame &>;
-
-    auto free_frame(PmFrame *frame, usize order) -> void;
+    /// Return a block owned by this zone.
+    auto return_block(PmFrame *frame, usize order) -> void;
 
     /// How many frames this zone could hand out right now, counted out of the
     /// buddy's free lists under the zone lock.
@@ -304,8 +290,6 @@ class PmZone {
         return order < MAX_PCPU_CACHE_ORDER;
     }
 
-    auto finish_allocation(PmFrame *frame, Gaf alloc_flags, usize order) -> void;
-
     /// Scales this zone's three watermarks out of the machine-wide reserve.
     ///
     /// |reserve_frames| is how many frames the machine holds back altogether
@@ -338,7 +322,7 @@ class PmZone {
     std::atomic<usize> m_present_frames;
 
     /// Frames this zone can hand out, maintained on both sides of the buddy:
-    /// down in finish_allocation(), up in free_frame().
+    /// down in take_block(), up in return_block().
     ///
     /// It starts at zero and grows as the handoff releases frames into the
     /// buddy, so it cannot go negative: a frame has to be freed in before it

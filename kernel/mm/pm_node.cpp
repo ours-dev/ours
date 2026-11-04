@@ -7,7 +7,6 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
-#include <ours/mm/priv/zone_selector.hpp>
 #include <ours/panic.hpp>
 #include <ours/task/thread.hpp>
 
@@ -149,33 +148,6 @@ PmNode::PmNode(NodeId nid)
     , m_zone_list(nid)
     , m_page_queues() {}
 
-auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
-    // The fallback order, not this node's zones by type: Gaf::ThisNode is
-    // honoured by the request's node mask, which resolve_request() has already
-    // narrowed, so the candidate list is the same either way and the filter
-    // does the restricting. The walk that was deleted with ZoneIterator chose
-    // between two lists instead, which is a second mechanism for one intent.
-    ZoneSelector const selector{m_zone_list.fallback(), request};
-    for (auto &zone: selector) {
-        // The zone answers with an Option, which is unwrapped here because
-        // PmNode's own return types are a pointer for now; this is where the
-        // two conventions meet, and it is one line rather than a convention
-        // of its own.
-        if (auto const frame = zone.alloc_frames(request)) {
-            return &frame.value();
-        }
-    }
-    return nullptr;
-}
-
-auto PmNode::alloc_frames_postamble(PmFrame *frame, AllocRequest const &request) -> void {
-    if (current_node() == m_id) {
-        PM_NODE_LOCAL_HIT.add(1);
-    } else {
-        PM_NODE_LOCAL_MISS.add(1);
-    }
-}
-
 auto PmNode::alloc_frames(Gaf alloc_flags, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
     auto const home = local_node_for(alloc_flags);
@@ -222,50 +194,31 @@ auto PmNode::alloc_frames(NodeId const nid, Gaf alloc_flags, usize order, NodeMa
         return ustl::err(Status::InvArgs);
     }
 
-    // One value, built once, read by every layer below. It replaces a
-    // MemoryAllocationContext filled by a preamble that could only answer Ok,
-    // and an AllocationOptions derived by a mapping that answered with the
-    // empty set for every Gaf.
+    auto const initiator = Cpu::id();
+    auto const initiator_node = NodePlacement::node_of(initiator);
     auto const request =
-        resolve_request(alloc_flags, order, fallback, Origin{.node = nid, .cpu = Cpu::id()});
+        resolve_request(alloc_flags, order, fallback, Origin{.node = nid, .cpu = initiator});
 
-    // The only attempt. Nothing reclaims on this path, by design: taking
-    // frames back means reaching into whatever holds them -- VMO pages, the
-    // page queues, the object cache's slabs -- and every one of those sits
-    // above this allocator, so a reclaimer called from inside it would invert
-    // that order. Reclaim belongs above the page queues instead, watching this
-    // node's free-frame level and handing frames back down, rather than being
-    // a step of an allocation that has already failed.
-    //
-    // What stood here was a loop over two stubs that both returned null, so a
-    // caller carrying Gaf::CanBlock -- which is every ALLOC_KERNEL
-    // allocation -- spun in it rather than being refused. The loop could not
-    // have helped even with the stubs filled in from here: its retry asked the
-    // same zones the same question with the same arguments, because nothing
-    // between the caller's Gaf and the zones differed on a second pass.
-    //
-    // A relaxed retry is a real thing and this is where it goes when it
-    // exists: an attempt that lets a caller dip below a zone's high watermark
-    // will carry a different mark on the request, and so have a reason to be a
-    // step rather than a repeat.
-    auto *const frame = home->get_frame_from_zone_list(request);
-    if (!frame) {
-        // The zone walk answers with a plain pointer, null on failure, so this
-        // is where that becomes the error the public interface promises.
-        // Wrapping the null in ustl::ok() made every caller's `if (result)`
-        // true -- the operator is is_ok(), not a test of the pointer -- and the
-        // bulk and fragment loops below then dereferenced it to reach
-        // push_back().
-        //
-        // Ahead of the postamble, which counts whether the frame came from the
-        // node the caller is running on. A failure is neither a local hit nor a
-        // miss, and handing it to either counter would turn both of them into
-        // counts of attempts rather than of allocations.
-        return ustl::err(Status::OutOfMem);
+    for (auto &zone: home->m_zone_list.candidates(request)) {
+        auto const block = zone.take_block(request.order());
+        if (!block) {
+            continue;
+        }
+
+        auto *const frame = &block.value();
+        if (!!(request.flags() & Gaf::Zero)) {
+            std::fill_n(frame_to_virt<isize>(frame),
+                        (usize{1} << request.order()) * PAGE_SIZE / sizeof(isize), 0);
+        }
+        if (frame->nid() == initiator_node) {
+            PM_NODE_LOCAL_HIT.add(1);
+        } else {
+            PM_NODE_LOCAL_MISS.add(1);
+        }
+        return ustl::ok(frame);
     }
 
-    home->alloc_frames_postamble(frame, request);
-    return ustl::ok(frame);
+    return ustl::err(Status::OutOfMem);
 }
 
 auto PmNode::alloc_frames_fragment(Gaf alloc_flags, usize n, NodeMask const &fallback)
@@ -344,12 +297,14 @@ auto PmNode::free_frames(PmFrame *frame, usize order) -> void {
     // would be handed out again still flagged and still counted.
     DEBUG_ASSERT(!(frame->flags() & page::Flags::Reserved),
                  "frame {:#x} is reserved; unwire_frame() it before freeing", frame_to_phys(frame));
+    DEBUG_ASSERT(!frame->is_role(page::Role::Vmm) || 0 == frame->page_queue(),
+                 "frame {:#x} is freed while still on a page queue", frame_to_phys(frame));
     // The frame says its node and its type, and the table has the zone; the
     // node itself is not needed.
     auto *const zone = PmZone::at(frame->nid(), frame->zone());
     DEBUG_ASSERT(zone, "frame {:#x} is in no zone", frame_to_phys(frame));
 
-    zone->free_frame(frame, order);
+    zone->return_block(frame, order);
 }
 
 auto PmNode::free_frames(PmFrame::List *list) -> void {
@@ -457,7 +412,7 @@ auto PmNode::publish_cpu(CpuNum const cpu) -> void {
 /// new ids equal and returns before it reaches the cache. That is what left
 /// the slot null across the zero-page allocation in init_vmm_preheap(): the
 /// node-less alloc_frames() went on through a null PmNode, and
-/// get_frame_from_zone_list() spun on the ZoneList it read out of address
+/// The allocation walk spun on the ZoneList it read out of address
 /// 0x48. The early return is right for what set_cpu_node() is for -- a CPU
 /// moving between nodes at run time, where nothing changing means nothing to
 /// do -- but the first publish is this function's job, and it has to be

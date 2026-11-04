@@ -12,6 +12,7 @@
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/priv/alloc_policy.hpp>
 #include <ours/mm/priv/alloc_request.hpp>
+#include <ours/mm/priv/zone_selector.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
 
@@ -115,6 +116,13 @@ class ZoneList {
     FORCE_INLINE
     auto fallback() const -> Zones {
         return Zones{m_fallback.data(), m_fallback.size()};
+    }
+
+    /// Eligible zones in fallback order. Availability is decided by each zone.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto candidates(AllocRequest const &request) const -> ZoneSelector {
+        return ZoneSelector{fallback(), request};
     }
 
     auto dump_fallback() const -> void;
@@ -386,10 +394,6 @@ class PmNode {
     /// Requires:
     ///     1). Range [start, end) is sorted by address.
     auto init() -> Status;
-
-    auto get_frame_from_zone_list(AllocRequest const &request) -> PmFrame *;
-
-    auto alloc_frames_postamble(PmFrame *, AllocRequest const &) -> void;
 
     [[no_unique_address]]
     gktl::Canary m_canary;

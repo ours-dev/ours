@@ -222,3 +222,63 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Separate the zone walk from block transfer (2026-11-04)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/pm_node.hpp` exposes the ordered candidate range.
+- `kernel/mm/pm_node.cpp` completes each allocation and validates returns through the shared entry.
+- `kernel/mm/pm_zone.cpp` withdraws and returns blocks through the zone inventory.
+- `kernel/commands/pm_node_test.cpp` checks the locality counter for an exhausted remote home.
+
+**Symptom**
+
+The locality counter used the requested home even when the allocator
+fulfilled the request on another node. The zone entry also took the full
+placement request although inventory withdrawal consumed its order and flags.
+
+**Cause**
+
+Candidate filtering, block withdrawal and completion were expressed as a
+chain of overlapping allocation methods. The old completion method compared
+the current node to the home instance and ignored the returned frame.
+
+**Change**
+
+`ZoneList::candidates(request)` supplies eligible zones in fallback order.
+`PmZone::take_block(order)` withdraws an available block. `PmNode` zeroes it
+when requested after the zone lock is released, and classifies it with
+`frame->nid() == initiator_node`. Single-frame and list releases share the
+queue-ownership check and call `return_block()` on the frame's zone.
+
+**Reference**
+
+Zircon `pmm_alloc_page()` separates caller-facing adaptation from allocation.
+Linux `get_page_from_freelist()` selects an available zone from the eligible
+order. The local NUMA accounting uses the returned descriptor.
+
+**Verification**
+
+Clang-format and clang-tidy checked ten C++ files. Both dev images booted in
+the default and four-node configurations. All 163 host tests passed.
+`NUMA=3 SMP=2` passed all 69 PM node checks, nine PM zone checks and 17
+pressure checks. The regression observed one local hit after an allocation
+with an exhausted remote home returned a local frame.
+
+**Deliberately not done**
+
+Batch ownership and pressure publication have their own design proposal.
+
+**How it was found**
+
+The PMM responsibility review traced the NUMA counter from the returned frame
+back to the home node's completion method.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

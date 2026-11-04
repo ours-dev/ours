@@ -3,9 +3,10 @@
 #ifndef OURS_MM_PRIV_ZONE_SELECTOR_HPP
 #define OURS_MM_PRIV_ZONE_SELECTOR_HPP 1
 
-#include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/priv/alloc_request.hpp>
+
+#include <ustl/views/span.hpp>
 
 namespace ours::mm {
 /// The zones of a node an allocation may draw from, in the order it should try
@@ -31,6 +32,7 @@ namespace ours::mm {
 /// node against the request's mask.
 class ZoneSelector {
     using Self = ZoneSelector;
+    using Zones = ustl::views::Span<PmZone *const>;
 
   public:
     /// One position in the walk: parked on a candidate that passed every
@@ -98,7 +100,7 @@ class ZoneSelector {
 
     /// |zones| is the candidate order -- a node's fallback order, or its own
     /// zones by type, whose holes are nulls this steps over.
-    ZoneSelector(ZoneList::Zones const zones, AllocRequest const &request)
+    ZoneSelector(Zones const zones, AllocRequest const &request)
         : m_zones(zones), m_request(request) {}
 
     [[nodiscard]]
@@ -135,17 +137,10 @@ class ZoneSelector {
         return m_request.allowed_nodes().test(zone->which_node());
     }
 
-    ZoneList::Zones m_zones;
+    Zones m_zones;
 
-    /// The criterion, borrowed. A reference and not a pointer: the request is
-    /// resolved before a selector can exist and outlives it on the same stack
-    /// frame, so there is no selector without one and no moment at which the
-    /// borrow could be rebound. A pointer would have had to carry both of
-    /// those facts in a comment -- it did, "|request| must outlive the
-    /// selector" -- and a comment is checked by nobody. The cost is that a
-    /// selector cannot be assigned to, which nothing does: a walk makes one
-    /// per allocation and lets it die.
-    AllocRequest const &m_request;
+    /// The request snapshot belongs to this walk. The zone order is borrowed.
+    AllocRequest m_request;
 };
 
 } // namespace ours::mm

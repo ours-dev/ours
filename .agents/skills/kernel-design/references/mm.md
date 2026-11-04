@@ -205,3 +205,9 @@ the current CPU's node. The resolver intersects the caller's allowed mask with
 that node, so an excluded or exhausted home yields allocation failure. The
 implicit path skips thread placement policy. References include Linux
 `gfp_zonelist()`, `prepare_alloc_pages()` and `alloc_frozen_pages_noprof()`.
+
+`ZoneList::candidates()` filters the stored zone order against a resolved
+request. `PmZone::take_block()` and `return_block()` own block transfer.
+`PmNode` completes zeroing outside the zone lock and compares the actual
+supplier with the captured initiator node for locality. Its static return
+path validates frames for both single and list release.

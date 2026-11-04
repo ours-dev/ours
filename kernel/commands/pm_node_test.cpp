@@ -54,7 +54,9 @@
 #include <algorithm>
 #include <string_view>
 
+#include <arch/auto_interrupt_disabler.hpp>
 #include <gktl/command.hpp>
+#include <gktl/counter.hpp>
 #include <logz4/log.hpp>
 #include <numa/fallback_order.hpp>
 #include <numa/topology.hpp>
@@ -313,7 +315,7 @@ namespace {
         auto without_local = all.allowed_nodes();
         without_local.set(node.nid(), false);
         auto const others = all.with_nodes(without_local);
-        mm::ZoneSelector const remote_walk{list->fallback(), others};
+        auto const remote_walk = list->candidates(others);
         auto remote_ok = true;
         usize remote = 0;
         for (auto &zone: remote_walk) {
@@ -327,7 +329,7 @@ namespace {
 
         // Upper bound: Dma as the ceiling yields only Dma zones.
         auto const low_only = all.with_zone_range(all.lowest_zone(), ZoneType::Dma);
-        mm::ZoneSelector const low_walk{list->fallback(), low_only};
+        auto const low_walk = list->candidates(low_only);
         auto upper_ok = true;
         usize dma = 0;
         for (auto &zone: low_walk) {
@@ -343,7 +345,7 @@ namespace {
         // floor of Dma32 must keep a caller off the Dma zones entirely. This
         // is the case that could not have been written before.
         auto const high_only = all.with_zone_range(ZoneType::Dma32, all.highest_zone());
-        mm::ZoneSelector const high_walk{list->fallback(), high_only};
+        auto const high_walk = list->candidates(high_only);
         auto lower_ok = true;
         usize above = 0;
         for (auto &zone: high_walk) {
@@ -361,7 +363,7 @@ namespace {
         // replaced switched between two candidate lists instead, which is a
         // second mechanism for the same intent.
         auto const this_node = request_for(node, mm::ALLOC_KERNEL | mm::Gaf::ThisNode);
-        mm::ZoneSelector const local_walk{list->fallback(), this_node};
+        auto const local_walk = list->candidates(this_node);
         auto this_node_ok = true;
         usize local_selected = 0;
         for (auto &zone: local_walk) {
@@ -559,6 +561,34 @@ namespace {
         }
     }
 
+    auto check_local_fallback(NodeId const remote_home) -> bool {
+        using Descriptor = gktl::Counter::Descriptor;
+        auto const *const hit =
+            std::find_if(Descriptor::GLOBAL_DESC_START, Descriptor::GLOBAL_DESC_END,
+                         [](Descriptor const &counter) {
+                             return std::string_view{counter.name} == "pm.node.local.hit";
+                         });
+        if (hit == Descriptor::GLOBAL_DESC_END) {
+            return false;
+        }
+
+        // Read one CPU's counter around the attempt without a preemption or interrupt.
+        arch::AutoInterruptDisabler irq;
+        auto const local = mm::current_node();
+        auto nodes = NodeMask::of(remote_home);
+        nodes.set(local);
+        gktl::Counter const hits{hit};
+        auto const before = hits.get();
+        auto const fallback = PmNode::alloc_frames(remote_home, mm::ALLOC_KERNEL, 0, nodes);
+        if (!fallback) {
+            return false;
+        }
+
+        auto const counted_local = (*fallback)->nid() == local && hits.get() == before + 1;
+        PmNode::free_frames(*fallback, 0);
+        return counted_local;
+    }
+
     auto check_exhausted_node(Tally &tally, NodeId const nid) -> void {
         auto const flags = mm::ALLOC_KERNEL | mm::Gaf::ThisNode;
         auto const mask = NodeMask::of(nid);
@@ -579,11 +609,7 @@ namespace {
         if (pinned) {
             PmNode::free_frames(*pinned, 0);
         }
-        auto const fallback = PmNode::alloc_frames(nid, mm::ALLOC_KERNEL);
-        auto const fell_back = fallback && (*fallback)->nid() != nid;
-        if (fallback) {
-            PmNode::free_frames(*fallback, 0);
-        }
+        auto const counted_local = check_local_fallback(nid);
 
         auto *const last = *reserved;
         auto *const zone = PmZone::at(nid, last->zone());
@@ -614,8 +640,8 @@ namespace {
         PmNode::free_frames(&held);
 
         verdict(tally, pinned_failed, "ThisNode fails after exhausting the requested node");
-        verdict(tally, drained && fell_back,
-                "allocation falls back after exhausting the requested node");
+        verdict(tally, drained && counted_local,
+                "fallback from the exhausted remote home supplies and counts a local page");
         verdict(tally, rejected && restored_last, "a partial bulk allocation returns its page");
         verdict(tally, invalid && fragment_restored_last,
                 "a partial fragment allocation returns its page");

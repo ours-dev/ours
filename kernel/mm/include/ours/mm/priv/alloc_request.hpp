@@ -108,8 +108,7 @@ class AllocRequest final {
         return m_allowed_nodes;
     }
 
-    /// The node serving this allocation: the one whose zone list the walk
-    /// starts from, and what the locality counters compare against.
+    /// The node whose zone order this allocation starts from.
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto home_node() const -> NodeId {
