@@ -53,3 +53,7 @@ None.
 2. Validate mapping windows before publication and keep boot adoption explicit.
 3. Consolidate mapping activation and teardown ownership, starting with fallible tree insertion.
 4. Centralize the permanent-residency guard in the backing node.
+
+## Frame replacement repair
+
+The copy and zero materialization paths invalidate under the existing shared lock before returning a new frame to the caller. The prefaulted alias cases exercise mapped writes, direct writes, a local marker and an inherited hole. Both development images and the snapshot, page-source and reclaim suites passed.

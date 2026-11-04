@@ -1089,19 +1089,24 @@ namespace {
 
         ustl::Arc<mm::VmObjectPaged> parent;
         ustl::Arc<mm::VmObjectPaged> child;
-        auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE,
+        auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, 5 * PAGE_SIZE,
                                                     mm::VmoFlags::Lazy, &parent) == Status::Ok &&
                           poke(parent, 0, 0x3100'0000) && poke(parent, 1, 0x3200'0000) &&
-                          parent->create_clone(0, 2 * PAGE_SIZE, &child) == Status::Ok;
-        verdict(tally, made, "an object with two pages, and a clone of it, are made");
+                          poke(parent, 2, 0x3300'0000) &&
+                          parent->create_clone(0, 5 * PAGE_SIZE, &child) == Status::Ok;
+        verdict(tally, made, "a sparse object and its clone are made");
         if (made) {
             // Not committed: nothing is mapped until it is touched.
-            auto mapped = root->map_with_vmo(AT, 2 * PAGE_SIZE, 0, rw, PERMS, child,
+            auto mapped = root->map_with_vmo(AT, 5 * PAGE_SIZE, 0, rw, PERMS, child,
                                              mm::MapOptions::Lazy, "mapped clone");
             verdict(tally, mapped.is_ok(),
                     "the clone is mapped read-write, and nothing is in "
                     "the page tables yet");
             if (mapped.is_ok()) {
+                constexpr auto ALIAS = AT + 8 * PAGE_SIZE;
+                auto alias = root->map_with_vmo(ALIAS, 5 * PAGE_SIZE, 0, rw, PERMS, child,
+                                                mm::MapOptions::Lazy, "clone alias");
+                verdict(tally, alias.is_ok(), "a second mapping covers the same clone");
                 Node parent_pages = parent->cow_pages();
                 auto const shared = lookup(parent_pages, false, 0);
                 verdict(tally,
@@ -1112,6 +1117,11 @@ namespace {
                             !is_writable(aspace, AT) && is_readable(aspace, AT),
                         "it maps the page the object holds, read-only, in a mapping that "
                         "allows Write");
+                verdict(tally,
+                        alias.is_ok() &&
+                            aspace->soft_fault(ALIAS, mm::VmfCause::Absent) == Status::Ok &&
+                            entry_pa(aspace, ALIAS) == entry_pa(aspace, AT),
+                        "both mappings initially point to the inherited frame");
 
                 // A write to that entry gets the clone a page of its own.
                 verdict(tally,
@@ -1123,6 +1133,11 @@ namespace {
                             peek(child, 0) == 0x3100'0000 && peek(parent, 0) == 0x3100'0000,
                         "the entry is writable on another frame, holding the bytes copied, and "
                         "the object's page is as it was");
+                verdict(tally,
+                        !is_readable(aspace, ALIAS) &&
+                            aspace->soft_fault(ALIAS, mm::VmfCause::Absent) == Status::Ok &&
+                            entry_pa(aspace, ALIAS) == entry_pa(aspace, AT),
+                        "the alias faults back in on the writer's new frame");
 
                 // A write to a page that was never mapped goes straight to a page of its own.
                 verdict(tally,
@@ -1131,6 +1146,30 @@ namespace {
                                                               mm::VmfCause::Absent) == Status::Ok &&
                             is_writable(aspace, AT + PAGE_SIZE) && peek(child, 1) == 0x3200'0000,
                         "a write to an unmapped page is mapped writable, on a copy");
+
+                auto const check_direct_write = [&](usize const index, char const *description) {
+                    auto const address = AT + index * PAGE_SIZE;
+                    auto const alias_address = ALIAS + index * PAGE_SIZE;
+                    auto const prefaulted =
+                        aspace->soft_fault(address, mm::VmfCause::Absent) == Status::Ok &&
+                        aspace->soft_fault(alias_address, mm::VmfCause::Absent) == Status::Ok;
+                    verdict(
+                        tally,
+                        prefaulted && poke(child, index, 0xA0) && !is_readable(aspace, address) &&
+                            !is_readable(aspace, alias_address) &&
+                            aspace->soft_fault(alias_address, mm::VmfCause::Absent) == Status::Ok &&
+                            peek(child, index) == 0xA0,
+                        description);
+                };
+                check_direct_write(2, "a direct VMO write invalidates both inherited entries");
+                verdict(tally, peek(parent, 2) == 0x3300'0000,
+                        "the other snapshot keeps the original content");
+                Node child_pages = child->cow_pages();
+                verdict(tally, add_marker(child_pages, 3) == Status::Ok,
+                        "the clone has a local zero marker");
+                check_direct_write(3, "materializing a local marker invalidates both zero entries");
+                check_direct_write(4,
+                                   "materializing an inherited hole invalidates both zero entries");
             }
         }
 

@@ -1118,6 +1118,7 @@ auto VmCowPages::find_content(u64 offset) -> FoundContent {
 
 auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
                           AnonymousPageRequest *const request) -> ktl::Result<VmPage *> {
+    m_lock.assert_held();
     auto *const source = found.page;
     auto *const holder = found.owner;
     DEBUG_ASSERT(source && holder);
@@ -1155,6 +1156,8 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
         return ktl::err(status);
     }
     file_page_locked(copy, PgOff(offset >> PAGE_SHIFT), Fill::Content);
+    // Every mapping of this offset may still point at the inherited frame.
+    range_change_locked(offset, PAGE_SIZE, RangeOp::Unmap);
 
     // Only a hidden node's page carries a count; a page a plain node holds
     // has no other viewer to lose.
@@ -1199,6 +1202,7 @@ auto VmCowPages::Cursor::require_page(bool will_write, usize nr_pages, MultiPage
 
 auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *request)
     -> ktl::Result<RequireResult> {
+    m_target->lock().assert_held();
     DEBUG_ASSERT(m_offset < m_end, "the cursor stepped past the range it was made for");
 
     // Replace page refernece with a real page.
@@ -1232,7 +1236,6 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     auto const found = m_target->find_content(m_offset);
     if (found.page) {
         if (found.owner == m_target) {
-            m_target->lock().assert_held();
             m_target->file_dirty_locked(found.page, index());
             advance();
             return ktl::ok(handed_out({.page = found.page, .writable = true}));
@@ -1258,6 +1261,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         }
         m_target->m_pages.replace_zero_marker(index(), page, VmPageList::Tag::Owned);
         m_target->file_page_locked(page, index(), Fill::ZeroFork);
+        m_target->range_change_locked(m_offset, PAGE_SIZE, RangeOp::Unmap);
         advance();
         return ktl::ok(handed_out({.page = page, .writable = true}));
     }
@@ -1282,7 +1286,6 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     // A node that takes 2 MiB blocks fills the hole with the block it lies in,
     // when one fits; otherwise, and for every other node, with one page.
     if (!found.zero_marker) {
-        m_target->lock().assert_held();
         if (auto *const page = m_target->fill_block_locked(m_offset)) {
             advance();
             return ktl::ok(handed_out({.page = page, .writable = true}));
@@ -1305,6 +1308,11 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         return ktl::err(status);
     }
     m_target->file_page_locked(page, index(), Fill::ZeroFork);
+
+    // A marker or a hole seen through a parent may already map the zero page.
+    if (found.zero_marker || m_target->m_parent) {
+        m_target->range_change_locked(m_offset, PAGE_SIZE, RangeOp::Unmap);
+    }
 
     advance();
     return ktl::ok(handed_out({.page = page, .writable = true}));

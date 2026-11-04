@@ -433,3 +433,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Invalidate old mappings when COW replaces backing (2026-11-04)
+
+**Files**
+
+- `kernel/mm/vm_cow_pages.cpp` notifies the VMO group when it installs a copied frame or materializes a mapped zero page.
+- `kernel/commands/vmo_snapshot_test.cpp` verifies that both aliases lose their old entries.
+
+**Symptom**
+
+A write fault changed the frame at one alias of a cloned VMO offset. The second alias kept its readable entry on the inherited frame.
+
+**Cause**
+
+The COW node installed new backing without notifying the mapping lists. The fault resolved its own address and direct writes had no faulting address at all.
+
+**Change**
+
+Successful frame replacement calls `range_change_locked(offset, PAGE_SIZE, RangeOp::Unmap)` under the shared tree lock. The representative VMO propagates it to the affected views. The same notification covers zero markers and holes that previously supplied the shared zero page. Taking ownership of the same frame does not require a translation change.
+
+**Reference**
+
+Zircon `VmCowPages::CloneCowPageLocked`, `CompleteAddPageLocked`, and `ForkMarkerLocked`.
+
+**Verification**
+
+Changed lines passed clang-format and clang-tidy. Both development images booted and 163 host tests passed. The snapshot, page source and reclaim suites passed 255, 76 and 21 checks.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+QEMU reproduced different present PTEs for two aliases of one clone offset after a write fault.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.
