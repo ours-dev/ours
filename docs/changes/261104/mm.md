@@ -87,3 +87,47 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Encapsulate VMM flags and document their combinations (2026-11-04)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/page_request.hpp` and `kernel/mm/page_request.cpp` encode PageSource lifecycle in private flags.
+- `kernel/object/include/ours/object/pager_proxy.hpp` and `kernel/object/pager_proxy.cpp` put proxy flags under the existing mutex.
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp` and `kernel/mm/vm_cow_pages.cpp` encode the cursor's accessed marking policy as a private flag.
+
+**Symptom**
+
+Stored pager and cursor flags were spread across boolean members. The PageSource lifecycle relationship was implicit in the methods that updated it.
+
+**Cause**
+
+The stored flags had individual declarations but shared lifecycle rules. The declarations did not describe which combinations the owner permitted.
+
+**Change**
+
+The private PageSource flag word starts with neither lifecycle bit set. Under the source lock, `detach()` sets Detached and `close()` replaces it with Closed. Both refuse new requests. PagerProxy keeps its packet and closure flags in one word under its own lock. The cursor starts with MarkAccessed and can clear it through its named method.
+
+**Reference**
+
+Zircon's `PageSource::Detach`, `PageSource::Close`, pager proxy packet bookkeeping and `VmCowPages::LookupCursor::DisableMarkAccessed` define the corresponding behaviors. The storage follows this repository's scoped flag convention.
+
+**Verification**
+
+Clang-format and LLVM 23 clang-tidy checked all six C++ files. Both QEMU dev images booted with all 163 host tests passing in both the default and four-node NUMA configurations. The targeted suites passed 373 checks in the default configuration and 132 checks in NUMA.
+
+**Deliberately not done**
+
+This change covers the representation and transitions of the reviewed flags.
+
+**How it was found**
+
+The user clarified that a private flag word can hold mutually exclusive bits when its owner enforces and documents the invariant.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

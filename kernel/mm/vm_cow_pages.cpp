@@ -1166,7 +1166,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
 
 VmCowPages::Cursor::Cursor(VmCowPages *target, usize offset, usize size)
     // Initializer order follows the member declaration order in the header.
-    : m_target(target), m_offset(offset), m_end(offset + size), m_mark_accessed(true) {}
+    : m_target(target), m_offset(offset), m_end(offset + size) {}
 
 /// A page found in the node's own store may be written through a mapping, but
 /// not in a node with a page source: such a page is mapped read-only, so that
@@ -1183,7 +1183,7 @@ auto VmCowPages::Cursor::handed_out(RequireResult const result) -> RequireResult
     // to the queues, which move it only if it is reclaimable: whether it is
     // can only be read under their lock, since the aging thread rewrites the
     // queue byte under that lock alone.
-    if (m_mark_accessed && result.page != get_zero_page()) {
+    if (!!(m_flags & Flags::MarkAccessed) && result.page != get_zero_page()) {
         queues_of(result.page).mark_accessed(result.page);
     }
     return result;

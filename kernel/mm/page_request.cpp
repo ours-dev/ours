@@ -131,7 +131,7 @@ PageSource::PageSource(ustl::Arc<PageProvider> provider) : m_provider(ustl::move
 /// One that was never closed is a VMO that forgot to.
 PageSource::~PageSource() {
     Guard guard{m_lock};
-    DEBUG_ASSERT(m_detached && m_closed, "a page source destroyed without being closed");
+    DEBUG_ASSERT(!!(m_flags & Flags::Closed), "a page source destroyed without being closed");
     DEBUG_ASSERT(m_outstanding.empty());
 }
 
@@ -142,7 +142,7 @@ auto PageSource::get_pages(u64 const offset, u64 const len, PageRequest *const r
     DEBUG_ASSERT(offset + len > offset, "the range wraps");
 
     Guard guard{m_lock};
-    if (m_detached) {
+    if (is_detached_locked()) {
         return Status::BadState;
     }
 
@@ -248,7 +248,7 @@ auto PageSource::complete_request_locked(PageRequest *const request) -> void {
 /// still needed.
 auto PageSource::resolve_requests_locked(u64 const offset, u64 const len, Status const status)
     -> void {
-    if (m_detached) {
+    if (is_detached_locked()) {
         return;
     }
 
@@ -304,10 +304,10 @@ auto PageSource::on_pages_failed(u64 const offset, u64 const len, Status const s
 /// what finds the source detached and fails, from get_pages().
 auto PageSource::detach() -> void {
     Guard guard{m_lock};
-    if (m_detached) {
+    if (is_detached_locked()) {
         return;
     }
-    m_detached = true;
+    m_flags |= Flags::Detached;
 
     while (!m_outstanding.empty()) {
         auto &request = *m_outstanding.begin();
@@ -322,16 +322,17 @@ auto PageSource::close() -> void {
     detach();
 
     Guard guard{m_lock};
-    if (m_closed) {
+    if (!!(m_flags & Flags::Closed)) {
         return;
     }
-    m_closed = true;
+    DEBUG_ASSERT(!!(m_flags & Flags::Detached));
+    m_flags = (m_flags & ~Flags::Detached) | Flags::Closed;
     m_provider->on_close();
 }
 
 auto PageSource::is_detached() const -> bool {
     Guard guard{m_lock};
-    return m_detached;
+    return is_detached_locked();
 }
 
 auto PageSource::owner_id() const -> ustl::Option<u64> {

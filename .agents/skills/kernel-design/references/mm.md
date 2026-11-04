@@ -80,6 +80,14 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   from the progress made. Reference: Zircon's
   `VmObjectPaged::ReadUser()`/`WriteUser()`.
 
+## Private VMM flags (user decision, 2026-11-04)
+
+A private flags word can include mutually exclusive bits when the owning
+class controls every transition. Document legal combinations and the
+transition that enforces them on the enum. Expose named operations, and
+update the word under one synchronization discipline. PageSource replaces
+Detached with Closed under its source lock. Both stop new page requests.
+
 ## Page aging (decided 2026-10-25, built 2026-10-30)
 
 - Recent use of a page is recorded in two ways. The hardware sets the A bit

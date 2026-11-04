@@ -11,6 +11,7 @@
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/option.hpp>
 #include <ustl/rc.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace ours::object {
 class PagerDispatcher;
@@ -123,7 +124,24 @@ class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
     /// when it is cut already.
     TA_REQUIRES(m_lock) auto cut_if_done_locked() -> Cut;
 
+    /// The proxy updates these bits under m_lock. PacketOut tracks port
+    /// ownership and can stay set after the request has been withdrawn.
+    /// CompletePending tracks the final packet from scheduling through its
+    /// return or cancellation. SourceClosed can coexist with either bit.
+    enum class Flags : u8 {
+        None = 0,
+        PacketOut = 0_bit,
+        CompletePending = 1_bit,
+        SourceClosed = 2_bit,
+        /// The port lost its last handle.
+        PortGone = 3_bit,
+        /// The pager closed. Drop any Complete that has yet to go out.
+        PagerClosed = 4_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
     sync::Mutex m_lock;
+    Flags m_flags TA_GUARDED(m_lock) = Flags::None;
     /// Set once, by the constructor. Not const: ustl::Arc passes its own
     /// constness through to the port, whose queue() changes it.
     ustl::Arc<PortDispatcher> m_port;
@@ -132,8 +150,6 @@ class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
     Overtime const m_overtime;
 
     QueuedPacket m_packet;
-    /// Whether m_packet is on the port.
-    bool m_packet_out TA_GUARDED(m_lock) = false;
     /// The request m_packet carries: null once the source has taken it back
     /// (clear_async_request()) while the packet was out, and the request
     /// that took its place if the source handed it on
@@ -141,15 +157,6 @@ class PagerProxy final: public mm::PageProvider, public PortPacketOwner {
     mm::PageRequest *m_active TA_GUARDED(m_lock) = nullptr;
     mm::PageRequest::ProviderList m_pending TA_GUARDED(m_lock);
     mm::PageRequest m_complete;
-    /// The Complete packet is queued or waiting to be: the port may still
-    /// have m_packet, so the cycle stays.
-    bool m_complete_pending TA_GUARDED(m_lock) = false;
-    bool m_source_closed TA_GUARDED(m_lock) = false;
-    /// The port lost its last handle: nothing sent from now on is read.
-    bool m_port_gone TA_GUARDED(m_lock) = false;
-    /// The pager closed: nobody will read this proxy's packets, so a Complete
-    /// not yet out is dropped rather than sent.
-    bool m_pager_closed TA_GUARDED(m_lock) = false;
     ustl::Arc<mm::PageSource> m_source TA_GUARDED(m_lock);
 
     /// The pager that keeps this proxy, null once it has closed or let go of

@@ -827,7 +827,7 @@ class VmCowPages::Cursor {
     /// default, because a forgotten mark gets a page in use reclaimed, while
     /// one made twice costs nothing.
     auto disable_mark_accessed() -> void {
-        m_mark_accessed = false;
+        m_flags &= ~Flags::MarkAccessed;
     }
 
   private:
@@ -884,7 +884,14 @@ class VmCowPages::Cursor {
     /// physical VMO need not begin on a page boundary.
     usize m_offset;
     usize m_end;
-    bool m_mark_accessed;
+    /// A cursor starts with software aging enabled. The caller may only
+    /// clear MarkAccessed through disable_mark_accessed() when the access
+    /// will be recorded by the page table or when looking without using.
+    enum class Flags : u8 {
+        MarkAccessed = 0_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+    Flags m_flags = Flags::MarkAccessed;
 };
 
 } // namespace ours::mm
