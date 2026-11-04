@@ -16,19 +16,6 @@
 #include <ustl/mem/address_of.hpp>
 
 namespace ours::task::sched {
-namespace {
-    FORCE_INLINE
-    auto calc_weighted_time(SchedDuration duration, Weight weight) -> SchedDuration {
-        if (weight == MID_WEIGHT) {
-            return duration;
-        }
-
-        auto const rate = weight / MID_WEIGHT;
-        return duration * rate;
-    }
-
-} // namespace
-
 class Observer {
     using Self = RunQueue;
 
@@ -47,22 +34,24 @@ class Observer {
 /// FairRunQueue itself -- all of Fair's per-CPU state -- is declared in
 /// fair.hpp and held directly by the per-CPU RunQueue.
 
-auto FairRunQueue::calc_weighted_time(SchedEntity &object) const -> SchedDuration {
-    return sched::calc_weighted_time(object.exec_runtime() - min_vruntime_, object.weight());
+/// The offset is read off exec_runtime(), real time, where the virtual clock
+/// belongs: item 3 of docs/repairs/261103/kernel-task-sched.md.
+auto FairRunQueue::term_of(SchedEntity &object) const -> SchedDuration {
+    return weighted_offset(object.exec_runtime() - min_vruntime_, object.weight());
 }
 
 auto FairRunQueue::dequeue_object(SchedEntity &object) -> void {
     (void)queue_.erase(queue_.iterator_to(object));
 
     weight_sum_ -= object.weight();
-    total_vruntime_ -= calc_weighted_time(object);
+    total_vruntime_ -= term_of(object);
 }
 
 auto FairRunQueue::enqueue_object(SchedEntity &object) -> void {
     (void)queue_.insert(object);
 
     weight_sum_ += object.weight();
-    total_vruntime_ += calc_weighted_time(object);
+    total_vruntime_ += term_of(object);
 }
 
 /// RelativeWeightedOwnedVirtualTime(i) = WeightedOwnedVirtualTime(i) - MinimalOwnedVirtualTime;
@@ -184,7 +173,7 @@ auto Fair::adjust_vlag(RunQueue &runtime, SchedEntity &ctx) -> void {
 
     // Compensates the |object|
     params.vruntime = ideal_vruntime - vlag;
-    params.vdeadline = params.vruntime + calc_weighted_time(timeslice.length(), ctx.weight());
+    params.vdeadline = params.vruntime + to_virtual_time(timeslice.length(), ctx.weight());
 }
 
 FORCE_INLINE
@@ -204,12 +193,12 @@ auto Fair::update_thread(RunQueue &runtime, Thread *curr) -> void {
     auto &ctx = curr->scheduling_entity();
 
     ctx.m_exec_runtime += elapsed;
-    ctx.m_fair.vruntime += calc_weighted_time(elapsed, ctx.weight());
+    ctx.m_fair.vruntime += to_virtual_time(elapsed, ctx.weight());
 
     // Both sides are read on the virtual clock: vdeadline is some vruntime plus
     // one or more requests, so whatever offset vruntime started from cancels, and
     // the test holds once about one request of real time has been charged since
-    // vdeadline was last set (about, because the weight scaling rounds). A start
+    // vdeadline was last set (about, because the weight scaling truncates). A start
     // that saturates both is the exception, see docs/repairs/261103/kernel-task-sched.md.
     // exec_runtime() is the other clock, which does not start where vruntime does
     // and is not scaled by the weight.
@@ -218,7 +207,7 @@ auto Fair::update_thread(RunQueue &runtime, Thread *curr) -> void {
         runtime.mark_preempt_pending();
 
         ctx.m_fair.vdeadline =
-            ctx.m_fair.vruntime + calc_weighted_time(ctx.m_timeslice.length(), ctx.weight());
+            ctx.m_fair.vruntime + to_virtual_time(ctx.m_timeslice.length(), ctx.weight());
     }
 }
 
@@ -376,7 +365,7 @@ auto Fair::set_next_object(SchedEntity &ctx) -> void {
 
     ctx.m_prev_exec_runtime = ctx.m_exec_runtime;
     ctx.m_fair.vdeadline =
-        ctx.m_fair.vruntime + calc_weighted_time(ctx.m_timeslice.length(), ctx.weight());
+        ctx.m_fair.vruntime + to_virtual_time(ctx.m_timeslice.length(), ctx.weight());
 }
 
 auto Fair::set_next_thread(RunQueue &runtime, Thread *next) -> void {
@@ -421,7 +410,7 @@ auto Fair::yield_thread(RunQueue &runtime, Thread *curr) -> void {
     update_thread(runtime, curr);
 
     auto &ctx = curr->scheduling_entity();
-    ctx.m_fair.vdeadline += calc_weighted_time(ctx.m_timeslice.length(), ctx.weight());
+    ctx.m_fair.vdeadline += to_virtual_time(ctx.m_timeslice.length(), ctx.weight());
 
     runtime.mark_preempt_pending();
 }

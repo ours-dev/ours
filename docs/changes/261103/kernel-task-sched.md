@@ -235,3 +235,97 @@ None
 - Why does `vruntime >= vdeadline` not depend on where `vruntime` started, and `vdeadline <= exec_runtime` does?
 - Why is this test unchanged by the wrong direction of the weight (item 1) while the order of the tree is not?
 - After `set_next_object()` rewrites `vdeadline` at every pick, which events can make the test fire, and which cannot?
+
+## Title: Fair's weights run the right way and its weighted average is in the right units (2026-11-03)
+
+**Files**
+- `kernel/include/ours/task/sched/common.hpp` — `to_virtual_time()` and `weighted_offset()`, and the `static_assert`s that pin them
+- `kernel/kernel/task/sched/fair.cpp` — the anonymous `calc_weighted_time()` is gone; its five call sites use `to_virtual_time()`; `FairRunQueue::term_of()` uses `weighted_offset()`
+- `kernel/include/ours/task/sched/fair.hpp` — `FairRunQueue::calc_weighted_time()` is `term_of()`
+- `docs/repairs/261103/kernel-task-sched.md` — items 1 and 2 are deleted (the numbers are kept, the change records cite them), items 13 to 15 are added
+- `docs/repairs/260903/scheduler.md` — the bullet about `calc_weighted_time()`'s integer division, a defect `ffl::Fixed` removed on 2026-09-17 (`docs/changes/260917/ffl.md`), is deleted: it named a function that is gone
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+None observable: Fair is still not built. By hand, from the constants: a thread of priority 31 (weight 1.0) and a default thread (priority 15, weight 0.0389) that both always want to run were given the CPU in the ratio 1 : 25.7, the heavy one getting 3.7 %. And two `MID_WEIGHT` threads whose virtual times stand 100 ms and 0 ms from the minimum had an average of about 1050 ms instead of 50 ms, which made both eligible.
+
+**Cause**
+**One function did two jobs that run in opposite directions.** The old `calc_weighted_time(duration, weight)` returned `duration * (weight / MID_WEIGHT)`.
+
+As a clock it is backwards. The discipline hands out equal virtual time, so a thread is run until its virtual clock catches up with the others'. Equal clocks mean service in proportion to weight only if a heavier thread's clock runs *slower*: virtual time is real time divided by weight. Multiplied, the heaviest thread's clock ran 21 times faster than a `MID_WEIGHT` thread's, so it received about a twenty-sixth of a default thread's CPU, not twenty-six times as much. `vruntime`, the request that builds `vdeadline`, and the order of the tree all took the wrong direction. The deadline test chosen earlier today was not hurt, because both of its sides carry the same factor while a weight stays constant.
+
+As a term of the average it has the wrong scale. The mean that decides eligibility is `sum(weight * offset) / sum(weight)`, where `offset` is how far a thread's virtual time stands from the minimum; the author's comment above `is_object_eligible()` derives it (`IdealServiceVirtualTime = WeightedOwnedVirtualTimeSum / TotalWeight`, with `Lag(i) = Weight(i) * (IdealServiceVirtualTime - OwnedServiceVirtualTime(i))`). The numerator's unit is weight times time; dividing it by the sum of the weights gives a time. The old helper made the term `offset * weight / MID_WEIGHT`, and the extra `/ MID_WEIGHT` made the numerator 21 times too large, so the mean was too, and `offset * weight_sum <= total` held for nearly every thread. A discipline in which everyone is eligible picks by earliest deadline alone: the part of EEVDF that makes a thread that has had more than its share wait was gone.
+
+The two uses were different quantities that happened to share a name, so each had to be right for the other to be wrong.
+
+**Change**
+The helper is split, in `common.hpp` beside `priority_to_weight()`, where a `static_assert` can reach it in every build:
+
+```cpp
+// before, fair.cpp
+auto calc_weighted_time(SchedDuration duration, Weight weight) -> SchedDuration {
+    if (weight == MID_WEIGHT) { return duration; }
+    auto const rate = weight / MID_WEIGHT;
+    return duration * rate;
+}
+
+// after, common.hpp
+constexpr auto to_virtual_time(SchedDuration const real, Weight const weight) -> SchedDuration {
+    DEBUG_ASSERT(weight > Weight{0});
+    if (weight == MID_WEIGHT) { return real; }
+    return real / (weight / MID_WEIGHT);
+}
+constexpr auto weighted_offset(SchedDuration const offset, Weight const weight) -> SchedDuration {
+    return offset * weight;
+}
+```
+
+| Site | Is | Now |
+|---|---|---|
+| `Fair::update_thread()`: the charge, and the replenish | real to virtual | `to_virtual_time()` |
+| `Fair::adjust_vlag()`, `Fair::set_next_object()`, `Fair::yield_thread()`: the request | real to virtual | `to_virtual_time()` |
+| `FairRunQueue::enqueue_object()`, `dequeue_object()`, `avg_vruntime()` | a term of the sum | `term_of()`, which calls `weighted_offset()` |
+
+The names: the first version called the second function `weighted_key`, and a reviewer pointed out that "key" already means the ordering key in this module (`SchedEntity::virtual_deadline()`, `WaitQueue::QueueKey`), and that a member of the same name would hide the free function. The member is `term_of()` and the function says what it multiplies, an offset from the minimum.
+
+The anchor stays `MID_WEIGHT`, the weight whose clock reads real time, which is what the code already assumed. Preparing the decision showed that it is not the default: `DEFAULT_PRIORITY` is `HIGHEST_PRIORITY >> 1` = 15, `MID_WEIGHT` is `PRIORITY_TO_WEIGHT_MAP[NUM_PRIORITIES / 2]` = priority 16 (Zircon's `DEFAULT_PRIORITY` is `NUM_PRIORITIES / 2`, which is 16). A default thread's weight is `MID_WEIGHT / 1.225`, so its clock runs 1.225 times as fast as the wall clock, and the fast path `weight == MID_WEIGHT` is taken only by a priority-16 thread, while the spawn sites pass `DEFAULT_PRIORITY` and the idle threads `IDLE_PRIORITY` (7): every call pays the division. The author kept `MID_WEIGHT`. The anchor changes no share, no order and no eligibility, because every clock is scaled by the same constant; it changes the magnitude of `vruntime`, the range, the rounding and how readable a `vruntime` is. Rejected: a new `DEFAULT_WEIGHT` anchor (priority 15), which makes a default thread's `vruntime` read wall time, and `MAX_WEIGHT`, which makes a priority-0 clock run 540 times fast and saturate an `i64` of nanoseconds after about 200 days of CPU. Under the chosen anchor a priority-0 clock runs about 26 times as fast as the wall clock.
+
+The form of the division was chosen between three. `real * MID_WEIGHT / weight` rounds `real * MID_WEIGHT` to a nanosecond and then divides by a weight as small as 0.00185, so the half nanosecond comes back as about 270 ns. A single exact expression in `__int128` needs raw access and a hand-written overflow rule that `ffl::Fixed` already has. `real / (weight / MID_WEIGHT)` is two library operators; its errors are the rate kept in sixteen fractional bits, at worst 1/2539 of itself (a relative 0.04 % at priority 0, 0.039 % computed below, against 0.34 % that the table's own rounding already puts in the raw value 121, whose exact value is 121.4), and the truncation of the quotient, under a nanosecond and always downward. It is the simplest and was taken; what it costs per call is item 14.
+
+`weighted_offset()` stays a function of its own, though it is one multiplication, because it carries the explanation that it multiplies where its neighbour divides, and the `static_assert` of its units.
+
+The argument of `FairRunQueue::term_of(object)`, `exec_runtime() - min_vruntime_`, is unchanged; a comment there says so. It is one of the four sites of item 3 and is changed with it.
+
+The `static_assert`s at the end of `common.hpp`:
+- `MID_WEIGHT`'s clock reads real time.
+- At every priority, and for 1 ms, 1000 s and 11.6 days of real time, virtual time times weight equals `real * MID_WEIGHT` within 1/2048 and a nanosecond (the worst deviation is 1/2507, at priority 0). Multiplying instead of dividing fails this by the square of `weight / MID_WEIGHT`; a conversion that narrows its intermediate to 64 bits fails the long ones.
+- The heaviest thread's clock runs about 21 times slower than `MID_WEIGHT`'s (asserted between 20 and 22.2), the lightest's about 26 times faster (between 25 and 26), and a default thread's about 1.225 times as fast (between 1.2 and 1.25).
+- A term is rounded to the nearest nanosecond: half of 3 is 2.
+- The two-thread example: offsets 100 ms and 0 average to 50 ms within 16 ns, the one behind the average is eligible and the other is not.
+
+**Reference**
+Linux EEVDF: `calc_delta_fair()` (virtual time is real time times `NICE_0_LOAD / weight`), and `sum_w_vruntime_add()`, `avg_vruntime()` and `vruntime_eligible()` (`sum_w_vruntime` is the sum of `key * weight`, a thread is eligible when `avg >= key * load`). A reviewer confirmed the function names in a local Linux checkout; the bodies are from memory, not checked. Zircon has none of this: `scheduler.cc`, `scheduler.h` and `scheduler_state.h` contain neither `vruntime` nor `virtual_time`, and its fair threads carry a start time and a finish time on a timeline that is rescaled as a whole (`fair_affine_transform_`); that is from a search and an outline reading, not a full reading. Only the numerics (`ffl::Fixed`, the weight table) are shared with it.
+
+**Verification**
+- `python3 .agents/skills/verify/scripts/boot_check.py --out out/fair-lane`, run on the final code: build ok (30.7 s, a full rebuild, because `common.hpp` is included almost everywhere and so every translation unit evaluated the `static_assert`s), dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (164 passed). Fair is not in these images, so the boots show that nothing else moved; the `static_assert`s are the check of the change.
+- Five independent read-only reviewers: 63 mutants of the `static_assert`s (the old multiply, a wrong anchor, the old term and so on; every behavioural one was killed, and four gaps were found and closed: a tolerance 2.5 times too loose, no check of long durations, of the default priority or of the rounding), a Python model of `ffl::Fixed` checked against the compiler on 458 values (0 mismatches), the substitution at each call site (all nine were right), style and lint, and a fact-check of these documents. They found a comment that said the opposite of its assert, the name clash above, and a dozen wrong or loose statements in the first draft of these documents (a count of 128-bit divisions, "wraps" for a saturating type, "measured" for computed figures); all were corrected.
+- The error of the conversion, recomputed in Python from the table generator's recurrence for 1 ms at each priority: 0.039 % at priority 0 (25,811,736 ns against an exact 25,801,653), under 0.008 % from priority 5 up, under 0.0025 % from priority 10 up, 0 at `MID_WEIGHT`.
+- `-fsyntax-only` on `fair.cpp` and `scheduler.cpp` with the Fair switch on: still 5 and 1 diagnostics, the same ones (items 4, 5 and 12 of the repair file).
+- `scripts/format_cpp.py` and `scripts/lint_docs.py` are clean. `clang-tidy -p out/fair-lane` on `rr.cpp`, which includes `common.hpp`, with `common.hpp` and `fair.hpp` in the header filter: no diagnostic in either. `fair.cpp` is not in the compile database and was not run through it.
+- Fair was not linked, booted or run. The shares in the Symptom are arithmetic on the constants, not measurements; no test shows them (item 13).
+
+**Deliberately not done**
+- The four sites that read `exec_runtime()` where `vruntime` belongs: item 3, and mandatory before Fair is enabled.
+- A `DEFAULT_WEIGHT` anchor or a change of `DEFAULT_PRIORITY` (above): the author kept `MID_WEIGHT`, and moving either is a change of numbers, not of behaviour.
+- A faster conversion (item 14), a sum with fractional bits (item 15), and the test that shares follow the weights (item 13).
+
+**How it was found**
+By the review of 2026-11-03 that produced the repair file, and by reading the two uses of the helper side by side: the same function appeared under `vruntime +=` and under `total_vruntime_ +=`, and only one direction can be right for each. The anchor mismatch was found while preparing the decision: a search for the uses of `DEFAULT_PRIORITY` and `MID_WEIGHT`, and the table recomputed in Python. The author asked for this fix and chose the anchor; the "Hands off" rule for `fair.*` in `kernel-design` is unchanged.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why must a heavier thread's virtual clock run slower, and what does an EEVDF pick do with two clocks that read the same?
+- What unit does `total_vruntime_` have, and why does dividing the term by `MID_WEIGHT` make the mean 21 times too large whatever the weights are?
+- A default thread has priority 15 and the anchor is priority 16. What does that do to its `vruntime`, and why does it leave its share against a priority-17 thread unchanged?

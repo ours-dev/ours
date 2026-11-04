@@ -70,7 +70,7 @@ class FairRunQueue {
 
         if (current_ && current_->runqueue_state().is_active()) {
             weight_sum += current_->weight();
-            total_vruntime += calc_weighted_time(*current_);
+            total_vruntime += term_of(*current_);
         }
 
         return min_vruntime_ + total_vruntime / weight_sum;
@@ -107,7 +107,8 @@ class FairRunQueue {
     }
 
   private:
-    auto calc_weighted_time(SchedEntity &object) const -> SchedDuration;
+    /// |object|'s term in total_vruntime_, see sched::weighted_offset().
+    auto term_of(SchedEntity &object) const -> SchedDuration;
 
     /// Earliest virtual deadline first; the pick takes the first eligible one
     /// (Fair::evaluate_next_thread()).

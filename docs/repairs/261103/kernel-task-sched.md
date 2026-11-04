@@ -1,46 +1,6 @@
 # kernel-task-sched outstanding repairs
 
-Fair (`fair.hpp`, `fair.cpp`) is out of the build and is the author's. It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` has five diagnostics (items 4, 5 and 12) and `scheduler.cpp` one (item 4); items 1 to 3 and 6 to 11 compile and are wrong or missing. Every claim below was read off the code, and the arithmetic was recomputed from the constants; none of it was run, because Fair does not build.
-
-## 1. The weights run the wrong way
-
-**Severity**
-High: with Fair on, a heavier thread gets less of the CPU, not more.
-
-**Symptom**
-`calc_weighted_time(duration, weight)` (the top of `fair.cpp`) returns `duration * (weight / MID_WEIGHT)`. `update_thread()` advances `m_fair.vruntime` by it, and `adjust_vlag()`, `update_thread()`'s replenish and `set_next_object()` build `vdeadline` as `vruntime + calc_weighted_time(slice, weight)`. A `Weight` is a share in (0, 1] (`MAX_WEIGHT` is 1, `MID_WEIGHT` about 0.0476), so a thread at the top priority advances about 21 times faster than real time and has its deadline about 21 times further away. By hand: a thread of weight 1 and one of `MID_WEIGHT` have each run 10 ms; the first has advanced `vruntime` by about 210 ms and the second by 10 ms, and, placed at the same `vruntime`, their deadlines are 64 ms times 21 and 64 ms ahead, so the light one is picked about 21 slices before the heavy one runs again.
-
-**Cause**
-A virtual-time delta divides by the weight (a heavier thread's clock runs slower, so it is owed more real time before its deadline), and the helper multiplies. The same helper is also used for the numerator of the weighted average, where multiplying is right (item 2), so one function serves two opposite directions.
-
-**Change**
-Split it: a conversion from real to virtual time that divides by the weight, for `vruntime` and the request, and the weighted term of the average that multiplies. The deadline test chosen on 2026-11-03 does not depend on this while a thread's weight stays constant (the factor is on both sides), so the order of the tree and the average are what it changes.
-
-**Reference**
-Linux EEVDF, `calc_delta_fair()` and `update_deadline()` in `kernel/sched/fair.c` (a reviewer read them in the first 100 kB of upstream master on 2026-11-03).
-
-**Acceptance**
-A host-style test of `FairRunQueue` with two threads of different weights, which does not exist yet: over a long window the ratio of their execution times approaches the ratio of their weights.
-
-## 2. The average and the eligibility test are about 21 times too large
-
-**Severity**
-High: eligibility is true for nearly every thread, so the discipline picks by earliest deadline alone.
-
-**Symptom**
-`FairRunQueue::calc_weighted_time(object)` is `calc_weighted_time(exec_runtime - min_vruntime_, weight)`, which is `(exec - min) * weight / MID_WEIGHT`, and `total_vruntime_` sums it. `avg_vruntime()` divides the sum by `weight_sum_`, which is in absolute `Weight` units. By hand: two threads of `MID_WEIGHT`, `exec_runtime` 100 ms and 0, `min_vruntime_` 0: the sum is 100 ms and `weight_sum_` is about 0.095, so the average is about 1050 ms where the true mean is 50 ms. `is_object_eligible()` tests `total_vruntime >= (exec - min) * weight_sum`, that is 100 against about 9.5 for the first thread, and 100 against 0 for the second: both are eligible.
-
-**Cause**
-The numerator should be the sum of `weight * (v - v0)`; it is that sum divided by `MID_WEIGHT`. The denominator is right.
-
-**Change**
-The weighted term of the average multiplies by the weight and does not divide by `MID_WEIGHT`. Done with item 1, since it is the same helper.
-
-**Reference**
-Linux EEVDF, `avg_vruntime()` and `entity_eligible()` (`vruntime_eligible()`) in `kernel/sched/fair.c`: `sum_w_vruntime` is the sum of `key * weight`, eligible when `avg >= key * load`.
-
-**Acceptance**
-A host-style test: for threads that have received service in proportion to their weights, every thread is eligible, and a thread ahead of its share is not.
+Fair (`fair.hpp`, `fair.cpp`) is out of the build and is the author's. It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights and the scale of the average were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1 and 2 are gone and the numbers are not reused, because the change records cite them (so the file is no longer in numeric order, and items 13 to 15, which that fix left open, are at the end). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` has five diagnostics (items 4, 5 and 12) and `scheduler.cpp` one (item 4); items 3 and 6 to 11 compile and are wrong or missing. Every claim below was read off the code, and the arithmetic was recomputed from the constants; none of it was run, because Fair does not build.
 
 ## 3. `exec_runtime()` stands in for `vruntime` in four places
 
@@ -48,7 +8,7 @@ A host-style test: for threads that have received service in proportion to their
 High: Fair runs on two clocks until these are changed, and the decision of 2026-11-03 makes the change mandatory before Fair is enabled.
 
 **Symptom**
-`FairRunQueue::lag_of()`, `FairRunQueue::calc_weighted_time(object)`, `FairRunQueue::update_min_vruntime()` and `Fair::is_object_eligible()` read `exec_runtime()`, real time that starts at zero and is not scaled by the weight. `m_fair.vruntime`, the virtual clock, is read nowhere except to build `vdeadline` and by the deadline test. `adjust_vlag()` then computes `vruntime = avg_vruntime() - vlag`, with both operands on the real clock, and the tree is ordered by `vdeadline` values built on that, so two threads' deadlines have different origins.
+`FairRunQueue::lag_of()`, `FairRunQueue::term_of(object)`, `FairRunQueue::update_min_vruntime()` and `Fair::is_object_eligible()` read `exec_runtime()`, real time that starts at zero and is not scaled by the weight. `m_fair.vruntime`, the virtual clock, is read nowhere except to build `vdeadline` and by the deadline test. `adjust_vlag()` then computes `vruntime = avg_vruntime() - vlag`, with both operands on the real clock, and the tree is ordered by `vdeadline` values built on that, so two threads' deadlines have different origins.
 
 **Cause**
 The framework's own `exec_runtime()` comment says so: every caller uses it where the virtual quantity is meant (`sched_entity.hpp`).
@@ -60,7 +20,7 @@ Those four read `m_fair.vruntime`. `FairRunQueue` is not a friend of `SchedEntit
 Linux EEVDF keeps one clock, `se->vruntime`, for the average, the lag, eligibility, the deadline and the expiry test.
 
 **Acceptance**
-No call of the accessor `exec_runtime()` in `fair.hpp` or `fair.cpp` (the charge, the slice mark and the NOHZ block read `m_exec_runtime` directly); the tests of items 1 and 2.
+No call of the accessor `exec_runtime()` in `fair.hpp` or `fair.cpp` (the charge, the slice mark and the NOHZ block read `m_exec_runtime` directly); the `static_assert`s at the end of `common.hpp` still hold, and the test of item 13 once it exists.
 
 ## 4. `FairRunQueue` has no `for_each`
 
@@ -168,7 +128,7 @@ A Fair boot in which a thread that does not block is preempted when its request 
 Low to Medium: both change what "the request is spent" means.
 
 **Symptom**
-`set_next_object()` rewrites `vdeadline` and `m_prev_exec_runtime` at every pick, so the deadline test means "one request since the last pick, placement or replenish", not "the request was served". A thread preempted at 90 % of its slice, again and again, never replenishes through the test. The same restart would happen in the middle of a slice if `Scheduler::Pi::common()`, which calls `put_prev_thread()` and `set_next_thread()` on the running thread, were called; nothing calls it today, and `Scheduler::on_thread_base_profile_overrided()` is empty. `yield_thread()` does `vdeadline += calc_weighted_time(slice, weight)` after an `update_thread()` that may just have replenished, so the deadline can sit two requests ahead of `vruntime`. The weight scaling also rounds to nearest on a quantised rate, so charging a slice in several pieces can leave `vruntime` a few nanoseconds either side of the deadline.
+`set_next_object()` rewrites `vdeadline` and `m_prev_exec_runtime` at every pick, so the deadline test means "one request since the last pick, placement or replenish", not "the request was served". A thread preempted at 90 % of its slice, again and again, never replenishes through the test. The same restart would happen in the middle of a slice if `Scheduler::Pi::common()`, which calls `put_prev_thread()` and `set_next_thread()` on the running thread, were called; nothing calls it today, and `Scheduler::on_thread_base_profile_overrided()` is empty. `yield_thread()` does `vdeadline += to_virtual_time(slice, weight)` after an `update_thread()` that may just have replenished, so the deadline can sit two requests ahead of `vruntime`. The weight scaling also truncates on a quantised rate, so charging a slice in several pieces can leave `vruntime` short of the deadline by up to a nanosecond per piece, and the test then fires one charge later.
 
 **Cause**
 Fair keeps the request in two places that are written independently.
@@ -241,3 +201,63 @@ None, this project's own design.
 
 **Acceptance**
 No `arm_preempt_timer` diagnostic.
+
+## 13. No test shows that CPU shares follow the weights
+
+**Severity**
+Low: a missing test. The weight fix is checked for its arithmetic only, so a wrong use of it elsewhere in Fair would not be caught.
+
+**Symptom**
+`common.hpp` proves at compile time that `to_virtual_time()` is inversely proportional to the weight at every priority, that `MID_WEIGHT`'s clock reads real time, and the units of `weighted_offset()` against the weight sum. Nothing runs `FairRunQueue` or `Fair::update_thread()`, because Fair does not build, so no test shows that two threads of different weights receive CPU in the ratio of their weights.
+
+**Cause**
+The acceptance of the two fixed items was a host-style test of `FairRunQueue`. It cannot be written until Fair compiles (items 4, 5 and 12) and reads one clock (items 3 and 6).
+
+**Change**
+Add the test when those are done: two threads that always want to run, at priorities 31 and 15, over a long window, with the ratio of the CPU time each was charged within a stated tolerance of the ratio of their weights (about 25.7); and the eligibility case, where threads that have been served in proportion to their weights are all eligible and one that is ahead of the weighted average is not.
+
+**Reference**
+None, this project's own test.
+
+**Acceptance**
+The test is in `//:default` and passes.
+
+## 14. The real-to-virtual conversion calls `__divti3` on every charge
+
+**Severity**
+Low: a cost read off the code and the generated assembly, not measured, and Fair does not build.
+
+**Symptom**
+`to_virtual_time()` (`common.hpp`) evaluates `real / (weight / MID_WEIGHT)`. `ffl::Fixed::operator/` shifts the numerator into an `__int128` and divides by an `__int128`. At `-O2` with the kernel's flags a function that calls it contains exactly one `__divti3`, for `real / rate`: clang turns the division by the constant `MID_WEIGHT` into multiplies. `mul_shr.hpp` says such a call is a software loop costing "tens to hundreds of cycles". It runs at every charge (`update_thread()`), pick (`set_next_object()`) and placement (`adjust_vlag()`), and in the replenish and the yield, and no thread skips it: the fast path for `weight == MID_WEIGHT` is taken only by a priority-16 thread, and the spawn sites use `DEFAULT_PRIORITY` (15). The factor `weight / MID_WEIGHT` depends on the weight alone, so it is recomputed with the same answer for a thread's every call.
+
+**Cause**
+It was written in the plainest form with the library's operators and nothing was optimised, on purpose.
+
+**Change**
+Performance work goes through the author, in depth (CLAUDE.md). Measure first: cycles per call of `to_virtual_time()` in a bench under `benches/`; the function is header-only, so this can run before Fair builds. Then weigh the candidates. A table of rates per priority, computed at compile time like the weight table, saves the multiplies and keeps the `__divti3`. Only a reciprocal removes it, and a reciprocal table is the `wmult` table that `kernel-design` excludes and that this project built and removed (3e0f49ce), so it is a departure for the author to decide. Not decided.
+
+**Reference**
+Linux `calc_delta_fair()` and `__calc_delta()` replace the division with a multiply by a precomputed reciprocal (from memory, not checked).
+
+**Acceptance**
+A report in `docs/perf/` with the raw samples of the baseline and of each stage.
+
+## 15. The weighted sum is kept in whole nanoseconds
+
+**Severity**
+Low: the error is tens to hundreds of nanoseconds against slices of milliseconds, and Fair does not build.
+
+**Symptom**
+`total_vruntime_` is a `SchedDuration`, whole nanoseconds, and each `weighted_offset()` term is rounded to the nearest one when `offset * weight` is formed. `avg_vruntime()` divides the sum by `weight_sum_`, which is a small fraction of one (0.0476 for a single `MID_WEIGHT` thread, 0.00185 for a priority-0 thread), so the half nanosecond comes back multiplied by `1 / weight_sum_`: up to about 11 ns for one `MID_WEIGHT` thread, 13 ns for a default thread and 271 ns for one priority-0 thread. A lone thread's lag, `avg_vruntime() - vruntime`, is that noise instead of zero. `is_object_eligible()` compares `total_vruntime >= offset * weight_sum` without a division, and for one thread both sides are the same product, so it is not affected. The sum is also changed by `update_min_vruntime()` (`total_vruntime_ -= delta * weight_sum_`) and `dequeue_object()` subtracts a term recomputed against a `min_vruntime_` that may have moved since the enqueue, so independent roundings can make the sum drift from the sum of its terms.
+
+**Cause**
+`SchedDuration` has no fractional bits and `ffl::Fixed::operator*` answers in the left operand's format, so the product loses the weight's sixteen fractional bits at once. The acceptance depends on items 13, 3 and 6: `lag_of()` reads `exec_runtime()` (item 3), and an empty tree saturates the average (item 6).
+
+**Change**
+Keep the sum in a format with fractional bits and round once, when the mean is formed; `update_min_vruntime()` and `is_object_eligible()`, which also multiply a time by a weight, change in step. Only worth doing if the noise shows in a measurement; the range of the wider format (for `Fixed<i64, 16>` about 39 hours of offset) has to be checked against the largest sum first.
+
+**Reference**
+Linux `sum_w_vruntime_add()` accumulates the exact product of `key * weight` with integer weights and rounds once, in `avg_vruntime()` (names confirmed by a reviewer in a local Linux checkout; the bodies are from memory, not checked).
+
+**Acceptance**
+In the test of item 13, the lag of a lone thread is zero at every priority.
