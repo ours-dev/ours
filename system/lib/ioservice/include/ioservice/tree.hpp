@@ -18,8 +18,10 @@
 /// A tree is built by the program that serves it, never by a client: the
 /// root adds /boot's directories and files at ingest and one /svc directory
 /// per component it starts. Clients only read it, through connections
-/// (<ioservice/server.hpp>). So there is no removal, and a node, once added, stays
-/// where it is for the life of the tree.
+/// (<ioservice/server.hpp>). The one exception is remove_service(): a
+/// service node can be taken back out at run time -- a device the registry
+/// served has gone -- and its storage slot is then retired, never reused.
+/// Every other node, and every directory, stays for the life of the tree.
 namespace ioservice {
 /// A node of a Tree: an index into the storage that tree was given. It means
 /// something only to the tree that returned it; another tree's id names
@@ -65,6 +67,12 @@ enum class NodeKind : u8 {
     /// (Tree::resolve()). To a client that lists the directory it is in, it is
     /// a directory.
     Handler,
+    /// A service node that remove_service() took back out. It is unlinked
+    /// from its directory's list -- no walk, listing or lookup reaches it --
+    /// and its storage slot is retired, never reused: a NodeId into this
+    /// tree never comes to name a different node. kind() answers none for
+    /// one, as for an id that is not a node of this tree.
+    Removed,
 };
 
 /// What a File node serves. Nothing here is owned by the tree: the program
@@ -243,9 +251,15 @@ class Tree final {
     auto file(NodeId node) const -> ustl::Option<VmoFile const &>;
 
     /// The value the service |node| was added with; none when it is not a
-    /// service.
+    /// service, or the service was removed.
     [[nodiscard]]
     auto service(NodeId node) const -> ustl::Option<u64>;
+
+    /// Takes the service |node| back out: unlinks it from its directory's
+    /// list and retires its slot. NotFound when the id is not a node of
+    /// this tree; InvArgs for anything that is not a service node --
+    /// directories, files and the rest stay for the life of the tree.
+    auto remove_service(NodeId node) -> ours::Status;
 
     /// The channel the remote |node| forwards to; none when it is not a
     /// remote entry.
@@ -264,7 +278,8 @@ class Tree final {
 
     /// How many more nodes the storage has room for: what is left before an
     /// add answers NoResource. A caller that has to add several nodes or none
-    /// asks first, since a node, once added, stays.
+    /// asks first. Removed service nodes' slots are retired, not reused, so
+    /// this only ever shrinks.
     [[nodiscard]]
     auto available() const -> usize;
 
@@ -298,7 +313,8 @@ class Tree final {
     auto find_child(Node const &directory, std::string_view name) const -> ustl::Option<NodeId>;
 
     std::span<Node> m_nodes;
-    /// Nodes are never removed, so the first m_size are the live ones.
+    /// Removed nodes keep their slots (never reused), so the first m_size
+    /// are the live ones and the retired ones among them.
     usize m_size = 0;
 };
 

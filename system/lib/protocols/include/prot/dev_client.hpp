@@ -86,6 +86,28 @@ class Client final {
         return ours::Status::Ok;
     }
 
+    /// Takes a published device back out: |kind| and |name| name the leaf
+    /// exactly as the publish's granted reply named it. Ok when the leaf
+    /// left the tree; NotFound when the registry holds no such mount.
+    [[nodiscard]]
+    auto unpublish(std::string_view const kind, std::string_view const name) -> ours::Status {
+        auto const txid = m_channel.next_txid();
+        auto const request =
+            encode_unpublish(m_request, {.txid = txid, .kind = kind, .name = name});
+        if (request.is_err()) {
+            return request.unwrap_err();
+        }
+        auto reply = m_channel.call(request.unwrap());
+        if (reply.is_err()) {
+            return reply.unwrap_err();
+        }
+        auto const answered = decode_unpublish_reply(*reply, txid);
+        if (answered.is_err()) {
+            return answered.unwrap_err();
+        }
+        return answered->status;
+    }
+
   private:
     rpc::Channel m_channel;
     std::array<u8, wire::MAX_MESSAGE_BYTES> m_request{};

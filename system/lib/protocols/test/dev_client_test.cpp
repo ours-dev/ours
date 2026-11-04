@@ -106,7 +106,7 @@ class DevClientTest: public testing::Test {
     }
 
     auto pump() -> void {
-        if (fake::kernel().queued_messages(ends_[1]) == 0) {
+        if (!fake::kernel().is_open(ends_[1]) || fake::kernel().queued_messages(ends_[1]) == 0) {
             return;
         }
         auto bytes = std::array<u8, wire::MAX_MESSAGE_BYTES>{};
@@ -125,7 +125,32 @@ class DevClientTest: public testing::Test {
         auto const header =
             wire::decode_header(std::span{bytes}.first(num_bytes), wire::Direction::ToServer);
         ASSERT_TRUE(header.is_ok());
-        auto const length = publish_reply(reply_, header->txid, malformed_, granted_name_);
+        // The un-publish's reply is the status form: Ok from this provider.
+        if (header->ordinal == prot::dev::UNPUBLISH.ordinal) {
+            if (garbage_unpublish_) {
+                auto garbage = std::array<u8, 32>{};
+                garbage.fill(0x5A);
+                EXPECT_EQ(ours::channel_write(ends_[1], ours::ChannelWriteOptions::None,
+                                              garbage.data(), static_cast<u32>(garbage.size()),
+                                              nullptr, 0),
+                          Status::Ok);
+                return;
+            }
+            auto const reply = prot::dev::encode_unpublish_reply(reply_, header->txid,
+                                                                 {.status = unpublish_status_});
+            ASSERT_TRUE(reply.is_ok());
+            EXPECT_EQ(ours::channel_write(ends_[1], ours::ChannelWriteOptions::None,
+                                          reply->bytes.data(),
+                                          static_cast<u32>(reply->bytes.size()), nullptr, 0),
+                      Status::Ok);
+            return;
+        }
+        auto const length = publish_status_ == Status::Ok
+                                ? publish_reply(reply_, header->txid, malformed_, granted_name_)
+                                : (wire::encode_status_reply(reply_, prot::dev::PUBLISH,
+                                                             header->txid, publish_status_)
+                                       .unwrap()
+                                       .bytes.size());
         EXPECT_EQ(ours::channel_write(ends_[1], ours::ChannelWriteOptions::None, reply_.data(),
                                       static_cast<u32>(length), nullptr, 0),
                   Status::Ok);
@@ -133,6 +158,9 @@ class DevClientTest: public testing::Test {
 
     std::array<Uandle, 2> ends_{};
     bool malformed_ = false;
+    bool garbage_unpublish_ = false;
+    Status publish_status_ = Status::Ok;
+    Status unpublish_status_ = Status::Ok;
     std::string_view granted_name_ = "000";
     std::array<u8, wire::MAX_MESSAGE_BYTES> reply_{};
 };
@@ -189,4 +217,64 @@ TEST_F(DevClientTest, OversizedProtocolRefusedBeforeWire) {
     auto protocol = std::string(prot::dev::MAX_PROTOCOL_NAME + 1, 'p');
     EXPECT_EQ(client.publish("block", "000", protocol, DIRECTORY, granted), Status::InvArgs);
     EXPECT_EQ(fake::kernel().queued_messages(ends_[1]), 0U);
+}
+
+/// The typed un-publish: Ok, NotFound, and the dead connection's
+/// PeerClosed, through the same channel the publish used.
+TEST_F(DevClientTest, UnpublishRoundTrip) {
+    auto client = prot::dev::Client{ends_[0]};
+    EXPECT_EQ(client.unpublish("block", "000"), Status::Ok);
+}
+
+TEST_F(DevClientTest, UnpublishUnknownNameReadsNotFound) {
+    unpublish_status_ = Status::NotFound;
+    auto client = prot::dev::Client{ends_[0]};
+    EXPECT_EQ(client.unpublish("block", "042"), Status::NotFound);
+}
+
+TEST_F(DevClientTest, UnpublishOnDeadConnectionReadsPeerClosed) {
+    auto client = prot::dev::Client{ends_[0]};
+    // The provider goes away between two calls: the second reads the peer
+    // gone, whatever the first answered.
+    EXPECT_EQ(client.unpublish("block", "000"), Status::Ok);
+    EXPECT_EQ(ours::handle_close(ends_[1]), Status::Ok);
+    EXPECT_EQ(client.unpublish("block", "000"), Status::PeerClosed);
+}
+
+/// Publish through a provider that answers a failure: the status arrives
+/// as itself.
+TEST_F(DevClientTest, PublishFailureStatusArrivesAsItself) {
+    publish_status_ = Status::NoResource;
+    auto client = prot::dev::Client{ends_[0]};
+    auto granted = std::array<char, 8>{};
+    EXPECT_EQ(client.publish("block", "000", "ours.block.Block", DIRECTORY, granted),
+              Status::NoResource);
+}
+
+/// Publish through a provider that went away between two calls: the dead
+/// connection's PeerClosed.
+TEST_F(DevClientTest, PublishOnDeadConnectionReadsPeerClosed) {
+    auto client = prot::dev::Client{ends_[0]};
+    auto granted = std::array<char, 8>{};
+    EXPECT_EQ(client.publish("block", "000", "ours.block.Block", DIRECTORY, granted), Status::Ok);
+    EXPECT_EQ(ours::handle_close(ends_[1]), Status::Ok);
+    EXPECT_EQ(client.publish("block", "001", "ours.block.Block", DIRECTORY, granted),
+              Status::PeerClosed);
+}
+
+/// The un-publish's own encode refusal: a kind that names a path is
+/// refused before any byte reaches the wire.
+TEST_F(DevClientTest, UnpublishPathNamingKindRefusedBeforeWire) {
+    auto client = prot::dev::Client{ends_[0]};
+    EXPECT_EQ(client.unpublish("blo/ck", "000"), Status::InvArgs);
+    EXPECT_EQ(fake::kernel().queued_messages(ends_[1]), 0U);
+}
+
+/// The un-publish's reply that is not a message at all: the pipeline's own
+/// header check refuses it before the codec runs, and the client reads the
+/// pipeline's BadState.
+TEST_F(DevClientTest, UnpublishGarbageReplyReadsBadState) {
+    garbage_unpublish_ = true;
+    auto client = prot::dev::Client{ends_[0]};
+    EXPECT_EQ(client.unpublish("block", "000"), Status::BadState);
 }

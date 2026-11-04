@@ -214,6 +214,48 @@ auto Tree::add_handler(NodeId const parent, std::string_view const name, u64 con
     node.m_value = value;
     return add_child(parent, node);
 }
+auto Tree::remove_service(NodeId const node) -> Status {
+    if (get(node) == nullptr) {
+        return Status::NotFound;
+    }
+    auto &removed = m_nodes[index_of(node)];
+    if (removed.m_kind != NodeKind::Service) {
+        // A directory, a file, or a node that was already removed: only a
+        // live service node is this call's to take.
+        return Status::InvArgs;
+    }
+
+    // Neither the parent nor the previous sibling is stored on the node, so
+    // the unlink walks the directories' children looking for it. Every
+    // parent of a service node is a directory (add_child checks), and a
+    // node is linked into exactly one list.
+    for (auto index = usize{0}; index < m_size; ++index) {
+        auto &candidate = m_nodes[index];
+        if (candidate.m_kind != NodeKind::Directory) {
+            continue;
+        }
+        auto previous = detail::NO_NODE;
+        auto child = candidate.m_first_child;
+        while (child != detail::NO_NODE) {
+            if (child == node) {
+                if (previous == detail::NO_NODE) {
+                    candidate.m_first_child = removed.m_next_sibling;
+                } else {
+                    m_nodes[index_of(previous)].m_next_sibling = removed.m_next_sibling;
+                }
+                // Out of the list, no walk or listing reaches it; kind()
+                // answers none, as for an id that is not a node of this
+                // tree. The slot is retired: never reused, so a NodeId
+                // never comes to name a different node.
+                removed.m_kind = NodeKind::Removed;
+                return Status::Ok;
+            }
+            previous = child;
+            child = m_nodes[index_of(child)].m_next_sibling;
+        }
+    }
+    return Status::NotFound;
+}
 
 auto Tree::add_remote(NodeId const parent, std::string_view const name, ours::Uandle const channel)
     -> ustl::Result<NodeId, Status> {

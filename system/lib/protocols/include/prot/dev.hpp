@@ -99,6 +99,50 @@ auto encode_publish_reply(std::span<u8> bytes, u32 txid, PublishReply const &rep
 [[nodiscard]]
 auto decode_publish_reply(wire::Message message, u32 txid)
     -> ustl::Result<PublishReply, ours::Status>;
+
+/// Takes a published device back out (Registry.Unpublish): the leaf at
+/// class/<kind>/<name> goes, and the slot is free for the next publish.
+/// The strings name the leaf exactly as its publish's reply granted them.
+///
+///   Registry.Unpublish  two-way  u32 kind_size@20, u32 name_size@24,
+///                               char kind[]@28, char name[]@28+kind_size
+///
+/// and its reply, the status form: Ok when the leaf was there, NotFound
+/// when the registry holds no such mount. A device's own driver unpublishes
+/// what it retracts; the registry itself unpublishes what died with a
+/// driver's exit.
+inline constexpr auto UNPUBLISH =
+    wire::method("ours.dev/Registry.Unpublish", wire::MethodKind::TwoWay);
+
+/// The un-publish, naming the leaf the way the granted reply named it.
+struct UnpublishRequest {
+    u32 txid;
+    std::string_view kind;
+    std::string_view name;
+};
+
+struct UnpublishReply {
+    ours::Status status;
+};
+
+/// Encoded by a driver or the registry itself. The strings carry the same
+/// shape checks a publish's do: a kind or name that cannot name a leaf is
+/// refused before any byte is judged against the mounts.
+[[nodiscard]]
+auto encode_unpublish(std::span<u8> bytes, UnpublishRequest const &request)
+    -> ustl::Result<wire::Message, ours::Status>;
+
+[[nodiscard]]
+auto decode_unpublish(wire::Message message) -> ustl::Result<UnpublishRequest, ours::Status>;
+
+/// The reply is the status form, whatever the status.
+[[nodiscard]]
+auto encode_unpublish_reply(std::span<u8> bytes, u32 txid, UnpublishReply const &reply)
+    -> ustl::Result<wire::Message, ours::Status>;
+
+[[nodiscard]]
+auto decode_unpublish_reply(wire::Message message, u32 txid)
+    -> ustl::Result<UnpublishReply, ours::Status>;
 } // namespace prot::dev
 
 #endif // #ifndef PROT_DEV_HPP

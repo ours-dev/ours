@@ -55,9 +55,10 @@ using ours::Uandle;
 constexpr auto DEV_PATH = std::string_view{"/dev"};
 
 /// The Loop's slots: one per connection to the outgoing directory, one per
-/// registry client, one per dev-tree connection.
+/// registry client, one per dev-tree connection, and one death watcher per
+/// mount.
 constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + device_registry::MAX_CLIENTS +
-                       device_registry::MAX_TREE_CONNECTIONS;
+                       device_registry::MAX_TREE_CONNECTIONS + device_registry::MAX_MOUNTS;
 
 // Each slot in use holds one live wait on the port (<loop/loop.hpp>).
 static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);

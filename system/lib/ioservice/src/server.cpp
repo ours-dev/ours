@@ -99,6 +99,11 @@ namespace {
                 // And so is a handler's place: the handler opens it as its
                 // root, a directory.
                 return prot::io::DirentType::Directory;
+            case NodeKind::Removed:
+                // A removed node is out of its directory's list, so no
+                // listing walks to it; the value exists to keep the switch
+                // total.
+                return prot::io::DirentType::Unknown;
         }
         return prot::io::DirentType::Unknown;
     }
@@ -268,8 +273,9 @@ auto Server::find(ConnectionId const id) const -> Connection const * {
 }
 
 auto Server::value_of(NodeId const node) const -> u64 {
-    // Only a connection to a Handler node's object asks, and a node is never
-    // removed or changed, so the value is there.
+    // Only a connection to a Handler node's object asks, and remove_service
+    // takes services alone -- a handler node is never removed or changed, so
+    // the value is there.
     return *m_tree->handler(node);
 }
 
@@ -1093,7 +1099,13 @@ auto Server::dispatch(ConnectionId const id, wire::Message const message, ReplyB
     auto const handled = connection->m_role != Connection::Role::Node;
     auto is_directory = connection->m_role == Connection::Role::HandledDirectory;
     if (!handled) {
-        is_directory = *m_tree->kind(connection->m_node) == NodeKind::Directory;
+        auto const kind = m_tree->kind(connection->m_node);
+        // A removed node (or any id that stopped naming a node of this
+        // tree): the connection has nothing left to serve.
+        if (kind.is_none()) {
+            return drop(id);
+        }
+        is_directory = *kind == NodeKind::Directory;
     }
 
     if (is_directory) {
