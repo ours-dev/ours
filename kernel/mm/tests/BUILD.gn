@@ -72,7 +72,7 @@ executable("alloc-request-smoke") {
   include_dirs = [ "//kernel/include" ]
 
   # NUMA on, for this test only. MAX_NODES is 1 in the default build, and the
-  # AllocFlags::HomeIfAllowed narrowing this test exists to pin is a no-op with
+  # AllocFlags::ThisNode narrowing this test exists to pin is a no-op with
   # one
   # node:
   # the caller's mask, the home node and the result are all {0}. The function's

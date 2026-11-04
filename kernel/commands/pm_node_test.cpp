@@ -21,7 +21,7 @@
 ///     exactly once, never the node itself, nearest first.
 ///   - ZoneSelector, which every allocation now walks: its three filters
 ///     (holes in the by-type array, the request's node mask, the request's
-///     zone-type range in both directions) and AllocFlags::HomeIfAllowed, which is served
+///     zone-type range in both directions) and AllocFlags::ThisNode, which is served
 ///     by resolve_request() narrowing the mask rather than by switching lists.
 ///     These cases were written against ZoneIterator and AllocationContext,
 ///     which were on no allocation path and are gone; they test the real one
@@ -355,26 +355,25 @@ namespace {
         verdict(tally, lower_ok && above == list->fallback().size() - dma_count,
                 "ZoneSelector's lower bound keeps a caller off the zones below it");
 
-        // AllocFlags::HomeIfAllowed, through the path that serves it: resolve_request()
+        // AllocFlags::ThisNode, through the path that serves it: resolve_request()
         // narrows the request's node mask, so the selector over the whole
         // fallback order yields this node's zones and no others. The walk this
         // replaced switched between two candidate lists instead, which is a
         // second mechanism for the same intent.
-        auto const home_if_allowed =
-            request_for(node, mm::ALLOC_KERNEL | mm::AllocFlags::HomeIfAllowed);
-        mm::ZoneSelector const local_walk{list->fallback(), home_if_allowed};
-        auto home_if_allowed_ok = true;
+        auto const this_node = request_for(node, mm::ALLOC_KERNEL | mm::AllocFlags::ThisNode);
+        mm::ZoneSelector const local_walk{list->fallback(), this_node};
+        auto this_node_ok = true;
         usize local_selected = 0;
         for (auto &zone: local_walk) {
             if (zone.which_node() != node.nid()) {
-                home_if_allowed_ok = false;
+                this_node_ok = false;
             }
             local_selected += 1;
         }
-        log::info("pmnode.test:   HomeIfAllowed selected {} of {} zone(s) in the fallback order",
+        log::info("pmnode.test:   ThisNode selected {} of {} zone(s) in the fallback order",
                   local_selected, list->fallback().size());
-        verdict(tally, home_if_allowed_ok && local_selected == local_count,
-                "AllocFlags::HomeIfAllowed narrows the request's node mask, and the selector "
+        verdict(tally, this_node_ok && local_selected == local_count,
+                "AllocFlags::ThisNode narrows the request's node mask, and the selector "
                 "honours it");
     }
 
@@ -455,9 +454,13 @@ namespace {
                 "static allocation needs no node instance");
         release(implicit);
 
-        auto explicit_home = PmNode::alloc_frames(nid, alloc_flags | mm::AllocFlags::HomeIfAllowed);
+        auto local = PmNode::alloc_frames(alloc_flags | mm::AllocFlags::ThisNode);
+        verdict(tally, local && *local, "ThisNode also accepts the implicit home");
+        release(local);
+
+        auto explicit_home = PmNode::alloc_frames(nid, alloc_flags | mm::AllocFlags::ThisNode);
         verdict(tally, explicit_home && *explicit_home && (*explicit_home)->nid() == nid,
-                "static allocation honors an explicit home and HomeIfAllowed");
+                "static allocation honors an explicit home and ThisNode");
         release(explicit_home);
 
         auto empty = PmNode::alloc_frames(nid, alloc_flags, 0, NodeMask{});
@@ -473,6 +476,12 @@ namespace {
         auto remote_nodes = PmNode::node_memory_mask();
         remote_nodes.set(nid, false);
         if (remote_nodes.any()) {
+            auto pinned =
+                PmNode::alloc_frames(nid, alloc_flags | mm::AllocFlags::ThisNode, 0, remote_nodes);
+            verdict(tally, !pinned && pinned.unwrap_err() == Status::OutOfMem,
+                    "ThisNode fails when the allowed mask excludes the requested node");
+            release(pinned);
+
             auto remote = PmNode::alloc_frames(nid, alloc_flags, 0, remote_nodes);
             verdict(tally, remote && *remote && remote_nodes.test((*remote)->nid()),
                     "static allocation reaches another node permitted by the mask");
@@ -551,7 +560,7 @@ namespace {
     }
 
     auto check_exhausted_node(Tally &tally, NodeId const nid) -> void {
-        auto const flags = mm::ALLOC_KERNEL | mm::AllocFlags::HomeIfAllowed;
+        auto const flags = mm::ALLOC_KERNEL | mm::AllocFlags::ThisNode;
         auto const mask = NodeMask::of(nid);
         auto const reserved = PmNode::alloc_frames(nid, flags, 0, mask);
         if (!reserved) {
@@ -564,6 +573,11 @@ namespace {
             while (auto block = PmNode::alloc_frames(nid, flags, order - 1, mask)) {
                 held.push_back(**block);
             }
+        }
+        auto const pinned = PmNode::alloc_frames(nid, flags);
+        auto const pinned_failed = !pinned && pinned.unwrap_err() == Status::OutOfMem;
+        if (pinned) {
+            PmNode::free_frames(*pinned, 0);
         }
         auto const fallback = PmNode::alloc_frames(nid, mm::ALLOC_KERNEL);
         auto const fell_back = fallback && (*fallback)->nid() != nid;
@@ -599,6 +613,7 @@ namespace {
         }
         PmNode::free_frames(&held);
 
+        verdict(tally, pinned_failed, "ThisNode fails after exhausting the requested node");
         verdict(tally, drained && fell_back,
                 "allocation falls back after exhausting the requested node");
         verdict(tally, rejected && restored_last, "a partial bulk allocation returns its page");
@@ -675,9 +690,9 @@ namespace {
         check(mm::get_frames_n<u8>(alloc_flags, 3), MAX_NODES,
               "get_frames_n() returns a usable zeroed block of at least three pages");
         auto const nid = mm::current_node();
-        check(mm::get_frames_n<u8>(nid, alloc_flags | mm::AllocFlags::HomeIfAllowed, 3,
-                                   NodeMask::of(nid)),
-              nid, "node-specific get_frames_n() honors the node and rounds the count");
+        check(
+            mm::get_frames_n<u8>(nid, alloc_flags | mm::AllocFlags::ThisNode, 3, NodeMask::of(nid)),
+            nid, "node-specific get_frames_n() honors the node and rounds the count");
     }
 
     auto check_disabled_allocation(Tally &tally) -> void {

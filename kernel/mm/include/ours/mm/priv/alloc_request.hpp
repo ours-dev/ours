@@ -100,9 +100,8 @@ class AllocRequest final {
     /// Never empty for a request that can succeed: an unset NodeMask answers
     /// false for every node, so the zone walk would reject everything.
     ///
-    /// `AllocFlags::HomeIfAllowed` restricts the walk to the home node if the
-    /// caller's mask includes it. This also applies to an online node with
-    /// no memory. A mask that excludes the home node keeps its original nodes.
+    /// `AllocFlags::ThisNode` intersects the caller's mask with the home node.
+    /// A mask that excludes the home node leaves no eligible zones.
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto allowed_nodes() const -> NodeMask const & {
@@ -216,12 +215,8 @@ FORCE_INLINE
 inline auto resolve_request(AllocFlags const alloc_flags, usize const order,
                             NodeMask const &fallback, Origin const origin) -> AllocRequest {
     auto allowed = fallback;
-    if (!!(alloc_flags & AllocFlags::HomeIfAllowed)) {
-        auto local = fallback;
-        local &= NodeMask::of(origin.node);
-        if (local.any()) {
-            allowed = local;
-        }
+    if (!!(alloc_flags & AllocFlags::ThisNode)) {
+        allowed &= NodeMask::of(origin.node);
     }
 
     return AllocRequest{

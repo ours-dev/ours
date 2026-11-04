@@ -199,7 +199,9 @@ interface selects a home node and walks permitted fallback zones. Retain the
 implicit-local and explicit-home calling forms and existing restrictions.
 This supersedes the separate FrameAllocator class in the earlier proposal.
 
-`AllocFlags::HomeIfAllowed` restricts the walk to the home node when the
-allowed mask includes it. If the mask excludes that node, the resolver uses
-the supplied mask. Linux's `__GFP_THISNODE` instead requires allocation from
-the requested node without fallback.
+`AllocFlags::ThisNode` follows Linux's `__GFP_THISNODE` placement contract.
+A request may use only its explicit home node or, for implicit allocation,
+the current CPU's node. The resolver intersects the caller's allowed mask with
+that node, so an excluded or exhausted home yields allocation failure. The
+implicit path skips thread placement policy. References include Linux
+`gfp_zonelist()`, `prepare_alloc_pages()` and `alloc_frozen_pages_noprof()`.

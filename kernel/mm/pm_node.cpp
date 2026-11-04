@@ -27,6 +27,9 @@ namespace {
 
     auto apply_thread_policy(AllocFlags &alloc_flags) -> Status {
         if constexpr (MEMORY_ALLOCATION_POLICY) {
+            if (!!(alloc_flags & AllocFlags::ThisNode)) {
+                return Status::Ok;
+            }
             using Kind = AllocPolicy::Kind;
 
             // The thread's resource lock covers reading the policy and nothing
@@ -147,7 +150,7 @@ PmNode::PmNode(NodeId nid)
     , m_page_queues() {}
 
 auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
-    // The fallback order, not this node's zones by type: AllocFlags::HomeIfAllowed is
+    // The fallback order, not this node's zones by type: AllocFlags::ThisNode is
     // honoured by the request's node mask, which resolve_request() has already
     // narrowed, so the candidate list is the same either way and the filter
     // does the restricting. The walk that was deleted with ZoneIterator chose
