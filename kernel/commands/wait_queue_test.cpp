@@ -24,7 +24,7 @@
 // A console command rather than a unit test for the reason mutex.stress
 // gives: a wait queue's slow path is the scheduler.
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -126,7 +126,7 @@ namespace {
     }
 
     auto check_suspend_of_parked_waiter(Tally &tally) -> void {
-        auto *const c = new (mm::GAF_KERNEL) SuspendCase{};
+        auto *const c = new (mm::ALLOC_KERNEL) SuspendCase{};
         if (c == nullptr) {
             verdict(tally, false, "allocate the suspend case");
             return;

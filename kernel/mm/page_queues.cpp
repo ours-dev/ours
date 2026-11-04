@@ -1,7 +1,7 @@
 #include <ours/boot/options.hpp>
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_node.hpp>
@@ -157,7 +157,7 @@ auto PageQueues::start_runners(Duration const period) -> Status {
         m_last_age_time = time::SteadyClock::now();
     }
 
-    auto *const runner = new (GAF_KERNEL) LruRunner(this);
+    auto *const runner = new (ALLOC_KERNEL) LruRunner(this);
     if (runner == nullptr) {
         return Status::OutOfMem;
     }

@@ -291,7 +291,7 @@ static auto hpet_init_internal() -> Status {
         return Status::NoResource;
     }
 
-    auto const channels = new (mm::GAF_KERNEL) HpetChannel[num_channels];
+    auto const channels = new (mm::ALLOC_KERNEL) HpetChannel[num_channels];
     if (!channels) {
         return Status::OutOfMem;
     }

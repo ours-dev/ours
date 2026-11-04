@@ -27,7 +27,7 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/irq/registration.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/status.hpp>
 #include <ours/task/irq_rcu.hpp>
 #include <ours/task/sched/common.hpp>
@@ -459,9 +459,9 @@ namespace {
         // A Permanent line: the domain, its registry, its slot and its owner
         // are leaked, one set per run, as the action can never come off.
         auto *const permanent =
-            new (mm::GAF_KERNEL) Hooked(irq::RegistrationOptions::Permanent, &hooked_cancel);
-        auto *const permanent_registry = new (mm::GAF_KERNEL) DomainRegistry();
-        auto *const leaked_slot = new (mm::GAF_KERNEL) DomainEndpoint();
+            new (mm::ALLOC_KERNEL) Hooked(irq::RegistrationOptions::Permanent, &hooked_cancel);
+        auto *const permanent_registry = new (mm::ALLOC_KERNEL) DomainRegistry();
+        auto *const leaked_slot = new (mm::ALLOC_KERNEL) DomainEndpoint();
         if (permanent == nullptr || permanent_registry == nullptr || leaked_slot == nullptr) {
             verdict(tally, false, "allocate the Permanent domain");
             return;
@@ -610,9 +610,9 @@ namespace {
     }
 
     auto check_removing(Tally &tally, CpuNum const reader_cpu, CpuNum const remover_cpu) -> void {
-        auto *const registry = new (mm::GAF_KERNEL) DomainRegistry();
-        auto *const slot = new (mm::GAF_KERNEL) DomainEndpoint();
-        auto *const spare = new (mm::GAF_KERNEL) DomainEndpoint();
+        auto *const registry = new (mm::ALLOC_KERNEL) DomainRegistry();
+        auto *const slot = new (mm::ALLOC_KERNEL) DomainEndpoint();
+        auto *const spare = new (mm::ALLOC_KERNEL) DomainEndpoint();
         if (registry == nullptr || slot == nullptr || spare == nullptr ||
             registry->register_domain(DomainId{1}, span(TWO), CHIP, *slot) != Status::Ok) {
             verdict(tally, false, "make the domain being removed");
@@ -690,7 +690,7 @@ namespace {
     }
 
     auto check_two_writers(Tally &tally, CpuNum const first_cpu, CpuNum const second_cpu) -> void {
-        auto *const registry = new (mm::GAF_KERNEL) DomainRegistry();
+        auto *const registry = new (mm::ALLOC_KERNEL) DomainRegistry();
         if (registry == nullptr) {
             verdict(tally, false, "make the registry of the two writers");
             return;
@@ -799,7 +799,7 @@ namespace {
     }
 
     auto check_stress(Tally &tally, CpuMask const &reader_cpus) -> void {
-        STRESS = new (mm::GAF_KERNEL) Stress();
+        STRESS = new (mm::ALLOC_KERNEL) Stress();
         if (STRESS == nullptr) {
             verdict(tally, false, "allocate the stress case");
             return;

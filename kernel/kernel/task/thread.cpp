@@ -185,7 +185,7 @@ auto Thread::spawn(char const *name, StartRoutine entry, void *arg,
     }
 
     // spawn_etc placement-news into this, so take raw storage.
-    auto self = ThreadCache::allocate(mm::GAF_KERNEL);
+    auto self = ThreadCache::allocate(mm::ALLOC_KERNEL);
     if (!self) {
         return 0;
     }

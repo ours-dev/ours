@@ -22,7 +22,7 @@
 // gives. It is named *.test so that scripts/kshell_run.py waits for its
 // verdict line, as for timershare.test.
 #include <ours/cpu.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/tick_broadcast.hpp>
@@ -212,7 +212,7 @@ namespace {
         }
         log::info("tickbcast.test:   serving from {} through a group", find.best->name());
 
-        auto *const members = new (mm::GAF_KERNEL) std::array<Member, 2>{};
+        auto *const members = new (mm::ALLOC_KERNEL) std::array<Member, 2>{};
         if (members == nullptr) {
             log::error("tickbcast.test: FAILED -- out of memory");
             return 1;

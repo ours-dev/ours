@@ -39,10 +39,10 @@ auto VmaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle
         return Status::InvArgs;
     }
 
-    // GAF_USER, not GAF_KERNEL: a dispatcher's lifetime is driven by how many
+    // ALLOC_USER, not ALLOC_KERNEL: a dispatcher's lifetime is driven by how many
     // handles userspace holds, so its memory is charged to the same pool as
     // everything else userspace can cause the kernel to allocate.
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(ustl::move(vma)));
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_USER) Self(ustl::move(vma)));
     if (!self) {
         return Status::OutOfMem;
     }

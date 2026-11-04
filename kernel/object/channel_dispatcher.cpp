@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/channel_dispatcher.hpp>
 
 #include <gktl/counter.hpp>
@@ -26,15 +26,15 @@ ChannelDispatcher::~ChannelDispatcher() {
 
 auto ChannelDispatcher::create(KernelHandle<Self> *const handle0, KernelHandle<Self> *const handle1,
                                Rights *const rights) -> Status {
-    auto holder = ustl::Arc<PeerHolder>::adopt(new (mm::GAF_KERNEL) PeerHolder());
+    auto holder = ustl::Arc<PeerHolder>::adopt(new (mm::ALLOC_KERNEL) PeerHolder());
     if (!holder) {
         return Status::NoMemory;
     }
-    auto end0 = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(holder));
+    auto end0 = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL) Self(holder));
     if (!end0) {
         return Status::NoMemory;
     }
-    auto end1 = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(holder));
+    auto end1 = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL) Self(holder));
     if (!end1) {
         return Status::NoMemory;
     }

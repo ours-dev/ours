@@ -114,7 +114,7 @@ namespace {
             return 1;
         }
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &vmo) ==
+        if (mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &vmo) ==
             Status::Ok) {
             check_placement(tally, *aspace, vmo);
         } else {

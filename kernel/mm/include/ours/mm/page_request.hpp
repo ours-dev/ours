@@ -3,7 +3,7 @@
 #ifndef OURS_MM_PAGE_REQUEST_HPP
 #define OURS_MM_PAGE_REQUEST_HPP 1
 
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
@@ -241,7 +241,7 @@ inline auto PageProvider::is_queued(PageRequest const &request) -> bool {
 
 /// A wait for a blank frame, raised when the PMM would not hand one to a VMO
 /// while free memory is short (try_alloc_frames() answered ShouldWait for an
-/// allocation with Gaf::CanWait).
+/// allocation with AllocFlags::CanWait).
 ///
 /// Unlike a PageRequest it asks no one for content: any frame will do, so
 /// it has no offset, no source and no provider, and two of them never merge.
@@ -265,8 +265,8 @@ class AnonymousPageRequest {
     auto operator=(Self const &) -> Self & = delete;
 
     /// Raises the request: the next wait() waits for a frame allocated with
-    /// |gaf|, the flags of the allocation that was turned away.
-    auto make_active(Gaf gaf) -> void;
+    /// |alloc_flags|, the flags of the allocation that was turned away.
+    auto make_active(AllocFlags alloc_flags) -> void;
 
     [[nodiscard]]
     auto is_active() const -> bool {
@@ -296,7 +296,7 @@ class AnonymousPageRequest {
 
   private:
     bool m_active = false;
-    Gaf m_gaf = Gaf{};
+    AllocFlags m_alloc_flags = AllocFlags{};
     PmFrame *m_frame = nullptr;
 };
 

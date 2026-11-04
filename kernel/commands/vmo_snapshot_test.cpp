@@ -39,7 +39,7 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/physmap.hpp>
@@ -194,7 +194,7 @@ namespace {
     }
 
     auto make(Node &out, usize const pages) -> bool {
-        return VmCowPages::create(mm::GAF_USER, pages * PAGE_SIZE, &out) == Status::Ok;
+        return VmCowPages::create(mm::ALLOC_USER, pages * PAGE_SIZE, &out) == Status::Ok;
     }
 
     TA_NO_THREAD_SAFETY_ANALYSIS
@@ -282,12 +282,12 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> vmo;
         ustl::Arc<mm::VmObjectPaged> ro_vmo;
         ustl::Arc<mm::VmObjectPaged> lazy_vmo;
-        auto const made =
-            mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, COMMITTED, &vmo) == Status::Ok &&
-            mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, COMMITTED, &ro_vmo) ==
-                Status::Ok &&
-            mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags::Lazy, &lazy_vmo) ==
-                Status::Ok;
+        auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE, COMMITTED,
+                                                    &vmo) == Status::Ok &&
+                          mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE, COMMITTED,
+                                                    &ro_vmo) == Status::Ok &&
+                          mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE,
+                                                    mm::VmoFlags::Lazy, &lazy_vmo) == Status::Ok;
         verdict(tally, made, "three VMOs for the remove-write checks are made");
         if (!made) {
             return;
@@ -367,7 +367,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> shared_vmo;
         constexpr auto FULL_AT = LAZY_AT + 8 * PAGE_SIZE;
         constexpr auto WIN_AT = FULL_AT + 8 * PAGE_SIZE;
-        auto const shared_made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, COMMITTED,
+        auto const shared_made = mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE, COMMITTED,
                                                            &shared_vmo) == Status::Ok;
         verdict(tally, shared_made, "an object to map twice is made");
         if (shared_made) {
@@ -437,7 +437,7 @@ namespace {
 
         ustl::Arc<mm::VmObjectPaged> vmo;
         auto const made =
-            mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, COMMITTED, &vmo) == Status::Ok;
+            mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE, COMMITTED, &vmo) == Status::Ok;
         verdict(tally, made, "an object for the protect checks is made");
         if (made) {
             static constexpr u8 PATTERN[4] = {0xde, 0xad, 0xbe, 0xef};
@@ -498,7 +498,7 @@ namespace {
         constexpr auto CODE_AT = AT + 8 * PAGE_SIZE;
         auto const rx = mm::MmuFlags::Readable | mm::MmuFlags::Executable | mm::MmuFlags::User;
         auto const code_made =
-            mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, COMMITTED, &code) == Status::Ok;
+            mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, COMMITTED, &code) == Status::Ok;
         if (code_made) {
             auto code_mapped = root->map_with_vmo(CODE_AT, PAGE_SIZE, 0, rx, PERMS, code,
                                                   mm::VmMapOption::Populate, "code");
@@ -574,7 +574,7 @@ namespace {
         auto const rx = mm::MmuFlags::Readable | mm::MmuFlags::Executable | mm::MmuFlags::User;
         ustl::Arc<mm::VmObjectPaged> code;
         auto const made =
-            mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, COMMITTED, &code) == Status::Ok;
+            mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, COMMITTED, &code) == Status::Ok;
         auto mapped =
             aspace->root_vma()->map_with_vmo(CODE_AT, PAGE_SIZE, 0, rx, mm::VmaFlags::PermMask,
                                              code, mm::VmMapOption::Populate, "widen check");
@@ -659,7 +659,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> whole;
         ustl::Arc<mm::VmObjectPaged> slice;
         ustl::Arc<mm::VmObjectPaged> gone;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, COMMITTED,
+        auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE, COMMITTED,
                                                     &whole) == Status::Ok &&
                           whole->create_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok &&
                           whole->create_slice(0, PAGE_SIZE, &gone) == Status::Ok;
@@ -764,7 +764,7 @@ namespace {
 
         ustl::Arc<mm::VmObjectPaged> vmo;
         auto const made =
-            mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, COMMITTED, &vmo) == Status::Ok;
+            mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE, COMMITTED, &vmo) == Status::Ok;
         verdict(tally, made, "an object to clone is made");
         if (made) {
             static constexpr u8 BEFORE[4] = {0x11, 0x22, 0x33, 0x44};
@@ -961,8 +961,8 @@ namespace {
     // refused.
     auto check_create_clone(Tally &tally) -> void {
         ustl::Arc<mm::VmObjectPaged> parent;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
-                                                    &parent) == Status::Ok;
+        auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE,
+                                                    mm::VmoFlags::Lazy, &parent) == Status::Ok;
         verdict(tally, made, "an object to clone is made");
         if (!made) {
             return;
@@ -1022,7 +1022,7 @@ namespace {
                 "refused");
         ustl::Arc<mm::VmObjectPaged> pinned;
         verdict(tally,
-                mm::VmObjectPaged::create(mm::GAF_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
+                mm::VmObjectPaged::create(mm::ALLOC_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
                                           &pinned) == Status::Ok &&
                     pinned->create_clone(0, PAGE_SIZE, &none) == Status::BadState,
                 "an object with pinned pages is refused: BadState");
@@ -1032,7 +1032,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> slice;
         ustl::Arc<mm::VmObjectPaged> of_slice;
         verdict(tally,
-                mm::VmObjectPaged::create(mm::GAF_USER, 4 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                mm::VmObjectPaged::create(mm::ALLOC_USER, 4 * PAGE_SIZE, mm::VmoFlags::Lazy,
                                           &whole) == Status::Ok &&
                     poke(whole, 0, 0x2100'0000) && poke(whole, 1, 0x2200'0000) &&
                     poke(whole, 2, 0x2300'0000) && poke(whole, 3, 0x2400'0000) &&
@@ -1071,8 +1071,8 @@ namespace {
 
         ustl::Arc<mm::VmObjectPaged> parent;
         ustl::Arc<mm::VmObjectPaged> child;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags::Lazy,
-                                                    &parent) == Status::Ok &&
+        auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE,
+                                                    mm::VmoFlags::Lazy, &parent) == Status::Ok &&
                           poke(parent, 0, 0x3100'0000) && poke(parent, 1, 0x3200'0000) &&
                           parent->create_clone(0, 2 * PAGE_SIZE, &child) == Status::Ok;
         verdict(tally, made, "an object with two pages, and a clone of it, are made");
@@ -1140,8 +1140,8 @@ namespace {
 
         ustl::Arc<mm::VmObjectPaged> parent;
         ustl::Arc<mm::VmObjectPaged> child;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
-                                                    &parent) == Status::Ok &&
+        auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE,
+                                                    mm::VmoFlags::Lazy, &parent) == Status::Ok &&
                           poke(parent, 0, 0x5100'0000) && poke(parent, 1, 0x5200'0000) &&
                           parent->create_clone(0, 4 * PAGE_SIZE, &child) == Status::Ok &&
                           poke(child, 1, 0x5a00'0000);
@@ -1207,7 +1207,7 @@ namespace {
 
         // A lazy object with only its page 1 written, populated.
         ustl::Arc<mm::VmObjectPaged> lazy;
-        auto const lazy_made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE,
+        auto const lazy_made = mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE,
                                                          mm::VmoFlags::Lazy, &lazy) == Status::Ok &&
                                poke(lazy, 1, 0x6100'0000);
         auto const populated =
@@ -1225,7 +1225,7 @@ namespace {
         // with Commit.
         ustl::Arc<mm::VmObjectPaged> parent;
         ustl::Arc<mm::VmObjectPaged> child;
-        auto const clone_made = mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, COMMITTED,
+        auto const clone_made = mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE, COMMITTED,
                                                           &parent) == Status::Ok &&
                                 parent->create_clone(0, 2 * PAGE_SIZE, &child) == Status::Ok;
         auto committed = false;
@@ -1292,7 +1292,7 @@ namespace {
         constexpr u64 P = PAGE_SIZE;
         ustl::Arc<mm::VmObjectPaged> origin;
         ustl::Arc<mm::VmObjectPaged> clone;
-        auto made = mm::VmObjectPaged::create(mm::GAF_USER, 4 * P, mm::VmoFlags::Lazy, &origin) ==
+        auto made = mm::VmObjectPaged::create(mm::ALLOC_USER, 4 * P, mm::VmoFlags::Lazy, &origin) ==
                         Status::Ok &&
                     poke(origin, 0, 0x7100'0000) && poke(origin, 1, 0x7200'0000) &&
                     poke(origin, 2, 0x7300'0000);
@@ -1484,9 +1484,9 @@ namespace {
 
         // Heap, not the stack: if a thread never finishes it still points here, and
         // this has to be leaked rather than popped.
-        auto *const run = new (mm::GAF_KERNEL) ShootdownRun{};
+        auto *const run = new (mm::ALLOC_KERNEL) ShootdownRun{};
         auto const made = run != nullptr &&
-                          mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, mm::VmoFlags::Lazy,
+                          mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy,
                                                     &run->object) == Status::Ok &&
                           poke(run->object, 0, 0x6000'0000) &&
                           aspace->root_vma()
@@ -1629,15 +1629,15 @@ namespace {
         }
 
         // Heap, not the stack, for the reason ShootdownRun is.
-        auto *const run = new (mm::GAF_KERNEL) KernelRemapRun{};
+        auto *const run = new (mm::ALLOC_KERNEL) KernelRemapRun{};
         auto root = mm::VmAspace::kernel_aspace()->root_vma();
-        auto const made = run != nullptr &&
-                          mm::VmObjectPaged::create(mm::GAF_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
-                                                    &run->before) == Status::Ok &&
-                          mm::VmObjectPaged::create(mm::GAF_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
-                                                    &run->after) == Status::Ok &&
-                          poke(run->before, 0, OLD_KERNEL_WORD) &&
-                          poke(run->after, 0, NEW_KERNEL_WORD);
+        auto const made =
+            run != nullptr &&
+            mm::VmObjectPaged::create(mm::ALLOC_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
+                                      &run->before) == Status::Ok &&
+            mm::VmObjectPaged::create(mm::ALLOC_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
+                                      &run->after) == Status::Ok &&
+            poke(run->before, 0, OLD_KERNEL_WORD) && poke(run->after, 0, NEW_KERNEL_WORD);
         ustl::Arc<mm::VmMapping> mapping;
         if (made) {
             auto mapped = root->map_with_vmo(

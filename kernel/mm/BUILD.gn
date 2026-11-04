@@ -85,7 +85,7 @@ cpp_interface("headers") {
   public_deps = [
     "//kernel/phys:handoff",
     "//kernel/lib/gktl:headers",
-    # Every mm source that says `new (gaf)` needs <heap/new.hpp>; heap takes
+    # Every mm source that says `new (alloc_flags)` needs <heap/new.hpp>; heap takes
     # only mm's include-path config back, so this stays a DAG.
     "//kernel/lib/heap:headers",
     "//kernel/lib/ktl:headers",

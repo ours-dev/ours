@@ -29,7 +29,7 @@
 // gives: a sleep's slow path is the scheduler.
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
@@ -226,7 +226,7 @@ namespace {
         // the command off it anyway once it starts.
         auto const cpu = static_cast<CpuNum>(num_cpus - 1);
 
-        auto *const c = new (mm::GAF_KERNEL) SleepCase{task::Interruptible::Yes};
+        auto *const c = new (mm::ALLOC_KERNEL) SleepCase{task::Interruptible::Yes};
         if (c == nullptr) {
             verdict(tally, false, "allocate the early-wake case");
             return;
@@ -267,7 +267,7 @@ namespace {
     }
 
     auto check_uninterruptible_sleep(Tally &tally) -> void {
-        auto *const c = new (mm::GAF_KERNEL) SleepCase{task::Interruptible::No};
+        auto *const c = new (mm::ALLOC_KERNEL) SleepCase{task::Interruptible::No};
         if (c == nullptr) {
             verdict(tally, false, "allocate the uninterruptible case");
             return;
@@ -295,7 +295,7 @@ namespace {
     /// A sleeper spawned and never resumed, then suspended or killed (|kill|)
     /// while it is still Initial.
     auto check_signal_before_start(Tally &tally, bool const kill) -> void {
-        auto *const c = new (mm::GAF_KERNEL) SleepCase{task::Interruptible::Yes};
+        auto *const c = new (mm::ALLOC_KERNEL) SleepCase{task::Interruptible::Yes};
         if (c == nullptr) {
             verdict(tally, false, "allocate the never-ran case");
             return;

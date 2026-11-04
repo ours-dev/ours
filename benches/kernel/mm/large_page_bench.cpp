@@ -93,7 +93,7 @@ namespace {
                 return status;
             }
             m_previous = attach(m_aspace.as_ptr_mut());
-            if (auto const status = mm::VmObjectPaged::create(mm::GAF_USER, SIZE, flags, &m_vmo);
+            if (auto const status = mm::VmObjectPaged::create(mm::ALLOC_USER, SIZE, flags, &m_vmo);
                 status != Status::Ok) {
                 return status;
             }

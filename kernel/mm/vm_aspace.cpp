@@ -116,7 +116,7 @@ auto VmAspace::create(VirtAddr base, usize size, Kind kind, Flags flags, char co
     if (size == 0 || base >= VIRT_ADDR_RESERVED_BASE || size > VIRT_ADDR_RESERVED_BASE - base) {
         return Status::InvArgs;
     }
-    auto const aspace = AspaceCache::get(GAF_KERNEL, base, size, kind, flags, name);
+    auto const aspace = AspaceCache::get(ALLOC_KERNEL, base, size, kind, flags, name);
     if (!aspace) {
         return Status::OutOfMem;
     }

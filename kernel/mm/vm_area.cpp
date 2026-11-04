@@ -45,7 +45,7 @@ auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *par
     DEBUG_ASSERT(aspace, "Given a invalid aspace");
     DEBUG_ASSERT(out, "`out` can not be null");
 
-    auto self = VmaCache::get(GAF_KERNEL, base, size, vmaf, parent, aspace, name);
+    auto self = VmaCache::get(ALLOC_KERNEL, base, size, vmaf, parent, aspace, name);
     if (!self) {
         return Status::OutOfMem;
     }
@@ -315,7 +315,7 @@ auto VmArea::map_anon(VirtAddr where, usize size, MmuFlags mmuf, VmMapOption opt
     }
 
     ustl::Arc<VmObjectPaged> vmo;
-    auto status = VmObjectPaged::create(GAF_KERNEL, size, VmoFlags::Pinned, &vmo);
+    auto status = VmObjectPaged::create(ALLOC_KERNEL, size, VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
         return ustl::err(status);
     }
@@ -788,7 +788,7 @@ auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const 
 
     // TODO(SmallHuaZi) Should we provide a specific way to make these kind of zero length VMO.
     ustl::Arc<VmObjectPaged> vmo;
-    auto status = VmObjectPaged::create(GAF_KERNEL, 0, VmoFlags::Pinned, &vmo);
+    auto status = VmObjectPaged::create(ALLOC_KERNEL, 0, VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
         return status;
     }

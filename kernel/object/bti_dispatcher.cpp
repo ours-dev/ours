@@ -2,7 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/assert.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/bti_dispatcher.hpp>
 #include <ours/object/pmt_dispatcher.hpp>
 
@@ -38,7 +38,7 @@ auto BtiDispatcher::create(ustl::Arc<IommuDispatcher> iommu, u64 const bti_id,
         return Status::InvArgs;
     }
 
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(ustl::move(iommu), bti_id));
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL) Self(ustl::move(iommu), bti_id));
     if (!self) {
         return Status::NoMemory;
     }
@@ -143,12 +143,12 @@ auto BtiDispatcher::pin(ustl::Arc<mm::VmObject> vmo, u64 const offset, u64 const
 
     // Both objects before the lock: the lock is held for the check and the
     // publication, and nothing that can fail or wait is allowed inside it.
-    auto *const raw_record = new (mm::GAF_KERNEL) Pin(vmo, offset, size);
+    auto *const raw_record = new (mm::ALLOC_KERNEL) Pin(vmo, offset, size);
     if (raw_record == nullptr) {
         return fail(Status::NoMemory);
     }
     auto record = ustl::Box<Pin>::from_raw(raw_record);
-    auto token = ustl::Arc<PmtDispatcher>::adopt(new (mm::GAF_KERNEL)
+    auto token = ustl::Arc<PmtDispatcher>::adopt(new (mm::ALLOC_KERNEL)
                                                      PmtDispatcher(ustl::Arc<Self>::adopt(this)));
     if (!token) {
         return fail(Status::NoMemory);

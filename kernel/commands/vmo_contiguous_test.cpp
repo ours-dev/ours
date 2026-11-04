@@ -15,7 +15,7 @@
 //   - the pages are one run (lookup_contiguous()), start on the alignment, and
 //     each is on the pinned queue, which the reclaimer never takes from;
 //   - they are zero (a fresh allocation: that the zero survives frames that
-//     held something is the allocator's Gaf::Zero, which this does not retest);
+//     held something is the allocator's AllocFlags::Zero, which this does not retest);
 //   - pin_range() and unpin_range() leave them on the pinned queue, and a BTI
 //     pin with Contiguous is Ok and answers the first page's address;
 //
@@ -27,7 +27,7 @@
 //
 // The name has no underscore for the reason usercopy.test's does not: gktl's
 // command table does not encode '_'.
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
@@ -122,7 +122,7 @@ namespace {
 
     auto make(usize const size, usize const alignment_log2, ustl::Arc<mm::VmObjectPaged> *out)
         -> Status {
-        return mm::VmObjectPaged::create_contiguous(mm::GAF_USER, size, alignment_log2,
+        return mm::VmObjectPaged::create_contiguous(mm::ALLOC_USER, size, alignment_log2,
                                                     mm::VmoFlags::Pinned, out);
     }
 
@@ -186,10 +186,10 @@ namespace {
                     make(P, 64, &none) == Status::InvArgs && make(P, 200, &none) == Status::InvArgs,
                 "an empty size, an alignment below a page and one that is not a shift are InvArgs");
         verdict(tally,
-                mm::VmObjectPaged::create_contiguous(mm::GAF_USER, P, 0, mm::VmoFlags::Lazy,
+                mm::VmObjectPaged::create_contiguous(mm::ALLOC_USER, P, 0, mm::VmoFlags::Lazy,
                                                      &none) == Status::InvArgs &&
                     mm::VmObjectPaged::create_contiguous(
-                        mm::GAF_USER, P, 0, mm::VmoFlags::LargePages, &none) == Status::InvArgs,
+                        mm::ALLOC_USER, P, 0, mm::VmoFlags::LargePages, &none) == Status::InvArgs,
                 "a lazy or a large-page VMO is InvArgs");
         verdict(tally, make(~usize{0}, 0, &none) == Status::OutOfRange && !none,
                 "a size no VMO can be is OutOfRange");

@@ -20,7 +20,7 @@ namespace ustl::collections {
 ///
 /// The allocator contract here is the kernel's, not the standard library's:
 /// `A::allocate(n)` hands back `n` *already value-initialized* elements
-/// (ktl::Allocator does `new (gaf) T[n]()`), and `A::deallocate(p, n)`
+/// (ktl::Allocator does `new (alloc_flags) T[n]()`), and `A::deallocate(p, n)`
 /// destroys them. Vec therefore never placement-news into raw storage the
 /// way StaticVec does -- every slot in the buffer is a live object, and
 /// growing means assigning into slots that already exist. That is why the

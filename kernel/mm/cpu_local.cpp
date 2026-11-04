@@ -41,11 +41,11 @@ namespace {
 
     /// Growth runs under Dyn's spin lock, i.e. with preemption off, so it must
     /// not take a path that can reclaim or wait. Nothing in the allocator waits
-    /// today whichever way it is asked, so leaving Gaf::DirectReclaim out --
-    /// GAF_KERNEL carries it -- is what keeps that true once a reclaimer exists
+    /// today whichever way it is asked, so leaving AllocFlags::CanBlock out --
+    /// ALLOC_KERNEL carries it -- is what keeps that true once a reclaimer exists
     /// and the bit means something again. A refusal here only means the growth
     /// fails, which this caller is written to handle.
-    constexpr auto GAF_GROW = Gaf::Zero;
+    constexpr auto ALLOC_GROW = AllocFlags::Zero;
 
     FORCE_INLINE
     auto initial_area_size() -> usize {
@@ -212,7 +212,7 @@ class CpuLocal::Mapper {
     }
 
     /// Takes another chunk, laid out like the first. Returns its base, or 0.
-    auto alloc_chunk(Gaf gaf) -> VirtAddr;
+    auto alloc_chunk(AllocFlags alloc_flags) -> VirtAddr;
 
     auto can_grow() const -> bool {
         return Layout::Dense == m_layout && m_next_slot < NUM_SLOTS;
@@ -225,7 +225,7 @@ class CpuLocal::Mapper {
   private:
     auto build_map_info() -> void;
 
-    auto build_dense(VirtAddr slot, Gaf gaf) -> Status;
+    auto build_dense(VirtAddr slot, AllocFlags alloc_flags) -> Status;
 
     auto build_scattered() -> Status;
 
@@ -332,7 +332,7 @@ auto CpuLocal::Mapper::build_map_info() -> void {
 /// The packing is what makes the table reproducible; the per-unit node is
 /// what keeps allocation local. Both at once is only possible because the
 /// address and the frames are chosen independently.
-auto CpuLocal::Mapper::build_dense(VirtAddr slot, Gaf gaf) -> Status {
+auto CpuLocal::Mapper::build_dense(VirtAddr slot, AllocFlags alloc_flags) -> Status {
     auto const pages = round_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
 
     for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
@@ -348,7 +348,7 @@ auto CpuLocal::Mapper::build_dense(VirtAddr slot, Gaf gaf) -> Status {
                 std::min(usize(ustl::bit_width(remaining)) - 1, usize(MAX_FRAME_ORDER));
             auto const n = usize{1} << order;
 
-            auto frame = alloc_frames(nid, gaf, order);
+            auto frame = alloc_frames(nid, alloc_flags, order);
             if (!frame) {
                 // Earlier units stay mapped. Nothing here is ever torn down,
                 // and the only caller that can fail is init(), which panics.
@@ -393,7 +393,7 @@ auto CpuLocal::Mapper::build_scattered() -> Status {
         }
 
         // Zeroed, so a unit's dynamic area starts clean.
-        auto frame = alloc_frames(nid, mm::GAF_KERNEL | mm::Gaf::Zero, order);
+        auto frame = alloc_frames(nid, mm::ALLOC_KERNEL | mm::AllocFlags::Zero, order);
         if (!frame) {
             for (auto done = u32(0); done < group; ++done) {
                 free_frames(&m_group_frames[done]);
@@ -436,7 +436,7 @@ auto CpuLocal::Mapper::init() -> Status {
         if (chunk_span() <= usize(ARCH_CPU_LOCAL_CHUNK_SLOT) && Status::Ok == m_aspace.init()) {
             auto const slot = slot_at(m_next_slot);
             // Zeroed, so a unit's dynamic area starts clean.
-            if (Status::Ok == build_dense(slot, mm::GAF_KERNEL | mm::Gaf::Zero)) {
+            if (Status::Ok == build_dense(slot, mm::ALLOC_KERNEL | mm::AllocFlags::Zero)) {
                 ++m_next_slot;
                 m_base = slot;
                 for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
@@ -452,13 +452,13 @@ auto CpuLocal::Mapper::init() -> Status {
     return build_scattered();
 }
 
-auto CpuLocal::Mapper::alloc_chunk(Gaf gaf) -> VirtAddr {
+auto CpuLocal::Mapper::alloc_chunk(AllocFlags alloc_flags) -> VirtAddr {
     if (!can_grow()) {
         return VirtAddr{0};
     }
 
     auto const slot = slot_at(m_next_slot);
-    if (Status::Ok != build_dense(slot, gaf)) {
+    if (Status::Ok != build_dense(slot, alloc_flags)) {
         return VirtAddr{0};
     }
 
@@ -568,12 +568,12 @@ auto CpuLocal::Dyn::grow() -> bool {
         return false;
     }
 
-    auto const base = m_mapper->alloc_chunk(GAF_GROW);
+    auto const base = m_mapper->alloc_chunk(ALLOC_GROW);
     if (base == VirtAddr{}) {
         return false;
     }
 
-    auto frame = alloc_frames(GAF_GROW, usize(0));
+    auto frame = alloc_frames(ALLOC_GROW, usize(0));
     if (!frame) {
         return false;
     }

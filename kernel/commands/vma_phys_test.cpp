@@ -22,7 +22,7 @@
 // a page read through its entry, so that this CPU caches the translation,
 // then written over with another frame, reads the new frame next time.
 #include <ours/arch/aspace_layout.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_area.hpp>
@@ -71,7 +71,7 @@ namespace {
 
     auto check_two_regions(Tally &tally, mm::VmAspace &aspace) -> void {
         PhysAddr phys{};
-        auto *const frames = mm::alloc_frames(mm::GAF_KERNEL, &phys, 1);
+        auto *const frames = mm::alloc_frames(mm::ALLOC_KERNEL, &phys, 1);
         if (!frames) {
             verdict(tally, false, "two contiguous frames are allocated");
             return;
@@ -137,8 +137,8 @@ namespace {
 
         PhysAddr first_pa{};
         PhysAddr second_pa{};
-        auto *const first = mm::alloc_frames(mm::GAF_KERNEL, &first_pa, 0);
-        auto *const second = mm::alloc_frames(mm::GAF_KERNEL, &second_pa, 0);
+        auto *const first = mm::alloc_frames(mm::ALLOC_KERNEL, &first_pa, 0);
+        auto *const second = mm::alloc_frames(mm::ALLOC_KERNEL, &second_pa, 0);
         if (!first || !second) {
             verdict(tally, false, "two frames are allocated for the overwrite");
             if (first) {

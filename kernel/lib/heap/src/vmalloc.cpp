@@ -102,7 +102,7 @@ auto init_vmalloc() -> void {
               VMALLOC_SIZE / PAGE_SIZE);
 }
 
-auto vmalloc(usize const size, Gaf const gaf) -> void * {
+auto vmalloc(usize const size, AllocFlags const alloc_flags) -> void * {
     if (size == 0) {
         return nullptr;
     }
@@ -134,7 +134,8 @@ auto vmalloc(usize const size, Gaf const gaf) -> void * {
     // answers NotFound for anything above the split -- so every page a kernel
     // mapping covers has to be present before the first access.
     ustl::Arc<ours::mm::VmObjectPaged> vmo;
-    auto status = ours::mm::VmObjectPaged::create(gaf, rounded, ours::mm::VmoFlags::Pinned, &vmo);
+    auto status =
+        ours::mm::VmObjectPaged::create(alloc_flags, rounded, ours::mm::VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
         return nullptr;
     }
@@ -236,7 +237,7 @@ auto vmalloc_self_test() -> void {
 
     // A single page, written end to end: a mapping that is short or carries
     // the wrong permissions faults here rather than returning.
-    auto *one = static_cast<u8 *>(vmalloc(PAGE_SIZE, ours::mm::GAF_KERNEL));
+    auto *one = static_cast<u8 *>(vmalloc(PAGE_SIZE, ours::mm::ALLOC_KERNEL));
     check(one != nullptr, "one-page allocation");
     if (one) {
         check(is_vmalloc_addr(one), "the result is inside the window");
@@ -251,7 +252,7 @@ auto vmalloc_self_test() -> void {
     // A size that is neither a page multiple nor a power of two. The round-up
     // is where an off-by-one hides, and get_frames_n() -- the hand-rolled path
     // this replaces -- would have quietly rounded 9 KiB up to 16.
-    auto *odd = static_cast<u8 *>(vmalloc(2 * PAGE_SIZE + 1, ours::mm::GAF_KERNEL));
+    auto *odd = static_cast<u8 *>(vmalloc(2 * PAGE_SIZE + 1, ours::mm::ALLOC_KERNEL));
     check(odd != nullptr, "odd-sized allocation");
     if (odd) {
         odd[0] = 1;
@@ -261,15 +262,15 @@ auto vmalloc_self_test() -> void {
 
     check(!is_vmalloc_addr(&NR_BUSY),
           "a kernel address outside the window is not mistaken for one");
-    check(vmalloc(0, ours::mm::GAF_KERNEL) == nullptr, "a zero-sized request is refused");
-    check(vmalloc(VMALLOC_SIZE + PAGE_SIZE, ours::mm::GAF_KERNEL) == nullptr,
+    check(vmalloc(0, ours::mm::ALLOC_KERNEL) == nullptr, "a zero-sized request is refused");
+    check(vmalloc(VMALLOC_SIZE + PAGE_SIZE, ours::mm::ALLOC_KERNEL) == nullptr,
           "a request larger than the window is refused");
 
     // The routing, end to end: a request past the size-class ladder has to come
     // back with a window address, a small one has to stay in the physmap, and
     // both have to survive the trip home through the same `delete`, which has
     // only the address to go on.
-    auto *big = new (ours::mm::GAF_KERNEL) u8[2 * KMALLOC_MAX_SIZE];
+    auto *big = new (ours::mm::ALLOC_KERNEL) u8[2 * KMALLOC_MAX_SIZE];
     check(big != nullptr, "new above the kmalloc ladder");
     if (big) {
         check(is_vmalloc_addr(big), "a large new is served by vmalloc");
@@ -279,7 +280,7 @@ auto vmalloc_self_test() -> void {
               "a large new is writable end to end");
     }
 
-    auto *small = new (ours::mm::GAF_KERNEL) u8[64];
+    auto *small = new (ours::mm::ALLOC_KERNEL) u8[64];
     check(small != nullptr, "new below the kmalloc ladder");
     check(small == nullptr || !is_vmalloc_addr(small), "a small new is still served by kmalloc");
 
@@ -298,7 +299,7 @@ auto vmalloc_self_test() -> void {
     // gone, but a boot-time self test still has no business exhausting the
     // machine. The request under test here is the one that is refused by
     // inspection.
-    auto *impossible = new (ours::mm::GAF_KERNEL) u8[VMALLOC_SIZE + PAGE_SIZE];
+    auto *impossible = new (ours::mm::ALLOC_KERNEL) u8[VMALLOC_SIZE + PAGE_SIZE];
     check(impossible == nullptr, "an impossible new returns null");
 
     delete[] small;
@@ -322,7 +323,7 @@ auto vmalloc_self_test() -> void {
     // series replaced, the same run reached ~1975 rounds -- about 494 MiB
     // leaked -- and was still going when the boot was cut off. It would not
     // have reported anything useful past that point either: at the time mm
-    // spun for ever on exhaustion for a GAF_KERNEL request rather than
+    // spun for ever on exhaustion for a ALLOC_KERNEL request rather than
     // returning null, so the null branch below was unreachable in exactly the
     // case it was written for, and a leak of this kind hung the machine rather
     // than failing a check. The allocator refuses what it cannot serve now, so
@@ -335,7 +336,7 @@ auto vmalloc_self_test() -> void {
     constexpr auto CHURN_PAGES = usize{64};
     constexpr auto CHURN_ROUNDS = usize{128};
     for (auto round = usize{0}; round < CHURN_ROUNDS; ++round) {
-        auto *block = vmalloc(CHURN_PAGES * PAGE_SIZE, ours::mm::GAF_KERNEL);
+        auto *block = vmalloc(CHURN_PAGES * PAGE_SIZE, ours::mm::ALLOC_KERNEL);
         if (block == nullptr) {
             log::error("vmalloc: FAILED pages are not returned (round {} of {})", round,
                        CHURN_ROUNDS);

@@ -63,8 +63,8 @@ auto VmObjectPaged::change_cow_range_locked(u64 const cow_offset, u64 const len,
     change_range_locked(first - m_cow_offset, last - first, change);
 }
 
-auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjectPaged> *out)
-    -> Status {
+auto VmObjectPaged::create(AllocFlags alloc_flags, usize size, VmoFlags vmof,
+                           ustl::Arc<VmObjectPaged> *out) -> Status {
     // Check vmof
     auto cow_flags = VmCowPages::Flags::None;
     if (!!(vmof & VmoFlags::LargePages)) {
@@ -74,12 +74,12 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
         cow_flags |= VmCowPages::Flags::Pinned;
     }
     ustl::Arc<VmCowPages> cow_pages;
-    auto status = VmCowPages::create(gaf, size, cow_flags, &cow_pages);
+    auto status = VmCowPages::create(alloc_flags, size, cow_flags, &cow_pages);
     if (Status::Ok != status) {
         return status;
     }
 
-    auto vmo = VmoPagedCache::get(GAF_KERNEL, vmof, ustl::move(cow_pages), 0, size);
+    auto vmo = VmoPagedCache::get(ALLOC_KERNEL, vmof, ustl::move(cow_pages), 0, size);
     if (!vmo) {
         return Status::OutOfMem;
     }
@@ -118,9 +118,9 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     return Status::Ok;
 }
 
-auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const gaf, usize const size,
-                                VmoFlags const vmof, ustl::Arc<VmObjectPaged> *const out)
-    -> Status {
+auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, AllocFlags const alloc_flags,
+                                usize const size, VmoFlags const vmof,
+                                ustl::Arc<VmObjectPaged> *const out) -> Status {
     DEBUG_ASSERT(source);
 
     if (!!(vmof & VmoFlags::Pinned) || !ustl::is_aligned(size, PAGE_SIZE)) {
@@ -133,13 +133,13 @@ auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const gaf, usi
     // reference is the one left to close it with. Once they exist they own
     // the source, and close it when they die.
     ustl::Arc<VmCowPages> cow_pages;
-    if (auto const status = VmCowPages::with_source(source, gaf, size, &cow_pages);
+    if (auto const status = VmCowPages::with_source(source, alloc_flags, size, &cow_pages);
         Status::Ok != status) {
         source->close();
         return status;
     }
 
-    auto *const vmo = VmoPagedCache::get(GAF_KERNEL, vmof, ustl::move(cow_pages), 0, size);
+    auto *const vmo = VmoPagedCache::get(ALLOC_KERNEL, vmof, ustl::move(cow_pages), 0, size);
     if (!vmo) {
         return Status::OutOfMem;
     }
@@ -148,13 +148,14 @@ auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const gaf, usi
     return Status::Ok;
 }
 
-auto VmObjectPaged::create_contiguous(Gaf const gaf, usize const size, usize alignment_log2,
-                                      Flags const vmof, ustl::Arc<VmObjectPaged> *const out)
-    -> Status {
+auto VmObjectPaged::create_contiguous(AllocFlags const alloc_flags, usize const size,
+                                      usize alignment_log2, Flags const vmof,
+                                      ustl::Arc<VmObjectPaged> *const out) -> Status {
     // A block is taken in one go, with no lock held across a wait to give it up
     // for: CanWait is for callers that sleep until a frame is free, and this
     // one answers NoMemory instead.
-    DEBUG_ASSERT(!(gaf & Gaf::CanWait), "create_contiguous() does not wait for memory");
+    DEBUG_ASSERT(!(alloc_flags & AllocFlags::CanWait),
+                 "create_contiguous() does not wait for memory");
     if (size == 0 || !!(vmof & (VmoFlags::Lazy | VmoFlags::LargePages))) {
         return Status::InvArgs;
     }
@@ -183,14 +184,15 @@ auto VmObjectPaged::create_contiguous(Gaf const gaf, usize const size, usize ali
     }
 
     ustl::Arc<VmCowPages> cow_pages;
-    if (auto const status = VmCowPages::create(gaf, rounded, VmCowPages::Flags::Pinned, &cow_pages);
+    if (auto const status =
+            VmCowPages::create(alloc_flags, rounded, VmCowPages::Flags::Pinned, &cow_pages);
         Status::Ok != status) {
         return status;
     }
 
     // Zero, as every page a program can reach is: a device's buffer is not the
     // place for what the last owner of the frames left in them.
-    auto *const block = alloc_frames(gaf | Gaf::Zero, order);
+    auto *const block = alloc_frames(alloc_flags | AllocFlags::Zero, order);
     if (block == nullptr) {
         return Status::NoMemory;
     }
@@ -229,8 +231,8 @@ auto VmObjectPaged::create_contiguous(Gaf const gaf, usize const size, usize ali
 
     // Constructed after the lock is released: the constructor takes the same
     // mutex to attach, and it is not recursive.
-    auto *const vmo =
-        VmoPagedCache::get(GAF_KERNEL, vmof | VmoFlags::Pinned, ustl::move(cow_pages), 0, rounded);
+    auto *const vmo = VmoPagedCache::get(ALLOC_KERNEL, vmof | VmoFlags::Pinned,
+                                         ustl::move(cow_pages), 0, rounded);
     if (!vmo) {
         return Status::OutOfMem;
     }
@@ -238,14 +240,16 @@ auto VmObjectPaged::create_contiguous(Gaf const gaf, usize const size, usize ali
     return Status::Ok;
 }
 
-auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, usize const size,
-                                            ustl::Arc<VmObjectPaged> *const out) -> Status {
+auto VmObjectPaged::create_from_wired_pages(AllocFlags const alloc_flags, PhysAddr const base,
+                                            usize const size, ustl::Arc<VmObjectPaged> *const out)
+    -> Status {
     if (size == 0 || !ustl::is_aligned(base, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
     }
 
     ustl::Arc<VmCowPages> cow_pages;
-    if (auto const status = VmCowPages::create(gaf, size, &cow_pages); Status::Ok != status) {
+    if (auto const status = VmCowPages::create(alloc_flags, size, &cow_pages);
+        Status::Ok != status) {
         return status;
     }
 
@@ -269,7 +273,7 @@ auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, 
 
     // Constructed after the lock is released: the constructor takes the same
     // mutex to attach, and it is not recursive.
-    auto *const vmo = VmoPagedCache::get(GAF_KERNEL, VmoFlags{}, ustl::move(cow_pages), 0, size);
+    auto *const vmo = VmoPagedCache::get(ALLOC_KERNEL, VmoFlags{}, ustl::move(cow_pages), 0, size);
     if (!vmo) {
         return Status::OutOfMem;
     }
@@ -298,7 +302,7 @@ auto VmObjectPaged::create_slice(u64 const offset, u64 const size,
     }
 
     auto child =
-        VmoPagedCache::get(GAF_KERNEL, m_flags, m_cow_pages, m_cow_offset + offset, usize(size));
+        VmoPagedCache::get(ALLOC_KERNEL, m_flags, m_cow_pages, m_cow_offset + offset, usize(size));
     if (!child) {
         return Status::OutOfMem;
     }
@@ -338,7 +342,7 @@ auto VmObjectPaged::create_clone(u64 const offset, u64 const size,
     // pages, under that lock. If it cannot be made the clone goes with |pages|,
     // and this object's pages stay as the clone left them, which is consistent:
     // the hidden node is merged away when the clone that hung under it is gone.
-    auto child = VmoPagedCache::get(GAF_KERNEL, m_flags, ustl::move(pages), u64{0}, usize(size));
+    auto child = VmoPagedCache::get(ALLOC_KERNEL, m_flags, ustl::move(pages), u64{0}, usize(size));
     if (!child) {
         return Status::OutOfMem;
     }

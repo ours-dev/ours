@@ -21,7 +21,7 @@
 ///     exactly once, never the node itself, nearest first.
 ///   - ZoneSelector, which every allocation now walks: its three filters
 ///     (holes in the by-type array, the request's node mask, the request's
-///     zone-type range in both directions) and Gaf::ThisNode, which is served
+///     zone-type range in both directions) and AllocFlags::ThisNode, which is served
 ///     by resolve_request() narrowing the mask rather than by switching lists.
 ///     These cases were written against ZoneIterator and AllocationContext,
 ///     which were on no allocation path and are gone; they test the real one
@@ -36,8 +36,8 @@
 /// is one: PmNode is built on EarlyMem and the buddy, which exist only in a
 /// booted kernel.
 #include <ours/cpu.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <ours/mm/gaf.hpp>
 #include <ours/mm/node_placement.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -276,8 +276,8 @@ namespace {
     }
 
     /// A request over every online node, which each case then narrows.
-    auto request_for(PmNode &node, mm::Gaf const gaf) -> mm::AllocRequest {
-        return mm::resolve_request(gaf, 0, PmNode::node_online_mask(),
+    auto request_for(PmNode &node, mm::AllocFlags const alloc_flags) -> mm::AllocRequest {
+        return mm::resolve_request(alloc_flags, 0, PmNode::node_online_mask(),
                                    mm::Origin{.node = node.nid(), .cpu = Cpu::id()});
     }
 
@@ -296,7 +296,7 @@ namespace {
 
         // Holes: the by-type array has a null for each missing type, and the
         // selector must step over them rather than stop or dereference one.
-        auto const all = request_for(node, mm::GAF_KERNEL);
+        auto const all = request_for(node, mm::ALLOC_KERNEL);
         mm::ZoneSelector const holes{list->local_zones(), all};
         verdict(tally, count_selected(holes) == local_count,
                 "ZoneSelector steps over the holes in the by-type array");
@@ -347,12 +347,12 @@ namespace {
         verdict(tally, lower_ok && above == list->fallback().size() - dma_count,
                 "ZoneSelector's lower bound keeps a caller off the zones below it");
 
-        // Gaf::ThisNode, through the path that serves it: resolve_request()
+        // AllocFlags::ThisNode, through the path that serves it: resolve_request()
         // narrows the request's node mask, so the selector over the whole
         // fallback order yields this node's zones and no others. The walk this
         // replaced switched between two candidate lists instead, which is a
         // second mechanism for the same intent.
-        auto const this_node = request_for(node, mm::GAF_KERNEL | mm::Gaf::ThisNode);
+        auto const this_node = request_for(node, mm::ALLOC_KERNEL | mm::AllocFlags::ThisNode);
         mm::ZoneSelector const local_walk{list->fallback(), this_node};
         auto this_node_ok = true;
         usize local_selected = 0;
@@ -364,8 +364,9 @@ namespace {
         }
         log::info("pmnode.test:   ThisNode selected {} of {} zone(s) in the fallback order",
                   local_selected, list->fallback().size());
-        verdict(tally, this_node_ok && local_selected == local_count,
-                "Gaf::ThisNode narrows the request's node mask, and the selector honours it");
+        verdict(
+            tally, this_node_ok && local_selected == local_count,
+            "AllocFlags::ThisNode narrows the request's node mask, and the selector honours it");
     }
 
     auto check_contains(Tally &tally, PmNode &node) -> void {
@@ -394,7 +395,7 @@ namespace {
         // Even counts first: they are the ones that used to hang.
         auto fragment_ok = true;
         for (usize const n: {usize(2), usize(6), usize(8), usize(5), usize(1)}) {
-            auto result = mm::alloc_frames_fragment(mm::GAF_KERNEL, n);
+            auto result = mm::alloc_frames_fragment(mm::ALLOC_KERNEL, n);
             if (!result) {
                 fragment_ok = false;
                 continue;
@@ -416,7 +417,8 @@ namespace {
                 "alloc_frames_fragment() returns one block per set bit, n pages in all");
 
         PmFrame::List list;
-        auto bulk_ok = Status::Ok == mm::alloc_frames(NodeId(MAX_NODES), mm::GAF_KERNEL, &list, 4);
+        auto bulk_ok =
+            Status::Ok == mm::alloc_frames(NodeId(MAX_NODES), mm::ALLOC_KERNEL, &list, 4);
         usize frames = 0;
         PmFrame const *previous = nullptr;
         for (auto &frame: list) {
@@ -434,11 +436,11 @@ namespace {
         auto &state = task::Thread::Current::memory_allocation_state();
 
         state.disable();
-        auto *const nodeless = mm::alloc_frames(mm::GAF_KERNEL, usize(0));
-        auto *const by_node = mm::alloc_frames(mm::current_node(), mm::GAF_KERNEL, usize(0));
+        auto *const nodeless = mm::alloc_frames(mm::ALLOC_KERNEL, usize(0));
+        auto *const by_node = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, usize(0));
         state.enable();
 
-        auto *const after = mm::alloc_frames(mm::current_node(), mm::GAF_KERNEL, usize(0));
+        auto *const after = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, usize(0));
         verdict(tally, !nodeless && !by_node,
                 "a thread that disabled allocation is refused with or without a node");
         verdict(tally, after != nullptr, "enabling it again lets the allocation through");

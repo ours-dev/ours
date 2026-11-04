@@ -1,6 +1,6 @@
 #include <ours/lockdep.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <ours/mm/gaf.hpp>
 #include <ours/status.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/cpu_stopper.hpp>
@@ -61,7 +61,7 @@ auto CpuStopper::stop_cpu_nowait(CpuNum cpu, Fn fn, Work *work) -> bool {
         // Intentionally not tracked for release: the work is intrusive-listed
         // until its worker runs it, and a nowait caller has no handle to free
         // it through.
-        work = new (mm::GAF_KERNEL) Work();
+        work = new (mm::ALLOC_KERNEL) Work();
     }
     // Filled in whether or not the caller supplied |work|. It used to be
     // filled only when allocated here, so a caller's own buffer was queued

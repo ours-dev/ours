@@ -136,7 +136,7 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
     }
 
     auto mapping =
-        VmMappingCache::get(GAF_KERNEL, parent, base, size, vmaf, ustl::move(vmo), vmo_off, name);
+        VmMappingCache::get(ALLOC_KERNEL, parent, base, size, vmaf, ustl::move(vmo), vmo_off, name);
     if (!mapping) {
         return Status::OutOfMem;
     }

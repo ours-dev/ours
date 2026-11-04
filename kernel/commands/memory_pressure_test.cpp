@@ -30,7 +30,7 @@
 // Why a console command: the gate counts the real zones' free frames, and a
 // waiter is a real thread asleep on the real event.
 #include <ours/arch/aspace_layout.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/memory_watchdog.hpp>
 #include <ours/mm/pmm.hpp>
@@ -53,7 +53,7 @@ namespace ours {
 namespace {
     using task::Thread;
 
-    constexpr auto WAITABLE = mm::GAF_USER_VMO;
+    constexpr auto WAITABLE = mm::ALLOC_USER_VMO;
     constexpr auto NO_BOUND = ~usize{0};
 
     /// How long a waiter is given to fall asleep, and an event to be
@@ -171,7 +171,7 @@ namespace {
         }
 
         auto const shut = shut_gate();
-        auto plain = mm::try_alloc_frames(mm::GAF_USER, 0);
+        auto plain = mm::try_alloc_frames(mm::ALLOC_USER, 0);
         verdict(tally, shut && !!plain,
                 "below the delay level a CanWait allocation answers ShouldWait, and one without "
                 "CanWait is served");
@@ -237,7 +237,7 @@ namespace {
                                                           mm::DelayedAllocations::Wait);
         usize taken = 0;
         for (auto &frame: frames) {
-            auto result = mm::try_alloc_frames(mm::GAF_USER, 0);
+            auto result = mm::try_alloc_frames(mm::ALLOC_USER, 0);
             if (!result) {
                 break;
             }
@@ -435,7 +435,7 @@ namespace {
         std::array<mm::PmFrame *, 2 * K> frames{};
         usize taken = 0;
         for (auto &frame: frames) {
-            auto result = mm::try_alloc_frames(mm::GAF_USER, 0);
+            auto result = mm::try_alloc_frames(mm::ALLOC_USER, 0);
             if (!result) {
                 break;
             }
@@ -456,7 +456,7 @@ namespace {
         auto const declared = oom_levels && watchdog.set_levels(*oom_levels) == Status::Ok &&
                               settles_at(MemoryPressure::OutOfMemory);
         auto refused = mm::try_alloc_frames(WAITABLE, 0);
-        auto served = mm::try_alloc_frames(mm::GAF_USER, 0);
+        auto served = mm::try_alloc_frames(mm::ALLOC_USER, 0);
         verdict(tally, declared && !refused && refused.unwrap_err() == Status::OutOfMem && !!served,
                 "at OutOfMemory an allocation that could wait is refused, and one that could not "
                 "is served");

@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/exception_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
@@ -13,7 +13,7 @@
 namespace ours::object {
 auto ExceptionDispatcher::create(ustl::Arc<ThreadDispatcher> thread, ExceptionType const type)
     -> ustl::Arc<Self> {
-    return ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(ustl::move(thread), type));
+    return ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL) Self(ustl::move(thread), type));
 }
 
 ExceptionDispatcher::ExceptionDispatcher(ustl::Arc<ThreadDispatcher> thread,

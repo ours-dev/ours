@@ -69,7 +69,7 @@
 #include <ours/irq/controller.hpp>
 #include <ours/irq/registration.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
 #include <ours/object/observer.hpp>
@@ -199,7 +199,7 @@ namespace {
     template <typename Prepare>
     auto park_waiter(Tally &tally, CpuNum const cpu, Waiter **const out, Prepare const &prepare)
         -> Thread * {
-        auto *const waiter = new (mm::GAF_KERNEL) Waiter{};
+        auto *const waiter = new (mm::ALLOC_KERNEL) Waiter{};
         if (waiter == nullptr || !make_interrupt(&waiter->interrupt)) {
             verdict(tally, false, "make a virtual interrupt");
             delete waiter;
@@ -356,7 +356,7 @@ namespace {
             verdict(tally, false, "make a port to bind to");
             return;
         }
-        auto *const waiter = new (mm::GAF_KERNEL) HeldWaiter{};
+        auto *const waiter = new (mm::ALLOC_KERNEL) HeldWaiter{};
         if (waiter == nullptr || !make_interrupt(&waiter->interrupt)) {
             verdict(tally, false, "make a virtual interrupt");
             delete waiter;
@@ -449,7 +449,7 @@ namespace {
     /// a thread.
     auto check_packet_wakes_port_waiter(Tally &tally, CpuNum const cpu) -> void {
         KernelHandle<InterruptDispatcher> interrupt;
-        auto *const waiter = new (mm::GAF_KERNEL) PortWaiter{};
+        auto *const waiter = new (mm::ALLOC_KERNEL) PortWaiter{};
         auto rights = Rights::None;
         if (waiter == nullptr || !make_interrupt(&interrupt) ||
             PortDispatcher::create(PortCreateOptions::BindToInterrupt, &waiter->port, &rights) !=
@@ -796,7 +796,7 @@ namespace {
     /// for ever.
     auto check_idle_follows_the_state(Tally &tally, usize const rounds, CpuNum const taker_cpu)
         -> void {
-        auto *const taker = new (mm::GAF_KERNEL) Taker{};
+        auto *const taker = new (mm::ALLOC_KERNEL) Taker{};
         if (taker == nullptr || !make_interrupt(&taker->interrupt)) {
             verdict(tally, false, "make a virtual interrupt");
             delete taker;
@@ -845,7 +845,7 @@ namespace {
 
     auto check_turns(Tally &tally, usize const rounds, CpuNum const pinger_cpu,
                      CpuNum const ponger_cpu) -> void {
-        auto *const turns = new (mm::GAF_KERNEL) Turns{};
+        auto *const turns = new (mm::ALLOC_KERNEL) Turns{};
         if (turns == nullptr || !make_interrupt(&turns->ping) || !make_interrupt(&turns->pong)) {
             verdict(tally, false, "make two virtual interrupts");
             delete turns;
@@ -977,9 +977,9 @@ namespace {
     /// detach (unregister_interrupt_handler()), which this counts.
     auto check_destroy_waits_for_the_line(Tally &tally) -> void {
         auto revoked =
-            ustl::Arc<RecordingInterrupt>::adopt(new (mm::GAF_KERNEL) RecordingInterrupt());
+            ustl::Arc<RecordingInterrupt>::adopt(new (mm::ALLOC_KERNEL) RecordingInterrupt());
         auto plain =
-            ustl::Arc<RecordingInterrupt>::adopt(new (mm::GAF_KERNEL) RecordingInterrupt());
+            ustl::Arc<RecordingInterrupt>::adopt(new (mm::ALLOC_KERNEL) RecordingInterrupt());
         if (!revoked || !plain) {
             verdict(tally, false, "allocate the objects");
             return;
@@ -1060,8 +1060,8 @@ namespace {
         self->set_cpu_affinity_hard(CpuMask::of(cpus[0]));
         auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
 
-        auto *const table = new (mm::GAF_KERNEL) irq::Domain();
-        auto *const object = new (mm::GAF_KERNEL) RecordingInterrupt();
+        auto *const table = new (mm::ALLOC_KERNEL) irq::Domain();
+        auto *const object = new (mm::ALLOC_KERNEL) RecordingInterrupt();
         std::array<HIrqNum, 1> const numbers{HIrqNum{9}};
         constexpr irq::ControllerOps NO_OP_CHIP = {
             .protocol = irq::DispatchProtocol::Eoi,

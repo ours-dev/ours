@@ -25,7 +25,7 @@
 /// The counts are read under the zone lock, but not all at once: another CPU
 /// allocating from or freeing into the zone between the two readings would
 /// move them. Run it from an idle shell.
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -127,7 +127,7 @@ namespace {
         PmFrame *later = nullptr;
         PmFrame::List spare;
         for (usize taken = 0; taken <= BLOCKS_PER_SECTION && !later; ++taken) {
-            auto const taken_block = zone.alloc_frame(mm::GAF_KERNEL, MAX_FRAME_ORDER);
+            auto const taken_block = zone.alloc_frame(mm::ALLOC_KERNEL, MAX_FRAME_ORDER);
             if (!taken_block) {
                 break;
             }

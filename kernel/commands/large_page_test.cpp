@@ -165,7 +165,7 @@ namespace {
 
         // Two blocks and three pages past them.
         Node node;
-        if (mm::VmCowPages::create(mm::GAF_USER, 2 * LARGE + 3 * PAGE_SIZE,
+        if (mm::VmCowPages::create(mm::ALLOC_USER, 2 * LARGE + 3 * PAGE_SIZE,
                                    mm::VmCowPages::Flags::LargeBlocks, &node) != Status::Ok) {
             verdict(tally, false, "a node that takes blocks is made");
             return;
@@ -185,7 +185,7 @@ namespace {
 
         Node marked;
         verdict(tally,
-                mm::VmCowPages::create(mm::GAF_USER, LARGE, mm::VmCowPages::Flags::LargeBlocks,
+                mm::VmCowPages::create(mm::ALLOC_USER, LARGE, mm::VmCowPages::Flags::LargeBlocks,
                                        &marked) == Status::Ok &&
                     add_marker(marked, 10) == Status::Ok && touch(marked, 3, true) != nullptr &&
                     nr_pages(marked) == 1,
@@ -193,7 +193,7 @@ namespace {
 
         Node plain;
         verdict(tally,
-                mm::VmCowPages::create(mm::GAF_USER, LARGE, &plain) == Status::Ok &&
+                mm::VmCowPages::create(mm::ALLOC_USER, LARGE, &plain) == Status::Ok &&
                     touch(plain, 3, true) != nullptr && nr_pages(plain) == 1,
                 "a node that does not take blocks gets one page");
     }
@@ -213,7 +213,7 @@ namespace {
     }
 
     auto make_large(usize const size, ustl::Arc<mm::VmObjectPaged> *const out) -> bool {
-        return mm::VmObjectPaged::create(mm::GAF_USER, size,
+        return mm::VmObjectPaged::create(mm::ALLOC_USER, size,
                                          mm::VmoFlags::LargePages | mm::VmoFlags::Lazy,
                                          out) == Status::Ok;
     }
@@ -325,7 +325,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> populated;
         auto const c = at(384);
         auto const populate =
-            mm::VmObjectPaged::create(mm::GAF_USER, 2 * LARGE, mm::VmoFlags::LargePages,
+            mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * LARGE, mm::VmoFlags::LargePages,
                                       &populated) == Status::Ok &&
             root.map_with_vmo(c, 2 * LARGE, 0, rw, mm::VmaFlags::PermMask, populated,
                               mm::VmMapOption::Populate, "largepage.test populate")
@@ -454,7 +454,7 @@ namespace {
         // because it was placed there, not by luck.
         ustl::Arc<mm::VmObjectPaged> spacer_vmo;
         auto const spacer =
-            mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &spacer_vmo) ==
+            mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &spacer_vmo) ==
                 Status::Ok &&
             root.map_with_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, rw, mm::VmaFlags::PermMask,
                               spacer_vmo, mm::VmMapOption::None, "largepage.test spacer")
@@ -494,7 +494,7 @@ namespace {
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
 
-        auto *const block = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero, ORDER);
+        auto *const block = mm::alloc_frames(mm::ALLOC_KERNEL | mm::AllocFlags::Zero, ORDER);
         if (block == nullptr) {
             log::error("largepage.test: no 2 MiB block to map");
             return 1;

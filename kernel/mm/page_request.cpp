@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/lockdep.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cfg.hpp>
-#include <ours/mm/gaf.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/time/clock.hpp>
@@ -65,11 +65,12 @@ AnonymousPageRequest::~AnonymousPageRequest() {
     }
 }
 
-auto AnonymousPageRequest::make_active(Gaf const gaf) -> void {
+auto AnonymousPageRequest::make_active(AllocFlags const alloc_flags) -> void {
     DEBUG_ASSERT(!m_frame, "raised while it still holds the frame of the last wait");
-    DEBUG_ASSERT(!!(gaf & Gaf::CanWait), "raised for an allocation that cannot wait");
+    DEBUG_ASSERT(!!(alloc_flags & AllocFlags::CanWait),
+                 "raised for an allocation that cannot wait");
     m_active = true;
-    m_gaf = gaf;
+    m_alloc_flags = alloc_flags;
 }
 
 auto AnonymousPageRequest::allocate(bool const interruptible) -> Status {
@@ -84,7 +85,7 @@ auto AnonymousPageRequest::allocate(bool const interruptible) -> Status {
     while (true) {
         auto const deadline =
             time::Deadline::at(time::SteadyClock::now() + Seconds(REPORT_EVERY_SECONDS));
-        auto result = wait_for_frame_allocation(m_gaf, deadline, interruptible);
+        auto result = wait_for_frame_allocation(m_alloc_flags, deadline, interruptible);
         if (result) {
             m_frame = *result;
             return Status::Ok;
@@ -116,7 +117,7 @@ auto MultiPageRequest::wait(bool const suspendable) -> Status {
 auto PageSource::create(ustl::Arc<PageProvider> provider, ustl::Arc<PageSource> *const out)
     -> Status {
     DEBUG_ASSERT(provider);
-    auto *const source = new (GAF_KERNEL) PageSource(ustl::move(provider));
+    auto *const source = new (ALLOC_KERNEL) PageSource(ustl::move(provider));
     if (!source) {
         return Status::OutOfMem;
     }

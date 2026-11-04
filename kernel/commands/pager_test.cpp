@@ -29,7 +29,7 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_area.hpp>
@@ -115,7 +115,7 @@ namespace {
             return status;
         }
         for (u64 at = offset; at < offset + len; at += P) {
-            auto *const frame = mm::alloc_frames(mm::GAF_KERNEL);
+            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL);
             if (!frame) {
                 return Status::OutOfMem;
             }
@@ -210,7 +210,7 @@ namespace {
         }
         out->proxy = proxy.downgrade();
         out->source = source.downgrade();
-        return mm::VmObjectPaged::with_source(source, mm::GAF_USER, pages * P, mm::VmoFlags::Lazy,
+        return mm::VmObjectPaged::with_source(source, mm::ALLOC_USER, pages * P, mm::VmoFlags::Lazy,
                                               &out->vmo) == Status::Ok;
     }
 

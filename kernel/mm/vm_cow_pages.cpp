@@ -175,13 +175,13 @@ auto VmCowPages::free_page(VmPage *const page) -> void {
     free_frames(page, 0);
 }
 
-VmCowPages::VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
+VmCowPages::VmCowPages(AllocFlags alloc_flags, usize size, ustl::Arc<HierarchyState> hierarchy,
                        ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit,
                        Flags flags)
     // Initializer order follows the member declaration order in the header:
     // the reference to the mutex can only be taken from a hierarchy that is
     // already held.
-    : m_gaf(gaf)
+    : m_alloc_flags(alloc_flags)
     , m_size(size)
     , m_parent(ustl::move(parent))
     , m_parent_offset(parent_offset)
@@ -406,11 +406,11 @@ auto VmCowPages::merge_into_only_child_locked() -> void {
     m_parent_limit = 0;
 }
 
-auto VmCowPages::make_node(Gaf const gaf, usize const size, ustl::Arc<HierarchyState> hierarchy,
-                           ustl::Arc<VmCowPages> parent, u64 const parent_offset,
-                           u64 const parent_limit, Flags const flags,
+auto VmCowPages::make_node(AllocFlags const alloc_flags, usize const size,
+                           ustl::Arc<HierarchyState> hierarchy, ustl::Arc<VmCowPages> parent,
+                           u64 const parent_offset, u64 const parent_limit, Flags const flags,
                            ustl::Arc<VmCowPages> *const out) -> Status {
-    auto cow_pages = VmCowPagesCache::get(GAF_KERNEL, gaf, size, ustl::move(hierarchy),
+    auto cow_pages = VmCowPagesCache::get(ALLOC_KERNEL, alloc_flags, size, ustl::move(hierarchy),
                                           ustl::move(parent), parent_offset, parent_limit, flags);
     if (!cow_pages) {
         return Status::OutOfMem;
@@ -420,29 +420,30 @@ auto VmCowPages::make_node(Gaf const gaf, usize const size, ustl::Arc<HierarchyS
     return Status::Ok;
 }
 
-auto VmCowPages::create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status {
-    return create(gaf, size, Flags::None, out);
+auto VmCowPages::create(AllocFlags alloc_flags, usize size, ustl::Arc<VmCowPages> *out) -> Status {
+    return create(alloc_flags, size, Flags::None, out);
 }
 
-auto VmCowPages::create(Gaf const gaf, usize const size, Flags const flags,
+auto VmCowPages::create(AllocFlags const alloc_flags, usize const size, Flags const flags,
                         ustl::Arc<VmCowPages> *const out) -> Status {
     DEBUG_ASSERT(!(flags & Flags::Hidden), "a node with no relatives is never hidden");
 
     // A tree of one: this node is its own root, so it starts its own lock.
-    auto hierarchy = ustl::Arc<HierarchyState>::adopt(new (GAF_KERNEL) HierarchyState());
+    auto hierarchy = ustl::Arc<HierarchyState>::adopt(new (ALLOC_KERNEL) HierarchyState());
     if (!hierarchy) {
         return Status::OutOfMem;
     }
 
-    return make_node(gaf, size, ustl::move(hierarchy), ustl::Arc<VmCowPages>{}, 0, 0, flags, out);
+    return make_node(alloc_flags, size, ustl::move(hierarchy), ustl::Arc<VmCowPages>{}, 0, 0, flags,
+                     out);
 }
 
-auto VmCowPages::with_source(ustl::Arc<PageSource> src, Gaf const gaf, usize const size,
-                             ustl::Arc<VmCowPages> *const out) -> Status {
+auto VmCowPages::with_source(ustl::Arc<PageSource> src, AllocFlags const alloc_flags,
+                             usize const size, ustl::Arc<VmCowPages> *const out) -> Status {
     DEBUG_ASSERT(src);
 
     ustl::Arc<VmCowPages> node;
-    if (auto const status = create(gaf, size, &node); Status::Ok != status) {
+    if (auto const status = create(alloc_flags, size, &node); Status::Ok != status) {
         return status;
     }
     // Before anyone else can see the node, so no lock: nothing can look a page
@@ -485,14 +486,14 @@ auto VmCowPages::create_child(ustl::Arc<VmCowPages> parent, u64 const parent_off
     // Copied out before |parent| is handed on: the node that takes it does not
     // exist yet, and what it borrows -- the flags and the lock -- is the
     // parent's.
-    auto const gaf = parent->m_gaf;
+    auto const alloc_flags = parent->m_alloc_flags;
     auto hierarchy = parent->m_hierarchy;
 
     // Held before it is linked, so that whatever happens between the two steps
     // the node has an owner, and the destructor that would take it off the list
     // is the one that runs.
     ustl::Arc<VmCowPages> node;
-    if (auto const status = make_node(gaf, size, ustl::move(hierarchy), ustl::move(parent),
+    if (auto const status = make_node(alloc_flags, size, ustl::move(hierarchy), ustl::move(parent),
                                       parent_offset, limit, flags, &node);
         Status::Ok != status) {
         return status;
@@ -581,8 +582,8 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
         // Hangs under a hidden node that is already there. The window is
         // translated into that node's coordinates by the walk above.
         if (auto const status =
-                make_node(m_gaf, size, m_hierarchy, ustl::Arc<VmCowPages>::adopt(chosen), at,
-                          visible, Flags::None, &clone);
+                make_node(m_alloc_flags, size, m_hierarchy, ustl::Arc<VmCowPages>::adopt(chosen),
+                          at, visible, Flags::None, &clone);
             Status::Ok != status) {
             return status;
         }
@@ -600,13 +601,14 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
         // node that already had a parent would take the lock a second time on
         // the same thread and never return.
         ustl::Arc<VmCowPages> hidden_node;
-        if (auto const status = make_node(m_gaf, m_size, m_hierarchy, ustl::Arc<VmCowPages>{}, 0, 0,
-                                          Flags::Hidden, &hidden_node);
+        if (auto const status =
+                make_node(m_alloc_flags, m_size, m_hierarchy, ustl::Arc<VmCowPages>{}, 0, 0,
+                          Flags::Hidden, &hidden_node);
             Status::Ok != status) {
             return status;
         }
-        if (auto const status =
-                make_node(m_gaf, size, m_hierarchy, hidden_node, at, visible, Flags::None, &clone);
+        if (auto const status = make_node(m_alloc_flags, size, m_hierarchy, hidden_node, at,
+                                          visible, Flags::None, &clone);
             Status::Ok != status) {
             // |hidden_node| goes with this return: never linked, and with no
             // parent, so its destructor takes no lock.
@@ -696,16 +698,16 @@ auto VmCowPages::find_block_locked(u64 const offset) -> ustl::Option<FoundBlock>
 }
 
 auto VmCowPages::alloc_pages(usize order, VmPage **page, AnonymousPageRequest *request) -> Status {
-    // Gaf::Zero unconditionally, on top of whatever the object was created
+    // AllocFlags::Zero unconditionally, on top of whatever the object was created
     // with. Every byte of a VMO that nobody has supplied reads as zero by
     // definition, and the buddy allocator hands back whatever the previous
     // owner left in the frame -- so without this the first read of a
     // freshly-faulted page returns another owner's data. None of the VMOs
-    // built today ask for Gaf::Zero themselves (they all pass GAF_KERNEL,
+    // built today ask for AllocFlags::Zero themselves (they all pass ALLOC_KERNEL,
     // which does not imply it), so the guarantee has to live here rather than
     // rest on callers remembering. A page source, once one exists, overwrites
     // the whole page anyway and should be allowed to skip the fill.
-    auto const gaf = m_gaf | Gaf::Zero;
+    auto const alloc_flags = m_alloc_flags | AllocFlags::Zero;
 
     // The frame a wait got, allocated with these same flags, so zeroed too.
     PmFrame *frame = nullptr;
@@ -713,7 +715,7 @@ auto VmCowPages::alloc_pages(usize order, VmPage **page, AnonymousPageRequest *r
         DEBUG_ASSERT(order == 0, "a wait gets one frame, and a block never waits");
         frame = request->take_frame();
     } else {
-        auto result = try_alloc_frames(gaf, order);
+        auto result = try_alloc_frames(alloc_flags, order);
         if (!result) {
             auto const status = result.unwrap_err();
             if (Status::ShouldWait != status) {
@@ -723,7 +725,7 @@ auto VmCowPages::alloc_pages(usize order, VmPage **page, AnonymousPageRequest *r
             if (!request) {
                 return Status::OutOfMem;
             }
-            request->make_active(gaf);
+            request->make_active(alloc_flags);
             return Status::ShouldWait;
         }
         frame = *result;
@@ -755,7 +757,7 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
 
     // Through the gate like any page of this node, but never waiting for it:
     // turned away, the hole gets one page instead, and that page waits.
-    auto allocated = try_alloc_frames(m_gaf | Gaf::Zero, ORDER);
+    auto allocated = try_alloc_frames(m_alloc_flags | AllocFlags::Zero, ORDER);
     if (!allocated) {
         return nullptr;
     }

@@ -7,7 +7,7 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/priv/alloc_request.hpp>
@@ -246,7 +246,7 @@ class PmNode {
     static auto setup_watermarks() -> void;
 
     [[nodiscard]]
-    auto alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
+    auto alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &fallback)
         -> ustl::Result<PmFrame *, Status>;
 
     /// Allocates exactly |n| pages as a list of blocks, one per set bit of |n|:
@@ -259,7 +259,7 @@ class PmNode {
     /// taken is freed and the error returned.
     ///
     /// Parameters:
-    ///   - |gaf|: Allocation flags specifying memory type, constraints, etc.
+    ///   - |alloc_flags|: Allocation flags specifying memory type, constraints, etc.
     ///   - |n|: The exact number of pages to allocate, decomposed into binary components
     ///   - |fallback|: Fallback options if allocation fails in preferred regions
     ///
@@ -269,14 +269,14 @@ class PmNode {
     ///                 representation of |n|, with sizes corresponding to 2^bit_position.
     ///   - On failure: An error Status indicating the reason for allocation failure.
     [[nodiscard]]
-    auto alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
+    auto alloc_frames_fragment(AllocFlags alloc_flags, usize n, NodeMask const &fallback)
         -> ustl::Result<PmFrame::List, Status>;
 
     /// Allocate a number of order-0 pages to a frame list.
     ///
     /// Return the frame list.
     [[nodiscard]]
-    auto alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallback)
+    auto alloc_frames_bulk(AllocFlags alloc_flags, usize n, NodeMask const &fallback)
         -> ustl::Result<PmFrame::List, Status>;
 
     /// Free a frame.

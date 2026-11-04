@@ -48,7 +48,7 @@
 // gives: the race is between CPUs.
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/channel_dispatcher.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
@@ -158,7 +158,7 @@ namespace {
         auto &port = *round.port.dispatcher().as_ptr_mut();
         auto &object = end.dispatcher();
         for (usize key = 0; key < count; ++key) {
-            auto *const observer = new (mm::GAF_KERNEL)
+            auto *const observer = new (mm::ALLOC_KERNEL)
                 PortObserver(round.port.dispatcher(), object.as_ptr_mut(), key, Signals::Readable);
             if (observer == nullptr) {
                 return false;
@@ -174,7 +174,7 @@ namespace {
 
     /// One round; answers whether every check held.
     auto run_round(usize const index, CpuNum const closer_cpu, CpuNum const ender_cpu) -> bool {
-        auto *const round = new (mm::GAF_KERNEL) Round{};
+        auto *const round = new (mm::ALLOC_KERNEL) Round{};
         if (round == nullptr) {
             return false;
         }
@@ -247,7 +247,7 @@ namespace {
     /// HandleTable::attach_port_observer() at the limit: the observer it made
     /// for a refused wait must be freed, or it would hold the port for ever.
     auto check_refusal() -> bool {
-        auto table = ustl::Arc<HandleTable>::adopt(new (mm::GAF_KERNEL) HandleTable());
+        auto table = ustl::Arc<HandleTable>::adopt(new (mm::ALLOC_KERNEL) HandleTable());
         if (!table) {
             return false;
         }

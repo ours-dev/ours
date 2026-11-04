@@ -36,8 +36,8 @@
 // The name has no underscore for the reason usercopy.test's does not: gktl's
 // command table does not encode '_'.
 #include <ours/arch/aspace_layout.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cfg.hpp>
-#include <ours/mm/gaf.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
@@ -66,7 +66,8 @@ namespace {
 
     auto make_vmo(usize const size) -> ustl::Arc<mm::VmObject> {
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (mm::VmObjectPaged::create(mm::GAF_USER, size, mm::VmoFlags::Lazy, &vmo) != Status::Ok) {
+        if (mm::VmObjectPaged::create(mm::ALLOC_USER, size, mm::VmoFlags::Lazy, &vmo) !=
+            Status::Ok) {
             return {};
         }
         return vmo;

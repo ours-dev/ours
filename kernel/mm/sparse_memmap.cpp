@@ -17,23 +17,24 @@ class SparseMemMap::Impl {
   public:
     template <typename T, typename... Args>
     FORCE_INLINE
-    constexpr static auto allocate(usize n, usize a, Gaf gaf, NodeId nid, Args &&...args) -> T *;
+    constexpr static auto allocate(usize n, usize a, AllocFlags alloc_flags, NodeId nid,
+                                   Args &&...args) -> T *;
 
     template <typename T>
     FORCE_INLINE
-    constexpr static auto dump(usize n, usize a, Gaf gaf, NodeId nid) -> T *;
+    constexpr static auto dump(usize n, usize a, AllocFlags alloc_flags, NodeId nid) -> T *;
 };
 
 template <typename T, typename... Args>
 FORCE_INLINE
-constexpr auto SparseMemMap::Impl::allocate(usize n, usize a, Gaf gaf, NodeId nid, Args &&...args)
-    -> T * {
+constexpr auto SparseMemMap::Impl::allocate(usize n, usize a, AllocFlags alloc_flags, NodeId nid,
+                                            Args &&...args) -> T * {
     T *object;
     // heap_enabled(), not pmm_enabled(): the branch below is `new`, so what it
     // needs is kmalloc, not the page allocator. These were one stage until the
     // buddy's arrival was given a stage of its own.
     if (heap_enabled()) {
-        object = new (gaf, nid) T[n](ustl::forward<Args>(args)...);
+        object = new (alloc_flags, nid) T[n](ustl::forward<Args>(args)...);
     } else {
         object = EarlyMem::allocate<T>(n, a, nid, bootmem::MemoryType::KernelData);
         if (!object) {
@@ -41,12 +42,12 @@ constexpr auto SparseMemMap::Impl::allocate(usize n, usize a, Gaf gaf, NodeId ni
                   ustl::traits::IsSameV<T, PmFrame> ? "frame" : "section");
         }
 
-        // The boot allocator has no notion of Gaf and hands back whatever was
-        // last in that memory, so Gaf::Zero has to be honoured here or a caller
+        // The boot allocator has no notion of AllocFlags and hands back whatever was
+        // last in that memory, so AllocFlags::Zero has to be honoured here or a caller
         // that asks for it silently gets garbage on this path and clean memory
         // on the other -- a difference that only shows up as a wild pointer far
         // from the allocation.
-        if (!!(gaf & Gaf::Zero)) {
+        if (!!(alloc_flags & AllocFlags::Zero)) {
             std::fill_n(reinterpret_cast<u8 *>(object), n * sizeof(T), u8(0));
         }
     }
@@ -84,10 +85,10 @@ auto SparseMemMap::init() -> Status {
     // all-zero entry -- init_index() decides whether to descend or to build a new
     // level purely from is_state_present() -- so uninitialised memory reads as a
     // random mixture of present entries pointing at whatever the previous owner
-    // left behind. GAF_KERNEL is DirectReclaim alone and does *not* imply
-    // Gaf::Zero, so it has to be asked for.
-    auto root_section =
-        Impl::allocate<MemSection>(ENTRIES_PER_SECTION, PAGE_SIZE, GAF_KERNEL | Gaf::Zero, 0);
+    // left behind. ALLOC_KERNEL is CanBlock alone and does *not* imply
+    // AllocFlags::Zero, so it has to be asked for.
+    auto root_section = Impl::allocate<MemSection>(ENTRIES_PER_SECTION, PAGE_SIZE,
+                                                   ALLOC_KERNEL | AllocFlags::Zero, 0);
     if (!root_section) {
         panic("Failed to allocate memory for root section");
     }
@@ -116,8 +117,8 @@ auto SparseMemMap::init_index(usize level, SecNum secnum, NodeId nid)
             // No sub section map, need we to create a new.
             auto submap =
                 // Zeroed for the same reason as the root table; see init().
-                Impl::allocate<MemSection>(ENTRIES_PER_SECTION, PAGE_SIZE, GAF_KERNEL | Gaf::Zero,
-                                           nid);
+                Impl::allocate<MemSection>(ENTRIES_PER_SECTION, PAGE_SIZE,
+                                           ALLOC_KERNEL | AllocFlags::Zero, nid);
             if (!submap) {
                 return ustl::err(Status::OutOfMem);
             }
@@ -169,7 +170,8 @@ auto SparseMemMap::activate_section(MemSection *section, NodeId nid)
     // initialisation opened by zeroing it, which pays the same cost, one
     // descriptor at a time.
     auto const nr_frames = FRAMES_PER_LEVEL[section->level()];
-    auto memmap = Impl::allocate<PmFrame>(nr_frames, PAGE_SIZE, GAF_KERNEL | Gaf::Zero, nid);
+    auto memmap =
+        Impl::allocate<PmFrame>(nr_frames, PAGE_SIZE, ALLOC_KERNEL | AllocFlags::Zero, nid);
     if (!memmap) {
         return ustl::err(Status::OutOfMem);
     }

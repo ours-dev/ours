@@ -33,7 +33,7 @@ namespace {
     /// half-built system could reach it.
     INIT_CODE
     auto init_root_job() -> void {
-        ROOT_JOB = ustl::Arc<JobDispatcher>::adopt(new (mm::GAF_KERNEL) JobDispatcher());
+        ROOT_JOB = ustl::Arc<JobDispatcher>::adopt(new (mm::ALLOC_KERNEL) JobDispatcher());
         if (!ROOT_JOB) {
             panic("Failed to create the root job");
         }
@@ -116,7 +116,7 @@ auto JobDispatcher::bind_debugger(KernelHandle<ChannelDispatcher> channel,
     -> Status {
     m_canary.verify<Self>();
 
-    auto debugger = ustl::Arc<DebugExceptionate>::adopt(new (mm::GAF_KERNEL) DebugExceptionate());
+    auto debugger = ustl::Arc<DebugExceptionate>::adopt(new (mm::ALLOC_KERNEL) DebugExceptionate());
     if (!debugger) {
         return Status::NoMemory;
     }

@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/pager_dispatcher.hpp>
 #include <ours/object/pager_proxy.hpp>
 #include <ours/time/timer.hpp>
@@ -34,7 +34,7 @@ auto PagerProxy::create(ustl::Arc<PortDispatcher> port, u64 const key, u64 const
                         Overtime const overtime, PagerDispatcher *const pager,
                         ustl::Arc<PagerProxy> *const proxy_out,
                         ustl::Arc<mm::PageSource> *const source_out) -> Status {
-    auto proxy = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL)
+    auto proxy = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL)
                                             Self(ustl::move(port), key, owner_id, overtime, pager));
     if (!proxy) {
         return Status::NoMemory;

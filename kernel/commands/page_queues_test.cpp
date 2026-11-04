@@ -29,7 +29,7 @@
 // VMO paths.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/boot/options.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/physmap.hpp>
@@ -123,7 +123,7 @@ namespace {
 
     auto check_anonymous(Tally &tally) -> void {
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (mm::VmObjectPaged::create(mm::GAF_USER_VMO, 4 * P, mm::VmoFlags::Lazy, &vmo) !=
+        if (mm::VmObjectPaged::create(mm::ALLOC_USER_VMO, 4 * P, mm::VmoFlags::Lazy, &vmo) !=
             Status::Ok) {
             verdict(tally, false, "an anonymous VMO is made");
             return;
@@ -162,7 +162,7 @@ namespace {
 
     auto check_pinned(Tally &tally) -> void {
         ustl::Arc<mm::VmObjectPaged> vmo;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_KERNEL, 2 * P, mm::VmoFlags::Pinned,
+        auto const made = mm::VmObjectPaged::create(mm::ALLOC_KERNEL, 2 * P, mm::VmoFlags::Pinned,
                                                     &vmo) == Status::Ok;
         auto page = Filed{};
         if (made) {
@@ -189,7 +189,7 @@ namespace {
     /// A VMO of two pages whose content comes from a page source nobody asks,
     /// both supplied; empty if any of that failed.
     auto supplied_vmo() -> ustl::Arc<mm::VmObjectPaged> {
-        auto *const provider = new (mm::GAF_KERNEL) SilentProvider();
+        auto *const provider = new (mm::ALLOC_KERNEL) SilentProvider();
         if (!provider) {
             return {};
         }
@@ -197,15 +197,15 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> vmo;
         if (mm::PageSource::create(ustl::Arc<mm::PageProvider>::adopt(provider), &source) !=
                 Status::Ok ||
-            mm::VmObjectPaged::with_source(source, mm::GAF_USER, 2 * P, mm::VmoFlags::Lazy, &vmo) !=
-                Status::Ok) {
+            mm::VmObjectPaged::with_source(source, mm::ALLOC_USER, 2 * P, mm::VmoFlags::Lazy,
+                                           &vmo) != Status::Ok) {
             return {};
         }
 
         mm::VmPageSpliceList pages(2);
         auto supplied = pages.reserve(2) == Status::Ok;
         for (usize i = 0; supplied && i < 2; ++i) {
-            auto *const frame = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero);
+            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::AllocFlags::Zero);
             supplied = frame && pages.append_page(i, frame) == Status::Ok;
         }
         if (!supplied || vmo->supply_pages(0, 2 * P, &pages, mm::VmObject::SupplyOption::Default) !=

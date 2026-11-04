@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/channel.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/message_packet.hpp>
 #include <ours/syscall.hpp>
 
@@ -89,7 +89,7 @@ auto MessagePacket::assemble(ktl::Vec<u8> data, ustl::Box<Handle> *const handles
 
     // If the allocation fails the constructor never runs, so |data| and
     // |slots| are still this function's, and go with it.
-    auto *const packet = new (mm::GAF_KERNEL) Self(ustl::move(data), ustl::move(slots));
+    auto *const packet = new (mm::ALLOC_KERNEL) Self(ustl::move(data), ustl::move(slots));
     if (packet == nullptr) {
         return Status::NoMemory;
     }

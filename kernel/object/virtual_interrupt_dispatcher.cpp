@@ -1,6 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
 
 #include <heap/new.hpp>
@@ -15,7 +15,7 @@ auto VirtualInterruptDispatcher::create(KernelHandle<InterruptDispatcher> *const
         return Status::InvArgs;
     }
 
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self());
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL) Self());
     if (!self) {
         return Status::NoMemory;
     }

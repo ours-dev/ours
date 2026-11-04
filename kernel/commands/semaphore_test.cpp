@@ -20,7 +20,7 @@
 //
 // A console command rather than a host test for the reason mutex.stress
 // gives: a semaphore's slow path is the scheduler.
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/sync/semaphore.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -140,7 +140,7 @@ namespace {
     }
 
     auto check_handoff(Tally &tally) -> void {
-        auto *const h = new (mm::GAF_KERNEL) Handoff{};
+        auto *const h = new (mm::ALLOC_KERNEL) Handoff{};
         if (h == nullptr) {
             verdict(tally, false, "allocate the handoff case");
             return;
@@ -246,7 +246,7 @@ namespace {
     }
 
     auto check_crowd(Tally &tally) -> void {
-        auto *const crowd = new (mm::GAF_KERNEL) Crowd{};
+        auto *const crowd = new (mm::ALLOC_KERNEL) Crowd{};
         if (crowd == nullptr) {
             verdict(tally, false, "allocate the crowd case");
             return;

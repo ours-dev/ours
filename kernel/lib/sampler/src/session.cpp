@@ -13,7 +13,7 @@
 #include <ours/cpu_hotplug_hook.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/irq/entry.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/task/cpu_hotplug.hpp>
@@ -231,7 +231,7 @@ auto Session::create(Config const &config, ustl::Box<Session> *const out) -> Sta
     // it is destroyed, after its memory. Only when no session could be built
     // at all is the claim given back by hand.
     auto session =
-        ustl::Box<Session>::adopt(new (mm::GAF_KERNEL) Session(config.period, config.targets));
+        ustl::Box<Session>::adopt(new (mm::ALLOC_KERNEL) Session(config.period, config.targets));
     if (!session) {
         Guard<sync::Mutex> guard(LOCK);
         CLAIMED = false;

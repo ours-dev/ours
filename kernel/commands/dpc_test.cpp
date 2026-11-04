@@ -23,7 +23,7 @@
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/dpc.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
@@ -164,7 +164,7 @@ namespace {
         Cpu::online_mask().for_each([&target](CpuNum const cpu) { target = cpu; });
         log::info("dpc.test: stopping the Dpc workers of CPU {}", target);
 
-        auto *const state = new (mm::GAF_KERNEL) State();
+        auto *const state = new (mm::ALLOC_KERNEL) State();
         if (state == nullptr) {
             log::error("dpc.test: FAILED -- no memory for the test's state");
             return 1;

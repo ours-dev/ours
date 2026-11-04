@@ -1,5 +1,5 @@
 #include <ours/assert.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 
 #include <algorithm>
 #include <utility>
@@ -66,7 +66,7 @@ auto Domain::init(ustl::views::Span<HIrqNum const> const sources, ControllerOps 
         auto const id = static_cast<VIrqNum>(next);
         storage.ids[index] = id;
         storage.sources[next - first] = source;
-        auto line = ustl::Box<Line>::adopt(new (mm::GAF_KERNEL) Line(source, id));
+        auto line = ustl::Box<Line>::adopt(new (mm::ALLOC_KERNEL) Line(source, id));
         if (!line) {
             return Status::OutOfMem;
         }

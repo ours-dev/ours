@@ -28,7 +28,7 @@
 //
 // The name has no underscore for the reason usercopy.test's does not: gktl's
 // command table does not encode '_'.
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -101,7 +101,7 @@ namespace {
     auto vmopin_test_command(int, char **) -> int {
         Tally tally;
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (mm::VmObjectPaged::create(mm::GAF_USER, PAGES * P, mm::VmoFlags::Lazy, &vmo) !=
+        if (mm::VmObjectPaged::create(mm::ALLOC_USER, PAGES * P, mm::VmoFlags::Lazy, &vmo) !=
             Status::Ok) {
             log::error("vmopin.test: could not make a VMO");
             return 1;

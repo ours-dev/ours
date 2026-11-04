@@ -13,20 +13,20 @@ namespace {
 ///
 /// The node hint reaches kmalloc only. See the note in new.hpp.
 [[nodiscard]]
-auto allocate(usize const size, ours::mm::Gaf const gaf) noexcept -> void * {
+auto allocate(usize const size, ours::mm::AllocFlags const alloc_flags) noexcept -> void * {
     if (size > heap::KMALLOC_MAX_SIZE) {
-        return heap::vmalloc(size, gaf);
+        return heap::vmalloc(size, alloc_flags);
     }
-    return heap::kmalloc(size, gaf);
+    return heap::kmalloc(size, alloc_flags);
 }
 
 [[nodiscard]]
-auto allocate(usize const size, ours::mm::Gaf const gaf, ours::NodeId const nid) noexcept
-    -> void * {
+auto allocate(usize const size, ours::mm::AllocFlags const alloc_flags,
+              ours::NodeId const nid) noexcept -> void * {
     if (size > heap::KMALLOC_MAX_SIZE) {
-        return heap::vmalloc(size, gaf);
+        return heap::vmalloc(size, alloc_flags);
     }
-    return heap::kmalloc(size, gaf, nid);
+    return heap::kmalloc(size, alloc_flags, nid);
 }
 
 /// The counterpart of allocate(), and the reason the vmalloc window is a
@@ -56,27 +56,27 @@ auto deallocate(void *const pointer) noexcept -> void {
 /// unreachable code guarded by a constructor that already ran on address zero.
 /// It cannot be observed from the boot self-check without arranging an
 /// allocation failure for a type with a constructor, so it is pinned here.
-static_assert(noexcept(::operator new(usize{}, ours::mm::Gaf{})),
+static_assert(noexcept(::operator new(usize{}, ours::mm::AllocFlags{})),
               "the kernel's placement new must be non-throwing");
-static_assert(noexcept(::operator new[](usize{}, ours::mm::Gaf{})),
+static_assert(noexcept(::operator new[](usize{}, ours::mm::AllocFlags{})),
               "the kernel's placement new[] must be non-throwing");
 
-auto operator new(usize const size, ours::mm::Gaf const gaf) noexcept -> void * {
-    return allocate(size, gaf);
+auto operator new(usize const size, ours::mm::AllocFlags const alloc_flags) noexcept -> void * {
+    return allocate(size, alloc_flags);
 }
 
-auto operator new[](usize const size, ours::mm::Gaf const gaf) noexcept -> void * {
-    return allocate(size, gaf);
+auto operator new[](usize const size, ours::mm::AllocFlags const alloc_flags) noexcept -> void * {
+    return allocate(size, alloc_flags);
 }
 
-auto operator new(usize const size, ours::mm::Gaf const gaf, ours::NodeId const nid) noexcept
-    -> void * {
-    return allocate(size, gaf, nid);
+auto operator new(usize const size, ours::mm::AllocFlags const alloc_flags,
+                  ours::NodeId const nid) noexcept -> void * {
+    return allocate(size, alloc_flags, nid);
 }
 
-auto operator new[](usize const size, ours::mm::Gaf const gaf, ours::NodeId const nid) noexcept
-    -> void * {
-    return allocate(size, gaf, nid);
+auto operator new[](usize const size, ours::mm::AllocFlags const alloc_flags,
+                    ours::NodeId const nid) noexcept -> void * {
+    return allocate(size, alloc_flags, nid);
 }
 
 auto operator delete(void *const ptr) noexcept -> void {

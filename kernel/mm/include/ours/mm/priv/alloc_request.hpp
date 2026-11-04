@@ -7,7 +7,7 @@
 // <ours/cpu.hpp>. <ours/mm/types.hpp> is here for ZoneType, which the zone
 // range below needs; it is the one heavy include, and the host test builds
 // with it the same way the other mm smoke tests do.
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/types.hpp>
@@ -51,15 +51,15 @@ struct Origin {
 /// The only way to build an AllocRequest from nothing, which is what makes
 /// "resolved" true of every request that exists: see the class below.
 [[nodiscard]]
-inline auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, Origin origin)
-    -> AllocRequest;
+inline auto resolve_request(AllocFlags alloc_flags, usize order, NodeMask const &fallback,
+                            Origin origin) -> AllocRequest;
 
 /// One allocation, resolved: what the caller asked for and what the allocator
 /// worked out from it.
 ///
 /// Built once, by resolve_request(), and read -- never written -- by every
 /// layer below. That is the whole point of it. The walk, the zones and the
-/// postamble used to be handed four parameters: a `Gaf`, an `order`, an
+/// postamble used to be handed four parameters: an `AllocFlags`, an `order`, an
 /// `AllocationOptions` and a `MemoryAllocationContext`. Three of those were
 /// views of one thing and the fourth was an option set that was always empty,
 /// so each layer re-derived from them whatever it needed.
@@ -83,8 +83,8 @@ class AllocRequest final {
     /// What the caller asked for, unchanged.
     [[nodiscard]]
     FORCE_INLINE
-    constexpr auto gaf() const -> Gaf {
-        return m_gaf;
+    constexpr auto flags() const -> AllocFlags {
+        return m_alloc_flags;
     }
 
     /// Frames, as a power of two. At most MAX_FRAME_ORDER; the public entry
@@ -100,7 +100,7 @@ class AllocRequest final {
     /// Never empty for a request that can succeed: an unset NodeMask answers
     /// false for every node, so the zone walk would reject everything.
     ///
-    /// `Gaf::ThisNode` narrows it to the home node whenever the caller's mask
+    /// `AllocFlags::ThisNode` narrows it to the home node whenever the caller's mask
     /// includes it, so the walk then skips every other node's zones even when
     /// the home node has nothing: a restriction, not a preference. Only a mask
     /// that leaves the home node out keeps its own nodes. That is not the
@@ -136,7 +136,7 @@ class AllocRequest final {
     /// caller treat them as one thing unifies them by pretending the
     /// difference away, and the difference is the only reason zones exist.
     ///
-    /// Every caller gets the whole range today because no Gaf bit names a
+    /// Every caller gets the whole range today because no AllocFlags bit names a
     /// zone -- the Dma, Dma32 and Movable bits that once did were never passed
     /// by anyone and are gone. What this changes is that the range is a value
     /// on the request, set in one place, rather than a constant pair written
@@ -188,20 +188,20 @@ class AllocRequest final {
     /// with_* methods above, both of which start from a request that was
     /// resolved -- so there is no path to an AllocRequest whose fields were
     /// never worked out from a caller's ask.
-    friend auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, Origin origin)
-        -> AllocRequest;
+    friend auto resolve_request(AllocFlags alloc_flags, usize order, NodeMask const &fallback,
+                                Origin origin) -> AllocRequest;
 
-    constexpr AllocRequest(Gaf const gaf, usize const order, NodeMask const &allowed_nodes,
-                           Origin const origin, ZoneType const lowest_zone,
-                           ZoneType const highest_zone)
-        : m_gaf(gaf)
+    constexpr AllocRequest(AllocFlags const alloc_flags, usize const order,
+                           NodeMask const &allowed_nodes, Origin const origin,
+                           ZoneType const lowest_zone, ZoneType const highest_zone)
+        : m_alloc_flags(alloc_flags)
         , m_order(order)
         , m_allowed_nodes(allowed_nodes)
         , m_origin(origin)
         , m_lowest_zone(lowest_zone)
         , m_highest_zone(highest_zone) {}
 
-    Gaf m_gaf;
+    AllocFlags m_alloc_flags;
     usize m_order;
     NodeMask m_allowed_nodes;
 
@@ -216,10 +216,10 @@ class AllocRequest final {
 };
 
 FORCE_INLINE
-inline auto resolve_request(Gaf const gaf, usize const order, NodeMask const &fallback,
-                            Origin const origin) -> AllocRequest {
+inline auto resolve_request(AllocFlags const alloc_flags, usize const order,
+                            NodeMask const &fallback, Origin const origin) -> AllocRequest {
     auto allowed = fallback;
-    if (!!(gaf & Gaf::ThisNode)) {
+    if (!!(alloc_flags & AllocFlags::ThisNode)) {
         auto local = fallback;
         local &= NodeMask::of(origin.node);
         if (local.any()) {
@@ -228,11 +228,11 @@ inline auto resolve_request(Gaf const gaf, usize const order, NodeMask const &fa
     }
 
     return AllocRequest{
-        gaf,
+        alloc_flags,
         order,
         allowed,
         origin,
-        // No Gaf bit names a zone, so every allocation may use Dma through
+        // No AllocFlags bit names a zone, so every allocation may use Dma through
         // Normal. Movable and Dynamic are above the bound deliberately: a
         // caller that has not said it can take movable memory must not be
         // given it.

@@ -22,7 +22,7 @@ auto Stack::init_first() -> void {
 
 auto Stack::init(usize size) -> Status {
     ustl::Arc<VmObjectPaged> vmo;
-    auto status = VmObjectPaged::create(GAF_KERNEL, size, VmoFlags::Pinned, &vmo);
+    auto status = VmObjectPaged::create(ALLOC_KERNEL, size, VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
         log::trace("Failed to allocate a kernel stack, size={}", size);
         return status;

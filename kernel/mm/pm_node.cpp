@@ -102,7 +102,7 @@ PmNode::PmNode(NodeId nid)
     , m_page_queues() {}
 
 auto PmNode::get_frame_from_zone_list(AllocRequest const &request) -> PmFrame * {
-    // The fallback order, not this node's zones by type: Gaf::ThisNode is
+    // The fallback order, not this node's zones by type: AllocFlags::ThisNode is
     // honoured by the request's node mask, which resolve_request() has already
     // narrowed, so the candidate list is the same either way and the filter
     // does the restricting. The walk that was deleted with ZoneIterator chose
@@ -128,7 +128,7 @@ auto PmNode::alloc_frames_postamble(PmFrame *frame, AllocRequest const &request)
     }
 }
 
-auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
+auto PmNode::alloc_frames(AllocFlags alloc_flags, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
     m_canary.verify<Self>();
 
@@ -161,9 +161,9 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     // One value, built once, read by every layer below. It replaces a
     // MemoryAllocationContext filled by a preamble that could only answer Ok,
     // and an AllocationOptions derived by a mapping that answered with the
-    // empty set for every Gaf.
+    // empty set for every AllocFlags.
     auto const request =
-        resolve_request(gaf, order, fallback, Origin{.node = m_id, .cpu = Cpu::id()});
+        resolve_request(alloc_flags, order, fallback, Origin{.node = m_id, .cpu = Cpu::id()});
 
     // The only attempt. Nothing reclaims on this path, by design: taking
     // frames back means reaching into whatever holds them -- VMO pages, the
@@ -174,11 +174,11 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     // a step of an allocation that has already failed.
     //
     // What stood here was a loop over two stubs that both returned null, so a
-    // caller carrying Gaf::DirectReclaim -- which is every GAF_KERNEL
+    // caller carrying AllocFlags::CanBlock -- which is every ALLOC_KERNEL
     // allocation -- spun in it rather than being refused. The loop could not
     // have helped even with the stubs filled in from here: its retry asked the
     // same zones the same question with the same arguments, because nothing
-    // between the caller's Gaf and the zones differed on a second pass.
+    // between the caller's AllocFlags and the zones differed on a second pass.
     //
     // A relaxed retry is a real thing and this is where it goes when it
     // exists: an attempt that lets a caller dip below a zone's high watermark
@@ -204,7 +204,7 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     return ustl::ok(frame);
 }
 
-auto PmNode::alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
+auto PmNode::alloc_frames_fragment(AllocFlags alloc_flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
 
     PmFrame::List list;
@@ -217,7 +217,7 @@ auto PmNode::alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
             continue;
         }
 
-        if (auto frame = this->alloc_frames(gaf, order, fallback)) {
+        if (auto frame = this->alloc_frames(alloc_flags, order, fallback)) {
             list.push_back(*frame.unwrap());
         } else {
             free_frames(&list);
@@ -228,7 +228,7 @@ auto PmNode::alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
     return ustl::ok(ustl::move(list));
 }
 
-auto PmNode::alloc_frames_bulk(Gaf flags, usize n, NodeMask const &fallback)
+auto PmNode::alloc_frames_bulk(AllocFlags flags, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
 
     PmFrame::List list;

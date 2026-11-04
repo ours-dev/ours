@@ -52,8 +52,8 @@
 // run.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cfg.hpp>
-#include <ours/mm/gaf.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_fault.hpp>
@@ -248,7 +248,7 @@ namespace {
 
         ustl::Arc<mm::VmObjectPaged> vmo;
         if (auto const status =
-                mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags{}, &vmo);
+                mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE, mm::VmoFlags{}, &vmo);
             status != Status::Ok) {
             log::error("usercopy.test: could not create the VMO: {}", static_cast<int>(status));
             tally.failed += 1;

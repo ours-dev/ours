@@ -10,7 +10,7 @@
 /// The kernel's `new`, and the one place the choice between the two
 /// allocators is made.
 ///
-/// `new (gaf) T` serves any size: at or below heap::KMALLOC_MAX_SIZE it comes
+/// `new (alloc_flags) T` serves any size: at or below heap::KMALLOC_MAX_SIZE it comes
 /// from a kmalloc size class, above it from vmalloc's window. Callers do not
 /// choose and should not have to -- where the boundary sits is a property of
 /// the size-class ladder, not of the object being allocated, and it moves if
@@ -18,7 +18,7 @@
 ///
 /// `noexcept`, and that is load-bearing rather than decorative. Without it the
 /// language lets the compiler assume the allocation function never returns
-/// null, so `new (gaf) T(...)` runs T's constructor on address zero and the
+/// null, so `new (alloc_flags) T(...)` runs T's constructor on address zero and the
 /// caller's `if (!p)` is never reached -- which is how a failed ktl::Vec
 /// growth became a page fault instead of an OutOfMemory (see
 /// docs/repairs/260903/ktl.md). With it, a new-expression whose allocation
@@ -33,10 +33,10 @@
 /// block, so they must not be used from an interrupt handler or with a spin
 /// lock held. Below it they behave exactly as they always have.
 [[nodiscard]]
-auto operator new(usize size, ours::mm::Gaf gaf) noexcept -> void *;
+auto operator new(usize size, ours::mm::AllocFlags alloc_flags) noexcept -> void *;
 
 [[nodiscard]]
-auto operator new[](usize size, ours::mm::Gaf gaf) noexcept -> void *;
+auto operator new[](usize size, ours::mm::AllocFlags alloc_flags) noexcept -> void *;
 
 /// The node-affine forms. Only kmalloc honours the node hint; a request large
 /// enough to reach vmalloc is served from wherever the buddy allocator has
@@ -44,10 +44,12 @@ auto operator new[](usize size, ours::mm::Gaf gaf) noexcept -> void *;
 /// frames and pinning all of them to one node would be a much stronger
 /// promise than the caller asked for.
 [[nodiscard]]
-auto operator new(usize size, ours::mm::Gaf gaf, ours::NodeId nid) noexcept -> void *;
+auto operator new(usize size, ours::mm::AllocFlags alloc_flags, ours::NodeId nid) noexcept
+    -> void *;
 
 [[nodiscard]]
-auto operator new[](usize size, ours::mm::Gaf gaf, ours::NodeId nid) noexcept -> void *;
+auto operator new[](usize size, ours::mm::AllocFlags alloc_flags, ours::NodeId nid) noexcept
+    -> void *;
 
 /// Deallocation routes on the address, not the size.
 ///

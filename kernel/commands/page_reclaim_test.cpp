@@ -41,7 +41,7 @@
 // Why a console command: the queues are the real nodes', filled by the real
 // VMO paths, and the stress needs threads.
 #include <ours/arch/aspace_layout.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/memory_watchdog.hpp>
@@ -121,7 +121,7 @@ namespace {
     /// |provider|, nothing supplied yet.
     auto make_vmo(usize const nr_pages, CountingProvider **const provider)
         -> ustl::Arc<mm::VmObjectPaged> {
-        auto *const made = new (mm::GAF_KERNEL) CountingProvider();
+        auto *const made = new (mm::ALLOC_KERNEL) CountingProvider();
         if (!made) {
             return {};
         }
@@ -130,7 +130,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> vmo;
         if (mm::PageSource::create(ustl::Arc<mm::PageProvider>::adopt(made), &source) !=
                 Status::Ok ||
-            mm::VmObjectPaged::with_source(source, mm::GAF_USER, nr_pages * P, mm::VmoFlags::Lazy,
+            mm::VmObjectPaged::with_source(source, mm::ALLOC_USER, nr_pages * P, mm::VmoFlags::Lazy,
                                            &vmo) != Status::Ok) {
             return {};
         }
@@ -145,7 +145,7 @@ namespace {
             return false;
         }
         for (usize i = 0; i < count; ++i) {
-            auto *const frame = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero);
+            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::AllocFlags::Zero);
             if (!frame) {
                 return false;
             }
@@ -399,7 +399,7 @@ namespace {
     /// A VMO of |nr_pages| anonymous pages, nothing committed.
     auto make_anonymous(usize const nr_pages) -> ustl::Arc<mm::VmObjectPaged> {
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (mm::VmObjectPaged::create(mm::GAF_USER_VMO, nr_pages * P, mm::VmoFlags::Lazy, &vmo) !=
+        if (mm::VmObjectPaged::create(mm::ALLOC_USER_VMO, nr_pages * P, mm::VmoFlags::Lazy, &vmo) !=
             Status::Ok) {
             return {};
         }
@@ -699,7 +699,7 @@ namespace {
         free = mm::approx_free_frame_count();
         set = use_levels(free + 40, free + 80, free + 100);
         auto const gave = set == Status::Ok && settle([&] { return more.nr_zero() < 64; });
-        auto const served = mm::try_alloc_frames(mm::GAF_USER_VMO, 0);
+        auto const served = mm::try_alloc_frames(mm::ALLOC_USER_VMO, 0);
         auto const pressure = watchdog.pressure();
         verdict(tally, gave && pressure != mm::MemoryPressure::OutOfMemory && !!served,
                 "at OutOfMemory with pages to give, they are given back, and an allocation that "
