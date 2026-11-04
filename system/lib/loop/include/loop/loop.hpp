@@ -9,6 +9,7 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 #include <ustl/result.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 /// One port and a fixed table of wait slots, through which a single-threaded
 /// server waits on many handles at once: the root's every wait
@@ -20,17 +21,20 @@
 ///
 /// The objects:
 ///   - the port, which every wait delivers its packet to;
-///   - the slots, each {handle, signals, waiter, generation};
+///   - the slots, each {handle, signals, waiter, generation, flags};
 ///   - the Waiter each slot in use points at, which the caller owns;
-///   - one one-shot, level-triggered wait per slot in use (object_wait_async),
-///     which queues one SignalOne packet carrying the slot's key once the
-///     handle asserts any of the slot's signals.
+///   - one one-shot, level-triggered wait per slot in use that is not
+///     suspended (object_wait_async), which queues one SignalOne packet
+///     carrying the slot's key once the handle asserts any of the slot's
+///     signals.
 ///
 /// The events: add() takes a free slot and arms its wait; run() takes a
 /// packet, finds its slot by the key and calls the slot's Waiter, which
-/// handles one message and answers Rearm or Close; run() then arms the wait
-/// again or closes the handle and frees the slot. When it could not arm the
-/// wait again, it also tells the Waiter, once the slot is free.
+/// handles one message and answers Rearm, Close or Suspend; run() then arms
+/// the wait again, closes the handle and frees the slot, or leaves the slot
+/// in use with nothing armed until someone calls resume() with its key, which
+/// arms the wait. When it could not arm the wait again, either of them also
+/// tells the Waiter, once the slot is free.
 namespace loop {
 /// What a Waiter asks the Loop to do with its slot once on_signals() returns.
 enum class Action : u8 {
@@ -39,6 +43,13 @@ enum class Action : u8 {
 
     /// Close the slot's handle and free the slot.
     Close,
+
+    /// Leave the slot in use and arm nothing: the handle stays open, the
+    /// generation stays, the key stays valid. Nothing calls the Waiter again
+    /// until Loop::resume(key) arms the wait, and what the handle asserts in
+    /// the meantime waits in the object (a channel keeps its messages and
+    /// its closed peer), not on the port. See Waiter.
+    Suspend,
 };
 
 /// What a slot waits on: an object whose on_signals() the Loop calls when the
@@ -49,8 +60,9 @@ enum class Action : u8 {
 ///
 /// on_signals() handles one unit of work -- one message read, one exit
 /// reported -- and answers. It never closes its own handle (it answers Close
-/// instead), never closes another slot's handle, and never arms a wait; it
-/// may add() new slots.
+/// instead), never closes another slot's handle, and never arms a wait (it
+/// answers Rearm, or Suspend and leaves the arming to resume()); it may add()
+/// new slots, and resume() the suspended slot of another Waiter.
 ///
 /// It answers Rearm only once it has consumed what asserted the signal. The
 /// wait is level-triggered, so a Waiter that answers Rearm with its message
@@ -60,9 +72,32 @@ enum class Action : u8 {
 /// (the packet queues behind everyone else's, I4), but it is the one thread's
 /// CPU.
 ///
+/// It answers Suspend when the unit of work it took is not finished and the
+/// next one must not be handed to it before it is: a connection that took a
+/// request whose reply waits on another party. run() marks the slot suspended
+/// and does nothing else. No wait is armed, so no packet is queued, nothing
+/// calls the Waiter again, and no signal reaches it, PeerClosed included. The
+/// handle stays open and the slot stays in use, so add() never takes it and
+/// its key stays valid. Whatever the handle asserts meanwhile stays in the
+/// object, and Suspend does not spin over an unread message as Rearm does,
+/// since nothing is waiting for it. The Waiter, or whoever knows the slot's
+/// key, calls Loop::resume(key) once the Waiter is ready for the next unit of
+/// work; the wait is armed then, with the same key and signals, and a message
+/// or a closed peer that arrived meanwhile queues its packet at once (the
+/// wait is level-triggered), behind the packets already queued (I4). It sees
+/// the closed peer then, as PeerClosed alone if nothing else was queued, and
+/// answers Close as for any closed peer. resume() from inside the on_signals()
+/// that is about to answer Suspend is BadState: the slot is marked only after
+/// on_signals() returns, so it is not yet suspended. A Waiter that answers
+/// Suspend and is never resumed keeps its slot and its handle for good, and
+/// the Loop does not tell it: Suspend frees nothing, so there is nothing to
+/// let go of. The Loop's destructor closes the handle of a suspended slot as
+/// of any other.
+///
 /// on_rearm_failed() is the one other thing the Loop tells a Waiter. A Waiter
 /// that answered Rearm is not told whether the wait was armed again: arming
 /// is the Loop's (a Waiter never arms its next wait itself), and it can fail.
+/// The same goes for the wait resume() arms for a slot that answered Suspend.
 /// object_wait_async answers NoMemory when the kernel has no memory for the
 /// wait, and, in theory, NoResource, BadType, AccessDenied and InvArgs; it
 /// answers BadHandle when a Waiter broke the rules above and closed or sent
@@ -75,7 +110,9 @@ enum class Action : u8 {
 ///
 /// The Loop calls on_rearm_failed() once, with the status arm() answered as
 /// |cause|, after it has closed the slot's handle, bumped the slot's
-/// generation and freed the slot. So the Waiter must not touch the handle,
+/// generation and freed the slot. run() calls it after an answer of Rearm, and
+/// resume() before it returns, after an answer of Suspend; the Waiter cannot
+/// tell the two apart, and need not. So the Waiter must not touch the handle,
 /// which is closed and whose number may name another object by now, and must
 /// release whatever it holds for the slot, the way it does when it answers
 /// Close. It may add() new slots, this one's among them: the slot is free,
@@ -83,20 +120,23 @@ enum class Action : u8 {
 /// waits and never calls run().
 ///
 /// It is not called after the answer Close, whose release the Waiter has
-/// done itself; not when add() fails, whose caller has the status and keeps
-/// the handle; and not by the Loop's destructor, which runs only when the
-/// Waiters' owners are going too. Its default does nothing, which is right
-/// for a Waiter that only ever answers Close, and so is never told.
+/// done itself; not after the answer Suspend, which frees nothing; not when
+/// add() fails, whose caller has the status and keeps the handle; not by a
+/// resume() unless the kernel refused its arm; and not by the Loop's
+/// destructor, which runs only when the Waiters' owners are going too. Its
+/// default does nothing, which is right for a Waiter that only ever answers
+/// Close, and so is never told.
 ///
 /// The Loop does not own a Waiter: add() keeps its address, and nothing
 /// copies, moves or deletes it. It must outlive its slot, which is to say
 /// that it stays where it is from add() until the slot is freed -- by its
 /// Close, by a re-arm that failed, or by the Loop's destructor -- and, after a
-/// re-arm that failed, until on_rearm_failed() returns. The Loop reaches it
-/// only through on_signals(), and only for a packet that names its slot in
-/// use (step 1 of run()), and through on_rearm_failed(), once, right after it
-/// frees the slot; once the slot is freed no packet names it, so the Waiter
-/// may go then.
+/// re-arm that failed, until on_rearm_failed() returns. A suspended slot is
+/// in use: its Waiter stays where it is for as long as the slot is suspended.
+/// The Loop reaches it only through on_signals(), and only for a packet that
+/// names its slot in use and not suspended (step 1 of run()), and through
+/// on_rearm_failed(), once, right after it frees the slot; once the slot is
+/// freed no packet names it, so the Waiter may go then.
 ///
 /// Nothing is deleted through a Waiter, so its destructor is not virtual: a
 /// virtual one would add a deleting destructor, which a program with no heap
@@ -166,8 +206,23 @@ class Slot final {
   private:
     friend class Loop;
 
+    /// What is true of the slot beyond what its other fields say. Nothing
+    /// else is stored for it, so a free slot has none.
+    enum class Flags : u8 {
+        None = 0,
+
+        /// Its Waiter answered Suspend and the slot has not been resumed: in
+        /// use, with no wait armed and no packet queued. run() sets it once
+        /// on_signals() has returned, which is why a resume() from inside
+        /// that on_signals() finds it clear; resume() clears it, and so does
+        /// freeing the slot.
+        Suspended = 1U << 0,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
     /// The handle the slot waits on, which the Loop owns while the slot is in
-    /// use. Invalid while the slot is free: that is what "free" means.
+    /// use, suspended or not. Invalid while the slot is free: that is what
+    /// "free" means.
     ours::Uandle m_handle = ours::Uandle::Invalid;
 
     /// The signals its wait asks for, the same on every re-arm.
@@ -182,6 +237,10 @@ class Slot final {
     /// after 2^32 lives, which no table lives long enough to see twice with a
     /// packet still queued.
     u32 m_generation = 0;
+
+    /// Sits in the 4 bytes of padding that follow the generation, so a slot
+    /// is still 24 bytes (test/loop_test.cpp asserts it).
+    Flags m_flags = Flags::None;
 };
 
 /// The port and the table; see the namespace's comment.
@@ -192,8 +251,9 @@ class Loop final {
     ///
     /// |slots| holds at most PORT_MAX_OBSERVERS entries, which the caller
     /// checks with a static_assert where it sizes them: each slot in use has
-    /// exactly one live wait on the port, armed or with its packet queued,
-    /// so a larger table could meet NoResource from the port's observer limit
+    /// at most one live wait on the port, armed or with its packet queued
+    /// (none while it is suspended, and then one again once resumed), so a
+    /// larger table could meet NoResource from the port's observer limit
     /// (<ours/port.hpp>).
     ///
     /// The port is the Loop's from here on, and the Loop never hands it out.
@@ -204,8 +264,8 @@ class Loop final {
     /// that wait queues cannot be told from the Loop's own.
     Loop(ours::Uandle port, std::span<Slot> slots);
 
-    /// Closes the handle of every slot in use, then the port. Only for a Loop
-    /// that is not running: the root's never ends.
+    /// Closes the handle of every slot in use, suspended ones included, then
+    /// the port. Only for a Loop that is not running: the root's never ends.
     ~Loop();
 
     Loop(Loop const &) = delete;
@@ -230,10 +290,51 @@ class Loop final {
     ///     without the Wait right, and so on.
     ///
     /// A Waiter may call add() from on_signals(): the slot whose Waiter is
-    /// running is in use, so it is never the one taken.
+    /// running is in use, so it is never the one taken. Nor is a suspended
+    /// slot: it is in use, with its handle open, until its Waiter is resumed
+    /// and answers Close.
     [[nodiscard]]
     auto add(ours::Uandle handle, ours::Signals signals, Waiter &waiter)
         -> ustl::Result<Key, ours::Status>;
+
+    /// Arms the wait of the slot |key| names, which its Waiter left suspended
+    /// (Action::Suspend): the same handle, signals and key as before. The
+    /// packet reaches the Waiter like any other, behind the port's queue
+    /// (I4); if the handle already asserts one of the signals -- a message
+    /// that arrived, the peer that went -- the wait is level-triggered, so the
+    /// packet is queued at once, and a peer that closed meanwhile is seen now,
+    /// as PeerClosed alone if nothing else was left to read.
+    ///
+    /// It answers by the state of the slot at |key|'s index:
+    ///   - Ok: the slot was suspended in the key's life; it is armed.
+    ///   - BadState: the slot is in use in the key's life but is not
+    ///     suspended -- its wait is armed or its packet queued, which is also
+    ///     what a second resume() finds -- or its Waiter is running: the slot
+    ///     is marked suspended only after on_signals() returns, so a resume()
+    ///     called from inside the on_signals() that is about to answer
+    ///     Suspend finds it unmarked. Nothing changes.
+    ///   - NotFound: |key| names no slot in use in its life: an index past the
+    ///     table, a free slot, or a generation other than the slot's current
+    ///     one, which is a key handed out before the slot was closed. A
+    ///     slot's next life is untouched by the key of an earlier one.
+    ///     Nothing changes. (A second resume() answers BadState while the
+    ///     slot is still armed, and NotFound once its Waiter has answered
+    ///     Close and the slot is free.)
+    ///   - otherwise object_wait_async's answer, when the arm is refused
+    ///     (NoMemory, in practice): the slot is freed as a re-arm that failed
+    ///     frees it in step 4 of run() -- the handle closed, the generation
+    ///     bumped -- and the Waiter's on_rearm_failed() is called once, with
+    ///     the answer, before resume() returns. The Waiter releases what it
+    ///     kept for the slot there, so the caller of resume() finds the key
+    ///     stale and the slot's state gone when it returns.
+    ///
+    /// Like add(), resume() makes object_wait_async and, on that failure,
+    /// handle_close, and nothing else. It is called on the thread that runs
+    /// run(): from a Waiter's on_signals() or on_rearm_failed() -- another
+    /// slot's, never its own, whose slot is not suspended yet -- or between
+    /// calls to run().
+    [[nodiscard]]
+    auto resume(Key key) -> ours::Status;
 
     /// Dispatches packets until port_wait answers anything but Ok, and
     /// returns that answer. This is the Loop's dispatch, which P3 in
@@ -258,19 +359,25 @@ class Loop final {
     ///
     /// For each packet port_wait hands out, in this order:
     ///   1. Drop it, calling nothing, unless it is a SignalOne packet whose
-    ///      key names a slot in use in its current life: Key::from_raw() of
-    ///      the packet's key has an index below the table's size, the slot
-    ///      at that index is in use (its handle is not Invalid; see Slot),
-    ///      and its generation is the key's. A
-    ///      packet that fails any of these is no wait of this Loop's: a slot
-    ///      freed and taken again since its wait was armed, a free slot, an
-    ///      index out of range, or a User packet that someone holding a
-    ///      duplicate of the port queued. The status of a SignalOne packet is
-    ///      always Ok (<ours/port.hpp>), so it is not looked at.
+    ///      key names a slot in use in its current life, and not suspended:
+    ///      Key::from_raw() of the packet's key has an index below the
+    ///      table's size, the slot at that index is in use (its handle is not
+    ///      Invalid; see Slot), its generation is the key's, and it is not
+    ///      marked suspended. A packet that fails any of these is no wait of
+    ///      this Loop's: a slot freed and taken again since its wait was
+    ///      armed, a free slot, an index out of range, a suspended slot (no
+    ///      wait is armed for one, so no packet of the Loop's can name it), or
+    ///      a User packet that someone holding a duplicate of the port queued.
+    ///      The status of a SignalOne packet is always Ok (<ours/port.hpp>),
+    ///      so it is not looked at.
     ///   2. Call the slot's Waiter's on_signals() once, with the packet's
-    ///      observed signals. The slot stays in use while it runs.
+    ///      observed signals. The slot stays in use while it runs, and is not
+    ///      marked suspended, whatever the Waiter is about to answer.
     ///   3. If on_signals() answered Rearm, arm the slot's wait again with
-    ///      arm(): the same key, the same signals.
+    ///      arm(): the same key, the same signals. If it answered Suspend,
+    ///      mark the slot suspended and go on to the next packet: arm
+    ///      nothing, close nothing, leave the generation, the handle and the
+    ///      Waiter as they are. resume() arms the wait later.
     ///   4. If it answered Close, or if arm() failed in step 3: close the
     ///      slot's handle, bump the slot's generation and free the slot (its
     ///      handle Invalid, so that add() may take it). Nothing else is
@@ -285,19 +392,24 @@ class Loop final {
     ///   - I1: it blocks only in port_wait, and makes no system call but
     ///     port_wait, object_wait_async (through arm()) and handle_close;
     ///     on_rearm_failed() adds none of its own. The host test links a fake
-    ///     of exactly those three.
+    ///     of exactly those three. resume() makes the same two and no more.
     ///   - I3: a slot's handle is closed only in step 4, for that slot's own
-    ///     Waiter's answer, or for the failure of the re-arm that answer
-    ///     asked for. When on_signals() runs, the slot's only wait has fired
-    ///     and its packet has been taken, so closing the handle there leaves
-    ///     nothing of the slot on the port; the generation check of step 1 is
-    ///     a defence, for packets no wait of this Loop's queued.
-    ///   - I4: one on_signals() per packet, then re-arm. A client with more
-    ///     messages queued is not called again at once: its level-triggered
-    ///     wait queues a fresh packet behind everyone else's, so a busy client
-    ///     is served in turns.
+    ///     Waiter's answer, or for the failure of the arm that answer asked
+    ///     for (the re-arm of step 3, or the resume() of a Suspend), and by
+    ///     the destructor. When on_signals() runs, the slot's only wait has
+    ///     fired and its packet has been taken, so closing the handle there
+    ///     leaves nothing of the slot on the port; a suspended slot has no
+    ///     wait and no packet either, so the same holds for the arm that
+    ///     resume() could not make. The generation check of step 1 is a
+    ///     defence, for packets no wait of this Loop's queued.
+    ///   - I4: one on_signals() per packet, then re-arm, close or suspend. A
+    ///     client with more messages queued is not called again at once: its
+    ///     level-triggered wait queues a fresh packet behind everyone else's,
+    ///     so a busy client is served in turns. A suspended client is not
+    ///     called at all until resumed, and then its packet queues behind
+    ///     everyone else's as well.
     ///   - At most one live wait per slot in use, armed or with its packet
-    ///     queued, and none for a free slot.
+    ///     queued, and none for a free slot or a suspended one.
     ///
     /// Why a key carries a generation: ours has no port_cancel yet, so a
     /// packet already queued cannot be withdrawn. A key that named only where
@@ -305,9 +417,11 @@ class Loop final {
     /// packet, one queued for a slot freed and taken again since, to the
     /// slot's new Waiter; a key that was the address of a wait object the
     /// caller frees would make the same packet a use-after-free. A stale key
-    /// only fails step 1's check, and the packet is dropped. And a Waiter
-    /// never arms its next wait itself: its answer tells run() to (step 3),
-    /// so add() arms a slot's first wait and run() every later one.
+    /// only fails step 1's check, and the packet is dropped; the same check in
+    /// resume() answers NotFound to it. And a Waiter never arms its next wait
+    /// itself: its answer tells run() to (step 3), or resume() to after a
+    /// Suspend, so add() arms a slot's first wait, run() every later one after
+    /// a Rearm, and resume() the one after a Suspend.
     [[nodiscard]]
     auto run(ours::Instant deadline) -> ours::Status;
 
@@ -317,6 +431,19 @@ class Loop final {
     /// object_wait_async's answer; on failure nothing is armed.
     [[nodiscard]]
     auto arm(u32 index) -> ours::Status;
+
+    /// Frees the slot at |index|, which is in use and has no live wait: its
+    /// wait fired and its packet was taken, or it was suspended. Closes the
+    /// handle, clears the fields, bumps the generation, and answers the
+    /// Waiter it had, so that a caller that must tell it can. It is step 4 of
+    /// run().
+    auto free_slot(u32 index) -> Waiter &;
+
+    /// The arm for the slot at |index| was refused with |cause|: frees the
+    /// slot and tells its Waiter, once, with on_rearm_failed(). The slot is
+    /// cleared first, since the call may add() and so take this very slot
+    /// again; the caller touches it no more.
+    auto fail_arm(u32 index, ours::Status cause) -> void;
 
     ours::Uandle m_port;
     std::span<Slot> m_slots;

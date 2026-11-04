@@ -7524,7 +7524,9 @@ struct LoopLog {
 /// channel end |handle|. on_signals() reads one message and answers Rearm,
 /// however many more are queued (I4); once nothing is readable, which here
 /// means the peer has gone, it answers Close and leaves the closing to the
-/// Loop (I3).
+/// Loop (I3). When |suspend_next| is set, its next call reads the message and
+/// answers Suspend instead, once: a connection that took a request whose
+/// reply is not ready.
 struct LoopClient final: loop::Waiter {
     LoopClient(char const client_name, ours::Uandle const client_handle, LoopLog *const client_log)
         : name{client_name}, handle{client_handle}, log{client_log} {}
@@ -7532,6 +7534,7 @@ struct LoopClient final: loop::Waiter {
     char name;
     ours::Uandle handle;
     LoopLog *log;
+    bool suspend_next = false;
 
     auto on_signals(ours::Signals const observed) -> loop::Action override {
         log->push(name);
@@ -7544,6 +7547,10 @@ struct LoopClient final: loop::Waiter {
                                static_cast<u32>(message.size()), 0, &actual,
                                nullptr) != ours::Status::Ok) {
             return loop::Action::Close;
+        }
+        if (suspend_next) {
+            suspend_next = false;
+            return loop::Action::Suspend;
         }
         return loop::Action::Rearm;
     }
@@ -7603,13 +7610,17 @@ auto check_loop() -> void {
     auto c1 = Uandle::Invalid;
     auto d0 = Uandle::Invalid;
     auto d1 = Uandle::Invalid;
+    auto e0 = Uandle::Invalid;
+    auto e1 = Uandle::Invalid;
     channel(a0, a1);
     channel(b0, b1);
     channel(c0, c1);
     channel(d0, d1);
+    channel(e0, e1);
     auto a = LoopClient{'a', a1, &log};
     auto b = LoopClient{'b', b1, &log};
     auto c = LoopClient{'c', c1, &log};
+    auto e = LoopClient{'e', e1, &log};
     {
         auto dispatch = loop::Loop{port, slots};
         // The Loop owns what add() accepted; what it refused is closed here.
@@ -7663,9 +7674,28 @@ auto check_loop() -> void {
             expect("shell: loop run(forged packets, then c) = ", dispatch.run(0), Status::TimeOut);
         served(log, "abaabc");
 
-        // The Loop closes a1, c1 and the port as it goes.
+        // 5. A slot that suspends. e takes a message and answers Suspend, so
+        //    it stays in use with nothing armed; the message that arrives
+        //    next is not delivered. resume() arms it, and then, and only then,
+        //    the message is delivered. A second resume() finds the slot armed.
+        e.suspend_next = true;
+        add(e, Key{2, 0});
+        send(e0, 1);
+        ok &= expect("shell: loop run(e suspends) = ", dispatch.run(0), Status::TimeOut);
+        served(log, "abaabce");
+        send(e0, 1);
+        ok &= expect("shell: loop run(e's message while suspended) = ", dispatch.run(0),
+                     Status::TimeOut);
+        served(log, "abaabce");
+        ok &= expect("shell: loop resume(e) = ", dispatch.resume(Key{2, 0}), Status::Ok);
+        ok &=
+            expect("shell: loop resume(e again) = ", dispatch.resume(Key{2, 0}), Status::BadState);
+        ok &= expect("shell: loop run(e resumed) = ", dispatch.run(0), Status::TimeOut);
+        served(log, "abaabcee");
+
+        // The Loop closes a1, c1, e1 and the port as it goes.
     }
-    for (auto const handle: {a0, c0, d0, d1, forger}) {
+    for (auto const handle: {a0, c0, d0, d1, e0, forger}) {
         ok &= ours::handle_close(handle) == Status::Ok;
     }
 
