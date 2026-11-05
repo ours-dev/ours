@@ -720,3 +720,47 @@ None (predictions are paused)
 - Why does a pick that reads the running thread uncharged re-pick it, and why does charging first remove the three-slice turns?
 - Why does a two-slice turn remain, and why is it still within EEVDF's lag bound?
 - What do `preempt.test`'s turn checks assume about round-robin that Fair need not satisfy, and why does round-robin keep the old windows?
+
+## Title: preempt.test bounds a turn by two slices again, and no longer fails the stretch between one and two (2026-11-05)
+
+**Files**
+- `kernel/commands/preempt_test.cpp` — the "stray turn" count of the previous entry is gone; "no turn runs past its slices" is `longest <= (slice + late) * MAX_SLICES_IN_A_ROW` again
+
+**Symptom**
+In the Fair lane, one boot of nine with the previous form of the test failed "no turn runs past its slices" with 13 turns of which 11 whole and the longest 96.7 ms. No spinner ran 97 ms in a row on a 64 ms slice: the turn was a longer one cut by the host.
+
+**Cause**
+The previous entry made a turn that is longer than a slice and not within a window of one or two slices (a "dead zone" of more than 68 and less than 127 ms) fail, to catch a single late-fired preemption. A spinner sees a turn as the stretch between two jumps of the clock larger than `GAP` (1 ms), so a host stall of more than 1 ms in the middle of a two-slice turn of about 130 ms splits it into two pieces, and unless the stall falls near either end or at about 62 to 68 ms one piece lies in the dead zone. That entry's review had predicted it ("3 of the 40 Fair boots on record had a split turn and none landed in the dead zone") and offered the way out; this is the boot in which it landed. Round-robin cannot be hit: its pieces are all under a slice and are ignored.
+
+**Change**
+```cpp
+// before (previous entry)
+if (is_whole) { num_whole += 1; } else if (turn > slice + late) { num_stray += 1; }
+verdict(tally, num_stray == 0, "no turn runs past its slices");
+// after
+if (is_whole) { num_whole += 1; }
+verdict(tally, longest <= (slice + late) * static_cast<i64>(MAX_SLICES_IN_A_ROW), "no turn runs past its slices");
+```
+With `MAX_SLICES_IN_A_ROW` at 1 (round-robin) this is the pre-change check, `longest <= slice + late`. On the Fair lane a turn of up to two slices plus lateness passes, whatever its length inside that bound. The cost: a single late-fired preemption (a turn between 68 and 127 ms) goes unseen there; "most turns are a whole number of slices" still fails a lane in which they are common. Tolerating one stray turn instead was considered and not taken: two stalls in one boot would still fail it, and it keeps the extra count.
+
+**Reference**
+None, this project's own test.
+
+**Verification**
+- `boot_check.py --out out/fair-lane` (default lane): build ok, dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (173 passed). `boot_check.py --out out/fair-on --no-tests` (Fair lane): dbg PASS (46/5/0), rel PASS (44/8/0, 7/7).
+- `preempt.test`, Fair lane, ten boots: all pass, with 10 to 13 turns, 10 to 13 of them whole, the longest 66, 129, 131, 132, 130, 66, 66, 130, 130, 131, 66 ms (a mixture of one and two slices as before). Round-robin lane, four boots: all pass, 13 turns, all whole, the longest 66 to 67 ms.
+- `scripts/format_cpp.py` is clean.
+
+**Deliberately not done**
+- Telling a stall-split turn from a late preemption; requiring each spinner to have two counted turns.
+
+**How it was found**
+By a boot in the run for the next entry: `kshell_run.py --out out/fair-on preempt.test` printed "13 turns, 11 of them a whole number of slices, the longest 96687 us" and failed "no turn runs past its slices".
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- How does a host stall turn one 130 ms turn into a 97 ms one in the spinner's record?
+- Why can the round-robin lane not be hit by the same thing?
+- What does the longest-turn bound give up compared with the window check?
