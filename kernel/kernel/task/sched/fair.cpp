@@ -342,6 +342,18 @@ auto Fair::on_thread_unpark(RunQueue &runtime, Thread *thread) -> void {
 auto Fair::evaluate_next_thread(RunQueue &runtime, Thread *curr) -> Thread * {
     auto &rq = runtime.queue<Discipline::Normal>();
     rq.verify();
+
+    // The running thread is charged before the walk. The scheduler picks before
+    // put_prev_thread() charges it, so otherwise the mean holds it up to a slice
+    // behind the waiters, who were charged in full when they last stopped: a
+    // waiter is then ahead of the mean, ineligible, and the running thread is
+    // picked again for another whole slice.
+    auto &curr_entity = curr->scheduling_entity();
+    if (curr_entity.discipline() == Discipline::Normal &&
+        curr_entity.runqueue_state().is_active()) {
+        update_thread(runtime, curr);
+    }
+
     auto iter = rq.begin();
     for (auto const last = rq.end(); iter != last; ++iter) {
         if (rq.is_eligible(*iter)) {

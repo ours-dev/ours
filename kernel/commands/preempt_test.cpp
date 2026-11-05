@@ -7,8 +7,9 @@
 // quiet machine:
 //
 //   - two threads spinning on the highest online CPU take turns, and every
-//     turn ends within a little of the slice: none runs on, which no tick
-//     would stop now, and most are a whole slice long;
+//     turn longer than a slice ends within a little of a whole number of
+//     slices, at most MAX_SLICES_IN_A_ROW of them: none runs on, which no tick
+//     would stop now, and most are whole slices long;
 //   - a timer due on that CPU before the running slice ends fires on time:
 //     the device is armed for the earlier of the two;
 //   - no other CPU passes a preemption deadline: an idle thread has no slice,
@@ -54,9 +55,18 @@ namespace {
     /// up to about 1.3 ms late (timer.test), and a turn ends about 1.5 ms past
     /// its slice.
     constexpr auto LATE_ONESHOT = Milliseconds(4);
-    /// How much shorter than the slice a turn may be and still count as a
+    /// How much shorter than its slices a turn may be and still count as a
     /// whole one.
     constexpr auto EARLY = Milliseconds(1);
+    /// How many slices one spinner may run in a row. Round-robin hands the CPU
+    /// over at every slice end: one. By the model of the queue (not instrumented),
+    /// Fair keeps a weighted lag, and a waiter that
+    /// is ahead of the mean by a sliver (the difference between two timer
+    /// latencies) is not eligible, so the running thread is picked again for a
+    /// new slice; the test starts the spinners back to back and so sits on that
+    /// near-tie. The waiter's lead is at most a slice and a latency, so the test
+    /// does not allow a third.
+    constexpr usize MAX_SLICES_IN_A_ROW = 1 + static_cast<usize>(SCHED_NORMAL_DISCIPLINE_FAIR);
     /// How far ahead the probe timer is due: well inside a slice. How late it
     /// may fire with a one-shot device: timer.test's bound, a fifth of a tick.
     /// A device armed for the slice's end instead would make it late by the
@@ -270,22 +280,32 @@ namespace {
         // wakeup on its CPU, so only the later ones count.
         auto num_turns = usize{0};
         auto num_whole = usize{0};
+        auto num_stray = usize{0};
         auto longest = Duration::zero();
         for (auto const &spinner: state->spinners) {
             for (usize i = 1; i < spinner.num_turns; ++i) {
                 auto const turn = spinner.turns[i];
                 num_turns += 1;
-                if (turn >= slice - EARLY && turn <= slice + late) {
+                auto is_whole = false;
+                for (usize slices = 1; slices <= MAX_SLICES_IN_A_ROW; ++slices) {
+                    auto const count = static_cast<i64>(slices);
+                    is_whole |= turn >= slice * count - EARLY && turn <= (slice + late) * count;
+                }
+                if (is_whole) {
                     num_whole += 1;
+                } else if (turn > slice + late) {
+                    // Past a slice and not a whole number of them: a deadline that
+                    // passed unseen, or one that was never armed.
+                    num_stray += 1;
                 }
                 longest = std::max(longest, turn);
             }
         }
-        log::info("preempt.test: {} turns, {} of them a whole slice, the longest {} us", num_turns,
-                  num_whole, longest.count() / 1000);
+        log::info("preempt.test: {} turns, {} of them a whole number of slices, the longest {} us",
+                  num_turns, num_whole, longest.count() / 1000);
         verdict(tally, num_turns >= 4, "the spinners take turns");
-        verdict(tally, longest <= slice + late, "no turn runs past its slice");
-        verdict(tally, num_whole * 2 >= num_turns, "most turns are a whole slice");
+        verdict(tally, num_stray == 0, "no turn runs past its slices");
+        verdict(tally, num_whole * 2 >= num_turns, "most turns are a whole number of slices");
 
         auto const fired = state->probe_fired.load(std::memory_order_acquire);
         auto probe_lateness = Duration{};

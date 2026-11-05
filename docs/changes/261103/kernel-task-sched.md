@@ -642,3 +642,81 @@ None (predictions are paused)
 - Why would the deleted block have armed the full slice whatever the thread had consumed, and who arms it instead?
 - Why did a discarded `if constexpr` branch still stop the file from compiling with `SCHED_NOHZ` off?
 - Why does a pick that reads the running thread uncharged re-pick it, and why does the re-pick get a whole new slice?
+
+## Title: Fair charges the running thread before it picks, and preempt.test allows two slices in a row (2026-11-04)
+
+**Files**
+- `kernel/kernel/task/sched/fair.cpp` — `Fair::evaluate_next_thread()` calls `update_thread(runtime, curr)` first when `curr` is of the Normal discipline and active
+- `kernel/commands/preempt_test.cpp` — `MAX_SLICES_IN_A_ROW` (2 when Fair is the Normal discipline, 1 otherwise): a turn is whole when it is that many slices or fewer, a turn longer than a slice that is not whole counts as stray and fails "no turn runs past its slices", and the log line and two verdict names say "a whole number of slices"
+- `docs/repairs/261103/kernel-task-sched.md` — item 8 is cut down to the tickless-charging question and its severity lowered; item 9 gets the two-slice turns; item 19's Cause is updated
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+In the Fair lane (`sched_normal_discipline="fair"`), `preempt.test` failed in every boot: two spinners on one CPU with a 64 ms slice, which round-robin runs a slice at a time, ran 2 to 4 counted turns of 196 to 197 ms (three slices) in four boots of an experiment and up to 263 ms (four) in earlier ones, and failed three of its eight checks, or two when it counted four turns or more.
+
+**Cause**
+`Scheduler::evaluate_next_thread()` picks first and then calls `put_prev_thread()`, which charges the running thread. At the pick the waiter was charged in full when it last stopped, and the running thread is up to a slice behind in the mean. A worked example, two equal threads A and B at 0, one 64 ms request being 78,387,949 ns of virtual time: A runs, and at its slice end the pick sees A at 0 (uncharged) and B at 0: B is eligible and runs. At the next slice end the pick sees B at 0 (uncharged) and A at 78,387,949 (charged at its hand-over): the mean is 39,193,974, A is ahead of it and ineligible, `Fair::evaluate_next_thread()` answers null, the scheduler falls back to the running thread, and `set_next_object()` plus `Scheduler::set_next_thread()` give B a whole new slice. B ran two. Then A is eligible again at a tie and the same thing happens to whichever stays. An exact-integer model of the queue that a reviewer wrote reproduces the turns of the base lane: 2 slices at an exact tie, and 3 to 4 once timer latency breaks the ties against the waiter, which matches the observed 197 ms and 260 to 263 ms.
+
+**Change**
+```cpp
+// Fair::evaluate_next_thread(), before the walk of the tree
+auto &curr_entity = curr->scheduling_entity();
+if (curr_entity.discipline() == Discipline::Normal && curr_entity.runqueue_state().is_active()) {
+    update_thread(runtime, curr);
+}
+```
+Linux does the same: `pick_task_fair()` calls `update_curr()` before it picks. `put_prev_thread()` charges again at the hand-over and adds nothing: the scheduler clock is read once at the top of `reschedule_common()` and not again between the pick and the hand-over, and the first replenish moved the deadline, so the test does not fire twice (a reviewer read this and confirmed that the pending bit the pick-time replenish sets is consumed by `take_pending_local()` right after the pick, as the old mark was). The guard on the discipline keeps the call from charging a thread of another discipline once there is one.
+
+Three variants were measured in an experiment before this change, four boots each (the patch applied and reverted by a script):
+
+| Variant | `preempt.test`: turns, whole slices (63 to 68 ms), longest turn | Failed checks |
+|---|---|---|
+| base | turns 2, 2, 4, 2; whole 0, 0, 0, 0; longest 197, 196, 197, 196 ms | 3, 3, 2, 3 of 8 |
+| A, charge first (this change) | turns 11, 9, 13, 8; whole 11, 8, 13, 5; longest 66, 131, 66, 132 ms | 0, 1, 0, 1 |
+| B, A and the running thread competes (returned when active, eligible, and either no waiter is eligible or its deadline is earlier than the first eligible waiter's) | turns 14, 13, 12, 20; whole 13, 13, 2, 8; longest 67, 67, 131, 132 ms | 0, 0, 2, 2 |
+
+B did no better than A and costs more code, and with one waiter it answers differently from A only on an exact tie of `vruntime`, so it was not taken (it is the form `pick_eevdf()` has in Linux). Its two boots with 2 of 12 and 8 of 20 turns whole are not explained by the tie argument; they look like host stalls splitting turns, as in the round-robin lane's one noisy boot below, and four boots run one variant after the other cannot separate that from a real difference.
+
+**The remaining two-slice turns, and the test.** After A, `preempt.test` still shows turns of two slices (130 to 132 ms) in more than half of the boots (12 of the author's 18: 2 of 4 in the experiment, 4 of 6 with the first form of the test, 6 of 8 with the final code; 13 of 20 in a reviewer's). The model's reading, not instrumented: a waiter ahead of the mean by a sliver (timer latency gave it a longer slice last turn) is ineligible, the running thread is picked again, and it gets a whole new slice, though it is owed the sliver (item 9). They are within EEVDF's bound, because the lag stays within a slice, and `preempt.test`'s turn checks were written for round-robin, which hands the CPU over at every slice end. A reviewer found that allowing two slices everywhere would blind the test on the round-robin lane, where a second slice in a row is always a bug, and that a single late-fired preemption (a turn between 68 and 127 ms) would pass the longest-turn bound. The test therefore became:
+
+```cpp
+// before
+if (turn >= slice - EARLY && turn <= slice + late) { num_whole += 1; }
+verdict(tally, longest <= slice + late, "no turn runs past its slice");
+// after (abbreviated: the real code casts the counts to i64)
+constexpr usize MAX_SLICES_IN_A_ROW = 1 + static_cast<usize>(SCHED_NORMAL_DISCIPLINE_FAIR);
+for (usize slices = 1; slices <= MAX_SLICES_IN_A_ROW; ++slices) {
+    is_whole |= turn >= slice * slices - EARLY && turn <= (slice + late) * slices;
+}
+if (is_whole) { num_whole += 1; } else if (turn > slice + late) { num_stray += 1; }
+verdict(tally, num_stray == 0, "no turn runs past its slices");
+```
+Round-robin keeps exactly the old windows, and so fails any turn over 68 ms as before. Fair accepts a turn of one or two slices, and a turn longer than a slice that is neither (the dead zone of more than 68 and less than 127 ms, or past 136 ms; with a periodic tick, whose lateness bound is 10 ms larger per slice, more than 78 and less than 127 ms, or past 156 ms) fails. Turns shorter than a slice, which host stalls produce, stay allowed. A stall of more than 1 ms in the middle of a two-slice turn splits it in two, though, and a piece of more than 68 and less than 127 ms counts as stray, so on the Fair lane a host stall can now fail "no turn runs past its slices" where the first form's single 136 ms bound did not: 3 of the 40 Fair boots on record had a split turn and none landed in the dead zone. The round-robin lane is as strict as before. If that flake shows, tolerate one stray turn, which costs the single late-preemption case. The checks "the spinners take turns" (at least four turns in all) and "most turns are a whole number of slices" keep their bounds. The old Fair behaviour still fails: its 196 to 263 ms turns are past the 136 ms limit. Not done: requiring each spinner to have at least two counted turns, which would make "take turns" independent of how long a turn is.
+
+**Reference**
+Linux EEVDF: `pick_task_fair()` calls `update_curr()` before `pick_eevdf()`, and `pick_eevdf()` considers `curr` (`kernel/sched/fair.c`, local checkout, v7.2-rc5 plus 31 commits). Linux re-runs the pick at a tick once the running entity is past its protected slice (`update_curr()` asks for a reschedule when `protect_slice()` is false; a tick is 1 / `CONFIG_HZ`, 4 ms by default, `kernel/Kconfig.hz`), and with HRTICK by a high-resolution timer, so a thread owed a sliver is stopped within a tick; here a slice ends only at its deadline.
+
+**Verification**
+- `-fsyntax-only` on `fair.cpp` and `scheduler.cpp` with the Fair switch on: 0 and 0 diagnostics.
+- `boot_check.py --out out/fair-lane` (default lane): build ok, dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (172 passed). `boot_check.py --out out/fair-on --no-tests` (Fair lane): dbg PASS (46/5/0), rel PASS (44/8/0, 7/7). Run on the final code.
+- **`preempt.test` on the Fair lane, final code, eight boots:** all eight pass, with 9 to 13 turns, 9 to 12 of them whole (a host stall split a turn in two boots: 13 turns of which 11 whole, and 12 of which 10), the longest 66, 132, 132, 130, 131, 131, 66, 131 ms. Earlier boots of the author with the first form of the test (six) and of a reviewer (twenty, 6 to 13 turns, the longest 66 to 132 ms) all passed too. **On the round-robin lane, final code, six boots:** all six pass (12 or 13 turns, all whole, the longest 66 ms). Before the test was hardened the same lane had seven passes in eight; the failure was one noisy boot, straight after `boot_check.py` had built that lane and booted its images: 32 turns of which 3 whole, the longest 70 ms, and the probe timer late. The final test fails any round-robin turn over 68 ms, as the pre-change test did, so that boot would now fail three checks. A host stall splits turns (a gap over 1 ms starts a new turn) and would also make the probe timer late, but no run was instrumented. Before the change to Fair the same lane had shown one such run in four (10 of 21 turns whole, in the previous entry's investigation), so it is not new. Five of those boots are only in the author's transcript.
+- **Other tests on the Fair lane:** `sleep.test`, `waitqueue.test`, `semaphore.test`, `threadjoin.test`, `dpc.test` and `timer.test` pass (run on the code before the last edit of `fair.cpp`, which cannot change them while every thread is of the Normal discipline). `hotplug.test` fails the same 2 of its checks, "and every spinner goes on elsewhere", in all the boots (item 19), also after this change.
+- Two rounds of independent read-only reviewers, each rebuilding and rebooting the lanes in directories of its own. First round: the charge-first call read against `reschedule_common()`, the idle and boot threads, delayed-dequeue sleepers and the pending bit (no defect), the test's arithmetic, a model of the spinners (a two-slice run in about 75 % of boots and never a third), and twenty Fair boots and six round-robin boots of `preempt.test`, all passing. It found that allowing two slices everywhere would blind the test on the round-robin lane and that a turn between 68 and 127 ms would pass, which became `MAX_SLICES_IN_A_ROW` per discipline and the stray-turn check. Second round: the delta, the windows for eleven turn lengths, the macro in a constant expression in all 104 translation units of `kernel/commands`, and the entry's numbers against the raw logs; it found two wrong counts, the host-stall flake the stray check adds on the Fair lane, and the age of the other tests' runs; all were corrected.
+- `scripts/format_cpp.py` and `scripts/lint_docs.py` are clean.
+
+**Deliberately not done**
+- The re-pick's whole new slice (item 9) and the instrumentation that would show it is the cause of the two-slice turns; variant B; a tolerance on eligibility.
+- `hotplug.test` (item 19): the charge at the pick did not change it.
+- Fair is still not selected in the product.
+- The queue count that drifts above the scheduler's (item 10), which makes the fast path in `pick_next_thread()` rarely taken.
+
+**How it was found**
+By the first Fair boot, in the previous entry, and by the investigation of `preempt.test` of 2026-11-04: `/private/tmp/.../scratchpad/variants.py` (a script that applied each variant, built the Fair lane, ran the tests and restored `fair.cpp` from git) and a reviewer's exact-integer model. The author chose "charge first and relax the test" from the options measured there. The edit of `fair.cpp` is on the author's request; it changes when Fair charges, which is EEVDF semantics, and the "Hands off" rule for `fair.*` in `kernel-design` is otherwise unchanged.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why does a pick that reads the running thread uncharged re-pick it, and why does charging first remove the three-slice turns?
+- Why does a two-slice turn remain, and why is it still within EEVDF's lag bound?
+- What do `preempt.test`'s turn checks assume about round-robin that Fair need not satisfy, and why does round-robin keep the old windows?
