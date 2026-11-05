@@ -1,0 +1,17 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The pci library's host tests: the walk, the sizing arithmetic and the
+# assignment writes, all over a fake ECAM array in host memory -- the
+# library is bytes-only by contract.
+executable("pci") {
+  testonly = true
+  sources = [ "pci_test.cpp" ]
+  deps = [
+    "//system/lib/pci:pci.headers",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

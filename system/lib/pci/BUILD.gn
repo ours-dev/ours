@@ -1,0 +1,26 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# The PCI configuration-space reader and the bus-0 enumerator, shared by
+# the drivers that each hand-rolled the walk -- and the BAR sizing and
+# assignment a hot-plugged function needs, since firmware assigns BARs at
+# boot only. Bytes over a window the caller maps (the ECAM base the route
+# service names), no system call: it builds in every toolchain, the host
+# one included, where its tests run against a fake ECAM array.
+cpp_interface("pci.headers") {
+  public = [ "include/pci/pci.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:pci($host_toolchain)" ]
+}
