@@ -8,9 +8,9 @@
 #include <ours/assert.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
-#include <ours/mm/node_placement.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/panic.hpp>
@@ -77,7 +77,7 @@ namespace {
     ///
     /// Returns how many CPUs the firmware put on a node that does not exist.
     auto claim_unplaced_cpus(NodeId const fallback, NodeMask const &nodes) -> usize {
-        return NodePlacement::seed_from_firmware(fallback, nodes);
+        return CpuNodeMap::seed_from_firmware(fallback, nodes);
     }
 
     /// The whole fallback table, asked of kernel/lib/numa once and reused for

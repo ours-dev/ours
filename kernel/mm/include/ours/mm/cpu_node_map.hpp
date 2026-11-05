@@ -16,8 +16,8 @@
 /// starts asking for a node long before that, so the answer has to come from
 /// somewhere that is correct from the first instruction. That was decision
 /// D2(a) of .agents/tasks/numa-out-of-mm/DESIGN.md.
-#ifndef OURS_MM_NODE_PLACEMENT_HPP
-#define OURS_MM_NODE_PLACEMENT_HPP 1
+#ifndef OURS_MM_CPU_NODE_MAP_HPP
+#define OURS_MM_CPU_NODE_MAP_HPP 1
 
 #include <ours/assert.hpp>
 #include <ours/cpu_mask.hpp>
@@ -48,11 +48,11 @@ class PmNode;
 /// purpose. CpuLocal::Current's storage belongs to the instantiation, not to
 /// the class that derives it, so a second class deriving
 /// CpuLocal::Current<PmNode *> would silently share this one slot; and its
-/// get()/set() invite `NodePlacement::get()->m_id`, which reads CURRENT_INSTANCE
+/// get()/set() invite `CpuNodeMap::get()->m_id`, which reads CURRENT_INSTANCE
 /// as an ordinary pointer -- the fold-to-a-constant trap described on
 /// current_node(). Neither is reachable through this interface.
-class NodePlacement: private CpuLocal::Current<PmNode *> {
-    using Self = NodePlacement;
+class CpuNodeMap: private CpuLocal::Current<PmNode *> {
+    using Self = CpuNodeMap;
     using Slot = CpuLocal::Current<PmNode *>;
 
   public:
@@ -130,4 +130,4 @@ class NodePlacement: private CpuLocal::Current<PmNode *> {
 
 } // namespace ours::mm
 
-#endif // #ifndef OURS_MM_NODE_PLACEMENT_HPP
+#endif // #ifndef OURS_MM_CPU_NODE_MAP_HPP

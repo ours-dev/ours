@@ -7,12 +7,12 @@
 /// arrays behind bounds-checked accessors need no kernel at all.
 ///
 /// The running placement is not here. It belongs to the node layer
-/// (ours::mm::NodePlacement), which seeds it from this table once and owns it
+/// (ours::mm::CpuNodeMap), which seeds it from this table once and owns it
 /// afterwards, and the case that used to check a run-time move leaving the
 /// firmware's answer alone went with it. That property is still checked, but
 /// only in a booted kernel: pmnode.test's "every possible CPU is still on its
 /// firmware node" compares the two tables. A host test for it would have to
-/// compile node_placement.cpp, which reaches CpuLocal.
+/// compile cpu_node_map.cpp, which reaches CpuLocal.
 ///
 /// Built with MM_NUMA=1, because MAX_NODES is 1 otherwise and then every case
 /// below collapses: one node means the only legal id is 0, so nothing about

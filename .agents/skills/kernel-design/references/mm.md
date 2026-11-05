@@ -282,3 +282,11 @@ lock. A read can observe the preceding count during an in-flight transfer.
 PmZone::count_free_frames() traverses the buddy lists while holding the zone
 lock. Document these contracts rather than encoding approximation in the
 getter name.
+
+## PMM helper classes (user decision, 2026-11-05)
+
+ZoneCandidates is the filtered range returned by ZoneList::candidates().
+CpuNodeMap owns the runtime CPU-to-node table and its per-CPU node-pointer
+cache. Allocation origin belongs to AllocRequest as AllocRequest::Origin.
+These names replace ZoneSelector, NodePlacement and the namespace-level
+Origin without adding a parallel interface.

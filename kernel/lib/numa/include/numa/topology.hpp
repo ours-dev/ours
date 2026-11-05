@@ -67,7 +67,7 @@ class Topology {
     ///
     /// It used to write a second table as well -- the running placement -- and
     /// that one belongs to the node layer, which seeds it from here once and
-    /// owns it afterwards (ours::mm::NodePlacement). A CPU moved at run time
+    /// owns it afterwards (ours::mm::CpuNodeMap). A CPU moved at run time
     /// must not change what the firmware said, because a node's hard affinity
     /// is built from this.
     FORCE_INLINE

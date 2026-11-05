@@ -784,3 +784,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Name the runtime CPU-node relation CpuNodeMap (2026-11-05)
+
+**Files**
+
+- `kernel/mm/cpu_node_map.cpp` and `kernel/mm/include/ours/mm/cpu_node_map.hpp` replace the node_placement files.
+- Node bring-up, allocation callers, NUMA documentation, tests and the MM build entry use CpuNodeMap.
+
+**Symptom**
+
+NodePlacement did not identify which resources the class places. It could be read as the allocation policy that chooses where frames should come from.
+
+**Cause**
+
+The owned state is a runtime CPU-to-node table and its per-CPU pointer cache. Allocation policy and fallback ordering are separate responsibilities.
+
+**Change**
+
+Rename `NodePlacement` to `CpuNodeMap`, rename the source and header, and migrate all includes, definitions and callers. The table, early lookup path, cache updates and node migration sequence keep their existing implementation.
+
+**Reference**
+
+Linux cpu_to_node names the corresponding CPU-to-node relation. The project also keeps its runtime table separate from the firmware topology.
+
+**Verification**
+
+The node ids, cache layout, publication hooks and synchronization are preserved. LLVM 23 clang-format and clang-tidy checked all nine C++ files, and the GN formatter checked the source list. Default and four-node NUMA configurations booted both development images and passed 163 host tests each. pmnode.test and pmzone.test passed in both configurations.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user accepted C2 from the PMM helper-class naming review.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

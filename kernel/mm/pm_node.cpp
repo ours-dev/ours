@@ -1,9 +1,9 @@
 #include <ours/assert.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
-#include <ours/mm/node_placement.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -71,7 +71,7 @@ namespace {
         if (auto const status = apply_thread_policy(alloc_flags); Status::Ok != status) {
             return ustl::err(status);
         }
-        auto *const node = NodePlacement::local_node();
+        auto *const node = CpuNodeMap::local_node();
         if (!node) {
             return ustl::err(Status::BadState);
         }
@@ -207,7 +207,7 @@ auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
     }
 
     auto const initiator = Cpu::id();
-    auto const initiator_node = NodePlacement::node_of(initiator);
+    auto const initiator_node = CpuNodeMap::node_of(initiator);
     auto const request =
         resolve_request(alloc_flags, order, fallback, Origin{.node = m_id, .cpu = initiator});
 
@@ -369,7 +369,7 @@ auto PmNode::set_cpu_node(CpuNum const cpu, NodeId const new_nid) -> void {
     DEBUG_ASSERT(cpu < MAX_CPU);
     DEBUG_ASSERT(new_nid < MAX_NODES);
 
-    auto const old_nid = NodePlacement::node_of(cpu);
+    auto const old_nid = CpuNodeMap::node_of(cpu);
     if (old_nid == new_nid) {
         return;
     }
@@ -388,19 +388,19 @@ auto PmNode::set_cpu_node(CpuNum const cpu, NodeId const new_nid) -> void {
     // table. Neither node's lock is held across both: the two masks are
     // separate invariants, and a CPU appearing in neither for an instant is
     // what a reader of work_cpus() already has to tolerate -- it takes a copy.
-    NodePlacement::set_node_of(cpu, new_nid);
+    CpuNodeMap::set_node_of(cpu, new_nid);
     if (auto node = PmNode::node(new_nid)) {
         node->m_canary.verify<Self>();
         {
             Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
             node->m_work_cpus.set(cpu);
         }
-        NodePlacement::cache_local_node(cpu, node);
+        CpuNodeMap::cache_local_node(cpu, node);
     }
 }
 
 auto PmNode::publish_cpu(CpuNum const cpu) -> void {
-    auto const nid = NodePlacement::node_of(cpu);
+    auto const nid = CpuNodeMap::node_of(cpu);
     if (nid == MAX_NODES) {
         // Not claimed yet. bootstrap() claims only the CPU it runs on;
         // claim_possible_cpus() and the NUMA topology parse claim the rest.
@@ -422,13 +422,13 @@ auto PmNode::publish_cpu(CpuNum const cpu) -> void {
             node->m_hard_affinity.set(cpu);
         }
     }
-    NodePlacement::cache_local_node(cpu, node);
+    CpuNodeMap::cache_local_node(cpu, node);
 }
 
 /// Publishes each CPU's node into its per-CPU slot, now that the slots exist.
 ///
 /// Not through set_cpu_node(). bootstrap() has already claimed every CPU with
-/// NodePlacement::seed_from_firmware(), so set_cpu_node() finds the old and
+/// CpuNodeMap::seed_from_firmware(), so set_cpu_node() finds the old and
 /// new ids equal and returns before it reaches the cache. That is what left
 /// the slot null across the zero-page allocation in init_vmm_preheap(): the
 /// node-less alloc_frames() went on through a null PmNode, and
@@ -476,7 +476,7 @@ auto PmNode::claim_possible_cpus() -> void {
     // init_pmm() get placed at all.
     // The count is not reported again: bootstrap() already said it for every
     // CPU the firmware bound, and the MADT adds only CPUs the firmware did not.
-    static_cast<void>(NodePlacement::seed_from_firmware(fallback, node_possible_mask()));
+    static_cast<void>(CpuNodeMap::seed_from_firmware(fallback, node_possible_mask()));
     Cpu::possible_mask().for_each(&PmNode::publish_cpu);
 }
 

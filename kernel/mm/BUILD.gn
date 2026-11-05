@@ -14,7 +14,7 @@ if (toolchain_environment == "kernel") {
       "memmap_init.cpp",
       "memory_reclaimer.cpp",
       "memory_watchdog.cpp",
-      "node_placement.cpp",
+      "cpu_node_map.cpp",
       "object_cache.cpp",
       "page_queues.cpp",
       "page_table_deposits.cpp",

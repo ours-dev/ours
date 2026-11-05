@@ -1,9 +1,9 @@
 #include <ours/assert.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/memory_reclaimer.hpp>
-#include <ours/mm/node_placement.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -342,10 +342,10 @@ auto set_free_memory_signal(usize const lower, usize const upper, usize const de
 /// per-CPU pointer until PmNode::publish_cpus() runs from an init hook, while
 /// allocation starts asking for a node long before that.
 ///
-/// The table is mm's own (NodePlacement), seeded once at bring-up from what
+/// The table is mm's own (CpuNodeMap), seeded once at bring-up from what
 /// the firmware declared. Nothing on this path asks kernel/lib/numa anything.
 auto current_node() -> NodeId {
-    return NodePlacement::node_of(CpuLocal::current_cpu());
+    return CpuNodeMap::node_of(CpuLocal::current_cpu());
 }
 
 auto node_online_mask() -> NodeMask const & {

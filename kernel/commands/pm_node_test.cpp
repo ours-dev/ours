@@ -43,8 +43,8 @@
 #include <ours/cpu.hpp>
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/memory_reclaimer.hpp>
-#include <ours/mm/node_placement.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
@@ -105,7 +105,7 @@ namespace {
         // topology's own gone, what is left to check is that the wrapper
         // really reads the placement table for the calling CPU rather than
         // answering from somewhere else.
-        verdict(tally, nid == mm::NodePlacement::node_of(cpu),
+        verdict(tally, nid == mm::CpuNodeMap::node_of(cpu),
                 "current_node() is the placement table's answer for the calling CPU");
 
         // Only the CPUs the firmware actually placed. The two tables mean
@@ -132,7 +132,7 @@ namespace {
                     return;
                 }
                 declared_cpus += 1;
-                auto const placed = mm::NodePlacement::node_of(each);
+                auto const placed = mm::CpuNodeMap::node_of(each);
                 if (PmNode::node(declared) == nullptr) {
                     memoryless_cpus += 1;
                     if (placed >= MAX_NODES || PmNode::node(placed) == nullptr) {
