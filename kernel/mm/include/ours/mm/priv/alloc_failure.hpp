@@ -19,8 +19,8 @@ enum class AllocationSite : u8 {
     /// A frame for a page table.
     PageTable,
 
-    /// A frame for the contents of a paged object.
-    VmoPage,
+    /// A frame or block requested without an explicit node.
+    Frame,
 };
 
 /// Fails one matching allocation on the constructing thread, after skipping

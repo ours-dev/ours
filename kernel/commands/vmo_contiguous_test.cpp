@@ -32,6 +32,7 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_page_splice_list.hpp>
@@ -123,6 +124,40 @@ namespace {
         return mm::VmObjectPaged::create_contiguous(mm::ALLOC_USER, size, alignment_log2,
                                                     mm::VmoFlags::Pinned, out);
     }
+
+#if MM_TEST_ALLOC_FAILURE
+    auto check_allocation_failures(Tally &tally) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        constexpr usize SIZE = 64 * P;
+        struct Case {
+            AllocationSite site;
+            usize skip;
+            Status expected;
+        };
+        constexpr Case CASES[] = {
+            {AllocationSite::Object, 0, Status::OutOfMem},
+            {AllocationSite::Frame, 0, Status::NoMemory},
+            {AllocationSite::Collection, 1, Status::OutOfMem},
+            {AllocationSite::Object, 1, Status::OutOfMem},
+        };
+        for (auto const &test: CASES) {
+            ustl::Arc<mm::VmObjectPaged> vmo;
+            bool failed;
+            {
+                AllocationFailure failure(test.site, test.skip);
+                failed = make(SIZE, 0, &vmo) == test.expected && failure.triggered();
+            }
+            verdict(tally, failed && !vmo, "failed contiguous creation publishes no VMO");
+            PhysAddr base{};
+            verdict(tally,
+                    make(SIZE, 0, &vmo) == Status::Ok &&
+                        vmo->lookup_contiguous(0, SIZE, &base) == Status::Ok &&
+                        all_pinned_queue(*vmo, SIZE / P),
+                    "contiguous allocation succeeds after the failure");
+        }
+    }
+#endif
 
     auto vmocontig_test_command(int, char **) -> int {
         Tally tally;
@@ -269,6 +304,9 @@ namespace {
             log::info("vmocontig.test: {} frames before, {} after", before, after);
         }
 
+#if MM_TEST_ALLOC_FAILURE
+        check_allocation_failures(tally);
+#endif
         if (tally.failed != 0) {
             log::error("vmocontig.test: FAILED -- {} of {} checks", tally.failed,
                        tally.passed + tally.failed);

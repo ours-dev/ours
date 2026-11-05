@@ -48,6 +48,7 @@
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/page_table_deposits.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -193,6 +194,32 @@ namespace {
                 mm::VmCowPages::create(mm::ALLOC_USER, LARGE, &plain) == Status::Ok &&
                     touch(plain, 3, true) != nullptr && nr_pages(plain) == 1,
                 "a node that does not take blocks gets one page");
+
+#if MM_TEST_ALLOC_FAILURE
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        for (auto const site: {AllocationSite::Frame, AllocationSite::Collection}) {
+            Node fallback;
+            if (mm::VmCowPages::create(mm::ALLOC_USER, 2 * LARGE,
+                                       mm::VmCowPages::Flags::LargeBlocks,
+                                       &fallback) != Status::Ok) {
+                verdict(tally, false, "a node for block allocation failure is made");
+                return;
+            }
+            mm::VmPage *page;
+            bool triggered;
+            {
+                // Skip the first tree allocation to fail after some pages were inserted.
+                AllocationFailure failure(site, site == AllocationSite::Collection ? 1 : 0);
+                page = touch(fallback, 3, true);
+                triggered = failure.triggered();
+            }
+            verdict(tally, triggered && page && page->order() == 0 && nr_pages(fallback) == 1,
+                    "an interrupted large block leaves only the single-page fallback");
+            verdict(tally, is_block(fallback, PER) && nr_pages(fallback) == PER + 1,
+                    "another block can still be filled after the failure");
+        }
+#endif
     }
 
     // Puts the calling thread on |next| and loads its page tables, as

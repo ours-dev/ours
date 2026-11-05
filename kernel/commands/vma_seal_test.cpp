@@ -252,7 +252,7 @@ namespace {
             {AllocationSite::Object, 0, Status::OutOfMem, "mapping object allocation fails"},
             {AllocationSite::Collection, 0, Status::OutOfMem, "protection range allocation fails"},
             {AllocationSite::Collection, 1, Status::OutOfMem, "mapping tree insertion fails"},
-            {AllocationSite::VmoPage, 0, Status::OutOfMem, "backing page allocation fails"},
+            {AllocationSite::Frame, 0, Status::OutOfMem, "backing page allocation fails"},
             {AllocationSite::PageTable, 0, Status::NoMemory, "page-table allocation fails"},
         };
         for (auto const &entry: CASES) {

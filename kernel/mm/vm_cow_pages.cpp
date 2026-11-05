@@ -5,7 +5,6 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
-#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vmm.hpp>
@@ -717,11 +716,6 @@ auto VmCowPages::alloc_pages(usize order, VmPage **page, AnonymousPageRequest *r
         DEBUG_ASSERT(order == 0, "a wait gets one frame, and a block never waits");
         frame = request->take_frame();
     } else {
-#if MM_TEST_ALLOC_FAILURE
-        if (test::AllocationFailure::hit(test::AllocationSite::VmoPage)) {
-            return Status::OutOfMem;
-        }
-#endif
         auto result = alloc_frames(alloc_flags, order);
         if (!result) {
             auto const status = result.unwrap_err();

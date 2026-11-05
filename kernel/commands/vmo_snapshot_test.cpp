@@ -894,6 +894,26 @@ namespace {
     }
 
 #if MM_TEST_ALLOC_FAILURE
+    auto check_eager_creation_failure(Tally &tally) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        ustl::Arc<mm::VmObjectPaged> vmo;
+        bool failed;
+        {
+            // The second page fails after the first has been committed.
+            AllocationFailure failure(AllocationSite::Frame, 1);
+            auto const status = mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE,
+                                                          mm::VmoFlags::Pinned, &vmo);
+            failed = status == Status::OutOfMem && failure.triggered();
+        }
+        verdict(tally, failed && !vmo, "partial eager commit publishes no VMO");
+        verdict(tally,
+                mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE, mm::VmoFlags::Pinned,
+                                          &vmo) == Status::Ok &&
+                    vmo->committed_pages(0, 2 * PAGE_SIZE) == 2,
+                "eager creation succeeds after allocation recovers");
+    }
+
     auto check_clone_allocation_failures(Tally &tally) -> void {
         using mm::test::AllocationFailure;
         using mm::test::AllocationSite;
@@ -1200,7 +1220,7 @@ namespace {
 
 #if MM_TEST_ALLOC_FAILURE
                 using mm::test::AllocationSite;
-                for (auto const site: {AllocationSite::VmoPage, AllocationSite::Collection}) {
+                for (auto const site: {AllocationSite::Frame, AllocationSite::Collection}) {
                     bool failed = false;
                     {
                         mm::test::AllocationFailure failure(site);
@@ -1515,7 +1535,7 @@ namespace {
         mm::VmPageSpliceList pages(5);
 #if MM_TEST_ALLOC_FAILURE
         using mm::test::AllocationSite;
-        for (auto const site: {AllocationSite::VmoPage, AllocationSite::Heap}) {
+        for (auto const site: {AllocationSite::Frame, AllocationSite::Heap}) {
             bool failed = false;
             {
                 mm::test::AllocationFailure failure(site);
@@ -2451,6 +2471,7 @@ namespace {
         check_shared_views(tally);
         check_slice_bounds(tally);
 #if MM_TEST_ALLOC_FAILURE
+        check_eager_creation_failure(tally);
         check_clone_allocation_failures(tally);
 #endif
         check_clone_of_mapped_object(tally);

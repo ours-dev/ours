@@ -136,3 +136,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Exercise frame and VMO creation failures (2026-11-05)
+
+**Files**
+
+- `kernel/mm/pmm.cpp` injects a failure in the implicit-node block allocation entry point.
+- The large-page, contiguous VMO, page-source and snapshot commands exercise the callers' error paths.
+
+**Symptom**
+
+The previous frame failure point returned from the COW node before it received the allocator's error. It could not exercise block allocation or contiguous creation.
+
+**Cause**
+
+Large-page fill and contiguous creation call the frame allocator directly. Creating a pager VMO can also fail after it has accepted responsibility for the source.
+
+**Change**
+
+The fault site supplies the allocator's normal error to each of these callers. The tests cover single-page fallback after failing to allocate or partially insert a large block, publication failure after a partial eager commit, contiguous VMO creation at four failure points, and closing a pager source when its VMO cannot be created.
+
+**Reference**
+
+None. The tests use the existing frame and VMO allocation entry points.
+
+**Verification**
+
+Clang-format and clang-tidy checked the eight C++ paths. Both images and 163 host tests passed in the default and opt-in configurations. The large-page, contiguous VMO, page-source and snapshot commands passed 32, 26, 85 and 275 checks respectively. The full instrumented run measured 4291/4763 VMM lines (90.09%), 234 short of 95%. Its only command failure was a timer deadline check in `preempt.test`, which passed in a standalone instrumented boot.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The first fault-injection pass left the frame allocator error, large-block rollback and pager source transfer paths uncovered.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

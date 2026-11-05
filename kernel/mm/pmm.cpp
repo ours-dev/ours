@@ -8,6 +8,7 @@
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -357,6 +358,11 @@ auto node_possible_mask() -> NodeMask const & {
 
 auto alloc_frames(Gaf alloc_flags, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
+#if MM_TEST_ALLOC_FAILURE
+    if (test::AllocationFailure::hit(test::AllocationSite::Frame)) {
+        return ustl::err(Status::OutOfMem);
+    }
+#endif
     return alloc_frames(bootmem::ANY_NODE, alloc_flags, order, fallback);
 }
 

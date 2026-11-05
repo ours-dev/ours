@@ -1064,10 +1064,46 @@ namespace {
         auto _ = root->unmap(base, 3 * P);
     }
 
+#if MM_TEST_ALLOC_FAILURE
+    auto check_creation_failures(Tally &tally) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        struct Case {
+            AllocationSite site;
+            usize skip;
+        };
+        constexpr Case CASES[] = {
+            {AllocationSite::Heap, 0},
+            {AllocationSite::Object, 0},
+            {AllocationSite::Object, 1},
+        };
+        for (auto const &test: CASES) {
+            Rig rig;
+            if (make_rig(&rig) != Status::Ok) {
+                verdict(tally, false, "a source for failed VMO creation is made");
+                return;
+            }
+            ustl::Arc<mm::VmObjectPaged> vmo;
+            bool failed;
+            {
+                AllocationFailure failure(test.site, test.skip);
+                auto const status = mm::VmObjectPaged::with_source(
+                    rig.source, mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &vmo);
+                failed = status == Status::OutOfMem && failure.triggered();
+            }
+            verdict(tally, failed && !vmo && rig.provider->closed(),
+                    "a failed pager VMO creation closes the source and publishes no VMO");
+        }
+    }
+#endif
+
     auto pagesource_test_command(int, char **) -> int {
         Tally tally;
         check_source(tally);
         check_zero_markers(tally);
+#if MM_TEST_ALLOC_FAILURE
+        check_creation_failures(tally);
+#endif
 
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
