@@ -25,6 +25,7 @@
 // command table does not encode '_'.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/cfg.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/object/vma_dispatcher.hpp>
@@ -82,6 +83,54 @@ namespace {
         return entry;
     }
 
+#if MM_TEST_ALLOC_FAILURE
+    auto check_allocation_failures(Tally &tally, mm::VmAspace &aspace, PhysAddr const phys)
+        -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        constexpr auto BASE = USER_ASPACE_BASE + 64_mb;
+        constexpr auto READ = mm::MmuFlags::Readable | mm::MmuFlags::User | mm::MmuFlags::Discache;
+        auto root = aspace.root_vma();
+        auto const map = [&](VirtAddr const at, usize const size) {
+            return root->map_phys(phys, at, size, READ, mm::MapOptions::Resident,
+                                  "physical allocation failure");
+        };
+        struct Case {
+            AllocationSite site;
+            usize pages;
+            Status expected;
+        };
+        constexpr Case CASES[] = {
+            {AllocationSite::Heap, 1, Status::OutOfMem},
+            {AllocationSite::PageTable, 1, Status::NoMemory},
+            {AllocationSite::PageTable, 32, Status::NoMemory},
+        };
+        auto at = BASE;
+        for (auto const &test: CASES) {
+            auto const size = test.pages * PAGE_SIZE;
+            bool failed;
+            {
+                AllocationFailure failure(test.site);
+                auto const mapping = map(at, size);
+                failed = mapping.is_err() && mapping.unwrap_err() == test.expected &&
+                         failure.triggered();
+            }
+            ustl::Arc<mm::VmMapping> leftover;
+            verdict(tally,
+                    failed && !entry_at(aspace, at).present &&
+                        aspace.find_mapping(at, &leftover) == Status::NotFound,
+                    "a physical mapping failure leaves no PTE or registered mapping");
+            auto retry = map(at, size);
+            auto const last = entry_at(aspace, at + size - PAGE_SIZE);
+            verdict(tally,
+                    retry.is_ok() && last.present && last.pa == phys + size - PAGE_SIZE &&
+                        root->unmap(at, size) == Status::Ok,
+                    "the physical window maps fully on retry");
+            at += 2_mb;
+        }
+    }
+#endif
+
     auto physvmo_test_command(int, char **) -> int {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
@@ -110,6 +159,9 @@ namespace {
         verdict(tally, made, "a region, a physical VMO and a paged VMO are made");
 
         if (made) {
+#if MM_TEST_ALLOC_FAILURE
+            check_allocation_failures(tally, *aspace, phys);
+#endif
             auto vmo = window.dispatcher()->vmo();
             PhysAddr first{};
             verdict(tally,

@@ -266,3 +266,47 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Exercise page-table and COW merge allocation failures (2026-11-05)
+
+**Files**
+
+- `kernel/commands/vma_physical_test.cpp` exercises the physical VMO factory and both sizes of physical map batch.
+- `kernel/commands/vma_seal_test.cpp` fails a page table allocation during a write fault.
+- `kernel/commands/vmo_snapshot_test.cpp` interrupts consolidation of a hidden COW node.
+
+**Symptom**
+
+The existing tests exercised mapping setup, faults and COW consolidation when all storage was available.
+
+**Cause**
+
+An interrupted consolidation must keep a page or a zero marker available through the hidden parent. A failed page-table allocation can leave a VMO page committed before the translation exists.
+
+**Change**
+
+Test both kinds of COW slot, verify that the survivor still sees the inherited value, then write through it. Verify that a demand mapping leaves a committed page behind and installs its PTE on retry. Physical mapping failures cover object allocation, a short batch and a full batch, and release the address for another attempt.
+
+**Reference**
+
+None. The cases exercise the existing failure contracts.
+
+**Verification**
+
+Clang-format and clang-tidy checked all three C++ files. Both images and all 163 host tests passed in the default and opt-in configurations. All 46 instrumented commands passed. The physical VMO, seal and snapshot commands passed 17, 75 and 279 checks. The VMM measured 4315/4770 covered lines (90.46%), with 217 more needed for 95%.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The instrumented run distinguished failed VMA registration from the paths that allocate after a mapping or COW relationship already exists.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

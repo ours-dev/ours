@@ -894,6 +894,44 @@ namespace {
     }
 
 #if MM_TEST_ALLOC_FAILURE
+    auto check_merge_allocation_failure(Tally &tally) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        enum class Slot { Page, Marker };
+        for (auto const slot: {Slot::Page, Slot::Marker}) {
+            Node survivor;
+            Node retiring;
+            if (!make(survivor, 1)) {
+                verdict(tally, false, "a node for merge failure is made");
+                return;
+            }
+            VmPage *original = nullptr;
+            auto const prepared = slot == Slot::Marker
+                                      ? add_marker(survivor, 0) == Status::Ok
+                                      : (original = fill(survivor, 0, 0x75)) != nullptr;
+            if (!prepared || clone_of(survivor, 0, 1, retiring) != Status::Ok) {
+                verdict(tally, false, "both leaves share a populated hidden node");
+                return;
+            }
+            auto const *const parent = parent_of(survivor);
+            bool triggered;
+            {
+                AllocationFailure failure(AllocationSite::Collection);
+                retiring.reset();
+                triggered = failure.triggered();
+            }
+            auto const preserved = slot == Slot::Marker ? reads_zero_page(survivor, 0)
+                                                        : reads_lenders_page(survivor, 0, original);
+            verdict(tally, triggered && parent && parent_of(survivor) == parent && preserved,
+                    "a failed merge keeps the original slot visible through the hidden node");
+            auto writable = lookup(survivor, true, 0);
+            verdict(tally,
+                    writable && writable->writable &&
+                        holds_only(writable->page, slot == Slot::Marker ? 0 : 0x75),
+                    "a survivor of a failed merge can materialize a writable page");
+        }
+    }
+
     auto check_eager_creation_failure(Tally &tally) -> void {
         using mm::test::AllocationFailure;
         using mm::test::AllocationSite;
@@ -2473,6 +2511,7 @@ namespace {
 #if MM_TEST_ALLOC_FAILURE
         check_eager_creation_failure(tally);
         check_clone_allocation_failures(tally);
+        check_merge_allocation_failure(tally);
 #endif
         check_clone_of_mapped_object(tally);
         check_zero_markers(tally);

@@ -358,6 +358,38 @@ namespace {
                                           vmo, mm::MapOptions::Commit, "partial map retry");
         verdict(tally, retried.is_ok(), "the same window can be remapped after partial failure");
     }
+
+    auto check_demand_mapping_failure(Tally &tally, mm::VmAspace &aspace) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        constexpr auto BASE = USER_ASPACE_BASE + 128_mb;
+        constexpr auto RW = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        auto vmo = make_vmo(PAGE_SIZE);
+        auto mapped =
+            aspace.root_vma()->map_with_vmo(BASE, PAGE_SIZE, 0, RW, mm::VmaFlags::PermMask, vmo,
+                                            mm::MapOptions::Lazy, "failed demand map");
+        verdict(tally, mapped.is_ok(), "a lazy mapping for page-table allocation failure");
+        if (!mapped) {
+            return;
+        }
+        bool failed;
+        {
+            AllocationFailure failure(AllocationSite::PageTable);
+            auto const status = aspace.soft_fault(BASE, mm::VmfCause::Write);
+            failed = status == Status::NoMemory && failure.triggered();
+        }
+        PhysAddr pa{};
+        mm::MmuFlags flags{};
+        verdict(tally,
+                failed && aspace.arch_aspace().query(BASE, &pa, &flags) == Status::NotFound &&
+                    vmo->committed_pages(0, PAGE_SIZE) == 1,
+                "a failed page-table allocation leaves a committed page with no translation");
+        verdict(tally,
+                aspace.soft_fault(BASE, mm::VmfCause::Write) == Status::Ok &&
+                    aspace.arch_aspace().query(BASE, &pa, &flags) == Status::Ok &&
+                    !!(flags & mm::MmuFlags::Writable),
+                "the next fault maps the committed page writable");
+    }
 #endif
 
     auto vmaseal_test_command(int, char **) -> int {
@@ -496,6 +528,7 @@ namespace {
         check_protect_allocation_failure(tally, *aspace);
         check_partial_map_failure(tally, *aspace);
         check_unmap_allocation_failure(tally, *aspace);
+        check_demand_mapping_failure(tally, *aspace);
 #endif
 
         // The sealed ones are in the address space when it goes.

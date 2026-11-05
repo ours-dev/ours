@@ -85,3 +85,5 @@ The frame failure point reached the allocator error returned to VMO callers. The
 The pager test reproduced a debug panic when an eager map failed with a staged batch. The coalescer now drops staged addresses on error, and the existing mapping teardown clears previously installed PTEs. The opt-in test verified that a failure after the first full batch released the complete window.
 
 Partial unmap now prepares the protection boundaries before the architecture call. The old build removed the PTE at two injected OutOfMem returns. The fixed seal suite passed all 72 checks, both images and the host tests passed in both configurations, and all 46 instrumented commands passed. The VMM result is 4301/4770 lines.
+
+The final allocation cases passed for physical mapping, a demand fault and both slot types in a failed COW merge. The two builds booted both images, and 163 host tests and 46 instrumented commands passed. The VMM scope measured 4315/4770 lines.
