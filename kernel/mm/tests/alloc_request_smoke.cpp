@@ -7,13 +7,10 @@
 /// request through a pure function -- everything it needs is an argument,
 /// including the calling CPU.
 ///
-/// What is worth pinning is the Gaf::ThisNode rule, because it is a
-/// restriction and not a preference and the difference is easy to get
-/// backwards: it narrows the allowed set to the home node only when the
-/// caller's mask already includes that node, and a mask that leaves the home
-/// node out keeps its own nodes untouched.
+/// Gaf::ThisNode restricts the allowed set to the home node.
+/// If the caller's mask excludes it, the request has no candidates.
 ///
-/// Built with OURS_CONFIG_NUMA=1, which the target sets for this test alone.
+/// Built with MM_NUMA=1, which enables multi-node masks for this host test.
 /// The default build has MAX_NODES == 1, and with one node every case
 /// below collapses into the same one: the caller's mask, the home node and the
 /// result are all {0}, so the narrowing cannot be observed either way. The
@@ -29,7 +26,6 @@ using ours::NodeId;
 using ours::NodeMask;
 using ours::mm::AllocRequest;
 using ours::mm::Gaf;
-using ours::mm::Origin;
 using ours::mm::resolve_request;
 
 auto FAILURES = 0;
@@ -49,7 +45,7 @@ constexpr auto CPU = CpuNum{3};
 
 /// Deliberately a node id and a CPU number that differ, so that a request
 /// which mixed the two would fail a check rather than pass by coincidence.
-constexpr auto HERE = Origin{.node = HOME, .cpu = CPU};
+constexpr auto HERE = AllocRequest::Origin{.node = HOME, .cpu = CPU};
 
 auto mask_of(NodeId const a, NodeId const b) -> NodeMask {
     NodeMask mask;
@@ -62,7 +58,7 @@ auto carried_through() -> void {
     auto const nodes = mask_of(HOME, OTHER);
     auto const request = resolve_request(Gaf::Zero, 4, nodes, HERE);
 
-    check(request.gaf() == Gaf::Zero, "the caller's gaf reaches the request unchanged");
+    check(request.flags() == Gaf::Zero, "the caller's alloc_flags reaches the request unchanged");
     check(request.order() == 4, "the order reaches the request");
     check(request.home_node() == HOME, "the home node is the one the caller named");
     check(request.initiator() == CPU, "the initiator is the CPU passed in, not one read");
@@ -82,7 +78,7 @@ auto with_this_node_including_home() -> void {
 
     check(request.allowed_nodes().test(HOME), "ThisNode keeps the home node");
     check(!request.allowed_nodes().test(OTHER),
-          "ThisNode drops every other node: a restriction, not a preference");
+          "ThisNode restricts allocation to the allowed home node");
 }
 
 auto with_this_node_excluding_home() -> void {
@@ -90,10 +86,8 @@ auto with_this_node_excluding_home() -> void {
     nodes.set(OTHER);
     auto const request = resolve_request(Gaf::ThisNode, 0, nodes, HERE);
 
-    check(!request.allowed_nodes().test(HOME),
-          "a mask without the home node does not gain it from ThisNode");
-    check(request.allowed_nodes().test(OTHER),
-          "a mask without the home node keeps its own nodes rather than emptying");
+    check(!request.allowed_nodes().any(),
+          "ThisNode leaves no candidates when the mask excludes the home node");
 }
 
 auto empty_mask_stays_empty() -> void {

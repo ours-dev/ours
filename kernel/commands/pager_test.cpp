@@ -29,7 +29,7 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_area.hpp>
@@ -115,7 +115,7 @@ namespace {
             return status;
         }
         for (u64 at = offset; at < offset + len; at += P) {
-            auto *const frame = mm::alloc_frames(mm::GAF_KERNEL);
+            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL).value_or(nullptr);
             if (!frame) {
                 return Status::OutOfMem;
             }
@@ -210,7 +210,7 @@ namespace {
         }
         out->proxy = proxy.downgrade();
         out->source = source.downgrade();
-        return mm::VmObjectPaged::with_source(source, mm::GAF_USER, pages * P, mm::VmoFlags::Lazy,
+        return mm::VmObjectPaged::with_source(source, mm::ALLOC_USER, pages * P, mm::VmoFlags::Lazy,
                                               &out->vmo) == Status::Ok;
     }
 
@@ -234,9 +234,9 @@ namespace {
 
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
-                                          ustl::Arc<mm::VmObject>(pager.vmo), mm::VmMapOption::None,
-                                          "pager.test");
+        auto mapping =
+            root->map_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
+                          ustl::Arc<mm::VmObject>(pager.vmo), mm::MapOptions::Lazy, "pager.test");
         if (mapping.is_err()) {
             verdict(tally, false, "the VMO is mapped");
             return;
@@ -311,9 +311,9 @@ namespace {
         }
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_with_vmo(VirtAddr::Anywhere, P, 0, rw, mm::VmaFlags::PermMask,
-                                          ustl::Arc<mm::VmObject>(pager.vmo), mm::VmMapOption::None,
-                                          "pager.test overtime");
+        auto mapping = root->map_vmo(VirtAddr::Anywhere, P, 0, rw, mm::VmaFlags::PermMask,
+                                     ustl::Arc<mm::VmObject>(pager.vmo), mm::MapOptions::Lazy,
+                                     "pager.test overtime");
         if (mapping.is_err()) {
             verdict(tally, false, "the VMO with the short overtime is mapped");
             return;
@@ -354,8 +354,8 @@ namespace {
         {
             mm::PageRequest primary;
             mm::PageRequest waiter;
-            auto const raised = source->get_pages(0, P, &primary) == Status::ShouldWait &&
-                                source->get_pages(0, P, &waiter) == Status::ShouldWait;
+            auto const raised = source->request_pages(0, P, &primary) == Status::ShouldWait &&
+                                source->request_pages(0, P, &waiter) == Status::ShouldWait;
             auto const read = next_packet(port, &packet) && is_read(packet, 0, P);
             primary.cancel();
             auto const asked_again = port.dequeue(0, &packet) == Status::Ok;
@@ -371,8 +371,8 @@ namespace {
         {
             mm::PageRequest primary;
             mm::PageRequest waiter;
-            auto const raised = source->get_pages(P, P, &primary) == Status::ShouldWait &&
-                                source->get_pages(P, P, &waiter) == Status::ShouldWait;
+            auto const raised = source->request_pages(P, P, &primary) == Status::ShouldWait &&
+                                source->request_pages(P, P, &waiter) == Status::ShouldWait;
             PortPacket behind{};
             behind.key = KEY + 1;
             auto const queued = port.queue_user(behind) == Status::Ok;
@@ -394,10 +394,10 @@ namespace {
             mm::PageRequest primary;
             mm::PageRequest later;
             mm::PageRequest waiter;
-            auto const raised = source->get_pages(2 * P, P, &carried) == Status::ShouldWait &&
-                                source->get_pages(3 * P, P, &primary) == Status::ShouldWait &&
-                                source->get_pages(4 * P, P, &later) == Status::ShouldWait &&
-                                source->get_pages(3 * P, P, &waiter) == Status::ShouldWait;
+            auto const raised = source->request_pages(2 * P, P, &carried) == Status::ShouldWait &&
+                                source->request_pages(3 * P, P, &primary) == Status::ShouldWait &&
+                                source->request_pages(4 * P, P, &later) == Status::ShouldWait &&
+                                source->request_pages(3 * P, P, &waiter) == Status::ShouldWait;
             primary.cancel();
             auto const in_order = next_packet(port, &packet) && is_read(packet, 2 * P, P) &&
                                   next_packet(port, &packet) && is_read(packet, 3 * P, P) &&
@@ -541,9 +541,8 @@ namespace {
             auto vmo = made.vmo.dispatcher()->vmo();
             auto root = aspace.root_vma();
             auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-            auto mapping =
-                root->map_with_vmo(VirtAddr::Anywhere, 2 * P, 0, rw, mm::VmaFlags::PermMask, vmo,
-                                   mm::VmMapOption::None, "pager.test pager first");
+            auto mapping = root->map_vmo(VirtAddr::Anywhere, 2 * P, 0, rw, mm::VmaFlags::PermMask,
+                                         vmo, mm::MapOptions::Lazy, "pager.test pager first");
             if (mapping.is_err()) {
                 verdict(tally, false, "the VMO that outlives its pager is mapped");
                 return;

@@ -76,7 +76,7 @@
 #include <ours/interrupt.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/interrupt_dispatcher.hpp>
 #include <ours/object/interrupt_event_dispatcher.hpp>
@@ -244,7 +244,7 @@ namespace {
     /// leaked, and logged.
     auto park_waiter(Tally &tally, ustl::Arc<InterruptDispatcher> interrupt, Waiter **const out)
         -> Thread * {
-        auto *const waiter = new (mm::GAF_KERNEL) Waiter{};
+        auto *const waiter = new (mm::ALLOC_KERNEL) Waiter{};
         if (waiter == nullptr) {
             verdict(tally, false, "allocate a waiter");
             return nullptr;
@@ -960,7 +960,7 @@ namespace {
                       num_cpus);
             return;
         }
-        auto *const race = new (mm::GAF_KERNEL) ModeRace{};
+        auto *const race = new (mm::ALLOC_KERNEL) ModeRace{};
         if (race == nullptr) {
             verdict(tally, false, "allocate the mode race");
             return;
@@ -1122,7 +1122,7 @@ namespace {
                       num_cpus);
             return;
         }
-        auto *const teardown = new (mm::GAF_KERNEL) Teardown{};
+        auto *const teardown = new (mm::ALLOC_KERNEL) Teardown{};
         if (teardown == nullptr) {
             verdict(tally, false, "allocate the teardown race");
             return;

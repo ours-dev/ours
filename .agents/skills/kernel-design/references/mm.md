@@ -80,6 +80,36 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
   from the progress made. Reference: Zircon's
   `VmObjectPaged::ReadUser()`/`WriteUser()`.
 
+## COW range notifications (user decision, 2026-11-04)
+
+A COW node decides the range and timing of page-table invalidation and
+synchronously notifies one representative VMO under the tree lock. The
+representative holds a flat list of other views over the same node. Each
+view clips the original range against its own window and updates its
+mappings. A slice joins its backing node's view group regardless of its
+creation parent. The representative hands off the list under the tree lock
+before destruction. Page movement or release follows the notification.
+
+## Private VMM flags (user decision, 2026-11-04)
+
+A private flags word can include mutually exclusive bits when the owning
+class controls every transition. Document legal combinations and the
+transition that enforces them on the enum. Expose named operations, and
+update the word under one synchronization discipline. PageSource replaces
+Detached with Closed under its source lock. Both stop new page requests.
+
+## Mapping options (user decision, 2026-11-04)
+
+The VMM uses one scoped MapOptions bitmask. ModeMask selects Lazy when
+zero, Resident for existing pages, or Commit for owned pages. Creation
+rejects conflicting modes and unknown bits before registration. Sealed
+combines with any one mode. Explicit installation accepts only Resident
+or Commit. The user ABI translates MapRange to Resident.
+
+Use Sealed for mappings whose address and permissions must survive ordinary
+unmap and protect requests. Use VMO pinning to express physical residency.
+The kernel still tears down sealed mappings during address-space destruction.
+
 ## Page aging (decided 2026-10-25, built 2026-10-30)
 
 - Recent use of a page is recorded in two ways. The hardware sets the A bit
@@ -181,3 +211,93 @@ the per-CPU frame cache, which is meant to run without it. Reference: Zircon's
 
 The object allocator is "cache": `MemCache`, `ObjectCache`,
 `object_cache.cpp`. "Slab" names only the internal page-level unit.
+
+The user clarified on 2026-11-04 that Pm/Vm prefixes mark principal memory
+models and are not mandatory on every helper. Prefer the repository's existing
+concrete helper names and containing-object context: PageQueues,
+ProtectionRanges, ZoneList, ZoneCandidates, VmCowPages::Cursor, and
+VmObject::Builder. Consolidate terminology rather than mechanically adding
+prefixes or role suffixes. Specific PMM helper renames remain design
+proposals, not accepted implementation decisions.
+
+## PmNode allocation interface (user decision, 2026-11-04)
+
+PmFrame, PmZone, and PmNode are the principal PMM resource models. The user
+selected PmNode::alloc_frames and PmNode::free_frames as static operations
+across nodes. Node instances retain their resource state; the static allocation
+interface selects a home node and walks permitted fallback zones. Retain the
+implicit-local and explicit-home calling forms and existing restrictions.
+This supersedes the separate FrameAllocator class in the earlier proposal.
+
+`Gaf::ThisNode` follows Linux's `__GFP_THISNODE` placement contract.
+A request may use only its explicit home node or, for implicit allocation,
+the current CPU's node. The resolver intersects the caller's allowed mask with
+that node, so an excluded or exhausted home yields allocation failure. The
+implicit path skips thread placement policy. References include Linux
+`gfp_zonelist()`, `prepare_alloc_pages()` and `alloc_frozen_pages_noprof()`.
+
+`ZoneList::candidates()` filters the stored zone order against a resolved
+request. `PmZone::take_block()` and `return_block()` own block transfer.
+`PmNode` completes zeroing outside the zone lock and compares the actual
+supplier with the captured initiator node for locality. Its static return
+path validates frames for both single and list release.
+
+`mm::alloc_frames()` is the result-returning interface for immediate block
+allocation and `Gaf::CanWait` pressure admission. `ShouldWait` lets the caller
+release its locks before waiting. `wait_for_frame_allocation()` serves the
+default-placement single-page wait. The static `PmNode` operations perform
+the physical transfer.
+
+Buddy transfers and their free-count deltas share the zone lock. Public
+static node allocation and return operations observe pressure once after
+completion, with staged blocks restored before observation on error.
+
+A failed order-zero walk may report an eligible zone below High. The
+background reclaimer resamples queued zones and walks the selected node's
+page queues. Admission and waits use the global gate. The node-scoped
+reclaim request is advisory and preserves the immediate allocation result.
+
+A block attempt carries its optional depleted zone in its typed failure.
+The reclaimer stores Idle and Pending as per-zone enum states. Owner-directed
+block return requires a frame reference at the zone boundary.
+
+## VMM naming choices (user decision, 2026-11-05)
+
+Keep the address selection name alloc_spot because selecting an address may
+later include randomization. Retain find_spot in VmaSet, MultiPageRequest,
+range_change_locked_object, create_subvma and VmPageSpliceList. Use subvma
+for child virtual memory areas.
+
+The approved VMM names are PageSource::request_pages, VmFault::Cause with
+the member VmFault::cause, lookup_cursor_locked on the COW and paged VMO
+layers, Cursor::PageLookup and VmArea::map_vmo. Use VmArea::UnmapScope with
+Mapping and Subarea for the unmap child policy. The placement
+helper is resolve_range_locked.
+
+## Zone free-frame count (user decision, 2026-11-05)
+
+PmZone::num_free_frames() reads its atomic free-frame counter without the
+zone lock. Buddy transfers update it by the actual frame delta under that
+lock. A read can observe the preceding count during an in-flight transfer.
+PmZone::count_free_frames() traverses the buddy lists while holding the zone
+lock. Document these contracts rather than encoding approximation in the
+getter name.
+
+## PMM helper classes (user decision, 2026-11-05)
+
+ZoneCandidates is the filtered range returned by ZoneList::candidates().
+CpuNodeMap owns the runtime CPU-to-node table and its per-CPU node-pointer
+cache. Allocation origin belongs to AllocRequest as AllocRequest::Origin.
+These names replace ZoneSelector, NodePlacement and the namespace-level
+Origin without adding a parallel interface.
+
+## PMM threshold and accessor names (user decision, 2026-11-05)
+
+The zone threshold enum is PmZone::Watermark, matching the existing
+watermark() and watermark_ok() spelling. Keep its unsigned base and the
+Min, Low, High, Count order. Put each variant's explanation above that
+variant, with a blank line between entries.
+
+The allocation-state policy accessor is AllocState::policy(), without a
+get_ prefix. It still returns a retained Arc; the allocator copies it under
+the thread resource lock before using it.

@@ -36,6 +36,7 @@ declare_args() {
   mm_numa = false
   mm_numa_emulation = false
   mm_allocation_policy = false
+  mm_test_alloc_failure = false
 
   # Selects the memory model. The two are mutually exclusive: exactly one is
   # compiled, and `MemMap` names whichever it is. False keeps the sparse

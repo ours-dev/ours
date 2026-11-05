@@ -338,7 +338,7 @@ class Rc final {
     constexpr Rc(std::nullptr_t) noexcept {}
 
     /// Adopt an externally allocated object. The object must have been created
-    /// with a zero strong count (the normal case: allocated with `new (gaf) T`
+    /// with a zero strong count (the normal case: allocated with `new (alloc_flags) T`
     /// or from an object cache, or a raw singleton), and this call turns it
     /// into one strong owner.
     explicit Rc(T *pointer) noexcept : m_pointer(pointer) {

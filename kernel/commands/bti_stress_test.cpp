@@ -35,7 +35,7 @@
 // The name has no underscore for the reason usercopy.test's does not: gktl's
 // command table does not encode '_'.
 #include <ours/cpu.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/object/bti_dispatcher.hpp>
@@ -297,9 +297,9 @@ namespace {
 
         // Heap, not the stack: on the failure path stuck threads still point at
         // them after this command returns, so they are leaked rather than popped.
-        auto *const state = new (mm::GAF_KERNEL) State{};
-        auto *const slots = new (mm::GAF_KERNEL) Slot[TOKENS]{};
-        auto *const workers = new (mm::GAF_KERNEL) Worker[WORKERS]{};
+        auto *const state = new (mm::ALLOC_KERNEL) State{};
+        auto *const slots = new (mm::ALLOC_KERNEL) Slot[TOKENS]{};
+        auto *const workers = new (mm::ALLOC_KERNEL) Worker[WORKERS]{};
         if (state == nullptr || slots == nullptr || workers == nullptr) {
             log::warn("btistress.test: out of memory");
             return 1;
@@ -325,8 +325,8 @@ namespace {
         };
 
         // ---- the first race
-        if (mm::VmObjectPaged::create(mm::GAF_USER, TOKENS * P, mm::VmoFlags::Lazy, &state->vmo) !=
-            Status::Ok) {
+        if (mm::VmObjectPaged::create(mm::ALLOC_USER, TOKENS * P, mm::VmoFlags::Lazy,
+                                      &state->vmo) != Status::Ok) {
             log::error("btistress.test: could not make a VMO");
             return 1;
         }
@@ -370,7 +370,7 @@ namespace {
         state->vmo = {};
 
         // ---- the second race
-        if (mm::VmObjectPaged::create(mm::GAF_USER, PAGES * P, mm::VmoFlags::Lazy, &state->vmo) !=
+        if (mm::VmObjectPaged::create(mm::ALLOC_USER, PAGES * P, mm::VmoFlags::Lazy, &state->vmo) !=
             Status::Ok) {
             log::error("btistress.test: could not make a VMO");
             return 1;

@@ -17,7 +17,7 @@ auto VmObjectPhysical::create(PhysAddr base, usize size, Flags vmof, ustl::Arc<S
         return Status::InvArgs;
     }
 
-    auto self = new (GAF_KERNEL) VmObjectPhysical(base, size, vmof);
+    auto self = new (ALLOC_KERNEL) VmObjectPhysical(base, size, vmof);
     if (!self) {
         return Status::OutOfMem;
     }

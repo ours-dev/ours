@@ -27,7 +27,9 @@
 ///     whose on_signals() reads one message from the connection's channel,
 ///     hands it to the Server and does what the Outcome says;
 ///   - the Delegate, the program's object that says what an Open of a service
-///     node comes to.
+///     node comes to;
+///   - the NodeHandler, the program's object that answers the Handler nodes of
+///     the tree (<ioservice/server.hpp>), now or later.
 ///
 /// The events: serve() binds a directory to a channel and waits on it. When
 /// a message arrives the slot fires. A reply is written back, a malformed
@@ -43,6 +45,17 @@
 /// slot. So does a
 /// slot the Loop cannot wait on again: it frees the slot and tells the
 /// Binding, which ends the connection.
+///
+/// A request the NodeHandler answers Pending is not answered now: the Binding
+/// answers Suspend, so that the Loop leaves the connection's slot in use and
+/// unarmed, and the next message of the client waits in its channel, in
+/// order, while this one is open. The handler ends the request later with
+/// complete(), from one of its own Loop callbacks: the glue writes the reply
+/// on the connection's channel, and then resumes the slot, in that order, so
+/// that the next request is never started before the last one is answered.
+/// The connection is not released by complete(), whatever the client did
+/// meanwhile: a client that went away is seen by the connection's own
+/// callback, once the slot is resumed (see complete()).
 ///
 /// One thread, as the Loop it runs on: nothing is locked, and an on_signals()
 /// runs to completion before the next one starts.
@@ -99,7 +112,10 @@ class LoopServer final {
         /// |path| is a view of the request, valid for the call only: a
         /// program that keeps it copies it. It is whatever the client sent,
         /// a path that was not valid included. A refused Clone has no path
-        /// and is not reported. This runs for every refused Open of every
+        /// and is not reported, and neither is an Open that a NodeHandler
+        /// answered Pending and that was refused when complete() ended it:
+        /// its request is gone by then, so there is no path to say. This runs
+        /// for every refused Open of every
         /// directory the server serves, so a program that serves a tree
         /// where a refusal is ordinary (a missing file) tells the
         /// directories apart by |directory|.
@@ -128,8 +144,16 @@ class LoopServer final {
     /// connection was released and the Loop has freed its slot. A connection
     /// is released by handle(), which answers Close, so that the Loop frees
     /// the slot before any other callback runs, and by on_rearm_failed(),
-    /// which the Loop calls after it has freed the slot. The constructor is
-    /// constexpr, so that an array of them can be constant-initialised.
+    /// which the Loop calls after it has freed the slot. Nothing else
+    /// releases one, complete() least of all: it runs in another slot's
+    /// callback, while this connection's slot is still in use, so an index it
+    /// freed could be taken by a new connection that this slot's late packet
+    /// would then be handled as. The constructor is constexpr, so that an
+    /// array of them can be constant-initialised.
+    ///
+    /// A Binding keeps the key the Loop gave its slot, which complete() needs
+    /// to resume the slot. It is the key of the slot's current life only: it is
+    /// set again whenever the connection's slot is.
     class Binding final: public loop::Waiter {
       public:
         constexpr Binding() = default;
@@ -148,6 +172,12 @@ class LoopServer final {
 
         LoopServer *m_server = nullptr;
         ConnectionId m_connection = {};
+        /// The key add() answered for the connection's slot, valid from the
+        /// connection's watch() until the slot is freed. Before the first
+        /// watch() it names slot 0 in its first life, which nothing reads: a
+        /// Binding is looked up for a ticket only through a connection that
+        /// is alive, and a live connection was watched.
+        loop::Key m_key = loop::Key{0, 0};
     };
 
     /// The storage a program lends the server, sized by how many connections
@@ -173,11 +203,14 @@ class LoopServer final {
     };
 
     /// A server for |tree|, whose connections wait on |loop|. |tree|, |loop|,
-    /// |delegate| and everything |memory| refers to must outlive it; the tree
-    /// may still grow while it is served. |syscalls| is the Server's.
-    /// |delegate| may be null for now: see set_delegate().
+    /// |delegate|, |handler| and everything |memory| refers to must outlive it;
+    /// the tree may still grow while it is served. |syscalls| is the Server's.
+    /// |delegate| may be null for now: see set_delegate(). |handler| answers
+    /// the tree's Handler nodes (NodeKind::Handler) and is the Server's, as its
+    /// constructor says; without one, an Open that walks to a Handler node is
+    /// refused with NotSupported, and nothing is ever pending.
     LoopServer(Tree const &tree, loop::Loop &loop, Syscalls syscalls, Memory memory,
-               Delegate *delegate = nullptr);
+               Delegate *delegate = nullptr, NodeHandler *handler = nullptr);
 
     /// The Server and its slots keep pointers to this object.
     LoopServer(LoopServer const &) = delete;
@@ -199,6 +232,60 @@ class LoopServer final {
     [[nodiscard]]
     auto serve(ours::Uandle channel, NodeId directory, prot::io::Operations rights) -> ours::Status;
 
+    /// Ends the request the NodeHandler answered Pending with |ticket|, with
+    /// its |result|, and answers the client: Server::complete() decides what
+    /// the answer is, and this carries it out on the connection the ticket
+    /// names, then resumes that connection's slot. The overload is the
+    /// operation's own, as the Server's. Call it from a Loop callback of the
+    /// handler's own, never from inside the call that was given the ticket
+    /// (the Server refuses that with NotFound: the ticket is good once the call
+    /// has returned Pending), and never use the ticket, or the cookie of the
+    /// connection, once it has returned: the connection may be released from
+    /// inside it.
+    ///
+    /// What is carried out, by what the Server answers:
+    ///   - a reply (Read, ReadDirents, GetBackingMemory, or an Open's refusal
+    ///     of a connection already made) is written on the connection's
+    ///     channel. A write that fails, the usual one being a client that went
+    ///     away while it waited, is told to the Delegate's write_failed() as
+    ///     any failed reply is, and the connection is left alone: its own
+    ///     callback sees the client gone once the slot is resumed, releases it
+    ///     and closes the slot, and the handler is told release(cookie) then,
+    ///     once;
+    ///   - a pending Open that was granted becomes a connection on the server
+    ///     end the Server held, and gets a slot (watch()); one that cannot get a
+    ///     slot, or that the Server refused, is answered with an epitaph on
+    ///     that server end, which is then closed. No Open path is left to say,
+    ///     so a refusal found here is not reported to open_refused();
+    /// and then the connection's slot is resumed, so the client's next message
+    /// is read.
+    ///
+    /// Answers Ok when the Server took the result, whatever became of the
+    /// reply: the request is ended, and the result is the reply's now. A
+    /// ticket the Server refuses is answered as it refuses it (NotFound for a
+    /// ticket that names no pending request, InvArgs for a result of another
+    /// operation than the request's), with nothing written and nothing taken
+    /// from |result|: a VMO handle in it is still the caller's, and the
+    /// cookie of an Opened still the handler's to release. BadState or
+    /// NotFound after the reply was written means the slot was not suspended
+    /// (someone resumed it, or a Binding answered Rearm for a Pending
+    /// request), a bug of the program and not of the handler: the request is
+    /// ended and answered all the same. A resume that the kernel refuses (the
+    /// wait could not be armed) frees the slot, and the Binding releases the
+    /// connection, from inside this call; the answer is Ok, since the reply is
+    /// out.
+    [[nodiscard]]
+    auto complete(Ticket ticket, OpenResult const &result) -> ours::Status;
+
+    [[nodiscard]]
+    auto complete(Ticket ticket, ReadResult const &result) -> ours::Status;
+
+    [[nodiscard]]
+    auto complete(Ticket ticket, EntriesResult const &result) -> ours::Status;
+
+    [[nodiscard]]
+    auto complete(Ticket ticket, VmoResult const &result) -> ours::Status;
+
   private:
     /// Handles what |observed| says happened on |connection|: one message,
     /// or its client gone. It is what the connection's Binding does when the
@@ -217,6 +304,27 @@ class LoopServer final {
     /// caller.
     [[nodiscard]]
     auto watch(ours::Uandle channel, ConnectionId connection) -> ours::Status;
+
+    /// Releases |connection| and closes the server end of an Open that was
+    /// pending on it, if one was: the Server hands it back because nothing
+    /// else would answer it. The program's callbacks release a connection
+    /// that is not waiting, so it is Invalid in practice.
+    auto release(ConnectionId connection) -> void;
+
+    /// A new connection |outcome| made for the request's channel: waits on it
+    /// (watch()), and answers an epitaph on the channel, closed, when that
+    /// fails. The Bind of dispatch() and of complete().
+    auto bind(Outcome const &outcome) -> void;
+
+    /// Writes |outcome|'s epitaph on its handle, the request's channel, and
+    /// closes it: the Refuse of dispatch() and of complete().
+    auto refuse(Outcome const &outcome) -> void;
+
+    /// Carries out what Server::complete() answered for |ticket|, then
+    /// resumes the connection's slot; the four complete() overloads end here.
+    [[nodiscard]]
+    auto finish(Ticket ticket, ustl::Result<Outcome, ours::Status> const &completed)
+        -> ours::Status;
 
     loop::Loop *m_loop;
     Server m_server;

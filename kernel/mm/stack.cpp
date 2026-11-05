@@ -22,7 +22,7 @@ auto Stack::init_first() -> void {
 
 auto Stack::init(usize size) -> Status {
     ustl::Arc<VmObjectPaged> vmo;
-    auto status = VmObjectPaged::create(GAF_KERNEL, size, VmoFlags::Pinned, &vmo);
+    auto status = VmObjectPaged::create(ALLOC_KERNEL, size, VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
         log::trace("Failed to allocate a kernel stack, size={}", size);
         return status;
@@ -32,25 +32,15 @@ auto Stack::init(usize size) -> Status {
     auto rvma = VmAspace::kernel_aspace()->root_vma();
     DEBUG_ASSERT(rvma);
 
-    ustl::Arc<VmMapping> mapping;
-    status = rvma->create_mapping(
-        VirtAddr::Anywhere, size, 0, MmuFlags::Readable | MmuFlags::Writable, VmaFlags::PermMask,
-        vmo, "k-stack-mapping", VmMapOption::Pinned | VmMapOption::Populate, &mapping);
-    if (Status::Ok != status) {
-        log::trace("Failed to allocate a VmMapping, size={}, reason={}", size, to_string(status));
-        return status;
+    // Every page must be the stack's own and mapped before the stack is used.
+    auto mapping =
+        rvma->map_vmo(VirtAddr::Anywhere, size, 0, MmuFlags::Readable | MmuFlags::Writable,
+                      VmaFlags::PermMask, ustl::move(vmo), MapOptions::Commit, "k-stack-mapping");
+    if (mapping.is_err()) {
+        return mapping.unwrap_err();
     }
 
-    // Every page made the stack's own before it is mapped: nothing may fault on
-    // a kernel stack.
-    status = mapping->map(mapping->base(), size, MapOptions::Commit);
-    if (Status::Ok != status) {
-        log::trace("Failed to map the space for kernel stack, size={}, reason={}", size,
-                   to_string(status));
-        return status;
-    }
-
-    m_stack = ustl::move(mapping);
+    m_stack = ustl::move(mapping).unwrap();
     m_base = m_stack->base();
     m_size = m_stack->size();
 

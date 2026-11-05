@@ -3,7 +3,7 @@
 #ifndef OURS_MM_VM_COW_PAGES_HPP
 #define OURS_MM_VM_COW_PAGES_HPP 1
 
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/vm_page_list.hpp>
@@ -23,33 +23,6 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
   public:
     class Cursor;
 
-    /// One VmObjectPaged over these pages, as the node knows it. A member of the
-    /// object, which registers it with the node it is over and takes it off
-    /// again when it dies, both under the tree's lock.
-    ///
-    /// The node has to know its objects because an operation on the pages has to
-    /// reach every mapping of them, and the mappings belong to the objects: a
-    /// slice shares its parent's pages and has a list of mappings of its own,
-    /// so a single back pointer to one object would not do. This is composition
-    /// and not a base class of the object, so that the node's header need not
-    /// know the object's.
-    class Attachment {
-        using Self = Attachment;
-
-      public:
-        explicit Attachment(VmObjectPaged *owner) : m_owner(owner) {}
-        USTL_NO_MOVEABLE_AND_COPYABLE(Attachment);
-
-      private:
-        friend class VmCowPages;
-
-        VmObjectPaged *const m_owner;
-
-        ustl::collections::intrusive::ListMemberHook<> m_hook;
-        USTL_DECLARE_HOOK_OPTION(Self, m_hook, Options);
-        USTL_DECLARE_LIST(Self, List, Options);
-    };
-
     /// What kind of node this is, fixed when it is made. A group of flags and
     /// not a bool for each, because a node will have more of them, and each new
     /// bool would have to be threaded through every factory by hand.
@@ -67,9 +40,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         /// or when the allocator has no block, gets one page as any node's.
         LargeBlocks = 1_bit,
 
-        /// The pages of a pinned VMO (VmoFlags::Pinned): filed on the pinned
-        /// queue, never reclaimed. The VMO is what is pinned, but it is the
-        /// node that files its pages, so the node is told.
+        /// Permanent residency for this node. Its frames stay on the pinned
+        /// queue and cannot leave through cloning or page transfer.
         Pinned = 2_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
@@ -80,11 +52,12 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// and what a mapping maps as one leaf.
     static constexpr usize BLOCK_SIZE = 2_mb;
 
-    static auto create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status;
+    static auto create(Gaf alloc_flags, usize size, ustl::Arc<VmCowPages> *out) -> Status;
 
     /// A node with no relatives of the kind |flags| says; only LargeBlocks is
     /// one a node with no relatives can be.
-    static auto create(Gaf gaf, usize size, Flags flags, ustl::Arc<VmCowPages> *out) -> Status;
+    static auto create(Gaf alloc_flags, usize size, Flags flags, ustl::Arc<VmCowPages> *out)
+        -> Status;
 
     /// A node of |size| bytes with no relatives whose pages come from |src|:
     /// a page nobody has supplied is not zero but missing, and a lookup of it
@@ -94,7 +67,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// Such a node has no children: create_child() and create_clone_locked()
     /// refuse it with NotSupported, because a lookup from a child stops at the
     /// root without asking the root's source.
-    static auto with_source(ustl::Arc<PageSource> src, Gaf gaf, usize size,
+    static auto with_source(ustl::Arc<PageSource> src, Gaf alloc_flags, usize size,
                             ustl::Arc<VmCowPages> *out) -> Status;
 
     /// A node of |size| bytes hanging under |parent|, in the parent's tree.
@@ -139,11 +112,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// aligned, and a hidden node cannot be cloned: BadState.
     ///
     /// Write is taken from every mapping of the pages that move, through the
-    /// objects registered over this node (change_range_locked()), since the
+    /// objects registered over this node (range_change_locked()), since the
     /// pages become shared and a writable mapping would write to all of their
     /// viewers. What this cannot check, because pinning is the object's and not
     /// the pages', is that none of them is pinned: the object that calls this
-    /// has to check that, and answer BadState for a pinned page.
+    /// has to check that, and answer BadState for a pinned node or page.
     ///
     /// The lock is taken by the caller, who has the answer to both anyway.
     ///
@@ -195,35 +168,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
                                    static_cast<PgOff>(((offset + len - 1) >> PAGE_SHIFT) + 1));
     }
 
-    /// Registers and takes off an object over these pages; see Attachment.
+    /// Notify the representative VMO of a page-table operation in this node's
+    /// byte range. The notification completes under the tree lock before the
+    /// caller changes the page slots or releases frames.
     TA_REQUIRES(m_lock)
-    auto attach_locked(Attachment &attachment) -> void {
-        m_attachments.push_back(attachment);
-    }
-
-    TA_REQUIRES(m_lock)
-    auto detach_locked(Attachment &attachment) -> void {
-        if (attachment.m_hook.is_linked()) {
-            m_attachments.erase(attachment);
-        }
-    }
-
-    /// How many objects are over these pages.
-    [[nodiscard]]
-    TA_REQUIRES(m_lock) auto nr_attached_locked() const -> usize {
-        return m_attachments.size();
-    }
-
-    /// Makes |change| to the page tables of every mapping, of every object
-    /// over these pages, of [offset, offset + len) of them (offsets in this
-    /// node's bytes, which each object translates into its own): a clone takes
-    /// Write away from the node it clones, since the pages are about to be
-    /// shared, and take_pages() unmaps what it takes. See RangeChange.
-    ///
-    /// Every object over the node is reached, a slice included: a slice
-    /// shares the pages and has mappings of its own (see Attachment).
-    TA_REQUIRES(m_lock)
-    auto change_range_locked(u64 offset, u64 len, RangeChange change) -> void;
+    auto range_change_locked(usize offset, usize len, RangeOp op) -> void;
 
     /// What reclaim_page() or dedup_zero_page() did.
     enum class ReclaimResult : u8 {
@@ -280,41 +229,6 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         return m_children.size();
     }
 
-    /// Makes every page of [offset, offset + size) the node's own, from the
-    /// start, and says in |nr_commited| how many it got through. ShouldWait
-    /// when a page source has to supply one first: the request for it is
-    /// raised in |request|, which the caller waits on with this lock let go
-    /// and then calls again from the page it stopped at.
-    TA_REQUIRES(m_lock)
-    auto commit_range_locked(usize offset, usize size, MultiPageRequest *request,
-                             usize *nr_commited) -> Status;
-
-    /// Makes every page of [offset, offset + size) the node's own, as
-    /// commit_range_locked() does, and pins each one, from the start: a pinned
-    /// page stays where it is, in this node and in the same frame, until every
-    /// pin on it is undone. A page that is pinned is filed as pinned, and not
-    /// reclaimable.
-    ///
-    /// Counted: a page pinned twice needs two unpins. A page that already holds
-    /// 255 pins is NoResource. |nr_pinned| is how many pages from the start of
-    /// the range were pinned, whatever the answer: ShouldWait when a page source
-    /// has to supply a page first, the request raised in |request| as for
-    /// commit_range_locked(), and the caller calls again from the page it
-    /// stopped at; any other error leaves those pages pinned, for the caller
-    /// to undo with unpin_range_locked() or to go on from.
-    TA_REQUIRES(m_lock)
-    auto pin_range_locked(usize offset, usize size, MultiPageRequest *request, usize *nr_pinned)
-        -> Status;
-
-    /// Undoes one pin of each page of [offset, offset + size). BadState, and no
-    /// pin undone, if any page of the range holds none: unpinning what was not
-    /// pinned is the caller's bug, and a count that wrapped would hold a page
-    /// for ever. A page whose last pin goes is filed again as its kind says,
-    /// and a page of a node with a page source as written, not reclaimable:
-    /// the pin handed it to a device that may have changed it.
-    TA_REQUIRES(m_lock)
-    auto unpin_range_locked(usize offset, usize size) -> Status;
-
     /// How many pages of this node are pinned.
     TA_REQUIRES(m_lock)
     auto nr_pinned_pages_locked() const -> usize {
@@ -322,7 +236,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     }
 
     TA_REQUIRES(m_lock)
-    auto make_cursor(usize offset, usize size) -> ustl::Result<Cursor, Status>;
+    auto lookup_cursor_locked(usize offset, usize size) -> Cursor;
 
     /// One 2 MiB block as this node sees it: where its frames start, and
     /// whether the node may write them.
@@ -419,7 +333,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// |pages|, a fresh list as long as the range, at the same places, and
     /// leaves the range reading zero: each page and zero marker moves, and an
     /// offset with neither is a gap. First the range is unmapped from every
-    /// mapping of every object over the node (change_range_locked()), since a
+    /// mapping of every object over the node (range_change_locked()), since a
     /// frame that leaves has to leave no entry behind.
     ///
     /// In a copy-on-write tree, a page this node only sees through an
@@ -439,8 +353,9 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     ///
     /// NotSupported for a node with a page source: its pages are the source's
     /// content, not the caller's to move.
+    /// BadState for a permanently pinned node or a counted pin in the range.
     TA_REQUIRES(m_lock)
-    auto take_pages_locked(u64 offset, u64 len, VmPageSpliceList *pages) -> Status;
+    auto take_pages_locked(usize offset, usize len, VmPageSpliceList *pages) -> Status;
 
     FORCE_INLINE
     auto size_locked() const -> usize {
@@ -448,6 +363,29 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     }
 
   private:
+    friend class VmObjectPaged;
+
+    enum class CommitMode : u8 {
+        Owned,
+        Pin,
+    };
+
+    /// Materializes the node's own pages in order and optionally pins each one.
+    /// |nr_done| counts the completed prefix, including on error. On ShouldWait
+    /// the caller drops the lock, waits on |request| and resumes after that prefix.
+    TA_REQUIRES(m_lock)
+    auto commit_range_locked(usize offset, usize size, CommitMode mode, MultiPageRequest &request,
+                             usize &nr_done) -> Status;
+
+    /// Undoes one pin of each page of [offset, offset + size). BadState, and no
+    /// pin undone, if any page of the range holds none: unpinning what was not
+    /// pinned is the caller's bug, and a count that wrapped would hold a page
+    /// for ever. A page whose last pin goes is filed again as its kind says,
+    /// and a page of a node with a page source as written, not reclaimable:
+    /// the pin handed it to a device that may have changed it.
+    TA_REQUIRES(m_lock)
+    auto unpin_range_locked(usize offset, usize size) -> Status;
+
     /// The lock of one whole tree of VmCowPages, held by every node in it.
     ///
     /// A node cannot own the tree's mutex, because any node can die first:
@@ -490,7 +428,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// parameter, not made here, because making one can fail and a constructor
     /// cannot say so. |parent| is empty for a node that hangs under nothing;
     /// create_child() clamps |parent_limit| before it gets here.
-    VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
+    VmCowPages(Gaf alloc_flags, usize size, ustl::Arc<HierarchyState> hierarchy,
                ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit, Flags flags);
 
     ~VmCowPages();
@@ -677,12 +615,12 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// create(), create_child() and the clone do not each spell out the cache
     /// call and its OutOfMem. The node is not linked onto any list: that is
     /// the caller's, under the lock.
-    static auto make_node(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
+    static auto make_node(Gaf alloc_flags, usize size, ustl::Arc<HierarchyState> hierarchy,
                           ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit,
                           Flags flags, ustl::Arc<VmCowPages> *out) -> Status;
 
     /// When no page sources exists, it will be used in frame allocation request.
-    Gaf m_gaf;
+    Gaf m_alloc_flags;
     /// Page list that operates within the virtual memory range of the VMO, from [0, N).
     VmPageList m_pages;
     ustl::Arc<PageSource> m_page_source;
@@ -755,9 +693,9 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// node can see.
     ChildList m_children TA_GUARDED(m_lock);
 
-    /// The objects over these pages. Under the tree's lock. Empty for a hidden
-    /// node, which is no object's.
-    Attachment::List m_attachments TA_GUARDED(m_lock);
+    /// Non-owning representative of the VMO views over this node, or null
+    /// when there are no views. VmObjectPaged maintains it under the tree lock.
+    VmObjectPaged *m_representative TA_GUARDED(m_lock) = nullptr;
 
     /// How many of this node's pages hold a pin (pinned_count above zero), kept
     /// beside the pages so that the operations a pin forbids, a clone above all,
@@ -789,12 +727,11 @@ class VmCowPages::Cursor {
     /// page must map it read-only when |writable| is false, even into a mapping
     /// whose own permission includes Write: the write then faults, asks for an
     /// owned page, and gets the copy instead of the ancestor's page.
-    struct RequireResult {
+    struct PageLookup {
         VmPage *page;
         bool writable;
     };
 
-    Cursor(VmCowPages *owner, usize offset, usize size);
     ~Cursor() = default;
 
     /// Hand back the page for the offset the cursor sits on, then step past it.
@@ -817,17 +754,15 @@ class VmCowPages::Cursor {
     /// allocated here because the fault path must not enter the allocator and
     /// risk recursing into reclaim and faulting again.
     auto require_page(bool will_write, usize nr_pages, MultiPageRequest *request)
-        -> ktl::Result<RequireResult>;
-    auto require_read_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<RequireResult>;
-    auto require_owned_page(usize nr_pages, MultiPageRequest *request)
-        -> ktl::Result<RequireResult>;
+        -> ktl::Result<PageLookup>;
+    auto require_owned_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<PageLookup>;
 
     /// The page a read would find at the cursor, if one is there, then step
     /// past it: the node's own, writable, or one it sees through an ancestor,
     /// read-only. Nothing when there is no page -- a hole, a zero marker, a page
     /// a source has not supplied -- and nothing is allocated or asked for to
     /// make one. What a mapping that maps only what is there wants.
-    auto maybe_page() -> ustl::Option<RequireResult>;
+    auto maybe_page() -> ustl::Option<PageLookup>;
 
     /// Hand pages out without marking them used.
     ///
@@ -840,29 +775,28 @@ class VmCowPages::Cursor {
     /// default, because a forgotten mark gets a page in use reclaimed, while
     /// one made twice costs nothing.
     auto disable_mark_accessed() -> void {
-        m_mark_accessed = false;
+        m_flags &= ~Flags::MarkAccessed;
     }
 
+  private:
+    friend class VmCowPages;
+
+    Cursor(VmCowPages *owner, usize offset, usize size);
+    auto require_read_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<PageLookup>;
     auto create_read_request(usize nr_pages, PageRequest *request) -> Status;
     auto create_dirty_request(usize nr_pages, PageRequest *request) -> Status;
-
-  private:
     auto convert_reference_to_page(AnonymousPageRequest *request) -> Status;
 
     /// Marks |result|'s page used, unless disable_mark_accessed() said not to,
     /// and hands |result| back. Every exit that hands a page out goes through
     /// here, so a lookup added later marks too.
-    auto handed_out(RequireResult result) -> RequireResult;
+    auto handed_out(PageLookup result) -> PageLookup;
 
     /// Whether a page found in the node's own store may be mapped writable.
     auto writable_here(FoundContent const &found) const -> bool;
 
     [[nodiscard]]
     auto is_type_reference() const -> bool;
-    [[nodiscard]]
-    auto is_type_page() const -> bool;
-    [[nodiscard]]
-    auto is_type_zero() const -> bool;
 
     /// The page index the cursor currently sits on.
     [[nodiscard]]
@@ -898,7 +832,14 @@ class VmCowPages::Cursor {
     /// physical VMO need not begin on a page boundary.
     usize m_offset;
     usize m_end;
-    bool m_mark_accessed;
+    /// A cursor starts with software aging enabled. The caller may only
+    /// clear MarkAccessed through disable_mark_accessed() when the access
+    /// will be recorded by the page table or when looking without using.
+    enum class Flags : u8 {
+        MarkAccessed = 0_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+    Flags m_flags = Flags::MarkAccessed;
 };
 
 } // namespace ours::mm

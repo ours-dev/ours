@@ -5,9 +5,7 @@
 
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <ours/mm/gaf.hpp>
 #include <ours/mm/pm_frame.hpp>
-#include <ours/mm/priv/alloc_request.hpp>
 #include <ours/mm/priv/frame_buddy.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -42,25 +40,18 @@ class PmZone {
     /// FIXME(SmallHuaZi) The cache per cpu has not been finished
     constexpr static usize MAX_PCPU_CACHE_ORDER = 0;
 
-    /// The three lines a zone's free count is measured against, lowest first.
-    ///
-    /// Min is the floor: only a caller that cannot block may draw a zone down
-    /// to it, on the grounds that it has nowhere else to go. Low is where a
-    /// caller that can block is turned away, so that it moves on to the next
-    /// zone and leaves what is left here for callers that cannot. High is not
-    /// an admission line at all -- above it the zone is comfortable, below it
-    /// the zone is worth reclaiming, and saying so is the only thing that fact
-    /// is for.
-    ///
-    /// They replaced Critical, Moderate and Sufficient (0-10%, 10-30%,
-    /// 30-100%), which classified how much memory was left rather than naming
-    /// lines an allocation is admitted against. That classification is a
-    /// different job -- what gets reported outward as memory pressure -- and
-    /// nothing read these three, so the names were free to take.
-    enum class WaterMark : u32 {
+    /// Allocation and reclaim thresholds, ordered from lowest to highest.
+    enum class Watermark : u32 {
+        /// The admission floor intended for callers that cannot block.
         Min,
+
+        /// The admission floor intended to preserve a reserve for nonblocking callers.
         Low,
+
+        /// The reclaim target, separate from allocation admission.
         High,
+
+        /// The number of thresholds stored for each zone.
         Count,
     };
 
@@ -124,32 +115,19 @@ class PmZone {
     [[nodiscard]]
     auto contains(usize order) -> bool;
 
-    /// A block of 2^|request.order()| frames for |request|, or none when this
-    /// zone cannot serve it.
-    ///
-    /// An Option and not a pointer because a zone failing to serve an
-    /// allocation is the ordinary case the walk is built around -- it is why
-    /// there is a fallback order at all -- and the caller has to handle it on
-    /// every call. Null for "nothing" is the shape that let a null travel
-    /// inside `ustl::ok()` as far as the frame-list loops; `ktl::Result` stays
-    /// where it belongs, at the public interface in pmm.hpp, where a caller
-    /// distinguishes one failure from another. Here there is one.
-    ///
-    /// Assumptions:
-    ///     1) |request.order()| must be lesser than `MAX_FRAME_ORDER`.
-    auto alloc_frames(AllocRequest const &request) -> ustl::Option<PmFrame &>;
+    /// Withdraw a block of 2^|order| frames, or none if the zone cannot serve it.
+    [[nodiscard]]
+    auto take_block(usize order) -> ustl::Option<PmFrame &>;
 
-    auto alloc_frame(Gaf gaf, usize order) -> ustl::Option<PmFrame &>;
-
-    auto free_frame(PmFrame *frame, usize order) -> void;
+    /// Return a block owned by this zone.
+    auto return_block(PmFrame &frame, usize order) -> void;
 
     /// How many frames this zone could hand out right now, counted out of the
     /// buddy's free lists under the zone lock.
     ///
     /// Exact as of the moment the lock is held, and that is what it costs: it
-    /// takes the lock the allocation path wants. For the cheap approximate
-    /// answer, which is the one anything on that path should ask, see
-    /// free_frames() below.
+    /// takes the lock the allocation path wants. num_free_frames() reads the
+    /// counter snapshot without taking that lock.
     [[nodiscard]]
     auto count_free_frames() -> usize;
 
@@ -176,16 +154,15 @@ class PmZone {
         return m_present_frames;
     }
 
-    /// How many frames this zone can hand out, to within one allocation.
+    /// Snapshot of this zone's free-frame counter, read without the zone lock.
     ///
-    /// A plain atomic the buddy keeps on both of its sides, so it is cheap
-    /// enough for the allocation path to consult before it takes the zone
-    /// lock. It is an approximation by construction: another CPU may allocate
-    /// or free between the read and the act, which is why the answer is only
-    /// ever used to decide where to try, never as a promise. The exact count
-    /// is count_free_frames(), and it costs the lock.
+    /// Buddy transfers update the counter by the actual number of frames under
+    /// the zone lock. A lock-free reader can observe the previous count while
+    /// a buddy mutation is still in progress. The value can change before the
+    /// caller uses it, so it gives no guarantee that an allocation will succeed.
+    /// count_free_frames() instead counts the buddy lists under the zone lock.
     FORCE_INLINE
-    constexpr auto free_frames() const -> usize {
+    constexpr auto num_free_frames() const -> usize {
         return m_free_frames;
     }
 
@@ -254,7 +231,7 @@ class PmZone {
     /// the allocator is serving anyone.
     [[nodiscard]]
     FORCE_INLINE
-    constexpr auto watermark(WaterMark const mark) const -> usize {
+    constexpr auto watermark(Watermark const mark) const -> usize {
         return m_watermarks[std::to_underlying(mark)];
     }
 
@@ -273,8 +250,8 @@ class PmZone {
     /// form of the question that pays for a definite answer.
     [[nodiscard]]
     FORCE_INLINE
-    auto watermark_ok(usize const order, WaterMark const mark) const -> bool {
-        auto const free = free_frames();
+    auto watermark_ok(usize const order, Watermark const mark) const -> bool {
+        auto const free = num_free_frames();
         auto const wanted = usize{1} << order;
         if (free < wanted) {
             return false;
@@ -303,8 +280,6 @@ class PmZone {
     static auto is_order_within_pcpu_cache_limit(usize order) -> bool {
         return order < MAX_PCPU_CACHE_ORDER;
     }
-
-    auto finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void;
 
     /// Scales this zone's three watermarks out of the machine-wide reserve.
     ///
@@ -337,22 +312,15 @@ class PmZone {
     //!	    present_frames_ = spanned_frames_ - absent_frames_(pages in holes).
     std::atomic<usize> m_present_frames;
 
-    /// Frames this zone can hand out, maintained on both sides of the buddy:
-    /// down in finish_allocation(), up in free_frame().
-    ///
-    /// It starts at zero and grows as the handoff releases frames into the
-    /// buddy, so it cannot go negative: a frame has to be freed in before it
-    /// can be allocated out. It carried the name m_managed_frames and the
-    /// comment of a constant total -- present minus reserved -- which it never
-    /// was; that total is managed_frames(), computed from the two counters
-    /// that do hold it.
+    /// Free frames. Buddy mutations and their count deltas share the zone
+    /// lock. The atomic snapshot can be read without acquiring the lock.
     std::atomic<usize> m_free_frames;
 
     std::atomic<usize> m_spanned_frames;
 
     std::atomic<usize> m_reserved_frames;
 
-    std::array<usize, std::to_underlying(WaterMark::Count)> m_watermarks;
+    std::array<usize, std::to_underlying(Watermark::Count)> m_watermarks;
 
     typedef FramePcpuCache<MAX_PCPU_CACHE_ORDER> PcpuCache;
     CpuLocal::PerCpu<PcpuCache> m_frame_cache;

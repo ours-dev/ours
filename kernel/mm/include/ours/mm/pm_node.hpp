@@ -7,11 +7,12 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_zone.hpp>
+#include <ours/mm/priv/alloc_policy.hpp>
 #include <ours/mm/priv/alloc_request.hpp>
-#include <ours/mm/priv/memory_allocation_policy.hpp>
+#include <ours/mm/priv/zone_candidates.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
 
@@ -27,6 +28,7 @@
 #include <ustl/function/invoke.hpp>
 #include <ustl/iterator/traits.hpp>
 #include <ustl/mem/address_of.hpp>
+#include <ustl/option.hpp>
 #include <ustl/result.hpp>
 #include <ustl/traits/is_invocable.hpp>
 #include <ustl/traits/is_same.hpp>
@@ -115,6 +117,13 @@ class ZoneList {
     FORCE_INLINE
     auto fallback() const -> Zones {
         return Zones{m_fallback.data(), m_fallback.size()};
+    }
+
+    /// Eligible zones in fallback order. Availability is decided by each zone.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto candidates(AllocRequest const &request) const -> ZoneCandidates {
+        return ZoneCandidates{fallback(), request};
     }
 
     auto dump_fallback() const -> void;
@@ -245,8 +254,20 @@ class PmNode {
     /// after the handoff, with nothing else running.
     static auto setup_watermarks() -> void;
 
+    /// Allocate across the permitted nodes, starting from the implicit local
+    /// node or the explicit home node. ThisNode restricts the walk to the
+    /// home node within the permitted mask and skips thread placement policy.
+    /// The pmm facade owns pressure admission and the wait protocol.
     [[nodiscard]]
-    auto alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
+    static auto alloc_frames(Gaf alloc_flags, usize order = 0,
+                             NodeMask const &fallback = node_online_mask())
+        -> ustl::Result<PmFrame *, Status>;
+
+    /// A home id outside the node table selects the implicit form, matching
+    /// the existing public pmm interface. An absent in-range node is invalid.
+    [[nodiscard]]
+    static auto alloc_frames(NodeId home, Gaf alloc_flags, usize order = 0,
+                             NodeMask const &fallback = node_online_mask())
         -> ustl::Result<PmFrame *, Status>;
 
     /// Allocates exactly |n| pages as a list of blocks, one per set bit of |n|:
@@ -259,7 +280,7 @@ class PmNode {
     /// taken is freed and the error returned.
     ///
     /// Parameters:
-    ///   - |gaf|: Allocation flags specifying memory type, constraints, etc.
+    ///   - |alloc_flags|: Allocation flags specifying memory type, constraints, etc.
     ///   - |n|: The exact number of pages to allocate, decomposed into binary components
     ///   - |fallback|: Fallback options if allocation fails in preferred regions
     ///
@@ -269,14 +290,26 @@ class PmNode {
     ///                 representation of |n|, with sizes corresponding to 2^bit_position.
     ///   - On failure: An error Status indicating the reason for allocation failure.
     [[nodiscard]]
-    auto alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
+    static auto alloc_frames_fragment(Gaf alloc_flags, usize n,
+                                      NodeMask const &fallback = node_online_mask())
+        -> ustl::Result<PmFrame::List, Status>;
+
+    [[nodiscard]]
+    static auto alloc_frames_fragment(NodeId home, Gaf alloc_flags, usize n,
+                                      NodeMask const &fallback = node_online_mask())
         -> ustl::Result<PmFrame::List, Status>;
 
     /// Allocate a number of order-0 pages to a frame list.
     ///
     /// Return the frame list.
     [[nodiscard]]
-    auto alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallback)
+    static auto alloc_frames_bulk(Gaf alloc_flags, usize n,
+                                  NodeMask const &fallback = node_online_mask())
+        -> ustl::Result<PmFrame::List, Status>;
+
+    [[nodiscard]]
+    static auto alloc_frames_bulk(NodeId home, Gaf alloc_flags, usize n,
+                                  NodeMask const &fallback = node_online_mask())
         -> ustl::Result<PmFrame::List, Status>;
 
     /// Free a frame.
@@ -363,9 +396,20 @@ class PmNode {
     ///     1). Range [start, end) is sorted by address.
     auto init() -> Status;
 
-    auto get_frame_from_zone_list(AllocRequest const &request) -> PmFrame *;
+    struct BlockFailure {
+        Status status;
+        ustl::Option<PmZone const &> depleted_zone = ustl::NONE;
+    };
 
-    auto alloc_frames_postamble(PmFrame *, AllocRequest const &) -> void;
+    auto take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
+        -> ustl::Result<PmFrame *, BlockFailure>;
+
+    static auto return_block(PmFrame &frame, usize order) -> void;
+
+    static auto return_blocks(PmFrame::List &list) -> void;
+
+    /// Sample pressure once after a complete allocation or return.
+    static auto observe_pressure(ustl::Option<PmZone const &> depleted_zone = ustl::NONE) -> void;
 
     [[no_unique_address]]
     gktl::Canary m_canary;
@@ -404,7 +448,7 @@ class PmNode {
     PageQueues m_page_queues;
 
     [[no_unique_address]]
-    MemoryAllocationPolicy m_node_policy;
+    AllocPolicy m_node_policy;
 
     constexpr static usize NUM_STATES = std::to_underlying(State::NumStates);
     static std::array<NodeMask, NUM_STATES> STATES;

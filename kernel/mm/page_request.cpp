@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/lockdep.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cfg.hpp>
-#include <ours/mm/gaf.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/time/clock.hpp>
@@ -38,7 +38,7 @@ PageRequest::~PageRequest() {
 }
 
 /// m_source is read without the source's lock: only the owning thread sets
-/// it, through get_pages(), and only the owning thread calls this.
+/// it, through request_pages(), and only the owning thread calls this.
 auto PageRequest::cancel() -> void {
     if (!m_source) {
         return;
@@ -65,11 +65,11 @@ AnonymousPageRequest::~AnonymousPageRequest() {
     }
 }
 
-auto AnonymousPageRequest::make_active(Gaf const gaf) -> void {
+auto AnonymousPageRequest::make_active(Gaf const alloc_flags) -> void {
     DEBUG_ASSERT(!m_frame, "raised while it still holds the frame of the last wait");
-    DEBUG_ASSERT(!!(gaf & Gaf::CanWait), "raised for an allocation that cannot wait");
+    DEBUG_ASSERT(!!(alloc_flags & Gaf::CanWait), "raised for an allocation that cannot wait");
     m_active = true;
-    m_gaf = gaf;
+    m_alloc_flags = alloc_flags;
 }
 
 auto AnonymousPageRequest::allocate(bool const interruptible) -> Status {
@@ -84,7 +84,7 @@ auto AnonymousPageRequest::allocate(bool const interruptible) -> Status {
     while (true) {
         auto const deadline =
             time::Deadline::at(time::SteadyClock::now() + Seconds(REPORT_EVERY_SECONDS));
-        auto result = wait_for_frame_allocation(m_gaf, deadline, interruptible);
+        auto result = wait_for_frame_allocation(m_alloc_flags, deadline, interruptible);
         if (result) {
             m_frame = *result;
             return Status::Ok;
@@ -116,7 +116,7 @@ auto MultiPageRequest::wait(bool const suspendable) -> Status {
 auto PageSource::create(ustl::Arc<PageProvider> provider, ustl::Arc<PageSource> *const out)
     -> Status {
     DEBUG_ASSERT(provider);
-    auto *const source = new (GAF_KERNEL) PageSource(ustl::move(provider));
+    auto *const source = new (ALLOC_KERNEL) PageSource(ustl::move(provider));
     if (!source) {
         return Status::OutOfMem;
     }
@@ -131,18 +131,19 @@ PageSource::PageSource(ustl::Arc<PageProvider> provider) : m_provider(ustl::move
 /// One that was never closed is a VMO that forgot to.
 PageSource::~PageSource() {
     Guard guard{m_lock};
-    DEBUG_ASSERT(m_detached && m_closed, "a page source destroyed without being closed");
+    DEBUG_ASSERT(!!(m_flags & Flags::Closed), "a page source destroyed without being closed");
     DEBUG_ASSERT(m_outstanding.empty());
 }
 
-auto PageSource::get_pages(u64 const offset, u64 const len, PageRequest *const request) -> Status {
+auto PageSource::request_pages(u64 const offset, u64 const len, PageRequest *const request)
+    -> Status {
     DEBUG_ASSERT(request);
     DEBUG_ASSERT(len > 0);
     DEBUG_ASSERT(ustl::is_aligned(offset, PAGE_SIZE) && ustl::is_aligned(len, PAGE_SIZE));
     DEBUG_ASSERT(offset + len > offset, "the range wraps");
 
     Guard guard{m_lock};
-    if (m_detached) {
+    if (is_detached_locked()) {
         return Status::BadState;
     }
 
@@ -248,7 +249,7 @@ auto PageSource::complete_request_locked(PageRequest *const request) -> void {
 /// still needed.
 auto PageSource::resolve_requests_locked(u64 const offset, u64 const len, Status const status)
     -> void {
-    if (m_detached) {
+    if (is_detached_locked()) {
         return;
     }
 
@@ -301,13 +302,13 @@ auto PageSource::on_pages_failed(u64 const offset, u64 const len, Status const s
 }
 
 /// Completed with Ok, not with a failure: the waiters retry, and the retry is
-/// what finds the source detached and fails, from get_pages().
+/// what finds the source detached and fails, from request_pages().
 auto PageSource::detach() -> void {
     Guard guard{m_lock};
-    if (m_detached) {
+    if (is_detached_locked()) {
         return;
     }
-    m_detached = true;
+    m_flags |= Flags::Detached;
 
     while (!m_outstanding.empty()) {
         auto &request = *m_outstanding.begin();
@@ -322,16 +323,17 @@ auto PageSource::close() -> void {
     detach();
 
     Guard guard{m_lock};
-    if (m_closed) {
+    if (!!(m_flags & Flags::Closed)) {
         return;
     }
-    m_closed = true;
+    DEBUG_ASSERT(!!(m_flags & Flags::Detached));
+    m_flags = (m_flags & ~Flags::Detached) | Flags::Closed;
     m_provider->on_close();
 }
 
 auto PageSource::is_detached() const -> bool {
     Guard guard{m_lock};
-    return m_detached;
+    return is_detached_locked();
 }
 
 auto PageSource::owner_id() const -> ustl::Option<u64> {

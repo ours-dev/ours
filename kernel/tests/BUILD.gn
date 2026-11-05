@@ -1,2 +1,134 @@
+import("kernel_test.gni")
+
+# The interface's own smoke tests: the KTEST declaration, the assertion
+# families and the skip state, run inside a booted kernel. Subsystem tests
+# arrive here as they migrate from console commands.
+kernel_test("framework") {
+  sources = [ "ktest_test.cpp" ]
+}
+
+# The header surfaces the migrated tests reach. The implementations are in the
+# kernel the tests are linked into, so these are header-only dependencies.
+_HEADER_DEPS = [
+  "//kernel/lib/heap:headers",
+  "//kernel/lib/user_copy:headers",
+  "//kernel/mm:headers",
+  "//kernel/object:headers",
+  "//system/lib/logz4:headers",
+  "//system/lib/ustl:headers",
+]
+
+kernel_test("dpc") {
+  sources = [ "dpc_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("irq_domain") {
+  sources = [ "irq_domain_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("tick_broadcast") {
+  sources = [ "tick_broadcast_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("vma_phys") {
+  sources = [ "vma_phys_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("pm_zone") {
+  sources = [ "pm_zone_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("tick_fallback") {
+  sources = [ "tick_fallback_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("vm_address") {
+  sources = [ "vm_address_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("vma_physical") {
+  sources = [ "vma_physical_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/platform:headers" ]
+}
+
+kernel_test("vma_seal") {
+  sources = [ "vma_seal_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("vma_undo") {
+  sources = [ "vma_undo_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("wait_queue") {
+  sources = [ "wait_queue_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("vmo_contiguous") {
+  sources = [ "vmo_contiguous_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("vmo_pin") {
+  sources = [ "vmo_pin_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("sampler_claim") {
+  sources = [ "sampler_claim_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("semaphore") {
+  sources = [ "semaphore_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("sched_domain") {
+  sources = [ "sched_domain_test.cpp" ]
+  deps = _HEADER_DEPS + [
+           "//kernel/lib/gktl:headers",
+           "//kernel/lib/sched_domain:headers",
+         ]
+}
+
+kernel_test("vma_wx") {
+  sources = [ "vma_wx_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+# Kernel tests and the interface that runs them. The aggregate label is what
+# vmours.with-tests links.
 source_set("kernel.tests") {
+  testonly = true
+  deps = [
+    ":dpc",
+    ":framework",
+    ":irq_domain",
+    ":sampler_claim",
+    ":semaphore",
+    ":sched_domain",
+    ":pm_zone",
+    ":tick_broadcast",
+    ":tick_fallback",
+    ":vm_address",
+    ":vma_phys",
+    ":vma_physical",
+    ":vma_seal",
+    ":vma_undo",
+    ":vma_wx",
+    ":vmo_contiguous",
+    ":vmo_pin",
+    ":wait_queue",
+    "//kernel/lib/ktest",
+  ]
 }

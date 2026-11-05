@@ -58,8 +58,6 @@ auto Timer::forward(Duration interval) -> u64 {
 auto Timer::cancel() -> bool {
     m_canary.verify<Self>();
 
-    auto const cpu = Cpu::id();
-
     // First, before any lock: a handler spinning in trylock_or_cancel() on
     // the other side of a lock we hold is waiting to see exactly this.
     m_cancelled.store(true, std::memory_order_release);
@@ -68,9 +66,21 @@ auto Timer::cancel() -> bool {
     // to finish -- we are it -- so disarm what we can and report that the
     // handler ran. The queue does not hold us (run_expired_timers() unlinks
     // before calling), so there is nothing to remove.
-    if (m_active_cpu.load(std::memory_order_acquire) == cpu) {
-        m_on_expired = nullptr;
-        return false;
+    //
+    // The CPU number is read in the same interrupts-off stretch as the
+    // comparison it feeds. A thread cancelling from outside may be preempted
+    // after reading it and resume on another CPU, the very one whose handler
+    // is running this timer: the numbers would then be equal for the wrong
+    // reason, and we would return while the handler still uses a timer the
+    // caller is about to free. With interrupts off on this CPU nothing but
+    // its handler can be running here, so equality can only mean that this
+    // is the handler.
+    {
+        arch::AutoInterruptDisabler const no_interrupts;
+        if (m_active_cpu.load(std::memory_order_acquire) == Cpu::id()) {
+            m_on_expired = nullptr;
+            return false;
+        }
     }
 
     // Still queued means the handler has not started, and once we unlink

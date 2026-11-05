@@ -408,7 +408,7 @@ namespace {
 
         // A frame the page allocator has just handed out is RAM, and it is a
         // witness that does not come through the copy of the map.
-        auto *const frame = mm::alloc_frames(mm::GAF_KERNEL, usize{0});
+        auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL, usize{0}).value_or(nullptr);
         if (frame == nullptr) {
             verdict(tally, false, "a frame to hold the gate against");
             return;

@@ -21,7 +21,7 @@
 /// the EXECUTE gate on a file that is not a program, and the AccessDenied
 /// entry, whose status every open() under it answers.
 ///
-/// Its manifest uses six more directories, which the sibling files
+/// Its manifest uses seven more directories, which the sibling files
 /// (//examples/files) provides and root.cm offers from it: the routes that
 /// end at a provider, whose entry the root does not serve but forwards to the
 /// provider with one Open when this component starts.
@@ -32,6 +32,8 @@
 ///                  answers AccessDenied and closes the entry, as /denied;
 ///   /files-wide    rx*, through an expose wider than files' declaration: the
 ///                  same;
+///   /slow          r*, the directory files serves through a handler node, one
+///                  file whose Read files answers a turn of its Loop later;
 ///   /ghost         r*, declared and exposed by files, never served by its
 ///                  program: files' server answers NotFound on the entry;
 ///   /files-file    r*, through an offer with the subdir hello.txt, so the
@@ -41,7 +43,11 @@
 /// It reads the files through /files and checks their bytes, lists the
 /// directory and checks the names in order, asks for write and for more rights
 /// than the use has and expects AccessDenied from files' server, and checks
-/// that /files-sub shows only nested.txt. Last of all it connects to the
+/// that /files-sub shows only nested.txt. It reads the slow file while a Read
+/// of another connection of the provider is answered, writes two Reads on one
+/// connection back to back and expects two replies in order, and writes a
+/// Read and closes the channel at once more times than the provider has
+/// connections, after which the provider still answers. Last of all it connects to the
 /// service node /files/stop, which makes files exit, and checks what a
 /// consumer that held the entry sees of a provider that has gone: a
 /// connection it held and the entry both read PEER_CLOSED.
@@ -170,6 +176,21 @@ constexpr auto FILES = component::names::routing_checks::USE_FILES;
 constexpr auto FILES_SUB = component::names::routing_checks::USE_FILES_SUB;
 constexpr auto GHOST = component::names::routing_checks::USE_GHOST;
 constexpr auto FILES_FILE = component::names::routing_checks::USE_FILES_FILE;
+/// The directory files serves through a handler node, and its one file: the
+/// bytes a Read of it comes back with, which files answers a turn of its Loop
+/// after the request (examples/files/files_server.cpp).
+constexpr auto SLOW = component::names::routing_checks::USE_SLOW;
+constexpr auto SLOW_FILE = std::string_view{"/slow/slow.txt"};
+constexpr auto SLOW_TEXT = std::string_view{"slow hello\n"};
+/// What the two Reads of check_slow_back_to_back() split SLOW_TEXT at: the
+/// first asks for this many bytes, the second for the rest.
+constexpr auto SLOW_FIRST = usize{5};
+/// How many times check_slow_abandoned() writes a Read and closes the channel:
+/// more than the 32 connections files' outgoing directory has
+/// (ioservice::Outgoing::MAX_CONNECTIONS), so that one connection leaked for
+/// each would run the table out before it ended.
+constexpr auto SLOW_ABANDONED = usize{40};
+
 /// The service node inside /files that makes files exit when it is connected
 /// to (examples/files/files_server.cpp): a connect() through the entry, whose
 /// r* holds CONNECT.
@@ -752,6 +773,185 @@ auto call(Uandle const connection, wire::Message const request, Incoming &reply)
         return *epitaph;
     }
     return Status::Ok;
+}
+
+/// Writes File.Read(|txid|, |count|) on |file| and does not wait for the reply.
+auto write_read(Uandle const file, u32 const txid, u64 const count) -> Status {
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const encoded =
+        prot::io::encode_read(bytes, prot::io::ReadRequest{.txid = txid, .count = count});
+    if (encoded.is_err()) {
+        return encoded.unwrap_err();
+    }
+    return write(file, encoded.unwrap());
+}
+
+/// Waits for the answer to File.Read(|txid|) on |file| and copies its bytes to
+/// the front of |out|, setting |length| to how many: Ok, or the epitaph's status,
+/// the server's, PeerClosed for a channel closed with nothing on it, or what
+/// the answer's decoding says when it is not the answer to |txid|. The wait is
+/// an infinite one for a message or PEER_CLOSED, as Incoming::receive()'s: there
+/// is no clock to bound it with (repair item 2 of
+/// docs/repairs/261029/routing-checks.md).
+auto receive_read(Uandle const file, u32 const txid, std::span<u8> const out, usize &length)
+    -> Status {
+    length = 0;
+    Incoming reply;
+    if (auto const received = reply.receive(file); received != Status::Ok) {
+        return received;
+    }
+    if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
+        return *epitaph;
+    }
+    auto const decoded = prot::io::decode_read_reply(reply.message(), txid);
+    if (decoded.is_err()) {
+        return decoded.unwrap_err();
+    }
+    if (decoded.unwrap().status != Status::Ok) {
+        return decoded.unwrap().status;
+    }
+    auto const data = decoded.unwrap().data;
+    length = std::min(out.size(), data.size());
+    std::copy_n(data.begin(), length, out.begin());
+    return Status::Ok;
+}
+
+/// Whether the first |length| bytes of |bytes| are |expected|.
+auto same_bytes(std::span<u8 const> const bytes, usize const length,
+                std::string_view const expected) -> bool {
+    return length == expected.size() &&
+           std::ranges::equal(bytes.first(length), expected,
+                              [](u8 const actual, char const wanted) {
+                                  return actual == static_cast<u8>(wanted);
+                              });
+}
+
+/// A Read of the slow file, which files answers a turn of its Loop after the
+/// request, and a Read of another connection of the same provider, answered
+/// while that one is outstanding: the provider is not held up by a Read that
+/// waits.
+///
+/// The Read is written and not waited for; /files' hello.txt is then read
+/// whole, which the provider's other tree serves on the Loop it shares with the
+/// slow one; and so is the slow file, on a second connection of the same
+/// handler node, to its end (two Reads, each answered a turn later). Only then
+/// is the first Read's answer taken. A provider that did its waiting by holding
+/// the Loop would answer none of them until it was done; one that never ended
+/// the Read would leave the last wait for good, and the failure is then the
+/// missing `routing_checks: passed`.
+auto check_slow_read() -> void {
+    auto const file = open_or_fail(SLOW_FILE, Flags::PermReadBytes);
+    if (file == Uandle::Invalid) {
+        return;
+    }
+    auto const txid = next_txid();
+    if (!expect("write of a Read of the slow file", write_read(file, txid, 100), Status::Ok)) {
+        auto _ = ours::handle_close(file);
+        return;
+    }
+    // Answered meanwhile: a file of the provider's other tree, and the slow
+    // file itself on another connection.
+    check_contents(HELLO_PATH, HELLO_TEXT);
+    check_contents(SLOW_FILE, SLOW_TEXT);
+
+    std::array<u8, 64> bytes{};
+    auto length = usize{0};
+    if (expect("the answer to a Read of the slow file", receive_read(file, txid, bytes, length),
+               Status::Ok) &&
+        !same_bytes(bytes, length, SLOW_TEXT)) {
+        fail("the answer to a Read of the slow file is not the bytes it holds");
+    }
+    expect("close", fsio::close(file), Status::Ok);
+}
+
+/// Two Reads written on one connection of the slow file with nothing between
+/// them: the provider starts the second only when the first is answered, so the
+/// replies come in the order the requests were sent, and the second begins where
+/// the first ended (the offset moves with a Read that is completed, not with
+/// one that was started).
+auto check_slow_back_to_back() -> void {
+    auto const file = open_or_fail(SLOW_FILE, Flags::PermReadBytes);
+    if (file == Uandle::Invalid) {
+        return;
+    }
+    auto const first = next_txid();
+    auto const second = next_txid();
+    if (!expect("write of the first of two Reads", write_read(file, first, SLOW_FIRST),
+                Status::Ok) ||
+        !expect("write of the second of two Reads", write_read(file, second, 100), Status::Ok)) {
+        auto _ = ours::handle_close(file);
+        return;
+    }
+    std::array<u8, 64> bytes{};
+    auto length = usize{0};
+    if (expect("the answer to the first of two Reads", receive_read(file, first, bytes, length),
+               Status::Ok) &&
+        !same_bytes(bytes, length, SLOW_TEXT.substr(0, SLOW_FIRST))) {
+        fail("the first of two Reads is not answered with the first bytes of the file");
+    }
+    if (expect("the answer to the second of two Reads", receive_read(file, second, bytes, length),
+               Status::Ok) &&
+        !same_bytes(bytes, length, SLOW_TEXT.substr(SLOW_FIRST))) {
+        fail("the second of two Reads does not begin where the first ended");
+    }
+    expect("close", fsio::close(file), Status::Ok);
+}
+
+/// A Read of the slow file written and the channel closed at once, SLOW_ABANDONED
+/// times, each on a connection of its own. The provider's answer has nowhere to
+/// go, and the connection must still be released: after more of them than the
+/// provider has connections, a normal Read of the slow file is answered, which
+/// it cannot be when each abandoned connection kept its place (the Open of the
+/// normal one is then refused with NoResource, and the read says so).
+///
+/// It does not wait for any of them. The provider takes one Open of the entry at
+/// a turn of its Loop, and releases an abandoned connection a few turns after
+/// it started it, so at most a handful are alive at once however fast this
+/// program writes them.
+auto check_slow_abandoned() -> void {
+    for (auto count = usize{0}; count < SLOW_ABANDONED; ++count) {
+        auto const file = open_or_fail(SLOW_FILE, Flags::PermReadBytes);
+        if (file == Uandle::Invalid) {
+            return;
+        }
+        // The provider reads the Read after this channel is closed, and the
+        // reply it writes finds no peer. Neither call's answer matters: the
+        // Open is one-way, so a refusal of it would come back as an epitaph
+        // on a channel nobody reads, and the normal Read below says it.
+        auto _ = write_read(file, next_txid(), 100);
+        auto _ = ours::handle_close(file);
+    }
+    check_contents(SLOW_FILE, SLOW_TEXT);
+}
+
+/// The directory the handler node opens, and what the provider's server and
+/// the handler refuse: write is the server's (rights beyond the entry's), a
+/// name the handler does not have is the handler's, and so are a path below
+/// the file and the file opened as a directory (NotDir: the kind the handler
+/// reports against the flags).
+auto check_slow_open() -> void {
+    auto const directory = open_or_fail(SLOW, Flags::ProtocolDirectory | Flags::PermTraverse);
+    if (directory != Uandle::Invalid) {
+        expect("close", fsio::close(directory), Status::Ok);
+    }
+    expect("open(WRITE) of the slow file", refused(SLOW_FILE, Flags::PermWriteBytes),
+           Status::AccessDenied);
+    expect("open of a name /slow does not have", refused("/slow/absent.txt", Flags::PermReadBytes),
+           Status::NotFound);
+    expect("open of a path below the slow file", refused("/slow/slow.txt/x", Flags::PermReadBytes),
+           Status::NotDir);
+    expect("open of the slow file as a directory",
+           refused(SLOW_FILE, Flags::ProtocolDirectory | Flags::PermEnumerate), Status::NotDir);
+}
+
+/// What the entry /slow gives, the directory files serves through a handler
+/// node whose Read it answers a turn of its Loop later. They run before
+/// check_files_stop(), which ends the provider.
+auto check_slow() -> void {
+    check_slow_open();
+    check_slow_read();
+    check_slow_back_to_back();
+    check_slow_abandoned();
 }
 
 /// prot::resource::get(): the resource |protocol| hands out, from /svc, which
@@ -2754,7 +2954,7 @@ auto check_echo() -> void {
 /// by the root (D23, the route to echo in check_echo()).
 ///
 /// It runs last, after every case that uses /files, /files-sub, /files-file,
-/// /ghost, /files-denied and /files-wide. The first two are the entries that
+/// /slow, /ghost, /files-denied and /files-wide. The first two are the entries that
 /// stay connected to files and die with it; /ghost and /files-file were closed
 /// by files' server with a status, /files-denied and /files-wide by the root,
 /// and keep that status. A case that opened a file or listed a directory after
@@ -3137,8 +3337,8 @@ auto main(int argc, char **argv) -> int {
         auto _ = ort::debug_line("routing_checks: FAILED");
         return 1;
     }
-    if (auto const bound = fsio::installed_namespace().size(); bound != 15) {
-        fail("the namespace does not hold the manifest's fourteen directory uses and /svc");
+    if (auto const bound = fsio::installed_namespace().size(); bound != 16) {
+        fail("the namespace does not hold the manifest's fifteen directory uses and /svc");
     }
     check_process_self("object_get_info(process_self())");
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
@@ -3165,6 +3365,7 @@ auto main(int argc, char **argv) -> int {
     check_execute_refused();
     check_denied();
     check_files();
+    check_slow();
     check_debug_resource();
     check_irq_resource();
     check_ioport_resource();

@@ -67,8 +67,8 @@ DESCRIPTIONS = {
         "riscv": "riscv64",
     },
     "switchset": {
-        "dbg.0": "asserts compiled out, unit tests linked in",
-        "dbg.1": "asserts and trace on",
+        "dbg.0": "asserts compiled out, production kernel",
+        "dbg.1": "asserts and trace on, kernel tests linked in",
         "dbg.2": "more tracing again",
     },
 }

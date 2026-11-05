@@ -1,6 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/iommu_dispatcher.hpp>
 
 #include <heap/new.hpp>
@@ -19,7 +19,7 @@ auto IommuDispatcher::create(IommuType const type, usize const desc_size,
         return Status::InvArgs;
     }
 
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(type));
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL) Self(type));
     if (!self) {
         return Status::NoMemory;
     }

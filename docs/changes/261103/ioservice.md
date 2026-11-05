@@ -247,3 +247,167 @@ None.
 1. `dispatch()` and `complete()` both ended in `answer()`, which drops the connection when it cannot build a reply. Why is that right in one and wrong in the other, and what does the Loop do with the index between the release and the `resume()`?
 2. Why does the fix make the status safe where the core reads the handler's error instead of making `complete()` return an error for it, and which client would wait for ever under the second choice?
 3. A refused Open is an epitaph on the server end the core held. Why did the same unnamed status trap there and release here, and what is it about `unwrap()` on `encode_epitaph` that made a comment the only guard?
+
+## Title: A handler that answers Pending is suspended and completed on the Loop, and Outgoing serves a declared path through a NodeHandler (2026-11-04)
+
+**Files**
+- `system/lib/ioservice/include/ioservice/loop_server.hpp`, `src/loop_server.cpp` — `LoopServer` takes the program's `NodeHandler` as its last constructor argument and gives it to its `Server`; `Action::Pending` makes the `Binding` answer `loop::Action::Suspend`; the `Binding` keeps the key `Loop::add()` answered (`m_key`; 24 to 32 bytes); `LoopServer::complete(ticket, result)`, four overloads, carries out what `Server::complete()` answers and resumes the connection's slot; the `Drop` case closes the handle it carries; the `Bind` and `Refuse` cases are shared with `complete()` (`bind()`, `refuse()`); every release goes through a private `release()` that closes the server end of an Open that was pending on the connection
+- `system/lib/ioservice/include/ioservice/outgoing.hpp`, `src/outgoing.cpp` — `Outgoing::add_handler(path, handler, value = 0)`; `Outgoing::complete()`, four overloads forwarding to the `LoopServer`; `Outgoing` is the `LoopServer`'s `NodeHandler` (a second private base beside `Delegate`) and passes each call to the handler registered for the node; `HandlerEntry` gains `node` and `node_value` (16 to 32 bytes); `MAX_PROTOCOLS` now limits four kinds of registration
+- `system/lib/ioservice/test/loop_server_test.cpp` — 17 tests more (32 to 49): a Handler node `/fs` answered by a fake `NodeHandler`
+- `system/lib/ioservice/test/outgoing_test.cpp` — 21 tests more (63 to 84): 16 for `add_handler()` and the forwarding, 5 more rotations of the shared table of eight
+- `system/lib/ioservice/README.md` — pending requests, `add_handler()`, the shared table, the storage size
+- `docs/repairs/261103/ioservice.md` — item 1 gains the two sizes above
+
+**Symptom**
+Latent until `examples/files` uses it (`docs/changes/261103/examples-files.md`): before this change no `LoopServer` gave its `Server` a handler, so the one `case Action::Pending` of `handle()` was defensive and released the connection if it were ever reached. This is step 9 of 9 of `.agents/tasks/directory-capability/DESIGN.md` (decision 7, option C′, the glue and the first use). Step 7 gave the Loop a slot that can be left unarmed (`Suspend`, `resume`) and step 8 gave the core a request that can wait (`Pending`, `Server::complete`); nothing yet put the two together or let a program register a handler.
+
+**Cause**
+The pieces of C′ are three, and each fails alone:
+
+- **A pending request has to leave its connection unread.** `Server::dispatch()` answers `Pending`, and the connection's next message is already in the channel; a slot the Loop re-arms (`Rearm`) is called with it at once, while the first request is unfinished, and the core drops the connection (`dispatch()` on a pending connection is `Drop`). `Suspend` leaves the message where it is, in the kernel's channel, in order, and costs the server nothing.
+- **The answer has to be written before the slot is resumed**, and the slot resumed with the key it was given. The `Binding` dropped the key `add()` answered, since a slot that answered only `Rearm` or `Close` needed none. A `resume()` with a guessed key resumes the wrong connection or none, and the connection stays suspended for good.
+- **A connection is released only by its own callback.** The design's rule 4 of "When the client goes away while the request is pending": `complete()` runs in the handler's own Waiter, while the connection's slot is still in use and points at the connection's `Binding`. A connection released there frees its index, a new connection takes the index and the same `Binding`, and the old slot's late packet is then handled as the new connection's: its PEER_CLOSED would release a connection that is alive. So a reply that cannot be written (the client went away while the request waited) is told to `write_failed()` and nothing more; the slot is resumed, PEER_CLOSED is observed in the connection's own callback, which releases the connection, calls `release(cookie)` on the handler once and answers `Close`.
+
+Decisions the design left to this step, in the order a reader meets them:
+
+- **`complete()` returns a `Status`, and Ok means the Server took the result.** NotFound or InvArgs are the Server's refusals, with nothing written and nothing taken from the result (a VMO handle or an `Opened` cookie is still the handler's). A write that fails is not an error of `complete()`: the result is the reply's now, and `write_failed()` says what happened. BadState or NotFound from the resume are returned, because they mean the slot was not suspended, which is a bug of the program and not of the handler; any other status from the resume is the kernel refusing the arm, which the Loop has dealt with (the slot freed, the `Binding` released the connection) before `resume()` returned, so the answer is Ok.
+- **A completion cannot run inside the Binding's own callback, so there is no `Rearm` branch.** Step 7 noted that `Loop::resume()` from inside the callback of the slot being resumed is BadState, and asked for the case to be handled: if `complete()` could run inside the callback, the `Binding` would have to answer `Rearm` and not `Suspend`. It cannot: `Server::complete()` accepts a ticket only once the handler's call has returned `Pending` (step 8: the ticket is good after the call, not before), and nothing runs between that return and the `Binding`'s own, so a handler that completes inside the call it was given is refused with NotFound and answers `Done`. A test pins it (`ACompletionInsideTheCallThatGotTheTicketIsRefusedAndTheConnectionIsServed`); the `Binding` answers `Suspend` for every `Pending`, with no flag to remember a completion. The neighbouring case that can happen is tested too: someone else resumed the slot while the request waited, so the resume in `complete()` answers BadState, which `complete()` returns after the reply is written.
+- **A completed refusal is not reported to `open_refused()`.** It has no path: the Open's bytes are gone by the time the handler answers. The line is for the outgoing root and `svc/` only anyway (`Outgoing::open_refused()`), and a refusal found at completion is under a Handler node. Documented on `Delegate::open_refused()` and `Outgoing`.
+- **`Drop` carries a handle to close**, as step 8's note asked: a message for a pending connection is dropped, and the Open's server end the `Server` held with it is closed by the glue. The same server end is closed when a connection is released while its Open is pending (a private `LoopServer::release()` wraps every release); it is `Invalid` in every callback that runs today, so both are exercised in the tests by resuming a pending connection's slot by hand, as a program that broke the rule would.
+- **`add_handler(path, handler, value = 0)`.** Like `add_subtree(path, handler)` in everything that judges the path (InvArgs, AlreadyExists, NoResource, judged whole before any node is made, so a refusal leaves nothing behind) and in the shared table. It differs in one thing: it takes the `value` the handler is told on every call about the node. The `NodeHandler` contract (step 8) says the value tells the handler which of its nodes a call is for; the table index the node is registered under is the `Outgoing`'s own number, and showing it would make the value depend on the order of registrations. `HandlerEntry` therefore keeps the program's value beside the handler. The default is 0 for a handler that serves one node.
+- **`Outgoing` is the `LoopServer`'s `NodeHandler`, by a second private base.** The `Server` asks one handler about every Handler node of its tree, and finds the node by the value the tree holds, which here is a table index: the lookup belongs to the class that owns the table, and `Delegate` is the precedent (the same class already is the `LoopServer`'s delegate, for the same reason). It is the implementation of an interface the `Server` requires and not a new hierarchy, and a nested helper class would need the table's size and storage by reference to do what `Outgoing` does with its own members; if the maintainer prefers the helper, the six overrides move into it and nothing else changes.
+- **`Outgoing::complete()` is four forwarding overloads**, the smallest interface that lets a program end a request without reaching the `LoopServer` (which `Outgoing` keeps private, as it keeps the tree). A template or a getter for the `LoopServer` would be smaller still and would give a program the whole `serve()` surface.
+- **The glue does not own the delay.** A handler decides when to complete; the library has no timer (the Loop has none). The rule from the design stands: a handler that answers `Pending` completes, on the answer or on the failure of what it waits for.
+
+**Change**
+`LoopServer::handle()`, before and after, for the case that mattered:
+
+```cpp
+// before: unreachable, defensive
+case Action::Pending: {
+    auto const held = m_server.release(connection);
+    if (held != Uandle::Invalid) { auto _ = ours::handle_close(held); }
+    return loop::Action::Close;
+}
+
+// after
+case Action::Pending: {
+    // The NodeHandler will answer later, through complete(). ...
+    return loop::Action::Suspend;
+}
+```
+
+`watch()` keeps the key, `complete()` ends a request:
+
+```cpp
+// watch(), after the Loop took the channel
+binding.m_key = added.unwrap();
+
+auto LoopServer::complete(Ticket const ticket, ReadResult const &result) -> Status {
+    return finish(ticket, m_server.complete(ticket, result, *m_memory.reply));   // and Open, Entries, Vmo
+}
+
+auto LoopServer::finish(Ticket const ticket, ustl::Result<Outcome, Status> const &completed) -> Status {
+    if (completed.is_err()) { return completed.unwrap_err(); }        // NotFound, InvArgs: nothing written or taken
+    auto const outcome = completed.unwrap();
+    auto const channel = *m_server.channel(ticket.connection);          // alive: the Server took the ticket
+    auto const key = m_memory.bindings[ticket.connection.index].m_key;
+    if (outcome.action == Action::Reply) {
+        if (auto const written = write(channel, outcome.message); written != Status::Ok && m_delegate != nullptr) {
+            m_delegate->write_failed(written);                          // and the connection is left alone
+        }
+    } else if (outcome.action == Action::Bind) {
+        bind(outcome);                                                  // watch(), or an epitaph and a close
+    } else if (outcome.action == Action::Refuse) {
+        refuse(outcome);                                                // epitaph, close; not reported
+    }
+    if (auto const resumed = m_loop->resume(key); resumed == Status::BadState || resumed == Status::NotFound) {
+        return resumed;                                                 // the slot was not suspended
+    }
+    return Status::Ok;
+}
+```
+
+`Outgoing`:
+
+```cpp
+auto add_handler(std::string_view path, NodeHandler &handler, u64 value = 0) -> ustl::Result<NodeId, Status>;
+auto complete(Ticket, OpenResult const &) -> Status;       // and Read, Entries, Vmo
+
+struct HandlerEntry {                  // one place of the table, indexed by the node's value
+    Handler *service = nullptr;        // a protocol, or a service node
+    SubtreeHandler *subtree = nullptr; // a Subtree node
+    NodeHandler *node = nullptr;       // a Handler node
+    u64 node_value = 0;                // what add_handler() was given
+};
+```
+
+Rejected: a `Rearm` flag in the `Binding` for a completion that already happened (dead code: the case cannot arise, and a test could only reach it by breaking a rule the Server enforces); making `complete()` release the connection when the write fails (the defect rule 4 exists for: mutation L6 below); a separate handler table for Handler nodes (the design says one table, and `MAX_PROTOCOLS` limits all four).
+
+**Reference**
+None, this project's own design: `.agents/tasks/directory-capability/DESIGN.md`, "Waiting for a reply: the handler node, Suspend and resume (C′)", the section on a client that goes away while the request is pending, and the Staging row 9. The shape of a handler operation that answers now or later follows the async operations of the Rust vfs (`src/storage/lib/vfs/rust/src/directory/entry_container.rs:102-107`), with `Done` and `Pending` written out where Rust has `Poll::Ready` and `Poll::Pending`.
+
+**Verification**
+- Host, `out/dc-step9`: `loop_server` 49 tests (32 before), `outgoing` 84 (63), `ioservice` 144 (unchanged), the whole suite 172 executables, all pass.
+- **Mutation, `loop_server.cpp` (18) and `outgoing.cpp` (16), one at a time, each built, run and reverted** (the scripts are in the session scratchpad; the source was compared with a copy after every run). Every one fails a named test. **Every one of the 38 new tests fails under at least one mutation.**
+
+  | Mutation of `loop_server.cpp` | Tests failing |
+  |---|---|
+  | Pending answers `Rearm` / `Close` instead of `Suspend` | 15 / 14 |
+  | resume skipped / resume called twice | 9 / 11 |
+  | the resume is made before the reply is written | 1 (`AResumeThatTheKernelRefusesReleasesTheConnectionAfterTheReplyIsOut`: the reply is lost when the arm fails) |
+  | the key never stored | 11 |
+  | `complete()` releases the connection when the write fails | 2 |
+  | the write failure not told to `write_failed()` | 2 |
+  | `release()` does not close the Open's held server end | 1 |
+  | `Drop` does not close the handle it carries | 1 |
+  | BadState and NotFound from the resume swallowed | 1 |
+  | the `Bind` of a completed Open not carried out / the `Refuse` not carried out | 2 / 2 |
+  | the reply written on another connection's channel | 1 (two pending connections completed in reverse order) |
+  | `rearm_failed()` does not release | 3 |
+  | the handler not given to the `Server` | 5 |
+  | a refused ticket carried out as if accepted | 3 |
+  | the PEER_CLOSED path does not release | 5 |
+
+  | Mutation of `outgoing.cpp` | Tests failing |
+  |---|---|
+  | the table not judged / the index not advanced | 13 / 18 |
+  | the table judged after the directories are made | 1 (`AddHandlerRefusedForTheTableLeavesNoDirectoryBehind`) |
+  | the declared path not recorded | 2 |
+  | the program's value not kept / the table index told in its place | 3 / 2 |
+  | `read` forwards offset and count swapped / `clone` the wrong cookie / `get_backing_memory` the wrong cookie / `read_dirents` the wrong value | 2 / 1 / 1 / 1 |
+  | `release` not forwarded / `complete(Read)` forwards nothing | 2 / 1 |
+  | the node added as a Subtree node / the `LoopServer` not given the `Outgoing` as handler | 10 / 15 |
+  | `judge()` accepts a relative path / accepts `/svc` | 5 / 5 (three of the five are `add_directory`'s and `add_subtree`'s) |
+
+  The reply-before-resume order is invisible on one thread unless the resume's arm fails (the Loop then closes the channel the reply was to be written on), so `AResumeThatTheKernelRefusesReleasesTheConnectionAfterTheReplyIsOut` is the one test that holds it.
+- **Target.** `routing_checks` reads the slow file, writes two Reads back to back and abandons 40, through this glue, on the real kernel (`docs/changes/261103/routing-checks.md`). Mutations of the library on the target: `Rearm` for `Pending` fails the back-to-back case (after the delay was made two turns, see `docs/changes/261103/examples-files.md`); `complete()` writing to the wrong connection fails the slow cases; a connection not released when its client is gone fails the 40-abandoned case with `NoResource`; no resume hangs the boot (`no "routing_checks: passed"`).
+- Sizes, from the `OUTGOING_STORAGE` symbol of the user `files_server` (`llvm-nm -S`): 14,984 bytes, 384 more than the 14,600 of step 8: a `Binding` is 32 bytes where it was 24 (32 of them: 256), and a table entry 32 where it was 16 (8 of them: 128). The root's boot server has 128 `Binding`s: 1,024 bytes more. The Loop's table follows `MAX_CONNECTIONS` and is unchanged. Repair item 1 of `docs/repairs/261103/ioservice.md` now lists both.
+- `boot_check.py --out out/dc-step9` on the final tree against the baseline of `e7bf44bd` measured first in the same worktree:
+
+  | | Baseline | Now |
+  |---|---|---|
+  | dbg | PASS, 46 passed, 5 skipped, 0 failed, 0 error lines | the same |
+  | rel | PASS, 44 passed, 8 skipped, 0 failed, 7 of 7 required, 0 error lines | the same |
+  | host tests | PASS, 172 passed (executables), 0 failed | the same |
+
+  Ten more rel boots with 4 CPUs (the default): 10 of 10 pass. Nine with `SMP=2`: 9 of 9 pass (the known `Gpt.GetInfo = PeerClosed` race of `docs/repairs/261103/routing-checks.md` did not appear). `SMP=1` does not boot on this tree (`CPU[0] tick device I8253 failed`, in the kernel before user space; no kernel source changed here, so it is not this change's).
+- clang-tidy (`prebuilt/clang/llvm-23`, `-p out/dc-step9`, headers of `system/lib/ioservice` and `examples/files` included) on `loop_server.cpp`, `outgoing.cpp`, both test files, `files_server.cpp` and `routing_checks.cpp`: no diagnostic. `format_cpp.py --check` and `format_gn.py --check` clean; `lint_docs.py --changed` clean.
+
+**Deliberately not done**
+- The guide and the architecture notes, as the brief says. The passages step 9 makes wrong are in `.agents/tasks/directory-capability-step9/RESULT.md`.
+- A `Rearm` branch for a completion inside the Binding's callback (above): the case cannot arise.
+- Pipelining, a timeout and cancellation: one request per connection, as the design says. A handler whose wait never ends keeps its connection suspended for good.
+- A test of `LoopServer::complete()` for an `EntriesResult` or a `VmoResult`: the fake handler answers those operations at once, and `finish()` is the same code for all four; the core's own tests (step 8) cover what each overload builds.
+- The `Binding` and the table entry could be smaller (`m_connection` and `m_key` carry overlapping information); not measured to matter, listed in repair item 1 with the sizes.
+
+**How it was found**
+None, a new feature from the design. Two things only the target showed: the example's delay had to be two Loop turns and not one (`docs/changes/261103/examples-files.md`), and `routing_checks` is at the limit of its namespace (`docs/changes/261103/routing-checks.md`).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. `complete()` writes the reply and then resumes the slot. Which request would be started too early if the order were reversed, and why can no test on one thread see it unless the resume's arm fails?
+2. A client closes its channel while its Read is pending. Who sees it, when, and who calls `release(cookie)`? Why must `complete()` not release the connection when its write fails, though it is the first to know the client is gone?
+3. The step 7 note says a completion inside the callback of the connection being completed would leave it suspended. Which rule of the core keeps that from happening, and what does a handler that tries it get back?

@@ -3,7 +3,7 @@
 #ifndef OURS_MM_VM_MAPPING_HPP
 #define OURS_MM_VM_MAPPING_HPP 1
 
-#include <ours/mm/priv/memory_allocation_policy.hpp>
+#include <ours/mm/priv/alloc_policy.hpp>
 #include <ours/mm/protection_ranges.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_area_or_mapping.hpp>
@@ -18,24 +18,6 @@
 #include <ustl/util/pair.hpp>
 
 namespace ours::mm {
-/// What VmMapping::map() does with a page the object does not have, in mm's
-/// own terms. The page table's choices (ArchMapOptions) are not a caller's to
-/// make: an entry already there is always an error, since a range map() fills
-/// is one nobody has mapped yet, and whether a block goes in as a 2 MiB leaf
-/// is the mapping's decision (map_block_locked()).
-enum class MapOptions : u8 {
-    /// Map the pages the object has -- its own, or ones it sees through an
-    /// ancestor, read-only -- and leave the rest to fault. Nothing is
-    /// allocated and no page source is asked. What a Populate mapping does.
-    None = 0,
-    /// Make every page the object's own first, then map it: a hole gets a
-    /// page, a page seen through an ancestor is copied, and a page source is
-    /// asked, which fails the map rather than wait. For the kernel's own
-    /// mappings, whose pages must be there before anything touches them.
-    Commit = 0_bit,
-};
-USTL_ENABLE_ENUM_BITMASK(MapOptions);
-
 /// VmMapping is the representation of a or a group of area which has been mapped in
 /// virtual memory address space.
 ///
@@ -61,7 +43,10 @@ class VmMapping final: public VmAreaOrMapping {
     /// VmArea::unmap_locked() converted the wrong way, subtracting the base
     /// before calling the absolute unmap_locked() and silently naming a range
     /// at the bottom of the address space.
-    auto map(VirtAddr base, usize size, MapOptions options) -> Status;
+    /// Installs page-table entries in this active mapping. Resident uses
+    /// existing pages. Commit obtains owned pages for the whole range.
+    /// Only these two modes are accepted by this operation.
+    auto map(VirtAddr base, usize size, MapOptions mode) -> Status;
 
     auto protect(VirtAddr base, usize size, MmuFlags) -> Status;
 
@@ -126,9 +111,9 @@ class VmMapping final: public VmAreaOrMapping {
     TA_REQUIRES(get_lock())
     auto protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status;
 
-    /// Makes |change| to the page tables of the part of this mapping that
+    /// Applies |op| to the page tables of the part of this mapping that
     /// shows [vmo_offset, vmo_offset + len) of its object; see
-    /// VmObject::change_range_locked(). Called with the object's lock held and
+    /// VmObject::range_change_locked(). Called with the object's lock held and
     /// without the address space's.
     ///
     /// Only the page tables change. The record of what the mapping allows
@@ -145,7 +130,7 @@ class VmMapping final: public VmAreaOrMapping {
     ///
     /// A failure would leave a shared page writable, or an entry to a frame
     /// the object no longer has, and cannot be undone, so it stops the kernel.
-    auto change_range_locked_object(u64 vmo_offset, u64 len, RangeChange change) -> void;
+    auto range_change_locked_object(usize vmo_offset, usize len, RangeOp op) -> void;
 
     /// Gives a present entry a permission an access needs and it lacks; see the
     /// definition. Part of page_fault(), split out for its length.
@@ -167,17 +152,17 @@ class VmMapping final: public VmAreaOrMapping {
         -> ustl::Option<ustl::Pair<Status, usize>>;
 
     TA_REQUIRES(get_lock())
-    virtual auto activate() -> Status override;
+    auto activate() -> Status;
     TA_REQUIRES(get_lock())
     virtual auto destroy() -> Status override;
 
     ustl::Arc<VmObject> m_vmo;
     usize m_vmo_ofs;
-    // TODO: m_policy (MemoryAllocationPolicy) is stored but never read by
+    // TODO: m_policy (AllocPolicy) is stored but never read by
     // any code path.  It is intended to guide NUMA / page-coloring
     // decisions during commit — either implement the integration or remove
     // the field to avoid dead weight.
-    ustl::Arc<MemoryAllocationPolicy> m_policy;
+    ustl::Arc<AllocPolicy> m_policy;
     ProtectionRanges m_protection_ranges;
     ustl::collections::intrusive::ListMemberHook<> m_list_hook;
     USTL_DECLARE_HOOK_OPTION(Self, m_list_hook, VmoListOption);

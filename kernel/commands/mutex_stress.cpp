@@ -21,12 +21,12 @@
 // read-spin-write, so two threads inside at once lose increments, and
 // holder() must name the thread that just acquired.
 //
-// This is a console command rather than a unit test because the tree has no
-// in-kernel unittest runtime yet (see //kernel/products/bin:vmours.with-tests),
-// and a mutex cannot be tested on the host: its slow path is the scheduler.
+// This is a console command because it has not moved to the kernel test
+// interface (//kernel/lib/ktest) yet, and a mutex cannot be tested on the
+// host: its slow path is the scheduler.
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -127,8 +127,8 @@ namespace {
         // Heap, not the stack: on the failure path the stuck threads still
         // point at it after this command returns, so it has to be leaked
         // rather than popped.
-        auto *const state = new (mm::GAF_KERNEL) StressState{};
-        auto *const workers = new (mm::GAF_KERNEL) Worker[NUM_WORKERS]{
+        auto *const state = new (mm::ALLOC_KERNEL) StressState{};
+        auto *const workers = new (mm::ALLOC_KERNEL) Worker[NUM_WORKERS]{
             {state, 64},
             {state, 64},
             {state, 0},

@@ -3,7 +3,7 @@
 #ifndef KTL_TYPES_HPP
 #define KTL_TYPES_HPP 1
 
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 

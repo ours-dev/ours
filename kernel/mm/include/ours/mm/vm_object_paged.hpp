@@ -8,6 +8,7 @@
 #include <ours/sync/mutex.hpp>
 
 #include <logz4/log.hpp>
+#include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/function.hpp>
 #include <ustl/result.hpp>
 
@@ -30,7 +31,8 @@ class VmObjectPaged: public VmObject {
     static_assert(MAX_SIZE % PAGE_SIZE == 0);
     static_assert(MAX_SIZE + PAGE_SIZE > MAX_SIZE, "a page more than MAX_SIZE must not wrap");
 
-    static auto create(Gaf gaf, usize size, Flags vmof, ustl::Arc<VmObjectPaged> *out) -> Status;
+    static auto create(Gaf alloc_flags, usize size, Flags vmof, ustl::Arc<VmObjectPaged> *out)
+        -> Status;
 
     /// A VMO of |size| bytes, rounded up to whole pages, whose pages are one run
     /// of physical memory starting on a multiple of 2^|alignment_log2| bytes,
@@ -54,10 +56,10 @@ class VmObjectPaged: public VmObject {
     /// OutOfRange, then NoMemory. |vmof| is for the future: Lazy and LargePages
     /// say the opposite of what this is, and are InvArgs.
     ///
-    /// |gaf| must not carry CanWait: the call answers NoMemory where a caller
+    /// |alloc_flags| must not carry CanWait: the call answers NoMemory where a caller
     /// that waits would sleep. The run can be anywhere in memory; nothing here
     /// limits it to what a device with a 32-bit address can reach.
-    static auto create_contiguous(Gaf gaf, usize size, usize alignment_log2, Flags vmof,
+    static auto create_contiguous(Gaf alloc_flags, usize size, usize alignment_log2, Flags vmof,
                                   ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// A VMO of |size| bytes whose pages come from |source| rather than being
@@ -69,7 +71,7 @@ class VmObjectPaged: public VmObject {
     /// until the provider supplies it. So Pinned, which promises that no access
     /// faults, is InvArgs. On any failure the source is closed, as the VMO
     /// would have closed it.
-    static auto with_source(ustl::Arc<PageSource> source, Gaf gaf, usize size, Flags vmof,
+    static auto with_source(ustl::Arc<PageSource> source, Gaf alloc_flags, usize size, Flags vmof,
                             ustl::Arc<VmObjectPaged> *out) -> Status;
 
     /// A VMO that takes over |size| bytes of frames at |base|, reserved since
@@ -85,10 +87,10 @@ class VmObjectPaged: public VmObject {
     /// Neither Lazy nor Pinned: every page is there from the start, and
     /// nothing pins them.
     ///
-    /// |gaf| is what the VMO allocates with afterwards -- a copy-on-write
+    /// |alloc_flags| is what the VMO allocates with afterwards -- a copy-on-write
     /// clone of it inherits it -- so a VMO user space can reach takes the user
     /// class, as create()'s callers choose theirs.
-    static auto create_from_wired_pages(Gaf gaf, PhysAddr base, usize size,
+    static auto create_from_wired_pages(Gaf alloc_flags, PhysAddr base, usize size,
                                         ustl::Arc<VmObjectPaged> *out) -> Status;
 
     ///
@@ -176,7 +178,7 @@ class VmObjectPaged: public VmObject {
     auto source_owner_id() const -> ustl::Option<u64> override;
 
     /// A page nobody has written reads as zero. Reading it commits a zeroed
-    /// page, as a fault would (VmCowPages::Cursor::require_read_page()). In a
+    /// page, as a fault would (VmCowPages::Cursor::require_page()). In a
     /// VMO made by with_source() there is no such page: the read waits until
     /// the provider supplies it, and fails if the provider fails it. The same
     /// holds for write(), read_user() and write_user().
@@ -221,17 +223,18 @@ class VmObjectPaged: public VmObject {
     /// otherwise reach the parent's pages beyond it.
     TA_REQUIRES(m_lock)
     FORCE_INLINE
-    auto make_cursor(usize offset, usize size) -> ustl::Result<VmCowPages::Cursor, Status> {
+    auto lookup_cursor_locked(usize offset, usize size)
+        -> ustl::Result<VmCowPages::Cursor, Status> {
         if (size > m_size || offset > m_size - size) {
             return ustl::err(Status::OutOfRange);
         }
         assert_cow_pages_locked();
-        return m_cow_pages->make_cursor(m_cow_offset + offset, size);
+        return ustl::ok(m_cow_pages->lookup_cursor_locked(m_cow_offset + offset, size));
     }
 
     /// Whether this object's 2 MiB at |offset| are one block of its pages; see
     /// VmCowPages::find_block_locked(). The range is checked against this
-    /// object as make_cursor() checks it, so a slice never answers for the
+    /// object as lookup_cursor_locked() checks it, so a slice never answers for the
     /// pages past its end.
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto find_block_locked(usize const offset)
@@ -250,7 +253,7 @@ class VmObjectPaged: public VmObject {
     /// |cow_offset| and |size| are the window of |cowpages| this object is:
     /// 0 and the pages' size for an object created on its own pages, a range
     /// inside them for a slice.
-    VmObjectPaged(Flags vmof, ustl::Arc<VmCowPages> cowpages, u64 cow_offset, usize size);
+    VmObjectPaged(Flags vmof, ustl::Arc<VmCowPages> cowpages, usize cow_offset, usize size);
     ~VmObjectPaged() override;
 
   private:
@@ -272,7 +275,7 @@ class VmObjectPaged: public VmObject {
         m_cow_pages->lock().assert_held();
     }
 
-    auto commit_range_internal(usize offset, usize size, CommitOptions option) -> Status;
+    auto commit_range_internal(usize offset, usize size, VmCowPages::CommitMode mode) -> Status;
 
     /// Moves |chunk| bytes between |page| and the caller's buffer at |done|,
     /// and says whether a user-side fault stopped it. |page| is writable even
@@ -293,12 +296,10 @@ class VmObjectPaged: public VmObject {
     auto copy_page_by_page(usize offset, usize size, bool will_write, CopyPage const &copy)
         -> Status;
 
-    /// Makes |change| to the page tables of this object's mappings of the part
-    /// of [cow_offset, cow_offset + len) of the pages that it shows, given in
-    /// the pages' bytes and translated into this object's. Called by the node,
-    /// for each object over it: VmCowPages::change_range_locked().
+    /// Propagate the node's notification through every view of its pages.
+    /// Called on the representative with the shared tree lock held.
     TA_REQUIRES(m_lock)
-    auto change_cow_range_locked(u64 cow_offset, u64 len, RangeChange change) -> void;
+    auto operate_views_locked(usize cow_offset, usize len, RangeOp op) -> void;
 
     ustl::Arc<VmCowPages> m_cow_pages;
 
@@ -307,13 +308,15 @@ class VmObjectPaged: public VmObject {
     /// check through the second. The window lives on the object, not on the
     /// pages, because a slice shares one VmCowPages with the object it was cut
     /// from.
-    u64 const m_cow_offset;
+    usize const m_cow_offset;
     usize const m_size;
 
-    /// How the pages know this object is over them, so that an operation on
-    /// the pages can reach this object's mappings. Registered when the object
-    /// is made and taken off when it dies.
-    VmCowPages::Attachment m_attachment;
+    /// A non-owning list of the other views, held by the representative.
+    /// All members refer to the same COW node and share m_lock.
+    ustl::collections::intrusive::ListMemberHook<> m_view_hook;
+    USTL_DECLARE_HOOK_OPTION(Self, m_view_hook, ViewOption);
+    USTL_DECLARE_LIST(Self, ViewList, ViewOption);
+    ViewList m_views TA_GUARDED(m_lock);
 };
 
 } // namespace ours::mm

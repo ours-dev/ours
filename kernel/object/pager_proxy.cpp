@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/pager_dispatcher.hpp>
 #include <ours/object/pager_proxy.hpp>
 #include <ours/time/timer.hpp>
@@ -34,7 +34,7 @@ auto PagerProxy::create(ustl::Arc<PortDispatcher> port, u64 const key, u64 const
                         Overtime const overtime, PagerDispatcher *const pager,
                         ustl::Arc<PagerProxy> *const proxy_out,
                         ustl::Arc<mm::PageSource> *const source_out) -> Status {
-    auto proxy = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL)
+    auto proxy = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL)
                                             Self(ustl::move(port), key, owner_id, overtime, pager));
     if (!proxy) {
         return Status::NoMemory;
@@ -56,8 +56,10 @@ auto PagerProxy::create(ustl::Arc<PortDispatcher> port, u64 const key, u64 const
 /// By the time the last reference goes, the port has nothing of this
 /// proxy's: the cycle is cut only once the packet is back for good.
 PagerProxy::~PagerProxy() {
-    DEBUG_ASSERT(!m_packet_out, "a pager proxy destroyed with its packet on the port");
-    DEBUG_ASSERT(!m_complete_pending, "a pager proxy destroyed with its Complete pending");
+    DEBUG_ASSERT(!(m_flags & Flags::PacketOut),
+                 "a pager proxy destroyed with its packet on the port");
+    DEBUG_ASSERT(!(m_flags & Flags::CompletePending),
+                 "a pager proxy destroyed with its Complete pending");
     DEBUG_ASSERT(m_pending.empty(), "a pager proxy destroyed with requests to send");
     DEBUG_ASSERT(!m_pager_hook.is_linked(), "a pager proxy destroyed on its pager's list");
     NR_ALIVE.fetch_sub(1, std::memory_order_relaxed);
@@ -69,7 +71,7 @@ auto PagerProxy::nr_alive() -> usize {
 
 auto PagerProxy::send_async_request(mm::PageRequest *const request) -> void {
     Guard guard{m_lock};
-    DEBUG_ASSERT(!m_source_closed, "a closed source sends nothing");
+    DEBUG_ASSERT(!(m_flags & Flags::SourceClosed), "a closed source sends nothing");
     send_locked(request);
 }
 
@@ -84,7 +86,7 @@ auto PagerProxy::clear_async_request(mm::PageRequest *const request) -> void {
         // has handed it out or dropped it and is about to call free(), which
         // finds no request on it.
         if (m_port->cancel_queued(&m_packet)) {
-            m_packet_out = false;
+            m_flags &= ~Flags::PacketOut;
             on_packet_back_locked();
         }
         return;
@@ -105,7 +107,7 @@ auto PagerProxy::clear_async_request(mm::PageRequest *const request) -> void {
 auto PagerProxy::swap_async_request(mm::PageRequest *const old, mm::PageRequest *const heir)
     -> void {
     Guard guard{m_lock};
-    DEBUG_ASSERT(!m_source_closed, "a closed source hands nothing on");
+    DEBUG_ASSERT(!(m_flags & Flags::SourceClosed), "a closed source hands nothing on");
     if (old == m_active) {
         m_active = heir;
         return;
@@ -148,8 +150,8 @@ auto PagerProxy::wait_on_event(sync::Event *const event, bool const suspendable)
 /// Complete packet is the last one, sent after whatever is still out.
 auto PagerProxy::on_detach() -> void {
     Guard guard{m_lock};
-    DEBUG_ASSERT(!m_source_closed);
-    m_complete_pending = true;
+    DEBUG_ASSERT(!(m_flags & Flags::SourceClosed));
+    m_flags |= Flags::CompletePending;
     send_locked(&m_complete);
 }
 
@@ -160,7 +162,7 @@ auto PagerProxy::on_close() -> void {
     // Dropped after the guard: declared before it.
     Cut cut;
     Guard guard{m_lock};
-    m_source_closed = true;
+    m_flags |= Flags::SourceClosed;
     cut = cut_if_done_locked();
 }
 
@@ -173,12 +175,13 @@ auto PagerProxy::free(QueuedPacket *const packet) -> void {
     // proxy once the guard is gone.
     Cut cut;
     Guard guard{m_lock};
-    DEBUG_ASSERT(packet == &m_packet && m_packet_out, "the port handed back a packet not out");
-    m_packet_out = false;
+    DEBUG_ASSERT(packet == &m_packet && !!(m_flags & Flags::PacketOut),
+                 "the port handed back a packet not out");
+    m_flags &= ~Flags::PacketOut;
 
     if (m_active == &m_complete) {
         m_active = nullptr;
-        m_complete_pending = false;
+        m_flags &= ~Flags::CompletePending;
         DEBUG_ASSERT(m_pending.empty(), "a request after the Complete packet");
     } else {
         m_active = nullptr;
@@ -194,9 +197,9 @@ auto PagerProxy::on_pager_close() -> void {
     ustl::Arc<mm::PageSource> source;
     {
         Guard guard{m_lock};
-        m_pager_closed = true;
+        m_flags |= Flags::PagerClosed;
         m_pager = nullptr;
-        if (!m_source_closed) {
+        if (!(m_flags & Flags::SourceClosed)) {
             source = m_source;
         }
     }
@@ -210,17 +213,17 @@ auto PagerProxy::on_pager_close() -> void {
     // Nobody reads the port for this pager any more. A Complete waiting
     // behind the packet is dropped first, so that taking the packet back
     // below does not send it.
-    if (m_complete_pending && is_queued(m_complete)) {
+    if (!!(m_flags & Flags::CompletePending) && is_queued(m_complete)) {
         m_pending.erase(m_complete);
-        m_complete_pending = false;
+        m_flags &= ~Flags::CompletePending;
     }
     // Whatever the packet carries, a Complete or a Read the source has taken
     // back, comes off the port if it is still queued. If it is not, free() is
     // coming, and cuts the cycle there.
-    if (m_packet_out && m_port->cancel_queued(&m_packet)) {
-        m_packet_out = false;
+    if (!!(m_flags & Flags::PacketOut) && m_port->cancel_queued(&m_packet)) {
+        m_flags &= ~Flags::PacketOut;
         if (m_active == &m_complete) {
-            m_complete_pending = false;
+            m_flags &= ~Flags::CompletePending;
         }
         m_active = nullptr;
     }
@@ -230,11 +233,11 @@ auto PagerProxy::on_pager_close() -> void {
 auto PagerProxy::send_locked(mm::PageRequest *const request) -> void {
     // A pager that has closed reads nothing more: its Complete would only
     // keep the cycle waiting for a reader that will never come.
-    if (request == &m_complete && m_pager_closed) {
-        m_complete_pending = false;
+    if (request == &m_complete && !!(m_flags & Flags::PagerClosed)) {
+        m_flags &= ~Flags::CompletePending;
         return;
     }
-    if (m_packet_out) {
+    if (!!(m_flags & Flags::PacketOut)) {
         m_pending.push_back(*request);
         return;
     }
@@ -253,11 +256,11 @@ auto PagerProxy::send_locked(mm::PageRequest *const request) -> void {
     }
 
     auto status = Status::BadHandle;
-    if (!m_port_gone) {
+    if (!(m_flags & Flags::PortGone)) {
         status = m_port->queue(&m_packet);
     }
     if (Status::Ok == status) {
-        m_packet_out = true;
+        m_flags |= Flags::PacketOut;
         m_active = request;
         return;
     }
@@ -268,9 +271,9 @@ auto PagerProxy::send_locked(mm::PageRequest *const request) -> void {
     // the VMO goes; a Complete is as good as delivered, or the cycle would
     // wait for a free() that never comes.
     DEBUG_ASSERT(Status::BadHandle == status);
-    m_port_gone = true;
+    m_flags |= Flags::PortGone;
     if (request == &m_complete) {
-        m_complete_pending = false;
+        m_flags &= ~Flags::CompletePending;
     }
 }
 
@@ -278,7 +281,7 @@ auto PagerProxy::send_locked(mm::PageRequest *const request) -> void {
 /// packet here: then the next request goes the same way, and the queue
 /// drains.
 auto PagerProxy::on_packet_back_locked() -> void {
-    while (!m_packet_out) {
+    while (!(m_flags & Flags::PacketOut)) {
         auto front = m_pending.front();
         if (!front) {
             return;
@@ -293,7 +296,8 @@ auto PagerProxy::on_packet_back_locked() -> void {
 /// before its list lock: a proxy whose cycle is cut has nothing left for the
 /// pager to close.
 auto PagerProxy::cut_if_done_locked() -> Cut {
-    if (!m_source_closed || m_complete_pending || m_packet_out || !m_source) {
+    if (!(m_flags & Flags::SourceClosed) ||
+        !!(m_flags & (Flags::CompletePending | Flags::PacketOut)) || !m_source) {
         return {};
     }
     Cut cut;

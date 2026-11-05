@@ -3,7 +3,7 @@
 #ifndef HEAP_KMALLOC_HPP
 #define HEAP_KMALLOC_HPP 1
 
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/types.hpp>
 
 namespace heap {
@@ -30,9 +30,9 @@ inline constexpr auto KMALLOC_MAX_SIZE = usize{1} << (KMALLOC_NUM_CACHES - 1 + K
 
 auto init_kmalloc() -> void;
 
-auto kmalloc(usize size, Gaf gaf) -> void *;
+auto kmalloc(usize size, Gaf alloc_flags) -> void *;
 
-auto kmalloc(usize size, Gaf gaf, NodeId nid) -> void *;
+auto kmalloc(usize size, Gaf alloc_flags, NodeId nid) -> void *;
 
 auto kfree(void *object) -> void;
 

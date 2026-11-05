@@ -2,6 +2,7 @@ import("//kernel/kernel_params.gni")
 
 source_set("sched") {
   sources = [
+    "domains.cpp",
     "sched_clock.cpp",
     "features.cpp",
     "scheduler.cpp",
@@ -23,6 +24,7 @@ source_set("sched") {
     "//kernel/lib/sampler:request",
     "//kernel/lib/gktl:headers",
     "//kernel/lib/ktl:headers",
+    "//kernel/lib/sched_domain",
     "//kernel/mm:headers",
     "//system/lib/lockdep",
   ]

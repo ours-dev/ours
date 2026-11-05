@@ -8,6 +8,8 @@ Low: a cost in bytes, not a wrong result. A provider's `Outgoing::Storage` is 1,
 **Symptom**
 Measured on 2026-11-03 with `sizeof` on the host and the `OUTGOING_STORAGE` symbol of `files_server` (the two agree): `Connection` 40 to 80 bytes, `Outgoing::Storage` 13,320 to 14,600 bytes. The design (`.agents/tasks/directory-capability/DESIGN.md`, "Where it lives in the provider") listed four new fields and called their cost "not measured". The fields are those four (a cookie, a serial, the pending flag as `m_waiting`, and the Open's held server end) and four more that the design did not list: the role (what the connection is to), and, because the handler's answer does not carry them, the request's txid, its argument (an Open's flags, a Read's count, a ReadDirents' byte limit) and the Handler node an Open walked to.
 
+Step 9 (2026-11-04) added two more costs of the same kind, both in `.bss`: a `LoopServer::Binding` keeps the key of its Loop slot, so it is 32 bytes where it was 24 (256 bytes for the 32 of an `Outgoing`, 1,024 for the 128 of the root's boot server), and an entry of `Outgoing`'s handler table holds three handler pointers and the program's value, 32 bytes where it was 16 (128 bytes for 8). `Outgoing::Storage` is now 14,984 bytes (the `OUTGOING_STORAGE` symbol of `files_server`). The key and `m_connection` overlap in what they say (both name the connection's slot and generation) and could share a word; not measured to matter.
+
 **Cause**
 The pending state is in every connection, though a connection waits for a handler only if its node is a Handler node's object or a directory an Open of one came on, and the cookie and the role matter to handled objects alone. A plain tree connection pays 40 bytes for fields it never reads. The request's 24 bytes are in use only while a request waits, one at a time per connection.
 
@@ -18,7 +20,7 @@ Not decided, and not to be done before measuring what a real filesystem's table 
 None, this project's own design.
 
 **Acceptance**
-A `static_assert` on `sizeof(Connection)` beside the new figure, and the `Outgoing::Storage` size in the README, move together; the `ioservice` tests pass unchanged.
+A `static_assert` on `sizeof(Connection)` and `sizeof(LoopServer::Binding)` beside the new figures, and the `Outgoing::Storage` size in the README, move together; the `ioservice` tests pass unchanged.
 
 ## 2. A Read from a handler node copies the handler's bytes into the reply, one copy more than a handler needs when it builds them in memory it will not reuse
 

@@ -65,6 +65,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/idle_thread.hpp>
+#include <ours/task/sched/domains.hpp>
 #include <ours/task/sched/features.hpp>
 #include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/schedule.hpp>
@@ -106,6 +107,8 @@ namespace {
     GKTL_COUNTER(SCHEDULE_IDLE_PAST, "schedule.idle_past");
     GKTL_COUNTER(SCHEDULE_PREEMPT_PAST, "schedule.preempt_past");
     GKTL_COUNTER(SCHEDULE_YIELD_PAST, "schedule.yield_past");
+    GKTL_COUNTER(SCHEDULE_STEAL_LOOKS, "schedule.steal_looks");
+    GKTL_COUNTER(SCHEDULE_STEALS, "schedule.steals");
 
 } // namespace
 
@@ -1040,6 +1043,118 @@ auto Scheduler::Current::deactivate() -> void {
             }));
     }
     reschedule_mask(moved_to);
+}
+
+auto Scheduler::Current::num_steal_looks(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(SCHEDULE_STEAL_LOOKS.get(cpu));
+}
+
+auto Scheduler::Current::num_steals(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(SCHEDULE_STEALS.get(cpu));
+}
+
+/// A pull, by a CPU with nothing to run, from the tiers of its scheduling
+/// domains (domains_of()), the nearest first: in each, the CPU with the most
+/// threads, if it has as many as the tier asks for. The hold-one-lock-at-a-time
+/// shape is deactivate()'s: no order of run queue locks is defined, and two CPUs
+/// stealing from each other would deadlock on the first one that took both.
+///
+/// While the thread is Migrating it is in neither queue, and its m_curr_cpu
+/// still names the victim. That is the window deactivate() has between its two
+/// locks, and this one is as long. What can reach the thread meanwhile is not
+/// kept out by it: set_cpu_affinity() installs a mask without any run queue
+/// lock, so a mask that excludes this CPU, installed after the walk below
+/// checked it, leaves the thread queued here; and the priority-inheritance walk
+/// (Scheduler::Pi::common()) takes the victim's lock by m_curr_cpu and does not
+/// ask whether the thread is queued there. Both are open for deactivate() too
+/// (items 25 and 26 of docs/repairs/261103/kernel-task-sched.md).
+auto Scheduler::Current::steal() -> bool {
+    DEBUG_ASSERT(arch::irqs_disabled());
+    auto &self = get();
+    self.m_canary.verify<Self>();
+    DEBUG_ASSERT(self.m_run_queue.m_curr_thread == self.m_idle_thread,
+                 "a CPU steals when it has nothing to run, in its idle thread");
+    SCHEDULE_STEAL_LOOKS.add(1);
+
+    auto const here = self.m_run_queue.m_which_cpu;
+
+    // Detaches one thread that may run here from |victim_cpu|'s queue, or
+    // answers null.
+    auto const detach_from = [&](CpuNum const victim_cpu, usize const min_runnable) -> Thread * {
+        if (victim_cpu == INVALID_CPU_NUM) {
+            return nullptr;
+        }
+        auto &victim = get(victim_cpu);
+        Guard<SpinLock, IrqSave> guard{victim.get_lock()};
+        // The count that chose the victim was read without its lock: another
+        // CPU may have taken a thread since, and two CPUs that read the same
+        // count must not both take from a queue that had enough for one.
+        if (!victim.is_state_active() || victim.num_runnable() < min_runnable) {
+            return nullptr;
+        }
+        // The first queued thread that may run here, in the order the
+        // discipline's queue walks (first in, first out for round-robin, by
+        // deadline for Fair). Only a Ready one: Fair's delayed dequeue leaves a
+        // thread that is asleep, parked, suspended or dead in its tree until
+        // its lag runs out, and that is not a thread to run. Not the thread
+        // the victim has nominated to run next (a directed yield), and not one
+        // pinned to the victim.
+        Thread *thread = nullptr;
+        victim.m_run_queue.for_each_thread([&](Thread &queued) {
+            if (&queued == victim.m_run_queue.m_next_thread || !queued.is_state_ready()) {
+                return true;
+            }
+            auto const may_run_here = queued.scheduling_entity()
+                                          .cpu_affinity()
+                                          .get_available_mask(peek_active_mask())
+                                          .test(here);
+            if (!may_run_here) {
+                return true;
+            }
+            thread = &queued;
+            return false;
+        });
+        if (thread != nullptr) {
+            // Not SkipClock: this is the victim's queue, and its clock was last
+            // read when it last scheduled, which may be a slice ago. The
+            // dequeue charges the victim's running thread and records the
+            // lag of the one that leaves against the clock it reads.
+            victim.deactivate_thread(thread, DequeueOptions::None);
+        }
+        return thread;
+    };
+
+    // Each tier in turn, nearest first, until one gives a thread. The deepest
+    // queue in a tier is a hint: read without the victim's lock, as
+    // select_target_cpu() reads the same count, and confirmed by the walk of
+    // the victim's queue under it. A tier lists every CPU that may ever exist,
+    // so it is cut to the ones active now.
+    Thread *thread = nullptr;
+    for (auto const &domain: domains_of(here).view()) {
+        auto victim_cpu = INVALID_CPU_NUM;
+        usize deepest = 0;
+        (domain.span & peek_active_mask()).for_each([&](CpuNum const cpu) {
+            auto const queued = get(cpu).num_runnable();
+            if (queued >= domain.min_runnable && queued > deepest) {
+                deepest = queued;
+                victim_cpu = cpu;
+            }
+        });
+        thread = detach_from(victim_cpu, domain.min_runnable);
+        if (thread != nullptr) {
+            break;
+        }
+    }
+    if (thread == nullptr) {
+        return false;
+    }
+
+    {
+        Guard<SpinLock, IrqSave> guard{self.get_lock()};
+        self.activate_thread(thread, EnqueueOptions::None);
+    }
+    SCHEDULE_STEALS.add(1);
+    return true;
 }
 
 auto Scheduler::Current::reactivate() -> void {

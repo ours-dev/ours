@@ -147,9 +147,9 @@ auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_to
     // Low. The fraction of the zone is what keeps the band usable there.
     auto const delta = std::max(min >> 2, managed * WATERMARK_SCALE / WATERMARK_SCALE_UNIT);
 
-    m_watermarks[std::to_underlying(WaterMark::Min)] = min;
-    m_watermarks[std::to_underlying(WaterMark::Low)] = min + delta;
-    m_watermarks[std::to_underlying(WaterMark::High)] = min + delta + delta;
+    m_watermarks[std::to_underlying(Watermark::Min)] = min;
+    m_watermarks[std::to_underlying(Watermark::Low)] = min + delta;
+    m_watermarks[std::to_underlying(Watermark::High)] = min + delta + delta;
 
     // One line, and a short one on purpose. logz4 hands std::vformat_to a
     // bounded output iterator, and libc++ gives up on its own 256-byte buffer
@@ -161,11 +161,7 @@ auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_to
               min + delta + delta);
 }
 
-auto PmZone::finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void {
-    m_free_frames -= usize{1} << order;
-}
-
-auto PmZone::alloc_frames(AllocRequest const &request) -> ustl::Option<PmFrame &> {
+auto PmZone::take_block(usize order) -> ustl::Option<PmFrame &> {
     // A zone below its high watermark is running short, and this gate still
     // has no writer for the flag, so it never fires. It also tests the wrong
     // line: the high watermark is where a zone becomes worth reclaiming, not
@@ -178,43 +174,27 @@ auto PmZone::alloc_frames(AllocRequest const &request) -> ustl::Option<PmFrame &
         return ustl::NONE;
     }
 
-    return alloc_frame(request.gaf(), request.order());
-}
-
-auto PmZone::alloc_frame(Gaf gaf, usize order) -> ustl::Option<PmFrame &> {
-    ustl::Option<PmFrame &> taken{ustl::NONE};
     if (is_order_within_pcpu_cache_limit(order)) {
-        taken = m_frame_cache.with_current(
+        auto const cached = m_frame_cache.with_current(
             [](PcpuCache &cache) { return ustl::Option<PmFrame &>{ustl::NONE}; });
+        if (cached) {
+            m_free_frames -= usize{1} << order;
+            return cached;
+        }
     }
 
-    if (!taken) {
-        // The zone's lock covers the frame set; the set has none of its own.
-        // Held only across the buddy call, so the zeroing below -- which can be
-        // a whole max-order block -- happens outside it. IrqSave: see
-        // ZoneGuard.
-        ZoneGuard guard{m_lock};
-        taken = m_buddy.allocate(order);
+    ZoneGuard guard{m_lock};
+    auto const taken = m_buddy.allocate(order);
+    if (taken) {
+        m_free_frames -= usize{1} << order;
     }
-
-    if (!taken) {
-        return ustl::NONE;
-    }
-
-    auto &frame = taken.value();
-    if (!!(Gaf::Zero & gaf)) {
-        std::fill_n(frame_to_virt<isize>(&frame), (usize{1} << order) * PAGE_SIZE / sizeof(usize),
-                    0);
-    }
-
-    finish_allocation(&frame, gaf, order);
     return taken;
 }
 
 auto PmZone::count_free_frames() -> usize {
     // Every block on every order's list, weighted by its size: a walk, not a
     // counter, so it costs time proportional to how fragmented the zone is.
-    // That is what makes this the diagnostic form and free_frames() the one
+    // That is what makes this the diagnostic form and num_free_frames() the one
     // the allocation path asks.
     ZoneGuard guard{m_lock};
     usize total = 0;
@@ -241,19 +221,18 @@ auto PmZone::contains(usize order) -> bool {
     return false;
 }
 
-auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
+auto PmZone::return_block(PmFrame &frame, usize order) -> void {
     if (is_order_within_pcpu_cache_limit(order)) {
         m_frame_cache.with_current([](PcpuCache &cache) {
             // Here no pcpu cache.
         });
-    } else {
-        // The buddy finds the partners from the freed descriptor and its pfn,
-        // never from a zone-wide base. Read before the lock: the memmap does
-        // not change under a frame the caller holds.
-        auto const pfn = frame_to_pfn(frame);
-        ZoneGuard guard{m_lock};
-        m_buddy.release(frame, pfn, order);
+        m_free_frames += usize{1} << order;
+        return;
     }
+
+    auto const pfn = frame_to_pfn(&frame);
+    ZoneGuard guard{m_lock};
+    m_buddy.release(&frame, pfn, order);
     m_free_frames += usize{1} << order;
 }
 } // namespace ours::mm

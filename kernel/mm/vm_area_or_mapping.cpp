@@ -47,16 +47,11 @@ auto VmAreaOrMapping::validate_mmuflags(MmuFlags mmuf) const -> bool {
     return !!(mmuf & MmuFlags::PermMask);
 }
 
-auto VmAreaOrMapping::activate() -> Status {
-    mark_active();
-    return m_parent->m_subvmas.insert(*this);
-}
-
 auto VmAreaOrMapping::destroy() -> Status {
-    m_vmaf &= ~VmaFlags::Active;
+    m_state = State::Inactive;
     if (m_parent) {
-        m_parent->m_subvmas.erase(*this);
-        m_parent = nullptr;
+        m_parent->get_lock().assert_held();
+        m_parent->unlink_child_locked(*this);
     }
     return Status::Ok;
 }
@@ -95,8 +90,9 @@ auto VmaSet::insert(VmAreaOrMapping &value) -> Status {
 }
 
 auto VmaSet::erase(VmAreaOrMapping &value) -> void {
-    if (m_tree.erase(value.base()) != 0) {
-        value.release();
+    auto const pos = m_tree.lower_bound(value.base());
+    if (pos && *pos.value() == &value) {
+        erase(pos.value());
     }
 }
 

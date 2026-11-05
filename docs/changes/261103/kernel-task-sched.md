@@ -642,3 +642,355 @@ None (predictions are paused)
 - Why would the deleted block have armed the full slice whatever the thread had consumed, and who arms it instead?
 - Why did a discarded `if constexpr` branch still stop the file from compiling with `SCHED_NOHZ` off?
 - Why does a pick that reads the running thread uncharged re-pick it, and why does the re-pick get a whole new slice?
+
+## Title: Fair charges the running thread before it picks, and preempt.test allows two slices in a row (2026-11-04)
+
+**Files**
+- `kernel/kernel/task/sched/fair.cpp` — `Fair::evaluate_next_thread()` calls `update_thread(runtime, curr)` first when `curr` is of the Normal discipline and active
+- `kernel/commands/preempt_test.cpp` — `MAX_SLICES_IN_A_ROW` (2 when Fair is the Normal discipline, 1 otherwise): a turn is whole when it is that many slices or fewer, a turn longer than a slice that is not whole counts as stray and fails "no turn runs past its slices", and the log line and two verdict names say "a whole number of slices"
+- `docs/repairs/261103/kernel-task-sched.md` — item 8 is cut down to the tickless-charging question and its severity lowered; item 9 gets the two-slice turns; item 19's Cause is updated
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+In the Fair lane (`sched_normal_discipline="fair"`), `preempt.test` failed in every boot: two spinners on one CPU with a 64 ms slice, which round-robin runs a slice at a time, ran 2 to 4 counted turns of 196 to 197 ms (three slices) in four boots of an experiment and up to 263 ms (four) in earlier ones, and failed three of its eight checks, or two when it counted four turns or more.
+
+**Cause**
+`Scheduler::evaluate_next_thread()` picks first and then calls `put_prev_thread()`, which charges the running thread. At the pick the waiter was charged in full when it last stopped, and the running thread is up to a slice behind in the mean. A worked example, two equal threads A and B at 0, one 64 ms request being 78,387,949 ns of virtual time: A runs, and at its slice end the pick sees A at 0 (uncharged) and B at 0: B is eligible and runs. At the next slice end the pick sees B at 0 (uncharged) and A at 78,387,949 (charged at its hand-over): the mean is 39,193,974, A is ahead of it and ineligible, `Fair::evaluate_next_thread()` answers null, the scheduler falls back to the running thread, and `set_next_object()` plus `Scheduler::set_next_thread()` give B a whole new slice. B ran two. Then A is eligible again at a tie and the same thing happens to whichever stays. An exact-integer model of the queue that a reviewer wrote reproduces the turns of the base lane: 2 slices at an exact tie, and 3 to 4 once timer latency breaks the ties against the waiter, which matches the observed 197 ms and 260 to 263 ms.
+
+**Change**
+```cpp
+// Fair::evaluate_next_thread(), before the walk of the tree
+auto &curr_entity = curr->scheduling_entity();
+if (curr_entity.discipline() == Discipline::Normal && curr_entity.runqueue_state().is_active()) {
+    update_thread(runtime, curr);
+}
+```
+Linux does the same: `pick_task_fair()` calls `update_curr()` before it picks. `put_prev_thread()` charges again at the hand-over and adds nothing: the scheduler clock is read once at the top of `reschedule_common()` and not again between the pick and the hand-over, and the first replenish moved the deadline, so the test does not fire twice (a reviewer read this and confirmed that the pending bit the pick-time replenish sets is consumed by `take_pending_local()` right after the pick, as the old mark was). The guard on the discipline keeps the call from charging a thread of another discipline once there is one.
+
+Three variants were measured in an experiment before this change, four boots each (the patch applied and reverted by a script):
+
+| Variant | `preempt.test`: turns, whole slices (63 to 68 ms), longest turn | Failed checks |
+|---|---|---|
+| base | turns 2, 2, 4, 2; whole 0, 0, 0, 0; longest 197, 196, 197, 196 ms | 3, 3, 2, 3 of 8 |
+| A, charge first (this change) | turns 11, 9, 13, 8; whole 11, 8, 13, 5; longest 66, 131, 66, 132 ms | 0, 1, 0, 1 |
+| B, A and the running thread competes (returned when active, eligible, and either no waiter is eligible or its deadline is earlier than the first eligible waiter's) | turns 14, 13, 12, 20; whole 13, 13, 2, 8; longest 67, 67, 131, 132 ms | 0, 0, 2, 2 |
+
+B did no better than A and costs more code, and with one waiter it answers differently from A only on an exact tie of `vruntime`, so it was not taken (it is the form `pick_eevdf()` has in Linux). Its two boots with 2 of 12 and 8 of 20 turns whole are not explained by the tie argument; they look like host stalls splitting turns, as in the round-robin lane's one noisy boot below, and four boots run one variant after the other cannot separate that from a real difference.
+
+**The remaining two-slice turns, and the test.** After A, `preempt.test` still shows turns of two slices (130 to 132 ms) in more than half of the boots (12 of the author's 18: 2 of 4 in the experiment, 4 of 6 with the first form of the test, 6 of 8 with the final code; 13 of 20 in a reviewer's). The model's reading, not instrumented: a waiter ahead of the mean by a sliver (timer latency gave it a longer slice last turn) is ineligible, the running thread is picked again, and it gets a whole new slice, though it is owed the sliver (item 9). They are within EEVDF's bound, because the lag stays within a slice, and `preempt.test`'s turn checks were written for round-robin, which hands the CPU over at every slice end. A reviewer found that allowing two slices everywhere would blind the test on the round-robin lane, where a second slice in a row is always a bug, and that a single late-fired preemption (a turn between 68 and 127 ms) would pass the longest-turn bound. The test therefore became:
+
+```cpp
+// before
+if (turn >= slice - EARLY && turn <= slice + late) { num_whole += 1; }
+verdict(tally, longest <= slice + late, "no turn runs past its slice");
+// after (abbreviated: the real code casts the counts to i64)
+constexpr usize MAX_SLICES_IN_A_ROW = 1 + static_cast<usize>(SCHED_NORMAL_DISCIPLINE_FAIR);
+for (usize slices = 1; slices <= MAX_SLICES_IN_A_ROW; ++slices) {
+    is_whole |= turn >= slice * slices - EARLY && turn <= (slice + late) * slices;
+}
+if (is_whole) { num_whole += 1; } else if (turn > slice + late) { num_stray += 1; }
+verdict(tally, num_stray == 0, "no turn runs past its slices");
+```
+Round-robin keeps exactly the old windows, and so fails any turn over 68 ms as before. Fair accepts a turn of one or two slices, and a turn longer than a slice that is neither (the dead zone of more than 68 and less than 127 ms, or past 136 ms; with a periodic tick, whose lateness bound is 10 ms larger per slice, more than 78 and less than 127 ms, or past 156 ms) fails. Turns shorter than a slice, which host stalls produce, stay allowed. A stall of more than 1 ms in the middle of a two-slice turn splits it in two, though, and a piece of more than 68 and less than 127 ms counts as stray, so on the Fair lane a host stall can now fail "no turn runs past its slices" where the first form's single 136 ms bound did not: 3 of the 40 Fair boots on record had a split turn and none landed in the dead zone. The round-robin lane is as strict as before. If that flake shows, tolerate one stray turn, which costs the single late-preemption case. The checks "the spinners take turns" (at least four turns in all) and "most turns are a whole number of slices" keep their bounds. The old Fair behaviour still fails: its 196 to 263 ms turns are past the 136 ms limit. Not done: requiring each spinner to have at least two counted turns, which would make "take turns" independent of how long a turn is.
+
+**Reference**
+Linux EEVDF: `pick_task_fair()` calls `update_curr()` before `pick_eevdf()`, and `pick_eevdf()` considers `curr` (`kernel/sched/fair.c`, local checkout, v7.2-rc5 plus 31 commits). Linux re-runs the pick at a tick once the running entity is past its protected slice (`update_curr()` asks for a reschedule when `protect_slice()` is false; a tick is 1 / `CONFIG_HZ`, 4 ms by default, `kernel/Kconfig.hz`), and with HRTICK by a high-resolution timer, so a thread owed a sliver is stopped within a tick; here a slice ends only at its deadline.
+
+**Verification**
+- `-fsyntax-only` on `fair.cpp` and `scheduler.cpp` with the Fair switch on: 0 and 0 diagnostics.
+- `boot_check.py --out out/fair-lane` (default lane): build ok, dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (172 passed). `boot_check.py --out out/fair-on --no-tests` (Fair lane): dbg PASS (46/5/0), rel PASS (44/8/0, 7/7). Run on the final code.
+- **`preempt.test` on the Fair lane, final code, eight boots:** all eight pass, with 9 to 13 turns, 9 to 12 of them whole (a host stall split a turn in two boots: 13 turns of which 11 whole, and 12 of which 10), the longest 66, 132, 132, 130, 131, 131, 66, 131 ms. Earlier boots of the author with the first form of the test (six) and of a reviewer (twenty, 6 to 13 turns, the longest 66 to 132 ms) all passed too. **On the round-robin lane, final code, six boots:** all six pass (12 or 13 turns, all whole, the longest 66 ms). Before the test was hardened the same lane had seven passes in eight; the failure was one noisy boot, straight after `boot_check.py` had built that lane and booted its images: 32 turns of which 3 whole, the longest 70 ms, and the probe timer late. The final test fails any round-robin turn over 68 ms, as the pre-change test did, so that boot would now fail three checks. A host stall splits turns (a gap over 1 ms starts a new turn) and would also make the probe timer late, but no run was instrumented. Before the change to Fair the same lane had shown one such run in four (10 of 21 turns whole, in the previous entry's investigation), so it is not new. Five of those boots are only in the author's transcript.
+- **Other tests on the Fair lane:** `sleep.test`, `waitqueue.test`, `semaphore.test`, `threadjoin.test`, `dpc.test` and `timer.test` pass (run on the code before the last edit of `fair.cpp`, which cannot change them while every thread is of the Normal discipline). `hotplug.test` fails the same 2 of its checks, "and every spinner goes on elsewhere", in all the boots (item 19), also after this change.
+- Two rounds of independent read-only reviewers, each rebuilding and rebooting the lanes in directories of its own. First round: the charge-first call read against `reschedule_common()`, the idle and boot threads, delayed-dequeue sleepers and the pending bit (no defect), the test's arithmetic, a model of the spinners (a two-slice run in about 75 % of boots and never a third), and twenty Fair boots and six round-robin boots of `preempt.test`, all passing. It found that allowing two slices everywhere would blind the test on the round-robin lane and that a turn between 68 and 127 ms would pass, which became `MAX_SLICES_IN_A_ROW` per discipline and the stray-turn check. Second round: the delta, the windows for eleven turn lengths, the macro in a constant expression in all 104 translation units of `kernel/commands`, and the entry's numbers against the raw logs; it found two wrong counts, the host-stall flake the stray check adds on the Fair lane, and the age of the other tests' runs; all were corrected.
+- `scripts/format_cpp.py` and `scripts/lint_docs.py` are clean.
+
+**Deliberately not done**
+- The re-pick's whole new slice (item 9) and the instrumentation that would show it is the cause of the two-slice turns; variant B; a tolerance on eligibility.
+- `hotplug.test` (item 19): the charge at the pick did not change it.
+- Fair is still not selected in the product.
+- The queue count that drifts above the scheduler's (item 10), which makes the fast path in `pick_next_thread()` rarely taken.
+
+**How it was found**
+By the first Fair boot, in the previous entry, and by the investigation of `preempt.test` of 2026-11-04: `/private/tmp/.../scratchpad/variants.py` (a script that applied each variant, built the Fair lane, ran the tests and restored `fair.cpp` from git) and a reviewer's exact-integer model. The author chose "charge first and relax the test" from the options measured there. The edit of `fair.cpp` is on the author's request; it changes when Fair charges, which is EEVDF semantics, and the "Hands off" rule for `fair.*` in `kernel-design` is otherwise unchanged.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why does a pick that reads the running thread uncharged re-pick it, and why does charging first remove the three-slice turns?
+- Why does a two-slice turn remain, and why is it still within EEVDF's lag bound?
+- What do `preempt.test`'s turn checks assume about round-robin that Fair need not satisfy, and why does round-robin keep the old windows?
+
+## Title: preempt.test bounds a turn by two slices again, and no longer fails the stretch between one and two (2026-11-05)
+
+**Files**
+- `kernel/commands/preempt_test.cpp` — the "stray turn" count of the previous entry is gone; "no turn runs past its slices" is `longest <= (slice + late) * MAX_SLICES_IN_A_ROW` again
+
+**Symptom**
+In the Fair lane, one boot of nine with the previous form of the test failed "no turn runs past its slices" with 13 turns of which 11 whole and the longest 96.7 ms. No spinner ran 97 ms in a row on a 64 ms slice: the turn was a longer one cut by the host.
+
+**Cause**
+The previous entry made a turn that is longer than a slice and not within a window of one or two slices (a "dead zone" of more than 68 and less than 127 ms) fail, to catch a single late-fired preemption. A spinner sees a turn as the stretch between two jumps of the clock larger than `GAP` (1 ms), so a host stall of more than 1 ms in the middle of a two-slice turn of about 130 ms splits it into two pieces, and unless the stall falls near either end or at about 62 to 68 ms one piece lies in the dead zone. That entry's review had predicted it ("3 of the 40 Fair boots on record had a split turn and none landed in the dead zone") and offered the way out; this is the boot in which it landed. Round-robin cannot be hit: its pieces are all under a slice and are ignored.
+
+**Change**
+```cpp
+// before (previous entry)
+if (is_whole) { num_whole += 1; } else if (turn > slice + late) { num_stray += 1; }
+verdict(tally, num_stray == 0, "no turn runs past its slices");
+// after
+if (is_whole) { num_whole += 1; }
+verdict(tally, longest <= (slice + late) * static_cast<i64>(MAX_SLICES_IN_A_ROW), "no turn runs past its slices");
+```
+With `MAX_SLICES_IN_A_ROW` at 1 (round-robin) this is the pre-change check, `longest <= slice + late`. On the Fair lane a turn of up to two slices plus lateness passes, whatever its length inside that bound. The cost: a single late-fired preemption (a turn between 68 and 127 ms) goes unseen there; "most turns are a whole number of slices" still fails a lane in which they are common. Tolerating one stray turn instead was considered and not taken: two stalls in one boot would still fail it, and it keeps the extra count.
+
+**Reference**
+None, this project's own test.
+
+**Verification**
+- `boot_check.py --out out/fair-lane` (default lane): build ok, dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (173 passed). `boot_check.py --out out/fair-on --no-tests` (Fair lane): dbg PASS (46/5/0), rel PASS (44/8/0, 7/7).
+- `preempt.test`, Fair lane, ten boots: all pass, with 10 to 13 turns, 10 to 13 of them whole, the longest 66, 129, 131, 132, 130, 66, 66, 130, 130, 131, 66 ms (a mixture of one and two slices as before). Round-robin lane, four boots: all pass, 13 turns, all whole, the longest 66 to 67 ms.
+- `scripts/format_cpp.py` is clean.
+
+**Deliberately not done**
+- Telling a stall-split turn from a late preemption; requiring each spinner to have two counted turns.
+
+**How it was found**
+By a boot in the run for the next entry: `kshell_run.py --out out/fair-on preempt.test` printed "13 turns, 11 of them a whole number of slices, the longest 96687 us" and failed "no turn runs past its slices".
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- How does a host stall turn one 130 ms turn into a 97 ms one in the spinner's record?
+- Why can the round-robin lane not be hit by the same thing?
+- What does the longest-turn bound give up compared with the window check?
+
+## Title: hotplug.test waits until every spinner has moved, instead of 100 ms (2026-11-05)
+
+**Files**
+- `kernel/commands/hotplug_test.cpp` — the check "and every spinner goes on elsewhere" polls (`poll_until`, up to `LOST_AFTER`, 5 s) for every spinner's round counter to pass its value from before the 100 ms sleep; the comment above says why, and the comment of `OFFLINE_FOR` says "first"
+- `docs/repairs/261103/kernel-task-sched.md` — item 19 (this failure) is deleted (the number is kept), item 21 is new, the header is edited
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+In the Fair lane `hotplug.test` failed "and every spinner goes on elsewhere" twice, once per round, in every Fair boot on record (25 boots in the investigation's records, 16 of the unmodified test and 9 of instrumented copies; none passed); the round-robin lane passed 47 of 47.
+
+**Cause**
+The test starts two spinners per online CPU (eight on four), takes CPU 3 offline, and checks that each spinner's round counter advanced between the sleeper's join and the end of a 100 ms sleep, to catch one stranded on the offline CPU. The two spinners of CPU 3 go to the survivors, which then hold 3, 3 and 2: as even as eight over three CPUs can be, so somebody shares a CPU with two others whatever the balancing. Instrumenting the test (the script applied a patch to the test, built a Fair lane and a round-robin lane, restored the source and ran both; none of it is committed) showed:
+
+1. **A spinner stays on the CPU it was placed on.** Every spinner that ran in the window ran on exactly one CPU (a one-bit mask of the CPUs it was seen on in 117 of 117 spinner-windows; the 11 that got nothing have an empty mask). No CPU steals work: `Scheduler::steal_work_from()` returns null (item 21, a different problem: it does not cause this one).
+2. **A spinner that shares with two others waits longer than a slice cycle suggests.** Per-turn records: in round-robin a spinner ran 65 ms and waited 130 to 132 ms (three turns of about 65 ms, 196 ms); in Fair it ran 64 to 66 ms and waited 130 to 133 ms (9 of 12 turns), 156 or 157 ms (2) or 175 ms (1). The longer Fair waits are not whole slices; their cause was not established (the near-ties of item 9 are one candidate).
+3. **In the Fair lane at most one spinner of a three-spinner CPU got nothing in the window, never two:** 45 of 68 CPU-windows had one and 23 had none. Of the 18 test windows, 10 had one such spinner in all and 8 had two (one per CPU). Over five successive 100 ms windows every spinner advanced (one spinner's counts per window: 0, 470719, 0, 444482, 0), so none was stranded: it was slow, not stuck.
+4. **The window is longer than 100 ms, and longer in round-robin.** The check runs from the test thread's wake-up after the sleep; the log timestamps between "the thread asleep there wakes on time" and "no spinner runs on it" put the window at 166 to 171 ms in 13 of 14 round-robin rounds (one of 232 ms) and at 167 to 169 ms in four, or 101 to 103 ms in six, of the old test's rounds in the Fair lane. That the test thread lands on CPU 2, the CPU with two spinners, and waits for a slice is a reading, not verified. A round-robin window of 166 ms or more cannot lie inside a wait of 131 ms, so it cannot show a zero, by construction; a Fair window of 101 to 103 ms can, and a Fair wait of 175 ms is longer than a 167 ms window.
+
+The test's assumption, that every spinner gets the CPU within its window with two others on the CPU, holds for round-robin because the window happens to be longer than its wait, and for Fair it does not.
+
+**Change**
+```cpp
+// before
+auto _ = Thread::Current::sleep_for(OFFLINE_FOR, task::Interruptible::No);
+auto ran_there = false;
+auto all_went_on = true;
+for (usize i = 0; i < state.num_spinners; ++i) {
+    ran_there |= state.spinners[i].ran_there_offline.load(std::memory_order_relaxed);
+    all_went_on &= state.spinners[i].rounds.load(std::memory_order_relaxed) > rounds_before[i];
+}
+// after
+auto _ = Thread::Current::sleep_for(OFFLINE_FOR, task::Interruptible::No);
+auto const all_went_on = poll_until([&state, &rounds_before] {
+    for (usize i = 0; i < state.num_spinners; ++i) {
+        if (state.spinners[i].rounds.load(std::memory_order_relaxed) <= rounds_before[i]) { return false; }
+    }
+    return true;
+});
+auto ran_there = false;
+for (usize i = 0; i < state.num_spinners; ++i) { ran_there |= state.spinners[i].ran_there_offline.load(std::memory_order_relaxed); }
+```
+The 100 ms sleep stays, so the spinners still run with the CPU offline for as long as before before "no spinner runs on it while it is offline" is read (it is read after the poll, so over a window at least as long; `state.offline` is cleared only after the check, so a longer window cannot count a spinner that ran on the CPU once it was back). The progress check waits as long as it takes, up to `LOST_AFTER`. A stranded spinner never advances, so the check fails after 5 s per round, where it failed after about 100 to 170 ms; a healthy run finishes as soon as the slowest has moved. The test takes 3.3 s (Fair) to 3.8 s (round-robin) by the log timestamps; a failing run takes about 14 s by the code, not measured. Rejected: a longer fixed window (any number is a guess about the slices and the sharing), and fixing the discipline (the failure is the test's assumption).
+
+**Reference**
+None, this project's own test.
+
+**Verification**
+- `boot_check.py --out out/fair-lane` (default lane): build ok, dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (173 passed). `boot_check.py --out out/fair-on --no-tests` (Fair lane): dbg PASS (46/5/0), rel PASS (44/8/0, 7/7).
+- `hotplug.test`: Fair lane, eight boots of the author and seven of a reviewer, all pass (47 checks); round-robin lane, four boots of the author and seven of a reviewer, all pass.
+- `preempt.test` still passes on both lanes (previous entry). A reviewer found the clang-tidy output for the file clean; `scripts/format_cpp.py` and `scripts/lint_docs.py` are clean.
+- Not run: the failing path, a spinner whose counter never advances. It needs an edit to the test (or, for a genuinely stranded one, to `Scheduler::Current::deactivate()`); that the check fails, after at most 5 s per round, is by reading `poll_until`.
+- A reviewer read the entry against the instrumentation logs and the code, and found that the first draft measured the wrong window (100 ms for 167), called the round-robin pass luck, mislabelled item 21 as an imbalance and miscounted the failing boots; all were corrected.
+
+**Deliberately not done**
+- Work stealing (item 21).
+- A reviewer's boot on 2026-11-04 counted 53 checks in `hotplug.test`, not 47: `check_start_withdrawn()` adds six verdicts when the withdrawal comes before the CPU arrives, and the usual path logs "that case is not made" and gives 47. That is a coverage gap of that check, unrelated to this change and not addressed.
+
+**How it was found**
+By the first Fair lane (2026-11-04) and its failing `hotplug.test`. The candidates were in the repair file; the instrumented runs refuted the first, the near-ties of `preempt.test`, as the cause, and showed the window. The author asked for the investigation ("查 hotplug.test"); the change is to a test, not to `fair.*`.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why can a spinner that shares its CPU with two others make no progress for 100 ms without being stranded?
+- Why can round-robin not show a zero in this test, and what makes Fair able to?
+- What does the poll fail on that the fixed window failed on, and how long does each take?
+
+## Title: An idle CPU takes a queued thread from another CPU, its own NUMA node first (2026-11-05)
+
+**Files**
+- `kernel/kernel/task/sched/scheduler.cpp` — new `Scheduler::Current::steal()`, `num_steal_looks()` and `num_steals()`; the counters `SCHEDULE_STEAL_LOOKS` and `SCHEDULE_STEALS`; the thresholds `STEAL_MIN_RUNNABLE_SAME_NODE` (2) and `STEAL_MIN_RUNNABLE_OTHER_NODE` (3), in the unnamed namespace; includes `ours/mm/cpu_node_map.hpp`
+- `kernel/include/ours/task/sched/scheduler.hpp` — the declarations (`steal()` is `[[nodiscard]]`), and a note on the stub `steal_work_from()` saying what pulls today
+- `kernel/kernel/task/idle_thread.cpp` — the idle loop calls `Scheduler::Current::steal()` when `num_runnable()` is zero, before it halts
+- `kernel/commands/steal_test.cpp` — new `steal.test`; `kernel/commands/BUILD.gn` lists it
+- `kernel/mm/include/ours/mm/cpu_local.hpp`, `kernel/include/ours/task/thread.hpp`, `kernel/commands/hotplug_test.cpp` — three comments that said no CPU takes a queued thread, now false (the first is a warning about exactly this change; its text now says what the audit of the callers found)
+- `docs/repairs/261103/kernel-task-sched.md` — item 21 is deleted (the number is kept); items 22 to 26 and 28 to 33 are new (27 was the audit, done); the header is edited
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+No CPU took a queued thread from another. A thread was placed when it became runnable (a start or a wakeup) or when its CPU went offline, by `select_target_cpu()`, and then stayed on that CPU's queue however idle the others were. Observed on 2026-11-05 with `hotplug.test` instrumented: eight always-running spinners on four CPUs, CPU 3 taken offline, its two spinners go to the survivors, which hold 3, 3 and 2; when CPU 3 returns it gets nothing (by inference from the identical spinner-to-CPU map of the second round, not observed). Round-robin and Fair alike.
+
+**Cause**
+`Scheduler::steal_work_from()` was a stub returning null, called at the end of `pick_next_thread()`. Two things make the obvious fix, filling in that stub, the wrong place here:
+1. **Who looks, and when.** An idle CPU runs `IdleThread::run()`, which halts when `num_runnable()` is zero and takes no tick. A CPU that comes back online enters that loop through `IdleThread::come_back()` and does not call `pick_next_thread()` first; `Current::reactivate()` only sets the state to Active under the run queue lock. So a pull that lives in the pick does not run at come-back time (a later preemption of the CPU would reach it, but nothing guarantees one). The loop is where "this CPU has nothing to run" is decided on every path, so that is where the CPU looks. What it does not cover is a CPU that has already halted: it looks again only when an interrupt wakes it (repair item 23).
+2. **Locks.** A pull needs the victim's run queue lock; the pick holds the thief's. No order of run queue locks is defined, and two CPUs pulling from each other under their own locks would take them in opposite orders and deadlock. The idle loop holds none, so the pull can follow `Scheduler::Current::deactivate()`'s shape, one lock at a time: take the victim's lock, detach the thread (`deactivate_thread()`, which makes it Migrating and takes it off the queue), drop it, take the own lock, `activate_thread()`. Between the two the thread is in neither queue and its `m_curr_cpu` still names the victim: the window `deactivate()` has between its own two locks. Two things reach a thread there and are not kept out: `set_cpu_affinity()` installs a mask with no run queue lock, so a mask that excludes the thief, installed after `steal()` checked it, leaves the thread queued on the thief (repair item 25; `deactivate()` re-selects the destination, so its window is shorter); and `Scheduler::Pi::common()` takes the victim's lock by `m_curr_cpu` and would dequeue a thread that is not there (repair item 26; nothing calls it today).
+
+The choice of victim is made on a racy hint, `num_runnable()` (the count of queued threads, the running one included), read without the victim's lock as `select_target_cpu()` reads it, and confirmed under the lock, where the depth is checked again (two thieves that read the same count must not both take from a queue that had enough for one) and the victim's queue is walked (`for_each_thread`), skipping the thread the victim has nominated to run next (a directed yield), any thread that is not Ready and is only still in a Fair queue (`SCHED_DELAY_DEQUEUE`, off by default, leaves asleep, parked, suspended and dead threads in the tree until their lag runs out), and any thread whose affinity mask, intersected with the active CPUs, does not contain this CPU. A hint that turned stale just finds nothing and the CPU halts.
+
+**Why the node comes first.** A thread that has run on a node has its memory there. Taking one from a CPU on the same node costs a cache refill; from another node, every access to what it has allocated crosses the interconnect. So `steal()` picks two candidates, the deepest queue on this node and the deepest elsewhere, and tries the same node first (so the order is two buckets, not the "deepest overall"). The two have different thresholds: on the same node one running and one waiting is enough (2); from another node a second waiting thread is asked for (3), so a single waiting thread is not dragged across just to shave one slice of latency. The numbers are guesses, recorded as item 24.
+
+**Fair.** `Fair::dequeue_thread()` records the thread's lag against the victim's weighted mean on the way out and `enqueue_thread()` goes through `adjust_vlag()`, which places it against the thief's, so the move needs no edit in `fair.*`. Four things about it are worth knowing: the lag is carried unscaled between the two means (item 18, which a move between CPUs exercises and a wakeup on one CPU does not); the walk visits a Fair queue in deadline order, so the first thread that may run here is the one the victim would pick next only for round-robin (the comment in `steal()` says what each queue's order is); under `SCHED_DELAY_DEQUEUE`, which no lane in this record builds, the Fair tree also holds delayed sleepers, parked, suspended and dead threads, which `steal()` skips by taking only Ready ones; and `Fair::dequeue_thread()` calls `update_thread()` on the victim's running thread from the thief's CPU, which charges it against the victim's clock. The first version of `steal()` passed `SkipClock` to the victim's dequeue, so that charge used a clock last read when the victim last scheduled, up to a slice old, and the lag recorded for the stolen thread was understated by what the victim's thread had run since. It does not pass it now, and the dequeue reads the victim's clock under the victim's lock, as `do_unpark_thread()` does for a remote enqueue. (`Scheduler::Migrator::move_queued_thread()` also dequeues remotely with `SkipClock` and has no callers, so `steal()` is the first remote Fair dequeue.) What remains is that `update_thread()` can mark a preemption pending on the victim's thread from the thief's CPU with a non-atomic write (item 33).
+
+**Change**
+```cpp
+// idle_thread.cpp, before
+if (!scheduler.num_runnable()) {
+    // halt ...
+    continue;
+}
+// after
+if (!scheduler.num_runnable() && !Scheduler::Current::steal()) {
+    // halt ...
+    continue;
+}
+```
+```cpp
+// scheduler.cpp, the shape of steal(); the full text is in the file
+auto Scheduler::Current::steal() -> bool {
+    SCHEDULE_STEAL_LOOKS.add(1);
+    // deepest same-node and deepest other-node candidates, from num_runnable()
+    peek_active_mask().for_each([&](CpuNum const cpu) { ... });
+    auto *thread = detach_from(same_node_cpu);   // victim's lock only
+    if (thread == nullptr) { thread = detach_from(other_node_cpu); }
+    if (thread == nullptr) { return false; }
+    { Guard<SpinLock, IrqSave> guard{self.get_lock()}; self.activate_thread(thread, EnqueueOptions::None); }
+    SCHEDULE_STEALS.add(1);
+    return true;                                  // the idle thread reschedules to it
+}
+```
+The walk takes only a Ready thread, checks the victim's depth again under its lock, and lets the dequeue read the victim's clock. Two per-CPU counters, `schedule.steal_looks` and `schedule.steals`, with accessors `num_steal_looks(cpu)` and `num_steals(cpu)` (the shape of `IdleThread::num_halts()`), so a test can tell a CPU that looked and declined from one that was never woken.
+
+Rejected: filling in `steal_work_from()` in the pick (Zircon's place: `Scheduler::DequeueThread()` drops its queue lock around `StealWork()` with `CallUnlocked`), because it does not run at come-back time and needs the own lock dropped in the middle of the pick, a change to the pick that is item 22's to decide; one lock held across both queues, ruled out by the missing lock order; one threshold for every victim, for lack of a reason to send a thread across nodes for one slice.
+
+**Reference**
+Zircon `Scheduler::StealWork()` and its caller `Scheduler::DequeueThread()` (`scheduler.cc`, local Fuchsia checkout, read on 2026-11-05): a pull when the CPU would otherwise idle, victims in the order of a search set by cache distance, one victim's lock at a time, and a cross-cluster gate `kInterClusterThreshold` of two milliseconds of queued time. Differences here: the trigger is the idle loop, not the pick; the gate is a count, not queued time; the order is two buckets (this node, other nodes), not a distance. Linux `sched_balance_newidle()` and `sched_balance_rq()` (`kernel/sched/fair.c`; names confirmed, bodies not read). Local: `Scheduler::Current::deactivate()` for the two-phase move; `mm::CpuNodeMap::node_of()` for the node.
+
+**Verification**
+- `steal.test` (new) takes a pair of CPUs, a victim that holds the queue and a thief that is idle and halted, once for the highest two CPUs on one node and once for the highest pair on two nodes, whichever the machine has. Per pair, three rounds, each with fresh spinners started pinned to the victim: (1) three that are then allowed on the thief, the thief is woken by a reschedule request, and one must be seen on it and counted by `num_steals()`; (2) two such, taken only if the pair is on one node (from another node, nothing seen on the thief and `num_steals()` unchanged for 300 ms), and the thief's `num_steal_looks()` must have risen, which says it looked; (3) three that stay pinned to the victim, which the thief must look at and take none of. The spinners never sleep or wake, so a spinner on the thief got there by a take, not a placement: `Thread::resume()` honours the pin, and `set_cpu_affinity()` does not move a thread whose current CPU is still allowed (`migrate_thread()` is a stub).
+- Default machine (all CPUs on one node, `out/fair-lane`): 2 runs, 15 checks each, ok. Fair lane (`out/fair-on`, `sched_normal_discipline="fair"`): 1 run, 15 checks, ok. Four-node machine (`mm_numa=true`, `NUMA=1`, `out/numa.x86`; CPUs 6 and 5 on one node, 7 and 6 on two): 3 runs, 30 checks each, ok, so one run covers both thresholds. After the tightening described under Change (Ready-only, depth rechecked, victim clock read) the same: 3 runs of 30 checks on the four-node machine, 1 run of 15 on the Fair lane.
+- Negative controls on the four-node machine (run on the first version and again on the final code, with the same results), each restored and compared with `cmp`: `steal()` disabled after the look is counted: 5 of 30 fail (the take, the take count and, on one node, the take of the single waiting thread); the affinity test skipped: 3 of 30 fail (the pinned round on one node, and, on two, round 1, where CPU 1, which the spinners are not allowed on, took one: the filter is what keeps it out); the cross-node threshold lowered from 3 to 2: 1 of 30 fails ("and left it, from another node").
+- The console tests around the scheduler in one `kshell_run.py` invocation each, with `tickreplace.test` last (see item 34): `preempt idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace`, 12 commands, ok on the default lane, the Fair lane and the four-node lane, once each; `ktest all` (`ran=24 passed=23 failed=0 skipped=1`, which includes `WaitQueue.*`, `Semaphore.*` and `Dpc.*`, the tests that replaced the console commands `waitqueue.test`, `semaphore.test` and `dpc.test`) on the same three lanes. `pmnode.test` on the four-node machine passed 3 of 3 after the tightening, and `vmosnapshot.test` and `usercopy.test` on the default lane. **Correction (2026-11-05, the same day):** the first version of this bullet claimed a fourteen-name batch passing nine times on three lanes. It had been run from zsh as `kshell_run.py --out out/<dir> $T`, and zsh does not split `$T`, so the shell was typed `idle.test` with nine arguments and only `idle.test` ran; the log line `run 'idle.test' with 9 argument(s)` showed it. The batch above was rerun with the names split (`${=T}`). Those that were run alone before (`steal.test`, `hotplug.test`, `preempt.test`, `pmnode.test`) were unaffected.
+- `boot_check.py`: default lane dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44/8/0, 7/7 required), host-tests PASS (173 passed); Fair lane and four-node machine (`NUMA=1`), `--no-tests`: dbg PASS (46/5/0), rel PASS (44/8/0, 7/7).
+- `scripts/format_cpp.py --check` and `scripts/format_gn.py --check` are clean; clang-tidy (`-p out/fair-lane`, header filter on `scheduler.hpp`) on `scheduler.cpp`, `idle_thread.cpp` and `steal_test.cpp` reports nothing on a line of this change; what it reports is old (`idle_thread.cpp:156` and `:161`, the lambdas' names, and `scheduler.cpp:457`, the stub's `return 0;`).
+- Not measured: any benefit. QEMU TCG has no remote-memory latency, so no run can show the node preference paying off, and the thresholds are untested against data (item 24). Not observed: the 3, 3, 2, 0 split of `hotplug.test` becoming 2, 3, 2, 1 after the CPU returns; `hotplug.test` passes but does not print the counts. Not run: `SCHED_DELAY_DEQUEUE`, the narrowed-affinity window and the priority-inheritance window (items 25 and 26).
+- `waitqueue.test` does not hang: the command is gone. `waitqueue.test`, `dpc.test`, `semaphore.test` and `tickbcast.test` were migrated to ktests (`f44d9634`) before this work, and `kshell_run.py` waits for a verdict line a missing command cannot print (repair item 3 of `docs/repairs/261105/kernel-test-framework.md`). The earlier claim in this entry that it hangs alone and passes in a batch was wrong, both halves: the batch ran only its first name (above).
+- Two rounds of independent read-only review. Round 1 (three lenses: concurrency, test power and claims, conventions) lost its concurrency lens to a usage limit; the other two found: the first draft's pinned-thread check could pass without the filter (it depended on which thread was at the head: replaced by round 3), the "not taken" round had no proof the thief looked (the counters), the Migrating-window text overstated (rewritten, items 25 and 26), "Fair needs no edit" and "waiting the longest" overstated (above, and the comment), the header comment for `steal()` and the change title wrong about the busiest CPU (fixed), three stale comments elsewhere (fixed), a global array shared by rounds, two ternaries, a `[[nodiscard]]`, the constants' names, a Linux function named wrongly and the "3, 3, 2, 1" count (all fixed). Round 2 re-ran the concurrency lens and audited every caller of `CpuLocal::access()`. The concurrency lens argued these safe: the context-switch hand-off (the thief spins on the thread's PI lock until the victim has saved its stack), the victim going offline mid-steal, wakeups, kills and joins in the Migrating window, and the idle loop's halt after a take. What it found was fixed here (non-Ready threads in a Fair tree; the stale clock; the depth not rechecked under the lock) or recorded: the affinity window (item 25, certain), the priority-inheritance window (item 26, certain, latent), the non-atomic preemption write (item 33, speculative), one deep queue of pinned threads hiding a shallower queue that has a thread to give (item 23). The audit found every one-argument `access()` caller non-preemptible, and four unsafe derived uses, none of them changed here: `Timer::cancel()` (item 28, a stack frame freed under a running handler), the page-fault assertion (item 29, a release-image panic), `DpcRunner::enqueue()` and `ChainLockTransaction::current()` (items 30 and 31, latent), and `pmnode.test` (item 32).
+
+**Deliberately not done**
+- A balance among busy CPUs and a pull at the pick (item 22), a kick for a halted idle CPU (item 23): a split like 2, 3, 2, 1 stays.
+- The thresholds' data (item 24), and a queued-time gate in place of the count.
+- The affinity and priority-inheritance windows (items 25 and 26), and the four uses of a stale CPU number that the audit found (items 28 to 32): `Timer::cancel()` and the page-fault assertion are in other subsystems and are one-line guards each, and they are reachable now that a preempted thread can move (item 28 is memory-unsafe in a window of a few instructions); they are for their own commits and sessions, and this change does not make them wait or fix them.
+- More than one thread per attempt: the idle thread reschedules to what it got, and if the victim still has two waiting the CPU is no longer idle, so it does not look again until it is.
+- Deleting `steal_work_from()`: it is scaffolding for a pull at the pick, now with a comment saying so.
+- Fair's carried lag (item 18) and the preemption-state write of its `update_thread()` (item 33): the user's code.
+- A known rare flake in `steal.test`: the victim's count must be exactly two when the thief looks in round 2 on two nodes, and any other runnable thread on the victim at that instant (a worker pinned there) makes it three; the window is microseconds, and the final test's runs above (7 on the four-node machine, 3 on the default lane, 3 on the Fair lane, the batches included) have not shown it.
+
+**How it was found**
+The user chose work stealing (item 21) from the repairs list, then argued for the idle thread as the place ("那我们在IdleThread里面偷吧") after the first design question (idle loop or pick) exposed that `come_back()` skips the pick, and asked why the cluster was not considered ("为什么不考虑CPU簇亲和性问题"), which led to the node-first order and to `CpuNodeMap`, which my first answer had wrongly said did not exist. The two rounds of independent review found most of the defects listed under Verification.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why does a CPU that comes back online not reach the stub that was in `pick_next_thread()`, and what in the idle loop does reach it?
+- Why does `steal()` hold the victim's lock and its own lock one after the other and never both, and what is the thread in between, and who can still reach it there?
+- Why is the cross-node threshold higher than the same-node one, and what would you have to measure to choose the numbers?
+
+## Title: Work stealing reads the scheduling domains, not the memory manager's node table (2026-11-05)
+
+**Files**
+- `kernel/lib/sched_domain/include/sched_domain/sched_domain.hpp` — new library, header only: `Domain` (a tier: `span`, `min_runnable`), `Domains` (a CPU's tiers, nearest first), `Thresholds` and `build_domains()`, a pure function from the possible CPUs and a node answer to the tiers
+- `kernel/lib/sched_domain/test/sched_domain_test.cpp`, `BUILD.gn`, `test/BUILD.gn`, `README.md` — ten host tests, wired into `//:default` through the root `BUILD.gn`'s tests list; `:headers` gives its dependants the include path of `ours/cpu_mask.hpp`
+- `kernel/tests/sched_domain_test.cpp`, `kernel/tests/BUILD.gn` — the ktest `SchedDomains.MatchTheNodeTable`: the table the kernel built at boot against the node table
+- `kernel/kernel/task/sched/domains.cpp`, `kernel/include/ours/task/sched/domains.hpp` — the table `domains_of(cpu)`, built by an init hook at `InitLevel::Threading` from `mm::CpuNodeMap`; the two thresholds now live here; the only file of the scheduler that knows the node table
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `steal()` walks `domains_of(here)` tier by tier; `scheduler.cpp` no longer includes `ours/mm/cpu_node_map.hpp`; the doc comment of `steal()` is now above it
+- `kernel/kernel/task/sched/BUILD.gn` — `domains.cpp` and the `//kernel/lib/sched_domain` dependency
+- `BUILD.gn` (root) — the new tests group in `//:default`
+- `.agents/skills/kernel-design/references/task.md` — the two decisions (a pull by the idle thread; a domain table)
+- `docs/repairs/261103/kernel-task-sched.md` — item 35 is new; item 24 points at `domains.cpp`; items 26, 30 and 31 are given the severity and the first words of their symptom that `docs/repairs/TEMPLATE.md` prescribes for a latent problem
+
+**Symptom**
+None that can be observed: behaviour is unchanged. The scheduler asked the memory manager `mm::CpuNodeMap::node_of()` on every look, and spelled "this node, then the others" and the numbers 2 and 3 in code. The user's objection, 2026-11-05: the scheduler should keep a data structure of its own for this, so that it can be configured, and perhaps later from user space.
+
+**Cause**
+`steal()` was written with its policy in its body. Three things follow from that. The scheduler depended on a memory-manager table for a question that is the scheduler's (which CPUs are worth taking from). A third kind of distance (CPUs that share a cache, CPUs of a package) would have been another branch in `steal()`. And the thresholds could not be read, listed or changed without editing it. Linux's answer is a hierarchy of `struct sched_domain` per CPU, each level with its own parameters (`imbalance_pct`, `min_interval`), walked by generic code; Zircon's is flatter, a `CpuSearchSet` per CPU (an ordered list of CPU and cluster) walked by `StealWork()`, with one gate constant for crossing clusters. The shape of the machine is data in both, and the walk does not change when the machine does.
+
+**Change**
+```cpp
+// before: steal() chose the candidates itself
+auto const here_node = mm::CpuNodeMap::node_of(here);
+auto same_node_most = STEAL_MIN_RUNNABLE_SAME_NODE - 1;
+...
+peek_active_mask().for_each([&](CpuNum const cpu) { /* is cpu on here_node? */ });
+auto *thread = detach_from(same_node_cpu, STEAL_MIN_RUNNABLE_SAME_NODE);
+if (thread == nullptr) { thread = detach_from(other_node_cpu, STEAL_MIN_RUNNABLE_OTHER_NODE); }
+
+// after: the tiers are data, the walk is generic
+for (auto const &domain : domains_of(here).view()) {
+    (domain.span & peek_active_mask()).for_each([&](CpuNum const cpu) { /* deepest with >= domain.min_runnable */ });
+    thread = detach_from(victim_cpu, domain.min_runnable);
+    if (thread != nullptr) { break; }
+}
+```
+`build_domains(owner, possible, node_of, thresholds)` (constrained to a `node_of` that is callable on a CPU and returns something comparable for equality) makes at most two tiers (the CPUs on the owner's node, the CPUs on every other), leaves out one that is empty, never puts the owner in a tier, and puts every other possible CPU in exactly one. `domains.cpp` calls it for each possible CPU with `mm::CpuNodeMap::node_of` as the answer. The list holds up to `MAX_DOMAINS` (4) tiers so that a new kind of distance needs no change of type; `push()` answers false when it is full, and `view()` cannot be taken of a temporary list. A `min_runnable` of 0 is read as 1 (the old code never took from a tier of 0, by an unsigned wrap; no producer makes one). Each tier lists every CPU that may ever exist and `steal()` cuts it to the active ones at use, so a CPU that comes and goes does not change the table.
+
+Why a library: the builder is a pure function of its arguments, which makes it a host test, where the old code could only be checked by booting a four-node machine. The ten tests: one node; two nodes; an owner alone on its node; each owner's own view; one CPU (no tier); a CPU that cannot exist; CPUs nobody has placed; a full list refusing a fifth tier; and two properties over nine machine shapes, that the tiers are exactly the other CPUs, once each, and that each CPU is in the tier of its kind of distance. Mutation testing by a reviewer (21 mutants of the builder against the test source) killed all but four, which were edits with the same behaviour. Why header only: there is no state or code here that needs a translation unit; being inline, it takes the `MP_MAX_CPUS` of whatever includes it, and the host test names a number (`kernel/lib/arch`'s `cpu-mask-smoke` does the same). A compiled source would also work, with the kernel's include path and define given by a config as `kernel/lib/numa` does.
+
+Rejected: building the table lazily at the first look (a lock or an atomic on the path, to save an init hook); a table per tier kind rather than per CPU (it cannot give a CPU its own view when nodes differ in size); naming the type for what it carries today (`StealDomain`), because the next fields (a balance interval) are not about stealing.
+
+**Reference**
+Linux `struct sched_domain` and its builder `build_sched_domains()` (`kernel/sched/topology.c`, names confirmed in the local checkout, bodies not read for this item); Zircon `CpuSearchSet` (`percpu` search set, ordered by cache distance, which `Scheduler::StealWork()` walks) and `kInterClusterThreshold`. Here: two tiers from a node table, a count in place of queued time.
+
+**Verification**
+- Behaviour is unchanged, and a reviewer's port of the old and the new selection to Python agreed on 200 000 random machines for thresholds (2, 3), (1, 1), (1, 3) and (2, 2): `steal.test` on the four-node machine (`NUMA=1`, `out/numa.x86`), 3 runs, 30 checks each, ok; on the default lane and the Fair lane, 15 checks each, ok. The 12 console tests (`preempt idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace`, split with `${=T}`) ok on the three lanes; `ktest all` on the three (`ran=24 passed=23 failed=0 skipped=1` before the new ktest).
+- `preempt.test`, the timing-sensitive one, passed in the batch on all three lanes before the review fixes and failed in the batch on the default and the four-node lanes after them (first command of the batch, `no turn runs past its slices` and the probe timer 2.4 to 2.6 ms late). A QEMU of another worktree (`.worktrees/exp-pci-hotplug`, a demo) was holding one host CPU at 100% for the whole time and the load average was 4.7. Six solo runs of `preempt.test` on the default lane: 1 ok and 5 FAIL with this change, 1 ok and 5 FAIL with `steal()` returning false at its top, so the load, not the change, decides it; it does not touch the domain table (its spinners are pinned to one CPU). Not rerun on an idle host.
+- `ktest SchedDomains.MatchTheNodeTable` ok on the default lane and the four-node machine; `ktest all` `ran=25` with it.
+- `boot_check.py`: default lane dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44/8/0, 7/7), host-tests PASS (174 passed: 173 before, plus the new executable); Fair lane and four-node machine, `--no-tests`: dbg PASS (46/5/0), rel PASS (44/8/0, 7/7).
+- Negative controls, each restored and compared with `cmp`: every CPU answered as one node in `domains.cpp` (so no cross-node tier): `steal.test` fails "and left it, from another node" (1 of 30); no tier built (`DOMAINS` left empty): 5 of 30 fail, every take; the two thresholds swapped in the builder: 3 of the host tests fail; the build function left empty (`return` at its top): `SchedDomains.MatchTheNodeTable` fails on every CPU; the hook registered at `InitLevel::Irq - 1`, before the possible CPUs are known: the dbg boot stops on the `DEBUG_ASSERT` in `build_all_domains()` and never reaches its end marker.
+- `scripts/format_cpp.py --check`, `format_gn.py --check` and `lint_docs.py` clean; clang-tidy (`-p out/fair-lane`) on `domains.cpp` and `steal_test.cpp` reports nothing on a line of this change.
+- Not measured: whether the table changes speed (it replaces a node lookup per active CPU and one for the owner with a mask AND per tier; not timed). Not run: a machine whose firmware places CPUs on nodes in a way `steal.test` does not pair (the test takes the highest same-node pair and the highest cross-node pair); a CPU moved at run time (item 35).
+
+**Deliberately not done**
+- How many threads one look takes (the next step), and the policy knobs (a struct the thresholds move into, one accessor).
+- Rebuilding the table when a CPU changes node (item 35).
+- A user-space interface: the user's idea is recorded in the design; no syscall or object property without a user-space consumer that forces it.
+- Tiers other than the node: the machine's topology source does not say which CPUs share a cache or a core yet.
+- Turning `steal.test`, a console command, into a ktest like the tests the framework is migrating: the console tests are being moved batch by batch by another session, and this one was written before that was settled; it is a follow-up.
+
+**How it was found**
+The user asked, after the first work-stealing change, why it always takes one thread and whether the scheduler should keep its own structure instead of reading the memory manager's CPU-to-node table ("调度器自己本身应该有维护一个数据结构"), and then chose scheduling domains ("那我们可以实现调度域"). The init level was chosen by reading `PmNode::claim_possible_cpus()` (`InitLevel::Irq + 1`, after the MADT fills the possible mask) and `main.cpp` (which announces Threading, running the hook, and only then creates the thread that calls `init_platform()` and so `x86_bring_aps()`).
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why is the builder a pure function in its own header-only library, and what would break if it were a compiled source?
+- Why does a tier list every possible CPU and `steal()` cut it to the active ones, and not the other way round?
+- What does the scheduler no longer know, and which one file still knows it?

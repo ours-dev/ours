@@ -1,6 +1,6 @@
 #include <ours/assert.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/task/cpu_hotplug.hpp>
 #include <ours/task/thread.hpp>
 
@@ -58,7 +58,7 @@ auto DomainRegistry::register_domain(DomainId const id,
             }
             floor = m_next_id;
         }
-        auto domain = ustl::Box<Domain>::adopt(new (mm::GAF_KERNEL) Domain());
+        auto domain = ustl::Box<Domain>::adopt(new (mm::ALLOC_KERNEL) Domain());
         if (!domain) {
             return Status::NoMemory;
         }
@@ -67,7 +67,7 @@ auto DomainRegistry::register_domain(DomainId const id,
             return status;
         }
         auto entry =
-            ustl::Box<Entry>::adopt(new (mm::GAF_KERNEL) Entry{id, std::move(domain), &endpoint});
+            ustl::Box<Entry>::adopt(new (mm::ALLOC_KERNEL) Entry{id, std::move(domain), &endpoint});
         if (!entry) {
             return Status::NoMemory;
         }

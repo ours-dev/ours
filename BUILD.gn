@@ -126,6 +126,10 @@ group("default") {
     # gktl::DeferredAction's run-at-most-once contract; see the target.
     "//kernel/lib/gktl:tests($host_toolchain)",
 
+    # The kernel test interface's host half: the selection grammar, the
+    # failure-message formatting, and the counting the SUMMARY line reports.
+    "//kernel/lib/ktest:tests($host_toolchain)",
+
     # The machine's NUMA tables, and the node ordering derived from them:
     # static arrays behind bounds-checked accessors plus a pure function over
     # the distance matrix, all of which needed a booted kernel only while they
@@ -186,6 +190,10 @@ group("default") {
     # The x86 idle states: each model's table of MWAIT states, cut to those
     # the CPU reports, and which may be entered.
     "//kernel/arch/x86/lib/idle_states:tests",
+
+    # The scheduling domains of a CPU: the tiers of CPUs it takes work from,
+    # built from a table of nodes.
+    "//kernel/lib/sched_domain:tests",
 
     # x86's page-table walks, in their CRTP base: run against tables built by
     # hand in host memory, and against the paging engine's answers.

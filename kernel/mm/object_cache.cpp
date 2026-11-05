@@ -187,16 +187,17 @@ namespace slab {
         return Status::Ok;
     }
 
-    auto allocate(Slab *slab, Gaf gaf) -> void * {
+    auto allocate(Slab *slab, Gaf alloc_flags) -> void * {
         return get_object(slab);
     }
 
-    auto create(MemCache *owner, void *node_cache, Gaf gaf, usize order, usize size,
+    auto create(MemCache *owner, void *node_cache, Gaf alloc_flags, usize order, usize size,
                 usize next_offset, NodeId nid) -> Slab * {
-        auto frame = mm::alloc_frames(nid, gaf, order);
-        if (!frame) {
+        auto const allocated = mm::alloc_frames(nid, alloc_flags, order);
+        if (!allocated) {
             return nullptr;
         }
+        auto *const frame = *allocated;
 
         // Claim the fresh frame for the slab role: clears the payload and stamps
         // the tag in one step.
@@ -400,7 +401,7 @@ auto MemCache::NodeCache::on_mem_cache_init(MemCache &cache) -> Status {
             continue;
         }
 
-        auto *const storage = NODE_CACHE->allocate(cache.m_gaf, static_cast<NodeId>(nid));
+        auto *const storage = NODE_CACHE->allocate(cache.m_alloc_flags, static_cast<NodeId>(nid));
         if (!storage) {
             // Release all holding and report error.
             on_mem_cache_free(cache);
@@ -469,7 +470,7 @@ MemCache::MemCache(char const *name, usize size, usize align, Option option)
     , m_order(0)
     , m_min_num_objects(0)
     , m_min_order(0)
-    , m_gaf()
+    , m_alloc_flags()
     // std::array of raw pointers: without this the entries are indeterminate,
     // and ~MemCache walks every one of them and frees it.
     , m_node_caches{} {
@@ -577,7 +578,7 @@ auto MemCache::create(char const *name, usize size, usize align, Option option,
     // stores the owning thread, so taking it here deadlocked the moment the
     // first cache was ever created. Allocating the storage needs no such
     // protection: MemCache::allocate does its own locking.
-    auto raw_self = SELF_CACHE->allocate(GAF_KERNEL);
+    auto raw_self = SELF_CACHE->allocate(ALLOC_KERNEL);
     if (!raw_self) {
         return Status::NoMemory;
     }
@@ -608,7 +609,7 @@ auto MemCache::create_boot(Self &self, char const *name, usize size, usize align
     return cache->init(name, size, align, options);
 }
 
-auto MemCache::allocate(Gaf gaf, NodeId nid, CpuCache *cache) -> void * {
+auto MemCache::allocate(Gaf alloc_flags, NodeId nid, CpuCache *cache) -> void * {
     DEBUG_ASSERT(nid < MAX_NODES, "caller must resolve 'no preference' first");
 
     auto *const node_cache = m_node_caches[nid];
@@ -638,8 +639,8 @@ auto MemCache::allocate(Gaf gaf, NodeId nid, CpuCache *cache) -> void * {
     // 2. The node's shared pool, and failing that the buddy allocator.
     auto *slab = node_cache->take_partial();
     if (!slab) {
-        slab =
-            slab::create(this, node_cache, m_gaf | gaf, m_order, m_phys_size, m_next_offset, nid);
+        slab = slab::create(this, node_cache, m_alloc_flags | alloc_flags, m_order, m_phys_size,
+                            m_next_offset, nid);
         if (!slab) {
             return nullptr;
         }
@@ -659,7 +660,7 @@ auto MemCache::allocate(Gaf gaf, NodeId nid, CpuCache *cache) -> void * {
     return object;
 }
 
-auto MemCache::allocate(Gaf gaf, NodeId nid) -> void * {
+auto MemCache::allocate(Gaf alloc_flags, NodeId nid) -> void * {
     task::AutoPreemptDisabler preempt_disabler{};
 
     // MAX_NODES is how a caller spells "no preference": it is this
@@ -677,7 +678,7 @@ auto MemCache::allocate(Gaf gaf, NodeId nid) -> void * {
     }
     DEBUG_ASSERT(nid < MAX_NODES, "current_node() returned an unusable node");
 
-    return allocate(gaf, nid, m_cpu_caches.ptr_mut());
+    return allocate(alloc_flags, nid, m_cpu_caches.ptr_mut());
 }
 
 auto MemCache::free(void *object) -> void {

@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/suspend_token_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
@@ -23,7 +23,7 @@ auto SuspendTokenDispatcher::create(ustl::Arc<ThreadDispatcher> thread, KernelHa
         return Status::NotSupported;
     }
 
-    auto *const token = new (mm::GAF_KERNEL) Self();
+    auto *const token = new (mm::ALLOC_KERNEL) Self();
     if (token == nullptr) {
         return Status::OutOfMem;
     }

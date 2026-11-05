@@ -22,9 +22,8 @@ namespace ours::mm {
 // `ours::arch` had not been declared yet at this point in the file. That is
 // not something an include order should be load-bearing for.
 using ::arch::paging::HarvestOptions;
-/// The page table's own choices for a map, under another name in mm: mm's
-/// MapOptions (vm_mapping.hpp) is what VmMapping::map()'s callers choose, in
-/// mm's terms, and only mm's own code talks to the page table.
+/// The page table's insertion and rollback options. The VMM's MapOptions
+/// governs mapping creation and the choice of pages to install.
 using ArchMapOptions = ::arch::paging::MapOptions;
 using ::arch::paging::MmuFlags;
 using ::arch::paging::UnmapOptions;
@@ -120,9 +119,9 @@ class VmPageSpliceList;
 
 /// What an operation on a range of a node's pages does to the page tables of
 /// every mapping of them, of every object over the node
-/// (VmCowPages::change_range_locked()). Done under the node's lock, so that
+/// (VmCowPages::range_change_locked()). Done under the node's lock, so that
 /// no fault can map the pages again before the operation is over.
-enum class RangeChange : u8 {
+enum class RangeOp : u8 {
     /// Write comes off the entries, which keep Read and Execute; the mappings'
     /// records keep Write, so that a write faults and is resolved. For pages
     /// about to be shared: a clone.

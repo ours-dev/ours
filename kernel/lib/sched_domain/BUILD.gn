@@ -1,0 +1,35 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The scheduling domains of a CPU: the nested sets of CPUs it looks at for
+# work, nearest first, built from a table of nodes. Pure and header only, so
+# it builds in the host toolchain too, where its tests run.
+group("sched_domain") {
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/sched_domain/sched_domain.hpp" ]
+  public_configs = [ ":cpu_mask" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:sched_domain($host_toolchain)" ]
+}
+
+# The header includes <ours/cpu_mask.hpp>, which is the kernel's. A dependant in
+# the kernel has the path already; one in the host toolchain does not, and also
+# has to name MP_MAX_CPUS itself (see test/BUILD.gn).
+config("cpu_mask") {
+  include_dirs = [ "//kernel/include" ]
+}

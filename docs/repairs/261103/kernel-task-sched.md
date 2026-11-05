@@ -1,6 +1,6 @@
 # kernel-task-sched outstanding repairs
 
-Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, and items 19 and 20, which the first Fair lane showed, are at the end). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile and are wrong or missing. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
+Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, item 20, found while the Fair lane was brought up, and items 22 to 26, 30, 31 and 33 to 35, left by the idle-thread steal (item 27, the audit of the callers of `CpuLocal::access()`, was done and became items 28 to 33; items 28, 29 and 32 were fixed the same day in their own commits), are at the end; item 21, work stealing, was fixed on 2026-11-05). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile; they are wrong or missing, or (item 8) a question for the author. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
 
 ## 7. A thread that was never enqueued has a slice of zero
 
@@ -25,22 +25,22 @@ A boot with Fair on in which the idle threads are not marked preempt-pending on 
 ## 8. Fair's charging runs from a tick that nothing delivers
 
 **Severity**
-Medium: it compiles, and changes what Fair does under the tickless scheduler.
+Low: it compiles and works, and is a question of design under the tickless scheduler.
 
 **Symptom**
-Nothing calls `Fair::on_thread_tick()` (`RoundRobin`'s is empty), so `update_thread()` and its deadline test run only from `enqueue_thread()`, `dequeue_thread()`, `put_prev_thread()`, `yield_thread()` and `yield_to_thread()` (and from `override_thread_base_profile()`, which nothing calls). `UpdateThread`, `OverrideThreadBaseProfile` and `MigrateThread` of the interface also have no caller, and `OnThreadDead`'s call is commented out. At the end of a slice the test is reached inside `put_prev_thread()`, after the pick, where `mark_preempt_pending()` is redundant (the pending bit is consumed in `reschedule_common()`) and the replenish is what matters. The same order means the pick reads the running thread's `vruntime` before it is charged, up to one slice old, for the mean and for the eligibility of the waiting threads. Observed on 2026-11-04 in the Fair lane (three boots by the author and four by a reviewer, in separate build directories): `preempt.test` (two spinners on one CPU, slice 64 ms, the longest allowed turn 68 ms) fails three of its eight checks, and two of them when it counts four turns or more; its counted turns are 2 to 4 (one run of 15 split by host stalls), none a whole slice, the longest 197 to 263 ms, three to four slices. The round-robin lane passes all eight in three runs, with about 13 turns, all whole slices, the longest 66 ms. Charging the running thread at the top of `evaluate_next_thread()` (an experiment of the author's, reverted, not reproduced by the reviewer) gave 12 turns with 11 whole slices and 10 with 7, the longest 132 ms, and one failed check. An exact-integer model of the queue by the reviewer reproduces the cause: at the pick the waiter, charged in full at its own `put_prev_thread()`, is ahead of a mean that still holds the running thread uncharged, so it is ineligible, `evaluate_next_thread()` answers null and the running thread is picked again; the re-pick gets a whole new slice because `set_next_object()` restarts `m_prev_exec_runtime` (the first half of item 9), and a tie of whole nanoseconds is broken against the waiter by timer latency, so the extra slice persists. Charging first leaves turns of two slices when the waiter is ahead of the mean by a sliver, for the same re-pick reason. A model of the queue that a reviewer ran on 2026-11-04 leaves the long-run shares unchanged (25.69 against 25.71 for priorities 31 and 15) but doubles the worst short-term service error (121 ms against 61 ms) and makes an equal-weight pair run two-slice bursts.
+Nothing calls `Fair::on_thread_tick()` (`RoundRobin`'s is empty), so `update_thread()` and its deadline test run only from `enqueue_thread()`, `dequeue_thread()`, `put_prev_thread()`, `yield_thread()`, `yield_to_thread()` and, since 2026-11-04, `evaluate_next_thread()` (and from `override_thread_base_profile()`, which nothing calls). `UpdateThread`, `OverrideThreadBaseProfile` and `MigrateThread` of the interface also have no caller, and `OnThreadDead`'s call is commented out. At the end of a slice the deadline test fires in the charge at the pick (`evaluate_next_thread()`), where the replenish is what matters and `mark_preempt_pending()` is redundant (the pending bit is consumed in `reschedule_common()` by `take_pending_local()` right after the pick); the charge in `put_prev_thread()` that follows adds nothing when the pick went through `Fair::evaluate_next_thread()`, because the scheduler clock is not read again between the pick and the hand-over (a pick that returns early, for an idle transition or a `yield_to` nomination, makes that charge the first).
 
 **Cause**
 A slice now ends at the CPU's preemption deadline, a slot in its `TimerQueue`, and nothing ticks (`kernel-design`, references/task.md, Time). Fair was written for a tick that charged the running thread and asked for preemption. `on_thread_tick()` also calls `add_pending()` with its default, which names the executing CPU rather than the run queue's (`run_queue.hpp`: say `mark_preempt_pending()`).
 
 **Change**
-The author decides how Fair ends a slice: from the deadline the framework sets, as it does now through `put_prev_thread()`, or by charging at another point. Charging the running thread at the top of `evaluate_next_thread()` also removes the stale read at the pick.
+The author decides how Fair ends a slice: from the deadline the framework sets, charged at the pick and at the hand-over as it is now, or by charging at another point.
 
 **Reference**
-None, this project's own design.
+Linux EEVDF, `pick_task_fair()` calls `update_curr()` before the pick (`kernel/sched/fair.c`, local checkout).
 
 **Acceptance**
-Two equal always-runnable spinners on one CPU keep their service within one slice of each other over the window of `preempt.test`, and the discipline-independent checks of that test (the probe timer, no other CPU passes a deadline, the hand-off arms the deadline once per switch) pass. The test's three turn checks (at least four turns, none past a slice, most whole) assume strict alternation, which is the round-robin's property and not EEVDF's: whether Fair is to alternate on a tie, or the test is to change, is the author's to decide.
+`Fair::on_thread_tick()` and the interface entries with no caller are removed or called from somewhere, any `add_pending()` that stays in them is `mark_preempt_pending()`, and `preempt.test` still passes on the Fair lane (it does since 2026-11-04).
 
 ## 9. A pick restarts the request, and a yield can push the deadline two requests out
 
@@ -48,13 +48,13 @@ Two equal always-runnable spinners on one CPU keep their service within one slic
 Low to Medium: both change what "the request is spent" means.
 
 **Symptom**
-`set_next_object()` rewrites `vdeadline` and `m_prev_exec_runtime` at every pick, so the deadline test means "one request since the last pick, placement or replenish", not "the request was served". A thread preempted at 90 % of its slice, again and again, never replenishes through the test. The same restart would happen in the middle of a slice if `Scheduler::Pi::common()`, which calls `put_prev_thread()` and `set_next_thread()` on the running thread, were called; nothing calls it today, and `Scheduler::on_thread_base_profile_overrided()` is empty. `yield_thread()` does `vdeadline += to_virtual_time(slice, weight)` after an `update_thread()` that may just have replenished, so the deadline can sit two requests ahead of `vruntime`. The weight scaling also truncates on a quantised rate, so charging a slice in several pieces can leave `vruntime` short of the deadline by up to a nanosecond per piece, and the test then fires one charge later.
+`set_next_object()` rewrites `vdeadline` and `m_prev_exec_runtime` at every pick, so the deadline test means "one request since the last pick, placement or replenish", not "the request was served". A thread preempted at 90 % of its slice, again and again, never replenishes through the test. The same restart would happen in the middle of a slice if `Scheduler::Pi::common()`, which calls `put_prev_thread()` and `set_next_thread()` on the running thread, were called; nothing calls it today, and `Scheduler::on_thread_base_profile_overrided()` is empty. `yield_thread()` does `vdeadline += to_virtual_time(slice, weight)` after an `update_thread()` that may just have replenished, so the deadline can sit two requests ahead of `vruntime`. The weight scaling also truncates on a quantised rate, so charging a slice in several pieces can leave `vruntime` short of the deadline by up to a nanosecond per piece, and the test then fires one charge later. Observed on 2026-11-04 in the Fair lane, with the running thread charged before the pick: `preempt.test` (two spinners on one CPU, slice 64 ms) still shows turns of two slices, 130 to 132 ms, in more than half of the boots (2 of 4 in the experiment, 10 of 14 after the change, and 13 of 20 in a reviewer's); the round-robin lane has none. A reviewer's exact-integer model of the queue explains them as near-ties, which no run was instrumented to show: a waiter that is ahead of the mean by a sliver, because timer latency gave it a slightly longer slice last turn, is ineligible, the running thread is picked again, and `set_next_object()` and `Scheduler::set_next_thread()` give it a whole new slice though it is owed only the sliver. `preempt.test` allows two slices in a row for this reason.
 
 **Cause**
 Fair keeps the request in two places that are written independently.
 
 **Change**
-The author's: keep the deadline across picks, as the algorithm does, and let only the replenish and the placement write it.
+The author's: keep the deadline across picks, as the algorithm does, and let only the replenish and the placement write it. For the re-pick, end the slice when the first waiter becomes eligible instead of arming a whole one: that is the waiter with the smallest `vruntime`, and the running thread's virtual time must advance by `(v_waiter - mean) * W / w_running` for it to reach the mean, `W` being the weight of everything in the mean, the running thread included. Not tried, nor was a tolerance on eligibility; the deadline-ordered tree does not give the smallest `vruntime` without a search.
 
 **Reference**
 Linux EEVDF, `update_deadline()`: the deadline is written at placement and when `vruntime` reaches it.
@@ -182,26 +182,6 @@ Linux EEVDF, `place_entity()` (`lag *= (load + weight) / load`) and `entity_lag(
 **Acceptance**
 In the test of item 13, a thread that leaves and returns while the others run is placed at the lag it left with, within a nanosecond.
 
-## 19. `hotplug.test` fails on the Fair lane
-
-**Severity**
-Medium: a test that passes under round-robin fails under Fair, and the cause is not established. Not reachable in the default build.
-
-**Symptom**
-Observed on 2026-11-04 in the Fair lane, in two boots by the author and one by a reviewer: `hotplug.test` fails 2 of its 47 checks, "and every spinner goes on elsewhere", in two of its rounds (`hotplug_test.cpp`: while a CPU is offline for `OFFLINE_FOR`, every spinner's round counter must have advanced). The round-robin lane passes 47 of 47. The other checks pass, among them the ones that walk the run queue (`FairRunQueue::for_each` through `Scheduler::Current::deactivate()`): the CPU goes offline, no spinner runs on it, and the sleeper wakes on time elsewhere.
-
-**Cause**
-Not established. Candidates, each read and not run: a spinner that was moved to another CPU finds two or more spinners already there, and Fair's bursts (item 8) leave one without a turn for `OFFLINE_FOR`; the lag a moved thread carries from the old CPU's mean is applied against the new CPU's mean unscaled (item 18); a moved thread is enqueued with a `vruntime` placed on the other queue's zero.
-
-**Change**
-Find the cause first: print each spinner's rounds at the end of the sleep for the Fair lane, and its CPU. Then the author decides.
-
-**Reference**
-None, this project's own test.
-
-**Acceptance**
-`hotplug.test` passes on the Fair lane.
-
 ## 20. `SCHED_NOHZ` has no reader
 
 **Severity**
@@ -221,3 +201,205 @@ None, this project's own design.
 
 **Acceptance**
 No reference to `SCHED_NOHZ` or `sched_nohz` outside the history.
+
+## 22. Busy CPUs are never balanced against each other
+
+**Severity**
+Medium: an idle CPU is served now, but a split among CPUs that all have work stays as it is; round-robin and Fair alike.
+
+**Symptom**
+`Scheduler::Current::steal()` runs only when a CPU has nothing to run (the idle loop), so a CPU that runs one thread never looks at the others. In `hotplug.test`, eight spinners on four CPUs, one CPU offline and back: the survivors hold 3, 3 and 2, the returning CPU takes one and the counts are 2, 3, 2, 1 (by inference from the code, not observed: the test does not print them), and they stay so for as long as the spinners run, where an even split is 2, 2, 2, 2. A pick-time pull does not exist either: `pick_next_thread()` still calls the stub `steal_work_from()`.
+
+**Cause**
+The idle loop was chosen as the place for a pull because it holds no run queue lock and is entered on every path a CPU becomes idle (including `IdleThread::come_back()`). That serves the CPU that has nothing; it does not serve one that has less than its neighbour.
+
+**Change**
+The author's, with options to put to the user: a periodic balance from the tick (Linux `sched_balance_domains()` and `sched_balance_rq()`), a pull at the pick (Zircon `Scheduler::DequeueThread()` calls `StealWork()` inside `queue_guard.CallUnlocked(...)`, with its own queue lock dropped and interrupts still off; it saves a switch to the idle thread and back, and does not run at come-back time), or a push when a queue grows. Each needs the own lock dropped inside the pick, or a tick-side step with its own cost; none is chosen.
+
+**Reference**
+Linux `sched_balance_domains()` and `sched_balance_rq()` (`kernel/sched/fair.c`, local checkout; names confirmed, bodies not read for this item); Zircon `Scheduler::StealWork()` (`scheduler.cc`).
+
+**Acceptance**
+In `hotplug.test`, after `bring_cpu_online()` the spinner counts per online CPU differ by at most one (2, 2, 2, 2) within a second; `steal.test` still passes.
+
+## 23. An idle CPU that found nothing looks again only when something wakes it
+
+**Severity**
+Low: a queue that reaches the threshold after the CPU halted is served late, not never, since a CPU's own wakeups and the first timer tick bring it back.
+
+**Symptom**
+An idle CPU that finds no queue deep enough halts with no tick (`IdleThread::run()`) and looks again only when an interrupt wakes it. `steal.test` sends the reschedule request by hand for that reason: after the test widens the spinners' affinity, nothing else tells the thief that the victim's queue is now stealable. Read off the code, shown by the test, not measured for how long a real case waits.
+
+**Cause**
+`steal()` is called once per pass through the idle loop, and the loop blocks in `hlt`. Nothing wakes an idle CPU when another CPU's queue grows past the threshold: placement (`select_target_cpu()`) prefers the least loaded CPU, so new threads go to idle CPUs, and the remaining cases are a thread whose affinity was widened, a thread that wakes onto a busy CPU because it last ran there, and threads that were pinned.
+
+`steal()` also tries only the deepest queue of each node class, so a deep queue of threads that may not run here (all pinned to it) hides a shallower one that has a thread to give: the idle CPU halts with that thread waiting a slice behind the other CPU's running one. Read off the code, not run.
+
+**Change**
+The author's: when a thread is queued on a CPU that already runs one, kick an idle CPU that could take it (Linux has a kick for idle balance, `nohz_balancer_kick()`, from memory; Zircon sends a reschedule IPI from `Scheduler::Insert()` to a CPU picked by `FindTargetCpu()` for the same purpose, from memory), or poll from a tick that the idle CPU keeps while another CPU has a queue. Neither is chosen.
+
+**Reference**
+Linux `nohz_balancer_kick()`; Zircon `Scheduler::Insert()`, `Scheduler::FindTargetCpu()` (names from memory, not read for this item).
+
+**Acceptance**
+A test that widens the affinity of a waiting thread with no reschedule request sent by hand sees the thread on the idle CPU within a bounded time, and says what the bound is.
+
+## 24. The steal thresholds and the node preference are first guesses, unmeasured
+
+**Severity**
+Low: a performance choice with a safe direction, since a threshold that is too high steals less and a too-low one only moves a thread early.
+
+**Symptom**
+`STEAL_MIN_RUNNABLE_SAME_NODE = 2` and `STEAL_MIN_RUNNABLE_OTHER_NODE = 3` (`domains.cpp`, the `min_runnable` of the two tiers `sched_domain::build_domains()` makes) count the running thread, so one waiting thread is enough on the same node and a second is asked for from another. They were chosen by reasoning, not by data. The QEMU machine used for all runs has no remote-memory latency (TCG), so no run to date can show a difference; `steal.test` checks which side of the node boundary the count decides, not whether the number is right, nor the order (the same node before another). The count also ignores how long a thread has waited, which Zircon's cross-cluster test uses (`kInterClusterThreshold`, two milliseconds of queued time).
+
+**Cause**
+No estimate of queued time exists in the scheduler, and no real NUMA machine has run this kernel.
+
+**Change**
+Per CLAUDE.md, before changing anything: take the measurement first and put each candidate to the user, with its mechanism and cost. The measurement is the time to the first run of a stolen thread and the throughput of a memory-bound workload split over two nodes, for thresholds of 2, 3 and 4 and for a queued-time gate; the report goes in `docs/perf/<YYMMDD>/sched-steal-threshold.md` with its raw samples (`scripts/perf_stats.py`).
+
+**Reference**
+Zircon `Scheduler::StealWork()` and its search set ordered by cache distance (`scheduler.cc`); Linux `sched_balance_newidle()`, which gives up when `this_rq->avg_idle < sd->max_newidle_lb_cost` (`kernel/sched/fair.c`, local checkout, read on 2026-11-05).
+
+**Acceptance**
+The report exists, shows the throughput and the latency distribution per threshold on hardware with at least two nodes, and names the value kept.
+
+## 25. A thread whose affinity is narrowed while it is queued stays where it is
+
+**Severity**
+Medium: a hard affinity can be broken, for a time, by a thread that is queued or in the middle of a move.
+
+**Symptom**
+`Scheduler::set_cpu_affinity()` installs the new mask without any run queue lock and, if the CPU the thread is on is no longer allowed, calls `Scheduler::migrate_thread()`, which is an empty stub. A thread that is queued on a CPU its new hard affinity excludes therefore stays queued and runs there. The same hole is wider since `steal()`: the affinity is checked once under the victim's lock, and a mask installed after that, before the thread is queued on the thief, leaves it on a CPU the mask excludes. `deactivate()` has it too (it re-selects the destination, so the window is shorter). Read off the code, not run.
+
+**Cause**
+`migrate_thread()` was never written, and affinity is not under a lock that the run queue lock orders against.
+
+**Change**
+The author's: write `migrate_thread()` for a Ready thread (take it off its queue, place it again) and for a Running one (a reschedule request), and decide how a thread in the Migrating window is told about a new mask, for instance by re-checking the mask under the thief's lock in `steal()` and handing the thread to `find_active_scheduler_for()` when it fails.
+
+**Reference**
+Zircon `Scheduler::ChangeCpuAffinity` path (names from memory); Linux `__set_cpus_allowed_ptr()` and `affine_move_task()` (names from memory).
+
+**Acceptance**
+A test narrows the hard affinity of a queued spinner to another CPU and sees it run there and never again on the first, with `steal.test` and `hotplug.test` passing.
+
+## 26. The priority-inheritance walk does not ask whether the thread is queued where its CPU says
+
+**Severity**
+Medium: not reached today, since nothing calls `Scheduler::Pi::common()`.
+
+**Symptom**
+Latent, cannot be triggered today: nothing calls `Scheduler::Pi::common()`. It reads the thread's `curr_cpu()`, takes that CPU's run queue lock and, for a Ready thread, dequeues and re-enqueues it. A thread in the Migrating window (taken off a queue by `deactivate_thread()` and not yet queued again) still names its old CPU, and is Ready, so the walk would dequeue it from a queue it is not in: `Scheduler::dequeue_thread()` decrements `m_num_queued_threads` and `m_total_weight` without a membership test, and the re-enqueue would put the thread on the old CPU's queue while it is activated on another. Read off the code, not run. The window is `deactivate()`'s and `steal()`'s.
+
+**Cause**
+`assert_thread_in_scheduler()` checks the CPU, not the queue, and the Migrating transient state is not looked at.
+
+**Change**
+Look at the transient state under the lock (the thread's `RunQueueState`) and skip the dequeue and re-enqueue when it is Migrating, leaving the new priority to be read when the thread is activated.
+
+**Reference**
+None, this project's own design.
+
+**Acceptance**
+A test changes the priority of a thread while another CPU moves it (a stress with `steal()` running) and ends with the queue counts equal to the queues' contents.
+
+## 30. `DpcRunner::enqueue()` resolves the CPU twice
+
+**Severity**
+Medium: not reached today, its only production caller holds interrupts off.
+
+**Symptom**
+Latent, cannot be triggered today: the one caller outside tests holds both disablers. `DpcRunner::enqueue()` (`kernel/kernel/task/dpc.cpp`) reads `mm::CpuLocal::current_cpu()` and then `Current::get()`. A caller that can be preempted between them and taken by another CPU queues the `Dpc` on one runner and records the other CPU as its owner, and `cancel()` then locks one CPU's queue to erase from the other's list. `Thread::Current::exit()` is the only caller outside tests and holds both disablers; `dpc.test` and `hotplug.test` pin their threads, so pinning is all that keeps them safe. A reviewer's reading, not run.
+
+**Cause**
+The public function says "the calling CPU" without making it so.
+
+**Change**
+Take the interrupt (or preemption) disabler first in `enqueue()`, or take the CPU from the runner.
+
+**Reference**
+None, this project's own design.
+
+**Acceptance**
+`enqueue()` does not depend on its caller's context; `dpc.test` passes.
+
+## 31. `ChainLockTransaction::current()` reads a per-CPU slot with no protection
+
+**Severity**
+Medium: not reached today, nothing calls it.
+
+**Symptom**
+Latent, cannot be triggered today: nothing calls it. `ChainLockTransaction::current()` (`kernel/lib/kconcurrent/src/chain_lock_transaction.cpp`) is documented for an assertion in code handed no transaction, which is the caller that is not inside one and may be preemptible. It uses the two-load `CpuLocal::access()`, so such a caller can be moved between the loads and read another CPU's transaction. The constructor and destructor are safe (the interrupt disabler is their first member). A reviewer's reading, not run.
+
+**Cause**
+The function does not say, or make, the context it needs.
+
+**Change**
+Document that it needs interrupts off, or take the disabler.
+
+**Reference**
+None, this project's own design.
+
+**Acceptance**
+The function states or enforces its context, with a caller of it as the reason.
+
+## 33. A remote write of a CPU's preemption state is not atomic
+
+**Severity**
+Low: speculative, Fair lane only as far as the reviewer found, and a few instructions wide.
+
+**Symptom**
+In the Fair lane, `Fair::dequeue_thread()` calls `update_thread()` on the victim's running thread, whose deadline test can call `RunQueue::mark_preempt_pending()`, which calls `PreemptionState::add_pending()` on that thread: a load, an or and a store with no atomic read-modify-write (`preemption_state.hpp`). The thread's own CPU, outside the run queue lock, can be doing the same on another bit (a remote wakeup that requests an IPI); the interleaving loses one bit, and a lost bit is a reschedule request that is never sent, so a woken thread waits for the next interrupt. Needs the Fair lane, a steal from a CPU whose running thread has spent its request, and a remote wakeup by that thread in the same few instructions. A reviewer's reading, not run; round-robin never calls `mark_preempt_pending()` from a dequeue.
+
+**Cause**
+`add_pending()` was written for the CPU that owns the state. The existing remote callers (`unpark_preempt()` on a waker's behalf) use the same function.
+
+**Change**
+The author's: make `add_pending()` an atomic read-modify-write (`fetch_or`) if the state may be written from another CPU, or keep the remote write off the running thread's state.
+
+**Reference**
+None, this project's own design.
+
+**Acceptance**
+`add_pending()` is a single atomic operation, and a stress of remote wakeups against steals in the Fair lane loses no request.
+
+## 34. `preempt.test` fails when `tickreplace.test` ran before it
+
+**Severity**
+Low: a test that depends on the order of the tests before it; the kernel is not shown to be wrong.
+
+**Symptom**
+`python3 scripts/kshell_run.py --out out/<dir> tickreplace.test preempt.test` ends with `preempt.test: FAIL  no turn runs past its slices` and `FAIL  most turns are a whole number of slices` (one run: 12 turns, 2 of them a whole number of slices, the longest 69937 us, the probe timer 1320 us late), in the default, Fair and four-node lanes alike. After `idle`, `sleep`, `threadjoin`, `timer`, `timershare` or `mutex.stress` instead, it passes, and alone it passes. With `Scheduler::Current::steal()` returning false at its top it fails the same, so it is not the work stealing. Observed on 2026-11-05 while a batch was being rerun; `preempt.test` was fixed on the same day for a different failure (`docs/changes/261103/kernel-task-sched.md`).
+
+**Cause**
+Not established. `tickreplace.test` replaces the tick device of the CPUs; if it leaves a different device or mode behind (a coarser timer, a longer lateness), a turn that `preempt.test` expects to end within its slice plus the lateness it measures runs longer. A guess from the symptom, not read.
+
+**Change**
+Read what `tickreplace.test` restores at its end and compare with what `preempt.test` assumes (`late by at most` in its first log line is measured before the spinners start); either restore fully in the first or measure in the second after the state it finds.
+
+**Reference**
+None, this project's own tests.
+
+**Acceptance**
+`kshell_run.py --out out/<dir> tickreplace.test preempt.test` passes in the default, Fair and four-node lanes, three runs in a row.
+
+## 35. The scheduling domains are built once and do not follow a CPU that moves to another node
+
+**Severity**
+Medium: not reached today, since nothing moves a CPU between nodes at run time.
+
+**Symptom**
+Latent, cannot be triggered today: nothing calls `PmNode::set_cpu_node()`. `domains_of(cpu)` (`kernel/kernel/task/sched/domains.cpp`) is built once, at `InitLevel::Threading`, from `mm::CpuNodeMap`. `PmNode::set_cpu_node()` (`kernel/mm/pm_node.cpp`) moves a CPU between two live nodes at run time and updates the node table; it has no caller, and nothing tells the scheduler. After such a move a CPU would still be in the tier its old node gave it: `steal()` would count a CPU as near that is far, and the other way round. Read off the code, not run.
+
+**Cause**
+The table is read-only after boot, so that `steal()` takes no lock to read it, and the memory manager has no hook through which a move could tell the scheduler (a call from `kernel/mm` into the scheduler would be a new edge; mm already includes task headers, `ours/task/thread.hpp` for one).
+
+**Change**
+The author's, with options: a generation count in `CpuNodeMap` that the scheduler compares at each look and rebuilds on a change (a rebuild that has to be safe against `steal()` readers on other CPUs); or a hook list that `set_cpu_node()` runs and the scheduler adds itself to, registered at `Threading`; or leaving it until a caller of `set_cpu_node()` exists, and making that caller rebuild. None is chosen.
+
+**Reference**
+Linux rebuilds its sched domains on a topology change with `rebuild_sched_domains()` (`kernel/cgroup/cpuset.c`, local checkout; name confirmed, body not read for this item).
+
+**Acceptance**
+A test moves a CPU to another node through `PmNode::set_cpu_node()` and `steal.test` sees the new tier of that CPU, or the item is closed by the first caller of `set_cpu_node()` doing so.

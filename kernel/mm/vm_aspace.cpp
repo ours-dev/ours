@@ -8,6 +8,7 @@
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 
+#include <arch/auto_interrupt_disabler.hpp>
 #include <arch/interrupt.hpp>
 #include <gktl/counter.hpp>
 #include <gktl/init_hook.hpp>
@@ -116,7 +117,7 @@ auto VmAspace::create(VirtAddr base, usize size, Kind kind, Flags flags, char co
     if (size == 0 || base >= VIRT_ADDR_RESERVED_BASE || size > VIRT_ADDR_RESERVED_BASE - base) {
         return Status::InvArgs;
     }
-    auto const aspace = AspaceCache::get(GAF_KERNEL, base, size, kind, flags, name);
+    auto const aspace = AspaceCache::get(ALLOC_KERNEL, base, size, kind, flags, name);
     if (!aspace) {
         return Status::OutOfMem;
     }
@@ -287,6 +288,15 @@ auto VmAspace::set_vdso(ustl::Arc<VmMapping> mapping) -> void {
     }
 }
 
+auto VmAspace::on_mapping_destroyed_locked(VmMapping &mapping) -> void {
+    if (m_last_fault.as_ptr() == &mapping) {
+        m_last_fault = {};
+    }
+    if (m_vdso_mapping.as_ptr() == &mapping) {
+        withdraw_vdso_locked();
+    }
+}
+
 /// The size alone goes to zero, and the base stays. vdso_contains() loads
 /// the size first, so a reader that loaded the old size just before this
 /// store then loads a base, and that must be one written together with that
@@ -299,8 +309,7 @@ auto VmAspace::set_vdso(ustl::Arc<VmMapping> mapping) -> void {
 /// set_vdso() writes under the same lock, and nothing new can be mapped where
 /// the code was until this lock is released, whose release orders the store
 /// before that. The reference let go of here is not the mapping's last:
-/// VmMapping::destroy(), the one caller, runs while its parent's set still
-/// holds one.
+/// the mapping teardown holds its own reference throughout.
 auto VmAspace::withdraw_vdso_locked() -> void {
     m_vdso_code_size.store(0, std::memory_order_relaxed);
     m_flags &= ~Flags::Vdso;
@@ -430,7 +439,7 @@ auto VmAspace::find_mapping(VirtAddr const va, ustl::Arc<VmMapping> *const out) 
     return Status::Ok;
 }
 
-auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status {
+auto VmAspace::page_fault_internal(VirtAddr va, VmFault::Cause cause, usize extra_pages) -> Status {
     m_canary.verify<Self>();
 
     // Every caller must be able to block, and this is where that is enforced
@@ -442,7 +451,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
     // one, and supplying a page can wait on reclaim. So this is not a question
     // this function can answer by refusing -- there is no fault it could
     // resolve without blocking -- only one it can check its callers got right.
-    // This used to be a VmfCause::MaySleep bit the fault entry set and this
+    // This used to be a VmFault::Cause::MaySleep bit the fault entry set and this
     // function refused without. The hardware path now stops the kernel before
     // any fault that may not sleep reaches here (x86_handle_page_fault()), which
     // left the bit redundant there and wrong everywhere else: soft_fault() never
@@ -460,9 +469,27 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
     // ASSERT rather than DEBUG_ASSERT for the reason the fault entry stops the
     // kernel in release builds as well: with the check compiled out, a violation
     // does not fail, it hangs on a mutex that can never be released to it.
-    ASSERT(sync::SpinLock::num_held_cpu() == 0,
+    //
+    // The count is a fact about the CPU the caller is on, and a soft fault
+    // arrives with interrupts and preemption on: a thread preempted inside the
+    // read can be taken by an idle CPU and resume on another, having resolved
+    // the CPU on one and loaded the slot on the other. That reads the first
+    // CPU's count, non-zero whenever it is inside a spin lock or an interrupt
+    // handler, and this assertion would stop a kernel that did nothing wrong.
+    // So it is read once, with interrupts off, and the assertion tests and
+    // reports that one value (ASSERT renders its message only after the test
+    // failed, so a second read there could differ from the first).
+    //
+    // The block ends before the next assertion, which needs interrupts as the
+    // caller left them.
+    usize num_spin_locks = 0;
+    {
+        arch::AutoInterruptDisabler irq;
+        num_spin_locks = sync::SpinLock::num_held_cpu();
+    }
+    ASSERT(num_spin_locks == 0,
            "page fault at {:#x} resolved with {} spin lock(s) held on this CPU", va,
-           sync::SpinLock::num_held_cpu());
+           num_spin_locks);
     ASSERT(!arch::irqs_disabled(), "page fault at {:#x} resolved with interrupts disabled", va);
 
     auto status = Status::Ok;
@@ -516,7 +543,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
         // taken again from the top, because anything may have changed while
         // this thread slept.
         if (Status::ShouldWait == status) {
-            auto const waited_status = vmf.page_request.wait(!!(cause & VmfCause::User));
+            auto const waited_status = vmf.page_request.wait(!!(cause & VmFault::Cause::User));
             if (Status::Ok != waited_status) {
                 // A provider that never answered: show what this address
                 // space maps. Under the lock, which the wait had to be without:
@@ -546,11 +573,11 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
     return status;
 }
 
-auto VmAspace::page_fault(VirtAddr va, VmfCause cause) -> Status {
+auto VmAspace::page_fault(VirtAddr va, VmFault::Cause cause) -> Status {
     return page_fault_internal(va, cause, 0);
 }
 
-auto VmAspace::soft_fault(VirtAddr va, VmfCause cause) -> Status {
-    return page_fault_internal(va, cause | VmfCause::Software, 0);
+auto VmAspace::soft_fault(VirtAddr va, VmFault::Cause cause) -> Status {
+    return page_fault_internal(va, cause | VmFault::Cause::Software, 0);
 }
 } // namespace ours::mm

@@ -43,11 +43,12 @@
 // usercopy.test's command thread is.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -224,7 +225,7 @@ namespace {
     };
 
     auto make_rig(Rig *const rig) -> Status {
-        auto *const provider = new (mm::GAF_KERNEL) TestProvider();
+        auto *const provider = new (mm::ALLOC_KERNEL) TestProvider();
         if (!provider) {
             return Status::OutOfMem;
         }
@@ -263,11 +264,11 @@ namespace {
         PageRequest b;
         PageRequest c;
         PageRequest d;
-        auto const raised = source.get_pages(0, 4 * P, &a) == Status::ShouldWait &&
-                            source.get_pages(2 * P, 4 * P, &b) == Status::ShouldWait &&
-                            source.get_pages(6 * P, 2 * P, &c) == Status::ShouldWait &&
-                            source.get_pages(4 * P, 4 * P, &d) == Status::ShouldWait;
-        verdict(tally, raised, "get_pages() answers ShouldWait");
+        auto const raised = source.request_pages(0, 4 * P, &a) == Status::ShouldWait &&
+                            source.request_pages(2 * P, 4 * P, &b) == Status::ShouldWait &&
+                            source.request_pages(6 * P, 2 * P, &c) == Status::ShouldWait &&
+                            source.request_pages(4 * P, 4 * P, &d) == Status::ShouldWait;
+        verdict(tally, raised, "request_pages() answers ShouldWait");
         verdict(tally, provider.nr_sent() == 3 && source.nr_raised() == 4,
                 "a request that starts inside an outstanding one is not sent");
 
@@ -294,8 +295,8 @@ namespace {
         // its place in the provider's queue, and nothing new is sent.
         PageRequest e;
         PageRequest f;
-        auto _ = source.get_pages(0, 2 * P, &e);
-        auto _ = source.get_pages(0, 2 * P, &f);
+        auto _ = source.request_pages(0, 2 * P, &e);
+        auto _ = source.request_pages(0, 2 * P, &f);
         auto const sent_before = provider.nr_sent();
         e.cancel();
         verdict(tally,
@@ -310,8 +311,8 @@ namespace {
         // A waiter that leaves changes nothing for the request it waited on.
         PageRequest g;
         PageRequest h;
-        auto _ = source.get_pages(0, P, &g);
-        auto _ = source.get_pages(0, P, &h);
+        auto _ = source.request_pages(0, P, &g);
+        auto _ = source.request_pages(0, P, &h);
         h.cancel();
         verdict(tally, source.nr_raised() == 1 && provider.nr_queued() == 1,
                 "a waiter that leaves only leaves");
@@ -320,12 +321,12 @@ namespace {
                 "the last one leaves the provider too");
 
         PageRequest i;
-        auto _ = source.get_pages(0, P, &i);
+        auto _ = source.request_pages(0, P, &i);
         source.close();
         verdict(tally, i.wait(false) == Status::Ok && source.nr_raised() == 0,
                 "closing completes what is outstanding");
         PageRequest j;
-        verdict(tally, source.get_pages(0, P, &j) == Status::BadState,
+        verdict(tally, source.request_pages(0, P, &j) == Status::BadState,
                 "a closed source raises nothing");
         verdict(tally, provider.closed(), "the provider hears of detach and close");
     }
@@ -356,7 +357,7 @@ namespace {
         Rig rig;
         ustl::Arc<mm::VmCowPages> node;
         if (make_rig(&rig) != Status::Ok ||
-            mm::VmCowPages::with_source(rig.source, mm::GAF_USER, 3 * P, &node) != Status::Ok) {
+            mm::VmCowPages::with_source(rig.source, mm::ALLOC_USER, 3 * P, &node) != Status::Ok) {
             verdict(tally, false, "a node with a source is made for the marker checks");
             return;
         }
@@ -366,9 +367,9 @@ namespace {
         verdict(tally, node->add_zero_marker_locked(1) == Status::Ok,
                 "a zero marker is put at page 1");
         {
-            auto cursor = node->make_cursor(P, P);
+            auto cursor = node->lookup_cursor_locked(P, P);
             mm::MultiPageRequest request;
-            auto const read = cursor->require_page(false, 1, &request);
+            auto const read = cursor.require_page(false, 1, &request);
             verdict(tally,
                     read && read->page == mm::get_zero_page() && !read->writable &&
                         provider.nr_sent() == 0 && node->nr_pages_locked() == 0,
@@ -376,9 +377,9 @@ namespace {
         }
         {
             // Withdrawn when |request| goes, at the end of the block.
-            auto cursor = node->make_cursor(0, 3 * P);
+            auto cursor = node->lookup_cursor_locked(0, 3 * P);
             mm::MultiPageRequest request;
-            auto const read = cursor->require_page(false, 3, &request);
+            auto const read = cursor.require_page(false, 3, &request);
             verdict(tally,
                     read.is_err() && read.unwrap_err() == Status::ShouldWait &&
                         is(provider.take(), 0, P),
@@ -386,25 +387,26 @@ namespace {
         }
         {
             mm::VmPageSpliceList pages(1);
-            auto *const frame = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero);
+            auto *const frame =
+                mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero).value_or(nullptr);
             auto held = frame != nullptr && pages.reserve(1) == Status::Ok &&
                         pages.append_page(0, frame) == Status::Ok;
             if (!held && frame != nullptr) {
                 mm::free_frames(frame, 0);
             }
             auto const supplied = held && node->supply_pages_locked(P, P, &pages) == Status::Ok;
-            auto cursor = node->make_cursor(P, P);
+            auto cursor = node->lookup_cursor_locked(P, P);
             mm::MultiPageRequest request;
-            auto const read = cursor->require_page(false, 1, &request);
+            auto const read = cursor.require_page(false, 1, &request);
             verdict(tally,
                     supplied && read && read->page == mm::get_zero_page() &&
                         node->nr_pages_locked() == 0,
                     "a page supplied over it is thrown away, and it still reads as zero");
         }
         {
-            auto cursor = node->make_cursor(P, P);
+            auto cursor = node->lookup_cursor_locked(P, P);
             mm::MultiPageRequest request;
-            auto const written = cursor->require_page(true, 1, &request);
+            auto const written = cursor.require_page(true, 1, &request);
             verdict(tally,
                     written && written->writable && written->page != mm::get_zero_page() &&
                         is_zero(written->page) && node->nr_pages_locked() == 1 &&
@@ -427,7 +429,7 @@ namespace {
             return status;
         }
         for (u64 at = offset; at < offset + len; at += PAGE_SIZE) {
-            auto *const frame = mm::alloc_frames(mm::GAF_KERNEL);
+            auto *const frame = mm::alloc_frames(mm::ALLOC_KERNEL).value_or(nullptr);
             if (!frame) {
                 return Status::OutOfMem;
             }
@@ -461,13 +463,16 @@ namespace {
             VmoReadUser,
             /// vmo->commit_range() of [|offset|, |offset| + |len|).
             VmoCommit,
+
+            /// vmo->pin_range() of [|offset|, |offset| + |len|).
+            VmoPin,
         };
 
         Kind kind = Kind::Load;
         VirtAddr va{};
         mm::VmObjectPaged *vmo = nullptr;
         u64 offset = 0;
-        /// How much a VmoCommit commits.
+        /// Length of the commit or pin request.
         u64 len = 0;
         /// Written, or read back.
         u64 value = 0;
@@ -500,6 +505,9 @@ namespace {
             case Access::Kind::VmoCommit:
                 access.status = access.vmo->commit_range(access.offset, access.len,
                                                          mm::VmObject::CommitOptions::None);
+                break;
+            case Access::Kind::VmoPin:
+                access.status = access.vmo->pin_range(access.offset, access.len);
                 break;
         }
         return 0;
@@ -583,7 +591,7 @@ namespace {
         auto buffer = aspace.root_vma()->map_anon(VirtAddr::Anywhere, P,
                                                   mm::MmuFlags::Readable | mm::MmuFlags::Writable |
                                                       mm::MmuFlags::User,
-                                                  mm::VmMapOption::None, "pagesource.test buffer");
+                                                  mm::MapOptions::Lazy, "pagesource.test buffer");
         if (buffer.is_err()) {
             log::error("pagesource.test: could not map the buffer: {}",
                        to_string(buffer.unwrap_err()));
@@ -641,7 +649,7 @@ namespace {
         // Pages 0 to 3 are mapped and faulted on; 4 to 6 are reached through
         // the VMO's own copies only.
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 9 * P,
+        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 9 * P,
                                                                mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
             log::error("pagesource.test: could not make the VMO: {}", to_string(status));
@@ -651,9 +659,9 @@ namespace {
 
         auto root = aspace.root_vma();
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, flags,
-                                          mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
-                                          mm::VmMapOption::None, "pagesource.test");
+        auto mapping =
+            root->map_vmo(VirtAddr::Anywhere, 4 * P, 0, flags, mm::VmaFlags::PermMask,
+                          ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Lazy, "pagesource.test");
         if (mapping.is_err()) {
             log::error("pagesource.test: could not map the VMO: {}",
                        to_string(mapping.unwrap_err()));
@@ -766,7 +774,7 @@ namespace {
         auto &provider = *rig.provider;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 2 * P,
+        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 3 * P,
                                                                mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
             log::error("pagesource.test: could not make the VMO to populate: {}",
@@ -777,19 +785,38 @@ namespace {
         verdict(tally, supply(*vmo, P, P) == Status::Ok,
                 "page 1 of an object with a source is supplied, page 0 is not");
 
-        auto const sent_before = provider.nr_sent();
         auto root = aspace.root_vma();
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_with_vmo(VirtAddr::Anywhere, 2 * P, 0, flags,
-                                          mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
-                                          mm::VmMapOption::Populate, "pagesource.test populate");
+        auto const where = root->base() + 16_mb;
+        auto const commit = root->map_vmo(where, 2 * P, 0, flags, mm::VmaFlags::PermMask, vmo,
+                                          mm::MapOptions::Commit, "pager commit");
+        ustl::Arc<mm::VmMapping> leftover;
+        verdict(tally,
+                commit.is_err() && commit.unwrap_err() == Status::ShouldWait &&
+                    aspace.find_mapping(where, &leftover) == Status::NotFound &&
+                    source.nr_raised() == 0 && provider.nr_queued() == 0,
+                "a failed immediate commit releases the address and withdraws its request");
+
+        auto const partial = root->map_vmo(where, 2 * P, P, flags, mm::VmaFlags::PermMask, vmo,
+                                           mm::MapOptions::Commit, "partial commit");
+        PhysAddr pa{};
+        mm::MmuFlags mmuf{};
+        verdict(tally,
+                partial.is_err() && partial.unwrap_err() == Status::ShouldWait &&
+                    aspace.find_mapping(where, &leftover) == Status::NotFound &&
+                    aspace.arch_aspace().query(where, &pa, &mmuf) == Status::NotFound &&
+                    source.nr_raised() == 0 && provider.nr_queued() == 0,
+                "a pager hole after a resident page leaves no mapping or outstanding request");
+
+        auto const sent_before = provider.nr_sent();
+        auto mapping = root->map_vmo(where, 2 * P, 0, flags, mm::VmaFlags::PermMask,
+                                     ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Resident,
+                                     "pagesource.test populate");
         verdict(tally, mapping.is_ok(), "a populate mapping of it is made");
         if (mapping.is_err()) {
             return;
         }
         auto const base = mapping.unwrap()->base();
-        PhysAddr pa{};
-        mm::MmuFlags mmuf{};
         auto const supplied_mapped = aspace.arch_aspace().query(base + P, &pa, &mmuf) == Status::Ok;
         auto const missing_mapped = aspace.arch_aspace().query(base, &pa, &mmuf) == Status::Ok;
         verdict(tally,
@@ -809,6 +836,27 @@ namespace {
             verdict(tally, done && reader.status == Status::Ok && reader.value == pattern(0),
                     "the read resumes and reads the supplied bytes");
         }
+
+        // The pin reaches page 1 before waiting for the missing page 2.
+        provider.set_wait_limit(Milliseconds(50));
+        auto const pin_status = vmo->pin_range(P, 2 * P);
+        provider.set_wait_limit(LOST_AFTER);
+        verdict(tally,
+                pin_status == Status::TimeOut && vmo->unpin_range(P, P) == Status::BadState &&
+                    vmo->committed_pages(P, P) == 1 && source.nr_raised() == 0,
+                "a pin that times out rolls back the prefix without discarding its pages");
+        Access pin{
+            .kind = Access::Kind::VmoPin, .vmo = vmo.as_ptr_mut(), .offset = P, .len = 2 * P};
+        auto *const thread = start(&aspace, &pin);
+        auto const waiting = poll_until([&] { return source.nr_raised() == 1; });
+        verdict(tally, waiting && is(provider.take(), 2 * P, P),
+                "a retry waits for only the unsupplied page");
+        verdict(tally, supply(*vmo, 2 * P, P) == Status::Ok, "the missing pin page is supplied");
+        auto const done = thread != nullptr && finish(thread, source);
+        verdict(tally,
+                done && pin.status == Status::Ok && vmo->unpin_range(P, 2 * P) == Status::Ok &&
+                    vmo->unpin_range(P, 2 * P) == Status::BadState,
+                "the resumed pin holds each page exactly once");
 
         auto _ = root->unmap(base, 2 * P);
     }
@@ -845,14 +893,14 @@ namespace {
         // unmap.
         ustl::Arc<mm::VmObjectPaged> aux;
         u64 const words[2] = {AUX_WORD | 0, AUX_WORD | 3};
-        auto const aux_made = mm::VmObjectPaged::create(mm::GAF_USER, 4 * P, mm::VmoFlags::Lazy,
+        auto const aux_made = mm::VmObjectPaged::create(mm::ALLOC_USER, 4 * P, mm::VmoFlags::Lazy,
                                                         &aux) == Status::Ok &&
                               aux->write(&words[0], 0, sizeof(u64)) == Status::Ok &&
                               aux->write(&words[1], 3 * P, sizeof(u64)) == Status::Ok &&
                               mark_zero(*aux, 1);
-        auto aux_map = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
-                                          ustl::Arc<mm::VmObject>(aux), mm::VmMapOption::Populate,
-                                          "pagesource.test aux");
+        auto aux_map = root->map_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
+                                     ustl::Arc<mm::VmObject>(aux), mm::MapOptions::Resident,
+                                     "pagesource.test aux");
         PhysAddr frame0{};
         auto const aux_ready =
             aux_made && aux_map.is_ok() && present_at(aux_map.unwrap()->base(), &frame0);
@@ -861,13 +909,24 @@ namespace {
 
         // The object with a source: page 3 supplied already, page 2 waited on.
         ustl::Arc<mm::VmObjectPaged> dst;
-        auto const dst_made =
-            mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 4 * P, mm::VmoFlags::Lazy,
-                                           &dst) == Status::Ok &&
-            supply(*dst, 3 * P, P) == Status::Ok;
-        auto dst_map = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
-                                          ustl::Arc<mm::VmObject>(dst), mm::VmMapOption::None,
-                                          "pagesource.test dst");
+        auto dst_made = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 4 * P,
+                                                       mm::VmoFlags::Lazy, &dst) == Status::Ok;
+        if (dst_made) {
+#if MM_TEST_ALLOC_FAILURE
+            bool failed = false;
+            {
+                mm::test::AllocationFailure failure(mm::test::AllocationSite::Collection);
+                auto const status = supply(*dst, 3 * P, P);
+                failed = status == Status::OutOfMem && failure.triggered();
+            }
+            verdict(tally, failed && dst->committed_pages(3 * P, P) == 0,
+                    "a failed supply leaves the target slot empty");
+#endif
+            dst_made = supply(*dst, 3 * P, P) == Status::Ok;
+        }
+        auto dst_map = root->map_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
+                                     ustl::Arc<mm::VmObject>(dst), mm::MapOptions::Lazy,
+                                     "pagesource.test dst");
         if (!aux_ready || !dst_made || dst_map.is_err()) {
             verdict(tally, false, "an object with a source, page 3 supplied, is mapped");
             return;
@@ -912,7 +971,7 @@ namespace {
                 "3 keeps what was supplied first, and the provider is asked nothing");
         PhysAddr frame0_now{};
         verdict(tally,
-                aspace.soft_fault(dst_base, mm::VmfCause::Absent) == Status::Ok &&
+                aspace.soft_fault(dst_base, mm::VmFault::Cause::Absent) == Status::Ok &&
                     present_at(dst_base, &frame0_now) && frame0_now == frame0,
                 "page 0 is the very frame the anonymous object had: moved, not copied");
 
@@ -929,7 +988,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> pinned;
         mm::VmPageSpliceList from_pinned(1);
         verdict(tally,
-                mm::VmObjectPaged::create(mm::GAF_USER, P, mm::VmoFlags::Pinned, &pinned) ==
+                mm::VmObjectPaged::create(mm::ALLOC_USER, P, mm::VmoFlags::Pinned, &pinned) ==
                         Status::Ok &&
                     pinned->take_pages(0, P, &from_pinned) == Status::BadState,
                 "and a pinned object is BadState");
@@ -949,7 +1008,7 @@ namespace {
         auto &provider = *rig.provider;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::GAF_USER, 3 * P,
+        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 3 * P,
                                                                mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
             log::error("pagesource.test: could not make the VMO to detach: {}", to_string(status));
@@ -960,7 +1019,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> plain;
         auto const owners =
             vmo->create_slice(P, P, &slice) == Status::Ok &&
-            mm::VmObjectPaged::create(mm::GAF_USER, P, mm::VmoFlags::Lazy, &plain) == Status::Ok;
+            mm::VmObjectPaged::create(mm::ALLOC_USER, P, mm::VmoFlags::Lazy, &plain) == Status::Ok;
         auto const vmo_owner = vmo->source_owner_id();
         ustl::Option<u64> slice_owner;
         if (owners) {
@@ -976,9 +1035,9 @@ namespace {
         verdict(tally, supply(*vmo, 0, P) == Status::Ok, "page 0 is supplied, pages 1 and 2 not");
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_with_vmo(VirtAddr::Anywhere, 3 * P, 0, rw, mm::VmaFlags::PermMask,
-                                          ustl::Arc<mm::VmObject>(vmo), mm::VmMapOption::None,
-                                          "pagesource.test detach");
+        auto mapping = root->map_vmo(VirtAddr::Anywhere, 3 * P, 0, rw, mm::VmaFlags::PermMask,
+                                     ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Lazy,
+                                     "pagesource.test detach");
         if (mapping.is_err()) {
             verdict(tally, false, "the VMO to detach is mapped");
             return;
@@ -1014,10 +1073,46 @@ namespace {
         auto _ = root->unmap(base, 3 * P);
     }
 
+#if MM_TEST_ALLOC_FAILURE
+    auto check_creation_failures(Tally &tally) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        struct Case {
+            AllocationSite site;
+            usize skip;
+        };
+        constexpr Case CASES[] = {
+            {AllocationSite::Heap, 0},
+            {AllocationSite::Object, 0},
+            {AllocationSite::Object, 1},
+        };
+        for (auto const &test: CASES) {
+            Rig rig;
+            if (make_rig(&rig) != Status::Ok) {
+                verdict(tally, false, "a source for failed VMO creation is made");
+                return;
+            }
+            ustl::Arc<mm::VmObjectPaged> vmo;
+            bool failed;
+            {
+                AllocationFailure failure(test.site, test.skip);
+                auto const status = mm::VmObjectPaged::with_source(
+                    rig.source, mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &vmo);
+                failed = status == Status::OutOfMem && failure.triggered();
+            }
+            verdict(tally, failed && !vmo && rig.provider->closed(),
+                    "a failed pager VMO creation closes the source and publishes no VMO");
+        }
+    }
+#endif
+
     auto pagesource_test_command(int, char **) -> int {
         Tally tally;
         check_source(tally);
         check_zero_markers(tally);
+#if MM_TEST_ALLOC_FAILURE
+        check_creation_failures(tally);
+#endif
 
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,

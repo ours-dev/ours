@@ -206,11 +206,11 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// Whether an unmap may destroy the sub-regions its range covers whole;
     /// mm's word for it, under the name the system calls use, so that they
     /// can say it without reaching into mm.
-    using OpChildren = mm::VmAreaOpChildren;
+    using UnmapScope = mm::VmArea::UnmapScope;
 
     /// The OpChildren right of the handle a call came through, as unmap()
     /// takes it.
-    static auto op_children_from_rights(Rights rights) -> OpChildren;
+    static auto unmap_scope_from_rights(Rights rights) -> UnmapScope;
 
     /// Tears down whatever is mapped in [base, base + length) of this region,
     /// |length| rounded up to a page, or nothing at all:
@@ -218,7 +218,7 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///     round it down and unmap a page the caller did not name), when
     ///     |length| rounds up to 0, when the range is not inside this region,
     ///     when it only partly covers a sub-region, and when it covers one
-    ///     whole and |op_children| is No;
+    ///     whole and |scope| is Mapping;
     ///   - AccessDenied when a sealed mapping overlaps the range, here or in
     ///     any sub-region below, the vDSO's code among them;
     ///   - BadState once the region has been destroyed, with its address space
@@ -230,7 +230,7 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// vma_map do not come here to take back what they made when they cannot
     /// report it: a range names whatever is in it by then, and those calls
     /// name the object instead (undo_allocate(), undo_map()).
-    auto unmap(VirtAddr base, usize length, OpChildren op_children) -> Status;
+    auto unmap(VirtAddr base, usize length, UnmapScope scope) -> Status;
 
     FORCE_INLINE
     auto vma() const -> ustl::Arc<mm::VmArea> const & {

@@ -29,12 +29,13 @@
 // VMO paths.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/boot/options.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -88,13 +89,10 @@ namespace {
     auto filed_at(mm::VmObjectPaged &vmo, u64 const offset) -> Filed {
         auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
         Guard guard{node->lock()};
-        auto cursor = node->make_cursor(offset, P);
-        if (!cursor) {
-            return {};
-        }
+        auto cursor = node->lookup_cursor_locked(offset, P);
         // Looking is not using: the checks read a page's age after this.
-        cursor->disable_mark_accessed();
-        auto const found = cursor->maybe_page();
+        cursor.disable_mark_accessed();
+        auto const found = cursor.maybe_page();
         if (found.is_none()) {
             return {};
         }
@@ -123,7 +121,7 @@ namespace {
 
     auto check_anonymous(Tally &tally) -> void {
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (mm::VmObjectPaged::create(mm::GAF_USER_VMO, 4 * P, mm::VmoFlags::Lazy, &vmo) !=
+        if (mm::VmObjectPaged::create(mm::ALLOC_USER_VMO, 4 * P, mm::VmoFlags::Lazy, &vmo) !=
             Status::Ok) {
             verdict(tally, false, "an anonymous VMO is made");
             return;
@@ -162,7 +160,7 @@ namespace {
 
     auto check_pinned(Tally &tally) -> void {
         ustl::Arc<mm::VmObjectPaged> vmo;
-        auto const made = mm::VmObjectPaged::create(mm::GAF_KERNEL, 2 * P, mm::VmoFlags::Pinned,
+        auto const made = mm::VmObjectPaged::create(mm::ALLOC_KERNEL, 2 * P, mm::VmoFlags::Pinned,
                                                     &vmo) == Status::Ok;
         auto page = Filed{};
         if (made) {
@@ -189,7 +187,7 @@ namespace {
     /// A VMO of two pages whose content comes from a page source nobody asks,
     /// both supplied; empty if any of that failed.
     auto supplied_vmo() -> ustl::Arc<mm::VmObjectPaged> {
-        auto *const provider = new (mm::GAF_KERNEL) SilentProvider();
+        auto *const provider = new (mm::ALLOC_KERNEL) SilentProvider();
         if (!provider) {
             return {};
         }
@@ -197,15 +195,16 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> vmo;
         if (mm::PageSource::create(ustl::Arc<mm::PageProvider>::adopt(provider), &source) !=
                 Status::Ok ||
-            mm::VmObjectPaged::with_source(source, mm::GAF_USER, 2 * P, mm::VmoFlags::Lazy, &vmo) !=
-                Status::Ok) {
+            mm::VmObjectPaged::with_source(source, mm::ALLOC_USER, 2 * P, mm::VmoFlags::Lazy,
+                                           &vmo) != Status::Ok) {
             return {};
         }
 
         mm::VmPageSpliceList pages(2);
         auto supplied = pages.reserve(2) == Status::Ok;
         for (usize i = 0; supplied && i < 2; ++i) {
-            auto *const frame = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero);
+            auto *const frame =
+                mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero).value_or(nullptr);
             supplied = frame && pages.append_page(i, frame) == Status::Ok;
         }
         if (!supplied || vmo->supply_pages(0, 2 * P, &pages, mm::VmObject::SupplyOption::Default) !=
@@ -236,6 +235,21 @@ namespace {
         auto _ = task::Thread::Current::sleep_for(period + Seconds(1), task::Interruptible::No);
         verdict(tally, queues.rotations() != before, "the aging thread rotates within a period");
     }
+
+#if MM_TEST_ALLOC_FAILURE
+    auto check_aging_start_failure(Tally &tally) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        mm::PageQueues queues;
+        for (auto const site: {AllocationSite::Object, AllocationSite::Heap}) {
+            AllocationFailure failure(site);
+            auto const status = queues.start_runners(Seconds(1));
+            ASSERT(status != Status::Ok, "a test queue must not leave a live aging thread");
+            verdict(tally, status == Status::OutOfMem && failure.triggered(),
+                    "starting an aging thread can be retried after allocation failure");
+        }
+    }
+#endif
 
     auto check_aging(Tally &tally) -> void {
         // Every node rotated first, before the pages are supplied: that puts
@@ -305,9 +319,9 @@ namespace {
         }
         auto *const previous = attach(aspace.as_ptr_mut());
         auto root = aspace->root_vma();
-        auto mapping = root->map_with_vmo(
-            VirtAddr::Anywhere, 2 * P, 0, mm::MmuFlags::Readable | mm::MmuFlags::User,
-            mm::VmaFlags::PermMask, vmo, mm::VmMapOption::Populate, "pagequeues.test");
+        auto mapping =
+            root->map_vmo(VirtAddr::Anywhere, 2 * P, 0, mm::MmuFlags::Readable | mm::MmuFlags::User,
+                          mm::VmaFlags::PermMask, vmo, mm::MapOptions::Resident, "pagequeues.test");
         auto const first = filed_at(*vmo, 0);
         auto const second = filed_at(*vmo, P);
         if (mapping.is_err() || !first.page || !second.page) {
@@ -343,6 +357,9 @@ namespace {
         check_pinned(tally);
         check_reclaimable(tally);
         check_aging_thread(tally);
+#if MM_TEST_ALLOC_FAILURE
+        check_aging_start_failure(tally);
+#endif
         check_aging(tally);
         check_harvest(tally);
         auto const after = counts();

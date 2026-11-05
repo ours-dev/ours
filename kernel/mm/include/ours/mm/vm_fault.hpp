@@ -9,33 +9,6 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::mm {
-enum class VmfCause {
-    None,
-    Write = 0_bit,
-    Absent = 1_bit,
-    User = 2_bit,
-
-    /// The fault was raised by the kernel (VmAspace::soft_fault()), not by the
-    /// hardware: a copy that captured a fault resolves it out of line.
-    ///
-    /// For page aging: the access of a hardware fault is retried through the
-    /// page-table entry, whose accessed bit records it, so the lookup that
-    /// resolves a fault without this cause skips the software mark that every
-    /// other lookup makes (VmCowPages::Cursor::disable_mark_accessed()).
-    Software = 3_bit,
-
-    /// The access was an instruction fetch.
-    ///
-    /// Without it an instruction fetch looks like a read to the mapping, and a
-    /// read is allowed on a page that is present but not executable. The
-    /// mapping then answered a fetch from such a page (a user stack, which is
-    /// NX) as a spurious fault, the CPU retried the same fetch, and it faulted
-    /// again for ever instead of killing the process. VmMapping::page_fault()
-    /// refuses this cause on a region without MmuFlags::Executable.
-    Instruction = 4_bit,
-};
-USTL_ENABLE_ENUM_BITMASK(VmfCause);
-
 /// One page fault, as it travels from the architecture's fault entry down to
 /// the mapping that has to resolve it.
 ///
@@ -43,6 +16,40 @@ USTL_ENABLE_ENUM_BITMASK(VmfCause);
 /// and handed down by pointer. VmMapping::page_fault() used to be given a literal
 /// `0` in its place.
 struct VmFault {
+    enum class Cause {
+        /// No fault attributes.
+        None,
+
+        /// The access writes to the page.
+        Write = 0_bit,
+
+        /// The translation was absent when the access faulted.
+        Absent = 1_bit,
+
+        /// The access originated in user mode.
+        User = 2_bit,
+
+        /// The fault was raised by the kernel (VmAspace::soft_fault()), not by the
+        /// hardware: a copy that captured a fault resolves it out of line.
+        ///
+        /// For page aging: the access of a hardware fault is retried through the
+        /// page-table entry, whose accessed bit records it, so the lookup that
+        /// resolves a fault without this cause skips the software mark that every
+        /// other lookup makes (VmCowPages::Cursor::disable_mark_accessed()).
+        Software = 3_bit,
+
+        /// The access was an instruction fetch.
+        ///
+        /// Without it an instruction fetch looks like a read to the mapping, and a
+        /// read is allowed on a page that is present but not executable. The
+        /// mapping then answered a fetch from such a page (a user stack, which is
+        /// NX) as a spurious fault, the CPU retried the same fetch, and it faulted
+        /// again for ever instead of killing the process. VmMapping::page_fault()
+        /// refuses this cause on a region without MmuFlags::Executable.
+        Instruction = 4_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Cause);
+
     /// The faulting address exactly as the hardware reported it, not page
     /// aligned -- x86 takes it straight out of CR2. VmMapping::page_fault() aligns
     /// it down itself, so the unaligned value stays available to anything that
@@ -54,7 +61,7 @@ struct VmFault {
     /// mapping ahead needs the VmCowPages cursor to hand back runs first.
     usize num_pages;
 
-    VmfCause cause;
+    Cause cause;
 
     /// The waiting token, held by value so that it lives on the faulting
     /// thread's stack for as long as the retry loop around it runs.

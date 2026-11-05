@@ -23,7 +23,7 @@ class Cpu {
     static auto id() -> CpuNum;
 
     /// For the node a CPU belongs to, use mm::current_node() or
-    /// mm::NodePlacement::node_of(). `Cpu::nid()`
+    /// mm::CpuNodeMap::node_of(). `Cpu::nid()`
     /// used to duplicate it from a function-local `CPU_LOCAL static` that could
     /// never be written, so it always answered 0; it had no callers.
 

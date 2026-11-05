@@ -37,7 +37,7 @@ auto arch_copy_to_user(VirtAddr dst, void const *src, usize size) -> Status;
 /// exactly what Thread::Current::soft_fault() takes.
 struct UserCopyFault {
     VirtAddr va;
-    mm::VmfCause cause;
+    mm::VmFault::Cause cause;
 };
 
 /// What a capturing copy returns. |fault| is set exactly when the copy stopped

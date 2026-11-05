@@ -3,11 +3,12 @@
 #ifndef OURS_MM_OBJECT_CACHE_HPP
 #define OURS_MM_OBJECT_CACHE_HPP 1
 
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <ours/mm/gaf.hpp>
 #include <ours/mm/pm_frame.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/sync/mutex.hpp>
 
 #include <array>
@@ -53,7 +54,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     static auto create_boot(Self &self, char const *name, usize size, usize align, Option)
         -> Status;
 
-    auto allocate(Gaf gaf, NodeId nid = MAX_NODES) -> void *;
+    auto allocate(Gaf alloc_flags, NodeId nid = MAX_NODES) -> void *;
 
     auto free(void *) -> void;
 
@@ -81,7 +82,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
 
     auto compute_layout(usize size) -> Status;
 
-    auto allocate(Gaf gaf, NodeId nid, CpuCache *cc) -> void *;
+    auto allocate(Gaf alloc_flags, NodeId nid, CpuCache *cc) -> void *;
 
     gktl::Canary m_canary;
     char const *m_name;
@@ -104,7 +105,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     u16 m_min_num_objects;
     u16 m_min_order;
 
-    Gaf m_gaf;
+    Gaf m_alloc_flags;
 
     CpuLocal::PerCpu<CpuCache> m_cpu_caches;
     std::array<NodeCache *, MAX_NODES> m_node_caches;
@@ -209,9 +210,14 @@ class ObjectCache::Instance {
     /// Hands back uninitialized storage for one T, for the two-phase callers
     /// that construct it themselves later (Thread::spawn_etc placement-news
     /// into what Thread::spawn allocated here). Prefer get() otherwise.
-    static auto allocate(Gaf gaf, NodeId nid = MAX_NODES) -> T * {
+    static auto allocate(Gaf alloc_flags, NodeId nid = MAX_NODES) -> T * {
         DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
-        return static_cast<T *>(CACHE->allocate(gaf, nid));
+#if MM_TEST_ALLOC_FAILURE
+        if (test::AllocationFailure::hit(test::AllocationSite::Object)) {
+            return nullptr;
+        }
+#endif
+        return static_cast<T *>(CACHE->allocate(alloc_flags, nid));
     }
 
     /// Releases storage from allocate() without running the destructor.
@@ -222,10 +228,8 @@ class ObjectCache::Instance {
     }
 
     template <typename... Args>
-    static auto get(Gaf gaf, Args &&...args) -> T * {
-        DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
-
-        auto *const storage = CACHE->allocate(gaf, MAX_NODES);
+    static auto get(Gaf alloc_flags, Args &&...args) -> T * {
+        auto *const storage = allocate(alloc_flags);
         if (!storage) {
             return nullptr;
         }
@@ -233,10 +237,8 @@ class ObjectCache::Instance {
     }
 
     template <typename... Args>
-    static auto get(Gaf gaf, NodeId nid, Args &&...args) -> T * {
-        DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
-
-        auto *const storage = CACHE->allocate(gaf, nid);
+    static auto get(Gaf alloc_flags, NodeId nid, Args &&...args) -> T * {
+        auto *const storage = allocate(alloc_flags, nid);
         if (!storage) {
             return nullptr;
         }

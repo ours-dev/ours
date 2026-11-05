@@ -2,7 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/port_dispatcher.hpp>
 
@@ -252,7 +252,7 @@ auto HandleTable::attach_port_observer(ours::Uandle const value, ours::Uandle co
     auto &object = handle->dispatcher();
     auto &port_ref = *port.as_ptr_mut();
     auto *const observer =
-        new (mm::GAF_KERNEL) PortObserver(ustl::move(port), object.as_ptr_mut(), key, signals);
+        new (mm::ALLOC_KERNEL) PortObserver(ustl::move(port), object.as_ptr_mut(), key, signals);
     if (observer == nullptr) {
         return Status::NoMemory;
     }

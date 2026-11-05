@@ -34,7 +34,7 @@
 #include <ours/arch/x86/io_bitmap.hpp>
 #include <ours/arch/x86/percpu.hpp>
 #include <ours/cpu.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
@@ -360,7 +360,7 @@ namespace {
             return true;
         }
 
-        auto *const c = new (mm::GAF_KERNEL) ReloadCase{};
+        auto *const c = new (mm::ALLOC_KERNEL) ReloadCase{};
         if (c == nullptr) {
             verdict(tally, false, "allocate the reload case");
             return true;
