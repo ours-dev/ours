@@ -42,6 +42,16 @@ Later steps are written when each one is introduced to the user, not before.
    - Verification, as done: unit tests 17/17; `ktest all` (`3 ran, 2 passed, 1 skipped`, exit 0), `ktest Ktest.Assertions*` (`ran=1`, exit 0), `ktest NoSuch.*` (`FAIL, SUMMARY says no test ran`, exit 1), `ktest list` (ok), `samplerclaim.test` unchanged; `boot_check.py` passes both images and 173 host tests.
    - Landed as one commit, `df23558b`, `feat(ktest): the host verdict parses the kernel test runner's SUMMARY`.
 
+4. The three-test pilot, and coverage follows the registry. Landed in `9534e49b`. The first tests that are not the interface's own moved from the console-command form.
+   - `kernel/tests/{sampler_claim,semaphore,vma_wx}_test.cpp` -- moved from `kernel/commands/` and converted. `samplerclaim.test` becomes one `KTEST(SamplerClaim, HoldsClaimUntilMemoryIsGone)`, whose "another session holds the claim" path is `KTEST_SKIP`; `semaphore.test` becomes five `Semaphore.*` tests, one per aspect, with the worker threads still only publishing counters for the test thread; `vmawx.test` becomes `KTEST(VmaWx, MapRefusesWriteAndExecute)`. Every check survived, and fatal setup paths became named `ASSERT_*`.
+   - `kernel/commands/BUILD.gn` drops the three files; `kernel/tests/BUILD.gn` gains their `kernel_test()` targets and the header dependencies they reach.
+   - `kernel/commands/{user_copy_test,mutex_stress}.cpp`: the comments that said the tree has no in-kernel test runtime now say the test has not migrated.
+   - `scripts/cov_kernel.py` asks the booted kernel for its tests (`ktest list`) and runs them one at a time beside the remaining `*.test` commands; its kernel ELF is `vmours.with-tests` now; `scripts/test_cov_kernel.py` covers the list parser.
+   - The conversion surfaced an ODR bug: `ktest::internal::finish()` in `format.hpp` was not `inline`, which only a link of three translation units including it could show. It is inline now.
+   - Why now: this is the design's v1 end -- the interface is measured against real subsystem tests, and the coverage consumer no longer loses a test when it migrates.
+   - Verification, as done: `ktest list` lists ten tests; `ktest all` reports `SUMMARY ran=10 passed=9 failed=0 skipped=1` and exits 0; `ktest SamplerClaim.*`, `ktest VmaWx.*` and `ktest Semaphore.*` all pass; the old command names fail as unknown commands (the expected cost of the rename); `boot_check.py` passes both images and 173 host tests; `scripts/test_cov_kernel.py` 19/19; coverage run numbers are in the change record; tidy, format, GN layout and docs lint clean, `gn check` OK on the migrated targets.
+   - Landed as one commit, `feat(ktest): migrate the three pilot tests and teach coverage to find tests`.
+
 ## Files
 
 - `kernel/lib/ktest/{BUILD.gn,README.md,.clang-format,.gitignore}`, `kernel/lib/ktest/include/ktest/{ktest,assertions,run_state,format,filter,summary}.hpp`, `kernel/lib/ktest/src/runner.cpp`, `kernel/lib/ktest/test/{BUILD.gn,filter_test.cpp,format_test.cpp,summary_test.cpp}`: new (step 1).
@@ -59,6 +69,13 @@ Later steps are written when each one is introduced to the user, not before.
 - `scripts/kshell_run.py`, `scripts/test_kshell_run.py`: the `ktest` verdict and its unit tests (step 3).
 - `.agents/skills/verify/SKILL.md`: the kernel-tests section names the `ktest` command (step 3).
 
+- `kernel/tests/{sampler_claim,semaphore,vma_wx}_test.cpp`: moved and converted from `kernel/commands/` (step 4).
+- `kernel/commands/BUILD.gn`, `kernel/tests/BUILD.gn`: the three commands leave, the three test targets arrive (step 4).
+- `kernel/commands/{user_copy_test,mutex_stress}.cpp`: the stale "no runtime" comments (step 4).
+- `kernel/lib/ktest/include/ktest/format.hpp`: `finish()` is `inline` (step 4).
+- `scripts/cov_kernel.py`, `scripts/test_cov_kernel.py`: the booted `ktest list` discovery and the `vmours.with-tests` ELF (step 4).
+- `docs/repairs/261105/kernel-test-framework.md`: the remaining 43 commands (step 4).
+
 ## Test plan
 
 - Host gtest: the filter grammar (`*`, `?`, `:`, `-`, an empty positive half, no match, match all), the failure-message formatting (a printable value, a value with no `std::formatter`, user format arguments, truncation and the nul terminator), and the counting the SUMMARY line reports. Done in step 1: 9 cases, all passing.
@@ -68,3 +85,5 @@ Later steps are written when each one is introduced to the user, not before.
 - Booted run: `ktest list`, `ktest all`, a filter and a no-match error on the dbg image, with the expected `RUN`/`OK`/`SKIP`/`ERROR`/`SUMMARY` lines and exit status. Done in step 2.
 - ELF of the images: the dbg kernel bounds three 24-byte records in `.data.rel.ro`; the rel kernel carries none. Done in step 2.
 - Host verdict (step 3): the 17 unit tests, plus the four booted cases (`ktest all`, a filter, a no-match and `ktest list`) and an unchanged `*.test` command. Done in step 3.
+- Pilot migration (step 4): `ktest list` lists ten tests; `ktest all` reports `ran=10 passed=9 skipped=1`; each `ktest <Suite>.*` passes; the old command names fail. Done in step 4.
+- Coverage (step 4): `python3 scripts/cov_kernel.py` runs the ten interface tests and the remaining commands, and reports the migrated files' lines. Numbers in the change record.
