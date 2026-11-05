@@ -38,40 +38,16 @@
 #include <ours/mm/vm_object_paged.hpp>
 
 #include <ktest/ktest.hpp>
+#include <logz4/log.hpp>
 
 namespace ours {
 namespace {
 
-    /// The checks that need only the layout constants: an address space cannot
-    /// start at a reserved value, and its range cannot cover one.
-    auto check_reserved_layouts() -> void {
-        ustl::Arc<mm::VmAspace> invalid;
-        auto const create = [&invalid](VirtAddr const base, usize const size) {
-            return mm::VmAspace::create(base, size, mm::VmasKind::User, mm::VmasFlags::None,
-                                        "vmaddress.test invalid", &invalid);
-        };
-        EXPECT_TRUE(create(VirtAddr::Anywhere, PAGE_SIZE) == Status::InvArgs && !invalid,
-                    "an address-space base cannot be Anywhere");
-        EXPECT_TRUE(create(VirtAddr::Invalid, PAGE_SIZE) == Status::InvArgs && !invalid,
-                    "an address-space base cannot be Invalid");
-        auto const last_page = VirtAddr{~0_usize - (PAGE_SIZE - 1)};
-        EXPECT_TRUE(create(last_page, PAGE_SIZE) == Status::InvArgs && !invalid,
-                    "a range intersecting the reserved values is refused without wrapping");
-        EXPECT_TRUE(create(VirtAddr{}, ~0_usize) == Status::InvArgs && !invalid,
-                    "a huge range cannot cover the reserved values");
-        static_assert(KERNEL_ASPACE_BASE + KERNEL_ASPACE_SIZE <=
-                      VirtAddr{~0_usize - (PAGE_SIZE - 1)});
-    }
-
-    /// The placement rules, checked in an address space of its own: where a
-    /// request lands, what a fixed one is refused with, and what the reserved
-    /// values are refused with.
     auto check_placement(mm::VmAspace &aspace, ustl::Arc<mm::VmObject> const &vmo) -> void {
         auto root = aspace.root_vma();
         auto const map = [&vmo](mm::VmArea &area, VirtAddr const where) {
-            return area.map_with_vmo(where, PAGE_SIZE, 0, mm::MmuFlags::Readable,
-                                     mm::VmaFlags::PermMask, vmo, mm::VmMapOption::None,
-                                     "vmaddress.test");
+            return area.map_vmo(where, PAGE_SIZE, 0, mm::MmuFlags::Readable, mm::VmaFlags::PermMask,
+                                vmo, mm::MapOptions::Lazy, "vmaddress.test");
         };
         auto const zero = map(*root, VirtAddr{});
         EXPECT_TRUE(zero.is_ok() && (*zero)->base() == VirtAddr{},
@@ -86,10 +62,9 @@ namespace {
                     "a fixed overlapping request is refused");
 
         ustl::Arc<mm::VmArea> restricted;
-        EXPECT_OK(root->create_subvma(VirtAddr::Anywhere, PAGE_SIZE, mm::VmaFlags::PermMask,
-                                      "vmaddress.test restricted", mm::VmMapOption::None,
-                                      &restricted),
-                  "Anywhere also places a sub-area");
+        EXPECT_TRUE(root->create_subvma(VirtAddr::Anywhere, PAGE_SIZE, mm::VmaFlags::PermMask,
+                                        "vmaddress.test restricted", &restricted) == Status::Ok,
+                    "Anywhere also places a sub-area");
         if (restricted) {
             auto const fixed = map(*restricted, restricted->base());
             EXPECT_TRUE(fixed.is_err() && fixed.unwrap_err() == Status::AccessDenied,
@@ -109,8 +84,7 @@ namespace {
                         "an unknown reserved address cannot become an aligned mapping");
             ustl::Arc<mm::VmArea> area;
             EXPECT_TRUE(root->create_subvma(reserved, PAGE_SIZE, mm::VmaFlags::PermMask,
-                                            "vmaddress.test invalid", mm::VmMapOption::None,
-                                            &area) == Status::InvArgs &&
+                                            "vmaddress.test invalid", &area) == Status::InvArgs &&
                             !area,
                         "an unknown reserved address cannot place a sub-area");
         }
@@ -121,24 +95,102 @@ namespace {
                     "rejected requests preserve the original mapping at zero");
     }
 
+    auto check_range_rejections(mm::VmAspace &aspace, ustl::Arc<mm::VmObject> const &vmo) -> void {
+        constexpr auto READ = mm::MmuFlags::Readable;
+        constexpr auto WRITE = mm::MmuFlags::Writable;
+        constexpr auto LAZY = mm::MapOptions::Lazy;
+        constexpr auto INVALID_MODE = mm::MapOptions::Resident | mm::MapOptions::Commit;
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        auto root = aspace.root_vma();
+        auto const map = [&](usize const size) {
+            return root->map_vmo(VirtAddr::Anywhere, size, 0, READ, PERMS, vmo, LAZY,
+                                 "invalid window");
+        };
+        auto const empty = map(0);
+        auto const full = map(2 * PAGE_SIZE);
+        EXPECT_TRUE(empty.is_err() && empty.unwrap_err() == Status::InvArgs && full.is_err() &&
+                        full.unwrap_err() == Status::NotFound,
+                    "placement rejects an empty request and one that cannot fit");
+
+        auto const bad_anon = root->map_anon(VirtAddr::Anywhere, PAGE_SIZE, READ, INVALID_MODE,
+                                             "invalid anonymous mode");
+        auto const empty_anon =
+            root->map_anon(VirtAddr::Anywhere, 0, READ, LAZY, "empty anonymous");
+        auto const bad_phys = root->map_phys(PhysAddr{PAGE_SIZE}, VirtAddr::Anywhere, PAGE_SIZE,
+                                             READ, INVALID_MODE, "invalid physical mode");
+        auto const empty_phys = root->map_phys(PhysAddr{PAGE_SIZE}, VirtAddr::Anywhere, 0, READ,
+                                               LAZY, "empty physical");
+        EXPECT_TRUE(bad_anon.is_err() && bad_anon.unwrap_err() == Status::InvArgs &&
+                        empty_anon.is_err() && empty_anon.unwrap_err() == Status::InvArgs &&
+                        bad_phys.is_err() && bad_phys.unwrap_err() == Status::InvArgs &&
+                        empty_phys.is_err() && empty_phys.unwrap_err() == Status::InvArgs,
+                    "both mapping helpers reject empty ranges and conflicting modes");
+
+        auto const end = root->base() + root->size();
+        EXPECT_TRUE(root->reserve(end, PAGE_SIZE, READ, "outside") == Status::InvArgs &&
+                        root->reserve(root->base(), 0, READ, "empty") == Status::InvArgs,
+                    "reservation requires a nonempty range inside the area");
+
+        ustl::Arc<mm::VmArea> read_only;
+        auto const at = end - PAGE_SIZE;
+        auto const created =
+            root->create_subvma(at, PAGE_SIZE, mm::VmaFlags::Read, "read only", &read_only);
+        EXPECT_TRUE(created == Status::Ok && read_only && read_only->base() == at,
+                    "rejected operations leave the final page available");
+        if (!read_only) {
+            return;
+        }
+        ustl::Arc<mm::VmArea> wider;
+        auto const bad_mapping = read_only->map_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, WRITE, PERMS,
+                                                    vmo, LAZY, "invalid initial permissions");
+        EXPECT_TRUE(bad_mapping.is_err() && bad_mapping.unwrap_err() == Status::InvArgs &&
+                        read_only->create_subvma(VirtAddr::Anywhere, PAGE_SIZE, mm::VmaFlags::Write,
+                                                 "invalid child permissions",
+                                                 &wider) == Status::InvArgs,
+                    "mappings and child areas cannot exceed the area's permission ceiling");
+        EXPECT_TRUE(
+            read_only->reserve(at, PAGE_SIZE, WRITE, "denied permission") == Status::InvArgs &&
+                read_only->reserve(at, PAGE_SIZE, READ, "denied placement") == Status::AccessDenied,
+            "reservation observes both the permission and placement ceiling");
+    }
+
+    auto check_reserved_layouts() -> void {
+        ustl::Arc<mm::VmAspace> invalid;
+        auto const create = [&invalid](VirtAddr const base, usize const size) {
+            return mm::VmAspace::create(base, size, mm::VmasKind::User, mm::VmasFlags::None,
+                                        "vmaddress.test invalid", &invalid);
+        };
+        EXPECT_TRUE(create(VirtAddr::Anywhere, PAGE_SIZE) == Status::InvArgs && !invalid,
+                    "an address-space base cannot be Anywhere");
+        EXPECT_TRUE(create(VirtAddr::Invalid, PAGE_SIZE) == Status::InvArgs && !invalid,
+                    "an address-space base cannot be Invalid");
+        auto const last_page = VirtAddr{~0_usize - (PAGE_SIZE - 1)};
+        EXPECT_TRUE(create(last_page, PAGE_SIZE) == Status::InvArgs && !invalid,
+                    "a range intersecting the reserved values is refused without wrapping");
+        EXPECT_TRUE(create(VirtAddr{}, ~0_usize) == Status::InvArgs && !invalid,
+                    "a huge range cannot cover the reserved values");
+        static_assert(KERNEL_ASPACE_BASE + KERNEL_ASPACE_SIZE <=
+                      VirtAddr{~0_usize - (PAGE_SIZE - 1)});
+    }
+
     KTEST(VmAddress, PlacesRequestsAndRefusesReservedAddresses) {
         check_reserved_layouts();
 
         ustl::Arc<mm::VmAspace> aspace;
-        ASSERT_OK(mm::VmAspace::create(VirtAddr{}, 4 * PAGE_SIZE, mm::VmasKind::User,
-                                       mm::VmasFlags::None, "vmaddress.test", &aspace),
-                  "an address space of its own, based at zero");
-
-        ustl::Arc<mm::VmObjectPaged> vmo;
-        auto const vmo_status =
-            mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &vmo);
-        EXPECT_OK(vmo_status, "the test VMO is created");
-        if (vmo_status == Status::Ok) {
-            check_placement(*aspace, vmo);
+        auto const status = mm::VmAspace::create(VirtAddr{}, 4 * PAGE_SIZE, mm::VmasKind::User,
+                                                 mm::VmasFlags::None, "vmaddress.test", &aspace);
+        if (status != Status::Ok) {
+            FAIL("vmaddress.test: FAILED -- cannot create the zero-based test space");
         }
-
-        EXPECT_OK(aspace->destroy(), "the test space is destroyed");
+        ustl::Arc<mm::VmObjectPaged> vmo;
+        if (mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &vmo) ==
+            Status::Ok) {
+            check_placement(*aspace, vmo);
+            check_range_rejections(*aspace, vmo);
+        } else {
+            EXPECT_TRUE(false, "the test VMO is created");
+        }
+        EXPECT_TRUE(aspace->destroy() == Status::Ok, "the test space is destroyed");
     }
-
 } // namespace
 } // namespace ours

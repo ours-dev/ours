@@ -72,7 +72,7 @@
 #include <ours/irq/entry.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/irq/registration.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/platform/isa.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
@@ -318,8 +318,8 @@ namespace {
     /// case are leaked, one pair per run: the Permanent action can never come
     /// off.
     auto check_permanent_line(Tally &tally) -> void {
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
-        auto *const c = new (mm::GAF_KERNEL) PermanentCase{};
+        auto *const line = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
+        auto *const c = new (mm::ALLOC_KERNEL) PermanentCase{};
         if (line == nullptr || c == nullptr) {
             verdict(tally, false, "allocate the Permanent line");
             return;
@@ -507,7 +507,7 @@ namespace {
     /// On a line of the test's own, outside the table, bound to the counting
     /// chip, so the ends of interrupt are counted and no controller sees one.
     auto check_end_of_interrupt(Tally &tally) -> void {
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
+        auto *const line = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
             verdict(tally, false, "allocate the counting line");
             return;
@@ -554,7 +554,7 @@ namespace {
     /// A line of the test's own, outside the table, bound to `chip`; null if
     /// it cannot be made. The caller deletes it, with nobody on it.
     auto own_line(irq::ControllerOps const &chip) -> irq::Line * {
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
+        auto *const line = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
             return nullptr;
         }
@@ -810,7 +810,7 @@ namespace {
         auto const no_line_mask_read = irq::is_masked_for_test(OWN_LINE);
 
         // A line of the test's own, outside the table, which no chip drives.
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
+        auto *const line = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
             verdict(tally, false, "allocate the line with no chip");
             return;
@@ -1207,7 +1207,7 @@ namespace {
     /// answers whether it did what it was asked.
     template <typename Call>
     auto waits_for_handler(CpuNum const cpu, Call const &call, char const *const name) -> bool {
-        auto *const c = new (mm::GAF_KERNEL) HoldCase{};
+        auto *const c = new (mm::ALLOC_KERNEL) HoldCase{};
         if (c == nullptr) {
             log::error("irq.test:   allocating the {} case failed", name);
             return false;
@@ -1296,7 +1296,7 @@ namespace {
             return;
         }
 
-        auto *const c = new (mm::GAF_KERNEL) BarrierCase{};
+        auto *const c = new (mm::ALLOC_KERNEL) BarrierCase{};
         if (c == nullptr) {
             verdict(tally, false, "allocate the barrier case");
             return;

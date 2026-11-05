@@ -55,7 +55,7 @@ auto ThreadDispatcher::create(ustl::Arc<ProcessDispatcher> process, char const *
         return Status::InvArgs;
     }
 
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(ustl::move(process), name));
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_USER) Self(ustl::move(process), name));
     if (!self) {
         return Status::OutOfMem;
     }

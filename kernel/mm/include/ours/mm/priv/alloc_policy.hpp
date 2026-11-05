@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_MM_PRIV_MEMORY_ALLOCATION_POLICY_HPP
-#define OURS_MM_PRIV_MEMORY_ALLOCATION_POLICY_HPP 1
+#ifndef OURS_MM_PRIV_ALLOC_POLICY_HPP
+#define OURS_MM_PRIV_ALLOC_POLICY_HPP 1
 
 #include <ours/mm/types.hpp>
 #include <ours/node_mask.hpp>
@@ -11,9 +11,8 @@
 #define MEMORY_ALLOCATION_POLICY 1
 
 namespace ours::mm {
-class MemoryAllocationPolicy
-    : public ustl::RefCounted<MemoryAllocationPolicy, ustl::sync::ThreadSafePolicy> {
-    using Self = MemoryAllocationPolicy;
+class AllocPolicy: public ustl::RefCounted<AllocPolicy, ustl::sync::ThreadSafePolicy> {
+    using Self = AllocPolicy;
 
   public:
     enum class Kind {
@@ -43,4 +42,4 @@ class MemoryAllocationPolicy
 };
 } // namespace ours::mm
 
-#endif // #ifndef OURS_MM_PRIV_MEMORY_ALLOCATION_POLICY_HPP
+#endif // #ifndef OURS_MM_PRIV_ALLOC_POLICY_HPP

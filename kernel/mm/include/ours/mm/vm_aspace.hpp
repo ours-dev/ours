@@ -75,9 +75,9 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto get_memory_usage() -> ktl::Result<Usage>;
 
-    auto page_fault(VirtAddr va, VmfCause cause) -> Status;
+    auto page_fault(VirtAddr va, VmFault::Cause cause) -> Status;
 
-    auto soft_fault(VirtAddr va, VmfCause cause) -> Status;
+    auto soft_fault(VirtAddr va, VmFault::Cause cause) -> Status;
 
     auto accessed_fault(VirtAddr va) -> Status;
 
@@ -265,7 +265,11 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto init() -> Status;
 
-    auto page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status;
+    auto page_fault_internal(VirtAddr va, VmFault::Cause cause, usize extra_pages) -> Status;
+
+    /// Withdraws the address space's references before the mapping removes its pages.
+    TA_REQUIRES(m_lock)
+    auto on_mapping_destroyed_locked(VmMapping &mapping) -> void;
 
     /// Undoes set_vdso() and claim_vdso() together, for VmMapping::destroy()
     /// when the mapping going is the registered one: no range is accepted

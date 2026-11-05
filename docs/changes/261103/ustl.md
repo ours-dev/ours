@@ -164,4 +164,3 @@ None
 - What does an `Own` need in its table that a `Ref` does not, and why?
 - Why does a type with a throwing move constructor not construct an `Own`, and what would break if it did?
 - Why does the method thunk call `std::launder`, and why is that harmless for a `Ref`?
-

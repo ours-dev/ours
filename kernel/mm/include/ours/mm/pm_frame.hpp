@@ -152,7 +152,7 @@ namespace page {
         std::atomic<u16> num_mappings; // 65536 mappings
         std::atomic<u16> num_users;    // 65536 users
 
-        /// How many pins hold this page in place (VmCowPages::pin_range_locked()):
+        /// How many pins hold this page in place:
         /// a page with any cannot be reclaimed, zero-deduplicated, taken out of
         /// its node, or shared with a clone, because something other than the
         /// CPU, a device that does DMA to it, knows where it is.

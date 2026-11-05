@@ -51,6 +51,17 @@ class ProtectionRanges {
     auto validate() const -> void;
 
   private:
+    friend class VmMapping;
+
+    /// Reserve the boundaries needed to change permissions without allocating
+    /// after the caller changes its page tables. Leaves every permission intact.
+    auto prepare_update(VirtAddr base, VirtAddr end, MmuFlags mmuf) -> Status;
+
+    /// Commit an update whose boundaries have already been prepared.
+    auto apply_update(VirtAddr base, VirtAddr end, MmuFlags mmuf) -> void;
+
+    auto coalesce() -> void;
+
     /// One flag regime. Both bounds are explicit -- the left one too -- so
     /// no invariant rests on how the container orders the regions.
     struct Region {

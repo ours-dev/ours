@@ -2,7 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <ours/mm/node_placement.hpp>
+#include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/pm_node.hpp>
 
 #include <algorithm>
@@ -13,13 +13,13 @@ namespace ours::mm {
 /// MAX_NODES is the "not placed yet" sentinel, and constinit keeps it there
 /// from the first instruction: current_node() reads this table before any init
 /// hook could have filled it.
-constinit decltype(NodePlacement::NODE_OF_CPU) NodePlacement::NODE_OF_CPU = [] {
-    decltype(NodePlacement::NODE_OF_CPU) value;
+constinit decltype(CpuNodeMap::NODE_OF_CPU) CpuNodeMap::NODE_OF_CPU = [] {
+    decltype(CpuNodeMap::NODE_OF_CPU) value;
     std::fill(std::begin(value), std::end(value), NodeId(MAX_NODES));
     return value;
 }();
 
-auto NodePlacement::seed_from_firmware(NodeId const fallback, NodeMask const &nodes) -> usize {
+auto CpuNodeMap::seed_from_firmware(NodeId const fallback, NodeMask const &nodes) -> usize {
     DEBUG_ASSERT(fallback < MAX_NODES, "the fallback node does not exist");
     DEBUG_ASSERT(nodes.test(fallback), "the fallback node is not one that exists");
 
@@ -66,7 +66,7 @@ auto NodePlacement::seed_from_firmware(NodeId const fallback, NodeMask const &no
     return refused;
 }
 
-auto NodePlacement::local_node() -> PmNode * {
+auto CpuNodeMap::local_node() -> PmNode * {
     // The cache, and the only answer needed once the publish hook has run.
     if (auto *const node = Slot::get()) {
         return node;
@@ -83,7 +83,7 @@ auto NodePlacement::local_node() -> PmNode * {
     return PmNode::node(nid);
 }
 
-auto NodePlacement::cache_local_node(CpuNum const cpu, PmNode *const node) -> void {
+auto CpuNodeMap::cache_local_node(CpuNum const cpu, PmNode *const node) -> void {
     DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
     DEBUG_ASSERT(node, "the cache holds a node or stays a miss, never null");
     DEBUG_ASSERT(node->nid() == node_of(cpu),

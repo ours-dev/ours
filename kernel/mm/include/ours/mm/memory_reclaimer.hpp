@@ -3,14 +3,18 @@
 #ifndef OURS_MM_MEMORY_RECLAIMER_HPP
 #define OURS_MM_MEMORY_RECLAIMER_HPP 1
 
+#include <ours/mm/types.hpp>
+#include <ours/node_mask.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/types.hpp>
 
+#include <array>
 #include <atomic>
 
 namespace ours::mm {
+class PmZone;
 
 /// Gives memory back when the memory watchdog says it runs short: the pages
 /// that all-zero anonymous memory holds, then the clean pages a page source
@@ -21,12 +25,9 @@ namespace ours::mm {
 /// finds a marker, a write commits a page. A pager page given back is asked
 /// of its source again when it is needed.
 ///
-/// Called two ways, both by the watchdog (D3 of .agents/tasks/page-reclaim):
-/// request() at Warning and Critical, which wakes a thread of its own and
-/// returns, and reclaim() at OutOfMemory, which the watchdog's thread calls
-/// and waits for before it refuses the allocations that could wait. One
-/// reclaim() walks at a time: a second caller waits, then walks. Nothing
-/// reclaims in the background, or when the watchdog has not asked.
+/// The watchdog requests global background work at Warning and Critical and
+/// reclaims synchronously at OutOfMemory. An eligible zone short of frames can
+/// also request background work on its own node. One reclaim walk runs at a time.
 class MemoryReclaimer {
     using Self = MemoryReclaimer;
 
@@ -44,6 +45,10 @@ class MemoryReclaimer {
     /// the thread has not taken keep the larger. Each is a distance from the
     /// free memory just read, and the thread has not run between them.
     auto request(usize frames) -> void;
+
+    /// Queue a shortage observed by an allocation. The worker samples the
+    /// zone again and walks only its node's page queues.
+    auto request(PmZone const &zone) -> void;
 
     /// The ask the thread has not taken, or 0. The thread walks what this
     /// returns. A synchronous reclaim calls it and drops the result: that
@@ -78,10 +83,19 @@ class MemoryReclaimer {
     };
 
   private:
+    enum class RequestState : u8 {
+        Idle,
+        Pending,
+    };
+
     MemoryReclaimer() = default;
 
     /// The thread: sleeps until a request, then reclaims what was asked.
     auto run() -> i32;
+
+    auto reclaim(usize frames, NodeMask const &nodes) -> usize;
+
+    auto reclaim_node_requests() -> void;
 
     [[nodiscard]]
     auto paused() const -> bool {
@@ -93,6 +107,12 @@ class MemoryReclaimer {
 
     /// What has been asked and not yet taken by the thread.
     std::atomic<usize> m_wanted{0};
+
+    /// One pending request per zone, coalesced until the worker samples it.
+    std::array<std::array<std::atomic<RequestState>, NR_ZONES_PER_NODE>, MAX_NODES>
+        m_zone_requests{};
+
+    std::atomic<bool> m_started{false};
 
     std::atomic<usize> m_pauses{0};
 

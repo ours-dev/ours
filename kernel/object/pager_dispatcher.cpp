@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/object/pager_dispatcher.hpp>
@@ -20,9 +20,9 @@ auto PagerDispatcher::create(u32 const options, KernelHandle<Self> &handle_out, 
         return Status::InvArgs;
     }
 
-    // GAF_USER, as with every other dispatcher: the lifetime of this object
+    // ALLOC_USER, as with every other dispatcher: the lifetime of this object
     // is driven by how many handles userspace holds.
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self());
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_USER) Self());
     if (!self) {
         return Status::OutOfMem;
     }
@@ -86,7 +86,7 @@ auto PagerDispatcher::create_vmo(VmoOptions const options, ustl::Arc<PortDispatc
     // Complete for a VMO nobody was handed (the user pager design's open
     // question); the proxy leaves the list once the pager reads it.
     ustl::Arc<mm::VmObjectPaged> vmo;
-    if (auto const status = mm::VmObjectPaged::with_source(source, mm::GAF_USER_VMO, rounded,
+    if (auto const status = mm::VmObjectPaged::with_source(source, mm::ALLOC_USER_VMO, rounded,
                                                            mm::VmoFlags::Lazy, &vmo);
         Status::Ok != status) {
         return status;

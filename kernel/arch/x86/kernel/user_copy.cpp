@@ -11,7 +11,7 @@
 #include <arch/interrupt.hpp>
 
 // What the copy in user_copy.S returns, in %rax:%rdx: whether it took its fault
-// exit, and for a capturing copy that did, the fault's VmfCause and address.
+// exit, and for a capturing copy that did, the fault's VmFault::Cause and address.
 // The layout is the ABI between the assembly and this file -- faulted in the
 // low half of %rax, the cause in the high half, the address in %rdx -- so it is
 // pinned down here rather than left to whatever the compiler would pick.
@@ -115,7 +115,7 @@ namespace {
         }
         return UserCopyCaptureResult{
             .status = Status::InvArgs,
-            .fault = UserCopyFault{.va = result.va, .cause = mm::VmfCause(result.cause)},
+            .fault = UserCopyFault{.va = result.va, .cause = mm::VmFault::Cause(result.cause)},
         };
     }
 } // namespace

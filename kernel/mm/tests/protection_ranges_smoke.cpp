@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include <ustl/collections/memory_resource.hpp>
+
 // Minimal host definitions of the panic hooks declared by <ours/panic.hpp>.
 // DEBUG_ASSERT only reaches the string_view overload (the form the debug
 // kernel builds use); the template covers non-debug ASSERT signatures. Both
@@ -274,6 +276,85 @@ auto test_repeated_cycles_stay_flat() -> int {
                        "repeated flip-flop cycles keep the tiling flat");
 }
 
+class FailingResource final: public ustl::collections::MemoryResource {
+  public:
+    explicit FailingResource(MemoryResource &upstream) : m_upstream(upstream) {}
+
+    auto reject_allocations(bool const reject) -> void {
+        m_reject = reject;
+    }
+
+  private:
+    auto do_try_allocate(usize const size, usize const alignment) noexcept
+        -> ustl::Result<void *, ustl::collections::Error> override {
+        if (m_reject) {
+            return ustl::err(ustl::collections::Error::OutOfMemory);
+        }
+        return m_upstream.try_allocate(size, alignment);
+    }
+
+    auto do_deallocate(void *const pointer, usize const size, usize const alignment) noexcept
+        -> void override {
+        m_upstream.deallocate(pointer, size, alignment);
+    }
+
+    MemoryResource &m_upstream;
+    bool m_reject = false;
+};
+
+auto test_failed_split_preserves_permissions() -> int {
+    auto *const previous = ustl::collections::get_default_resource();
+    FailingResource resource(*previous);
+    auto _ = ustl::collections::set_default_resource(&resource);
+    ProtectionRanges ranges;
+    _ = ustl::collections::set_default_resource(previous);
+
+    constexpr usize PAGES = 64;
+    resource.reject_allocations(true);
+    if (ranges.init(WINDOW_BASE, PAGES * PAGE, RW) != Status::OutOfMem) {
+        std::fprintf(stderr, "FAILED: initial allocation should fail without publishing a range\n");
+        return 1;
+    }
+    resource.reject_allocations(false);
+    if (ranges.init(WINDOW_BASE, PAGES * PAGE, RW) != Status::Ok) {
+        std::fprintf(stderr, "FAILED: initialize after allocation recovers\n");
+        return 1;
+    }
+
+    usize failures = 0;
+    for (usize page = 1; page + 1 < PAGES; page += 2) {
+        auto const address = WINDOW_BASE + page * PAGE;
+        resource.reject_allocations(true);
+        auto const status = ranges.update(address, PAGE, R);
+        resource.reject_allocations(false);
+        if (status == Status::Ok) {
+            continue;
+        }
+        if (status != Status::OutOfMem) {
+            std::fprintf(stderr, "FAILED: unexpected split failure\n");
+            return 1;
+        }
+        ++failures;
+        for (usize index = 0; index < PAGES; ++index) {
+            auto const at = WINDOW_BASE + index * PAGE;
+            auto const expected = index < page && index % 2 != 0 ? R : RW;
+            if (check_spans(collect(ranges, at, PAGE), {{at, PAGE, expected}},
+                            "failed split preserves page permissions")) {
+                return 1;
+            }
+        }
+        if (ranges.update(address, PAGE, R) != Status::Ok) {
+            std::fprintf(stderr, "FAILED: retrying a failed split\n");
+            return 1;
+        }
+    }
+    if (failures == 0) {
+        std::fprintf(stderr, "FAILED: the test never reached a split requiring allocation\n");
+        return 1;
+    }
+    return 0;
+}
+
 } // namespace
 
 auto main() -> int {
@@ -287,6 +368,7 @@ auto main() -> int {
     failed += test_edge_aligned_updates();
     failed += test_invalid_updates_are_rejected();
     failed += test_repeated_cycles_stay_flat();
+    failed += test_failed_split_preserves_permissions();
 
     if (failed) {
         std::fprintf(stderr, "%d test(s) failed\n", failed);

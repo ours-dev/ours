@@ -3,7 +3,7 @@
 #ifndef OURS_MM_PAGE_REQUEST_HPP
 #define OURS_MM_PAGE_REQUEST_HPP 1
 
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
@@ -16,6 +16,7 @@
 #include <ustl/collections/intrusive/set_hook.hpp>
 #include <ustl/option.hpp>
 #include <ustl/rc.hpp>
+#include <ustl/util/enum_bits.hpp>
 #include <ustl/util/pair.hpp>
 
 namespace ours::mm {
@@ -240,7 +241,7 @@ inline auto PageProvider::is_queued(PageRequest const &request) -> bool {
 }
 
 /// A wait for a blank frame, raised when the PMM would not hand one to a VMO
-/// while free memory is short (try_alloc_frames() answered ShouldWait for an
+/// while free memory is short (alloc_frames() answered ShouldWait for an
 /// allocation with Gaf::CanWait).
 ///
 /// Unlike a PageRequest it asks no one for content: any frame will do, so
@@ -265,8 +266,8 @@ class AnonymousPageRequest {
     auto operator=(Self const &) -> Self & = delete;
 
     /// Raises the request: the next wait() waits for a frame allocated with
-    /// |gaf|, the flags of the allocation that was turned away.
-    auto make_active(Gaf gaf) -> void;
+    /// |alloc_flags|, the flags of the allocation that was turned away.
+    auto make_active(Gaf alloc_flags) -> void;
 
     [[nodiscard]]
     auto is_active() const -> bool {
@@ -296,7 +297,7 @@ class AnonymousPageRequest {
 
   private:
     bool m_active = false;
-    Gaf m_gaf = Gaf{};
+    Gaf m_alloc_flags = Gaf{};
     PmFrame *m_frame = nullptr;
 };
 
@@ -331,7 +332,7 @@ class MultiPageRequest {
 /// request raised against it.
 ///
 /// Lock order: the VMO's lock, then this source's, then the provider's.
-/// get_pages() is called with the VMO's lock held, and so is
+/// request_pages() is called with the VMO's lock held, and so is
 /// on_pages_supplied(), from supply_pages().
 class PageSource final: public ustl::RefCounted<PageSource, ustl::sync::ThreadSafePolicy> {
     using Self = PageSource;
@@ -347,7 +348,7 @@ class PageSource final: public ustl::RefCounted<PageSource, ustl::sync::ThreadSa
     /// The request may be cut short, to end where an outstanding one ends or
     /// where the next one starts: it never asks for a page twice. The caller
     /// retries once it wakes and raises another for what is still missing.
-    auto get_pages(u64 offset, u64 len, PageRequest *request) -> Status;
+    auto request_pages(u64 offset, u64 len, PageRequest *request) -> Status;
 
     /// [offset, offset + len) now holds pages it did not hold before. Every
     /// request this completes is woken.
@@ -400,9 +401,23 @@ class PageSource final: public ustl::RefCounted<PageSource, ustl::sync::ThreadSa
     TA_REQUIRES(m_lock)
     auto primary_containing_locked(u64 offset) -> PageRequest::Outstanding::IterMut;
 
+    /// The lifecycle bits are mutually exclusive. None accepts requests.
+    /// Under m_lock, detach() sets Detached and drains requests. close()
+    /// replaces Detached with Closed after the provider's detach callback.
+    /// Both bits stop new requests. Only these transitions write the flags.
+    enum class Flags : u8 {
+        None = 0,
+        Detached = 0_bit,
+        Closed = 1_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
+    TA_REQUIRES(m_lock) auto is_detached_locked() const -> bool {
+        return !!(m_flags & (Flags::Detached | Flags::Closed));
+    }
+
     mutable sync::Mutex m_lock;
-    bool m_detached TA_GUARDED(m_lock) = false;
-    bool m_closed TA_GUARDED(m_lock) = false;
+    Flags m_flags TA_GUARDED(m_lock) = Flags::None;
     PageRequest::Outstanding m_outstanding TA_GUARDED(m_lock);
     /// Set once, by the constructor. Not const: ustl::Arc passes its own
     /// constness through to the provider, whose methods change it.

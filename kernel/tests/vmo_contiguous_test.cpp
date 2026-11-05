@@ -24,13 +24,15 @@
 // lazy VMO (InvArgs), a size no VMO can be (OutOfRange). Making and dropping a
 // VMO a hundred times leaves the allocator with the frames it had, which is what
 // shows that the tail of a block is given back.
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_object_paged.hpp>
+#include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/object/bti_dispatcher.hpp>
 #include <ours/object/iommu_dispatcher.hpp>
 #include <ours/object/pmt_dispatcher.hpp>
@@ -55,13 +57,10 @@ namespace {
     auto kind_at(mm::VmObjectPaged &vmo, usize const index) -> Kind {
         auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
         Guard guard{node->lock()};
-        auto cursor = node->make_cursor(index * P, P);
-        if (!cursor) {
-            return Kind::None;
-        }
+        auto cursor = node->lookup_cursor_locked(index * P, P);
         // Looking is not using.
-        cursor->disable_mark_accessed();
-        auto const found = cursor->maybe_page();
+        cursor.disable_mark_accessed();
+        auto const found = cursor.maybe_page();
         if (found.is_none()) {
             return Kind::None;
         }
@@ -104,9 +103,42 @@ namespace {
 
     auto make(usize const size, usize const alignment_log2, ustl::Arc<mm::VmObjectPaged> *out)
         -> Status {
-        return mm::VmObjectPaged::create_contiguous(mm::GAF_USER, size, alignment_log2,
+        return mm::VmObjectPaged::create_contiguous(mm::ALLOC_USER, size, alignment_log2,
                                                     mm::VmoFlags::Pinned, out);
     }
+
+#if MM_TEST_ALLOC_FAILURE
+    auto check_allocation_failures() -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        constexpr usize SIZE = 64 * P;
+        struct Case {
+            AllocationSite site;
+            usize skip;
+            Status expected;
+        };
+        constexpr Case CASES[] = {
+            {AllocationSite::Object, 0, Status::OutOfMem},
+            {AllocationSite::Frame, 0, Status::NoMemory},
+            {AllocationSite::Collection, 1, Status::OutOfMem},
+            {AllocationSite::Object, 1, Status::OutOfMem},
+        };
+        for (auto const &test: CASES) {
+            ustl::Arc<mm::VmObjectPaged> vmo;
+            bool failed;
+            {
+                AllocationFailure failure(test.site, test.skip);
+                failed = make(SIZE, 0, &vmo) == test.expected && failure.triggered();
+            }
+            EXPECT_TRUE(failed && !vmo, "failed contiguous creation publishes no VMO");
+            PhysAddr base{};
+            EXPECT_TRUE(make(SIZE, 0, &vmo) == Status::Ok &&
+                            vmo->lookup_contiguous(0, SIZE, &base) == Status::Ok &&
+                            all_pinned_queue(*vmo, SIZE / P),
+                        "contiguous allocation succeeds after the failure");
+        }
+    }
+#endif
 
     KTEST(VmoContiguous, CreatesContiguousMemory) {
         ustl::Arc<mm::VmObjectPaged> vmo;
@@ -127,9 +159,8 @@ namespace {
         EXPECT_TRUE(vmo->lookup_contiguous(0, 3 * P, &first) == Status::Ok &&
                         std::to_underlying(first) % (4 * P) == 0 && first == phys_of(*vmo, 0) &&
                         all_pinned_queue(*vmo, 3) && all_zero(*vmo, 3),
-                    "they are one run on the block's own alignment, on the pinned queue, and "
-                    "zero");
-        EXPECT_EQ(kind_at(*vmo, 3), Kind::None, "there is no fourth page");
+                    "they are one run on the block's own alignment, on the pinned queue, and zero");
+        EXPECT_TRUE(kind_at(*vmo, 3) == Kind::None, "there is no fourth page");
 
         // ---- alignment
         EXPECT_TRUE(make(2 * P, 16, &vmo) == Status::Ok &&
@@ -142,12 +173,13 @@ namespace {
 
         // ---- the largest block
         constexpr auto MOST = usize{1} << MAX_FRAME_ORDER;
-        EXPECT_TRUE(make(MOST * P, 0, &vmo) == Status::Ok && vmo->size() == MOST * P &&
-                        vmo->lookup_contiguous(0, MOST * P, &first) == Status::Ok &&
-                        std::to_underlying(first) % (MOST * P) == 0 &&
-                        all_pinned_queue(*vmo, MOST) && all_zero(*vmo, MOST),
-                    "the largest block is made: all its pages one run, on its alignment, pinned "
-                    "queue, zero");
+        EXPECT_TRUE(
+            make(MOST * P, 0, &vmo) == Status::Ok && vmo->size() == MOST * P &&
+                vmo->lookup_contiguous(0, MOST * P, &first) == Status::Ok &&
+                std::to_underlying(first) % (MOST * P) == 0 && all_pinned_queue(*vmo, MOST) &&
+                all_zero(*vmo, MOST),
+            "the largest block is made: all its pages one run, on its alignment, pinned queue, "
+            "zero");
         vmo = {};
 
         // ---- what cannot be
@@ -156,15 +188,15 @@ namespace {
                         make(P, 12 + MAX_FRAME_ORDER + 1, &none) == Status::NoMemory &&
                         make(P, 40, &none) == Status::NoMemory,
                     "a size or an alignment past the largest block is NoMemory");
-        EXPECT_TRUE(make(0, 0, &none) == Status::InvArgs && make(P, 5, &none) == Status::InvArgs &&
-                        make(P, 64, &none) == Status::InvArgs &&
-                        make(P, 200, &none) == Status::InvArgs,
-                    "an empty size, an alignment below a page and one that is not a shift are "
-                    "InvArgs");
-        EXPECT_TRUE(mm::VmObjectPaged::create_contiguous(mm::GAF_USER, P, 0, mm::VmoFlags::Lazy,
+        EXPECT_TRUE(
+            make(0, 0, &none) == Status::InvArgs && make(P, 5, &none) == Status::InvArgs &&
+                make(P, 64, &none) == Status::InvArgs && make(P, 200, &none) == Status::InvArgs,
+            "an empty size, an alignment below a page and one that is not a shift are InvArgs");
+        EXPECT_TRUE(mm::VmObjectPaged::create_contiguous(mm::ALLOC_USER, P, 0, mm::VmoFlags::Lazy,
                                                          &none) == Status::InvArgs &&
-                        mm::VmObjectPaged::create_contiguous(
-                            mm::GAF_USER, P, 0, mm::VmoFlags::LargePages, &none) == Status::InvArgs,
+                        mm::VmObjectPaged::create_contiguous(mm::ALLOC_USER, P, 0,
+                                                             mm::VmoFlags::LargePages,
+                                                             &none) == Status::InvArgs,
                     "a lazy or a large-page VMO is InvArgs");
         EXPECT_TRUE(make(~usize{0}, 0, &none) == Status::OutOfRange && !none,
                     "a size no VMO can be is OutOfRange");
@@ -172,10 +204,24 @@ namespace {
         // ---- what moves a page is refused
         {
             ustl::Arc<mm::VmObjectPaged> clone;
-            EXPECT_TRUE(make(2 * P, 0, &vmo) == Status::Ok &&
-                            vmo->create_clone(0, 2 * P, &clone) == Status::BadState && !clone,
-                        "a snapshot of the memory is refused: it would move the pages the "
-                        "device has");
+            EXPECT_TRUE(
+                make(2 * P, 0, &vmo) == Status::Ok &&
+                    vmo->create_clone(0, 2 * P, &clone) == Status::BadState && !clone,
+                "a snapshot of the memory is refused: it would move the pages the device has");
+            if (vmo) {
+                auto backing = vmo->cow_pages();
+                auto *const node = backing.as_ptr_mut();
+                ustl::Arc<mm::VmCowPages> clone_pages;
+                mm::VmPageSpliceList transferred(1);
+                Guard guard{node->lock()};
+                EXPECT_TRUE(node->create_clone_locked(0, P, 2 * P, &clone_pages) ==
+                                    Status::BadState &&
+                                !clone_pages,
+                            "the COW node rejects a clone of permanently resident frames");
+                EXPECT_TRUE(node->take_pages_locked(0, P, &transferred) == Status::BadState &&
+                                transferred.is_fresh(),
+                            "the COW node rejects a transfer before consuming the splice list");
+            }
         }
 
         // ---- the pinned queue through a pin
@@ -199,10 +245,11 @@ namespace {
                 made && vmo &&
                 bti.dispatcher()->pin(vmo, 0, 3 * P, options, pin, pmt_rights) == Status::Ok;
             std::array<PhysAddr, 1> address{};
-            EXPECT_TRUE(pinned && pin.dispatcher()->query_pieces(3 * P, 0, address) == Status::Ok &&
-                            address[0] == phys_of(*vmo, 0),
-                        "a BTI pin with Contiguous over the three pages is Ok, and the one "
-                        "address is the first page's");
+            EXPECT_TRUE(
+                pinned && pin.dispatcher()->query_pieces(3 * P, 0, address) == Status::Ok &&
+                    address[0] == phys_of(*vmo, 0),
+                "a BTI pin with Contiguous over the three pages is Ok, and the one address is "
+                "the first page's");
             if (pin.dispatcher()) {
                 pin.dispatcher()->unpin();
             }
@@ -226,9 +273,12 @@ namespace {
             }
             EXPECT_TRUE(all_made && lost <= 32,
                         "a hundred VMOs made and dropped leave the allocator its frames");
-            log::info("VmoContiguous: {} frames before, {} after", before, after);
+            log::info("vmocontig.test: {} frames before, {} after", before, after);
         }
-    }
 
+#if MM_TEST_ALLOC_FAILURE
+        check_allocation_failures();
+#endif
+    }
 } // namespace
 } // namespace ours

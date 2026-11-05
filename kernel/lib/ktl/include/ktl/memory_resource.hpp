@@ -3,7 +3,7 @@
 #ifndef KTL_MEMORY_RESOURCE_HPP
 #define KTL_MEMORY_RESOURCE_HPP 1
 
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ustl/collections/memory_resource.hpp>
 
 namespace ktl {
@@ -13,7 +13,7 @@ namespace ktl {
 /// be used from kernel code at all: their default resource is the hosted
 /// `new`/`delete` one, which does not exist here.
 ///
-/// It allocates through the kernel's `operator new(size, gaf)` and frees
+/// It allocates through the kernel's `operator new(size, alloc_flags)` and frees
 /// through `operator delete`, the same kmalloc-or-vmalloc routing every other
 /// kernel allocation gets. A request above heap::KMALLOC_MAX_SIZE therefore
 /// inherits vmalloc's contract: it may block, so a container that can grow
@@ -30,7 +30,8 @@ class KernelMemoryResource final: public ustl::collections::MemoryResource {
     /// to go through a different allocator.
     static constexpr std::size_t MAX_ALIGNMENT = alignof(std::max_align_t);
 
-    explicit KernelMemoryResource(ours::mm::Gaf gaf) noexcept : m_gaf(gaf) {}
+    explicit KernelMemoryResource(ours::mm::Gaf alloc_flags) noexcept
+        : m_alloc_flags(alloc_flags) {}
 
   protected:
     [[nodiscard]]
@@ -41,7 +42,7 @@ class KernelMemoryResource final: public ustl::collections::MemoryResource {
         -> void override;
 
   private:
-    ours::mm::Gaf m_gaf;
+    ours::mm::Gaf m_alloc_flags;
 };
 
 /// The heap-backed resource every kernel container defaults to. Installed as

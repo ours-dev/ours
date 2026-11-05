@@ -215,6 +215,6 @@ auto vma_unmap(ours::Uandle const vma, VirtAddr const addr, usize const length) 
         status != Status::Ok) {
         return status;
     }
-    return region->unmap(addr, length, object::VmaDispatcher::op_children_from_rights(rights));
+    return region->unmap(addr, length, object::VmaDispatcher::unmap_scope_from_rights(rights));
 }
 } // namespace ours::syscall

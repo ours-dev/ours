@@ -52,8 +52,8 @@
 // run.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cfg.hpp>
-#include <ours/mm/gaf.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_fault.hpp>
@@ -70,10 +70,10 @@
 
 namespace ours {
 namespace {
-    using mm::VmfCause;
+    using mm::VmFault;
 
-    constexpr auto WRITE_ABSENT = VmfCause::Write | VmfCause::Absent;
-    constexpr auto READ_ABSENT = VmfCause::Absent;
+    constexpr auto WRITE_ABSENT = VmFault::Cause::Write | VmFault::Cause::Absent;
+    constexpr auto READ_ABSENT = VmFault::Cause::Absent;
 
     struct Tally {
         usize passed = 0;
@@ -102,8 +102,8 @@ namespace {
         log::info("usercopy.test:   {}: status={} no fault", name, static_cast<int>(result.status));
     }
 
-    auto faulted_at(UserCopyCaptureResult const &result, VirtAddr const va, VmfCause const cause)
-        -> bool {
+    auto faulted_at(UserCopyCaptureResult const &result, VirtAddr const va,
+                    VmFault::Cause const cause) -> bool {
         if (result.status != Status::InvArgs || result.fault.is_none()) {
             return false;
         }
@@ -248,7 +248,7 @@ namespace {
 
         ustl::Arc<mm::VmObjectPaged> vmo;
         if (auto const status =
-                mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags{}, &vmo);
+                mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE, mm::VmoFlags{}, &vmo);
             status != Status::Ok) {
             log::error("usercopy.test: could not create the VMO: {}", static_cast<int>(status));
             tally.failed += 1;
@@ -265,7 +265,7 @@ namespace {
 
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto scratch = root->map_anon(VirtAddr::Anywhere, 3 * PAGE_SIZE, flags,
-                                      mm::VmMapOption::None, "usercopy.test buffers");
+                                      mm::MapOptions::Lazy, "usercopy.test buffers");
         if (scratch.is_err()) {
             log::error("usercopy.test: could not map the VMO test buffers: {}",
                        static_cast<int>(scratch.unwrap_err()));
@@ -340,9 +340,9 @@ namespace {
         // the lock dropped. A regression here shows up as a command that never
         // finishes.
         {
-            auto self = root->map_with_vmo(VirtAddr::Anywhere, 2 * PAGE_SIZE, 0, flags,
-                                           mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
-                                           mm::VmMapOption::None, "usercopy.test self");
+            auto self = root->map_vmo(VirtAddr::Anywhere, 2 * PAGE_SIZE, 0, flags,
+                                      mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
+                                      mm::MapOptions::Lazy, "usercopy.test self");
             if (self.is_err()) {
                 log::error("usercopy.test: could not map the VMO: {}",
                            static_cast<int>(self.unwrap_err()));
@@ -402,7 +402,7 @@ namespace {
         auto root = aspace->root_vma();
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto mapping = root->map_anon(VirtAddr::Anywhere, 3 * PAGE_SIZE, flags,
-                                      mm::VmMapOption::None, "usercopy.test");
+                                      mm::MapOptions::Lazy, "usercopy.test");
         if (mapping.is_err()) {
             log::error("usercopy.test: could not map the scratch pages: {}",
                        static_cast<int>(mapping.unwrap_err()));

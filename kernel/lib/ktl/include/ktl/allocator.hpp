@@ -24,7 +24,7 @@ struct Allocator {
     using RebindT = Allocator<U>;
 
     static auto allocate(usize n) -> PtrMut {
-        return new (ours::mm::GAF_KERNEL) Element[n]();
+        return new (ours::mm::ALLOC_KERNEL) Element[n]();
     }
 
     static auto deallocate(Ptr ptr, usize n) -> void {

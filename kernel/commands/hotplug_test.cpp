@@ -38,7 +38,7 @@
 #include <ours/dpc.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/sampler_dispatcher.hpp>
 #include <ours/sampler.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
@@ -237,7 +237,7 @@ namespace {
     auto check_runs_there(Tally &tally, State &state) -> void {
         auto const target = state.target;
         state.dpc_runs.store(0, std::memory_order_relaxed);
-        auto *const dpc = new (mm::GAF_KERNEL) Dpc(dpc_routine, &state);
+        auto *const dpc = new (mm::ALLOC_KERNEL) Dpc(dpc_routine, &state);
         auto arg = PinnedArg{&state, dpc};
         Thread *pinned = nullptr;
         if (dpc != nullptr) {
@@ -597,7 +597,7 @@ namespace {
         verdict(tally, task::bring_cpu_online(target) == Status::BadState,
                 "bringing back a CPU that is online is BadState");
 
-        auto *const state = new (mm::GAF_KERNEL) State();
+        auto *const state = new (mm::ALLOC_KERNEL) State();
         if (state == nullptr) {
             log::error("hotplug.test: FAILED -- no memory for the test's state");
             return 1;

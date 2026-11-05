@@ -26,7 +26,7 @@
 // test can neither park a thread nor end its park from a timer interrupt, and
 // the suspend path needs another thread to run while this one is parked.
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -115,7 +115,7 @@ namespace {
     KTEST(WaitQueue, WakesByTimeoutAndSuspend) {
         check_timeout();
 
-        auto *const c = new (mm::GAF_KERNEL) SuspendCase{};
+        auto *const c = new (mm::ALLOC_KERNEL) SuspendCase{};
         ASSERT_NONNULL(c, "allocate the suspend case");
 
         auto *const waiter =

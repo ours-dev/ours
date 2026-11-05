@@ -2,7 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/assert.hpp>
 #include <ours/irq/mod.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/interrupt_event_dispatcher.hpp>
 
 #include <heap/new.hpp>
@@ -86,7 +86,7 @@ auto InterruptEventDispatcher::create(KernelHandle<InterruptDispatcher> *const o
         return Status::AccessDenied;
     }
 
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(virqnum));
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL) Self(virqnum));
     if (!self) {
         return Status::NoMemory;
     }

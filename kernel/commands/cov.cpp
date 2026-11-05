@@ -12,7 +12,7 @@
 // carries its own offset into the profile, the script keeps only lines with
 // the tag, and the closing line carries a checksum of all the bytes, so a line
 // lost or damaged shows up as a mismatch and the script asks again.
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 
 #include <algorithm>
 #include <format>
@@ -154,7 +154,7 @@ auto cov_dump() -> int {
     // 64-bit words, because the counters in the profile are and the buffer must
     // start on a multiple of profdata::RawProfile::ALIGNMENT.
     auto const word_count = (profile.size_bytes() + sizeof(u64) - 1) / sizeof(u64);
-    auto *const words = new (ours::mm::GAF_KERNEL) u64[word_count]();
+    auto *const words = new (ours::mm::ALLOC_KERNEL) u64[word_count]();
     if (words == nullptr) {
         reply("cov: no memory for a {}-byte profile", profile.size_bytes());
         return 1;

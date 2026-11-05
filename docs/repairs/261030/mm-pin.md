@@ -40,26 +40,6 @@ Zircon `VmCowPages::DecommitRange()` (`kernel/vm/vm_cow_pages.cc:4086`) and `Res
 **Acceptance**
 `vmopin.test` has a decommit and a resize over a pinned range answering BadState.
 
-## 3. A pin on a VMO with a page source is untested
-
-**Severity**
-Low: pager-backed VMOs are not pinned by any caller today.
-
-**Symptom**
-Latent, cannot be triggered today. `pin_range()` is meant to work on a VMO made by `VmCowPages::with_source()`: a page the source has not supplied makes `pin_range_locked()` answer ShouldWait, and the loop in `VmObjectPaged::pin_range()` waits and goes on from the page it stopped at. That loop has not run. What a pin leaves behind is covered: a page of such a VMO is written once it has been pinned, and not reclaimable after the unpin (`pagereclaim.test`, `docs/changes/261103/mm.md`).
-
-**Cause**
-`vmopin.test` uses an anonymous VMO. A source-backed one needs the provider machinery of `pagesource.test` and `pagereclaim.test`.
-
-**Change**
-A case in `vmopin.test` that pins a source-backed range with a provider that supplies late, and shows the pin completes after the wait.
-
-**Reference**
-None, this project's own design.
-
-**Acceptance**
-That case passes, and removing the wait-and-go-on in `VmObjectPaged::pin_range()` fails it.
-
 ## 4. A read-only pin of a page-source page makes it unreclaimable for good
 
 **Severity**

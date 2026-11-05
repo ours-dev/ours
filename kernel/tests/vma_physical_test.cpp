@@ -25,7 +25,10 @@
 // and then destroys the address space.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/cfg.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
+#include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/platform/mmio.hpp>
@@ -34,6 +37,7 @@
 #include <algorithm>
 
 #include <ktest/ktest.hpp>
+#include <logz4/log.hpp>
 #include <ustl/mem/align.hpp>
 #include <ustl/rc.hpp>
 
@@ -66,12 +70,82 @@ namespace {
         return entry;
     }
 
+    auto check_ownership(mm::VmObject &vmo) -> void {
+        mm::VmPageSpliceList pages(1);
+        EXPECT_TRUE(vmo.take_pages(0, PAGE_SIZE, &pages) == Status::Unsupported &&
+                        vmo.supply_pages(0, PAGE_SIZE, &pages) == Status::Unsupported &&
+                        pages.is_fresh(),
+                    "a physical window cannot transfer ownership of frames");
+        EXPECT_TRUE(vmo.pin_range(0, PAGE_SIZE) == Status::NotSupported &&
+                        vmo.unpin_range(0, PAGE_SIZE) == Status::NotSupported &&
+                        vmo.source_owner_id().is_none(),
+                    "a physical window has neither counted VMO pins nor a pager");
+
+        u64 word = 0x1234'5678;
+        EXPECT_TRUE(vmo.read(&word, 0, sizeof(word)) == Status::Unsupported &&
+                        vmo.write(&word, 0, sizeof(word)) == Status::Unsupported &&
+                        vmo.store_u64(0, word) == Status::Unsupported && word == 0x1234'5678,
+                    "generic VMO I/O does not touch physical memory");
+        EXPECT_TRUE(vmo.read_user(user_copy::UserOutPtr<u8>{}, 0, sizeof(word)) ==
+                            Status::Unsupported &&
+                        vmo.write_user(user_copy::UserInPtr<u8 const>{}, 0, sizeof(word)) ==
+                            Status::Unsupported,
+                    "generic user-buffer copies also refuse physical memory");
+    }
+
+#if MM_TEST_ALLOC_FAILURE
+    auto check_allocation_failures(mm::VmAspace &aspace, PhysAddr const phys) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        constexpr auto BASE = USER_ASPACE_BASE + 64_mb;
+        constexpr auto READ = mm::MmuFlags::Readable | mm::MmuFlags::User | mm::MmuFlags::Discache;
+        auto root = aspace.root_vma();
+        auto const map = [&](VirtAddr const at, usize const size) {
+            return root->map_phys(phys, at, size, READ, mm::MapOptions::Resident,
+                                  "physical allocation failure");
+        };
+        struct Case {
+            AllocationSite site;
+            usize pages;
+            Status expected;
+        };
+        constexpr Case CASES[] = {
+            {AllocationSite::Heap, 1, Status::OutOfMem},
+            {AllocationSite::PageTable, 1, Status::NoMemory},
+            {AllocationSite::PageTable, 32, Status::NoMemory},
+        };
+        auto at = BASE;
+        for (auto const &test: CASES) {
+            auto const size = test.pages * PAGE_SIZE;
+            bool failed;
+            {
+                AllocationFailure failure(test.site);
+                auto const mapping = map(at, size);
+                failed = mapping.is_err() && mapping.unwrap_err() == test.expected &&
+                         failure.triggered();
+            }
+            ustl::Arc<mm::VmMapping> leftover;
+            EXPECT_TRUE(failed && !entry_at(aspace, at).present &&
+                            aspace.find_mapping(at, &leftover) == Status::NotFound,
+                        "a physical mapping failure leaves no PTE or registered mapping");
+            auto retry = map(at, size);
+            auto const last = entry_at(aspace, at + size - PAGE_SIZE);
+            EXPECT_TRUE(retry.is_ok() && last.present && last.pa == phys + size - PAGE_SIZE &&
+                            root->unmap(at, size) == Status::Ok,
+                        "the physical window maps fully on retry");
+            at += 2_mb;
+        }
+    }
+#endif
+
     KTEST(VmaPhysical, MapsPhysicalWindowUncached) {
         ustl::Arc<mm::VmAspace> aspace;
-        ASSERT_OK(mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
-                                       mm::VmasKind::User, mm::VmasFlags::None, "physvmo.test",
-                                       &aspace),
-                  "an address space of its own");
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "physvmo.test", &aspace);
+            status != Status::Ok) {
+            FAIL("physvmo.test: could not create an address space: {}", to_string(status));
+        }
 
         constexpr auto PAGES = usize{2};
         auto const phys = page_above_ram();
@@ -90,6 +164,40 @@ namespace {
         EXPECT_TRUE(made, "a region, a physical VMO and a paged VMO are made");
 
         if (made) {
+#if MM_TEST_ALLOC_FAILURE
+            check_allocation_failures(*aspace, phys);
+#endif
+            auto vmo = window.dispatcher()->vmo();
+            check_ownership(*vmo);
+            PhysAddr first{};
+            EXPECT_TRUE(
+                vmo->lookup_contiguous(1, PAGE_SIZE, &first) == Status::Ok && first == phys + 1 &&
+                    vmo->lookup_contiguous(0, 0, &first) == Status::InvArgs &&
+                    vmo->lookup_contiguous(PAGES * PAGE_SIZE, 1, &first) == Status::OutOfRange,
+                "a physical window resolves byte offsets and rejects invalid lengths");
+            EXPECT_TRUE(vmo->commit_range(0, PAGES * PAGE_SIZE) == Status::Ok &&
+                            vmo->commit_range(PAGES * PAGE_SIZE, PAGE_SIZE) == Status::OutOfRange,
+                        "committing a physical window checks bounds without allocating frames");
+
+            auto root = aspace->root_vma();
+            constexpr auto READ =
+                mm::MmuFlags::Readable | mm::MmuFlags::User | mm::MmuFlags::Discache;
+            auto alias = root->map_phys(phys, VirtAddr::Anywhere, PAGE_SIZE, READ,
+                                        mm::MapOptions::Resident, "physical read alias");
+            EXPECT_TRUE(alias.is_ok(), "the kernel mapping helper installs a physical window");
+            if (alias) {
+                auto const address = (*alias)->base();
+                auto const writable = READ | mm::MmuFlags::Writable;
+                EXPECT_TRUE(root->protect(address, PAGE_SIZE, writable) == Status::Ok &&
+                                aspace->soft_fault(address, mm::VmFault::Cause::Write) ==
+                                    Status::Ok,
+                            "a write fault can widen a physical mapping after protect");
+                auto const entry = entry_at(*aspace, address);
+                EXPECT_TRUE(entry.present && entry.pa == phys &&
+                                (entry.flags & writable) == writable,
+                            "widening preserves the physical frame and its uncached attribute");
+            }
+
             constexpr auto OPTIONS = VmOptions::PermRead | VmOptions::PermWrite |
                                      VmOptions::CanMapRead | VmOptions::CanMapWrite;
             auto const physical = region.dispatcher()->map(OPTIONS, 0, *window.dispatcher(), 0,
@@ -104,9 +212,10 @@ namespace {
                     uncached = uncached && entry.present && entry.pa == phys + page * PAGE_SIZE &&
                                (entry.flags & WANT) == WANT;
                 }
-                EXPECT_TRUE(uncached,
-                            "each page of the window is in the page tables at once, on its own "
-                            "frame, readable, writable, for the user, and uncached");
+                EXPECT_TRUE(
+                    uncached,
+                    "each page of the window is in the page tables at once, on its own frame, "
+                    "readable, writable, for the user, and uncached");
             }
 
             auto const ram =
@@ -123,8 +232,7 @@ namespace {
             }
         }
 
-        EXPECT_OK(aspace->destroy(), "the address space is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok, "the address space is destroyed");
     }
-
 } // namespace
 } // namespace ours

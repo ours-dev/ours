@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/port_dispatcher.hpp>
 #include <ours/syscall.hpp>
 #include <ours/time/timer.hpp>
@@ -49,7 +49,7 @@ auto PortDispatcher::create(PortCreateOptions const options, KernelHandle<Self> 
         return Status::InvArgs;
     }
 
-    auto port = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(options));
+    auto port = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL) Self(options));
     if (!port) {
         return Status::NoMemory;
     }
@@ -86,7 +86,7 @@ auto PortDispatcher::queue_user(PortPacket const &packet) -> Status {
     // Allocated before the lock is taken and, if the port refuses it, freed
     // after the lock is dropped: |queued| is declared before the guard, so it
     // is destroyed after it.
-    auto queued = ustl::Box<QueuedPacket>::from_raw(new (mm::GAF_KERNEL) QueuedPacket{});
+    auto queued = ustl::Box<QueuedPacket>::from_raw(new (mm::ALLOC_KERNEL) QueuedPacket{});
     if (!queued) {
         return Status::NoMemory;
     }

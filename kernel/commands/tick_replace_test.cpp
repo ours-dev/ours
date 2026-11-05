@@ -61,7 +61,7 @@
 // verdict line, as for timershare.test.
 #include <ours/arch/time.hpp>
 #include <ours/cpu.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/tick_broadcast.hpp>
@@ -417,7 +417,7 @@ namespace {
     }
 
     auto enroll_refusing(CpuNum const cpu) -> RefusingDevice * {
-        auto *const device = new (mm::GAF_KERNEL) RefusingDevice(cpu);
+        auto *const device = new (mm::ALLOC_KERNEL) RefusingDevice(cpu);
         if (device == nullptr) {
             return nullptr;
         }
@@ -426,7 +426,7 @@ namespace {
     }
 
     auto enroll_fading(CpuNum const cpu) -> FadingDevice * {
-        auto *const device = new (mm::GAF_KERNEL) FadingDevice(cpu);
+        auto *const device = new (mm::ALLOC_KERNEL) FadingDevice(cpu);
         if (device == nullptr) {
             return nullptr;
         }
@@ -435,7 +435,7 @@ namespace {
     }
 
     auto enroll_flaky(CpuNum const cpu, usize const refuse) -> FlakyDevice * {
-        auto *const device = new (mm::GAF_KERNEL) FlakyDevice(cpu, refuse);
+        auto *const device = new (mm::ALLOC_KERNEL) FlakyDevice(cpu, refuse);
         if (device == nullptr) {
             return nullptr;
         }
@@ -451,7 +451,7 @@ namespace {
         if (LATE_REFUSING != nullptr && LATE_REFUSING->device().cpumask() == CpuMask::of(cpu)) {
             return LATE_REFUSING;
         }
-        auto *const device = new (mm::GAF_KERNEL) LateRefusingDevice(cpu);
+        auto *const device = new (mm::ALLOC_KERNEL) LateRefusingDevice(cpu);
         if (device == nullptr) {
             return nullptr;
         }
@@ -693,7 +693,7 @@ namespace {
     /// The fake global device and its group, made on the first run and kept.
     auto fake_global(Result &result) -> void {
         if (FAKE_GLOBAL == nullptr) {
-            auto *const device = new (mm::GAF_KERNEL) FakeGlobalDevice();
+            auto *const device = new (mm::ALLOC_KERNEL) FakeGlobalDevice();
             if (device == nullptr) {
                 return;
             }
@@ -727,7 +727,7 @@ namespace {
             return 1;
         }
 
-        auto *const result = new (mm::GAF_KERNEL) Result{};
+        auto *const result = new (mm::ALLOC_KERNEL) Result{};
         if (result == nullptr) {
             log::error("tickreplace.test: FAILED -- out of memory");
             return 1;

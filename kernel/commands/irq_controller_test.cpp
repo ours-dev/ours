@@ -122,7 +122,7 @@ namespace {
     /// A line of the test's own, outside the table, bound to `chip`; null if
     /// it cannot be made. The caller deletes it, with nobody on it.
     auto make_line(irq::ControllerOps const &chip) -> irq::Line * {
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, LINE);
+        auto *const line = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, LINE);
         if (line == nullptr) {
             return nullptr;
         }
@@ -270,7 +270,7 @@ namespace {
                          irq::TriggerMode const trigger) -> void {
         HandshakeProbe probe;
         probe.trigger = trigger;
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, LINE);
+        auto *const line = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, LINE);
         if (line == nullptr) {
             verdict(tally, false, "allocate the handshake line");
             return;
@@ -318,7 +318,7 @@ namespace {
         probe.trigger = irq::TriggerMode::Level;
         probe.answer = irq::IrqReturn::WakeThread;
         probe.ready = false;
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, LINE);
+        auto *const line = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, LINE);
         if (line == nullptr) {
             verdict(tally, false, "allocate the hold line");
             return;
@@ -368,7 +368,7 @@ namespace {
 
         auto ordinary_only = END_OPS;
         ordinary_only.masking = irq::Masking::Unspecified;
-        auto *const restricted = new (mm::GAF_KERNEL) irq::Line(HIrqNum{7}, LINE);
+        auto *const restricted = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, LINE);
         if (restricted == nullptr) {
             verdict(tally, false, "make the restricted-capability line");
             return;

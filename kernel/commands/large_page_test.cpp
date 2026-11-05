@@ -48,6 +48,7 @@
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/page_table_deposits.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -106,7 +107,7 @@ namespace {
     using Node = ustl::Arc<mm::VmCowPages>;
     constexpr usize PAGES_PER_BLOCK = LARGE / PAGE_SIZE;
 
-    // The analysis cannot tie `node->lock()` to the `m_lock` that make_cursor()
+    // The analysis cannot tie `node->lock()` to the `m_lock` that lookup_cursor_locked()
     // and the _locked calls require: it sees two expressions through two calls
     // of Arc::operator->(). The lock is held from the guard to the end.
 
@@ -115,12 +116,9 @@ namespace {
     TA_NO_THREAD_SAFETY_ANALYSIS
     auto touch(Node &node, usize const index, bool const write) -> mm::VmPage * {
         Guard guard{node->lock()};
-        auto cursor = node->make_cursor(index * PAGE_SIZE, PAGE_SIZE);
-        if (!cursor) {
-            return nullptr;
-        }
+        auto cursor = node->lookup_cursor_locked(index * PAGE_SIZE, PAGE_SIZE);
         mm::MultiPageRequest request;
-        auto found = cursor->require_page(write, 1, &request);
+        auto found = cursor.require_page(write, 1, &request);
         if (!found) {
             return nullptr;
         }
@@ -165,7 +163,7 @@ namespace {
 
         // Two blocks and three pages past them.
         Node node;
-        if (mm::VmCowPages::create(mm::GAF_USER, 2 * LARGE + 3 * PAGE_SIZE,
+        if (mm::VmCowPages::create(mm::ALLOC_USER, 2 * LARGE + 3 * PAGE_SIZE,
                                    mm::VmCowPages::Flags::LargeBlocks, &node) != Status::Ok) {
             verdict(tally, false, "a node that takes blocks is made");
             return;
@@ -185,7 +183,7 @@ namespace {
 
         Node marked;
         verdict(tally,
-                mm::VmCowPages::create(mm::GAF_USER, LARGE, mm::VmCowPages::Flags::LargeBlocks,
+                mm::VmCowPages::create(mm::ALLOC_USER, LARGE, mm::VmCowPages::Flags::LargeBlocks,
                                        &marked) == Status::Ok &&
                     add_marker(marked, 10) == Status::Ok && touch(marked, 3, true) != nullptr &&
                     nr_pages(marked) == 1,
@@ -193,9 +191,35 @@ namespace {
 
         Node plain;
         verdict(tally,
-                mm::VmCowPages::create(mm::GAF_USER, LARGE, &plain) == Status::Ok &&
+                mm::VmCowPages::create(mm::ALLOC_USER, LARGE, &plain) == Status::Ok &&
                     touch(plain, 3, true) != nullptr && nr_pages(plain) == 1,
                 "a node that does not take blocks gets one page");
+
+#if MM_TEST_ALLOC_FAILURE
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        for (auto const site: {AllocationSite::Frame, AllocationSite::Collection}) {
+            Node fallback;
+            if (mm::VmCowPages::create(mm::ALLOC_USER, 2 * LARGE,
+                                       mm::VmCowPages::Flags::LargeBlocks,
+                                       &fallback) != Status::Ok) {
+                verdict(tally, false, "a node for block allocation failure is made");
+                return;
+            }
+            mm::VmPage *page;
+            bool triggered;
+            {
+                // Skip the first tree allocation to fail after some pages were inserted.
+                AllocationFailure failure(site, site == AllocationSite::Collection ? 1 : 0);
+                page = touch(fallback, 3, true);
+                triggered = failure.triggered();
+            }
+            verdict(tally, triggered && page && page->order() == 0 && nr_pages(fallback) == 1,
+                    "an interrupted large block leaves only the single-page fallback");
+            verdict(tally, is_block(fallback, PER) && nr_pages(fallback) == PER + 1,
+                    "another block can still be filled after the failure");
+        }
+#endif
     }
 
     // Puts the calling thread on |next| and loads its page tables, as
@@ -213,14 +237,14 @@ namespace {
     }
 
     auto make_large(usize const size, ustl::Arc<mm::VmObjectPaged> *const out) -> bool {
-        return mm::VmObjectPaged::create(mm::GAF_USER, size,
+        return mm::VmObjectPaged::create(mm::ALLOC_USER, size,
                                          mm::VmoFlags::LargePages | mm::VmoFlags::Lazy,
                                          out) == Status::Ok;
     }
 
     /// Takes a fault at |va| and answers what |va| translates to after it; an
     /// absent Translation when the fault failed.
-    auto fault_at(mm::VmAspace &aspace, VirtAddr const va, mm::VmfCause const cause)
+    auto fault_at(mm::VmAspace &aspace, VirtAddr const va, mm::VmFault::Cause const cause)
         -> Translation {
         if (task::Thread::Current::soft_fault(va, cause) != Status::Ok) {
             return Translation{};
@@ -231,23 +255,24 @@ namespace {
     /// Unmaps [offset, offset + len) of |vmo|'s pages from every mapping of
     /// every object over them: the walk take_pages() makes.
     TA_NO_THREAD_SAFETY_ANALYSIS
-    auto unmap_through_node(mm::VmObjectPaged const &vmo, u64 const offset, u64 const len) -> void {
+    auto unmap_through_node(mm::VmObjectPaged const &vmo, usize const offset, usize const len)
+        -> void {
         auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
         Guard guard{node->lock()};
-        node->change_range_locked(offset, len, mm::RangeChange::Unmap);
+        node->range_change_locked(offset, len, mm::RangeOp::Unmap);
     }
 
     /// A large-page object of |size| bytes, mapped read-write at |va| from
     /// |offset| on, into |out|; null when either step failed.
     auto map_large(mm::VmArea &root, VirtAddr const va, usize const size, u64 const offset,
-                   mm::VmMapOption const option, ustl::Arc<mm::VmObjectPaged> *const out)
+                   mm::MapOptions const option, ustl::Arc<mm::VmObjectPaged> *const out)
         -> ustl::Arc<mm::VmMapping> {
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         if (!make_large(size + offset, out)) {
             return {};
         }
-        auto mapped = root.map_with_vmo(va, size, offset, rw, mm::VmaFlags::PermMask, *out, option,
-                                        "largepage.test");
+        auto mapped = root.map_vmo(va, size, offset, rw, mm::VmaFlags::PermMask, *out, option,
+                                   "largepage.test");
         if (mapped.is_err()) {
             return {};
         }
@@ -265,8 +290,8 @@ namespace {
         }
         auto *const previous = attach(aspace.as_ptr_mut());
         auto &root = *aspace->root_vma();
-        constexpr auto WRITE = mm::VmfCause::Write;
-        constexpr auto READ = mm::VmfCause::Absent;
+        constexpr auto WRITE = mm::VmFault::Cause::Write;
+        constexpr auto READ = mm::VmFault::Cause::Absent;
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
         auto const at = [](usize const megabytes) {
             return ustl::round_up(USER_ASPACE_BASE + megabytes * 1_mb, LARGE);
@@ -279,7 +304,7 @@ namespace {
         // page read-only gets one small entry; a leaf protected in part splits.
         ustl::Arc<mm::VmObjectPaged> plain;
         auto const a = at(128);
-        if (auto mapping = map_large(root, a, 2 * LARGE, 0, mm::VmMapOption::None, &plain)) {
+        if (auto mapping = map_large(root, a, 2 * LARGE, 0, mm::MapOptions::Lazy, &plain)) {
             auto const leaf = fault_at(*aspace, a + 5 * PAGE_SIZE, WRITE);
             verdict(tally,
                     leaf.present && leaf.size == LARGE && writable(leaf) &&
@@ -312,7 +337,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> shifted;
         auto const b = at(256);
         auto off = Translation{};
-        if (map_large(root, b, 2 * LARGE, PAGE_SIZE, mm::VmMapOption::None, &shifted)) {
+        if (map_large(root, b, 2 * LARGE, PAGE_SIZE, mm::MapOptions::Lazy, &shifted)) {
             off = fault_at(*aspace, b + 5 * PAGE_SIZE, WRITE);
         }
         verdict(tally, off.present && off.size == PAGE_SIZE,
@@ -325,10 +350,10 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> populated;
         auto const c = at(384);
         auto const populate =
-            mm::VmObjectPaged::create(mm::GAF_USER, 2 * LARGE, mm::VmoFlags::LargePages,
+            mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * LARGE, mm::VmoFlags::LargePages,
                                       &populated) == Status::Ok &&
-            root.map_with_vmo(c, 2 * LARGE, 0, rw, mm::VmaFlags::PermMask, populated,
-                              mm::VmMapOption::Populate, "largepage.test populate")
+            root.map_vmo(c, 2 * LARGE, 0, rw, mm::VmaFlags::PermMask, populated,
+                         mm::MapOptions::Resident, "largepage.test populate")
                 .is_ok();
         auto const p0 = translate(*aspace, c);
         auto const p1 = translate(*aspace, c + LARGE + 9 * PAGE_SIZE);
@@ -355,8 +380,8 @@ namespace {
         if (make_large(LARGE, &origin) &&
             origin->write(&word, 3 * PAGE_SIZE, sizeof(word)) == Status::Ok &&
             origin->create_clone(0, LARGE, &clone) == Status::Ok &&
-            root.map_with_vmo(d, LARGE, 0, rw, mm::VmaFlags::PermMask, clone, mm::VmMapOption::None,
-                              "largepage.test clone")
+            root.map_vmo(d, LARGE, 0, rw, mm::VmaFlags::PermMask, clone, mm::MapOptions::Lazy,
+                         "largepage.test clone")
                 .is_ok()) {
             shared = fault_at(*aspace, d + 9 * PAGE_SIZE, READ);
             shared.pa -= 9 * PAGE_SIZE;
@@ -391,8 +416,8 @@ namespace {
             origin2->write(&word, 5 * PAGE_SIZE, sizeof(word)) == Status::Ok &&
             origin2->create_clone(0, LARGE, &clone2) == Status::Ok &&
             origin2->write(&word, 0, sizeof(word)) == Status::Ok &&
-            root.map_with_vmo(e, LARGE, 0, rw, mm::VmaFlags::PermMask, clone2,
-                              mm::VmMapOption::None, "largepage.test migrate")
+            root.map_vmo(e, LARGE, 0, rw, mm::VmaFlags::PermMask, clone2, mm::MapOptions::Lazy,
+                         "largepage.test migrate")
                 .is_ok()) {
             took = fault_at(*aspace, e, WRITE);
         }
@@ -409,7 +434,7 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> walked;
         auto const f = at(768);
         auto whole = Translation{};
-        if (map_large(root, f, LARGE, 0, mm::VmMapOption::None, &walked)) {
+        if (map_large(root, f, LARGE, 0, mm::MapOptions::Lazy, &walked)) {
             whole = fault_at(*aspace, f, WRITE);
         }
         auto const held_with_leaf = mm::PageTableDeposits::nr_held();
@@ -441,9 +466,8 @@ namespace {
             if (!make_large(size + offset, out)) {
                 return placed;
             }
-            auto mapped =
-                root.map_with_vmo(VirtAddr::Anywhere, size, offset, rw, mm::VmaFlags::PermMask,
-                                  *out, mm::VmMapOption::None, "largepage.test anywhere");
+            auto mapped = root.map_vmo(VirtAddr::Anywhere, size, offset, rw, mm::VmaFlags::PermMask,
+                                       *out, mm::MapOptions::Lazy, "largepage.test anywhere");
             if (mapped.is_ok()) {
                 placed = mapped.unwrap();
             }
@@ -454,10 +478,10 @@ namespace {
         // because it was placed there, not by luck.
         ustl::Arc<mm::VmObjectPaged> spacer_vmo;
         auto const spacer =
-            mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &spacer_vmo) ==
+            mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &spacer_vmo) ==
                 Status::Ok &&
-            root.map_with_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, rw, mm::VmaFlags::PermMask,
-                              spacer_vmo, mm::VmMapOption::None, "largepage.test spacer")
+            root.map_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, rw, mm::VmaFlags::PermMask, spacer_vmo,
+                         mm::MapOptions::Lazy, "largepage.test spacer")
                 .is_ok();
         ustl::Arc<mm::VmObjectPaged> at_zero;
         auto const zero = anywhere(2 * LARGE, 0, &at_zero);
@@ -494,7 +518,8 @@ namespace {
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
 
-        auto *const block = mm::alloc_frames(mm::GAF_KERNEL | mm::Gaf::Zero, ORDER);
+        auto *const block =
+            mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero, ORDER).value_or(nullptr);
         if (block == nullptr) {
             log::error("largepage.test: no 2 MiB block to map");
             return 1;

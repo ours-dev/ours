@@ -318,7 +318,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// space's, which is what the mappings' records are written under
     /// (VmMapping::protect_locked()) so that this can read them.
     TA_REQUIRES(m_lock)
-    auto change_range_locked(u64 offset, u64 len, RangeChange change) -> void;
+    auto range_change_locked(usize offset, usize len, RangeOp op) -> void;
 
   protected:
     friend class VmMapping;

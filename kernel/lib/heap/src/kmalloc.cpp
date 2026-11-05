@@ -58,7 +58,7 @@ static auto get_allocation_index(usize size) -> usize {
 // MemCache::init() uses for its own bootstrap caches.
 static std::array<ustl::LazyInit<MemCache>, NUM_MALLOC_CACHES> KMALLOC_CACHE;
 
-auto kmalloc(usize size, Gaf gaf, NodeId nid) -> void * {
+auto kmalloc(usize size, Gaf alloc_flags, NodeId nid) -> void * {
     if (size > MAX_MALLOC_SIZE) {
         // Now we do not support to allocate frames from kmalloc
         return nullptr;
@@ -68,17 +68,17 @@ auto kmalloc(usize size, Gaf gaf, NodeId nid) -> void * {
     }
 
     auto const index = get_allocation_index(size);
-    return KMALLOC_CACHE[index]->allocate(gaf, nid);
+    return KMALLOC_CACHE[index]->allocate(alloc_flags, nid);
 }
 
-auto kmalloc(usize size, Gaf gaf) -> void * {
+auto kmalloc(usize size, Gaf alloc_flags) -> void * {
     if (size > MAX_MALLOC_SIZE) {
         // Now we do not support to allocate frames from kmalloc
         return nullptr;
     }
 
     auto const index = get_allocation_index(size);
-    return KMALLOC_CACHE[index]->allocate(gaf, current_node());
+    return KMALLOC_CACHE[index]->allocate(alloc_flags, current_node());
 }
 
 auto kfree(void *object) -> void {

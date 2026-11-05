@@ -33,7 +33,7 @@
 //     NotFound must find the hook done. This needs two CPUs.
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/status.hpp>
 #include <ours/task/sched/common.hpp>
 #include <ours/task/thread.hpp>
@@ -222,7 +222,7 @@ namespace {
     /// A line of the test's own; null if it cannot be made. The caller
     /// deletes it with nobody on it.
     auto own_line(irq::ControllerOps const &chip = CHIP) -> irq::Line * {
-        auto *const line = new (mm::GAF_KERNEL) irq::Line(OWN_HWIRQ, OWN_LINE);
+        auto *const line = new (mm::ALLOC_KERNEL) irq::Line(OWN_HWIRQ, OWN_LINE);
         if (line == nullptr) {
             return nullptr;
         }
@@ -355,7 +355,7 @@ namespace {
     auto check_refuses_permanent(Tally &tally) -> void {
         auto *const line = own_line();
         auto *const owner =
-            new (mm::GAF_KERNEL) Owner(irq::RegistrationOptions::Permanent, &owner_cancel);
+            new (mm::ALLOC_KERNEL) Owner(irq::RegistrationOptions::Permanent, &owner_cancel);
         if (line == nullptr || owner == nullptr) {
             verdict(tally, false, "make the Permanent line");
             return;
@@ -612,7 +612,7 @@ namespace {
     }
 
     auto check_race(Tally &tally, CpuNum const remover_cpu, CpuNum const detacher_cpu) -> void {
-        auto *const table = new (mm::GAF_KERNEL) irq::Domain();
+        auto *const table = new (mm::ALLOC_KERNEL) irq::Domain();
         constexpr std::array<HIrqNum, 1> NUMBERS{OWN_HWIRQ};
         if (table == nullptr ||
             table->init(ustl::views::Span<HIrqNum const>(NUMBERS), CHIP) != Status::Ok) {
@@ -636,7 +636,7 @@ namespace {
         auto ran = remover != nullptr && detacher != nullptr;
         for (u32 round = 1; ran && round <= RACE_ROUNDS; ++round) {
             auto *const owner =
-                new (mm::GAF_KERNEL) Owner(irq::RegistrationOptions::None, &owner_cancel);
+                new (mm::ALLOC_KERNEL) Owner(irq::RegistrationOptions::None, &owner_cancel);
             if (owner == nullptr) {
                 ran = false;
                 break;

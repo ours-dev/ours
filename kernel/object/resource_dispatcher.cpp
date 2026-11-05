@@ -1,6 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/process_dispatcher.hpp>
@@ -92,7 +92,7 @@ auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind ki
             return Status::InvArgs;
     }
 
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(kind, base, size, flags, name));
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL) Self(kind, base, size, flags, name));
     if (!self) {
         return Status::OutOfMem;
     }

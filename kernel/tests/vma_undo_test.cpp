@@ -42,12 +42,13 @@
 #include <ours/vma.hpp>
 
 #include <ktest/ktest.hpp>
+#include <logz4/log.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours {
 namespace {
 
-    using OpChildren = object::VmaDispatcher::OpChildren;
+    using UnmapScope = object::VmaDispatcher::UnmapScope;
 
     /// A readable mapping, which every mapping here is.
     constexpr auto READ = VmOptions::PermRead | VmOptions::CanMapRead;
@@ -76,21 +77,21 @@ namespace {
 
         // The other thread: it unmaps the mapping through the region it
         // shares, and maps its own, which lands in the same place.
-        EXPECT_OK(region.unmap(at, PAGE_SIZE, OpChildren::No),
-                  "another holder of the region unmaps it");
+        EXPECT_TRUE(region.unmap(at, PAGE_SIZE, UnmapScope::Mapping) == Status::Ok,
+                    "another holder of the region unmaps it");
         auto second = region.map(READ, 0, vmo, 0, PAGE_SIZE, "vmaundo.test second");
         EXPECT_TRUE(second.is_ok() && second->base() == at,
                     "and maps its own, which the kernel places at the same address");
 
         // The first call's undo, which used to be an unmap() of its range.
-        EXPECT_EQ(region.undo_map(ustl::move(first).unwrap()), Status::BadState,
-                  "the first call's undo_map() finds its mapping gone");
+        EXPECT_TRUE(region.undo_map(ustl::move(first).unwrap()) == Status::BadState,
+                    "the first call's undo_map() finds its mapping gone");
         EXPECT_TRUE(taken(region, vmo, at), "and leaves the other mapping in place");
 
         if (second.is_ok()) {
-            EXPECT_OK(region.undo_map(ustl::move(second).unwrap()),
-                      "undo_map() of a mapping still there takes it down");
-            EXPECT_FALSE(taken(region, vmo, at), "and frees its range");
+            EXPECT_TRUE(region.undo_map(ustl::move(second).unwrap()) == Status::Ok,
+                        "undo_map() of a mapping still there takes it down");
+            EXPECT_TRUE(!taken(region, vmo, at), "and frees its range");
         }
     }
 
@@ -98,16 +99,17 @@ namespace {
         object::KernelHandle<object::VmaDispatcher> first;
         auto rights = Rights::None;
         VirtAddr first_at{};
-        EXPECT_OK(region.allocate(VmOptions::None, 0, PAGE_SIZE, first, rights, first_at),
-                  "a sub-region is made where the kernel places it");
+        EXPECT_TRUE(region.allocate(VmOptions::None, 0, PAGE_SIZE, first, rights, first_at) ==
+                        Status::Ok,
+                    "a sub-region is made where the kernel places it");
         if (!first.dispatcher()) {
             return;
         }
 
         // The other thread: it destroys the sub-region through the parent,
-        // as a handle with OpChildren may, and reserves its own in its place.
-        EXPECT_OK(region.unmap(first_at, PAGE_SIZE, OpChildren::Yes),
-                  "another holder of the parent destroys it");
+        // as a handle allowed to unmap subareas may, and reserves its own in its place.
+        EXPECT_TRUE(region.unmap(first_at, PAGE_SIZE, UnmapScope::Subarea) == Status::Ok,
+                    "another holder of the parent destroys it");
         object::KernelHandle<object::VmaDispatcher> second;
         VirtAddr second_at{};
         EXPECT_TRUE(region.allocate(VmOptions::None, 0, PAGE_SIZE, second, rights, second_at) ==
@@ -115,14 +117,14 @@ namespace {
                         second_at == first_at,
                     "and reserves its own, which the kernel places at the same address");
 
-        EXPECT_EQ(region.undo_allocate(*first.dispatcher()), Status::BadState,
-                  "the first call's undo_allocate() finds its sub-region gone");
+        EXPECT_TRUE(region.undo_allocate(*first.dispatcher()) == Status::BadState,
+                    "the first call's undo_allocate() finds its sub-region gone");
         EXPECT_TRUE(taken(region, vmo, first_at), "and leaves the other sub-region in place");
 
         if (second.dispatcher()) {
-            EXPECT_OK(region.undo_allocate(*second.dispatcher()),
-                      "undo_allocate() of a sub-region still there takes it down");
-            EXPECT_FALSE(taken(region, vmo, first_at), "and frees its range");
+            EXPECT_TRUE(region.undo_allocate(*second.dispatcher()) == Status::Ok,
+                        "undo_allocate() of a sub-region still there takes it down");
+            EXPECT_TRUE(!taken(region, vmo, first_at), "and frees its range");
         }
     }
 
@@ -134,19 +136,21 @@ namespace {
             return;
         }
         auto const at = sealed->base();
-        EXPECT_EQ(region.unmap(at, PAGE_SIZE, OpChildren::No), Status::AccessDenied,
-                  "which unmap() refuses");
-        EXPECT_OK(region.undo_map(ustl::move(sealed).unwrap()),
-                  "and undo_map() takes it down, nobody having been told of it");
-        EXPECT_FALSE(taken(region, vmo, at), "and frees its range");
+        EXPECT_TRUE(region.unmap(at, PAGE_SIZE, UnmapScope::Mapping) == Status::AccessDenied,
+                    "which unmap() refuses");
+        EXPECT_TRUE(region.undo_map(ustl::move(sealed).unwrap()) == Status::Ok,
+                    "and undo_map() takes it down, nobody having been told of it");
+        EXPECT_TRUE(!taken(region, vmo, at), "and frees its range");
     }
 
     KTEST(VmaUndo, UndoesOnlyItsOwnObject) {
         ustl::Arc<mm::VmAspace> aspace;
-        ASSERT_OK(mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
-                                       mm::VmasKind::User, mm::VmasFlags::None, "vmaundo.test",
-                                       &aspace),
-                  "an address space of its own");
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmaundo.test", &aspace);
+            status != Status::Ok) {
+            FAIL("vmaundo.test: could not create an address space: {}", to_string(status));
+        }
 
         object::KernelHandle<object::VmaDispatcher> region;
         auto region_rights = Rights::None;
@@ -164,8 +168,7 @@ namespace {
             check_sealed(*region.dispatcher(), *vmo.dispatcher());
         }
 
-        EXPECT_OK(aspace->destroy(), "the address space is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok, "the address space is destroyed");
     }
-
 } // namespace
 } // namespace ours

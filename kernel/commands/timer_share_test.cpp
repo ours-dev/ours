@@ -58,7 +58,7 @@
 // emulated delivery adds, and the paired ratios are noisy by a few points.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -281,7 +281,7 @@ namespace {
 
     auto measure(u64 const cost_ns, u64 const give_up_targets, CpuNum const cpu, u64 &median_tenths)
         -> bool {
-        auto *const run = new (mm::GAF_KERNEL) Run{};
+        auto *const run = new (mm::ALLOC_KERNEL) Run{};
         if (run == nullptr) {
             log::error("timershare.test: out of memory");
             return false;

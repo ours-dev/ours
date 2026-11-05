@@ -22,7 +22,7 @@
 // and pins worker threads to CPUs, neither of which exists outside a booted
 // kernel with timer hardware.
 #include <ours/cpu.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/tick_broadcast.hpp>
@@ -188,7 +188,7 @@ namespace {
         ASSERT_NONNULL(group, "the global device has a broadcast group");
         log::info("TickBroadcast:   serving from {} through a group", find.best->name());
 
-        auto *const members = new (mm::GAF_KERNEL) std::array<Member, 2>{};
+        auto *const members = new (mm::ALLOC_KERNEL) std::array<Member, 2>{};
         ASSERT_NONNULL(members, "allocate the case for two CPUs");
 
         auto const ipis_before = TickBroadcast::num_ipis_sent();

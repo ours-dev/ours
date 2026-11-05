@@ -23,16 +23,14 @@ namespace {
 
 /// Gathers pages to map at consecutive addresses with one set of permissions,
 /// and maps them with one map_bulk() call per batch.
+/// The caller commits its final batch on success. On early return, staged
+/// addresses can be discarded because they hold no references or PTEs.
 template <usize MaxNumPages>
 class MappingCoalescer {
   public:
     MappingCoalescer(VmMapping *mapping, VirtAddr base, MmuFlags mmuf)
         // Initializer order follows the member declaration order below.
-        : m_mapping(mapping), m_va(base), m_nr_pages(0), m_total_mapped(0), m_mmuf(mmuf) {}
-
-    ~MappingCoalescer() {
-        DEBUG_ASSERT(m_nr_pages == 0);
-    }
+        : m_mapping(mapping), m_va(base), m_nr_pages(0), m_mmuf(mmuf) {}
 
     /// Both are [[nodiscard]]: a dropped status here is invisible at run time
     /// -- the batch is silently not mapped, and the mapping object is handed
@@ -65,7 +63,6 @@ class MappingCoalescer {
     VirtAddr m_va;
     PhysAddr m_pa[MaxNumPages];
     usize m_nr_pages;
-    usize m_total_mapped;
     MmuFlags m_mmuf;
 };
 
@@ -89,21 +86,15 @@ auto MappingCoalescer<MaxNumPages>::commit() -> Status {
     // An entry already there is an error: a batch goes where nothing is
     // mapped yet. A failure part way is undone, so the batch is mapped whole
     // or not at all.
-    usize nr_mapped = 0;
     auto const status = m_mapping->aspace()->arch_aspace().map_bulk(
         m_va, m_pa, m_nr_pages, m_mmuf,
-        ArchMapOptions::ErrorIfExisting | ArchMapOptions::UndoOnFailure, &nr_mapped);
+        ArchMapOptions::ErrorIfExisting | ArchMapOptions::UndoOnFailure, nullptr);
     if (Status::Ok != status) {
         log::error("Failed to map {} pages at {}", m_nr_pages, m_va);
     }
 
-    // Drained either way, and before the early return: the destructor asserts
-    // the batch is empty, so a caller propagating the failure still has to be
-    // able to let this object go. `m_total_mapped` takes what the arch layer
-    // left mapped: the whole batch, or nothing after the undo.
     m_va += m_nr_pages * PAGE_SIZE;
     m_nr_pages = 0;
-    m_total_mapped += nr_mapped;
 
     // The status the caller acts on. Returning Ok here regardless -- which is
     // what this did -- left map_paged()/map_physical() reporting success for a
@@ -136,7 +127,7 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
     }
 
     auto mapping =
-        VmMappingCache::get(GAF_KERNEL, parent, base, size, vmaf, ustl::move(vmo), vmo_off, name);
+        VmMappingCache::get(ALLOC_KERNEL, parent, base, size, vmaf, ustl::move(vmo), vmo_off, name);
     if (!mapping) {
         return Status::OutOfMem;
     }
@@ -148,9 +139,10 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
     // Created under the parent area's lock, which is the new mapping's too.
     // Asserted, because the analysis does not follow it through Builder.
     mapping->get_lock().assert_held();
-    // FIXME: the same unwinding is missing as below. docs/repairs/260908/heap.md,
-    // item 4.
-    auto _ = mapping->activate();
+    if (status = mapping->activate(); Status::Ok != status) {
+        VmMappingCache::put(mapping);
+        return status;
+    }
 
     *out = ustl::Arc<Self>::adopt(mapping);
     return Status::Ok;
@@ -159,10 +151,10 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
 auto VmMapping::activate() -> Status {
     m_canary.verify<Self>();
 
-    // FIXME: an insert that fails (OutOfMem) leaves this mapping unlinked yet
-    // answered Ok, and the VMO's list takes it below all the same.
-    // docs/repairs/260908/heap.md, item 4.
-    auto _ = Base::activate();
+    m_parent->get_lock().assert_held();
+    if (auto const status = m_parent->link_child_locked(*this); Status::Ok != status) {
+        return status;
+    }
 
     // Note when a mapping was added into a VMO's mapping list, the inside counter
     // has not been increased implicitly. It is required to pay attention to manually
@@ -172,6 +164,7 @@ auto VmMapping::activate() -> Status {
     // VmObject::add_mapping().
     Guard guard{m_vmo->lock()};
     m_vmo->add_mapping(*this);
+    mark_active();
 
     return Status::Ok;
 }
@@ -180,35 +173,13 @@ auto VmMapping::destroy() -> Status {
     m_canary.verify<Self>();
 
     // Once only. Everything below undoes something activate() did exactly
-    // once -- the VMO's list, the parent's count and set -- so a second pass
-    // would unlink a node that is no longer linked and count the parent down
-    // twice.
+    // once, so a second pass would remove an already unlinked node.
     if (!is_active()) {
         return Status::BadState;
     }
 
-    // The address space's last-fault cache may be this mapping, and it holds
-    // a reference: left there, it would keep the mapping -- and through it the
-    // VMO and the address space itself -- alive after the mapping is gone,
-    // and hand the next fault in this range a mapping that no longer covers
-    // anything. Cleared first, because clearing it is right whatever happens
-    // below.
-    if (m_aspace->m_last_fault.as_ptr() == this) {
-        m_aspace->m_last_fault = {};
-    }
-
-    // The address space's vDSO, if this mapping is the one registered as it:
-    // the registration goes with the mapping, before the pages do, so that
-    // the range a system call is accepted from never outlives the code it
-    // was registered for. Under this lock nothing new can be mapped where the
-    // code is until both are gone. Only one caller gets here with a
-    // registered mapping: the undo of the vma_map that registered it, which
-    // could not report the address (VmArea::destroy_child()). The mapping is
-    // sealed, so no unmap reaches it, and the address space's teardown takes
-    // it out of m_vdso_mapping before destroying anything.
-    if (m_aspace->m_vdso_mapping.as_ptr() == this) {
-        m_aspace->withdraw_vdso_locked();
-    }
+    m_aspace->get_lock().assert_held();
+    m_aspace->on_mapping_destroyed_locked(*this);
 
     // Take the mapping out of the page tables first, but do not let a failure
     // here abandon the bookkeeping below. This used to return early, which left
@@ -235,9 +206,6 @@ auto VmMapping::destroy() -> Status {
         }
         m_vmo = {};
     }
-    if (m_parent) {
-        m_parent->m_num_mappings -= 1;
-    }
     // Unlinking cannot fail: VmAreaOrMapping::destroy() answers only Ok.
     auto _ = Base::destroy();
 
@@ -254,7 +222,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOpti
     DEBUG_ASSERT(ustl::is_aligned(base, PAGE_SIZE));
     DEBUG_ASSERT(ustl::is_aligned(size, PAGE_SIZE));
 
-    bool const commit = !!(options & MapOptions::Commit);
+    bool const commit = options == MapOptions::Commit;
     constexpr static auto MAX_BATCH_PAGES = 32;
 
     // The cursor is positioned in the VMO's own byte space, not in the address
@@ -271,7 +239,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOpti
     // inside the address space lock map() holds: a page found here must still
     // belong to the object when it is mapped. See VmObjectPaged::lock().
     Guard guard{vmo->lock()};
-    auto cursor = vmo->make_cursor(m_vmo_ofs + (base - m_base), size);
+    auto cursor = vmo->lookup_cursor_locked(m_vmo_ofs + (base - m_base), size);
     if (!cursor) {
         return cursor.unwrap_err();
     }
@@ -303,7 +271,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOpti
             // With Commit, every page is made the node's own first. A source
             // asked for a page answers ShouldWait, and the map fails with it:
             // nothing that maps with Commit has a source.
-            ustl::Option<VmCowPages::Cursor::RequireResult> result;
+            ustl::Option<VmCowPages::Cursor::PageLookup> result;
             if (commit) {
                 auto owned = cursor->require_owned_page(1, &page_request);
                 if (!owned) {
@@ -413,8 +381,12 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size) -
 }
 
 /// Do check arguments and dispatch the request to correct sub-routine for different VmObjects.
-auto VmMapping::map(VirtAddr base, usize size, MapOptions options) -> Status {
+auto VmMapping::map(VirtAddr base, usize size, MapOptions const mode) -> Status {
     m_canary.verify<Self>();
+
+    if (mode != MapOptions::Resident && mode != MapOptions::Commit) {
+        return Status::InvArgs;
+    }
 
     // The address space lock, as protect() and unmap() take it. Without it a
     // map() raced them over the page tables and m_protection_ranges, and a
@@ -441,7 +413,7 @@ auto VmMapping::map(VirtAddr base, usize size, MapOptions options) -> Status {
     }
 
     if (auto paged = as<VmObjectPaged>(m_vmo.as_ptr_mut())) {
-        return map_paged(paged, base, size, options);
+        return map_paged(paged, base, size, mode);
     } else if (auto physical = as<VmObjectPhysical>(m_vmo.as_ptr_mut())) {
         return map_physical(physical, base, size);
     }
@@ -451,6 +423,7 @@ auto VmMapping::map(VirtAddr base, usize size, MapOptions options) -> Status {
 
 auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     m_canary.verify<Self>();
+    Guard guard{get_lock()};
 
     if (!is_active()) {
         return Status::BadState;
@@ -461,7 +434,6 @@ auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
         return Status::InvArgs;
     }
 
-    Guard guard{get_lock()};
     base = ustl::round_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvArgs;
@@ -469,6 +441,10 @@ auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
 
     if (!validate_mmuflags(mmuf)) {
         return Status::InvArgs;
+    }
+
+    if (is_sealed()) {
+        return Status::AccessDenied;
     }
 
     return protect_locked(base, size, mmuf);
@@ -533,8 +509,8 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     return first_failure;
 }
 
-auto VmMapping::change_range_locked_object(u64 const vmo_offset, u64 const len,
-                                           RangeChange const change) -> void {
+auto VmMapping::range_change_locked_object(usize const vmo_offset, usize const len,
+                                           RangeOp const op) -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(m_vmo);
     m_vmo->lock().assert_held();
@@ -542,12 +518,9 @@ auto VmMapping::change_range_locked_object(u64 const vmo_offset, u64 const len,
     // The part of the range this mapping shows, in the object's bytes and then
     // as addresses. |len| may reach the end of the address space, so the end is
     // clamped rather than added.
-    u64 end = vmo_offset + len;
-    if (len > ~u64{0} - vmo_offset) {
-        end = ~u64{0};
-    }
-    u64 const first = std::max<u64>(vmo_offset, m_vmo_ofs);
-    u64 const last = std::min<u64>(end, m_vmo_ofs + m_size);
+    auto const end = vmo_offset + std::min(len, ~usize{0} - vmo_offset);
+    auto const first = std::max(vmo_offset, m_vmo_ofs);
+    auto const last = std::min(end, m_vmo_ofs + m_size);
     if (first >= last) {
         return;
     }
@@ -555,7 +528,7 @@ auto VmMapping::change_range_locked_object(u64 const vmo_offset, u64 const len,
     usize const size = last - first;
     auto &arch_aspace = m_aspace->arch_aspace();
 
-    if (change == RangeChange::Unmap) {
+    if (op == RangeOp::Unmap) {
         // The kernel's own mappings rely on their pages staying where they
         // are, and their objects are made Pinned: an operation that takes pages
         // out of an object refuses a pinned one before it gets here.
@@ -590,6 +563,7 @@ auto VmMapping::change_range_locked_object(u64 const vmo_offset, u64 const len,
 
 auto VmMapping::unmap(VirtAddr base, usize size, UnmapOptions options) -> Status {
     m_canary.verify<Self>();
+    Guard guard{get_lock()};
 
     if (!is_active()) {
         return Status::BadState;
@@ -600,10 +574,13 @@ auto VmMapping::unmap(VirtAddr base, usize size, UnmapOptions options) -> Status
         return Status::InvArgs;
     }
 
-    Guard guard{get_lock()};
     base = ustl::round_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvArgs;
+    }
+
+    if (is_sealed()) {
+        return Status::AccessDenied;
     }
 
     return unmap_locked(base, size, options);
@@ -616,25 +593,23 @@ auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapOptions options) ->
     DEBUG_ASSERT(m_vmo);
     Guard guard{m_vmo->lock()};
 
-    auto &arch_aspace = m_aspace->arch_aspace();
-    auto enumerator = m_protection_ranges.make_enumerator(base, size);
-    while (auto [region_base, region_size, mmuf] = enumerator.next()) {
-        auto status = arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, options, nullptr);
-        if (Status::Ok != status) {
-            log::error("Failed to unmap range[{:X}, {:X})", region_base, region_size);
-            return status;
-        }
-    }
-
-    // Mark the range as permission-less, the same representation of "unmapped"
-    // that protect() relies on when it skips zero-permission regions; without
-    // this, a later protect() would try to modify page-table entries that no
-    // longer exist.
-    auto status = m_protection_ranges.update(base, size, MmuFlags{});
-    if (Status::Ok != status) {
+    // Allocate protection boundaries before removing any PTE. Once the
+    // translations are gone, publishing the hole must be infallible.
+    auto const end = base + size;
+    if (auto const status = m_protection_ranges.prepare_update(base, end, MmuFlags{});
+        Status::Ok != status) {
         return status;
     }
 
+    auto &arch_aspace = m_aspace->arch_aspace();
+    if (auto const status = arch_aspace.unmap(base, size >> PAGE_SHIFT, options, nullptr);
+        Status::Ok != status) {
+        m_protection_ranges.coalesce();
+        log::error("Failed to unmap range[{:X}, {:X})", base, end);
+        return status;
+    }
+
+    m_protection_ranges.apply_update(base, end, MmuFlags{});
     return Status::Ok;
 }
 
@@ -678,7 +653,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
         return {Status::AccessDenied, 0};
     }
 
-    bool const will_write = !!(vmf->cause & VmfCause::Write);
+    bool const will_write = !!(vmf->cause & VmFault::Cause::Write);
     if (will_write && !(mmuf & MmuFlags::Writable)) {
         return {Status::AccessDenied, 0};
     }
@@ -693,7 +668,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // protect() that added Executable, a fetch through a stale NX entry is
     // spurious, and only this region says which case it is. So an
     // instruction fetch requires Executable of the region ahead of any lookup.
-    bool const will_execute = !!(vmf->cause & VmfCause::Instruction);
+    bool const will_execute = !!(vmf->cause & VmFault::Cause::Instruction);
     if (will_execute && !(mmuf & MmuFlags::Executable)) {
         return {Status::AccessDenied, 0};
     }
@@ -753,14 +728,14 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
 
     // The same conversion map_paged() does, for the same reason: the cursor is
     // positioned in the VMO's byte space and |va| is an address.
-    auto cursor = paged->make_cursor(m_vmo_ofs + (va - m_base), PAGE_SIZE);
+    auto cursor = paged->lookup_cursor_locked(m_vmo_ofs + (va - m_base), PAGE_SIZE);
     if (!cursor) {
         return {cursor.unwrap_err(), 0};
     }
     // The hardware retries the access through the entry made here, whose
     // accessed bit records it. A fault the kernel raised for a copy marks the
     // page as well: twice costs nothing.
-    if (!(vmf->cause & VmfCause::Software)) {
+    if (!(vmf->cause & VmFault::Cause::Software)) {
         cursor->disable_mark_accessed();
     }
 
@@ -842,12 +817,12 @@ auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existin
         // address space's.
         Guard guard{paged->lock()};
         if (will_write) {
-            auto cursor = paged->make_cursor(m_vmo_ofs + (va - m_base), PAGE_SIZE);
+            auto cursor = paged->lookup_cursor_locked(m_vmo_ofs + (va - m_base), PAGE_SIZE);
             if (!cursor) {
                 return {cursor.unwrap_err(), 0};
             }
             // As the demand path: the entry records a hardware access.
-            if (!(vmf->cause & VmfCause::Software)) {
+            if (!(vmf->cause & VmFault::Cause::Software)) {
                 cursor->disable_mark_accessed();
             }
             auto page = cursor->require_owned_page(1, &vmf->page_request);
@@ -859,7 +834,7 @@ auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existin
             // |existing| was read before this lock was taken, and a frame leaves
             // the object only under it, after every entry for it is unmapped;
             // Write is taken off entries the same way (a clone's
-            // change_range_locked()). So the entry is read again now that the
+            // range_change_locked()). So the entry is read again now that the
             // lock is held. One that is gone, or names another frame, is not the
             // one this fault saw: the access retries, and finds what is there now.
             // Mapping |existing| again would map a frame the object no longer has.

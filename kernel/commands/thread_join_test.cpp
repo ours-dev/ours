@@ -26,7 +26,7 @@
 // gives: a join's slow path is the scheduler.
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -150,7 +150,7 @@ namespace {
     }
 
     auto check_join_after_exit(Tally &tally) -> void {
-        auto *const target = new (mm::GAF_KERNEL) Target{};
+        auto *const target = new (mm::ALLOC_KERNEL) Target{};
         target->retcode = 42;
         auto *const thread = spawn_joinable(target);
         if (thread == nullptr) {
@@ -174,7 +174,7 @@ namespace {
     }
 
     auto check_join_waits(Tally &tally) -> void {
-        auto *const target = new (mm::GAF_KERNEL) Target{};
+        auto *const target = new (mm::ALLOC_KERNEL) Target{};
         target->retcode = 7;
         target->run_a_while = true;
         auto *const thread = spawn_joinable(target);
@@ -196,7 +196,7 @@ namespace {
     }
 
     auto check_join_times_out(Tally &tally) -> void {
-        auto *const target = new (mm::GAF_KERNEL) Target{};
+        auto *const target = new (mm::ALLOC_KERNEL) Target{};
         target->retcode = 3;
         target->wait_for_release = true;
         auto *const thread = spawn_joinable(target);
@@ -239,8 +239,8 @@ namespace {
     }
 
     auto check_one_reaper(Tally &tally) -> void {
-        auto *const target = new (mm::GAF_KERNEL) Target{};
-        auto *const joiner = new (mm::GAF_KERNEL) Joiner{};
+        auto *const target = new (mm::ALLOC_KERNEL) Target{};
+        auto *const joiner = new (mm::ALLOC_KERNEL) Joiner{};
         target->retcode = 4;
         target->wait_for_release = true;
 
@@ -294,7 +294,7 @@ namespace {
     }
 
     auto check_join_of_detached(Tally &tally) -> void {
-        auto *const target = new (mm::GAF_KERNEL) Target{};
+        auto *const target = new (mm::ALLOC_KERNEL) Target{};
         target->wait_for_release = true;
         auto *const thread = spawn_joinable(target);
         if (thread == nullptr) {
@@ -318,7 +318,7 @@ namespace {
     }
 
     auto check_detach_after_exit(Tally &tally) -> void {
-        auto *const target = new (mm::GAF_KERNEL) Target{};
+        auto *const target = new (mm::ALLOC_KERNEL) Target{};
         auto *const thread = spawn_joinable(target);
         if (thread == nullptr) {
             verdict(tally, false, "spawn a joinable thread");
@@ -352,7 +352,7 @@ namespace {
             Target *targets[MAX_CPUS] = {};
             Thread *threads[MAX_CPUS] = {};
             for (usize i = 0; i < width; ++i) {
-                targets[i] = new (mm::GAF_KERNEL) Target{};
+                targets[i] = new (mm::ALLOC_KERNEL) Target{};
                 targets[i]->retcode = static_cast<i32>(round * width + i);
                 threads[i] = spawn_joinable(targets[i], static_cast<CpuNum>(i));
             }

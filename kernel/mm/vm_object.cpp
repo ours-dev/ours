@@ -13,10 +13,9 @@ VmObject::VmObject(u32 magic, Type type, Flags vmof, sync::Mutex &lock)
     DEBUG_ASSERT(type == Type::Paged || type == Type::Physical);
 }
 
-auto VmObject::change_range_locked(u64 const offset, u64 const len, RangeChange const change)
-    -> void {
+auto VmObject::range_change_locked(usize const offset, usize const len, RangeOp const op) -> void {
     for (auto &mapping: m_mappings) {
-        mapping.change_range_locked_object(offset, len, change);
+        mapping.range_change_locked_object(offset, len, op);
     }
 }
 } // namespace ours::mm

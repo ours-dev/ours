@@ -39,9 +39,9 @@ auto VmoDispatcher::create(ustl::Arc<mm::VmObject> vmo, KernelHandle<Self> &hand
         return Status::InvArgs;
     }
 
-    // GAF_USER, as with every other dispatcher: the lifetime of this object is
+    // ALLOC_USER, as with every other dispatcher: the lifetime of this object is
     // driven by how many handles userspace holds.
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(ustl::move(vmo)));
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_USER) Self(ustl::move(vmo)));
     if (!self) {
         return Status::OutOfMem;
     }
@@ -67,7 +67,7 @@ auto VmoDispatcher::create_paged(usize const size, KernelHandle<Self> &handle_ou
     // reason, so this is the existing behaviour spelled out rather than a new
     // policy.
     ustl::Arc<mm::VmObjectPaged> vmo;
-    auto const status = mm::VmObjectPaged::create(mm::GAF_USER, size, mm::VmoFlags::Pinned, &vmo);
+    auto const status = mm::VmObjectPaged::create(mm::ALLOC_USER, size, mm::VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
         return status;
     }
@@ -80,7 +80,7 @@ auto VmoDispatcher::create_contiguous(usize const size, usize const alignment_lo
     -> Status {
     ustl::Arc<mm::VmObjectPaged> vmo;
     // The user class, as every VMO user space can reach.
-    auto const status = mm::VmObjectPaged::create_contiguous(mm::GAF_USER, size, alignment_log2,
+    auto const status = mm::VmObjectPaged::create_contiguous(mm::ALLOC_USER, size, alignment_log2,
                                                              mm::VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
         return status;
@@ -97,7 +97,8 @@ auto VmoDispatcher::create_from_wired_pages(PhysAddr const base, usize const siz
     // this replaced used it too. A snapshot of the boot image allocates its
     // copies with it, and the kernel class would spin in the allocator's slow
     // path when memory runs out instead of answering OutOfMem.
-    auto const status = mm::VmObjectPaged::create_from_wired_pages(mm::GAF_USER, base, size, &vmo);
+    auto const status =
+        mm::VmObjectPaged::create_from_wired_pages(mm::ALLOC_USER, base, size, &vmo);
     if (Status::Ok != status) {
         return status;
     }
@@ -131,7 +132,7 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
     // reads as zero.
     ustl::Arc<mm::VmObjectPaged> vmo;
     auto const status =
-        mm::VmObjectPaged::create(mm::GAF_USER_VMO, rounded, mm::VmoFlags::Lazy, &vmo);
+        mm::VmObjectPaged::create(mm::ALLOC_USER_VMO, rounded, mm::VmoFlags::Lazy, &vmo);
     if (Status::Ok != status) {
         return status;
     }

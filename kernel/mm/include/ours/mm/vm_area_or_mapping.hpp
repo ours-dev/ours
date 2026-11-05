@@ -24,48 +24,34 @@
 #include <ustl/util/move.hpp>
 
 namespace ours::mm {
-/// What a caller asks of ONE operation that creates a mapping: options of the
-/// call, not properties of the result.
-///
-/// It is kept apart from VmaFlags on purpose, and the line between them is
-/// this: a VmMapOption is a request, a VmaFlags is what the object is. Some
-/// requests leave nothing behind -- Commit means "populate the pages now" and
-/// is gone once it has been done -- so they have no flag to become. Others
-/// outlive the call: Pinned and Sealed are asked for here and, at creation
-/// (VmArea::create_mapping()), become VmaFlags::Pinned and VmaFlags::Sealed on
-/// the mapping. The same word on both sides is that translation, not a
-/// duplicate: "make it sealed" and "it is sealed" are different statements.
-///
-/// One set of flags for both would also work; this project keeps the request
-/// and the state apart. The ABI has a third vocabulary, ours::VmOptions, for
-/// the same reason at another boundary.
-enum class VmMapOption {
-    // For semenatics, no any effects.
-    None,
-    /// Fill the page tables in when the mapping is made, rather than leaving
-    /// each page to the first access that faults on it. Only that: it maps what
-    /// the object has, and does not ask the object for pages of its own, which
-    /// on a copy-on-write clone would copy every shared page. The ABI's
-    /// ours::VmOptions::MapRange is what becomes it. It was called Commit,
-    /// which is the name of the other thing.
-    Populate = 0_bit,
-    Pinned = 1_bit,
+enum class MapOptions : u8 {
+    /// Register the mapping and defer page-table installation.
+    Lazy = 0,
 
-    /// The mapping is immutable from the moment it exists: nothing may unmap
-    /// it, change its protection, or destroy it with its parent. See
-    /// VmaFlags::Sealed.
+    /// Install entries for existing pages and leave holes to fault.
+    Resident = 0_bit,
+
+    /// Obtain owned pages for the entire range and install their entries.
+    Commit = 1_bit,
+
+    /// Reject unmap and protect requests. Can be combined with any mode.
     Sealed = 2_bit,
-};
-USTL_ENABLE_ENUM_BITMASK(VmMapOption);
 
-/// What a VMA -- an area or a mapping -- IS: its attributes and state, stored on
-/// the object and true for as long as it lives. The permissions it allows
-/// (which a mapping's protection may never exceed), whether it is active,
-/// pinned or sealed, what kind of thing it is.
+    /// Select the installation mode. Creation accepts at most one mode bit.
+    /// Explicit installation requires exactly one.
+    ModeMask = Resident | Commit,
+
+    /// Mask of known bits. Creation rejects any bits outside this mask.
+    ValidMask = ModeMask | Sealed,
+};
+USTL_ENABLE_ENUM_BITMASK(MapOptions);
+
+/// An area's or mapping's attributes, fixed at construction. They describe
+/// its permission ceiling, kind, and restrictions such as sealing.
 ///
-/// Not what a caller asked of a call: that is VmMapOption, and a request that
+/// Not what a caller asked of a call: that is MapOptions, and a request that
 /// outlives the call is translated into a flag here at creation. See
-/// VmMapOption.
+/// MapOptions.
 enum class VmaFlags : u32 {
     // For semantics, no any actual effects.
     None,
@@ -77,15 +63,13 @@ enum class VmaFlags : u32 {
     Share = 3_bit,
     PermMask = Write | Read | Exec | Share,
 
-    // States
-    Active = 0x10000,
     Pinned = 0x20000,
 
     // Features.
     Anonymous = 0x40000,
     Mergeable = 0x80000,
 
-    // Set once, when a mapping is created with VmMapOption::Sealed, and never
+    // Set once, when a mapping is created with MapOptions::Sealed, and never
     // cleared: an unmap, protect or destroy that meets a sealed mapping is
     // refused (AccessDenied) whole, without touching anything else in its
     // range. The address space's own teardown is not such an operation; it
@@ -191,8 +175,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
 
     /// What this area allows mappings under it, or what this mapping's
     /// protection may ever be raised to: the ceiling, as permission bits.
-    /// Read without the aspace lock: the permission bits are fixed when the
-    /// object is built, and only the state bits (Active) change after.
+    /// Read without the aspace lock because the attributes are immutable.
     [[nodiscard]]
     FORCE_INLINE
     auto permissions() const -> VmaFlags {
@@ -207,7 +190,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     [[nodiscard]]
     FORCE_INLINE
     auto is_active() const -> bool {
-        return !!(m_vmaf & VmaFlags::Active);
+        return m_state == State::Active;
     }
 
     FORCE_INLINE
@@ -274,7 +257,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     /// `m_base + m_size` wraps to 0: every "starts below the end" test against
     /// the root answered no, and a walk over the whole root came back with no
     /// children at all. An inclusive last address cannot wrap while the area is
-    /// non-empty, and every area is -- create_subaom_preamble() rejects a
+    /// non-empty, and every area is -- resolve_range_locked() rejects a
     /// zero-length request before there is an area to ask.
     ///
     /// Containment is deliberately not written in these terms: contains() and
@@ -439,11 +422,8 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
 
     FORCE_INLINE
     auto mark_active() -> void {
-        m_vmaf |= VmaFlags::Active;
+        m_state = State::Active;
     }
-
-    TA_REQUIRES(get_lock())
-    virtual auto activate() -> Status;
 
     /// This routine by default just remove itself.
     TA_REQUIRES(get_lock())
@@ -458,9 +438,20 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     char const *m_name;
     VirtAddr m_base;
     usize m_size;
-    VmaFlags m_vmaf;
+    VmaFlags const m_vmaf;
     VmArea *m_parent;
     ustl::Arc<VmAspace> m_aspace;
+
+  private:
+    enum class State : u8 {
+        /// Constructed but unpublished, or removed from the address space.
+        Inactive,
+
+        /// Registered with every index required by this node.
+        Active,
+    };
+
+    State m_state = State::Inactive;
 };
 
 /// Areas are held by pointer: the tree allocates only its own node storage,
@@ -509,11 +500,6 @@ class VmAreaOrMapping::Builder {
         return *this;
     }
 
-    auto set_option(VmMapOption option) -> Self & {
-        m_option = option;
-        return *this;
-    }
-
     auto set_mmuf(MmuFlags mmuf) -> Self & {
         m_mmuf = mmuf;
         return *this;
@@ -529,7 +515,6 @@ class VmAreaOrMapping::Builder {
     usize m_size{};
     VmaFlags m_vmaf{};
     MmuFlags m_mmuf{};
-    VmMapOption m_option{};
     VmArea *m_parent{};
     ustl::Arc<VmAspace> *m_aspace{};
     char const *m_name{};

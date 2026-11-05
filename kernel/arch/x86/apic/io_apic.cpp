@@ -221,7 +221,7 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
                   ustl::views::Span<arch::IoApicIsaOverride> const &overrides) -> void {
     auto const nr_ioapics = ioapics.size();
     {
-        auto raw_ioapics = new (mm::GAF_KERNEL) arch::IoApic[nr_ioapics]();
+        auto raw_ioapics = new (mm::ALLOC_KERNEL) arch::IoApic[nr_ioapics]();
         ASSERT(raw_ioapics, "Failed to allocate IO-APIC");
         IOAPICS = ustl::views::make_span(raw_ioapics, nr_ioapics);
     }
@@ -248,7 +248,7 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
                 phys_aligned, VirtAddr::Anywhere, PAGE_SIZE,
                 // `Discache` is required to prevent
                 mm::MmuFlags::Discache | mm::MmuFlags::Readable | mm::MmuFlags::Writable,
-                mm::VmMapOption::Populate | mm::VmMapOption::Pinned, "IO-APIC");
+                mm::MapOptions::Resident | mm::MapOptions::Sealed, "IO-APIC");
             DEBUG_ASSERT(result, "Failed to initialize IO-APIC");
 
             mmio_virt = (*result)->base() + (phys - phys_aligned);

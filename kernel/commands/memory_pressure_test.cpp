@@ -30,9 +30,10 @@
 // Why a console command: the gate counts the real zones' free frames, and a
 // waiter is a real thread asleep on the real event.
 #include <ours/arch/aspace_layout.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/memory_reclaimer.hpp>
 #include <ours/mm/memory_watchdog.hpp>
+#include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
@@ -53,7 +54,7 @@ namespace ours {
 namespace {
     using task::Thread;
 
-    constexpr auto WAITABLE = mm::GAF_USER_VMO;
+    constexpr auto WAITABLE = mm::ALLOC_USER_VMO;
     constexpr auto NO_BOUND = ~usize{0};
 
     /// How long a waiter is given to fall asleep, and an event to be
@@ -103,7 +104,7 @@ namespace {
     auto shut_gate() -> bool {
         auto _ = mm::set_free_memory_signal(0, NO_BOUND, NO_BOUND, nullptr,
                                             mm::DelayedAllocations::Wait);
-        auto const delayed = mm::try_alloc_frames(WAITABLE, 0);
+        auto const delayed = mm::alloc_frames(WAITABLE);
         if (delayed) {
             mm::free_frames(*delayed, 0);
             return false;
@@ -164,19 +165,32 @@ namespace {
 
     auto check_gate(Tally &tally) -> void {
         open_gate();
-        auto served = mm::try_alloc_frames(WAITABLE, 0);
+        auto served = mm::alloc_frames(WAITABLE);
         verdict(tally, !!served, "with no delay level, a CanWait allocation is served");
         if (served) {
             mm::free_frames(*served, 0);
         }
 
         auto const shut = shut_gate();
-        auto plain = mm::try_alloc_frames(mm::GAF_USER, 0);
+        auto plain = mm::alloc_frames(mm::ALLOC_USER);
         verdict(tally, shut && !!plain,
                 "below the delay level a CanWait allocation answers ShouldWait, and one without "
                 "CanWait is served");
         if (plain) {
             mm::free_frames(*plain, 0);
+        }
+
+        auto const by_node = mm::alloc_frames(mm::current_node(), WAITABLE, 0);
+        auto address = PhysAddr::Invalid;
+        auto const with_address = mm::alloc_frames(WAITABLE, &address);
+        verdict(tally,
+                !by_node && by_node.unwrap_err() == Status::ShouldWait && !with_address &&
+                    with_address.unwrap_err() == Status::ShouldWait && address == PhysAddr::Invalid,
+                "block overloads share pressure admission and keep outputs on ShouldWait");
+        for (auto const &result: {by_node, with_address}) {
+            if (result) {
+                mm::free_frames(*result, 0);
+            }
         }
     }
 
@@ -212,7 +226,7 @@ namespace {
         auto const asleep = still_waiting(thread);
         refuse();
         auto const ended = finish(thread);
-        auto refused = mm::try_alloc_frames(WAITABLE, 0);
+        auto refused = mm::alloc_frames(WAITABLE);
         verdict(tally,
                 shut && asleep && ended && waiter.status == Status::OutOfMem &&
                     waiter.frame == nullptr && !refused && refused.unwrap_err() == Status::OutOfMem,
@@ -227,39 +241,63 @@ namespace {
         open_gate();
     }
 
+    auto check_timeout(Tally &tally) -> void {
+        auto const shut = shut_gate();
+        auto const deadline = deadline_after(SETTLE);
+        auto result = mm::wait_for_frame_allocation(WAITABLE, deadline, true);
+        if (!result && result.unwrap_err() == Status::ShouldWait) {
+            // Closing the gate can leave a wakeup from its previous opening.
+            result = mm::wait_for_frame_allocation(WAITABLE, deadline, true);
+        }
+        open_gate();
+        verdict(tally, shut && !result && result.unwrap_err() == Status::TimeOut,
+                "an interruptible allocation wait times out while the gate stays shut");
+        if (result) {
+            mm::free_frames(*result, 0);
+        }
+    }
+
     auto check_signal(Tally &tally) -> void {
         sync::Event watched;
-        std::array<mm::PmFrame *, NR_CROSSING> frames{};
-
+        sync::Event rejected;
         // Free memory pushed below the lower bound by allocations.
         auto const before = mm::approx_free_frame_count();
         auto const armed_low = mm::set_free_memory_signal(before - MARGIN, NO_BOUND, 0, &watched,
                                                           mm::DelayedAllocations::Wait);
-        usize taken = 0;
-        for (auto &frame: frames) {
-            auto result = mm::try_alloc_frames(mm::GAF_USER, 0);
-            if (!result) {
-                break;
-            }
-            frame = *result;
-            taken += 1;
+        auto const stale_low = mm::set_free_memory_signal(NO_BOUND, NO_BOUND, 0, &rejected,
+                                                          mm::DelayedAllocations::Wait);
+        auto const stale_high =
+            mm::set_free_memory_signal(0, 0, 0, &rejected, mm::DelayedAllocations::Wait);
+        // The first fragment crosses the lower bound before the second fails.
+        constexpr auto ROLLBACK = NR_CROSSING | (usize{1} << (MAX_FRAME_ORDER + 1));
+        auto rolled_back = mm::PmNode::alloc_frames_fragment(mm::ALLOC_KERNEL, ROLLBACK);
+        auto const invalid = !rolled_back && rolled_back.unwrap_err() == Status::InvArgs;
+        if (rolled_back) {
+            mm::PmNode::free_frames(&*rolled_back);
         }
+        auto const quiet = watched.wait(deadline_after(SETTLE)) == Status::TimeOut;
+        verdict(tally, armed_low && invalid && quiet,
+                "a partial withdrawal is rolled back before pressure is sampled");
+
+        auto batch = mm::PmNode::alloc_frames_bulk(mm::ALLOC_USER, NR_CROSSING);
         auto const low = watched.wait(deadline_after(SETTLE)) == Status::Ok;
-        verdict(tally, armed_low && taken == NR_CROSSING && low,
-                "an allocation that takes free memory below the lower bound signals the event");
+        verdict(tally, armed_low && batch && batch->size() == NR_CROSSING && low,
+                "a direct PmNode batch below the lower bound signals the event");
         watched.unsignal();
 
         // And above the upper bound by frees.
         auto const during = mm::approx_free_frame_count();
         auto const armed_high = mm::set_free_memory_signal(0, during + MARGIN, 0, &watched,
                                                            mm::DelayedAllocations::Wait);
-        for (usize i = 0; i < taken; ++i) {
-            mm::free_frames(frames[i], 0);
+        if (batch) {
+            mm::PmNode::free_frames(&*batch);
         }
         auto const high = watched.wait(deadline_after(SETTLE)) == Status::Ok;
         verdict(tally, armed_high && high,
-                "a free that takes free memory above the upper bound signals the event");
+                "a direct PmNode list return above the upper bound signals the event");
         open_gate();
+        verdict(tally, !stale_low && !stale_high && low,
+                "stale bounds are rejected without replacing the armed event");
     }
 
     /// One use of a user VMO's page, by a thread of its own: it sleeps while
@@ -344,9 +382,9 @@ namespace {
             mm::VmObjectPaged::create(WAITABLE, 3 * P, mm::VmoFlags::Lazy, &vmo) == Status::Ok;
         VirtAddr base{};
         if (made) {
-            auto mapping = aspace->root_vma()->map_with_vmo(
+            auto mapping = aspace->root_vma()->map_vmo(
                 VirtAddr::Anywhere, 3 * P, 0, rw, mm::VmaFlags::PermMask,
-                ustl::Arc<mm::VmObject>(vmo), mm::VmMapOption::None, "mempressure.test");
+                ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Lazy, "mempressure.test");
             if (mapping.is_ok()) {
                 base = mapping.unwrap()->base();
             }
@@ -435,7 +473,7 @@ namespace {
         std::array<mm::PmFrame *, 2 * K> frames{};
         usize taken = 0;
         for (auto &frame: frames) {
-            auto result = mm::try_alloc_frames(mm::GAF_USER, 0);
+            auto result = mm::alloc_frames(mm::ALLOC_USER);
             if (!result) {
                 break;
             }
@@ -455,8 +493,8 @@ namespace {
         auto const oom_levels = at(now + K, now + 3 * K, now + 5 * K);
         auto const declared = oom_levels && watchdog.set_levels(*oom_levels) == Status::Ok &&
                               settles_at(MemoryPressure::OutOfMemory);
-        auto refused = mm::try_alloc_frames(WAITABLE, 0);
-        auto served = mm::try_alloc_frames(mm::GAF_USER, 0);
+        auto refused = mm::alloc_frames(WAITABLE);
+        auto served = mm::alloc_frames(mm::ALLOC_USER);
         verdict(tally, declared && !refused && refused.unwrap_err() == Status::OutOfMem && !!served,
                 "at OutOfMemory an allocation that could wait is refused, and one that could not "
                 "is served");
@@ -469,7 +507,7 @@ namespace {
 
         auto const restored = watchdog.set_levels(boot);
         auto const normal = restored == Status::Ok && settles_at(MemoryPressure::Normal);
-        auto waited = mm::try_alloc_frames(WAITABLE, 0);
+        auto waited = mm::alloc_frames(WAITABLE);
         verdict(tally, normal && !!waited,
                 "with the boot levels back, the pressure is Normal and an allocation that could "
                 "wait is served");
@@ -486,6 +524,7 @@ namespace {
             check_gate(tally);
             check_waiter(tally);
             check_refusal(tally);
+            check_timeout(tally);
             check_signal(tally);
             check_vmo(tally);
             open_gate();

@@ -22,7 +22,7 @@
 // a page read through its entry, so that this CPU caches the translation,
 // then written over with another frame, reads the new frame next time.
 #include <ours/arch/aspace_layout.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_area.hpp>
@@ -56,38 +56,46 @@ namespace {
 
     auto check_two_regions(mm::VmAspace &aspace) -> void {
         PhysAddr phys{};
-        auto *const frames = mm::alloc_frames(mm::GAF_KERNEL, &phys, 1);
+        auto *const frames = mm::alloc_frames(mm::ALLOC_KERNEL, &phys, 1).value_or(nullptr);
         if (!frames) {
-            FAIL("two contiguous frames are allocated");
+            EXPECT_TRUE(false, "two contiguous frames are allocated");
+            return;
         }
 
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_phys(phys, VirtAddr::Anywhere, 2 * P, rw, mm::VmMapOption::None,
+        auto mapping = root->map_phys(phys, VirtAddr::Anywhere, 2 * P, rw, mm::MapOptions::Lazy,
                                       "vmaphys.test");
         if (mapping.is_err()) {
+            EXPECT_TRUE(false, "the two frames are mapped as a physical object");
             mm::free_frames(frames, 1);
-            FAIL("the two frames are mapped as a physical object");
+            return;
         }
         auto const base = mapping.unwrap()->base();
         EXPECT_TRUE(!entry_at(aspace, base).present && !entry_at(aspace, base + P).present,
                     "a physical object mapped without Populate has nothing in the page tables");
+        EXPECT_TRUE(aspace.soft_fault(base, mm::VmFault::Cause::Absent) == Status::NotSupported &&
+                        !entry_at(aspace, base).present,
+                    "a physical mapping cannot install a frame on demand");
 
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
-        EXPECT_OK(root->protect(base + P, P, ro),
-                  "its second page is made read-only: two protection regions");
+        EXPECT_TRUE(root->protect(base + P, P, ro) == Status::Ok,
+                    "its second page is made read-only: two protection regions");
 
-        EXPECT_OK(mapping.unwrap()->map(base, 2 * P, mm::MapOptions::None),
-                  "map() over both regions is Ok");
+        EXPECT_TRUE(mapping.unwrap()->map(base, 2 * P, mm::MapOptions::Resident) == Status::Ok,
+                    "map() over both regions is Ok");
         auto const first = entry_at(aspace, base);
         auto const second = entry_at(aspace, base + P);
-        log::info("VmaPhys:   frames at {:#x}; page 0 -> {:#x}, page 1 -> {:#x}", phys, first.pa,
-                  second.pa);
+        log::info("vmaphys.test:   frames at {:#x}; page 0 -> {:#x}, page 1 -> {:#x}", phys,
+                  first.pa, second.pa);
         EXPECT_TRUE(first.present && first.pa == phys && !!(first.flags & mm::MmuFlags::Writable),
                     "the first region's page is on the first frame, writable");
         EXPECT_TRUE(second.present && second.pa == phys + P &&
                         !(second.flags & mm::MmuFlags::Writable),
                     "the second region's page is on the second frame, read-only");
+        EXPECT_TRUE(root->protect(base + P, P, mm::MmuFlags{}) == Status::InvArgs &&
+                        entry_at(aspace, base + P).flags == second.flags,
+                    "protect rejects empty permissions and leaves the physical PTE unchanged");
 
         auto _ = root->unmap(base, 2 * P);
         mm::free_frames(frames, 1);
@@ -119,27 +127,29 @@ namespace {
 
         PhysAddr first_pa{};
         PhysAddr second_pa{};
-        auto *const first = mm::alloc_frames(mm::GAF_KERNEL, &first_pa, 0);
-        auto *const second = mm::alloc_frames(mm::GAF_KERNEL, &second_pa, 0);
+        auto *const first = mm::alloc_frames(mm::ALLOC_KERNEL, &first_pa, 0).value_or(nullptr);
+        auto *const second = mm::alloc_frames(mm::ALLOC_KERNEL, &second_pa, 0).value_or(nullptr);
         if (!first || !second) {
+            EXPECT_TRUE(false, "two frames are allocated for the overwrite");
             if (first) {
                 mm::free_frames(first, 0);
             }
             if (second) {
                 mm::free_frames(second, 0);
             }
-            FAIL("two frames are allocated for the overwrite");
+            return;
         }
         *reinterpret_cast<u64 *>(mm::PhysMap::phys_to_virt(first_pa)) = FIRST;
         *reinterpret_cast<u64 *>(mm::PhysMap::phys_to_virt(second_pa)) = SECOND;
 
         auto root = aspace.root_vma();
-        auto mapping = root->map_phys(first_pa, VirtAddr::Anywhere, P, RW,
-                                      mm::VmMapOption::Populate, "vmaphys.test overwrite");
+        auto mapping = root->map_phys(first_pa, VirtAddr::Anywhere, P, RW, mm::MapOptions::Resident,
+                                      "vmaphys.test overwrite");
         if (mapping.is_err()) {
+            EXPECT_TRUE(false, "the first frame is mapped, populated");
             mm::free_frames(first, 0);
             mm::free_frames(second, 0);
-            FAIL("the first frame is mapped, populated");
+            return;
         }
         auto const va = mapping.unwrap()->base();
         auto &arch_aspace = aspace.arch_aspace();
@@ -169,7 +179,7 @@ namespace {
         auto const still = entry_at(aspace, va);
         attach(previous);
 
-        log::info("VmaPhys:   overwrite: read {:#x}, then {:#x}", before, after);
+        log::info("vmaphys.test:   overwrite: read {:#x}, then {:#x}", before, after);
         EXPECT_TRUE(read_first == Status::Ok && overwritten == Status::Ok &&
                         read_second == Status::Ok && before == FIRST && after == SECOND,
                     "a page written over with another frame reads the new frame on the CPU that "
@@ -184,15 +194,16 @@ namespace {
 
     KTEST(VmaPhys, MapsEachPageToItsOwnFrame) {
         ustl::Arc<mm::VmAspace> aspace;
-        ASSERT_OK(mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
-                                       mm::VmasKind::User, mm::VmasFlags::None, "vmaphys.test",
-                                       &aspace),
-                  "an address space of its own");
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmaphys.test", &aspace);
+            status != Status::Ok) {
+            FAIL("vmaphys.test: could not create an address space: {}", to_string(status));
+        }
 
         check_two_regions(*aspace);
         check_overwrite(*aspace);
-        EXPECT_OK(aspace->destroy(), "the address space is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok, "the address space is destroyed");
     }
-
 } // namespace
 } // namespace ours

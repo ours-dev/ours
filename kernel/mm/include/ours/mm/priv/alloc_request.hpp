@@ -7,59 +7,18 @@
 // <ours/cpu.hpp>. <ours/mm/types.hpp> is here for ZoneType, which the zone
 // range below needs; it is the one heavy include, and the host test builds
 // with it the same way the other mm smoke tests do.
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/types.hpp>
 
 namespace ours::mm {
-class AllocRequest;
-
-/// Where an allocation comes from: the node that is to serve it and the CPU
-/// that asked.
-///
-/// One type for the two because NodeId and CpuNum are both aliases of u32, so
-/// as two adjacent parameters they were interchangeable to the compiler, and
-/// a transposed call built a request that named a CPU as its home node and a
-/// node as its initiator -- silently, and then wrongly for the rest of the
-/// allocation: the walk would start from whatever node had the CPU's number
-/// and the locality counters would compare against it. Folding the pair into
-/// one argument leaves exactly one place where the two can still be confused,
-/// the brace that builds an Origin, and both of its writers name the fields so
-/// that even that place is checked -- a designated initialiser out of
-/// declaration order does not compile.
-///
-/// A plain record rather than a class with accessors: there is no invariant
-/// over the pair, and its readers fill and read it field by field.
-struct Origin {
-    /// The node serving this allocation. Not necessarily the node |cpu| is
-    /// on: a caller may name a node directly, and the thread's memory policy
-    /// may choose another.
-    NodeId node;
-
-    /// The CPU the request came from.
-    CpuNum cpu;
-};
-
-/// Resolves a caller's ask into the request every layer below reads.
-///
-/// Pure: everything it needs is an argument, including the calling CPU, so the
-/// same code runs in a host test without a kernel. That is also why it takes
-/// |origin| rather than reading the current node and CPU -- which node serves
-/// an allocation is a different question, answered before this one.
-///
-/// The only way to build an AllocRequest from nothing, which is what makes
-/// "resolved" true of every request that exists: see the class below.
-[[nodiscard]]
-inline auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, Origin origin)
-    -> AllocRequest;
-
 /// One allocation, resolved: what the caller asked for and what the allocator
 /// worked out from it.
 ///
 /// Built once, by resolve_request(), and read -- never written -- by every
 /// layer below. That is the whole point of it. The walk, the zones and the
-/// postamble used to be handed four parameters: a `Gaf`, an `order`, an
+/// postamble used to be handed four parameters: an `Gaf`, an `order`, an
 /// `AllocationOptions` and a `MemoryAllocationContext`. Three of those were
 /// views of one thing and the fourth was an option set that was always empty,
 /// so each layer re-derived from them whatever it needed.
@@ -75,16 +34,42 @@ inline auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, Orig
 ///
 /// The walk's cursor is deliberately not in here: a mutable iteration position
 /// inside an otherwise read-only value is what made the shape it replaces hard
-/// to reason about. ZoneSelector holds it.
+/// to reason about. ZoneCandidates holds it.
 class AllocRequest final {
     using Self = AllocRequest;
 
   public:
+    /// Where an allocation comes from: the node that is to serve it and the CPU
+    /// that asked.
+    ///
+    /// One type for the two because NodeId and CpuNum are both aliases of u32, so
+    /// as two adjacent parameters they were interchangeable to the compiler, and
+    /// a transposed call built a request that named a CPU as its home node and a
+    /// node as its initiator -- silently, and then wrongly for the rest of the
+    /// allocation: the walk would start from whatever node had the CPU's number
+    /// and the locality counters would compare against it. Folding the pair into
+    /// one argument leaves exactly one place where the two can still be confused,
+    /// the brace that builds an Origin, and both of its writers name the fields so
+    /// that even that place is checked -- a designated initialiser out of
+    /// declaration order does not compile.
+    ///
+    /// A plain record rather than a class with accessors: there is no invariant
+    /// over the pair, and its readers fill and read it field by field.
+    struct Origin {
+        /// The node serving this allocation. Not necessarily the node |cpu| is
+        /// on: a caller may name a node directly, and the thread's memory policy
+        /// may choose another.
+        NodeId node;
+
+        /// The CPU the request came from.
+        CpuNum cpu;
+    };
+
     /// What the caller asked for, unchanged.
     [[nodiscard]]
     FORCE_INLINE
-    constexpr auto gaf() const -> Gaf {
-        return m_gaf;
+    constexpr auto flags() const -> Gaf {
+        return m_alloc_flags;
     }
 
     /// Frames, as a power of two. At most MAX_FRAME_ORDER; the public entry
@@ -100,20 +85,15 @@ class AllocRequest final {
     /// Never empty for a request that can succeed: an unset NodeMask answers
     /// false for every node, so the zone walk would reject everything.
     ///
-    /// `Gaf::ThisNode` narrows it to the home node whenever the caller's mask
-    /// includes it, so the walk then skips every other node's zones even when
-    /// the home node has nothing: a restriction, not a preference. Only a mask
-    /// that leaves the home node out keeps its own nodes. That is not the
-    /// memoryless-node case -- a node with no memory is still in the online
-    /// mask, so ThisNode leaves such a node nothing to allocate from.
+    /// `Gaf::ThisNode` intersects the caller's mask with the home node.
+    /// A mask that excludes the home node leaves no eligible zones.
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto allowed_nodes() const -> NodeMask const & {
         return m_allowed_nodes;
     }
 
-    /// The node serving this allocation: the one whose zone list the walk
-    /// starts from, and what the locality counters compare against.
+    /// The node whose zone order this allocation starts from.
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto home_node() const -> NodeId {
@@ -188,20 +168,20 @@ class AllocRequest final {
     /// with_* methods above, both of which start from a request that was
     /// resolved -- so there is no path to an AllocRequest whose fields were
     /// never worked out from a caller's ask.
-    friend auto resolve_request(Gaf gaf, usize order, NodeMask const &fallback, Origin origin)
-        -> AllocRequest;
+    friend auto resolve_request(Gaf alloc_flags, usize order, NodeMask const &fallback,
+                                Origin origin) -> AllocRequest;
 
-    constexpr AllocRequest(Gaf const gaf, usize const order, NodeMask const &allowed_nodes,
+    constexpr AllocRequest(Gaf const alloc_flags, usize const order, NodeMask const &allowed_nodes,
                            Origin const origin, ZoneType const lowest_zone,
                            ZoneType const highest_zone)
-        : m_gaf(gaf)
+        : m_alloc_flags(alloc_flags)
         , m_order(order)
         , m_allowed_nodes(allowed_nodes)
         , m_origin(origin)
         , m_lowest_zone(lowest_zone)
         , m_highest_zone(highest_zone) {}
 
-    Gaf m_gaf;
+    Gaf m_alloc_flags;
     usize m_order;
     NodeMask m_allowed_nodes;
 
@@ -215,20 +195,26 @@ class AllocRequest final {
     ZoneType m_highest_zone;
 };
 
+/// Resolves a caller's ask into the request every layer below reads.
+///
+/// Pure: everything it needs is an argument, including the calling CPU, so the
+/// same code runs in a host test without a kernel. That is also why it takes
+/// |origin| rather than reading the current node and CPU -- which node serves
+/// an allocation is a different question, answered before this one.
+///
+/// The only way to build an AllocRequest from nothing, which is what makes
+/// "resolved" true of every request that exists.
+[[nodiscard]]
 FORCE_INLINE
-inline auto resolve_request(Gaf const gaf, usize const order, NodeMask const &fallback,
-                            Origin const origin) -> AllocRequest {
+inline auto resolve_request(Gaf const alloc_flags, usize const order, NodeMask const &fallback,
+                            AllocRequest::Origin const origin) -> AllocRequest {
     auto allowed = fallback;
-    if (!!(gaf & Gaf::ThisNode)) {
-        auto local = fallback;
-        local &= NodeMask::of(origin.node);
-        if (local.any()) {
-            allowed = local;
-        }
+    if (!!(alloc_flags & Gaf::ThisNode)) {
+        allowed &= NodeMask::of(origin.node);
     }
 
     return AllocRequest{
-        gaf,
+        alloc_flags,
         order,
         allowed,
         origin,

@@ -1,6 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/object/sampler_dispatcher.hpp>
 
 #include <heap/new.hpp>
@@ -44,7 +44,7 @@ auto SamplerDispatcher::create(SamplerConfig const &config, KernelHandle<Sampler
 
     // If the object cannot be made, the session's destructor releases it, so
     // a failed create leaves no session claimed.
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(ustl::move(session)));
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_KERNEL) Self(ustl::move(session)));
     if (!self) {
         return Status::NoMemory;
     }

@@ -4,6 +4,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 
 namespace ours::mm {
 
@@ -123,6 +124,11 @@ auto PageTable::second_level_empty(VirtAddr const va) -> bool {
 /// worse, made an edit made *while* allocating from the buddy re-enter it.
 /// alloc_page_table() picks the allocator that is up.
 auto PageTable::allocate_table() -> PhysAddr {
+#if MM_TEST_ALLOC_FAILURE
+    if (test::AllocationFailure::hit(test::AllocationSite::PageTable)) {
+        return {};
+    }
+#endif
     return alloc_page_table(PAGE_SIZE, PAGE_SIZE);
 }
 

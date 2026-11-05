@@ -5,8 +5,8 @@
 #include <ours/assert.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <ours/mm/gaf.hpp>
 
 #include <algorithm>
 
@@ -78,7 +78,7 @@ auto IoBitmap::change(u32 const base, u32 const count, Change const change,
     // heap may not be entered. An edit uses at most one new run: opening
     // [base, end) where it touches no run, or closing it out of the middle of
     // one, which splits that run in two.
-    auto *spare = new (mm::GAF_KERNEL) Run{};
+    auto *spare = new (mm::ALLOC_KERNEL) Run{};
     if (spare == nullptr) {
         return Status::OutOfMem;
     }

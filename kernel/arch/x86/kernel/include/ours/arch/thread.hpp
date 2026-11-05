@@ -41,7 +41,7 @@ class X86Thread {
         /// on; only a fault that cannot be resolved is sent to the copy's exit.
         /// Clear, the fault is not resolved at all. The handler sends it
         /// straight to the exit with the faulting address in %rdx and its
-        /// VmfCause in %rcx, and the copy returns them to its caller. That is
+        /// VmFault::Cause in %rcx, and the copy returns them to its caller. That is
         /// fault capture: a copy that runs under a lock -- where resolving would
         /// take the address space's lock inside it, or block where blocking is
         /// not allowed -- gets the fault back, drops the lock, resolves it with

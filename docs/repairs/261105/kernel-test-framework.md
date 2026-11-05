@@ -21,3 +21,23 @@ The migrated tests under `kernel/tests/` are the pattern, batch 1's thirteen inc
 
 **Acceptance**
 `ktest list` names every kernel test; `kernel/commands` holds only commands that are not tests; `kshell_run.py`'s `<name>: ok` rule and `cov_kernel.py`'s `GKTL_COMMAND` scrape can be deleted; `python3 .agents/skills/verify/scripts/boot_check.py` passes and `python3 scripts/kshell_run.py --out out/bringup.x86 'ktest all'` reports every test passing; `python3 scripts/cov_kernel.py` still enumerates every test at run time.
+
+## 2. Intentional allocation-failure logs make a passing KTEST run fail the console runner
+
+**Severity**
+Low: the optional MM allocation-failure build reports a false harness failure, while the tests' own assertions and summary succeed.
+
+**Symptom**
+With `mm_test_alloc_failure=true`, `ktest all` reports `ran=24 passed=23 failed=0 skipped=1`. The seal suite intentionally causes three page-table allocation failures, whose production error logs say `Failed to map ... pages`. `scripts/kshell_run.py` then reports `3 FAILED or error line(s) beside the SUMMARY` and returns failure. The coverage runner accepts the zero-failure test summary. Observed during the MM integration on 2026-11-05.
+
+**Cause**
+`judge_ktest_run()` correctly rejects unaccounted error logs, but the MM injection tests currently have no explicit way to mark the expected diagnostics produced by the error path they are testing. A successful assertion does not by itself classify that independent log output.
+
+**Change**
+Provide a narrowly scoped expected-diagnostic mechanism for intentional allocation failures, or report those expected diagnostics through a test-owned sink. Do not remove generic error checking or whitelist every page-table failure: either would hide unexpected errors in other tests. This needs an interface decision before implementation.
+
+**Reference**
+None, this project's own diagnostic and kernel-test interfaces.
+
+**Acceptance**
+The default and fault-enabled `ktest all` commands both pass the console runner when their summaries have no failures. A deliberately unexpected error emitted by a passing test must still make the runner fail.

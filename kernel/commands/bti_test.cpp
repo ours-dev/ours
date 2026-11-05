@@ -36,7 +36,7 @@
 //
 // The name has no underscore for the reason usercopy.test's does not: gktl's
 // command table does not encode '_'.
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/object/bti_dispatcher.hpp>
@@ -93,7 +93,7 @@ namespace {
 
     auto make_vmo(usize const pages) -> ustl::Arc<mm::VmObjectPaged> {
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (mm::VmObjectPaged::create(mm::GAF_USER, pages * P, mm::VmoFlags::Lazy, &vmo) !=
+        if (mm::VmObjectPaged::create(mm::ALLOC_USER, pages * P, mm::VmoFlags::Lazy, &vmo) !=
             Status::Ok) {
             return {};
         }

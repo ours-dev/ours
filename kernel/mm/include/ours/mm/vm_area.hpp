@@ -19,28 +19,22 @@
 #include <ustl/util/pair.hpp>
 
 namespace ours::mm {
-/// Whether an unmap may destroy the sub-areas that lie wholly inside its range.
-///
-/// The kernel's own callers own every area they unmap in and pass Yes. A
-/// program reaches an area through a VMA handle, and the handle's OpChildren
-/// right is what lets it reach the areas below the one it names: without it a
-/// range that covers a sub-area is refused, as one that only partly covers it
-/// always is. What a sub-area holds is not the parent handle's to give away,
-/// which is why the right is asked of the handle and not of the area.
-///
-/// A handle's Rights::OpChildren becomes it in
-/// VmaDispatcher::op_children_from_rights().
-enum class VmAreaOpChildren : bool {
-    No,
-    Yes,
-};
-
 /// `VmArea` is a representation of a contiguous range of virtual memory space.
 class VmArea final: public VmAreaOrMapping {
     using Self = VmArea;
     using Base = VmAreaOrMapping;
 
   public:
+    /// Whether unmap may also destroy fully covered child VMAs.
+    /// A request that only partly covers a child VMA is always rejected.
+    enum class UnmapScope : u8 {
+        /// Unmap mappings and reject ranges that include a child VMA.
+        Mapping,
+
+        /// Also destroy fully covered child VMAs and their contents.
+        Subarea,
+    };
+
     static constexpr std::uintptr_t TYPE_TAG = 2;
     [[nodiscard]]
     auto rc_type_tag() const noexcept -> std::uintptr_t override {
@@ -80,28 +74,13 @@ class VmArea final: public VmAreaOrMapping {
     /// Internally the *_locked helpers were already absolute, so the
     /// conversions did not buy anything even inside the class.
 
-    /// Create a mapping at |where|, or choose a free spot for VirtAddr::Anywhere.
-    /// Zero is a concrete address. Other reserved values are InvArgs, and an
-    /// occupied fixed range is AlreadyExists; nothing is replaced.
-    ///
-    /// |mmuf| is the protection the pages get now; |ceiling| is what a later
-    /// protect() may ever raise them to, as far as this area allows -- the
-    /// mapping keeps `ceiling & permissions()`. A caller with nothing to add
-    /// passes VmaFlags::PermMask and gets this area's own allowance, which is
-    /// what every mapping got before a ceiling could be asked for. |mmuf|
-    /// must fit inside the result (InvArgs otherwise). A mapping is a leaf,
-    /// so its ceiling is its own and handed on to nobody.
-    auto create_mapping(VirtAddr where, usize size, usize vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
-                        ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
-                        ustl::Arc<VmMapping> *out) -> Status;
-
-    /// Create a sub-VMA at |where|, with the same placement rules as create_mapping().
+    /// Create a sub-VMA at |where|, with the same placement rules as map_vmo().
     ///
     /// |vmaf| is the new area's allowance, and it may narrow this area's but
     /// never widen it. Narrowing is the point: it is the ceiling every
     /// protect() under the new area is checked against.
     auto create_subvma(VirtAddr where, usize size, VmaFlags vmaf, char const *name,
-                       VmMapOption option, ustl::Arc<Self> *out) -> Status;
+                       ustl::Arc<Self> *out) -> Status;
 
     /// The two coarse-grained ways to get memory mapped into this area. They
     /// differ in what backs the mapping, which is what their names say: a
@@ -115,42 +94,36 @@ class VmArea final: public VmAreaOrMapping {
     /// of them took. Two axes were spelt as one, and neither was spelt as
     /// itself.
     ///
-    /// With |VmMapOption::Populate| the mapping is populated immediately rather
+    /// With |MapOptions::Resident| the mapping is populated immediately rather
     /// than left for a page fault to resolve.
 
     /// Map |size| bytes of physical memory starting at |phys_base|.
-    auto map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags, VmMapOption,
+    auto map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags, MapOptions,
                   char const *name) -> ktl::Result<ustl::Arc<VmMapping>>;
 
     /// Map |size| bytes of anonymous memory.
-    auto map_anon(VirtAddr where, usize size, MmuFlags, VmMapOption, char const *name)
+    auto map_anon(VirtAddr where, usize size, MmuFlags, MapOptions, char const *name)
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
-    /// Map |size| bytes of a VMO the caller already has.
+    /// Map |size| bytes of an existing VMO, starting at its byte offset |vmo_ofs|.
+    /// The offset is page-aligned and the rounded window must fit in the VMO.
+    /// VirtAddr::Anywhere chooses a free range. Zero is a concrete address.
+    /// Other reserved values are InvArgs and an occupied range is AlreadyExists.
     ///
-    /// The general form the two above are special cases of -- they differ only
-    /// in which kind of VmObject they build before calling this. It was
-    /// protected, which made sense while it was only their shared helper, and
-    /// stopped making sense the moment anything wanted to map memory it had
-    /// obtained separately: that is the shape of every vma_map system call,
-    /// and it is what //kernel/object's VmaDispatcher::map() needs.
+    /// |mmuf| is the initial protection. The mapping retains the permission
+    /// ceiling |ceiling & permissions()| for later protect() calls.
     ///
-    /// Note what this does that create_mapping() does not: create_mapping()
-    /// accepts a VmMapOption and never acts on Commit, so a caller that used
-    /// it directly got a live mapping with no pages installed, and faulted on
-    /// first touch. Honouring Commit -- and unwinding correctly when it fails
-    /// -- lives here.
-    ///
-    /// |vmo_ofs| is where in the object the mapping starts, and Commit
-    /// commits from there; |ceiling| is create_mapping()'s.
-    auto map_with_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
-                      ustl::Arc<VmObject> vmo, VmMapOption option, char const *name)
+    /// The mapping is registered before the selected mode installs entries.
+    /// Lazy registers it for demand faults. A failed immediate installation
+    /// tears the mapping down before returning its error.
+    auto map_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
+                 ustl::Arc<VmObject> vmo, MapOptions option, char const *name)
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
     /// Tear down everything mapped in [base, base + size). AccessDenied, with
-    /// nothing torn down, if a sealed mapping (VmMapOption::Sealed) overlaps
+    /// nothing torn down, if a sealed mapping (MapOptions::Sealed) overlaps
     /// the range. A sub-area wholly inside the range is destroyed when
-    /// |op_children| allows it and refuses the whole call (InvArgs) when it
+    /// |scope| allows it and refuses the whole call (InvArgs) when it
     /// does not; one only partly inside always refuses it. BadState once this
     /// area has been destroyed, asked under the address space lock.
     ///
@@ -158,10 +131,9 @@ class VmArea final: public VmAreaOrMapping {
     /// the way a region is dissolved), and a vma_destroy that a program can
     /// call has to check the region for sealed mappings first, as this does.
     ///
-    /// |op_children| defaults to Yes for the kernel's own callers, which own
-    /// every area they unmap in; vma_unmap passes what the handle's rights say.
-    auto unmap(VirtAddr base, usize size, VmAreaOpChildren op_children = VmAreaOpChildren::Yes)
-        -> Status;
+    /// |scope| defaults to Subarea for the kernel's own callers,
+    /// which own every area they unmap in. vma_unmap passes what the handle's rights say.
+    auto unmap(VirtAddr base, usize size, UnmapScope scope = UnmapScope::Subarea) -> Status;
 
     /// Destroys |child|, and everything under it, if it is still one of this
     /// area's children: unmap() names a range, this names the object. The
@@ -252,8 +224,8 @@ class VmArea final: public VmAreaOrMapping {
     /// the object can be mapped as one leaf (decision D6 of
     /// .agents/tasks/large-pages). A child placed by its creator ignores it.
     TA_REQUIRES(get_lock())
-    auto create_subaom_preamble(VirtAddr where, usize size,
-                                ustl::Option<usize> block_phase = ustl::NONE)
+    auto resolve_range_locked(VirtAddr where, usize size,
+                              ustl::Option<usize> block_phase = ustl::NONE)
         -> ktl::Result<ustl::Pair<VirtAddr, usize>>;
 
     TA_REQUIRES(get_lock())
@@ -264,9 +236,9 @@ class VmArea final: public VmAreaOrMapping {
 
     /// Unmap everything inside [base, base + size), assuming the aspace lock is
     /// already held and the range was validated against this area. See
-    /// unmap() for |op_children|.
+    /// unmap() for |scope|.
     TA_REQUIRES(get_lock())
-    auto unmap_locked(VirtAddr base, usize size, VmAreaOpChildren op_children) -> Status;
+    auto unmap_locked(VirtAddr base, usize size, UnmapScope scope) -> Status;
 
     /// Whether a sealed mapping overlaps [base, base + size); the aspace lock
     /// held. See unmap().
@@ -287,6 +259,11 @@ class VmArea final: public VmAreaOrMapping {
     virtual auto destroy() -> Status override;
 
   private:
+    /// Registers a mapping and leaves page-table installation to the caller.
+    auto create_mapping(VirtAddr where, usize size, usize vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
+                        ustl::Arc<VmObject> vmo, char const *name, MapOptions option,
+                        ustl::Arc<VmMapping> *out) -> Status;
+
     // ObjectCache::Instance placement-news T; VmArea's constructor stays
     // protected otherwise.
     template <typename, typename...>
@@ -299,7 +276,12 @@ class VmArea final: public VmAreaOrMapping {
     // For Enumerator's VmArea overload, which reaches m_subvmas.
     friend class VmaSet;
 
-    usize m_num_mappings;
+    TA_REQUIRES(get_lock())
+    auto link_child_locked(VmAreaOrMapping &child) -> Status;
+
+    TA_REQUIRES(get_lock())
+    auto unlink_child_locked(VmAreaOrMapping &child) -> void;
+
     VmaSet m_subvmas;
 };
 

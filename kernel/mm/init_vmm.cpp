@@ -110,9 +110,9 @@ namespace {
         [[maybe_unused]]
         // CanMapSpecific: reserve() below records the mapping at the area's
         // own base, a place chosen for it, which only such an area takes.
-        auto status = root_vma->create_subvma(phys_vma.base, phys_vma.size,
-                                              phys_vma.vmaf | VmaFlags::CanMapSpecific,
-                                              phys_vma.name, VmMapOption::None, &vma);
+        auto status =
+            root_vma->create_subvma(phys_vma.base, phys_vma.size,
+                                    phys_vma.vmaf | VmaFlags::CanMapSpecific, phys_vma.name, &vma);
         DEBUG_ASSERT(Status::Ok == status);
 
         if (PhysVma::Backing::AddressSpace == phys_vma.backing) {
@@ -244,22 +244,22 @@ namespace {
             entrol_preset_vma(PRESET_VMAS[i]);
         }
 
-        // Gaf::Zero is asked for by name: GAF_KERNEL does not imply it (only
-        // GAF_USER does), and the buddy allocator hands back the
+        // Gaf::Zero is asked for by name: ALLOC_KERNEL does not imply it (only
+        // ALLOC_USER does), and the buddy allocator hands back the
         // frame as the previous owner left it. A page whose whole job is to
         // stand in for "nothing has been written here" and which is not zero
         // is worse than having none, and nothing could have told: no code
         // reads ZERO_PAGE yet, so this went unnoticed until the first reader
         // -- a copy-on-write child answering a read of a hole -- would have
         // returned another owner's bytes as if they were zeros.
-        auto frame = alloc_frames(GAF_KERNEL | Gaf::Zero, usize(0));
+        auto const frame = alloc_frames(ALLOC_KERNEL | Gaf::Zero);
         if (!frame) {
             panic("Failed to allocate the zero page");
         }
         // Claim it for the VMM: the frame comes straight from the buddy
         // allocator, so this is a role *declaration*, not a query.
-        frame->become<page::VmmBody>();
-        ZERO_PAGE = frame;
+        (*frame)->become<page::VmmBody>();
+        ZERO_PAGE = *frame;
 
         // Checked rather than trusted, because a booted kernel is the only
         // evidence a change here can offer and nothing else looks at the page.

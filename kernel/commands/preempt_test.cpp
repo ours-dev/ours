@@ -24,7 +24,7 @@
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/ipi_service.hpp>
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/sync/semaphore.hpp>
 #include <ours/task/sched/common.hpp>
 #include <ours/task/thread.hpp>
@@ -241,7 +241,7 @@ namespace {
         log::info("preempt.test: CPU {}, slice {} us, late by at most {} us", target,
                   slice.count() / 1000, late.count() / 1000);
 
-        auto *const state = new (mm::GAF_KERNEL) State();
+        auto *const state = new (mm::ALLOC_KERNEL) State();
         if (state == nullptr) {
             log::error("preempt.test: FAILED -- no memory for the test's state");
             return 1;

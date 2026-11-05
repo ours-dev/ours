@@ -20,7 +20,7 @@
 //
 // In-kernel rather than a host test for the reason mutex.stress gives: a
 // semaphore's slow path is the scheduler.
-#include <ours/mm/gaf.hpp>
+#include <ours/mm/alloc_flags.hpp>
 #include <ours/sync/semaphore.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -124,7 +124,7 @@ namespace {
     }
 
     KTEST(Semaphore, PostHandsUnitToAParkedWaiter) {
-        auto *const h = new (mm::GAF_KERNEL) Handoff{};
+        auto *const h = new (mm::ALLOC_KERNEL) Handoff{};
         ASSERT_NONNULL(h, "allocate the handoff case");
 
         auto *const poster = start("semaphore-test-poster", handoff_poster, h);
@@ -224,7 +224,7 @@ namespace {
     }
 
     KTEST(Semaphore, EachPostWakesExactlyOne) {
-        auto *const crowd = new (mm::GAF_KERNEL) Crowd{};
+        auto *const crowd = new (mm::ALLOC_KERNEL) Crowd{};
         ASSERT_NONNULL(crowd, "allocate the crowd case");
         auto &c = *crowd;
         c.deadline = lost_after_from_now();

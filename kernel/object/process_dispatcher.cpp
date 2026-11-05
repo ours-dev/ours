@@ -100,17 +100,17 @@ auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const 
     // root_vma_out holding a dispatcher, which the caller's KernelHandle
     // releases on its own -- and the aspace dies with it, since the root VMA
     // was the last thing referencing it.
-    auto handle_table = ustl::Arc<HandleTable>::adopt(new (mm::GAF_KERNEL) HandleTable());
+    auto handle_table = ustl::Arc<HandleTable>::adopt(new (mm::ALLOC_KERNEL) HandleTable());
     if (!handle_table) {
         return Status::OutOfMem;
     }
 
-    auto handle_account = ustl::Arc<HandleAccount>::adopt(new (mm::GAF_KERNEL) HandleAccount());
+    auto handle_account = ustl::Arc<HandleAccount>::adopt(new (mm::ALLOC_KERNEL) HandleAccount());
     if (!handle_account) {
         return Status::OutOfMem;
     }
 
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(
+    auto self = ustl::Arc<Self>::adopt(new (mm::ALLOC_USER) Self(
         job, name, ustl::move(aspace), ustl::move(handle_table), ustl::move(handle_account)));
     if (!self) {
         return Status::OutOfMem;

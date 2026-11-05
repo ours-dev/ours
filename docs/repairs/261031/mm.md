@@ -26,27 +26,7 @@ None, this project's own design.
 **Acceptance**
 A `docs/perf/` report with the baseline and each stage, and a smaller cost for the alignment-above-size case without a slower common case.
 
-## 2. A snapshot of a pinned-node VMO is refused by the object's flag and not by the node
-
-**Severity**
-Low: nothing reaches the node without the object, and the object refuses.
-
-**Symptom**
-Latent, cannot be triggered today. `VmObjectPaged::create_clone()` answers BadState for a VMO with `VmoFlags::Pinned`, and `take_pages()` does the same; `VmCowPages::create_clone_locked()` looks only at the count of pinned pages (`m_nr_pinned_pages`), not at the node's own `Flags::Pinned`. A contiguous VMO has the flag on both, so it is safe; a path that cloned the node without the object, with no pin held, would move the pages under a hidden node, and the parent's next write would copy to a new frame and break the run.
-
-**Cause**
-The pin of step 4 counted pins and refused on the count. The `Pinned` flag of a node (pages that are never reclaimed, kernel stacks) was a separate idea that only the object checks.
-
-**Change**
-Refuse a clone of a node with `Flags::Pinned` in `create_clone_locked()`, with a case in `vmocontig.test`. Ask first whether the kernel's stack VMOs (also `Pinned`) are ever cloned by a path that would now fail.
-
-**Reference**
-None, this project's own design.
-
-**Acceptance**
-`create_clone_locked()` of a `Pinned` node answers BadState in a kernel test, and the boot checks pass.
-
-## 3. Nothing can ask for memory below 4 GiB
+## 2. Nothing can ask for memory below 4 GiB
 
 **Severity**
 Low: no driver of this image needs it, and a virtio device is given 64-bit addresses.

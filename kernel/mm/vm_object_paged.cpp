@@ -23,48 +23,71 @@ using ustl::round_up;
 namespace ours::mm {
 using VmoPagedCache = ObjectCache::Instance<VmObjectPaged>;
 
-VmObjectPaged::VmObjectPaged(VmoFlags vmof, ustl::Arc<VmCowPages> cowpages, u64 const cow_offset,
+VmObjectPaged::VmObjectPaged(VmoFlags vmof, ustl::Arc<VmCowPages> cowpages, usize const cow_offset,
                              usize const size)
     : Base(gktl::magic<Self>(), Type::Paged, vmof, cowpages->lock())
     , m_cow_pages(ustl::move(cowpages))
     , m_cow_offset(cow_offset)
-    , m_size(size)
-    , m_attachment(this) {
-    // Registered with the pages, under their lock, so that an operation on the
-    // pages can reach this object's mappings. Not yet reachable by anyone else,
-    // so nothing can be missed between the two.
-    Guard guard{m_cow_pages->lock()};
-    m_cow_pages->lock().assert_held();
-    m_cow_pages->attach_locked(m_attachment);
-}
-
-/// Off the pages' list before anything of this object is gone, under the same
-/// lock: an operation on the pages that is walking the list holds it, so it
-/// never sees an object half destroyed. The reference to the pages is released
-/// after this body, outside the lock, as the last reference to a node must be.
-VmObjectPaged::~VmObjectPaged() {
-    Guard guard{m_cow_pages->lock()};
-    m_cow_pages->lock().assert_held();
-    m_cow_pages->detach_locked(m_attachment);
-}
-
-auto VmObjectPaged::change_cow_range_locked(u64 const cow_offset, u64 const len,
-                                            RangeChange const change) -> void {
-    // This object shows [m_cow_offset, m_cow_offset + m_size) of the pages.
-    u64 end = cow_offset + len;
-    if (len > ~u64{0} - cow_offset) {
-        end = ~u64{0};
-    }
-    u64 const first = std::max<u64>(cow_offset, m_cow_offset);
-    u64 const last = std::min<u64>(end, m_cow_offset + m_size);
-    if (first >= last) {
+    , m_size(size) {
+    Guard guard{m_lock};
+    assert_cow_pages_locked();
+    auto *const representative = m_cow_pages->m_representative;
+    if (representative == nullptr) {
+        m_cow_pages->m_representative = this;
         return;
     }
-    change_range_locked(first - m_cow_offset, last - first, change);
+
+    representative->lock().assert_held();
+    representative->m_views.push_back(*this);
 }
 
-auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjectPaged> *out)
-    -> Status {
+VmObjectPaged::~VmObjectPaged() {
+    // The view leaves the group before its members are destroyed. The COW
+    // reference drops after the guard, so the node can take its lock on death.
+    Guard guard{m_lock};
+    assert_cow_pages_locked();
+
+    auto *const representative = m_cow_pages->m_representative;
+    DEBUG_ASSERT(representative);
+    if (representative != this) {
+        representative->lock().assert_held();
+        representative->m_views.erase(*this);
+        return;
+    }
+
+    if (auto next = m_views.front()) {
+        auto &successor = next.value();
+        m_views.pop_front();
+        successor.lock().assert_held();
+        DEBUG_ASSERT(successor.m_views.empty());
+        successor.m_views.swap(m_views);
+        m_cow_pages->m_representative = &successor;
+    } else {
+        m_cow_pages->m_representative = nullptr;
+    }
+}
+
+auto VmObjectPaged::operate_views_locked(usize const cow_offset, usize const len, RangeOp const op)
+    -> void {
+    auto const end = cow_offset + std::min(len, ~usize{0} - cow_offset);
+    // Each view clips the original range independently, even when the
+    // representative's own window does not overlap it.
+    auto const notify = [cow_offset, end, op](VmObjectPaged &view) -> void {
+        view.lock().assert_held();
+        auto const first = std::max(cow_offset, view.m_cow_offset);
+        auto const last = std::min(end, view.m_cow_offset + view.m_size);
+        if (first < last) {
+            view.range_change_locked(first - view.m_cow_offset, last - first, op);
+        }
+    };
+    notify(*this);
+    for (auto &view: m_views) {
+        notify(view);
+    }
+}
+
+auto VmObjectPaged::create(Gaf alloc_flags, usize size, VmoFlags vmof,
+                           ustl::Arc<VmObjectPaged> *out) -> Status {
     // Check vmof
     auto cow_flags = VmCowPages::Flags::None;
     if (!!(vmof & VmoFlags::LargePages)) {
@@ -74,12 +97,12 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
         cow_flags |= VmCowPages::Flags::Pinned;
     }
     ustl::Arc<VmCowPages> cow_pages;
-    auto status = VmCowPages::create(gaf, size, cow_flags, &cow_pages);
+    auto status = VmCowPages::create(alloc_flags, size, cow_flags, &cow_pages);
     if (Status::Ok != status) {
         return status;
     }
 
-    auto vmo = VmoPagedCache::get(GAF_KERNEL, vmof, ustl::move(cow_pages), 0, size);
+    auto vmo = VmoPagedCache::get(ALLOC_KERNEL, vmof, ustl::move(cow_pages), 0, size);
     if (!vmo) {
         return Status::OutOfMem;
     }
@@ -118,9 +141,9 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     return Status::Ok;
 }
 
-auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const gaf, usize const size,
-                                VmoFlags const vmof, ustl::Arc<VmObjectPaged> *const out)
-    -> Status {
+auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const alloc_flags,
+                                usize const size, VmoFlags const vmof,
+                                ustl::Arc<VmObjectPaged> *const out) -> Status {
     DEBUG_ASSERT(source);
 
     if (!!(vmof & VmoFlags::Pinned) || !ustl::is_aligned(size, PAGE_SIZE)) {
@@ -133,13 +156,13 @@ auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const gaf, usi
     // reference is the one left to close it with. Once they exist they own
     // the source, and close it when they die.
     ustl::Arc<VmCowPages> cow_pages;
-    if (auto const status = VmCowPages::with_source(source, gaf, size, &cow_pages);
+    if (auto const status = VmCowPages::with_source(source, alloc_flags, size, &cow_pages);
         Status::Ok != status) {
         source->close();
         return status;
     }
 
-    auto *const vmo = VmoPagedCache::get(GAF_KERNEL, vmof, ustl::move(cow_pages), 0, size);
+    auto *const vmo = VmoPagedCache::get(ALLOC_KERNEL, vmof, ustl::move(cow_pages), 0, size);
     if (!vmo) {
         return Status::OutOfMem;
     }
@@ -148,13 +171,13 @@ auto VmObjectPaged::with_source(ustl::Arc<PageSource> source, Gaf const gaf, usi
     return Status::Ok;
 }
 
-auto VmObjectPaged::create_contiguous(Gaf const gaf, usize const size, usize alignment_log2,
+auto VmObjectPaged::create_contiguous(Gaf const alloc_flags, usize const size, usize alignment_log2,
                                       Flags const vmof, ustl::Arc<VmObjectPaged> *const out)
     -> Status {
     // A block is taken in one go, with no lock held across a wait to give it up
     // for: CanWait is for callers that sleep until a frame is free, and this
     // one answers NoMemory instead.
-    DEBUG_ASSERT(!(gaf & Gaf::CanWait), "create_contiguous() does not wait for memory");
+    DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "create_contiguous() does not wait for memory");
     if (size == 0 || !!(vmof & (VmoFlags::Lazy | VmoFlags::LargePages))) {
         return Status::InvArgs;
     }
@@ -183,17 +206,19 @@ auto VmObjectPaged::create_contiguous(Gaf const gaf, usize const size, usize ali
     }
 
     ustl::Arc<VmCowPages> cow_pages;
-    if (auto const status = VmCowPages::create(gaf, rounded, VmCowPages::Flags::Pinned, &cow_pages);
+    if (auto const status =
+            VmCowPages::create(alloc_flags, rounded, VmCowPages::Flags::Pinned, &cow_pages);
         Status::Ok != status) {
         return status;
     }
 
     // Zero, as every page a program can reach is: a device's buffer is not the
     // place for what the last owner of the frames left in them.
-    auto *const block = alloc_frames(gaf | Gaf::Zero, order);
-    if (block == nullptr) {
+    auto const allocated = alloc_frames(alloc_flags | Gaf::Zero, order);
+    if (!allocated) {
         return Status::NoMemory;
     }
+    auto *const block = *allocated;
 
     // Each frame is its own from here, as if it had been allocated alone (the
     // way fill_block_locked() treats a large block): the tail goes back now,
@@ -229,8 +254,8 @@ auto VmObjectPaged::create_contiguous(Gaf const gaf, usize const size, usize ali
 
     // Constructed after the lock is released: the constructor takes the same
     // mutex to attach, and it is not recursive.
-    auto *const vmo =
-        VmoPagedCache::get(GAF_KERNEL, vmof | VmoFlags::Pinned, ustl::move(cow_pages), 0, rounded);
+    auto *const vmo = VmoPagedCache::get(ALLOC_KERNEL, vmof | VmoFlags::Pinned,
+                                         ustl::move(cow_pages), 0, rounded);
     if (!vmo) {
         return Status::OutOfMem;
     }
@@ -238,14 +263,16 @@ auto VmObjectPaged::create_contiguous(Gaf const gaf, usize const size, usize ali
     return Status::Ok;
 }
 
-auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, usize const size,
-                                            ustl::Arc<VmObjectPaged> *const out) -> Status {
+auto VmObjectPaged::create_from_wired_pages(Gaf const alloc_flags, PhysAddr const base,
+                                            usize const size, ustl::Arc<VmObjectPaged> *const out)
+    -> Status {
     if (size == 0 || !ustl::is_aligned(base, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE)) {
         return Status::InvArgs;
     }
 
     ustl::Arc<VmCowPages> cow_pages;
-    if (auto const status = VmCowPages::create(gaf, size, &cow_pages); Status::Ok != status) {
+    if (auto const status = VmCowPages::create(alloc_flags, size, &cow_pages);
+        Status::Ok != status) {
         return status;
     }
 
@@ -269,7 +296,7 @@ auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, 
 
     // Constructed after the lock is released: the constructor takes the same
     // mutex to attach, and it is not recursive.
-    auto *const vmo = VmoPagedCache::get(GAF_KERNEL, VmoFlags{}, ustl::move(cow_pages), 0, size);
+    auto *const vmo = VmoPagedCache::get(ALLOC_KERNEL, VmoFlags{}, ustl::move(cow_pages), 0, size);
     if (!vmo) {
         return Status::OutOfMem;
     }
@@ -279,8 +306,8 @@ auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, 
 
 /// No lock is taken: everything read here -- the window and the pages it
 /// sits on -- is fixed when the parent is built, and the child only adds a
-/// reference to the pages. The lock would be needed to link the child into
-/// the parent's list of children, which is not kept (nothing yet walks it).
+/// reference to the pages. Its constructor registers the view under the
+/// shared lock.
 ///
 /// The child keeps the parent's flags. For a Pinned parent every page of the
 /// window is already committed, and stays so; for a Lazy one the child
@@ -297,8 +324,8 @@ auto VmObjectPaged::create_slice(u64 const offset, u64 const size,
         return Status::InvArgs;
     }
 
-    auto child =
-        VmoPagedCache::get(GAF_KERNEL, m_flags, m_cow_pages, m_cow_offset + offset, usize(size));
+    auto child = VmoPagedCache::get(ALLOC_KERNEL, m_flags, m_cow_pages,
+                                    m_cow_offset + usize(offset), usize(size));
     if (!child) {
         return Status::OutOfMem;
     }
@@ -316,10 +343,6 @@ auto VmObjectPaged::create_clone(u64 const offset, u64 const size,
     if (offset > m_size || size > MAX_SIZE) {
         return Status::InvArgs;
     }
-    if (!!(m_flags & Flags::Pinned)) {
-        return Status::BadState;
-    }
-
     ustl::Arc<VmCowPages> pages;
     {
         Guard guard{m_lock};
@@ -338,7 +361,7 @@ auto VmObjectPaged::create_clone(u64 const offset, u64 const size,
     // pages, under that lock. If it cannot be made the clone goes with |pages|,
     // and this object's pages stay as the clone left them, which is consistent:
     // the hidden node is merged away when the clone that hung under it is gone.
-    auto child = VmoPagedCache::get(GAF_KERNEL, m_flags, ustl::move(pages), u64{0}, usize(size));
+    auto child = VmoPagedCache::get(ALLOC_KERNEL, m_flags, ustl::move(pages), 0, usize(size));
     if (!child) {
         return Status::OutOfMem;
     }
@@ -346,67 +369,56 @@ auto VmObjectPaged::create_clone(u64 const offset, u64 const size,
     return Status::Ok;
 }
 
-FORCE_INLINE
-auto VmObjectPaged::commit_range_internal(usize offset, usize size, CommitOptions option)
-    -> Status {
-    if (!!(option & CommitOptions::Pin)) {
-        if (!size) {
-            return Status::InvArgs;
-        }
-    }
-
-    if (!size) {
-        return Status::Ok;
-    }
-
-    // One call commits as much of the range as it can. It stops early only
-    // with ShouldWait, when a page source has to supply a page first: the
-    // request is waited on with the lock let go, since the provider supplies
-    // under this same lock, and the next call starts at the first page not yet
-    // committed. Without that advance the loop would only repeat itself. (A
-    // loop once called it for the whole range once per page, so a VMO of n
-    // pages cost n^2 lookups.)
-    //
-    // Raised under the lock, waited on outside it, as in copy_page_by_page().
+auto VmObjectPaged::commit_range_internal(usize const offset, usize const size,
+                                          VmCowPages::CommitMode const mode) -> Status {
     MultiPageRequest request;
     usize done = 0;
+    auto status = Status::Ok;
     while (done < size) {
         {
             Guard guard{m_lock};
-            // The whole range, offset included, and written so that it cannot
-            // wrap: this used to compare |size| alone against the object's
-            // size, so a range starting anywhere but 0 was admitted however
-            // far it ran past the end. Rechecked each time the lock is
-            // retaken, since the size is only known while it is held.
+            // Recheck the whole range after each wait, with the lock held.
             if (size > m_size || offset > m_size - size) {
-                return Status::OutOfRange;
+                status = Status::OutOfRange;
+                break;
             }
 
-            usize nr_committed = 0;
+            usize nr_done = 0;
             assert_cow_pages_locked();
-            auto const status = m_cow_pages->commit_range_locked(
-                m_cow_offset + offset + done, size - done, &request, &nr_committed);
-            done += nr_committed * PAGE_SIZE;
+            status = m_cow_pages->commit_range_locked(m_cow_offset + offset + done, size - done,
+                                                      mode, request, nr_done);
+            done += nr_done * PAGE_SIZE;
             if (Status::ShouldWait != status) {
-                return status;
+                break;
             }
         }
 
-        // Suspendable, as copy_page_by_page()'s wait is, for the same reason.
-        // A wait that ends without the page fails the commit with its status;
-        // the pages committed before it stay.
-        if (auto const status = request.wait(true); Status::Ok != status) {
-            return status;
+        status = request.wait(true);
+        if (Status::Ok != status) {
+            break;
         }
     }
-    return Status::Ok;
+
+    if (mode == VmCowPages::CommitMode::Pin && Status::Ok != status && done != 0) {
+        // A failed pin releases this call's pins. The materialized pages stay.
+        Guard guard{m_lock};
+        assert_cow_pages_locked();
+        [[maybe_unused]]
+        auto const undone = m_cow_pages->unpin_range_locked(m_cow_offset + offset, done);
+        DEBUG_ASSERT(Status::Ok == undone, "pages this call pinned were not pinned");
+    }
+    return status;
 }
 
-auto VmObjectPaged::commit_range(usize offset, usize size, CommitOptions option) -> Status {
+auto VmObjectPaged::commit_range(usize const offset, usize const size, CommitOptions const option)
+    -> Status {
     m_canary.verify<Self>();
 
     log::trace("VMO Commit Action: [ofs: {:X}, size: {:X}]", offset, size);
-    return commit_range_internal(offset, size, option);
+    if (size == 0) {
+        return !!(option & CommitOptions::Pin) ? Status::InvArgs : Status::Ok;
+    }
+    return commit_range_internal(offset, size, VmCowPages::CommitMode::Owned);
 }
 
 auto VmObjectPaged::decommit(usize offset, usize size) -> Status {
@@ -421,50 +433,7 @@ auto VmObjectPaged::pin_range(usize const offset, usize const size) -> Status {
     if (!ustl::is_aligned(offset, PAGE_SIZE) || !ustl::is_aligned(size, PAGE_SIZE) || !size) {
         return Status::InvArgs;
     }
-
-    // One call pins as much as it can and stops early only with ShouldWait, as
-    // commit_range_internal() does: the request is waited on with the lock let
-    // go, and the next call starts at the first page not yet pinned. The pages
-    // pinned meanwhile stay pinned, which is what makes the wait safe.
-    MultiPageRequest request;
-    usize done = 0;
-    auto status = Status::Ok;
-    while (done < size) {
-        {
-            Guard guard{m_lock};
-            // Rechecked each time the lock is retaken, written so that it cannot
-            // wrap, as commit_range_internal() does.
-            if (size > m_size || offset > m_size - size) {
-                status = Status::OutOfRange;
-                break;
-            }
-
-            usize nr_pinned = 0;
-            assert_cow_pages_locked();
-            status = m_cow_pages->pin_range_locked(m_cow_offset + offset + done, size - done,
-                                                   &request, &nr_pinned);
-            done += nr_pinned * PAGE_SIZE;
-            if (Status::ShouldWait != status) {
-                break;
-            }
-        }
-
-        // Suspendable, as the commit's wait is.
-        status = request.wait(true);
-        if (Status::Ok != status) {
-            break;
-        }
-    }
-
-    if (Status::Ok != status && done != 0) {
-        // Whole or not at all: what was pinned before the failure is let go.
-        Guard guard{m_lock};
-        assert_cow_pages_locked();
-        [[maybe_unused]]
-        auto const undone = m_cow_pages->unpin_range_locked(m_cow_offset + offset, done);
-        DEBUG_ASSERT(Status::Ok == undone, "pages this call pinned were not pinned");
-    }
-    return status;
+    return commit_range_internal(offset, size, VmCowPages::CommitMode::Pin);
 }
 
 auto VmObjectPaged::unpin_range(usize const offset, usize const size) -> Status {
@@ -496,17 +465,14 @@ auto VmObjectPaged::lookup_contiguous(usize const offset, usize const size, Phys
     }
 
     assert_cow_pages_locked();
-    auto cursor = m_cow_pages->make_cursor(m_cow_offset + offset, size);
-    if (!cursor) {
-        return cursor.unwrap_err();
-    }
+    auto cursor = m_cow_pages->lookup_cursor_locked(m_cow_offset + offset, size);
     // Looking is not using: the answer is about where the pages are, and an
     // access through the physmap that this is not.
-    cursor->disable_mark_accessed();
+    cursor.disable_mark_accessed();
 
     auto first = PhysAddr{0};
     for (usize at = 0; at < size; at += PAGE_SIZE) {
-        auto const found = cursor->maybe_page();
+        auto const found = cursor.maybe_page();
         if (found.is_none()) {
             return Status::BadState;
         }
@@ -535,13 +501,6 @@ auto VmObjectPaged::take_pages(usize const offset, usize const size, VmPageSplic
     if (size > m_size || offset > m_size - size) {
         return Status::OutOfRange;
     }
-    // Checked here and not by the node, as the clone checks it: pinning is the
-    // object's (VmoFlags::Pinned), and the kernel's mappings of a pinned
-    // object rely on its pages staying where they are.
-    if (!!(m_flags & Flags::Pinned)) {
-        return Status::BadState;
-    }
-
     assert_cow_pages_locked();
     return m_cow_pages->take_pages_locked(m_cow_offset + offset, size, pages);
 }
@@ -658,10 +617,7 @@ auto VmObjectPaged::copy_page_by_page(usize const offset, usize const size, bool
             auto const end_page = round_up(offset + size, PAGE_SIZE);
             assert_cow_pages_locked();
             auto cursor =
-                m_cow_pages->make_cursor(m_cow_offset + first_page, end_page - first_page);
-            if (!cursor) {
-                return cursor.unwrap_err();
-            }
+                m_cow_pages->lookup_cursor_locked(m_cow_offset + first_page, end_page - first_page);
 
             while (done < size) {
                 auto const at = offset + done;
@@ -673,7 +629,7 @@ auto VmObjectPaged::copy_page_by_page(usize const offset, usize const size, bool
                 // an anonymous VMO both commit a zeroed page where there was
                 // none, so a read of a never-written page reads zero (see
                 // VmCowPages::Cursor).
-                auto page = cursor->require_page(will_write, 1, &request);
+                auto page = cursor.require_page(will_write, 1, &request);
                 if (!page) {
                     if (Status::ShouldWait == page.unwrap_err()) {
                         must_wait = true;
@@ -738,7 +694,7 @@ auto VmObjectPaged::copy_page_by_page(usize const offset, usize const size, bool
     return Status::Ok;
 }
 
-/// The window is clipped to this object first, as make_cursor() checks it:
+/// The window is clipped to this object first, as lookup_cursor_locked() checks it:
 /// the page tree is a slice's parent's too, and its pages past the slice's
 /// end are not the slice's to count.
 auto VmObjectPaged::committed_pages(u64 const offset, u64 const len) -> usize {

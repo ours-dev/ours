@@ -8,6 +8,7 @@
 
 executable("frame-buddy-smoke") {
   testonly = true
+  defines = [ "MM_NUMA=1" ]
   sources = [
     "frame_buddy_smoke.cpp",
     "//kernel/mm/frame_buddy.cpp",
@@ -71,7 +72,9 @@ executable("alloc-request-smoke") {
   include_dirs = [ "//kernel/include" ]
 
   # NUMA on, for this test only. MAX_NODES is 1 in the default build, and the
-  # Gaf::ThisNode narrowing this test exists to pin is a no-op with one node:
+  # Gaf::ThisNode narrowing this test exists to pin is a no-op with
+  # one
+  # node:
   # the caller's mask, the home node and the result are all {0}. The function's
   # logic does not depend on the configured node count, so testing it at 32
   # nodes tests the branches that a one-node build cannot reach.

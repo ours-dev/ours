@@ -150,6 +150,7 @@ config("memory") {
     "MM_NUMA=$mm_numa",
     "MM_NUMA_EMULATION=$mm_numa_emulation",
     "MM_ALLOCATION_POLICY=$mm_allocation_policy",
+    "MM_TEST_ALLOC_FAILURE=$mm_test_alloc_failure",
     "MM_VFLAT_MEMMAP=$mm_vflat_memmap",
   ]
 }

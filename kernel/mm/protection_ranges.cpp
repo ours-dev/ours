@@ -24,10 +24,18 @@ auto ProtectionRanges::init(VirtAddr base, usize size, MmuFlags mmuf) -> Status 
 }
 
 auto ProtectionRanges::update(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
+    auto const end = base + size;
+    if (auto const status = prepare_update(base, end, mmuf); Status::Ok != status) {
+        return status;
+    }
+    apply_update(base, end, mmuf);
+    return Status::Ok;
+}
+
+auto ProtectionRanges::prepare_update(VirtAddr base, VirtAddr end, MmuFlags mmuf) -> Status {
     DEBUG_ASSERT(!m_regions.empty(), "update before init");
 
-    VirtAddr const end = base + size;
-    if (!size || base < m_base || end > m_end) {
+    if (end <= base || base < m_base || end > m_end) {
         return Status::InvArgs;
     }
 
@@ -63,7 +71,10 @@ auto ProtectionRanges::update(VirtAddr base, usize size, MmuFlags mmuf) -> Statu
         // leave an empty region behind.
         m_regions.find(a_base).value()->end = base;
     }
+    return Status::Ok;
+}
 
+auto ProtectionRanges::apply_update(VirtAddr base, VirtAddr end, MmuFlags mmuf) -> void {
     // Overwrite every region intersecting the range. A region reaching past
     // an endpoint can only still do so when it already carried |mmuf| -- the
     // alternative was split off above -- so this never clobbers a tail that
@@ -72,7 +83,10 @@ auto ProtectionRanges::update(VirtAddr base, usize size, MmuFlags mmuf) -> Statu
     for (auto iter = region_containing(base); iter != m_regions.end() && iter->base < end; ++iter) {
         iter->mmuf = mmuf;
     }
+    coalesce();
+}
 
+auto ProtectionRanges::coalesce() -> void {
     // Merge equal-flag neighbours; only regions around the updated range can
     // newly qualify, but a whole-window sweep is the same code with no case
     // analysis about which ends moved. The walk is carried by the running
@@ -100,7 +114,6 @@ auto ProtectionRanges::update(VirtAddr base, usize size, MmuFlags mmuf) -> Statu
     }
 
     validate();
-    return Status::Ok;
 }
 
 auto ProtectionRanges::make_enumerator(VirtAddr base, usize size) const -> Enumerator {

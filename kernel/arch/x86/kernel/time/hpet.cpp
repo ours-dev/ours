@@ -291,7 +291,7 @@ static auto hpet_init_internal() -> Status {
         return Status::NoResource;
     }
 
-    auto const channels = new (mm::GAF_KERNEL) HpetChannel[num_channels];
+    auto const channels = new (mm::ALLOC_KERNEL) HpetChannel[num_channels];
     if (!channels) {
         return Status::OutOfMem;
     }
@@ -372,7 +372,7 @@ static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
     auto result = VmAspace::kernel_aspace()->root_vma()->map_phys(
         mmio, VirtAddr::Anywhere, PAGE_SIZE,
         MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Discache,
-        VmMapOption::Populate | VmMapOption::Pinned, "HPET");
+        MapOptions::Resident | MapOptions::Sealed, "HPET");
 
     if (!result) {
         return result.unwrap_err();

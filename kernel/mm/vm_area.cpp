@@ -14,6 +14,13 @@
 #include <ustl/mem/align.hpp>
 
 namespace ours::mm {
+namespace {
+    constexpr auto valid_map_options(MapOptions const options) -> bool {
+        return !(options & ~MapOptions::ValidMask) &&
+               (options & MapOptions::ModeMask) != MapOptions::ModeMask;
+    }
+} // namespace
+
 using VmaCache = ObjectCache::Instance<
     VmArea,
     ObjectCache::Option::AddInitHook<"VmaCache", ObjectCache::Flags::Folio, gktl::InitLevel::Heap>>;
@@ -37,7 +44,6 @@ GKTL_INIT_HOOK(VmaCacheInit, init_vma_cache, gktl::InitLevel::Heap);
 VmArea::VmArea(VirtAddr base, usize size, VmaFlags vmaf, Self *parent, VmAspace *aspace,
                char const *name)
     : Base(gktl::magic<Self>(), base, size, vmaf, parent, aspace, name)
-    , m_num_mappings()
     , m_subvmas() {}
 
 auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *parent,
@@ -45,23 +51,18 @@ auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *par
     DEBUG_ASSERT(aspace, "Given a invalid aspace");
     DEBUG_ASSERT(out, "`out` can not be null");
 
-    auto self = VmaCache::get(GAF_KERNEL, base, size, vmaf, parent, aspace, name);
+    auto self = VmaCache::get(ALLOC_KERNEL, base, size, vmaf, parent, aspace, name);
     if (!self) {
         return Status::OutOfMem;
     }
-    if (!parent) {
-        // A root VMA has no parent so just mark it active.
-        self->mark_active();
-    } else {
-        // Created under the parent's lock, which is this area's too: both
-        // live in one address space. Asserted, because the analysis does not
-        // follow the lock from create_subvma() through Builder to here.
-        self->get_lock().assert_held();
-        // FIXME: an insert that fails (OutOfMem) leaves the area active and
-        // unlinked; it should unwind instead. docs/repairs/261002/mm.md,
-        // item 2.
-        auto _ = self->activate();
+    if (parent) {
+        parent->get_lock().assert_held();
+        if (auto const status = parent->link_child_locked(*self); Status::Ok != status) {
+            VmaCache::put(self);
+            return status;
+        }
     }
+    self->mark_active();
 
     *out = ustl::Arc<VmArea>::adopt(self);
     return Status::Ok;
@@ -77,7 +78,7 @@ auto VmArea::alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr 
 }
 
 auto VmArea::create_subvma(VirtAddr where, usize requested_size, VmaFlags vmaf, char const *name,
-                           VmMapOption option, ustl::Arc<VmArea> *out) -> Status {
+                           ustl::Arc<VmArea> *out) -> Status {
     m_canary.verify<Self>();
 
     // The new area's allowance, which may narrow this one's but never widen
@@ -95,9 +96,9 @@ auto VmArea::create_subvma(VirtAddr where, usize requested_size, VmaFlags vmaf, 
     }
 
     // From finding the spot to linking the new area into this one's set, all
-    // under the address space lock; see create_subaom_preamble().
+    // under the address space lock; see resolve_range_locked().
     Guard guard{get_lock()};
-    auto const result = create_subaom_preamble(where, requested_size);
+    auto const result = resolve_range_locked(where, requested_size);
     if (result.is_err()) {
         return result.unwrap_err();
     }
@@ -112,7 +113,6 @@ auto VmArea::create_subvma(VirtAddr where, usize requested_size, VmaFlags vmaf, 
     auto const status = Builder(&m_aspace, vmaf, size)
                             .set_parent(this)
                             .set_base(base)
-                            .set_option(option)
                             .set_name(name)
                             .build(&aom);
 
@@ -126,8 +126,12 @@ auto VmArea::create_subvma(VirtAddr where, usize requested_size, VmaFlags vmaf, 
 
 auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs, MmuFlags mmuf,
                             VmaFlags ceiling, ustl::Arc<VmObject> vmo, char const *name,
-                            VmMapOption option, ustl::Arc<VmMapping> *out) -> Status {
+                            MapOptions option, ustl::Arc<VmMapping> *out) -> Status {
     m_canary.verify<Self>();
+
+    if (!vmo || !ustl::is_aligned(vmo_ofs, PAGE_SIZE)) {
+        return Status::InvArgs;
+    }
 
     // What this area permits, asked of the protection the mapping is being
     // created with. Nothing asked it before: the preamble's check was handed
@@ -147,7 +151,7 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
     }
 
     // Where in a block the mapping starts, for an object that takes blocks:
-    // see create_subaom_preamble().
+    // see resolve_range_locked().
     ustl::Option<usize> block_phase;
     if (!!(vmo->flags() & VmoFlags::LargePages)) {
         block_phase = ustl::some(static_cast<usize>(vmo_ofs % VmCowPages::BLOCK_SIZE));
@@ -155,15 +159,19 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
 
     // From finding the spot to linking the mapping into this area's set and
     // its VMO's list, all under the address space lock; see
-    // create_subaom_preamble(). The VMO's own lock is taken inside it, by
+    // resolve_range_locked(). The VMO's own lock is taken inside it, by
     // VmMapping::activate(), in the one order the two are ever taken.
     Guard guard{get_lock()};
-    auto const result = create_subaom_preamble(where, requested_size, block_phase);
+    auto const result = resolve_range_locked(where, requested_size, block_phase);
     if (result.is_err()) {
         return result.unwrap_err();
     }
 
     auto const [base, size] = *result;
+    auto const vmo_size = vmo->size();
+    if (size > vmo_size || vmo_ofs > vmo_size - size) {
+        return Status::OutOfRange;
+    }
 
     // A mapping's VmaFlags are the ceiling a later protect() is checked
     // against: this area's own flags, with the permission bits narrowed to
@@ -175,7 +183,7 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
     // Nor does a mapping take the area's CanMapSpecific: it is a rule about
     // what goes into an area, and nothing goes into a mapping.
     auto vmaf = (m_vmaf & ~(VmaFlags::PermMask | VmaFlags::CanMapSpecific)) | allowed;
-    if (!!(option & VmMapOption::Sealed)) {
+    if (!!(option & MapOptions::Sealed)) {
         vmaf |= VmaFlags::Sealed;
     }
     ustl::Arc<VmAreaOrMapping> out_aom;
@@ -192,16 +200,27 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
                             .set_vmo_offset(vmo_ofs)
                             .set_name(name)
                             .set_mmuf(mmuf)
-                            .set_option(option)
                             .build(&out_aom);
 
     if (Status::Ok != status) {
         return status;
     }
     *out = ustl::downcast<VmMapping>(ustl::move(out_aom));
-    m_num_mappings += 1;
-
     return Status::Ok;
+}
+
+auto VmArea::link_child_locked(VmAreaOrMapping &child) -> Status {
+    DEBUG_ASSERT(child.m_parent == this);
+    if (!is_active()) {
+        return Status::BadState;
+    }
+    return m_subvmas.insert(child);
+}
+
+auto VmArea::unlink_child_locked(VmAreaOrMapping &child) -> void {
+    DEBUG_ASSERT(child.m_parent == this);
+    child.m_parent = nullptr;
+    m_subvmas.erase(child);
 }
 
 /// Picks where a new child goes. Called with the address space lock held, and
@@ -212,8 +231,7 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
 /// all, so two threads creating in one area could pick the same spot, and
 /// their inserts wrote the set concurrently. The address space lock now
 /// covers the whole span, from this search to that insert.
-auto VmArea::create_subaom_preamble(VirtAddr where, usize size,
-                                    ustl::Option<usize> const block_phase)
+auto VmArea::resolve_range_locked(VirtAddr where, usize size, ustl::Option<usize> const block_phase)
     -> ktl::Result<ustl::Pair<VirtAddr, usize>> {
     if (!is_active()) {
         // Operate an illegal VMA.
@@ -287,8 +305,12 @@ auto VmArea::create_subaom_preamble(VirtAddr where, usize size,
 }
 
 auto VmArea::map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags mmuf,
-                      VmMapOption options, char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
+                      MapOptions options, char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
+
+    if (!valid_map_options(options)) {
+        return ustl::err(Status::InvArgs);
+    }
 
     DEBUG_ASSERT(ustl::is_aligned(phys_base, PAGE_SIZE));
     size = ustl::round_up(size, PAGE_SIZE);
@@ -302,12 +324,16 @@ auto VmArea::map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags m
         return ustl::err(status);
     }
 
-    return map_with_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
+    return map_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
 }
 
-auto VmArea::map_anon(VirtAddr where, usize size, MmuFlags mmuf, VmMapOption options,
+auto VmArea::map_anon(VirtAddr where, usize size, MmuFlags mmuf, MapOptions options,
                       char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
+
+    if (!valid_map_options(options)) {
+        return ustl::err(Status::InvArgs);
+    }
 
     size = ustl::round_up(size, PAGE_SIZE);
     if (!size) {
@@ -315,41 +341,33 @@ auto VmArea::map_anon(VirtAddr where, usize size, MmuFlags mmuf, VmMapOption opt
     }
 
     ustl::Arc<VmObjectPaged> vmo;
-    auto status = VmObjectPaged::create(GAF_KERNEL, size, VmoFlags::Pinned, &vmo);
+    auto status = VmObjectPaged::create(ALLOC_KERNEL, size, VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
         return ustl::err(status);
     }
 
-    return map_with_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
+    return map_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
 }
 
-auto VmArea::map_with_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
-                          ustl::Arc<VmObject> vmo, VmMapOption option, char const *name)
+auto VmArea::map_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
+                     ustl::Arc<VmObject> vmo, MapOptions option, char const *name)
     -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
+    if (!valid_map_options(option)) {
+        return ustl::err(Status::InvArgs);
+    }
+
+    auto const mode = option & MapOptions::ModeMask;
     ustl::Arc<VmMapping> mapping;
-    auto status = create_mapping(where, size, vmo_ofs, mmuf, ceiling, vmo, name, option, &mapping);
+    auto status = create_mapping(where, size, vmo_ofs, mmuf, ceiling, ustl::move(vmo), name,
+                                 option & MapOptions::Sealed, &mapping);
     if (Status::Ok != status) {
         return ustl::err(status);
     }
 
-    // Populate: fill the page tables in now, with what the object has. Only
-    // that. It used to commit the object first (commit_range()), which asks for
-    // every page to be the object's own: the same pages as mapping them for a
-    // node with no ancestors, but for a copy-on-write clone it copies every
-    // shared page of the window at the moment of mapping. map() without
-    // MapOptions::Commit maps the pages the object has -- the node's own
-    // writable, pages it only sees read-only -- and leaves a page that is not
-    // there to fault: a write faults and copies then, one page at a time, and a
-    // page a source has not supplied is asked for by a fault, which can wait
-    // for it, not by this, which holds the address space's lock.
-    //
-    // The kernel's own populated mappings lose nothing: a stack and vmalloc's
-    // memory are Pinned objects, committed when they were made, and the rest
-    // map physical objects, whose pages are always there.
-    if (!!(VmMapOption::Populate & option)) {
-        status = mapping->map(mapping->base(), size, MapOptions::None);
+    if (mode != MapOptions::Lazy) {
+        status = mapping->map(mapping->base(), mapping->size(), mode);
 
         if (Status::Ok != status) {
             // The mapping is already live by this point: create_mapping() ends
@@ -385,7 +403,7 @@ auto VmArea::map_with_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf
     return ustl::ok(ustl::move(mapping));
 }
 
-auto VmArea::unmap(VirtAddr base, usize size, VmAreaOpChildren const op_children) -> Status {
+auto VmArea::unmap(VirtAddr base, usize size, UnmapScope const scope) -> Status {
     m_canary.verify<Self>();
 
     // A length that rounds up to nothing -- 0, or one so close to 2^64 that
@@ -423,7 +441,7 @@ auto VmArea::unmap(VirtAddr base, usize size, VmAreaOpChildren const op_children
     if (has_sealed_mapping_locked(aligned_base, aligned_size)) {
         return Status::AccessDenied;
     }
-    return unmap_locked(aligned_base, aligned_size, op_children);
+    return unmap_locked(aligned_base, aligned_size, scope);
 }
 
 auto VmArea::destroy_child(VmAreaOrMapping &child) -> Status {
@@ -484,13 +502,13 @@ auto VmArea::has_sealed_mapping_locked(VirtAddr const base, usize const size) ->
 /// rejected, and a caller who means to dissolve one names it and unmaps inside
 /// it instead.
 ///
-/// |op_children| is the opt-out: whether destroying a whole sub-area is
+/// |scope| is the opt-out: whether destroying a whole sub-area is
 /// allowed at all, so that vma_unmap can forbid what the kernel's own callers
 /// are allowed. A handle without OpChildren may unmap mappings beside a
 /// sub-area but not the sub-area, and is refused with InvArgs rather than
 /// having the sub-area skipped: a skip would leave a range the caller asked to
 /// be empty with something in it.
-auto VmArea::unmap_locked(VirtAddr base, usize size, VmAreaOpChildren const op_children) -> Status {
+auto VmArea::unmap_locked(VirtAddr base, usize size, UnmapScope const scope) -> Status {
     DEBUG_ASSERT(size, "an empty range has nothing to unmap");
 
     // Inclusive, because `base + size` is 2^64 when the range is the whole
@@ -509,8 +527,7 @@ auto VmArea::unmap_locked(VirtAddr base, usize size, VmAreaOpChildren const op_c
                 // A mapping is a run of pages and may be trimmed at either end.
                 continue;
             }
-            if (child->base() < base || child->last() > last ||
-                op_children == VmAreaOpChildren::No) {
+            if (child->base() < base || child->last() > last || scope == UnmapScope::Mapping) {
                 return Status::InvArgs;
             }
         }
@@ -592,6 +609,7 @@ auto VmArea::unmap_locked(VirtAddr base, usize size, VmAreaOpChildren const op_c
 /// does, and a nested area recurses.
 auto VmArea::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     m_canary.verify<Self>();
+    Guard guard{get_lock()};
 
     if (!is_active()) {
         return Status::BadState;
@@ -612,8 +630,6 @@ auto VmArea::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     if (!validate_mmuflags(mmuf)) {
         return Status::InvArgs;
     }
-
-    Guard guard{get_lock()};
 
     // Ask before doing. A protect that fails halfway would leave the first
     // children rewritten and the rest untouched, with nothing in the return
@@ -788,7 +804,7 @@ auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const 
 
     // TODO(SmallHuaZi) Should we provide a specific way to make these kind of zero length VMO.
     ustl::Arc<VmObjectPaged> vmo;
-    auto status = VmObjectPaged::create(GAF_KERNEL, 0, VmoFlags::Pinned, &vmo);
+    auto status = VmObjectPaged::create(ALLOC_KERNEL, 0, VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
         return status;
     }
@@ -803,6 +819,9 @@ auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const 
         Guard guard{get_lock()};
         if (!(m_vmaf & VmaFlags::CanMapSpecific)) {
             return Status::AccessDenied;
+        }
+        if (m_subvmas.has_range(aligned_base, size)) {
+            return Status::AlreadyExists;
         }
         status = VmMapping::create(this, aligned_base, size, m_vmaf & ~VmaFlags::CanMapSpecific,
                                    ustl::move(vmo), 0, mmuf, name, &mapping);
@@ -882,7 +901,6 @@ auto VmArea::destroy() -> Status {
         curr = parent ? ustl::adopt<Self, ustl::sync::ThreadSafePolicy>(parent) : ustl::Arc<Self>();
     }
 
-    m_num_mappings = 0;
     return first_error;
 }
 

@@ -116,7 +116,7 @@ auto VmAspace::create(VirtAddr base, usize size, Kind kind, Flags flags, char co
     if (size == 0 || base >= VIRT_ADDR_RESERVED_BASE || size > VIRT_ADDR_RESERVED_BASE - base) {
         return Status::InvArgs;
     }
-    auto const aspace = AspaceCache::get(GAF_KERNEL, base, size, kind, flags, name);
+    auto const aspace = AspaceCache::get(ALLOC_KERNEL, base, size, kind, flags, name);
     if (!aspace) {
         return Status::OutOfMem;
     }
@@ -287,6 +287,15 @@ auto VmAspace::set_vdso(ustl::Arc<VmMapping> mapping) -> void {
     }
 }
 
+auto VmAspace::on_mapping_destroyed_locked(VmMapping &mapping) -> void {
+    if (m_last_fault.as_ptr() == &mapping) {
+        m_last_fault = {};
+    }
+    if (m_vdso_mapping.as_ptr() == &mapping) {
+        withdraw_vdso_locked();
+    }
+}
+
 /// The size alone goes to zero, and the base stays. vdso_contains() loads
 /// the size first, so a reader that loaded the old size just before this
 /// store then loads a base, and that must be one written together with that
@@ -299,8 +308,7 @@ auto VmAspace::set_vdso(ustl::Arc<VmMapping> mapping) -> void {
 /// set_vdso() writes under the same lock, and nothing new can be mapped where
 /// the code was until this lock is released, whose release orders the store
 /// before that. The reference let go of here is not the mapping's last:
-/// VmMapping::destroy(), the one caller, runs while its parent's set still
-/// holds one.
+/// the mapping teardown holds its own reference throughout.
 auto VmAspace::withdraw_vdso_locked() -> void {
     m_vdso_code_size.store(0, std::memory_order_relaxed);
     m_flags &= ~Flags::Vdso;
@@ -430,7 +438,7 @@ auto VmAspace::find_mapping(VirtAddr const va, ustl::Arc<VmMapping> *const out) 
     return Status::Ok;
 }
 
-auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status {
+auto VmAspace::page_fault_internal(VirtAddr va, VmFault::Cause cause, usize extra_pages) -> Status {
     m_canary.verify<Self>();
 
     // Every caller must be able to block, and this is where that is enforced
@@ -442,7 +450,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
     // one, and supplying a page can wait on reclaim. So this is not a question
     // this function can answer by refusing -- there is no fault it could
     // resolve without blocking -- only one it can check its callers got right.
-    // This used to be a VmfCause::MaySleep bit the fault entry set and this
+    // This used to be a VmFault::Cause::MaySleep bit the fault entry set and this
     // function refused without. The hardware path now stops the kernel before
     // any fault that may not sleep reaches here (x86_handle_page_fault()), which
     // left the bit redundant there and wrong everywhere else: soft_fault() never
@@ -516,7 +524,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
         // taken again from the top, because anything may have changed while
         // this thread slept.
         if (Status::ShouldWait == status) {
-            auto const waited_status = vmf.page_request.wait(!!(cause & VmfCause::User));
+            auto const waited_status = vmf.page_request.wait(!!(cause & VmFault::Cause::User));
             if (Status::Ok != waited_status) {
                 // A provider that never answered: show what this address
                 // space maps. Under the lock, which the wait had to be without:
@@ -546,11 +554,11 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
     return status;
 }
 
-auto VmAspace::page_fault(VirtAddr va, VmfCause cause) -> Status {
+auto VmAspace::page_fault(VirtAddr va, VmFault::Cause cause) -> Status {
     return page_fault_internal(va, cause, 0);
 }
 
-auto VmAspace::soft_fault(VirtAddr va, VmfCause cause) -> Status {
-    return page_fault_internal(va, cause | VmfCause::Software, 0);
+auto VmAspace::soft_fault(VirtAddr va, VmFault::Cause cause) -> Status {
+    return page_fault_internal(va, cause | VmFault::Cause::Software, 0);
 }
 } // namespace ours::mm

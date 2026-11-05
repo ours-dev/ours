@@ -848,7 +848,7 @@ auto init_local_apic() -> void {
         arch::APIC_PHYS_BASE, VirtAddr::Anywhere, PAGE_SIZE,
         // `Discache` is required to prevent
         mm::MmuFlags::Discache | mm::MmuFlags::Readable | mm::MmuFlags::Writable,
-        mm::VmMapOption::Populate | mm::VmMapOption::Pinned, "Local-APIC");
+        mm::MapOptions::Resident | mm::MapOptions::Sealed, "Local-APIC");
     DEBUG_ASSERT(result, "Failed to allocate MMIO for BP's Local APIC");
 
     auto mmio_base(reinterpret_cast<volatile u32 *>((*result)->base()));
