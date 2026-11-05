@@ -11,7 +11,7 @@ The user asked for the rest of the migration ("迁移"): move the remaining 43 `
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| How the four commands that take an argument are migrated (`interrupt.test [ROUNDS]`, `port.test [ROUNDS]`, `threadjoin.test stress`, `timershare.test big`) | A: each becomes two fixed-configuration tests (a short default and a long/stress one with the value the code already defaults to or the largest the boot can run), so no runtime configuration is needed; B: `ktest` grows a per-run configuration mechanism; C: they stay console commands and only the other 39 migrate | A, with the long variant's value chosen conservatively for QEMU | | |
+| How the four commands that take an argument are migrated (`interrupt.test [ROUNDS]`, `port.test [ROUNDS]`, `threadjoin.test stress N`, `timershare.test big`) | A: each becomes two fixed-configuration tests (a default and a conservative stress variant), no runtime configuration; B: `ktest` grows a per-run option mechanism, and the four migrate as ordinary tests that read it with fallbacks; C: they stay console commands and only the other 39 migrate | B, because it keeps the tests' existing configurability without a second argument path per test | | B, 2026-11-05 |
 
 ## Steps
 
@@ -21,10 +21,21 @@ Later steps are written when each one is introduced to the user, not before.
    - As landed: all thirteen converted, every check preserved; `tick_fallback` and `tick_broadcast` turned their "cannot exercise" `ok -- skipped` paths into `KTEST_SKIP`, which is the one verdict-shape change; `dpc` keeps a local `ok` and `FAIL`s at the end to preserve its leak-on-failure behaviour; `wait_queue` folded a helper into the body so its allocation can be `ASSERT_NONNULL`; `vma_phys`/`irq_domain` use `FAIL` inside helpers where `ASSERT` cannot go. Diagnostic logs stayed with the suite name as prefix; six files dropped `<logz4/log.hpp>`, and every file dropped the gktl command-table paragraph.
    - Verification, as done: `boot_check.py` passes (dbg 46/5/0, rel 44/8/0, host-tests 173/0); `ktest list` 23 tests; `ktest all` `SUMMARY ran=23 passed=22 failed=0 skipped=1`, exit 0; all thirteen suites run alone through the host verdict (`ok, 1 ran, 1 passed` each: Dpc, IrqDomain, PmZone, TickBroadcast, TickFallback, VmAddress, VmaPhys, VmaPhysical, VmaSeal, VmaUndo, VmoContiguous, VmoPin, WaitQueue); `kernel/commands` now has 30 `*.test` commands; `gn check` OK on every target; tidy/format/GN/docs lint clean. The one skip in the run of everything is `Ktest.SkipIsReported`; the batch's skip branches were not exercised on this machine.
 
+2. Run options for the four argument-taking commands. Landed in `19cf30f5`. `ktest <selection> [name=value ...]` carries a run's options, and a test reads them with a fallback of its own.
+   - `kernel/lib/ktest/include/ktest/options.hpp`: `Option`, the pure `parse_option`/`find_option`, and the `has_option`/`option`/`option_usize` accessors; the runner parses at most 14 tokens after the selection, logs each as `ktest: OPTION name=value`, and answers a malformed number with an error line and the fallback. `ktest list` takes no options; values are views into the console line and live for the run.
+   - `Ktest.ReadsRunOptions` is the booted test of both paths; the host check that `expected=41` fails proves the option reaches the test rather than a default. `kernel/lib/ktest:ktest-test` has two option-parsing cases, and `scripts/test_kshell_run.py` keeps the list-count check for `ktest all <option>=<value>`.
+   - Why this instead of splitting the commands (option A): the round count and the `big` flag are the only way to reach the longer paths without editing source, and they are what the command help text promised. The user chose B on 2026-11-05.
+   - Verification, as done: host tests 11 + 20, all pass; `boot_check.py` both images and 173 host tests; `ktest Ktest.ReadsRunOptions` (fallback), `... expected=42` (visible) and `... expected=41` (failure line names 41 vs 42) all behave as intended; `ktest list` 24 tests; format/tidy/gn check clean.
+   - Landed as one commit, `19cf30f5`, `feat(ktest): run options for tests that need a value`.
+
 ## Files
 
 - Batch 1 (step 1): the thirteen `kernel/commands/<name>_test.cpp` files moved to `kernel/tests/`, `kernel/commands/BUILD.gn` and `kernel/tests/BUILD.gn` updated, `docs/changes/261105/kernel-test-migration.md` created, `docs/repairs/261105/kernel-test-framework.md` updated to the 30 remaining commands.
 
+- `kernel/lib/ktest/include/ktest/options.hpp`, `kernel/lib/ktest/test/options_test.cpp`, `kernel/lib/ktest/src/runner.cpp`, `kernel/tests/ktest_test.cpp`, `scripts/kshell_run.py`: run options, their host tests and the booted smoke test (step 2).
+- `docs/design/261105/kernel-test-framework.md`: the grammar and the fallback rule (step 2).
+
 ## Test plan
 
 - Per batch: `python3 .agents/skills/verify/scripts/boot_check.py` (both images, host tests), `python3 scripts/kshell_run.py --out out/bringup.x86 'ktest list'` and one filtered run per migrated suite, plus `'ktest all'`; a command whose old name was removed must fail as unknown; tidy/format/GN/docs lint; `python3 scripts/cov_kernel.py --out out/cov-kernel` after the last batch (it must still enumerate the remaining commands).
+- Run options (step 2): `ktest Ktest.ReadsRunOptions` without an option (fallback), with `expected=42` (visible) and with `expected=41` (fails, the message naming the value). Done in step 2.
