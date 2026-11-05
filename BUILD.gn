@@ -88,6 +88,18 @@ group("default") {
     # refusals, and the leaf forward, on the fake kernel.
     "//system/service/device-registry:tests($host_toolchain)",
 
+    # The PCI configuration-space library: the walk, the sizing arithmetic
+    # and the assignment writes, over a fake ECAM array.
+    "//system/lib/pci:tests($host_toolchain)",
+
+    # The NVMe device core: the probe over a fake ECAM, the bring-up
+    # sequence and the admin commands against a fake controller array.
+    "//system/lib/nvme:tests($host_toolchain)",
+
+    # The virtio legacy device core: the probe, the bring-up and the
+    # submit path, over a fake device whose ports answer from arrays.
+    "//system/lib/virtio:tests($host_toolchain)",
+
     # The rpc core: call round trip, epitaph translation, peer-closed, the
     # txid wrap, the stray handle, on the fake kernel.
     "//system/lib/rpc:tests($host_toolchain)",

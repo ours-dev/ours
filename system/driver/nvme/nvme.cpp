@@ -2,50 +2,57 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// nvme -- the userspace driver of QEMU's NVMe controller (storage-layer
-/// plan, system/driver/nvme), as a component that serves
-/// ours.block.Block: a client opens the protocol, asks for the namespace's
-/// geometry or for blocks by number, and the driver drives the controller
-/// on its behalf. Root.cm offers it under the name ours.block.Nvme, so a
-/// machine with both disks answers on two names.
+/// plan, system/driver/nvme; the PCI hot-plug round made it resident), as a
+/// component that serves ours.block.Block: a client opens the protocol, asks
+/// for the namespace's geometry or for blocks by number, and the driver
+/// drives the controller on its behalf. Root.cm offers it under the name
+/// ours.block.Nvme, and its control under ours.nvme.Control.
 ///
-/// The device is found in the ECAM window by class code (01h/08h, mass
-/// storage / NVM controller) rather than by vendor and device: the class
-/// names the family, and every vendor's controller is driven the same way.
-/// BAR0 is 16 KiB of MMIO -- the register file: CAP, CC, CSTS, the admin
-/// and I/O queue doorbells -- mapped uncached through the MmIo root, and
-/// every control is a store through that mapping.
+/// Resident, not scan-once: a boot without the device finds no class-01h/08h
+/// function and stays up anyway, serving ours.nvme.Control. A rescan -- the
+/// boot's own first one, or a Control.Rescan a program asked for -- walks
+/// the ECAM window through system/lib/pci, claims the first function of the
+/// class that is not already running, sizes and assigns its BAR0 if it
+/// arrived with no base (hot-plug: firmware assigns BARs at boot only),
+/// brings the controller up through system/lib/nvme's device core, and
+/// publishes the disk into the registry's tree. The device is found by class
+/// code (01h/08h, mass storage / NVM controller) rather than by vendor and
+/// device: the class names the family, and every vendor's controller is
+/// driven the same way.
 ///
 /// The objects:
 ///   - the MmIo root resource and the IOMMU System resource, through /svc:
 ///     the window mapping and the pin that hands the queues to the device;
+///     the IOMMU resource is kept for the driver's life, because every
+///     rescan that claims a function makes a fresh BTI for it;
 ///   - the DMA region: one contiguous run of pages from
-///     vmo_create_contiguous, hand-sliced at page boundaries -- the admin
-///     queues, the Identify page, the I/O queues, and one page per slot
-///     for the blocks, which is what PRP wants (PRP1 = the page, PRP2 = 0,
-///     a 7-block transfer fitting one page);
-///   - the Loop, on which the outgoing directory and every client
-///     connection wait;
+///     vmo_create_contiguous, hand-sliced by system/lib/nvme's map -- the
+///     admin queues, the Identify page, the I/O queues, and one page per
+///     slot for the blocks, which is what PRP wants;
+///   - the Loop, on which the outgoing directory, every client connection
+///     and the control's connections wait;
 ///   - the server, block_server::BlockServer over the controller: the
 ///     library owns the connections, the decode, the slot table, and the
-///     reply; the driver's start() builds the 64-byte command, writes it
-///     to the I/O submission queue, rings the doorbell, and polls the
+///     reply; the driver's start() builds the 64-byte command, writes it to
+///     the I/O submission queue, rings the doorbell, and polls the
 ///     completion queue's phase bit until this command's entry lands --
 ///     the poll is on the same thread as everything else, so requests
 ///     serialize, which one I/O queue makes true anyway. The device's
 ///     interrupt pin is never unmasked: polling needs no line, and the
-///     kernel's MSI does not exist yet.
+///     kernel's MSI does not exist yet;
+///   - the control, a Handler whose connections answer Control.Rescan: the
+///     request runs the rescan, and the reply carries its answer -- Ok when
+///     a function was claimed, NotFound for an unchanged machine.
 ///
 /// The events: the root routes a client's Open into the outgoing directory
 /// (design D11); the server takes the channel and parks the request in a
-/// slot; start() builds the command (opcode Read or Write, NSID 1, CID =
-/// the slot), submits, polls the completion, and complete() turns it into
-/// the reply. Before the driver leaves, CC.EN is cleared and CSTS.RDY
-/// observed low, so the kernel never has to quarantine what it pinned.
-///
-/// QEMU's controller: attached with NVME_DISK= (scripts/qemu_boot.py), it
-/// lands somewhere on bus 0 of the ECAM window the route service names; a
-/// boot without it finds no class-01h/08h function and exits 0 -- an
-/// answer, not a failure, as virtio-blk's no-disk path is.
+/// slot; start() builds the command, submits, polls the completion, and
+/// complete() turns it into the reply. A rescan's bring-up runs inside the
+/// control's on_signals(), on the Loop thread: nothing else runs under it,
+/// which is what makes the one-at-a-time controller safe to re-enter.
+/// Before the driver leaves, CC.EN is cleared by the kernel's teardown of
+/// what it pinned; the device's own shutdown is the DMA teardown order the
+/// DmaRegion destructor keeps.
 #include <ours/bti.hpp>
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
@@ -54,6 +61,7 @@
 #include <ours/vdso.hpp>
 
 #include <array>
+#include <span>
 #include <string_view>
 
 #include <cstdint>
@@ -64,16 +72,17 @@
 #include <fsio/fsio.hpp>
 #include <ioservice/outgoing.hpp>
 #include <loop/loop.hpp>
+#include <nvme/nvme.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
+#include <pci/bridge.hpp>
 #include <prot/acpi_client.hpp>
 #include <prot/block.hpp>
 #include <prot/dev.hpp>
 #include <prot/dev_client.hpp>
-#include <prot/resource.hpp>
-#include <prot/resource_client.hpp>
+#include <prot/nvme_control.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
 
@@ -81,397 +90,40 @@ namespace {
 using ours::Status;
 using ours::Uandle;
 
-/// The ECAM walk's geometry: one 4 KiB function page per
-/// bus-slot-function triple, all of bus 0 mapped through one window.
-constexpr auto DEVICE_SHIFT = usize{15};
-
-/// The PCI configuration registers the walk reads and, for the device the
-/// walk claims, the command register it writes: PCI command bit 2 (bus
-/// master) gates the device's own DMA, and a boot firmware that probed the
-/// device and gave up on it may have left the bit clear.
-constexpr auto CFG_VENDOR_ID = usize{0x00};
-constexpr auto CFG_COMMAND = usize{0x04};
-constexpr auto CFG_CLASS_BYTE = usize{0x0B};
-constexpr auto CFG_SUBCLASS_BYTE = usize{0x0A};
-constexpr auto CFG_BAR_0 = usize{0x10};
-constexpr auto CFG_BAR_0_HIGH = usize{0x14};
-
-/// A mass-storage controller whose specific subclass is the NVM one: class
-/// base 01h, subclass 08h names every vendor's NVMe.
-constexpr auto CLASS_MASS_STORAGE = u8{0x01};
-constexpr auto SUBCLASS_NVM = u8{0x08};
-
-/// The register file's layout, at byte offsets from BAR0.
-constexpr auto NVME_CAP = usize{0x00};
-constexpr auto NVME_VS = usize{0x08};
-constexpr auto NVME_CC = usize{0x14};
-constexpr auto NVME_CSTS = usize{0x1C};
-constexpr auto NVME_AQA = usize{0x24};
-constexpr auto NVME_ASQ = usize{0x28};
-constexpr auto NVME_ACQ = usize{0x30};
-/// The doorbell array's base: queue pair |qid| rings its SQ tail at
-/// NVME_SQ0TDBL + 2*qid*stride and its CQ head one stride further, where
-/// stride is CAP.DSTRD's (1 << (2 + DSTRD)); the admin pair is qid 0.
-constexpr auto NVME_SQ0TDBL = usize{0x1000};
-
-/// CC's bits: enabled, and the I/O queue entry sizes in log2 units (64-byte
-/// SQ entries = 6, 16-byte CQE entries = 4), written before EN goes high.
-constexpr auto CC_ENABLE = u64{1};
-constexpr auto CC_IOSQES_SHIFT = usize{16};
-constexpr auto CC_IOCQES_SHIFT = usize{20};
-constexpr auto CC_IOSQES_VALUE = u64{6} << CC_IOSQES_SHIFT;
-constexpr auto CC_IOCQES_VALUE = u64{4} << CC_IOCQES_SHIFT;
-
-/// CSTS's bits: ready, and the fatal status.
-constexpr auto CSTS_READY = u64{1};
-constexpr auto CSTS_FATAL = u64{1} << 1;
-
-/// The admin queue depths: 2 entries each carries bring-up's commands, run
-/// one at a time. AQA packs both as (count - 1).
-constexpr auto ADMIN_QUEUE_ENTRIES = usize{2};
-/// The I/O queue pair's depth: one slot is in flight at a time, the block
-/// service's tag depth, and the queue carries it with room to spare.
-constexpr auto IO_QUEUE_ENTRIES = usize{4};
-constexpr auto AQA_ASQS_FIELD = u32{ADMIN_QUEUE_ENTRIES - 1};
-constexpr auto AQA_ACQS_FIELD = u32{ADMIN_QUEUE_ENTRIES - 1} << 16;
-
-/// The admin command opcodes: Identify Namespace (CNS 0 names a namespace),
-/// and the I/O queue pair's creation, the CQ first, for the SQ to name it.
-constexpr auto ADMIN_CREATE_IO_SQ = u8{0x01};
-constexpr auto ADMIN_CREATE_IO_CQ = u8{0x05};
-constexpr auto ADMIN_IDENTIFY = u8{6};
-constexpr auto CNS_IDENTIFY_NAMESPACE = u32{0};
-/// The I/O command opcodes, NVM command set.
-constexpr auto IO_WRITE = u8{0x01};
-constexpr auto IO_READ = u8{0x02};
-/// The one namespace this driver claims, and the I/O queues' id: 0 is the
-/// admin pair's.
-constexpr auto NSID = u32{1};
-constexpr auto QID_IO = u16{1};
-
-/// DMA layout: every slice page-aligned, because PRP wants pages, and the
-/// slices' offsets are the driver's constant map of the region. One data
-/// page per in-flight request: the largest read, 7 blocks, fits a page, so
-/// PRP1 alone names the buffer and PRP2 stays zero.
-constexpr auto PAGE = usize{4096};
-constexpr auto ADMIN_SQ_BYTES = 2 * PAGE;
-constexpr auto ADMIN_CQ_BYTES = 2 * PAGE;
-constexpr auto IDENTIFY_BYTES = PAGE;
-constexpr auto IO_SQ_BYTES = 2 * PAGE;
-constexpr auto IO_CQ_BYTES = 2 * PAGE;
-constexpr auto DATA_BYTES = PAGE;
-constexpr auto DMA_BYTES =
-    ADMIN_SQ_BYTES + ADMIN_CQ_BYTES + IDENTIFY_BYTES + IO_SQ_BYTES + IO_CQ_BYTES + DATA_BYTES;
-constexpr auto SLICE_ADMIN_SQ = usize{0};
-constexpr auto SLICE_ADMIN_CQ = SLICE_ADMIN_SQ + ADMIN_SQ_BYTES;
-constexpr auto SLICE_IDENTIFY = SLICE_ADMIN_CQ + ADMIN_CQ_BYTES;
-constexpr auto SLICE_IO_SQ = SLICE_IDENTIFY + IDENTIFY_BYTES;
-constexpr auto SLICE_IO_CQ = SLICE_IO_SQ + IO_SQ_BYTES;
-constexpr auto SLICE_DATA = SLICE_IO_CQ + IO_CQ_BYTES;
-
-/// The 64-byte submission queue entry. Only the fields the commands here
-/// use are named; the rest stay zero, which the specification requires for
-/// "not used".
-struct SqEntry final {
-    u8 opcode = 0;
-    u8 flags = 0;
-    u16 command_id = 0;
-    u32 nsid = 0;
-    u32 reserved0 = 0;
-    u64 mptr = 0;
-    u64 prp1 = 0;
-    u64 prp2 = 0;
-    u32 cdw10 = 0;
-    u32 cdw11 = 0;
-    u32 cdw12 = 0;
-    u32 reserved13 = 0;
-    u32 cdw14 = 0;
-    u32 reserved15 = 0;
-};
-static_assert(sizeof(SqEntry) == 64);
-
-/// The 16-byte completion queue entry, as the device lays it out. The
-/// third dword names the submission queue's consumed head and its id; the
-/// fourth carries the command id in its low half, the phase at bit 16 --
-/// the bit a polled driver tells a fresh entry from a stale one by, which
-/// flips each pass of the ring -- and the status field above, whose clear
-/// value names success.
-struct CqEntry final {
-    u32 command_specific = 0;
-    u32 reserved = 0;
-    u32 word2 = 0;
-    u32 word3 = 0;
-};
-static_assert(sizeof(CqEntry) == 16);
-
-/// Whether the completion |dw3| names: the status field, the phase bit
-/// aside, is zero exactly when the command succeeded.
-[[nodiscard]]
-constexpr auto is_command_ok(u32 const dw3) -> bool {
-    return (dw3 & 0xFFFE'0000u) == 0;
-}
-
-/// MMIO reads and writes through the controller's mapping, volatile
-/// because the device acts on every store.
-class Regs final {
-  public:
-    explicit Regs(ours::VirtAddr base) : m_base(base) {}
-
-    [[nodiscard]]
-    auto read64(usize const at) const -> u64 {
-        return *reinterpret_cast<volatile u64 const *>(m_base + at);
-    }
-    [[nodiscard]]
-    auto read32(usize const at) const -> u32 {
-        return *reinterpret_cast<volatile u32 const *>(m_base + at);
-    }
-    auto write64(usize const at, u64 const value) const -> void {
-        *reinterpret_cast<volatile u64 *>(m_base + at) = value;
-    }
-    auto write32(usize const at, u32 const value) const -> void {
-        *reinterpret_cast<volatile u32 *>(m_base + at) = value;
-    }
-
-    /// CAP.DSTRD: the byte stride between consecutive doorbell registers,
-    /// 1 << (2 + DSTRD) -- 4 on QEMU, SQ0's tail at 0x1000 and CQ0's head
-    /// one stride after.
-    [[nodiscard]]
-    auto doorbell_stride() const -> usize {
-        return usize{1} << (((read32(NVME_CAP + 4) >> 24) & 0xF) + 2);
-    }
-
-  private:
-    ours::VirtAddr m_base;
-};
-
-/// The controller: the register file and the DMA slices, with the views
-/// the admin commands and the block service read through. One controller,
-/// one namespace, one I/O queue pair; commands run one at a time.
-class Controller final {
-  public:
-    Controller(ours::PhysAddr dma_phys, ours::VirtAddr dma_virt)
-        : m_dma_phys(dma_phys), m_dma_virt(dma_virt) {}
-
-    [[nodiscard]]
-    auto admin_sq_phys() const -> ours::PhysAddr {
-        return m_dma_phys + SLICE_ADMIN_SQ;
-    }
-    [[nodiscard]]
-    auto admin_cq_phys() const -> ours::PhysAddr {
-        return m_dma_phys + SLICE_ADMIN_CQ;
-    }
-    /// The Identify page, the geometry command's target.
-    auto identify_phys() const -> ours::PhysAddr {
-        return m_dma_phys + SLICE_IDENTIFY;
-    }
-    [[nodiscard]]
-    auto admin_sq() const -> ours::VirtAddr {
-        return m_dma_virt + SLICE_ADMIN_SQ;
-    }
-    [[nodiscard]]
-    auto admin_cq() const -> ours::VirtAddr {
-        return m_dma_virt + SLICE_ADMIN_CQ;
-    }
-    [[nodiscard]]
-    auto identify() const -> ours::VirtAddr {
-        return m_dma_virt + SLICE_IDENTIFY;
-    }
-    /// The in-flight request's buffer: the one data page, aligned as PRP
-    /// wants, where a Read's blocks land and a Write's start from. One page
-    /// carries the largest read -- 7 blocks -- and the tag depth is 1, so
-    /// the request in flight always owns it.
-    [[nodiscard]]
-    auto data() const -> ours::VirtAddr {
-        return m_dma_virt + SLICE_DATA;
-    }
-    [[nodiscard]]
-    auto data_phys() const -> ours::PhysAddr {
-        return m_dma_phys + SLICE_DATA;
-    }
-    [[nodiscard]]
-    auto io_sq_phys() const -> ours::PhysAddr {
-        return m_dma_phys + SLICE_IO_SQ;
-    }
-    [[nodiscard]]
-    auto io_cq_phys() const -> ours::PhysAddr {
-        return m_dma_phys + SLICE_IO_CQ;
-    }
-    [[nodiscard]]
-    auto io_sq() const -> ours::VirtAddr {
-        return m_dma_virt + SLICE_IO_SQ;
-    }
-    [[nodiscard]]
-    auto io_cq() const -> ours::VirtAddr {
-        return m_dma_virt + SLICE_IO_CQ;
-    }
-
-  private:
-    ours::PhysAddr m_dma_phys;
-    ours::VirtAddr m_dma_virt;
-};
-
-/// One submission/completion queue pair, polled. The admin pair and the
-/// I/O pair differ in their DMA slices, their depths and their doorbells
-/// alone, so one class serves both: the doorbells are byte offsets in the
-/// register file, computed by the pair's queue id as the doorbell array's
-/// layout names them.
-class Queues final {
-  public:
-    Queues(Regs const &regs, ours::VirtAddr sq, ours::VirtAddr cq, usize const sq_doorbell,
-           usize const cq_doorbell, usize const entries)
-        : m_regs(regs)
-        , m_sq(sq)
-        , m_cq(cq)
-        , m_sq_doorbell(sq_doorbell)
-        , m_cq_doorbell(cq_doorbell)
-        , m_entries(entries) {}
-
-    /// Submits the command |entry| names, stamped with the command id |id|
-    /// the completion is matched by, polls for that completion, and hands
-    /// the entry back. False on timeout. The expected phase starts true:
-    /// the host zeroes every entry's phase bit at creation, the controller
-    /// writes 1 on the first pass, and the expected phase toggles each full
-    /// pass of the ring -- so a fresh entry's bit matches the expected one,
-    /// and a stale entry's differs.
-    [[nodiscard]]
-    auto submit(SqEntry entry, u16 const id, CqEntry &out) -> bool {
-        entry.command_id = id;
-        auto *const slot = reinterpret_cast<volatile SqEntry *>(m_sq) + m_tail;
-        // The whole 64-byte entry, written field by field: volatile
-        // destinations reject the struct copy.
-        auto const *const src = &entry;
-        auto *const dst = reinterpret_cast<volatile u32 *>(slot);
-        for (auto word = usize{0}; word < sizeof(SqEntry) / 4; ++word) {
-            u32 value = 0;
-            std::memcpy(&value, reinterpret_cast<u8 const *>(src) + word * 4, 4);
-            dst[word] = value;
-        }
-        m_tail = (m_tail + 1) % m_entries;
-        // The doorbell takes the new tail: the index one past the last
-        // entry the device has not consumed, which a fresh submission makes
-        // this entry's own slot.
-        m_regs.write32(m_sq_doorbell, static_cast<u32>(m_tail));
-        return wait_for(id, out);
-    }
-
-  private:
-    /// Polls the completion queue for the entry whose command id is |id|,
-    /// the phase bit naming it fresh. The head doorbell rings after.
-    auto wait_for(u16 const id, CqEntry &out) -> bool {
-        auto *const entries = reinterpret_cast<volatile CqEntry *>(m_cq);
-        for (auto round = u32{0}; round < POLL_ROUNDS; ++round) {
-            auto const &at = entries[m_head];
-            auto const phase = (at.word3 & 0x1'0000u) != 0;
-            if (phase != m_phase) {
-                continue;
-            }
-            if ((at.word3 & 0xFFFFu) == id) {
-                out = CqEntry{at.command_specific, at.reserved, at.word2, at.word3};
-                m_head = (m_head + 1) % m_entries;
-                if (m_head == 0) {
-                    m_phase = !m_phase;
-                }
-                // The completion head doorbell: the controller may reuse
-                // the entry only once the host has rung.
-                m_regs.write32(m_cq_doorbell, static_cast<u32>(m_head));
-                return true;
-            }
-            ort::spin_hint();
-        }
-        return false;
-    }
-
-    Regs m_regs;
-    ours::VirtAddr m_sq;
-    ours::VirtAddr m_cq;
-    usize m_sq_doorbell = 0;
-    usize m_cq_doorbell = 0;
-    usize m_entries = 0;
-    u16 m_tail = 0;
-    u16 m_head = 0;
-    bool m_phase = true;
-    static constexpr auto POLL_ROUNDS = u32{4'000'000};
-};
-
-/// Spins |predicate| until true or |seconds| pass, printing a line every
-/// second: the wait is silent work on a console whose 15-second silence
-/// trips the boot check's NMI, so it must keep talking; and the wait is
-/// wall-clock because the controller's ready transitions run on the
-/// device's own timers (CAP.TO, 500 ms units -- 7.5 s on QEMU), which
-/// advance at the emulator's pace, not the driver's.
-template <typename Predicate>
-auto wait_silent(Predicate &&predicate, u64 const seconds, char const *const what) -> bool {
-    auto const started = ours::clock_get_monotonic();
-    auto printed = u64{0};
-    for (;;) {
-        if (predicate()) {
-            return true;
-        }
-        auto const now = ours::clock_get_monotonic();
-        auto const elapsed = static_cast<u64>((now - started) / 1'000'000);
-        if (elapsed > printed) {
-            printed = elapsed;
-            if (elapsed >= seconds) {
-                return false;
-            }
-            char text[10];
-            auto _ = ort::debug_line({"nvme: waiting for ", what, " (",
-                                      ort::decimal(static_cast<u32>(elapsed), text), "s)"});
-        }
-        ort::spin_hint();
-    }
-}
-
-/// The config-space reader over the mapped ECAM window, one function's
-/// page: the walk reads vendor, class and BAR0 from it.
-class Config final {
-  public:
-    Config(ours::VirtAddr base, usize const offset) : m_at(base + offset) {}
-
-    [[nodiscard]]
-    auto read8(usize const at) const -> u8 {
-        return *reinterpret_cast<volatile u8 const *>(m_at + at);
-    }
-    [[nodiscard]]
-    auto read16(usize const at) const -> u16 {
-        return *reinterpret_cast<volatile u16 const *>(m_at + at);
-    }
-    [[nodiscard]]
-    auto read32(usize const at) const -> u32 {
-        return *reinterpret_cast<volatile u32 const *>(m_at + at);
-    }
-    auto write32(usize const at, u32 const value) const -> void {
-        *reinterpret_cast<volatile u32 *>(m_at + at) = value;
-    }
-
-  private:
-    ours::VirtAddr m_at;
-};
-
 /// The block service's shape: two clients at once, and the device works on
 /// one request at a time -- the poll model, MAX_INFLIGHT the tag depth the
 /// one data page answers.
 constexpr auto MAX_CLIENTS = usize{2};
 constexpr auto MAX_INFLIGHT = usize{1};
 
+/// How many Control.Rescan connections may be open at once: the shell's
+/// rescan is one request on one connection of its own, and a second open
+/// before the first's reply lands is refused with its channel closed.
+constexpr auto CONTROL_CONNECTIONS = usize{4};
+
+/// The address range a rescan assigns new BARs from, behind the ECAM
+/// window: 64 MiB, far more than the disks this machine will hot-add.
+constexpr u64 ARENA_BYTES = 64 * 1024 * 1024;
+
 /// The block service over the polled controller, the driver's subclass of
 /// the block-driver library: GetInfo answers the Identify'd geometry, and
 /// start() runs one parked request to completion -- the 64-byte command
 /// built, the data page primed for a Write, the doorbell rung, the
 /// completion polled, the slot completed -- so the slot is free again by
-/// the time start() returns, as virtio-blk's synchronous start() is. One
-/// queue pair and one data page make the serialization physical.
+/// the time start() returns. One queue pair and one data page make the
+/// serialization physical. Until a rescan claims a controller there is
+/// none, and start() answers NotFound: the protocol is served, the disk is
+/// not there yet.
 class NvmeBlockServer final
     : public block_server::BlockServer<NvmeBlockServer, MAX_CLIENTS, MAX_INFLIGHT> {
   public:
     using Base = block_server::BlockServer<NvmeBlockServer, MAX_CLIENTS, MAX_INFLIGHT>;
     using Storage = typename Base::Storage;
 
-    NvmeBlockServer(Storage &storage, loop::Loop &loop, Controller &controller, Queues &io)
-        : Base(storage, loop), m_controller(&controller), m_io(&io) {}
+    NvmeBlockServer(Storage &storage, loop::Loop &loop) : Base(storage, loop) {}
 
-    auto set_blocks(u64 const blocks) -> void {
-        m_blocks = blocks;
+    auto set_device(nvme::Device &device) -> void {
+        m_device = &device;
     }
 
     /// GetInfo's answer: the namespace's logical block is the 512-byte
@@ -481,32 +133,39 @@ class NvmeBlockServer final
         return {.block_size = prot::block::BLOCK_SIZE, .blocks = m_blocks};
     }
 
+    auto set_blocks(u64 const blocks) -> void {
+        m_blocks = blocks;
+    }
+
     /// The library's hand-off: run the parked request against the device,
     /// and complete it before returning. |data| is a Write's blocks, copied
     /// into the data page the command's PRP1 names -- the one copy of a
-    /// Write, as the region-backed virtio path copies once too.
+    /// Write.
     auto start(usize const index, std::span<u8 const> const data) -> Status {
+        if (m_device == nullptr) {
+            return Status::NotFound;
+        }
         auto const &parked = slot(index);
-        auto entry = SqEntry{};
-        entry.opcode = data.empty() ? IO_READ : IO_WRITE;
-        entry.nsid = NSID;
-        entry.prp1 = std::to_underlying(m_controller->data_phys());
+        auto entry = nvme::SqEntry{};
+        entry.opcode = data.empty() ? nvme::IO_READ : nvme::IO_WRITE;
+        entry.nsid = nvme::NSID;
+        entry.prp1 = std::to_underlying(m_device->data_phys());
         // SLBA, the first block, is 64 bits over CDW10 and CDW11; NLB, the
         // count, is zero-based.
         entry.cdw10 = static_cast<u32>(parked.lba);
         entry.cdw11 = static_cast<u32>(parked.lba >> 32);
         entry.cdw12 = parked.count - 1;
         if (!data.empty()) {
-            std::memcpy(reinterpret_cast<void *>(m_controller->data()), data.data(), data.size());
+            std::memcpy(reinterpret_cast<void *>(m_device->data()), data.data(), data.size());
         }
-        auto cqe = CqEntry{};
-        if (!m_io->submit(entry, static_cast<u16>(index), cqe)) {
+        auto cqe = nvme::CqEntry{};
+        if (!m_device->io().submit(entry, static_cast<u16>(index), cqe)) {
             return Status::TimeOut;
         }
         // Success is the whole status field clear -- its position the
         // device's own encoding, which a failure here says on the console
         // instead of this driver guessing wrong about.
-        if (!is_command_ok(cqe.word3)) {
+        if (!nvme::is_command_ok(cqe.word3)) {
             char status_text[18];
             auto _ = ort::debug_line(
                 {"nvme: the device failed a command, DW3 ", ort::hex(cqe.word3, status_text)});
@@ -514,7 +173,7 @@ class NvmeBlockServer final
         }
         if (data.empty()) {
             complete(index, Status::Ok,
-                     std::span{reinterpret_cast<u8 const *>(m_controller->data()),
+                     std::span{reinterpret_cast<u8 const *>(m_device->data()),
                                usize{parked.count} * prot::block::BLOCK_SIZE});
         } else {
             complete(index, Status::Ok);
@@ -523,16 +182,378 @@ class NvmeBlockServer final
     }
 
   private:
-    Controller *m_controller;
-    Queues *m_io;
+    nvme::Device *m_device = nullptr;
     u64 m_blocks = 0;
 };
 
-constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS;
+class Driver;
+
+/// One Control.Rescan connection: the channel the outgoing directory handed
+/// over, parked on the Loop. A readable rescan runs the driver's rescan on
+/// the Loop thread -- nothing else runs under it -- and answers the bare
+/// status form; a message the decoder refuses closes the connection without
+/// an epitaph, as the protocol's contract has it.
+class ControlConnection final: public loop::Waiter {
+  public:
+    ControlConnection() = default;
+
+    auto install(loop::Loop &loop, Driver *driver) -> void {
+        m_loop = &loop;
+        m_driver = driver;
+    }
+
+    /// Whether the connection may take a channel: it holds none.
+    [[nodiscard]]
+    auto is_free() const -> bool {
+        return m_channel == Uandle::Invalid;
+    }
+
+    /// Takes |channel| over, the request's, onto the Loop.
+    auto connect(Uandle const channel) -> Status {
+        auto added = m_loop->add(channel, ours::Signals::Readable | ours::Signals::PeerClosed,
+                                 *static_cast<loop::Waiter *>(this));
+        if (added.is_err()) {
+            auto _ = ours::handle_close(channel);
+            return added.unwrap_err();
+        }
+        m_channel = channel;
+        return Status::Ok;
+    }
+
+    /// Defined below Driver, whose rescan() the readable case runs.
+    auto on_signals(ours::Signals const observed) -> loop::Action override;
+
+  private:
+    /// Frees the connection for the next open and tells the Loop to close
+    /// the channel and the slot.
+    auto close() -> loop::Action {
+        m_channel = Uandle::Invalid;
+        return loop::Action::Close;
+    }
+
+    Uandle m_channel = Uandle::Invalid;
+    loop::Loop *m_loop = nullptr;
+    Driver *m_driver = nullptr;
+};
+
+constinit std::array<ControlConnection, CONTROL_CONNECTIONS> CONNECTIONS{};
+
+/// The control, the protocol's Handler: an Open of ours.nvme.Control hands
+/// its channel to a free connection, or closes it when all four are busy.
+class Control final: public ioservice::Handler {
+  public:
+    Control(loop::Loop &loop, Driver &driver, std::span<ControlConnection> connections)
+        : m_connections(connections) {
+        for (auto &connection: m_connections) {
+            connection.install(loop, &driver);
+        }
+    }
+
+    auto connect(Uandle const channel) -> void override {
+        for (auto &connection: m_connections) {
+            if (!connection.is_free()) {
+                continue;
+            }
+            auto const taken = connection.connect(channel);
+            if (taken != Status::Ok) {
+                auto _ = ort::debug_line(
+                    {"nvme: its control refused a connection: ", ours::to_string(taken)});
+            }
+            return;
+        }
+        auto _ = ours::handle_close(channel);
+    }
+
+  private:
+    std::span<ControlConnection> m_connections;
+};
+
+/// The storages: the outgoing's, the block server's, the Loop's slots, the
+/// window and the claimed function's mapping, BTI, DMA region and device
+/// core. They stand before the Driver, whose rescan claims them; the
+/// control's connections come after it, because each one calls into it.
+constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS + CONTROL_CONNECTIONS;
 
 constinit ustl::LazyInit<ioservice::Outgoing::Storage> OUTGOING_STORAGE;
 constinit ustl::LazyInit<NvmeBlockServer::Storage> SERVER_STORAGE;
 constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
+constinit ustl::LazyInit<ddk::MappedMmio> WINDOW_STORAGE;
+constinit ustl::LazyInit<ddk::MappedMmio> BAR_STORAGE;
+constinit ustl::LazyInit<ddk::Bti> BTI_STORAGE;
+constinit ustl::LazyInit<ddk::DmaRegion> DMA_STORAGE;
+constinit ustl::LazyInit<nvme::Device> DEVICE_STORAGE;
+
+/// The driver: the resources and the window it holds for its life, and the
+/// rescan -- the one routine both the boot's first scan and every
+/// Control.Rescan run.
+class Driver final {
+  public:
+    Driver(std::span<u8> window, nvme::Arena arena, ours::PhysAddr arena_base,
+           ours::PhysAddr arena_top, Uandle const vma, Uandle const mmio, Uandle const iommu)
+        : m_window(window)
+        , m_arena(arena)
+        , m_arena_base(arena_base)
+        , m_arena_top(arena_top)
+        , m_vma(vma)
+        , m_mmio(mmio)
+        , m_iommu(iommu)
+        , m_window_buses(window.size() / pci::BUS_BYTES) {}
+
+    auto set_server(NvmeBlockServer *server) -> void {
+        m_server = server;
+    }
+
+    auto set_outgoing(ioservice::Outgoing *outgoing) -> void {
+        m_outgoing = outgoing;
+    }
+
+    /// The rescan: walk, claim, bring up, publish. NotFound for an
+    /// unchanged machine -- the answer, not a failure; otherwise why not,
+    /// the claim's own steps' statuses. The walk is over every bus the
+    /// ECAM window covers, one Config per bus slice: a hot-added function
+    /// sits behind the root port that accepted it, on the bus the port
+    /// bridges, not on bus 0.
+    auto rescan() -> Status {
+        auto found = ustl::Result<nvme::Found, Status>{ustl::err(Status::NotFound)};
+        usize claimed_bus = 0;
+        for (auto bus = usize{0};
+             bus < m_window_buses && found.is_err() && found.unwrap_err() == Status::NotFound;
+             ++bus) {
+            // The functions this driver runs on this bus, which the walk
+            // skips.
+            auto bus_owned = std::array<usize, 4>{};
+            auto bus_owned_count = usize{0};
+            for (auto i = usize{0}; i < m_owned_count; ++i) {
+                if (m_owned[i].bus == bus) {
+                    bus_owned[bus_owned_count++] = m_owned[i].index;
+                }
+            }
+            auto const bus_bytes = m_window.subspan(bus * pci::BUS_BYTES, pci::BUS_BYTES);
+            auto bus_config = pci::Config{bus_bytes};
+            found = nvme::probe(bus_config, m_arena,
+                                std::span<usize const>{bus_owned}.first(bus_owned_count));
+            claimed_bus = bus;
+        }
+        if (found.is_err()) {
+            return found.unwrap_err();
+        }
+
+        // A claim behind a root port opens the port's windows first: the
+        // bridge forwards memory cycles for its secondary bus only over
+        // the range its memory window names, and firmware programs that at
+        // boot only, as it programs the BARs. The window covers the whole
+        // arena, since every claim takes its base from it.
+        if (claimed_bus != 0) {
+            auto bus0 = pci::Config{m_window.subspan(0, pci::BUS_BYTES)};
+            auto const bridge = pci::bridge_for_bus(bus0, claimed_bus);
+            if (bridge.is_err()) {
+                auto _ = ort::debug_line("nvme: no bridge to the claimed bus");
+                return Status::NotFound;
+            }
+            pci::program_bridge_memory(bus0, bridge.unwrap(), std::to_underlying(m_arena_base),
+                                       std::to_underlying(m_arena_top), claimed_bus);
+            pci::enable_bridge(bus0, bridge.unwrap());
+        }
+
+        // The register file, mapped uncached; the DMA region; the device
+        // core over both. The mapped window, the BTI, the region and the
+        // Device live for the driver's life in their storages: one claim
+        // this round, and a second claim is the next round's work.
+        auto bar0 = ddk::MappedMmio::map(m_vma, m_mmio, found->bar0, nvme::REGS_BYTES);
+        if (bar0.is_err()) {
+            auto _ =
+                ort::debug_line({"nvme: cannot map BAR0: ", ours::to_string(bar0.unwrap_err())});
+            return bar0.unwrap_err();
+        }
+        auto &mapped_bar = *BAR_STORAGE.init(std::move(bar0).unwrap());
+
+        auto bti = ddk::Bti::create(m_iommu);
+        if (bti.is_err()) {
+            auto _ =
+                ort::debug_line({"nvme: cannot make its BTI: ", ours::to_string(bti.unwrap_err())});
+            return bti.unwrap_err();
+        }
+        auto &kept_bti = *BTI_STORAGE.init(std::move(bti).unwrap());
+        auto dma = ddk::DmaRegion::allocate(m_vma, kept_bti.handle(), nvme::DMA_BYTES);
+        if (dma.is_err()) {
+            auto _ = ort::debug_line(
+                {"nvme: cannot make its DMA region: ", ours::to_string(dma.unwrap_err())});
+            return dma.unwrap_err();
+        }
+        auto &kept_dma = *DMA_STORAGE.init(std::move(dma).unwrap());
+
+        auto &device = *DEVICE_STORAGE.init(mapped_bar.addr(), kept_dma.phys(), kept_dma.virt());
+
+        // Bring-up, in the order the specification fixes. The waits are
+        // wall-clock with a per-second keepalive, so the console's silence
+        // detector does not NMI the machine mid-bring-up.
+        auto const brought = device.bring_up(
+            [] { return ours::clock_get_monotonic(); },
+            [](u64 const seconds) {
+                char text[10];
+                auto _ = ort::debug_line({"nvme: waiting for the controller (",
+                                          ort::decimal(static_cast<u32>(seconds), text), "s)"});
+            });
+        if (brought != Status::Ok) {
+            auto _ = ort::debug_line({"nvme: bring-up answered ", ours::to_string(brought)});
+            return brought;
+        }
+        auto const blocks = device.identify_blocks();
+        if (blocks.is_err()) {
+            auto _ =
+                ort::debug_line({"nvme: Identify answered ", ours::to_string(blocks.unwrap_err())});
+            return blocks.unwrap_err();
+        }
+        if (blocks.unwrap() == 0) {
+            auto _ = ort::debug_line("nvme: the namespace names no blocks");
+            return Status::NotFound;
+        }
+        if (auto const made = device.create_io_queues(); made != Status::Ok) {
+            auto _ = ort::debug_line({"nvme: the I/O queues answered ", ours::to_string(made)});
+            return made;
+        }
+
+        m_server->set_device(device);
+        m_server->set_blocks(blocks.unwrap());
+
+        // The block protocol appears with the disk: until a claim, an Open
+        // of ours.block.Block is refused by the outgoing directory, which
+        // is how a client reads "no device yet" -- an empty geometry would
+        // read as a disk of no blocks.
+        if (!m_block_served) {
+            if (auto const status = m_outgoing->add_protocol(prot::block::BLOCK_NAME, *m_server);
+                status != Status::Ok) {
+                auto _ =
+                    ort::debug_line({"nvme: cannot serve its protocol: ", ours::to_string(status)});
+                return status;
+            }
+            m_block_served = true;
+        }
+
+        if (auto const published = publish(); published != Status::Ok) {
+            // Logged and not fatal -- the disk still serves its /svc route;
+            // the tree merely shows one device fewer.
+            auto _ = ort::debug_line({"nvme: its publish answered ", ours::to_string(published)});
+        }
+
+        m_owned[m_owned_count] = {.bus = claimed_bus, .index = found->index};
+        m_owned_count += 1;
+        return Status::Ok;
+    }
+
+  private:
+    /// The device, published into the registry's tree: a second server end
+    /// of the outgoing serves the mount, and the publish names the class,
+    /// the proposal and the protocol. One attempt, as before: the mount
+    /// handle goes with the message, and a retry would need a fresh pair.
+    auto publish() -> Status {
+        auto mount_server = Uandle::Invalid;
+        auto mount = Uandle::Invalid;
+        auto registry_client = Uandle::Invalid;
+        auto registry_server = Uandle::Invalid;
+        if (auto const made =
+                ours::channel_create(ours::ChannelCreateOptions::None, &mount_server, &mount);
+            made != Status::Ok) {
+            return made;
+        }
+        if (auto const made = ours::channel_create(ours::ChannelCreateOptions::None,
+                                                   &registry_client, &registry_server);
+            made != Status::Ok) {
+            {
+                auto _ = ours::handle_close(mount_server);
+            }
+            {
+                auto _ = ours::handle_close(mount);
+            }
+            return made;
+        }
+        if (auto const status = m_outgoing->serve(mount_server); status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"nvme: cannot serve its mount channel: ", ours::to_string(status)});
+            return status;
+        }
+        if (auto const status = fsio::connect(prot::dev::REGISTRY_PATH, registry_server);
+            status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"nvme: cannot reach the device registry: ", ours::to_string(status)});
+            return status;
+        }
+        prot::dev::Client registry{registry_client};
+        auto granted = std::array<char, 8>{};
+        auto const published = registry.publish("block", "000", prot::block::BLOCK_NAME, mount,
+                                                std::span<char>{granted});
+        if (published == Status::Ok) {
+            auto _ = ort::debug_line(
+                {"nvme: its device is in the tree as block/", std::string_view{granted.data()}});
+        }
+        return published;
+    }
+
+    /// The ECAM window, sliced per bus: one Config per pci::BUS_BYTES.
+    std::span<u8> m_window;
+    nvme::Arena m_arena;
+    /// The arena's two ends, what a claim's bridge window covers.
+    ours::PhysAddr m_arena_base;
+    ours::PhysAddr m_arena_top;
+    Uandle m_vma;
+    Uandle m_mmio;
+    Uandle m_iommu;
+    NvmeBlockServer *m_server = nullptr;
+    ioservice::Outgoing *m_outgoing = nullptr;
+    /// The functions this driver is running, which a rescan skips.
+    struct Owned {
+        usize bus = 0;
+        usize index = 0;
+    };
+    std::array<Owned, 4> m_owned{};
+    usize m_owned_count = 0;
+    /// How many buses the window covers.
+    usize m_window_buses = 0;
+    /// Whether the block protocol is in the outgoing already: the first
+    /// claim adds it, and the rescan of a second claim must not.
+    bool m_block_served = false;
+};
+
+auto ControlConnection::on_signals(ours::Signals const observed) -> loop::Action {
+    if (!(observed & ours::Signals::Readable)) {
+        // The peer went with nothing to read: the slot's close is the
+        // reply there is to give.
+        return close();
+    }
+    auto bytes = std::array<u8, wire::HEADER_SIZE>{};
+    auto handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
+    auto num_bytes = u32{0};
+    auto num_handles = u32{0};
+    auto const read = ours::channel_read(
+        m_channel, ours::ChannelReadOptions::None, bytes.data(), handles.data(),
+        static_cast<u32>(bytes.size()), static_cast<u32>(handles.size()), &num_bytes, &num_handles);
+    for (auto index = u32{0}; index < num_handles; ++index) {
+        auto _ = ours::handle_close(handles[index]);
+    }
+    if (read != Status::Ok) {
+        return close();
+    }
+    auto const decoded = prot::nvme::decode_rescan(
+        wire::Message{.bytes = std::span{bytes}.first(num_bytes), .handles = {}});
+    if (decoded.is_err()) {
+        // Refused, no epitaph: the connection closes.
+        return close();
+    }
+    auto const answer = m_driver->rescan();
+    auto reply_bytes = std::array<u8, wire::STATUS_FORM_SIZE>{};
+    auto const reply =
+        prot::nvme::encode_rescan_reply(reply_bytes, decoded->txid, {.status = answer});
+    if (reply.is_err()) {
+        return close();
+    }
+    if (auto const written =
+            ours::channel_write(m_channel, ours::ChannelWriteOptions::None, reply->bytes.data(),
+                                static_cast<u32>(reply->bytes.size()), nullptr, 0);
+        written != Status::Ok) {
+        return close();
+    }
+    return loop::Action::Rearm;
+}
 
 } // namespace
 
@@ -566,16 +587,15 @@ auto main(int, char **) -> int {
     }
 
     // Where the ECAM window is: the route service reads it from the MCFG
-    // table, as virtio-blk's driver does for its enumeration.
+    // table, as virtio-blk's driver does for its enumeration. Behind it is
+    // where a rescan assigns new BARs from, the decode space the firmware
+    // left unassigned.
     auto const ecam = prot::acpi::ecam_base(0);
     if (ecam.is_err()) {
         auto _ = ort::debug_line(
             {"nvme: no ECAM base from the route service: ", ours::to_string(ecam.unwrap_err())});
         return 1;
     }
-
-    // The whole window: every bus the firmware named, walked function page
-    // by function page.
     auto ecam_window = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(),
                                             ours::PhysAddr{ecam->address}, usize{ecam->size});
     if (ecam_window.is_err()) {
@@ -583,184 +603,15 @@ auto main(int, char **) -> int {
             {"nvme: cannot map the ECAM window: ", ours::to_string(ecam_window.unwrap_err())});
         return 1;
     }
-    auto const config_base = ecam_window->addr();
+    auto &mapped_window = *WINDOW_STORAGE.init(std::move(ecam_window).unwrap());
+    auto window_bytes = std::span<u8>{
+        reinterpret_cast<u8 *>(std::to_underlying(mapped_window.addr())), usize{ecam->size}};
+    auto const arena_base = ours::PhysAddr{ecam->address - ARENA_BYTES};
+    auto arena = nvme::Arena{arena_base, ours::PhysAddr{ecam->address}};
 
-    // The controller, by class: base 01h mass storage, subclass 08h NVM.
-    auto device_offset = usize{0};
-    auto bar0_phys = ours::PhysAddr{0};
-    for (auto device = u8{0}; device < 32 && device_offset == 0; ++device) {
-        auto const cfg = Config{config_base, usize{device} << DEVICE_SHIFT};
-        auto const vendor = cfg.read16(CFG_VENDOR_ID);
-        if (vendor == 0xFFFF) {
-            continue;
-        }
-        if (cfg.read8(CFG_CLASS_BYTE) != CLASS_MASS_STORAGE ||
-            cfg.read8(CFG_SUBCLASS_BYTE) != SUBCLASS_NVM) {
-            continue;
-        }
-        // BAR0 is a 64-bit memory BAR: the low register holds bits 0-31
-        // with the low nibble the type flags (bit 0 clear names memory,
-        // bits 2-1 = 10b a 64-bit width), the high register bits 32-63.
-        auto const bar_low = cfg.read32(CFG_BAR_0);
-        if ((bar_low & 0x1) != 0 || (bar_low & 0x6) != 0x4) {
-            continue;
-        }
-        device_offset = device << DEVICE_SHIFT;
-        bar0_phys =
-            ours::PhysAddr{(u64{cfg.read32(CFG_BAR_0_HIGH)} << 32) | u64{bar_low & ~u32{0xF}}};
-        // The device's own DMA (queue fetch, completions) needs bus master
-        // and the memory-space decode both set in the command register: a
-        // boot firmware that probed the device and gave up may have left
-        // them clear, and the controller then fetches no commands and never
-        // reaches CSTS.RDY.
-        cfg.write32(CFG_COMMAND,
-                    cfg.read32(CFG_COMMAND) | 0x2 /* memory space */ | 0x4 /* bus master */);
-    }
-    if (device_offset == 0) {
-        // A boot without the device attached is an answer, not a failure:
-        // the boot check runs on images whose QEMU carries no NVMe. The
-        // routes to this component's protocol answer NotFound while it is
-        // gone.
-        auto _ = ort::debug_line("nvme: no NVMe controller on bus 0");
-        return 0;
-    }
-
-    // The controller's register file, mapped uncached.
-    auto bar0 = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(), bar0_phys, 16 * PAGE);
-    if (bar0.is_err()) {
-        auto _ = ort::debug_line({"nvme: cannot map BAR0: ", ours::to_string(bar0.unwrap_err())});
-        return 1;
-    }
-    auto const regs_addr = bar0->addr();
-    Regs regs{regs_addr};
-
-    // The DMA region, sliced per the constants above.
-    auto bti = ddk::Bti::create(iommu_resource.unwrap());
-    if (bti.is_err()) {
-        auto _ =
-            ort::debug_line({"nvme: cannot make its BTI: ", ours::to_string(bti.unwrap_err())});
-        return 1;
-    }
-    resources.drop(iommu_resource.unwrap());
-    auto dma = ddk::DmaRegion::allocate(vma.unwrap(), bti->handle(), DMA_BYTES);
-    if (dma.is_err()) {
-        auto _ = ort::debug_line(
-            {"nvme: cannot make its DMA region: ", ours::to_string(dma.unwrap_err())});
-        return 1;
-    }
-    Controller controller(dma->phys(), dma->virt());
-
-    // Bring-up, in the order the specification fixes. The waits are
-    // wall-clock: the controller's ready transitions run on the device's
-    // own timers (CAP.TO, 500 ms units -- 7.5 s on QEMU), and the waits
-    // print per-second keep-alives so the console's silence detector does
-    // not NMI the machine mid-bring-up.
-    regs.write32(NVME_CC, 0);
-    if (!wait_silent([&] { return (regs.read32(NVME_CSTS) & CSTS_READY) == 0; }, 30,
-                     "CSTS.RDY 0")) {
-        auto _ = ort::debug_line("nvme: the controller would not leave CSTS.RDY");
-        return 1;
-    }
-    auto const stride = regs.doorbell_stride();
-
-    // The admin queues: base addresses must be page-aligned at least, and
-    // the region's slices are page-aligned.
-    regs.write32(NVME_AQA, AQA_ACQS_FIELD | AQA_ASQS_FIELD);
-    regs.write64(NVME_ASQ, std::to_underlying(controller.admin_sq_phys()));
-    regs.write64(NVME_ACQ, std::to_underlying(controller.admin_cq_phys()));
-
-    // The I/O queue entry sizes, then enable.
-    auto const cc_sizes = static_cast<u32>(CC_IOSQES_VALUE | CC_IOCQES_VALUE);
-    regs.write32(NVME_CC, cc_sizes);
-    regs.write32(NVME_CC, cc_sizes | static_cast<u32>(CC_ENABLE));
-    if (!wait_silent([&] { return (regs.read32(NVME_CSTS) & CSTS_READY) != 0; }, 30,
-                     "CSTS.RDY 1")) {
-        auto _ = ort::debug_line("nvme: the controller never reached CSTS.RDY");
-        return 1;
-    }
-    if ((regs.read32(NVME_CSTS) & CSTS_FATAL) != 0) {
-        auto _ = ort::debug_line("nvme: the controller raised CSTS.CFS");
-        return 1;
-    }
-
-    char ver_text[18];
-    char stride_text[18];
-    auto _ = ort::debug_line({"nvme: controller ready, version ",
-                              ort::hex(regs.read32(NVME_VS), ver_text), ", doorbell stride ",
-                              ort::hex(static_cast<u32>(stride), stride_text)});
-
-    // The admin queues, then the namespace's size, from Identify Namespace:
-    // the geometry the block service answers GetInfo with.
-    auto admin = Queues(regs, controller.admin_sq(), controller.admin_cq(), NVME_SQ0TDBL,
-                        NVME_SQ0TDBL + stride, ADMIN_QUEUE_ENTRIES);
-    auto cqe = CqEntry{};
-    {
-        auto entry = SqEntry{};
-        entry.opcode = ADMIN_IDENTIFY;
-        entry.nsid = NSID;
-        entry.prp1 = std::to_underlying(controller.identify_phys());
-        entry.cdw10 = CNS_IDENTIFY_NAMESPACE;
-        if (!admin.submit(entry, 0, cqe)) {
-            auto _ = ort::debug_line("nvme: Identify timed out");
-            return 1;
-        }
-        if (!is_command_ok(cqe.word3)) {
-            auto _ = ort::debug_line("nvme: Identify failed");
-            return 1;
-        }
-    }
-    char nsze_text[18];
-    auto const nsze = *reinterpret_cast<volatile u64 const *>(controller.identify());
-    auto _ = ort::debug_line({"nvme: controller ready, NSZE ", ort::hex(nsze, nsze_text)});
-    if (nsze == 0) {
-        auto _ = ort::debug_line("nvme: the namespace names no blocks");
-        return 0;
-    }
-
-    // The I/O queue pair, created over the admin queues -- the CQ first,
-    // for the SQ to name it. Queue size is the entry count itself (AQA's
-    // counts were minus one; these are not); the CQ is physically
-    // contiguous, its interrupts not enabled -- the poll model -- and the
-    // SQ names this CQ at priority zero, which polling ignores.
-    auto io =
-        Queues(regs, controller.io_sq(), controller.io_cq(), NVME_SQ0TDBL + 2 * QID_IO * stride,
-               NVME_SQ0TDBL + (2 * QID_IO + 1) * stride, IO_QUEUE_ENTRIES);
-    {
-        auto entry = SqEntry{};
-        entry.opcode = ADMIN_CREATE_IO_CQ;
-        entry.prp1 = std::to_underlying(controller.io_cq_phys());
-        entry.cdw10 = static_cast<u32>(IO_QUEUE_ENTRIES) << 16 | QID_IO;
-        entry.cdw11 = 0x1 /* physically contiguous */;
-        if (!admin.submit(entry, 1, cqe)) {
-            auto _ = ort::debug_line("nvme: Create I/O CQ timed out");
-            return 1;
-        }
-        if (!is_command_ok(cqe.word3)) {
-            char status_text[18];
-            auto _ = ort::debug_line(
-                {"nvme: Create I/O CQ failed, DW3 ", ort::hex(cqe.word3, status_text)});
-            return 1;
-        }
-        entry = SqEntry{};
-        entry.opcode = ADMIN_CREATE_IO_SQ;
-        entry.prp1 = std::to_underlying(controller.io_sq_phys());
-        entry.cdw10 = static_cast<u32>(IO_QUEUE_ENTRIES) << 16 | QID_IO;
-        entry.cdw11 = 0x1 /* physically contiguous */ | u32{QID_IO} << 16;
-        if (!admin.submit(entry, 2, cqe)) {
-            auto _ = ort::debug_line("nvme: Create I/O SQ timed out");
-            return 1;
-        }
-        if (!is_command_ok(cqe.word3)) {
-            char status_text[18];
-            auto _ = ort::debug_line(
-                {"nvme: Create I/O SQ failed, DW3 ", ort::hex(cqe.word3, status_text)});
-            return 1;
-        }
-    }
-
-    // The device is brought up and the I/O queues live: the block service
-    // serves its protocol until the machine ends. The kit objects and the
-    // storages outlive the Loop.
+    // The machine: the port, the Loop, the outgoing, the block server, the
+    // control. All of it stands up before the first rescan, because the
+    // driver is resident -- the routes exist whether or not a device does.
     auto port = Uandle::Invalid;
     if (auto const status = ours::port_create(ours::PortCreateOptions::None, &port);
         status != Status::Ok) {
@@ -768,72 +619,41 @@ auto main(int, char **) -> int {
         return 1;
     }
     loop::Loop loop(port, SLOT_STORAGE);
-    auto &storage = *SERVER_STORAGE.init();
-    NvmeBlockServer server(storage, loop, controller, io);
-    server.set_blocks(nsze);
-
     auto &outgoing_storage = *OUTGOING_STORAGE.init();
     ioservice::Outgoing outgoing(outgoing_storage, loop);
-    if (auto const status = outgoing.add_protocol(prot::block::BLOCK_NAME, server);
+    auto &storage = *SERVER_STORAGE.init();
+    NvmeBlockServer server(storage, loop);
+
+    Driver driver(window_bytes, arena, arena_base, ours::PhysAddr{ecam->address}, vma.unwrap(),
+                  mmio_resource.unwrap(), iommu_resource.unwrap());
+    driver.set_server(&server);
+    driver.set_outgoing(&outgoing);
+
+    Control control(loop, driver, std::span<ControlConnection>{CONNECTIONS});
+    if (auto const status = outgoing.add_protocol(prot::nvme::CONTROL_NAME, control);
         status != Status::Ok) {
-        auto _ = ort::debug_line({"nvme: cannot serve its protocol: ", ours::to_string(status)});
+        auto _ = ort::debug_line({"nvme: cannot serve its control: ", ours::to_string(status)});
         return 1;
     }
+    // ours.block.Block is added by the first claim, not here: until a
+    // controller is running, an Open of it is refused, which is how a
+    // client reads "no device yet".
     if (auto const status = outgoing.serve(directory_request.unwrap()); status != Status::Ok) {
         auto _ = ort::debug_line(
             {"nvme: cannot serve its outgoing directory: ", ours::to_string(status)});
         return 1;
     }
 
-    // The device, published into the registry's tree (the device-namespace
-    // round): a second server end of this outgoing serves the mount, and the
-    // publish names the class, the proposal and the protocol. A failure to
-    // publish is logged and not fatal -- the disk still serves its /svc
-    // route; the tree merely shows one device fewer.
-    {
-        auto mount_server = Uandle::Invalid;
-        auto mount = Uandle::Invalid;
-        auto registry_client = Uandle::Invalid;
-        auto registry_server = Uandle::Invalid;
-        if (auto const made =
-                ours::channel_create(ours::ChannelCreateOptions::None, &mount_server, &mount);
-            made != Status::Ok) {
-            auto _ =
-                ort::debug_line({"nvme: cannot make its mount channel: ", ours::to_string(made)});
-        } else if (auto const made = ours::channel_create(ours::ChannelCreateOptions::None,
-                                                          &registry_client, &registry_server);
-                   made != Status::Ok) {
-            auto _ = ort::debug_line(
-                {"nvme: cannot make its registry channel: ", ours::to_string(made)});
-        } else if (auto const status = outgoing.serve(mount_server); status != Status::Ok) {
-            auto _ = ort::debug_line(
-                {"nvme: cannot serve its mount channel: ", ours::to_string(status)});
-        } else if (auto const status = fsio::connect(prot::dev::REGISTRY_PATH, registry_server);
-                   status != Status::Ok) {
-            auto _ = ort::debug_line(
-                {"nvme: cannot reach the device registry: ", ours::to_string(status)});
-        } else {
-            // One attempt, as virtio-blk's: the mount handle goes with the
-            // message, and a retry would need a fresh pair. The granted name
-            // is what the leaf answers as.
-            prot::dev::Client registry{registry_client};
-            auto granted = std::array<char, 8>{};
-            auto const published = registry.publish("block", "000", prot::block::BLOCK_NAME, mount,
-                                                    std::span<char>{granted});
-            if (published == Status::Ok) {
-                auto _ = ort::debug_line({"nvme: its device is in the tree as block/",
-                                          std::string_view{granted.data()}});
-            } else {
-                auto _ =
-                    ort::debug_line({"nvme: its publish answered ", ours::to_string(published)});
-            }
-        }
+    // The boot's own first rescan. NotFound leaves the driver resident: it
+    // answers its control until a device appears.
+    auto const first = driver.rescan();
+    if (first != Status::Ok) {
+        auto _ = ort::debug_line({"nvme: no NVMe controller on bus 0 (", ours::to_string(first),
+                                  "); resident, waiting for a rescan"});
     }
 
     // Stop ends the program from inside an on_signals(); run() comes back
     // only when the port itself fails.
-    auto _ = ort::debug_line({"nvme: serving ", prot::block::BLOCK_NAME, " over ",
-                              ort::hex(nsze, nsze_text), " blocks"});
     auto _ = ort::debug_line(
         {"nvme: its Loop stopped: ", ours::to_string(loop.run(ours::INSTANT_INFINITE))});
     return 1;

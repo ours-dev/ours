@@ -32,6 +32,7 @@ user_executable("nvme") {
     "//system/lib/fsio",
     "//system/lib/ioservice:outgoing",
     "//system/lib/loop",
+    "//system/lib/nvme",
     "//system/lib/protocols:client",
     "//system/lib/ustl",
     "//system/lib/wire",
@@ -60,10 +61,17 @@ component_manifest("nvme.cm") {
       {
         protocol = "ours.block.Block"
       },
+      {
+        protocol = "ours.nvme.Control"
+      },
     ]
     expose = [
       {
         protocol = "ours.block.Block"
+        from = "self"
+      },
+      {
+        protocol = "ours.nvme.Control"
         from = "self"
       },
     ]

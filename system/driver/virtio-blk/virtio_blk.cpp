@@ -2,10 +2,23 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// virtio-blk -- the userspace driver of QEMU's virtio block device
-/// (storage-layer plan, .agents/tasks/storage-layer), as a component that
-/// provides ours.block.Block: a client opens the protocol, asks for the
-/// device's geometry or for blocks by number, and the driver drives the
-/// hardware on its behalf.
+/// (storage-layer plan, .agents/tasks/storage-layer; the PCI hot-plug round
+/// made it resident), as a component that provides ours.block.Block: a
+/// client opens the protocol, asks for the device's geometry or for blocks
+/// by number, and the driver drives the hardware on its behalf. Root.cm
+/// offers it under the name ours.block.Nvme's sibling ours.block.Virtio,
+/// and its control under ours.virtio.Control.
+///
+/// Resident, not scan-once: a boot without the device finds no
+/// vendor-0x1AF4 block function and stays up anyway, serving
+/// ours.virtio.Control. A rescan -- the boot's own first one, or a
+/// Control.Rescan a program asked for -- walks the ECAM window through
+/// system/lib/pci, claims the first function of the family that is not
+/// already running, sizes and assigns its I/O BAR0 if it arrived with no
+/// base (hot-plug: firmware assigns BARs at boot only), takes its I/O
+/// ports and its interrupt line, brings the device up through
+/// system/lib/virtio's device core, and publishes the disk into the
+/// registry's tree.
 ///
 /// The device is driven through the legacy (transitional) interface: the
 /// I/O-port BAR that QEMU's virtio-pci keeps beside the modern one, whose
@@ -20,36 +33,33 @@
 ///
 /// The objects:
 ///   - the MmIo root resource, through /svc: the ECAM window the
-///     enumeration reads and the BARs it reports come from
-///     vmo_create_physical;
-///   - the Ioport root resource: ioports_request opens the device's I/O
-///     ports to this process's threads, and the legacy registers are read
-///     and written with in and out from then on;
-///   - the IOMMU System resource: a stub IOMMU, one BTI for the device, and
-///     the pin that hands the ring and the request buffer to the device by
-///     one physical address;
-///   - the ring: one contiguous run of pages from vmo_create_contiguous.
-///     The legacy layout puts the used ring on the page boundary after the
-///     available ring, and the request's header, data and status live
-///     behind it;
-///   - the Loop, on which the outgoing directory and every client
-///     connection wait;
-///   - the server, block_server::BlockServer over this device: the
+///     enumeration reads comes from vmo_create_physical; it is kept for the
+///     driver's life, because every rescan walks the window again;
+///   - the Ioport root resource, likewise kept: each claim's
+///     ioports_request opens the function's I/O range to this process;
+///   - the IOMMU System resource, likewise kept: each claim makes its own
+///     BTI and its own pinned region for the ring;
+///   - the Irq root resource, likewise kept: each claim takes its line,
+///     whose GSI the chipset's wiring computes from the slot the probe
+///     named;
+///   - the Loop, on which the outgoing directory, every client connection
+///     and the control's connections wait;
+///   - the server, block_server::BlockServer over the claimed device: the
 ///     library owns the connections, the decode and the reply, and the
 ///     driver's start() runs one request to completion -- the poll is on
 ///     the same thread as everything else, so requests serialize, which
-///     one device queue makes true anyway. The library's async path, an
-///     interrupt-driven completion, waits on the kernel to deliver an
-///     interrupt into a Loop (docs/repairs/261103/kernel-interrupts.md);
-///     this driver's single-request region keeps it synchronous either way.
+///     one device queue makes true anyway.
 ///
 /// The events: the root routes a client's Open into the outgoing directory
 /// (design D11); the server takes the channel, and each Read on it parks in
 /// the slot, writes the request header, offers the descriptor chain through
-/// the available ring, rings the queue, and polls the used ring until the
-/// device answers, whose answer complete() turns into the reply. Before the
-/// driver leaves, the device is stopped and observed stopped, so the kernel
-/// never has to quarantine what it pinned.
+/// the available ring, rings the queue, and parks on the interrupt line
+/// until the device answers, whose answer complete() turns into the reply.
+/// A rescan's bring-up runs inside the control's on_signals(), on the Loop
+/// thread: nothing else runs under it, which is what makes the
+/// one-at-a-time device safe to re-enter. Before the driver leaves, the
+/// device is stopped and observed stopped, so the kernel never has to
+/// quarantine what it pinned.
 #include <ours/bti.hpp>
 #include <ours/interrupt.hpp>
 #include <ours/port.hpp>
@@ -60,6 +70,7 @@
 #include <ours/vdso.hpp>
 
 #include <array>
+#include <span>
 #include <string_view>
 
 #include <cstdint>
@@ -73,14 +84,17 @@
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
+#include <pci/bridge.hpp>
 #include <prot/acpi_client.hpp>
 #include <prot/block.hpp>
 #include <prot/dev.hpp>
 #include <prot/dev_client.hpp>
 #include <prot/resource.hpp>
 #include <prot/resource_client.hpp>
+#include <prot/virtio_control.hpp>
 #include <server/server.hpp>
 #include <ustl/lazy_init.hpp>
+#include <virtio/virtio.hpp>
 #include <wire/wire.hpp>
 
 namespace {
@@ -88,393 +102,121 @@ using ours::Signals;
 using ours::Status;
 using ours::Uandle;
 
-/// The registers the enumeration reads, in bytes from a function's base.
-constexpr auto CFG_VENDOR_ID = usize{0x00};
-constexpr auto CFG_DEVICE_ID = usize{0x02};
-constexpr auto CFG_BAR_0 = usize{0x10};
+/// How many Control.Rescan connections may be open at once: the shell's
+/// rescan is one request on one connection of its own, and a second open
+/// before the first's reply lands is refused with its channel closed.
+constexpr auto CONTROL_CONNECTIONS = usize{4};
 
-/// The virtio vendor, and the block device's id in both forms.
-constexpr auto VIRTIO_VENDOR = u16{0x1AF4};
-constexpr auto VIRTIO_BLK_TRANSITIONAL = u16{0x1001};
-constexpr auto VIRTIO_BLK_MODERN = u16{0x1042};
+/// The I/O-port range a rescan assigns new BARs from: 4 KiB of the 16-bit
+/// port space's tail, far more than the disks this machine will hot-add.
+constexpr u16 IO_ARENA_BASE = 0xE000;
+constexpr u16 IO_ARENA_LIMIT = 0xF000;
 
-/// The device status bits, in the order the specification demands them.
-constexpr auto STATUS_ACKNOWLEDGE = u8{1};
-constexpr auto STATUS_DRIVER = u8{2};
-constexpr auto STATUS_DRIVER_OK = u8{4};
-constexpr auto STATUS_FEATURES_OK = u8{8};
+/// How many functions this driver may run at once: one disk this round,
+/// and a second claim is the next round's work.
+constexpr auto MAX_OWNED = usize{4};
 
-/// A descriptor's flags.
-constexpr auto DESC_NEXT = u16{1};
-constexpr auto DESC_WRITE = u16{2};
-
-/// One page, the unit a legacy ring's page frame number names.
-constexpr auto PAGE = usize{4096};
-
-/// One sector, plus the request header that precedes the data and the
-/// status byte that follows it.
-constexpr auto SECTOR = usize{512};
-constexpr auto HEADER = usize{16};
-
-/// The GSI the device's INTx line is wired to on this machine's chipset:
-/// the first PCI function QEMU adds, slot 3 pin A.
-constexpr auto GSI_DISK = u32{23};
-
-/// The queue's depth, the driver's choice within the device's maximum. A
-/// legacy ring is the descriptor table, the available ring after it, and
-/// the used ring on the next page boundary, so it spans two pages whatever
-/// the depth: the used ring always starts on the page after the one the
-/// page frame number names.
-constexpr auto LEGACY_QUEUE_NUM = usize{256};
-constexpr auto DESC_BYTES = LEGACY_QUEUE_NUM * 16;
-constexpr auto AVAIL_OFFSET = DESC_BYTES;
-constexpr auto AVAIL_BYTES = 6 + LEGACY_QUEUE_NUM * 2;
-constexpr auto USED_OFFSET = (AVAIL_OFFSET + AVAIL_BYTES + PAGE - 1) & ~(PAGE - 1);
-constexpr auto USED_END = USED_OFFSET + 6 + LEGACY_QUEUE_NUM * 8;
-
-/// The contiguous run: the ring's pages, then the request behind the used
-/// ring, on a 16-byte boundary. Its tail holds the biggest request the
-/// protocol carries: header, MAX_READ_SECTORS blocks, status.
-constexpr auto REGION_PAGES = usize{4};
-constexpr auto REGION_BYTES = REGION_PAGES * PAGE;
-constexpr auto REQUEST_OFFSET = (USED_END + 15) & ~usize{15};
-constexpr auto DATA_OFFSET = REQUEST_OFFSET + HEADER;
-
-/// How many clients may be connected at once. One is all dev's routing
-/// checks use; a client past them is refused with NoResource.
-constexpr auto MAX_CLIENTS = usize{2};
-
-/// How many requests the hardware works on at once: one, the region's
-/// single request layout being why. See VirtioBlockServer.
-constexpr auto MAX_INFLIGHT = usize{1};
-
-/// The Loop's slots: one per connection to the outgoing directory, one per
-/// client.
-constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS;
-
-static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
-static_assert(DATA_OFFSET + prot::block::MAX_READ_BLOCKS * SECTOR + 1 <= REGION_BYTES);
-
-/// Configuration space as this driver sees it: a mapped window plus the
-/// offset of one function in it.
-class Config final {
+/// The port I/O the legacy registers are reached through: the x86 in and
+/// out, which ioports_request has opened to this process's threads for the
+/// function's range. An I/O port is not memory, and reading it as one is a
+/// page fault on the port address.
+class IoPorts final: public virtio::Ports {
   public:
-    Config(ours::VirtAddr base, usize function_offset) : m_base(base), m_offset(function_offset) {}
+    explicit IoPorts(u16 const base) : m_base(base) {}
 
-    [[nodiscard]]
-    auto read16(usize const offset) const -> u16 {
-        return *reinterpret_cast<volatile u16 const *>(m_base + m_offset + offset);
-    }
-
-    [[nodiscard]]
-    auto read32(usize const offset) const -> u32 {
-        return *reinterpret_cast<volatile u32 const *>(m_base + m_offset + offset);
-    }
-
-  private:
-    ours::VirtAddr m_base;
-    usize m_offset;
-};
-
-auto to_function_offset(u8 const device) -> usize {
-    return usize{device} << 15;
-}
-
-/// The legacy registers, at |base| in this process's I/O space. One field
-/// each, at one offset, with one width -- the shape the modern common config
-/// lacks on this build.
-class LegacyRegs final {
-  public:
-    explicit LegacyRegs(u16 const base) : m_base(base) {}
-
-    /// HOST_FEATURES, and the features the driver accepts: a legacy driver
-    /// needs none of the device's.
-    [[nodiscard]]
-    auto host_features() const -> u32 {
-        return in32(0x00);
-    }
-
-    auto accept_no_features() const -> void {
-        out32(0x04, 0);
-    }
-
-    /// QUEUE_PFN: the ring's physical address, named by page frame.
-    auto set_queue_pfn(ours::PhysAddr const paddr) const -> void {
-        out32(0x08, static_cast<u32>(std::to_underlying(paddr) >> 12));
-    }
-
-    /// QUEUE_NUM: the depth the device runs this queue at, read as its
-    /// maximum and written as the driver's choice.
-    [[nodiscard]]
-    auto queue_num() const -> u16 {
-        return in16(0x0C);
-    }
-
-    auto set_queue_num(u16 const num) const -> void {
-        out16(0x0C, num);
-    }
-
-    auto select_queue(u16 const index) const -> void {
-        out16(0x0E, index);
-    }
-
-    /// QUEUE_NOTIFY: rung with the queue's index.
-    auto notify(u16 const index) const -> void {
-        out16(0x10, index);
-    }
-
-    [[nodiscard]]
-    auto status() const -> u8 {
-        return in8(0x12);
-    }
-
-    auto set_status(u8 const value) const -> void {
-        out8(0x12, value);
-    }
-
-    /// ISR status: which of the ring and the config asked for attention. One
-    /// read answers and clears it, which drops the device's interrupt line --
-    /// what the driver does after each wait, so the level the device holds
-    /// does not re-fire the moment the kernel unmasks.
-    [[nodiscard]]
-    auto isr() const -> u8 {
-        return in8(0x13);
-    }
-
-    /// The device config's capacity, in blocks: two reads of the u64 the
-    /// legacy layout puts behind the common registers, without MSI-X enabled.
-    [[nodiscard]]
-    auto capacity() const -> u64 {
-        return static_cast<u64>(in32(0x14)) | (static_cast<u64>(in32(0x18)) << 32);
-    }
-
-  private:
-    // The x86 I/O instructions, which ioports_request has opened to this
-    // process's threads: an I/O port is not memory, and reading it as one is
-    // a page fault on the port address.
-    [[nodiscard]]
-    auto in8(u16 const offset) const -> u8 {
+    auto in8(u16 const offset) const -> u8 override {
         auto value = u8{0};
         asm volatile("inb %1, %0" : "=a"(value) : "Nd"(static_cast<u16>(m_base + offset)));
         return value;
     }
-
-    [[nodiscard]]
-    auto in16(u16 const offset) const -> u16 {
+    auto in16(u16 const offset) const -> u16 override {
         auto value = u16{0};
         asm volatile("inw %1, %0" : "=a"(value) : "Nd"(static_cast<u16>(m_base + offset)));
         return value;
     }
-
-    [[nodiscard]]
-    auto in32(u16 const offset) const -> u32 {
+    auto in32(u16 const offset) const -> u32 override {
         auto value = u32{0};
         asm volatile("inl %1, %0" : "=a"(value) : "Nd"(static_cast<u16>(m_base + offset)));
         return value;
     }
-
-    auto out8(u16 const offset, u8 const value) const -> void {
+    auto out8(u16 const offset, u8 const value) const -> void override {
         asm volatile("outb %0, %1" : : "a"(value), "Nd"(static_cast<u16>(m_base + offset)));
     }
-
-    auto out16(u16 const offset, u16 const value) const -> void {
+    auto out16(u16 const offset, u16 const value) const -> void override {
         asm volatile("outw %0, %1" : : "a"(value), "Nd"(static_cast<u16>(m_base + offset)));
     }
-
-    auto out32(u16 const offset, u32 const value) const -> void {
+    auto out32(u16 const offset, u32 const value) const -> void override {
         asm volatile("outl %0, %1" : : "a"(value), "Nd"(static_cast<u16>(m_base + offset)));
     }
 
+  private:
     u16 m_base;
 };
 
-/// The device, once brought up: everything the ring and the requests touch.
-/// One instance, in Storage below, and only the Loop's thread reaches it.
-class Device final {
-  public:
-    auto init(u16 const io_ports, ours::VirtAddr const region_map_address,
-              ours::PhysAddr const region_base, ours::Uandle const interrupt) -> void {
-        m_regs = LegacyRegs{io_ports};
-        m_region_map = region_map_address;
-        m_region_phys = region_base;
-        m_interrupt = interrupt;
-    }
+/// The block service's shape: two clients at once, and the device works on
+/// one request at a time -- the poll model, MAX_INFLIGHT the tag depth the
+/// one request region answers.
+constexpr auto MAX_CLIENTS = usize{2};
+constexpr auto MAX_INFLIGHT = usize{1};
 
-    /// The device's capacity, in blocks, for GetInfo.
-    [[nodiscard]]
-    auto blocks() const -> u64 {
-        return m_regs.capacity();
-    }
-
-    /// Reads |count| blocks starting at |lba| into the region's data area,
-    /// and returns the region offset the data landed at -- the caller reads
-    /// it there, through the same mapping. The whole request runs on the
-    /// caller's thread: the header and descriptors are written, the chain
-    /// offered, the queue rung, and the thread parks in interrupt_wait()
-    /// until the device answers. Requests serialize on this, which one device
-    /// queue makes true anyway.
-    [[nodiscard]]
-    auto read_blocks(u64 const lba, usize const count) -> Status {
-        return submit(lba, count, false);
-    }
-
-    /// Writes |count| blocks starting at |lba| from the region's data area,
-    /// which the caller filled before the call.
-    [[nodiscard]]
-    auto write_blocks(u64 const lba, usize const count) -> Status {
-        return submit(lba, count, true);
-    }
-
-  private:
-    /// The one device path, both directions: |write| flips the header's type
-    /// and the data descriptor's direction -- the device reads a write's data
-    /// and writes a read's.
-    [[nodiscard]]
-    auto submit(u64 const lba, usize const count, bool const write) -> Status {
-        if (count == 0 || DATA_OFFSET + count * SECTOR + 1 > REGION_BYTES) {
-            return Status::InvArgs;
-        }
-        auto *const bytes = reinterpret_cast<volatile u8 *>(m_region_map);
-        // The header: a read (type 0) or a write (type 1), from |lba|.
-        *reinterpret_cast<volatile u32 *>(bytes + REQUEST_OFFSET) = write ? 1 : 0;
-        *reinterpret_cast<volatile u32 *>(bytes + REQUEST_OFFSET + 4) = 0;
-        *reinterpret_cast<volatile u64 *>(bytes + REQUEST_OFFSET + 8) = lba;
-
-        auto const buf_base = m_region_phys + REQUEST_OFFSET;
-        auto const put64 = [&](usize index, usize field, u64 value) -> void {
-            *reinterpret_cast<volatile u64 *>(bytes + index * 16 + field) = value;
-        };
-        auto const put32 = [&](usize index, usize field, u32 value) -> void {
-            *reinterpret_cast<volatile u32 *>(bytes + index * 16 + field) = value;
-        };
-        auto const put16 = [&](usize index, usize field, u16 value) -> void {
-            *reinterpret_cast<volatile u16 *>(bytes + index * 16 + field) = value;
-        };
-        // desc[0]: the header, read by the device, chained to desc[1].
-        put64(0, 0, std::to_underlying(buf_base));
-        put32(0, 8, HEADER);
-        put16(0, 12, DESC_NEXT);
-        put16(0, 14, 1);
-        // desc[1]: the blocks, chained to desc[2]. A write's data flows
-        // toward the device, so the WRITE flag -- what the device writes --
-        // is on only for a read.
-        put64(1, 0, std::to_underlying(buf_base + HEADER));
-        put32(1, 8, static_cast<u32>(count * SECTOR));
-        put16(1, 12, DESC_NEXT | (write ? u16{0} : DESC_WRITE));
-        put16(1, 14, 2);
-        // desc[2]: the status byte, written by the device, end of the chain.
-        // It sits right after the data, which starts HEADER into the buffer:
-        // drop the HEADER and the device writes the status one header's
-        // width into the data's tail, and the byte read back at the true
-        // status slot is whatever the region held before.
-        put64(2, 0, std::to_underlying(buf_base + HEADER + count * SECTOR));
-        put32(2, 8, 1);
-        put16(2, 12, DESC_WRITE);
-        put16(2, 14, 0);
-
-        // The available ring: one offered chain, the device's cursor moving
-        // past it. The entry lands at |m_offered| modulo the queue's size;
-        // the ring's index is a free-running counter, wrapping at 16 bits
-        // and never at the queue's size -- the device reads it with its own
-        // free-running cursor, and an index that resets at the queue size
-        // reads as the ring moving backward, its chains walked again past
-        // the end. x86 orders stores strongly; no barrier is asked for.
-        auto *const avail = bytes + AVAIL_OFFSET;
-        *reinterpret_cast<volatile u16 *>(avail + 4 + 2 * (m_offered % LEGACY_QUEUE_NUM)) = 0;
-        *reinterpret_cast<volatile u16 *>(avail + 2) = static_cast<u16>(m_offered + 1);
-        m_offered += 1;
-        m_regs.notify(0);
-
-        // The device raises the line when the chain's entry lands in the used
-        // ring; the wait parks the thread until it does. A level line stays
-        // masked from its delivery until its ack, and each wait is also the
-        // ack of the one before it, so the wait that comes back from request
-        // N is what arms the line for request N + 1. Reading the ISR register
-        // after each wait clears the device's own level, without which the
-        // unmasked line would re-fire before any new completion. A wait can
-        // come back without this request's entry -- an interrupt the last
-        // request left pending -- so the entry is what ends the loop, not the
-        // wait.
-        auto *const used = bytes + USED_OFFSET;
-        for (auto waits = u32{0}; waits < 100; ++waits) {
-            if (auto const waited = ours::interrupt_wait(m_interrupt, nullptr);
-                waited != Status::Ok) {
-                return waited;
-            }
-            (void)m_regs.isr();
-            if (*reinterpret_cast<volatile u16 const *>(used + 2) == static_cast<u16>(m_seen + 1)) {
-                m_seen += 1;
-                auto const status_byte = *reinterpret_cast<volatile u8 const *>(
-                    bytes + REQUEST_OFFSET + HEADER + count * SECTOR);
-                return status_byte == 0 ? Status::Ok : Status::BadState;
-            }
-        }
-        return Status::TimeOut;
-    }
-
-  private:
-    LegacyRegs m_regs = LegacyRegs{0};
-    ours::VirtAddr m_region_map = ours::VirtAddr{0};
-    ours::PhysAddr m_region_phys = ours::PhysAddr{0};
-    /// The interrupt object on the device's line, which every submit() parks
-    /// its thread on.
-    ours::Uandle m_interrupt = ours::Uandle::Invalid;
-    /// The chains offered so far, and the used entries seen so far: the two
-    /// cursors of the ring, the device's behind the driver's by exactly the
-    /// requests in flight.
-    u64 m_offered = 0;
-    u64 m_seen = 0;
-};
-
-/// The server: the block-driver library's BlockServer over this device. The
-/// library owns the connections, the decode, the slot table and the reply;
-/// this class is the hardware, the two hooks the library calls.
-///
-/// MAX_INFLIGHT is 1, and the work runs to completion inside start(): the
-/// region holds one request's layout, so the poll of the used ring -- the
-/// same one the private server did -- sits in the driver's hook, and the
-/// slot is free again by the time start() returns. The library's async path
-/// waits on the kernel to deliver an interrupt into a loop::Loop, which no
-/// path does yet (docs/repairs/261103/kernel-interrupts.md); this driver's
-/// single-request region keeps it synchronous either way, and the host
-/// suite pins the async path the library provides.
+/// The server: the block-driver library's BlockServer over the claimed
+/// device. The library owns the connections, the decode, the slot table
+/// and the reply; this class is the hardware, the two hooks the library
+/// calls. Until a rescan claims a device there is none, and start()
+/// answers NotFound: the protocol is served, the disk is not there yet.
 class VirtioBlockServer final
     : public block_server::BlockServer<VirtioBlockServer, MAX_CLIENTS, MAX_INFLIGHT> {
   public:
     using Base = block_server::BlockServer<VirtioBlockServer, MAX_CLIENTS, MAX_INFLIGHT>;
     using Storage = typename Base::Storage;
 
-    VirtioBlockServer(Storage &storage, loop::Loop &loop, Device &device, ours::VirtAddr region_map)
-        : Base(storage, loop), m_device(&device), m_region_map(region_map) {}
+    VirtioBlockServer(Storage &storage, loop::Loop &loop) : Base(storage, loop) {}
 
-    /// GetInfo's answer: the legacy device's block is a 512-byte sector, and
-    /// the geometry is what setup read from the device.
+    auto set_device(virtio::Device *device) -> void {
+        m_device = device;
+    }
+
+    /// GetInfo's answer: the legacy device's block is a 512-byte sector,
+    /// and the geometry is what setup read from the device.
     [[nodiscard]]
     auto geometry() const -> block_server::Geometry {
-        return {.block_size = prot::block::BLOCK_SIZE, .blocks = m_device->blocks()};
+        return {.block_size = prot::block::BLOCK_SIZE, .blocks = m_blocks};
+    }
+
+    auto set_blocks(u64 const blocks) -> void {
+        m_blocks = blocks;
     }
 
     /// The library's hand-off: run the parked request against the device,
-    /// and complete it before returning. |data| is a Write's blocks, placed
-    /// where the device reads them from -- the one copy of a Write.
+    /// and complete it before returning. |data| is a Write's blocks,
+    /// placed where the device reads them from -- the one copy of a Write.
+    /// The park is the interrupt wait: the thread parks on the device's
+    /// line until it answers, as the hardware path is.
     auto start(usize const index, std::span<u8 const> const data) -> Status {
+        if (m_device == nullptr || m_interrupt == Uandle::Invalid) {
+            return Status::NotFound;
+        }
         auto const &parked = slot(index);
+        auto const park = [this] { return ours::interrupt_wait(m_interrupt, nullptr); };
         if (data.empty()) {
             // A Read: the device writes the blocks into the region's data
             // area, where the completion's encoder reads them from -- no
             // copy but the one into the reply.
-            auto const status = m_device->read_blocks(parked.lba, parked.count);
+            auto const status = m_device->read_blocks(parked.lba, parked.count, park);
             if (status != Status::Ok) {
                 return status;
             }
-            complete(index, Status::Ok,
-                     std::span{reinterpret_cast<u8 const *>(m_region_map + REQUEST_OFFSET + HEADER),
-                               usize{parked.count} * SECTOR});
+            complete(
+                index, Status::Ok,
+                std::span{reinterpret_cast<u8 const *>(std::to_underlying(m_region_map) +
+                                                       virtio::REQUEST_OFFSET + virtio::HEADER),
+                          usize{parked.count} * virtio::SECTOR});
             return Status::Ok;
         }
-        std::memcpy(reinterpret_cast<void *>(m_region_map + REQUEST_OFFSET + HEADER), data.data(),
-                    data.size());
-        auto const status = m_device->write_blocks(parked.lba, parked.count);
+        std::memcpy(reinterpret_cast<void *>(std::to_underlying(m_region_map) +
+                                             virtio::REQUEST_OFFSET + virtio::HEADER),
+                    data.data(), data.size());
+        auto const status = m_device->write_blocks(parked.lba, parked.count, park);
         if (status != Status::Ok) {
             return status;
         }
@@ -482,19 +224,414 @@ class VirtioBlockServer final
         return Status::Ok;
     }
 
+    /// The interrupt line the park waits on, the claim's to hand over.
+    auto set_interrupt(Uandle const interrupt) -> void {
+        m_interrupt = interrupt;
+    }
+
+    auto set_region(ours::VirtAddr const region_map) -> void {
+        m_region_map = region_map;
+    }
+
   private:
-    Device *m_device;
+    virtio::Device *m_device = nullptr;
+    Uandle m_interrupt = Uandle::Invalid;
     /// The region's CPU mapping, where the device leaves the data a Read
     /// answers with.
     ours::VirtAddr m_region_map = ours::VirtAddr{0};
+    u64 m_blocks = 0;
 };
-} // namespace
 
-namespace {
+class Driver;
+
+/// One Control.Rescan connection: the channel the outgoing directory handed
+/// over, parked on the Loop. A readable rescan runs the driver's rescan on
+/// the Loop thread -- nothing else runs under it -- and answers the bare
+/// status form; a message the decoder refuses closes the connection without
+/// an epitaph, as the protocol's contract has it.
+class ControlConnection final: public loop::Waiter {
+  public:
+    ControlConnection() = default;
+
+    auto install(loop::Loop &loop, Driver *driver) -> void {
+        m_loop = &loop;
+        m_driver = driver;
+    }
+
+    /// Whether the connection may take a channel: it holds none.
+    [[nodiscard]]
+    auto is_free() const -> bool {
+        return m_channel == Uandle::Invalid;
+    }
+
+    /// Takes |channel| over, the request's, onto the Loop.
+    auto connect(Uandle const channel) -> Status {
+        auto added = m_loop->add(channel, ours::Signals::Readable | ours::Signals::PeerClosed,
+                                 *static_cast<loop::Waiter *>(this));
+        if (added.is_err()) {
+            auto _ = ours::handle_close(channel);
+            return added.unwrap_err();
+        }
+        m_channel = channel;
+        return Status::Ok;
+    }
+
+    /// Defined below Driver, whose rescan() the readable case runs.
+    auto on_signals(ours::Signals const observed) -> loop::Action override;
+
+  private:
+    /// Frees the connection for the next open and tells the Loop to close
+    /// the channel and the slot.
+    auto close() -> loop::Action {
+        m_channel = Uandle::Invalid;
+        return loop::Action::Close;
+    }
+
+    Uandle m_channel = Uandle::Invalid;
+    loop::Loop *m_loop = nullptr;
+    Driver *m_driver = nullptr;
+};
+
+/// The control, the protocol's Handler: an Open of ours.virtio.Control
+/// hands its channel to a free connection, or closes it when all four are
+/// busy.
+class Control final: public ioservice::Handler {
+  public:
+    Control(loop::Loop &loop, Driver &driver, std::span<ControlConnection> connections)
+        : m_connections(connections) {
+        for (auto &connection: m_connections) {
+            connection.install(loop, &driver);
+        }
+    }
+
+    auto connect(Uandle const channel) -> void override {
+        for (auto &connection: m_connections) {
+            if (!connection.is_free()) {
+                continue;
+            }
+            auto const taken = connection.connect(channel);
+            if (taken != Status::Ok) {
+                auto _ = ort::debug_line(
+                    {"virtio-blk: its control refused a connection: ", ours::to_string(taken)});
+            }
+            return;
+        }
+        auto _ = ours::handle_close(channel);
+    }
+
+  private:
+    std::span<ControlConnection> m_connections;
+};
+
+constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS + CONTROL_CONNECTIONS;
+static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
+static_assert(virtio::DATA_OFFSET + prot::block::MAX_READ_BLOCKS * virtio::SECTOR + 1 <=
+              virtio::REGION_BYTES);
+
+/// The storages: the outgoing's, the block server's, the Loop's slots, the
+/// ECAM window, and each claim's ports, line, BTI, region and device. They
+/// stand before the Driver, whose rescan claims them; the control's
+/// connections come after it, because each one calls into it.
 constinit ustl::LazyInit<ioservice::Outgoing::Storage> OUTGOING_STORAGE;
 constinit ustl::LazyInit<VirtioBlockServer::Storage> SERVER_STORAGE;
-constinit ustl::LazyInit<Device> DEVICE_STORAGE;
 constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
+constinit ustl::LazyInit<ddk::MappedMmio> WINDOW_STORAGE;
+constinit ustl::LazyInit<IoPorts> PORTS_STORAGE;
+constinit ustl::LazyInit<Uandle> IRQ_STORAGE;
+constinit ustl::LazyInit<ddk::Bti> BTI_STORAGE;
+constinit ustl::LazyInit<ddk::DmaRegion> REGION_STORAGE;
+constinit ustl::LazyInit<virtio::Device> DEVICE_STORAGE;
+
+/// The driver: the resources and the window it holds for its life, and the
+/// rescan -- the one routine both the boot's first scan and every
+/// Control.Rescan run.
+class Driver final {
+  public:
+    Driver(std::span<u8> window, Uandle const vma, Uandle const ioport, Uandle const iommu,
+           Uandle const irq)
+        : m_window(window)
+        , m_vma(vma)
+        , m_ioport(ioport)
+        , m_iommu(iommu)
+        , m_irq(irq)
+        , m_window_buses(window.size() / pci::BUS_BYTES) {}
+
+    auto set_server(VirtioBlockServer *server) -> void {
+        m_server = server;
+    }
+
+    auto set_outgoing(ioservice::Outgoing *outgoing) -> void {
+        m_outgoing = outgoing;
+    }
+
+    /// The rescan: walk, claim, bring up, publish. NotFound for an
+    /// unchanged machine -- the answer, not a failure; otherwise why not,
+    /// the claim's own steps' statuses.
+    auto rescan() -> Status {
+        // The walk is over every bus the ECAM window covers, one Config
+        // per bus slice: a hot-added function sits behind the root port
+        // that accepted it, on the bus the port bridges, not on bus 0.
+        // |claimed| is the Config the claim came from, whose reads name
+        // the interrupt pin.
+        auto found = ustl::Result<virtio::Found, Status>{ustl::err(Status::NotFound)};
+        usize claimed_bus = 0;
+        pci::Config claimed = pci::Config{m_window.subspan(0, pci::BUS_BYTES)};
+        for (auto bus = usize{0};
+             bus < m_window_buses && found.is_err() && found.unwrap_err() == Status::NotFound;
+             ++bus) {
+            auto bus_owned = std::array<usize, MAX_OWNED>{};
+            auto bus_owned_count = usize{0};
+            for (auto i = usize{0}; i < m_owned_count; ++i) {
+                if (m_owned[i].bus == bus) {
+                    bus_owned[bus_owned_count++] = m_owned[i].index;
+                }
+            }
+            auto const bus_bytes = m_window.subspan(bus * pci::BUS_BYTES, pci::BUS_BYTES);
+            auto bus_config = pci::Config{bus_bytes};
+            found = virtio::probe(bus_config, m_arena,
+                                  std::span<usize const>{bus_owned}.first(bus_owned_count));
+            claimed_bus = bus;
+            claimed = bus_config;
+        }
+        if (found.is_err()) {
+            return found.unwrap_err();
+        }
+
+        // A claim behind a root port opens the port's windows first: the
+        // bridge forwards I/O and memory cycles for its secondary bus only
+        // over the ranges its windows name, and firmware programs those at
+        // boot only, as it programs the BARs. The I/O window covers the
+        // whole port arena, since every claim takes its base from it.
+        usize bridge_slot = 0;
+        if (claimed_bus != 0) {
+            auto bus0 = pci::Config{m_window.subspan(0, pci::BUS_BYTES)};
+            auto const bridge = pci::bridge_for_bus(bus0, claimed_bus);
+            if (bridge.is_err()) {
+                auto _ = ort::debug_line("virtio-blk: no bridge to the claimed bus");
+                return Status::NotFound;
+            }
+            bridge_slot = static_cast<u32>(bridge.unwrap() / pci::FUNCTIONS_PER_DEVICE);
+            pci::program_bridge_io(bus0, bridge.unwrap(), IO_ARENA_BASE, IO_ARENA_LIMIT);
+            pci::enable_bridge(bus0, bridge.unwrap());
+        }
+
+        // The function's I/O ports, opened to this process's threads; the
+        // interrupt line; the DMA ring; the device core over all of it.
+        // Each claim's objects live for the driver's life in their
+        // storages: one claim this round, and a second claim is the next
+        // round's work.
+        if (auto const status = ours::ioports_request(m_ioport, found->io_base, 0x80);
+            status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot take its I/O ports: ", ours::to_string(status)});
+            return status;
+        }
+
+        // The interrupt line, on the GSI the chipset's wiring names: a
+        // function on bus 0 at slot S, pin P, is wired to GSI 20 +
+        // ((S + P) & 3) -- the boot disk sat at slot 3, pin A, whose GSI 23
+        // the first driver carried as a constant. Behind a root port (a
+        // hot-added function's bus), INTx swizzles through the port: pin P
+        // on slot S reaches the port as pin ((S + P) & 3), and the port
+        // hands the machine the GSI of its own slot with that pin, on the
+        // same wiring. The port's slot and the claimed function's pin are
+        // config-space facts, read here: the port is bus 0's bridge whose
+        // secondary bus is the claimed function's, and the pin is the
+        // function's interrupt pin register at 0x3D (0x3C is the line
+        // register, the platform's own answer). A PciIrq method on the
+        // route service, planned with the driver manager, will name the
+        // line from the firmware's tables instead of this chipset rule.
+        // PCI INTx is level and active low, which ModeLevelLow says.
+        u32 gsi = 0;
+        {
+            auto const slot = static_cast<u32>(found->index / pci::FUNCTIONS_PER_DEVICE);
+            auto const pin_byte = claimed.read8(found->index, 0x3D);
+            auto const pin0 = pin_byte == 0 ? 0u : static_cast<u32>(pin_byte - 1);
+            gsi = static_cast<u32>(20 + ((bridge_slot + slot + pin0) & 3));
+        }
+        auto interrupt = ddk::irq::take(m_irq, ours::ROOT_INTERRUPT_DOMAIN, gsi,
+                                        ours::InterruptOptions::ModeLevelLow);
+        if (interrupt.is_err()) {
+            auto _ = ort::debug_line({"virtio-blk: cannot take its interrupt line: ",
+                                      ours::to_string(interrupt.unwrap_err())});
+            return interrupt.unwrap_err();
+        }
+        auto &line = *IRQ_STORAGE.init(interrupt.unwrap());
+
+        auto bti = ddk::Bti::create(m_iommu);
+        if (bti.is_err()) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot make its BTI: ", ours::to_string(bti.unwrap_err())});
+            return bti.unwrap_err();
+        }
+        auto &kept_bti = *BTI_STORAGE.init(std::move(bti).unwrap());
+        auto region = ddk::DmaRegion::allocate(m_vma, kept_bti.handle(), virtio::REGION_BYTES);
+        if (region.is_err()) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot make its DMA region: ", ours::to_string(region.unwrap_err())});
+            return region.unwrap_err();
+        }
+        auto &kept_region = *REGION_STORAGE.init(std::move(region).unwrap());
+
+        auto &ports = *PORTS_STORAGE.init(found->io_base);
+        auto &device = *DEVICE_STORAGE.init(ports, kept_region.virt(), kept_region.phys());
+
+        // Bring-up, in the order the legacy specification fixes.
+        if (auto const status = device.bring_up(kept_region.phys()); status != Status::Ok) {
+            auto _ = ort::debug_line({"virtio-blk: bring-up answered ", ours::to_string(status)});
+            return status;
+        }
+        auto const blocks = device.blocks();
+        if (blocks == 0) {
+            auto _ = ort::debug_line("virtio-blk: the device names no blocks");
+            return Status::NotFound;
+        }
+
+        m_server->set_device(&device);
+        m_server->set_blocks(blocks);
+        m_server->set_interrupt(line);
+        m_server->set_region(kept_region.virt());
+
+        // The block protocol appears with the disk: until a claim, an Open
+        // of ours.block.Block is refused by the outgoing directory, which
+        // is how a client reads "no device yet" -- an empty geometry would
+        // read as a disk of no blocks.
+        if (!m_block_served) {
+            if (auto const status = m_outgoing->add_protocol(prot::block::BLOCK_NAME, *m_server);
+                status != Status::Ok) {
+                auto _ = ort::debug_line(
+                    {"virtio-blk: cannot serve its protocol: ", ours::to_string(status)});
+                return status;
+            }
+            m_block_served = true;
+        }
+
+        if (auto const published = publish(); published != Status::Ok) {
+            // Logged and not fatal -- the disk still serves its /svc route;
+            // the tree merely shows one device fewer.
+            auto _ =
+                ort::debug_line({"virtio-blk: its publish answered ", ours::to_string(published)});
+        }
+
+        m_owned[m_owned_count] = {.bus = claimed_bus, .index = found->index};
+        m_owned_count += 1;
+        return Status::Ok;
+    }
+
+  private:
+    /// The device, published into the registry's tree: a second server end
+    /// of the outgoing serves the mount, and the publish names the class,
+    /// the proposal and the protocol. One attempt, as before: the mount
+    /// handle goes with the message, and a retry would need a fresh pair.
+    auto publish() -> Status {
+        auto mount_server = Uandle::Invalid;
+        auto mount = Uandle::Invalid;
+        auto registry_client = Uandle::Invalid;
+        auto registry_server = Uandle::Invalid;
+        if (auto const made =
+                ours::channel_create(ours::ChannelCreateOptions::None, &mount_server, &mount);
+            made != Status::Ok) {
+            return made;
+        }
+        if (auto const made = ours::channel_create(ours::ChannelCreateOptions::None,
+                                                   &registry_client, &registry_server);
+            made != Status::Ok) {
+            {
+                auto _ = ours::handle_close(mount_server);
+            }
+            {
+                auto _ = ours::handle_close(mount);
+            }
+            return made;
+        }
+        if (auto const status = m_outgoing->serve(mount_server); status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot serve its mount channel: ", ours::to_string(status)});
+            return status;
+        }
+        if (auto const status = fsio::connect(prot::dev::REGISTRY_PATH, registry_server);
+            status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot reach the device registry: ", ours::to_string(status)});
+            return status;
+        }
+        prot::dev::Client registry{registry_client};
+        auto granted = std::array<char, 8>{};
+        auto const published = registry.publish("block", "000", prot::block::BLOCK_NAME, mount,
+                                                std::span<char>{granted});
+        if (published == Status::Ok) {
+            auto _ = ort::debug_line({"virtio-blk: its device is in the tree as block/",
+                                      std::string_view{granted.data()}});
+        }
+        return published;
+    }
+
+    /// The ECAM window, sliced per bus: one Config per pci::BUS_BYTES.
+    std::span<u8> m_window;
+    virtio::IoArena m_arena{IO_ARENA_BASE, IO_ARENA_LIMIT};
+    Uandle m_vma;
+    Uandle m_ioport;
+    Uandle m_iommu;
+    Uandle m_irq;
+    VirtioBlockServer *m_server = nullptr;
+    ioservice::Outgoing *m_outgoing = nullptr;
+    /// The functions this driver is running, which a rescan skips.
+    struct Owned {
+        usize bus = 0;
+        usize index = 0;
+    };
+    std::array<Owned, MAX_OWNED> m_owned{};
+    usize m_owned_count = 0;
+    /// How many buses the window covers.
+    usize m_window_buses = 0;
+    /// Whether the block protocol is in the outgoing already: the first
+    /// claim adds it, and the rescan of a second claim must not.
+    bool m_block_served = false;
+};
+
+auto ControlConnection::on_signals(ours::Signals const observed) -> loop::Action {
+    if (!(observed & ours::Signals::Readable)) {
+        // The peer went with nothing to read: the slot's close is the
+        // reply there is to give.
+        return close();
+    }
+    auto bytes = std::array<u8, wire::HEADER_SIZE>{};
+    auto handles = std::array<Uandle, wire::MAX_MESSAGE_HANDLES>{};
+    auto num_bytes = u32{0};
+    auto num_handles = u32{0};
+    auto const read = ours::channel_read(
+        m_channel, ours::ChannelReadOptions::None, bytes.data(), handles.data(),
+        static_cast<u32>(bytes.size()), static_cast<u32>(handles.size()), &num_bytes, &num_handles);
+    for (auto index = u32{0}; index < num_handles; ++index) {
+        auto _ = ours::handle_close(handles[index]);
+    }
+    if (read != Status::Ok) {
+        return close();
+    }
+    auto const decoded = prot::virtio::decode_rescan(
+        wire::Message{.bytes = std::span{bytes}.first(num_bytes), .handles = {}});
+    if (decoded.is_err()) {
+        // Refused, no epitaph: the connection closes.
+        return close();
+    }
+    auto const answer = m_driver->rescan();
+    auto reply_bytes = std::array<u8, wire::STATUS_FORM_SIZE>{};
+    auto const reply =
+        prot::virtio::encode_rescan_reply(reply_bytes, decoded->txid, {.status = answer});
+    if (reply.is_err()) {
+        return close();
+    }
+    if (auto const written =
+            ours::channel_write(m_channel, ours::ChannelWriteOptions::None, reply->bytes.data(),
+                                static_cast<u32>(reply->bytes.size()), nullptr, 0);
+        written != Status::Ok) {
+        return close();
+    }
+    return loop::Action::Rearm;
+}
+
+constinit std::array<ControlConnection, CONTROL_CONNECTIONS> CONNECTIONS{};
+
 } // namespace
 
 auto main(int, char **) -> int {
@@ -507,7 +644,9 @@ auto main(int, char **) -> int {
     }
 
     // Every root this driver asks for, with the ladder's destructor closing
-    // whatever is still held on any early return below.
+    // whatever is still held on any early return below. Each root is kept
+    // for the driver's life: every rescan that claims a function walks the
+    // window, opens ports, makes a BTI and takes a line.
     ddk::Resources resources;
 
     auto const vma = ddk::startup_handle(ours::HandleType::VmaRoot, "VmaRoot");
@@ -545,17 +684,14 @@ auto main(int, char **) -> int {
         return 1;
     }
 
-    // The enumeration window's base is the firmware's to name: the route
-    // service reads it from the MCFG table, and this driver asks instead of
-    // carrying a chipset constant.
+    // Bus 0 of the ECAM, one window for the whole enumeration, kept for the
+    // driver's life: every rescan walks it again.
     auto const ecam = prot::acpi::ecam_base(0);
     if (ecam.is_err()) {
         auto _ = ort::debug_line({"virtio-blk: no ECAM base from the route service: ",
                                   ours::to_string(ecam.unwrap_err())});
         return 1;
     }
-
-    // Bus 0 of the ECAM, one window for the whole enumeration.
     auto ecam_window = ddk::MappedMmio::map(vma.unwrap(), mmio_resource.unwrap(),
                                             ours::PhysAddr{ecam->address}, usize{ecam->size});
     if (ecam_window.is_err()) {
@@ -563,48 +699,12 @@ auto main(int, char **) -> int {
                                   ours::to_string(ecam_window.unwrap_err())});
         return 1;
     }
-    auto const config_base = ecam_window->addr();
-
-    // The block device, and the I/O base its legacy BAR names.
-    auto device_offset = usize{0};
-    auto io_base = u16{0};
-    for (auto device = u8{0}; device < 32 && device_offset == 0; ++device) {
-        auto const cfg = Config{config_base, to_function_offset(device)};
-        auto const vendor = cfg.read16(CFG_VENDOR_ID);
-        if (vendor == 0xFFFF) {
-            continue;
-        }
-        auto const device_id = cfg.read16(CFG_DEVICE_ID);
-        if (vendor != VIRTIO_VENDOR ||
-            (device_id != VIRTIO_BLK_TRANSITIONAL && device_id != VIRTIO_BLK_MODERN)) {
-            continue;
-        }
-        // The legacy BAR0: bit 0 set names I/O space, and the base is what
-        // the register holds above the two low bits the specification keeps
-        // for its own flags.
-        auto const bar0 = cfg.read32(CFG_BAR_0);
-        if ((bar0 & 1) == 0) {
-            auto _ = ort::debug_line("virtio-blk: the device has no legacy I/O BAR");
-            continue;
-        }
-        device_offset = to_function_offset(device);
-        io_base = static_cast<u16>(bar0 & 0xFFFC);
-    }
-    {
-        // The enumeration is over: the window goes, and with it the MmIo
-        // root's last use, which goes back to the pool.
-        auto window = std::move(ecam_window).unwrap();
-    }
-    resources.drop(mmio_resource.unwrap());
-    if (device_offset == 0) {
-        // A boot without the device attached is an answer, not a failure: the
-        // boot check runs on images whose QEMU carries no disk. The routes to
-        // this component's protocol answer NotFound while it is gone.
-        auto _ = ort::debug_line("virtio-blk: no virtio block device on bus 0");
-        return 0;
-    }
-
-    // The device, brought up once and served forever.
+    auto &mapped_window = *WINDOW_STORAGE.init(std::move(ecam_window).unwrap());
+    auto window_bytes = std::span<u8>{
+        reinterpret_cast<u8 *>(std::to_underlying(mapped_window.addr())), usize{ecam->size}};
+    // The machine: the port, the Loop, the outgoing, the block server, the
+    // control. All of it stands up before the first rescan, because the
+    // driver is resident -- the routes exist whether or not a device does.
     auto port = Uandle::Invalid;
     if (auto const status = ours::port_create(ours::PortCreateOptions::None, &port);
         status != Status::Ok) {
@@ -612,158 +712,42 @@ auto main(int, char **) -> int {
         return 1;
     }
     loop::Loop loop(port, SLOT_STORAGE);
-
-    if (auto const status = ours::ioports_request(ioport_resource.unwrap(), io_base, 0x80);
-        status != Status::Ok) {
-        auto _ =
-            ort::debug_line({"virtio-blk: cannot take its I/O ports: ", ours::to_string(status)});
-        return 1;
-    }
-    auto const regs = LegacyRegs{io_base};
-
-    // The device's interrupt line. On this machine's chipset a function at
-    // root-bus slot S, pin P, is wired to GSI 20 + ((S + P) & 3), and QEMU
-    // adds the disk's virtio-blk as the first PCI function, slot 3 pin A:
-    // GSI 23. A PciIrq method on the route service, planned with the driver
-    // manager, will name the line from the firmware's tables instead of this
-    // constant. PCI INTx is level and active low, which ModeLevelLow says.
-    // take() maps, creates, and closes the root on success -- the line is
-    // held by the interrupt object from here, and the root goes back to the
-    // pool for the next driver.
-    auto interrupt = ddk::irq::take(irq_resource.unwrap(), ours::ROOT_INTERRUPT_DOMAIN, GSI_DISK,
-                                    ours::InterruptOptions::ModeLevelLow);
-    if (interrupt.is_err()) {
-        auto _ = ort::debug_line({"virtio-blk: cannot take its interrupt line: ",
-                                  ours::to_string(interrupt.unwrap_err())});
-        return 1;
-    }
-    resources.drop(irq_resource.unwrap());
-
-    // Bring-up, in the order the legacy specification fixes.
-    regs.set_status(0);
-    for (auto tries = u32{0}; tries < 1'000'000; ++tries) {
-        if (regs.status() == 0) {
-            break;
-        }
-        ort::spin_hint();
-    }
-    regs.set_status(STATUS_ACKNOWLEDGE);
-    regs.set_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER);
-    (void)regs.host_features();
-    regs.accept_no_features();
-
-    regs.select_queue(0);
-    auto const queue_max = regs.queue_num();
-    if (queue_max == 0) {
-        auto _ = ort::debug_line("virtio-blk: the device names no queue");
-        return 1;
-    }
-    // The legacy depth is the driver's to choose, within the device's
-    // maximum: written back before the ring is registered, so the device
-    // computes the rings' addresses from the same depth this driver laid
-    // them out with.
-    regs.set_queue_num(static_cast<u16>(LEGACY_QUEUE_NUM));
-
-    // The DMA ring: one contiguous run of pages, made into a BTI and a
-    // pinned, mapped region. The kit objects' destructors undo each step in
-    // the order that answers the kernel's pin discipline on any early return
-    // below.
-    auto bti = ddk::Bti::create(iommu_resource.unwrap());
-    if (bti.is_err()) {
-        auto _ = ort::debug_line(
-            {"virtio-blk: cannot make its BTI: ", ours::to_string(bti.unwrap_err())});
-        return 1;
-    }
-    resources.drop(iommu_resource.unwrap());
-    auto region = ddk::DmaRegion::allocate(vma.unwrap(), bti->handle(), REGION_BYTES);
-    if (region.is_err()) {
-        auto _ = ort::debug_line(
-            {"virtio-blk: cannot make its DMA region: ", ours::to_string(region.unwrap_err())});
-        return 1;
-    }
-    auto const region_phys = region->phys();
-    auto const region_map = region->virt();
-    regs.set_queue_pfn(region_phys);
-    {
-        char phys_text[18];
-        auto _ = ort::debug_line(
-            {"virtio-blk: region at ", ort::hex(std::to_underlying(region_phys), phys_text)});
-    }
-
-    // The device is told the driver is ready, and may now be served.
-    regs.set_status(STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK | STATUS_DRIVER_OK);
-
-    // The server, over the device. The kit objects and the storages outlive
-    // the Loop.
-    auto &storage = *SERVER_STORAGE.init();
-    auto &device = *DEVICE_STORAGE.init();
-    device.init(io_base, region_map, region_phys, interrupt.unwrap());
-    VirtioBlockServer server(storage, loop, device, region_map);
-
     auto &outgoing_storage = *OUTGOING_STORAGE.init();
     ioservice::Outgoing outgoing(outgoing_storage, loop);
-    if (auto const status = outgoing.add_protocol(prot::block::BLOCK_NAME, server);
+    auto &storage = *SERVER_STORAGE.init();
+    VirtioBlockServer server(storage, loop);
+
+    Driver driver(window_bytes, vma.unwrap(), ioport_resource.unwrap(), iommu_resource.unwrap(),
+                  irq_resource.unwrap());
+    driver.set_server(&server);
+    driver.set_outgoing(&outgoing);
+
+    Control control(loop, driver, std::span<ControlConnection>{CONNECTIONS});
+    if (auto const status = outgoing.add_protocol(prot::virtio::CONTROL_NAME, control);
         status != Status::Ok) {
         auto _ =
-            ort::debug_line({"virtio-blk: cannot serve its protocol: ", ours::to_string(status)});
+            ort::debug_line({"virtio-blk: cannot serve its control: ", ours::to_string(status)});
         return 1;
     }
+    // ours.block.Block is added by the first claim, not here: until a
+    // device is running, an Open of it is refused, which is how a client
+    // reads "no device yet".
     if (auto const status = outgoing.serve(directory_request.unwrap()); status != Status::Ok) {
         auto _ = ort::debug_line(
             {"virtio-blk: cannot serve its outgoing directory: ", ours::to_string(status)});
         return 1;
     }
 
-    // The device, published into the registry's tree (the device-namespace
-    // round): a second server end of this outgoing serves the mount, so the
-    // registry's forwards reach the same block service; the publish names the
-    // leaf's class and number and the protocol a client's open of it carries.
-    // A failure to publish is logged and not fatal -- the disk still serves
-    // its /svc route; the tree merely shows one device fewer.
-    {
-        auto mount = Uandle::Invalid;
-        auto mount_server = Uandle::Invalid;
-        auto registry_client = Uandle::Invalid;
-        auto registry_server = Uandle::Invalid;
-        if (auto const made =
-                ours::channel_create(ours::ChannelCreateOptions::None, &mount_server, &mount);
-            made != Status::Ok) {
-            auto _ = ort::debug_line(
-                {"virtio-blk: cannot make its mount channel: ", ours::to_string(made)});
-        } else if (auto const made = ours::channel_create(ours::ChannelCreateOptions::None,
-                                                          &registry_client, &registry_server);
-                   made != Status::Ok) {
-            auto _ = ort::debug_line(
-                {"virtio-blk: cannot make its registry channel: ", ours::to_string(made)});
-        } else if (auto const status = outgoing.serve(mount_server); status != Status::Ok) {
-            auto _ = ort::debug_line(
-                {"virtio-blk: cannot serve its mount channel: ", ours::to_string(status)});
-        } else if (auto const status = fsio::connect(prot::dev::REGISTRY_PATH, registry_server);
-                   status != Status::Ok) {
-            auto _ = ort::debug_line(
-                {"virtio-blk: cannot reach the device registry: ", ours::to_string(status)});
-        } else {
-            // The driver proposes "000"; the registry grants it or the class's
-            // lowest free number, and the reply's name is what the leaf
-            // answers as. One attempt: the mount handle goes with the
-            // message, and a retry would need a fresh pair.
-            prot::dev::Client registry{registry_client};
-            auto granted = std::array<char, 8>{};
-            auto const published = registry.publish("block", "000", prot::block::BLOCK_NAME, mount,
-                                                    std::span<char>{granted});
-            if (published == Status::Ok) {
-                auto _ = ort::debug_line({"virtio-blk: its device is in the tree as block/",
-                                          std::string_view{granted.data()}});
-            } else {
-                auto _ = ort::debug_line(
-                    {"virtio-blk: its publish answered ", ours::to_string(published)});
-            }
-        }
+    // The boot's own first rescan. NotFound leaves the driver resident: it
+    // answers its control until a device appears.
+    auto const first = driver.rescan();
+    if (first != Status::Ok) {
+        auto _ = ort::debug_line({"virtio-blk: no virtio block device on bus 0 (",
+                                  ours::to_string(first), "); resident, waiting for a rescan"});
     }
 
     // Stop ends the program from inside an on_signals(); run() comes back
     // only when the port itself fails.
-    auto _ = ort::debug_line({"virtio-blk: serving ", prot::block::BLOCK_NAME});
     auto _ = ort::debug_line(
         {"virtio-blk: its Loop stopped: ", ours::to_string(loop.run(ours::INSTANT_INFINITE))});
     return 1;

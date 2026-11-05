@@ -1,0 +1,14 @@
+# The virtio library's host tests: the probe over a fake ECAM, and the
+# bring-up and submit paths against a fake device -- a Ports
+# implementation backed by arrays, whose reads answer and whose stores can
+# act, as the device answers its registers.
+executable("virtio") {
+  testonly = true
+  sources = [ "virtio_test.cpp" ]
+  deps = [
+    "//system/lib/virtio",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

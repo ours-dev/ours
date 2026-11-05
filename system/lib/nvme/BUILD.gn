@@ -1,0 +1,38 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# The NVMe controller's device core: the register file's layout, the queue
+# pairs, and the bring-up sequence, over an MMIO mapping and a DMA region
+# the caller owns. Bytes and register stores alone, no system call, so it
+# builds in every toolchain, the host one included, where its tests run a
+# fake controller over an array; the driver assembles the kernel objects
+# around this core. The probe walks config space through system/lib/pci and
+# assigns a hot-plugged function's BAR0 from an Arena, since firmware
+# assigns BARs at boot only.
+source_set("nvme") {
+  sources = [ "src/nvme.cpp" ]
+  public_deps = [ ":headers" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/nvme/nvme.hpp" ]
+  public_deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/pci:pci.headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:nvme($host_toolchain)" ]
+}

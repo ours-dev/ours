@@ -1,0 +1,28 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/user_executable.gni")
+
+assert(
+    toolchain_environment == "user",
+    "system/app/pci-rescan must be built in a //build/toolchain/ours:user-* toolchain")
+
+# Asks a resident driver to look at the bus again (the PCI hot-plug round):
+# `pci-rescan nvme|virtio` sends Control.Rescan to that driver's control,
+# whose reply is the answer -- a device claimed, or an unchanged machine.
+# It needs ours.nvme.Control and ours.virtio.Control in /svc, which root.cm
+# offers to the shell whose namespace it inherits, and itself under /boot,
+# which dev's BootFS carries.
+user_executable("pci-rescan") {
+  visibility = [
+    "//system/app/*",
+    "//kernel/products/image/*",
+  ]
+  sources = [ "pci_rescan.cpp" ]
+  deps = [
+    "//system/lib/fsio",
+    "//system/lib/protocols:client",
+  ]
+}

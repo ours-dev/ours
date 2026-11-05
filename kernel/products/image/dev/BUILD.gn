@@ -50,6 +50,12 @@ _user_programs = [
   # The userspace driver of QEMU's virtio block device (storage-layer plan),
   # which the root starts with the MmIo resource offered below.
   "//system/driver/virtio-blk",
+
+  # The bus rescan the shell runs (`pci-rescan nvme|virtio`): it sends
+  # Control.Rescan to a resident driver's control, whose reply says whether
+  # the machine gained a device. Not a component, so root.cm does not bring
+  # it; the shell's namespace carries both controls.
+  "//system/app/pci-rescan",
 ]
 
 if (defined(ours.with)) {
@@ -379,6 +385,21 @@ component_manifest("root.cm") {
           "#nvme",
           "#routing_checks",
         ]
+      },
+
+      # The resident drivers' controls, to the shell, whose `pci-rescan`
+      # command reaches them through the namespace it hands on: the rescan
+      # asks a driver to look at the bus again, and the reply says whether
+      # the machine gained a device.
+      {
+        protocol = "ours.nvme.Control"
+        from = "#nvme"
+        to = [ "#shell" ]
+      },
+      {
+        protocol = "ours.virtio.Control"
+        from = "#virtio-blk"
+        to = [ "#shell" ]
       },
 
       # The device tree itself, to routing_checks, which enumerates it and
