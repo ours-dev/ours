@@ -571,3 +571,74 @@ None (predictions are paused)
 - Why is the running thread not visited, and where is it counted instead?
 - Why must the visitor not change the queue during the walk, and how does the one caller avoid the problem?
 - What does the walk's order decide for the caller, and what does it leave alone?
+
+## Title: Fair arms no preemption timer of its own, and now compiles (2026-11-04)
+
+**Files**
+- `kernel/kernel/task/sched/fair.cpp` — `Fair::set_next_thread()` loses its `if constexpr (SCHED_NOHZ)` block and gains a comment saying where the deadline is set
+- `kernel/include/ours/task/sched/rr.hpp`, `.agents/skills/kernel-design/references/task.md`, `.agents/tasks/sched-facade/DESIGN.md` — a comment and two notes that called Fair "out of the build" now say it is off by default
+- `docs/repairs/261103/kernel-task-sched.md` — item 12 is deleted (the number is kept); the header, item 8 (what the Fair lane showed, and its Acceptance), items 13 and 14 are edited; items 19 and 20 are new
+
+**Symptom**
+`runtime.arm_preempt_timer(remaining_timeslice)` did not compile: `RunQueue::arm_preempt_timer` was renamed `set_preemption_deadline` on 2026-10-26 (`f7825b7c`) and this call was left, because `fair.cpp` was not built. It was the last diagnostic of `fair.cpp` with the Fair switch on, and it did not depend on `SCHED_NOHZ`, whose default is false and which no commit ever set true: the discarded branch of an `if constexpr` in a member of a non-template class is still checked (the same error with `SCHED_NOHZ` false and true, in HEAD's `fair.cpp`; none after). With it gone Fair compiles, links and boots (below).
+
+**Cause**
+The block came in with the checkpoint `feec7b72` as `driver.reset_preempt()`, for a scheduler whose picks re-armed the clock event. `c6764d82` (2026-10-13) made `Scheduler::set_next_thread()` (`scheduler_inline.hpp`) set the preemption deadline at every pick of a thread other than the idle thread, from `ctx.remaining_slice()`, after the discipline's own `set_next_thread()` and under no `SCHED_NOHZ` condition; from then on the block was redundant. It could not add to that: its `consumed_timeslice` is `m_exec_runtime - m_prev_exec_runtime`, evaluated right after `set_next_object()` has made the two equal, so it is zero, and `remaining_timeslice` is the whole slice. Both write the single deadline slot of the CPU's `TimerQueue` (`SchedClock::set_preemption_deadline()`), and the scheduler's write comes last, so the block's would have been overwritten with the same value. The comment above it, that the next thread "has been woken just now" and the slice has to be recalculated, describes a case that cannot arise: `set_next_object()` restarts the slice at every pick, so no thread is picked with part of it consumed.
+
+**Change**
+```cpp
+// before
+auto Fair::set_next_thread(RunQueue &runtime, Thread *next) -> void {
+    runtime.queue<Discipline::Normal>().verify();
+    auto &ctx = next->scheduling_entity();
+    set_next_object(runtime, ctx);
+    if constexpr (SCHED_NOHZ) {
+        // (a comment: the next thread may have been woken just now, so recalculate)
+        auto const consumed_timeslice = ctx.m_exec_runtime - ctx.m_prev_exec_runtime;
+        auto const remaining_timeslice = ctx.m_timeslice.length() - consumed_timeslice;
+        if (remaining_timeslice < SchedDuration{0}) { return; }
+        runtime.arm_preempt_timer(remaining_timeslice);
+    }
+}
+
+// after
+/// The preemption deadline that ends the slice is set by the scheduler after
+/// this, from remaining_slice() (Scheduler::set_next_thread()), so Fair arms no
+/// timer of its own.
+auto Fair::set_next_thread(RunQueue &runtime, Thread *next) -> void {
+    runtime.queue<Discipline::Normal>().verify();
+    auto &ctx = next->scheduling_entity();
+    set_next_object(runtime, ctx);
+}
+```
+Options: delete the block, or say what it adds. It adds nothing, so it is deleted. Renaming the call to `set_preemption_deadline(...)` was rejected: it would arm, a moment before the scheduler does, the value the scheduler arms again. `SCHED_NOHZ` itself is left, with no reader (item 20).
+
+**Reference**
+The framework side is this project's own design (`kernel-design`, references/task.md, Time; `RoundRobin::set_next_thread()` relies on the same call). Zircon sets the preemption deadline in `Scheduler::RescheduleCommon()` through `PreemptReset()` (`scheduler.cc`), as the scheduler does here. Linux arms a high-resolution timer from the discipline, `hrtick_start_fair()` (`kernel/sched/fair.c`), which is the design this block copied and this project did not follow.
+
+**Verification**
+- `-fsyntax-only` on `fair.cpp` and `scheduler.cpp` with the Fair switch on: 0 and 0 diagnostics.
+- `python3 .agents/skills/verify/scripts/boot_check.py --out out/fair-lane` (the default lane, `rr`), run on the final code: build ok, dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (172 passed). `fair.cpp` is not in these images; the Fair lane's own boots are in the next bullet.
+- **Fair, built and booted for the first time.** `python3 tools/set.py bringup.x86 --out out/fair-on --args 'sched_normal_discipline="fair"'`, then `boot_check.py --out out/fair-on --no-tests`: build ok (26.8 s cold), dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required). Fair is linked there (19 `Fair::` and `FairRunQueue` symbols in `vmours` and no `RoundRobin` ones; the default lane has none of the first and eight of the second). A reviewer reproduced all of it in a directory of its own.
+- **The kernel tests on that lane** (`kshell_run.py`): eight commands were run, of the 46 `*.test` and `*.stress` commands there are: `sleep.test`, `waitqueue.test`, `semaphore.test`, `threadjoin.test`, `dpc.test` and `timer.test` pass (in the author's boots and in the reviewer's), `preempt.test` and `hotplug.test` fail. The other 38 were not run. `preempt.test` fails three of its eight checks, two when it counts four turns or more: counted turns 2 to 4 in six boots (one run of 15 split by host stalls), none a whole slice, the longest 197 to 263 ms against a 64 ms slice; the round-robin lane passes it 8 of 8 in three runs (about 13 whole turns, the longest 66 ms). An earlier run of the author's on the round-robin lane that failed one check ("most turns are a whole slice", 10 of 21) was a noisy one and did not reproduce. `hotplug.test` fails 2 of its 47 checks ("and every spinner goes on elsewhere") on the Fair lane in all three boots and passes 47 of 47 on round-robin; the cause is not established (item 19).
+- **The cause of `preempt.test`'s bursts,** by an exact-integer model of the queue that a reviewer wrote: the pick reads the running thread uncharged (item 8), the waiter is then ineligible, the running thread is picked again and gets a whole slice. A turn is 2 slices at an exact tie and 3 to 4 once timer latency breaks the ties against the waiter, which matches the observed 197 ms and 260 to 263 ms. The model does not explain the run of 15 turns.
+- **An experiment of the author's, reverted and not committed, and not reproduced by the reviewer:** charging the running thread at the top of `Fair::evaluate_next_thread()` (`if (curr is active) update_thread(runtime, curr);`) gave 12 turns of which 11 whole, longest 131 ms, and 10 of which 7 whole, longest 132 ms, in two runs, with one failed check ("no turn runs past its slice"). The reviewer's model gives the same shape and attributes the two-slice turns that remain to the first half of item 9 (a re-pick gets a whole new slice) and not to its `vdeadline` half.
+- Two independent read-only reviewers, each building in a directory of its own. Code: the redundancy of the block read against `scheduler_inline.hpp`, `SchedClock` and `TimerQueue` and against the git history, the Fair lane rebuilt and rebooted (same numbers), the kernel tests rerun, and `preempt.test` run on both lanes; an exact-integer model of the queue's first slices. Docs: every sentence of this entry against the code, the history and the logs. They found two results of mine that were wrong (the round-robin lane's `preempt.test` failure, which did not reproduce, and the number of failed checks), a second failing test I had not run (`hotplug.test`, item 19), an acceptance that assumed round-robin's alternation, the stale "out of the build" notes, a missing Reference, and the unread `SCHED_NOHZ` (item 20); all were corrected.
+- `scripts/format_cpp.py` and `scripts/lint_docs.py` are clean.
+
+**Deliberately not done**
+- Fair is not selected in the product: `sched_normal_discipline` stays `"rr"` and the default images do not contain it.
+- The fix of the bursts (item 8, and the re-pick of item 9), and the cause of `hotplug.test` (item 19): how Fair ends a slice and breaks a tie is the author's to decide, and the experiment above is evidence for that, not a change. `preempt.test`'s three turn checks assume strict alternation, which is the round-robin's property; item 8 says so.
+- `SCHED_NOHZ` and `sched_nohz` (item 20).
+- The "Hands off" rule for `fair.*` in `kernel-design` is unchanged: this edit is on the author's request and adds no EEVDF semantics.
+
+**How it was found**
+By the first syntax check of `fair.cpp` with the Fair switch on, in the rename entry of 2026-11-03. The author asked for the item ("处理第 12 项", 2026-11-04). Building and booting a Fair lane was not part of the request; it is the check that "Fair compiles" is more than a syntax check, and it found the two failing tests.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why would the deleted block have armed the full slice whatever the thread had consumed, and who arms it instead?
+- Why did a discarded `if constexpr` branch still stop the file from compiling with `SCHED_NOHZ` off?
+- Why does a pick that reads the running thread uncharged re-pick it, and why does the re-pick get a whole new slice?

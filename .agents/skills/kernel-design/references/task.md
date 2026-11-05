@@ -2,8 +2,10 @@
 
 ## Scheduler
 
-- Fair (`kernel/kernel/task/sched/fair.*`) is the user's own design and out of
-  the build. Bring-up runs on a simple round-robin discipline. Do not edit
+- Fair (`kernel/kernel/task/sched/fair.*`) is the user's own design and off by
+  default (`sched_normal_discipline` is `"rr"`; a lane built with `"fair"`
+  compiles, links and boots). Bring-up runs on a simple round-robin
+  discipline. Do not edit
   Fair at all; a refactor whose value depends on changing fair.cpp must be put
   to the user, not carried out. In the generic scheduler machinery
   (`scheduler.cpp`, `context.hpp`, `scheduler_inline.hpp`), ask before any fix

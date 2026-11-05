@@ -391,24 +391,14 @@ auto Fair::set_next_object(RunQueue &runtime, SchedEntity &ctx) -> void {
         ctx.m_fair.vruntime + to_virtual_time(ctx.m_timeslice.length(), ctx.weight());
 }
 
+/// The preemption deadline that ends the slice is set by the scheduler after
+/// this, from remaining_slice() (Scheduler::set_next_thread()), so Fair arms no
+/// timer of its own.
 auto Fair::set_next_thread(RunQueue &runtime, Thread *next) -> void {
     runtime.queue<Discipline::Normal>().verify();
 
     auto &ctx = next->scheduling_entity();
     set_next_object(runtime, ctx);
-
-    if constexpr (SCHED_NOHZ) {
-        // When configured NOHZ, need we to manuaully reset the preemption time point.
-        // It is possiablely that the next thread has been woken just now, ctx recalculate
-        //
-        auto const consumed_timeslice = ctx.m_exec_runtime - ctx.m_prev_exec_runtime;
-        auto const remaining_timeslice = ctx.m_timeslice.length() - consumed_timeslice;
-        if (remaining_timeslice < SchedDuration{0}) {
-            return;
-        }
-
-        runtime.arm_preempt_timer(remaining_timeslice);
-    }
 }
 
 /// |curr| voluntarily gives up the cpu.

@@ -15,9 +15,9 @@ namespace ours::task::sched {
 /// It exists so the rest of the kernel can be brought up on a scheduler with
 /// no arithmetic to get wrong: run the head of the FIFO for a fixed slice,
 /// which ends at the CPU's preemption deadline, then move it to the back. There is no weighting, no lag, no deadline. The Fair (EEVDF)
-/// discipline is the intended one; it is out of the build while the boot is
-/// being walked, not deleted, and registering it again under
-/// Discipline::Normal is how it comes back.
+/// discipline is the intended one; it is off by default while the boot is being
+/// walked, and `sched_normal_discipline = "fair"` selects it for
+/// Discipline::Normal in its place.
 ///
 /// Only the parts of Schedule the generic Scheduler actually drives are
 /// implemented; the optional methods it leaves out are answered by their

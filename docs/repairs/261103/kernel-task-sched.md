@@ -1,6 +1,6 @@
 # kernel-task-sched outstanding repairs
 
-Fair (`fair.hpp`, `fair.cpp`) is out of the build and is the author's. It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and item 4, `FairRunQueue::for_each`, was added on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, are at the end). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` has one diagnostic (item 12) and `scheduler.cpp` none; items 7 to 11 compile and are wrong or missing. Every claim below was read off the code, and the arithmetic was recomputed from the constants; none of it was run, because Fair does not build.
+Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, and items 19 and 20, which the first Fair lane showed, are at the end). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile and are wrong or missing. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
 
 ## 7. A thread that was never enqueued has a slice of zero
 
@@ -28,7 +28,7 @@ A boot with Fair on in which the idle threads are not marked preempt-pending on 
 Medium: it compiles, and changes what Fair does under the tickless scheduler.
 
 **Symptom**
-Nothing calls `Fair::on_thread_tick()` (`RoundRobin`'s is empty), so `update_thread()` and its deadline test run only from `enqueue_thread()`, `dequeue_thread()`, `put_prev_thread()`, `yield_thread()` and `yield_to_thread()` (and from `override_thread_base_profile()`, which nothing calls). `UpdateThread`, `OverrideThreadBaseProfile` and `MigrateThread` of the interface also have no caller, and `OnThreadDead`'s call is commented out. At the end of a slice the test is reached inside `put_prev_thread()`, after the pick, where `mark_preempt_pending()` is redundant (the pending bit is consumed in `reschedule_common()`) and the replenish is what matters. The same order means the pick reads the running thread's `vruntime` before it is charged, up to one slice old, for the mean and for the eligibility of the waiting threads. A model of the queue that a reviewer ran on 2026-11-04 leaves the long-run shares unchanged (25.69 against 25.71 for priorities 31 and 15) but doubles the worst short-term service error (121 ms against 61 ms) and makes an equal-weight pair run two-slice bursts.
+Nothing calls `Fair::on_thread_tick()` (`RoundRobin`'s is empty), so `update_thread()` and its deadline test run only from `enqueue_thread()`, `dequeue_thread()`, `put_prev_thread()`, `yield_thread()` and `yield_to_thread()` (and from `override_thread_base_profile()`, which nothing calls). `UpdateThread`, `OverrideThreadBaseProfile` and `MigrateThread` of the interface also have no caller, and `OnThreadDead`'s call is commented out. At the end of a slice the test is reached inside `put_prev_thread()`, after the pick, where `mark_preempt_pending()` is redundant (the pending bit is consumed in `reschedule_common()`) and the replenish is what matters. The same order means the pick reads the running thread's `vruntime` before it is charged, up to one slice old, for the mean and for the eligibility of the waiting threads. Observed on 2026-11-04 in the Fair lane (three boots by the author and four by a reviewer, in separate build directories): `preempt.test` (two spinners on one CPU, slice 64 ms, the longest allowed turn 68 ms) fails three of its eight checks, and two of them when it counts four turns or more; its counted turns are 2 to 4 (one run of 15 split by host stalls), none a whole slice, the longest 197 to 263 ms, three to four slices. The round-robin lane passes all eight in three runs, with about 13 turns, all whole slices, the longest 66 ms. Charging the running thread at the top of `evaluate_next_thread()` (an experiment of the author's, reverted, not reproduced by the reviewer) gave 12 turns with 11 whole slices and 10 with 7, the longest 132 ms, and one failed check. An exact-integer model of the queue by the reviewer reproduces the cause: at the pick the waiter, charged in full at its own `put_prev_thread()`, is ahead of a mean that still holds the running thread uncharged, so it is ineligible, `evaluate_next_thread()` answers null and the running thread is picked again; the re-pick gets a whole new slice because `set_next_object()` restarts `m_prev_exec_runtime` (the first half of item 9), and a tie of whole nanoseconds is broken against the waiter by timer latency, so the extra slice persists. Charging first leaves turns of two slices when the waiter is ahead of the mean by a sliver, for the same re-pick reason. A model of the queue that a reviewer ran on 2026-11-04 leaves the long-run shares unchanged (25.69 against 25.71 for priorities 31 and 15) but doubles the worst short-term service error (121 ms against 61 ms) and makes an equal-weight pair run two-slice bursts.
 
 **Cause**
 A slice now ends at the CPU's preemption deadline, a slot in its `TimerQueue`, and nothing ticks (`kernel-design`, references/task.md, Time). Fair was written for a tick that charged the running thread and asked for preemption. `on_thread_tick()` also calls `add_pending()` with its default, which names the executing CPU rather than the run queue's (`run_queue.hpp`: say `mark_preempt_pending()`).
@@ -40,7 +40,7 @@ The author decides how Fair ends a slice: from the deadline the framework sets, 
 None, this project's own design.
 
 **Acceptance**
-A Fair boot in which a thread that does not block is preempted when its request is spent.
+Two equal always-runnable spinners on one CPU keep their service within one slice of each other over the window of `preempt.test`, and the discipline-independent checks of that test (the probe timer, no other CPU passes a deadline, the hand-off arms the deadline once per switch) pass. The test's three turn checks (at least four turns, none past a slice, most whole) assume strict alternation, which is the round-robin's property and not EEVDF's: whether Fair is to alternate on a tie, or the test is to change, is the author's to decide.
 
 ## 9. A pick restarts the request, and a yield can push the deadline two requests out
 
@@ -102,39 +102,19 @@ None, this project's own design.
 **Acceptance**
 A host-style test of a profile change on a queued thread and on the running one.
 
-## 12. `set_next_thread()` re-arms the preemption timer the framework already arms
-
-**Severity**
-Low: dormant at run time (`SCHED_NOHZ` defaults to false), but it does not compile with `SCHED_NOHZ` on or off, because the discarded branch of an `if constexpr` in a non-template function is still checked.
-
-**Symptom**
-`runtime.arm_preempt_timer(remaining_timeslice)` under `if constexpr (SCHED_NOHZ)` has no counterpart: the member is gone.
-
-**Cause**
-`Scheduler::set_next_thread()` now sets the preemption deadline at every pick of a thread other than the idle thread (the idle pick clears it) from `remaining_slice()`, after the discipline's own `set_next_thread()` and without a `SCHED_NOHZ` condition (`scheduler_inline.hpp`). The block's `consumed_timeslice` is `m_exec_runtime - m_prev_exec_runtime` computed right after `set_next_object()` made them equal, so it is zero and the block would arm the same full slice twice.
-
-**Change**
-Delete the block, or say what it adds.
-
-**Reference**
-None, this project's own design.
-
-**Acceptance**
-No `arm_preempt_timer` diagnostic.
-
 ## 13. No test shows that CPU shares follow the weights
 
 **Severity**
 Low: a missing test. The weight fix is checked for its arithmetic only, so a wrong use of it elsewhere in Fair would not be caught.
 
 **Symptom**
-`common.hpp` proves at compile time that `to_virtual_time()` is inversely proportional to the weight at every priority, that `MID_WEIGHT`'s clock reads real time, and the units of `weighted_offset()` against the weight sum. Nothing runs `FairRunQueue` or `Fair::update_thread()`, because Fair does not build, so no test shows that two threads of different weights receive CPU in the ratio of their weights.
+`common.hpp` proves at compile time that `to_virtual_time()` is inversely proportional to the weight at every priority, that `MID_WEIGHT`'s clock reads real time, and the units of `weighted_offset()` against the weight sum. Nothing checks `FairRunQueue` or `Fair::update_thread()` for it: the kernel's own tests run Fair only in the lane that selects it, and none measures shares, so no test shows that two threads of different weights receive CPU in the ratio of their weights.
 
 **Cause**
-The acceptance of the two fixed items was a host-style test of `FairRunQueue`. It cannot be written until Fair compiles (item 12).
+The acceptance of the two fixed items was a host-style test of `FairRunQueue`. It was blocked on Fair compiling, which it does now; what is missing is a harness for `FairRunQueue` on the host, or a `*.test` command that spins threads of two priorities and reports their charged time.
 
 **Change**
-Add the test when those are done: two threads that always want to run, at priorities 31 and 15, over a long window, with the ratio of the CPU time each was charged within a stated tolerance of the ratio of their weights (about 25.7); the eligibility case, where threads that have been served in proportion to their weights are all eligible and one that is ahead of the weighted average is not; one thread alone, which has a finite `vdeadline` one request ahead of its `vruntime` and a lag of zero through `lag_of()` at every priority; a wakeup from another CPU, which leaves `weight_sum_` equal to the sum of the weights in the tree; and the walk, which visits the waiting threads in deadline order, not the running one, and stops when the visitor answers false.
+Add the test: two threads that always want to run, at priorities 31 and 15, over a long window, with the ratio of the CPU time each was charged within a stated tolerance of the ratio of their weights (about 25.7); the eligibility case, where threads that have been served in proportion to their weights are all eligible and one that is ahead of the weighted average is not; one thread alone, which has a finite `vdeadline` one request ahead of its `vruntime` and a lag of zero through `lag_of()` at every priority; a wakeup from another CPU, which leaves `weight_sum_` equal to the sum of the weights in the tree; and the walk, which visits the waiting threads in deadline order, not the running one, and stops when the visitor answers false.
 
 **Reference**
 None, this project's own test.
@@ -145,7 +125,7 @@ The test is in `//:default` and passes.
 ## 14. The real-to-virtual conversion calls `__divti3` on every charge
 
 **Severity**
-Low: a cost read off the code and the generated assembly, not measured, and Fair does not build.
+Low: a cost read off the code and the generated assembly, not measured, and Fair is off by default.
 
 **Symptom**
 `to_virtual_time()` (`common.hpp`) evaluates `real / (weight / MID_WEIGHT)`. `ffl::Fixed::operator/` shifts the numerator into an `__int128` and divides by an `__int128`. At `-O2` with the kernel's flags a function that calls it contains exactly one `__divti3`, for `real / rate`: clang turns the division by the constant `MID_WEIGHT` into multiplies. `mul_shr.hpp` says such a call is a software loop costing "tens to hundreds of cycles". It runs at every charge (`update_thread()`), pick (`set_next_object()`) and placement (`adjust_vlag()`), and in the replenish and the yield, and no thread skips it: the fast path for `weight == MID_WEIGHT` is taken only by a priority-16 thread, and the spawn sites use `DEFAULT_PRIORITY` (15). The factor `weight / MID_WEIGHT` depends on the weight alone, so it is recomputed with the same answer for a thread's every call.
@@ -154,7 +134,7 @@ Low: a cost read off the code and the generated assembly, not measured, and Fair
 It was written in the plainest form with the library's operators and nothing was optimised, on purpose.
 
 **Change**
-Performance work goes through the author, in depth (CLAUDE.md). Measure first: cycles per call of `to_virtual_time()` in a bench under `benches/`; the function is header-only, so this can run before Fair builds. Then weigh the candidates. A table of rates per priority, computed at compile time like the weight table, saves the multiplies and keeps the `__divti3`. Only a reciprocal removes it, and a reciprocal table is the `wmult` table that `kernel-design` excludes and that this project built and removed (3e0f49ce), so it is a departure for the author to decide. Not decided.
+Performance work goes through the author, in depth (CLAUDE.md). Measure first: cycles per call of `to_virtual_time()` in a bench under `benches/`; the function is header-only, so it needs no Fair lane. Then weigh the candidates. A table of rates per priority, computed at compile time like the weight table, saves the multiplies and keeps the `__divti3`. Only a reciprocal removes it, and a reciprocal table is the `wmult` table that `kernel-design` excludes and that this project built and removed (3e0f49ce), so it is a departure for the author to decide. Not decided.
 
 **Reference**
 Linux `calc_delta_fair()` and `__calc_delta()` replace the division with a multiply by a precomputed reciprocal (from memory, not checked).
@@ -185,7 +165,7 @@ A test that nominates a thread queued on another CPU, and one that wakes a delay
 ## 18. The lag a thread carries is not rescaled when it is placed
 
 **Severity**
-Low: the effect is a fraction of a request of service, and Fair does not build.
+Low: the effect is a fraction of a request of service, and Fair is off by default.
 
 **Symptom**
 `Fair::adjust_vlag()` places a thread at `avg_vruntime() - vlag`, and the block meant to adjust `vlag` (`if (vlag != SchedDuration{0}) { // Adjust the vlag. }`) is empty. The lag was measured against the mean with the thread in it (`update_vlag()` before the dequeue) and is applied against the mean without it, which is shifted toward the other threads: a thread that left with a lag of -6.1 ms beside one equal-weight thread comes back with -3.1 ms, exactly `W / (W + w)` of it, in a model that a reviewer ran on 2026-11-04. Read and modelled, not run.
@@ -201,3 +181,43 @@ Linux EEVDF, `place_entity()` (`lag *= (load + weight) / load`) and `entity_lag(
 
 **Acceptance**
 In the test of item 13, a thread that leaves and returns while the others run is placed at the lag it left with, within a nanosecond.
+
+## 19. `hotplug.test` fails on the Fair lane
+
+**Severity**
+Medium: a test that passes under round-robin fails under Fair, and the cause is not established. Not reachable in the default build.
+
+**Symptom**
+Observed on 2026-11-04 in the Fair lane, in two boots by the author and one by a reviewer: `hotplug.test` fails 2 of its 47 checks, "and every spinner goes on elsewhere", in two of its rounds (`hotplug_test.cpp`: while a CPU is offline for `OFFLINE_FOR`, every spinner's round counter must have advanced). The round-robin lane passes 47 of 47. The other checks pass, among them the ones that walk the run queue (`FairRunQueue::for_each` through `Scheduler::Current::deactivate()`): the CPU goes offline, no spinner runs on it, and the sleeper wakes on time elsewhere.
+
+**Cause**
+Not established. Candidates, each read and not run: a spinner that was moved to another CPU finds two or more spinners already there, and Fair's bursts (item 8) leave one without a turn for `OFFLINE_FOR`; the lag a moved thread carries from the old CPU's mean is applied against the new CPU's mean unscaled (item 18); a moved thread is enqueued with a `vruntime` placed on the other queue's zero.
+
+**Change**
+Find the cause first: print each spinner's rounds at the end of the sleep for the Fair lane, and its CPU. Then the author decides.
+
+**Reference**
+None, this project's own test.
+
+**Acceptance**
+`hotplug.test` passes on the Fair lane.
+
+## 20. `SCHED_NOHZ` has no reader
+
+**Severity**
+Low: a build argument that does nothing.
+
+**Symptom**
+`sched_nohz` (`kernel_params.gni`) becomes the define `SCHED_NOHZ` (`products/BUILD.gn`), and nothing reads the define since the block in `Fair::set_next_thread()` was deleted on 2026-11-04; `features.cpp` mentions it in a comment to say it is unrelated.
+
+**Cause**
+The block was the only reader.
+
+**Change**
+Remove the argument and the define, or give it a meaning. The author decides; nothing at run time depends on it.
+
+**Reference**
+None, this project's own design.
+
+**Acceptance**
+No reference to `SCHED_NOHZ` or `sched_nohz` outside the history.
