@@ -38,6 +38,7 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cfg.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
@@ -136,6 +137,88 @@ namespace {
             aspace.release_vdso();
         }
     }
+
+#if MM_TEST_ALLOC_FAILURE
+    auto check_aspace_allocation_failures(Tally &tally) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        auto const fails = [](AllocationSite const site, usize const skip, Status const expected) {
+            ustl::Arc<mm::VmAspace> aspace;
+            AllocationFailure failure(site, skip);
+            auto const status = mm::VmAspace::create(mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "failed address space", &aspace);
+            return status == expected && failure.triggered() && !aspace;
+        };
+        verdict(tally, fails(AllocationSite::Object, 0, Status::OutOfMem),
+                "address-space object allocation failure leaves no reference");
+        verdict(tally, fails(AllocationSite::PageTable, 0, Status::NoMemory),
+                "a missing root table leaves the address space unpublished");
+        verdict(tally, fails(AllocationSite::Object, 1, Status::OutOfMem),
+                "a missing root VMA unwinds an initialized page table");
+    }
+
+    auto check_allocation_failures(Tally &tally, mm::VmAspace &aspace) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        constexpr auto BASE = USER_ASPACE_BASE + 64_mb;
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        constexpr auto READ = mm::MmuFlags::Readable | mm::MmuFlags::User;
+        auto root = aspace.root_vma();
+        ustl::Arc<mm::VmArea> parent;
+        auto vmo = make_vmo(PAGE_SIZE);
+        auto const created =
+            root->create_subvma(BASE, 2 * PAGE_SIZE, PERMS | mm::VmaFlags::CanMapSpecific,
+                                "allocation failures", &parent);
+        verdict(tally, created == Status::Ok && vmo, "a fresh area for failed insertions");
+        if (!parent || !vmo) {
+            return;
+        }
+
+        ustl::Arc<mm::VmArea> child;
+        bool failed_insert = false;
+        {
+            AllocationFailure failure(AllocationSite::Collection);
+            auto const status =
+                parent->create_subvma(BASE, PAGE_SIZE, PERMS, "failed child", &child);
+            failed_insert = status == Status::OutOfMem && failure.triggered() && !child;
+        }
+        verdict(tally, failed_insert, "an allocation failure leaves the sub-area unpublished");
+
+        struct Case {
+            AllocationSite site;
+            usize skip;
+            Status error;
+            char const *description;
+        };
+        constexpr Case CASES[] = {
+            {AllocationSite::Object, 0, Status::OutOfMem, "mapping object allocation fails"},
+            {AllocationSite::Collection, 0, Status::OutOfMem, "protection range allocation fails"},
+            {AllocationSite::Collection, 1, Status::OutOfMem, "mapping tree insertion fails"},
+            {AllocationSite::VmoPage, 0, Status::OutOfMem, "backing page allocation fails"},
+            {AllocationSite::PageTable, 0, Status::NoMemory, "page-table allocation fails"},
+        };
+        for (auto const &entry: CASES) {
+            bool failed = false;
+            {
+                AllocationFailure failure(entry.site, entry.skip);
+                auto mapped = parent->map_with_vmo(BASE, PAGE_SIZE, 0, READ, PERMS, vmo,
+                                                   mm::MapOptions::Commit, entry.description);
+                failed =
+                    mapped.is_err() && mapped.unwrap_err() == entry.error && failure.triggered();
+            }
+            ustl::Arc<mm::VmMapping> leftover;
+            PhysAddr pa{};
+            mm::MmuFlags flags{};
+            verdict(tally,
+                    failed && aspace.find_mapping(BASE, &leftover) == Status::NotFound &&
+                        aspace.arch_aspace().query(BASE, &pa, &flags) == Status::NotFound,
+                    entry.description);
+        }
+        auto retried = parent->map_with_vmo(BASE, PAGE_SIZE, 0, READ, PERMS, vmo,
+                                            mm::MapOptions::Commit, "mapping retry");
+        verdict(tally, retried.is_ok(), "the same address can be mapped after every failed step");
+    }
+#endif
 
     auto vmaseal_test_command(int, char **) -> int {
         ustl::Arc<mm::VmAspace> aspace;
@@ -267,6 +350,10 @@ namespace {
 
         check_protect_preflight(tally, *aspace);
         check_registration_undo(tally, *aspace);
+#if MM_TEST_ALLOC_FAILURE
+        check_aspace_allocation_failures(tally);
+        check_allocation_failures(tally, *aspace);
+#endif
 
         // The sealed ones are in the address space when it goes.
         verdict(tally, aspace->destroy() == Status::Ok,

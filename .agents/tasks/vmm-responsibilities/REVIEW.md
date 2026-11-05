@@ -73,3 +73,7 @@ The COW node rejects clone and transfer before it changes slots. The VMO still v
 ## Coverage follow-up
 
 The regression cases check state visible to callers after failure, including retained objects, rolled-back page requests and page protections. The host allocator replacement is limited to construction of the test range tracker. Both development images booted, all 163 host tests and all 46 instrumented kernel test commands passed. The four repairs reached 70/70 executable changed lines, and the VMM scope measured 4173/4763 lines. The remaining gaps include kernel allocation failures, exceptional pager and reclaim branches, and legacy unsupported methods.
+
+## Allocation failure follow-up
+
+The opt-in scope targets the current thread and one allocation site. Tests reached tree allocation failure after protection initialization, partial address-space construction, failed clone creation and a failed fork. They checked the original state and successful retry where applicable. The default and opt-in boots and all 46 instrumented commands passed.

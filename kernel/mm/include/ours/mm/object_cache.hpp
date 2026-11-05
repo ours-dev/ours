@@ -8,6 +8,7 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/pm_frame.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/sync/mutex.hpp>
 
 #include <array>
@@ -211,6 +212,11 @@ class ObjectCache::Instance {
     /// into what Thread::spawn allocated here). Prefer get() otherwise.
     static auto allocate(Gaf alloc_flags, NodeId nid = MAX_NODES) -> T * {
         DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
+#if MM_TEST_ALLOC_FAILURE
+        if (test::AllocationFailure::hit(test::AllocationSite::Object)) {
+            return nullptr;
+        }
+#endif
         return static_cast<T *>(CACHE->allocate(alloc_flags, nid));
     }
 
@@ -223,9 +229,7 @@ class ObjectCache::Instance {
 
     template <typename... Args>
     static auto get(Gaf alloc_flags, Args &&...args) -> T * {
-        DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
-
-        auto *const storage = CACHE->allocate(alloc_flags, MAX_NODES);
+        auto *const storage = allocate(alloc_flags);
         if (!storage) {
             return nullptr;
         }
@@ -234,9 +238,7 @@ class ObjectCache::Instance {
 
     template <typename... Args>
     static auto get(Gaf alloc_flags, NodeId nid, Args &&...args) -> T * {
-        DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
-
-        auto *const storage = CACHE->allocate(alloc_flags, nid);
+        auto *const storage = allocate(alloc_flags, nid);
         if (!storage) {
             return nullptr;
         }

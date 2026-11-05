@@ -3,6 +3,7 @@
 #include <ktl/memory_resource.hpp>
 
 #include <heap/new.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 
 namespace ktl {
 
@@ -16,6 +17,13 @@ auto KernelMemoryResource::do_try_allocate(std::size_t bytes, std::size_t alignm
     if (bytes == 0) {
         bytes = 1;
     }
+#if MM_TEST_ALLOC_FAILURE
+    using ours::mm::test::AllocationFailure;
+    using ours::mm::test::AllocationSite;
+    if (AllocationFailure::hit(AllocationSite::Collection)) {
+        return ustl::err(ustl::collections::Error::OutOfMemory);
+    }
+#endif
 
     // Through the kernel's `new`, not straight into kmalloc. That operator is
     // the one place the kmalloc/vmalloc choice is made (heap/new.hpp), and

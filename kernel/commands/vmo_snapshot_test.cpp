@@ -43,6 +43,7 @@
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/physmap.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -892,6 +893,39 @@ namespace {
                 "invalid unpin and atomic store requests are rejected");
     }
 
+#if MM_TEST_ALLOC_FAILURE
+    auto check_clone_allocation_failures(Tally &tally) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        constexpr u32 ORIGINAL = 0xA0B0'C0D0;
+        ustl::Arc<mm::VmObjectPaged> source;
+        auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &source) == Status::Ok &&
+                          poke(source, 0, ORIGINAL);
+        verdict(tally, made, "a populated VMO for allocation failure during clone");
+        if (!made) {
+            return;
+        }
+        Node pages = source->cow_pages();
+        for (usize skip = 0; skip < 3; ++skip) {
+            ustl::Arc<mm::VmObjectPaged> clone;
+            bool failed = false;
+            {
+                AllocationFailure failure(AllocationSite::Object, skip);
+                auto const status = source->create_clone(0, PAGE_SIZE, &clone);
+                failed = status == Status::OutOfMem && !clone && failure.triggered();
+            }
+            verdict(tally, failed && peek(source, 0) == ORIGINAL && parent_of(pages) == nullptr,
+                    "a failed clone preserves the source frame and removes any transient parent");
+        }
+        ustl::Arc<mm::VmObjectPaged> clone;
+        verdict(tally,
+                source->create_clone(0, PAGE_SIZE, &clone) == Status::Ok && clone &&
+                    peek(clone, 0) == ORIGINAL,
+                "clone succeeds after allocation recovers");
+    }
+#endif
+
     // Zero markers: slots that say their page is zero and hold none, put by hand
     // with add_zero_marker_locked(). A marker reads as the zero page and is no
     // page; a write puts a zeroed page in its place; it hides the page of an
@@ -1163,6 +1197,20 @@ namespace {
                             aspace->soft_fault(ALIAS, mm::VmfCause::Absent) == Status::Ok &&
                             entry_pa(aspace, ALIAS) == entry_pa(aspace, AT),
                         "both mappings initially point to the inherited frame");
+
+#if MM_TEST_ALLOC_FAILURE
+                bool failed = false;
+                {
+                    mm::test::AllocationFailure failure(mm::test::AllocationSite::VmoPage);
+                    auto const status = aspace->soft_fault(AT, mm::VmfCause::Write);
+                    failed = status == Status::OutOfMem && failure.triggered();
+                }
+                verdict(
+                    tally,
+                    failed && shared && entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
+                        entry_pa(aspace, ALIAS) == entry_pa(aspace, AT) && !is_writable(aspace, AT),
+                    "a failed fork preserves both inherited mappings and their permissions");
+#endif
 
                 // A write to that entry gets the clone a page of its own.
                 verdict(tally,
@@ -2383,6 +2431,9 @@ namespace {
         check_widen_reads_entry_again(tally);
         check_shared_views(tally);
         check_slice_bounds(tally);
+#if MM_TEST_ALLOC_FAILURE
+        check_clone_allocation_failures(tally);
+#endif
         check_clone_of_mapped_object(tally);
         check_zero_markers(tally);
         check_create_clone(tally);

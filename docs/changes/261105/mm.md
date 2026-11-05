@@ -47,3 +47,49 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Exercise VMM allocation failures in an opt-in kernel (2026-11-05)
+
+**Files**
+
+- `kernel/mm/alloc_failure.cpp` and its private header implement one scoped failure on the owning test thread.
+- The kernel collection resource, object cache, page table and VMO frame allocation supply the failure points.
+- `kernel/commands/vma_seal_test.cpp` and `kernel/commands/vmo_snapshot_test.cpp` exercise initialization, registration, mapping and COW rollback.
+
+**Symptom**
+
+Normal QEMU tests could reproduce duplicate registration. They could not reliably make VMA tree growth, object allocation or page-table allocation fail at a specific step.
+
+**Cause**
+
+Allocation failures depend on memory and allocator state. Exhausting memory globally would also disrupt unrelated kernel threads and make the failure site nondeterministic.
+
+**Change**
+
+The optional `mm_test_alloc_failure=true` configuration enables a thread-owned scope with a selected allocation site and skip count. The scope fails one matching allocation and records that it fired. Tests assert both the error and the resulting mapping or backing state, then retry. The default configuration compiles the failure sites out.
+
+**Reference**
+
+None. The failure points use the repository's existing allocation contracts.
+
+**Verification**
+
+The default and opt-in configurations booted both dev images and passed 163 host tests each. LLVM 23 clang-format and clang-tidy checked the C++ changes, and the repository GN formatter checked the three build files. All 46 instrumented commands passed. The seal suite passed 45 checks and the snapshot suite passed 270. The opt-in VMM line result was 4234/4768 (88.80%). It takes 296 more covered lines to reach 95% in that build.
+
+Run the fault cases with `python3 scripts/cov_kernel.py --out out/vmm-coverage` after configuring the output with `--variant coverage-kernel --args 'mm_test_alloc_failure=true'`. The injected page-table error is logged as an error before the test reports its passing verdict.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The VMM coverage gaps included rollback paths that could not be reached with the ordinary test workloads.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.
