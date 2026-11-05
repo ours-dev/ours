@@ -26,7 +26,6 @@ using ours::NodeId;
 using ours::NodeMask;
 using ours::mm::AllocRequest;
 using ours::mm::Gaf;
-using ours::mm::Origin;
 using ours::mm::resolve_request;
 
 auto FAILURES = 0;
@@ -46,7 +45,7 @@ constexpr auto CPU = CpuNum{3};
 
 /// Deliberately a node id and a CPU number that differ, so that a request
 /// which mixed the two would fail a check rather than pass by coincidence.
-constexpr auto HERE = Origin{.node = HOME, .cpu = CPU};
+constexpr auto HERE = AllocRequest::Origin{.node = HOME, .cpu = CPU};
 
 auto mask_of(NodeId const a, NodeId const b) -> NodeMask {
     NodeMask mask;

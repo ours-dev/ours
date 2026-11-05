@@ -827,3 +827,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Scope allocation origin to AllocRequest (2026-11-05)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` nests the origin record.
+- The node allocation path and existing kernel and host request tests name AllocRequest::Origin.
+
+**Symptom**
+
+Origin was a generic namespace-level name for the node and initiating CPU of one allocation request.
+
+**Cause**
+
+The record's meaning depends on the allocation request it describes. Its global spelling required surrounding context to identify that meaning.
+
+**Change**
+
+Move `Origin` into the public scope of `AllocRequest` and migrate resolver parameters and callers to `AllocRequest::Origin`. The resolver definition follows the completed class, and keeps its nodiscard attribute.
+
+**Reference**
+
+None. The user selected the nested record as part of the PMM naming review.
+
+**Verification**
+
+The record fields, designated initialization, request storage and resolver body are preserved. LLVM 23 clang-format and clang-tidy checked all four C++ files. Default and four-node NUMA configurations booted both images and passed 163 host tests each, including the multi-node request smoke test. pmnode.test passed in both configurations.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user accepted the proposed AllocRequest::Origin scoping change along with the two helper-class renames.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

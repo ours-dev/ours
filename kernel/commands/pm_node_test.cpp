@@ -291,7 +291,7 @@ namespace {
     /// A request over every online node, which each case then narrows.
     auto request_for(PmNode &node, mm::Gaf const alloc_flags) -> mm::AllocRequest {
         return mm::resolve_request(alloc_flags, 0, PmNode::node_online_mask(),
-                                   mm::Origin{.node = node.nid(), .cpu = Cpu::id()});
+                                   mm::AllocRequest::Origin{.node = node.nid(), .cpu = Cpu::id()});
     }
 
     auto check_zone_candidates(Tally &tally, PmNode &node) -> void {

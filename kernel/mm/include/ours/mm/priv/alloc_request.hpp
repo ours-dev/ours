@@ -13,47 +13,6 @@
 #include <ours/types.hpp>
 
 namespace ours::mm {
-class AllocRequest;
-
-/// Where an allocation comes from: the node that is to serve it and the CPU
-/// that asked.
-///
-/// One type for the two because NodeId and CpuNum are both aliases of u32, so
-/// as two adjacent parameters they were interchangeable to the compiler, and
-/// a transposed call built a request that named a CPU as its home node and a
-/// node as its initiator -- silently, and then wrongly for the rest of the
-/// allocation: the walk would start from whatever node had the CPU's number
-/// and the locality counters would compare against it. Folding the pair into
-/// one argument leaves exactly one place where the two can still be confused,
-/// the brace that builds an Origin, and both of its writers name the fields so
-/// that even that place is checked -- a designated initialiser out of
-/// declaration order does not compile.
-///
-/// A plain record rather than a class with accessors: there is no invariant
-/// over the pair, and its readers fill and read it field by field.
-struct Origin {
-    /// The node serving this allocation. Not necessarily the node |cpu| is
-    /// on: a caller may name a node directly, and the thread's memory policy
-    /// may choose another.
-    NodeId node;
-
-    /// The CPU the request came from.
-    CpuNum cpu;
-};
-
-/// Resolves a caller's ask into the request every layer below reads.
-///
-/// Pure: everything it needs is an argument, including the calling CPU, so the
-/// same code runs in a host test without a kernel. That is also why it takes
-/// |origin| rather than reading the current node and CPU -- which node serves
-/// an allocation is a different question, answered before this one.
-///
-/// The only way to build an AllocRequest from nothing, which is what makes
-/// "resolved" true of every request that exists: see the class below.
-[[nodiscard]]
-inline auto resolve_request(Gaf alloc_flags, usize order, NodeMask const &fallback, Origin origin)
-    -> AllocRequest;
-
 /// One allocation, resolved: what the caller asked for and what the allocator
 /// worked out from it.
 ///
@@ -80,6 +39,32 @@ class AllocRequest final {
     using Self = AllocRequest;
 
   public:
+    /// Where an allocation comes from: the node that is to serve it and the CPU
+    /// that asked.
+    ///
+    /// One type for the two because NodeId and CpuNum are both aliases of u32, so
+    /// as two adjacent parameters they were interchangeable to the compiler, and
+    /// a transposed call built a request that named a CPU as its home node and a
+    /// node as its initiator -- silently, and then wrongly for the rest of the
+    /// allocation: the walk would start from whatever node had the CPU's number
+    /// and the locality counters would compare against it. Folding the pair into
+    /// one argument leaves exactly one place where the two can still be confused,
+    /// the brace that builds an Origin, and both of its writers name the fields so
+    /// that even that place is checked -- a designated initialiser out of
+    /// declaration order does not compile.
+    ///
+    /// A plain record rather than a class with accessors: there is no invariant
+    /// over the pair, and its readers fill and read it field by field.
+    struct Origin {
+        /// The node serving this allocation. Not necessarily the node |cpu| is
+        /// on: a caller may name a node directly, and the thread's memory policy
+        /// may choose another.
+        NodeId node;
+
+        /// The CPU the request came from.
+        CpuNum cpu;
+    };
+
     /// What the caller asked for, unchanged.
     [[nodiscard]]
     FORCE_INLINE
@@ -210,9 +195,19 @@ class AllocRequest final {
     ZoneType m_highest_zone;
 };
 
+/// Resolves a caller's ask into the request every layer below reads.
+///
+/// Pure: everything it needs is an argument, including the calling CPU, so the
+/// same code runs in a host test without a kernel. That is also why it takes
+/// |origin| rather than reading the current node and CPU -- which node serves
+/// an allocation is a different question, answered before this one.
+///
+/// The only way to build an AllocRequest from nothing, which is what makes
+/// "resolved" true of every request that exists.
+[[nodiscard]]
 FORCE_INLINE
 inline auto resolve_request(Gaf const alloc_flags, usize const order, NodeMask const &fallback,
-                            Origin const origin) -> AllocRequest {
+                            AllocRequest::Origin const origin) -> AllocRequest {
     auto allowed = fallback;
     if (!!(alloc_flags & Gaf::ThisNode)) {
         allowed &= NodeMask::of(origin.node);

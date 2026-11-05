@@ -21,6 +21,8 @@ The local references are Linux mm/page_alloc.c, including build_zonelists, its f
 
 - CpuNodeMap is implemented with matching source and header names. Default and four-node NUMA builds booted both images, passed 163 host tests each and passed node and zone commands. All nine C++ files passed formatting and clang-tidy.
 
+- AllocRequest::Origin preserves the record fields and resolver logic. All four C++ files passed formatting and clang-tidy. Default and four-node NUMA configurations booted both images, passed 163 host tests each and passed pmnode.test.
+
 ## High severity
 
 None established within this naming review.
@@ -57,7 +59,7 @@ The selected getter reads the atomic counter without acquiring the zone lock. Co
 | C1 | ZoneSelector | ZoneCandidates | priv/zone_selector.hpp:33 and pm_node.hpp:125. The object is a repeatable filtered range returned by ZoneList::candidates. It holds a zone order and a request, and exposes begin/end. PmNode's allocation path decides which candidate ultimately supplies the block. |
 | C2 | NodePlacement | CpuNodeMap | node_placement.hpp:54. The owned state is NODE_OF_CPU and its per-CPU node pointer cache. node_of and set_node_of maintain the runtime CPU-to-node relation. Allocation policy and fallback selection are separate responsibilities. |
 
-The user accepted C1, C2 and AllocRequest::Origin on 2026-11-05. C1 and C2 are implemented. The strongest class rename is C1 because the existing candidates factory already states the returned object's role. C2 removes ambiguity about what is placed and where the information lives. The previously proposed AllocRequest::Origin remains a separate type-scoping candidate.
+The user accepted C1, C2 and AllocRequest::Origin on 2026-11-05. C1, C2 and AllocRequest::Origin are implemented. The strongest class rename is C1 because the existing candidates factory already states the returned object's role. C2 removes ambiguity about what is placed and where the information lives. The previously proposed AllocRequest::Origin remains a separate type-scoping candidate.
 
 PmFrame, PmZone, PmNode, FrameBuddy, AllocRequest, AllocPolicy, AllocState, ZoneList, MemoryReclaimer and MemoryWatchdog already express their current roles. MemoryPressureLevels contains thresholds, debounce and hysteresis, so a shorter thresholds-only name would need care about the complete contract.
 

@@ -208,8 +208,8 @@ auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
 
     auto const initiator = Cpu::id();
     auto const initiator_node = CpuNodeMap::node_of(initiator);
-    auto const request =
-        resolve_request(alloc_flags, order, fallback, Origin{.node = m_id, .cpu = initiator});
+    auto const request = resolve_request(alloc_flags, order, fallback,
+                                         AllocRequest::Origin{.node = m_id, .cpu = initiator});
 
     ustl::Option<PmZone const &> depleted_zone;
     for (auto &zone: m_zone_list.candidates(request)) {
