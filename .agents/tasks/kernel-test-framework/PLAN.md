@@ -1,7 +1,7 @@
 # kernel-test-framework: plan for the kernel test interface on the hsien runtime
 
 **Date**: 2026-11-05
-**Status**: Proposed
+**Status**: Implemented
 
 ## Request
 
@@ -52,6 +52,12 @@ Later steps are written when each one is introduced to the user, not before.
    - Verification, as done: `ktest list` lists ten tests; `ktest all` reports `SUMMARY ran=10 passed=9 failed=0 skipped=1` and exits 0; `ktest SamplerClaim.*`, `ktest VmaWx.*` and `ktest Semaphore.*` all pass; the old command names fail as unknown commands (the expected cost of the rename); `boot_check.py` passes both images and 173 host tests; `scripts/test_cov_kernel.py` 19/19; coverage run numbers are in the change record; tidy, format, GN layout and docs lint clean, `gn check` OK on the migrated targets.
    - Landed as one commit, `feat(ktest): migrate the three pilot tests and teach coverage to find tests`.
 
+5. Review, result and the review's fixes. Landed in `b7c9a288` (the fixes and `REVIEW.md`); the result is this directory's `RESULT.md`.
+   - A self-review over the whole change, with `cpp-code-review` and the design as the authorities, produced `REVIEW.md`: H1 (the run state and owner thread were plain pointers, so a mistaken worker-thread assertion was a data race), H2 (a skip reason was borrowed and printed after the body returned), M1 (C strings compare as pointers under `EXPECT_EQ`), M2 (the host waited out the timeout on a registry-level `ktest: ERROR`), M3 (the summary's counts were not checked for consistency) and three minor items.
+   - Fixed: H1 and H2 in the interface (atomic publication, the owner check before the state is dereferenced, the skip reason copied into the run state), M2 and M3 in the host (`ktest: ERROR` ends a run; `passed + failed + skipped == ran`), M1 and the README path in the documentation. Left as decisions: the `unit_tests_enabled` metadata and `make_buffer`'s zero-room precondition.
+   - Verification, as done: the skip-reason fix was measured against the bug it fixes (a booted run with a stack-buffer reason printed it correctly, then the file was restored); `ktest NoSuch.*` now fails in 7.4 s instead of 120 s with the error line named; `test_kshell_run.py` 20/20 and `test_cov_kernel.py` 19/19; `boot_check.py` passes both images and 173 host tests; `ktest all` reports 10 tests; tidy, format, GN and docs lint clean.
+   - Landed as one commit for the fixes and the review, and one for the result documents.
+
 ## Files
 
 - `kernel/lib/ktest/{BUILD.gn,README.md,.clang-format,.gitignore}`, `kernel/lib/ktest/include/ktest/{ktest,assertions,run_state,format,filter,summary}.hpp`, `kernel/lib/ktest/src/runner.cpp`, `kernel/lib/ktest/test/{BUILD.gn,filter_test.cpp,format_test.cpp,summary_test.cpp}`: new (step 1).
@@ -75,6 +81,8 @@ Later steps are written when each one is introduced to the user, not before.
 - `kernel/lib/ktest/include/ktest/format.hpp`: `finish()` is `inline` (step 4).
 - `scripts/cov_kernel.py`, `scripts/test_cov_kernel.py`: the booted `ktest list` discovery and the `vmours.with-tests` ELF (step 4).
 - `docs/repairs/261105/kernel-test-framework.md`: the remaining 43 commands (step 4).
+
+- `.agents/tasks/kernel-test-framework/{REVIEW,RESULT}.md`: the self-review and the result (step 5).
 
 ## Test plan
 
