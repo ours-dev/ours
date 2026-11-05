@@ -11,7 +11,7 @@
 
 #include "pools.hpp"
 #include <loop/loop.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/resource.hpp>
 #include <wire/wire.hpp>
 
 /// The root's ours.resource protocols: built-ins (component-framework design,
@@ -81,11 +81,11 @@ class ResourceServer final {
         std::array<ours::Uandle, 1> reply_handles;
     };
 
-    /// A server of |protocol|, one of ours_resource's, whose connections
+    /// A server of |protocol|, one of prot::resource's, whose connections
     /// live in |storage| and wait on |loop|, and which hands out duplicates
     /// of |resource|: the one userboot gave the root for this protocol,
     /// which stays the root's. |storage| and |loop| must outlive it.
-    ResourceServer(Storage &storage, loop::Loop &loop, ours_resource::Protocol const &protocol,
+    ResourceServer(Storage &storage, loop::Loop &loop, prot::resource::Protocol const &protocol,
                    ours::Uandle resource);
 
     ResourceServer(ResourceServer const &) = delete;
@@ -113,7 +113,7 @@ class ResourceServer final {
 
     Storage *m_storage;
     loop::Loop *m_loop;
-    ours_resource::Protocol m_protocol;
+    prot::resource::Protocol m_protocol;
     ours::Uandle m_resource;
 };
 } // namespace init

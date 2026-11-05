@@ -11,9 +11,9 @@ namespace {
     using ours::HandleType;
     using ours::Status;
     using ours::Uandle;
-    using ours_process::AddHandlesRequest;
-    using ours_process::LaunchInfo;
-    using ours_process::PackedStrings;
+    using prot::process::AddHandlesRequest;
+    using prot::process::LaunchInfo;
+    using prot::process::PackedStrings;
 
     /// The handle types a client may not give, because the launcher adds
     /// them itself or they would describe the launcher's own work. VmaRoot
@@ -47,23 +47,23 @@ auto ProcessLauncherState::receive(wire::Message const message, std::span<u8> co
     if (auto const header = wire::decode_header(message.bytes, wire::Direction::ToServer);
         header.is_ok()) {
         auto const ordinal = header->ordinal;
-        if (ordinal == ours_process::ADD_ARGS.ordinal) {
-            if (auto const request = ours_process::decode_add_args(message); request.is_ok()) {
+        if (ordinal == prot::process::ADD_ARGS.ordinal) {
+            if (auto const request = prot::process::decode_add_args(message); request.is_ok()) {
                 add_args(request->args);
                 return Received{.outcome = Outcome::Continue};
             }
-        } else if (ordinal == ours_process::ADD_HANDLES.ordinal) {
-            if (auto const request = ours_process::decode_add_handles(message); request.is_ok()) {
+        } else if (ordinal == prot::process::ADD_HANDLES.ordinal) {
+            if (auto const request = prot::process::decode_add_handles(message); request.is_ok()) {
                 add_handles(request.unwrap());
                 return Received{.outcome = Outcome::Continue};
             }
-        } else if (ordinal == ours_process::ADD_NAMES.ordinal) {
-            if (auto const request = ours_process::decode_add_names(message); request.is_ok()) {
+        } else if (ordinal == prot::process::ADD_NAMES.ordinal) {
+            if (auto const request = prot::process::decode_add_names(message); request.is_ok()) {
                 add_names(request.unwrap());
                 return Received{.outcome = Outcome::Continue};
             }
-        } else if (ordinal == ours_process::LAUNCH.ordinal) {
-            if (auto const request = ours_process::decode_launch(message); request.is_ok()) {
+        } else if (ordinal == prot::process::LAUNCH.ordinal) {
+            if (auto const request = prot::process::decode_launch(message); request.is_ok()) {
                 return launch(request.unwrap(), scratch);
             }
         }
@@ -123,7 +123,7 @@ auto ProcessLauncherState::add_handles(AddHandlesRequest const &request) -> void
     }
 }
 
-auto ProcessLauncherState::add_names(ours_process::AddNamesRequest const &request) -> void {
+auto ProcessLauncherState::add_names(prot::process::AddNamesRequest const &request) -> void {
     auto const count = request.directories.size();
     if (count > MAX_HANDLES - m_num_handles ||
         request.paths.bytes.size() > MAX_STRING_BYTES - m_strings_size) {
@@ -145,7 +145,7 @@ auto ProcessLauncherState::add_names(ours_process::AddNamesRequest const &reques
     }
 }
 
-auto ProcessLauncherState::launch(ours_process::LaunchRequest const &request,
+auto ProcessLauncherState::launch(prot::process::LaunchRequest const &request,
                                   std::span<u8> const scratch) -> Received {
     auto started = start(request.info, scratch);
     // start() never consumes the job or the program: the launcher closes

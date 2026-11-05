@@ -1,0 +1,19 @@
+# Host-side tests. These link googletest and run on the build machine, so
+# they exercise the parts of the interface that need no booted kernel: the
+# selection grammar, the failure-message formatting, and the counting the
+# SUMMARY line reports.
+executable("ktest-test") {
+  testonly = true
+  sources = [
+    "filter_test.cpp",
+    "format_test.cpp",
+    "options_test.cpp",
+    "summary_test.cpp",
+  ]
+  deps = [
+    "//kernel/lib/ktest:headers",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

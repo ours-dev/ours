@@ -66,9 +66,9 @@
   { "image": "kernel.dev", "obi": "kernel.dev.obi",
     "label": "//kernel/products/image/dev:dev" },
 
-  { "debug": "kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests",
+  { "debug": "kernel_x86.dbg.0/obj/kernel/products/bin/vmours",
     "environment": "kernel",
-    "label": "//kernel/products/bin:vmours.with-tests(//build/switch/set/dbg.0:kernel_x86.dbg.0)" },
+    "label": "//kernel/products/bin:vmours(//build/switch/set/dbg.0:kernel_x86.dbg.0)" },
   { "debug": "kernel.phys_x86.phys.dbg_0/obj/kernel/phys/physload", "environment": "kernel.phys", ... },
   { "debug": "user-x86/obj/kernel/lib/userabi/userboot/userboot", "environment": "user", ... }
 ]
@@ -90,7 +90,8 @@ switchset 也从这里读——内核那条 label 的 toolchain 部分就是
 对不上"这件事**没法表达**。
 
 这么做的理由是它已经错过一次。之前每个内核一份配置，要在两处分别写下镜像和 ELF，而这
-两者**不是机械对应的**：`kernel.dev.obi` 装的是 `vmours.with-tests` 而不是 `vmours`，
+两者**不是机械对应的**：`kernel.dev.obi` 装的是 dbg.0 的 `vmours`，
+`kernel.dev.dbg_1.obi` 装的是 dbg.1 的 `vmours.with-tests`（调试镜像带内核测试），
 `fake.obi` 装的干脆不是 vmours。那份 `dev` 配置指着 `vmours`，两个二进制里 `start_kernel`
 差 `0xE000`（56 KiB）——断点全落在不相干的代码上；更糟的是 dbg.0 的 `vmours` 已经不是
 构建目标了（`ninja -t query` 报 unknown），是个不会再被重建的陈旧文件。

@@ -10,6 +10,7 @@
 #include <ours/task/sched/config.hpp>
 #include <ours/task/sched/rr.hpp>
 #include <ours/task/sched/run_queue.hpp>
+#include <ours/task/sched/schedule.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/timer.hpp>
@@ -20,8 +21,15 @@
 
 #include <gktl/canary.hpp>
 #include <ustl/chrono/duration.hpp>
+#include <ustl/dyn.hpp>
 
 namespace ours::task::sched {
+#if SCHED_NORMAL_DISCIPLINE_FAIR
+/// The reference to the Fair discipline, made in fair.cpp where the class is
+/// complete.
+auto fair_schedule() -> ustl::Ref<Schedule>;
+#endif
+
 /// The core scheduler per cpu.
 class Scheduler {
     using Self = Scheduler;
@@ -120,7 +128,7 @@ class Scheduler {
     ///
     /// A RunQueue is a member of exactly one Scheduler, so this is the same
     /// member-to-owner recovery Thread::of(SchedEntity *) performs, and it is here
-    /// for the same reason: an ISchedule entry point is handed the RunQueue as
+    /// for the same reason: a discipline's entry point is handed the RunQueue as
     /// its capability token and has no other honest way back to the scheduler
     /// around it.
     ///
@@ -142,7 +150,7 @@ class Scheduler {
 
     /// TA_RETURN_CAPABILITY makes `get_lock()` and `m_run_queue.m_rqlock` one
     /// capability to the analysis. Both spellings are in use: Scheduler's own
-    /// methods say `TA_REQUIRES(get_lock())`, ISchedule's virtuals say
+    /// methods say `TA_REQUIRES(get_lock())`, a discipline's entry points say
     /// `TA_REQUIRES(rq.rqlock)`, and enqueue_thread() calls the latter
     /// while holding the former.
     TA_RETURN_CAPABILITY(m_run_queue.m_rqlock) FORCE_INLINE auto get_lock() -> sync::SpinLock & {
@@ -161,7 +169,7 @@ class Scheduler {
     static auto reschedule_mask(CpuMask const &mask) -> void;
 
     /// Assign a CPU on which the given |thread| will run.
-    /// It first attempt to use specific method |IScheduler::select_target_cpu|.
+    /// It first attempt to use specific method |SelectTargetCpu|.
     /// If got a invalid CPU number, it will adopts fallback method.
     static auto select_target_cpu(Thread *thread) -> CpuNum;
 
@@ -305,9 +313,36 @@ class Scheduler {
     TA_REQUIRES(get_lock())
     auto evaluate_next_thread(Thread *curr) -> Thread *;
 
-    auto set_schedule(Thread *thread) -> ISchedule *;
+    /// The schedule that implements |discipline|, or an empty reference where no
+    /// discipline is implemented (Deadline today). The set of disciplines is
+    /// closed -- it is the enumerators of Discipline -- so this is a plain
+    /// function over them, and adding one is an enumerator, a case and a class.
+    static auto schedule_of(Discipline discipline) -> ustl::Ref<Schedule>;
 
-    auto get_schedule(Thread *thread) -> ISchedule *;
+    /// Calls the method |Dispatch| of the schedule of |discipline|, under this
+    /// run queue's lock.
+    ///
+    /// The one place the analysis is asked about the erased call: it does not
+    /// see through a ustl::Ref, so this requires the lock itself, and every
+    /// caller has to show it holds it. A discipline's own functions declare the
+    /// same requirement (`TA_REQUIRES(rq.lock())`), which checks their bodies.
+    template <typename Dispatch, typename... Args>
+    TA_REQUIRES(get_lock())
+    auto call_schedule(Discipline const discipline, Args &&...args) -> decltype(auto) {
+        auto const schedule = schedule_of(discipline);
+        DEBUG_ASSERT(schedule, "No schedule for discipline[{}]", std::to_underlying(discipline));
+        return schedule.template call<Dispatch>(std::forward<Args>(args)...);
+    }
+
+    /// The same for a method that is not called under the run queue lock, and
+    /// from a context that has no Scheduler (select_target_cpu()).
+    template <typename Dispatch, typename... Args>
+    static auto call_schedule_unlocked(Discipline const discipline, Args &&...args)
+        -> decltype(auto) {
+        auto const schedule = schedule_of(discipline);
+        DEBUG_ASSERT(schedule, "No schedule for discipline[{}]", std::to_underlying(discipline));
+        return schedule.template call<Dispatch>(std::forward<Args>(args)...);
+    }
 
     /// [MP] Attempts to steal work from other busy CPUs spcified by |mask| and move it
     /// to the local run queues. Returns a pointer to the stolen thread that is now
@@ -344,10 +379,7 @@ class Scheduler {
     RunQueue m_run_queue;
     usize m_num_switches;
 
-    /// Indexed directly by `Discipline` -- entry `i` is the schedule
-    /// implementing `Discipline(i)`, or null if none is registered.
     static constexpr auto NUM_DISCIPLINE = std::to_underlying(Discipline::Count);
-    std::array<ISchedule *, NUM_DISCIPLINE> m_schedules{};
 
     Thread *m_idle_thread;
 

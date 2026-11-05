@@ -4,7 +4,7 @@
 #define OURS_TASK_SCHED_FAIR_HPP 1
 
 #include <ours/compiler.hpp>
-#include <ours/task/sched/context.hpp>
+#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/types.hpp>
 
 #include <gktl/canary.hpp>
@@ -12,20 +12,20 @@
 
 namespace ours::task::sched {
 /// Fair (EEVDF) discipline's per-CPU run queue -- all of the Fair
-/// discipline's per-CPU state. Held directly by Scheduler (see
-/// Scheduler::fair_run_queue()) rather than through its own CpuLocal
-/// instance: Scheduler is already a per-CPU singleton, so a second,
-/// independent per-CPU mechanism just for this queue would be redundant.
+/// discipline's per-CPU state. Held directly by the per-CPU RunQueue (see
+/// RunQueue::queue<Discipline::Normal>()) rather than through its own CpuLocal
+/// instance: the RunQueue is already per CPU, so a second, independent
+/// per-CPU mechanism just for this queue would be redundant.
 ///
 /// This mirrors Linux's `struct rq` embedding `struct cfs_rq cfs`
 /// directly rather than routing through a generic/type-erased slot: the
 /// set of disciplines is small and fixed at compile time (see
 /// `Discipline`), so the per-CPU container naming its disciplines' queues
-/// directly is simpler than full type erasure. `ISchedule`/`Schedule<>`
+/// directly is simpler than full type erasure. The `Schedule` interface
 /// already decouples the *behavior* (Fair's algorithm) from Scheduler;
 /// this only concerns where the *data* lives.
-class RunQueue {
-    using Self = RunQueue;
+class FairRunQueue {
+    using Self = FairRunQueue;
 
   public:
     FORCE_INLINE
@@ -33,47 +33,69 @@ class RunQueue {
         m_canary.verify<Self>();
     }
 
-    auto enqueue_object(Context &object) -> void;
+    auto enqueue_object(SchedEntity &object) -> void;
 
-    auto dequeue_object(Context &object) -> void;
+    auto dequeue_object(SchedEntity &object) -> void;
 
-    auto update_min_vruntime(Context &object) -> void;
+    /// |object| is the thread now running on this CPU. It is off the tree, and
+    /// part of the average for as long as it is active (`sums()`).
+    FORCE_INLINE
+    auto set_current(SchedEntity &object) -> void {
+        current_ = &object;
+    }
+
+    /// The running thread is going back to the tree, or has stopped wanting
+    /// to run.
+    FORCE_INLINE
+    auto clear_current() -> void {
+        current_ = nullptr;
+    }
+
+    /// The weighted mean of the virtual times of everything that wants to run
+    /// here, the running thread included. It is the point of the queue at which
+    /// a thread owes nothing and is owed nothing, and a thread is placed on it
+    /// less the lag it carried.
+    ///
+    /// Moves the queue's zero to the mean on the way (`recenter()`), which is
+    /// why it is not const. An empty queue has no mean and answers its zero.
+    auto avg_vruntime() -> SchedDuration;
+
+    /// Moves the zero to the weighted mean. The sums are valid for any zero, but
+    /// an offset converts into `WeightedTime` only up to about 39 hours, so the
+    /// zero has to follow the threads: it is moved at every placement and lag
+    /// (`avg_vruntime()`) and whenever a request is replenished
+    /// (`Fair::update_thread()`), which is what keeps a thread that is only ever
+    /// re-picked from running away from it.
+    auto recenter() -> void;
 
     /// Returns the lag of |object| relative to this runqueue.
     FORCE_INLINE
-    auto lag_of(Context &object) -> SchedDuration {
-        return avg_vruntime() - object.runtime();
+    auto lag_of(SchedEntity &object) -> SchedDuration {
+        return avg_vruntime() - object.vruntime();
     }
 
+    /// Whether |object| is owed service: its lag is not negative.
+    ///
+    /// The sum and the weights it is tested against are `sums()`, the same pair
+    /// `avg_vruntime()` uses, so the running thread is in both.
+    [[nodiscard]]
+    auto is_eligible(SchedEntity const &object) const -> bool;
+
+    /// The weights of what is in the mean: the tree and the running thread.
     FORCE_INLINE
     auto total_weight() const -> Weight {
-        if (current_ && current_->runqueue_state().is_active()) {
-            return weight_sum_ + current_->weight();
-        }
-        return weight_sum_;
+        return sums().weight;
+    }
+
+    /// The weighted sum of what is in the mean: the tree and the running thread.
+    FORCE_INLINE
+    auto total_vruntime() const -> WeightedTime {
+        return sums().total;
     }
 
     FORCE_INLINE
-    auto total_vruntime() const -> SchedDuration {
-        return total_vruntime_;
-    }
-
-    FORCE_INLINE
-    auto min_vruntime() const -> SchedDuration {
-        return min_vruntime_;
-    }
-
-    FORCE_INLINE
-    auto avg_vruntime() const -> SchedDuration {
-        auto total_vruntime = total_vruntime_;
-        auto weight_sum = weight_sum_;
-
-        if (current_ && current_->runqueue_state().is_active()) {
-            weight_sum += current_->weight();
-            total_vruntime += calc_weighted_time(*current_);
-        }
-
-        return min_vruntime_ + total_vruntime / weight_sum;
+    auto zero_vruntime() const -> SchedDuration {
+        return zero_vruntime_;
     }
 
     FORCE_INLINE
@@ -84,6 +106,23 @@ class RunQueue {
     FORCE_INLINE
     auto end() {
         return queue_.end();
+    }
+
+    /// Calls |visit| on every queued entity, from the earliest virtual deadline,
+    /// until it answers false: this queue's part of RunQueue::for_each_thread(),
+    /// which every discipline's queue type supplies. Under the run queue lock.
+    ///
+    /// The running thread is off the tree and is not visited, though it is in
+    /// the mean while it is active (`current_`, `sums()`). Under
+    /// SCHED_DELAY_DEQUEUE the tree also holds the sleepers whose dequeue was
+    /// delayed, and the walk visits them.
+    template <typename Visit>
+    auto for_each(Visit &&visit) -> void {
+        for (auto &object: queue_) {
+            if (!visit(object)) {
+                return;
+            }
+        }
     }
 
     FORCE_INLINE
@@ -107,21 +146,42 @@ class RunQueue {
     }
 
   private:
-    auto calc_weighted_time(Context &object) const -> SchedDuration;
+    /// The weighted sum and the weights of what is in the mean: the tree, and
+    /// the running thread while it is active.
+    struct Sums {
+        WeightedTime total;
+        Weight weight;
+    };
+    [[nodiscard]]
+    auto sums() const -> Sums;
 
-    using Lesser = decltype([](Context const &x, Context const &y) noexcept {
-        return x.deadline() < y.deadline();
+    /// |object|'s term in the weighted sum, see sched::weighted_offset().
+    auto term_of(SchedEntity &object) const -> WeightedTime;
+
+    /// Moves the zero by |delta|, and the sum of the tree with it.
+    auto update_zero_vruntime(SchedDuration const delta) -> void;
+
+    /// Earliest virtual deadline first; the pick takes the first eligible one
+    /// (Fair::evaluate_next_thread()).
+    using Lesser = decltype([](SchedEntity const &x, SchedEntity const &y) noexcept {
+        return x.virtual_deadline() < y.virtual_deadline();
     });
     using Queue = ustl::collections::intrusive::MultiSet<
-        Context, ustl::collections::intrusive::ValueTraits<Context::RunQueueTraits<>>,
+        SchedEntity, ustl::collections::intrusive::ValueTraits<SchedEntity::RunQueueTraits<>>,
         ustl::collections::intrusive::Compare<Lesser>>;
 
     gktl::Canary m_canary{this};
     Queue queue_;
-    Context *current_;
+    /// The thread running on this CPU if it is one of Fair's. Not in `queue_`.
+    SchedEntity *current_ = nullptr;
+    /// The weights of what is in `queue_`.
     Weight weight_sum_;
-    SchedDuration total_vruntime_;
-    SchedDuration min_vruntime_;
+    /// `weight * (vruntime - zero_vruntime_)` summed over what is in `queue_`.
+    WeightedTime total_vruntime_;
+    /// The point the offsets are taken from. A thread's term is its distance
+    /// from it, so any value would do for the sums; keeping it at the mean
+    /// keeps them small.
+    SchedDuration zero_vruntime_;
     usize m_num_queued = 0;
 };
 

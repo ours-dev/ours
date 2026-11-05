@@ -79,9 +79,18 @@ group("default") {
     # hosted main()s, hence the host toolchain as for the tests above.
     "//system/lib/ustl:tests($host_toolchain)",
 
-    # ours.block's codec: the two methods and their replies, written, read
-    # back and broken on purpose, from bytes alone.
-    "//system/lib/ours.block:tests($host_toolchain)",
+    # The protocols library's codecs: the block, io, resource, acpi, fshost
+    # and process methods and their replies, written, read back and broken on
+    # purpose, from bytes alone.
+    "//system/lib/protocols:tests($host_toolchain)",
+
+    # The device registry's core: the grant rule, the mount pool, the
+    # refusals, and the leaf forward, on the fake kernel.
+    "//system/service/device-registry:tests($host_toolchain)",
+
+    # The rpc core: call round trip, epitaph translation, peer-closed, the
+    # txid wrap, the stray handle, on the fake kernel.
+    "//system/lib/rpc:tests($host_toolchain)",
 
     # ours.gpt's parser: the CRC-32's known answer, the header and entry
     # parses and their refusals, and whole tables read through a fake reader.
@@ -90,10 +99,6 @@ group("default") {
     # ours.btreefs's tree: keys and values, the allocator, inserts through
     # splits that climb to height 3, and scans along the leaves' chain.
     "//system/lib/ours.btreefs:tests($host_toolchain)",
-
-    # ours.fshost's admin codec: the Mount request written, read back and
-    # refused on purpose, from bytes alone.
-    "//system/lib/ours.fshost:tests($host_toolchain)",
 
     # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
     # decision over two token values and its state is one std::atomic, so the
@@ -108,6 +113,10 @@ group("default") {
 
     # gktl::DeferredAction's run-at-most-once contract; see the target.
     "//kernel/lib/gktl:tests($host_toolchain)",
+
+    # The kernel test interface's host half: the selection grammar, the
+    # failure-message formatting, and the counting the SUMMARY line reports.
+    "//kernel/lib/ktest:tests($host_toolchain)",
 
     # The machine's NUMA tables, and the node ordering derived from them:
     # static arrays behind bounds-checked accessors plus a pure function over
@@ -200,17 +209,14 @@ group("default") {
     # from numbers alone.
     "//system/lib/launch:tests",
 
-    # The framing every hand-written protocol codec shares, and the codec of
-    # ours.io on top of it: each message written, read back and
-    # broken on purpose, from bytes alone.
+    # The framing every hand-written protocol codec shares: each message
+    # written, read back and broken on purpose, from bytes alone.
     "//system/lib/wire:tests",
-    "//system/lib/ours.io:tests",
 
-    # The ours.process and ours.resource codecs, on the same framing; the
-    # Launcher's per-connection state is in //system/lib/launch:tests.
-    "//system/lib/ours.process:tests",
-    "//system/lib/ours.resource:tests",
-    "//system/lib/ours.acpi:tests",
+    # The process, resource and acpi codecs, on the same framing; the
+    # Launcher's per-connection state is in //system/lib/launch:tests. The
+    # block, io and fshost codecs' tests run on the host above.
+    "//system/lib/protocols:tests",
 
     # The ours.io server: its tree, and its connections driven one encoded
     # message at a time -- the Open checks in order, rights, ReadDirents,

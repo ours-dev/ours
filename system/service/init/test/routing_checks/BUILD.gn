@@ -22,14 +22,8 @@ user_executable("routing_checks") {
     ":routing_checks.cm.names",
     "//examples/echo/protocol",
     "//system/lib/fsio",
-    "//system/lib/ours.acpi:client",
-    "//system/lib/ours.block",
-    "//system/lib/ours.block:client",
-    "//system/lib/ours.fshost",
+    "//system/lib/protocols:client",
     "//system/lib/ours.gpt",
-    "//system/lib/ours.io",
-    "//system/lib/ours.resource:client",
-    "//system/lib/ours.process",
     "//system/lib/wire",
   ]
 }
@@ -45,7 +39,7 @@ user_executable("routing_checks") {
 #            not the writable `tmp`, which the shell's `all` view holds: a
 #            read through it walks two servers, and the listing asserts the
 #            view really hides tmp.
-# Eight uses of directories that the sibling files (//examples/files)
+# Nine uses of directories that the sibling files (//examples/files)
 # provides, each offered from it by root.cm, and the first provider a
 # directory route ends at:
 #   /files         r*, the tree files serves at its declared /export/docs;
@@ -57,12 +51,14 @@ user_executable("routing_checks") {
 #   /files-wide    rx*, through files' expose of docs-wide, which states rx*
 #                  over a declaration of r*: AccessDenied at files'
 #                  declaration, and the entry arrives closed;
+#   /slow          r*, the directory files serves through a handler node: one
+#                  file, whose Read files answers a turn of the Loop later;
 #   /ghost         r*, a directory files declares and exposes and its program
 #                  does not serve: files' server answers NotFound;
 #   /files-file    r*, through an offer of docs with the subdir hello.txt: the
 #                  Open asks for a directory and the path ends at a file, so
 #                  files' server answers NotDir.
-# And eleven protocol uses, each at /svc/<name>:
+# And twelve protocol uses, each at /svc/<name>:
 #   ours.process.Launcher, ours.resource.Debug, ours.resource.Sampling,
 #   ours.resource.Irq, ours.resource.Ioport, ours.resource.Mmio,
 #   ours.resource.Iommu and ours.boot.Acpi, the root's built-ins, which
@@ -73,6 +69,10 @@ user_executable("routing_checks") {
 #   ours.acpi.Route, which root.cm offers from the sibling acpi-route, the
 #   route service (//system/service/acpi-route), that this component asks
 #   about every ISA number and the ECAM window;
+#   ours.block.Block, the virtio disk's protocol, and ours.block.Nvme, the
+#   NVMe disk's under the name root.cm's offer renames it to: GetInfo and a
+#   write-read-back through each, skipped while the image carries no disk
+#   of that kind;
 #   ours.test.Unoffered, which nobody offers, so its Open answers NotFound
 #   at the root's offer;
 #   ours.test.Echo, which root.cm offers from its sibling echo
@@ -136,6 +136,11 @@ component_manifest("routing_checks.cm") {
         rights = [ "rx*" ]
       },
       {
+        directory = "slow"
+        path = "/slow"
+        rights = [ "r*" ]
+      },
+      {
         directory = "ghost"
         path = "/ghost"
         rights = [ "r*" ]
@@ -167,6 +172,10 @@ component_manifest("routing_checks.cm") {
         protocol = "ours.block.Block"
       },
       {
+        protocol = "ours.block.Nvme"
+        type = "ours.block.Block"
+      },
+      {
         protocol = "ours.fshost.Admin"
       },
       {
@@ -176,6 +185,11 @@ component_manifest("routing_checks.cm") {
           "rx*",
           "w*",
         ]
+      },
+      {
+        directory = "dev"
+        path = "/dev"
+        rights = [ "r*" ]
       },
     ]
   }

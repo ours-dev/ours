@@ -170,6 +170,16 @@ SECTIONS {
         KEEP(*(SORT_BY_ALIGNMENT(.gktl.commands*)))
         PROVIDE_HIDDEN(__commands_end = .);
 
+        /* hsien test records (system/lib/hsien's TestRecord, emitted by
+         * ktest's KTEST macro). The `ktest` command reads them on demand,
+         * long after the .init tail has been handed back to the page
+         * allocator, so they cannot live in .init.rodata. KEEP for the same
+         * reason as the command registry: being found by walking this range
+         * is the only reference to a record. */
+        PROVIDE_HIDDEN(__hsien_tests_start = .);
+        KEEP(*(SORT_BY_ALIGNMENT(.hsien.tests)))
+        PROVIDE_HIDDEN(__hsien_tests_end = .);
+
         PROVIDE_HIDDEN(__gktl_counter_desc_start = .);
         *(.gktl.counter.descs*)
         PROVIDE_HIDDEN(__gktl_counter_desc_end = .);
@@ -221,11 +231,6 @@ SECTIONS {
 
     PROVIDE_HIDDEN(__init_rodata_start = .);
     .init.rodata : AT(ADDR(.init.rodata)) {
-        /* hsien test records */
-        PROVIDE_HIDDEN(__hsien_tests_start = .);
-        KEEP(*(SORT_BY_ALIGNMENT(.hsien.tests)))
-        PROVIDE_HIDDEN(__hsien_tests_end = .);
-
         /* gktl::InitHook */
         PROVIDE_HIDDEN(__init_hook_start = .);
         KEEP(*(SORT_BY_ALIGNMENT(.gktl.init_hook*)))
@@ -235,17 +240,6 @@ SECTIONS {
         PROVIDE_HIDDEN(__gktl_counter_desc_start = .);
         KEEP(*(SORT_BY_ALIGNMENT(.gktl.counter.descs)))
         PROVIDE_HIDDEN(__gktl_counter_desc_end = .);
-
-        /* task::sched discipline registry. Collected here, before the
-         * catch-all below, and *not* named .init.rodata.something: this used
-         * to live in its own INSERT AFTER fragment as .init.rodata.schedules,
-         * where the wildcard on the next line matched it first and swallowed
-         * every entry into the body of this section. The bounds then sat past
-         * the end of what they were supposed to delimit, and Scheduler::init()
-         * read an empty registry. */
-        PROVIDE_HIDDEN(__schedules_start = .);
-        KEEP(*(SORT_BY_ALIGNMENT(.task.schedules)))
-        PROVIDE_HIDDEN(__schedules_end = .);
 
         *(SORT_BY_ALIGNMENT(.init.rodata*))
     }

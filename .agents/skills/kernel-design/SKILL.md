@@ -42,6 +42,7 @@ and their rationale.
 | physical memory, MemMap, VmObject, user copies, CpuLocal, allocators | [references/mm.md](references/mm.md) |
 | scheduler, threads, locking, wait queues, interrupt lines (kernel/irq), timers, prof | [references/task.md](references/task.md) |
 | phys, boot shim, physload modules, linker script, boot options, userboot/init, filesystems | [references/boot.md](references/boot.md) |
+| choosing names for anything | [references/naming.md](references/naming.md) |
 
 ## Hands off
 

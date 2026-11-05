@@ -1,0 +1,202 @@
+# The protocols library's host tests. These link googletest and run on the
+# build machine: the codecs work on bytes and handle values alone, so every
+# message can be written, read back and broken on purpose without a kernel.
+
+# ours.block: round trips for both methods, and the refusals a closed
+# protocol's decoders owe.
+executable("block") {
+  testonly = true
+  sources = [ "block_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.block's typed client, over the fake kernel: the test plays the Block
+# provider inside the fixture's pump, answering the codec's requests per
+# mode -- the round trips, the client-side refusals, the short reply, the
+# epitaph, the silent close, and the reply to another request's txid.
+executable("block_client") {
+  testonly = true
+  sources = [ "block_client_test.cpp" ]
+  deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.acpi's typed client, over the fake kernel: the test plays the Route
+# provider inside the fixture's pump -- both round trips, the epitaph, the
+# stray handle on a reply refused with the handle closed, the other method's
+# reply caught as InvArgs, and the silent close reading PeerClosed. The
+# /svc overloads walk a fake /svc bound into the real namespace: its
+# namespace table links on the host, and the Tree+LoopServer behind the
+# bound directory is the ioservice suite's.
+executable("acpi_client") {
+  testonly = true
+  sources = [
+    "../src/acpi_client.cpp",
+    "acpi_client_test.cpp",
+  ]
+  deps = [
+    "//system/lib/fsio:headers",
+    "//system/lib/fsio:namespace",
+    "//system/lib/ioservice:loop_server",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.dev: Publish's round trip, the strings' back-to-back layout, and the
+# refusals -- separators, NULs, the bounds, a missing handle, a body off by
+# one byte.
+executable("dev") {
+  testonly = true
+  sources = [ "dev_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.io: every request and reply of the subset, written, read back and
+# broken on purpose.
+executable("io") {
+  testonly = true
+  sources = [ "io_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.resource: each protocol's Get and its reply, and one protocol's
+# messages refused by another's decoders.
+executable("resource") {
+  testonly = true
+  sources = [ "resource_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.resource's typed client, over the fake kernel: the test plays the
+# resource provider inside the fixture's pump -- the Get answered with a
+# handle that survives for the caller, the reply's failure status arriving
+# as itself, the epitaph (Ok reading as the connection closing), the
+# malformed reply and its stray handle closed, and the silent close. The
+# /svc overload walks a fake /svc bound into the real namespace: its
+# namespace table links on the host, and the Tree+LoopServer behind the
+# bound directory is the ioservice suite's.
+executable("resource_client") {
+  testonly = true
+  sources = [
+    "../src/resource_client.cpp",
+    "resource_client_test.cpp",
+  ]
+  deps = [
+    "//system/lib/fsio:headers",
+    "//system/lib/fsio:namespace",
+    "//system/lib/ioservice:loop_server",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.acpi: each method's request and reply, and one method's messages
+# refused by the other's decoders.
+executable("acpi") {
+  testonly = true
+  sources = [ "acpi_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.fshost: the admin codec's Mount request, its refusals, and the reply's
+# status form.
+executable("fshost") {
+  testonly = true
+  sources = [ "fshost_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.fshost's typed client, over the fake kernel: the test plays the
+# Admin provider inside the fixture's pump -- the Mount's name and handle
+# arriving as sent, and each answer reading as itself.
+executable("dev_client") {
+  testonly = true
+  sources = [ "dev_client_test.cpp" ]
+  deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+executable("fshost_client") {
+  testonly = true
+  sources = [ "fshost_client_test.cpp" ]
+  deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.process: every Launcher message and the Launch reply, written, read
+# back and broken on purpose.
+executable("process") {
+  testonly = true
+  sources = [ "process_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

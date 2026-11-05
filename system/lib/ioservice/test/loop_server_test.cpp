@@ -10,9 +10,14 @@
 // and reported to the delegate, a directory opened through it, a reply
 // written back, a Close answered, a malformed message, a reply that cannot
 // be written, a client gone, and a Loop that cannot arm a connection's wait
-// again.
+// again. And a Handler node whose NodeHandler answers Pending: the connection
+// is suspended, complete() writes the reply and resumes it, the replies come in
+// the order the requests were sent, a client that goes away while its request
+// waits is released by its own callback after the resume, and a pending Open
+// makes its connection when it is completed.
 #include <ioservice/loop_server.hpp>
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <optional>
@@ -28,7 +33,7 @@
 #include <ours/port.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <wire/wire.hpp>
 
 // How gtest prints a status in a failure: by name, found by argument-
@@ -44,7 +49,7 @@ auto PrintTo(Status const status, std::ostream *const out) -> void {
 namespace {
 using ours::Status;
 using ours::Uandle;
-using ours_io::Flags;
+using prot::io::Flags;
 
 /// The connections the server allows at once.
 constexpr auto CONNECTIONS = usize{4};
@@ -55,6 +60,14 @@ constexpr auto NESTED_SERVICE = u64{9};
 
 /// The value the Subtree node /mount is added with.
 constexpr auto MOUNT_VALUE = u64{11};
+
+/// The value the Handler node /fs is added with, and what its handler serves:
+/// a directory (cookie FS_DIRECTORY) holding one file (cookie FS_FILE) named
+/// "file".
+constexpr auto FS_VALUE = u64{21};
+constexpr auto FS_DIRECTORY = u64{1};
+constexpr auto FS_FILE = u64{2};
+constexpr auto FS_TEXT = std::string_view{"0123456789"};
 
 /// The server's delegate, which keeps what it was called with, in order.
 class Calls final: public ioservice::LoopServer::Delegate {
@@ -127,6 +140,114 @@ class Calls final: public ioservice::LoopServer::Delegate {
     }
 };
 
+auto bytes_of(std::string_view const text) -> std::span<u8 const> {
+    return {reinterpret_cast<u8 const *>(text.data()), text.size()};
+}
+
+/// What a completed Read of |text| is.
+auto read_of(std::string_view const text) -> ioservice::ReadResult {
+    return ustl::ok(bytes_of(text));
+}
+
+/// The NodeHandler of /fs: a directory with one file, "file", holding FS_TEXT.
+/// It answers Done unless a test says an operation waits, and then it answers
+/// Pending and the test ends the request with complete(), when it likes. It
+/// keeps what it was asked, so that a test can say what the Server told it and
+/// when.
+class Fs final: public ioservice::NodeHandler {
+  public:
+    struct OpenCall {
+        u64 value;
+        ustl::Option<u64> directory;
+        std::string path;
+        Flags flags;
+        ioservice::Ticket ticket;
+    };
+
+    struct ReadCall {
+        u64 value;
+        u64 cookie;
+        u64 offset;
+        u64 count;
+        ioservice::Ticket ticket;
+    };
+
+    // What a test sets.
+    bool pend_open = false;
+    bool pend_read = false;
+    /// Where a call tries to complete its own ticket, when |complete_inside|.
+    ioservice::LoopServer *server = nullptr;
+    bool complete_inside = false;
+
+    // What a test reads back.
+    std::vector<OpenCall> opens;
+    std::vector<ReadCall> reads;
+    std::vector<u64> releases;
+    /// What complete() answered inside the call that tried it.
+    Status completed_inside = Status::Ok;
+
+    auto open(u64 const value, ustl::Option<u64> const directory, std::string_view const path,
+              Flags const flags, ioservice::Ticket const ticket)
+        -> ioservice::Answer<ioservice::OpenResult> override {
+        opens.push_back({value, directory, std::string{path}, flags, ticket});
+        if (pend_open) {
+            return ioservice::Pending{ticket};
+        }
+        return ioservice::Done<ioservice::OpenResult>{open_result(directory, path)};
+    }
+
+    /// What an Open of |path| from |directory| makes, as a test completes a
+    /// pending one with.
+    static auto open_result(ustl::Option<u64> const directory, std::string_view const path)
+        -> ioservice::OpenResult {
+        if (directory.is_none() && path == ".") {
+            return ustl::ok(ioservice::Opened{ioservice::ObjectKind::Directory, FS_DIRECTORY});
+        }
+        if (directory.is_some() && *directory == FS_DIRECTORY && path == "file") {
+            return ustl::ok(ioservice::Opened{ioservice::ObjectKind::File, FS_FILE});
+        }
+        return ustl::err(Status::NotFound);
+    }
+
+    auto read(u64 const value, u64 const cookie, u64 const offset, u64 const count,
+              ioservice::Ticket const ticket) -> ioservice::Answer<ioservice::ReadResult> override {
+        reads.push_back({value, cookie, offset, count, ticket});
+        if (complete_inside && server != nullptr) {
+            // The ticket is good once this call has returned Pending, and not
+            // before: the Server refuses it, and nothing is written or resumed.
+            completed_inside = server->complete(ticket, read_of("inside"));
+        }
+        if (pend_read) {
+            return ioservice::Pending{ticket};
+        }
+        return ioservice::Done<ioservice::ReadResult>{read_of(slice(offset, count))};
+    }
+
+    auto read_dirents(u64, u64, u64, u64, ioservice::Ticket)
+        -> ioservice::Answer<ioservice::EntriesResult> override {
+        return ioservice::Done<ioservice::EntriesResult>{ustl::err(Status::NotSupported)};
+    }
+
+    auto get_backing_memory(u64, u64, prot::io::VmoFlags, ioservice::Ticket)
+        -> ioservice::Answer<ioservice::VmoResult> override {
+        return ioservice::Done<ioservice::VmoResult>{ustl::err(Status::NotSupported)};
+    }
+
+    auto clone(u64, u64 const cookie) -> ustl::Result<u64, Status> override {
+        return ustl::ok(cookie);
+    }
+
+    auto release(u64, u64 const cookie) -> void override {
+        releases.push_back(cookie);
+    }
+
+  private:
+    static auto slice(u64 const offset, u64 const count) -> std::string_view {
+        auto const from = std::min<usize>(offset, FS_TEXT.size());
+        return FS_TEXT.substr(from, count);
+    }
+};
+
 /// A channel pair: the client end first.
 auto channel() -> std::array<Uandle, 2> {
     auto client = Uandle::Invalid;
@@ -148,8 +269,8 @@ auto open(Uandle const directory, std::string_view const path, Flags const flags
           Uandle const object) -> void {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 1> handles{};
-    auto const encoded = ours_io::encode_open(
-        bytes, handles, ours_io::OpenRequest{.flags = flags, .path = path, .object = object});
+    auto const encoded = prot::io::encode_open(
+        bytes, handles, prot::io::OpenRequest{.flags = flags, .path = path, .object = object});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
 }
@@ -157,10 +278,19 @@ auto open(Uandle const directory, std::string_view const path, Flags const flags
 /// Writes ReadDirents(|txid|) on |directory|.
 auto request_dirents(Uandle const directory, u32 const txid) -> void {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_io::encode_read_dirents(
-        bytes, ours_io::ReadDirentsRequest{.txid = txid, .max_bytes = 512});
+    auto const encoded = prot::io::encode_read_dirents(
+        bytes, prot::io::ReadDirentsRequest{.txid = txid, .max_bytes = 512});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
+}
+
+/// Writes Read(|txid|, |count|) on the file connection |file|.
+auto request_read(Uandle const file, u32 const txid, u64 const count) -> void {
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const encoded =
+        prot::io::encode_read(bytes, prot::io::ReadRequest{.txid = txid, .count = count});
+    ASSERT_TRUE(encoded.is_ok());
+    write(file, encoded.unwrap());
 }
 
 /// Writes Clone(|object|) on |directory|.
@@ -168,7 +298,7 @@ auto clone(Uandle const directory, Uandle const object) -> void {
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<Uandle, 1> handles{};
     auto const encoded =
-        ours_io::encode_clone(bytes, handles, ours_io::CloneRequest{.request = object});
+        prot::io::encode_clone(bytes, handles, prot::io::CloneRequest{.request = object});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
 }
@@ -187,13 +317,29 @@ auto receive(Uandle const channel) -> std::optional<std::vector<u8>> {
     return std::vector<u8>(bytes.begin(), bytes.begin() + num_bytes);
 }
 
+/// The data of the Ok answer to Read(|txid|) that is waiting on |file|, as
+/// text; none when no message is, or when it is not that answer.
+auto read_reply(Uandle const file, u32 const txid) -> std::optional<std::string> {
+    auto const reply = receive(file);
+    if (!reply.has_value()) {
+        return std::nullopt;
+    }
+    auto const decoded =
+        prot::io::decode_read_reply(wire::Message{.bytes = *reply, .handles = {}}, txid);
+    if (decoded.is_err() || decoded.unwrap().status != Status::Ok) {
+        return std::nullopt;
+    }
+    auto const data = decoded.unwrap().data;
+    return std::string{data.begin(), data.end()};
+}
+
 /// Checks that the one message waiting on |directory| is the Ok answer to
 /// ReadDirents(|txid|).
 auto expect_dirents_reply(Uandle const directory, u32 const txid) -> void {
     auto const reply = receive(directory);
     ASSERT_TRUE(reply.has_value());
     auto const decoded =
-        ours_io::decode_read_dirents_reply(wire::Message{.bytes = *reply, .handles = {}}, txid);
+        prot::io::decode_read_dirents_reply(wire::Message{.bytes = *reply, .handles = {}}, txid);
     ASSERT_TRUE(decoded.is_ok());
     EXPECT_EQ(decoded.unwrap().status, Status::Ok);
     EXPECT_FALSE(decoded.unwrap().dirents.empty());
@@ -242,6 +388,7 @@ struct Storage {
 ///   /sub       a directory
 ///   /sub/nested  a service, NESTED_SERVICE
 ///   /mount     a Subtree node, MOUNT_VALUE
+///   /fs        a Handler node, FS_VALUE, answered by Fs
 class LoopServerTest: public testing::Test {
   protected:
     LoopServerTest() : m_storage(std::make_unique<Storage>()), m_tree(m_storage->nodes) {
@@ -255,9 +402,11 @@ class LoopServerTest: public testing::Test {
         // The tests find /sub/nested by its path, so its id is not kept.
         auto _ = m_tree.add_service(m_sub, "nested", NESTED_SERVICE).unwrap();
         m_mount = m_tree.add_subtree(m_root, "mount", MOUNT_VALUE).unwrap();
+        m_fs_node = m_tree.add_handler(m_root, "fs", FS_VALUE).unwrap();
 
         m_loop.emplace(port, m_slots);
-        m_server.emplace(m_tree, *m_loop, syscalls(), memory(), &m_calls);
+        m_server.emplace(m_tree, *m_loop, syscalls(), memory(), &m_calls, &m_fs);
+        m_fs.server = &*m_server;
     }
 
     static auto syscalls() -> ioservice::Syscalls {
@@ -282,6 +431,10 @@ class LoopServerTest: public testing::Test {
         return m_calls;
     }
 
+    auto fs() -> Fs & {
+        return m_fs;
+    }
+
     auto tree() -> ioservice::Tree & {
         return m_tree;
     }
@@ -299,7 +452,7 @@ class LoopServerTest: public testing::Test {
     /// directory: the client end first.
     auto serve_root() -> std::array<Uandle, 2> {
         auto const ends = channel();
-        EXPECT_EQ(server().serve(ends[1], m_root, ours_io::R_STAR_DIR), Status::Ok);
+        EXPECT_EQ(server().serve(ends[1], m_root, prot::io::R_STAR_DIR), Status::Ok);
         return ends;
     }
 
@@ -312,6 +465,7 @@ class LoopServerTest: public testing::Test {
     ioservice::NodeId m_echo = {};
     ioservice::NodeId m_sub = {};
     ioservice::NodeId m_mount = {};
+    ioservice::NodeId m_fs_node = {};
 
   private:
     std::array<loop::Slot, 8> m_slots{};
@@ -320,14 +474,15 @@ class LoopServerTest: public testing::Test {
     std::optional<loop::Loop> m_loop;
     std::optional<ioservice::LoopServer> m_server;
     Calls m_calls;
+    Fs m_fs;
 };
 
 TEST_F(LoopServerTest, ServeRefusals) {
-    EXPECT_EQ(server().serve(Uandle::Invalid, m_root, ours_io::R_STAR_DIR), Status::InvArgs);
+    EXPECT_EQ(server().serve(Uandle::Invalid, m_root, prot::io::R_STAR_DIR), Status::InvArgs);
 
     // A service is not a directory, and nothing is served.
     auto const [client, server_end] = channel();
-    EXPECT_EQ(server().serve(server_end, m_echo, ours_io::R_STAR_DIR), Status::NotDir);
+    EXPECT_EQ(server().serve(server_end, m_echo, prot::io::R_STAR_DIR), Status::NotDir);
     EXPECT_TRUE(fake::kernel().is_open(server_end));
 }
 
@@ -336,7 +491,7 @@ TEST_F(LoopServerTest, ServeRefusesPastItsConnections) {
         serve_root();
     }
     auto const [client, server_end] = channel();
-    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
+    EXPECT_EQ(server().serve(server_end, m_root, prot::io::R_STAR_DIR), Status::NoResource);
     // Refused, so still the caller's.
     EXPECT_TRUE(fake::kernel().is_open(server_end));
 }
@@ -378,7 +533,7 @@ class ConnectOnly final: public ioservice::LoopServer::Delegate {
 TEST_F(LoopServerTest, OpenThatWalksToASubtreeNodeReachesTheDelegateWithWhatItWasAskedFor) {
     auto const [directory, directory_server] = serve_root();
     auto const [client, object] = channel();
-    constexpr auto FLAGS = Flags::ProtocolDirectory | ours_io::PERM_READABLE;
+    constexpr auto FLAGS = Flags::ProtocolDirectory | prot::io::PERM_READABLE;
     open(directory, "mount/a/b", FLAGS, object);
     run();
 
@@ -400,7 +555,7 @@ TEST_F(LoopServerTest, OpenThatWalksToASubtreeNodeReachesTheDelegateWithWhatItWa
 TEST_F(LoopServerTest, TheRestIsDotWhenTheOpenNamesTheSubtreeNodeItself) {
     auto const [directory, directory_server] = serve_root();
     auto const [client, object] = channel();
-    open(directory, "mount", Flags::ProtocolDirectory | ours_io::PERM_READABLE, object);
+    open(directory, "mount", Flags::ProtocolDirectory | prot::io::PERM_READABLE, object);
     run();
 
     ASSERT_EQ(calls().subtrees.size(), 1u);
@@ -412,7 +567,7 @@ TEST_F(LoopServerTest, OpenOfASubtreeNodeMakesNoConnectionAndNoSlot) {
     // Many more Opens than there are connections: none takes one.
     for (auto count = usize{0}; count < 2 * CONNECTIONS; ++count) {
         auto const [client, object] = channel();
-        open(directory, "mount/x", ours_io::PERM_READABLE, object);
+        open(directory, "mount/x", prot::io::PERM_READABLE, object);
         run();
     }
     EXPECT_EQ(calls().subtrees.size(), 2 * CONNECTIONS);
@@ -423,13 +578,13 @@ TEST_F(LoopServerTest, OpenOfASubtreeNodeMakesNoConnectionAndNoSlot) {
         serve_root();
     }
     auto const [client, server_end] = channel();
-    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
+    EXPECT_EQ(server().serve(server_end, m_root, prot::io::R_STAR_DIR), Status::NoResource);
 }
 
 TEST_F(LoopServerTest, TheRestViewsTheRequestAndDoesNotLastPastTheCall) {
     auto const [directory, directory_server] = serve_root();
     auto const [client, first] = channel();
-    open(directory, "mount/abc", ours_io::PERM_READABLE, first);
+    open(directory, "mount/abc", prot::io::PERM_READABLE, first);
     run();
     ASSERT_EQ(calls().subtrees.size(), 1u);
 
@@ -444,7 +599,7 @@ TEST_F(LoopServerTest, TheRestViewsTheRequestAndDoesNotLastPastTheCall) {
 
     // The next request is read over it.
     auto const [other_client, second] = channel();
-    open(directory, "mount/XYZ", ours_io::PERM_READABLE, second);
+    open(directory, "mount/XYZ", prot::io::PERM_READABLE, second);
     run();
     EXPECT_EQ(viewed, "XYZ");
     EXPECT_EQ(calls().subtrees[0].rest, "abc");
@@ -454,7 +609,7 @@ TEST_F(LoopServerTest, TheRestViewsTheRequestAndDoesNotLastPastTheCall) {
 TEST_F(LoopServerTest, ADelegateThatParksAnOpenCanAnswerItLaterOnItsChannel) {
     auto const [directory, directory_server] = serve_root();
     auto const [client, object] = channel();
-    open(directory, "mount/parked", ours_io::PERM_READABLE, object);
+    open(directory, "mount/parked", prot::io::PERM_READABLE, object);
     run();
     ASSERT_EQ(calls().subtrees.size(), 1u);
 
@@ -483,7 +638,7 @@ TEST_F(LoopServerTest, ADelegateThatDoesNotOverrideSubtreeClosesTheChannel) {
     server().set_delegate(&connect_only);
     auto const [directory, directory_server] = serve_root();
     auto const [client, object] = channel();
-    open(directory, "mount/x", ours_io::PERM_READABLE, object);
+    open(directory, "mount/x", prot::io::PERM_READABLE, object);
     run();
 
     // Nobody else would: the server gave the channel away, and the default
@@ -497,7 +652,7 @@ TEST_F(LoopServerTest, OpenOfASubtreeNodeWithoutADelegateClosesItsChannel) {
     server().set_delegate(nullptr);
     auto const [directory, directory_server] = serve_root();
     auto const [client, object] = channel();
-    open(directory, "mount/x", ours_io::PERM_READABLE, object);
+    open(directory, "mount/x", prot::io::PERM_READABLE, object);
     run();
 
     EXPECT_FALSE(fake::kernel().is_open(object));
@@ -529,7 +684,7 @@ TEST_F(LoopServerTest, SubtreeOpensAreHandedOverInTheOrderTheyArrived) {
     for (auto const rest: {"one", "two", "three"}) {
         auto const [client, object] = channel();
         objects.push_back(object);
-        open(directory, std::string{"mount/"} + rest, ours_io::PERM_READABLE, object);
+        open(directory, std::string{"mount/"} + rest, prot::io::PERM_READABLE, object);
     }
     run();
 
@@ -665,8 +820,8 @@ TEST_F(LoopServerTest, OpenOfADirectoryMakesAConnectionOfItsOwn) {
 TEST_F(LoopServerTest, ReadDirentsIsAnsweredOnTheConnection) {
     auto const [directory, directory_server] = serve_root();
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_io::encode_read_dirents(
-        bytes, ours_io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
+    auto const encoded = prot::io::encode_read_dirents(
+        bytes, prot::io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
     run();
@@ -674,7 +829,7 @@ TEST_F(LoopServerTest, ReadDirentsIsAnsweredOnTheConnection) {
     auto const reply = receive(directory);
     ASSERT_TRUE(reply.has_value());
     auto const decoded =
-        ours_io::decode_read_dirents_reply(wire::Message{.bytes = *reply, .handles = {}}, 1);
+        prot::io::decode_read_dirents_reply(wire::Message{.bytes = *reply, .handles = {}}, 1);
     ASSERT_TRUE(decoded.is_ok());
     EXPECT_EQ(decoded.unwrap().status, Status::Ok);
     EXPECT_FALSE(decoded.unwrap().dirents.empty());
@@ -707,7 +862,7 @@ TEST_F(LoopServerTest, EachConnectionIsReachedThroughItsOwnBinding) {
 TEST_F(LoopServerTest, CloseIsAnsweredAndEndsTheConnection) {
     auto const [directory, directory_server] = serve_root();
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_io::encode_close(bytes, ours_io::CloseRequest{.txid = 1});
+    auto const encoded = prot::io::encode_close(bytes, prot::io::CloseRequest{.txid = 1});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
     run();
@@ -715,7 +870,7 @@ TEST_F(LoopServerTest, CloseIsAnsweredAndEndsTheConnection) {
     auto const reply = receive(directory);
     ASSERT_TRUE(reply.has_value());
     auto const decoded =
-        ours_io::decode_close_reply(wire::Message{.bytes = *reply, .handles = {}}, 1);
+        prot::io::decode_close_reply(wire::Message{.bytes = *reply, .handles = {}}, 1);
     ASSERT_TRUE(decoded.is_ok());
     EXPECT_EQ(decoded.unwrap().status, Status::Ok);
     EXPECT_FALSE(fake::kernel().is_open(directory_server));
@@ -738,8 +893,8 @@ TEST_F(LoopServerTest, MalformedMessageDropsTheConnection) {
 TEST_F(LoopServerTest, ReplyThatCannotBeWrittenIsReportedAndEndsTheConnection) {
     auto const [directory, directory_server] = serve_root();
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_io::encode_read_dirents(
-        bytes, ours_io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
+    auto const encoded = prot::io::encode_read_dirents(
+        bytes, prot::io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
     ASSERT_TRUE(encoded.is_ok());
     write(directory, encoded.unwrap());
     // The client goes away with its request still queued: the server reads
@@ -785,7 +940,7 @@ TEST_F(LoopServerTest, ConnectionIsReleasedWhenTheLoopCannotArmItsWaitAgain) {
         serve_root();
     }
     auto const [client, server_end] = channel();
-    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
+    EXPECT_EQ(server().serve(server_end, m_root, prot::io::R_STAR_DIR), Status::NoResource);
 }
 
 // Only the connection whose wait failed is released: the other, on the same
@@ -809,7 +964,7 @@ TEST_F(LoopServerTest, OnlyTheConnectionWhoseRearmFailedIsReleased) {
         serve_root();
     }
     auto const [client, server_end] = channel();
-    EXPECT_EQ(server().serve(server_end, m_root, ours_io::R_STAR_DIR), Status::NoResource);
+    EXPECT_EQ(server().serve(server_end, m_root, prot::io::R_STAR_DIR), Status::NoResource);
 }
 
 TEST_F(LoopServerTest, ConnectionsPastTheBindingsAreRefused) {
@@ -823,9 +978,9 @@ TEST_F(LoopServerTest, ConnectionsPastTheBindingsAreRefused) {
     auto small = ioservice::LoopServer(tree(), event_loop(), syscalls(), memory);
 
     auto const first = channel();
-    EXPECT_EQ(small.serve(first[1], m_root, ours_io::R_STAR_DIR), Status::Ok);
+    EXPECT_EQ(small.serve(first[1], m_root, prot::io::R_STAR_DIR), Status::Ok);
     auto const second = channel();
-    EXPECT_EQ(small.serve(second[1], m_root, ours_io::R_STAR_DIR), Status::NoResource);
+    EXPECT_EQ(small.serve(second[1], m_root, prot::io::R_STAR_DIR), Status::NoResource);
     // Refused, so still the caller's.
     EXPECT_TRUE(fake::kernel().is_open(second[1]));
 }
@@ -841,7 +996,7 @@ TEST_F(LoopServerTest, OpenThroughARemoteEntryIsForwardedOnItsChannel) {
 
     auto const ends = serve_root();
     auto const object = channel();
-    open(ends[0], "boot/bin/x", ours_io::PERM_READABLE, object[1]);
+    open(ends[0], "boot/bin/x", prot::io::PERM_READABLE, object[1]);
     run();
 
     // The Open arrived on the remote's end of the link, the rest of its path
@@ -854,13 +1009,13 @@ TEST_F(LoopServerTest, OpenThroughARemoteEntryIsForwardedOnItsChannel) {
                                  handles.data(), static_cast<u32>(bytes.size()),
                                  static_cast<u32>(handles.size()), &num_bytes, &num_handles),
               Status::Ok);
-    auto const forwarded = ours_io::decode_open(wire::Message{
+    auto const forwarded = prot::io::decode_open(wire::Message{
         .bytes = std::span{bytes}.first(num_bytes),
         .handles = std::span{handles}.first(num_handles),
     });
     ASSERT_TRUE(forwarded.is_ok());
     EXPECT_EQ(forwarded->path, "bin/x");
-    EXPECT_EQ(forwarded->flags, ours_io::PERM_READABLE);
+    EXPECT_EQ(forwarded->flags, prot::io::PERM_READABLE);
     EXPECT_EQ(forwarded->object, object[1]);
     // Nothing came back on the client's connection: forwarding keeps no
     // per-open state.
@@ -875,7 +1030,7 @@ TEST_F(LoopServerTest, ForwardToADeadRemoteConsumesTheOpen) {
 
     auto const ends = serve_root();
     auto const object = channel();
-    open(ends[0], "boot/x", ours_io::PERM_READABLE, object[1]);
+    open(ends[0], "boot/x", prot::io::PERM_READABLE, object[1]);
     run();
 
     // The failed write consumed the client's server end, so the client sees
@@ -883,5 +1038,465 @@ TEST_F(LoopServerTest, ForwardToADeadRemoteConsumesTheOpen) {
     // provider already does.
     EXPECT_FALSE(fake::kernel().is_open(object[1]));
     EXPECT_EQ(fake::kernel().queued_messages(ends[0]), 0U);
+}
+
+// --- a Handler node whose handler answers Pending -----------------------------------
+
+/// /fs opened through the root directory, the handler answering at once unless
+/// a test says otherwise. The Loop's slots are taken in the order the
+/// connections are made, which the keys below rely on: the root directory is
+/// slot 0, /fs slot 1, and the files opened below it slots 2 and up, all at
+/// generation 0.
+class PendingTest: public LoopServerTest {
+  protected:
+    static constexpr auto DIRECTORY_SLOT = u32{1};
+    static constexpr auto FIRST_FILE_SLOT = u32{2};
+
+    /// The two ends of a file connection.
+    struct Ends {
+        Uandle client;
+        Uandle server;
+    };
+
+    /// Serves the root directory and opens /fs through it: the handler's
+    /// directory, as a connection of its own.
+    auto open_fs() -> void {
+        m_root_client = serve_root()[0];
+        auto const [client, server_end] = channel();
+        open(m_root_client, "fs", Flags::ProtocolDirectory | prot::io::PERM_READABLE, server_end);
+        run();
+        m_dir_client = client;
+        m_dir_server = server_end;
+    }
+
+    /// Opens the file below /fs. The Open is one-way, so the caller may write on
+    /// the client end at once.
+    auto open_file() -> Ends {
+        auto const [client, server_end] = channel();
+        open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, server_end);
+        run();
+        return {client, server_end};
+    }
+
+    /// How many more connections the table takes: serves the root directory
+    /// until it is refused, and counts.
+    auto free_connections() -> usize {
+        auto count = usize{0};
+        for (;;) {
+            auto const [client, server_end] = channel();
+            if (server().serve(server_end, m_root, prot::io::R_STAR_DIR) != Status::Ok) {
+                return count;
+            }
+            ++count;
+        }
+    }
+
+    Uandle m_root_client = Uandle::Invalid;
+    Uandle m_dir_client = Uandle::Invalid;
+    Uandle m_dir_server = Uandle::Invalid;
+};
+
+TEST_F(PendingTest, APendingReadIsNotAnsweredNowAndCompleteAnswersIt) {
+    fs().pend_read = true;
+    open_fs();
+    auto const file = open_file();
+    request_read(file.client, 1, 4);
+    run();
+
+    // The handler was asked once, for what the Server has checked and keeps.
+    ASSERT_EQ(fs().reads.size(), 1u);
+    EXPECT_EQ(fs().reads[0].value, FS_VALUE);
+    EXPECT_EQ(fs().reads[0].cookie, FS_FILE);
+    EXPECT_EQ(fs().reads[0].offset, 0u);
+    EXPECT_EQ(fs().reads[0].count, 4u);
+    // Nothing is answered now, and the connection stays.
+    EXPECT_EQ(fake::kernel().queued_messages(file.client), 0u);
+    EXPECT_TRUE(fake::kernel().is_open(file.server));
+
+    // complete() writes the reply itself.
+    EXPECT_EQ(server().complete(fs().reads[0].ticket, read_of("0123")), Status::Ok);
+    EXPECT_EQ(fake::kernel().queued_messages(file.client), 1u);
+    EXPECT_EQ(read_reply(file.client, 1).value_or("<none>"), "0123");
+    run();
+    EXPECT_TRUE(fake::kernel().is_open(file.server));
+    EXPECT_TRUE(fs().releases.empty());
+    EXPECT_TRUE(calls().write_failures.empty());
+}
+
+TEST_F(PendingTest, ASecondRequestWrittenBehindAPendingOneIsServedAfterItAndRepliesComeInOrder) {
+    fs().pend_read = true;
+    open_fs();
+    auto const file = open_file();
+    request_read(file.client, 1, 4);
+    request_read(file.client, 2, 3);
+    run();
+
+    // Only the first was started. The second is in the channel, unread, and
+    // another turn of the Loop does not read it: a suspended slot waits on
+    // nothing.
+    ASSERT_EQ(fs().reads.size(), 1u);
+    EXPECT_EQ(fake::kernel().queued_messages(file.server), 1u);
+    run();
+    EXPECT_EQ(fs().reads.size(), 1u);
+    auto const first = fs().reads[0].ticket;
+
+    // The first is answered, and the second is not started inside complete():
+    // it starts when the Loop reads the connection again, with the offset the
+    // completed Read moved.
+    EXPECT_EQ(server().complete(first, read_of("0123")), Status::Ok);
+    EXPECT_EQ(fs().reads.size(), 1u);
+    run();
+    ASSERT_EQ(fs().reads.size(), 2u);
+    EXPECT_EQ(fs().reads[1].offset, 4u);
+    EXPECT_EQ(fs().reads[1].count, 3u);
+    EXPECT_NE(fs().reads[1].ticket, first);
+    EXPECT_EQ(server().complete(fs().reads[1].ticket, read_of("456")), Status::Ok);
+
+    // In the order they were sent.
+    EXPECT_EQ(read_reply(file.client, 1).value_or("<none>"), "0123");
+    EXPECT_EQ(read_reply(file.client, 2).value_or("<none>"), "456");
+}
+
+TEST_F(PendingTest, TwoPendingConnectionsAreCompletedInAnyOrderEachOnItsOwnChannel) {
+    fs().pend_read = true;
+    open_fs();
+    auto const first = open_file();
+    auto const second = open_file();
+    request_read(first.client, 1, 2);
+    request_read(second.client, 7, 3);
+    run();
+    ASSERT_EQ(fs().reads.size(), 2u);
+
+    // The later request is completed first. Its answer is on its own channel,
+    // under its own txid, and the other connection is still waiting.
+    EXPECT_EQ(server().complete(fs().reads[1].ticket, read_of("abc")), Status::Ok);
+    EXPECT_FALSE(read_reply(first.client, 1).has_value());
+    EXPECT_EQ(read_reply(second.client, 7).value_or("<none>"), "abc");
+    EXPECT_EQ(server().complete(fs().reads[0].ticket, read_of("de")), Status::Ok);
+    EXPECT_EQ(read_reply(first.client, 1).value_or("<none>"), "de");
+
+    // Each connection's slot was resumed with its own key: both go on.
+    request_read(first.client, 2, 1);
+    request_read(second.client, 8, 1);
+    run();
+    EXPECT_EQ(fs().reads.size(), 4u);
+}
+
+TEST_F(PendingTest, AnotherConnectionIsServedWhileOneIsPending) {
+    fs().pend_read = true;
+    open_fs();
+    auto const file = open_file();
+    request_read(file.client, 1, 4);
+    request_dirents(m_root_client, 5);
+    run();
+
+    // The root directory was answered while the file's Read waits.
+    expect_dirents_reply(m_root_client, 5);
+    ASSERT_EQ(fs().reads.size(), 1u);
+    EXPECT_EQ(fake::kernel().queued_messages(file.client), 0u);
+}
+
+TEST_F(PendingTest, AClientThatClosesWhilePendingGetsNoReplyAndIsReleasedByItsOwnCallback) {
+    fs().pend_read = true;
+    open_fs();
+    auto const file = open_file();
+    request_read(file.client, 1, 4);
+    run();
+    ASSERT_EQ(fs().reads.size(), 1u);
+    auto const ticket = fs().reads[0].ticket;
+    EXPECT_EQ(ours::handle_close(file.client), Status::Ok);
+    run();
+
+    // Nobody sees the client go: the slot is suspended, with no wait armed.
+    EXPECT_TRUE(fake::kernel().is_open(file.server));
+    EXPECT_TRUE(fs().releases.empty());
+
+    // The handler finishes, as it must; the write fails, the delegate is told,
+    // and complete() leaves the connection alone.
+    EXPECT_EQ(server().complete(ticket, read_of("0123")), Status::Ok);
+    EXPECT_EQ(calls().write_failures, std::vector<Status>{Status::PeerClosed});
+    EXPECT_TRUE(fake::kernel().is_open(file.server));
+    EXPECT_TRUE(fs().releases.empty());
+    // Its entry is still taken, so that no new connection can take its index
+    // while the old slot is in use: the table is the root's, /fs's, this one,
+    // and one more.
+    EXPECT_EQ(free_connections(), 1u);
+
+    // The resumed slot's own callback finds the peer closed and nothing to
+    // read, releases the connection, and the Loop closes the slot.
+    run();
+    EXPECT_FALSE(fake::kernel().is_open(file.server));
+    EXPECT_EQ(fs().releases, std::vector<u64>{FS_FILE});
+
+    // The ticket is spent, and so is the connection: nothing is touched.
+    EXPECT_EQ(server().complete(ticket, read_of("0123")), Status::NotFound);
+    EXPECT_EQ(fs().releases.size(), 1u);
+    EXPECT_EQ(calls().write_failures.size(), 1u);
+}
+
+TEST_F(PendingTest, AClientThatClosesWithAnotherRequestQueuedIsReleasedOnceAfterBothAreCompleted) {
+    fs().pend_read = true;
+    open_fs();
+    auto const file = open_file();
+    request_read(file.client, 1, 4);
+    request_read(file.client, 2, 3);
+    run();
+    EXPECT_EQ(ours::handle_close(file.client), Status::Ok);
+
+    EXPECT_EQ(server().complete(fs().reads[0].ticket, read_of("0123")), Status::Ok);
+    // The closed peer and the second request are both there when the slot is
+    // read again: the request is read, and started, though its reply has
+    // nowhere to go.
+    run();
+    ASSERT_EQ(fs().reads.size(), 2u);
+    EXPECT_TRUE(fs().releases.empty());
+    EXPECT_EQ(server().complete(fs().reads[1].ticket, read_of("456")), Status::Ok);
+    EXPECT_EQ(calls().write_failures.size(), 2u);
+    run();
+    EXPECT_FALSE(fake::kernel().is_open(file.server));
+    EXPECT_EQ(fs().releases, std::vector<u64>{FS_FILE});
+}
+
+TEST_F(PendingTest, ASpentOrMismatchedTicketIsRefusedAndWritesAndResumesNothing) {
+    fs().pend_read = true;
+    open_fs();
+    auto const file = open_file();
+    request_read(file.client, 1, 4);
+    run();
+    auto const ticket = fs().reads[0].ticket;
+    EXPECT_EQ(server().complete(ticket, read_of("0123")), Status::Ok);
+    EXPECT_EQ(read_reply(file.client, 1).value_or("<none>"), "0123");
+
+    // Spent: refused, and no second reply, whatever it says.
+    EXPECT_EQ(server().complete(ticket, read_of("zzzz")), Status::NotFound);
+    EXPECT_EQ(fake::kernel().queued_messages(file.client), 0u);
+
+    // A pending Read completed with another operation's result: refused, and
+    // the request is still pending, so the right result ends it.
+    request_read(file.client, 2, 2);
+    run();
+    ASSERT_EQ(fs().reads.size(), 2u);
+    EXPECT_EQ(server().complete(fs().reads[1].ticket,
+                                ioservice::EntriesResult{ustl::err(Status::NotSupported)}),
+              Status::InvArgs);
+    EXPECT_EQ(fake::kernel().queued_messages(file.client), 0u);
+    EXPECT_EQ(server().complete(fs().reads[1].ticket, read_of("45")), Status::Ok);
+    EXPECT_EQ(read_reply(file.client, 2).value_or("<none>"), "45");
+}
+
+TEST_F(PendingTest, CompleteSaysWhenTheSlotWasNotSuspended) {
+    fs().pend_read = true;
+    open_fs();
+    auto const file = open_file();
+    request_read(file.client, 1, 4);
+    run();
+
+    // Someone else resumed the slot of the connection that waits: it is armed.
+    // The Binding left it suspended, and nothing here resumes twice.
+    EXPECT_EQ(event_loop().resume(loop::Key{FIRST_FILE_SLOT, 0}), Status::Ok);
+    // The request is ended and answered all the same, and the program is told
+    // that the resume found the slot armed.
+    EXPECT_EQ(server().complete(fs().reads[0].ticket, read_of("0123")), Status::BadState);
+    EXPECT_EQ(read_reply(file.client, 1).value_or("<none>"), "0123");
+    request_read(file.client, 2, 1);
+    run();
+    EXPECT_EQ(fs().reads.size(), 2u);
+}
+
+TEST_F(PendingTest, ACompletionInsideTheCallThatGotTheTicketIsRefusedAndTheConnectionIsServed) {
+    // The one way complete() could run inside the Binding's own callback, where
+    // resume() answers BadState and Suspend would leave the connection stuck:
+    // the Server accepts a ticket only once the handler's call has returned
+    // Pending, so the call is refused and the handler answers Done.
+    fs().complete_inside = true;
+    fs().server = &server();
+    open_fs();
+    auto const file = open_file();
+    request_read(file.client, 1, 4);
+    run();
+
+    EXPECT_EQ(fs().completed_inside, Status::NotFound);
+    EXPECT_EQ(read_reply(file.client, 1).value_or("<none>"), "0123");
+    EXPECT_EQ(fake::kernel().queued_messages(file.client), 0u);
+    // Not left suspended: the next request is read.
+    request_read(file.client, 2, 2);
+    run();
+    EXPECT_EQ(read_reply(file.client, 2).value_or("<none>"), "45");
+}
+
+TEST_F(PendingTest, AResumeThatTheKernelRefusesReleasesTheConnectionAfterTheReplyIsOut) {
+    fs().pend_read = true;
+    open_fs();
+    auto const file = open_file();
+    request_read(file.client, 1, 4);
+    run();
+
+    // The next wait is the arm of resume(): the Loop frees the slot, closes the
+    // channel and tells the Binding, which releases the connection, all inside
+    // complete(). The reply was written before.
+    fake::kernel().fail_next_wait_async(Status::NoMemory);
+    EXPECT_EQ(server().complete(fs().reads[0].ticket, read_of("0123")), Status::Ok);
+    EXPECT_EQ(read_reply(file.client, 1).value_or("<none>"), "0123");
+    EXPECT_FALSE(fake::kernel().is_open(file.server));
+    EXPECT_EQ(fs().releases, std::vector<u64>{FS_FILE});
+    // Its entry is free: the table is the root's and /fs's, and two more.
+    EXPECT_EQ(free_connections(), 2u);
+}
+
+// --- a pending Open ---------------------------------------------------------------
+
+TEST_F(PendingTest,
+       APendingOpenSuspendsItsDirectoryConnectionAndTheNewConnectionIsMadeAtCompletion) {
+    open_fs();
+    fs().pend_open = true;
+    auto const [file_client, file_server] = channel();
+    open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, file_server);
+    // The object-to-be is written to at once, and a second Open waits behind
+    // the first on the directory.
+    request_read(file_client, 1, 4);
+    auto const [second_client, second_server] = channel();
+    open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, second_server);
+    run();
+
+    // opens[0] is the Open of /fs itself.
+    ASSERT_EQ(fs().opens.size(), 2u);
+    EXPECT_EQ(fs().opens[1].path, "file");
+    EXPECT_EQ(fs().opens[1].directory.is_some(), true);
+    // No connection yet: the Read is unread, the server end is held and
+    // nothing is written on it.
+    EXPECT_TRUE(fs().reads.empty());
+    EXPECT_EQ(fake::kernel().queued_messages(file_server), 1u);
+    EXPECT_TRUE(fake::kernel().is_open(file_server));
+    EXPECT_EQ(fake::kernel().queued_messages(file_client), 0u);
+    EXPECT_EQ(free_connections(), 2u);
+}
+
+TEST_F(PendingTest, ACompletedOpenMakesItsConnectionAndResumesTheDirectory) {
+    open_fs();
+    fs().pend_open = true;
+    auto const [file_client, file_server] = channel();
+    open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, file_server);
+    request_read(file_client, 1, 4);
+    auto const [second_client, second_server] = channel();
+    open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, second_server);
+    run();
+    ASSERT_EQ(fs().opens.size(), 2u);
+
+    EXPECT_EQ(
+        server().complete(fs().opens[1].ticket, Fs::open_result(ustl::some(FS_DIRECTORY), "file")),
+        Status::Ok);
+    // The connection is made on the Open's server end, and waits on it; the
+    // directory's slot is resumed, and the Open behind starts, which the
+    // handler again leaves pending.
+    run();
+    ASSERT_EQ(fs().reads.size(), 1u);
+    EXPECT_EQ(fs().reads[0].cookie, FS_FILE);
+    EXPECT_EQ(read_reply(file_client, 1).value_or("<none>"), "0123");
+    ASSERT_EQ(fs().opens.size(), 3u);
+    EXPECT_TRUE(fake::kernel().is_open(second_server));
+    EXPECT_TRUE(fs().releases.empty());
+    // root, /fs and the new file: one more fits.
+    EXPECT_EQ(free_connections(), 1u);
+}
+
+TEST_F(PendingTest, ARefusedPendingOpenIsAnsweredWithAnEpitaphAndNotReported) {
+    open_fs();
+    fs().pend_open = true;
+    auto const [file_client, file_server] = channel();
+    calls().watched = file_client;
+    open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, file_server);
+    run();
+    ASSERT_EQ(fs().opens.size(), 2u);
+
+    EXPECT_EQ(
+        server().complete(fs().opens[1].ticket, ioservice::OpenResult{ustl::err(Status::NotFound)}),
+        Status::Ok);
+    EXPECT_EQ(epitaph(file_client), Status::NotFound);
+    EXPECT_FALSE(fake::kernel().is_open(file_server));
+    // The Open's path is gone by now, so there is nothing to report.
+    EXPECT_TRUE(calls().refusals.empty());
+    // The directory's slot was resumed: the next Open on it is started.
+    auto const [other_client, other_server] = channel();
+    open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, other_server);
+    run();
+    EXPECT_EQ(fs().opens.size(), 3u);
+}
+
+TEST_F(PendingTest, AnOpenCompletedWhenTheTableIsFullIsRefusedAndTheCookieReleased) {
+    open_fs();
+    fs().pend_open = true;
+    auto const [file_client, file_server] = channel();
+    open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, file_server);
+    run();
+    ASSERT_EQ(fs().opens.size(), 2u);
+    // The table fills up while the Open waits: it needs its room at completion,
+    // not when it began.
+    EXPECT_EQ(free_connections(), 2u);
+
+    EXPECT_EQ(
+        server().complete(fs().opens[1].ticket, Fs::open_result(ustl::some(FS_DIRECTORY), "file")),
+        Status::Ok);
+    EXPECT_EQ(epitaph(file_client), Status::NoResource);
+    EXPECT_FALSE(fake::kernel().is_open(file_server));
+    EXPECT_EQ(fs().releases, std::vector<u64>{FS_FILE});
+}
+
+TEST_F(PendingTest, ClientThatClosedBeforeItsOpenCompletedIsReleasedOnceAtItsFirstTurn) {
+    open_fs();
+    fs().pend_open = true;
+    auto const [file_client, file_server] = channel();
+    open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, file_server);
+    run();
+    EXPECT_EQ(ours::handle_close(file_client), Status::Ok);
+
+    EXPECT_EQ(
+        server().complete(fs().opens[1].ticket, Fs::open_result(ustl::some(FS_DIRECTORY), "file")),
+        Status::Ok);
+    run();
+    EXPECT_FALSE(fake::kernel().is_open(file_server));
+    EXPECT_EQ(fs().releases, std::vector<u64>{FS_FILE});
+}
+
+// --- a connection that is read while it waits -----------------------------------------
+
+// Nothing in this library reads a suspended slot: these two resume the slot of
+// a connection that waits on its own, as a program that broke the rule would, and
+// check that nothing the Server held for the request is lost.
+
+TEST_F(PendingTest, AMessageForAPendingConnectionDropsItAndClosesTheOpensServerEnd) {
+    open_fs();
+    fs().pend_open = true;
+    auto const [file_client, file_server] = channel();
+    open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, file_server);
+    run();
+    ASSERT_EQ(fs().opens.size(), 2u);
+    EXPECT_TRUE(fake::kernel().is_open(file_server));
+
+    EXPECT_EQ(event_loop().resume(loop::Key{DIRECTORY_SLOT, 0}), Status::Ok);
+    request_dirents(m_dir_client, 3);
+    run();
+
+    // The directory connection went, and with it the server end it held.
+    EXPECT_FALSE(fake::kernel().is_open(m_dir_server));
+    EXPECT_FALSE(fake::kernel().is_open(file_server));
+    EXPECT_EQ(epitaph(file_client), Status::PeerClosed);
+    EXPECT_EQ(fs().releases, std::vector<u64>{FS_DIRECTORY});
+}
+
+TEST_F(PendingTest, ConnectionReleasedWhileItsOpenIsPendingClosesTheServerEndTheServerHeld) {
+    open_fs();
+    fs().pend_open = true;
+    auto const [file_client, file_server] = channel();
+    open(m_dir_client, "file", Flags::ProtocolFile | Flags::PermReadBytes, file_server);
+    run();
+    ASSERT_EQ(fs().opens.size(), 2u);
+
+    EXPECT_EQ(ours::handle_close(m_dir_client), Status::Ok);
+    EXPECT_EQ(event_loop().resume(loop::Key{DIRECTORY_SLOT, 0}), Status::Ok);
+    run();
+
+    EXPECT_FALSE(fake::kernel().is_open(m_dir_server));
+    EXPECT_FALSE(fake::kernel().is_open(file_server));
+    EXPECT_EQ(fs().releases, std::vector<u64>{FS_DIRECTORY});
 }
 } // namespace

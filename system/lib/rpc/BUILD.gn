@@ -1,0 +1,32 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+
+# The call pipeline under the typed clients: rpc::Channel, one per
+# connected channel, conducting send/wait/read and translating an epitaph
+# into the failure. Header-only; its body makes system calls, so a target
+# linking real behavior is read only in a user toolchain -- the codecs
+# above it stay host-clean (see //system/lib/wire, whose bytes-only
+# contract this preserves). The header itself compiles everywhere: the
+# host tests include it and answer the calls it makes through the fake
+# kernel.
+cpp_interface("headers") {
+  public = [ "include/rpc/rpc.hpp" ]
+  public_deps = [
+    "//system/public",
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host tests, over the fake kernel: the pipeline's own behaviors, driven
+# through one Channel against a stand-in provider.
+if (is_host_toolchain) {
+  group("tests") {
+    testonly = true
+    public_deps = [ "test:rpc($host_toolchain)" ]
+  }
+}

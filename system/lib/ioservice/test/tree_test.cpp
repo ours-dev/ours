@@ -6,6 +6,7 @@
 #include <ioservice/tree.hpp>
 
 #include <array>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -13,7 +14,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 
 namespace {
 using ioservice::NodeId;
@@ -51,11 +52,26 @@ auto children(Tree const &tree, NodeId const directory) -> std::vector<std::stri
     return names;
 }
 
+/// The id of |directory|'s child named |name|, over the public walk: the
+/// test's stand-in for find_child, which is private.
+auto child_named(Tree const &tree, NodeId const directory, std::string_view const name)
+    -> std::optional<NodeId> {
+    for (auto child = tree.first_child(directory); child.is_some();
+         child = tree.next_sibling(*child)) {
+        if (tree.name(*child) == name) {
+            return *child;
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
 TEST(IoserviceName, Valid) {
     for (auto const name: {"a", "bin", "...", ".hidden", "a b", "\xff"}) {
         EXPECT_TRUE(ioservice::is_valid_name(name)) << name;
     }
-    EXPECT_TRUE(ioservice::is_valid_name(std::string(ours_io::MAX_NAME_LENGTH, 'n')));
+    EXPECT_TRUE(ioservice::is_valid_name(std::string(prot::io::MAX_NAME_LENGTH, 'n')));
 }
 
 TEST(IoserviceName, Invalid) {
@@ -63,7 +79,7 @@ TEST(IoserviceName, Invalid) {
         EXPECT_FALSE(ioservice::is_valid_name(name)) << name;
     }
     EXPECT_FALSE(ioservice::is_valid_name(std::string_view{"a\0b", 3}));
-    EXPECT_FALSE(ioservice::is_valid_name(std::string(ours_io::MAX_NAME_LENGTH + 1, 'n')));
+    EXPECT_FALSE(ioservice::is_valid_name(std::string(prot::io::MAX_NAME_LENGTH + 1, 'n')));
 }
 
 TEST(IoservicePath, Valid) {
@@ -73,11 +89,11 @@ TEST(IoservicePath, Valid) {
     // MAX_PATH_LENGTH bytes, every segment a valid name.
     auto longest = std::string{};
     // Room is left for one more byte after the last '/'.
-    while (longest.size() + 3 <= ours_io::MAX_PATH_LENGTH) {
+    while (longest.size() + 3 <= prot::io::MAX_PATH_LENGTH) {
         longest += "a/";
     }
-    longest += std::string(ours_io::MAX_PATH_LENGTH - longest.size(), 'a');
-    ASSERT_EQ(longest.size(), ours_io::MAX_PATH_LENGTH);
+    longest += std::string(prot::io::MAX_PATH_LENGTH - longest.size(), 'a');
+    ASSERT_EQ(longest.size(), prot::io::MAX_PATH_LENGTH);
     EXPECT_TRUE(ioservice::is_valid_path(longest));
     EXPECT_FALSE(ioservice::is_valid_path(longest + "a"));
 }
@@ -478,6 +494,229 @@ TEST_F(IoserviceSubtree, LookupWalksToASubtreeNodeButNotThroughIt) {
     EXPECT_EQ(refusal(m_tree.lookup(m_data, ".")), Status::NotDir);
 }
 
+// --- Handler nodes -------------------------------------------------------------------
+
+/// The tree the Handler node tests walk:
+///
+///   /                     root
+///     export/             a directory
+///       docs/             a directory
+///         readme          a file
+///       files             a Handler node, FILES_VALUE
+///       sub               a Subtree node, SUB_VALUE
+///     fs                  a Handler node, FS_VALUE
+///     mount/              a directory
+///       boot              a remote entry
+class IoserviceHandlerNode: public testing::Test {
+  protected:
+    /// The status |result| was refused with, or Ok when it was not.
+    template <typename T>
+    static auto refusal(ustl::Result<T, Status> const &result) -> Status {
+        if (result.is_ok()) {
+            return Status::Ok;
+        }
+        return result.unwrap_err();
+    }
+
+    /// What a walk came to; a test failure, and an empty answer, when it was
+    /// refused. unwrap() would trap, which ends the whole binary where a
+    /// failure should end one test.
+    [[nodiscard]]
+    auto walk(NodeId const directory, std::string_view const path) const -> ioservice::Resolved {
+        auto const resolved = m_tree.resolve(directory, path);
+        EXPECT_TRUE(resolved.is_ok()) << path;
+        if (resolved.is_err()) {
+            return {.node = NodeId{}, .rest = "<refused>"};
+        }
+        return resolved.unwrap();
+    }
+
+    /// The node |result| holds; a test failure, and the root's id, when it
+    /// holds none.
+    static auto held_node(ustl::Result<NodeId, Status> const &result) -> NodeId {
+        EXPECT_TRUE(result.is_ok());
+        if (result.is_err()) {
+            return NodeId{};
+        }
+        return result.unwrap();
+    }
+
+    static constexpr auto FS_VALUE = u64{0};
+    static constexpr auto FILES_VALUE = u64{0x1'0000'0007};
+    static constexpr auto SUB_VALUE = u64{5};
+
+    IoserviceHandlerNode() {
+        m_root = m_tree.add_root().unwrap();
+        m_export = m_tree.add_directory(m_root, "export").unwrap();
+        m_docs = m_tree.add_directory(m_export, "docs").unwrap();
+        m_readme = m_tree.add_file(m_docs, "readme", file("hi")).unwrap();
+        m_files = m_tree.add_handler(m_export, "files", FILES_VALUE).unwrap();
+        m_sub = m_tree.add_subtree(m_export, "sub", SUB_VALUE).unwrap();
+        m_fs = m_tree.add_handler(m_root, "fs", FS_VALUE).unwrap();
+        m_mount = m_tree.add_directory(m_root, "mount").unwrap();
+        m_boot = m_tree.add_remote(m_mount, "boot", ours::Uandle{0x1001}).unwrap();
+    }
+
+    std::array<ioservice::Node, 12> m_nodes{};
+    Tree m_tree{m_nodes};
+    NodeId m_root{};
+    NodeId m_export{};
+    NodeId m_docs{};
+    NodeId m_readme{};
+    NodeId m_files{};
+    NodeId m_sub{};
+    NodeId m_fs{};
+    NodeId m_mount{};
+    NodeId m_boot{};
+};
+
+TEST_F(IoserviceHandlerNode, AHandlerNodeIsAKindOfItsOwnThatHoldsAValue) {
+    EXPECT_EQ(held(m_tree.kind(m_files)), NodeKind::Handler);
+    EXPECT_EQ(m_tree.name(m_files), "files");
+    // The value is what the program chose, zero and a wide one included.
+    EXPECT_EQ(held(m_tree.handler(m_fs)), FS_VALUE);
+    EXPECT_EQ(held(m_tree.handler(m_files)), FILES_VALUE);
+
+    // It is no other kind, and the other kinds are not it.
+    EXPECT_TRUE(m_tree.subtree(m_files).is_none());
+    EXPECT_TRUE(m_tree.service(m_files).is_none());
+    EXPECT_TRUE(m_tree.file(m_files).is_none());
+    EXPECT_TRUE(m_tree.remote(m_files).is_none());
+    EXPECT_TRUE(m_tree.first_child(m_files).is_none());
+    EXPECT_TRUE(m_tree.handler(m_sub).is_none());
+    EXPECT_TRUE(m_tree.handler(m_readme).is_none());
+    EXPECT_TRUE(m_tree.handler(m_export).is_none());
+    EXPECT_TRUE(m_tree.handler(m_boot).is_none());
+    EXPECT_TRUE(m_tree.handler(NodeId{11}).is_none());
+    EXPECT_EQ(held(m_tree.subtree(m_sub)), SUB_VALUE);
+}
+
+TEST_F(IoserviceHandlerNode, AHandlerNodeIsListedWithItsSiblingsInNameOrder) {
+    EXPECT_EQ(children(m_tree, m_export), (std::vector<std::string_view>{"docs", "files", "sub"}));
+    EXPECT_EQ(children(m_tree, m_root), (std::vector<std::string_view>{"export", "fs", "mount"}));
+}
+
+TEST_F(IoserviceHandlerNode, NothingIsAddedBelowAHandlerNode) {
+    EXPECT_EQ(refusal(m_tree.add_directory(m_fs, "x")), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.add_file(m_fs, "x", file())), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.add_service(m_fs, "x", 1)), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.add_subtree(m_fs, "x", 1)), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.add_handler(m_fs, "x", 1)), Status::NotDir);
+}
+
+TEST_F(IoserviceHandlerNode, AddHandlerIsRefusedAsTheOtherAddersAre) {
+    EXPECT_EQ(refusal(m_tree.add_handler(m_export, "files", 1)), Status::AlreadyExists);
+    EXPECT_EQ(refusal(m_tree.add_handler(m_export, "docs", 1)), Status::AlreadyExists);
+    EXPECT_EQ(refusal(m_tree.add_handler(m_export, "sub", 1)), Status::AlreadyExists);
+    EXPECT_EQ(refusal(m_tree.add_handler(m_readme, "x", 1)), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.add_handler(NodeId{11}, "x", 1)), Status::InvArgs);
+    for (auto const name: {"", ".", "..", "a/b"}) {
+        EXPECT_EQ(refusal(m_tree.add_handler(m_export, name, 1)), Status::InvArgs) << name;
+    }
+
+    // Refusals take no storage: the three nodes left are all there.
+    EXPECT_EQ(m_tree.available(), 3u);
+    for (auto const name: {"a", "b", "c"}) {
+        EXPECT_TRUE(m_tree.add_handler(m_export, name, 1).is_ok()) << name;
+    }
+    EXPECT_EQ(refusal(m_tree.add_handler(m_export, "d", 1)), Status::NoResource);
+}
+
+TEST_F(IoserviceHandlerNode, ResolveStopsAtAHandlerNodeAndReturnsTheRestOfThePath) {
+    // The path ends on the node: "." says so, so that the handler opens its
+    // own root.
+    auto const itself = m_tree.resolve(m_root, "fs");
+    ASSERT_TRUE(itself.is_ok());
+    EXPECT_EQ(itself->node, m_fs);
+    EXPECT_EQ(itself->rest, ".");
+
+    auto const one = m_tree.resolve(m_root, "fs/x");
+    ASSERT_TRUE(one.is_ok());
+    EXPECT_EQ(one->node, m_fs);
+    EXPECT_EQ(one->rest, "x");
+    auto const several = m_tree.resolve(m_root, "export/files/sub/dir/file.txt");
+    ASSERT_TRUE(several.is_ok());
+    EXPECT_EQ(several->node, m_files);
+    EXPECT_EQ(several->rest, "sub/dir/file.txt");
+
+    // From a directory further down.
+    auto const below = m_tree.resolve(m_export, "files/a/b");
+    ASSERT_TRUE(below.is_ok());
+    EXPECT_EQ(below->node, m_files);
+    EXPECT_EQ(below->rest, "a/b");
+    auto const from_export = m_tree.resolve(m_export, "files");
+    ASSERT_TRUE(from_export.is_ok());
+    EXPECT_EQ(from_export->node, m_files);
+    EXPECT_EQ(from_export->rest, ".");
+}
+
+TEST_F(IoserviceHandlerNode, TheRestIsAViewOfThePathItCameFrom) {
+    auto const path = std::string_view{"export/files/sub/dir"};
+    auto const resolved = m_tree.resolve(m_root, path);
+    ASSERT_TRUE(resolved.is_ok());
+    EXPECT_EQ(resolved->rest.data(), path.data() + std::string_view{"export/files/"}.size());
+    EXPECT_EQ(resolved->rest.size(), std::string_view{"sub/dir"}.size());
+}
+
+TEST_F(IoserviceHandlerNode, NoSegmentAfterAHandlerNodeIsLookedAt) {
+    for (auto const path: {"fs/nope", "fs/a/b/c", "export/files/x/y/z/w"}) {
+        auto const resolved = m_tree.resolve(m_root, path);
+        ASSERT_TRUE(resolved.is_ok()) << path;
+        EXPECT_EQ(held(m_tree.kind(resolved->node)), NodeKind::Handler) << path;
+    }
+    // The same names under a directory are not there.
+    EXPECT_EQ(refusal(m_tree.resolve(m_root, "export/docs/nope")), Status::NotFound);
+}
+
+TEST_F(IoserviceHandlerNode, AWalkStopsAtTheFirstNodeThatIsNotThisTrees) {
+    // A Handler node, a Subtree node and a remote entry side by side: each
+    // walk stops at its own, and what follows is not matched against the
+    // others' names.
+    EXPECT_EQ(walk(m_root, "export/sub/q").node, m_sub);
+    EXPECT_EQ(walk(m_root, "export/sub/q").rest, "q");
+    EXPECT_EQ(walk(m_root, "export/files/sub/q").node, m_files);
+    EXPECT_EQ(walk(m_root, "export/files/sub/q").rest, "sub/q");
+    EXPECT_EQ(walk(m_root, "mount/boot/fs").node, m_boot);
+    EXPECT_EQ(walk(m_root, "mount/boot/fs").rest, "fs");
+    EXPECT_EQ(walk(m_root, "fs/export/files").node, m_fs);
+    EXPECT_EQ(walk(m_root, "fs/export/files").rest, "export/files");
+}
+
+TEST_F(IoserviceHandlerNode, AWalkThatMeetsNoHandlerNodeEndsWhereLookupDoesWithNothingLeft) {
+    for (auto const [directory, path, node]: {
+             std::tuple{m_root, ".", m_root},
+             std::tuple{m_root, "export", m_export},
+             std::tuple{m_root, "export/docs/readme", m_readme},
+             std::tuple{m_docs, "readme", m_readme},
+         }) {
+        auto const resolved = m_tree.resolve(directory, path);
+        ASSERT_TRUE(resolved.is_ok()) << path;
+        EXPECT_EQ(resolved->node, node) << path;
+        EXPECT_TRUE(resolved->rest.empty()) << path;
+    }
+}
+
+TEST_F(IoserviceHandlerNode, ResolveRefusesAsLookupDoesUpToTheNode) {
+    EXPECT_EQ(refusal(m_tree.resolve(m_root, "nope")), Status::NotFound);
+    EXPECT_EQ(refusal(m_tree.resolve(m_root, "export/nope/files")), Status::NotFound);
+    EXPECT_EQ(refusal(m_tree.resolve(m_root, "export/docs/readme/x")), Status::NotDir);
+    for (auto const path: {"/fs", "fs/", "fs//x", "fs/../x", "fs/./x", ""}) {
+        EXPECT_EQ(refusal(m_tree.resolve(m_root, path)), Status::BadPath) << path;
+    }
+    // A Handler node is no place to start a walk from.
+    EXPECT_EQ(refusal(m_tree.resolve(m_fs, ".")), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.resolve(m_fs, "x")), Status::NotDir);
+}
+
+TEST_F(IoserviceHandlerNode, LookupWalksToAHandlerNodeButNotThroughIt) {
+    EXPECT_EQ(refusal(m_tree.lookup(m_root, "fs")), Status::Ok);
+    EXPECT_EQ(held_node(m_tree.lookup(m_root, "fs")), m_fs);
+    EXPECT_EQ(held_node(m_tree.lookup(m_export, "files")), m_files);
+    EXPECT_EQ(refusal(m_tree.lookup(m_root, "fs/x")), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.lookup(m_root, "export/files/x/y")), Status::NotDir);
+    EXPECT_EQ(refusal(m_tree.lookup(m_fs, ".")), Status::NotDir);
+}
+
 // --- printable_path ---------------------------------------------------------------
 
 TEST(IoservicePrintablePath, APrintablePathComesBackAsItWas) {
@@ -513,4 +752,73 @@ TEST(IoservicePrintablePath, ABufferTooSmallForTheEllipsisIsJustCut) {
     auto none = std::array<char, 0>{};
     EXPECT_EQ(ioservice::printable_path("abcdef", none), "");
 }
+
+/// remove_service: the device registry's hot-unplug primitive. The cases
+/// pin what the tree promises after a removal -- the node unlinked from its
+/// directory's list, lookups missing it, the slot retired rather than
+/// reused, directories untouchable -- and what it refuses.
+namespace {
+/// A small tree for the removal cases: root, a class directory, and two
+/// services in it, the shape the device registry lays out.
+auto removal_tree(Tree &tree) -> NodeId {
+    auto root = tree.add_root();
+    EXPECT_TRUE(root.is_ok());
+    auto block = tree.add_directory(*root, "block");
+    EXPECT_TRUE(block.is_ok());
+    auto first = tree.add_service(*block, "000", 1);
+    EXPECT_TRUE(first.is_ok());
+    auto second = tree.add_service(*block, "001", 2);
+    EXPECT_TRUE(second.is_ok());
+    return *block;
+}
 } // namespace
+
+TEST(IoserviceTree, RemoveServiceUnlinksIt) {
+    auto nodes = std::array<ioservice::Node, 8>{};
+    auto tree = Tree{nodes};
+    auto const block = removal_tree(tree);
+
+    auto const first = *child_named(tree, block, "000");
+    EXPECT_EQ(tree.remove_service(first), Status::Ok);
+    EXPECT_EQ(children(tree, block), std::vector<std::string_view>{"001"});
+    // The lookups miss, and the walk stops at the directory.
+    EXPECT_EQ(child_named(tree, block, "000"), std::nullopt);
+    EXPECT_TRUE(tree.resolve(block, "000").is_err());
+}
+
+TEST(IoserviceTree, RemoveServiceRetiresTheSlot) {
+    auto nodes = std::array<ioservice::Node, 8>{};
+    auto tree = Tree{nodes};
+    auto const block = removal_tree(tree);
+    auto const first = *child_named(tree, block, "000");
+    auto const room_before = tree.available();
+
+    EXPECT_EQ(tree.remove_service(first), Status::Ok);
+    // The slot is retired, not reused: the room is unchanged, and a later
+    // add spends fresh storage on new nodes, never on the retired id.
+    EXPECT_EQ(tree.available(), room_before);
+    // And a fresh add lands after the survivors, not in the retired slot:
+    // the children keep their order and the retired id never renames.
+    EXPECT_EQ(tree.add_service(block, "002", 3).is_ok(), true);
+    EXPECT_EQ(children(tree, block), std::vector<std::string_view>({"001", "002"}));
+    EXPECT_FALSE(tree.service(first).is_some());
+}
+
+TEST(IoserviceTree, RemoveServiceRefusals) {
+    auto nodes = std::array<ioservice::Node, 8>{};
+    auto tree = Tree{nodes};
+    auto const block = removal_tree(tree);
+    auto const root = NodeId{0};
+
+    // A directory stays for the tree's life.
+    EXPECT_EQ(tree.remove_service(block), Status::InvArgs);
+    // An id that is not a node of this tree.
+    EXPECT_EQ(tree.remove_service(NodeId{0x7FFF'0000}), Status::NotFound);
+    // Removing twice: the first unlink is the only one, and the second
+    // names a retired node -- refused as not-a-service, not NotFound.
+    auto const first = *child_named(tree, block, "000");
+    EXPECT_EQ(tree.remove_service(first), Status::Ok);
+    EXPECT_EQ(tree.remove_service(first), Status::InvArgs);
+    // The root is a directory like any other.
+    EXPECT_EQ(tree.remove_service(root), Status::InvArgs);
+}

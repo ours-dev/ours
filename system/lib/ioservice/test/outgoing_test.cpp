@@ -13,7 +13,11 @@
 // with the protocols, and what it refuses. And a Subtree node at a declared
 // path (add_subtree()): the Open it hands to the program's handler with the
 // rest of the path and the flags, what is checked before that, the table it
-// shares with the protocols and the service nodes, and what it refuses.
+// shares with the protocols and the service nodes, and what it refuses. And a
+// Handler node at a declared path (add_handler()): the NodeHandler an Open
+// reaches and every request on the connection it makes, the value each node is
+// told, the table all four kinds of handler share, what it refuses, and
+// complete() ending a request the handler answered Pending.
 #include <ioservice/outgoing.hpp>
 
 #include <array>
@@ -32,7 +36,7 @@
 #include <ours/port.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <wire/wire.hpp>
 
 // How gtest prints a status in a failure: by name, found by argument-
@@ -49,7 +53,7 @@ namespace {
 using ioservice::NodeId;
 using ours::Status;
 using ours::Uandle;
-using ours_io::Flags;
+using prot::io::Flags;
 
 constexpr auto ECHO = std::string_view{"ours.test.Echo"};
 constexpr auto OTHER = std::string_view{"ours.test.Other"};
@@ -58,7 +62,7 @@ constexpr auto OTHER = std::string_view{"ours.test.Other"};
 /// the protocol bit that makes a file or a service answer NotDir. The root
 /// writes this, with the declared path and the joined subdir, for each
 /// directory use that routes to a provider.
-constexpr auto READABLE_DIRECTORY = Flags::ProtocolDirectory | ours_io::PERM_READABLE;
+constexpr auto READABLE_DIRECTORY = Flags::ProtocolDirectory | prot::io::PERM_READABLE;
 
 /// The tests use the decided sizes as numbers, not through the constants, so
 /// that a constant changed by mistake fails them instead of moving them.
@@ -124,6 +128,95 @@ class SubtreeCalls final: public ioservice::SubtreeHandler {
     }
 };
 
+/// A NodeHandler serving, for every Open it is asked, a directory (cookie
+/// DIRECTORY_COOKIE) or, for the path "file", a file (FILE_COOKIE). It keeps
+/// what each call brought, in order, and the value it was told, so that a test
+/// can say which node a call was for; a Read it answers Pending when |pend_read|
+/// says so, and the test ends it with Outgoing::complete().
+class NodeCalls final: public ioservice::NodeHandler {
+  public:
+    static constexpr auto DIRECTORY_COOKIE = u64{1};
+    static constexpr auto FILE_COOKIE = u64{2};
+    /// What clone() adds to the cookie, so that the new connection's differs.
+    static constexpr auto CLONE_OFFSET = u64{100};
+
+    struct Open {
+        u64 value;
+        ustl::Option<u64> directory;
+        std::string path;
+        Flags flags;
+    };
+
+    struct Read {
+        u64 value;
+        u64 cookie;
+        u64 offset;
+        u64 count;
+        ioservice::Ticket ticket;
+    };
+
+    struct Pair {
+        u64 value;
+        u64 cookie;
+    };
+
+    bool pend_read = false;
+
+    std::vector<Open> opens;
+    std::vector<Read> reads;
+    std::vector<Pair> listings;
+    std::vector<Pair> vmos;
+    std::vector<Pair> clones;
+    std::vector<Pair> releases;
+
+    auto open(u64 const value, ustl::Option<u64> const directory, std::string_view const path,
+              Flags const flags, ioservice::Ticket)
+        -> ioservice::Answer<ioservice::OpenResult> override {
+        opens.push_back({value, directory, std::string{path}, flags});
+        auto kind = ioservice::ObjectKind::Directory;
+        auto cookie = DIRECTORY_COOKIE;
+        if (path == "file") {
+            kind = ioservice::ObjectKind::File;
+            cookie = FILE_COOKIE;
+        }
+        return ioservice::Done<ioservice::OpenResult>{ustl::ok(ioservice::Opened{kind, cookie})};
+    }
+
+    auto read(u64 const value, u64 const cookie, u64 const offset, u64 const count,
+              ioservice::Ticket const ticket) -> ioservice::Answer<ioservice::ReadResult> override {
+        reads.push_back({value, cookie, offset, count, ticket});
+        if (pend_read) {
+            return ioservice::Pending{ticket};
+        }
+        return ioservice::Done<ioservice::ReadResult>{ustl::ok(std::span<u8 const>{DATA})};
+    }
+
+    auto read_dirents(u64 const value, u64 const cookie, u64, u64, ioservice::Ticket)
+        -> ioservice::Answer<ioservice::EntriesResult> override {
+        listings.push_back({value, cookie});
+        return ioservice::Done<ioservice::EntriesResult>{
+            ustl::ok(ioservice::Entries{.dirents = {}, .next = 0})};
+    }
+
+    auto get_backing_memory(u64 const value, u64 const cookie, prot::io::VmoFlags,
+                            ioservice::Ticket) -> ioservice::Answer<ioservice::VmoResult> override {
+        vmos.push_back({value, cookie});
+        return ioservice::Done<ioservice::VmoResult>{ustl::err(Status::NotSupported)};
+    }
+
+    auto clone(u64 const value, u64 const cookie) -> ustl::Result<u64, Status> override {
+        clones.push_back({value, cookie});
+        return ustl::ok(cookie + CLONE_OFFSET);
+    }
+
+    auto release(u64 const value, u64 const cookie) -> void override {
+        releases.push_back({value, cookie});
+    }
+
+    /// What a Read that is answered at once returns.
+    static constexpr auto DATA = std::array<u8, 7>{'h', 'a', 'n', 'd', 'l', 'e', 'r'};
+};
+
 /// A fresh fake kernel, a Loop on it, and an Outgoing on the Loop, with its
 /// storage, which is too large for the stack.
 class OutgoingTest: public testing::Test {
@@ -175,8 +268,8 @@ class OutgoingTest: public testing::Test {
                      Uandle const object) -> void {
         std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
         std::array<Uandle, 1> handles{};
-        auto const encoded = ours_io::encode_open(
-            bytes, handles, ours_io::OpenRequest{.flags = flags, .path = path, .object = object});
+        auto const encoded = prot::io::encode_open(
+            bytes, handles, prot::io::OpenRequest{.flags = flags, .path = path, .object = object});
         ASSERT_TRUE(encoded.is_ok());
         auto const message = encoded.unwrap();
         EXPECT_EQ(ours::channel_write(directory, ours::ChannelWriteOptions::None,
@@ -238,7 +331,7 @@ class OutgoingTest: public testing::Test {
     auto read_all(Uandle const file, u64 const count) -> std::optional<std::string> {
         std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
         auto const encoded =
-            ours_io::encode_read(bytes, ours_io::ReadRequest{.txid = 1, .count = count});
+            prot::io::encode_read(bytes, prot::io::ReadRequest{.txid = 1, .count = count});
         EXPECT_TRUE(encoded.is_ok());
         if (encoded.is_err()) {
             return std::nullopt;
@@ -257,7 +350,7 @@ class OutgoingTest: public testing::Test {
                                &num_handles) != Status::Ok) {
             return std::nullopt;
         }
-        auto const decoded = ours_io::decode_read_reply(
+        auto const decoded = prot::io::decode_read_reply(
             wire::Message{.bytes = std::span{reply}.first(num_bytes), .handles = {}}, 1);
         if (decoded.is_err() || decoded.unwrap().status != Status::Ok) {
             return std::nullopt;
@@ -557,11 +650,11 @@ TEST_F(OutgoingTest, AddDirectoryRefusesAPathThatIsNotValid) {
     // One byte past what a path may be, in segments that are each a valid
     // name, so that the length is what is wrong with it.
     auto too_long = std::string{};
-    while (too_long.size() <= ours_io::MAX_PATH_LENGTH) {
+    while (too_long.size() <= prot::io::MAX_PATH_LENGTH) {
         too_long += "/a";
     }
     auto const long_path = keep(too_long);
-    auto const long_name = keep("/" + std::string(ours_io::MAX_NAME_LENGTH + 1, 'x'));
+    auto const long_name = keep("/" + std::string(prot::io::MAX_NAME_LENGTH + 1, 'x'));
     auto const refused = std::vector<std::string_view>{
         // Not absolute, or nothing below the root.
         "",
@@ -763,7 +856,7 @@ TEST_F(OutgoingTest, AnOpenWithRightsBeyondTheConnectionsIsAccessDenied) {
     // the first Open, for the entry, is the route's own check: this asks for
     // what a use of w* would, and the directory serves it.
     EXPECT_EQ(
-        open_through(directory, "export/data", Flags::ProtocolDirectory | ours_io::PERM_WRITABLE)
+        open_through(directory, "export/data", Flags::ProtocolDirectory | prot::io::PERM_WRITABLE)
             .status,
         Status::Ok);
 }
@@ -1376,8 +1469,8 @@ TEST_F(OutgoingTest, ASubtreeNodeIsListedAsADirectoryNextToItsSiblings) {
     auto const export_dir = open_through(directory, "export", READABLE_DIRECTORY);
     ASSERT_EQ(export_dir.status, Status::Ok);
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
-    auto const encoded = ours_io::encode_read_dirents(
-        bytes, ours_io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
+    auto const encoded = prot::io::encode_read_dirents(
+        bytes, prot::io::ReadDirentsRequest{.txid = 1, .max_bytes = 512});
     ASSERT_TRUE(encoded.is_ok());
     EXPECT_EQ(ours::channel_write(export_dir.client, ours::ChannelWriteOptions::None,
                                   encoded.unwrap().bytes.data(),
@@ -1391,21 +1484,21 @@ TEST_F(OutgoingTest, ASubtreeNodeIsListedAsADirectoryNextToItsSiblings) {
                                  nullptr, static_cast<u32>(reply.size()), 0, &num_bytes,
                                  &num_handles),
               Status::Ok);
-    auto const decoded = ours_io::decode_read_dirents_reply(
+    auto const decoded = prot::io::decode_read_dirents_reply(
         wire::Message{.bytes = std::span{reply}.first(num_bytes), .handles = {}}, 1);
     ASSERT_TRUE(decoded.is_ok());
     ASSERT_EQ(decoded.unwrap().status, Status::Ok);
     auto names = std::vector<std::string>{};
-    auto types = std::vector<ours_io::DirentType>{};
-    auto reader = ours_io::DirentReader(decoded.unwrap().dirents);
+    auto types = std::vector<prot::io::DirentType>{};
+    auto reader = prot::io::DirentReader(decoded.unwrap().dirents);
     for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
         names.emplace_back(next.unwrap().value().name);
         types.push_back(next.unwrap().value().type);
     }
     EXPECT_EQ(names, (std::vector<std::string>{".", "data", "live"}));
-    EXPECT_EQ(types, (std::vector<ours_io::DirentType>{ours_io::DirentType::Directory,
-                                                       ours_io::DirentType::Directory,
-                                                       ours_io::DirentType::Directory}));
+    EXPECT_EQ(types, (std::vector<prot::io::DirentType>{prot::io::DirentType::Directory,
+                                                        prot::io::DirentType::Directory,
+                                                        prot::io::DirentType::Directory}));
 }
 
 TEST_F(OutgoingTest, AddSubtreeRefusesAPathThatIsNotValid) {
@@ -1563,6 +1656,7 @@ enum class Kind : u8 {
     Protocol,
     Service,
     Subtree,
+    Handler,
 };
 
 /// A table filled in the order |kinds| gives, one place each.
@@ -1575,6 +1669,7 @@ class MixedTable: public OutgoingTest {
         constexpr auto COUNT = DECIDED_HANDLERS;
         std::array<Calls, COUNT> connect_handlers;
         std::array<SubtreeCalls, COUNT> subtree_handlers;
+        std::array<NodeCalls, COUNT> node_handlers;
         auto const data = outgoing().add_directory("/export/data").unwrap();
         auto paths = std::vector<std::string>{};
         for (auto index = usize{0}; index < COUNT; ++index) {
@@ -1598,42 +1693,63 @@ class MixedTable: public OutgoingTest {
                         << index;
                     paths.push_back("m" + std::to_string(index) + "/rest");
                     break;
+                case Kind::Handler:
+                    ASSERT_TRUE(
+                        outgoing()
+                            .add_handler(keep("/h" + std::to_string(index)), node_handlers[index])
+                            .is_ok())
+                        << index;
+                    paths.push_back("h" + std::to_string(index) + "/rest");
+                    break;
             }
         }
 
         // The ninth, of each kind, whichever the eight were.
         Calls extra;
         SubtreeCalls extra_subtree;
+        NodeCalls extra_node;
         EXPECT_EQ(outgoing().add_protocol("extra", extra), Status::NoResource);
         EXPECT_EQ(refusal(outgoing().add_service(data, "extra", extra)), Status::NoResource);
         EXPECT_EQ(refusal(outgoing().add_subtree("/extra", extra_subtree)), Status::NoResource);
+        EXPECT_EQ(refusal(outgoing().add_handler("/extra", extra_node)), Status::NoResource);
 
         auto const directory = serve();
         for (auto index = usize{0}; index < COUNT; ++index) {
-            auto const flags =
-                (kinds[index] == Kind::Subtree) ? READABLE_DIRECTORY : Flags::ProtocolService;
+            auto const flags = (kinds[index] == Kind::Subtree || kinds[index] == Kind::Handler)
+                                   ? READABLE_DIRECTORY
+                                   : Flags::ProtocolService;
             auto const opened = open_through(directory, paths[index], flags);
             ASSERT_EQ(opened.status, Status::Ok) << paths[index];
             // Each Open reaches the handler of its own place and no other.
             for (auto other = usize{0}; other < COUNT; ++other) {
-                auto const reached = (other <= index);
+                auto const wanted = (other <= index) ? 1u : 0u;
                 if (kinds[other] == Kind::Subtree) {
-                    EXPECT_EQ(subtree_handlers[other].opens.size(), reached ? 1u : 0u)
+                    EXPECT_EQ(subtree_handlers[other].opens.size(), wanted)
                         << index << " " << other;
+                } else if (kinds[other] == Kind::Handler) {
+                    EXPECT_EQ(node_handlers[other].opens.size(), wanted) << index << " " << other;
                 } else {
-                    EXPECT_EQ(connect_handlers[other].channels.size(), reached ? 1u : 0u)
+                    EXPECT_EQ(connect_handlers[other].channels.size(), wanted)
                         << index << " " << other;
                 }
             }
             if (kinds[index] == Kind::Subtree) {
                 EXPECT_EQ(subtree_handlers[index].opens[0].channel, opened.server);
                 EXPECT_EQ(subtree_handlers[index].opens[0].rest, "rest");
+            } else if (kinds[index] == Kind::Handler) {
+                // The handler is asked to open what is left of the path, and
+                // the Open's channel is now a connection of the server's: the
+                // handler never sees it.
+                EXPECT_EQ(node_handlers[index].opens[0].path, "rest");
+                EXPECT_TRUE(node_handlers[index].opens[0].directory.is_none());
+                EXPECT_TRUE(fake::kernel().is_open(opened.server));
             } else {
                 EXPECT_EQ(connect_handlers[index].channels[0], opened.server);
             }
         }
         EXPECT_TRUE(extra.channels.empty());
         EXPECT_TRUE(extra_subtree.opens.empty());
+        EXPECT_TRUE(extra_node.opens.empty());
     }
 };
 
@@ -1655,6 +1771,31 @@ TEST_F(MixedTable, ServiceNodesAndSubtreesOnly) {
 TEST_F(MixedTable, TheLastPlaceIsASubtree) {
     fill_and_check({Kind::Protocol, Kind::Protocol, Kind::Protocol, Kind::Service, Kind::Service,
                     Kind::Service, Kind::Protocol, Kind::Subtree});
+}
+
+TEST_F(MixedTable, AllFourKindsInRotation) {
+    fill_and_check({Kind::Handler, Kind::Protocol, Kind::Service, Kind::Subtree, Kind::Handler,
+                    Kind::Protocol, Kind::Service, Kind::Subtree});
+}
+
+TEST_F(MixedTable, HandlersFirstThenTheOthers) {
+    fill_and_check({Kind::Handler, Kind::Handler, Kind::Handler, Kind::Protocol, Kind::Subtree,
+                    Kind::Service, Kind::Handler, Kind::Protocol});
+}
+
+TEST_F(MixedTable, TheLastPlaceIsAHandler) {
+    fill_and_check({Kind::Protocol, Kind::Service, Kind::Subtree, Kind::Protocol, Kind::Service,
+                    Kind::Subtree, Kind::Protocol, Kind::Handler});
+}
+
+TEST_F(MixedTable, HandlersAndSubtreesOnly) {
+    fill_and_check({Kind::Handler, Kind::Subtree, Kind::Handler, Kind::Subtree, Kind::Handler,
+                    Kind::Subtree, Kind::Handler, Kind::Subtree});
+}
+
+TEST_F(MixedTable, EightHandlers) {
+    fill_and_check({Kind::Handler, Kind::Handler, Kind::Handler, Kind::Handler, Kind::Handler,
+                    Kind::Handler, Kind::Handler, Kind::Handler});
 }
 
 TEST_F(OutgoingTest, AHandlerThatParksAnOpenAnswersItLaterOnItsChannel) {
@@ -1681,5 +1822,391 @@ TEST_F(OutgoingTest, AHandlerThatParksAnOpenAnswersItLaterOnItsChannel) {
                                   static_cast<u32>(message.unwrap().bytes.size()), nullptr, 0),
               Status::Ok);
     EXPECT_EQ(epitaph(parked.client), Status::NotSupported);
+}
+
+// --- a Handler node at a declared path ----------------------------------------------
+
+/// What a file Open asks for: read, as a use of r* does.
+constexpr auto READABLE_FILE = Flags::ProtocolFile | Flags::PermReadBytes;
+
+/// Writes |message| on |channel|.
+auto send(Uandle const channel, wire::Message const message) -> void {
+    EXPECT_EQ(ours::channel_write(channel, ours::ChannelWriteOptions::None, message.bytes.data(),
+                                  static_cast<u32>(message.bytes.size()), message.handles.data(),
+                                  static_cast<u32>(message.handles.size())),
+              Status::Ok);
+}
+
+/// Writes Read(|txid|, |count|) on the file connection |file|.
+auto send_read(Uandle const file, u32 const txid, u64 const count) -> void {
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const encoded =
+        prot::io::encode_read(bytes, prot::io::ReadRequest{.txid = txid, .count = count});
+    ASSERT_TRUE(encoded.is_ok());
+    send(file, encoded.unwrap());
+}
+
+/// The data of the Ok answer to Read(|txid|) waiting on |file|; none when no
+/// message is, or when it is not that answer.
+auto read_reply(Uandle const file, u32 const txid) -> std::optional<std::string> {
+    std::array<u8, wire::MAX_MESSAGE_BYTES> reply{};
+    auto num_bytes = u32{0};
+    auto num_handles = u32{0};
+    if (ours::channel_read(file, ours::ChannelReadOptions::None, reply.data(), nullptr,
+                           static_cast<u32>(reply.size()), 0, &num_bytes,
+                           &num_handles) != Status::Ok) {
+        return std::nullopt;
+    }
+    auto const decoded = prot::io::decode_read_reply(
+        wire::Message{.bytes = std::span{reply}.first(num_bytes), .handles = {}}, txid);
+    if (decoded.is_err() || decoded.unwrap().status != Status::Ok) {
+        return std::nullopt;
+    }
+    auto const data = decoded.unwrap().data;
+    return std::string{data.begin(), data.end()};
+}
+
+/// What a completed Read of |text| is.
+auto read_of(std::string_view const text) -> ioservice::ReadResult {
+    return ustl::ok(std::span<u8 const>{reinterpret_cast<u8 const *>(text.data()), text.size()});
+}
+
+TEST_F(OutgoingTest, AddHandlerMakesTheNodeAndEveryDirectoryOnTheWay) {
+    NodeCalls handler;
+    ASSERT_TRUE(outgoing().add_handler("/export/data", handler).is_ok());
+    auto const directory = serve();
+
+    // export/ is a directory, as for any declared path; data is the node, and
+    // an Open of it is the handler's.
+    EXPECT_EQ(open_through(directory, "export", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_TRUE(handler.opens.empty());
+    EXPECT_EQ(open_through(directory, "export/other", READABLE_DIRECTORY).status, Status::NotFound);
+    EXPECT_EQ(open_through(directory, "data", READABLE_DIRECTORY).status, Status::NotFound);
+    EXPECT_TRUE(handler.opens.empty());
+    EXPECT_EQ(open_through(directory, "export/data", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(handler.opens.size(), 1u);
+}
+
+TEST_F(OutgoingTest, AddHandlerWorksBeforeAndAfterServe) {
+    NodeCalls before;
+    NodeCalls after;
+    ASSERT_TRUE(outgoing().add_handler("/before", before).is_ok());
+    auto const directory = serve();
+    ASSERT_TRUE(outgoing().add_handler("/after", after).is_ok());
+    EXPECT_EQ(open_through(directory, "before", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(open_through(directory, "after/x", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(before.opens.size(), 1u);
+    EXPECT_EQ(after.opens.size(), 1u);
+}
+
+TEST_F(OutgoingTest, AnOpenThatWalksToTheNodeAsksTheHandlerToOpenTheRestWithTheFlagsAsAsked) {
+    NodeCalls handler;
+    ASSERT_TRUE(outgoing().add_handler("/export/data", handler).is_ok());
+    auto const directory = serve();
+
+    // The node itself, one segment after it, and several: what the root writes
+    // for a use with no subdir and with one.
+    EXPECT_EQ(open_through(directory, "export/data", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(open_through(directory, "export/data/sub", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(open_through(directory, "export/data/a/b/c", READABLE_DIRECTORY).status, Status::Ok);
+
+    ASSERT_EQ(handler.opens.size(), 3u);
+    EXPECT_EQ(handler.opens[0].path, ".");
+    EXPECT_EQ(handler.opens[1].path, "sub");
+    EXPECT_EQ(handler.opens[2].path, "a/b/c");
+    for (auto const &open: handler.opens) {
+        // The Open walked to the node: no directory of the handler's was
+        // involved. The flags are the consumer's own.
+        EXPECT_TRUE(open.directory.is_none());
+        EXPECT_EQ(open.flags, READABLE_DIRECTORY);
+    }
+    // The connection the server made for each holds exactly the rights asked,
+    // and the provider's console is quiet.
+    EXPECT_TRUE(fake::kernel().debug_writes().empty());
+}
+
+TEST_F(OutgoingTest, AnOpenIsCheckedOnTheConnectionItCameOnBeforeAHandlerNodesHandlerIsAsked) {
+    NodeCalls handler;
+    ASSERT_TRUE(outgoing().add_handler("/export/data", handler).is_ok());
+    auto const directory = serve();
+    auto const entry = open_through(directory, "export", READABLE_DIRECTORY);
+    ASSERT_EQ(entry.status, Status::Ok);
+
+    // Beyond the r* of the entry, a bad path, or a creation flag: refused with
+    // the epitaph, and the handler is never asked.
+    EXPECT_EQ(open_through(entry.client, "data/sub", Flags::PermWriteBytes).status,
+              Status::AccessDenied);
+    EXPECT_EQ(open_through(entry.client, "data/../x", READABLE_DIRECTORY).status, Status::BadPath);
+    EXPECT_EQ(
+        open_through(entry.client, "data/new", Flags::FlagMaybeCreate | Flags::ProtocolFile).status,
+        Status::AccessDenied);
+    EXPECT_TRUE(handler.opens.empty());
+    // Within it, the handler is asked.
+    EXPECT_EQ(open_through(entry.client, "data/sub", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(handler.opens.size(), 1u);
+}
+
+TEST_F(OutgoingTest, TheHandlerIsToldTheValueItWasAddedWithAndNeverTheTableIndex) {
+    NodeCalls handler;
+    Calls calls;
+    // A protocol first, so that no handler's table index is its value by
+    // accident: the three below are entries 1, 2 and 3 of the table.
+    ASSERT_EQ(outgoing().add_protocol(ECHO, calls), Status::Ok);
+    ASSERT_TRUE(outgoing().add_handler("/a", handler, 55).is_ok());
+    ASSERT_TRUE(outgoing().add_handler("/b", handler, 66).is_ok());
+    ASSERT_TRUE(outgoing().add_handler("/c", handler).is_ok());
+    auto const directory = serve();
+
+    EXPECT_EQ(open_through(directory, "b/x", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(open_through(directory, "a/x", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(open_through(directory, "c/x", READABLE_DIRECTORY).status, Status::Ok);
+    ASSERT_EQ(handler.opens.size(), 3u);
+    EXPECT_EQ(handler.opens[0].value, 66u);
+    EXPECT_EQ(handler.opens[1].value, 55u);
+    EXPECT_EQ(handler.opens[2].value, 0u);
+}
+
+TEST_F(OutgoingTest, EveryRequestOnAHandlersConnectionsReachesItWithTheValueAndTheCookie) {
+    NodeCalls handler;
+    ASSERT_TRUE(outgoing().add_handler("/export/data", handler, 9).is_ok());
+    auto const directory = serve();
+    auto const entry = open_through(directory, "export/data", READABLE_DIRECTORY);
+    ASSERT_EQ(entry.status, Status::Ok);
+
+    // An Open through the directory the handler opened is told its cookie, and
+    // the whole path the client sent.
+    auto const file = open_through(entry.client, "file", READABLE_FILE);
+    ASSERT_EQ(file.status, Status::Ok);
+    ASSERT_EQ(handler.opens.size(), 2u);
+    EXPECT_EQ(handler.opens[1].value, 9u);
+    ASSERT_TRUE(handler.opens[1].directory.is_some());
+    EXPECT_EQ(*handler.opens[1].directory, NodeCalls::DIRECTORY_COOKIE);
+    EXPECT_EQ(handler.opens[1].path, "file");
+
+    // A Read: the file's cookie and the connection's offset.
+    EXPECT_EQ(read_all(file.client, 100).value_or("<none>"), "handler");
+    ASSERT_EQ(handler.reads.size(), 1u);
+    EXPECT_EQ(handler.reads[0].value, 9u);
+    EXPECT_EQ(handler.reads[0].cookie, NodeCalls::FILE_COOKIE);
+    EXPECT_EQ(handler.reads[0].offset, 0u);
+    EXPECT_EQ(handler.reads[0].count, 100u);
+
+    // A ReadDirents and a GetBackingMemory.
+    std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
+    auto const listing = prot::io::encode_read_dirents(
+        bytes, prot::io::ReadDirentsRequest{.txid = 3, .max_bytes = 256});
+    ASSERT_TRUE(listing.is_ok());
+    send(entry.client, listing.unwrap());
+    run();
+    ASSERT_EQ(handler.listings.size(), 1u);
+    EXPECT_EQ(handler.listings[0].value, 9u);
+    EXPECT_EQ(handler.listings[0].cookie, NodeCalls::DIRECTORY_COOKIE);
+    auto const vmo = prot::io::encode_get_backing_memory(
+        bytes, prot::io::GetBackingMemoryRequest{.txid = 4, .flags = prot::io::VmoFlags::Read});
+    ASSERT_TRUE(vmo.is_ok());
+    send(file.client, vmo.unwrap());
+    run();
+    ASSERT_EQ(handler.vmos.size(), 1u);
+    EXPECT_EQ(handler.vmos[0].value, 9u);
+    EXPECT_EQ(handler.vmos[0].cookie, NodeCalls::FILE_COOKIE);
+
+    // A Clone of the file: the handler names the new connection.
+    auto const [clone_client, clone_server] = channel();
+    std::array<Uandle, 1> handles{};
+    auto const cloned =
+        prot::io::encode_clone(bytes, handles, prot::io::CloneRequest{.request = clone_server});
+    ASSERT_TRUE(cloned.is_ok());
+    send(file.client, cloned.unwrap());
+    run();
+    ASSERT_EQ(handler.clones.size(), 1u);
+    EXPECT_EQ(handler.clones[0].value, 9u);
+    EXPECT_EQ(handler.clones[0].cookie, NodeCalls::FILE_COOKIE);
+
+    // Closing the clone ends its connection: the handler is told, once, with
+    // the cookie it gave.
+    auto const closed = prot::io::encode_close(bytes, prot::io::CloseRequest{.txid = 5});
+    ASSERT_TRUE(closed.is_ok());
+    send(clone_client, closed.unwrap());
+    run();
+    ASSERT_EQ(handler.releases.size(), 1u);
+    EXPECT_EQ(handler.releases[0].value, 9u);
+    EXPECT_EQ(handler.releases[0].cookie, NodeCalls::FILE_COOKIE + NodeCalls::CLONE_OFFSET);
+}
+
+TEST_F(OutgoingTest, ARequestTheHandlerAnswersPendingIsEndedByComplete) {
+    NodeCalls handler;
+    handler.pend_read = true;
+    ASSERT_TRUE(outgoing().add_handler("/export/data", handler, 9).is_ok());
+    auto const directory = serve();
+    auto const entry = open_through(directory, "export/data", READABLE_DIRECTORY);
+    auto const file = open_through(entry.client, "file", READABLE_FILE);
+    ASSERT_EQ(file.status, Status::Ok);
+
+    // Two Reads written back to back: only the first is started.
+    send_read(file.client, 1, 4);
+    send_read(file.client, 2, 3);
+    run();
+    ASSERT_EQ(handler.reads.size(), 1u);
+    EXPECT_EQ(fake::kernel().queued_messages(file.client), 0u);
+    auto const first = handler.reads[0].ticket;
+
+    EXPECT_EQ(outgoing().complete(first, read_of("late")), Status::Ok);
+    EXPECT_EQ(read_reply(file.client, 1).value_or("<none>"), "late");
+    // A spent ticket is refused, with nothing written.
+    EXPECT_EQ(outgoing().complete(first, read_of("late")), Status::NotFound);
+    EXPECT_EQ(fake::kernel().queued_messages(file.client), 0u);
+
+    // The second starts on the next turn, where the first ended.
+    run();
+    ASSERT_EQ(handler.reads.size(), 2u);
+    EXPECT_EQ(handler.reads[1].offset, 4u);
+    EXPECT_EQ(outgoing().complete(handler.reads[1].ticket, read_of("er")), Status::Ok);
+    EXPECT_EQ(read_reply(file.client, 2).value_or("<none>"), "er");
+}
+
+TEST_F(OutgoingTest, AConnectionThatEndsTellsTheHandlerOnce) {
+    NodeCalls handler;
+    ASSERT_TRUE(outgoing().add_handler("/export/data", handler, 9).is_ok());
+    auto const directory = serve();
+    auto const entry = open_through(directory, "export/data", READABLE_DIRECTORY);
+    ASSERT_EQ(entry.status, Status::Ok);
+    EXPECT_TRUE(handler.releases.empty());
+
+    EXPECT_EQ(ours::handle_close(entry.client), Status::Ok);
+    run();
+    ASSERT_EQ(handler.releases.size(), 1u);
+    EXPECT_EQ(handler.releases[0].value, 9u);
+    EXPECT_EQ(handler.releases[0].cookie, NodeCalls::DIRECTORY_COOKIE);
+    run();
+    EXPECT_EQ(handler.releases.size(), 1u);
+}
+
+TEST_F(OutgoingTest, AddHandlerRefusesAPathThatIsNotValid) {
+    NodeCalls handler;
+    for (auto const path:
+         {"", "/", "export/data", "/export/", "/export//data", "/export/./data", "/export/../data",
+          "/export/data/", "/.", "/svc", "/svc/x", "/svc/x/y"}) {
+        EXPECT_EQ(refusal(outgoing().add_handler(path, handler)), Status::InvArgs) << path;
+    }
+    EXPECT_EQ(refusal(outgoing().add_handler(keep("/" + std::string(256, 'n')), handler)),
+              Status::InvArgs);
+    // By segment: svcx is a name of its own.
+    EXPECT_TRUE(outgoing().add_handler("/svcx", handler).is_ok());
+    EXPECT_TRUE(outgoing().add_handler("/export/svc", handler).is_ok());
+}
+
+TEST_F(OutgoingTest, AddHandlerRefusesAPathThatOverlapsADeclaredOneOfAnyKind) {
+    NodeCalls handler;
+    SubtreeCalls subtree;
+    ASSERT_TRUE(outgoing().add_handler("/export/data", handler).is_ok());
+    ASSERT_TRUE(outgoing().add_directory("/a/b").is_ok());
+    ASSERT_TRUE(outgoing().add_subtree("/s/t", subtree).is_ok());
+
+    // Equal to one added, above it and below it, whichever kind of declared
+    // path it is, and whichever kind the new one is.
+    for (auto const path: {"/export/data", "/export", "/export/data/x", "/a/b", "/a", "/a/b/c",
+                           "/s/t", "/s", "/s/t/u"}) {
+        EXPECT_EQ(refusal(outgoing().add_handler(path, handler)), Status::AlreadyExists) << path;
+        EXPECT_EQ(refusal(outgoing().add_directory(path)), Status::AlreadyExists) << path;
+        EXPECT_EQ(refusal(outgoing().add_subtree(path, subtree)), Status::AlreadyExists) << path;
+    }
+    // By segments: a path that only shares leading bytes is a different one,
+    // and a sibling is. Six of them fit the six places the table has left.
+    for (auto const path:
+         {"/export/data2", "/export/dat", "/export/other", "/export2/data", "/a/c", "/s/u"}) {
+        EXPECT_TRUE(outgoing().add_handler(path, handler).is_ok()) << path;
+    }
+    // None of the refusals replaced a node: an Open still reaches the first
+    // handler.
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "export/data/x", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(open_through(directory, "a/b/c", READABLE_DIRECTORY).status, Status::NotFound);
+    EXPECT_EQ(handler.opens.size(), 1u);
+}
+
+TEST_F(OutgoingTest, AddHandlerRefusedForRoomLeavesNothingBehind) {
+    NodeCalls handler;
+    // One node left. /x/y needs two: x/ must not be made and then y refused.
+    for (auto index = usize{0}; index < NODES_FOR_DIRECTORIES - 1; ++index) {
+        ASSERT_TRUE(outgoing().add_directory(keep("/d" + std::to_string(index))).is_ok());
+    }
+    EXPECT_EQ(refusal(outgoing().add_handler("/x/y", handler)), Status::NoResource);
+    EXPECT_EQ(refusal(outgoing().add_handler("/x/y/z", handler)), Status::NoResource);
+
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "x", READABLE_DIRECTORY).status, Status::NotFound);
+
+    // No handler was taken either: the one node left takes one.
+    EXPECT_TRUE(outgoing().add_handler("/x", handler).is_ok());
+    EXPECT_EQ(open_through(directory, "x/q", READABLE_DIRECTORY).status, Status::Ok);
+    EXPECT_EQ(refusal(outgoing().add_handler("/y", handler)), Status::NoResource);
+}
+
+TEST_F(OutgoingTest, AddHandlerRefusedForTheTableLeavesNoDirectoryBehind) {
+    NodeCalls handler;
+    Calls calls;
+    for (auto index = usize{0}; index < DECIDED_HANDLERS; ++index) {
+        ASSERT_EQ(outgoing().add_protocol(keep("p" + std::to_string(index)), calls), Status::Ok);
+    }
+    // The nodes are there for it, the table is not: refused before export/ is
+    // made, and the name is free.
+    EXPECT_EQ(refusal(outgoing().add_handler("/export/data", handler)), Status::NoResource);
+    auto const directory = serve();
+    EXPECT_EQ(open_through(directory, "export", READABLE_DIRECTORY).status, Status::NotFound);
+    EXPECT_TRUE(outgoing().add_directory("/export/data").is_ok());
+    EXPECT_TRUE(handler.opens.empty());
+}
+
+TEST_F(OutgoingTest, AnInvalidPathTakesNoHandlerSlotFromAHandler) {
+    NodeCalls handler;
+    for (auto index = usize{0}; index < 4 * DECIDED_HANDLERS; ++index) {
+        EXPECT_EQ(refusal(outgoing().add_handler("/svc/x", handler)), Status::InvArgs);
+        EXPECT_EQ(refusal(outgoing().add_handler("relative", handler)), Status::InvArgs);
+        EXPECT_EQ(refusal(outgoing().add_handler("/", handler)), Status::InvArgs);
+    }
+    for (auto index = usize{0}; index < DECIDED_HANDLERS; ++index) {
+        EXPECT_TRUE(outgoing().add_handler(keep("/h" + std::to_string(index)), handler).is_ok())
+            << index;
+    }
+    EXPECT_EQ(refusal(outgoing().add_handler("/one-too-many", handler)), Status::NoResource);
+}
+
+TEST_F(OutgoingTest, NothingIsAddedBelowAHandlerNode) {
+    NodeCalls handler;
+    Calls calls;
+    auto const node = outgoing().add_handler("/export/data", handler).unwrap();
+    EXPECT_EQ(refusal(outgoing().add_directory(node, "x")), Status::NotDir);
+    EXPECT_EQ(refusal(outgoing().add_file(node, "x", file_of(HELLO))), Status::NotDir);
+    EXPECT_EQ(refusal(outgoing().add_service(node, "x", calls)), Status::NotDir);
+
+    // The refused add_service() took no handler: the other seven fit, and the
+    // table is then full.
+    for (auto index = usize{1}; index < DECIDED_HANDLERS; ++index) {
+        EXPECT_TRUE(outgoing().add_handler(keep("/h" + std::to_string(index)), handler).is_ok())
+            << index;
+    }
+    EXPECT_EQ(refusal(outgoing().add_handler("/one-too-many", handler)), Status::NoResource);
+}
+
+TEST_F(OutgoingTest, EightHandlersLeaveNoRoomForAProtocolAServiceNodeOrASubtree) {
+    NodeCalls handler;
+    Calls calls;
+    SubtreeCalls subtree;
+    auto const data = outgoing().add_directory("/export/data").unwrap();
+    for (auto index = usize{0}; index < DECIDED_HANDLERS; ++index) {
+        ASSERT_TRUE(outgoing().add_handler(keep("/h" + std::to_string(index)), handler).is_ok());
+    }
+    EXPECT_EQ(outgoing().add_protocol(ECHO, calls), Status::NoResource);
+    EXPECT_EQ(refusal(outgoing().add_service(data, "stop", calls)), Status::NoResource);
+    EXPECT_EQ(refusal(outgoing().add_subtree("/s", subtree)), Status::NoResource);
+}
+
+TEST_F(OutgoingTest, EightProtocolsLeaveNoRoomForAHandlerNode) {
+    NodeCalls handler;
+    Calls calls;
+    for (auto index = usize{0}; index < DECIDED_HANDLERS; ++index) {
+        ASSERT_EQ(outgoing().add_protocol(keep("p" + std::to_string(index)), calls), Status::Ok);
+    }
+    EXPECT_EQ(refusal(outgoing().add_handler("/export/data", handler)), Status::NoResource);
 }
 } // namespace

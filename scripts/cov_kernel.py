@@ -15,10 +15,12 @@ What it does, in order:
   1. Builds the directory.
   2. Boots the dbg image under QEMU, as scripts/kshell_run.py does, and waits
      for the boot to end. Everything the boot itself ran is already counted.
-  3. Types the kernel's `*.test` commands, which nothing runs at boot (the list
-     is taken from the GKTL_COMMAND registrations in kernel/commands, so there
-     is no second list to keep), and any --command given. A test that fails is
-     reported; the coverage of what it ran still counts.
+  3. Types the kernel's tests, which nothing runs at boot. The test
+     interface's tests are asked from the booted kernel with `ktest list` and
+     run one at a time; the `*.test` console commands that have not migrated
+     are taken from the GKTL_COMMAND registrations in kernel/commands. Both
+     then run with any --command given. A test that fails is reported; the
+     coverage of what it ran still counts.
   4. Types `cov dump`. The kernel prints its counters as a raw profile in text
      lines (kernel/commands/cov.cpp), which are put back together here. Every
      line carries its own offset and the last carries a checksum, because the
@@ -59,7 +61,7 @@ from boot_logdir import log_directory  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 
 VARIANT = "coverage-kernel"
-KERNEL_ELF = f"kernel_x86.dbg.1-{VARIANT}/obj/kernel/products/bin/vmours"
+KERNEL_ELF = f"kernel_x86.dbg.1-{VARIANT}/obj/kernel/products/bin/vmours.with-tests"
 
 BOOT_TIMEOUT = 90       # seconds for the boot to end
 COMMAND_TIMEOUT = 120   # seconds for one kernel test
@@ -76,6 +78,8 @@ FNV_PRIME = 0x100000001b3
 MASK_64 = (1 << 64) - 1
 
 TEST_COMMAND = re.compile(r'GKTL_COMMAND\(\s*\w+,\s*"([^"]+\.test)"')
+# One line of the test interface's `ktest list` (kernel/lib/ktest/src/runner.cpp).
+KTEST_TEST = re.compile(r"ktest: TEST (\S+)")
 
 
 class KernelCovError(Exception):
@@ -147,8 +151,14 @@ def assemble(size: int, chunk: int, pieces: dict[int, bytes]) -> Optional[bytes]
     return bytes(out)
 
 
+def ktest_commands(text: str) -> list[str]:
+    """The commands that run the tests a `ktest list` printed, one each."""
+    return [f"ktest {name}" for name in KTEST_TEST.findall(text)]
+
+
 def test_commands(root: Path) -> list[str]:
-    """The kernel's `*.test` commands, from where they are registered."""
+    """The `*.test` console commands that have not migrated to the test
+    interface, from where they are registered."""
     names: list[str] = []
     for path in sorted((root / "kernel" / "commands").glob("*.cpp")):
         for name in TEST_COMMAND.findall(path.read_text()):
@@ -211,10 +221,13 @@ class Boot:
 def type_command(console: kshell_run.Console, command: str) -> bool:
     """Types `command` and waits for it to end; whether it passed."""
     name = command.split()[0]
+    ktest = kshell_run.is_ktest(command)
     console.keep()
     console.type(command)
     if name.endswith(".test"):
         verdict = re.compile(re.escape(name) + r": (ok|FAILED)\b[^\n]*\n")
+    elif ktest:
+        verdict = kshell_run.KTEST_END
     else:
         verdict = re.compile(re.escape(kshell_run.PROMPT))
     ended = console.wait_for(verdict, time.monotonic() + COMMAND_TIMEOUT, through=True)
@@ -222,7 +235,31 @@ def type_command(console: kshell_run.Console, command: str) -> bool:
     console.drain(kshell_run.AFTER_VERDICT)
     if name.endswith(".test"):
         return ended and f"{name}: ok" in text
+    if ktest:
+        summaries = kshell_run.ktest_summaries(text.splitlines())
+        return ended and len(summaries) == 1 and summaries[0]["failed"] == 0
     return ended
+
+
+def discover_ktest_commands(out: Path, logdir: Path) -> list[str]:
+    """The tests the kernel's test interface registered, asked from a boot of
+    its own. A kernel without the interface answers nothing, and the list is
+    empty; that is not an error, the `*.test` commands still cover it."""
+    console = kshell_run.Console(out, "dbg", logdir, kshell_run.SILENCE)
+    try:
+        if not console.wait_for(re.compile(re.escape(kshell_run.END_MARKER)),
+                                time.monotonic() + BOOT_TIMEOUT):
+            raise KernelCovError(
+                f'no "{kshell_run.END_MARKER}" within {BOOT_TIMEOUT}s of booting; see {console.log_path}')
+        console.drain(kshell_run.SETTLE)
+        console.keep()
+        console.type("ktest list")
+        if not console.wait_for(re.compile(re.escape(kshell_run.PROMPT)),
+                                time.monotonic() + COMMAND_TIMEOUT):
+            raise KernelCovError(f"`ktest list` did not return to the prompt within {COMMAND_TIMEOUT}s")
+        return ktest_commands(console.kept())
+    finally:
+        console.close()
 
 
 def dump(console: kshell_run.Console) -> Optional[bytes]:
@@ -294,7 +331,8 @@ def main(argv: list[str]) -> int:
                         help="the coverage build directory (default: out/cov-kernel)")
     parser.add_argument("--no-build", action="store_true", help="use the directory as it is built")
     parser.add_argument("--no-tests", action="store_true",
-                        help="run no *.test command: the coverage is the boot's alone")
+                        help="run no test at all, neither the interface's nor a *.test command: "
+                             "the coverage is the boot's alone")
     parser.add_argument("--command", action="append", default=[], metavar="CMD",
                         help="another kernel-shell command to type before the dump")
     parser.add_argument("--html", action="store_true",
@@ -320,11 +358,12 @@ def main(argv: list[str]) -> int:
             say(f"build      {build(ROOT, out):.1f}s")
         elf = kernel_elf(out)
 
-        commands = [] if args.no_tests else test_commands(ROOT)
-        commands += args.command
-        say(f"boot       dbg image, then {len(commands)} command(s)")
         logdir = log_directory("ours-covkernel", out.resolve())
         logdir.mkdir(parents=True, exist_ok=True)
+        discovered = [] if args.no_tests else discover_ktest_commands(out, logdir)
+        commands = discovered + ([] if args.no_tests else test_commands(ROOT))
+        commands += args.command
+        say(f"boot       dbg image, then {len(commands)} command(s)")
 
         # A command that takes the machine down (a lockup, a panic) ends that
         # boot. What it ran before is in the last dump; the commands after it

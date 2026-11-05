@@ -35,7 +35,7 @@ namespace {
 
 auto LoopServer::Delegate::write_failed(Status) -> void {}
 
-auto LoopServer::Delegate::subtree(u64, std::string_view, ours_io::Flags, Uandle const channel)
+auto LoopServer::Delegate::subtree(u64, std::string_view, prot::io::Flags, Uandle const channel)
     -> void {
     // Nobody else holds the channel now: it was the Open's, and the server
     // gave it away. Nothing can be done about a close that fails.
@@ -45,14 +45,14 @@ auto LoopServer::Delegate::subtree(u64, std::string_view, ours_io::Flags, Uandle
 auto LoopServer::Delegate::open_refused(NodeId, std::string_view, Status) -> void {}
 
 LoopServer::LoopServer(Tree const &tree, loop::Loop &loop, Syscalls const syscalls,
-                       Memory const memory, Delegate *const delegate)
+                       Memory const memory, Delegate *const delegate, NodeHandler *const handler)
     : m_loop(&loop)
-    , m_server(tree, memory.connections, syscalls)
+    , m_server(tree, memory.connections, syscalls, handler)
     , m_memory(memory)
     , m_delegate(delegate) {}
 
 auto LoopServer::serve(Uandle const channel, NodeId const directory,
-                       ours_io::Operations const rights) -> Status {
+                       prot::io::Operations const rights) -> Status {
     auto const bound = m_server.bind(channel, directory, rights);
     if (bound.is_err()) {
         return bound.unwrap_err();
@@ -60,11 +60,75 @@ auto LoopServer::serve(Uandle const channel, NodeId const directory,
     return watch(channel, bound.unwrap());
 }
 
+auto LoopServer::complete(Ticket const ticket, OpenResult const &result) -> Status {
+    return finish(ticket, m_server.complete(ticket, result, *m_memory.reply));
+}
+
+auto LoopServer::complete(Ticket const ticket, ReadResult const &result) -> Status {
+    return finish(ticket, m_server.complete(ticket, result, *m_memory.reply));
+}
+
+auto LoopServer::complete(Ticket const ticket, EntriesResult const &result) -> Status {
+    return finish(ticket, m_server.complete(ticket, result, *m_memory.reply));
+}
+
+auto LoopServer::complete(Ticket const ticket, VmoResult const &result) -> Status {
+    return finish(ticket, m_server.complete(ticket, result, *m_memory.reply));
+}
+
+auto LoopServer::finish(Ticket const ticket, ustl::Result<Outcome, Status> const &completed)
+    -> Status {
+    if (completed.is_err()) {
+        // Refused: NotFound or InvArgs, and nothing was written or taken.
+        return completed.unwrap_err();
+    }
+    auto const outcome = completed.unwrap();
+    // The Server accepted the ticket, so its connection is alive and was made
+    // through watch(): its channel is there, and so are its Binding and the key
+    // of its slot. Both are read before anything is carried out, which can run
+    // the handler (a release) but never frees this connection or its Binding.
+    auto const connection = ticket.connection;
+    auto const channel = *m_server.channel(connection);
+    auto const key = m_memory.bindings[connection.index].m_key;
+
+    // complete() answers one of three: the reply, the connection of a granted
+    // Open, or the epitaph of a refused one. Never a Drop or a ReplyAndClose,
+    // which would release the connection from a callback that is not its own.
+    if (outcome.action == Action::Reply) {
+        // A write to a client that went away fails alone: nothing here waits.
+        // The connection stays. Its callback releases it once it is resumed
+        // and sees the client gone, and not here, where its slot is still in
+        // use and an index freed would be taken by a new connection before the
+        // old slot's packet came.
+        if (auto const written = write(channel, outcome.message);
+            written != Status::Ok && m_delegate != nullptr) {
+            m_delegate->write_failed(written);
+        }
+    } else if (outcome.action == Action::Bind) {
+        bind(outcome);
+    } else if (outcome.action == Action::Refuse) {
+        // There is no path to report to open_refused(): the Open's bytes are
+        // gone by now.
+        refuse(outcome);
+    }
+
+    // After the answer, never before: the slot is read again from here, and
+    // the next request must find the last one answered.
+    if (auto const resumed = m_loop->resume(key);
+        resumed == Status::BadState || resumed == Status::NotFound) {
+        // The slot was not suspended, or is not the one this connection had.
+        // Any other answer is the kernel refusing the arm, which freed the slot
+        // and had the Binding release the connection already.
+        return resumed;
+    }
+    return Status::Ok;
+}
+
 auto LoopServer::watch(Uandle const channel, ConnectionId const connection) -> Status {
     // A connection's Binding is the one at its index. A program that lent
     // fewer Bindings than connections has a connection it cannot wait on.
     if (connection.index >= m_memory.bindings.size()) {
-        m_server.release(connection);
+        release(connection);
         return Status::NoResource;
     }
     auto &binding = m_memory.bindings[connection.index];
@@ -74,10 +138,39 @@ auto LoopServer::watch(Uandle const channel, ConnectionId const connection) -> S
     if (added.is_err()) {
         // The Loop did not take the channel, so the connection must not
         // outlive this answer either.
-        m_server.release(connection);
+        release(connection);
         return added.unwrap_err();
     }
+    // Kept for complete(), which resumes the slot with it.
+    binding.m_key = added.unwrap();
     return Status::Ok;
+}
+
+auto LoopServer::release(ConnectionId const connection) -> void {
+    if (auto const held = m_server.release(connection); held != Uandle::Invalid) {
+        // An Open that was still pending on the connection: nothing will
+        // answer it now, and the client would wait for ever on its channel.
+        // Nothing can be done about a close that fails.
+        auto _ = ours::handle_close(held);
+    }
+}
+
+auto LoopServer::bind(Outcome const &outcome) -> void {
+    if (auto const watched = watch(outcome.handle, outcome.connection); watched != Status::Ok) {
+        // Answered the way any other refused Open is.
+        if (auto const epitaph = wire::encode_epitaph(m_memory.reply->bytes, watched);
+            epitaph.is_ok()) {
+            auto _ = write(outcome.handle, epitaph.unwrap());
+        }
+        auto _ = ours::handle_close(outcome.handle);
+    }
+}
+
+auto LoopServer::refuse(Outcome const &outcome) -> void {
+    // The epitaph says why the Open or Clone failed. The client may be gone
+    // already; the handle closes either way.
+    auto _ = write(outcome.handle, outcome.message);
+    auto _ = ours::handle_close(outcome.handle);
 }
 
 auto LoopServer::Binding::on_signals(Signals const observed) -> loop::Action {
@@ -93,7 +186,7 @@ auto LoopServer::rearm_failed(ConnectionId const connection) -> void {
     // connection is released as it is when its client goes, so that its entry
     // is handed out again. The Loop closed the channel, so nothing is closed
     // here.
-    m_server.release(connection);
+    release(connection);
 }
 
 auto LoopServer::handle(ConnectionId const connection, Signals const observed) -> loop::Action {
@@ -108,7 +201,7 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
     // The client went away with nothing left to read. The slot's own
     // callback closes its handle, by answering Close.
     if (!(observed & Signals::Readable)) {
-        m_server.release(connection);
+        release(connection);
         return loop::Action::Close;
     }
 
@@ -124,7 +217,7 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
         // The buffers hold the largest message a channel carries, so this is
         // the channel failing, not the message: nothing more can be served
         // on it.
-        m_server.release(connection);
+        release(connection);
         return loop::Action::Close;
     }
     auto const message = wire::Message{
@@ -142,7 +235,7 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
                 if (m_delegate != nullptr) {
                     m_delegate->write_failed(written);
                 }
-                m_server.release(connection);
+                release(connection);
                 return loop::Action::Close;
             }
             return loop::Action::Rearm;
@@ -156,21 +249,17 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
         case Action::Drop: {
             // Malformed, or a method this connection does not serve: the
             // connection is gone, and with it every handle the message
-            // brought, which nothing took.
+            // brought, which nothing took, and the Open's server end that it
+            // still held, when the message came for a connection that waited.
             close_all(message.handles);
+            if (outcome.handle != Uandle::Invalid) {
+                auto _ = ours::handle_close(outcome.handle);
+            }
             return loop::Action::Close;
         }
         case Action::Bind: {
             // An Open or Clone of a directory: a connection of its own.
-            if (auto const watched = watch(outcome.handle, outcome.connection);
-                watched != Status::Ok) {
-                // Answered the way any other refused Open is.
-                if (auto const epitaph = wire::encode_epitaph(m_memory.reply->bytes, watched);
-                    epitaph.is_ok()) {
-                    auto _ = write(outcome.handle, epitaph.unwrap());
-                }
-                auto _ = ours::handle_close(outcome.handle);
-            }
+            bind(outcome);
             return loop::Action::Rearm;
         }
         case Action::Connect: {
@@ -196,10 +285,7 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
             return loop::Action::Rearm;
         }
         case Action::Refuse: {
-            // The epitaph says why the Open or Clone failed. The client may
-            // be gone already; the handle closes either way.
-            auto _ = write(outcome.handle, outcome.message);
-            auto _ = ours::handle_close(outcome.handle);
+            refuse(outcome);
             // Reported once the client has its answer, so that a delegate
             // that is slow to say so delays nobody's. The path still views
             // the request buffer, which nothing has touched since the read.
@@ -211,6 +297,17 @@ auto LoopServer::handle(ConnectionId const connection, Signals const observed) -
                 }
             }
             return loop::Action::Rearm;
+        }
+        case Action::Pending: {
+            // The NodeHandler will answer later, through complete(). Nothing is
+            // written now, and the connection must not be read before then:
+            // Suspend leaves its slot in use with nothing armed, so the
+            // client's next message waits in the channel, in order, and a
+            // client that goes away is seen when complete() resumes the slot.
+            // complete() never runs inside this callback: the Server accepts a
+            // ticket only once the handler's call has returned Pending, and
+            // nothing between that and this return calls the handler.
+            return loop::Action::Suspend;
         }
         case Action::Forward: {
             // An Open that reached a remote entry: the message is the Open

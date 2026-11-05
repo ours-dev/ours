@@ -73,10 +73,12 @@
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
-#include <ours_acpi/client.hpp>
-#include <ours_block/ours_block.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/acpi_client.hpp>
+#include <prot/block.hpp>
+#include <prot/dev.hpp>
+#include <prot/dev_client.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 #include <server/server.hpp>
 #include <ustl/lazy_init.hpp>
 #include <wire/wire.hpp>
@@ -151,7 +153,7 @@ constexpr auto MAX_INFLIGHT = usize{1};
 constexpr auto SLOTS = ioservice::Outgoing::MAX_CONNECTIONS + MAX_CLIENTS;
 
 static_assert(SLOTS <= ours::PORT_MAX_OBSERVERS);
-static_assert(DATA_OFFSET + ours_block::MAX_READ_BLOCKS * SECTOR + 1 <= REGION_BYTES);
+static_assert(DATA_OFFSET + prot::block::MAX_READ_BLOCKS * SECTOR + 1 <= REGION_BYTES);
 
 /// Configuration space as this driver sees it: a mapped window plus the
 /// offset of one function in it.
@@ -449,7 +451,7 @@ class VirtioBlockServer final
     /// the geometry is what setup read from the device.
     [[nodiscard]]
     auto geometry() const -> block_server::Geometry {
-        return {.block_size = ours_block::BLOCK_SIZE, .blocks = m_device->blocks()};
+        return {.block_size = prot::block::BLOCK_SIZE, .blocks = m_device->blocks()};
     }
 
     /// The library's hand-off: run the parked request against the device,
@@ -546,7 +548,7 @@ auto main(int, char **) -> int {
     // The enumeration window's base is the firmware's to name: the route
     // service reads it from the MCFG table, and this driver asks instead of
     // carrying a chipset constant.
-    auto const ecam = ours_acpi::ecam_base(0);
+    auto const ecam = prot::acpi::ecam_base(0);
     if (ecam.is_err()) {
         auto _ = ort::debug_line({"virtio-blk: no ECAM base from the route service: ",
                                   ours::to_string(ecam.unwrap_err())});
@@ -700,7 +702,7 @@ auto main(int, char **) -> int {
 
     auto &outgoing_storage = *OUTGOING_STORAGE.init();
     ioservice::Outgoing outgoing(outgoing_storage, loop);
-    if (auto const status = outgoing.add_protocol(ours_block::BLOCK_NAME, server);
+    if (auto const status = outgoing.add_protocol(prot::block::BLOCK_NAME, server);
         status != Status::Ok) {
         auto _ =
             ort::debug_line({"virtio-blk: cannot serve its protocol: ", ours::to_string(status)});
@@ -712,9 +714,56 @@ auto main(int, char **) -> int {
         return 1;
     }
 
+    // The device, published into the registry's tree (the device-namespace
+    // round): a second server end of this outgoing serves the mount, so the
+    // registry's forwards reach the same block service; the publish names the
+    // leaf's class and number and the protocol a client's open of it carries.
+    // A failure to publish is logged and not fatal -- the disk still serves
+    // its /svc route; the tree merely shows one device fewer.
+    {
+        auto mount = Uandle::Invalid;
+        auto mount_server = Uandle::Invalid;
+        auto registry_client = Uandle::Invalid;
+        auto registry_server = Uandle::Invalid;
+        if (auto const made =
+                ours::channel_create(ours::ChannelCreateOptions::None, &mount_server, &mount);
+            made != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot make its mount channel: ", ours::to_string(made)});
+        } else if (auto const made = ours::channel_create(ours::ChannelCreateOptions::None,
+                                                          &registry_client, &registry_server);
+                   made != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot make its registry channel: ", ours::to_string(made)});
+        } else if (auto const status = outgoing.serve(mount_server); status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot serve its mount channel: ", ours::to_string(status)});
+        } else if (auto const status = fsio::connect(prot::dev::REGISTRY_PATH, registry_server);
+                   status != Status::Ok) {
+            auto _ = ort::debug_line(
+                {"virtio-blk: cannot reach the device registry: ", ours::to_string(status)});
+        } else {
+            // The driver proposes "000"; the registry grants it or the class's
+            // lowest free number, and the reply's name is what the leaf
+            // answers as. One attempt: the mount handle goes with the
+            // message, and a retry would need a fresh pair.
+            prot::dev::Client registry{registry_client};
+            auto granted = std::array<char, 8>{};
+            auto const published = registry.publish("block", "000", prot::block::BLOCK_NAME, mount,
+                                                    std::span<char>{granted});
+            if (published == Status::Ok) {
+                auto _ = ort::debug_line({"virtio-blk: its device is in the tree as block/",
+                                          std::string_view{granted.data()}});
+            } else {
+                auto _ = ort::debug_line(
+                    {"virtio-blk: its publish answered ", ours::to_string(published)});
+            }
+        }
+    }
+
     // Stop ends the program from inside an on_signals(); run() comes back
     // only when the port itself fails.
-    auto _ = ort::debug_line({"virtio-blk: serving ", ours_block::BLOCK_NAME});
+    auto _ = ort::debug_line({"virtio-blk: serving ", prot::block::BLOCK_NAME});
     auto _ = ort::debug_line(
         {"virtio-blk: its Loop stopped: ", ours::to_string(loop.run(ours::INSTANT_INFINITE))});
     return 1;

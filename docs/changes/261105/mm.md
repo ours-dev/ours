@@ -870,3 +870,40 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Preserve the MM regressions while integrating the KTEST migration (2026-11-05)
+
+**Files**
+- `kernel/tests/*_test.cpp` — adopt the baseline registrations and retain the branch's MM checks and approved names.
+- `kernel/commands/vm_address_test.cpp`, `vma_seal_test.cpp`, `vma_undo_test.cpp`, `vmo_pin_test.cpp` — remove the superseded command implementations after moving their checks.
+- `.agents/tasks/pmm-baseline-integration/` — record resolution decisions, validation and review.
+- `docs/changes/261103/ustl.md` — normalize an imported extra final newline required by the commit gate.
+
+**Symptom**
+Merging baseline `80958189` into the MM naming branch at `59046bdc` produced eleven conflicts. Taking only the baseline's migrated test files would discard newer MM regressions; restoring the old files would leave two competing test interfaces and lose the new registrations.
+
+**Cause**
+One branch changed the interface being tested while the other changed the test interface itself. Rename detection connected some old command files to the new test files but did not connect all of them, so several conflicts appeared as modify/delete rather than normal content conflicts. Neither conflict spelling determines the intended result: the baseline's registrations and failure-lifetime safeguards must coexist with the branch's behavioral checks.
+
+**Change**
+Replaced `verdict(tally, condition, description)` and `tally.check(condition, description)` with `EXPECT_TRUE(condition, description)`, preserving all 176 assertion sites across seven MM suites. Kept `KTEST(Suite, Case)` registrations and removed the obsolete commands. Updated the baseline's newly migrated sources to `ALLOC_KERNEL`, `MapOptions`, `VmFault::Cause`, `map_vmo`, `lookup_cursor_locked` and `UnmapScope`. A dynamic description uses `EXPECT_TRUE(condition, "{}", entry.description)` to meet the assertion API's compile-time format contract. Generic worker tests retain the baseline's failure-path lifetime handling.
+
+**Reference**
+None, this project's own test-interface migration. The integration follows the repository merge skill: merge the baseline into the feature branch, verify the resolved tree, then merge that verified tip back into the baseline.
+
+**Verification**
+Default and four-node builds each booted both images and passed 173 host tests. The fault-enabled build also booted both images and passed 173 host tests. Default and four-node KTEST runs each reported 24 ran, 23 passed, 1 intentional skip, zero failed; the four-node PMM command passed 77 checks. The ordered full instrumented run passed all 31 commands, covering the 24 registered tests and 30 legacy commands. The first full run and one fresh-boot attempt exposed the existing preemption timing instability; passing the ordered run does not close that repair. The generic console runner also rejects expected injection error logs despite a successful KTEST summary, now recorded separately. VMM line coverage remains 91.68% (4375/4772), 159 lines short of 95%. Formatting and clang-tidy passed on all twelve adapted sources in both configurations.
+
+**Deliberately not done**
+No scheduler behavior, test timing tolerance or diagnostic policy was changed. No additional MM naming proposals were adopted. Unrelated untracked files remain outside the merge.
+
+**How it was found**
+Read both parents' test migration and MM change records, compared the conflicting files, counted retained assertion sites, built both normal and injected configurations, and read KTEST summaries and coverage-run logs. The injected build caught the nonliteral format argument. The first combined coverage run caught the preemption timing failures; a reordered full run passed while leaving that instability explicitly open.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can a modify/delete conflict still represent a test that must be preserved under a new path?
+- Why do KTEST's summary and the console runner's generic error verdict disagree during an intentional allocation failure?
+- Why does one passing reordered run not prove a timing instability has been repaired?

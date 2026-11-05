@@ -155,5 +155,20 @@ class Setup(unittest.TestCase):
         self.assertEqual(cov_kernel.kernel_elf(self.root), elf)
 
 
+class KtestCommands(unittest.TestCase):
+    def test_turns_a_list_into_run_commands(self):
+        text = "\n".join([
+            "   [6351527000 cpu0 info] ktest: TEST Ktest.AssertionsPass",
+            "   [6351664000 cpu0 info] ktest: TEST SamplerClaim.HoldsClaimUntilMemoryIsGone",
+            "kshell> ",
+        ])
+        self.assertEqual(cov_kernel.ktest_commands(text),
+                         ["ktest Ktest.AssertionsPass",
+                          "ktest SamplerClaim.HoldsClaimUntilMemoryIsGone"])
+
+    def test_a_kernel_without_the_interface_answers_nothing(self):
+        self.assertEqual(cov_kernel.ktest_commands("kshell> "), [])
+
+
 if __name__ == "__main__":
     unittest.main()

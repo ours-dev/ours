@@ -22,7 +22,7 @@ source_set("process_launcher") {
   sources = [ "src/process_launcher.cpp" ]
   public_deps = [
     ":headers",
-    "//system/lib/ours.process",
+    "//system/lib/protocols",
   ]
 }
 

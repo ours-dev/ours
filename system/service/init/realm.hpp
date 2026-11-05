@@ -341,7 +341,7 @@ class Realm final: private ioservice::LoopServer::Delegate {
     /// epitaph; the root logs it as "cannot forward |name|", |name| being the
     /// capability's name at the provider. An Open that cannot be encoded
     /// closes |object| with the reason as an epitaph. Consumes |object|.
-    auto write_open(Instance const &provider, std::string_view name, ours_io::Flags flags,
+    auto write_open(Instance const &provider, std::string_view name, prot::io::Flags flags,
                     std::string_view path, ours::Uandle object) -> void;
 
     /// What the wait on |instance|'s outgoing directory's client end does

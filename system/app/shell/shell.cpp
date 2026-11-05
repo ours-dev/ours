@@ -61,9 +61,9 @@
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
-#include <ours_io/ours_io.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/io.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 #include <wire/wire.hpp>
 
 namespace {
@@ -165,7 +165,7 @@ auto list_bootfs(std::span<u8 const> const bootfs_file) -> ours::Status {
 /// answers NotFound for any other.
 auto list_directory(std::string_view const path) -> ours::Status {
     using ours::Status;
-    using ours_io::Flags;
+    using prot::io::Flags;
 
     auto const opened = fsio::open(path, Flags::ProtocolDirectory | Flags::PermEnumerate);
     if (opened.is_err()) {
@@ -173,7 +173,7 @@ auto list_directory(std::string_view const path) -> ours::Status {
     }
     auto const directory = opened.unwrap();
     auto status = Status::Ok;
-    std::array<u8, ours_io::MAX_BUF> buffer{};
+    std::array<u8, prot::io::MAX_BUF> buffer{};
     for (auto done = false; !done;) {
         auto const read = fsio::read_dirents(directory, buffer);
         if (read.is_err()) {
@@ -182,7 +182,7 @@ auto list_directory(std::string_view const path) -> ours::Status {
         }
         // Every entry has been read once a call fills nothing.
         done = read.unwrap() == 0;
-        auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+        auto reader = prot::io::DirentReader(std::span{buffer}.first(read.unwrap()));
         for (auto next = reader.next(); !done; next = reader.next()) {
             if (next.is_err()) {
                 status = next.unwrap_err();
@@ -197,7 +197,7 @@ auto list_directory(std::string_view const path) -> ours::Status {
                 continue;
             }
             std::string_view suffix;
-            if (dirent.type == ours_io::DirentType::Directory) {
+            if (dirent.type == prot::io::DirentType::Directory) {
                 suffix = "/";
             }
             auto _ = ort::debug_line({dirent.name, suffix});
@@ -653,13 +653,13 @@ auto main(int, char **) -> int {
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (component) {
         auto _ = ort::debug_line("shell: started by the root, with /boot and /svc");
-        if (auto const fetched = ours_resource::get(ours_resource::DEBUG_PROTOCOL);
+        if (auto const fetched = prot::resource::get(prot::resource::DEBUG_PROTOCOL);
             fetched.is_ok()) {
             debug_resource = fetched.unwrap();
         } else {
             report("shell: Debug.Get FAILED: ", fetched.unwrap_err());
         }
-        if (auto const fetched = ours_resource::get(ours_resource::SAMPLING_PROTOCOL);
+        if (auto const fetched = prot::resource::get(prot::resource::SAMPLING_PROTOCOL);
             fetched.is_ok()) {
             sampling = fetched.unwrap();
         } else {

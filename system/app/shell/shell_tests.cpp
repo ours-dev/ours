@@ -31,10 +31,10 @@
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/startup.hpp>
-#include <ours_io/ours_io.hpp>
-#include <ours_process/ours_process.hpp>
-#include <ours_resource/client.hpp>
-#include <ours_resource/ours_resource.hpp>
+#include <prot/io.hpp>
+#include <prot/process.hpp>
+#include <prot/resource.hpp>
+#include <prot/resource_client.hpp>
 #include <ustl/option.hpp>
 #include <wire/wire.hpp>
 
@@ -1543,7 +1543,7 @@ auto check_port_observer_limit() -> void {
 /// Where this shell's namespace has the root's Launcher on dev: its /svc,
 /// where every protocol use lives (design D3).
 constexpr std::string_view LAUNCHER_PATH{"/svc/ours.process.Launcher"};
-static_assert(LAUNCHER_PATH.ends_with(ours_process::LAUNCHER_NAME));
+static_assert(LAUNCHER_PATH.ends_with(prot::process::LAUNCHER_NAME));
 
 /// routing_checks in this shell's namespace on dev: /boot/ and its install
 /// name (programs.hpp), so that no program name is spelled here. The program
@@ -1718,11 +1718,11 @@ auto connect_launcher() -> ustl::Result<ours::Uandle, ours::Status> {
 /// A VMO of routing_checks' file without Execute: File.GetBackingMemory with
 /// READ alone, on a connection opened without EXECUTE.
 auto readable_vmo() -> ustl::Result<ours::Uandle, ours::Status> {
-    auto const file = fsio::open(routing_checks_path(), ours_io::Flags::PermReadBytes);
+    auto const file = fsio::open(routing_checks_path(), prot::io::Flags::PermReadBytes);
     if (file.is_err()) {
         return ustl::err(file.unwrap_err());
     }
-    auto const vmo = fsio::get_backing_memory(file.unwrap(), ours_io::VmoFlags::Read);
+    auto const vmo = fsio::get_backing_memory(file.unwrap(), prot::io::VmoFlags::Read);
     auto _ = ours::handle_close(file.unwrap());
     return vmo;
 }
@@ -1745,7 +1745,7 @@ auto launch_answer(ours::Uandle const launcher, ours::Uandle const executable,
     constexpr auto TXID = u32{1};
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<ours::Uandle, 2> handles{};
-    auto const request = ours_process::encode_launch(
+    auto const request = prot::process::encode_launch(
         bytes, handles,
         {.txid = TXID, .info = {.executable = executable, .job = launch_job, .name = "refused"}});
     if (request.is_err()) {
@@ -1766,7 +1766,7 @@ auto launch_answer(ours::Uandle const launcher, ours::Uandle const executable,
     if (auto const epitaph = reply.epitaph(); epitaph.is_some()) {
         return *epitaph;
     }
-    auto const decoded = ours_process::decode_launch_reply(reply.message(), TXID);
+    auto const decoded = prot::process::decode_launch_reply(reply.message(), TXID);
     if (decoded.is_err()) {
         return Status::InvArgs;
     }
@@ -1779,7 +1779,7 @@ auto launch_answer(ours::Uandle const launcher, ours::Uandle const executable,
 /// argument. One-way: the answer is the write's.
 auto add_handles(ours::Uandle const launcher, ours::Uandle const job, usize const count,
                  ours::HandleType const first_type) -> ours::Status {
-    std::array<ours_process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
+    std::array<prot::process::HandleInfo, wire::MAX_MESSAGE_HANDLES> infos{};
     auto const close_made = [&infos](usize const made) {
         for (auto index = usize{0}; index < made; ++index) {
             auto _ = ours::handle_close(infos[index].handle);
@@ -1801,7 +1801,7 @@ auto add_handles(ours::Uandle const launcher, ours::Uandle const job, usize cons
     std::array<u8, wire::MAX_MESSAGE_BYTES> bytes{};
     std::array<ours::Uandle, wire::MAX_MESSAGE_HANDLES> handles{};
     auto const request =
-        ours_process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
+        prot::process::encode_add_handles(bytes, handles, std::span{infos}.first(count));
     if (request.is_err()) {
         close_made(count);
         return request.unwrap_err();
@@ -1987,10 +1987,10 @@ auto check_vfs(bool const component) -> void {
 
     // The mount point stands in its parent's listing as a directory.
     auto const vfs =
-        fsio::open("/vfs", ours_io::Flags::ProtocolDirectory | ours_io::Flags::PermEnumerate);
+        fsio::open("/vfs", prot::io::Flags::ProtocolDirectory | prot::io::Flags::PermEnumerate);
     ok &= expect("shell: open(/vfs) = ", status_of(vfs), Status::Ok);
     if (vfs.is_ok()) {
-        std::array<u8, ours_io::MAX_BUF> buffer{};
+        std::array<u8, prot::io::MAX_BUF> buffer{};
         auto found = false;
         for (;;) {
             auto const read = fsio::read_dirents(vfs.unwrap(), buffer);
@@ -1998,11 +1998,11 @@ auto check_vfs(bool const component) -> void {
                 read.unwrap() == 0) {
                 break;
             }
-            auto reader = ours_io::DirentReader(std::span{buffer}.first(read.unwrap()));
+            auto reader = prot::io::DirentReader(std::span{buffer}.first(read.unwrap()));
             for (auto next = reader.next(); next.is_ok() && next->is_some(); next = reader.next()) {
                 auto const &dirent = next.unwrap().value();
                 found = found ||
-                        (dirent.name == "boot" && dirent.type == ours_io::DirentType::Directory);
+                        (dirent.name == "boot" && dirent.type == prot::io::DirentType::Directory);
             }
         }
         if (!found) {
@@ -2015,7 +2015,7 @@ auto check_vfs(bool const component) -> void {
     }
 
     // Through the mount point: this program's own file, two servers away.
-    auto const file = fsio::open("/vfs/boot/bin/shell", ours_io::Flags::PermReadBytes);
+    auto const file = fsio::open("/vfs/boot/bin/shell", prot::io::Flags::PermReadBytes);
     ok &= expect("shell: open(/vfs/boot/bin/shell) = ", status_of(file), Status::Ok);
     if (file.is_ok()) {
         std::array<u8, 4> magic{};
@@ -2041,7 +2041,7 @@ auto check_vfs(bool const component) -> void {
     // fshost forwarding every step.
     constexpr std::string_view TEXT{"written through /vfs/tmp"};
     auto const made =
-        fsio::open("/vfs/tmp/hello", ours_io::PERM_WRITABLE | ours_io::Flags::FlagMaybeCreate);
+        fsio::open("/vfs/tmp/hello", prot::io::PERM_WRITABLE | prot::io::Flags::FlagMaybeCreate);
     ok &= expect("shell: open(/vfs/tmp/hello, maybe_create) = ", status_of(made), Status::Ok);
     if (made.is_ok()) {
         auto const written =
@@ -2052,7 +2052,7 @@ auto check_vfs(bool const component) -> void {
     } else {
         ok = false;
     }
-    auto const read_back = fsio::open("/vfs/tmp/hello", ours_io::Flags::PermReadBytes);
+    auto const read_back = fsio::open("/vfs/tmp/hello", prot::io::Flags::PermReadBytes);
     ok &= expect("shell: open(/vfs/tmp/hello, read) = ", status_of(read_back), Status::Ok);
     if (read_back.is_ok()) {
         std::array<u8, 32> buffer{};
@@ -7524,7 +7524,9 @@ struct LoopLog {
 /// channel end |handle|. on_signals() reads one message and answers Rearm,
 /// however many more are queued (I4); once nothing is readable, which here
 /// means the peer has gone, it answers Close and leaves the closing to the
-/// Loop (I3).
+/// Loop (I3). When |suspend_next| is set, its next call reads the message and
+/// answers Suspend instead, once: a connection that took a request whose
+/// reply is not ready.
 struct LoopClient final: loop::Waiter {
     LoopClient(char const client_name, ours::Uandle const client_handle, LoopLog *const client_log)
         : name{client_name}, handle{client_handle}, log{client_log} {}
@@ -7532,6 +7534,7 @@ struct LoopClient final: loop::Waiter {
     char name;
     ours::Uandle handle;
     LoopLog *log;
+    bool suspend_next = false;
 
     auto on_signals(ours::Signals const observed) -> loop::Action override {
         log->push(name);
@@ -7544,6 +7547,10 @@ struct LoopClient final: loop::Waiter {
                                static_cast<u32>(message.size()), 0, &actual,
                                nullptr) != ours::Status::Ok) {
             return loop::Action::Close;
+        }
+        if (suspend_next) {
+            suspend_next = false;
+            return loop::Action::Suspend;
         }
         return loop::Action::Rearm;
     }
@@ -7603,13 +7610,17 @@ auto check_loop() -> void {
     auto c1 = Uandle::Invalid;
     auto d0 = Uandle::Invalid;
     auto d1 = Uandle::Invalid;
+    auto e0 = Uandle::Invalid;
+    auto e1 = Uandle::Invalid;
     channel(a0, a1);
     channel(b0, b1);
     channel(c0, c1);
     channel(d0, d1);
+    channel(e0, e1);
     auto a = LoopClient{'a', a1, &log};
     auto b = LoopClient{'b', b1, &log};
     auto c = LoopClient{'c', c1, &log};
+    auto e = LoopClient{'e', e1, &log};
     {
         auto dispatch = loop::Loop{port, slots};
         // The Loop owns what add() accepted; what it refused is closed here.
@@ -7663,9 +7674,28 @@ auto check_loop() -> void {
             expect("shell: loop run(forged packets, then c) = ", dispatch.run(0), Status::TimeOut);
         served(log, "abaabc");
 
-        // The Loop closes a1, c1 and the port as it goes.
+        // 5. A slot that suspends. e takes a message and answers Suspend, so
+        //    it stays in use with nothing armed; the message that arrives
+        //    next is not delivered. resume() arms it, and then, and only then,
+        //    the message is delivered. A second resume() finds the slot armed.
+        e.suspend_next = true;
+        add(e, Key{2, 0});
+        send(e0, 1);
+        ok &= expect("shell: loop run(e suspends) = ", dispatch.run(0), Status::TimeOut);
+        served(log, "abaabce");
+        send(e0, 1);
+        ok &= expect("shell: loop run(e's message while suspended) = ", dispatch.run(0),
+                     Status::TimeOut);
+        served(log, "abaabce");
+        ok &= expect("shell: loop resume(e) = ", dispatch.resume(Key{2, 0}), Status::Ok);
+        ok &=
+            expect("shell: loop resume(e again) = ", dispatch.resume(Key{2, 0}), Status::BadState);
+        ok &= expect("shell: loop run(e resumed) = ", dispatch.run(0), Status::TimeOut);
+        served(log, "abaabcee");
+
+        // The Loop closes a1, c1, e1 and the port as it goes.
     }
-    for (auto const handle: {a0, c0, d0, d1, forger}) {
+    for (auto const handle: {a0, c0, d0, d1, e0, forger}) {
         ok &= ours::handle_close(handle) == Status::Ok;
     }
 
@@ -8550,7 +8580,7 @@ auto check_root_job(bool const component, ours::Uandle const job) -> void {
         auto _ = ort::debug_line("shell: root job checks skipped (no namespace)");
         return;
     }
-    auto const fetched = ours_resource::get(ours_resource::ROOT_JOB_PROTOCOL);
+    auto const fetched = prot::resource::get(prot::resource::ROOT_JOB_PROTOCOL);
     auto ok = expect("shell: ours.kernel.RootJob Get = ", status_of(fetched), Status::Ok);
     if (fetched.is_ok()) {
         auto const root = fetched.unwrap();

@@ -131,6 +131,23 @@ a test's own `<name>: ok` line. A misspelt test name is a FAIL, after
 the hash is of the build directory's full path, so worktrees that all build
 into `out/bringup.x86` do not share one; the run prints the path.
 
+The kernel test interface (`//kernel/lib/ktest`) is run the same way, with
+the same script; nothing about the image or the console changes:
+
+```bash
+python3 scripts/kshell_run.py --out out/<dir> 'ktest list'
+python3 scripts/kshell_run.py --out out/<dir> 'ktest all'
+python3 scripts/kshell_run.py --out out/<dir> 'ktest Sched.*:-Sched.Slow'
+```
+
+The script knows that grammar: a run ends at its `ktest: SUMMARY` line and
+passes only if the summary is present, `failed=0` and at least one test ran;
+for a run of everything it first types `ktest list` and requires the summary's
+`ran=` to equal the number of tests listed, so a test that stops being linked
+in fails the run. A `ktest` command that hangs is NMI'd like `lockup spin all`
+and the lockup report is the diagnosis. `scripts/cov_kernel.py` still
+enumerates only the `*.test` commands; the pilot migration brings it over.
+
 It sends the same `nmi` after 15 seconds of silence (`--silence N`, 0 for
 never): on dbg until the run ends, since its debug threads never stop
 logging, and on rel only until the boot's end marker, since its shell waits
@@ -185,15 +202,15 @@ lockup: dump asked for by an NMI on cpu0
 
 Addresses are offsets from the start of the kernel image, which is linked at
 0, so the offset is the address in the unstripped ELF: for dbg
-`out/<dir>/kernel_x86.dbg.1/obj/kernel/products/bin/vmours`, for rel
-`out/<dir>/kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests`. A
+`out/<dir>/kernel_x86.dbg.1/obj/kernel/products/bin/vmours.with-tests`, for rel
+`out/<dir>/kernel_x86.dbg.0/obj/kernel/products/bin/vmours`. A
 one-byte disassembly names the function around an offset (there is no
 `llvm-symbolizer` in `prebuilt/`):
 
 ```bash
 prebuilt/clang/llvm-23/bin/llvm-objdump -d -C --no-show-raw-insn \
   --start-address=0x86132 --stop-address=0x86133 \
-  out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours
+  out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours.with-tests
 ```
 
 ```text

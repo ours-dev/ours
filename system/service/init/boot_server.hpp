@@ -16,7 +16,7 @@
 #include <ioservice/server.hpp>
 #include <ioservice/tree.hpp>
 #include <loop/loop.hpp>
-#include <ours_io/ours_io.hpp>
+#include <prot/io.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
 #include <wire/wire.hpp>
@@ -109,14 +109,14 @@ class BootServer final {
     /// still the caller's, to close with an epitaph: the lookup's refusals,
     /// NotDir, or NoResource when the connections or the Loop are full.
     [[nodiscard]]
-    auto serve(ours::Uandle channel, std::string_view subdir, ours_io::Operations rights)
+    auto serve(ours::Uandle channel, std::string_view subdir, prot::io::Operations rights)
         -> ours::Status;
 
     /// Serves |directory|, any directory of the tree, on |channel| with
     /// |rights|: serve() for a node already found, such as a component's
     /// /svc. The same answers.
     [[nodiscard]]
-    auto serve(ours::Uandle channel, ioservice::NodeId directory, ours_io::Operations rights)
+    auto serve(ours::Uandle channel, ioservice::NodeId directory, prot::io::Operations rights)
         -> ours::Status;
 
     /// Makes an empty directory beside /boot, no part of it: one

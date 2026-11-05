@@ -52,12 +52,13 @@ out/<output_dir>/
 最小的可启动镜像集合，用于 bring-up 内核与核心驱动、验证构建流水线。包含两个
 内核镜像：
 
-* `kernel.dev` —— 带单测的开发内核（与 physload 一起加载，见
-  `kernel/arch/x86/phys/legacy-boot.hpp` 的 LegacyBoot 注释）；
-* `kernel.dev.dbg_1` —— 无单测的独立调试镜像。
+* `kernel.dev` — the production kernel, no tests (loaded with physload; see
+  the LegacyBoot comment in `kernel/arch/x86/phys/legacy-boot.hpp`);
+* `kernel.dev.dbg_1` — the test-capable debug image: kernel shell, assertions
+  and the kernel tests.
 
-内核可执行文件在 `debug_level_0` switchset（`//build/switch/set/`）工具链下
-编译；cmdline 为空，维持 phys 侧默认启动行为（如 KASLR 默认禁用）。
+Each kernel is built in the switchset its image names: `dbg.0` for
+`kernel.dev`, `dbg.1` for `kernel.dev.dbg_1`.
 
 未来产品（minimal / core 等）应以 bringup 为基础，在其上添加内容而不是削减。
 

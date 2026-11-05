@@ -45,6 +45,20 @@ using Weight = ffl::Fixed<i64, 16>;
 /// expressions are short enough to read.
 using SchedDuration = ffl::Fixed<i64, 0>;
 using SchedTime = ffl::Fixed<i64, 0>;
+/// A weight times a time: the unit of the Fair run queue's weighted sum.
+///
+/// Sixteen fractional bits, the same as Weight, and that is the point. A whole
+/// number of nanoseconds times a weight is a whole number of units of this
+/// format, so a term is held exactly: nothing is rounded when it is added, and
+/// the same term taken out again leaves the sum as it was, however often the
+/// queue's zero is moved in between. In `SchedDuration` each term was rounded
+/// to a nanosecond, and the sum drifted by up to half a nanosecond per term
+/// per move. The cost is the range: a time is held in it up to about 39 hours
+/// (2^47 nanoseconds), which is far more than the offsets it is made of, a few
+/// requests, and saturates beyond. The same type as Weight, as SchedDuration
+/// is the same type as SchedTime: the sum and the weights it divides by are
+/// freely swappable, and the names are all that tell them apart.
+using WeightedTime = ffl::Fixed<i64, 16>;
 
 /// The boundary between the kernel clock and the scheduler's arithmetic.
 ///
@@ -84,7 +98,6 @@ USTL_ENABLE_ENUM_BITMASK(UnparkOptions);
 
 class RunQueue;
 class Scheduler;
-class ISchedule;
 class Fair;
 class RoundRobin;
 
