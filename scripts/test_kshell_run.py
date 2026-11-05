@@ -50,6 +50,13 @@ class Classify(unittest.TestCase):
             self.assertFalse(kshell_run.ktest_runs_all(command))
 
 
+class EndPattern(unittest.TestCase):
+    def test_a_run_ends_at_its_summary_or_its_error(self):
+        self.assertTrue(kshell_run.KTEST_END.search("x ktest: SUMMARY ran=1 passed=1 failed=0 skipped=0\n"))
+        self.assertTrue(kshell_run.KTEST_END.search("x ktest: ERROR no tests are linked into this kernel\n"))
+        self.assertFalse(kshell_run.KTEST_END.search("x ktest: RUN Ktest.Foo\n"))
+
+
 class Summaries(unittest.TestCase):
     def test_parses_one_summary(self):
         lines = [info("ktest: RUN Ktest.AssertionsPass"),
@@ -114,6 +121,14 @@ class JudgeRun(unittest.TestCase):
         lines = [info("ktest: RUN Ktest.AssertionsPass"),
                  info("ktest: OK Ktest.AssertionsPass (100 us)")]
         self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest all", lines, 1))
+
+    def test_error_before_a_summary(self):
+        lines = [error("ktest: ERROR no tests are linked into this kernel")]
+        self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest all", lines, None))
+
+    def test_inconsistent_summary(self):
+        lines = self.run_lines("ktest: SUMMARY ran=3 passed=3 failed=0 skipped=1")
+        self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest all", lines, 3))
 
     def test_two_summaries(self):
         summary = "ktest: SUMMARY ran=1 passed=1 failed=0 skipped=0"

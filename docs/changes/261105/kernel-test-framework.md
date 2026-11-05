@@ -302,3 +302,82 @@ None.
 1. The migrated semaphore tests spawn threads that wait and post. Why does none of them call `EXPECT_*` from a worker thread, and what does the interface do if one does?
 2. Why does `cov_kernel.py` boot once to ask for the test list and then again to run, and why is the first boot's profile not merged?
 3. The migrated tests are the same checks as the commands they replaced. Name two places where the conversion turned a fatal setup path into its own named assertion, and say whether that added or lost coverage of the original behaviour.
+
+## Review fixes: the publication is atomic, a skip reason is copied, and the host fails fast on an error (2026-11-05)
+
+**Files**
+- `kernel/lib/ktest/src/runner.cpp`, `kernel/lib/ktest/include/ktest/run_state.hpp` — the published run state and owner thread are `std::atomic`; `KTEST_SKIP`'s reason is copied into the state instead of pointed at.
+- `kernel/lib/ktest/include/ktest/assertions.hpp` — the owner check runs before the state is dereferenced; the comparison macros say why two C strings compare as pointers (and `KTEST_SKIP`'s comment no longer asks for a literal).
+- `kernel/lib/ktest/include/ktest/format.hpp` — `make_buffer`'s precondition (a non-zero room) is written down.
+- `scripts/kshell_run.py`, `scripts/cov_kernel.py`, `scripts/test_kshell_run.py` — a run's end is `ktest: SUMMARY` **or** `ktest: ERROR`; the summary's counts must add up; both are unit-tested.
+- `kernel/lib/ktest/README.md` — the host test path was missing `test/`, and the C-string comparison difference is now stated.
+- `.agents/tasks/kernel-test-framework/REVIEW.md` — the self-review these came from; this entry records what was fixed.
+
+**Symptom**
+
+Latent in all four cases; each needs a condition the current tests do not create:
+
+- A worker thread that calls `EXPECT_*` by mistake reads `CURRENT_STATE`/`OWNER_THREAD` while the runner thread writes them — a C++ data race, in the code whose job is to diagnose exactly that mistake. The design promised a file-static atomic (`docs/design/261105/kernel-test-framework.md`, "Objects"); the implementation had plain pointers.
+- `KTEST_SKIP(reason)` kept the caller's pointer and the runner printed it after the body returned: a non-literal reason (a stack buffer) is a use-after-free at the SKIP line.
+- A `ktest` command whose registry cannot start a run (no tests linked in, a duplicate name, three arguments) prints `ktest: ERROR` and returns without a summary. The host waited for the summary until `--command-timeout` (120 s), and because a `ktest` command keeps the silence monitor on, the machine was NMI'd and the lockup report was the diagnosis of a registry error.
+- `judge_ktest_run` read the four summary numbers independently, so a `SUMMARY` whose counts did not add up would have passed the host.
+
+**Cause**
+
+Each is a small drift from the design or from the assumption the code was written under. The atomic was in the design and not in the implementation. The skip reason was documented as "must be a literal" instead of made safe, which a test framework cannot enforce on its own API. The host's grammar knew only the success path's terminal line, not the registry's error path. The arithmetic was never asked for. The review's items H1, H2, M2, M3 and m1 in `REVIEW.md` say the same with the reasoning; this entry is their fix.
+
+**Change**
+
+The publication, before and after (`kernel/lib/ktest/src/runner.cpp`):
+
+```text
+-    internal::RunState *CURRENT_STATE = nullptr;
+-    ::ours::task::Thread *OWNER_THREAD = nullptr;
++    std::atomic<internal::RunState *> CURRENT_STATE{nullptr};
++    std::atomic<::ours::task::Thread *> OWNER_THREAD{nullptr};
+```
+
+with relaxed loads and stores: the check only asks "is it null, and is it this thread", so no ordering is needed between the publication and anything else; what the atomic buys is that the mistaken read is no longer a race. `record_failure` now checks `on_test_thread()` before it dereferences the state, because the state lives on the runner's stack — the worker must be told off, not read.
+
+The skip reason, `RunState` now carries `char skip_reason[SKIP_REASON_ROOM]{}` (96 bytes) and `record_skip` copies into it, truncated; the runner prints the copy after the body returns. The comment that asked callers for a literal is gone.
+
+The host: `KTEST_END` matches `ktest: (?:SUMMARY|ERROR)`, `judge_ktest_run` reports "no SUMMARY; the run reported: <error line>" when the run ended that way, and it now requires `passed + failed + skipped == ran`. `scripts/cov_kernel.py` uses the same end pattern. The README gained the correct host-test path and one paragraph on `EXPECT_EQ` and C strings; `format.hpp`'s `make_buffer` says it needs a non-zero room.
+
+Rejected: making the pointer lifetime safe with reference counting. It would turn a test-only state into an allocated object for the benefit of code that is already a test bug, and the design chose the contract instead; the atomic and the check-before-dereference make the misuse safe to *report*, not safe to *do*.
+
+**Reference**
+
+- Zircon's kernel runner has the same shape of publication: the per-test context is passed by reference to the test function (`kernel/lib/unittest/console.rs` builds it around each invocation), so there is no global to race. This interface needs one because the assertion macros take no context argument, which is what GoogleTest also hides behind its thread-local current-test pointer (`gtest.cc` `UnitTestImpl::current_test_`).
+- The host-side terminal-line grammar follows `run_unittests`' `SUMMARY: Ran N test case(s): M failed` line and its use by a harness.
+- `cppreference.com/w/cpp/atomic/atomic` — relaxed operations and what they do and do not order.
+
+**Verification**
+
+- The skip-reason fix was verified against the failure it fixes: `Ktest.SkipIsReported` was temporarily changed to skip with `char reason[] = "..."; KTEST_SKIP(reason);`, and the booted run printed `ktest: SKIP Ktest.SkipIsReported: a reason from a stack buffer, gone when this body returns`. The file was restored, and the final boot log is the committed one.
+- The host error path: `ktest NoSuch.*` now ends at the error line in 7.4 s (it used to wait 120 s), with `FAIL, no "ktest: SUMMARY" line; the run reported: ... ktest: ERROR no test matches "NoSuch.*"`, exit 1.
+- `python3 scripts/test_kshell_run.py`: 20 tests (three new: the end pattern, an error before the summary, an inconsistent summary); all pass. `python3 scripts/test_cov_kernel.py`: 19 tests, all pass.
+- `boot_check.py`: build ok; dbg PASS 46/5/0, rel PASS 44/8/0 with 7/7 required; host-tests 173/0.
+- `ktest all`: `SUMMARY ran=10 passed=9 failed=0 skipped=1`, exit 0, with the SKIP line carrying the copied reason.
+- clang-tidy on `runner.cpp` and the test translation units: no diagnostic; format, GN and docs lint clean.
+- Not verified at run time: the wrong-thread assertion path (H1). Reproducing it means adding a test that violates the contract on purpose; the fix's effect is the absence of a data race by construction, not an observable change.
+
+**Deliberately not done**
+
+- The lifetime contract itself: a worker that asserts after its test has returned can still reach a destroyed state in principle; the API says assertions are for the test thread, and the check makes the common mistake reportable. Reference-counting the state was rejected above.
+- GoogleTest's C-string special-casing in `EXPECT_EQ`: the difference is documented rather than implemented; a `PrintTo`/`FormatForComparison` increment is where it belongs.
+- `products/bringup.gni`'s `unit_tests_enabled = false` against the test-capable dbg image: still the design's decision 10 (linkage is the gate), and the review lists it as a decision, not an edit.
+- `make_buffer`'s zero-room case: documented as a precondition rather than made safe, because it is internal and no caller can reach it.
+
+**How it was found**
+
+A self-review of the whole change against `cpp-code-review` and the design document: the atomic requirement was in the design's "Objects" and not in the code; the skip reason's lifetime followed from reading `record_skip` and the runner's print order; the host wait came from reading the runner's early returns; the arithmetic from reading the judge. See `REVIEW.md` for the full report, including the items left open.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+1. Why is `std::memory_order_relaxed` enough for the publication pointer and the owner thread, and what would acquire/release add that this check does not need?
+2. Why does the runner copy a skip reason into the state instead of keeping the pointer, and why can the same reasoning not be applied to the `hsien::Context` reference by reference counting it?
+3. A run that prints `ktest: ERROR` and a summary still ends at the error line for the host. Why does the judge still fail the run, and what does the host do with the summary line that arrives after it stopped waiting?

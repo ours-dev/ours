@@ -34,12 +34,14 @@ inline auto record_failure(std::source_location const location, std::string_view
         framework_error("an assertion ran with no test running");
         return;
     }
-    if (state->context == nullptr) {
-        framework_error("an assertion ran before the test context was bound");
-        return;
-    }
+    // Ask before touching |state|: it lives on the runner thread's stack, and
+    // a worker thread that reads here must be told off, not dereferenced.
     if (!on_test_thread()) {
         framework_error("an assertion ran on a thread that is not running the test");
+        return;
+    }
+    if (state->context == nullptr) {
+        framework_error("an assertion ran before the test context was bound");
         return;
     }
     ++state->checks;
@@ -196,6 +198,10 @@ auto record_status(std::source_location const location, std::string_view const e
 /// One comparison body for both families. The operator is a parameter so the
 /// six relational checks keep one implementation each, and the symbol names
 /// the operator in the message.
+// The comparison macros use the language's own operator on the two operands,
+// with both bound as `auto const &`. Two C string literals therefore compare
+// as pointers; compare std::string_view instead when the content is what the
+// check is about.
 #define KTEST_COMPARE(operator_token, symbol, expected, actual, ...)                               \
     do {                                                                                           \
         auto const &ktest_expected = (expected);                                                   \
@@ -276,8 +282,8 @@ auto record_status(std::source_location const location, std::string_view const e
         return;                                                                                    \
     } while (false)
 
-/// Ends the current test as skipped. The reason is a plain string; it
-/// outlives the test because every caller passes a literal.
+/// Ends the current test as skipped. The reason is copied into the run state,
+/// so a temporary string is fine; a longer one is truncated.
 #define KTEST_SKIP(reason)                                                                         \
     do {                                                                                           \
         ::ktest::internal::record_skip(reason);                                                    \

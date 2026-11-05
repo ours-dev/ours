@@ -37,7 +37,10 @@ scripts/qemu_boot.py, as they do for the ours-verify skill's boot_check.py.
 A `ktest` command (the kernel test runner, //kernel/lib/ktest) is judged by
 its own grammar. A run -- `ktest`, `ktest all`, or `ktest <filter>` -- is done
 at its "ktest: SUMMARY" line, which must appear exactly once, must say
-failed=0, and must say at least one test ran. For `ktest` and `ktest all` the
+failed=0, and must say at least one test ran. A registry-level failure (no
+tests linked in, a duplicate test name, a usage error) ends at its
+"ktest: ERROR" line without a summary, and is judged as a failure straight
+away rather than after the command timeout. For `ktest` and `ktest all` the
 script first types `ktest list` and requires the summary's ran= to equal the
 number of "ktest: TEST" lines: a test that stops being linked in fails the run
 instead of silently disappearing from it. `ktest list` itself passes when the
@@ -141,7 +144,9 @@ FAILED_LINE = re.compile(r"\bFAILED\b")
 # The kernel test runner's grammar (//kernel/lib/ktest/src/runner.cpp): a run
 # ends at its summary, and a list prints one TEST line per registered test.
 KTEST_SUMMARY = re.compile(r"ktest: SUMMARY ran=(\d+) passed=(\d+) failed=(\d+) skipped=(\d+)")
-KTEST_SUMMARY_END = re.compile(r"ktest: SUMMARY[^\n]*\n")
+# A run's own end: its summary, or the error line the paths that cannot start
+# a run print instead (empty registry, duplicate name, usage error).
+KTEST_END = re.compile(r"ktest: (?:SUMMARY|ERROR)[^\n]*\n")
 KTEST_TEST = "ktest: TEST "
 NOISE = re.compile(LEVEL.format("debug|trace"))
 # The lockup detector's report (//kernel/lib/lockup_detector): every line of
@@ -493,9 +498,16 @@ def judge_ktest_run(command: str, lines: list[str], expected: int | None) -> boo
     `ktest list` gave, or None when a filter makes the count unknown."""
     summaries = ktest_summaries(lines)
     if len(summaries) != 1:
-        print(f'{command}: FAIL, expected one "ktest: SUMMARY" line, found {len(summaries)}')
+        errors = [l for l in lines if ERROR_LINE.search(l)]
+        if errors:
+            print(f'{command}: FAIL, no "ktest: SUMMARY" line; the run reported: {errors[0].strip()[:180]}')
+        else:
+            print(f'{command}: FAIL, expected one "ktest: SUMMARY" line, found {len(summaries)}')
         return False
     summary = summaries[0]
+    if summary["passed"] + summary["failed"] + summary["skipped"] != summary["ran"]:
+        print(f"{command}: FAIL, SUMMARY counts do not add up: {summary}")
+        return False
     if summary["failed"] != 0:
         print(f"{command}: FAIL, SUMMARY says {summary['failed']} test(s) failed")
         return False
@@ -763,8 +775,8 @@ def main(argv: list[str]) -> int:
                 done = re.compile(re.escape(name) + r": (?:ok|FAILED)\b[^\n]*\n")
                 awaited = f'"{name}: ok" or FAILED line'
             elif ktest_run:
-                done = KTEST_SUMMARY_END
-                awaited = '"ktest: SUMMARY" line'
+                done = KTEST_END
+                awaited = '"ktest: SUMMARY" or "ktest: ERROR" line'
             elif returns is not None:
                 done = returns
                 awaited = f"line matching /{returns.pattern}/"

@@ -13,6 +13,11 @@
 
 namespace ktest::internal {
 
+/// Longest skip reason the run state keeps. The runner prints it after the
+/// test body has returned, so the reason is copied here rather than pointed
+/// at; a longer one is truncated.
+inline constexpr usize SKIP_REASON_ROOM = 96;
+
 /// What the assertions and the runner share for one test. The fields are
 /// written by the channel that owns each: the runner publishes the state, the
 /// adapter binds |context|, and the assertion macros count |checks| and set
@@ -21,7 +26,7 @@ struct RunState {
     ::hsien::Context *context{nullptr};
     usize checks{};
     bool skipped{};
-    char const *skip_reason{""};
+    char skip_reason[SKIP_REASON_ROOM]{};
 };
 
 /// The test being run on this thread, or nullptr when no test is running.
@@ -44,8 +49,8 @@ auto framework_error(char const *what) -> void;
 auto bind_context(::hsien::Context &context) -> void;
 auto unbind_context() -> void;
 
-/// Marks the running test skipped. The reason string must outlive the test,
-/// which a string literal does.
+/// Marks the running test skipped. The reason is copied into the run state,
+/// so a temporary string is fine; a longer one is truncated.
 auto record_skip(char const *reason) -> void;
 
 /// Binds the Context for the lifetime of one test body. The generated

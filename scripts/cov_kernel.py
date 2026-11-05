@@ -227,7 +227,7 @@ def type_command(console: kshell_run.Console, command: str) -> bool:
     if name.endswith(".test"):
         verdict = re.compile(re.escape(name) + r": (ok|FAILED)\b[^\n]*\n")
     elif ktest:
-        verdict = kshell_run.KTEST_SUMMARY_END
+        verdict = kshell_run.KTEST_END
     else:
         verdict = re.compile(re.escape(kshell_run.PROMPT))
     ended = console.wait_for(verdict, time.monotonic() + COMMAND_TIMEOUT, through=True)

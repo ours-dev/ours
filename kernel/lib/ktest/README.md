@@ -37,6 +37,11 @@ and `KTEST_SKIP("reason")` marks a test this machine cannot exercise. Assertions
 run on the test thread only; a worker thread publishes its result for the test
 thread to assert on.
 
+`EXPECT_EQ` compares its operands with the language's `==`, so two C string
+literals compare as pointers, not characters; compare `std::string_view`s when
+the content is what the check is about. `EXPECT_OK` is the spelling for a
+`Status`, and prints the status through its `to_string`.
+
 ## Running
 
 On the dbg image's kernel shell:
@@ -61,7 +66,7 @@ The library is `//kernel/lib/ktest`; its headers alone are
 built and run by the host toolchain, not in the kernel:
 
 ```text
-prebuilt/ninja/ninja -C out/bringup.x86 host/obj/kernel/lib/ktest/ktest-test
+prebuilt/ninja/ninja -C out/bringup.x86 host/obj/kernel/lib/ktest/test/ktest-test
 ```
 
 The kernel-side source set is built only by a kernel that links tests; the

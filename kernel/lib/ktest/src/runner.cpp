@@ -9,6 +9,7 @@
 #include <ktest/run_state.hpp>
 #include <ktest/summary.hpp>
 
+#include <atomic>
 #include <string_view>
 
 #include <gktl/command.hpp>
@@ -22,11 +23,14 @@ namespace ktest {
 namespace {
 
     /// The test the runner is executing, published for the adapter and the
-    /// assertion macros. Only the runner thread writes it.
-    internal::RunState *CURRENT_STATE = nullptr;
+    /// assertion macros. Only the runner thread writes it, but a worker thread
+    /// that asserts by mistake reads it, so it is atomic: the read that is
+    /// there to diagnose the mistake must not race the store.
+    std::atomic<internal::RunState *> CURRENT_STATE{nullptr};
 
-    /// The thread the published test runs on, for the wrong-thread guard.
-    ::ours::task::Thread *OWNER_THREAD = nullptr;
+    /// The thread the published test runs on, for the wrong-thread guard. Same
+    /// reason as CURRENT_STATE.
+    std::atomic<::ours::task::Thread *> OWNER_THREAD{nullptr};
 
     /// Guards against a second `ktest` entering while one runs. The console
     /// dispatches one line at a time, so this only catches a future caller.
@@ -76,13 +80,13 @@ namespace {
         log::info("ktest: RUN {}", record.name);
 
         internal::RunState state;
-        CURRENT_STATE = &state;
-        OWNER_THREAD = ::ours::task::Thread::Current::get();
+        CURRENT_STATE.store(&state, std::memory_order_relaxed);
+        OWNER_THREAD.store(::ours::task::Thread::Current::get(), std::memory_order_relaxed);
         auto const started = ::ours::time::SteadyClock::now();
         auto const recorded = hsien::run(&record, &record + 1, reporter);
         auto const elapsed = ::ours::time::SteadyClock::now() - started;
-        CURRENT_STATE = nullptr;
-        OWNER_THREAD = nullptr;
+        CURRENT_STATE.store(nullptr, std::memory_order_relaxed);
+        OWNER_THREAD.store(nullptr, std::memory_order_relaxed);
 
         auto const failed = recorded.failed != 0;
         if (failed) {
@@ -165,11 +169,12 @@ namespace {
 namespace internal {
 
     auto current_state() -> RunState * {
-        return CURRENT_STATE;
+        return CURRENT_STATE.load(std::memory_order_relaxed);
     }
 
     auto on_test_thread() -> bool {
-        return OWNER_THREAD != nullptr && ::ours::task::Thread::Current::get() == OWNER_THREAD;
+        auto *const owner = OWNER_THREAD.load(std::memory_order_relaxed);
+        return owner != nullptr && ::ours::task::Thread::Current::get() == owner;
     }
 
     auto framework_error(char const *const what) -> void {
@@ -177,21 +182,24 @@ namespace internal {
     }
 
     auto bind_context(::hsien::Context &context) -> void {
-        if (CURRENT_STATE == nullptr) {
+        auto *const state = CURRENT_STATE.load(std::memory_order_relaxed);
+        if (state == nullptr) {
             framework_error("a test body ran with no test state published");
             return;
         }
-        CURRENT_STATE->context = &context;
+        state->context = &context;
     }
 
     auto unbind_context() -> void {
-        if (CURRENT_STATE != nullptr) {
-            CURRENT_STATE->context = nullptr;
+        auto *const state = CURRENT_STATE.load(std::memory_order_relaxed);
+        if (state != nullptr) {
+            state->context = nullptr;
         }
     }
 
     auto record_skip(char const *const reason) -> void {
-        if (CURRENT_STATE == nullptr) {
+        auto *const state = CURRENT_STATE.load(std::memory_order_relaxed);
+        if (state == nullptr) {
             framework_error("KTEST_SKIP ran with no test running");
             return;
         }
@@ -199,8 +207,17 @@ namespace internal {
             framework_error("KTEST_SKIP ran on a thread that is not running the test");
             return;
         }
-        CURRENT_STATE->skipped = true;
-        CURRENT_STATE->skip_reason = reason;
+        // The runner prints the reason after the body has returned, so it
+        // cannot keep the caller's pointer: copy it into the state, truncated
+        // to fit.
+        auto const text = std::string_view{reason};
+        auto const room = sizeof(state->skip_reason) - 1;
+        auto const count = text.size() < room ? text.size() : room;
+        for (auto i = usize{0}; i < count; ++i) {
+            state->skip_reason[i] = text[i];
+        }
+        state->skip_reason[count] = '\0';
+        state->skipped = true;
     }
 
 } // namespace internal

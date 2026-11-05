@@ -31,6 +31,8 @@ struct Buffer {
     char *end;
 };
 
+/// |room| must be at least 1: finish() needs one byte for the terminator, so
+/// the buffer holds room - 1 bytes of content.
 [[nodiscard]]
 constexpr auto make_buffer(char *const storage, usize const room) -> Buffer {
     return Buffer{storage, storage, storage + room - 1};
