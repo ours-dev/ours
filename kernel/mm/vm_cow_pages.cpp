@@ -658,7 +658,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 con
     return Status::Ok;
 }
 
-auto VmCowPages::make_cursor(usize const offset, usize const size) -> Cursor {
+auto VmCowPages::lookup_cursor_locked(usize const offset, usize const size) -> Cursor {
     return Cursor(this, offset, size);
 }
 
@@ -1028,7 +1028,7 @@ auto VmCowPages::commit_range_locked(usize const offset, usize const size, Commi
         return Status::InvArgs;
     }
 
-    auto cursor = make_cursor(offset, size);
+    auto cursor = lookup_cursor_locked(offset, size);
     auto const walk = [&](auto const &finish_page) -> Status {
         for (usize at = 0; at < size; at += PAGE_SIZE) {
             auto const result = cursor.require_owned_page(1, &request);
@@ -1186,7 +1186,7 @@ auto VmCowPages::Cursor::writable_here(FoundContent const &found) const -> bool 
     return found.owner == m_target && !m_target->is_hidden() && !m_target->m_page_source;
 }
 
-auto VmCowPages::Cursor::handed_out(RequireResult const result) -> RequireResult {
+auto VmCowPages::Cursor::handed_out(PageLookup const result) -> PageLookup {
     // The shared zero page is no node's and on no queue. Any other page goes
     // to the queues, which move it only if it is reclaimable: whether it is
     // can only be read under their lock, since the aging thread rewrites the
@@ -1198,13 +1198,13 @@ auto VmCowPages::Cursor::handed_out(RequireResult const result) -> RequireResult
 }
 
 auto VmCowPages::Cursor::require_page(bool will_write, usize nr_pages, MultiPageRequest *request)
-    -> ktl::Result<RequireResult> {
+    -> ktl::Result<PageLookup> {
     return will_write ? require_owned_page(nr_pages, request)
                       : require_read_page(nr_pages, request);
 }
 
 auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *request)
-    -> ktl::Result<RequireResult> {
+    -> ktl::Result<PageLookup> {
     m_target->lock().assert_held();
     DEBUG_ASSERT(m_offset < m_end, "the cursor stepped past the range it was made for");
 
@@ -1322,7 +1322,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
 }
 
 auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *request)
-    -> ktl::Result<RequireResult> {
+    -> ktl::Result<PageLookup> {
     DEBUG_ASSERT(m_offset < m_end, "the cursor stepped past the range it was made for");
 
     // What the node sees here, wherever it is held. Writable only when it is the
@@ -1366,7 +1366,7 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     return require_owned_page(nr_pages, request);
 }
 
-auto VmCowPages::Cursor::maybe_page() -> ustl::Option<RequireResult> {
+auto VmCowPages::Cursor::maybe_page() -> ustl::Option<PageLookup> {
     DEBUG_ASSERT(m_offset < m_end, "the cursor stepped past the range it was made for");
 
     // As require_read_page() answers a page that is there, and nothing else.

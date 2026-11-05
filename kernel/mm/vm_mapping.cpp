@@ -239,7 +239,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOpti
     // inside the address space lock map() holds: a page found here must still
     // belong to the object when it is mapped. See VmObjectPaged::lock().
     Guard guard{vmo->lock()};
-    auto cursor = vmo->make_cursor(m_vmo_ofs + (base - m_base), size);
+    auto cursor = vmo->lookup_cursor_locked(m_vmo_ofs + (base - m_base), size);
     if (!cursor) {
         return cursor.unwrap_err();
     }
@@ -271,7 +271,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, MapOpti
             // With Commit, every page is made the node's own first. A source
             // asked for a page answers ShouldWait, and the map fails with it:
             // nothing that maps with Commit has a source.
-            ustl::Option<VmCowPages::Cursor::RequireResult> result;
+            ustl::Option<VmCowPages::Cursor::PageLookup> result;
             if (commit) {
                 auto owned = cursor->require_owned_page(1, &page_request);
                 if (!owned) {
@@ -728,7 +728,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
 
     // The same conversion map_paged() does, for the same reason: the cursor is
     // positioned in the VMO's byte space and |va| is an address.
-    auto cursor = paged->make_cursor(m_vmo_ofs + (va - m_base), PAGE_SIZE);
+    auto cursor = paged->lookup_cursor_locked(m_vmo_ofs + (va - m_base), PAGE_SIZE);
     if (!cursor) {
         return {cursor.unwrap_err(), 0};
     }
@@ -817,7 +817,7 @@ auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existin
         // address space's.
         Guard guard{paged->lock()};
         if (will_write) {
-            auto cursor = paged->make_cursor(m_vmo_ofs + (va - m_base), PAGE_SIZE);
+            auto cursor = paged->lookup_cursor_locked(m_vmo_ofs + (va - m_base), PAGE_SIZE);
             if (!cursor) {
                 return {cursor.unwrap_err(), 0};
             }

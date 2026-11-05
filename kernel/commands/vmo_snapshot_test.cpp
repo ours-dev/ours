@@ -75,7 +75,7 @@ namespace {
     using mm::VmCowPages;
     using mm::VmPage;
     using Node = ustl::Arc<VmCowPages>;
-    using Found = VmCowPages::Cursor::RequireResult;
+    using Found = VmCowPages::Cursor::PageLookup;
 
     struct Tally {
         usize passed = 0;
@@ -92,13 +92,13 @@ namespace {
         log::error("vmosnapshot.test: FAIL  {}", name);
     }
 
-    // The analysis cannot tie `node->lock()` to the `m_lock` that make_cursor()
+    // The analysis cannot tie `node->lock()` to the `m_lock` that lookup_cursor_locked()
     // requires: it sees two expressions through two calls of Arc::operator->().
     // The lock is taken on the line above and held to the end of the function.
     TA_NO_THREAD_SAFETY_ANALYSIS
     auto lookup(Node &node, bool const will_write, usize const page_index) -> ktl::Result<Found> {
         Guard guard{node->lock()};
-        auto cursor = node->make_cursor(page_index * PAGE_SIZE, PAGE_SIZE);
+        auto cursor = node->lookup_cursor_locked(page_index * PAGE_SIZE, PAGE_SIZE);
         mm::MultiPageRequest request;
         return cursor.require_page(will_write, 1, &request);
     }

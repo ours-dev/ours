@@ -89,7 +89,7 @@ namespace {
     auto filed_at(mm::VmObjectPaged &vmo, u64 const offset) -> Filed {
         auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
         Guard guard{node->lock()};
-        auto cursor = node->make_cursor(offset, P);
+        auto cursor = node->lookup_cursor_locked(offset, P);
         // Looking is not using: the checks read a page's age after this.
         cursor.disable_mark_accessed();
         auto const found = cursor.maybe_page();

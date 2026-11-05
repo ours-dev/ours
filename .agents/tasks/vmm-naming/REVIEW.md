@@ -12,6 +12,8 @@ Compare each diff with the user's selected name, search all declarations and cal
 
 - VmFault::Cause preserves the enum values, aggregate fields and captured x86 fault encoding. Both images, 163 host tests and the user-copy and snapshot commands passed.
 
+- lookup_cursor_locked retains the existing lock annotations, and PageLookup retains its fields and all result paths. Both images, 163 host tests and five COW and pager commands passed.
+
 ## High severity
 
 None.

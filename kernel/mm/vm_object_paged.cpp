@@ -465,7 +465,7 @@ auto VmObjectPaged::lookup_contiguous(usize const offset, usize const size, Phys
     }
 
     assert_cow_pages_locked();
-    auto cursor = m_cow_pages->make_cursor(m_cow_offset + offset, size);
+    auto cursor = m_cow_pages->lookup_cursor_locked(m_cow_offset + offset, size);
     // Looking is not using: the answer is about where the pages are, and an
     // access through the physmap that this is not.
     cursor.disable_mark_accessed();
@@ -617,7 +617,7 @@ auto VmObjectPaged::copy_page_by_page(usize const offset, usize const size, bool
             auto const end_page = round_up(offset + size, PAGE_SIZE);
             assert_cow_pages_locked();
             auto cursor =
-                m_cow_pages->make_cursor(m_cow_offset + first_page, end_page - first_page);
+                m_cow_pages->lookup_cursor_locked(m_cow_offset + first_page, end_page - first_page);
 
             while (done < size) {
                 auto const at = offset + done;
@@ -694,7 +694,7 @@ auto VmObjectPaged::copy_page_by_page(usize const offset, usize const size, bool
     return Status::Ok;
 }
 
-/// The window is clipped to this object first, as make_cursor() checks it:
+/// The window is clipped to this object first, as lookup_cursor_locked() checks it:
 /// the page tree is a slice's parent's too, and its pages past the slice's
 /// end are not the slice's to count.
 auto VmObjectPaged::committed_pages(u64 const offset, u64 const len) -> usize {

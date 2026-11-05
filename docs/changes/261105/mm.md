@@ -483,3 +483,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Name the page lookup cursor and its result (2026-11-05)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp` and `kernel/mm/include/ours/mm/vm_object_paged.hpp` expose the cursor factory.
+- Their implementations, mappings and existing kernel command tests use the new names.
+
+**Symptom**
+
+The cursor factory's old name did not express its page lookup role or required lock. RequireResult was also returned by a lookup that might find no page.
+
+**Cause**
+
+The factory name described construction, and the result name was tied to one of several operations producing the same page and writability record.
+
+**Change**
+
+Rename `make_cursor` to `lookup_cursor_locked` on the COW and paged VMO layers. Rename `Cursor::RequireResult` to `Cursor::PageLookup` throughout its producers and consumers.
+
+**Reference**
+
+Zircon VmCowPages::LookupCursor supplies the domain vocabulary. The factory and result spellings were selected by the user.
+
+**Verification**
+
+The original lock annotations and page lookup logic are preserved. LLVM 23 clang-format and clang-tidy checked all twelve C++ files. Both development images booted and 163 host tests passed. The snapshot, pin, contiguous, large-page and page-source commands passed.
+
+**Deliberately not done**
+
+The independent xarray cursor uses its existing name.
+
+**How it was found**
+
+The user accepted items eight and nine of the VMM naming list.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

@@ -236,7 +236,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     }
 
     TA_REQUIRES(m_lock)
-    auto make_cursor(usize offset, usize size) -> Cursor;
+    auto lookup_cursor_locked(usize offset, usize size) -> Cursor;
 
     /// One 2 MiB block as this node sees it: where its frames start, and
     /// whether the node may write them.
@@ -727,7 +727,7 @@ class VmCowPages::Cursor {
     /// page must map it read-only when |writable| is false, even into a mapping
     /// whose own permission includes Write: the write then faults, asks for an
     /// owned page, and gets the copy instead of the ancestor's page.
-    struct RequireResult {
+    struct PageLookup {
         VmPage *page;
         bool writable;
     };
@@ -754,16 +754,15 @@ class VmCowPages::Cursor {
     /// allocated here because the fault path must not enter the allocator and
     /// risk recursing into reclaim and faulting again.
     auto require_page(bool will_write, usize nr_pages, MultiPageRequest *request)
-        -> ktl::Result<RequireResult>;
-    auto require_owned_page(usize nr_pages, MultiPageRequest *request)
-        -> ktl::Result<RequireResult>;
+        -> ktl::Result<PageLookup>;
+    auto require_owned_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<PageLookup>;
 
     /// The page a read would find at the cursor, if one is there, then step
     /// past it: the node's own, writable, or one it sees through an ancestor,
     /// read-only. Nothing when there is no page -- a hole, a zero marker, a page
     /// a source has not supplied -- and nothing is allocated or asked for to
     /// make one. What a mapping that maps only what is there wants.
-    auto maybe_page() -> ustl::Option<RequireResult>;
+    auto maybe_page() -> ustl::Option<PageLookup>;
 
     /// Hand pages out without marking them used.
     ///
@@ -783,7 +782,7 @@ class VmCowPages::Cursor {
     friend class VmCowPages;
 
     Cursor(VmCowPages *owner, usize offset, usize size);
-    auto require_read_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<RequireResult>;
+    auto require_read_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<PageLookup>;
     auto create_read_request(usize nr_pages, PageRequest *request) -> Status;
     auto create_dirty_request(usize nr_pages, PageRequest *request) -> Status;
     auto convert_reference_to_page(AnonymousPageRequest *request) -> Status;
@@ -791,7 +790,7 @@ class VmCowPages::Cursor {
     /// Marks |result|'s page used, unless disable_mark_accessed() said not to,
     /// and hands |result| back. Every exit that hands a page out goes through
     /// here, so a lookup added later marks too.
-    auto handed_out(RequireResult result) -> RequireResult;
+    auto handed_out(PageLookup result) -> PageLookup;
 
     /// Whether a page found in the node's own store may be mapped writable.
     auto writable_here(FoundContent const &found) const -> bool;

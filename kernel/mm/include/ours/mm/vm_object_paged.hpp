@@ -223,17 +223,18 @@ class VmObjectPaged: public VmObject {
     /// otherwise reach the parent's pages beyond it.
     TA_REQUIRES(m_lock)
     FORCE_INLINE
-    auto make_cursor(usize offset, usize size) -> ustl::Result<VmCowPages::Cursor, Status> {
+    auto lookup_cursor_locked(usize offset, usize size)
+        -> ustl::Result<VmCowPages::Cursor, Status> {
         if (size > m_size || offset > m_size - size) {
             return ustl::err(Status::OutOfRange);
         }
         assert_cow_pages_locked();
-        return ustl::ok(m_cow_pages->make_cursor(m_cow_offset + offset, size));
+        return ustl::ok(m_cow_pages->lookup_cursor_locked(m_cow_offset + offset, size));
     }
 
     /// Whether this object's 2 MiB at |offset| are one block of its pages; see
     /// VmCowPages::find_block_locked(). The range is checked against this
-    /// object as make_cursor() checks it, so a slice never answers for the
+    /// object as lookup_cursor_locked() checks it, so a slice never answers for the
     /// pages past its end.
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto find_block_locked(usize const offset)

@@ -107,7 +107,7 @@ namespace {
     using Node = ustl::Arc<mm::VmCowPages>;
     constexpr usize PAGES_PER_BLOCK = LARGE / PAGE_SIZE;
 
-    // The analysis cannot tie `node->lock()` to the `m_lock` that make_cursor()
+    // The analysis cannot tie `node->lock()` to the `m_lock` that lookup_cursor_locked()
     // and the _locked calls require: it sees two expressions through two calls
     // of Arc::operator->(). The lock is held from the guard to the end.
 
@@ -116,7 +116,7 @@ namespace {
     TA_NO_THREAD_SAFETY_ANALYSIS
     auto touch(Node &node, usize const index, bool const write) -> mm::VmPage * {
         Guard guard{node->lock()};
-        auto cursor = node->make_cursor(index * PAGE_SIZE, PAGE_SIZE);
+        auto cursor = node->lookup_cursor_locked(index * PAGE_SIZE, PAGE_SIZE);
         mm::MultiPageRequest request;
         auto found = cursor.require_page(write, 1, &request);
         if (!found) {

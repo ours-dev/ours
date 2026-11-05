@@ -367,7 +367,7 @@ namespace {
         verdict(tally, node->add_zero_marker_locked(1) == Status::Ok,
                 "a zero marker is put at page 1");
         {
-            auto cursor = node->make_cursor(P, P);
+            auto cursor = node->lookup_cursor_locked(P, P);
             mm::MultiPageRequest request;
             auto const read = cursor.require_page(false, 1, &request);
             verdict(tally,
@@ -377,7 +377,7 @@ namespace {
         }
         {
             // Withdrawn when |request| goes, at the end of the block.
-            auto cursor = node->make_cursor(0, 3 * P);
+            auto cursor = node->lookup_cursor_locked(0, 3 * P);
             mm::MultiPageRequest request;
             auto const read = cursor.require_page(false, 3, &request);
             verdict(tally,
@@ -395,7 +395,7 @@ namespace {
                 mm::free_frames(frame, 0);
             }
             auto const supplied = held && node->supply_pages_locked(P, P, &pages) == Status::Ok;
-            auto cursor = node->make_cursor(P, P);
+            auto cursor = node->lookup_cursor_locked(P, P);
             mm::MultiPageRequest request;
             auto const read = cursor.require_page(false, 1, &request);
             verdict(tally,
@@ -404,7 +404,7 @@ namespace {
                     "a page supplied over it is thrown away, and it still reads as zero");
         }
         {
-            auto cursor = node->make_cursor(P, P);
+            auto cursor = node->lookup_cursor_locked(P, P);
             mm::MultiPageRequest request;
             auto const written = cursor.require_page(true, 1, &request);
             verdict(tally,

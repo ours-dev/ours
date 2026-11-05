@@ -73,7 +73,7 @@ namespace {
     auto filed_at(mm::VmObjectPaged &vmo, usize const index) -> Filed {
         auto &node = const_cast<ustl::Arc<mm::VmCowPages> &>(vmo.cow_pages());
         Guard guard{node->lock()};
-        auto cursor = node->make_cursor(index * P, P);
+        auto cursor = node->lookup_cursor_locked(index * P, P);
         // Looking is not using.
         cursor.disable_mark_accessed();
         auto const found = cursor.maybe_page();
