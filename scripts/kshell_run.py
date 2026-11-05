@@ -34,6 +34,18 @@ of what is printed unless --all is given; the whole serial log stays on disk.
 Environment variables such as SMP=1 pass straight through to
 scripts/qemu_boot.py, as they do for the ours-verify skill's boot_check.py.
 
+A `ktest` command (the kernel test runner, //kernel/lib/ktest) is judged by
+its own grammar. A run -- `ktest`, `ktest all`, or `ktest <filter>` -- is done
+at its "ktest: SUMMARY" line, which must appear exactly once, must say
+failed=0, and must say at least one test ran. For `ktest` and `ktest all` the
+script first types `ktest list` and requires the summary's ran= to equal the
+number of "ktest: TEST" lines: a test that stops being linked in fails the run
+instead of silently disappearing from it. `ktest list` itself passes when the
+prompt comes back with at least one test listed. While any `ktest` command
+runs, console silence is a hang, as for `lockup spin all`: the script sends the
+NMI and the lockup report is the diagnosis. Every other command's rules are
+unchanged.
+
 A `crash` command (//kernel/commands/crash.cpp) panics the kernel on purpose,
 so it has to be the last command, and it is judged by the panic report it
 leads to rather than by a prompt that never comes back. It is done once the
@@ -126,6 +138,11 @@ PANIC_BANNER = "OURS KERNEL PANIC"
 RECENT_START = re.compile(r"--- recent log: (?:the last (\d+) lines|every line kept)[^\n]*\n")
 RECENT_END = "--- end of recent log ---"
 FAILED_LINE = re.compile(r"\bFAILED\b")
+# The kernel test runner's grammar (//kernel/lib/ktest/src/runner.cpp): a run
+# ends at its summary, and a list prints one TEST line per registered test.
+KTEST_SUMMARY = re.compile(r"ktest: SUMMARY ran=(\d+) passed=(\d+) failed=(\d+) skipped=(\d+)")
+KTEST_SUMMARY_END = re.compile(r"ktest: SUMMARY[^\n]*\n")
+KTEST_TEST = "ktest: TEST "
 NOISE = re.compile(LEVEL.format("debug|trace"))
 # The lockup detector's report (//kernel/lib/lockup_detector): every line of
 # its own is an error-level "lockup: " line; a CPU's registers follow its
@@ -423,6 +440,80 @@ def judge(command: str, lines: list[str]) -> bool:
     return True
 
 
+def is_ktest(command: str) -> bool:
+    """Whether |command| invokes the kernel test runner."""
+    words = command.split()
+    return bool(words) and words[0] == "ktest"
+
+
+def ktest_lists(command: str) -> bool:
+    """Whether |command| only lists the test registry."""
+    return command.split() in (["ktest", "list"], ["ktest", "?"])
+
+
+def ktest_runs_all(command: str) -> bool:
+    """Whether |command| runs every registered test, so that a preceding
+    `ktest list` gives the count its summary must match."""
+    return command.split() in (["ktest"], ["ktest", "all"])
+
+
+def ktest_summaries(lines: list[str]) -> list[dict[str, int]]:
+    """Every "ktest: SUMMARY" line among |lines|, as parsed counts."""
+    summaries = []
+    for line in lines:
+        found = KTEST_SUMMARY.search(line)
+        if found is not None:
+            counts = (int(group) for group in found.groups())
+            summaries.append(dict(zip(("ran", "passed", "failed", "skipped"), counts)))
+    return summaries
+
+
+def ktest_listed(lines: list[str]) -> int:
+    """How many tests a `ktest list` printed."""
+    return sum(1 for line in lines if KTEST_TEST in line)
+
+
+def judge_ktest_list(command: str, lines: list[str]) -> bool:
+    """Says whether a `ktest list` passed: no error line, and at least one
+    test listed."""
+    failed = [l for l in lines if FAILED_LINE.search(l) or ERROR_LINE.search(l)]
+    if failed:
+        print(f"{command}: FAIL, {len(failed)} FAILED or error line(s)")
+        return False
+    count = ktest_listed(lines)
+    if count == 0:
+        print(f'{command}: FAIL, no "{KTEST_TEST}" line -- are any tests linked in?')
+        return False
+    print(f"{command}: ok, {count} test(s)")
+    return True
+
+
+def judge_ktest_run(command: str, lines: list[str], expected: int | None) -> bool:
+    """Says whether a `ktest` run passed. |expected| is the count a preceding
+    `ktest list` gave, or None when a filter makes the count unknown."""
+    summaries = ktest_summaries(lines)
+    if len(summaries) != 1:
+        print(f'{command}: FAIL, expected one "ktest: SUMMARY" line, found {len(summaries)}')
+        return False
+    summary = summaries[0]
+    if summary["failed"] != 0:
+        print(f"{command}: FAIL, SUMMARY says {summary['failed']} test(s) failed")
+        return False
+    if expected is not None and summary["ran"] != expected:
+        print(f"{command}: FAIL, SUMMARY says {summary['ran']} ran, but {expected} test(s) were listed")
+        return False
+    if summary["ran"] == 0:
+        print(f"{command}: FAIL, SUMMARY says no test ran")
+        return False
+    failed = [l for l in lines if FAILED_LINE.search(l) or ERROR_LINE.search(l)]
+    if failed:
+        print(f"{command}: FAIL, {len(failed)} FAILED or error line(s) beside the SUMMARY")
+        return False
+    print(f"{command}: ok, {summary['ran']} ran, {summary['passed']} passed, "
+          f"{summary['skipped']} skipped")
+    return True
+
+
 def ends_machine(command: str) -> bool:
     """Whether |command| ends the machine, and so has to be the last: `crash`,
     which panics, and the lockup commands whose report ends in a panic --
@@ -656,25 +747,57 @@ def main(argv: list[str]) -> int:
         for command in args.commands:
             name = command.split()[0]
             test = name.endswith(".test")
+            ktest = is_ktest(command)
+            ktest_list = ktest and ktest_lists(command)
+            ktest_run = ktest and not ktest_list
             ends = ends_machine(command)
             returns = lockup_end(command)
-            console.silence = args.silence if stops_every_cpu(command) else 0
+            # A `ktest` command that stops answering has left the console
+            # silent with the machine still running, which is what the
+            # NMI-and-report diagnosis is for.
+            console.silence = args.silence if (stops_every_cpu(command) or ktest) else 0
             if ends:
                 done = re.compile(re.escape(PANIC_BANNER) + r"[^\n]*\n[^\n]*\n")
                 awaited = f'"{PANIC_BANNER}" and the line after it'
             elif test:
                 done = re.compile(re.escape(name) + r": (?:ok|FAILED)\b[^\n]*\n")
                 awaited = f'"{name}: ok" or FAILED line'
+            elif ktest_run:
+                done = KTEST_SUMMARY_END
+                awaited = '"ktest: SUMMARY" line'
             elif returns is not None:
                 done = returns
                 awaited = f"line matching /{returns.pattern}/"
             else:
                 done = re.compile(re.escape(PROMPT))
                 awaited = "prompt"
+
+            # A run of everything is listed first, so the summary has a count
+            # to check itself against: a test that is no longer linked in
+            # then fails the run instead of silently disappearing from it.
+            expected = None
+            if ktest_run and ktest_runs_all(command):
+                console.keep()
+                console.type("ktest list")
+                listed = console.wait_for(re.compile(re.escape(PROMPT)),
+                                          time.monotonic() + args.command_timeout)
+                list_lines = show("ktest list (setup)", console.kept(), args.all)
+                if not listed:
+                    print(f"{command}: FAIL, its setup `ktest list` did not return to the prompt "
+                          f"within {args.command_timeout:.0f}s")
+                    results.append(False)
+                    break
+                if not judge_ktest_list("ktest list (setup)", list_lines):
+                    results.append(False)
+                    break
+                expected = ktest_listed(list_lines)
+                console.drain(AFTER_VERDICT)
+
             console.keep()
             console.type(command)
-            ended = console.wait_for(done, time.monotonic() + args.command_timeout,
-                                     through=test or ends or returns is not None)
+            ended = console.wait_for(
+                done, time.monotonic() + args.command_timeout,
+                through=test or ktest_run or ends or returns is not None)
             lines = show(command, console.kept(), args.all)
             if not ended:
                 if console.nmi_at is not None:
@@ -693,8 +816,14 @@ def main(argv: list[str]) -> int:
                     passed = judge_recovery(console, command, lines, after, args.boot_timeout)
                 results.append(passed)
                 break
-            results.append(judge(command, lines))
-            if test:
+            if ktest_run:
+                passed = judge_ktest_run(command, lines, expected)
+            elif ktest_list:
+                passed = judge_ktest_list(command, lines)
+            else:
+                passed = judge(command, lines)
+            results.append(passed)
+            if test or ktest:
                 console.drain(AFTER_VERDICT)
     finally:
         console.close()

@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Unit tests for scripts/kshell_run.py's `ktest` verdict.
+
+The verdict is pure logic over the lines a command printed, so it runs here
+rather than on a booted image; the booted runs themselves are exercised by
+hand (and by the pilot migration's change record).
+"""
+from __future__ import annotations
+
+import io
+import sys
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+import kshell_run
+
+
+def quiet(function, *args):
+    with redirect_stdout(io.StringIO()):
+        return function(*args)
+
+
+def info(text: str) -> str:
+    return f"   [6351527000 cpu0 info] {text}"
+
+
+def error(text: str) -> str:
+    return f"   [6351527000 cpu0 error] {text}"
+
+
+class Classify(unittest.TestCase):
+    def test_ktest_commands(self):
+        for command in ("ktest", "ktest all", "ktest list", "ktest ?",
+                        "ktest Ktest.*", "ktest Sched.*:-Sched.Slow"):
+            self.assertTrue(kshell_run.is_ktest(command), command)
+        for command in ("lockup status", "samplerclaim.test", "ktestx", ""):
+            self.assertFalse(kshell_run.is_ktest(command), command)
+
+    def test_list_and_run_forms(self):
+        for command in ("ktest list", "ktest ?"):
+            self.assertTrue(kshell_run.ktest_lists(command))
+            self.assertFalse(kshell_run.ktest_runs_all(command))
+        self.assertFalse(kshell_run.ktest_lists("ktest all"))
+        for command in ("ktest", "ktest all"):
+            self.assertTrue(kshell_run.ktest_runs_all(command))
+        for command in ("ktest Ktest.*", "ktest all extra"):
+            self.assertFalse(kshell_run.ktest_runs_all(command))
+
+
+class Summaries(unittest.TestCase):
+    def test_parses_one_summary(self):
+        lines = [info("ktest: RUN Ktest.AssertionsPass"),
+                 info("ktest: SUMMARY ran=3 passed=2 failed=0 skipped=1")]
+        self.assertEqual(kshell_run.ktest_summaries(lines),
+                         [{"ran": 3, "passed": 2, "failed": 0, "skipped": 1}])
+
+    def test_no_summary(self):
+        self.assertEqual(kshell_run.ktest_summaries([info("ktest: RUN Ktest.AssertionsPass")]), [])
+
+    def test_counts_listed_tests(self):
+        lines = [info("ktest: TEST Ktest.AssertionsPass"),
+                 info("ktest: TEST Ktest.SkipIsReported"),
+                 info("ktest: RUN Ktest.AssertionsPass")]
+        self.assertEqual(kshell_run.ktest_listed(lines), 2)
+
+
+class JudgeList(unittest.TestCase):
+    def test_list_with_tests(self):
+        lines = [info("ktest: TEST Ktest.AssertionsPass"),
+                 info("ktest: TEST Ktest.SkipIsReported")]
+        self.assertTrue(quiet(kshell_run.judge_ktest_list, "ktest list", lines))
+
+    def test_list_without_tests(self):
+        self.assertFalse(quiet(kshell_run.judge_ktest_list, "ktest list", []))
+
+    def test_list_with_error_line(self):
+        lines = [info("ktest: TEST Ktest.AssertionsPass"),
+                 error('ktest: ERROR the test name "A.B" is registered twice')]
+        self.assertFalse(quiet(kshell_run.judge_ktest_list, "ktest list", lines))
+
+
+class JudgeRun(unittest.TestCase):
+    def run_lines(self, summary: str, *extra: str) -> list[str]:
+        return [info("ktest: RUN Ktest.AssertionsPass"),
+                info("ktest: OK Ktest.AssertionsPass (100 us)"),
+                info(summary),
+                *extra]
+
+    def test_passing_run_of_everything(self):
+        lines = self.run_lines("ktest: SUMMARY ran=3 passed=2 failed=0 skipped=1")
+        self.assertTrue(quiet(kshell_run.judge_ktest_run, "ktest all", lines, 3))
+
+    def test_passing_filtered_run_has_no_expected_count(self):
+        lines = self.run_lines("ktest: SUMMARY ran=1 passed=1 failed=0 skipped=0")
+        self.assertTrue(quiet(kshell_run.judge_ktest_run, "ktest Ktest.*", lines, None))
+
+    def test_failed_test(self):
+        lines = self.run_lines("ktest: SUMMARY ran=1 passed=0 failed=1 skipped=0",
+                               error("ktest: FAILED Ktest.AssertionsPass (1 of 2 checks failed)"))
+        self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest all", lines, 1))
+
+    def test_fewer_ran_than_listed(self):
+        lines = self.run_lines("ktest: SUMMARY ran=2 passed=2 failed=0 skipped=0")
+        self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest all", lines, 3))
+
+    def test_no_test_ran(self):
+        lines = self.run_lines("ktest: SUMMARY ran=0 passed=0 failed=0 skipped=0")
+        self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest NoSuch.*", lines, None))
+
+    def test_missing_summary(self):
+        lines = [info("ktest: RUN Ktest.AssertionsPass"),
+                 info("ktest: OK Ktest.AssertionsPass (100 us)")]
+        self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest all", lines, 1))
+
+    def test_two_summaries(self):
+        summary = "ktest: SUMMARY ran=1 passed=1 failed=0 skipped=0"
+        lines = self.run_lines(summary, info(summary))
+        self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest all", lines, 1))
+
+    def test_error_line_beside_a_passing_summary(self):
+        lines = self.run_lines("ktest: SUMMARY ran=1 passed=1 failed=0 skipped=0",
+                               error("some kernel error"))
+        self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest all", lines, 1))
+
+
+class ExistingVerdict(unittest.TestCase):
+    def test_a_command_test_still_needs_its_ok_line(self):
+        lines = ["   [.. info] samplerclaim.test: ok -- 3 checks"]
+        self.assertTrue(quiet(kshell_run.judge, "samplerclaim.test", lines))
+        self.assertFalse(quiet(kshell_run.judge, "samplerclaim.test", []))
+
+
+if __name__ == "__main__":
+    unittest.main()

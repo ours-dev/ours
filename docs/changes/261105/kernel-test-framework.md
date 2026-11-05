@@ -162,3 +162,73 @@ None on this step.
 1. Why is the test-capable kernel packaged by the dbg image rather than the dev image, and which two properties of that image make it the right one?
 2. Both images still link `//kernel/commands`, the 46 `*.test` commands included, although only dbg starts the kernel shell. Which switch decides that, and why is it a build argument when it is the cmdline's `kernel.shell` that decides whether the shell runs?
 3. Why is a test record a 24-byte constant in `.data.rel.ro` rather than something a test registers when it starts, and what would "register at run time" cost?
+
+## The host learns the kernel test runner's grammar (2026-11-05)
+
+**Files**
+- `scripts/kshell_run.py` — the `ktest` classification, the summary parser, the list and run judges, the setup list a run of everything is checked against, the hang diagnosis, and the module docstring.
+- `scripts/test_kshell_run.py` — new: 17 unit tests over the pure verdict logic.
+- `.agents/skills/verify/SKILL.md` — the "Kernel tests" section names the `ktest` command and the script's verdict.
+
+**Symptom**
+
+After the first records landed, `kshell_run.py` judged `ktest all` with its generic rule: no FAILED or error line, and the prompt back. That cannot tell a complete run from a partial one. If one of the three tests stopped being linked, the run would print a smaller SUMMARY -- or, before the runner's error path existed, none at all -- and still pass; the summary was never parsed. A `ktest` command that hangs was not watched either: after boot the console's silence counts as a hang only for `lockup spin all`, so the command would wait out `--command-timeout` with no NMI and no lockup report.
+
+**Cause**
+
+The generic rule was written for the console-command tests, whose grammar is "print `<name>: ok` and return to the prompt". A `ktest` run ends with something stronger -- a summary line carrying the three counts -- and the host's job is to check those numbers, not the presence of output. Treating the run as "any other command" discarded exactly the information the runner added for the host. The hang side is the same mismatch: a `ktest` command runs arbitrary test code with no in-kernel timeout, so the only diagnosis for a hang is the NMI and the lockup report -- machinery that was enabled for the one command known to stop every CPU, not for the command that can run anything.
+
+**Change**
+
+`kshell_run.py` now classifies a command by its first word, and then:
+
+- A run (`ktest`, `ktest all`, `ktest <filter>`) ends at its `ktest: SUMMARY` line, and the line is kept (`through=True`) so it is printed and parsed. Exactly one summary must be present, `failed` must be 0, and `ran` must be non-zero.
+- For `ktest` and `ktest all` the script first types `ktest list` and requires `ran` to equal the number of `ktest: TEST` lines. A test that stops being linked in then fails the run instead of disappearing from it silently.
+- A filter run has no expected count, because the host does not re-implement the selection grammar; it only requires `ran > 0`.
+- `ktest list` (and `?`) passes when the prompt returns with at least one TEST line and no error line.
+- Any remaining FAILED or error line still fails the command, and the generic `*.test`, `crash` and `lockup` rules are untouched.
+- While a `ktest` command runs, `console.silence` is the configured silence, as for `lockup spin all`: a hang is NMI'd and the lockup report is the diagnosis.
+- After a `ktest` command the script drains `AFTER_VERDICT`, like a `*.test` command, so the next command is not typed into a shell still printing.
+
+The verdict helpers are pure over the captured lines -- `is_ktest`, `ktest_lists`, `ktest_runs_all`, `ktest_summaries`, `ktest_listed`, `judge_ktest_list`, `judge_ktest_run` -- which is what lets the new unit tests run without QEMU.
+
+Rejected: compute the expected count for a filter run on the host by globbing the listed names. That duplicates the filter grammar in a second language, where the two can drift, for a check the run-of-everything case already has; a filter that matches nothing is caught by `ran == 0` already. The glob stays in the kernel only.
+
+**Reference**
+
+- Zircon: `run_unittests` in `zircon/kernel/lib/unittest/console.rs` prints a per-test `PASSED`/`FAILED` and a `SUMMARY: Ran N test case(s): M failed` line, and the host harness reads those lines the same way.
+- GoogleTest: the test binary's exit code is the verdict (`UnitTest::Run` answers 0 or 1). A kernel cannot exit, so the summary line carries the same contract and the host turns it back into an exit code.
+- This project: `docs/design/261105/kernel-test-framework.md`, "Host side".
+
+**Verification**
+
+- `python3 scripts/test_kshell_run.py`: 17 tests, all passing -- classification, summary parsing, list and run verdicts, missing and duplicated summary, count mismatch, a failed test, an error line beside a passing summary, and the untouched legacy `*.test` rule.
+- Booted runs on `out/bringup.x86`:
+  - `ktest all`: the setup list reports `3 test(s)`; the run prints two `OK`, one `SKIP` and `SUMMARY ran=3 passed=2 failed=0 skipped=1`; the verdict is `ktest all: ok, 3 ran, 2 passed, 1 skipped`; exit 0.
+  - `ktest Ktest.Assertions*`: `SUMMARY ran=1 passed=1 failed=0 skipped=0`, verdict ok, exit 0.
+  - `ktest NoSuch.*`: the `ERROR` line, `SUMMARY ran=0`, verdict `FAIL, SUMMARY says no test ran`, exit 1.
+  - `ktest list`: `ok, 3 test(s)`, exit 0.
+  - `samplerclaim.test`: unchanged, `ok`, exit 0.
+- `python3 .agents/skills/verify/scripts/boot_check.py`: build ok; dbg PASS (46/5/0), rel PASS (44/8/0, 7/7 required); host-tests 173 passed / 0 failed.
+- Not verified: the hang path end to end, which would need a deliberately hanging test; its branches are the existing NMI/lockup ones, and the `ktest` runs in this step never hang.
+
+**Deliberately not done**
+
+- No new runner script and no `verify` integration: the same `kshell_run.py` invocation is the workflow, as the design decided.
+- The filter grammar is not duplicated on the host (see Change).
+- `scripts/cov_kernel.py` still enumerates only `*.test` commands; it learns the test registry in the pilot step.
+- No parsing of per-test timings, and no JSON output.
+
+**How it was found**
+
+None; step 2's runs already printed the counts that the host did not read.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+1. Why does `ktest all` need a `ktest list` first while `ktest <filter>` does not, and which class of bug does the count check catch?
+2. Why does the host still fail a `ktest` run on an error-level line even when the summary says `failed=0`?
+3. A hung `ktest` command never returns a summary. What does the NMI/lockup path produce, and why is it a better diagnosis than the command timeout alone?
