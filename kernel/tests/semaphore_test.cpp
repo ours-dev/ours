@@ -1,25 +1,25 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `semaphore.test`: sync::Semaphore, the counting semaphore a port's waiters
-// sleep on (.agents/tasks/microkernel-interrupts/PLAN.md, step 3). Its one
-// invariant is that a thread waits only while the count is zero: a post hands
-// its unit to a waiter if there is one and banks it otherwise, and a wait
-// takes a banked unit if there is one and blocks otherwise. Each check below
-// looks at one side of that:
+// Semaphore.*: sync::Semaphore, the counting semaphore a port's waiters sleep
+// on (.agents/tasks/microkernel-interrupts/PLAN.md, step 3). Its one invariant
+// is that a thread waits only while the count is zero: a post hands its unit to
+// a waiter if there is one and banks it otherwise, and a wait takes a banked
+// unit if there is one and blocks otherwise. Each test below looks at one side
+// of that:
 //
-//   - posts with nobody waiting are banked: as many polls as posts take a
-//     unit each without blocking, and the next poll answers TimeOut;
-//   - a wait with nothing banked blocks until another thread posts, and the
-//     post hands its unit over rather than banking it;
-//   - a wait with a deadline times out and leaves the queue, so a post after
-//     it is banked instead of going to a waiter that has gone;
-//   - a post from a timer handler, in interrupt context, wakes a parked
-//     waiter: what an interrupt object will do to a port;
-//   - with several waiters, each post wakes exactly one.
+//   - BanksPostsWithNoWaiter: posts with nobody waiting are banked, and the
+//     next poll answers TimeOut;
+//   - PostHandsUnitToAParkedWaiter: a wait with nothing banked blocks until
+//     another thread posts, and the post hands its unit over;
+//   - TimedWaitTimesOutAndLeavesTheQueue: a wait with a deadline times out and
+//     leaves the queue, so a later post is banked;
+//   - PostFromTimerHandlerWakesAParkedWaiter: a post from a timer handler, in
+//     interrupt context, wakes a parked waiter;
+//   - EachPostWakesExactlyOne: with several waiters, each post wakes one.
 //
-// A console command rather than a host test for the reason mutex.stress
-// gives: a semaphore's slow path is the scheduler.
+// In-kernel rather than a host test for the reason mutex.stress gives: a
+// semaphore's slow path is the scheduler.
 #include <ours/mm/gaf.hpp>
 #include <ours/sync/semaphore.hpp>
 #include <ours/task/thread.hpp>
@@ -29,12 +29,12 @@
 #include <array>
 #include <atomic>
 
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
-#include <logz4/log.hpp>
+#include <ktest/ktest.hpp>
 
 namespace ours {
 namespace {
+
     using task::Thread;
 
     /// How long a wake may take before the test calls it lost. Generous for
@@ -47,25 +47,10 @@ namespace {
     /// than one thread.
     constexpr auto SETTLE = Milliseconds(20);
 
-    /// Units banked by the first check.
+    /// Units banked by the first test.
     constexpr usize BANKED = 8;
-    /// Threads waiting at once in the crowd check.
+    /// Threads waiting at once in the crowd test.
     constexpr usize CROWD = 4;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("semaphore.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("semaphore.test: FAIL  {}", name);
-    }
 
     /// A deadline long past, which makes a wait a poll.
     auto already_passed() -> time::Deadline {
@@ -105,26 +90,25 @@ namespace {
         return thread->join(&retcode, time::Deadline::infinite()) == Status::Ok;
     }
 
-    auto check_banked(Tally &tally) -> void {
+    KTEST(Semaphore, BanksPostsWithNoWaiter) {
         sync::Semaphore sema;
         for (usize i = 0; i < BANKED; ++i) {
             sema.post();
         }
-        verdict(tally, sema.count() == BANKED, "posts with nobody waiting are banked");
+        EXPECT_EQ(sema.count(), BANKED, "posts with nobody waiting are banked");
 
         usize taken = 0;
         while (taken < BANKED && sema.wait(already_passed()) == Status::Ok) {
             taken += 1;
         }
-        verdict(tally, taken == BANKED, "as many polls as posts take a unit each");
-        verdict(tally, sema.wait(already_passed()) == Status::TimeOut,
-                "the next poll answers TimeOut");
+        EXPECT_EQ(taken, BANKED, "as many polls as posts take a unit each");
+        EXPECT_EQ(sema.wait(already_passed()), Status::TimeOut, "the next poll answers TimeOut");
     }
 
-    /// Shared between the command, which waits, and the thread that posts
-    /// once it has seen the command parked. On the heap, and freed only once
-    /// the poster is joined: if the join fails, it is leaked rather than
-    /// freed under a thread that may still use it.
+    /// Shared between the test, which waits, and the thread that posts once it
+    /// has seen the test parked. On the heap, and freed only once the poster
+    /// is joined: if the join fails, it is leaked rather than freed under a
+    /// thread that may still use it.
     struct Handoff {
         sync::Semaphore sema;
         std::atomic<bool> saw_waiter{false};
@@ -139,52 +123,47 @@ namespace {
         return 0;
     }
 
-    auto check_handoff(Tally &tally) -> void {
+    KTEST(Semaphore, PostHandsUnitToAParkedWaiter) {
         auto *const h = new (mm::GAF_KERNEL) Handoff{};
-        if (h == nullptr) {
-            verdict(tally, false, "allocate the handoff case");
-            return;
-        }
+        ASSERT_NONNULL(h, "allocate the handoff case");
+
         auto *const poster = start("semaphore-test-poster", handoff_poster, h);
         if (poster == nullptr) {
-            verdict(tally, false, "spawn the poster");
             delete h;
-            return;
+            FAIL("spawn the poster");
         }
 
         auto const status = h->sema.wait(lost_after_from_now());
         if (!join(poster)) {
-            verdict(tally, false, "join the poster; leaking its state");
-            return;
+            FAIL("join the poster; leaking its state");
         }
 
-        verdict(tally, status == Status::Ok, "a wait with nothing banked returns once posted");
-        verdict(tally, h->saw_waiter.load(std::memory_order_acquire),
-                "and it was parked until the post");
-        verdict(tally, h->sema.count() == 0,
-                "the post handed its unit over rather than banking it");
+        EXPECT_EQ(status, Status::Ok, "a wait with nothing banked returns once posted");
+        EXPECT_TRUE(h->saw_waiter.load(std::memory_order_acquire),
+                    "and it was parked until the post");
+        EXPECT_EQ(h->sema.count(), u64{0}, "the post handed its unit over rather than banking it");
         delete h;
     }
 
-    auto check_timeout(Tally &tally) -> void {
+    KTEST(Semaphore, TimedWaitTimesOutAndLeavesTheQueue) {
         sync::Semaphore sema;
         auto const started = time::SteadyClock::now();
         auto const status = sema.wait(time::Deadline::at(started + TIMEOUT));
         auto const elapsed = time::SteadyClock::now() - started;
 
-        log::info("semaphore.test:   timed wait answered {} after {} us", to_string(status),
-                  duration_cast<Microseconds>(elapsed).count());
-        verdict(tally, status == Status::TimeOut, "a wait that nothing posts times out");
-        verdict(tally, elapsed >= TIMEOUT, "and not before its deadline");
-        verdict(tally, sema.num_waiters() == 0, "the timed-out waiter has left the queue");
+        auto const elapsed_us = duration_cast<Microseconds>(elapsed).count();
+        EXPECT_EQ(status, Status::TimeOut, "a wait that nothing posts times out after {} us",
+                  elapsed_us);
+        EXPECT_TRUE(elapsed >= TIMEOUT, "and not before its deadline ({} us)", elapsed_us);
+        EXPECT_EQ(sema.num_waiters(), usize{0}, "the timed-out waiter has left the queue");
 
         sema.post();
-        verdict(tally, sema.count() == 1, "so a post after it is banked, not lost on it");
-        verdict(tally, sema.wait(already_passed()) == Status::Ok, "and the next poll takes it");
+        EXPECT_EQ(sema.count(), u64{1}, "so a post after it is banked, not lost on it");
+        EXPECT_EQ(sema.wait(already_passed()), Status::Ok, "and the next poll takes it");
     }
 
     /// Shared with a timer handler. The handler re-arms itself until it sees
-    /// the command parked, so the post below always lands on a waiter rather
+    /// the test parked, so the post below always lands on a waiter rather
     /// than on the count, however slow the emulated CPU is.
     struct IrqCase {
         sync::Semaphore sema;
@@ -192,11 +171,11 @@ namespace {
         usize rearms = 0;
     };
 
-    /// Enough re-arms, POLL_INTERVAL apart, to outlast the command's
-    /// LOST_AFTER: the handler gives up and posts after that anyway.
+    /// Enough re-arms, POLL_INTERVAL apart, to outlast the test's LOST_AFTER:
+    /// the handler gives up and posts after that anyway.
     constexpr usize MAX_REARMS = 5000;
 
-    auto check_post_from_interrupt(Tally &tally) -> void {
+    KTEST(Semaphore, PostFromTimerHandlerWakesAParkedWaiter) {
         IrqCase c;
         time::Timer timer;
         auto *const pc = &c;
@@ -215,19 +194,18 @@ namespace {
                        });
 
         auto const status = c.sema.wait(lost_after_from_now());
-        // Waits for a handler still running; after it, |c| is the command's.
+        // Waits for a handler still running; after it, |c| is the test's.
         auto _ = timer.cancel();
 
-        log::info("semaphore.test:   the timer re-armed {} time(s) before it saw the waiter",
-                  c.rearms);
-        verdict(tally, status == Status::Ok, "a post from a timer interrupt wakes a parked waiter");
-        verdict(tally, c.waiters_at_post == 1, "the waiter was parked when the interrupt posted");
-        verdict(tally, c.sema.count() == 0, "and the unit went to it, not to the count");
+        EXPECT_EQ(status, Status::Ok, "a post from a timer interrupt wakes a parked waiter");
+        EXPECT_EQ(c.waiters_at_post, usize{1},
+                  "the waiter was parked when the interrupt posted after {} re-arms", c.rearms);
+        EXPECT_EQ(c.sema.count(), u64{0}, "and the unit went to it, not to the count");
     }
 
-    /// Shared between the command and CROWD waiters. On the heap, as Handoff
-    /// is; each waiter's wait ends by LOST_AFTER at the latest, so the joins
-    /// do not hang.
+    /// Shared between the test and CROWD waiters. On the heap, as Handoff is;
+    /// each waiter's wait ends by LOST_AFTER at the latest, so the joins do
+    /// not hang.
     struct Crowd {
         sync::Semaphore sema;
         time::Deadline deadline;
@@ -245,12 +223,9 @@ namespace {
         return 0;
     }
 
-    auto check_crowd(Tally &tally) -> void {
+    KTEST(Semaphore, EachPostWakesExactlyOne) {
         auto *const crowd = new (mm::GAF_KERNEL) Crowd{};
-        if (crowd == nullptr) {
-            verdict(tally, false, "allocate the crowd case");
-            return;
-        }
+        ASSERT_NONNULL(crowd, "allocate the crowd case");
         auto &c = *crowd;
         c.deadline = lost_after_from_now();
 
@@ -260,10 +235,10 @@ namespace {
             waiter = start("semaphore-test-waiter", crowd_waiter, crowd);
             spawned &= waiter != nullptr;
         }
-        verdict(tally, spawned, "spawn the waiters");
+        EXPECT_TRUE(spawned, "spawn the waiters");
 
         auto const parked = poll_until([&c] { return c.sema.num_waiters() == CROWD; });
-        verdict(tally, parked, "every waiter parks");
+        EXPECT_TRUE(parked, "every waiter parks");
 
         for (usize i = 0; i + 1 < CROWD; ++i) {
             c.sema.post();
@@ -271,10 +246,9 @@ namespace {
         auto const woke =
             poll_until([&c] { return c.woken.load(std::memory_order_acquire) == CROWD - 1; });
         auto _ = Thread::Current::sleep_for(SETTLE, task::Interruptible::No);
-        verdict(tally,
-                woke && c.woken.load(std::memory_order_acquire) == CROWD - 1 &&
-                    c.sema.num_waiters() == 1,
-                "each of the posts but one woke one waiter, and one waiter is left");
+        EXPECT_TRUE(woke && c.woken.load(std::memory_order_acquire) == CROWD - 1 &&
+                        c.sema.num_waiters() == 1,
+                    "each of the posts but one woke one waiter, and one waiter is left");
 
         c.sema.post();
         auto joined = true;
@@ -284,35 +258,13 @@ namespace {
             }
         }
         if (!joined) {
-            verdict(tally, false, "join the waiters; leaking their state");
-            return;
+            FAIL("join the waiters; leaking their state");
         }
-        verdict(tally,
-                c.woken.load(std::memory_order_acquire) == CROWD &&
-                    c.failed.load(std::memory_order_acquire) == 0 && c.sema.count() == 0,
-                "the last post woke the last waiter, and nothing was banked");
+        EXPECT_TRUE(c.woken.load(std::memory_order_acquire) == CROWD &&
+                        c.failed.load(std::memory_order_acquire) == 0 && c.sema.count() == 0,
+                    "the last post woke the last waiter, and nothing was banked");
         delete crowd;
     }
 
-    auto semaphore_test_command(int, char **) -> int {
-        Tally tally;
-
-        check_banked(tally);
-        check_handoff(tally);
-        check_timeout(tally);
-        check_post_from_interrupt(tally);
-        check_crowd(tally);
-
-        if (tally.failed != 0) {
-            log::error("semaphore.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("semaphore.test: ok -- {} checks", tally.passed);
-        return 0;
-    }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(SemaphoreTest, "semaphore.test", ours::semaphore_test_command,
-             "post and wait on a counting semaphore, from threads and from a timer interrupt");

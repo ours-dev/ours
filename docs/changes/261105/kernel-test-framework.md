@@ -232,3 +232,73 @@ None.
 1. Why does `ktest all` need a `ktest list` first while `ktest <filter>` does not, and which class of bug does the count check catch?
 2. Why does the host still fail a `ktest` run on an error-level line even when the summary says `failed=0`?
 3. A hung `ktest` command never returns a summary. What does the NMI/lockup path produce, and why is it a better diagnosis than the command timeout alone?
+
+## The three-test pilot migrates, and coverage learns to find tests (2026-11-05)
+
+**Files**
+- `kernel/tests/sampler_claim_test.cpp`, `kernel/tests/semaphore_test.cpp`, `kernel/tests/vma_wx_test.cpp` — moved from `kernel/commands/` and converted from console commands to `KTEST` tests.
+- `kernel/commands/BUILD.gn`, `kernel/tests/BUILD.gn` — the three commands leave the command library; the three tests get `kernel_test()` targets and the header dependencies they reach.
+- `kernel/commands/user_copy_test.cpp`, `kernel/commands/mutex_stress.cpp` — the comments that said there is no in-kernel test runtime now say the test has not migrated.
+- `kernel/lib/ktest/include/ktest/format.hpp` — `finish()` is `inline` (the ODR fix below).
+- `scripts/cov_kernel.py`, `scripts/test_cov_kernel.py` — the coverage run asks the booted kernel for its tests and runs them; the dbg kernel ELF is `vmours.with-tests`; the new list parser is unit-tested.
+- `docs/repairs/261105/kernel-test-framework.md` — new: the remaining 43 console commands, with the three that take arguments named.
+
+**Symptom**
+
+The interface had ten tests, but only the three smoke tests were real work: every other kernel test in the tree was still a console command with its own reporting. Two consumers still assumed that: `scripts/cov_kernel.py` enumerated only `GKTL_COMMAND`-registered `*.test` commands, so a migrated test would silently leave the coverage run, and its `KERNEL_ELF` still named the dbg image's old kernel (`vmours`, not `vmours.with-tests`).
+
+**Cause**
+
+Nothing was broken; this is the design's v1 measurement. The migrated tests are the same checks as the commands they replace, so the step's value is showing the interface can carry them without losing one, and finding out what a real test needs that the smoke tests did not. Two things showed up:
+
+- A header function that is not `inline`: `ktest::internal::finish()` was a plain function in `format.hpp`. The host test had one translation unit including that header; the three kernel test translation units are the first link with three, and it failed with `multiple definition of 'ktest::internal::finish(...)'`. The header is shared by every test file, so the function has to be `inline` (or a template, as its neighbours are).
+- Sign-compare on untyped literals: `EXPECT_EQ(sema.count(), 0)` compares `u64` with `int`, and the kernel builds with `-Werror`; the literal has to say what it is, `u64{0}`. The old `verdict(count == 0, ...)` expressions had the same comparison but the compiler could see the promoted context differently; the assertion macro captures both sides as `auto const &`, which makes the types explicit.
+
+**Change**
+
+Per file:
+
+- `sampler_claim_test.cpp` (108 lines): one `KTEST(SamplerClaim, HoldsClaimUntilMemoryIsGone)`. The "another session holds the claim" path is `KTEST_SKIP`, the probe session and the session under test are made and closed in their own scopes (closing the last handle is what releases them), and the three checks are `ASSERT_OK`, `EXPECT_TRUE(make(&second) == Status::AlreadyExists)` and `EXPECT_OK`.
+- `semaphore_test.cpp` (318 lines): five tests, one per aspect — `BanksPostsWithNoWaiter`, `PostHandsUnitToAParkedWaiter`, `TimedWaitTimesOutAndLeavesTheQueue`, `PostFromTimerHandlerWakesAParkedWaiter`, `EachPostWakesExactlyOne`. The helpers (`poll_until`, `start`, `join`, `Handoff`, `IrqCase`, `Crowd`) are unchanged; allocation and spawn paths became `ASSERT_NONNULL`, the two join-failure paths `FAIL(...)` where the command deliberately leaked, and the timed wait passes its elapsed microseconds into the assertion message. The worker threads still only publish counters for the test thread; no assertion runs on a worker thread.
+- `vma_wx_test.cpp` (108 lines): one `KTEST(VmaWx, MapRefusesWriteAndExecute)`. Address-space creation is `ASSERT_OK`; the region-and-VMO setup keeps its single `EXPECT_TRUE(made)` so the map checks are skipped when setup failed; the three map checks and the destroy are `EXPECT_*`/`EXPECT_OK`.
+- Each file lost its `Tally`, its `verdict()`, its final `ok`/`FAILED` line and its `GKTL_COMMAND`, and its "why a console command" comment became "why an in-kernel test".
+- `scripts/cov_kernel.py`: a probe boot types `ktest list` and turns the names into `ktest <name>` commands; the run then types those, then the remaining `*.test` from the registrations. A `ktest` command's completion is its summary line with `failed=0`. The dbg kernel ELF constant follows the image swap (`vmours.with-tests`). The list parser is a pure helper, `ktest_commands(text)`, covered by `scripts/test_cov_kernel.py`.
+
+**Reference**
+
+- The interface's own design, `docs/design/261105/kernel-test-framework.md`, "Pilot migration".
+- Zircon's kernel framework has the same shape: a test is a function, a suite is a naming prefix, and the runner owns the reporting. The `Tally`/`verdict` the migrated files carried was a local copy of what the `EXPECT` family already does.
+- GoogleTest: the equivalent move is from a `main()` that prints its own verdict to `TEST`/`EXPECT`.
+
+**Verification**
+
+- `python3 .agents/skills/verify/scripts/boot_check.py`: build ok; dbg PASS (46/5/0), rel PASS (44/8/0, 7/7 required); host-tests 173 passed / 0 failed.
+- `ktest list` on the dbg image lists ten tests: the three `Ktest.*`, `SamplerClaim.HoldsClaimUntilMemoryIsGone`, the five `Semaphore.*`, and `VmaWx.MapRefusesWriteAndExecute`.
+- `ktest all`: `SUMMARY ran=10 passed=9 failed=0 skipped=1`, verdict `ok, 10 ran, 9 passed, 1 skipped`, exit 0. The skip is `Ktest.SkipIsReported`.
+- Per migration, all exit 0: `ktest SamplerClaim.*` ran 1 (45.7 ms), `ktest VmaWx.*` ran 1 (859 us), `ktest Semaphore.*` ran 5 (434 us, 1.7 ms, 5.6 ms, 2.0 ms, 26.5 ms).
+- The old command names are gone: `samplerclaim.test` now prints nothing and fails after the command timeout. That is the expected user-visible cost: the invocation changes from `<name>.test` to `ktest Suite.Name`.
+- `python3 scripts/test_cov_kernel.py`: 19 tests, all passing (the two new `ktest_commands` cases included).
+- Coverage: `python3 scripts/cov_kernel.py --out out/cov-kernel` exited 0 after running the ten interface tests and the 43 remaining `*.test` commands in the coverage variant. The dbg kernel's report is 74.4% lines (42,153 of 56,631), with `kernel/lib/ktest` at 42.3% (142/336), `system/lib/hsien` at 52.5% (21/40), and the areas the migrated tests reach at `kernel/lib/sampler` 80.4%, `kernel/object` 90.3%, `kernel/mm` 82.0%, `kernel/kernel/sync` 86.1%. This is not like-for-like with the design's earlier 68.1% (26,894 of 39,491 on 2026-10-09): the tree and the denominator grew in between. Test sources themselves are not in the default report (`--all` counts them), so `kernel/tests/` has no row here.
+- `clang-tidy -p out/bringup.x86` on the three migrated files: no diagnostic. Format, GN layout and docs lint clean; `gn check` OK on the three `kernel_test()` targets and the aggregate.
+- Not measured: the wall time of `ktest all` against the old three-command sequence; the console is the same either way and the set was never run together before.
+
+**Deliberately not done**
+
+- The other 43 commands stay console commands; `docs/repairs/261105/kernel-test-framework.md` is the list, and the three that take arguments are called out there because the interface has no per-run argument mechanism yet.
+- One `KTEST` per original command body, except the semaphore's five aspects, which were already five separate functions. Splitting `vmo_snapshot`-sized commands belongs to their own migration.
+- The host verdict's legacy `*.test` path and `cov_kernel.py`'s registration scrape stay: the unmigrated commands still need both.
+- No performance measurement; this is not a performance change.
+
+**How it was found**
+
+None; the two problems came from the first build and link of the migrated tests — `multiple definition of 'ktest::internal::finish(...)'` pointed at the header, and `-Wsign-compare` pointed at `EXPECT_EQ(sema.count(), 0)`.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+1. The migrated semaphore tests spawn threads that wait and post. Why does none of them call `EXPECT_*` from a worker thread, and what does the interface do if one does?
+2. Why does `cov_kernel.py` boot once to ask for the test list and then again to run, and why is the first boot's profile not merged?
+3. The migrated tests are the same checks as the commands they replaced. Name two places where the conversion turned a fatal setup path into its own named assertion, and say whether that added or lost coverage of the original behaviour.

@@ -35,9 +35,9 @@
 //     fault the boot takes is on an address that cannot be resolved -- and
 //     must still fail cleanly on the hole.
 //
-// Why a console command: the tree has no in-kernel unittest runtime yet (see
-// //kernel/products/bin:vmours.with-tests), and what is under test is a page
-// fault the MMU raises on a user mapping, which no host test can produce.
+// Why a console command: this test has not moved to the kernel test interface
+// (//kernel/lib/ktest) yet, and what is under test is a page fault the MMU
+// raises on a user mapping, which no host test can produce.
 //
 // Why its own address space: kshell runs a command on its own kernel thread,
 // which has no user address space to borrow, and mapping scratch pages into

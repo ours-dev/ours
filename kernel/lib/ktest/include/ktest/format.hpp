@@ -96,7 +96,7 @@ auto append_format(Buffer &buffer, std::format_string<Args...> format, Args &&..
 
 /// Ends the write and answers what was written, nul-terminated.
 [[nodiscard]]
-auto finish(Buffer &buffer) -> std::string_view {
+inline auto finish(Buffer &buffer) -> std::string_view {
     *buffer.out = '\0';
     return std::string_view{buffer.begin, used(buffer)};
 }

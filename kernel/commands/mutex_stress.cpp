@@ -21,9 +21,9 @@
 // read-spin-write, so two threads inside at once lose increments, and
 // holder() must name the thread that just acquired.
 //
-// This is a console command rather than a unit test because the tree has no
-// in-kernel unittest runtime yet (see //kernel/products/bin:vmours.with-tests),
-// and a mutex cannot be tested on the host: its slow path is the scheduler.
+// This is a console command because it has not moved to the kernel test
+// interface (//kernel/lib/ktest) yet, and a mutex cannot be tested on the
+// host: its slow path is the scheduler.
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>

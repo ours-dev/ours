@@ -7,14 +7,39 @@ kernel_test("framework") {
   sources = [ "ktest_test.cpp" ]
 }
 
-# Kernel tests and the interface that runs them. The tests themselves arrive
-# as they migrate from console commands; the aggregate label is what
-# vmours.with-tests links, so its dependencies are the test interface and one
-# kernel_test() target per area.
+# The header surfaces the migrated tests reach. The implementations are in the
+# kernel the tests are linked into, so these are header-only dependencies.
+_HEADER_DEPS = [
+  "//kernel/lib/heap:headers",
+  "//kernel/mm:headers",
+  "//kernel/object:headers",
+  "//system/lib/ustl:headers",
+]
+
+kernel_test("sampler_claim") {
+  sources = [ "sampler_claim_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("semaphore") {
+  sources = [ "semaphore_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("vma_wx") {
+  sources = [ "vma_wx_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+# Kernel tests and the interface that runs them. The aggregate label is what
+# vmours.with-tests links.
 source_set("kernel.tests") {
   testonly = true
   deps = [
     ":framework",
+    ":sampler_claim",
+    ":semaphore",
+    ":vma_wx",
     "//kernel/lib/ktest",
   ]
 }
