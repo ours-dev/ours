@@ -12,7 +12,7 @@
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/priv/alloc_policy.hpp>
 #include <ours/mm/priv/alloc_request.hpp>
-#include <ours/mm/priv/zone_selector.hpp>
+#include <ours/mm/priv/zone_candidates.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
 
@@ -122,8 +122,8 @@ class ZoneList {
     /// Eligible zones in fallback order. Availability is decided by each zone.
     [[nodiscard]]
     FORCE_INLINE
-    auto candidates(AllocRequest const &request) const -> ZoneSelector {
-        return ZoneSelector{fallback(), request};
+    auto candidates(AllocRequest const &request) const -> ZoneCandidates {
+        return ZoneCandidates{fallback(), request};
     }
 
     auto dump_fallback() const -> void;

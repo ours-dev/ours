@@ -19,7 +19,7 @@
 ///     up (//kernel/lib/numa/test:fallback_order); what is checked here is the
 ///     derivation against this machine's own masks -- every node with memory
 ///     exactly once, never the node itself, nearest first.
-///   - ZoneSelector, which every allocation now walks: its three filters
+///   - ZoneCandidates, which every allocation now walks: its three filters
 ///     (holes in the by-type array, the request's node mask, the request's
 ///     zone-type range in both directions) and Gaf::ThisNode, which is served
 ///     by resolve_request() narrowing the mask rather than by switching lists.
@@ -48,7 +48,7 @@
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
-#include <ours/mm/priv/zone_selector.hpp>
+#include <ours/mm/priv/zone_candidates.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/task/thread.hpp>
@@ -280,7 +280,7 @@ namespace {
                 "build_fallback_orders() with no members leaves an empty order");
     }
 
-    auto count_selected(mm::ZoneSelector const &selector) -> usize {
+    auto count_selected(mm::ZoneCandidates const &selector) -> usize {
         usize count = 0;
         for (auto it = selector.begin(); it != selector.end(); ++it) {
             count += 1;
@@ -294,7 +294,7 @@ namespace {
                                    mm::Origin{.node = node.nid(), .cpu = Cpu::id()});
     }
 
-    auto check_zone_selector(Tally &tally, PmNode &node) -> void {
+    auto check_zone_candidates(Tally &tally, PmNode &node) -> void {
         auto const *const list = node.zone_list();
 
         usize local_count = 0;
@@ -310,9 +310,9 @@ namespace {
         // Holes: the by-type array has a null for each missing type, and the
         // selector must step over them rather than stop or dereference one.
         auto const all = request_for(node, mm::ALLOC_KERNEL);
-        mm::ZoneSelector const holes{list->local_zones(), all};
+        mm::ZoneCandidates const holes{list->local_zones(), all};
         verdict(tally, count_selected(holes) == local_count,
-                "ZoneSelector steps over the holes in the by-type array");
+                "ZoneCandidates steps over the holes in the by-type array");
 
         // Node filter: excluding this node leaves only the remote zones.
         auto without_local = all.allowed_nodes();
@@ -328,7 +328,7 @@ namespace {
             remote += 1;
         }
         verdict(tally, remote_ok && remote == list->fallback().size() - local_count,
-                "ZoneSelector's node mask filters out the excluded node");
+                "ZoneCandidates's node mask filters out the excluded node");
 
         // Upper bound: Dma as the ceiling yields only Dma zones.
         auto const low_only = all.with_zone_range(all.lowest_zone(), ZoneType::Dma);
@@ -342,7 +342,7 @@ namespace {
             dma += 1;
         }
         verdict(tally, upper_ok && dma == dma_count,
-                "ZoneSelector's upper bound filters out higher zone types");
+                "ZoneCandidates's upper bound filters out higher zone types");
 
         // Lower bound, which the walk this replaced stored and never read: a
         // floor of Dma32 must keep a caller off the Dma zones entirely. This
@@ -358,7 +358,7 @@ namespace {
             above += 1;
         }
         verdict(tally, lower_ok && above == list->fallback().size() - dma_count,
-                "ZoneSelector's lower bound keeps a caller off the zones below it");
+                "ZoneCandidates's lower bound keeps a caller off the zones below it");
 
         // Gaf::ThisNode, through the path that serves it: resolve_request()
         // narrows the request's node mask, so the selector over the whole
@@ -844,7 +844,7 @@ namespace {
             log::info("pmnode.test: node {}", node.nid());
             check_zone_list(tally, node);
             check_fallback_orders(tally, node.nid());
-            check_zone_selector(tally, node);
+            check_zone_candidates(tally, node);
             check_contains(tally, node);
         });
         check_fragment_and_bulk(tally);

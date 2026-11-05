@@ -11,6 +11,7 @@ Review PMM naming and list the current and proposed names for the user's selecti
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
+| Helper classes | ZoneSelector, ZoneCandidates; NodePlacement, CpuNodeMap; global Origin, AllocRequest::Origin | The proposed names | None | All three accepted, 2026-11-05 |
 | Scope | Propose names, implement names | Propose names first | None | User selected the candidate-list review |
 | Principal model vocabulary | Existing PmFrame, PmZone, PmNode and Gaf, new type family | Existing vocabulary | None | Retain the previously selected resource and allocation flag names |
 
@@ -19,6 +20,10 @@ Review PMM naming and list the current and proposed names for the user's selecti
 1. Read the resource and allocator entry points and trace names whose apparent meaning differs from their implementation.
 2. Compare the unit and ownership terminology with local reference implementations, then check the reviewed C++ files with LLVM 23 formatting and clang-tidy.
 3. Record a numbered candidate list with exact source locations, leaving implementation decisions to the user.
+
+4. Implement the accepted ZoneCandidates class and header rename, migrate every caller, and verify before committing.
+5. Implement the accepted CpuNodeMap class, source and header rename, migrate the build entry and callers, and verify default and four-node NUMA behavior before committing.
+6. Nest Origin in AllocRequest, migrate the resolver and callers, then verify the host request checks and kernel allocation paths before committing.
 
 ## Files
 

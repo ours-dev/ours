@@ -741,3 +741,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Name the eligible zone range ZoneCandidates (2026-11-05)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/priv/zone_candidates.hpp` replaces zone_selector.hpp.
+- The node interface, request comments and existing allocation tests use ZoneCandidates.
+
+**Symptom**
+
+ZoneSelector suggested an object that selects the final zone, while its interface exposes an iterable range of eligible candidates.
+
+**Cause**
+
+Filtering eligibility and obtaining a block from a candidate are separate operations. The node allocation path decides which candidate actually supplies the allocation.
+
+**Change**
+
+Rename `ZoneSelector` to `ZoneCandidates` and its header to `zone_candidates.hpp`. Migrate includes, test helpers and iterator owner names. ZoneList::candidates keeps its existing factory name.
+
+**Reference**
+
+Linux next_zones_zonelist supplies the corresponding filtered traversal role. ZoneCandidates is the name selected by the user for this project's range interface.
+
+**Verification**
+
+Candidate order, filters and iterator behavior are preserved. LLVM 23 clang-format and clang-tidy checked all four C++ files. Both development images booted, all 163 host tests passed, and pmnode.test and pmzone.test passed.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user accepted C1 from the PMM helper-class naming review.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

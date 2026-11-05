@@ -75,7 +75,7 @@ inline auto resolve_request(Gaf alloc_flags, usize order, NodeMask const &fallba
 ///
 /// The walk's cursor is deliberately not in here: a mutable iteration position
 /// inside an otherwise read-only value is what made the shape it replaces hard
-/// to reason about. ZoneSelector holds it.
+/// to reason about. ZoneCandidates holds it.
 class AllocRequest final {
     using Self = AllocRequest;
 

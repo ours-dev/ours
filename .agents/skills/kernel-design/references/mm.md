@@ -215,7 +215,7 @@ The object allocator is "cache": `MemCache`, `ObjectCache`,
 The user clarified on 2026-11-04 that Pm/Vm prefixes mark principal memory
 models and are not mandatory on every helper. Prefer the repository's existing
 concrete helper names and containing-object context: PageQueues,
-ProtectionRanges, ZoneList, ZoneSelector, VmCowPages::Cursor, and
+ProtectionRanges, ZoneList, ZoneCandidates, VmCowPages::Cursor, and
 VmObject::Builder. Consolidate terminology rather than mechanically adding
 prefixes or role suffixes. Specific PMM helper renames remain design
 proposals, not accepted implementation decisions.
