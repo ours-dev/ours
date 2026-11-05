@@ -1,0 +1,45 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The kernel-facing test interface: the KTEST declaration, the EXPECT/ASSERT
+# assertions, the selection grammar and the `ktest` console command. It is a
+# layer over the hsien runtime (//system/lib/hsien), which owns the records,
+# the linker section, the context and the failure reporting; this library adds
+# what a kernel test needs from them and nothing at boot.
+cpp_interface("headers") {
+  public = [
+    "include/ktest/assertions.hpp",
+    "include/ktest/filter.hpp",
+    "include/ktest/format.hpp",
+    "include/ktest/ktest.hpp",
+    "include/ktest/run_state.hpp",
+    "include/ktest/summary.hpp",
+  ]
+  public_deps = [
+    "//kernel/lib/gktl:headers",
+    "//system/lib/hsien:headers",
+  ]
+  visibility = [ "*" ]
+}
+
+# The runner and the console command. Linked only into a kernel that carries
+# tests, which is what keeps the command out of production kernels.
+source_set("ktest") {
+  testonly = true
+  sources = [ "src/runner.cpp" ]
+  public_deps = [ ":headers" ]
+  deps = [
+    # <ours/task/thread.hpp>, which the runner reads the current thread from,
+    # reaches the handoff seam through mm's header surface and the sampler
+    # request through the object layer's.
+    "//kernel/mm:headers",
+    "//kernel/object:headers",
+    "//system/lib/hsien",
+    "//system/lib/logz4:headers",
+  ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  deps = [ "test:ktest-test" ]
+}

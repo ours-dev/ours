@@ -114,6 +114,10 @@ group("default") {
     # gktl::DeferredAction's run-at-most-once contract; see the target.
     "//kernel/lib/gktl:tests($host_toolchain)",
 
+    # The kernel test interface's host half: the selection grammar, the
+    # failure-message formatting, and the counting the SUMMARY line reports.
+    "//kernel/lib/ktest:tests($host_toolchain)",
+
     # The machine's NUMA tables, and the node ordering derived from them:
     # static arrays behind bounds-checked accessors plus a pure function over
     # the distance matrix, all of which needed a booted kernel only while they

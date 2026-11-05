@@ -1,2 +1,8 @@
+# Kernel tests and the interface that runs them. The tests themselves arrive
+# as they migrate from console commands; the aggregate label is what
+# vmours.with-tests links, so its dependencies are the test interface and,
+# eventually, one kernel_test() target per area.
 source_set("kernel.tests") {
+  testonly = true
+  deps = [ "//kernel/lib/ktest" ]
 }
