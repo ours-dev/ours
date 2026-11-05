@@ -46,6 +46,19 @@ Items 1 through 5 are the highest-value proposals because they expose behavior o
 
 The selected getter reads the atomic counter without acquiring the zone lock. Counter updates use the actual frame deltas, and the comment distinguishes a snapshot during an in-flight transfer from the locked buddy-list traversal.
 
+### Class name candidates
+
+| Item | Current name | Proposed name | Evidence and reason |
+|---|---|---|---|
+| C1 | ZoneSelector | ZoneCandidates | priv/zone_selector.hpp:33 and pm_node.hpp:125. The object is a repeatable filtered range returned by ZoneList::candidates. It holds a zone order and a request, and exposes begin/end. PmNode's allocation path decides which candidate ultimately supplies the block. |
+| C2 | NodePlacement | CpuNodeMap | node_placement.hpp:54. The owned state is NODE_OF_CPU and its per-CPU node pointer cache. node_of and set_node_of maintain the runtime CPU-to-node relation. Allocation policy and fallback selection are separate responsibilities. |
+
+The strongest class rename is C1 because the existing candidates factory already states the returned object's role. C2 removes ambiguity about what is placed and where the information lives. The previously proposed AllocRequest::Origin remains a separate type-scoping candidate.
+
+PmFrame, PmZone, PmNode, FrameBuddy, AllocRequest, AllocPolicy, AllocState, ZoneList, MemoryReclaimer and MemoryWatchdog already express their current roles. MemoryPressureLevels contains thresholds, debounce and hysteresis, so a shorter thresholds-only name would need care about the complete contract.
+
+The additional ZoneSelector and NodePlacement header/source checks completed with LLVM 23 clang-format dry-run and clang-tidy, all with exit code zero. clang-tidy emitted existing diagnostics. Logs are in /var/folders/n_/20ryw2px3052ggtjf0xpsc8h0000gn/T/ours-pmm-class-names-17yyd5rd. This extension changes review text only and reuses the latest verified implementation at 6271ea0f.
+
 ## Teaching opportunities
 
 None requested.
