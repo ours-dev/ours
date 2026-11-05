@@ -304,26 +304,6 @@ None, this project's own design.
 **Acceptance**
 A test changes the priority of a thread while another CPU moves it (a stress with `steal()` running) and ends with the queue counts equal to the queues' contents.
 
-## 28. `Timer::cancel()` compares a CPU number it read before it could be moved
-
-**Severity**
-Medium: memory-unsafe when it happens, which needs a preempt, a steal and a timer expiry inside a few instructions.
-
-**Symptom**
-`Timer::cancel()` (`kernel/kernel/time/timer.cpp`) reads `Cpu::id()` first, with preemption and interrupts on, and later tests `m_active_cpu == cpu` to decide that it is running inside its own handler and may return without waiting. A thread that `Thread::Current::sleep_etc()` leaves with preemption on (its stack `Timer` is cancelled after the PI guard is released) can be preempted on CPU A after the read, taken by an idle CPU B, and resume in `cancel()` while A's handler for that very timer is running: the test is then true for the wrong reason, `cancel()` returns without waiting, `sleep_etc()` returns, and A's handler goes on using a stack frame that is gone and stores `INVALID_CPU_NUM` into it afterwards (`timer_queue.cpp`). A debug image trips the assertion in `~Timer()`; a release image corrupts the stack. Before `Scheduler::Current::steal()` a preempted thread always resumed on the CPU it left, where no handler can run while the thread does. A reviewer's reading of the code on 2026-11-05, not run.
-
-**Cause**
-The CPU number is a fact about where the thread is at one instant; the later test needs it at the instant of the comparison.
-
-**Change**
-Read `Cpu::id()` and compare under `arch::AutoInterruptDisabler`, as `TimerQueue::activate_timer()` already does for the same reason (its comment names the hazard). A thread with interrupts off on A cannot coexist with a handler on A, so equality then means this is the handler.
-
-**Reference**
-None, this project's own design.
-
-**Acceptance**
-`cancel()` reads the CPU number with interrupts off, immediately before the comparison; `timer.test`, `timershare.test` and `sleep.test` pass.
-
 ## 29. The page-fault spin-lock assertion reads a per-CPU count from a thread that can move
 
 **Severity**
