@@ -6,6 +6,7 @@
 // it can frame and time it. Its lines are the host's contract: `RUN`, `OK`,
 // `FAIL`, `FAILED`, `SKIP`, `TEST`, `ERROR` and the final `SUMMARY`.
 #include <ktest/filter.hpp>
+#include <ktest/options.hpp>
 #include <ktest/run_state.hpp>
 #include <ktest/summary.hpp>
 
@@ -35,6 +36,12 @@ namespace {
     /// Guards against a second `ktest` entering while one runs. The console
     /// dispatches one line at a time, so this only catches a future caller.
     bool RUNNING = false;
+
+    /// The options the current run was given, published for the tests. They
+    /// point into the console line, which lives for the command, and the run
+    /// happens inside it, so they stay valid while a test can read them.
+    Option OPTIONS[MAX_RUN_OPTIONS];
+    usize OPTION_COUNT = 0;
 
     /// Clears the re-entry guard however the command returns.
     struct RunnerScope final {
@@ -115,6 +122,7 @@ namespace {
             return 1;
         }
         RunnerScope const scope;
+        OPTION_COUNT = 0;
 
         auto const *const begin = hsien::section_begin();
         auto const *const end = hsien::section_end();
@@ -126,13 +134,9 @@ namespace {
             return 1;
         }
 
-        if (argc > 2) {
-            log::error("ktest: ERROR usage: ktest [all|list|?|<filter>]");
-            return 1;
-        }
         auto list_only = false;
         auto const *filter = "";
-        if (argc == 2) {
+        if (argc >= 2) {
             auto const *const argument = argv[1];
             if (std::string_view{argument} == "list" || std::string_view{argument} == "?") {
                 list_only = true;
@@ -140,9 +144,29 @@ namespace {
                 filter = argument;
             }
         }
+        if (list_only && argc > 2) {
+            log::error("ktest: ERROR ktest list takes no options");
+            return 1;
+        }
+        for (auto i = 2; i < argc; ++i) {
+            if (OPTION_COUNT == MAX_RUN_OPTIONS) {
+                log::error("ktest: ERROR at most {} options, got {}", MAX_RUN_OPTIONS, argc - 2);
+                return 1;
+            }
+            auto parsed = Option{};
+            if (!parse_option(argv[i], parsed)) {
+                log::error("ktest: ERROR usage: ktest [all|list|?|<filter>] [name=value ...]");
+                return 1;
+            }
+            OPTIONS[OPTION_COUNT] = parsed;
+            OPTION_COUNT += 1;
+        }
         if (list_only) {
             list_tests(begin, end);
             return 0;
+        }
+        for (auto i = usize{0}; i < OPTION_COUNT; ++i) {
+            log::info("ktest: OPTION {}={}", OPTIONS[i].name, OPTIONS[i].value);
         }
 
         auto reporter = hsien::Reporter{&report};
@@ -221,6 +245,36 @@ namespace internal {
     }
 
 } // namespace internal
+
+auto has_option(std::string_view const name) -> bool {
+    return find_option(OPTIONS, OPTION_COUNT, name) != nullptr;
+}
+
+auto option(std::string_view const name, std::string_view const fallback) -> std::string_view {
+    auto const *const found = find_option(OPTIONS, OPTION_COUNT, name);
+    return found == nullptr ? fallback : found->value;
+}
+
+auto option_usize(std::string_view const name, usize const fallback) -> usize {
+    auto const *const found = find_option(OPTIONS, OPTION_COUNT, name);
+    if (found == nullptr) {
+        return fallback;
+    }
+    if (found->value.empty()) {
+        log::error("ktest: ERROR option \"{}\" needs a number", name);
+        return fallback;
+    }
+    auto value = usize{0};
+    for (auto const c: found->value) {
+        if (c < '0' || c > '9') {
+            log::error("ktest: ERROR option \"{}\" is not a number: \"{}\"", name, found->value);
+            return fallback;
+        }
+        value = value * 10 + static_cast<usize>(c - '0');
+    }
+    return value;
+}
+
 } // namespace ktest
 
 GKTL_COMMAND(Ktest, "ktest", ktest::ktest_command,

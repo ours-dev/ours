@@ -11,6 +11,7 @@ cpp_interface("headers") {
     "include/ktest/filter.hpp",
     "include/ktest/format.hpp",
     "include/ktest/ktest.hpp",
+    "include/ktest/options.hpp",
     "include/ktest/run_state.hpp",
     "include/ktest/summary.hpp",
   ]

@@ -51,7 +51,23 @@ ktest                 run every test
 ktest all             same
 ktest list            list the registry (also `ktest ?`)
 ktest <filter>        run the tests whose full name matches the filter
+ktest <selection> [name=value ...]   ... with options for the tests that read them
 ```
+
+A run may carry options after its selection: `name=value` tokens, or a bare
+`name` for a presence-only flag. A test reads them through `ktest::option`,
+`ktest::option_usize` and `ktest::has_option`, always with a fallback of its
+own, so `ktest all` and a bare `ktest <filter>` still run the ordinary
+configuration:
+
+```text
+ktest Interrupt.* rounds=256
+ktest TimerShare.* big
+```
+
+`ktest list` takes no options, and a test that does not ask for an option never
+sees it. The value points into the console line and is only valid while the
+test runs.
 
 The filter is a `:`-separated list of `*`/`?` globs over `Suite.Name`; a token
 beginning with `-` excludes. Each run ends with a `SUMMARY` line

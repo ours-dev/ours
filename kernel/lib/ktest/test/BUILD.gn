@@ -7,6 +7,7 @@ executable("ktest-test") {
   sources = [
     "filter_test.cpp",
     "format_test.cpp",
+    "options_test.cpp",
     "summary_test.cpp",
   ]
   deps = [

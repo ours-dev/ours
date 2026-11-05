@@ -8,6 +8,7 @@
 #define KTEST_KTEST_HPP 1
 
 #include <ktest/assertions.hpp>
+#include <ktest/options.hpp>
 
 #include <source_location>
 

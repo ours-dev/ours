@@ -142,7 +142,10 @@ ktest all                same
 ktest list               list the registry, one "ktest: TEST <Suite.Name>" line per test
 ktest ?                  same
 ktest <filter>           run the tests whose full name matches the filter
+ktest <selection> [name=value ...]   the run also carries options for the tests that read them
 ```
+
+Run options (added 2026-11-05, after the migration start; the user chose this over splitting the argument-taking tests, decision B of `.agents/tasks/kernel-test-migration/PLAN.md`). A token after the selection is `name=value`, or `name` alone for a presence-only flag; the runner parses at most `MAX_RUN_OPTIONS` of them and logs each as `ktest: OPTION name=value` before the first test. A test reads them with `ktest::option`, `ktest::option_usize` and `ktest::has_option`, and must pass a fallback of its own, so `ktest all` and a bare `ktest <filter>` keep the ordinary configuration; `option_usize` reports a malformed value at error level and uses the fallback, which fails the run rather than silently changing what is tested. `ktest list` takes no options. The values point into the console line and are valid only while the run lasts. This is what lets the four commands that took console arguments (`interrupt.test [ROUNDS]`, `port.test [ROUNDS]`, `threadjoin.test stress N`, `timershare.test big`) migrate as ordinary tests instead of growing a second, per-test argument path.
 
 The filter is split on `:`; a token beginning with `-` is a negative pattern, every other token is a positive one, and no positive token means `*`. Each pattern is matched against the full `Suite.Name` with a linear glob where `*` matches any run of characters and `?` matches one. Examples: `ktest SamplerClaim.*`, `ktest Sched.*:-Sched.Slow`, `ktest Semaphore.*:Vma*`. This is GoogleTest's grammar with the token classification made per-token (`src/gtest.cc:820-880`), which is what a shell without quoting can express. The words `all`, `list` and `?` are reserved.
 

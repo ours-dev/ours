@@ -46,4 +46,17 @@ KTEST(Ktest, Names_MayHaveUnderscores) {
     EXPECT_TRUE(true);
 }
 
+/// Run options: the first check is the fallback path, which is what `ktest
+/// all` and a bare `ktest Ktest.*` use; the second only runs when the host
+/// passed `expected=<n>` after the selection, so the default run stays
+/// deterministic and the option path is testable from the console.
+KTEST(Ktest, ReadsRunOptions) {
+    EXPECT_EQ(ktest::option_usize("absent_option", usize{7}), usize{7},
+              "an absent option takes its fallback");
+    if (ktest::has_option("expected")) {
+        EXPECT_EQ(ktest::option_usize("expected", usize{0}), usize{42},
+                  "the run option is visible to the test");
+    }
+}
+
 } // namespace

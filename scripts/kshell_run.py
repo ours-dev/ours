@@ -452,14 +452,18 @@ def is_ktest(command: str) -> bool:
 
 
 def ktest_lists(command: str) -> bool:
-    """Whether |command| only lists the test registry."""
-    return command.split() in (["ktest", "list"], ["ktest", "?"])
+    """Whether |command| only lists the test registry. `ktest list` takes no
+    options, so the words after the selection do not matter here."""
+    words = command.split()
+    return len(words) >= 2 and words[0] == "ktest" and words[1] in ("list", "?")
 
 
 def ktest_runs_all(command: str) -> bool:
     """Whether |command| runs every registered test, so that a preceding
-    `ktest list` gives the count its summary must match."""
-    return command.split() in (["ktest"], ["ktest", "all"])
+    `ktest list` gives the count its summary must match. Options after the
+    selection (`rounds=256`, `big`) do not change that."""
+    words = command.split()
+    return bool(words) and words[0] == "ktest" and (len(words) == 1 or words[1] == "all")
 
 
 def ktest_summaries(lines: list[str]) -> list[dict[str, int]]:

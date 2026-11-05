@@ -44,9 +44,9 @@ class Classify(unittest.TestCase):
             self.assertTrue(kshell_run.ktest_lists(command))
             self.assertFalse(kshell_run.ktest_runs_all(command))
         self.assertFalse(kshell_run.ktest_lists("ktest all"))
-        for command in ("ktest", "ktest all"):
+        for command in ("ktest", "ktest all", "ktest all rounds=256"):
             self.assertTrue(kshell_run.ktest_runs_all(command))
-        for command in ("ktest Ktest.*", "ktest all extra"):
+        for command in ("ktest Ktest.*", "ktest Ktest.* rounds=256"):
             self.assertFalse(kshell_run.ktest_runs_all(command))
 
 
