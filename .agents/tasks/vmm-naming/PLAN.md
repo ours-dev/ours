@@ -13,7 +13,7 @@ Apply the names selected from the twelve-item VMM list. Use Rust naming conventi
 |---|---|---|---|---|
 | Page source request | get_pages, request_pages | request_pages | None | request_pages, confirmed earlier |
 | Mapping options | Two enums, one bitmask | One bitmask | None | MapOptions with Lazy, Resident, Commit and Sealed, already delivered |
-| Unmap child policy | Existing name, nested scope | Nested scope | None | VmArea::UnmapScope with MappingsOnly and IncludeSubvmas, 2026-11-05 |
+| Unmap child policy | Existing name, nested scope | Nested scope | None | VmArea::UnmapScope with Mapping and Subarea, refined on 2026-11-05 |
 | Placement resolution | create_subaom_preamble, resolve_range_locked | resolve_range_locked | None | Accepted, 2026-11-05 |
 | Address selection | alloc_spot, find_free_base | Retain allocation vocabulary | None | Keep alloc_spot and find_spot, 2026-11-05 |
 | Wait token | MultiPageRequest, PageWait | Retain selected name | None | Keep MultiPageRequest, 2026-11-05 |
@@ -42,3 +42,5 @@ Apply the names selected from the twelve-item VMM list. Use Rust naming conventi
 ## Test plan
 
 Use the existing compile database for LLVM 23 clang-tidy and the repository formatter for changed lines. Run the repository verify script after each increment. Both development images and all host tests must pass. Run the existing kernel command suites through the renamed normal entry points. No new behavior tests are needed for these mechanical changes.
+
+The follow-up shortens MappingsOnly and IncludeSubvmas to Mapping and Subarea after the user selected those final spellings. It uses the same formatting, clang-tidy, boot and unmap regression checks.

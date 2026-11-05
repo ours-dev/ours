@@ -218,7 +218,7 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///     round it down and unmap a page the caller did not name), when
     ///     |length| rounds up to 0, when the range is not inside this region,
     ///     when it only partly covers a sub-region, and when it covers one
-    ///     whole and |scope| is MappingsOnly;
+    ///     whole and |scope| is Mapping;
     ///   - AccessDenied when a sealed mapping overlaps the range, here or in
     ///     any sub-region below, the vDSO's code among them;
     ///   - BadState once the region has been destroyed, with its address space

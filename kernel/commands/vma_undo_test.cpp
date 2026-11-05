@@ -93,7 +93,7 @@ namespace {
 
         // The other thread: it unmaps the mapping through the region it
         // shares, and maps its own, which lands in the same place.
-        verdict(tally, region.unmap(at, PAGE_SIZE, UnmapScope::MappingsOnly) == Status::Ok,
+        verdict(tally, region.unmap(at, PAGE_SIZE, UnmapScope::Mapping) == Status::Ok,
                 "another holder of the region unmaps it");
         auto second = region.map(READ, 0, vmo, 0, PAGE_SIZE, "vmaundo.test second");
         verdict(tally, second.is_ok() && second->base() == at,
@@ -126,7 +126,7 @@ namespace {
 
         // The other thread: it destroys the sub-region through the parent,
         // as a handle with OpChildren may, and reserves its own in its place.
-        verdict(tally, region.unmap(first_at, PAGE_SIZE, UnmapScope::IncludeSubvmas) == Status::Ok,
+        verdict(tally, region.unmap(first_at, PAGE_SIZE, UnmapScope::Subarea) == Status::Ok,
                 "another holder of the parent destroys it");
         object::KernelHandle<object::VmaDispatcher> second;
         VirtAddr second_at{};
@@ -156,8 +156,7 @@ namespace {
             return;
         }
         auto const at = sealed->base();
-        verdict(tally,
-                region.unmap(at, PAGE_SIZE, UnmapScope::MappingsOnly) == Status::AccessDenied,
+        verdict(tally, region.unmap(at, PAGE_SIZE, UnmapScope::Mapping) == Status::AccessDenied,
                 "which unmap() refuses");
         verdict(tally, region.undo_map(ustl::move(sealed).unwrap()) == Status::Ok,
                 "and undo_map() takes it down, nobody having been told of it");

@@ -271,5 +271,5 @@ for child virtual memory areas.
 The approved VMM names are PageSource::request_pages, VmFault::Cause with
 the member VmFault::cause, lookup_cursor_locked on the COW and paged VMO
 layers, Cursor::PageLookup and VmArea::map_vmo. Use VmArea::UnmapScope with
-MappingsOnly and IncludeSubvmas for the unmap child policy. The placement
+Mapping and Subarea for the unmap child policy. The placement
 helper is resolve_range_locked.

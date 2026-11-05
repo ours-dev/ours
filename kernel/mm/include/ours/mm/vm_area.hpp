@@ -28,11 +28,11 @@ class VmArea final: public VmAreaOrMapping {
     /// Whether unmap may also destroy fully covered child VMAs.
     /// A request that only partly covers a child VMA is always rejected.
     enum class UnmapScope : u8 {
-        /// Reject ranges that include a child VMA.
-        MappingsOnly,
+        /// Unmap mappings and reject ranges that include a child VMA.
+        Mapping,
 
-        /// Destroy child VMAs wholly contained in the range.
-        IncludeSubvmas,
+        /// Also destroy fully covered child VMAs and their contents.
+        Subarea,
     };
 
     static constexpr std::uintptr_t TYPE_TAG = 2;
@@ -131,9 +131,9 @@ class VmArea final: public VmAreaOrMapping {
     /// the way a region is dissolved), and a vma_destroy that a program can
     /// call has to check the region for sealed mappings first, as this does.
     ///
-    /// |scope| defaults to IncludeSubvmas for the kernel's own callers,
+    /// |scope| defaults to Subarea for the kernel's own callers,
     /// which own every area they unmap in. vma_unmap passes what the handle's rights say.
-    auto unmap(VirtAddr base, usize size, UnmapScope scope = UnmapScope::IncludeSubvmas) -> Status;
+    auto unmap(VirtAddr base, usize size, UnmapScope scope = UnmapScope::Subarea) -> Status;
 
     /// Destroys |child|, and everything under it, if it is still one of this
     /// area's children: unmap() names a range, this names the object. The

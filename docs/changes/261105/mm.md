@@ -655,3 +655,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Shorten the unmap scope variants to Mapping and Subarea (2026-11-05)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/vm_area.hpp` names and documents the two scopes.
+- The area, VMA dispatcher and existing undo command use the selected variants.
+
+**Symptom**
+
+MappingsOnly and IncludeSubvmas were longer than the user's preferred scope vocabulary.
+
+**Cause**
+
+UnmapScope already supplies the operation and scope context.
+
+**Change**
+
+Rename `UnmapScope::MappingsOnly` to `UnmapScope::Mapping` and `UnmapScope::IncludeSubvmas` to `UnmapScope::Subarea`. Update the default argument, rights conversion, callers and comments.
+
+**Reference**
+
+None. Mapping and Subarea are the user's selected names.
+
+**Verification**
+
+The enum values, default scope and child coverage checks are preserved. LLVM 23 clang-format and clang-tidy checked all five C++ files. Both development images booted, all 163 host tests passed, and vmaundo.test and vmaseal.test passed.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user selected Mapping and Subarea while refining the delivered UnmapScope names.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

@@ -377,9 +377,9 @@ auto VmaDispatcher::undo_allocate(VmaDispatcher &child) -> Status {
 
 auto VmaDispatcher::unmap_scope_from_rights(Rights const rights) -> UnmapScope {
     if (!!(rights & Rights::OpChildren)) {
-        return UnmapScope::IncludeSubvmas;
+        return UnmapScope::Subarea;
     }
-    return UnmapScope::MappingsOnly;
+    return UnmapScope::Mapping;
 }
 
 auto VmaDispatcher::unmap(VirtAddr const base, usize const length, UnmapScope const scope)

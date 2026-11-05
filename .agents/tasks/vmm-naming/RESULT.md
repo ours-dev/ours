@@ -9,8 +9,10 @@
 - `203bf951` names the COW and paged VMO factories lookup_cursor_locked and their result Cursor::PageLookup.
 - `211eb6e8` names VMO-backed mapping map_vmo across all kernel and benchmark callers.
 - `e741fb30` nests UnmapScope in VmArea, with MappingsOnly and IncludeSubvmas, and updates the dispatcher and syscall conversion.
-- The commit containing this result names the common range helper resolve_range_locked.
+- `7b0791c3` names the common range helper resolve_range_locked.
 - The task plan records the user's choices for all twelve entries, including the previously delivered single MapOptions bitmask.
+
+The final UnmapScope variants are Mapping and Subarea, selected by the user in the follow-up to this task.
 
 ## Verification
 

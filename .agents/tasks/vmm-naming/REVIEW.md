@@ -20,6 +20,8 @@ Compare each diff with the user's selected name, search all declarations and cal
 
 - resolve_range_locked retains the placement checks and lock annotation. The three affected files passed clang-tidy, both images and 163 host tests passed, and placement, seal and large-page commands passed.
 
+- The final Mapping and Subarea variants preserve the default, rights conversion and child-range rejection. All five C++ files passed clang-tidy, both images and 163 host tests passed, and the undo and seal commands passed.
+
 ## High severity
 
 None.

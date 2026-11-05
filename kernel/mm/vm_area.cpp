@@ -527,7 +527,7 @@ auto VmArea::unmap_locked(VirtAddr base, usize size, UnmapScope const scope) -> 
                 // A mapping is a run of pages and may be trimmed at either end.
                 continue;
             }
-            if (child->base() < base || child->last() > last || scope == UnmapScope::MappingsOnly) {
+            if (child->base() < base || child->last() > last || scope == UnmapScope::Mapping) {
                 return Status::InvArgs;
             }
         }
