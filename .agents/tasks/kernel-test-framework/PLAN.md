@@ -34,6 +34,14 @@ Later steps are written when each one is introduced to the user, not before.
    - Verification, as done: `boot_check.py` (dbg PASS 46/5/0 at 6.1 s, rel PASS 44/8/0 with 7/7 required, host-tests 173/0); `ktest list` prints the three names; `ktest all` prints two `OK`, one `SKIP`, `SUMMARY ran=3 passed=2 failed=0 skipped=1` and exits 0; `ktest Ktest.Assertions*` prints `ran=1 passed=1`; `ktest NoSuch.*` prints the `ERROR` line and `SUMMARY ran=0`, and the host exits 1; the dbg kernel's `__hsien_tests_start`/`__hsien_tests_end` bound three 24-byte records inside `.data.rel.ro` while the rel kernel has none; tidy, format, GN layout and docs lint clean.
    - Landed as one commit, `3ed64780`, `feat(ktest): run the first kernel tests on the dbg image`.
 
+3. The host verdict for `ktest`. Landed in `df23558b`. `scripts/kshell_run.py` parses the runner's grammar instead of judging it as an ordinary command.
+   - A run ends at `ktest: SUMMARY`; exactly one summary must be present, `failed` must be 0 and `ran` non-zero. For `ktest` and `ktest all` the script first types `ktest list` and requires `ran` to equal the listed count; a filter run has no expected count, because the glob stays in the kernel. `ktest list` passes on the prompt plus at least one `TEST` line; a missing summary fails; the legacy `*.test`, `crash` and `lockup` rules are untouched.
+   - While a `ktest` command runs, console silence is a hang, so a stuck run is NMI'd and the lockup report is the diagnosis; the script drains `AFTER_VERDICT` after the command like after a `*.test`.
+   - The verdict helpers are pure over the captured lines (`is_ktest`, `ktest_lists`, `ktest_runs_all`, `ktest_summaries`, `ktest_listed`, `judge_ktest_list`, `judge_ktest_run`), which `scripts/test_kshell_run.py` exercises with 17 cases without QEMU.
+   - Why now: the pilot migration replaces commands with `ktest` tests; the host has to fail a partial run before that, or the migration loses the verification the commands had.
+   - Verification, as done: unit tests 17/17; `ktest all` (`3 ran, 2 passed, 1 skipped`, exit 0), `ktest Ktest.Assertions*` (`ran=1`, exit 0), `ktest NoSuch.*` (`FAIL, SUMMARY says no test ran`, exit 1), `ktest list` (ok), `samplerclaim.test` unchanged; `boot_check.py` passes both images and 173 host tests.
+   - Landed as one commit, `df23558b`, `feat(ktest): the host verdict parses the kernel test runner's SUMMARY`.
+
 ## Files
 
 - `kernel/lib/ktest/{BUILD.gn,README.md,.clang-format,.gitignore}`, `kernel/lib/ktest/include/ktest/{ktest,assertions,run_state,format,filter,summary}.hpp`, `kernel/lib/ktest/src/runner.cpp`, `kernel/lib/ktest/test/{BUILD.gn,filter_test.cpp,format_test.cpp,summary_test.cpp}`: new (step 1).
@@ -48,6 +56,9 @@ Later steps are written when each one is introduced to the user, not before.
 - The pairing comments and docs (`kernel/products/bin/BUILD.gn`, `kernel/kernel_image.gni`, `products/{bringup.gni,README.md}`, `kernel/lib/lockup_detector/README.md`, `tools/gen_debug_menu.py`, `.agents/skills/verify/SKILL.md`, `docs/development/debugging.md`) (step 2).
 - `kernel/lib/ktest/include/ktest/{assertions,ktest}.hpp`: the macro fixes and renames (step 2).
 
+- `scripts/kshell_run.py`, `scripts/test_kshell_run.py`: the `ktest` verdict and its unit tests (step 3).
+- `.agents/skills/verify/SKILL.md`: the kernel-tests section names the `ktest` command (step 3).
+
 ## Test plan
 
 - Host gtest: the filter grammar (`*`, `?`, `:`, `-`, an empty positive half, no match, match all), the failure-message formatting (a printable value, a value with no `std::formatter`, user format arguments, truncation and the nul terminator), and the counting the SUMMARY line reports. Done in step 1: 9 cases, all passing.
@@ -56,3 +67,4 @@ Later steps are written when each one is introduced to the user, not before.
 - The section's placement in `.data.rel.ro` was checked on the unstripped test kernel in step 1, where the (empty) range sits between `__hsien_tests_start` and `__hsien_tests_end`; the non-empty case is checked in step 2, with the first record.
 - Booted run: `ktest list`, `ktest all`, a filter and a no-match error on the dbg image, with the expected `RUN`/`OK`/`SKIP`/`ERROR`/`SUMMARY` lines and exit status. Done in step 2.
 - ELF of the images: the dbg kernel bounds three 24-byte records in `.data.rel.ro`; the rel kernel carries none. Done in step 2.
+- Host verdict (step 3): the 17 unit tests, plus the four booted cases (`ktest all`, a filter, a no-match and `ktest list`) and an unchanged `*.test` command. Done in step 3.
