@@ -78,13 +78,14 @@ if (defined(ours.with)) {
 #     which routing_checks reaches under another name through an offer from
 #     its sibling: the route through echo's expose and into its outgoing
 #     directory;
-#   - files (//examples/files), which provides two directories, docs and
-#     ghost, and routing_checks reaches six ways through offers from its
+#   - files (//examples/files), which provides three directories, docs, slow
+#     and ghost, and routing_checks reaches seven ways through offers from its
 #     sibling: whole, through a subdirectory, through an offer that asks more
 #     than files' expose states, through an expose that asks more than the
-#     declaration allows, a directory the program does not serve, and a
-#     subdirectory that is a file; and, last, through files' service node
-#     `stop`, which makes files exit, so that the provider-exit case runs;
+#     declaration allows, a directory the program does not serve, a
+#     subdirectory that is a file, and slow, whose Read the provider answers a
+#     turn of the Loop later; and, last, through files' service node `stop`,
+#     which makes files exit, so that the provider-exit case runs;
 #   - shell, the serial console's shell, with /boot rx* and the same three
 #     protocols: it runs its commands through the Launcher, reads the
 #     console with the resource ours.resource.Debug gives it, and holds
@@ -429,7 +430,7 @@ component_manifest("root.cm") {
       },
 
       # files' directories, from the sibling that exposes them, each under
-      # the name routing_checks uses it by. Two of these routes work and
+      # the name routing_checks uses it by. Three of these routes work and
       # three fail on purpose; the build warns for the two that fail by
       # rights (system/component_manifest.py), and each use is explained
       # where routing_checks declares it
@@ -473,6 +474,15 @@ component_manifest("root.cm") {
         to = "#routing_checks"
         as = "files-wide"
         rights = [ "rx*" ]
+      },
+
+      # slow, r*: declared by files and served through a handler node, whose
+      # Read waits a turn of the Loop before it is answered.
+      {
+        directory = "slow"
+        from = "#files"
+        to = "#routing_checks"
+        rights = [ "r*" ]
       },
 
       # ghost, r*: declared by files and exposed, but its program serves

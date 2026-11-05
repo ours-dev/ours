@@ -17,9 +17,10 @@ assert(
 # tree of files from its outgoing directory, ioservice::Outgoing on a Loop
 # (files_server.cpp), through a Subtree node, so that the tree behind the
 # declared path is the program's own: a second ioservice::Tree and
-# ioservice::LoopServer. It provides no protocol; it runs until the system
-# goes or a consumer connects to the service node `stop` inside the tree it
-# serves, which makes the program exit with 0.
+# ioservice::LoopServer. A second directory is served through a Handler node,
+# whose NodeHandler answers a Read a turn of the Loop later. It provides no
+# protocol; it runs until the system goes or a consumer connects to the service
+# node `stop` inside the tree it serves, which makes the program exit with 0.
 user_executable("files_server") {
   visibility = [ "//examples/*" ]
   sources = [ "files_server.cpp" ]
@@ -30,21 +31,24 @@ user_executable("files_server") {
   ]
 }
 
-# Declares two directories and exposes them to its parent, which decides who
+# Declares three directories and exposes them to its parent, which decides who
 # reaches them and under which names. It uses nothing: no namespace, no /svc.
 #
 #   docs   at /export/docs, r*, which the program serves (files_server.cpp);
+#   slow   at /export/slow, r*, which the program serves through a Handler node
+#          whose Read waits a turn of the Loop;
 #   ghost  at /export/ghost, r*, which the program does not serve, on
 #          purpose: a path the manifest declares and the program never
 #          adds, so that a consumer's Open of it answers NotFound.
 #
-# And exposes four things to dev's root.cm, which offers each to
+# And exposes five things to dev's root.cm, which offers each to
 # routing_checks (kernel/products/image/dev/BUILD.gn):
 #
 #   docs       r*, as declared;
 #   docs-sub   r*, only the subdirectory `sub` of it;
 #   docs-wide  rx*, which is wider than the declaration allows (r*), so a
 #              use of it routes nowhere: AccessDenied at this declaration;
+#   slow       r*, as declared;
 #   ghost      r*, as declared.
 component_manifest("files.cm") {
   visibility = [ "//kernel/products/image/*" ]
@@ -54,6 +58,11 @@ component_manifest("files.cm") {
       {
         directory = "docs"
         path = "/export/docs"
+        rights = [ "r*" ]
+      },
+      {
+        directory = "slow"
+        path = "/export/slow"
         rights = [ "r*" ]
       },
       {
@@ -80,6 +89,11 @@ component_manifest("files.cm") {
         from = "self"
         as = "docs-wide"
         rights = [ "rx*" ]
+      },
+      {
+        directory = "slow"
+        from = "self"
+        rights = [ "r*" ]
       },
       {
         directory = "ghost"

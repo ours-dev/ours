@@ -39,7 +39,7 @@ user_executable("routing_checks") {
 #            not the writable `tmp`, which the shell's `all` view holds: a
 #            read through it walks two servers, and the listing asserts the
 #            view really hides tmp.
-# Eight uses of directories that the sibling files (//examples/files)
+# Nine uses of directories that the sibling files (//examples/files)
 # provides, each offered from it by root.cm, and the first provider a
 # directory route ends at:
 #   /files         r*, the tree files serves at its declared /export/docs;
@@ -51,6 +51,8 @@ user_executable("routing_checks") {
 #   /files-wide    rx*, through files' expose of docs-wide, which states rx*
 #                  over a declaration of r*: AccessDenied at files'
 #                  declaration, and the entry arrives closed;
+#   /slow          r*, the directory files serves through a handler node: one
+#                  file, whose Read files answers a turn of the Loop later;
 #   /ghost         r*, a directory files declares and exposes and its program
 #                  does not serve: files' server answers NotFound;
 #   /files-file    r*, through an offer of docs with the subdir hello.txt: the
@@ -132,6 +134,11 @@ component_manifest("routing_checks.cm") {
         directory = "files-wide"
         path = "/files-wide"
         rights = [ "rx*" ]
+      },
+      {
+        directory = "slow"
+        path = "/slow"
+        rights = [ "r*" ]
       },
       {
         directory = "ghost"

@@ -89,7 +89,7 @@ Outgoing::Outgoing(Storage &storage, loop::Loop &loop)
                    .request_handles = storage.request_handles,
                    .reply = &storage.reply,
                },
-               this)
+               this, this)
     // The tree's first two nodes, which Storage sizes room for: neither add
     // can fail, and unwrap() traps if one ever does.
     , m_root(m_tree.add_root().unwrap())
@@ -233,6 +233,48 @@ auto Outgoing::add_subtree(std::string_view const path, SubtreeHandler &handler)
     return ustl::ok(node);
 }
 
+auto Outgoing::add_handler(std::string_view const path, NodeHandler &handler, u64 const value)
+    -> ustl::Result<NodeId, Status> {
+    // 1. The path, as add_directory() judges it: syntax, svc/, overlap and
+    //    the room for its nodes.
+    auto judged = judge(path);
+    if (judged.is_err()) {
+        return ustl::err(judged.unwrap_err());
+    }
+    // 2. Room in the table of handlers, before the tree is touched: a node,
+    //    once added, stays, and one whose value indexes past the table would
+    //    be an Open that reaches no handler.
+    if (m_handlers == MAX_PROTOCOLS) {
+        return ustl::err(Status::NoResource);
+    }
+    // 3. Made. The node's value is the handler's index, which the NodeHandler
+    //    calls take back; the program's own value is kept beside the handler.
+    auto declaration = judged.unwrap();
+    auto const parent = make_parents(declaration);
+    auto const node = m_tree.add_handler(parent, declaration.missing, m_handlers).unwrap();
+    m_storage->handlers[m_handlers] = HandlerEntry{.node = &handler, .node_value = value};
+    m_handlers += 1;
+    m_storage->directories[m_declared] = node;
+    m_declared += 1;
+    return ustl::ok(node);
+}
+
+auto Outgoing::complete(Ticket const ticket, OpenResult const &result) -> Status {
+    return m_server.complete(ticket, result);
+}
+
+auto Outgoing::complete(Ticket const ticket, ReadResult const &result) -> Status {
+    return m_server.complete(ticket, result);
+}
+
+auto Outgoing::complete(Ticket const ticket, EntriesResult const &result) -> Status {
+    return m_server.complete(ticket, result);
+}
+
+auto Outgoing::complete(Ticket const ticket, VmoResult const &result) -> Status {
+    return m_server.complete(ticket, result);
+}
+
 auto Outgoing::add_directory(NodeId const parent, std::string_view const name)
     -> ustl::Result<NodeId, Status> {
     return m_tree.add_directory(parent, name);
@@ -300,6 +342,66 @@ auto Outgoing::subtree(u64 const value, std::string_view const rest, prot::io::F
         return;
     }
     m_storage->handlers[value].subtree->open(rest, flags, channel);
+}
+
+auto Outgoing::node_entry(u64 const value) const -> HandlerEntry const * {
+    // The value is an index add_handler() gave out, and the tree holds no other
+    // Handler node; one past them, or one whose entry is another kind's, would
+    // be a bug, the same as in connect().
+    if (value >= m_handlers || m_storage->handlers[value].node == nullptr) {
+        return nullptr;
+    }
+    return &m_storage->handlers[value];
+}
+
+auto Outgoing::open(u64 const value, ustl::Option<u64> const directory, std::string_view const path,
+                    prot::io::Flags const flags, Ticket const ticket) -> Answer<OpenResult> {
+    auto const *const entry = node_entry(value);
+    if (entry == nullptr) {
+        return Done<OpenResult>{ustl::err(Status::InternalError)};
+    }
+    return entry->node->open(entry->node_value, directory, path, flags, ticket);
+}
+
+auto Outgoing::read(u64 const value, u64 const cookie, u64 const offset, u64 const count,
+                    Ticket const ticket) -> Answer<ReadResult> {
+    auto const *const entry = node_entry(value);
+    if (entry == nullptr) {
+        return Done<ReadResult>{ustl::err(Status::InternalError)};
+    }
+    return entry->node->read(entry->node_value, cookie, offset, count, ticket);
+}
+
+auto Outgoing::read_dirents(u64 const value, u64 const cookie, u64 const cursor,
+                            u64 const max_bytes, Ticket const ticket) -> Answer<EntriesResult> {
+    auto const *const entry = node_entry(value);
+    if (entry == nullptr) {
+        return Done<EntriesResult>{ustl::err(Status::InternalError)};
+    }
+    return entry->node->read_dirents(entry->node_value, cookie, cursor, max_bytes, ticket);
+}
+
+auto Outgoing::get_backing_memory(u64 const value, u64 const cookie, prot::io::VmoFlags const flags,
+                                  Ticket const ticket) -> Answer<VmoResult> {
+    auto const *const entry = node_entry(value);
+    if (entry == nullptr) {
+        return Done<VmoResult>{ustl::err(Status::InternalError)};
+    }
+    return entry->node->get_backing_memory(entry->node_value, cookie, flags, ticket);
+}
+
+auto Outgoing::clone(u64 const value, u64 const cookie) -> ustl::Result<u64, Status> {
+    auto const *const entry = node_entry(value);
+    if (entry == nullptr) {
+        return ustl::err(Status::InternalError);
+    }
+    return entry->node->clone(entry->node_value, cookie);
+}
+
+auto Outgoing::release(u64 const value, u64 const cookie) -> void {
+    if (auto const *const entry = node_entry(value); entry != nullptr) {
+        entry->node->release(entry->node_value, cookie);
+    }
 }
 
 auto Outgoing::open_refused(NodeId const directory, std::string_view const path,
