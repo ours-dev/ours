@@ -194,7 +194,7 @@ auto PmZone::take_block(usize order) -> ustl::Option<PmFrame &> {
 auto PmZone::count_free_frames() -> usize {
     // Every block on every order's list, weighted by its size: a walk, not a
     // counter, so it costs time proportional to how fragmented the zone is.
-    // That is what makes this the diagnostic form and free_frames() the one
+    // That is what makes this the diagnostic form and num_free_frames() the one
     // the allocation path asks.
     ZoneGuard guard{m_lock};
     usize total = 0;

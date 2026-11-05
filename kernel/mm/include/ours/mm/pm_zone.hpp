@@ -133,9 +133,8 @@ class PmZone {
     /// buddy's free lists under the zone lock.
     ///
     /// Exact as of the moment the lock is held, and that is what it costs: it
-    /// takes the lock the allocation path wants. For the cheap approximate
-    /// answer, which is the one anything on that path should ask, see
-    /// free_frames() below.
+    /// takes the lock the allocation path wants. num_free_frames() reads the
+    /// counter snapshot without taking that lock.
     [[nodiscard]]
     auto count_free_frames() -> usize;
 
@@ -162,16 +161,15 @@ class PmZone {
         return m_present_frames;
     }
 
-    /// How many frames this zone can hand out, to within one allocation.
+    /// Snapshot of this zone's free-frame counter, read without the zone lock.
     ///
-    /// A plain atomic the buddy keeps on both of its sides, so it is cheap
-    /// enough for the allocation path to consult before it takes the zone
-    /// lock. It is an approximation by construction: another CPU may allocate
-    /// or free between the read and the act, which is why the answer is only
-    /// ever used to decide where to try, never as a promise. The exact count
-    /// is count_free_frames(), and it costs the lock.
+    /// Buddy transfers update the counter by the actual number of frames under
+    /// the zone lock. A lock-free reader can observe the previous count while
+    /// a buddy mutation is still in progress. The value can change before the
+    /// caller uses it, so it gives no guarantee that an allocation will succeed.
+    /// count_free_frames() instead counts the buddy lists under the zone lock.
     FORCE_INLINE
-    constexpr auto free_frames() const -> usize {
+    constexpr auto num_free_frames() const -> usize {
         return m_free_frames;
     }
 
@@ -260,7 +258,7 @@ class PmZone {
     [[nodiscard]]
     FORCE_INLINE
     auto watermark_ok(usize const order, WaterMark const mark) const -> bool {
-        auto const free = free_frames();
+        auto const free = num_free_frames();
         auto const wanted = usize{1} << order;
         if (free < wanted) {
             return false;

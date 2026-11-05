@@ -15,6 +15,8 @@ The local references are Linux mm/page_alloc.c, including build_zonelists, its f
 - take_block and return_block name the physical transfer at the zone boundary. candidates describes the filtered zone order.
 - The allocation and transfer paths distinguish blocks, exact batches of order-zero frames and power-of-two rounding. The proposed names should preserve those distinctions.
 
+- The selected num_free_frames getter and its callers passed changed-line formatting and clang-tidy in all six C++ files. Both development images and 163 host tests passed, together with the existing node, zone and pressure commands.
+
 ## High severity
 
 None established within this naming review.
@@ -25,7 +27,7 @@ None established within this naming review.
 
 ## Minor and style
 
-All entries are proposals. No entry is an approved implementation change.
+The table records the initial proposals. The user subsequently selected num_free_frames for item 2, superseding its proposed approximate-count spelling. Other entries remain proposals.
 
 | Item | Current name | Proposed name | Evidence and reason |
 |---|---|---|---|
@@ -41,6 +43,8 @@ All entries are proposals. No entry is an approved implementation change.
 | 10 | Origin | AllocRequest::Origin | priv/alloc_request.hpp:34. The node and initiating CPU record belongs to resolved allocation requests. Nesting it supplies that context at callers without a new role suffix. |
 
 Items 1 through 5 are the highest-value proposals because they expose behavior or the counted unit. Items 6 through 10 primarily converge spelling and type context. Exact batch allocation remains a distinct operation from the rounded block helpers in item 5.
+
+The selected getter reads the atomic counter without acquiring the zone lock. Counter updates use the actual frame deltas, and the comment distinguishes a snapshot during an in-flight transfer from the locked buddy-list traversal.
 
 ## Teaching opportunities
 

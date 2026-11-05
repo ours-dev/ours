@@ -34,7 +34,7 @@ namespace priv {
 
 auto approx_free_frame_count() -> usize {
     usize total = 0;
-    PmZone::for_each([&total](PmZone &zone) { total += zone.free_frames(); });
+    PmZone::for_each([&total](PmZone &zone) { total += zone.num_free_frames(); });
     return total;
 }
 

@@ -216,7 +216,7 @@ auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
         auto const block = zone.take_block(request.order());
         if (!block) {
             if (order == 0 && !depleted_zone &&
-                zone.free_frames() < zone.watermark(PmZone::WaterMark::High)) {
+                zone.num_free_frames() < zone.watermark(PmZone::WaterMark::High)) {
                 depleted_zone = ustl::some_ref(zone);
             }
             continue;

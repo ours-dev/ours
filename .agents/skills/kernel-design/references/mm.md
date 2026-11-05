@@ -273,3 +273,12 @@ the member VmFault::cause, lookup_cursor_locked on the COW and paged VMO
 layers, Cursor::PageLookup and VmArea::map_vmo. Use VmArea::UnmapScope with
 Mapping and Subarea for the unmap child policy. The placement
 helper is resolve_range_locked.
+
+## Zone free-frame count (user decision, 2026-11-05)
+
+PmZone::num_free_frames() reads its atomic free-frame counter without the
+zone lock. Buddy transfers update it by the actual frame delta under that
+lock. A read can observe the preceding count during an in-flight transfer.
+PmZone::count_free_frames() traverses the buddy lists while holding the zone
+lock. Document these contracts rather than encoding approximation in the
+getter name.

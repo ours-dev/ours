@@ -28,3 +28,5 @@ Review PMM naming and list the current and proposed names for the user's selecti
 ## Test plan
 
 This is a source review. Run LLVM 23 clang-format in dry-run mode and clang-tidy against the existing compile database for the nine reviewed files. Confirm that the existing built development images and host tests still pass before committing the report. No implementation or new behavior tests are part of this review.
+
+The user selected PmZone::num_free_frames for the counter getter and requested a comment explaining its snapshot contract. This follow-up migrates the callers, keeps the existing counter and lock behavior, and runs the normal C++ and build-and-boot checks plus the existing PMM commands.

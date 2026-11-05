@@ -606,11 +606,11 @@ namespace {
             constexpr auto ITERATIONS = usize{8192};
             for (usize i = 0; i < ITERATIONS; ++i) {
                 auto const block = state.zone.take_block(0);
-                auto const count = state.zone.free_frames();
+                auto const count = state.zone.num_free_frames();
                 if (block) {
                     state.zone.return_block(block.value(), 0);
                 }
-                if (count > 1 || state.zone.free_frames() > 1) {
+                if (count > 1 || state.zone.num_free_frames() > 1) {
                     return 1;
                 }
             }
@@ -644,7 +644,7 @@ namespace {
                 }
             }
         }
-        return ok && zone.free_frames() == 1 && zone.count_free_frames() == 1;
+        return ok && zone.num_free_frames() == 1 && zone.count_free_frames() == 1;
     }
 
     auto check_exhausted_node(Tally &tally, NodeId const nid) -> void {
@@ -671,7 +671,8 @@ namespace {
 
         auto *const last = *reserved;
         auto *const zone = PmZone::at(nid, last->zone());
-        auto const drained = zone && zone->count_free_frames() == 0 && zone->free_frames() == 0 &&
+        auto const drained = zone && zone->count_free_frames() == 0 &&
+                             zone->num_free_frames() == 0 &&
                              !zone->watermark_ok(0, PmZone::WaterMark::Min);
         PmNode::free_frames(last, 0);
         if (Cpu::num_online_cpus() >= 2) {

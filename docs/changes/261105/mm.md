@@ -698,3 +698,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Name the zone free-frame snapshot num_free_frames (2026-11-05)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/pm_zone.hpp` names the counter getter and explains its snapshot contract.
+- PMM admission, reclaim, aggregate counting and existing node tests use the getter.
+
+**Symptom**
+
+PmZone::free_frames looked like the operation that releases frames. Calling the value approximate without explaining its relationship to the buddy lists also obscured the actual counting mechanism.
+
+**Cause**
+
+The atomic counter is maintained using the actual frame deltas, but reading it does not acquire the lock that groups a buddy mutation and its counter update. A read may therefore observe the preceding count during an in-flight transfer, and later operations may change it again.
+
+**Change**
+
+Rename `PmZone::free_frames()` to `PmZone::num_free_frames()` at every call site. Document the actual frame updates, the read's independence from the zone lock, and the distinction from `count_free_frames()`, which traverses buddy lists under that lock.
+
+**Reference**
+
+None. The user selected num_free_frames and requested that the snapshot semantics be expressed in the comment.
+
+**Verification**
+
+The counter representation, memory ordering, update sites and lock scope are preserved. LLVM 23 clang-format and clang-tidy checked all six C++ files. Both development images booted, all 163 host tests passed, and pmnode.test, pmzone.test and mempressure.test passed.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user questioned the proposed approximate-count name and selected num_free_frames after inspecting the concurrent update sequence.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.
