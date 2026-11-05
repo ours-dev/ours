@@ -1,6 +1,6 @@
 # kernel-task-sched outstanding repairs
 
-Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, item 20, found while the Fair lane was brought up, and items 22 to 26, 30, 31, 33 and 34, left by the idle-thread steal (item 27, the audit of the callers of `CpuLocal::access()`, was done and became items 28 to 33; items 28, 29 and 32 were fixed the same day in their own commits), are at the end; item 21, work stealing, was fixed on 2026-11-05). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile; they are wrong or missing, or (item 8) a question for the author. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
+Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, item 20, found while the Fair lane was brought up, and items 22 to 26, 30, 31 and 33 to 35, left by the idle-thread steal (item 27, the audit of the callers of `CpuLocal::access()`, was done and became items 28 to 33; items 28, 29 and 32 were fixed the same day in their own commits), are at the end; item 21, work stealing, was fixed on 2026-11-05). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile; they are wrong or missing, or (item 8) a question for the author. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
 
 ## 7. A thread that was never enqueued has a slice of zero
 
@@ -250,7 +250,7 @@ A test that widens the affinity of a waiting thread with no reschedule request s
 Low: a performance choice with a safe direction, since a threshold that is too high steals less and a too-low one only moves a thread early.
 
 **Symptom**
-`STEAL_MIN_RUNNABLE_SAME_NODE = 2` and `STEAL_MIN_RUNNABLE_OTHER_NODE = 3` (`scheduler.cpp`) count the running thread, so one waiting thread is enough on the same node and a second is asked for from another. They were chosen by reasoning, not by data. The QEMU machine used for all runs has no remote-memory latency (TCG), so no run to date can show a difference; `steal.test` checks which side of the node boundary the count decides, not whether the number is right, nor the order (the same node before another). The count also ignores how long a thread has waited, which Zircon's cross-cluster test uses (`kInterClusterThreshold`, two milliseconds of queued time).
+`STEAL_MIN_RUNNABLE_SAME_NODE = 2` and `STEAL_MIN_RUNNABLE_OTHER_NODE = 3` (`domains.cpp`, the `min_runnable` of the two tiers `sched_domain::build_domains()` makes) count the running thread, so one waiting thread is enough on the same node and a second is asked for from another. They were chosen by reasoning, not by data. The QEMU machine used for all runs has no remote-memory latency (TCG), so no run to date can show a difference; `steal.test` checks which side of the node boundary the count decides, not whether the number is right, nor the order (the same node before another). The count also ignores how long a thread has waited, which Zircon's cross-cluster test uses (`kInterClusterThreshold`, two milliseconds of queued time).
 
 **Cause**
 No estimate of queued time exists in the scheduler, and no real NUMA machine has run this kernel.
@@ -287,10 +287,10 @@ A test narrows the hard affinity of a queued spinner to another CPU and sees it 
 ## 26. The priority-inheritance walk does not ask whether the thread is queued where its CPU says
 
 **Severity**
-Low: latent, since nothing calls `Scheduler::Pi::common()` today.
+Medium: not reached today, since nothing calls `Scheduler::Pi::common()`.
 
 **Symptom**
-`Scheduler::Pi::common()` reads the thread's `curr_cpu()`, takes that CPU's run queue lock and, for a Ready thread, dequeues and re-enqueues it. A thread in the Migrating window (taken off a queue by `deactivate_thread()` and not yet queued again) still names its old CPU, and is Ready, so the walk would dequeue it from a queue it is not in: `Scheduler::dequeue_thread()` decrements `m_num_queued_threads` and `m_total_weight` without a membership test, and the re-enqueue would put the thread on the old CPU's queue while it is activated on another. Read off the code, not run. The window is `deactivate()`'s and `steal()`'s.
+Latent, cannot be triggered today: nothing calls `Scheduler::Pi::common()`. It reads the thread's `curr_cpu()`, takes that CPU's run queue lock and, for a Ready thread, dequeues and re-enqueues it. A thread in the Migrating window (taken off a queue by `deactivate_thread()` and not yet queued again) still names its old CPU, and is Ready, so the walk would dequeue it from a queue it is not in: `Scheduler::dequeue_thread()` decrements `m_num_queued_threads` and `m_total_weight` without a membership test, and the re-enqueue would put the thread on the old CPU's queue while it is activated on another. Read off the code, not run. The window is `deactivate()`'s and `steal()`'s.
 
 **Cause**
 `assert_thread_in_scheduler()` checks the CPU, not the queue, and the Migrating transient state is not looked at.
@@ -307,10 +307,10 @@ A test changes the priority of a thread while another CPU moves it (a stress wit
 ## 30. `DpcRunner::enqueue()` resolves the CPU twice
 
 **Severity**
-Low: latent, its only production caller holds interrupts off.
+Medium: not reached today, its only production caller holds interrupts off.
 
 **Symptom**
-`DpcRunner::enqueue()` (`kernel/kernel/task/dpc.cpp`) reads `mm::CpuLocal::current_cpu()` and then `Current::get()`. A caller that can be preempted between them and taken by another CPU queues the `Dpc` on one runner and records the other CPU as its owner, and `cancel()` then locks one CPU's queue to erase from the other's list. `Thread::Current::exit()` is the only caller outside tests and holds both disablers; `dpc.test` and `hotplug.test` pin their threads, so pinning is all that keeps them safe. A reviewer's reading, not run.
+Latent, cannot be triggered today: the one caller outside tests holds both disablers. `DpcRunner::enqueue()` (`kernel/kernel/task/dpc.cpp`) reads `mm::CpuLocal::current_cpu()` and then `Current::get()`. A caller that can be preempted between them and taken by another CPU queues the `Dpc` on one runner and records the other CPU as its owner, and `cancel()` then locks one CPU's queue to erase from the other's list. `Thread::Current::exit()` is the only caller outside tests and holds both disablers; `dpc.test` and `hotplug.test` pin their threads, so pinning is all that keeps them safe. A reviewer's reading, not run.
 
 **Cause**
 The public function says "the calling CPU" without making it so.
@@ -327,10 +327,10 @@ None, this project's own design.
 ## 31. `ChainLockTransaction::current()` reads a per-CPU slot with no protection
 
 **Severity**
-Low: latent, nothing calls it.
+Medium: not reached today, nothing calls it.
 
 **Symptom**
-`ChainLockTransaction::current()` (`kernel/lib/kconcurrent/src/chain_lock_transaction.cpp`) is documented for an assertion in code handed no transaction, which is the caller that is not inside one and may be preemptible. It uses the two-load `CpuLocal::access()`, so such a caller can be moved between the loads and read another CPU's transaction. The constructor and destructor are safe (the interrupt disabler is their first member). A reviewer's reading, not run.
+Latent, cannot be triggered today: nothing calls it. `ChainLockTransaction::current()` (`kernel/lib/kconcurrent/src/chain_lock_transaction.cpp`) is documented for an assertion in code handed no transaction, which is the caller that is not inside one and may be preemptible. It uses the two-load `CpuLocal::access()`, so such a caller can be moved between the loads and read another CPU's transaction. The constructor and destructor are safe (the interrupt disabler is their first member). A reviewer's reading, not run.
 
 **Cause**
 The function does not say, or make, the context it needs.
@@ -383,3 +383,23 @@ None, this project's own tests.
 
 **Acceptance**
 `kshell_run.py --out out/<dir> tickreplace.test preempt.test` passes in the default, Fair and four-node lanes, three runs in a row.
+
+## 35. The scheduling domains are built once and do not follow a CPU that moves to another node
+
+**Severity**
+Medium: not reached today, since nothing moves a CPU between nodes at run time.
+
+**Symptom**
+Latent, cannot be triggered today: nothing calls `PmNode::set_cpu_node()`. `domains_of(cpu)` (`kernel/kernel/task/sched/domains.cpp`) is built once, at `InitLevel::Threading`, from `mm::CpuNodeMap`. `PmNode::set_cpu_node()` (`kernel/mm/pm_node.cpp`) moves a CPU between two live nodes at run time and updates the node table; it has no caller, and nothing tells the scheduler. After such a move a CPU would still be in the tier its old node gave it: `steal()` would count a CPU as near that is far, and the other way round. Read off the code, not run.
+
+**Cause**
+The table is read-only after boot, so that `steal()` takes no lock to read it, and the memory manager has no hook through which a move could tell the scheduler (a call from `kernel/mm` into the scheduler would be a new edge; mm already includes task headers, `ours/task/thread.hpp` for one).
+
+**Change**
+The author's, with options: a generation count in `CpuNodeMap` that the scheduler compares at each look and rebuilds on a change (a rebuild that has to be safe against `steal()` readers on other CPUs); or a hook list that `set_cpu_node()` runs and the scheduler adds itself to, registered at `Threading`; or leaving it until a caller of `set_cpu_node()` exists, and making that caller rebuild. None is chosen.
+
+**Reference**
+Linux rebuilds its sched domains on a topology change with `rebuild_sched_domains()` (`kernel/cgroup/cpuset.c`, local checkout; name confirmed, body not read for this item).
+
+**Acceptance**
+A test moves a CPU to another node through `PmNode::set_cpu_node()` and `steal.test` sees the new tier of that CPU, or the item is closed by the first caller of `set_cpu_node()` doing so.

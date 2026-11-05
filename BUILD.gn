@@ -179,6 +179,10 @@ group("default") {
     # the CPU reports, and which may be entered.
     "//kernel/arch/x86/lib/idle_states:tests",
 
+    # The scheduling domains of a CPU: the tiers of CPUs it takes work from,
+    # built from a table of nodes.
+    "//kernel/lib/sched_domain:tests",
+
     # x86's page-table walks, in their CRTP base: run against tables built by
     # hand in host memory, and against the paging engine's answers.
     "//kernel/arch/x86/lib/page_tables/test:page_tables($host_toolchain)",

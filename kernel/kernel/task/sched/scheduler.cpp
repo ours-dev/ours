@@ -63,9 +63,9 @@
 #include <ours/cpu.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/cpu_node_map.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/idle_thread.hpp>
+#include <ours/task/sched/domains.hpp>
 #include <ours/task/sched/features.hpp>
 #include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/schedule.hpp>
@@ -109,20 +109,6 @@ namespace {
     GKTL_COUNTER(SCHEDULE_YIELD_PAST, "schedule.yield_past");
     GKTL_COUNTER(SCHEDULE_STEAL_LOOKS, "schedule.steal_looks");
     GKTL_COUNTER(SCHEDULE_STEALS, "schedule.steals");
-
-    /// How many threads a CPU must hold, the one it runs counted
-    /// (Scheduler::num_runnable()), for a CPU with nothing to run to take one
-    /// from it, when it is on the same NUMA node as the CPU taking. One running
-    /// and one waiting is enough: the waiting one is behind a whole slice, and
-    /// on the same node it loses only its cache.
-    constexpr usize STEAL_MIN_RUNNABLE_SAME_NODE = 2;
-
-    /// The same, when the CPU is on another node. The thread leaves the memory
-    /// it has been working on, so a second one waiting is asked for. There is no
-    /// estimate of how long a thread has been queued here, only the count, and
-    /// both numbers are first guesses to be measured on real hardware (item 24
-    /// of docs/repairs/261103/kernel-task-sched.md).
-    constexpr usize STEAL_MIN_RUNNABLE_OTHER_NODE = 3;
 
 } // namespace
 
@@ -1059,11 +1045,19 @@ auto Scheduler::Current::deactivate() -> void {
     reschedule_mask(moved_to);
 }
 
-/// A pull, by a CPU with nothing to run, from the CPU with the most threads on
-/// its own node, or failing that from another node's. The
-/// hold-one-lock-at-a-time shape is deactivate()'s: no order of run queue locks
-/// is defined, and two CPUs stealing from each other would deadlock on the first
-/// one that took both.
+auto Scheduler::Current::num_steal_looks(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(SCHEDULE_STEAL_LOOKS.get(cpu));
+}
+
+auto Scheduler::Current::num_steals(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(SCHEDULE_STEALS.get(cpu));
+}
+
+/// A pull, by a CPU with nothing to run, from the tiers of its scheduling
+/// domains (domains_of()), the nearest first: in each, the CPU with the most
+/// threads, if it has as many as the tier asks for. The hold-one-lock-at-a-time
+/// shape is deactivate()'s: no order of run queue locks is defined, and two CPUs
+/// stealing from each other would deadlock on the first one that took both.
 ///
 /// While the thread is Migrating it is in neither queue, and its m_curr_cpu
 /// still names the victim. That is the window deactivate() has between its two
@@ -1074,14 +1068,6 @@ auto Scheduler::Current::deactivate() -> void {
 /// (Scheduler::Pi::common()) takes the victim's lock by m_curr_cpu and does not
 /// ask whether the thread is queued there. Both are open for deactivate() too
 /// (items 25 and 26 of docs/repairs/261103/kernel-task-sched.md).
-auto Scheduler::Current::num_steal_looks(CpuNum const cpu) -> u64 {
-    return static_cast<u64>(SCHEDULE_STEAL_LOOKS.get(cpu));
-}
-
-auto Scheduler::Current::num_steals(CpuNum const cpu) -> u64 {
-    return static_cast<u64>(SCHEDULE_STEALS.get(cpu));
-}
-
 auto Scheduler::Current::steal() -> bool {
     DEBUG_ASSERT(arch::irqs_disabled());
     auto &self = get();
@@ -1091,30 +1077,6 @@ auto Scheduler::Current::steal() -> bool {
     SCHEDULE_STEAL_LOOKS.add(1);
 
     auto const here = self.m_run_queue.m_which_cpu;
-    auto const here_node = mm::CpuNodeMap::node_of(here);
-
-    // Two candidates, the deepest queue on this node and the deepest elsewhere.
-    // A hint: read without the victim's lock, as select_target_cpu() reads the
-    // same count, and confirmed by the walk of the victim's queue below.
-    auto same_node_cpu = INVALID_CPU_NUM;
-    auto same_node_most = STEAL_MIN_RUNNABLE_SAME_NODE - 1;
-    auto other_node_cpu = INVALID_CPU_NUM;
-    auto other_node_most = STEAL_MIN_RUNNABLE_OTHER_NODE - 1;
-    peek_active_mask().for_each([&](CpuNum const cpu) {
-        if (cpu == here) {
-            return;
-        }
-        auto const queued = get(cpu).num_runnable();
-        if (mm::CpuNodeMap::node_of(cpu) == here_node) {
-            if (queued > same_node_most) {
-                same_node_most = queued;
-                same_node_cpu = cpu;
-            }
-        } else if (queued > other_node_most) {
-            other_node_most = queued;
-            other_node_cpu = cpu;
-        }
-    });
 
     // Detaches one thread that may run here from |victim_cpu|'s queue, or
     // answers null.
@@ -1162,9 +1124,26 @@ auto Scheduler::Current::steal() -> bool {
         return thread;
     };
 
-    auto *thread = detach_from(same_node_cpu, STEAL_MIN_RUNNABLE_SAME_NODE);
-    if (thread == nullptr) {
-        thread = detach_from(other_node_cpu, STEAL_MIN_RUNNABLE_OTHER_NODE);
+    // Each tier in turn, nearest first, until one gives a thread. The deepest
+    // queue in a tier is a hint: read without the victim's lock, as
+    // select_target_cpu() reads the same count, and confirmed by the walk of
+    // the victim's queue under it. A tier lists every CPU that may ever exist,
+    // so it is cut to the ones active now.
+    Thread *thread = nullptr;
+    for (auto const &domain: domains_of(here).view()) {
+        auto victim_cpu = INVALID_CPU_NUM;
+        usize deepest = 0;
+        (domain.span & peek_active_mask()).for_each([&](CpuNum const cpu) {
+            auto const queued = get(cpu).num_runnable();
+            if (queued >= domain.min_runnable && queued > deepest) {
+                deepest = queued;
+                victim_cpu = cpu;
+            }
+        });
+        thread = detach_from(victim_cpu, domain.min_runnable);
+        if (thread != nullptr) {
+            break;
+        }
     }
     if (thread == nullptr) {
         return false;

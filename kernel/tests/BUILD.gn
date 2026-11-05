@@ -93,6 +93,14 @@ kernel_test("semaphore") {
   deps = _HEADER_DEPS
 }
 
+kernel_test("sched_domain") {
+  sources = [ "sched_domain_test.cpp" ]
+  deps = _HEADER_DEPS + [
+           "//kernel/lib/gktl:headers",
+           "//kernel/lib/sched_domain:headers",
+         ]
+}
+
 kernel_test("vma_wx") {
   sources = [ "vma_wx_test.cpp" ]
   deps = _HEADER_DEPS
@@ -108,6 +116,7 @@ source_set("kernel.tests") {
     ":irq_domain",
     ":sampler_claim",
     ":semaphore",
+    ":sched_domain",
     ":pm_zone",
     ":tick_broadcast",
     ":tick_fallback",

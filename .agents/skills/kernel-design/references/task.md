@@ -24,6 +24,22 @@
   carries `TA_REQUIRES(get_lock())` and a discipline declares
   `TA_REQUIRES(rq.lock())` on its own functions. One discipline outranks
   another if its enumerator is later (Deadline over Normal), not by address.
+- Work stealing is a pull by the idle thread, before it halts
+  (`Scheduler::Current::steal()`, called from `IdleThread::run()`; the user's
+  call of 2026-11-05). Not in `pick_next_thread()`, which is where Zircon puts
+  it: a CPU that comes back online enters the idle loop through
+  `IdleThread::come_back()` and never picks, and a pull from the pick would have
+  to drop the CPU's own run queue lock in the middle of the pick. It moves a
+  thread in two steps, each under one run queue lock and never both, as
+  `Scheduler::Current::deactivate()` does; no order of run queue locks is
+  defined. What the scheduler looks at is a table, not a question to the memory
+  manager: `domains_of(cpu)` (`kernel/lib/sched_domain`, built once from the
+  node table in `kernel/kernel/task/sched/domains.cpp`, the one file of the
+  scheduler that knows `mm::CpuNodeMap`), the CPU's tiers nearest first, each
+  with the queue depth that makes a CPU in it worth taking from (the user's
+  call of 2026-11-05; it is the role of Linux's `sched_domain` and Zircon's
+  `CpuSearchSet`). A new kind of distance is one more tier built there, and the
+  numbers are data, so that they can be measured and later set from outside.
 - Numerics follow Zircon: weights and times are `ffl::Fixed`
   (`SchedWeight` is `ffl::Fixed<int64_t, 10>`, a fraction in (0, 1]). No Linux
   integer weights, no `wmult` reciprocal table. Read

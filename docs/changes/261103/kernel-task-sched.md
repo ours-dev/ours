@@ -922,3 +922,75 @@ None (predictions are paused)
 - Why does a CPU that comes back online not reach the stub that was in `pick_next_thread()`, and what in the idle loop does reach it?
 - Why does `steal()` hold the victim's lock and its own lock one after the other and never both, and what is the thread in between, and who can still reach it there?
 - Why is the cross-node threshold higher than the same-node one, and what would you have to measure to choose the numbers?
+
+## Title: Work stealing reads the scheduling domains, not the memory manager's node table (2026-11-05)
+
+**Files**
+- `kernel/lib/sched_domain/include/sched_domain/sched_domain.hpp` — new library, header only: `Domain` (a tier: `span`, `min_runnable`), `Domains` (a CPU's tiers, nearest first), `Thresholds` and `build_domains()`, a pure function from the possible CPUs and a node answer to the tiers
+- `kernel/lib/sched_domain/test/sched_domain_test.cpp`, `BUILD.gn`, `test/BUILD.gn`, `README.md` — ten host tests, wired into `//:default` through the root `BUILD.gn`'s tests list; `:headers` gives its dependants the include path of `ours/cpu_mask.hpp`
+- `kernel/tests/sched_domain_test.cpp`, `kernel/tests/BUILD.gn` — the ktest `SchedDomains.MatchTheNodeTable`: the table the kernel built at boot against the node table
+- `kernel/kernel/task/sched/domains.cpp`, `kernel/include/ours/task/sched/domains.hpp` — the table `domains_of(cpu)`, built by an init hook at `InitLevel::Threading` from `mm::CpuNodeMap`; the two thresholds now live here; the only file of the scheduler that knows the node table
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `steal()` walks `domains_of(here)` tier by tier; `scheduler.cpp` no longer includes `ours/mm/cpu_node_map.hpp`; the doc comment of `steal()` is now above it
+- `kernel/kernel/task/sched/BUILD.gn` — `domains.cpp` and the `//kernel/lib/sched_domain` dependency
+- `BUILD.gn` (root) — the new tests group in `//:default`
+- `.agents/skills/kernel-design/references/task.md` — the two decisions (a pull by the idle thread; a domain table)
+- `docs/repairs/261103/kernel-task-sched.md` — item 35 is new; item 24 points at `domains.cpp`; items 26, 30 and 31 are given the severity and the first words of their symptom that `docs/repairs/TEMPLATE.md` prescribes for a latent problem
+
+**Symptom**
+None that can be observed: behaviour is unchanged. The scheduler asked the memory manager `mm::CpuNodeMap::node_of()` on every look, and spelled "this node, then the others" and the numbers 2 and 3 in code. The user's objection, 2026-11-05: the scheduler should keep a data structure of its own for this, so that it can be configured, and perhaps later from user space.
+
+**Cause**
+`steal()` was written with its policy in its body. Three things follow from that. The scheduler depended on a memory-manager table for a question that is the scheduler's (which CPUs are worth taking from). A third kind of distance (CPUs that share a cache, CPUs of a package) would have been another branch in `steal()`. And the thresholds could not be read, listed or changed without editing it. Linux's answer is a hierarchy of `struct sched_domain` per CPU, each level with its own parameters (`imbalance_pct`, `min_interval`), walked by generic code; Zircon's is flatter, a `CpuSearchSet` per CPU (an ordered list of CPU and cluster) walked by `StealWork()`, with one gate constant for crossing clusters. The shape of the machine is data in both, and the walk does not change when the machine does.
+
+**Change**
+```cpp
+// before: steal() chose the candidates itself
+auto const here_node = mm::CpuNodeMap::node_of(here);
+auto same_node_most = STEAL_MIN_RUNNABLE_SAME_NODE - 1;
+...
+peek_active_mask().for_each([&](CpuNum const cpu) { /* is cpu on here_node? */ });
+auto *thread = detach_from(same_node_cpu, STEAL_MIN_RUNNABLE_SAME_NODE);
+if (thread == nullptr) { thread = detach_from(other_node_cpu, STEAL_MIN_RUNNABLE_OTHER_NODE); }
+
+// after: the tiers are data, the walk is generic
+for (auto const &domain : domains_of(here).view()) {
+    (domain.span & peek_active_mask()).for_each([&](CpuNum const cpu) { /* deepest with >= domain.min_runnable */ });
+    thread = detach_from(victim_cpu, domain.min_runnable);
+    if (thread != nullptr) { break; }
+}
+```
+`build_domains(owner, possible, node_of, thresholds)` (constrained to a `node_of` that is callable on a CPU and returns something comparable for equality) makes at most two tiers (the CPUs on the owner's node, the CPUs on every other), leaves out one that is empty, never puts the owner in a tier, and puts every other possible CPU in exactly one. `domains.cpp` calls it for each possible CPU with `mm::CpuNodeMap::node_of` as the answer. The list holds up to `MAX_DOMAINS` (4) tiers so that a new kind of distance needs no change of type; `push()` answers false when it is full, and `view()` cannot be taken of a temporary list. A `min_runnable` of 0 is read as 1 (the old code never took from a tier of 0, by an unsigned wrap; no producer makes one). Each tier lists every CPU that may ever exist and `steal()` cuts it to the active ones at use, so a CPU that comes and goes does not change the table.
+
+Why a library: the builder is a pure function of its arguments, which makes it a host test, where the old code could only be checked by booting a four-node machine. The ten tests: one node; two nodes; an owner alone on its node; each owner's own view; one CPU (no tier); a CPU that cannot exist; CPUs nobody has placed; a full list refusing a fifth tier; and two properties over nine machine shapes, that the tiers are exactly the other CPUs, once each, and that each CPU is in the tier of its kind of distance. Mutation testing by a reviewer (21 mutants of the builder against the test source) killed all but four, which were edits with the same behaviour. Why header only: there is no state or code here that needs a translation unit; being inline, it takes the `MP_MAX_CPUS` of whatever includes it, and the host test names a number (`kernel/lib/arch`'s `cpu-mask-smoke` does the same). A compiled source would also work, with the kernel's include path and define given by a config as `kernel/lib/numa` does.
+
+Rejected: building the table lazily at the first look (a lock or an atomic on the path, to save an init hook); a table per tier kind rather than per CPU (it cannot give a CPU its own view when nodes differ in size); naming the type for what it carries today (`StealDomain`), because the next fields (a balance interval) are not about stealing.
+
+**Reference**
+Linux `struct sched_domain` and its builder `build_sched_domains()` (`kernel/sched/topology.c`, names confirmed in the local checkout, bodies not read for this item); Zircon `CpuSearchSet` (`percpu` search set, ordered by cache distance, which `Scheduler::StealWork()` walks) and `kInterClusterThreshold`. Here: two tiers from a node table, a count in place of queued time.
+
+**Verification**
+- Behaviour is unchanged, and a reviewer's port of the old and the new selection to Python agreed on 200 000 random machines for thresholds (2, 3), (1, 1), (1, 3) and (2, 2): `steal.test` on the four-node machine (`NUMA=1`, `out/numa.x86`), 3 runs, 30 checks each, ok; on the default lane and the Fair lane, 15 checks each, ok. The 12 console tests (`preempt idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace`, split with `${=T}`) ok on the three lanes; `ktest all` on the three (`ran=24 passed=23 failed=0 skipped=1` before the new ktest).
+- `preempt.test`, the timing-sensitive one, passed in the batch on all three lanes before the review fixes and failed in the batch on the default and the four-node lanes after them (first command of the batch, `no turn runs past its slices` and the probe timer 2.4 to 2.6 ms late). A QEMU of another worktree (`.worktrees/exp-pci-hotplug`, a demo) was holding one host CPU at 100% for the whole time and the load average was 4.7. Six solo runs of `preempt.test` on the default lane: 1 ok and 5 FAIL with this change, 1 ok and 5 FAIL with `steal()` returning false at its top, so the load, not the change, decides it; it does not touch the domain table (its spinners are pinned to one CPU). Not rerun on an idle host.
+- `ktest SchedDomains.MatchTheNodeTable` ok on the default lane and the four-node machine; `ktest all` `ran=25` with it.
+- `boot_check.py`: default lane dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44/8/0, 7/7), host-tests PASS (174 passed: 173 before, plus the new executable); Fair lane and four-node machine, `--no-tests`: dbg PASS (46/5/0), rel PASS (44/8/0, 7/7).
+- Negative controls, each restored and compared with `cmp`: every CPU answered as one node in `domains.cpp` (so no cross-node tier): `steal.test` fails "and left it, from another node" (1 of 30); no tier built (`DOMAINS` left empty): 5 of 30 fail, every take; the two thresholds swapped in the builder: 3 of the host tests fail; the build function left empty (`return` at its top): `SchedDomains.MatchTheNodeTable` fails on every CPU; the hook registered at `InitLevel::Irq - 1`, before the possible CPUs are known: the dbg boot stops on the `DEBUG_ASSERT` in `build_all_domains()` and never reaches its end marker.
+- `scripts/format_cpp.py --check`, `format_gn.py --check` and `lint_docs.py` clean; clang-tidy (`-p out/fair-lane`) on `domains.cpp` and `steal_test.cpp` reports nothing on a line of this change.
+- Not measured: whether the table changes speed (it replaces a node lookup per active CPU and one for the owner with a mask AND per tier; not timed). Not run: a machine whose firmware places CPUs on nodes in a way `steal.test` does not pair (the test takes the highest same-node pair and the highest cross-node pair); a CPU moved at run time (item 35).
+
+**Deliberately not done**
+- How many threads one look takes (the next step), and the policy knobs (a struct the thresholds move into, one accessor).
+- Rebuilding the table when a CPU changes node (item 35).
+- A user-space interface: the user's idea is recorded in the design; no syscall or object property without a user-space consumer that forces it.
+- Tiers other than the node: the machine's topology source does not say which CPUs share a cache or a core yet.
+- Turning `steal.test`, a console command, into a ktest like the tests the framework is migrating: the console tests are being moved batch by batch by another session, and this one was written before that was settled; it is a follow-up.
+
+**How it was found**
+The user asked, after the first work-stealing change, why it always takes one thread and whether the scheduler should keep its own structure instead of reading the memory manager's CPU-to-node table ("调度器自己本身应该有维护一个数据结构"), and then chose scheduling domains ("那我们可以实现调度域"). The init level was chosen by reading `PmNode::claim_possible_cpus()` (`InitLevel::Irq + 1`, after the MADT fills the possible mask) and `main.cpp` (which announces Threading, running the hook, and only then creates the thread that calls `init_platform()` and so `x86_bring_aps()`).
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why is the builder a pure function in its own header-only library, and what would break if it were a compiled source?
+- Why does a tier list every possible CPU and `steal()` cut it to the active ones, and not the other way round?
+- What does the scheduler no longer know, and which one file still knows it?

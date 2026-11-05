@@ -446,9 +446,9 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     static auto reactivate() -> void;
 
     /// This CPU has nothing to run: take one queued thread from another active
-    /// CPU. The deepest queue on this CPU's NUMA node is tried first, and one
-    /// thread waiting behind the one it runs is enough there; failing that, the
-    /// deepest queue on another node, which has to have two waiting. The thread
+    /// CPU. The tiers of this CPU's scheduling domains are tried nearest first
+    /// (domains_of()); in each, the deepest queue is taken from if it holds as
+    /// many threads as the tier asks for, the one it runs counted. The thread
     /// has to be one that may run here. Called by the idle thread before it
     /// halts, with interrupts off; true when a thread was moved here and is
     /// queued, so that the idle thread has something to reschedule to. A caller

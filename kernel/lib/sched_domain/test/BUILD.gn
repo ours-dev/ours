@@ -1,0 +1,18 @@
+# Host-side tests. These link googletest and run on the build machine, so
+# they exercise the library's own logic rather than anything that needs a
+# booted kernel.
+executable("sched_domain") {
+  testonly = true
+  sources = [ "sched_domain_test.cpp" ]
+
+  # CpuMask is MAX_CPU bits wide and the kernel's build says how many; the host
+  # has no kernel build, so the test names a number, as kernel/lib/arch's
+  # cpu-mask-smoke does.
+  defines = [ "MP_MAX_CPUS=16" ]
+  deps = [
+    "//kernel/lib/sched_domain",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
