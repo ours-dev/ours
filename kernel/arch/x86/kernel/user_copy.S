@@ -54,7 +54,7 @@
 //   returns struct X86UserCopyRet { u32 faulted; u32 cause; VirtAddr va; },
 //   sixteen bytes of integers and so returned in %rax:%rdx under the SysV
 //   ABI: %eax is 0 when every byte was copied and 1 when the copy took its
-//   fault exit, the upper half of %rax the fault's VmfCause, %rdx the
+//   fault exit, the upper half of %rax the fault's VmFault::Cause, %rdx the
 //   faulting address. The last two are only meaningful for a capturing copy
 //   that faulted -- only then did the page-fault handler put them in %rcx and
 //   %rdx; otherwise they are whatever the copy left there. The C++ caller
@@ -87,7 +87,7 @@
 // Fault capture. With RUN_FAULT_HANDLER clear in the stored exit address,
 // the page-fault handler does not try to resolve a fault inside the copy at
 // all. It writes the faulting address into the frame's %rdx and the fault's
-// VmfCause into its %rcx, sets the instruction pointer to the exit -- with
+// VmFault::Cause into its %rcx, sets the instruction pointer to the exit -- with
 // bit 63 put back, since clearing it made the address non-canonical -- and
 // returns. It enables nothing and takes no lock on the way, so a capturing
 // copy may run where resolving a fault could not: under a lock, with

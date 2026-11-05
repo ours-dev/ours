@@ -15,6 +15,7 @@
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/stack.hpp>
 #include <ours/mm/types.hpp>
+#include <ours/mm/vm_fault.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/config.hpp>
@@ -809,9 +810,9 @@ namespace task {
 
         static auto migrate_to(CpuNum dest) -> void;
 
-        static auto page_fault(VirtAddr va, mm::VmfCause cause) -> Status;
+        static auto page_fault(VirtAddr va, mm::VmFault::Cause cause) -> Status;
 
-        static auto soft_fault(VirtAddr va, mm::VmfCause cause) -> Status;
+        static auto soft_fault(VirtAddr va, mm::VmFault::Cause cause) -> Status;
 
         /// Through get(), like every accessor below. CpuLocal::read() takes a
         /// CPU_LOCAL variable itself, never a field reached through one:

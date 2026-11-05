@@ -217,7 +217,7 @@ namespace {
             verdict(tally,
                     status == Status::Ok &&
                         aspace.arch_aspace().query(at, &pa, &flags) == Status::NotFound &&
-                        aspace.soft_fault(at, mm::VmfCause::Absent) == Status::AccessDenied &&
+                        aspace.soft_fault(at, mm::VmFault::Cause::Absent) == Status::AccessDenied &&
                         aspace.arch_aspace().query(at - PAGE_SIZE, &pa, &flags) == Status::Ok,
                     "partial unmap removes the target translation and prevents a refault");
         }
@@ -375,7 +375,7 @@ namespace {
         bool failed;
         {
             AllocationFailure failure(AllocationSite::PageTable);
-            auto const status = aspace.soft_fault(BASE, mm::VmfCause::Write);
+            auto const status = aspace.soft_fault(BASE, mm::VmFault::Cause::Write);
             failed = status == Status::NoMemory && failure.triggered();
         }
         PhysAddr pa{};
@@ -385,7 +385,7 @@ namespace {
                     vmo->committed_pages(0, PAGE_SIZE) == 1,
                 "a failed page-table allocation leaves a committed page with no translation");
         verdict(tally,
-                aspace.soft_fault(BASE, mm::VmfCause::Write) == Status::Ok &&
+                aspace.soft_fault(BASE, mm::VmFault::Cause::Write) == Status::Ok &&
                     aspace.arch_aspace().query(BASE, &pa, &flags) == Status::Ok &&
                     !!(flags & mm::MmuFlags::Writable),
                 "the next fault maps the committed page writable");
@@ -471,7 +471,7 @@ namespace {
                     plain_mapping.unmap(PLAIN + PAGE_SIZE, PAGE_SIZE, mm::UnmapOptions::None) ==
                         Status::InvArgs,
                 "a direct mapping operation validates its range and permissions");
-        verdict(tally, aspace->soft_fault(PLAIN, mm::VmfCause::Absent) == Status::Ok,
+        verdict(tally, aspace->soft_fault(PLAIN, mm::VmFault::Cause::Absent) == Status::Ok,
                 "fault lookup caches the plain mapping before teardown");
         auto inside =
             area->map_with_vmo(AREA + PAGE_SIZE, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
@@ -510,7 +510,7 @@ namespace {
         verdict(tally, root->unmap(PLAIN, PAGE_SIZE) == Status::Ok,
                 "unmap of the plain mapping is Ok");
         verdict(tally, !plain.unwrap()->is_active(), "and the plain mapping is gone");
-        verdict(tally, aspace->soft_fault(PLAIN, mm::VmfCause::Absent) == Status::NotFound,
+        verdict(tally, aspace->soft_fault(PLAIN, mm::VmFault::Cause::Absent) == Status::NotFound,
                 "the next fault cannot find the removed mapping in the address-space cache");
         verdict(tally,
                 plain_mapping.map(PLAIN, PAGE_SIZE, mm::MapOptions::Resident) == Status::BadState &&

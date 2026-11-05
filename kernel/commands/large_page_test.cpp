@@ -244,7 +244,7 @@ namespace {
 
     /// Takes a fault at |va| and answers what |va| translates to after it; an
     /// absent Translation when the fault failed.
-    auto fault_at(mm::VmAspace &aspace, VirtAddr const va, mm::VmfCause const cause)
+    auto fault_at(mm::VmAspace &aspace, VirtAddr const va, mm::VmFault::Cause const cause)
         -> Translation {
         if (task::Thread::Current::soft_fault(va, cause) != Status::Ok) {
             return Translation{};
@@ -290,8 +290,8 @@ namespace {
         }
         auto *const previous = attach(aspace.as_ptr_mut());
         auto &root = *aspace->root_vma();
-        constexpr auto WRITE = mm::VmfCause::Write;
-        constexpr auto READ = mm::VmfCause::Absent;
+        constexpr auto WRITE = mm::VmFault::Cause::Write;
+        constexpr auto READ = mm::VmFault::Cause::Absent;
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
         auto const at = [](usize const megabytes) {
             return ustl::round_up(USER_ASPACE_BASE + megabytes * 1_mb, LARGE);

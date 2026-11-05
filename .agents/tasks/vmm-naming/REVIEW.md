@@ -10,6 +10,8 @@ Compare each diff with the user's selected name, search all declarations and cal
 
 - PageSource::request_pages describes the asynchronous operation and leaves ShouldWait and request lifetime intact. Both development images, 163 host tests and the two pager commands passed.
 
+- VmFault::Cause preserves the enum values, aggregate fields and captured x86 fault encoding. Both images, 163 host tests and the user-copy and snapshot commands passed.
+
 ## High severity
 
 None.

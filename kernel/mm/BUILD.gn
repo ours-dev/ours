@@ -82,7 +82,7 @@ cpp_interface("headers") {
     # vm_object.hpp names user_copy::UserOutPtr/UserInPtr in read_user() and
     # write_user(), so whoever includes it needs user_copy's include path.
     # Only the include path, not a dependency on //kernel/lib/user_copy:headers:
-    # that target depends back on this one (its header reaches mm::VmfCause),
+    # that target depends back on this one (its header reaches mm::VmFault::Cause),
     # and a dependency both ways is a cycle GN refuses. heap takes mm's config
     # back the same way, for the same reason.
     "//kernel/lib/user_copy:headers.config",

@@ -433,7 +433,7 @@ namespace {
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
         constexpr auto AT = USER_ASPACE_BASE + 16_mb;
-        constexpr auto WRITE = mm::VmfCause::Write;
+        constexpr auto WRITE = mm::VmFault::Cause::Write;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
         auto const made =
@@ -514,8 +514,8 @@ namespace {
                         "protect() to read-only takes Execute from the entry and back to "
                         "executable does not give it back");
                 verdict(tally,
-                        task::Thread::Current::soft_fault(CODE_AT, mm::VmfCause::Instruction) ==
-                                Status::Ok &&
+                        task::Thread::Current::soft_fault(
+                            CODE_AT, mm::VmFault::Cause::Instruction) == Status::Ok &&
                             is_executable(aspace, CODE_AT) && !is_writable(aspace, CODE_AT),
                         "an instruction fetch adds Execute to the entry, and no Write");
             }
@@ -529,7 +529,7 @@ namespace {
     /// A fault taken on another thread, in |aspace|: what soft_fault() answered.
     struct Fault {
         VirtAddr va;
-        mm::VmfCause cause;
+        mm::VmFault::Cause cause;
         Status status = Status::InternalError;
     };
 
@@ -586,7 +586,7 @@ namespace {
                            pte_flags(aspace, CODE_AT).is_some() && !is_executable(aspace, CODE_AT);
         verdict(tally, ready, "a mapped page whose entry lacks the Execute its mapping allows");
         if (ready) {
-            Fault fault{.va = CODE_AT, .cause = mm::VmfCause::Instruction};
+            Fault fault{.va = CODE_AT, .cause = mm::VmFault::Cause::Instruction};
             auto parked = false;
             auto unmapped = false;
             task::Thread *thread = nullptr;
@@ -614,7 +614,7 @@ namespace {
             verdict(tally, fault.status == Status::Ok && !pte_flags(aspace, CODE_AT).is_some(),
                     "the fetch leaves the entry unmapped instead of mapping its frame back");
             verdict(tally,
-                    task::Thread::Current::soft_fault(CODE_AT, mm::VmfCause::Instruction) ==
+                    task::Thread::Current::soft_fault(CODE_AT, mm::VmFault::Cause::Instruction) ==
                             Status::Ok &&
                         is_executable(aspace, CODE_AT),
                     "and the fetch retried maps the object's page, executable");
@@ -716,7 +716,8 @@ namespace {
                 "an unmap of the pages takes the page out of the object's mapping and the "
                 "slice's, each at its own offset, and nothing else");
         verdict(tally,
-                aspace->soft_fault(WHOLE_AT + 2 * PAGE_SIZE, mm::VmfCause::Absent) == Status::Ok &&
+                aspace->soft_fault(WHOLE_AT + 2 * PAGE_SIZE, mm::VmFault::Cause::Absent) ==
+                        Status::Ok &&
                     present(WHOLE_AT + 2 * PAGE_SIZE),
                 "the mapping still allows the page: a read maps it again");
         operate_cow_range(cow, 0, ~usize{0}, mm::RangeOp::Unmap);
@@ -733,8 +734,8 @@ namespace {
             // The first slice takes over the list, but its window starts at
             // page 1. It must still notify the other slice about page 0.
             auto const refaulted =
-                aspace->soft_fault(SLICE_AT, mm::VmfCause::Absent) == Status::Ok &&
-                aspace->soft_fault(FIRST_AT, mm::VmfCause::Absent) == Status::Ok &&
+                aspace->soft_fault(SLICE_AT, mm::VmFault::Cause::Absent) == Status::Ok &&
+                aspace->soft_fault(FIRST_AT, mm::VmFault::Cause::Absent) == Status::Ok &&
                 present(SLICE_AT) && present(FIRST_AT);
             operate_cow_range(cow, 0, PAGE_SIZE, mm::RangeOp::Unmap);
             verdict(tally, refaulted && present(SLICE_AT) && !present(FIRST_AT),
@@ -745,7 +746,7 @@ namespace {
             if (removed_slice == Status::Ok) {
                 slice = nullptr;
                 auto const refaulted_first =
-                    aspace->soft_fault(FIRST_AT, mm::VmfCause::Absent) == Status::Ok &&
+                    aspace->soft_fault(FIRST_AT, mm::VmFault::Cause::Absent) == Status::Ok &&
                     present(FIRST_AT);
                 operate_cow_range(cow, 0, PAGE_SIZE, mm::RangeOp::Unmap);
                 verdict(tally, refaulted_first && !present(FIRST_AT),
@@ -808,7 +809,8 @@ namespace {
                 // The mapping still allows the write; the fault path resolves it with a page
                 // of the object's own.
                 verdict(tally,
-                        task::Thread::Current::soft_fault(AT, mm::VmfCause::Write) == Status::Ok,
+                        task::Thread::Current::soft_fault(AT, mm::VmFault::Cause::Write) ==
+                            Status::Ok,
                         "a write through the mapping is resolved");
                 verdict(tally,
                         is_writable(aspace, AT) && entry_pa(aspace, AT) != old_pa &&
@@ -1243,7 +1245,8 @@ namespace {
                 Node parent_pages = parent->cow_pages();
                 auto const shared = lookup(parent_pages, false, 0);
                 verdict(tally,
-                        task::Thread::Current::soft_fault(AT, mm::VmfCause::Absent) == Status::Ok,
+                        task::Thread::Current::soft_fault(AT, mm::VmFault::Cause::Absent) ==
+                            Status::Ok,
                         "a read of the clone's page 0 is resolved");
                 verdict(tally,
                         shared && entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
@@ -1252,7 +1255,7 @@ namespace {
                         "allows Write");
                 verdict(tally,
                         alias.is_ok() &&
-                            aspace->soft_fault(ALIAS, mm::VmfCause::Absent) == Status::Ok &&
+                            aspace->soft_fault(ALIAS, mm::VmFault::Cause::Absent) == Status::Ok &&
                             entry_pa(aspace, ALIAS) == entry_pa(aspace, AT),
                         "both mappings initially point to the inherited frame");
 
@@ -1262,7 +1265,7 @@ namespace {
                     bool failed = false;
                     {
                         mm::test::AllocationFailure failure(site);
-                        auto const status = aspace->soft_fault(AT, mm::VmfCause::Write);
+                        auto const status = aspace->soft_fault(AT, mm::VmFault::Cause::Write);
                         failed = status == Status::OutOfMem && failure.triggered();
                     }
                     verdict(tally,
@@ -1276,7 +1279,8 @@ namespace {
 
                 // A write to that entry gets the clone a page of its own.
                 verdict(tally,
-                        task::Thread::Current::soft_fault(AT, mm::VmfCause::Write) == Status::Ok,
+                        task::Thread::Current::soft_fault(AT, mm::VmFault::Cause::Write) ==
+                            Status::Ok,
                         "a write to it is resolved");
                 verdict(tally,
                         is_writable(aspace, AT) && shared &&
@@ -1286,15 +1290,15 @@ namespace {
                         "the object's page is as it was");
                 verdict(tally,
                         !is_readable(aspace, ALIAS) &&
-                            aspace->soft_fault(ALIAS, mm::VmfCause::Absent) == Status::Ok &&
+                            aspace->soft_fault(ALIAS, mm::VmFault::Cause::Absent) == Status::Ok &&
                             entry_pa(aspace, ALIAS) == entry_pa(aspace, AT),
                         "the alias faults back in on the writer's new frame");
 
                 // A write to a page that was never mapped goes straight to a page of its own.
                 verdict(tally,
-                        task::Thread::Current::soft_fault(AT + PAGE_SIZE,
-                                                          mm::VmfCause::Write |
-                                                              mm::VmfCause::Absent) == Status::Ok &&
+                        task::Thread::Current::soft_fault(
+                            AT + PAGE_SIZE,
+                            mm::VmFault::Cause::Write | mm::VmFault::Cause::Absent) == Status::Ok &&
                             is_writable(aspace, AT + PAGE_SIZE) && peek(child, 1) == 0x3200'0000,
                         "a write to an unmapped page is mapped writable, on a copy");
 
@@ -1302,15 +1306,16 @@ namespace {
                     auto const address = AT + index * PAGE_SIZE;
                     auto const alias_address = ALIAS + index * PAGE_SIZE;
                     auto const prefaulted =
-                        aspace->soft_fault(address, mm::VmfCause::Absent) == Status::Ok &&
-                        aspace->soft_fault(alias_address, mm::VmfCause::Absent) == Status::Ok;
-                    verdict(
-                        tally,
-                        prefaulted && poke(child, index, 0xA0) && !is_readable(aspace, address) &&
-                            !is_readable(aspace, alias_address) &&
-                            aspace->soft_fault(alias_address, mm::VmfCause::Absent) == Status::Ok &&
-                            peek(child, index) == 0xA0,
-                        description);
+                        aspace->soft_fault(address, mm::VmFault::Cause::Absent) == Status::Ok &&
+                        aspace->soft_fault(alias_address, mm::VmFault::Cause::Absent) == Status::Ok;
+                    verdict(tally,
+                            prefaulted && poke(child, index, 0xA0) &&
+                                !is_readable(aspace, address) &&
+                                !is_readable(aspace, alias_address) &&
+                                aspace->soft_fault(alias_address, mm::VmFault::Cause::Absent) ==
+                                    Status::Ok &&
+                                peek(child, index) == 0xA0,
+                            description);
                 };
                 check_direct_write(2, "a direct VMO write invalidates both inherited entries");
                 verdict(tally, peek(parent, 2) == 0x3300'0000,

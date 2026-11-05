@@ -1041,11 +1041,11 @@ auto Thread::Current::fault(VirtAddr va, F &&f) -> Status {
 /// would send the copy straight back into a wait that ends at once while the
 /// signal is pending. A kill may end it, and is answered as it is: the copy
 /// fails, and the thread dies at the end of its system call.
-auto Thread::Current::page_fault(VirtAddr va, mm::VmfCause reason) -> Status {
+auto Thread::Current::page_fault(VirtAddr va, mm::VmFault::Cause reason) -> Status {
     auto const status = Thread::Current::fault(
         va, [va, reason](mm::VmAspace *aspace) { return aspace->page_fault(va, reason); });
 
-    if (!(reason & mm::VmfCause::User)) {
+    if (!(reason & mm::VmFault::Cause::User)) {
         DEBUG_ASSERT(Status::InternalIrqRetry != status,
                      "a fault taken in ring 0 had its wait ended by a suspend");
         return status;
@@ -1056,7 +1056,7 @@ auto Thread::Current::page_fault(VirtAddr va, mm::VmfCause reason) -> Status {
     return status;
 }
 
-auto Thread::Current::soft_fault(VirtAddr va, mm::VmfCause reason) -> Status {
+auto Thread::Current::soft_fault(VirtAddr va, mm::VmFault::Cause reason) -> Status {
     return Thread::Current::fault(
         va, [va, reason](mm::VmAspace *aspace) { return aspace->soft_fault(va, reason); });
 }

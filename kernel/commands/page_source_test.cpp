@@ -971,7 +971,7 @@ namespace {
                 "3 keeps what was supplied first, and the provider is asked nothing");
         PhysAddr frame0_now{};
         verdict(tally,
-                aspace.soft_fault(dst_base, mm::VmfCause::Absent) == Status::Ok &&
+                aspace.soft_fault(dst_base, mm::VmFault::Cause::Absent) == Status::Ok &&
                     present_at(dst_base, &frame0_now) && frame0_now == frame0,
                 "page 0 is the very frame the anonymous object had: moved, not copied");
 

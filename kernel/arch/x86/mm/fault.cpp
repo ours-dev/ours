@@ -134,7 +134,7 @@ namespace {
     }
 } // namespace
 
-using mm::VmfCause;
+using mm::VmFault;
 
 auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status {
     usize const error_code = frame->error_code;
@@ -184,16 +184,17 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
         return Status::AccessDenied;
     }
 
-    VmfCause cause{};
-    cause |= (error_code & PAGE_FAULT_PRESENT) ? VmfCause::None : VmfCause::Absent;
-    cause |= (error_code & PAGE_FAULT_WRITE) ? VmfCause::Write : VmfCause::None;
-    cause |= (error_code & PAGE_FAULT_USER) ? VmfCause::User : VmfCause::None;
+    VmFault::Cause cause{};
+    cause |= (error_code & PAGE_FAULT_PRESENT) ? VmFault::Cause::None : VmFault::Cause::Absent;
+    cause |= (error_code & PAGE_FAULT_WRITE) ? VmFault::Cause::Write : VmFault::Cause::None;
+    cause |= (error_code & PAGE_FAULT_USER) ? VmFault::Cause::User : VmFault::Cause::None;
     // Translated, not judged here. A fetch from a present page is not always
     // a violation: after a protect() that added Executable the page tables
     // can still hold the old NX entry, and that fault is spurious. Only the
     // mapping knows which permissions the page is meant to have, so it is
     // VmMapping::page_fault() that refuses the fetch.
-    cause |= (error_code & PAGE_FAULT_INSTRUCTION) ? VmfCause::Instruction : VmfCause::None;
+    cause |=
+        (error_code & PAGE_FAULT_INSTRUCTION) ? VmFault::Cause::Instruction : VmFault::Cause::None;
 
     // A user copy that captures its faults gets this one back unresolved.
     //

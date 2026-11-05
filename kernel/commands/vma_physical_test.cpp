@@ -215,7 +215,7 @@ namespace {
                 auto const writable = READ | mm::MmuFlags::Writable;
                 verdict(tally,
                         root->protect(address, PAGE_SIZE, writable) == Status::Ok &&
-                            aspace->soft_fault(address, mm::VmfCause::Write) == Status::Ok,
+                            aspace->soft_fault(address, mm::VmFault::Cause::Write) == Status::Ok,
                         "a write fault can widen a physical mapping after protect");
                 auto const entry = entry_at(*aspace, address);
                 verdict(tally,

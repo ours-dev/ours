@@ -90,7 +90,7 @@ namespace {
         verdict(tally, !entry_at(aspace, base).present && !entry_at(aspace, base + P).present,
                 "a physical object mapped without Populate has nothing in the page tables");
         verdict(tally,
-                aspace.soft_fault(base, mm::VmfCause::Absent) == Status::NotSupported &&
+                aspace.soft_fault(base, mm::VmFault::Cause::Absent) == Status::NotSupported &&
                     !entry_at(aspace, base).present,
                 "a physical mapping cannot install a frame on demand");
 

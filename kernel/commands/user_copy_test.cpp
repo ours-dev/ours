@@ -70,10 +70,10 @@
 
 namespace ours {
 namespace {
-    using mm::VmfCause;
+    using mm::VmFault;
 
-    constexpr auto WRITE_ABSENT = VmfCause::Write | VmfCause::Absent;
-    constexpr auto READ_ABSENT = VmfCause::Absent;
+    constexpr auto WRITE_ABSENT = VmFault::Cause::Write | VmFault::Cause::Absent;
+    constexpr auto READ_ABSENT = VmFault::Cause::Absent;
 
     struct Tally {
         usize passed = 0;
@@ -102,8 +102,8 @@ namespace {
         log::info("usercopy.test:   {}: status={} no fault", name, static_cast<int>(result.status));
     }
 
-    auto faulted_at(UserCopyCaptureResult const &result, VirtAddr const va, VmfCause const cause)
-        -> bool {
+    auto faulted_at(UserCopyCaptureResult const &result, VirtAddr const va,
+                    VmFault::Cause const cause) -> bool {
         if (result.status != Status::InvArgs || result.fault.is_none()) {
             return false;
         }

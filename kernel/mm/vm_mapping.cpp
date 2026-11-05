@@ -653,7 +653,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
         return {Status::AccessDenied, 0};
     }
 
-    bool const will_write = !!(vmf->cause & VmfCause::Write);
+    bool const will_write = !!(vmf->cause & VmFault::Cause::Write);
     if (will_write && !(mmuf & MmuFlags::Writable)) {
         return {Status::AccessDenied, 0};
     }
@@ -668,7 +668,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // protect() that added Executable, a fetch through a stale NX entry is
     // spurious, and only this region says which case it is. So an
     // instruction fetch requires Executable of the region ahead of any lookup.
-    bool const will_execute = !!(vmf->cause & VmfCause::Instruction);
+    bool const will_execute = !!(vmf->cause & VmFault::Cause::Instruction);
     if (will_execute && !(mmuf & MmuFlags::Executable)) {
         return {Status::AccessDenied, 0};
     }
@@ -735,7 +735,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // The hardware retries the access through the entry made here, whose
     // accessed bit records it. A fault the kernel raised for a copy marks the
     // page as well: twice costs nothing.
-    if (!(vmf->cause & VmfCause::Software)) {
+    if (!(vmf->cause & VmFault::Cause::Software)) {
         cursor->disable_mark_accessed();
     }
 
@@ -822,7 +822,7 @@ auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existin
                 return {cursor.unwrap_err(), 0};
             }
             // As the demand path: the entry records a hardware access.
-            if (!(vmf->cause & VmfCause::Software)) {
+            if (!(vmf->cause & VmFault::Cause::Software)) {
                 cursor->disable_mark_accessed();
             }
             auto page = cursor->require_owned_page(1, &vmf->page_request);

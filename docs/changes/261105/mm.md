@@ -440,3 +440,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Scope fault causes to VmFault (2026-11-05)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/vm_fault.hpp` declares the nested Cause bitmask.
+- Fault resolution, task, architecture, user-copy and command callers use the nested type.
+
+**Symptom**
+
+VmfCause used an abbreviation separate from the fault descriptor it describes.
+
+**Cause**
+
+The type's global name repeated its association with a VM fault. The user selected a nested type so callers can write the association directly.
+
+**Change**
+
+Move `VmfCause` into the descriptor as `VmFault::Cause` and keep the field `Cause cause`. Use the nested enum bitmask declaration and migrate every type, flag expression and assembly comment.
+
+**Reference**
+
+None. VmFault::Cause is the user's selected project vocabulary.
+
+**Verification**
+
+LLVM 23 clang-format and clang-tidy checked all seventeen changed C++ files. The enum's underlying type and its six values match the old definition, including the values captured by the x86 user-copy assembly. Both development images booted, all 163 host tests passed, and usercopy.test and vmosnapshot.test passed.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user selected the nested Cause spelling while reviewing item seven of the VMM naming list.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.
