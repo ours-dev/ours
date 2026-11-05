@@ -593,25 +593,23 @@ auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapOptions options) ->
     DEBUG_ASSERT(m_vmo);
     Guard guard{m_vmo->lock()};
 
-    auto &arch_aspace = m_aspace->arch_aspace();
-    auto enumerator = m_protection_ranges.make_enumerator(base, size);
-    while (auto [region_base, region_size, mmuf] = enumerator.next()) {
-        auto status = arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, options, nullptr);
-        if (Status::Ok != status) {
-            log::error("Failed to unmap range[{:X}, {:X})", region_base, region_size);
-            return status;
-        }
-    }
-
-    // Mark the range as permission-less, the same representation of "unmapped"
-    // that protect() relies on when it skips zero-permission regions; without
-    // this, a later protect() would try to modify page-table entries that no
-    // longer exist.
-    auto status = m_protection_ranges.update(base, size, MmuFlags{});
-    if (Status::Ok != status) {
+    // Allocate protection boundaries before removing any PTE. Once the
+    // translations are gone, publishing the hole must be infallible.
+    auto const end = base + size;
+    if (auto const status = m_protection_ranges.prepare_update(base, end, MmuFlags{});
+        Status::Ok != status) {
         return status;
     }
 
+    auto &arch_aspace = m_aspace->arch_aspace();
+    if (auto const status = arch_aspace.unmap(base, size >> PAGE_SHIFT, options, nullptr);
+        Status::Ok != status) {
+        m_protection_ranges.coalesce();
+        log::error("Failed to unmap range[{:X}, {:X})", base, end);
+        return status;
+    }
+
+    m_protection_ranges.apply_update(base, end, MmuFlags{});
     return Status::Ok;
 }
 

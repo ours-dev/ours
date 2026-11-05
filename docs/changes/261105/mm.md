@@ -222,3 +222,47 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Prepare protection metadata before a partial unmap (2026-11-05)
+
+**Files**
+
+- `kernel/mm/protection_ranges.cpp` and its header separate boundary preparation from the infallible flag update.
+- `kernel/mm/vm_mapping.cpp` orders preparation, page-table removal and publication of the hole.
+- `kernel/commands/vma_seal_test.cpp` injects a failure while creating an unmap boundary.
+
+**Symptom**
+
+Partial unmap could return OutOfMem after removing a PTE, leaving the target page absent even though its recorded permissions still allowed access.
+
+**Cause**
+
+The code removed translations before updating its protection tree. Updating a subrange can allocate tree nodes to split either endpoint.
+
+**Change**
+
+Prepare both boundaries under the existing locks before touching the page table. A successful architecture unmap commits the permissionless range without allocating. If the architecture operation fails, the original permissions are retained and the prepared boundaries are coalesced. The regression checks the original PTE after injected allocation failure, a successful retry, denial of a later fault, and preservation of an adjacent translation.
+
+**Reference**
+
+None. The change orders the existing mapping and protection operations.
+
+**Verification**
+
+Before the repair, two injected failures returned OutOfMem after clearing the target PTE. Clang-format and clang-tidy checked all four C++ files. Both images and 163 host tests passed in each configuration. The seal command passed all 72 checks, and all 46 instrumented kernel commands passed with the preemption test run first. VMM line coverage reached 4301/4770 (90.17%), 231 lines short of 95%.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The protection fault-injection cases revealed that partial unmap used the same tree allocation in the opposite order from protect.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

@@ -180,6 +180,50 @@ namespace {
         verdict(tally, failures != 0, "the protection tree needed allocation while splitting");
     }
 
+    auto check_unmap_allocation_failure(Tally &tally, mm::VmAspace &aspace) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        constexpr auto BASE = USER_ASPACE_BASE + 112_mb;
+        constexpr usize PAGES = 32;
+        constexpr auto READ = mm::MmuFlags::Readable | mm::MmuFlags::User;
+        auto root = aspace.root_vma();
+        auto mapped = root->map_with_vmo(BASE, PAGES * PAGE_SIZE, 0, READ, mm::VmaFlags::PermMask,
+                                         make_vmo(PAGES * PAGE_SIZE), mm::MapOptions::Commit,
+                                         "unmap allocation");
+        verdict(tally, mapped.is_ok(), "a committed mapping for partial unmap");
+        if (!mapped) {
+            return;
+        }
+        usize failures = 0;
+        for (usize index = 1; index + 1 < PAGES; index += 2) {
+            auto const at = BASE + index * PAGE_SIZE;
+            Status status;
+            bool triggered;
+            {
+                AllocationFailure failure(AllocationSite::Collection);
+                status = root->unmap(at, PAGE_SIZE);
+                triggered = failure.triggered();
+            }
+            PhysAddr pa{};
+            mm::MmuFlags flags{};
+            if (triggered) {
+                ++failures;
+                verdict(tally,
+                        status == Status::OutOfMem &&
+                            aspace.arch_aspace().query(at, &pa, &flags) == Status::Ok,
+                        "a failed partial unmap preserves the original PTE");
+                status = root->unmap(at, PAGE_SIZE);
+            }
+            verdict(tally,
+                    status == Status::Ok &&
+                        aspace.arch_aspace().query(at, &pa, &flags) == Status::NotFound &&
+                        aspace.soft_fault(at, mm::VmfCause::Absent) == Status::AccessDenied &&
+                        aspace.arch_aspace().query(at - PAGE_SIZE, &pa, &flags) == Status::Ok,
+                    "partial unmap removes the target translation and prevents a refault");
+        }
+        verdict(tally, failures != 0, "the unmap needed allocation while splitting");
+    }
+
     auto check_aspace_allocation_failures(Tally &tally) -> void {
         using mm::test::AllocationFailure;
         using mm::test::AllocationSite;
@@ -451,6 +495,7 @@ namespace {
         check_allocation_failures(tally, *aspace);
         check_protect_allocation_failure(tally, *aspace);
         check_partial_map_failure(tally, *aspace);
+        check_unmap_allocation_failure(tally, *aspace);
 #endif
 
         // The sealed ones are in the address space when it goes.
