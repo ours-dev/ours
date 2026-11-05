@@ -907,3 +907,40 @@ None.
 - Why can a modify/delete conflict still represent a test that must be preserved under a new path?
 - Why do KTEST's summary and the console runner's generic error verdict disagree during an intentional allocation failure?
 - Why does one passing reordered run not prove a timing instability has been repaired?
+
+## Name the zone threshold enum Watermark (2026-11-05)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — rename the enum and its parameter and array-extent references; move explanations above individual variants.
+- `kernel/mm/pm_zone.cpp` — migrate the threshold initialization indices.
+- `kernel/mm/pm_node.cpp`, `kernel/mm/memory_reclaimer.cpp` — migrate reclaim threshold queries.
+- `kernel/commands/pm_node_test.cpp` — migrate the exhausted-zone regression.
+
+**Symptom**
+The enum was spelled WaterMark while the related methods use the domain word watermark, making one concept appear under two word boundaries.
+
+**Cause**
+The extra capital split a single word without expressing an additional type or responsibility. The type-level comment also mixed the variant descriptions together instead of placing each explanation at the corresponding value.
+
+**Change**
+Replaced `PmZone::WaterMark` with `PmZone::Watermark` across the declaration and all active callers. Kept `: u32` and `Min, Low, High, Count` unchanged. Moved the explanations directly above their variants and separated entries with blank lines. No compatibility alias was added.
+
+**Reference**
+None, this project's own naming decision. The spelling follows the existing watermark() and watermark_ok() methods and the user's Rust-first naming convention.
+
+**Verification**
+The five edited C++ files are token-identical after normalizing the selected name and comments. Changed-line formatting and LLVM 23 clang-tidy passed in all five. Both default and four-node builds booted the debug image (46 passed, 5 skipped) and release image (44 passed, 8 skipped, 7/7 required), with 173 host tests passing per configuration. Default pmnode.test passed 38 checks, the zone KTEST passed one case, mempressure.test passed 19 checks and four-node pmnode.test passed 77 checks. Performance was not measured.
+
+**Deliberately not done**
+The other unapproved PMM naming candidates and allocation admission policy were left unchanged. The separately approved policy getter rename is the next increment.
+
+**How it was found**
+The user accepted the threshold spelling from the PMM candidate table. Searched all active declarations and callers, inspected the diff, compared normalized C++ tokens and exercised the existing allocation, pressure and zone regressions.
+
+**The user's prediction**
+None; this is a mechanical naming change.
+
+**Three questions you should be able to answer**
+- Why does Watermark match the existing query vocabulary?
+- Why must the enum's order and unsigned base remain unchanged during this rename?
+- Why should each variant's explanation be placed immediately above it?

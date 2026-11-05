@@ -23,6 +23,8 @@ The local references are Linux mm/page_alloc.c, including build_zonelists, its f
 
 - AllocRequest::Origin preserves the record fields and resolver logic. All four C++ files passed formatting and clang-tidy. Default and four-node NUMA configurations booted both images, passed 163 host tests each and passed pmnode.test.
 
+- PmZone::Watermark preserves the unsigned base, enumerator order and array extent. All five edited C++ files are token-identical to their parents after normalizing the selected name and comments. Formatting and clang-tidy passed. Default and four-node builds booted both images and passed 173 host tests each. The default PMM, zone and pressure tests passed; the four-node PMM test passed 77 checks.
+
 ## High severity
 
 None established within this naming review.
@@ -33,7 +35,7 @@ None established within this naming review.
 
 ## Minor and style
 
-The table records the initial proposals. The user subsequently selected num_free_frames for item 2, superseding its proposed approximate-count spelling. Other entries remain proposals.
+The table records the initial proposals. The user subsequently selected num_free_frames for item 2, superseding its proposed approximate-count spelling. Items 2, 9 and 10 are implemented. The user also accepted item 6, scheduled as the next naming increment. Items 1, 3, 4, 5, 7 and 8 remain proposals.
 
 | Item | Current name | Proposed name | Evidence and reason |
 |---|---|---|---|
