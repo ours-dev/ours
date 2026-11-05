@@ -1,6 +1,6 @@
 # kernel-task-sched outstanding repairs
 
-Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, item 20, found while the Fair lane was brought up, and items 22 to 26 and 28 to 33, left by the idle-thread steal (item 27, the audit of the callers of `CpuLocal::access()`, was done and became items 28 to 31), are at the end; item 21, work stealing, was fixed on 2026-11-05). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile; they are wrong or missing, or (item 8) a question for the author. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
+Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, item 20, found while the Fair lane was brought up, and items 22 to 26, 30, 31, 33 and 34, left by the idle-thread steal (item 27, the audit of the callers of `CpuLocal::access()`, was done and became items 28 to 33; items 28, 29 and 32 were fixed the same day in their own commits), are at the end; item 21, work stealing, was fixed on 2026-11-05). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile; they are wrong or missing, or (item 8) a question for the author. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
 
 ## 7. A thread that was never enqueued has a slice of zero
 
@@ -363,3 +363,23 @@ None, this project's own design.
 
 **Acceptance**
 `add_pending()` is a single atomic operation, and a stress of remote wakeups against steals in the Fair lane loses no request.
+
+## 34. `preempt.test` fails when `tickreplace.test` ran before it
+
+**Severity**
+Low: a test that depends on the order of the tests before it; the kernel is not shown to be wrong.
+
+**Symptom**
+`python3 scripts/kshell_run.py --out out/<dir> tickreplace.test preempt.test` ends with `preempt.test: FAIL  no turn runs past its slices` and `FAIL  most turns are a whole number of slices` (one run: 12 turns, 2 of them a whole number of slices, the longest 69937 us, the probe timer 1320 us late), in the default, Fair and four-node lanes alike. After `idle`, `sleep`, `threadjoin`, `timer`, `timershare` or `mutex.stress` instead, it passes, and alone it passes. With `Scheduler::Current::steal()` returning false at its top it fails the same, so it is not the work stealing. Observed on 2026-11-05 while a batch was being rerun; `preempt.test` was fixed on the same day for a different failure (`docs/changes/261103/kernel-task-sched.md`).
+
+**Cause**
+Not established. `tickreplace.test` replaces the tick device of the CPUs; if it leaves a different device or mode behind (a coarser timer, a longer lateness), a turn that `preempt.test` expects to end within its slice plus the lateness it measures runs longer. A guess from the symptom, not read.
+
+**Change**
+Read what `tickreplace.test` restores at its end and compare with what `preempt.test` assumes (`late by at most` in its first log line is measured before the spinners start); either restore fully in the first or measure in the second after the state it finds.
+
+**Reference**
+None, this project's own tests.
+
+**Acceptance**
+`kshell_run.py --out out/<dir> tickreplace.test preempt.test` passes in the default, Fair and four-node lanes, three runs in a row.
