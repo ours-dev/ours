@@ -1,7 +1,7 @@
 # Compatibility labels for the pre-canonicalized products path.  New build
 # definitions should use //kernel/bin.
-import("//kernel/kernel_executable.gni")
 import("//build/toolchain/toolchain_environment.gni")
+import("//kernel/kernel_executable.gni")
 
 assert(toolchain_environment == "kernel")
 
@@ -10,19 +10,23 @@ kernel_executable("vmours") {
   visibility = [
     "//kernel/products/bin:*",
     "//kernel/products/image/*",
-    # 产品的 kernel_package 在所选 switchset 工具链下引用内核可执行文件。
+
+    # 产品的 kernel_package 在所选 switchset
+    # 工具链下引用内核可执行文件。
     "//products/*",
     "//tests/*",
   ]
-  # 子树形态：镜像内打包为 vmours/image.elf + vmours/code-patches（目标树
-  # 契约，见 .agents/tasks/phys-module-and-obi-tree）。
+
+  # 子树形态：镜像内打包为 vmours/image.elf +
+  # vmours/code-patches（目标树 契约，见
+  # .agents/tasks/phys-module-and-obi-tree）。
   has_patches = true
   deps = []
 }
 
-# Test-capable kernel: vmours with the kernel tests
-# (//kernel/tests:kernel.tests) linked in.  Its current test dependency graph
-# remains structural until the local unittest runtime exists.
+# Test-capable kernel: vmours with //kernel/tests:kernel.tests linked in -- the
+# test interface and the tests declared with it. Only the dbg_1 image packages
+# this one; production kernels link vmours instead.
 kernel_executable("vmours.with-tests") {
   testonly = true
   visibility = [

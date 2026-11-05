@@ -184,15 +184,15 @@ lockup: dump asked for by an NMI on cpu0
 
 Addresses are offsets from the start of the kernel image, which is linked at
 0, so the offset is the address in the unstripped ELF: for dbg
-`out/<dir>/kernel_x86.dbg.1/obj/kernel/products/bin/vmours`, for rel
-`out/<dir>/kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests`. A
+`out/<dir>/kernel_x86.dbg.1/obj/kernel/products/bin/vmours.with-tests`, for rel
+`out/<dir>/kernel_x86.dbg.0/obj/kernel/products/bin/vmours`. A
 one-byte disassembly names the function around an offset (there is no
 `llvm-symbolizer` in `prebuilt/`):
 
 ```bash
 prebuilt/clang/llvm-23/bin/llvm-objdump -d -C --no-show-raw-insn \
   --start-address=0x86132 --stop-address=0x86133 \
-  out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours
+  out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours.with-tests
 ```
 
 ```text

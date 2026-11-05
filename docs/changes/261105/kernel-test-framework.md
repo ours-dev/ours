@@ -87,3 +87,78 @@ None on this step. The four decisions this builds on (reuse the hsien runtime, `
 1. Why must `.hsien.tests` live in `.data.rel.ro` when the July design put it in `.init.rodata`, and what exactly would a post-boot `ktest` read if it moved back?
 2. `KTEST` emits an existing `hsien::TestRecord` rather than a record type of its own. What does that let a future annotation scanner reuse without touching the runtime or the runner?
 3. Why does `ASSERT_*` have to be a macro that executes `return;` instead of a function, and why does that limit it to `void`-returning functions?
+
+## The first kernel test records land, and the test-capable kernel moves to the dbg image (2026-11-05)
+
+**Files**
+- `kernel/tests/kernel_test.gni` — new: the `kernel_test()` template (a testonly source set whose include surface is the interface's headers).
+- `kernel/tests/ktest_test.cpp` — new: the interface's three smoke tests.
+- `kernel/tests/BUILD.gn` — the `framework` target, and the aggregate that `vmours.with-tests` links.
+- `kernel/products/image/dev.dbg_1/BUILD.gn` — packages `vmours.with-tests` built in dbg.1; `kernel_package` and the image are `testonly`.
+- `kernel/products/image/dev/BUILD.gn` — packages plain `vmours(dbg.0)`; its kernel package is no longer testonly.
+- `kernel/products/bin/BUILD.gn`, `kernel/kernel_image.gni`, `products/bringup.gni`, `products/README.md`, `kernel/lib/lockup_detector/README.md`, `tools/gen_debug_menu.py`, `.agents/skills/verify/SKILL.md`, `docs/development/debugging.md` — every comment and document that named the image/kernel pair now names the opposite one.
+- `kernel/lib/ktest/include/ktest/{assertions,ktest}.hpp` — the macro fixes and the `UPPER_CASE` renames the first real test forced.
+
+**Symptom**
+
+After the interface landed, no image carried a test it could run. The kernel that links `kernel.tests` (`vmours.with-tests`) was packaged by `kernel.dev.obi`, whose cmdline sets `kernel.shell=false`, so its `ktest` command could never be typed; the image that does start the kernel shell (`kernel.dev.dbg_1.obi`) packaged `vmours`, which links no test code. The product's own comments had the pair backwards too ("dev — the kernel with unit tests", "dbg_1 — without"), so the intended arrangement had never been booted.
+
+**Cause**
+
+The pair was left over from the intent that the test runner runs at boot inside the dev image — the July hsien design's init-hook runner, which is also why its records were placed in reclaimable `.init.rodata`. Once the decision is "tests run on demand from the kernel shell, under DEBUG_ASSERT" (2026-11-05), the only image that can run them is the debug one: it has `kernel.shell=true` and `KERNEL_DEBUG_LEVEL=1`, so a broken invariant fails a test instead of passing silently in a build whose assertions are compiled out. The `vmours.with-tests` label already existed and was already linked to `kernel.tests`; only the image edges were crossed, and a label nothing could invoke was the visible shape of that.
+
+**Change**
+
+The image edges, as they were and as they are:
+
+```text
+ kernel/products/image/dev.dbg_1/BUILD.gn
+- "//kernel/products/bin:vmours(//build/switch/set/dbg.1:kernel_${target_cpu}.dbg.1...)"
++ "//kernel/products/bin:vmours.with-tests(//build/switch/set/dbg.1:kernel_${target_cpu}.dbg.1...)"
++ testonly = true   (on the kernel package and the image)
+
+ kernel/products/image/dev/BUILD.gn
+- "//kernel/products/bin:vmours.with-tests(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)"
++ "//kernel/products/bin:vmours(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)"
+- testonly = true   (on the kernel package)
+```
+
+`kernel_test("name")` gives the tests one declaration point: a testonly source set that carries the interface's headers, aggregated by `kernel.tests`. The first tests are the interface's own smoke tests, so the image always carries at least one real record and a booted run exercises the declaration macro, both assertion families and the skip state: `Ktest.AssertionsPass`, `Ktest.SkipIsReported` and `Ktest.Names_MayHaveUnderscores` (the last one proves a test name may contain `_`, unlike a console command name).
+
+The `KTEST` macro needed one fix, found by the first build of the first test. A macro parameter named `name` substitutes into the designator `.name`, so the record came out as `.AssertionsPass = "Ktest" "." "AssertionsPass"`; and the closing brace of the macro's anonymous namespace sat before the body function, leaving `void ktest_body_17() } {`. The parameters are now `suite_token`/`name_token`/`line_number`, and the namespace closes before the body definition. The lesson is the one every macro in this tree pays for: a macro parameter is a token name, and token names appear in places the author is not thinking about. `clang-tidy` then rejected the internal macro names because `readability-identifier-naming` wants `UPPER_CASE` and a trailing `_` is not that, so they are `KTEST_EXPECT_TRUE` and friends now.
+
+`scripts/format_gn.py` also refused `kernel/products/bin/BUILD.gn` as unsafe: its two `import()` lines were not in gn's order, which the formatter cannot fix without reordering tokens. They were sorted as part of the edit, and the file formats clean.
+
+**Reference**
+- Zircon: `zircon/kernel/kernel_image.gni` packages the kernel variant a switchset builds, and `zircon/kernel/kernel_switchset.gni` carries `unit_tests_enabled`; the test-carrying kernel is the one whose image starts the console that runs `run_unittests` (`k ut`, `zircon/kernel/lib/unittest/console.rs`).
+- GoogleTest: none for this half; the smoke tests only use `TEST`-shaped declarations, and the image does not care which framework declared them.
+- This project's own design: `docs/design/261105/kernel-test-framework.md`, "Build and image integration" and its two-image table.
+
+**Verification**
+- `python3 .agents/skills/verify/scripts/boot_check.py`: build ok; dbg PASS, shell finished at 6.1 s, 46 passed / 5 skipped / 0 failed, no error line; rel PASS, shell finished at 5.2 s, 44 passed / 8 skipped / 0 failed, 7/7 required; host-tests 173 passed / 0 failed.
+- `ktest list` on the dbg image prints the three `ktest: TEST` lines above.
+- `ktest all` prints `RUN`/`OK` for two tests, `SKIP` for one, and `ktest: SUMMARY ran=3 passed=2 failed=0 skipped=1`; `kshell_run.py` exits 0.
+- `ktest Ktest.Assertions*` prints one `RUN`/`OK` pair and `SUMMARY ran=1 passed=1`, exit 0.
+- Error path: `ktest NoSuch.*` prints `ktest: ERROR no test matches "NoSuch.*"` and `SUMMARY ran=0`, and `kshell_run.py` exits 1 on the error line. This is the generic judge, before the strict `ktest` verdict exists in the next step.
+- ELF: the dbg kernel (dbg.1, `vmours.with-tests`) has `__hsien_tests_start = 0x159558` and `__hsien_tests_end = 0x1595a0` inside `.data.rel.ro` [0x159000, +0x1200), which is 0x48 bytes: three 24-byte records, with the three `ktest_record_*` symbols visible. The rel kernel (dbg.0, `vmours`) has none of them. `kernel.dev.debug.json` names dbg.0/`vmours`; `kernel.dev.dbg_1.debug.json` names dbg.1/`vmours.with-tests`.
+- `clang-tidy -p out/bringup.x86` on the changed C++: no diagnostic in the changed files. `format_cpp.py --check`, `format_gn.py --check` and `lint_docs.py --changed` clean; `gn check` OK on the test target and on `kernel.tests`.
+- Not measured: the image-size and boot-time cost of three records (72 bytes) and the tests' code; nothing in the boot path runs them.
+
+**Deliberately not done**
+- `scripts/kshell_run.py` does not know the `ktest` grammar yet; its strict verdict (summary present, `failed=0`, `ran` equal to the listed count) is the next step.
+- The three-test pilot migration (`samplerclaim.test`, `semaphore.test`, `vma_wx.test`) and the other 43 commands are untouched.
+- The product-level `unit_tests_enabled` metadata still says `false`: it is informational, the linkage is the gate, and the design decided not to wire it.
+
+**How it was found**
+
+The first build of the first test failed with four errors, all inside the `KTEST` expansion. Reading the preprocessed translation unit (the compile database's own command with `-E`, run from the build directory) showed both mistakes in one line: `.AssertionsPass = "Ktest" "." "AssertionsPass"` and `void ktest_body_17() } {`.
+
+**The user's prediction**
+
+None on this step.
+
+**Three questions you should be able to answer**
+
+1. Why is the test-capable kernel packaged by the dbg image rather than the dev image, and which two properties of that image make it the right one?
+2. Both images still link `//kernel/commands`, the 46 `*.test` commands included, although only dbg starts the kernel shell. Which switch decides that, and why is it a build argument when it is the cmdline's `kernel.shell` that decides whether the shell runs?
+3. Why is a test record a 24-byte constant in `.data.rel.ro` rather than something a test registers when it starts, and what would "register at run time" cost?

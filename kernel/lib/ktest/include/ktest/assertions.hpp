@@ -130,65 +130,65 @@ auto record_status(std::source_location const location, std::string_view const e
 /// belongs to as the runtime sees them. EXPECT_* and ASSERT_* are the two
 /// public spellings; both name the check, the values where there are two, and
 /// take an optional trailing `{}` format string and arguments.
-#define KTEST_INTERNAL_RECORD_MESSAGE_(...)                                                        \
+#define KTEST_RECORD_MESSAGE(...)                                                                  \
     ::ktest::internal::record_message(::std::source_location::current(), __VA_ARGS__)
 
-#define KTEST_INTERNAL_EXPECT_TRUE_(condition, ...)                                                \
+#define KTEST_EXPECT_TRUE(condition, ...)                                                          \
     do {                                                                                           \
         if (!(condition)) {                                                                        \
-            KTEST_INTERNAL_RECORD_MESSAGE_(#condition " is false" __VA_OPT__(, ) __VA_ARGS__);     \
+            KTEST_RECORD_MESSAGE(#condition " is false" __VA_OPT__(, ) __VA_ARGS__);               \
         }                                                                                          \
     } while (false)
 
-#define KTEST_INTERNAL_ASSERT_TRUE_(condition, ...)                                                \
+#define KTEST_ASSERT_TRUE(condition, ...)                                                          \
     do {                                                                                           \
         if (!(condition)) {                                                                        \
-            KTEST_INTERNAL_RECORD_MESSAGE_(#condition " is false" __VA_OPT__(, ) __VA_ARGS__);     \
+            KTEST_RECORD_MESSAGE(#condition " is false" __VA_OPT__(, ) __VA_ARGS__);               \
             return;                                                                                \
         }                                                                                          \
     } while (false)
 
-#define KTEST_INTERNAL_EXPECT_FALSE_(condition, ...)                                               \
+#define KTEST_EXPECT_FALSE(condition, ...)                                                         \
     do {                                                                                           \
         if (condition) {                                                                           \
-            KTEST_INTERNAL_RECORD_MESSAGE_(#condition " is true" __VA_OPT__(, ) __VA_ARGS__);      \
+            KTEST_RECORD_MESSAGE(#condition " is true" __VA_OPT__(, ) __VA_ARGS__);                \
         }                                                                                          \
     } while (false)
 
-#define KTEST_INTERNAL_ASSERT_FALSE_(condition, ...)                                               \
+#define KTEST_ASSERT_FALSE(condition, ...)                                                         \
     do {                                                                                           \
         if (condition) {                                                                           \
-            KTEST_INTERNAL_RECORD_MESSAGE_(#condition " is true" __VA_OPT__(, ) __VA_ARGS__);      \
+            KTEST_RECORD_MESSAGE(#condition " is true" __VA_OPT__(, ) __VA_ARGS__);                \
             return;                                                                                \
         }                                                                                          \
     } while (false)
 
-#define KTEST_INTERNAL_EXPECT_NULL_(pointer, ...)                                                  \
+#define KTEST_EXPECT_NULL(pointer, ...)                                                            \
     do {                                                                                           \
         if ((pointer) != nullptr) {                                                                \
-            KTEST_INTERNAL_RECORD_MESSAGE_(#pointer " is not null" __VA_OPT__(, ) __VA_ARGS__);    \
+            KTEST_RECORD_MESSAGE(#pointer " is not null" __VA_OPT__(, ) __VA_ARGS__);              \
         }                                                                                          \
     } while (false)
 
-#define KTEST_INTERNAL_ASSERT_NULL_(pointer, ...)                                                  \
+#define KTEST_ASSERT_NULL(pointer, ...)                                                            \
     do {                                                                                           \
         if ((pointer) != nullptr) {                                                                \
-            KTEST_INTERNAL_RECORD_MESSAGE_(#pointer " is not null" __VA_OPT__(, ) __VA_ARGS__);    \
+            KTEST_RECORD_MESSAGE(#pointer " is not null" __VA_OPT__(, ) __VA_ARGS__);              \
             return;                                                                                \
         }                                                                                          \
     } while (false)
 
-#define KTEST_INTERNAL_EXPECT_NONNULL_(pointer, ...)                                               \
+#define KTEST_EXPECT_NONNULL(pointer, ...)                                                         \
     do {                                                                                           \
         if ((pointer) == nullptr) {                                                                \
-            KTEST_INTERNAL_RECORD_MESSAGE_(#pointer " is null" __VA_OPT__(, ) __VA_ARGS__);        \
+            KTEST_RECORD_MESSAGE(#pointer " is null" __VA_OPT__(, ) __VA_ARGS__);                  \
         }                                                                                          \
     } while (false)
 
-#define KTEST_INTERNAL_ASSERT_NONNULL_(pointer, ...)                                               \
+#define KTEST_ASSERT_NONNULL(pointer, ...)                                                         \
     do {                                                                                           \
         if ((pointer) == nullptr) {                                                                \
-            KTEST_INTERNAL_RECORD_MESSAGE_(#pointer " is null" __VA_OPT__(, ) __VA_ARGS__);        \
+            KTEST_RECORD_MESSAGE(#pointer " is null" __VA_OPT__(, ) __VA_ARGS__);                  \
             return;                                                                                \
         }                                                                                          \
     } while (false)
@@ -196,7 +196,7 @@ auto record_status(std::source_location const location, std::string_view const e
 /// One comparison body for both families. The operator is a parameter so the
 /// six relational checks keep one implementation each, and the symbol names
 /// the operator in the message.
-#define KTEST_INTERNAL_COMPARE_(operator_token, symbol, expected, actual, ...)                     \
+#define KTEST_COMPARE(operator_token, symbol, expected, actual, ...)                               \
     do {                                                                                           \
         auto const &ktest_expected = (expected);                                                   \
         auto const &ktest_actual = (actual);                                                       \
@@ -207,7 +207,7 @@ auto record_status(std::source_location const location, std::string_view const e
         }                                                                                          \
     } while (false)
 
-#define KTEST_INTERNAL_ASSERT_COMPARE_(operator_token, symbol, expected, actual, ...)              \
+#define KTEST_ASSERT_COMPARE(operator_token, symbol, expected, actual, ...)                        \
     do {                                                                                           \
         auto const &ktest_expected = (expected);                                                   \
         auto const &ktest_actual = (actual);                                                       \
@@ -219,7 +219,7 @@ auto record_status(std::source_location const location, std::string_view const e
         }                                                                                          \
     } while (false)
 
-#define KTEST_INTERNAL_EXPECT_OK_(expression, ...)                                                 \
+#define KTEST_EXPECT_OK(expression, ...)                                                           \
     do {                                                                                           \
         auto const ktest_status = (expression);                                                    \
         if (ktest_status != ::ours::Status::Ok) {                                                  \
@@ -228,7 +228,7 @@ auto record_status(std::source_location const location, std::string_view const e
         }                                                                                          \
     } while (false)
 
-#define KTEST_INTERNAL_ASSERT_OK_(expression, ...)                                                 \
+#define KTEST_ASSERT_OK(expression, ...)                                                           \
     do {                                                                                           \
         auto const ktest_status = (expression);                                                    \
         if (ktest_status != ::ours::Status::Ok) {                                                  \
@@ -238,47 +238,41 @@ auto record_status(std::source_location const location, std::string_view const e
         }                                                                                          \
     } while (false)
 
-#define EXPECT_TRUE(condition, ...)                                                                \
-    KTEST_INTERNAL_EXPECT_TRUE_(condition __VA_OPT__(, ) __VA_ARGS__)
-#define EXPECT_FALSE(condition, ...)                                                               \
-    KTEST_INTERNAL_EXPECT_FALSE_(condition __VA_OPT__(, ) __VA_ARGS__)
-#define EXPECT_NULL(pointer, ...) KTEST_INTERNAL_EXPECT_NULL_(pointer __VA_OPT__(, ) __VA_ARGS__)
-#define EXPECT_NONNULL(pointer, ...)                                                               \
-    KTEST_INTERNAL_EXPECT_NONNULL_(pointer __VA_OPT__(, ) __VA_ARGS__)
-#define EXPECT_OK(expression, ...) KTEST_INTERNAL_EXPECT_OK_(expression __VA_OPT__(, ) __VA_ARGS__)
-#define EXPECT_EQ(...) KTEST_INTERNAL_COMPARE_(==, "==", __VA_ARGS__)
-#define EXPECT_NE(...) KTEST_INTERNAL_COMPARE_(!=, "!=", __VA_ARGS__)
-#define EXPECT_LT(...) KTEST_INTERNAL_COMPARE_(<, "<", __VA_ARGS__)
-#define EXPECT_LE(...) KTEST_INTERNAL_COMPARE_(<=, "<=", __VA_ARGS__)
-#define EXPECT_GT(...) KTEST_INTERNAL_COMPARE_(>, ">", __VA_ARGS__)
-#define EXPECT_GE(...) KTEST_INTERNAL_COMPARE_(>=, ">=", __VA_ARGS__)
+#define EXPECT_TRUE(condition, ...) KTEST_EXPECT_TRUE(condition __VA_OPT__(, ) __VA_ARGS__)
+#define EXPECT_FALSE(condition, ...) KTEST_EXPECT_FALSE(condition __VA_OPT__(, ) __VA_ARGS__)
+#define EXPECT_NULL(pointer, ...) KTEST_EXPECT_NULL(pointer __VA_OPT__(, ) __VA_ARGS__)
+#define EXPECT_NONNULL(pointer, ...) KTEST_EXPECT_NONNULL(pointer __VA_OPT__(, ) __VA_ARGS__)
+#define EXPECT_OK(expression, ...) KTEST_EXPECT_OK(expression __VA_OPT__(, ) __VA_ARGS__)
+#define EXPECT_EQ(...) KTEST_COMPARE(==, "==", __VA_ARGS__)
+#define EXPECT_NE(...) KTEST_COMPARE(!=, "!=", __VA_ARGS__)
+#define EXPECT_LT(...) KTEST_COMPARE(<, "<", __VA_ARGS__)
+#define EXPECT_LE(...) KTEST_COMPARE(<=, "<=", __VA_ARGS__)
+#define EXPECT_GT(...) KTEST_COMPARE(>, ">", __VA_ARGS__)
+#define EXPECT_GE(...) KTEST_COMPARE(>=, ">=", __VA_ARGS__)
 
-#define ASSERT_TRUE(condition, ...)                                                                \
-    KTEST_INTERNAL_ASSERT_TRUE_(condition __VA_OPT__(, ) __VA_ARGS__)
-#define ASSERT_FALSE(condition, ...)                                                               \
-    KTEST_INTERNAL_ASSERT_FALSE_(condition __VA_OPT__(, ) __VA_ARGS__)
-#define ASSERT_NULL(pointer, ...) KTEST_INTERNAL_ASSERT_NULL_(pointer __VA_OPT__(, ) __VA_ARGS__)
-#define ASSERT_NONNULL(pointer, ...)                                                               \
-    KTEST_INTERNAL_ASSERT_NONNULL_(pointer __VA_OPT__(, ) __VA_ARGS__)
-#define ASSERT_OK(expression, ...) KTEST_INTERNAL_ASSERT_OK_(expression __VA_OPT__(, ) __VA_ARGS__)
-#define ASSERT_EQ(...) KTEST_INTERNAL_ASSERT_COMPARE_(==, "==", __VA_ARGS__)
-#define ASSERT_NE(...) KTEST_INTERNAL_ASSERT_COMPARE_(!=, "!=", __VA_ARGS__)
-#define ASSERT_LT(...) KTEST_INTERNAL_ASSERT_COMPARE_(<, "<", __VA_ARGS__)
-#define ASSERT_LE(...) KTEST_INTERNAL_ASSERT_COMPARE_(<=, "<=", __VA_ARGS__)
-#define ASSERT_GT(...) KTEST_INTERNAL_ASSERT_COMPARE_(>, ">", __VA_ARGS__)
-#define ASSERT_GE(...) KTEST_INTERNAL_ASSERT_COMPARE_(>=, ">=", __VA_ARGS__)
+#define ASSERT_TRUE(condition, ...) KTEST_ASSERT_TRUE(condition __VA_OPT__(, ) __VA_ARGS__)
+#define ASSERT_FALSE(condition, ...) KTEST_ASSERT_FALSE(condition __VA_OPT__(, ) __VA_ARGS__)
+#define ASSERT_NULL(pointer, ...) KTEST_ASSERT_NULL(pointer __VA_OPT__(, ) __VA_ARGS__)
+#define ASSERT_NONNULL(pointer, ...) KTEST_ASSERT_NONNULL(pointer __VA_OPT__(, ) __VA_ARGS__)
+#define ASSERT_OK(expression, ...) KTEST_ASSERT_OK(expression __VA_OPT__(, ) __VA_ARGS__)
+#define ASSERT_EQ(...) KTEST_ASSERT_COMPARE(==, "==", __VA_ARGS__)
+#define ASSERT_NE(...) KTEST_ASSERT_COMPARE(!=, "!=", __VA_ARGS__)
+#define ASSERT_LT(...) KTEST_ASSERT_COMPARE(<, "<", __VA_ARGS__)
+#define ASSERT_LE(...) KTEST_ASSERT_COMPARE(<=, "<=", __VA_ARGS__)
+#define ASSERT_GT(...) KTEST_ASSERT_COMPARE(>, ">", __VA_ARGS__)
+#define ASSERT_GE(...) KTEST_ASSERT_COMPARE(>=, ">=", __VA_ARGS__)
 
 /// Records a missed opportunity unconditionally. ADD_FAILURE continues;
 /// FAIL returns from the test, and is the only way to end one early without a
 /// failed check of its own.
 #define ADD_FAILURE(...)                                                                           \
     do {                                                                                           \
-        KTEST_INTERNAL_RECORD_MESSAGE_("ADD_FAILURE" __VA_OPT__(, ) __VA_ARGS__);                  \
+        KTEST_RECORD_MESSAGE("ADD_FAILURE" __VA_OPT__(, ) __VA_ARGS__);                            \
     } while (false)
 
 #define FAIL(...)                                                                                  \
     do {                                                                                           \
-        KTEST_INTERNAL_RECORD_MESSAGE_("FAIL" __VA_OPT__(, ) __VA_ARGS__);                         \
+        KTEST_RECORD_MESSAGE("FAIL" __VA_OPT__(, ) __VA_ARGS__);                                   \
         return;                                                                                    \
     } while (false)
 

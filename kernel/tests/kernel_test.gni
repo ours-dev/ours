@@ -1,0 +1,29 @@
+# A source set of kernel tests. The tests are declared with KTEST() and run by
+# the `ktest` command, which is linked only into a kernel that carries this
+# target; nothing here is built into a production kernel.
+#
+#   kernel_test("scheduler") {
+#     sources = [ "scheduler_test.cpp" ]
+#     deps = [ ... header targets the test includes ... ]
+#   }
+#
+# The test sources need only the headers of what they use: the kernel they are
+# linked into already carries the implementations.
+template("kernel_test") {
+  assert(defined(invoker.sources), "kernel_test($target_name) requires sources")
+
+  source_set(target_name) {
+    testonly = true
+    sources = invoker.sources
+    forward_variables_from(invoker,
+                           [
+                             "deps",
+                             "public_deps",
+                             "visibility",
+                           ])
+    if (!defined(deps)) {
+      deps = []
+    }
+    deps += [ "//kernel/lib/ktest:headers" ]
+  }
+}

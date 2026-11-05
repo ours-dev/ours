@@ -20,27 +20,27 @@
 /// tests without a fixture class.
 ///
 /// The record lands in `.hsien.tests`, the section the runtime's section
-/// reader already bounds, so no registration runs and no dynamic initialization
-/// is needed. The adapter binds the runtime's Context to the state the
-/// assertion macros read; it is one function call around the body.
-#define KTEST_INTERNAL_JOIN_(left, right) left##right
+/// reader already bounds, so no registration runs and no dynamic
+/// initialization is needed. The adapter binds the runtime's Context to the
+/// state the assertion macros read; it is one function call around the body.
+#define KTEST_JOIN(left, right) left##right
 
-#define KTEST_INTERNAL_DEFINE_(suite, name, line)                                                  \
+#define KTEST_DEFINE(suite_token, name_token, line_number)                                         \
+    static void KTEST_JOIN(ktest_body_, line_number)();                                            \
     namespace {                                                                                    \
-    void KTEST_INTERNAL_JOIN_(ktest_body_, line)();                                                \
-    void KTEST_INTERNAL_JOIN_(ktest_invoke_, line)(::hsien::Context & context) {                   \
+    void KTEST_JOIN(ktest_invoke_, line_number)(::hsien::Context & context) {                      \
         ::ktest::internal::BindScope const scope(context);                                         \
-        KTEST_INTERNAL_JOIN_(ktest_body_, line)();                                                 \
+        KTEST_JOIN(ktest_body_, line_number)();                                                    \
     }                                                                                              \
     LINK_SECTION(".hsien.tests")                                                                   \
-    FORCE_USED static ::hsien::TestRecord const KTEST_INTERNAL_JOIN_(ktest_record_, line) = {      \
-        .name = #suite "." #name,                                                                  \
-        .invoke = KTEST_INTERNAL_JOIN_(ktest_invoke_, line),                                       \
+    FORCE_USED static ::hsien::TestRecord const KTEST_JOIN(ktest_record_, line_number) = {         \
+        .name = #suite_token "." #name_token,                                                      \
+        .invoke = KTEST_JOIN(ktest_invoke_, line_number),                                          \
         .location = ::std::source_location::current(),                                             \
     };                                                                                             \
-    void KTEST_INTERNAL_JOIN_(ktest_body_, line)()                                                 \
-    }
+    }                                                                                              \
+    static void KTEST_JOIN(ktest_body_, line_number)()
 
-#define KTEST(suite, name) KTEST_INTERNAL_DEFINE_(suite, name, __LINE__)
+#define KTEST(suite, name) KTEST_DEFINE(suite, name, __LINE__)
 
 #endif // #ifndef KTEST_KTEST_HPP

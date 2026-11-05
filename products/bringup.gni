@@ -13,8 +13,8 @@
 # 本产品选择两个内核镜像（镜像本体定义在
 # kernel/products/image/，对标 Fuchsia
 # zircon/kernel/image/$name）：
-#   kernel.dev      —— 带单测的开发内核（GRUB 双文件模型中与 physload 一起加载）
-#   kernel.dev.dbg_1 —— 无单测的独立调试镜像
+#   kernel.dev      —— the production kernel, no tests (loaded with physload in the two-file flow)
+#   kernel.dev.dbg_1 —— the test-capable debug image: kernel shell, assertions, kernel tests
 # 内核可执行文件在镜像定义处的 dbg.0 switchset
 # 工具链下编译；cmdline 为空，维持 phys 侧默认启动行为（如
 # KASLR 默认禁用，见 kernel/phys/boot-options.cpp）。
@@ -23,14 +23,14 @@ product = {
 
   kernel_images = [
     {
-      # dev：带单测的内核。镜像本体（kernel_package + cmdline +
-      # kernel_image + physboot 依赖）定义在
-      # //kernel/products/image/dev/（对标 Fuchsia
-      # zircon/kernel/image/$name），这里只按 label 选择。
+      # dev: the production kernel. The image itself (kernel_package +
+      # cmdline + kernel_image + physboot dependencies) is defined in
+      # //kernel/products/image/dev; this list only selects the label.
       image = "//kernel/products/image/dev"
     },
     {
-      # dbg_1：无单测的调试镜像（dev 的对照）。
+      # dbg_1: the test-capable debug image (the counterpart of dev): kernel
+      # shell, assertions and the kernel tests.
       image = "//kernel/products/image/dev.dbg_1"
     },
   ]

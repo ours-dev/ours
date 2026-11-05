@@ -43,8 +43,8 @@ template("kernel_image") {
   #
   # An .obi and the unstripped ELF whose symbols match it are chosen in
   # different templates, in different toolchains, and the pairing is not
-  # mechanical -- kernel.dev.obi packages vmours.with-tests,
-  # kernel.dev.dbg_1.obi packages vmours, and fake.obi packages neither.
+  # mechanical -- kernel.dev.obi packages vmours, kernel.dev.dbg_1.obi
+  # packages vmours.with-tests, and fake.obi packages neither.
   # Anything that writes the pair down a second time drifts from this one, and
   # it has: the debugger entry for kernel.dev.obi named a binary that had
   # stopped being a build target at all (docs/changes/260909/tooling.md).

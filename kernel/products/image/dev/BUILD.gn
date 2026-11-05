@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# dev 内核镜像（带单测的开发内核）。
+# dev 内核镜像（无单测的开发内核）。
 #
 # 一个镜像 = 一个子目录， 内含
 # kernel_package（内核存储块，按 switchset
@@ -511,22 +511,20 @@ component_manifest("root.cm") {
   }
 }
 
-# 内核存储块：共享配方 + 带单测的内核可执行文件（dbg.0
-# switchset 工具链）。prefix="" ——BootFS
-# 顶层是扁平命名空间，内核落在 vmours/image.elf 等顶层路径。
+# The kernel storage block: the shared recipe plus the production kernel built
+# in dbg.0. The kernel tests live in the dbg_1 image instead, whose kernel has
+# the console and the assertions a test run needs. prefix="" keeps the flat
+# BootFS namespace, so the kernel lands at vmours/image.elf and friends.
 kernel_package("ours") {
   visibility = [
     ":*",
     "//products/*",
   ]
 
-  # 含带单测的内核（vmours.with-tests 是 testonly），必须
-  # testonly。
-  testonly = true
   prefix = ""
   deps = [
     "..:common_package_items",
-    "//kernel/products/bin:vmours.with-tests(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
+    "//kernel/products/bin:vmours(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
   ]
 }
 
