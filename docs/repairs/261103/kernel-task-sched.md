@@ -1,6 +1,6 @@
 # kernel-task-sched outstanding repairs
 
-Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, and items 19 and 20, which the first Fair lane showed, are at the end). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile; they are wrong or missing, or (item 8) a question for the author. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
+Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, and items 20 and 21, found while the Fair lane was brought up, are at the end). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile; they are wrong or missing, or (item 8) a question for the author. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
 
 ## 7. A thread that was never enqueued has a slice of zero
 
@@ -182,26 +182,6 @@ Linux EEVDF, `place_entity()` (`lag *= (load + weight) / load`) and `entity_lag(
 **Acceptance**
 In the test of item 13, a thread that leaves and returns while the others run is placed at the lag it left with, within a nanosecond.
 
-## 19. `hotplug.test` fails on the Fair lane
-
-**Severity**
-Medium: a test that passes under round-robin fails under Fair, and the cause is not established. Not reachable in the default build.
-
-**Symptom**
-Observed on 2026-11-04 in the Fair lane, in two boots by the author and one by a reviewer: `hotplug.test` fails 2 of its 47 checks, "and every spinner goes on elsewhere", in two of its rounds (`hotplug_test.cpp`: while a CPU is offline for `OFFLINE_FOR`, every spinner's round counter must have advanced). The round-robin lane passes 47 of 47. The other checks pass, among them the ones that walk the run queue (`FairRunQueue::for_each` through `Scheduler::Current::deactivate()`): the CPU goes offline, no spinner runs on it, and the sleeper wakes on time elsewhere.
-
-**Cause**
-Not established. The three-slice bursts that the charge at the pick removed from `preempt.test` (change record of 2026-11-04) were not the cause: the test fails 2 of its checks in all six boots of the experiment (base, charged first, and charged first with the running thread competing, two boots each; the harness counted the failed checks and did not record their names), and fails "and every spinner goes on elsewhere" twice in each of the three boots after the change (two with the first form of the test, one with the final code). The bursts were gone in four of the six boots of the experiment (all but the base's two) and in the three after it. The total is not always 47 (one reviewer boot reported 2 of 53), which the investigation should explain. Two-slice turns remain, about 130 ms against an `OFFLINE_FOR` of 100 ms, and the turns in `hotplug.test` were not measured, so the near-ties of item 9 are not excluded. Candidates, each read and not run: a spinner that was moved to another CPU finds two or more spinners already there and one is starved for `OFFLINE_FOR` by the near-ties of item 9; the lag a moved thread carries from the old CPU's mean is applied against the new CPU's mean unscaled (item 18); a moved thread is enqueued with a `vruntime` placed on the other queue's zero.
-
-**Change**
-Find the cause first: print each spinner's rounds at the end of the sleep for the Fair lane, and its CPU. Then the author decides.
-
-**Reference**
-None, this project's own test.
-
-**Acceptance**
-`hotplug.test` passes on the Fair lane.
-
 ## 20. `SCHED_NOHZ` has no reader
 
 **Severity**
@@ -221,3 +201,23 @@ None, this project's own design.
 
 **Acceptance**
 No reference to `SCHED_NOHZ` or `sched_nohz` outside the history.
+
+## 21. No CPU takes a queued thread from another, so a CPU that comes back stays idle
+
+**Severity**
+Medium: an idle CPU, one that has just come back online, never helps busy ones; round-robin and Fair alike.
+
+**Symptom**
+`Scheduler::steal_work_from()` is a stub that returns null (`scheduler.cpp`), and `pick_next_thread()` calls it after every discipline's `EvaluateNextThread` came up empty, so an idle CPU never takes a queued thread from a busy one. Placement happens when a thread becomes runnable (a start or a wakeup) and when its CPU goes offline (`Scheduler::Current::deactivate()`), through `select_target_cpu()`, which asks the discipline and falls back to the least `num_runnable()`; nothing places a thread that stays runnable when another CPU becomes idle or comes back. Observed on 2026-11-05 in both lanes with `hotplug.test` instrumented: eight always-running spinners, two per CPU on four CPUs; once one CPU is offline its two spinners have gone to the others, which hold 3, 3 and 2, as even as eight over three CPUs can be, and each spinner that ran in a window ran on a single CPU. After the CPU returns the counts are, by inference from the identical spinner-to-CPU map of the second round and not observed, 3, 3, 2 and 0.
+
+**Cause**
+Work stealing and periodic balancing were not written; the interface's `MigrateThread` has no caller, and Fair's own `migrate_thread` has a different signature (`fair.cpp`).
+
+**Change**
+The author's: a balancing step, by stealing at an idle pick or on a period, for both disciplines; it needs a way to take a thread off another CPU's queue under its lock (`Scheduler::Current::deactivate()` and `find_active_scheduler_for()` are the existing moves).
+
+**Reference**
+Linux `sched_balance_newidle()` and `sched_balance_rq()` (`kernel/sched/fair.c`, local checkout; names confirmed, bodies not read for this item); Zircon `Scheduler::StealWork()` (`scheduler.cc`).
+
+**Acceptance**
+In `hotplug.test`, after `bring_cpu_online()` the spinner counts per online CPU differ by at most one (2, 2, 2, 2), where today they are by inference 3, 3, 2, 0.

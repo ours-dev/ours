@@ -764,3 +764,71 @@ None (predictions are paused)
 - How does a host stall turn one 130 ms turn into a 97 ms one in the spinner's record?
 - Why can the round-robin lane not be hit by the same thing?
 - What does the longest-turn bound give up compared with the window check?
+
+## Title: hotplug.test waits until every spinner has moved, instead of 100 ms (2026-11-05)
+
+**Files**
+- `kernel/commands/hotplug_test.cpp` — the check "and every spinner goes on elsewhere" polls (`poll_until`, up to `LOST_AFTER`, 5 s) for every spinner's round counter to pass its value from before the 100 ms sleep; the comment above says why, and the comment of `OFFLINE_FOR` says "first"
+- `docs/repairs/261103/kernel-task-sched.md` — item 19 (this failure) is deleted (the number is kept), item 21 is new, the header is edited
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+In the Fair lane `hotplug.test` failed "and every spinner goes on elsewhere" twice, once per round, in every Fair boot on record (25 boots in the investigation's records, 16 of the unmodified test and 9 of instrumented copies; none passed); the round-robin lane passed 47 of 47.
+
+**Cause**
+The test starts two spinners per online CPU (eight on four), takes CPU 3 offline, and checks that each spinner's round counter advanced between the sleeper's join and the end of a 100 ms sleep, to catch one stranded on the offline CPU. The two spinners of CPU 3 go to the survivors, which then hold 3, 3 and 2: as even as eight over three CPUs can be, so somebody shares a CPU with two others whatever the balancing. Instrumenting the test (the script applied a patch to the test, built a Fair lane and a round-robin lane, restored the source and ran both; none of it is committed) showed:
+
+1. **A spinner stays on the CPU it was placed on.** Every spinner that ran in the window ran on exactly one CPU (a one-bit mask of the CPUs it was seen on in 117 of 117 spinner-windows; the 11 that got nothing have an empty mask). No CPU steals work: `Scheduler::steal_work_from()` returns null (item 21, a different problem: it does not cause this one).
+2. **A spinner that shares with two others waits longer than a slice cycle suggests.** Per-turn records: in round-robin a spinner ran 65 ms and waited 130 to 132 ms (three turns of about 65 ms, 196 ms); in Fair it ran 64 to 66 ms and waited 130 to 133 ms (9 of 12 turns), 156 or 157 ms (2) or 175 ms (1). The longer Fair waits are not whole slices; their cause was not established (the near-ties of item 9 are one candidate).
+3. **In the Fair lane at most one spinner of a three-spinner CPU got nothing in the window, never two:** 45 of 68 CPU-windows had one and 23 had none. Of the 18 test windows, 10 had one such spinner in all and 8 had two (one per CPU). Over five successive 100 ms windows every spinner advanced (one spinner's counts per window: 0, 470719, 0, 444482, 0), so none was stranded: it was slow, not stuck.
+4. **The window is longer than 100 ms, and longer in round-robin.** The check runs from the test thread's wake-up after the sleep; the log timestamps between "the thread asleep there wakes on time" and "no spinner runs on it" put the window at 166 to 171 ms in 13 of 14 round-robin rounds (one of 232 ms) and at 167 to 169 ms in four, or 101 to 103 ms in six, of the old test's rounds in the Fair lane. That the test thread lands on CPU 2, the CPU with two spinners, and waits for a slice is a reading, not verified. A round-robin window of 166 ms or more cannot lie inside a wait of 131 ms, so it cannot show a zero, by construction; a Fair window of 101 to 103 ms can, and a Fair wait of 175 ms is longer than a 167 ms window.
+
+The test's assumption, that every spinner gets the CPU within its window with two others on the CPU, holds for round-robin because the window happens to be longer than its wait, and for Fair it does not.
+
+**Change**
+```cpp
+// before
+auto _ = Thread::Current::sleep_for(OFFLINE_FOR, task::Interruptible::No);
+auto ran_there = false;
+auto all_went_on = true;
+for (usize i = 0; i < state.num_spinners; ++i) {
+    ran_there |= state.spinners[i].ran_there_offline.load(std::memory_order_relaxed);
+    all_went_on &= state.spinners[i].rounds.load(std::memory_order_relaxed) > rounds_before[i];
+}
+// after
+auto _ = Thread::Current::sleep_for(OFFLINE_FOR, task::Interruptible::No);
+auto const all_went_on = poll_until([&state, &rounds_before] {
+    for (usize i = 0; i < state.num_spinners; ++i) {
+        if (state.spinners[i].rounds.load(std::memory_order_relaxed) <= rounds_before[i]) { return false; }
+    }
+    return true;
+});
+auto ran_there = false;
+for (usize i = 0; i < state.num_spinners; ++i) { ran_there |= state.spinners[i].ran_there_offline.load(std::memory_order_relaxed); }
+```
+The 100 ms sleep stays, so the spinners still run with the CPU offline for as long as before before "no spinner runs on it while it is offline" is read (it is read after the poll, so over a window at least as long; `state.offline` is cleared only after the check, so a longer window cannot count a spinner that ran on the CPU once it was back). The progress check waits as long as it takes, up to `LOST_AFTER`. A stranded spinner never advances, so the check fails after 5 s per round, where it failed after about 100 to 170 ms; a healthy run finishes as soon as the slowest has moved. The test takes 3.3 s (Fair) to 3.8 s (round-robin) by the log timestamps; a failing run takes about 14 s by the code, not measured. Rejected: a longer fixed window (any number is a guess about the slices and the sharing), and fixing the discipline (the failure is the test's assumption).
+
+**Reference**
+None, this project's own test.
+
+**Verification**
+- `boot_check.py --out out/fair-lane` (default lane): build ok, dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44 passed, 8 skipped, 0 failed, 7/7 required), host-tests PASS (173 passed). `boot_check.py --out out/fair-on --no-tests` (Fair lane): dbg PASS (46/5/0), rel PASS (44/8/0, 7/7).
+- `hotplug.test`: Fair lane, eight boots of the author and seven of a reviewer, all pass (47 checks); round-robin lane, four boots of the author and seven of a reviewer, all pass.
+- `preempt.test` still passes on both lanes (previous entry). A reviewer found the clang-tidy output for the file clean; `scripts/format_cpp.py` and `scripts/lint_docs.py` are clean.
+- Not run: the failing path, a spinner whose counter never advances. It needs an edit to the test (or, for a genuinely stranded one, to `Scheduler::Current::deactivate()`); that the check fails, after at most 5 s per round, is by reading `poll_until`.
+- A reviewer read the entry against the instrumentation logs and the code, and found that the first draft measured the wrong window (100 ms for 167), called the round-robin pass luck, mislabelled item 21 as an imbalance and miscounted the failing boots; all were corrected.
+
+**Deliberately not done**
+- Work stealing (item 21).
+- A reviewer's boot on 2026-11-04 counted 53 checks in `hotplug.test`, not 47: `check_start_withdrawn()` adds six verdicts when the withdrawal comes before the CPU arrives, and the usual path logs "that case is not made" and gives 47. That is a coverage gap of that check, unrelated to this change and not addressed.
+
+**How it was found**
+By the first Fair lane (2026-11-04) and its failing `hotplug.test`. The candidates were in the repair file; the instrumented runs refuted the first, the near-ties of `preempt.test`, as the cause, and showed the window. The author asked for the investigation ("查 hotplug.test"); the change is to a test, not to `fair.*`.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why can a spinner that shares its CPU with two others make no progress for 100 ms without being stranded?
+- Why can round-robin not show a zero in this test, and what makes Fair able to?
+- What does the poll fail on that the fixed window failed on, and how long does each take?

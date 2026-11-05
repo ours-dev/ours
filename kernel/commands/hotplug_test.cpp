@@ -65,7 +65,7 @@ namespace {
 
     constexpr auto LOST_AFTER = Seconds(5);
     constexpr auto POLL_INTERVAL = Milliseconds(1);
-    /// How long the spinners run with the CPU offline before they are
+    /// How long the spinners run with the CPU offline before they are first
     /// looked at.
     constexpr auto OFFLINE_FOR = Milliseconds(100);
     /// How long the sleeper sleeps, and how late it may wake. Long enough for
@@ -293,18 +293,29 @@ namespace {
                 "the thread asleep there wakes on time, elsewhere");
 
         // Each spinner on its own: one left queued on the offline CPU makes
-        // no progress, however much the others make.
+        // no progress, however much the others make. A spinner waits for its
+        // turn behind the others on its CPU, and with three on one CPU that is
+        // two slices, and four if a discipline lets each run two in a row: more
+        // than OFFLINE_FOR, and a thread stays on the CPU it was placed on, so
+        // the ones that have to share are the same throughout. The test
+        // therefore waits for every spinner to move, as long as LOST_AFTER: a
+        // stranded one is the one that never does.
         u64 rounds_before[MAX_SPINNERS];
         for (usize i = 0; i < state.num_spinners; ++i) {
             rounds_before[i] = state.spinners[i].rounds.load(std::memory_order_relaxed);
         }
         auto _ = Thread::Current::sleep_for(OFFLINE_FOR, task::Interruptible::No);
+        auto const all_went_on = poll_until([&state, &rounds_before] {
+            for (usize i = 0; i < state.num_spinners; ++i) {
+                if (state.spinners[i].rounds.load(std::memory_order_relaxed) <= rounds_before[i]) {
+                    return false;
+                }
+            }
+            return true;
+        });
         auto ran_there = false;
-        auto all_went_on = true;
         for (usize i = 0; i < state.num_spinners; ++i) {
             ran_there |= state.spinners[i].ran_there_offline.load(std::memory_order_relaxed);
-            all_went_on &=
-                state.spinners[i].rounds.load(std::memory_order_relaxed) > rounds_before[i];
         }
         verdict(tally, !ran_there, "no spinner runs on it while it is offline");
         verdict(tally, all_went_on, "and every spinner goes on elsewhere");
