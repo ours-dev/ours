@@ -231,3 +231,33 @@ executable("nvme_control_client") {
   ]
   visibility = [ "*" ]
 }
+
+# ours.virtio.Control: the rescan's codec -- round trips, the refusals, and
+# the nvme family's messages refused by these decoders.
+executable("virtio_control") {
+  testonly = true
+  sources = [ "virtio_control_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.virtio.Control's typed client, over the fake kernel: the pump plays
+# the driver's control, as the nvme suite's does.
+executable("virtio_control_client") {
+  testonly = true
+  sources = [ "virtio_control_client_test.cpp" ]
+  deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

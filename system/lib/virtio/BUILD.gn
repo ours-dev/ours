@@ -1,0 +1,38 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# The virtio legacy device's core: the register access interface, the legacy
+# ring's layout, the bring-up sequence, the submit path and the probe, over
+# port I/O and a DMA region the caller supplies. The registers are reached
+# through the Ports interface -- port I/O is not memory, so a host test's
+# fake answers the reads from an array where the driver's target
+# implementation runs the x86 in and out. The probe walks config space
+# through system/lib/pci and assigns a hot-plugged function's I/O BAR0 from
+# an IoArena, since firmware assigns BARs at boot only.
+source_set("virtio") {
+  sources = [ "src/virtio.cpp" ]
+  public_deps = [ ":headers" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/virtio/virtio.hpp" ]
+  public_deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/pci:pci.headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:virtio($host_toolchain)" ]
+}

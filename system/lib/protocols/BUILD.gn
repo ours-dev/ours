@@ -25,6 +25,7 @@ source_set("protocols") {
     "src/nvme_control.cpp",
     "src/process.cpp",
     "src/resource.cpp",
+    "src/virtio_control.cpp",
   ]
 
   # Its messages are wire::Message and its methods wire::Method, so a user
@@ -49,6 +50,7 @@ cpp_interface("headers") {
     "include/prot/nvme_control.hpp",
     "include/prot/process.hpp",
     "include/prot/resource.hpp",
+    "include/prot/virtio_control.hpp",
   ]
   public_deps = [
     "//system/lib/ustl:headers",
@@ -83,6 +85,7 @@ if (!is_host_toolchain && toolchain_environment == "user") {
       "include/prot/dev_client.hpp",
       "include/prot/nvme_control_client.hpp",
       "include/prot/resource_client.hpp",
+      "include/prot/virtio_control_client.hpp",
     ]
     public_deps = [
       ":headers",
@@ -106,6 +109,8 @@ group("tests") {
     "test:nvme_control($host_toolchain)",
     "test:nvme_control_client($host_toolchain)",
     "test:process($host_toolchain)",
+    "test:virtio_control($host_toolchain)",
+    "test:virtio_control_client($host_toolchain)",
     "test:resource($host_toolchain)",
     "test:resource_client($host_toolchain)",
     "test:acpi($host_toolchain)",

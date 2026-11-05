@@ -32,6 +32,7 @@ user_executable("virtio-blk") {
     "//system/lib/server",
     "//system/lib/loop",
     "//system/lib/protocols:client",
+    "//system/lib/virtio",
     "//system/lib/ustl",
     "//system/lib/wire",
   ]
@@ -65,10 +66,17 @@ component_manifest("virtio-blk.cm") {
       {
         protocol = "ours.block.Block"
       },
+      {
+        protocol = "ours.virtio.Control"
+      },
     ]
     expose = [
       {
         protocol = "ours.block.Block"
+        from = "self"
+      },
+      {
+        protocol = "ours.virtio.Control"
         from = "self"
       },
     ]
