@@ -13,6 +13,9 @@ enum class AllocationSite : u8 {
     /// Storage for an object constructed by an object cache.
     Object,
 
+    /// Storage requested through kernel new or new[].
+    Heap,
+
     /// A frame for a page table.
     PageTable,
 

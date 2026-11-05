@@ -3,7 +3,14 @@
 #include <heap/new.hpp>
 #include <heap/vmalloc.hpp>
 
+#include <ours/mm/priv/alloc_failure.hpp>
+
 namespace {
+#if MM_TEST_ALLOC_FAILURE
+using ours::mm::test::AllocationFailure;
+using ours::mm::test::AllocationSite;
+#endif
+
 /// Where a request of |size| bytes comes from.
 ///
 /// Decided up front, by size, rather than by trying kmalloc and falling back
@@ -14,6 +21,11 @@ namespace {
 /// The node hint reaches kmalloc only. See the note in new.hpp.
 [[nodiscard]]
 auto allocate(usize const size, ours::mm::Gaf const alloc_flags) noexcept -> void * {
+#if MM_TEST_ALLOC_FAILURE
+    if (AllocationFailure::hit(AllocationSite::Heap)) {
+        return nullptr;
+    }
+#endif
     if (size > heap::KMALLOC_MAX_SIZE) {
         return heap::vmalloc(size, alloc_flags);
     }
@@ -23,6 +35,11 @@ auto allocate(usize const size, ours::mm::Gaf const alloc_flags) noexcept -> voi
 [[nodiscard]]
 auto allocate(usize const size, ours::mm::Gaf const alloc_flags, ours::NodeId const nid) noexcept
     -> void * {
+#if MM_TEST_ALLOC_FAILURE
+    if (AllocationFailure::hit(AllocationSite::Heap)) {
+        return nullptr;
+    }
+#endif
     if (size > heap::KMALLOC_MAX_SIZE) {
         return heap::vmalloc(size, alloc_flags);
     }

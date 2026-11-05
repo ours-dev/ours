@@ -1199,17 +1199,21 @@ namespace {
                         "both mappings initially point to the inherited frame");
 
 #if MM_TEST_ALLOC_FAILURE
-                bool failed = false;
-                {
-                    mm::test::AllocationFailure failure(mm::test::AllocationSite::VmoPage);
-                    auto const status = aspace->soft_fault(AT, mm::VmfCause::Write);
-                    failed = status == Status::OutOfMem && failure.triggered();
+                using mm::test::AllocationSite;
+                for (auto const site: {AllocationSite::VmoPage, AllocationSite::Collection}) {
+                    bool failed = false;
+                    {
+                        mm::test::AllocationFailure failure(site);
+                        auto const status = aspace->soft_fault(AT, mm::VmfCause::Write);
+                        failed = status == Status::OutOfMem && failure.triggered();
+                    }
+                    verdict(tally,
+                            failed && shared &&
+                                entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
+                                entry_pa(aspace, ALIAS) == entry_pa(aspace, AT) &&
+                                !is_writable(aspace, AT),
+                            "a failed fork preserves both inherited mappings and permissions");
                 }
-                verdict(
-                    tally,
-                    failed && shared && entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
-                        entry_pa(aspace, ALIAS) == entry_pa(aspace, AT) && !is_writable(aspace, AT),
-                    "a failed fork preserves both inherited mappings and their permissions");
 #endif
 
                 // A write to that entry gets the clone a page of its own.
@@ -1509,6 +1513,21 @@ namespace {
         }
 
         mm::VmPageSpliceList pages(5);
+#if MM_TEST_ALLOC_FAILURE
+        using mm::test::AllocationSite;
+        for (auto const site: {AllocationSite::VmoPage, AllocationSite::Heap}) {
+            bool failed = false;
+            {
+                mm::test::AllocationFailure failure(site);
+                auto const status = clone->take_pages(0, 5 * P, &pages);
+                failed = status == Status::OutOfMem && failure.triggered();
+            }
+            verdict(tally,
+                    failed && pages.is_fresh() && peek(clone, 0) == 0x7100'0000 &&
+                        peek(clone, 1) == 0x7b00'0000 && peek(origin, 0) == 0x7100'0000,
+                    "a failed splice leaves the transfer list empty and preserves both views");
+        }
+#endif
         verdict(tally, clone->take_pages(0, 5 * P, &pages) == Status::Ok,
                 "take_pages() of the whole clone succeeds");
         Popped popped[5] = {};

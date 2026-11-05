@@ -139,6 +139,47 @@ namespace {
     }
 
 #if MM_TEST_ALLOC_FAILURE
+    auto check_protect_allocation_failure(Tally &tally, mm::VmAspace &aspace) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        constexpr auto BASE = USER_ASPACE_BASE + 80_mb;
+        constexpr usize PAGES = 32;
+        constexpr auto READ = mm::MmuFlags::Readable | mm::MmuFlags::User;
+        constexpr auto RW = READ | mm::MmuFlags::Writable;
+        auto root = aspace.root_vma();
+        auto mapped = root->map_with_vmo(BASE, PAGES * PAGE_SIZE, 0, RW, mm::VmaFlags::PermMask,
+                                         make_vmo(PAGES * PAGE_SIZE), mm::MapOptions::Commit,
+                                         "protection allocation");
+        verdict(tally, mapped.is_ok(), "a writable mapping for protection tree growth");
+        if (!mapped) {
+            return;
+        }
+        usize failures = 0;
+        for (usize index = 1; index + 1 < PAGES; index += 2) {
+            auto const at = BASE + index * PAGE_SIZE;
+            Status status;
+            bool triggered = false;
+            {
+                AllocationFailure failure(AllocationSite::Collection);
+                status = root->protect(at, PAGE_SIZE, READ);
+                triggered = failure.triggered();
+            }
+            if (!triggered && status == Status::Ok) {
+                continue;
+            }
+            ++failures;
+            PhysAddr pa{};
+            mm::MmuFlags flags{};
+            verdict(tally,
+                    triggered && status == Status::OutOfMem &&
+                        aspace.arch_aspace().query(at, &pa, &flags) == Status::Ok &&
+                        !!(flags & mm::MmuFlags::Writable) &&
+                        root->protect(at, PAGE_SIZE, READ) == Status::Ok,
+                    "an allocation failure preserves the PTE until protect is retried");
+        }
+        verdict(tally, failures != 0, "the protection tree needed allocation while splitting");
+    }
+
     auto check_aspace_allocation_failures(Tally &tally) -> void {
         using mm::test::AllocationFailure;
         using mm::test::AllocationSite;
@@ -183,6 +224,23 @@ namespace {
             failed_insert = status == Status::OutOfMem && failure.triggered() && !child;
         }
         verdict(tally, failed_insert, "an allocation failure leaves the sub-area unpublished");
+
+        bool failed_reservation = false;
+        {
+            AllocationFailure failure(AllocationSite::Heap);
+            auto const status = parent->reserve(BASE, PAGE_SIZE, READ, "failed reservation");
+            failed_reservation = status == Status::OutOfMem && failure.triggered();
+        }
+        verdict(tally, failed_reservation, "a failed reservation leaves the range available");
+        bool failed_anon = false;
+        {
+            AllocationFailure failure(AllocationSite::Heap);
+            auto mapped = parent->map_anon(BASE, PAGE_SIZE, READ, mm::MapOptions::Resident,
+                                           "failed anonymous VMO");
+            failed_anon =
+                mapped.is_err() && mapped.unwrap_err() == Status::OutOfMem && failure.triggered();
+        }
+        verdict(tally, failed_anon, "an anonymous mapping propagates hierarchy allocation failure");
 
         struct Case {
             AllocationSite site;
@@ -353,6 +411,7 @@ namespace {
 #if MM_TEST_ALLOC_FAILURE
         check_aspace_allocation_failures(tally);
         check_allocation_failures(tally, *aspace);
+        check_protect_allocation_failure(tally, *aspace);
 #endif
 
         // The sealed ones are in the address space when it goes.

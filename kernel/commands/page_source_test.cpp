@@ -48,6 +48,7 @@
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -899,10 +900,21 @@ namespace {
 
         // The object with a source: page 3 supplied already, page 2 waited on.
         ustl::Arc<mm::VmObjectPaged> dst;
-        auto const dst_made =
-            mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 4 * P, mm::VmoFlags::Lazy,
-                                           &dst) == Status::Ok &&
-            supply(*dst, 3 * P, P) == Status::Ok;
+        auto dst_made = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 4 * P,
+                                                       mm::VmoFlags::Lazy, &dst) == Status::Ok;
+        if (dst_made) {
+#if MM_TEST_ALLOC_FAILURE
+            bool failed = false;
+            {
+                mm::test::AllocationFailure failure(mm::test::AllocationSite::Collection);
+                auto const status = supply(*dst, 3 * P, P);
+                failed = status == Status::OutOfMem && failure.triggered();
+            }
+            verdict(tally, failed && dst->committed_pages(3 * P, P) == 0,
+                    "a failed supply leaves the target slot empty");
+#endif
+            dst_made = supply(*dst, 3 * P, P) == Status::Ok;
+        }
         auto dst_map = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
                                           ustl::Arc<mm::VmObject>(dst), mm::MapOptions::Lazy,
                                           "pagesource.test dst");

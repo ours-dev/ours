@@ -77,3 +77,5 @@ The regression cases check state visible to callers after failure, including ret
 ## Allocation failure follow-up
 
 The opt-in scope targets the current thread and one allocation site. Tests reached tree allocation failure after protection initialization, partial address-space construction, failed clone creation and a failed fork. They checked the original state and successful retry where applicable. The default and opt-in boots and all 46 instrumented commands passed.
+
+The next pass exercised page transfers, page supply, protection splits and raw heap failures in VMA setup. The original data or permissions survived each failed operation. Both configurations passed verification, and instrumented VMM coverage reached 4260/4768 lines.

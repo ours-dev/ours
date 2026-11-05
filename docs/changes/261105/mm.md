@@ -93,3 +93,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Exercise allocation failure while transferring pages (2026-11-05)
+
+**Files**
+
+- `kernel/lib/heap/src/new.cpp` provides the opt-in failure site for kernel new and new[].
+- `kernel/commands/page_source_test.cpp`, `kernel/commands/vma_seal_test.cpp` and `kernel/commands/vmo_snapshot_test.cpp` exercise supply, protection and transfer rollback.
+
+**Symptom**
+
+An allocation error while preparing a range or transferring its pages could leave the operation partially applied. The tests could only check successful transfers and permission changes.
+
+**Cause**
+
+Range splits can allocate tree nodes. A COW fork can allocate both a frame and a page-list slot. A splice must reserve space to hold transferred frames before it takes them from the backing node.
+
+**Change**
+
+The tests fail allocation at these steps and verify the original PTE permissions, backing data or empty destination slot as appropriate. They then retry the operation. Raw heap failures can also exercise hierarchy allocation during anonymous mapping and reservation.
+
+**Reference**
+
+None. These are failure contracts of the existing operations.
+
+**Verification**
+
+Clang-format and clang-tidy checked the five changed C++ files. The default and opt-in configurations booted both dev images and passed all 163 host tests each. All 46 instrumented kernel commands passed. The VMM measured 4260/4768 covered lines (89.35%). The 95% target requires another 270 lines.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The coverage report showed gaps when the kernel allocates range metadata and copies or transfers page slots.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.
