@@ -673,7 +673,7 @@ namespace {
         auto *const zone = PmZone::at(nid, last->zone());
         auto const drained = zone && zone->count_free_frames() == 0 &&
                              zone->num_free_frames() == 0 &&
-                             !zone->watermark_ok(0, PmZone::WaterMark::Min);
+                             !zone->watermark_ok(0, PmZone::Watermark::Min);
         PmNode::free_frames(last, 0);
         if (Cpu::num_online_cpus() >= 2) {
             verdict(tally, drained && check_zone_inventory(*zone),

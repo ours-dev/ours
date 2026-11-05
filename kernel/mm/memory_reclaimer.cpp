@@ -98,7 +98,7 @@ auto MemoryReclaimer::reclaim_node_requests() -> void {
                 return;
             }
             auto const free = zone.num_free_frames();
-            auto const high = zone.watermark(PmZone::WaterMark::High);
+            auto const high = zone.watermark(PmZone::Watermark::High);
             if (free < high) {
                 wanted += high - free;
             }

@@ -907,3 +907,110 @@ None.
 - Why can a modify/delete conflict still represent a test that must be preserved under a new path?
 - Why do KTEST's summary and the console runner's generic error verdict disagree during an intentional allocation failure?
 - Why does one passing reordered run not prove a timing instability has been repaired?
+
+## Name the zone threshold enum Watermark (2026-11-05)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — rename the enum and its parameter and array-extent references; move explanations above individual variants.
+- `kernel/mm/pm_zone.cpp` — migrate the threshold initialization indices.
+- `kernel/mm/pm_node.cpp`, `kernel/mm/memory_reclaimer.cpp` — migrate reclaim threshold queries.
+- `kernel/commands/pm_node_test.cpp` — migrate the exhausted-zone regression.
+
+**Symptom**
+The enum was spelled WaterMark while the related methods use the domain word watermark, making one concept appear under two word boundaries.
+
+**Cause**
+The extra capital split a single word without expressing an additional type or responsibility. The type-level comment also mixed the variant descriptions together instead of placing each explanation at the corresponding value.
+
+**Change**
+Replaced `PmZone::WaterMark` with `PmZone::Watermark` across the declaration and all active callers. Kept `: u32` and `Min, Low, High, Count` unchanged. Moved the explanations directly above their variants and separated entries with blank lines. No compatibility alias was added.
+
+**Reference**
+None, this project's own naming decision. The spelling follows the existing watermark() and watermark_ok() methods and the user's Rust-first naming convention.
+
+**Verification**
+The five edited C++ files are token-identical after normalizing the selected name and comments. Changed-line formatting and LLVM 23 clang-tidy passed in all five. Both default and four-node builds booted the debug image (46 passed, 5 skipped) and release image (44 passed, 8 skipped, 7/7 required), with 173 host tests passing per configuration. Default pmnode.test passed 38 checks, the zone KTEST passed one case, mempressure.test passed 19 checks and four-node pmnode.test passed 77 checks. Performance was not measured.
+
+**Deliberately not done**
+The other unapproved PMM naming candidates and allocation admission policy were left unchanged. The separately approved policy getter rename is the next increment.
+
+**How it was found**
+The user accepted the threshold spelling from the PMM candidate table. Searched all active declarations and callers, inspected the diff, compared normalized C++ tokens and exercised the existing allocation, pressure and zone regressions.
+
+**The user's prediction**
+None; this is a mechanical naming change.
+
+**Three questions you should be able to answer**
+- Why does Watermark match the existing query vocabulary?
+- Why must the enum's order and unsigned base remain unchanged during this rename?
+- Why should each variant's explanation be placed immediately above it?
+
+## Name the allocation-state policy accessor policy (2026-11-05)
+
+**Files**
+- `kernel/mm/include/ours/mm/alloc_state.hpp` — rename the policy accessor.
+- `kernel/mm/pm_node.cpp` — migrate the thread-policy lookup.
+
+**Symptom**
+AllocState::get_policy used a get_ prefix while neighboring accessors use the name of the value they expose.
+
+**Cause**
+The extra verb contributes no ownership or conversion meaning: the operation returns the allocation state's current policy as an Arc. Keeping the noun supplies the same information in the project's selected naming vocabulary.
+
+**Change**
+Replaced `AllocState::get_policy()` with `AllocState::policy()` and updated its sole caller. Kept the `ustl::Arc<AllocPolicy>` return type, non-const method qualification, getter body and the thread resource lock around the copy unchanged. Added no alias or overload.
+
+**Reference**
+None, this project's own naming decision, following the user's Rust-first accessor convention.
+
+**Verification**
+Both edited C++ files contain exactly the selected name substitution. Changed-line formatting and LLVM 23 clang-tidy passed in both. Both default images booted: debug 46 passed and 5 skipped, release 44 passed and 8 skipped with 7/7 required checks. All 173 host tests passed; pmnode.test passed 38 checks. Performance was not measured.
+
+**Deliberately not done**
+The remaining unapproved naming candidates, policy selection behavior and lock scope were left unchanged. No new test mirrors the mechanical rename; existing allocation coverage is reused.
+
+**How it was found**
+The user accepted the policy accessor entry in the PMM candidate list. Searched all declarations and calls, inspected both exact replacements and ran the existing build, boot and allocator checks.
+
+**The user's prediction**
+None; this is a mechanical naming change.
+
+**Three questions you should be able to answer**
+- What ownership does the Arc returned by policy() provide?
+- Why must the caller's resource lock remain around the policy copy?
+- Which PMM candidate names are still awaiting approval?
+
+## Integrate the approved PMM naming follow-ups with the latest baseline (2026-11-05)
+
+**Files**
+- `.agents/tasks/pmm-baseline-integration/` — record the second integration and its checks.
+- The Watermark and policy changes from `019af217` and `5070f014`, together with baseline `8fb7e131` and its existing preemption and hotplug test fixes.
+
+**Symptom**
+The approved PMM names were committed on codex/pmm-naming while two independent test fixes had advanced the baseline.
+
+**Cause**
+The target tree combines both branches, so verification of either old tip alone does not establish that the integration builds or runs. The shared checkout also carries unrelated active work that must not enter the merge commit.
+
+**Change**
+Merged baseline `8fb7e131` into the naming branch at `5070f014` first. The automatic merge had no conflicts and preserved both parents' changes. Verified the combined tree before preparing its merge back to baseline/20260824. Retained the five tracked edits and five untracked files in place because none overlaps the final merge paths; no stash was needed.
+
+**Reference**
+None, this project's own integration workflow, as specified by the merge skill.
+
+**Verification**
+Default and four-node configurations each booted both development images and passed 173 host tests: debug 46 passed and 5 skipped; release 44 passed and 8 skipped, with 7/7 required checks. Default preempt.test passed 8 checks, hotplug.test 47 and pmnode.test 38. KTEST reported 24 ran, 23 passed, zero failed and 1 intentional skip. Four-node PMM passed 77 checks and the zone KTEST passed its one case. Both incoming test files passed changed-line formatting and clang-tidy. The final merge must have an empty diff against the verified feature tree; the shared checkout's pre-existing files are checked by path and content hash around that merge. Performance was not measured.
+
+**Deliberately not done**
+No unapproved naming proposal or scheduler change was added. Existing test and coverage limitations recorded by the earlier integration are not declared repaired by this run.
+
+**How it was found**
+Compared branch tips and merge paths with the shared checkout's status, read the incoming test fixes and their change records, then ran both image configurations and the affected test commands.
+
+**The user's prediction**
+None; the user requested integration of the two completed naming changes.
+
+**Three questions you should be able to answer**
+- Why does the current baseline enter the feature branch before the reverse merge?
+- Why can these unrelated active edits remain in the shared checkout?
+- When does an empty source-tree diff allow the final merge to reuse the verified boot result?

@@ -11,6 +11,7 @@ Review PMM naming and list the current and proposed names for the user's selecti
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
+| Follow-up names | WaterMark, Watermark; get_policy, policy | Watermark and policy | None | Both accepted, 2026-11-05 |
 | Helper classes | ZoneSelector, ZoneCandidates; NodePlacement, CpuNodeMap; global Origin, AllocRequest::Origin | The proposed names | None | All three accepted, 2026-11-05 |
 | Scope | Propose names, implement names | Propose names first | None | User selected the candidate-list review |
 | Principal model vocabulary | Existing PmFrame, PmZone, PmNode and Gaf, new type family | Existing vocabulary | None | Retain the previously selected resource and allocation flag names |
@@ -24,6 +25,8 @@ Review PMM naming and list the current and proposed names for the user's selecti
 4. Implement the accepted ZoneCandidates class and header rename, migrate every caller, and verify before committing.
 5. Implement the accepted CpuNodeMap class, source and header rename, migrate the build entry and callers, and verify default and four-node NUMA behavior before committing.
 6. Nest Origin in AllocRequest, migrate the resolver and callers, then verify the host request checks and kernel allocation paths before committing.
+7. Rename PmZone::WaterMark to Watermark, migrate all callers, put explanations above enum variants, and verify the default and four-node configurations before committing.
+8. Rename AllocState::get_policy to policy, migrate the allocator caller, and run the normal source, build and boot checks before committing.
 
 ## Files
 

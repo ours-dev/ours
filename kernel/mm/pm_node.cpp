@@ -41,7 +41,7 @@ namespace {
             auto const policy = [] {
                 auto *const thread = task::Thread::Current::get();
                 Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
-                return thread->alloc_state().get_policy();
+                return thread->alloc_state().policy();
             }();
             if (policy) {
                 switch (policy->kind()) {
@@ -216,7 +216,7 @@ auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
         auto const block = zone.take_block(request.order());
         if (!block) {
             if (order == 0 && !depleted_zone &&
-                zone.num_free_frames() < zone.watermark(PmZone::WaterMark::High)) {
+                zone.num_free_frames() < zone.watermark(PmZone::Watermark::High)) {
                 depleted_zone = ustl::some_ref(zone);
             }
             continue;

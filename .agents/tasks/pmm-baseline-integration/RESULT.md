@@ -6,6 +6,8 @@
 
 Integrated the feature tip `59046bdc` with baseline tip `80958189`. The enclosing merge commit preserves the approved PMM/VMM names and responsibility repairs, while adopting the baseline's KTEST framework and the independent baseline changes. All 176 assertion sites in seven MM suites were migrated, including allocation-failure regressions. Removed the four remaining legacy test files whose registrations the baseline had already replaced.
 
+The naming follow-up integrates `019af217` (PmZone::Watermark) and `5070f014` (AllocState::policy) with baseline `8fb7e131`, including its preemption and hotplug test fixes. The merge has no conflicts. Five tracked work-in-progress files and five untracked files in the shared baseline checkout are retained in place, without stashing.
+
 ## Verification
 
 - Default and four-node NUMA builds: debug image 46 passed, 5 skipped; release image 44 passed, 8 skipped, with all 7 required device/routing checks. Each configuration passed all 173 host tests.
@@ -16,6 +18,8 @@ Integrated the feature tip `59046bdc` with baseline tip `80958189`. The enclosin
 - The fault-enabled KTEST summary was 24 ran, 23 passed, 1 skipped, zero failed. kshell_run.py separately rejects three intentional page-table error logs; cov_kernel.py reports the test verdicts successfully.
 - VMM coverage, using the existing source grouping: 4375/4772 lines (91.68%), 1800/2244 branches (80.21%), 447/483 functions (92.55%). The 95% line target still needs 159 additional covered lines.
 - Repository changed-line formatting and LLVM 23 clang-tidy passed on all twelve adapted test sources in both configurations. Documentation lint passed. Performance was not measured.
+
+The naming follow-up passed both image boots and 173 host tests in both default and four-node configurations. Debug reported 46 passed and 5 skipped; release reported 44 passed and 8 skipped with 7/7 required checks. Default preempt.test passed 8 checks, hotplug.test 47, pmnode.test 38, and KTEST reported 24 ran, 23 passed, 1 intentional skip. Four-node pmnode.test passed 77 checks and the zone KTEST passed one case. The two incoming test files passed formatting and clang-tidy with no diagnostics on their changed lines.
 
 ## Deviations from the design
 

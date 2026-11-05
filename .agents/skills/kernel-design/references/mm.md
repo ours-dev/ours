@@ -290,3 +290,14 @@ CpuNodeMap owns the runtime CPU-to-node table and its per-CPU node-pointer
 cache. Allocation origin belongs to AllocRequest as AllocRequest::Origin.
 These names replace ZoneSelector, NodePlacement and the namespace-level
 Origin without adding a parallel interface.
+
+## PMM threshold and accessor names (user decision, 2026-11-05)
+
+The zone threshold enum is PmZone::Watermark, matching the existing
+watermark() and watermark_ok() spelling. Keep its unsigned base and the
+Min, Low, High, Count order. Put each variant's explanation above that
+variant, with a blank line between entries.
+
+The allocation-state policy accessor is AllocState::policy(), without a
+get_ prefix. It still returns a retained Arc; the allocator copies it under
+the thread resource lock before using it.

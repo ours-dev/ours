@@ -147,9 +147,9 @@ auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_to
     // Low. The fraction of the zone is what keeps the band usable there.
     auto const delta = std::max(min >> 2, managed * WATERMARK_SCALE / WATERMARK_SCALE_UNIT);
 
-    m_watermarks[std::to_underlying(WaterMark::Min)] = min;
-    m_watermarks[std::to_underlying(WaterMark::Low)] = min + delta;
-    m_watermarks[std::to_underlying(WaterMark::High)] = min + delta + delta;
+    m_watermarks[std::to_underlying(Watermark::Min)] = min;
+    m_watermarks[std::to_underlying(Watermark::Low)] = min + delta;
+    m_watermarks[std::to_underlying(Watermark::High)] = min + delta + delta;
 
     // One line, and a short one on purpose. logz4 hands std::vformat_to a
     // bounded output iterator, and libc++ gives up on its own 256-byte buffer

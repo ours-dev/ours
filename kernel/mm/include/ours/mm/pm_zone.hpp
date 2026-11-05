@@ -40,25 +40,18 @@ class PmZone {
     /// FIXME(SmallHuaZi) The cache per cpu has not been finished
     constexpr static usize MAX_PCPU_CACHE_ORDER = 0;
 
-    /// The three lines a zone's free count is measured against, lowest first.
-    ///
-    /// Min is the floor: only a caller that cannot block may draw a zone down
-    /// to it, on the grounds that it has nowhere else to go. Low is where a
-    /// caller that can block is turned away, so that it moves on to the next
-    /// zone and leaves what is left here for callers that cannot. High is not
-    /// an admission line at all -- above it the zone is comfortable, below it
-    /// the zone is worth reclaiming, and saying so is the only thing that fact
-    /// is for.
-    ///
-    /// They replaced Critical, Moderate and Sufficient (0-10%, 10-30%,
-    /// 30-100%), which classified how much memory was left rather than naming
-    /// lines an allocation is admitted against. That classification is a
-    /// different job -- what gets reported outward as memory pressure -- and
-    /// nothing read these three, so the names were free to take.
-    enum class WaterMark : u32 {
+    /// Allocation and reclaim thresholds, ordered from lowest to highest.
+    enum class Watermark : u32 {
+        /// The admission floor intended for callers that cannot block.
         Min,
+
+        /// The admission floor intended to preserve a reserve for nonblocking callers.
         Low,
+
+        /// The reclaim target, separate from allocation admission.
         High,
+
+        /// The number of thresholds stored for each zone.
         Count,
     };
 
@@ -238,7 +231,7 @@ class PmZone {
     /// the allocator is serving anyone.
     [[nodiscard]]
     FORCE_INLINE
-    constexpr auto watermark(WaterMark const mark) const -> usize {
+    constexpr auto watermark(Watermark const mark) const -> usize {
         return m_watermarks[std::to_underlying(mark)];
     }
 
@@ -257,7 +250,7 @@ class PmZone {
     /// form of the question that pays for a definite answer.
     [[nodiscard]]
     FORCE_INLINE
-    auto watermark_ok(usize const order, WaterMark const mark) const -> bool {
+    auto watermark_ok(usize const order, Watermark const mark) const -> bool {
         auto const free = num_free_frames();
         auto const wanted = usize{1} << order;
         if (free < wanted) {
@@ -327,7 +320,7 @@ class PmZone {
 
     std::atomic<usize> m_reserved_frames;
 
-    std::array<usize, std::to_underlying(WaterMark::Count)> m_watermarks;
+    std::array<usize, std::to_underlying(Watermark::Count)> m_watermarks;
 
     typedef FramePcpuCache<MAX_PCPU_CACHE_ORDER> PcpuCache;
     CpuLocal::PerCpu<PcpuCache> m_frame_cache;
