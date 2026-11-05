@@ -7,9 +7,9 @@
 // quiet machine:
 //
 //   - two threads spinning on the highest online CPU take turns, and every
-//     turn longer than a slice ends within a little of a whole number of
-//     slices, at most MAX_SLICES_IN_A_ROW of them: none runs on, which no tick
-//     would stop now, and most are whole slices long;
+//     turn ends within a little of at most MAX_SLICES_IN_A_ROW slices: none
+//     runs on, which no tick would stop now, and most are a whole number of
+//     slices long;
 //   - a timer due on that CPU before the running slice ends fires on time:
 //     the device is armed for the earlier of the two;
 //   - no other CPU passes a preemption deadline: an idle thread has no slice,
@@ -280,7 +280,6 @@ namespace {
         // wakeup on its CPU, so only the later ones count.
         auto num_turns = usize{0};
         auto num_whole = usize{0};
-        auto num_stray = usize{0};
         auto longest = Duration::zero();
         for (auto const &spinner: state->spinners) {
             for (usize i = 1; i < spinner.num_turns; ++i) {
@@ -293,10 +292,6 @@ namespace {
                 }
                 if (is_whole) {
                     num_whole += 1;
-                } else if (turn > slice + late) {
-                    // Past a slice and not a whole number of them: a deadline that
-                    // passed unseen, or one that was never armed.
-                    num_stray += 1;
                 }
                 longest = std::max(longest, turn);
             }
@@ -304,7 +299,8 @@ namespace {
         log::info("preempt.test: {} turns, {} of them a whole number of slices, the longest {} us",
                   num_turns, num_whole, longest.count() / 1000);
         verdict(tally, num_turns >= 4, "the spinners take turns");
-        verdict(tally, num_stray == 0, "no turn runs past its slices");
+        verdict(tally, longest <= (slice + late) * static_cast<i64>(MAX_SLICES_IN_A_ROW),
+                "no turn runs past its slices");
         verdict(tally, num_whole * 2 >= num_turns, "most turns are a whole number of slices");
 
         auto const fired = state->probe_fired.load(std::memory_order_acquire);

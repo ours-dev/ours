@@ -979,3 +979,38 @@ None; this is a mechanical naming change.
 - What ownership does the Arc returned by policy() provide?
 - Why must the caller's resource lock remain around the policy copy?
 - Which PMM candidate names are still awaiting approval?
+
+## Integrate the approved PMM naming follow-ups with the latest baseline (2026-11-05)
+
+**Files**
+- `.agents/tasks/pmm-baseline-integration/` — record the second integration and its checks.
+- The Watermark and policy changes from `019af217` and `5070f014`, together with baseline `8fb7e131` and its existing preemption and hotplug test fixes.
+
+**Symptom**
+The approved PMM names were committed on codex/pmm-naming while two independent test fixes had advanced the baseline.
+
+**Cause**
+The target tree combines both branches, so verification of either old tip alone does not establish that the integration builds or runs. The shared checkout also carries unrelated active work that must not enter the merge commit.
+
+**Change**
+Merged baseline `8fb7e131` into the naming branch at `5070f014` first. The automatic merge had no conflicts and preserved both parents' changes. Verified the combined tree before preparing its merge back to baseline/20260824. Retained the five tracked edits and five untracked files in place because none overlaps the final merge paths; no stash was needed.
+
+**Reference**
+None, this project's own integration workflow, as specified by the merge skill.
+
+**Verification**
+Default and four-node configurations each booted both development images and passed 173 host tests: debug 46 passed and 5 skipped; release 44 passed and 8 skipped, with 7/7 required checks. Default preempt.test passed 8 checks, hotplug.test 47 and pmnode.test 38. KTEST reported 24 ran, 23 passed, zero failed and 1 intentional skip. Four-node PMM passed 77 checks and the zone KTEST passed its one case. Both incoming test files passed changed-line formatting and clang-tidy. The final merge must have an empty diff against the verified feature tree; the shared checkout's pre-existing files are checked by path and content hash around that merge. Performance was not measured.
+
+**Deliberately not done**
+No unapproved naming proposal or scheduler change was added. Existing test and coverage limitations recorded by the earlier integration are not declared repaired by this run.
+
+**How it was found**
+Compared branch tips and merge paths with the shared checkout's status, read the incoming test fixes and their change records, then ran both image configurations and the affected test commands.
+
+**The user's prediction**
+None; the user requested integration of the two completed naming changes.
+
+**Three questions you should be able to answer**
+- Why does the current baseline enter the feature branch before the reverse merge?
+- Why can these unrelated active edits remain in the shared checkout?
+- When does an empty source-tree diff allow the final merge to reuse the verified boot result?

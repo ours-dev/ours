@@ -13,6 +13,8 @@ Reviewed all eleven conflict resolutions against both parents and their change r
 - `kernel/tests/dpc_test.cpp:229` preserves the baseline's intentional retention of state that a queued worker may still access on failure.
 - The seven reconstructed MM suites retain all 176 original assertion sites while using the baseline's KTEST registrations. No deleted legacy command was reintroduced.
 
+- The naming follow-up cleanly combines feature tip 5070f014 and baseline tip 8fb7e131. No conflict resolution changes test or allocator behavior. Both configurations passed both image boots and 173 host tests. Default preemption, hotplug, PMM and all registered tests passed; four-node PMM and zone checks passed. Incoming test changes passed formatting and clang-tidy on changed lines. Shared baseline edits have no path overlap.
+
 ## High severity
 
 None.
