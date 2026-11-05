@@ -1412,7 +1412,7 @@ auto VmCowPages::Cursor::create_read_request(usize const nr_pages, PageRequest *
         len += PAGE_SIZE;
     }
 
-    return m_target->m_page_source->get_pages(m_offset, len, page_request);
+    return m_target->m_page_source->request_pages(m_offset, len, page_request);
 }
 
 auto VmCowPages::Cursor::create_dirty_request(usize nr_pages, PageRequest *page_request) -> Status {

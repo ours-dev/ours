@@ -332,7 +332,7 @@ class MultiPageRequest {
 /// request raised against it.
 ///
 /// Lock order: the VMO's lock, then this source's, then the provider's.
-/// get_pages() is called with the VMO's lock held, and so is
+/// request_pages() is called with the VMO's lock held, and so is
 /// on_pages_supplied(), from supply_pages().
 class PageSource final: public ustl::RefCounted<PageSource, ustl::sync::ThreadSafePolicy> {
     using Self = PageSource;
@@ -348,7 +348,7 @@ class PageSource final: public ustl::RefCounted<PageSource, ustl::sync::ThreadSa
     /// The request may be cut short, to end where an outstanding one ends or
     /// where the next one starts: it never asks for a page twice. The caller
     /// retries once it wakes and raises another for what is still missing.
-    auto get_pages(u64 offset, u64 len, PageRequest *request) -> Status;
+    auto request_pages(u64 offset, u64 len, PageRequest *request) -> Status;
 
     /// [offset, offset + len) now holds pages it did not hold before. Every
     /// request this completes is woken.

@@ -38,7 +38,7 @@ PageRequest::~PageRequest() {
 }
 
 /// m_source is read without the source's lock: only the owning thread sets
-/// it, through get_pages(), and only the owning thread calls this.
+/// it, through request_pages(), and only the owning thread calls this.
 auto PageRequest::cancel() -> void {
     if (!m_source) {
         return;
@@ -135,7 +135,8 @@ PageSource::~PageSource() {
     DEBUG_ASSERT(m_outstanding.empty());
 }
 
-auto PageSource::get_pages(u64 const offset, u64 const len, PageRequest *const request) -> Status {
+auto PageSource::request_pages(u64 const offset, u64 const len, PageRequest *const request)
+    -> Status {
     DEBUG_ASSERT(request);
     DEBUG_ASSERT(len > 0);
     DEBUG_ASSERT(ustl::is_aligned(offset, PAGE_SIZE) && ustl::is_aligned(len, PAGE_SIZE));
@@ -301,7 +302,7 @@ auto PageSource::on_pages_failed(u64 const offset, u64 const len, Status const s
 }
 
 /// Completed with Ok, not with a failure: the waiters retry, and the retry is
-/// what finds the source detached and fails, from get_pages().
+/// what finds the source detached and fails, from request_pages().
 auto PageSource::detach() -> void {
     Guard guard{m_lock};
     if (is_detached_locked()) {

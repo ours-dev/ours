@@ -264,11 +264,11 @@ namespace {
         PageRequest b;
         PageRequest c;
         PageRequest d;
-        auto const raised = source.get_pages(0, 4 * P, &a) == Status::ShouldWait &&
-                            source.get_pages(2 * P, 4 * P, &b) == Status::ShouldWait &&
-                            source.get_pages(6 * P, 2 * P, &c) == Status::ShouldWait &&
-                            source.get_pages(4 * P, 4 * P, &d) == Status::ShouldWait;
-        verdict(tally, raised, "get_pages() answers ShouldWait");
+        auto const raised = source.request_pages(0, 4 * P, &a) == Status::ShouldWait &&
+                            source.request_pages(2 * P, 4 * P, &b) == Status::ShouldWait &&
+                            source.request_pages(6 * P, 2 * P, &c) == Status::ShouldWait &&
+                            source.request_pages(4 * P, 4 * P, &d) == Status::ShouldWait;
+        verdict(tally, raised, "request_pages() answers ShouldWait");
         verdict(tally, provider.nr_sent() == 3 && source.nr_raised() == 4,
                 "a request that starts inside an outstanding one is not sent");
 
@@ -295,8 +295,8 @@ namespace {
         // its place in the provider's queue, and nothing new is sent.
         PageRequest e;
         PageRequest f;
-        auto _ = source.get_pages(0, 2 * P, &e);
-        auto _ = source.get_pages(0, 2 * P, &f);
+        auto _ = source.request_pages(0, 2 * P, &e);
+        auto _ = source.request_pages(0, 2 * P, &f);
         auto const sent_before = provider.nr_sent();
         e.cancel();
         verdict(tally,
@@ -311,8 +311,8 @@ namespace {
         // A waiter that leaves changes nothing for the request it waited on.
         PageRequest g;
         PageRequest h;
-        auto _ = source.get_pages(0, P, &g);
-        auto _ = source.get_pages(0, P, &h);
+        auto _ = source.request_pages(0, P, &g);
+        auto _ = source.request_pages(0, P, &h);
         h.cancel();
         verdict(tally, source.nr_raised() == 1 && provider.nr_queued() == 1,
                 "a waiter that leaves only leaves");
@@ -321,12 +321,12 @@ namespace {
                 "the last one leaves the provider too");
 
         PageRequest i;
-        auto _ = source.get_pages(0, P, &i);
+        auto _ = source.request_pages(0, P, &i);
         source.close();
         verdict(tally, i.wait(false) == Status::Ok && source.nr_raised() == 0,
                 "closing completes what is outstanding");
         PageRequest j;
-        verdict(tally, source.get_pages(0, P, &j) == Status::BadState,
+        verdict(tally, source.request_pages(0, P, &j) == Status::BadState,
                 "a closed source raises nothing");
         verdict(tally, provider.closed(), "the provider hears of detach and close");
     }

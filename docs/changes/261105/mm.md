@@ -397,3 +397,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Name asynchronous page requests request_pages (2026-11-05)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/page_request.hpp` and `kernel/mm/page_request.cpp` declare and implement the request operation.
+- `kernel/mm/vm_cow_pages.cpp` and the existing pager commands call the renamed entry point.
+
+**Symptom**
+
+The name get_pages suggested immediate retrieval even when the operation records, combines or sends a pager request and returns ShouldWait.
+
+**Cause**
+
+The old name described the eventual content rather than the operation performed by this call.
+
+**Change**
+
+Rename `PageSource::get_pages(offset, len, request)` to `PageSource::request_pages(offset, len, request)` at every code and comment reference.
+
+**Reference**
+
+Zircon PageSource::GetPages supplies the domain contract. The user selected request_pages to express asynchronous request semantics using the project's Rust-based naming convention.
+
+**Verification**
+
+LLVM 23 clang-format and clang-tidy checked all five C++ files. Both development images booted and all 163 host tests passed. The existing pagesource.test and pager.test commands passed.
+
+**Deliberately not done**
+
+The unmap policy and placement helper names await the user's selection.
+
+**How it was found**
+
+The user revisited the twelve-item VMM naming list. A symbol search showed that its first approved rename had not been applied.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

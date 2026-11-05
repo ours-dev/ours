@@ -354,8 +354,8 @@ namespace {
         {
             mm::PageRequest primary;
             mm::PageRequest waiter;
-            auto const raised = source->get_pages(0, P, &primary) == Status::ShouldWait &&
-                                source->get_pages(0, P, &waiter) == Status::ShouldWait;
+            auto const raised = source->request_pages(0, P, &primary) == Status::ShouldWait &&
+                                source->request_pages(0, P, &waiter) == Status::ShouldWait;
             auto const read = next_packet(port, &packet) && is_read(packet, 0, P);
             primary.cancel();
             auto const asked_again = port.dequeue(0, &packet) == Status::Ok;
@@ -371,8 +371,8 @@ namespace {
         {
             mm::PageRequest primary;
             mm::PageRequest waiter;
-            auto const raised = source->get_pages(P, P, &primary) == Status::ShouldWait &&
-                                source->get_pages(P, P, &waiter) == Status::ShouldWait;
+            auto const raised = source->request_pages(P, P, &primary) == Status::ShouldWait &&
+                                source->request_pages(P, P, &waiter) == Status::ShouldWait;
             PortPacket behind{};
             behind.key = KEY + 1;
             auto const queued = port.queue_user(behind) == Status::Ok;
@@ -394,10 +394,10 @@ namespace {
             mm::PageRequest primary;
             mm::PageRequest later;
             mm::PageRequest waiter;
-            auto const raised = source->get_pages(2 * P, P, &carried) == Status::ShouldWait &&
-                                source->get_pages(3 * P, P, &primary) == Status::ShouldWait &&
-                                source->get_pages(4 * P, P, &later) == Status::ShouldWait &&
-                                source->get_pages(3 * P, P, &waiter) == Status::ShouldWait;
+            auto const raised = source->request_pages(2 * P, P, &carried) == Status::ShouldWait &&
+                                source->request_pages(3 * P, P, &primary) == Status::ShouldWait &&
+                                source->request_pages(4 * P, P, &later) == Status::ShouldWait &&
+                                source->request_pages(3 * P, P, &waiter) == Status::ShouldWait;
             primary.cancel();
             auto const in_order = next_packet(port, &packet) && is_read(packet, 2 * P, P) &&
                                   next_packet(port, &packet) && is_read(packet, 3 * P, P) &&

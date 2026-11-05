@@ -260,3 +260,15 @@ reclaim request is advisory and preserves the immediate allocation result.
 A block attempt carries its optional depleted zone in its typed failure.
 The reclaimer stores Idle and Pending as per-zone enum states. Owner-directed
 block return requires a frame reference at the zone boundary.
+
+## VMM naming choices (user decision, 2026-11-05)
+
+Keep the address selection name alloc_spot because selecting an address may
+later include randomization. Retain find_spot in VmaSet, MultiPageRequest,
+range_change_locked_object, create_subvma and VmPageSpliceList. Use subvma
+for child virtual memory areas.
+
+The approved VMM names are PageSource::request_pages, VmFault::Cause with
+the member VmFault::cause, lookup_cursor_locked on the COW and paged VMO
+layers, Cursor::PageLookup and VmArea::map_vmo. The unmap child policy name
+and the noun following resolve in the placement helper remain pending.
