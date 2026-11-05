@@ -23,16 +23,14 @@ namespace {
 
 /// Gathers pages to map at consecutive addresses with one set of permissions,
 /// and maps them with one map_bulk() call per batch.
+/// The caller commits its final batch on success. On early return, staged
+/// addresses can be discarded because they hold no references or PTEs.
 template <usize MaxNumPages>
 class MappingCoalescer {
   public:
     MappingCoalescer(VmMapping *mapping, VirtAddr base, MmuFlags mmuf)
         // Initializer order follows the member declaration order below.
-        : m_mapping(mapping), m_va(base), m_nr_pages(0), m_total_mapped(0), m_mmuf(mmuf) {}
-
-    ~MappingCoalescer() {
-        DEBUG_ASSERT(m_nr_pages == 0);
-    }
+        : m_mapping(mapping), m_va(base), m_nr_pages(0), m_mmuf(mmuf) {}
 
     /// Both are [[nodiscard]]: a dropped status here is invisible at run time
     /// -- the batch is silently not mapped, and the mapping object is handed
@@ -65,7 +63,6 @@ class MappingCoalescer {
     VirtAddr m_va;
     PhysAddr m_pa[MaxNumPages];
     usize m_nr_pages;
-    usize m_total_mapped;
     MmuFlags m_mmuf;
 };
 
@@ -89,21 +86,15 @@ auto MappingCoalescer<MaxNumPages>::commit() -> Status {
     // An entry already there is an error: a batch goes where nothing is
     // mapped yet. A failure part way is undone, so the batch is mapped whole
     // or not at all.
-    usize nr_mapped = 0;
     auto const status = m_mapping->aspace()->arch_aspace().map_bulk(
         m_va, m_pa, m_nr_pages, m_mmuf,
-        ArchMapOptions::ErrorIfExisting | ArchMapOptions::UndoOnFailure, &nr_mapped);
+        ArchMapOptions::ErrorIfExisting | ArchMapOptions::UndoOnFailure, nullptr);
     if (Status::Ok != status) {
         log::error("Failed to map {} pages at {}", m_nr_pages, m_va);
     }
 
-    // Drained either way, and before the early return: the destructor asserts
-    // the batch is empty, so a caller propagating the failure still has to be
-    // able to let this object go. `m_total_mapped` takes what the arch layer
-    // left mapped: the whole batch, or nothing after the undo.
     m_va += m_nr_pages * PAGE_SIZE;
     m_nr_pages = 0;
-    m_total_mapped += nr_mapped;
 
     // The status the caller acts on. Returning Ok here regardless -- which is
     // what this did -- left map_paged()/map_physical() reporting success for a

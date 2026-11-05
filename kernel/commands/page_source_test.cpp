@@ -797,6 +797,17 @@ namespace {
                     source.nr_raised() == 0 && provider.nr_queued() == 0,
                 "a failed immediate commit releases the address and withdraws its request");
 
+        auto const partial = root->map_with_vmo(where, 2 * P, P, flags, mm::VmaFlags::PermMask, vmo,
+                                                mm::MapOptions::Commit, "partial commit");
+        PhysAddr pa{};
+        mm::MmuFlags mmuf{};
+        verdict(tally,
+                partial.is_err() && partial.unwrap_err() == Status::ShouldWait &&
+                    aspace.find_mapping(where, &leftover) == Status::NotFound &&
+                    aspace.arch_aspace().query(where, &pa, &mmuf) == Status::NotFound &&
+                    source.nr_raised() == 0 && provider.nr_queued() == 0,
+                "a pager hole after a resident page leaves no mapping or outstanding request");
+
         auto const sent_before = provider.nr_sent();
         auto mapping = root->map_with_vmo(where, 2 * P, 0, flags, mm::VmaFlags::PermMask,
                                           ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Resident,
@@ -806,8 +817,6 @@ namespace {
             return;
         }
         auto const base = mapping.unwrap()->base();
-        PhysAddr pa{};
-        mm::MmuFlags mmuf{};
         auto const supplied_mapped = aspace.arch_aspace().query(base + P, &pa, &mmuf) == Status::Ok;
         auto const missing_mapped = aspace.arch_aspace().query(base, &pa, &mmuf) == Status::Ok;
         verdict(tally,

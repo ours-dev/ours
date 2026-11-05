@@ -179,3 +179,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Let an interrupted eager map discard its staged batch (2026-11-05)
+
+**Files**
+
+- `kernel/mm/vm_mapping.cpp` owns the temporary batch of physical addresses.
+- The page-source and sealed-mapping commands test interruption before and after a page-table batch is installed.
+
+**Symptom**
+
+A commit mapping of a pager VMO panicked when the first page was present and the next page needed supply. An allocation failure after staging the first page had the same path.
+
+**Cause**
+
+The cursor returned an error while the coalescer still held addresses. The coalescer's destructor asserted that its batch was empty, even though none of those staged entries had reached the page tables.
+
+**Change**
+
+Only successful completion requires a final batch commit. Staged physical addresses own no frames and need no cleanup. The mapping factory still destroys the failed mapping, which removes earlier batches already installed in the page table and releases the virtual range.
+
+**Reference**
+
+None. The repair uses the local mapping factory's existing rollback.
+
+**Verification**
+
+The standard debug image reproduced the old assertion. After the repair, the pager regression passed in that image. Both images and all 163 host tests passed in the default and opt-in configurations. Clang-format and clang-tidy checked all three C++ files. The instrumented pager and seal suites passed 86 and 53 checks. The full run reached 4286/4758 VMM lines (90.08%). The preemption timer deadline check failed again in the combined run.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+Reviewing allocation failure after the first page exposed a return between staging an address and committing the batch.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

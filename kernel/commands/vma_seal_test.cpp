@@ -276,6 +276,44 @@ namespace {
                                             mm::MapOptions::Commit, "mapping retry");
         verdict(tally, retried.is_ok(), "the same address can be mapped after every failed step");
     }
+
+    auto check_partial_map_failure(Tally &tally, mm::VmAspace &aspace) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        constexpr auto BASE = USER_ASPACE_BASE + 96_mb;
+        constexpr usize PAGES = 34;
+        constexpr auto READ = mm::MmuFlags::Readable | mm::MmuFlags::User;
+        auto root = aspace.root_vma();
+        auto vmo = make_vmo(PAGES * PAGE_SIZE);
+        if (!vmo) {
+            verdict(tally, false, "a VMO for partial map rollback is made");
+            return;
+        }
+        bool failed;
+        {
+            // The first batch is installed and the next one has begun when the last page fails.
+            AllocationFailure failure(AllocationSite::Frame, PAGES - 1);
+            auto mapped =
+                root->map_with_vmo(BASE, PAGES * PAGE_SIZE, 0, READ, mm::VmaFlags::PermMask, vmo,
+                                   mm::MapOptions::Commit, "failed partial map");
+            failed =
+                mapped.is_err() && mapped.unwrap_err() == Status::OutOfMem && failure.triggered();
+        }
+        ustl::Arc<mm::VmMapping> leftover;
+        bool unmapped = true;
+        for (usize index = 0; index < PAGES; ++index) {
+            PhysAddr pa{};
+            mm::MmuFlags flags{};
+            unmapped &= aspace.arch_aspace().query(BASE + index * PAGE_SIZE, &pa, &flags) ==
+                        Status::NotFound;
+        }
+        verdict(tally,
+                failed && unmapped && aspace.find_mapping(BASE, &leftover) == Status::NotFound,
+                "an allocation failure withdraws the mapping and every installed PTE");
+        auto retried = root->map_with_vmo(BASE, PAGES * PAGE_SIZE, 0, READ, mm::VmaFlags::PermMask,
+                                          vmo, mm::MapOptions::Commit, "partial map retry");
+        verdict(tally, retried.is_ok(), "the same window can be remapped after partial failure");
+    }
 #endif
 
     auto vmaseal_test_command(int, char **) -> int {
@@ -412,6 +450,7 @@ namespace {
         check_aspace_allocation_failures(tally);
         check_allocation_failures(tally, *aspace);
         check_protect_allocation_failure(tally, *aspace);
+        check_partial_map_failure(tally, *aspace);
 #endif
 
         // The sealed ones are in the address space when it goes.

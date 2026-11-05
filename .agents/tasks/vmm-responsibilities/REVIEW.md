@@ -81,3 +81,5 @@ The opt-in scope targets the current thread and one allocation site. Tests reach
 The next pass exercised page transfers, page supply, protection splits and raw heap failures in VMA setup. The original data or permissions survived each failed operation. Both configurations passed verification, and instrumented VMM coverage reached 4260/4768 lines.
 
 The frame failure point reached the allocator error returned to VMO callers. The instrumented suites passed the large-block, contiguous, eager VMO and pager VMO cases. Both configurations passed verification. The full run measured 4291/4763 VMM lines and its only failed command, preempt.test, passed in a standalone instrumented boot.
+
+The pager test reproduced a debug panic when an eager map failed with a staged batch. The coalescer now drops staged addresses on error, and the existing mapping teardown clears previously installed PTEs. The opt-in test verified that a failure after the first full batch released the complete window.
