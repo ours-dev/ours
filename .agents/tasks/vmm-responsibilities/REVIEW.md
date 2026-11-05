@@ -89,3 +89,5 @@ Partial unmap now prepares the protection boundaries before the architecture cal
 The final allocation cases passed for physical mapping, a demand fault and both slot types in a failed COW merge. The two builds booted both images, and 163 host tests and 46 instrumented commands passed. The VMM scope measured 4315/4770 lines.
 
 The normal API cases covered placement exhaustion, inherited permission ceilings and unsupported operations on a physical VMO. Both configurations passed the build and boot checks, and the focused suites verified rejected operations left their state intact.
+
+The page-queue startup test reproduced a duplicate-start assertion after thread allocation failed. Startup now keeps ownership local until the worker starts. Both images passed for both configurations, 163 host tests passed and all 46 instrumented commands passed. The VMM reached 4376/4773 lines, with 159 additional lines needed for the 95 percent target.

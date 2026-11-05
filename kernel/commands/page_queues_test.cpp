@@ -35,6 +35,7 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -235,6 +236,21 @@ namespace {
         verdict(tally, queues.rotations() != before, "the aging thread rotates within a period");
     }
 
+#if MM_TEST_ALLOC_FAILURE
+    auto check_aging_start_failure(Tally &tally) -> void {
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+        mm::PageQueues queues;
+        for (auto const site: {AllocationSite::Object, AllocationSite::Heap}) {
+            AllocationFailure failure(site);
+            auto const status = queues.start_runners(Seconds(1));
+            ASSERT(status != Status::Ok, "a test queue must not leave a live aging thread");
+            verdict(tally, status == Status::OutOfMem && failure.triggered(),
+                    "starting an aging thread can be retried after allocation failure");
+        }
+    }
+#endif
+
     auto check_aging(Tally &tally) -> void {
         // Every node rotated first, before the pages are supplied: that puts
         // each aging thread's next rotation a period away, so none of its own
@@ -341,6 +357,9 @@ namespace {
         check_pinned(tally);
         check_reclaimable(tally);
         check_aging_thread(tally);
+#if MM_TEST_ALLOC_FAILURE
+        check_aging_start_failure(tally);
+#endif
         check_aging(tally);
         check_harvest(tally);
         auto const after = counts();

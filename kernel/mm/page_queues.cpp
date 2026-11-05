@@ -157,12 +157,15 @@ auto PageQueues::start_runners(Duration const period) -> Status {
         m_last_age_time = time::SteadyClock::now();
     }
 
-    auto *const runner = new (ALLOC_KERNEL) LruRunner(this);
-    if (runner == nullptr) {
+    auto runner = ustl::Arc<LruRunner>::adopt(new (ALLOC_KERNEL) LruRunner(this));
+    if (!runner) {
         return Status::OutOfMem;
     }
-    m_lru_runner = ustl::Arc<LruRunner>::adopt(runner);
-    return m_lru_runner->start();
+    if (auto const status = runner->start(); Status::Ok != status) {
+        return status;
+    }
+    m_lru_runner = ustl::move(runner);
+    return Status::Ok;
 }
 
 auto PageQueues::rotate() -> void {

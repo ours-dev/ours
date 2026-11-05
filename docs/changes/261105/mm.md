@@ -354,3 +354,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Publish the page aging runner after startup succeeds (2026-11-05)
+
+**Files**
+
+- `kernel/mm/page_queues.cpp` owns the runner during startup.
+- `kernel/commands/page_queues_test.cpp` tests worker allocation failure followed by another start attempt.
+
+**Symptom**
+
+If allocating an aging thread failed, the next call to start the runner asserted that it had already started.
+
+**Cause**
+
+The queue recorded the runner before the runner had a thread. On error the caller got OutOfMem, but the queue still looked started.
+
+**Change**
+
+Hold the runner locally during startup and publish it after success. A failed start drops the unpublished runner. The test first fails thread storage, then retries and fails allocation of the runner itself, proving that the first call left the queue eligible to start.
+
+**Reference**
+
+None. The change follows the queue's existing single-start contract.
+
+**Verification**
+
+The opt-in debug image reproduced the duplicate-start assertion before the fix. Clang-format and clang-tidy checked both C++ files. Both images and all 163 host tests passed in each configuration. All 46 instrumented commands passed, including 14 page-queue checks. The VMM measured 4376/4773 lines (91.68%) and 1800/2244 branches (80.21%). The 95% line target requires 159 additional covered lines.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+Reviewing the aging worker's uncovered allocation errors showed that startup published state before its final fallible operation.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.
