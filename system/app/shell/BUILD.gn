@@ -72,12 +72,14 @@ user_executable("shell") {
 # manifest"): the root's built-in `boot` at /boot with rx*, where its
 # commands' programs are and which `ls` lists; fshost's tree at /vfs with
 # rx*, whose `boot` entry is that same directory mounted, which check_vfs()
-# reads through; and two built-in protocols in its /svc:
+# reads through; and the built-in protocols in its /svc:
 # ours.process.Launcher, which runs those commands (fsio::spawn()), and
 # ours.resource.Debug, the only way the root hands out the Debug resource
 # the shell reads serial input with (D19); and ours.resource.Sampling and
 # ours.kernel.RootJob, which the programs it starts reach through the
-# namespace it hands on: the profiler takes both.
+# namespace it hands on: the profiler takes both. The resident drivers'
+# controls (ours.nvme.Control, ours.virtio.Control) ride the same namespace:
+# the pci-rescan program it starts sends a Control.Rescan through it.
 component_manifest("shell.cm") {
   visibility = [ "//kernel/products/image/*" ]
   program = ":shell"
@@ -102,6 +104,8 @@ component_manifest("shell.cm") {
           "ours.resource.Debug",
           "ours.resource.Sampling",
           "ours.kernel.RootJob",
+          "ours.nvme.Control",
+          "ours.virtio.Control",
         ]
       },
     ]

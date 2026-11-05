@@ -109,15 +109,29 @@ inline auto size_bar(Config &config, usize const index, usize const bar)
     }
     config.write32(index, 4, command);
 
-    if (mask == 0) {
+    // The size is the lowest set bit of the size mask -- the mask's
+    // complement-plus-one, without the width traps the complement carries:
+    // computed at 32 bits it caps a 64-bit BAR's decode at 4 GiB, and at
+    // 64 bits it reads a hot-added device's all-ones high half (every bit
+    // above the low half's is a size bit, so the high half of the mask is
+    // all ones and its own complement contributes nothing) as two to the
+    // 64th. The lowest set bit says the size whatever the width, whatever
+    // the half.
+    if (!(is64 && bar < 5)) {
+        if (mask == 0) {
+            return ustl::err(ours::Status::InvArgs);
+        }
+        return ustl::ok(Bar{.space = Space::Memory,
+                            .size = static_cast<u64>(mask & (~mask + 1)),
+                            .index = bar,
+                            .is64 = is64});
+    }
+    auto const size_mask = static_cast<u64>(mask) | (static_cast<u64>(high_mask) << 32);
+    if (size_mask == 0) {
         return ustl::err(ours::Status::InvArgs);
     }
-    // A 64-bit BAR's size is the low mask plus the high half's complement.
-    auto size = static_cast<u64>(~mask + 1);
-    if (is64 && bar < 5) {
-        size += static_cast<u64>(high_mask) * 0x1'0000'0000ull;
-    }
-    return ustl::ok(Bar{.space = Space::Memory, .size = size, .index = bar, .is64 = is64});
+    return ustl::ok(Bar{
+        .space = Space::Memory, .size = size_mask & (~size_mask + 1), .index = bar, .is64 = is64});
 }
 
 /// Assigns the BAR |bar| of function |index| to |base|: the low half (and

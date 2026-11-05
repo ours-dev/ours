@@ -84,6 +84,7 @@
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
+#include <pci/bridge.hpp>
 #include <prot/acpi_client.hpp>
 #include <prot/block.hpp>
 #include <prot/dev.hpp>
@@ -346,9 +347,14 @@ constinit ustl::LazyInit<virtio::Device> DEVICE_STORAGE;
 /// Control.Rescan run.
 class Driver final {
   public:
-    Driver(pci::Config config, Uandle const vma, Uandle const ioport, Uandle const iommu,
+    Driver(std::span<u8> window, Uandle const vma, Uandle const ioport, Uandle const iommu,
            Uandle const irq)
-        : m_config(config), m_vma(vma), m_ioport(ioport), m_iommu(iommu), m_irq(irq) {}
+        : m_window(window)
+        , m_vma(vma)
+        , m_ioport(ioport)
+        , m_iommu(iommu)
+        , m_irq(irq)
+        , m_window_buses(window.size() / pci::BUS_BYTES) {}
 
     auto set_server(VirtioBlockServer *server) -> void {
         m_server = server;
@@ -362,10 +368,51 @@ class Driver final {
     /// unchanged machine -- the answer, not a failure; otherwise why not,
     /// the claim's own steps' statuses.
     auto rescan() -> Status {
-        auto const found =
-            virtio::probe(m_config, m_arena, std::span<usize const>{m_owned}.first(m_owned_count));
+        // The walk is over every bus the ECAM window covers, one Config
+        // per bus slice: a hot-added function sits behind the root port
+        // that accepted it, on the bus the port bridges, not on bus 0.
+        // |claimed| is the Config the claim came from, whose reads name
+        // the interrupt pin.
+        auto found = ustl::Result<virtio::Found, Status>{ustl::err(Status::NotFound)};
+        usize claimed_bus = 0;
+        pci::Config claimed = pci::Config{m_window.subspan(0, pci::BUS_BYTES)};
+        for (auto bus = usize{0};
+             bus < m_window_buses && found.is_err() && found.unwrap_err() == Status::NotFound;
+             ++bus) {
+            auto bus_owned = std::array<usize, MAX_OWNED>{};
+            auto bus_owned_count = usize{0};
+            for (auto i = usize{0}; i < m_owned_count; ++i) {
+                if (m_owned[i].bus == bus) {
+                    bus_owned[bus_owned_count++] = m_owned[i].index;
+                }
+            }
+            auto const bus_bytes = m_window.subspan(bus * pci::BUS_BYTES, pci::BUS_BYTES);
+            auto bus_config = pci::Config{bus_bytes};
+            found = virtio::probe(bus_config, m_arena,
+                                  std::span<usize const>{bus_owned}.first(bus_owned_count));
+            claimed_bus = bus;
+            claimed = bus_config;
+        }
         if (found.is_err()) {
             return found.unwrap_err();
+        }
+
+        // A claim behind a root port opens the port's windows first: the
+        // bridge forwards I/O and memory cycles for its secondary bus only
+        // over the ranges its windows name, and firmware programs those at
+        // boot only, as it programs the BARs. The I/O window covers the
+        // whole port arena, since every claim takes its base from it.
+        usize bridge_slot = 0;
+        if (claimed_bus != 0) {
+            auto bus0 = pci::Config{m_window.subspan(0, pci::BUS_BYTES)};
+            auto const bridge = pci::bridge_for_bus(bus0, claimed_bus);
+            if (bridge.is_err()) {
+                auto _ = ort::debug_line("virtio-blk: no bridge to the claimed bus");
+                return Status::NotFound;
+            }
+            bridge_slot = static_cast<u32>(bridge.unwrap() / pci::FUNCTIONS_PER_DEVICE);
+            pci::program_bridge_io(bus0, bridge.unwrap(), IO_ARENA_BASE, IO_ARENA_LIMIT);
+            pci::enable_bridge(bus0, bridge.unwrap());
         }
 
         // The function's I/O ports, opened to this process's threads; the
@@ -380,16 +427,28 @@ class Driver final {
             return status;
         }
 
-        // The interrupt line, on the GSI the chipset's wiring names for the
-        // slot the probe found: a function at root-bus slot S, pin A, is
-        // wired to GSI 20 + ((S + 0) & 3) on this machine -- the boot disk
-        // sat at slot 3, whose GSI 23 the first driver carried as a
-        // constant. A PciIrq method on the route service, planned with the
-        // driver manager, will name the line from the firmware's tables
-        // instead of this chipset rule. PCI INTx is level and active low,
-        // which ModeLevelLow says.
-        auto const slot = static_cast<u32>(found->index / pci::FUNCTIONS_PER_DEVICE);
-        auto const gsi = static_cast<u32>(20 + (slot & 3));
+        // The interrupt line, on the GSI the chipset's wiring names: a
+        // function on bus 0 at slot S, pin P, is wired to GSI 20 +
+        // ((S + P) & 3) -- the boot disk sat at slot 3, pin A, whose GSI 23
+        // the first driver carried as a constant. Behind a root port (a
+        // hot-added function's bus), INTx swizzles through the port: pin P
+        // on slot S reaches the port as pin ((S + P) & 3), and the port
+        // hands the machine the GSI of its own slot with that pin, on the
+        // same wiring. The port's slot and the claimed function's pin are
+        // config-space facts, read here: the port is bus 0's bridge whose
+        // secondary bus is the claimed function's, and the pin is the
+        // function's interrupt pin register at 0x3D (0x3C is the line
+        // register, the platform's own answer). A PciIrq method on the
+        // route service, planned with the driver manager, will name the
+        // line from the firmware's tables instead of this chipset rule.
+        // PCI INTx is level and active low, which ModeLevelLow says.
+        u32 gsi = 0;
+        {
+            auto const slot = static_cast<u32>(found->index / pci::FUNCTIONS_PER_DEVICE);
+            auto const pin_byte = claimed.read8(found->index, 0x3D);
+            auto const pin0 = pin_byte == 0 ? 0u : static_cast<u32>(pin_byte - 1);
+            gsi = static_cast<u32>(20 + ((bridge_slot + slot + pin0) & 3));
+        }
         auto interrupt = ddk::irq::take(m_irq, ours::ROOT_INTERRUPT_DOMAIN, gsi,
                                         ours::InterruptOptions::ModeLevelLow);
         if (interrupt.is_err()) {
@@ -454,7 +513,7 @@ class Driver final {
                 ort::debug_line({"virtio-blk: its publish answered ", ours::to_string(published)});
         }
 
-        m_owned[m_owned_count] = found->index;
+        m_owned[m_owned_count] = {.bus = claimed_bus, .index = found->index};
         m_owned_count += 1;
         return Status::Ok;
     }
@@ -507,7 +566,8 @@ class Driver final {
         return published;
     }
 
-    pci::Config m_config;
+    /// The ECAM window, sliced per bus: one Config per pci::BUS_BYTES.
+    std::span<u8> m_window;
     virtio::IoArena m_arena{IO_ARENA_BASE, IO_ARENA_LIMIT};
     Uandle m_vma;
     Uandle m_ioport;
@@ -516,8 +576,14 @@ class Driver final {
     VirtioBlockServer *m_server = nullptr;
     ioservice::Outgoing *m_outgoing = nullptr;
     /// The functions this driver is running, which a rescan skips.
-    std::array<usize, MAX_OWNED> m_owned{};
+    struct Owned {
+        usize bus = 0;
+        usize index = 0;
+    };
+    std::array<Owned, MAX_OWNED> m_owned{};
     usize m_owned_count = 0;
+    /// How many buses the window covers.
+    usize m_window_buses = 0;
     /// Whether the block protocol is in the outgoing already: the first
     /// claim adds it, and the rescan of a second claim must not.
     bool m_block_served = false;
@@ -636,8 +702,6 @@ auto main(int, char **) -> int {
     auto &mapped_window = *WINDOW_STORAGE.init(std::move(ecam_window).unwrap());
     auto window_bytes = std::span<u8>{
         reinterpret_cast<u8 *>(std::to_underlying(mapped_window.addr())), usize{ecam->size}};
-    auto config = pci::Config{window_bytes};
-
     // The machine: the port, the Loop, the outgoing, the block server, the
     // control. All of it stands up before the first rescan, because the
     // driver is resident -- the routes exist whether or not a device does.
@@ -653,7 +717,7 @@ auto main(int, char **) -> int {
     auto &storage = *SERVER_STORAGE.init();
     VirtioBlockServer server(storage, loop);
 
-    Driver driver(config, vma.unwrap(), ioport_resource.unwrap(), iommu_resource.unwrap(),
+    Driver driver(window_bytes, vma.unwrap(), ioport_resource.unwrap(), iommu_resource.unwrap(),
                   irq_resource.unwrap());
     driver.set_server(&server);
     driver.set_outgoing(&outgoing);

@@ -40,6 +40,9 @@ Environment:
             that goes away with the machine and the file is never changed, so
             the dbg and rel images boot_check starts side by side can use one
             file (two machines cannot both hold a raw file for writing)
+    QMP     a path: serve the QEMU Machine Protocol on a Unix socket there,
+            so a host script can add and query devices while the machine
+            runs (scripts/qemu_device.py). Without it QEMU serves no QMP.
 
 Anything after the options is forwarded to QEMU untouched, which is how
 qemu_debug.py adds -S -gdb.
@@ -288,6 +291,16 @@ def main(argv: list[str]) -> int:
     qemu = ROOT / "prebuilt/qemu/bin/qemu-system-x86_64"
     disk = os.environ.get("DISK")
     nvme_disk = os.environ.get("NVME_DISK")
+    # The QMP socket, served when QMP= names a path: the hot-plug demo's
+    # host side adds devices through it while the machine runs. A stale
+    # socket from an earlier run is removed first; QEMU refuses to serve on
+    # one that exists.
+    qmp = os.environ.get("QMP")
+    qmp_args = []
+    if qmp:
+        qmp_path = Path(qmp)
+        qmp_path.unlink(missing_ok=True)
+        qmp_args = ["-qmp", f"unix:{qmp_path},server,nowait"]
     cmd = [
         str(qemu),
         "-M", "q35", "-cpu", os.environ.get("CPU", "Nehalem"),
@@ -300,6 +313,7 @@ def main(argv: list[str]) -> int:
         "-drive", f"format=raw,file={esp_img}",
         *(disk_args(disk) if disk else []),
         *(nvme_args(nvme_disk) if nvme_disk else []),
+        *qmp_args,
         "-serial", "mon:stdio",
         *argv,
     ]

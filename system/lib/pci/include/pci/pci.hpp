@@ -27,11 +27,14 @@ namespace pci {
 /// The ECAM stride: one 4 KiB function page per bus-device-function, the
 /// geometry the route service's window is laid out with. A function's page
 /// index on a bus is device * FUNCTIONS_PER_DEVICE + function, and a bus
-/// walks all of them -- 32 devices times 8 functions.
+/// walks all of them -- 32 devices times 8 functions. A bus's slice of the
+/// window is BUS_BYTES wide, so a driver that walks more than bus 0 makes
+/// one Config per bus over the window's subspans.
 inline constexpr auto FUNCTION_STRIDE = usize{4096};
 inline constexpr auto DEVICES_PER_BUS = usize{32};
 inline constexpr auto FUNCTIONS_PER_DEVICE = usize{8};
 inline constexpr auto FUNCTIONS_PER_BUS = DEVICES_PER_BUS * FUNCTIONS_PER_DEVICE;
+inline constexpr auto BUS_BYTES = FUNCTIONS_PER_BUS * FUNCTION_STRIDE;
 
 /// A configuration space: the ECAM window's bytes for one bus, and the
 /// reads and writes a driver needs on its functions. All access is through
@@ -50,6 +53,14 @@ class Config final {
     /// return what was stored.
     Config(std::span<u8> bytes, std::span<u32 const> const probe_masks = {})
         : m_bytes(bytes), m_probe_masks(probe_masks) {}
+
+    /// The 8-bit register at |offset| of function |index| (0..31): the
+    /// byte registers the walk's callers read behind the ids -- the bridge
+    /// header's secondary bus, the interrupt pin.
+    [[nodiscard]]
+    auto read8(usize const index, usize const offset) const -> u8 {
+        return m_bytes[index * FUNCTION_STRIDE + offset];
+    }
 
     /// The 16-bit register at |offset| of function |index| (0..31).
     [[nodiscard]]

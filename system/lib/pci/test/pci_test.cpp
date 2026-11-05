@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 #include <pci/bar.hpp>
+#include <pci/bridge.hpp>
 #include <pci/pci.hpp>
 
 namespace {
@@ -73,6 +74,14 @@ class FakeEcam {
         return static_cast<u32>(value);
     }
 
+    /// Stores a raw word into function |index|'s register |offset|, for
+    /// the registers a test seeds that place() does not carry.
+    auto word_at(usize const index, usize const offset, u32 const value) -> void {
+        for (auto i = usize{0}; i < 4; ++i) {
+            bytes_[index * PAGE + offset + i] = static_cast<u8>((value >> (8 * i)) & 0xFF);
+        }
+    }
+
   private:
     auto word(usize const index, usize const offset, u32 const value) -> void {
         for (auto i = usize{0}; i < 4; ++i) {
@@ -87,6 +96,17 @@ class FakeEcam {
 
 /// The id of the class directory's child named |name|, over the public
 /// walk: the test's stand-in for the tree's private lookup.
+TEST(IoservicePciConfig, ReadsBytesAndSpansBuses) {
+    auto ecam = FakeEcam{};
+    ecam.place(9, 0x1B36, 0x000C, 0x060400, {0, 0, 0, 0, 0, 0});
+    auto config = ecam.config();
+    // A byte register: the interrupt pin the drivers' swizzle reads.
+    EXPECT_EQ(config.read8(9, 0x3C), 0xFFu); // vacant page bytes read all ones
+    // The bus slice a multi-bus driver makes its per-bus Configs over: one
+    // Config spans BUS_BYTES, and the next bus's window starts past it.
+    EXPECT_EQ(pci::BUS_BYTES, pci::FUNCTIONS_PER_BUS * pci::FUNCTION_STRIDE);
+}
+
 TEST(IoservicePciWalk, VisitsPresentFunctionsInOrder) {
     auto ecam = FakeEcam{};
     ecam.place(3, 0x1AF4, 0x1001, 0x010000, {0x1, 0, 0, 0, 0, 0});
@@ -155,23 +175,41 @@ TEST(IoservicePciBar, IoBarSize) {
 }
 
 /// A 64-bit memory BAR: the probe reads the high half too, and the size
-/// carries its complement -- a 4 GiB decode above the low half's own.
+/// comes from the two halves' mask as one 64-bit answer. The high mask of
+/// a real 16 KiB decode is all ones -- every bit above the low half's is a
+/// size bit -- which the per-half arithmetic reads as four gibibytes of
+/// high contribution; the whole-mask complement reads it as the 16 KiB it
+/// is.
 TEST(IoservicePciBar, HighHalfJoinsTheSize) {
     auto ecam = FakeEcam{};
     // The high half lies at 0 (a base below 4 GiB so far) -- distinct from
-    // its probe mask 0x1, so the size must come from the probe, not the
+    // its probe mask, so the size must come from the probe, not the
     // restored word.
     ecam.place(6, 0x1234, 0x5678, 0x010000, {0x4000'0004u, 0x0, 0, 0, 0, 0});
-    ecam.set_mask(6, 0, 0xFFFF'FFF0u);
-    ecam.set_mask(6, 1, 0x1u);
+    ecam.set_mask(6, 0, 0xFFFF'C000u);
+    ecam.set_mask(6, 1, 0xFFFF'FFFFu);
     auto config = ecam.config();
     (void)config;
 
     auto const sized = pci::size_bar(config, 6, 0);
     ASSERT_TRUE(sized.is_ok());
     EXPECT_EQ(sized->is64, true);
-    // low complement 0x10 + high complement 1 * 4 GiB.
-    EXPECT_EQ(sized->size, usize{0x10} + (usize{1} << 32));
+    EXPECT_EQ(sized->size, usize{0x4000});
+}
+
+/// A decode that crosses 4 GiB: the low mask's own complement overflows
+/// the low half, and the high half's mask carries the rest -- 8 GiB.
+TEST(IoservicePciBar, SizeCrossesTheFourGibByteLine) {
+    auto ecam = FakeEcam{};
+    ecam.place(6, 0x1234, 0x5678, 0x010000, {0x4u, 0x0, 0, 0, 0, 0});
+    ecam.set_mask(6, 0, 0x0u);
+    ecam.set_mask(6, 1, 0xFFFF'FFFEu);
+    auto config = ecam.config();
+
+    auto const sized = pci::size_bar(config, 6, 0);
+    ASSERT_TRUE(sized.is_ok());
+    EXPECT_EQ(sized->is64, true);
+    EXPECT_EQ(sized->size, usize{2} << 32);
 }
 
 /// Assignment: assign_bar writes the base keeping the register's fixed low
@@ -218,6 +256,39 @@ TEST(IoservicePciBar, RefusesBoundsAndBlankProbeAnswers) {
     ecam.place(2, 0x2222, 0x2, 0, {0x0, 0, 0, 0, 0, 0});
     ecam.set_mask(2, 0, 0x4);
     EXPECT_TRUE(pci::size_bar(config, 2, 0).is_err());
+}
+
+/// The bridge windows: what a hot-added function needs besides its own
+/// BARs. The bridge to a bus is found by its secondary-bus register, the
+/// memory and I/O windows are written in their fields' granularity, the
+/// subordinate bus is named, and the bridge's command is armed.
+TEST(IoservicePciBridge, ProgramsTheWindows) {
+    auto ecam = FakeEcam{};
+    // The root port: a bridge on bus 0 at device 4, secondary bus 1.
+    ecam.place(4 * 8, 0x1B36, 0x000C, 0x060400, {0, 0, 0, 0, 0, 0});
+    ecam.word_at(4 * 8, 0x18, 0x0000'0100u); // primary 0, secondary 1
+    auto bus0 = ecam.config();
+
+    auto const bridge = pci::bridge_for_bus(bus0, 1);
+    ASSERT_TRUE(bridge.is_ok());
+    EXPECT_EQ(bridge.unwrap(), 4u * 8u);
+
+    pci::program_bridge_memory(bus0, bridge.unwrap(), 0xAC00'0000u, 0xB000'0000u, 1);
+    // The window fields: the base's and limit's address bits 31:20, each
+    // in its register's own bit position -- 0xAC00 and 0xAFF0.
+    EXPECT_EQ(ecam.word(4 * 8, 0x20), 0xAFF0'AC00u);
+    // The bus numbers dword: the subordinate named, the rest kept.
+    EXPECT_EQ(ecam.word(4 * 8, 0x18), 0x0001'0100u);
+
+    pci::program_bridge_io(bus0, bridge.unwrap(), 0xE000, 0xF000);
+    // The I/O fields: address bits 15:12, the low nibbles the 32-bit flag.
+    EXPECT_EQ(ecam.word(4 * 8, 0x1C), 0x0000'E1E1u);
+
+    pci::enable_bridge(bus0, bridge.unwrap());
+    EXPECT_EQ((ecam.word(4 * 8, 4) & 0x7u), 0x7u);
+
+    // No bridge to an unprovisioned bus.
+    EXPECT_TRUE(pci::bridge_for_bus(bus0, 2).is_err());
 }
 
 } // namespace

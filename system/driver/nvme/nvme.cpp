@@ -77,6 +77,7 @@
 #include <ort/main.hpp>
 #include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
+#include <pci/bridge.hpp>
 #include <prot/acpi_client.hpp>
 #include <prot/block.hpp>
 #include <prot/dev.hpp>
@@ -287,9 +288,16 @@ constinit ustl::LazyInit<nvme::Device> DEVICE_STORAGE;
 /// Control.Rescan run.
 class Driver final {
   public:
-    Driver(pci::Config config, nvme::Arena arena, Uandle const vma, Uandle const mmio,
-           Uandle const iommu)
-        : m_config(config), m_arena(arena), m_vma(vma), m_mmio(mmio), m_iommu(iommu) {}
+    Driver(std::span<u8> window, nvme::Arena arena, ours::PhysAddr arena_base,
+           ours::PhysAddr arena_top, Uandle const vma, Uandle const mmio, Uandle const iommu)
+        : m_window(window)
+        , m_arena(arena)
+        , m_arena_base(arena_base)
+        , m_arena_top(arena_top)
+        , m_vma(vma)
+        , m_mmio(mmio)
+        , m_iommu(iommu)
+        , m_window_buses(window.size() / pci::BUS_BYTES) {}
 
     auto set_server(NvmeBlockServer *server) -> void {
         m_server = server;
@@ -301,12 +309,50 @@ class Driver final {
 
     /// The rescan: walk, claim, bring up, publish. NotFound for an
     /// unchanged machine -- the answer, not a failure; otherwise why not,
-    /// the claim's own steps' statuses.
+    /// the claim's own steps' statuses. The walk is over every bus the
+    /// ECAM window covers, one Config per bus slice: a hot-added function
+    /// sits behind the root port that accepted it, on the bus the port
+    /// bridges, not on bus 0.
     auto rescan() -> Status {
-        auto const found =
-            nvme::probe(m_config, m_arena, std::span<usize const>{m_owned}.first(m_owned_count));
+        auto found = ustl::Result<nvme::Found, Status>{ustl::err(Status::NotFound)};
+        usize claimed_bus = 0;
+        for (auto bus = usize{0};
+             bus < m_window_buses && found.is_err() && found.unwrap_err() == Status::NotFound;
+             ++bus) {
+            // The functions this driver runs on this bus, which the walk
+            // skips.
+            auto bus_owned = std::array<usize, 4>{};
+            auto bus_owned_count = usize{0};
+            for (auto i = usize{0}; i < m_owned_count; ++i) {
+                if (m_owned[i].bus == bus) {
+                    bus_owned[bus_owned_count++] = m_owned[i].index;
+                }
+            }
+            auto const bus_bytes = m_window.subspan(bus * pci::BUS_BYTES, pci::BUS_BYTES);
+            auto bus_config = pci::Config{bus_bytes};
+            found = nvme::probe(bus_config, m_arena,
+                                std::span<usize const>{bus_owned}.first(bus_owned_count));
+            claimed_bus = bus;
+        }
         if (found.is_err()) {
             return found.unwrap_err();
+        }
+
+        // A claim behind a root port opens the port's windows first: the
+        // bridge forwards memory cycles for its secondary bus only over
+        // the range its memory window names, and firmware programs that at
+        // boot only, as it programs the BARs. The window covers the whole
+        // arena, since every claim takes its base from it.
+        if (claimed_bus != 0) {
+            auto bus0 = pci::Config{m_window.subspan(0, pci::BUS_BYTES)};
+            auto const bridge = pci::bridge_for_bus(bus0, claimed_bus);
+            if (bridge.is_err()) {
+                auto _ = ort::debug_line("nvme: no bridge to the claimed bus");
+                return Status::NotFound;
+            }
+            pci::program_bridge_memory(bus0, bridge.unwrap(), std::to_underlying(m_arena_base),
+                                       std::to_underlying(m_arena_top), claimed_bus);
+            pci::enable_bridge(bus0, bridge.unwrap());
         }
 
         // The register file, mapped uncached; the DMA region; the device
@@ -390,7 +436,7 @@ class Driver final {
             auto _ = ort::debug_line({"nvme: its publish answered ", ours::to_string(published)});
         }
 
-        m_owned[m_owned_count] = found->index;
+        m_owned[m_owned_count] = {.bus = claimed_bus, .index = found->index};
         m_owned_count += 1;
         return Status::Ok;
     }
@@ -443,16 +489,26 @@ class Driver final {
         return published;
     }
 
-    pci::Config m_config;
+    /// The ECAM window, sliced per bus: one Config per pci::BUS_BYTES.
+    std::span<u8> m_window;
     nvme::Arena m_arena;
+    /// The arena's two ends, what a claim's bridge window covers.
+    ours::PhysAddr m_arena_base;
+    ours::PhysAddr m_arena_top;
     Uandle m_vma;
     Uandle m_mmio;
     Uandle m_iommu;
     NvmeBlockServer *m_server = nullptr;
     ioservice::Outgoing *m_outgoing = nullptr;
     /// The functions this driver is running, which a rescan skips.
-    std::array<usize, 4> m_owned{};
+    struct Owned {
+        usize bus = 0;
+        usize index = 0;
+    };
+    std::array<Owned, 4> m_owned{};
     usize m_owned_count = 0;
+    /// How many buses the window covers.
+    usize m_window_buses = 0;
     /// Whether the block protocol is in the outgoing already: the first
     /// claim adds it, and the rescan of a second claim must not.
     bool m_block_served = false;
@@ -550,9 +606,8 @@ auto main(int, char **) -> int {
     auto &mapped_window = *WINDOW_STORAGE.init(std::move(ecam_window).unwrap());
     auto window_bytes = std::span<u8>{
         reinterpret_cast<u8 *>(std::to_underlying(mapped_window.addr())), usize{ecam->size}};
-    auto config = pci::Config{window_bytes};
-    auto arena = nvme::Arena{ours::PhysAddr{ecam->address + ecam->size},
-                             ours::PhysAddr{ecam->address + ecam->size + ARENA_BYTES}};
+    auto const arena_base = ours::PhysAddr{ecam->address - ARENA_BYTES};
+    auto arena = nvme::Arena{arena_base, ours::PhysAddr{ecam->address}};
 
     // The machine: the port, the Loop, the outgoing, the block server, the
     // control. All of it stands up before the first rescan, because the
@@ -569,7 +624,8 @@ auto main(int, char **) -> int {
     auto &storage = *SERVER_STORAGE.init();
     NvmeBlockServer server(storage, loop);
 
-    Driver driver(config, arena, vma.unwrap(), mmio_resource.unwrap(), iommu_resource.unwrap());
+    Driver driver(window_bytes, arena, arena_base, ours::PhysAddr{ecam->address}, vma.unwrap(),
+                  mmio_resource.unwrap(), iommu_resource.unwrap());
     driver.set_server(&server);
     driver.set_outgoing(&outgoing);
 
