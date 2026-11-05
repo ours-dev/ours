@@ -28,6 +28,7 @@
 #include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vm_page_splice_list.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/platform/mmio.hpp>
@@ -81,6 +82,33 @@ namespace {
         Entry entry;
         entry.present = aspace.arch_aspace().query(va, &entry.pa, &entry.flags) == Status::Ok;
         return entry;
+    }
+
+    auto check_ownership(Tally &tally, mm::VmObject &vmo) -> void {
+        mm::VmPageSpliceList pages(1);
+        verdict(tally,
+                vmo.take_pages(0, PAGE_SIZE, &pages) == Status::Unsupported &&
+                    vmo.supply_pages(0, PAGE_SIZE, &pages) == Status::Unsupported &&
+                    pages.is_fresh(),
+                "a physical window cannot transfer ownership of frames");
+        verdict(tally,
+                vmo.pin_range(0, PAGE_SIZE) == Status::NotSupported &&
+                    vmo.unpin_range(0, PAGE_SIZE) == Status::NotSupported &&
+                    vmo.source_owner_id().is_none(),
+                "a physical window has neither counted VMO pins nor a pager");
+
+        u64 word = 0x1234'5678;
+        verdict(tally,
+                vmo.read(&word, 0, sizeof(word)) == Status::Unsupported &&
+                    vmo.write(&word, 0, sizeof(word)) == Status::Unsupported &&
+                    vmo.store_u64(0, word) == Status::Unsupported && word == 0x1234'5678,
+                "generic VMO I/O does not touch physical memory");
+        verdict(tally,
+                vmo.read_user(user_copy::UserOutPtr<u8>{}, 0, sizeof(word)) ==
+                        Status::Unsupported &&
+                    vmo.write_user(user_copy::UserInPtr<u8 const>{}, 0, sizeof(word)) ==
+                        Status::Unsupported,
+                "generic user-buffer copies also refuse physical memory");
     }
 
 #if MM_TEST_ALLOC_FAILURE
@@ -163,6 +191,7 @@ namespace {
             check_allocation_failures(tally, *aspace, phys);
 #endif
             auto vmo = window.dispatcher()->vmo();
+            check_ownership(tally, *vmo);
             PhysAddr first{};
             verdict(tally,
                     vmo->lookup_contiguous(1, PAGE_SIZE, &first) == Status::Ok &&

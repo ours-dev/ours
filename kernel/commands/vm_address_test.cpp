@@ -81,6 +81,67 @@ namespace {
                     "rejected requests preserve the original mapping at zero");
     }
 
+    auto check_range_rejections(Tally &tally, mm::VmAspace &aspace,
+                                ustl::Arc<mm::VmObject> const &vmo) -> void {
+        constexpr auto READ = mm::MmuFlags::Readable;
+        constexpr auto WRITE = mm::MmuFlags::Writable;
+        constexpr auto LAZY = mm::MapOptions::Lazy;
+        constexpr auto INVALID_MODE = mm::MapOptions::Resident | mm::MapOptions::Commit;
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        auto root = aspace.root_vma();
+        auto const map = [&](usize const size) {
+            return root->map_with_vmo(VirtAddr::Anywhere, size, 0, READ, PERMS, vmo, LAZY,
+                                      "invalid window");
+        };
+        auto const empty = map(0);
+        auto const full = map(2 * PAGE_SIZE);
+        tally.check(empty.is_err() && empty.unwrap_err() == Status::InvArgs && full.is_err() &&
+                        full.unwrap_err() == Status::NotFound,
+                    "placement rejects an empty request and one that cannot fit");
+
+        auto const bad_anon = root->map_anon(VirtAddr::Anywhere, PAGE_SIZE, READ, INVALID_MODE,
+                                             "invalid anonymous mode");
+        auto const empty_anon =
+            root->map_anon(VirtAddr::Anywhere, 0, READ, LAZY, "empty anonymous");
+        auto const bad_phys = root->map_phys(PhysAddr{PAGE_SIZE}, VirtAddr::Anywhere, PAGE_SIZE,
+                                             READ, INVALID_MODE, "invalid physical mode");
+        auto const empty_phys = root->map_phys(PhysAddr{PAGE_SIZE}, VirtAddr::Anywhere, 0, READ,
+                                               LAZY, "empty physical");
+        tally.check(bad_anon.is_err() && bad_anon.unwrap_err() == Status::InvArgs &&
+                        empty_anon.is_err() && empty_anon.unwrap_err() == Status::InvArgs &&
+                        bad_phys.is_err() && bad_phys.unwrap_err() == Status::InvArgs &&
+                        empty_phys.is_err() && empty_phys.unwrap_err() == Status::InvArgs,
+                    "both mapping helpers reject empty ranges and conflicting modes");
+
+        auto const end = root->base() + root->size();
+        tally.check(root->reserve(end, PAGE_SIZE, READ, "outside") == Status::InvArgs &&
+                        root->reserve(root->base(), 0, READ, "empty") == Status::InvArgs,
+                    "reservation requires a nonempty range inside the area");
+
+        ustl::Arc<mm::VmArea> read_only;
+        auto const at = end - PAGE_SIZE;
+        auto const created =
+            root->create_subvma(at, PAGE_SIZE, mm::VmaFlags::Read, "read only", &read_only);
+        tally.check(created == Status::Ok && read_only && read_only->base() == at,
+                    "rejected operations leave the final page available");
+        if (!read_only) {
+            return;
+        }
+        ustl::Arc<mm::VmArea> wider;
+        auto const bad_mapping =
+            read_only->map_with_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, WRITE, PERMS, vmo, LAZY,
+                                    "invalid initial permissions");
+        tally.check(bad_mapping.is_err() && bad_mapping.unwrap_err() == Status::InvArgs &&
+                        read_only->create_subvma(VirtAddr::Anywhere, PAGE_SIZE, mm::VmaFlags::Write,
+                                                 "invalid child permissions",
+                                                 &wider) == Status::InvArgs,
+                    "mappings and child areas cannot exceed the area's permission ceiling");
+        tally.check(
+            read_only->reserve(at, PAGE_SIZE, WRITE, "denied permission") == Status::InvArgs &&
+                read_only->reserve(at, PAGE_SIZE, READ, "denied placement") == Status::AccessDenied,
+            "reservation observes both the permission and placement ceiling");
+    }
+
     auto check_reserved_layouts(Tally &tally) -> void {
         ustl::Arc<mm::VmAspace> invalid;
         auto const create = [&invalid](VirtAddr const base, usize const size) {
@@ -115,6 +176,7 @@ namespace {
         if (mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &vmo) ==
             Status::Ok) {
             check_placement(tally, *aspace, vmo);
+            check_range_rejections(tally, *aspace, vmo);
         } else {
             tally.check(false, "the test VMO is created");
         }

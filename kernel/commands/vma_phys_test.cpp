@@ -89,6 +89,10 @@ namespace {
         auto const base = mapping.unwrap()->base();
         verdict(tally, !entry_at(aspace, base).present && !entry_at(aspace, base + P).present,
                 "a physical object mapped without Populate has nothing in the page tables");
+        verdict(tally,
+                aspace.soft_fault(base, mm::VmfCause::Absent) == Status::NotSupported &&
+                    !entry_at(aspace, base).present,
+                "a physical mapping cannot install a frame on demand");
 
         auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
         verdict(tally, root->protect(base + P, P, ro) == Status::Ok,
@@ -106,6 +110,10 @@ namespace {
         verdict(tally,
                 second.present && second.pa == phys + P && !(second.flags & mm::MmuFlags::Writable),
                 "the second region's page is on the second frame, read-only");
+        verdict(tally,
+                root->protect(base + P, P, mm::MmuFlags{}) == Status::InvArgs &&
+                    entry_at(aspace, base + P).flags == second.flags,
+                "protect rejects empty permissions and leaves the physical PTE unchanged");
 
         auto _ = root->unmap(base, 2 * P);
         mm::free_frames(frames, 1);

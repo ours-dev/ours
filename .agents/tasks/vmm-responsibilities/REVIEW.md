@@ -87,3 +87,5 @@ The pager test reproduced a debug panic when an eager map failed with a staged b
 Partial unmap now prepares the protection boundaries before the architecture call. The old build removed the PTE at two injected OutOfMem returns. The fixed seal suite passed all 72 checks, both images and the host tests passed in both configurations, and all 46 instrumented commands passed. The VMM result is 4301/4770 lines.
 
 The final allocation cases passed for physical mapping, a demand fault and both slot types in a failed COW merge. The two builds booted both images, and 163 host tests and 46 instrumented commands passed. The VMM scope measured 4315/4770 lines.
+
+The normal API cases covered placement exhaustion, inherited permission ceilings and unsupported operations on a physical VMO. Both configurations passed the build and boot checks, and the focused suites verified rejected operations left their state intact.

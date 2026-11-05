@@ -310,3 +310,47 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Check VMM placement and physical ownership boundaries (2026-11-05)
+
+**Files**
+
+- `kernel/commands/vm_address_test.cpp` checks placement exhaustion, invalid map modes and permission ceilings.
+- `kernel/commands/vma_phys_test.cpp` exercises demand fault and protection rejection for a physical mapping.
+- `kernel/commands/vma_physical_test.cpp` checks operations that would require ownership of a physical window.
+
+**Symptom**
+
+The ordinary mapping tests focused on successful placement and physical address translation. They rarely exercised invalid or unsupported requests at those boundaries.
+
+**Cause**
+
+Placement, permissions and backing ownership are independent checks. A physical window has no paged backing to fault in, copy through generic VMO I/O, pin by count or transfer into a pager.
+
+**Change**
+
+The cases verify that rejected requests leave the virtual range or PTE intact, and that unsupported physical VMO operations do not consume the splice list or modify the caller's data.
+
+**Reference**
+
+None. The tests exercise the local contracts.
+
+**Verification**
+
+Clang-format and clang-tidy checked the three changed C++ files. Both development images and all 163 host tests passed in each configuration. The three boundary suites passed in the default kernel. The corrected placement and protection tests also passed in the opt-in kernel, and the physical ownership cases passed in the instrumented run.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+Coverage highlighted missing rejection paths in placement and the inherited physical VMO interface.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.
