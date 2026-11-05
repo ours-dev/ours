@@ -41,7 +41,7 @@ namespace {
             auto const policy = [] {
                 auto *const thread = task::Thread::Current::get();
                 Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
-                return thread->alloc_state().get_policy();
+                return thread->alloc_state().policy();
             }();
             if (policy) {
                 switch (policy->kind()) {

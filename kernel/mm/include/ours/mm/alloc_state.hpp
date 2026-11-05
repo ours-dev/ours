@@ -34,7 +34,7 @@ class AllocState {
         return !m_disable_count;
     }
 
-    auto get_policy() -> ustl::Arc<AllocPolicy> {
+    auto policy() -> ustl::Arc<AllocPolicy> {
         return m_policy;
     }
 

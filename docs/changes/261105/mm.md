@@ -944,3 +944,38 @@ None; this is a mechanical naming change.
 - Why does Watermark match the existing query vocabulary?
 - Why must the enum's order and unsigned base remain unchanged during this rename?
 - Why should each variant's explanation be placed immediately above it?
+
+## Name the allocation-state policy accessor policy (2026-11-05)
+
+**Files**
+- `kernel/mm/include/ours/mm/alloc_state.hpp` — rename the policy accessor.
+- `kernel/mm/pm_node.cpp` — migrate the thread-policy lookup.
+
+**Symptom**
+AllocState::get_policy used a get_ prefix while neighboring accessors use the name of the value they expose.
+
+**Cause**
+The extra verb contributes no ownership or conversion meaning: the operation returns the allocation state's current policy as an Arc. Keeping the noun supplies the same information in the project's selected naming vocabulary.
+
+**Change**
+Replaced `AllocState::get_policy()` with `AllocState::policy()` and updated its sole caller. Kept the `ustl::Arc<AllocPolicy>` return type, non-const method qualification, getter body and the thread resource lock around the copy unchanged. Added no alias or overload.
+
+**Reference**
+None, this project's own naming decision, following the user's Rust-first accessor convention.
+
+**Verification**
+Both edited C++ files contain exactly the selected name substitution. Changed-line formatting and LLVM 23 clang-tidy passed in both. Both default images booted: debug 46 passed and 5 skipped, release 44 passed and 8 skipped with 7/7 required checks. All 173 host tests passed; pmnode.test passed 38 checks. Performance was not measured.
+
+**Deliberately not done**
+The remaining unapproved naming candidates, policy selection behavior and lock scope were left unchanged. No new test mirrors the mechanical rename; existing allocation coverage is reused.
+
+**How it was found**
+The user accepted the policy accessor entry in the PMM candidate list. Searched all declarations and calls, inspected both exact replacements and ran the existing build, boot and allocator checks.
+
+**The user's prediction**
+None; this is a mechanical naming change.
+
+**Three questions you should be able to answer**
+- What ownership does the Arc returned by policy() provide?
+- Why must the caller's resource lock remain around the policy copy?
+- Which PMM candidate names are still awaiting approval?
