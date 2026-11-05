@@ -96,9 +96,9 @@ auto VmArea::create_subvma(VirtAddr where, usize requested_size, VmaFlags vmaf, 
     }
 
     // From finding the spot to linking the new area into this one's set, all
-    // under the address space lock; see create_subaom_preamble().
+    // under the address space lock; see resolve_range_locked().
     Guard guard{get_lock()};
-    auto const result = create_subaom_preamble(where, requested_size);
+    auto const result = resolve_range_locked(where, requested_size);
     if (result.is_err()) {
         return result.unwrap_err();
     }
@@ -151,7 +151,7 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
     }
 
     // Where in a block the mapping starts, for an object that takes blocks:
-    // see create_subaom_preamble().
+    // see resolve_range_locked().
     ustl::Option<usize> block_phase;
     if (!!(vmo->flags() & VmoFlags::LargePages)) {
         block_phase = ustl::some(static_cast<usize>(vmo_ofs % VmCowPages::BLOCK_SIZE));
@@ -159,10 +159,10 @@ auto VmArea::create_mapping(VirtAddr where, usize requested_size, usize vmo_ofs,
 
     // From finding the spot to linking the mapping into this area's set and
     // its VMO's list, all under the address space lock; see
-    // create_subaom_preamble(). The VMO's own lock is taken inside it, by
+    // resolve_range_locked(). The VMO's own lock is taken inside it, by
     // VmMapping::activate(), in the one order the two are ever taken.
     Guard guard{get_lock()};
-    auto const result = create_subaom_preamble(where, requested_size, block_phase);
+    auto const result = resolve_range_locked(where, requested_size, block_phase);
     if (result.is_err()) {
         return result.unwrap_err();
     }
@@ -231,8 +231,7 @@ auto VmArea::unlink_child_locked(VmAreaOrMapping &child) -> void {
 /// all, so two threads creating in one area could pick the same spot, and
 /// their inserts wrote the set concurrently. The address space lock now
 /// covers the whole span, from this search to that insert.
-auto VmArea::create_subaom_preamble(VirtAddr where, usize size,
-                                    ustl::Option<usize> const block_phase)
+auto VmArea::resolve_range_locked(VirtAddr where, usize size, ustl::Option<usize> const block_phase)
     -> ktl::Result<ustl::Pair<VirtAddr, usize>> {
     if (!is_active()) {
         // Operate an illegal VMA.

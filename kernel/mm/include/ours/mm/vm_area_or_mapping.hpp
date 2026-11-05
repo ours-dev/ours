@@ -257,7 +257,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     /// `m_base + m_size` wraps to 0: every "starts below the end" test against
     /// the root answered no, and a walk over the whole root came back with no
     /// children at all. An inclusive last address cannot wrap while the area is
-    /// non-empty, and every area is -- create_subaom_preamble() rejects a
+    /// non-empty, and every area is -- resolve_range_locked() rejects a
     /// zero-length request before there is an area to ask.
     ///
     /// Containment is deliberately not written in these terms: contains() and

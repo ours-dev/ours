@@ -1,7 +1,7 @@
 # vmm-naming: finish the approved VMM naming list
 
 **Date**: 2026-11-05
-**Status**: Accepted
+**Status**: Implemented
 
 ## Request
 

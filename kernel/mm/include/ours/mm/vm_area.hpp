@@ -131,8 +131,8 @@ class VmArea final: public VmAreaOrMapping {
     /// the way a region is dissolved), and a vma_destroy that a program can
     /// call has to check the region for sealed mappings first, as this does.
     ///
-    /// |scope| defaults to Yes for the kernel's own callers, which own
-    /// every area they unmap in; vma_unmap passes what the handle's rights say.
+    /// |scope| defaults to IncludeSubvmas for the kernel's own callers,
+    /// which own every area they unmap in. vma_unmap passes what the handle's rights say.
     auto unmap(VirtAddr base, usize size, UnmapScope scope = UnmapScope::IncludeSubvmas) -> Status;
 
     /// Destroys |child|, and everything under it, if it is still one of this
@@ -224,8 +224,8 @@ class VmArea final: public VmAreaOrMapping {
     /// the object can be mapped as one leaf (decision D6 of
     /// .agents/tasks/large-pages). A child placed by its creator ignores it.
     TA_REQUIRES(get_lock())
-    auto create_subaom_preamble(VirtAddr where, usize size,
-                                ustl::Option<usize> block_phase = ustl::NONE)
+    auto resolve_range_locked(VirtAddr where, usize size,
+                              ustl::Option<usize> block_phase = ustl::NONE)
         -> ktl::Result<ustl::Pair<VirtAddr, usize>>;
 
     TA_REQUIRES(get_lock())

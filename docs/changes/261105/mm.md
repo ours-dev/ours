@@ -612,3 +612,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Name range resolution resolve_range_locked (2026-11-05)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/vm_area.hpp` and `kernel/mm/vm_area.cpp` declare and use the range resolver.
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp` refers to its range validation.
+
+**Symptom**
+
+create_subaom_preamble used an abbreviation and a processing-stage name for a helper shared by child area creation and VMO mapping.
+
+**Cause**
+
+The helper returns a validated, aligned base and length. It also resolves a fixed address or calls automatic address selection while holding the address-space lock.
+
+**Change**
+
+Rename `create_subaom_preamble(...)` to `resolve_range_locked(...)` at both creation paths and in its supporting comments.
+
+**Reference**
+
+Zircon VmAddressRegion::CreateSubVmarInner contains the corresponding common creation checks and calls AllocSpotLockedRegion. The user selected resolve_range_locked and retained alloc_spot for address selection.
+
+**Verification**
+
+The resolver body, allocation policy and existing lock annotation are preserved. LLVM 23 clang-format and clang-tidy checked all three C++ files. Both images booted, 163 host tests passed, and the address placement, seal and large-page commands passed. A symbol search found no remaining old approved names in kernel, system or benchmark source.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user accepted resolve as the verb and then selected range as the noun in item four of the VMM naming list.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

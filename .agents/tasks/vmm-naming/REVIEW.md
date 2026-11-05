@@ -18,6 +18,8 @@ Compare each diff with the user's selected name, search all declarations and cal
 
 - UnmapScope retains the include-children default, partial-child rejection and handle-right conversion. Both images, 163 host tests and undo and seal commands passed.
 
+- resolve_range_locked retains the placement checks and lock annotation. The three affected files passed clang-tidy, both images and 163 host tests passed, and placement, seal and large-page commands passed.
+
 ## High severity
 
 None.
@@ -36,5 +38,4 @@ None requested.
 
 ## Suggested follow-up order
 
-1. Complete the approved fault, cursor and mapping renames.
-2. Resolve the two pending names with the user.
+None.
