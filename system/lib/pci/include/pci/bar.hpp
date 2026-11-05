@@ -69,7 +69,7 @@ inline auto write_bar(Config &config, usize const index, usize const bar, u32 co
 [[nodiscard]]
 inline auto size_bar(Config &config, usize const index, usize const bar)
     -> ustl::Result<Bar, ours::Status> {
-    if (index >= pci::DEVICES_PER_BUS || bar >= 6) {
+    if (index >= pci::FUNCTIONS_PER_BUS || bar >= 6) {
         return ustl::err(ours::Status::InvArgs);
     }
     auto const original_low = read_bar(config, index, bar);
@@ -124,8 +124,8 @@ inline auto size_bar(Config &config, usize const index, usize const bar)
 /// the high half for a 64-bit memory BAR) written with the base's bits,
 /// keeping the register's fixed low bits. The caller enables decode after
 /// all BARs are set.
-auto assign_bar(Config &config, usize const index, usize const bar, Bar const &shape,
-                u64 const base) -> void {
+inline auto assign_bar(Config &config, usize const index, usize const bar, Bar const &shape,
+                       u64 const base) -> void {
     auto const keep = shape.space == Space::Io ? 0x3u : 0xFu;
     auto const low = static_cast<u32>(base) | (read_bar(config, index, bar) & keep);
     write_bar(config, index, bar, low);

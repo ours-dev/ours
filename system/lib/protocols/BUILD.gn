@@ -22,6 +22,7 @@ source_set("protocols") {
     "src/dev.cpp",
     "src/fshost.cpp",
     "src/io.cpp",
+    "src/nvme_control.cpp",
     "src/process.cpp",
     "src/resource.cpp",
   ]
@@ -45,6 +46,7 @@ cpp_interface("headers") {
     "include/prot/dev.hpp",
     "include/prot/fshost.hpp",
     "include/prot/io.hpp",
+    "include/prot/nvme_control.hpp",
     "include/prot/process.hpp",
     "include/prot/resource.hpp",
   ]
@@ -79,6 +81,7 @@ if (!is_host_toolchain && toolchain_environment == "user") {
       "include/prot/acpi_client.hpp",
       "include/prot/block_client.hpp",
       "include/prot/dev_client.hpp",
+      "include/prot/nvme_control_client.hpp",
       "include/prot/resource_client.hpp",
     ]
     public_deps = [
@@ -100,6 +103,8 @@ group("tests") {
     "test:fshost($host_toolchain)",
     "test:fshost_client($host_toolchain)",
     "test:io($host_toolchain)",
+    "test:nvme_control($host_toolchain)",
+    "test:nvme_control_client($host_toolchain)",
     "test:process($host_toolchain)",
     "test:resource($host_toolchain)",
     "test:resource_client($host_toolchain)",

@@ -200,3 +200,34 @@ executable("process") {
   ]
   visibility = [ "*" ]
 }
+
+# ours.nvme.Control: the rescan's codec -- round trips, the refusals, and
+# another family's messages refused by these decoders.
+executable("nvme_control") {
+  testonly = true
+  sources = [ "nvme_control_test.cpp" ]
+  deps = [
+    "//system/lib/protocols",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# ours.nvme.Control's typed client, over the fake kernel: the test plays the
+# driver's control inside the fixture's pump -- the Ok rescan, the unchanged
+# machine's NotFound, the garbage reply, the silent close.
+executable("nvme_control_client") {
+  testonly = true
+  sources = [ "nvme_control_client_test.cpp" ]
+  deps = [
+    "//system/lib/ort:headers",
+    "//system/lib/protocols",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/wire",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

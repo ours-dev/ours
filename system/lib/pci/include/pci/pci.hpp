@@ -25,10 +25,13 @@
 namespace pci {
 
 /// The ECAM stride: one 4 KiB function page per bus-device-function, the
-/// geometry the route service's window is laid out with.
+/// geometry the route service's window is laid out with. A function's page
+/// index on a bus is device * FUNCTIONS_PER_DEVICE + function, and a bus
+/// walks all of them -- 32 devices times 8 functions.
 inline constexpr auto FUNCTION_STRIDE = usize{4096};
 inline constexpr auto DEVICES_PER_BUS = usize{32};
 inline constexpr auto FUNCTIONS_PER_DEVICE = usize{8};
+inline constexpr auto FUNCTIONS_PER_BUS = DEVICES_PER_BUS * FUNCTIONS_PER_DEVICE;
 
 /// A configuration space: the ECAM window's bytes for one bus, and the
 /// reads and writes a driver needs on its functions. All access is through
@@ -88,7 +91,8 @@ class Config final {
 };
 
 /// One in-use function, as the walk reports it: the ids a driver matches
-/// and the raw BAR registers it probes.
+/// and the raw BAR registers it probes. |index| is the function's page
+/// index on the bus, device * 8 + function.
 struct Function {
     usize index = 0;
     u16 vendor = 0;
@@ -99,11 +103,11 @@ struct Function {
     std::array<u32, 6> bars{};
 };
 
-/// Walks bus 0's 32 functions, visiting each in-use one (vendor register
+/// Walks bus 0's function pages, visiting each in-use one (vendor register
 /// reads 0xFFFF for the vacant slots). |visit| answers false to stop early.
 template <typename Visit>
 auto walk_bus0(Config const &config, Visit &&visit) -> void {
-    for (auto index = usize{0}; index < DEVICES_PER_BUS; ++index) {
+    for (auto index = usize{0}; index < FUNCTIONS_PER_BUS; ++index) {
         if (config.read16(index, 0) == 0xFFFF) {
             continue;
         }

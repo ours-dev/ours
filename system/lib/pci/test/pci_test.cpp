@@ -55,7 +55,7 @@ class FakeEcam {
     }
 
     auto config() -> Config {
-        return Config{std::span{bytes_}.first(PAGE * 32), masks_};
+        return Config{std::span{bytes_}, masks_};
     }
 
     [[nodiscard]]
@@ -80,8 +80,9 @@ class FakeEcam {
         }
     }
 
-    std::array<u8, PAGE * 32> bytes_{};
-    std::array<u32, PAGE * 32 / 4> masks_{};
+    // The whole of bus 0: 256 function pages, the walk's full range.
+    std::array<u8, PAGE * pci::FUNCTIONS_PER_BUS> bytes_{};
+    std::array<u32, PAGE * pci::FUNCTIONS_PER_BUS / 4> masks_{};
 };
 
 /// The id of the class directory's child named |name|, over the public
@@ -205,7 +206,7 @@ TEST(IoservicePciBar, AssignAndEnable) {
 TEST(IoservicePciBar, RefusesBoundsAndBlankProbeAnswers) {
     auto ecam = FakeEcam{};
     auto config = ecam.config();
-    EXPECT_TRUE(pci::size_bar(config, 32, 0).is_err()); // no device 32
+    EXPECT_TRUE(pci::size_bar(config, 256, 0).is_err()); // no function page 256
     EXPECT_TRUE(pci::size_bar(config, 0, 6).is_err());  // no BAR register 6
 
     // An I/O BAR that answers all ones with just the space flag: no size.

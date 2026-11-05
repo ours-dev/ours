@@ -1,0 +1,14 @@
+# The nvme library's host tests: the probe over a fake ECAM, and the
+# bring-up sequence and admin commands against a fake controller the test
+# models over a plain array -- the register stores the device acts on are
+# plain loads and stores when the mapping is host memory.
+executable("nvme") {
+  testonly = true
+  sources = [ "nvme_test.cpp" ]
+  deps = [
+    "//system/lib/nvme",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
