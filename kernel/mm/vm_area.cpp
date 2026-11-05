@@ -404,7 +404,7 @@ auto VmArea::map_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, Vma
     return ustl::ok(ustl::move(mapping));
 }
 
-auto VmArea::unmap(VirtAddr base, usize size, VmAreaOpChildren const op_children) -> Status {
+auto VmArea::unmap(VirtAddr base, usize size, UnmapScope const scope) -> Status {
     m_canary.verify<Self>();
 
     // A length that rounds up to nothing -- 0, or one so close to 2^64 that
@@ -442,7 +442,7 @@ auto VmArea::unmap(VirtAddr base, usize size, VmAreaOpChildren const op_children
     if (has_sealed_mapping_locked(aligned_base, aligned_size)) {
         return Status::AccessDenied;
     }
-    return unmap_locked(aligned_base, aligned_size, op_children);
+    return unmap_locked(aligned_base, aligned_size, scope);
 }
 
 auto VmArea::destroy_child(VmAreaOrMapping &child) -> Status {
@@ -503,13 +503,13 @@ auto VmArea::has_sealed_mapping_locked(VirtAddr const base, usize const size) ->
 /// rejected, and a caller who means to dissolve one names it and unmaps inside
 /// it instead.
 ///
-/// |op_children| is the opt-out: whether destroying a whole sub-area is
+/// |scope| is the opt-out: whether destroying a whole sub-area is
 /// allowed at all, so that vma_unmap can forbid what the kernel's own callers
 /// are allowed. A handle without OpChildren may unmap mappings beside a
 /// sub-area but not the sub-area, and is refused with InvArgs rather than
 /// having the sub-area skipped: a skip would leave a range the caller asked to
 /// be empty with something in it.
-auto VmArea::unmap_locked(VirtAddr base, usize size, VmAreaOpChildren const op_children) -> Status {
+auto VmArea::unmap_locked(VirtAddr base, usize size, UnmapScope const scope) -> Status {
     DEBUG_ASSERT(size, "an empty range has nothing to unmap");
 
     // Inclusive, because `base + size` is 2^64 when the range is the whole
@@ -528,8 +528,7 @@ auto VmArea::unmap_locked(VirtAddr base, usize size, VmAreaOpChildren const op_c
                 // A mapping is a run of pages and may be trimmed at either end.
                 continue;
             }
-            if (child->base() < base || child->last() > last ||
-                op_children == VmAreaOpChildren::No) {
+            if (child->base() < base || child->last() > last || scope == UnmapScope::MappingsOnly) {
                 return Status::InvArgs;
             }
         }

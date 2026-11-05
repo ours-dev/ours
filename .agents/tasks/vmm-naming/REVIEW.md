@@ -16,6 +16,8 @@ Compare each diff with the user's selected name, search all declarations and cal
 
 - map_vmo has the same signature and body as map_with_vmo after formatting. Stack, heap and dispatcher callers compiled, both images and 163 host tests passed, and six mapping commands passed.
 
+- UnmapScope retains the include-children default, partial-child rejection and handle-right conversion. Both images, 163 host tests and undo and seal commands passed.
+
 ## High severity
 
 None.

@@ -375,14 +375,14 @@ auto VmaDispatcher::undo_allocate(VmaDispatcher &child) -> Status {
     return m_vma->destroy_child(*child.m_vma);
 }
 
-auto VmaDispatcher::op_children_from_rights(Rights const rights) -> OpChildren {
+auto VmaDispatcher::unmap_scope_from_rights(Rights const rights) -> UnmapScope {
     if (!!(rights & Rights::OpChildren)) {
-        return OpChildren::Yes;
+        return UnmapScope::IncludeSubvmas;
     }
-    return OpChildren::No;
+    return UnmapScope::MappingsOnly;
 }
 
-auto VmaDispatcher::unmap(VirtAddr const base, usize const length, OpChildren const op_children)
+auto VmaDispatcher::unmap(VirtAddr const base, usize const length, UnmapScope const scope)
     -> Status {
     m_canary.verify<Self>();
 
@@ -392,7 +392,7 @@ auto VmaDispatcher::unmap(VirtAddr const base, usize const length, OpChildren co
     if (!ustl::is_aligned(base, PAGE_SIZE)) {
         return Status::InvArgs;
     }
-    return m_vma->unmap(base, length, op_children);
+    return m_vma->unmap(base, length, scope);
 }
 
 } // namespace ours::object

@@ -19,28 +19,22 @@
 #include <ustl/util/pair.hpp>
 
 namespace ours::mm {
-/// Whether an unmap may destroy the sub-areas that lie wholly inside its range.
-///
-/// The kernel's own callers own every area they unmap in and pass Yes. A
-/// program reaches an area through a VMA handle, and the handle's OpChildren
-/// right is what lets it reach the areas below the one it names: without it a
-/// range that covers a sub-area is refused, as one that only partly covers it
-/// always is. What a sub-area holds is not the parent handle's to give away,
-/// which is why the right is asked of the handle and not of the area.
-///
-/// A handle's Rights::OpChildren becomes it in
-/// VmaDispatcher::op_children_from_rights().
-enum class VmAreaOpChildren : bool {
-    No,
-    Yes,
-};
-
 /// `VmArea` is a representation of a contiguous range of virtual memory space.
 class VmArea final: public VmAreaOrMapping {
     using Self = VmArea;
     using Base = VmAreaOrMapping;
 
   public:
+    /// Whether unmap may also destroy fully covered child VMAs.
+    /// A request that only partly covers a child VMA is always rejected.
+    enum class UnmapScope : u8 {
+        /// Reject ranges that include a child VMA.
+        MappingsOnly,
+
+        /// Destroy child VMAs wholly contained in the range.
+        IncludeSubvmas,
+    };
+
     static constexpr std::uintptr_t TYPE_TAG = 2;
     [[nodiscard]]
     auto rc_type_tag() const noexcept -> std::uintptr_t override {
@@ -129,7 +123,7 @@ class VmArea final: public VmAreaOrMapping {
     /// Tear down everything mapped in [base, base + size). AccessDenied, with
     /// nothing torn down, if a sealed mapping (MapOptions::Sealed) overlaps
     /// the range. A sub-area wholly inside the range is destroyed when
-    /// |op_children| allows it and refuses the whole call (InvArgs) when it
+    /// |scope| allows it and refuses the whole call (InvArgs) when it
     /// does not; one only partly inside always refuses it. BadState once this
     /// area has been destroyed, asked under the address space lock.
     ///
@@ -137,10 +131,9 @@ class VmArea final: public VmAreaOrMapping {
     /// the way a region is dissolved), and a vma_destroy that a program can
     /// call has to check the region for sealed mappings first, as this does.
     ///
-    /// |op_children| defaults to Yes for the kernel's own callers, which own
+    /// |scope| defaults to Yes for the kernel's own callers, which own
     /// every area they unmap in; vma_unmap passes what the handle's rights say.
-    auto unmap(VirtAddr base, usize size, VmAreaOpChildren op_children = VmAreaOpChildren::Yes)
-        -> Status;
+    auto unmap(VirtAddr base, usize size, UnmapScope scope = UnmapScope::IncludeSubvmas) -> Status;
 
     /// Destroys |child|, and everything under it, if it is still one of this
     /// area's children: unmap() names a range, this names the object. The
@@ -243,9 +236,9 @@ class VmArea final: public VmAreaOrMapping {
 
     /// Unmap everything inside [base, base + size), assuming the aspace lock is
     /// already held and the range was validated against this area. See
-    /// unmap() for |op_children|.
+    /// unmap() for |scope|.
     TA_REQUIRES(get_lock())
-    auto unmap_locked(VirtAddr base, usize size, VmAreaOpChildren op_children) -> Status;
+    auto unmap_locked(VirtAddr base, usize size, UnmapScope scope) -> Status;
 
     /// Whether a sealed mapping overlaps [base, base + size); the aspace lock
     /// held. See unmap().

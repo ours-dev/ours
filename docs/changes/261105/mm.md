@@ -569,3 +569,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Name the unmap child policy UnmapScope (2026-11-05)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/vm_area.hpp` nests UnmapScope in VmArea.
+- The area, VMA dispatcher, syscall and undo tests use the named scope.
+
+**Symptom**
+
+VmAreaOpChildren::No and Yes did not state what an unmap would be allowed to destroy.
+
+**Cause**
+
+The type name came from the handle right, while its values describe the scope of an unmap operation.
+
+**Change**
+
+Replace `VmAreaOpChildren::{No, Yes}` with `VmArea::UnmapScope::{MappingsOnly, IncludeSubvmas}`. The dispatcher exposes the same UnmapScope and translates Rights::OpChildren through `unmap_scope_from_rights`. The default still includes fully covered child VMAs. Both modes reject partial coverage of a child VMA.
+
+**Reference**
+
+Zircon VmAddressRegion::UnmapInternalLocked has the corresponding can_destroy_regions policy. The user selected the explicit scoped-enum spelling.
+
+**Verification**
+
+The preflight, teardown and handle-right checks keep the same conditions and branches. LLVM 23 clang-format and clang-tidy checked all six C++ files. Both development images booted, 163 host tests passed, and the undo and seal commands passed.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user asked what item three controlled and then selected MappingsOnly and IncludeSubvmas.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.
