@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `vmocontig.test`: mm::VmObjectPaged::create_contiguous(), the memory a device
-// is given one address of.
+// VmoContiguous.CreatesContiguousMemory: mm::VmObjectPaged::create_contiguous(),
+// the memory a device is given one address of.
 //
-// Why a console command: the call that reaches it from a program
+// Why an in-kernel test: the call that reaches it from a program
 // (vmo_create_contiguous) cannot see a frame's address, the queue a page is
 // on, or the allocator's count of free frames, and those are what it promises.
 //
@@ -24,9 +24,6 @@
 // lazy VMO (InvArgs), a size no VMO can be (OutOfRange). Making and dropping a
 // VMO a hundred times leaves the allocator with the frames it had, which is what
 // shows that the tail of a block is given back.
-//
-// The name has no underscore for the reason usercopy.test's does not: gktl's
-// command table does not encode '_'.
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/physmap.hpp>
@@ -40,28 +37,13 @@
 
 #include <array>
 
-#include <gktl/command.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours {
 namespace {
     constexpr usize P = PAGE_SIZE;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("vmocontig.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("vmocontig.test: FAIL  {}", name);
-    }
 
     using Kind = mm::PageQueues::PageKind;
 
@@ -126,88 +108,80 @@ namespace {
                                                     mm::VmoFlags::Pinned, out);
     }
 
-    auto vmocontig_test_command(int, char **) -> int {
-        Tally tally;
+    KTEST(VmoContiguous, CreatesContiguousMemory) {
         ustl::Arc<mm::VmObjectPaged> vmo;
 
         // ---- one page, and the size rounded up
-        verdict(tally,
-                make(1, 0, &vmo) == Status::Ok && vmo->size() == P &&
-                    phys_of(*vmo, 0) != PhysAddr{0} && all_pinned_queue(*vmo, 1) &&
-                    all_zero(*vmo, 1),
-                "one byte is one page, there from the start, on the pinned queue, and zero");
-        verdict(tally,
-                make(P + 1, 0, &vmo) == Status::Ok && vmo->size() == 2 * P &&
-                    phys_of(*vmo, 1) == phys_of(*vmo, 0) + P,
-                "a size of a page and a byte is two pages, one after the other");
+        EXPECT_TRUE(make(1, 0, &vmo) == Status::Ok && vmo->size() == P &&
+                        phys_of(*vmo, 0) != PhysAddr{0} && all_pinned_queue(*vmo, 1) &&
+                        all_zero(*vmo, 1),
+                    "one byte is one page, there from the start, on the pinned queue, and zero");
+        EXPECT_TRUE(make(P + 1, 0, &vmo) == Status::Ok && vmo->size() == 2 * P &&
+                        phys_of(*vmo, 1) == phys_of(*vmo, 0) + P,
+                    "a size of a page and a byte is two pages, one after the other");
 
         // ---- three pages: a block of four, the fourth given back
-        verdict(tally, make(3 * P, 0, &vmo) == Status::Ok && vmo->size() == 3 * P,
-                "three pages are made");
+        EXPECT_TRUE(make(3 * P, 0, &vmo) == Status::Ok && vmo->size() == 3 * P,
+                    "three pages are made");
         auto first = PhysAddr{0};
-        verdict(tally,
-                vmo->lookup_contiguous(0, 3 * P, &first) == Status::Ok &&
-                    std::to_underlying(first) % (4 * P) == 0 && first == phys_of(*vmo, 0) &&
-                    all_pinned_queue(*vmo, 3) && all_zero(*vmo, 3),
-                "they are one run on the block's own alignment, on the pinned queue, and zero");
-        verdict(tally, kind_at(*vmo, 3) == Kind::None, "there is no fourth page");
+        EXPECT_TRUE(vmo->lookup_contiguous(0, 3 * P, &first) == Status::Ok &&
+                        std::to_underlying(first) % (4 * P) == 0 && first == phys_of(*vmo, 0) &&
+                        all_pinned_queue(*vmo, 3) && all_zero(*vmo, 3),
+                    "they are one run on the block's own alignment, on the pinned queue, and "
+                    "zero");
+        EXPECT_EQ(kind_at(*vmo, 3), Kind::None, "there is no fourth page");
 
         // ---- alignment
-        verdict(tally,
-                make(2 * P, 16, &vmo) == Status::Ok &&
-                    std::to_underlying(phys_of(*vmo, 0)) % (usize{1} << 16) == 0 &&
-                    vmo->lookup_contiguous(0, 2 * P, &first) == Status::Ok,
-                "two pages on 64 KiB are one run starting on a multiple of 64 KiB");
-        verdict(tally,
-                make(P, 21, &vmo) == Status::Ok &&
-                    std::to_underlying(phys_of(*vmo, 0)) % (usize{1} << 21) == 0,
-                "one page on 2 MiB starts on a multiple of 2 MiB");
+        EXPECT_TRUE(make(2 * P, 16, &vmo) == Status::Ok &&
+                        std::to_underlying(phys_of(*vmo, 0)) % (usize{1} << 16) == 0 &&
+                        vmo->lookup_contiguous(0, 2 * P, &first) == Status::Ok,
+                    "two pages on 64 KiB are one run starting on a multiple of 64 KiB");
+        EXPECT_TRUE(make(P, 21, &vmo) == Status::Ok &&
+                        std::to_underlying(phys_of(*vmo, 0)) % (usize{1} << 21) == 0,
+                    "one page on 2 MiB starts on a multiple of 2 MiB");
 
         // ---- the largest block
         constexpr auto MOST = usize{1} << MAX_FRAME_ORDER;
-        verdict(tally,
-                make(MOST * P, 0, &vmo) == Status::Ok && vmo->size() == MOST * P &&
-                    vmo->lookup_contiguous(0, MOST * P, &first) == Status::Ok &&
-                    std::to_underlying(first) % (MOST * P) == 0 && all_pinned_queue(*vmo, MOST) &&
-                    all_zero(*vmo, MOST),
-                "the largest block is made: all its pages one run, on its alignment, pinned queue, "
-                "zero");
+        EXPECT_TRUE(make(MOST * P, 0, &vmo) == Status::Ok && vmo->size() == MOST * P &&
+                        vmo->lookup_contiguous(0, MOST * P, &first) == Status::Ok &&
+                        std::to_underlying(first) % (MOST * P) == 0 &&
+                        all_pinned_queue(*vmo, MOST) && all_zero(*vmo, MOST),
+                    "the largest block is made: all its pages one run, on its alignment, pinned "
+                    "queue, zero");
         vmo = {};
 
         // ---- what cannot be
         ustl::Arc<mm::VmObjectPaged> none;
-        verdict(tally,
-                make((MOST + 1) * P, 0, &none) == Status::NoMemory && !none &&
-                    make(P, 12 + MAX_FRAME_ORDER + 1, &none) == Status::NoMemory &&
-                    make(P, 40, &none) == Status::NoMemory,
-                "a size or an alignment past the largest block is NoMemory");
-        verdict(tally,
-                make(0, 0, &none) == Status::InvArgs && make(P, 5, &none) == Status::InvArgs &&
-                    make(P, 64, &none) == Status::InvArgs && make(P, 200, &none) == Status::InvArgs,
-                "an empty size, an alignment below a page and one that is not a shift are InvArgs");
-        verdict(tally,
-                mm::VmObjectPaged::create_contiguous(mm::GAF_USER, P, 0, mm::VmoFlags::Lazy,
-                                                     &none) == Status::InvArgs &&
-                    mm::VmObjectPaged::create_contiguous(
-                        mm::GAF_USER, P, 0, mm::VmoFlags::LargePages, &none) == Status::InvArgs,
-                "a lazy or a large-page VMO is InvArgs");
-        verdict(tally, make(~usize{0}, 0, &none) == Status::OutOfRange && !none,
-                "a size no VMO can be is OutOfRange");
+        EXPECT_TRUE(make((MOST + 1) * P, 0, &none) == Status::NoMemory && !none &&
+                        make(P, 12 + MAX_FRAME_ORDER + 1, &none) == Status::NoMemory &&
+                        make(P, 40, &none) == Status::NoMemory,
+                    "a size or an alignment past the largest block is NoMemory");
+        EXPECT_TRUE(make(0, 0, &none) == Status::InvArgs && make(P, 5, &none) == Status::InvArgs &&
+                        make(P, 64, &none) == Status::InvArgs &&
+                        make(P, 200, &none) == Status::InvArgs,
+                    "an empty size, an alignment below a page and one that is not a shift are "
+                    "InvArgs");
+        EXPECT_TRUE(mm::VmObjectPaged::create_contiguous(mm::GAF_USER, P, 0, mm::VmoFlags::Lazy,
+                                                         &none) == Status::InvArgs &&
+                        mm::VmObjectPaged::create_contiguous(
+                            mm::GAF_USER, P, 0, mm::VmoFlags::LargePages, &none) == Status::InvArgs,
+                    "a lazy or a large-page VMO is InvArgs");
+        EXPECT_TRUE(make(~usize{0}, 0, &none) == Status::OutOfRange && !none,
+                    "a size no VMO can be is OutOfRange");
 
         // ---- what moves a page is refused
         {
             ustl::Arc<mm::VmObjectPaged> clone;
-            verdict(tally,
-                    make(2 * P, 0, &vmo) == Status::Ok &&
-                        vmo->create_clone(0, 2 * P, &clone) == Status::BadState && !clone,
-                    "a snapshot of the memory is refused: it would move the pages the device has");
+            EXPECT_TRUE(make(2 * P, 0, &vmo) == Status::Ok &&
+                            vmo->create_clone(0, 2 * P, &clone) == Status::BadState && !clone,
+                        "a snapshot of the memory is refused: it would move the pages the "
+                        "device has");
         }
 
         // ---- the pinned queue through a pin
-        verdict(tally,
-                make(3 * P, 0, &vmo) == Status::Ok && vmo->pin_range(0, 3 * P) == Status::Ok &&
-                    vmo->unpin_range(0, 3 * P) == Status::Ok && all_pinned_queue(*vmo, 3),
-                "after pin_range and unpin_range the pages are still on the pinned queue");
+        EXPECT_TRUE(make(3 * P, 0, &vmo) == Status::Ok && vmo->pin_range(0, 3 * P) == Status::Ok &&
+                        vmo->unpin_range(0, 3 * P) == Status::Ok && all_pinned_queue(*vmo, 3),
+                    "after pin_range and unpin_range the pages are still on the pinned queue");
 
         // ---- a BTI pin with Contiguous
         {
@@ -225,11 +199,10 @@ namespace {
                 made && vmo &&
                 bti.dispatcher()->pin(vmo, 0, 3 * P, options, pin, pmt_rights) == Status::Ok;
             std::array<PhysAddr, 1> address{};
-            verdict(tally,
-                    pinned && pin.dispatcher()->query_pieces(3 * P, 0, address) == Status::Ok &&
-                        address[0] == phys_of(*vmo, 0),
-                    "a BTI pin with Contiguous over the three pages is Ok, and the one address is "
-                    "the first page's");
+            EXPECT_TRUE(pinned && pin.dispatcher()->query_pieces(3 * P, 0, address) == Status::Ok &&
+                            address[0] == phys_of(*vmo, 0),
+                        "a BTI pin with Contiguous over the three pages is Ok, and the one "
+                        "address is the first page's");
             if (pin.dispatcher()) {
                 pin.dispatcher()->unpin();
             }
@@ -251,22 +224,11 @@ namespace {
             if (before > after) {
                 lost = before - after;
             }
-            verdict(tally, all_made && lost <= 32,
-                    "a hundred VMOs made and dropped leave the allocator its frames");
-            log::info("vmocontig.test: {} frames before, {} after", before, after);
+            EXPECT_TRUE(all_made && lost <= 32,
+                        "a hundred VMOs made and dropped leave the allocator its frames");
+            log::info("VmoContiguous: {} frames before, {} after", before, after);
         }
-
-        if (tally.failed != 0) {
-            log::error("vmocontig.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("vmocontig.test: ok -- {} checks", tally.passed);
-        return 0;
     }
+
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(VmoContigTest, "vmocontig.test", ours::vmocontig_test_command,
-             "check create_contiguous(): one run, aligned, zero, on the pinned queue, the "
-             "largest block, what it refuses, and that the tail of a block is given back");

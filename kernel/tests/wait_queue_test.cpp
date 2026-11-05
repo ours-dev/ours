@@ -1,9 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `waitqueue.test`: wake a parked thread the two ways that pick one
-// particular thread out of a wait queue, rather than whoever is at its head,
-// and check that the waiter comes back, with the status that says why:
+// WaitQueue.WakesByTimeoutAndSuspend: wake a parked thread the two ways that
+// pick one particular thread out of a wait queue, rather than whoever is at
+// its head, and check that the waiter comes back, with the status that says
+// why:
 //
 //   - its own timeout: a wait with a deadline that nothing signals, which
 //     WaitQueue::handle_timeout() ends from the timer interrupt, and which
@@ -21,8 +22,9 @@
 // refuses finite deadlines and no system call suspends -- which is how it
 // stayed unseen. This makes both happen.
 //
-// A console command rather than a unit test for the reason mutex.stress
-// gives: a wait queue's slow path is the scheduler.
+// Why an in-kernel test: a wait queue's slow path is the scheduler, so a host
+// test can neither park a thread nor end its park from a timer interrupt, and
+// the suspend path needs another thread to run while this one is parked.
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/sync/event.hpp>
@@ -31,8 +33,8 @@
 
 #include <atomic>
 
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -43,21 +45,6 @@ namespace {
     constexpr auto LOST_AFTER = Seconds(5);
     constexpr auto POLL_INTERVAL = Milliseconds(1);
     constexpr auto TIMEOUT = Milliseconds(5);
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("waitqueue.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("waitqueue.test: FAIL  {}", name);
-    }
 
     /// Polls |condition| until it holds or LOST_AFTER has passed.
     template <typename Condition>
@@ -73,26 +60,26 @@ namespace {
     }
 
     /// A wait nobody ends but its own deadline.
-    auto check_timeout(Tally &tally) -> void {
+    auto check_timeout() -> void {
         sync::Event event;
         auto const started = time::SteadyClock::now();
         auto const status = event.wait(time::Deadline::at(started + TIMEOUT));
         auto const elapsed = time::SteadyClock::now() - started;
 
-        log::info("waitqueue.test:   timed wait answered {} after {} us", to_string(status),
+        log::info("WaitQueue:   timed wait answered {} after {} us", to_string(status),
                   duration_cast<Microseconds>(elapsed).count());
-        verdict(tally, status == Status::TimeOut, "a wait that nothing signals times out");
-        verdict(tally, elapsed >= TIMEOUT, "and not before its deadline");
+        EXPECT_EQ(status, Status::TimeOut, "a wait that nothing signals times out");
+        EXPECT_TRUE(elapsed >= TIMEOUT, "and not before its deadline");
     }
 
-    /// Shared between the command and the waiter it suspends. On the heap:
-    /// a waiter that is never woken still points at it after the command
-    /// has given up, so on that path it is leaked rather than popped.
+    /// Shared between the test and the waiter it suspends. On the heap: a
+    /// waiter that is never woken still points at it after the test has given
+    /// up, so on that path it is leaked rather than popped.
     struct SuspendCase {
         /// Never signalled while the test passes: the suspend is what ends
         /// the waiter's wait on it.
         sync::Event wait_here;
-        /// Ends the waiter's second wait, once the command has resumed it.
+        /// Ends the waiter's second wait, once the test has resumed it.
         sync::Event release;
         /// Written by the waiter before |woken|, read after it.
         Status woken_status = Status::Ok;
@@ -111,7 +98,7 @@ namespace {
         // an interruptible wait would return at once on it.
         auto _ = c.release.wait();
 
-        // Last touch of |c|: once the command sees this, it frees it.
+        // Last touch of |c|: once the test sees this, it frees it.
         c.done.store(true, std::memory_order_release);
         return 0;
     }
@@ -125,19 +112,17 @@ namespace {
                waiter.is_interruptible();
     }
 
-    auto check_suspend_of_parked_waiter(Tally &tally) -> void {
+    KTEST(WaitQueue, WakesByTimeoutAndSuspend) {
+        check_timeout();
+
         auto *const c = new (mm::GAF_KERNEL) SuspendCase{};
-        if (c == nullptr) {
-            verdict(tally, false, "allocate the suspend case");
-            return;
-        }
+        ASSERT_NONNULL(c, "allocate the suspend case");
 
         auto *const waiter =
             task::Thread::spawn("waitqueue-test", suspended_waiter, c, task::DEFAULT_PRIORITY);
         if (waiter == nullptr) {
-            verdict(tally, false, "spawn the waiter");
             delete c;
-            return;
+            FAIL("spawn the waiter");
         }
         // detach() and resume() separately: detach_and_resume() is declared
         // but has no definition yet.
@@ -148,55 +133,36 @@ namespace {
         // |wait_here| and then on |release|, and nothing else ends it.
         if (!poll_until([waiter] { return is_parked_interruptibly(waiter); })) {
             // It never parked, so it may yet: signal both, and leak |c|.
-            verdict(tally, false, "the waiter parks interruptibly");
             c->wait_here.signal();
             c->release.signal();
-            return;
+            FAIL("the waiter parks interruptibly; leaking its state");
         }
 
         auto _ = waiter->suspend();
         auto const woken = poll_until([c] { return c->woken.load(std::memory_order_acquire); });
-        verdict(tally, woken, "suspending a parked interruptible waiter wakes it");
+        EXPECT_TRUE(woken, "suspending a parked interruptible waiter wakes it");
         if (!woken) {
             // Release it the ordinary way, so it is not left parked for good.
             c->wait_here.signal();
             if (!poll_until([c] { return c->woken.load(std::memory_order_acquire); })) {
-                log::error("waitqueue.test:   the waiter is lost; leaking its state");
+                log::error("WaitQueue:   the waiter is lost; leaking its state");
                 return;
             }
         }
-        log::info("waitqueue.test:   the suspended wait answered {}", to_string(c->woken_status));
-        verdict(tally, c->woken_status == Status::InternalIrqRetry,
-                "the suspended wait answers InternalIrqRetry, not Ok");
+        log::info("WaitQueue:   the suspended wait answered {}", to_string(c->woken_status));
+        EXPECT_EQ(c->woken_status, Status::InternalIrqRetry,
+                  "the suspended wait answers InternalIrqRetry, not Ok");
 
         // The other half of the protocol: drop the Suspend signal, then let
         // the waiter finish.
         auto _ = waiter->resume();
         c->release.signal();
         if (!poll_until([c] { return c->done.load(std::memory_order_acquire); })) {
-            log::error("waitqueue.test:   the waiter did not finish; leaking its state");
-            verdict(tally, false, "the waiter finishes once released");
-            return;
+            log::error("WaitQueue:   the waiter did not finish; leaking its state");
+            FAIL("the waiter finishes once released");
         }
         delete c;
     }
 
-    auto waitqueue_test_command(int, char **) -> int {
-        Tally tally;
-
-        check_timeout(tally);
-        check_suspend_of_parked_waiter(tally);
-
-        if (tally.failed != 0) {
-            log::error("waitqueue.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("waitqueue.test: ok -- {} checks", tally.passed);
-        return 0;
-    }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(WaitQueueTest, "waitqueue.test", ours::waitqueue_test_command,
-             "wake a parked thread by its timeout and by a suspend");

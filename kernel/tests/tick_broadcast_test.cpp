@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `tickbcast.test`: a CPU whose tick is served by a global timer device
-// through a broadcast group (time::TickBroadcast) still gets its timers, and
-// goes back to its own device afterwards.
+// TickBroadcast.ServesTicksThroughAGroup: a CPU whose tick is served by a
+// global timer device through a broadcast group (time::TickBroadcast) still
+// gets its timers, and goes back to its own device afterwards.
 //
 // The two last CPUs are moved, one worker thread pinned to each. Each worker
 // swaps its CPU's tick from the local APIC timer to the HPET with
@@ -14,13 +14,13 @@
 // fires on the boot CPU, the one whose deadline came is told by IPI; a timer
 // that never fires is a deadline the group lost or an IPI it did not send.
 //
-// Needs kernel.time.oneshot, as a CPU only replaces a Oneshot device, and a
-// global device that can be armed for one instant; without either it says so
-// and passes.
+// Needs kernel.time.oneshot, a global device that can be armed for one
+// instant, and two CPUs besides the boot CPU; without any of them the test is
+// skipped.
 //
-// A console command rather than a unit test for the reason mutex.stress
-// gives. It is named *.test so that scripts/kshell_run.py waits for its
-// verdict line, as for timershare.test.
+// Why an in-kernel test rather than a host test: it swaps a CPU's tick device
+// and pins worker threads to CPUs, neither of which exists outside a booted
+// kernel with timer hardware.
 #include <ours/cpu.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/task/thread.hpp>
@@ -35,8 +35,8 @@
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -58,21 +58,6 @@ namespace {
     /// Not a tight bound: the group adds an IPI and the HPET's latency to
     /// what a CPU's own device would give, under TCG a good deal.
     constexpr auto MEDIAN_LIMIT = Milliseconds(5);
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("tickbcast.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("tickbcast.test: FAIL  {}", name);
-    }
 
     struct Member {
         CpuNum cpu = 0;
@@ -185,38 +170,26 @@ namespace {
         return values[count / 2];
     }
 
-    auto tick_broadcast_command(int, char **) -> int {
-        Tally tally;
-
+    KTEST(TickBroadcast, ServesTicksThroughAGroup) {
         if (!TickDevice::Current::is_mode_oneshot()) {
-            log::info("tickbcast.test: ok -- skipped, kernel.time.oneshot is off");
-            return 0;
+            KTEST_SKIP("kernel.time.oneshot is off");
         }
         Find find;
         ClockEventDevice::for_each_enrolled(find_global, &find);
         if (find.best == nullptr) {
-            log::info("tickbcast.test: ok -- skipped, no global device can be armed for one "
-                      "instant");
-            return 0;
+            KTEST_SKIP("no global device can be armed for one instant");
         }
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 3) {
-            log::info("tickbcast.test: ok -- skipped, needs two CPUs besides the boot CPU");
-            return 0;
+            KTEST_SKIP("two CPUs besides the boot CPU are needed");
         }
 
         auto *const group = TickBroadcast::for_device(*find.best);
-        verdict(tally, group != nullptr, "the global device has a broadcast group");
-        if (group == nullptr) {
-            return 1;
-        }
-        log::info("tickbcast.test:   serving from {} through a group", find.best->name());
+        ASSERT_NONNULL(group, "the global device has a broadcast group");
+        log::info("TickBroadcast:   serving from {} through a group", find.best->name());
 
         auto *const members = new (mm::GAF_KERNEL) std::array<Member, 2>{};
-        if (members == nullptr) {
-            log::error("tickbcast.test: FAILED -- out of memory");
-            return 1;
-        }
+        ASSERT_NONNULL(members, "allocate the case for two CPUs");
 
         auto const ipis_before = TickBroadcast::num_ipis_sent();
         // Differences, as in timer.test: tickreplace.test refuses deadlines on
@@ -232,8 +205,9 @@ namespace {
             auto *const thread =
                 task::Thread::spawn("tickbcast", worker, &member, task::DEFAULT_PRIORITY);
             if (thread == nullptr) {
-                log::error("tickbcast.test: FAILED -- cannot spawn a worker; leaking the case");
-                return 1;
+                // A previously spawned worker may still touch |members|, so the
+                // case is leaked rather than freed under it.
+                FAIL("spawn a worker; leaking the case");
             }
             thread->set_cpu_affinity_hard(CpuMask::of(member.cpu));
             // detach() and resume() separately: detach_and_resume() is declared
@@ -246,52 +220,39 @@ namespace {
         for (auto &member: *members) {
             while (!member.done.load(std::memory_order_acquire)) {
                 if (SteadyClock::now() >= give_up) {
-                    log::error("tickbcast.test: FAILED -- CPU[{}] did not finish; leaking the "
-                               "case",
-                               member.cpu);
-                    return 1;
+                    // The worker may still be touching |members|.
+                    FAIL("CPU {} did not finish; leaking the case", member.cpu);
                 }
                 auto _ = task::Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No);
             }
         }
 
         for (auto &member: *members) {
-            log::info("tickbcast.test: CPU[{}]", member.cpu);
-            verdict(tally, member.moved_in == Status::Ok && member.in_group,
-                    "its tick moves to the global device");
-            verdict(tally, member.fired == SAMPLES, "every timer fires while it is in the group");
+            log::info("TickBroadcast: CPU[{}]", member.cpu);
+            EXPECT_TRUE(member.moved_in == Status::Ok && member.in_group,
+                        "its tick moves to the global device");
+            EXPECT_EQ(member.fired, SAMPLES, "every timer fires while it is in the group");
             if (member.fired != 0) {
                 auto const median = median_of(member.lateness, member.fired);
-                log::info("tickbcast.test:   {} us timers fired a median of {} us late",
+                log::info("TickBroadcast:   {} us timers fired a median of {} us late",
                           duration_cast<Microseconds>(REQUESTED).count(),
                           duration_cast<Microseconds>(median).count());
-                verdict(tally, median < MEDIAN_LIMIT, "and the median lateness is under 5 ms");
+                EXPECT_TRUE(median < MEDIAN_LIMIT, "and the median lateness is under 5 ms");
             }
-            verdict(tally, member.moved_out == Status::Ok && member.back_on_own,
-                    "it goes back to its own device");
-            verdict(tally, !group->has_member(member.cpu), "and leaves the group");
+            EXPECT_TRUE(member.moved_out == Status::Ok && member.back_on_own,
+                        "it goes back to its own device");
+            EXPECT_FALSE(group->has_member(member.cpu), "and leaves the group");
         }
 
-        verdict(tally, group->device().has_event_handler(),
-                "the group's handler is still on the device once its last member has left");
-        verdict(tally, TickBroadcast::num_ipis_sent() > ipis_before,
-                "the group told a CPU by IPI that its timer was due");
-        verdict(tally,
-                TickBroadcast::num_refused_programs() + TimerQueue::num_refused_programs() ==
-                    refused_before,
-                "no device refused a deadline");
+        EXPECT_TRUE(group->device().has_event_handler(),
+                    "the group's handler is still on the device once its last member has left");
+        EXPECT_GT(TickBroadcast::num_ipis_sent(), ipis_before,
+                  "the group told a CPU by IPI that its timer was due");
+        EXPECT_EQ(TickBroadcast::num_refused_programs() + TimerQueue::num_refused_programs(),
+                  refused_before, "no device refused a deadline");
 
         delete members;
-        if (tally.failed != 0) {
-            log::error("tickbcast.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("tickbcast.test: ok -- {} checks", tally.passed);
-        return 0;
     }
+
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(TickBroadcastTest, "tickbcast.test", ours::tick_broadcast_command,
-             "serve two CPUs' ticks from the HPET through a broadcast group and back");

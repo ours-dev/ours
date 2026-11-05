@@ -1,13 +1,16 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `physvmo.test`: object::VmaDispatcher::map() of a physical VMO installs the
-// whole window, uncached; a paged VMO is mapped as before.
+// VmaPhysical.MapsPhysicalWindowUncached: object::VmaDispatcher::map() of a
+// physical VMO installs the whole window, uncached; a paged VMO is mapped as
+// before.
 //
-// Why a console command: a program can map a physical VMO (vmo_create_physical
+// Why an in-kernel test: a program can map a physical VMO (vmo_create_physical
 // and vma_map) but cannot read a page-table entry back, and the cache
 // attribute is a bit of the entry. The routing_checks read of a device's
-// register shows the window is live; this shows what the entry says.
+// register shows the window is live; this shows what the entry says. It is not
+// a host test because an address space and its page tables only exist in a
+// booted kernel.
 //
 // It builds an address space of its own, wraps its root region in a
 // VmaDispatcher as a process's is, and maps two pages of a physical VMO over
@@ -20,9 +23,6 @@
 //     is no reason to leave RAM cached.
 //
 // and then destroys the address space.
-//
-// The name has no underscore for the reason usercopy.test's does not: gktl's
-// command table does not encode '_'.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/vm_aspace.hpp>
@@ -33,27 +33,12 @@
 
 #include <algorithm>
 
-#include <gktl/command.hpp>
-#include <logz4/log.hpp>
+#include <ktest/ktest.hpp>
 #include <ustl/mem/align.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours {
 namespace {
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("physvmo.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("physvmo.test: FAIL  {}", name);
-    }
 
     /// The first page above all the RAM the kernel knows and every device it
     /// drives.
@@ -81,17 +66,13 @@ namespace {
         return entry;
     }
 
-    auto physvmo_test_command(int, char **) -> int {
+    KTEST(VmaPhysical, MapsPhysicalWindowUncached) {
         ustl::Arc<mm::VmAspace> aspace;
-        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
-                                                     mm::VmasKind::User, mm::VmasFlags::None,
-                                                     "physvmo.test", &aspace);
-            status != Status::Ok) {
-            log::error("physvmo.test: could not create an address space: {}", to_string(status));
-            return 1;
-        }
+        ASSERT_OK(mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                       mm::VmasKind::User, mm::VmasFlags::None, "physvmo.test",
+                                       &aspace),
+                  "an address space of its own");
 
-        Tally tally;
         constexpr auto PAGES = usize{2};
         auto const phys = page_above_ram();
         object::KernelHandle<object::VmaDispatcher> region;
@@ -106,14 +87,14 @@ namespace {
             object::VmoDispatcher::create_physical(phys, PAGES * PAGE_SIZE, window, vmo_rights) ==
                 Status::Ok &&
             object::VmoDispatcher::create_paged(PAGES * PAGE_SIZE, paged, vmo_rights) == Status::Ok;
-        verdict(tally, made, "a region, a physical VMO and a paged VMO are made");
+        EXPECT_TRUE(made, "a region, a physical VMO and a paged VMO are made");
 
         if (made) {
             constexpr auto OPTIONS = VmOptions::PermRead | VmOptions::PermWrite |
                                      VmOptions::CanMapRead | VmOptions::CanMapWrite;
             auto const physical = region.dispatcher()->map(OPTIONS, 0, *window.dispatcher(), 0,
                                                            PAGES * PAGE_SIZE, "physvmo.test");
-            verdict(tally, physical.is_ok(), "the physical VMO is mapped, without MapRange");
+            EXPECT_TRUE(physical.is_ok(), "the physical VMO is mapped, without MapRange");
             if (physical.is_ok()) {
                 constexpr auto WANT = mm::MmuFlags::Readable | mm::MmuFlags::Writable |
                                       mm::MmuFlags::User | mm::MmuFlags::Discache;
@@ -123,38 +104,27 @@ namespace {
                     uncached = uncached && entry.present && entry.pa == phys + page * PAGE_SIZE &&
                                (entry.flags & WANT) == WANT;
                 }
-                verdict(tally, uncached,
-                        "each page of the window is in the page tables at once, on its own frame, "
-                        "readable, writable, for the user, and uncached");
+                EXPECT_TRUE(uncached,
+                            "each page of the window is in the page tables at once, on its own "
+                            "frame, readable, writable, for the user, and uncached");
             }
 
             auto const ram =
                 region.dispatcher()->map(OPTIONS | VmOptions::MapRange, 0, *paged.dispatcher(), 0,
                                          PAGES * PAGE_SIZE, "physvmo.test");
-            verdict(tally, ram.is_ok(), "the paged VMO is mapped");
+            EXPECT_TRUE(ram.is_ok(), "the paged VMO is mapped");
             if (ram.is_ok()) {
                 auto cached = true;
                 for (auto page = usize{0}; page < PAGES; ++page) {
                     auto const entry = entry_at(*aspace, ram->base() + page * PAGE_SIZE);
                     cached = cached && entry.present && !(entry.flags & mm::MmuFlags::Discache);
                 }
-                verdict(tally, cached, "the paged VMO's pages carry no cache attribute");
+                EXPECT_TRUE(cached, "the paged VMO's pages carry no cache attribute");
             }
         }
 
-        verdict(tally, aspace->destroy() == Status::Ok, "the address space is destroyed");
-
-        if (tally.failed != 0) {
-            log::error("physvmo.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("physvmo.test: ok -- {} checks", tally.passed);
-        return 0;
+        EXPECT_OK(aspace->destroy(), "the address space is destroyed");
     }
+
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(PhysVmoTest, "physvmo.test", ours::physvmo_test_command,
-             "check that mapping a physical VMO installs the whole window, uncached, and a paged "
-             "VMO stays cached");

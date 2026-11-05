@@ -1,8 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `tickfallback.test`: a CPU offered a device that claims one-shot and will
-// not enter it keeps a periodic tick (TickDevice::rebind_device()).
+// TickFallback.KeepsPeriodicWhenOneshotIsRefused: a CPU offered a device that
+// claims one-shot and will not enter it keeps a periodic tick
+// (TickDevice::rebind_device()).
 //
 // The device is a fake that can run Periodic and Oneshot on paper and refuses
 // the second when asked. The tick device it is offered to is a TickDevice of
@@ -20,39 +21,25 @@
 // what a periodic tick in service is; and it was asked for Oneshot once.
 //
 // Needs kernel.time.oneshot, as the fallback is only entered when the CPU
-// wants a one-shot tick; without it the test says so and passes.
+// wants a one-shot tick; without it the test is skipped.
 //
-// A console command rather than a unit test for the reason mutex.stress
-// gives. It is named *.test so that scripts/kshell_run.py waits for its
-// verdict line, as for timershare.test.
+// Why an in-kernel test: the boot option, the interrupt mask check_new_device()
+// requires, and the tick mode of the CPU it runs on exist only in a booted
+// kernel, and the tick layer has no host-side stand-in. A plain unit test could
+// not offer a tick device a clock event device and see what the device layer
+// does with it.
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/time/clock_event_device.hpp>
 #include <ours/time/tick_device.hpp>
 
 #include <arch/auto_interrupt_disabler.hpp>
-#include <gktl/command.hpp>
-#include <logz4/log.hpp>
+#include <ktest/ktest.hpp>
 
 namespace ours {
 namespace {
     using time::ClockEventDevice;
     using time::TickDevice;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("tickfallback.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("tickfallback.test: FAIL  {}", name);
-    }
 
     /// A device that is rated above the local APIC timer, can run Periodic,
     /// and refuses Oneshot every time it is asked.
@@ -97,12 +84,10 @@ namespace {
         ClockEventDevice m_clkevt;
     };
 
-    auto tick_fallback_command(int, char **) -> int {
-        Tally tally;
-
+    KTEST(TickFallback, KeepsPeriodicWhenOneshotIsRefused) {
         if (!TickDevice::Current::is_mode_oneshot()) {
-            log::info("tickfallback.test: ok -- skipped, kernel.time.oneshot is off");
-            return 0;
+            KTEST_SKIP(
+                "kernel.time.oneshot is off, so there is no one-shot tick to fall back from");
         }
 
         // What happened, noted with interrupts off and judged after them.
@@ -129,25 +114,14 @@ namespace {
             oneshot_asked = fake.oneshot_asked();
         }
 
-        verdict(tally, offered == Status::Ok, "a device that will not run one-shot is still taken");
-        verdict(tally, holds_fake, "the tick device points at it");
-        verdict(tally, still_periodic,
-                "the mode is still Periodic: it was not committed before the device accepted");
-        verdict(tally, fake_periodic, "and the device runs Periodic");
-        verdict(tally, fake_has_handler, "with the periodic tick's handler on it");
-        verdict(tally, oneshot_asked == 1, "after being asked for one-shot once");
-
-        if (tally.failed != 0) {
-            log::error("tickfallback.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("tickfallback.test: ok -- {} checks", tally.passed);
-        return 0;
+        EXPECT_OK(offered, "a device that will not run one-shot is still taken");
+        EXPECT_TRUE(holds_fake, "the tick device points at it");
+        EXPECT_TRUE(still_periodic,
+                    "the mode is still Periodic: it was not committed before the device accepted");
+        EXPECT_TRUE(fake_periodic, "and the device runs Periodic");
+        EXPECT_TRUE(fake_has_handler, "with the periodic tick's handler on it");
+        EXPECT_EQ(oneshot_asked, usize{1}, "after being asked for one-shot once");
     }
+
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(
-    TickFallbackTest, "tickfallback.test", ours::tick_fallback_command,
-    "offer a tick device a device that will not run one-shot, and check it stays periodic");

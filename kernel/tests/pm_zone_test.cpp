@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 ///
-/// `pmzone.test`: a max-order block freed back into its zone one frame at a
-/// time comes back together as one max-order block, whichever memmap section
-/// of the zone it lies in.
+/// PmZone.FreedBlocksCoalesceAcrossSections: a max-order block freed back into
+/// its zone one frame at a time comes back together as one max-order block,
+/// whichever memmap section of the zone it lies in.
 ///
 /// Why sections: the sparse memmap gives each section its own descriptor
 /// array, allocated apart from the others, so a zone that spans several
@@ -14,6 +14,11 @@
 /// array: in every section but the first the partner was never found, and a
 /// block split there stayed split for good. Nothing at boot looks at
 /// coalescing, so this test does.
+///
+/// Why an in-kernel test: which zones span several sections, and what their
+/// free lists hold, are properties of the memory map the boot built on this
+/// machine, so the check needs the booted kernel's zones. A host test has no
+/// memmap and no section layout to span.
 ///
 /// For each zone spanning more than one section it takes a max-order block
 /// from the zone's first section, the control, and one from a later section,
@@ -32,7 +37,7 @@
 
 #include <array>
 
-#include <gktl/command.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -40,21 +45,6 @@ namespace {
     using mm::PmFrame;
     using mm::PmNode;
     using mm::PmZone;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("pmzone.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("pmzone.test: FAIL  {}", name);
-    }
 
     /// Frames in a max-order block.
     constexpr auto BLOCK_FRAMES = usize{1} << MAX_FRAME_ORDER;
@@ -99,7 +89,7 @@ namespace {
             }
             if (after[order] != expected) {
                 whole = false;
-                log::info("pmzone.test:     order {}: {} free block(s) before, {} after", order,
+                log::info("PmZone:     order {}: {} free block(s) before, {} after", order,
                           before[order], after[order]);
             }
         }
@@ -107,7 +97,7 @@ namespace {
         if (!whole) {
             outcome = "did not coalesce";
         }
-        log::info("pmzone.test:   {} zone, {}: block at pfn {:#x} (section {}) {}",
+        log::info("PmZone:   {} zone, {}: block at pfn {:#x} (section {}) {}",
                   mm::to_string(zone.zone_type()), where, pfn, mm::pfn_to_secnum(pfn), outcome);
         return whole;
     }
@@ -120,7 +110,7 @@ namespace {
 
     /// The checks for one zone spanning several sections. Returns whether a
     /// block from a later section was found to check.
-    auto check_zone(Tally &tally, PmZone &zone) -> bool {
+    auto check_zone(PmZone &zone) -> bool {
         auto const first_section = mm::pfn_to_secnum(zone.start_pfn());
 
         PmFrame *first = nullptr;
@@ -142,14 +132,14 @@ namespace {
         }
 
         if (first) {
-            verdict(tally, frees_back_whole(zone, first, "first section"),
-                    "a block freed frame by frame in the zone's first section coalesces whole");
+            EXPECT_TRUE(frees_back_whole(zone, first, "first section"),
+                        "a block freed frame by frame in the zone's first section coalesces whole");
         }
         if (later) {
-            verdict(tally, frees_back_whole(zone, later, "later section"),
-                    "a block freed frame by frame in a later section coalesces whole");
+            EXPECT_TRUE(frees_back_whole(zone, later, "later section"),
+                        "a block freed frame by frame in a later section coalesces whole");
         } else {
-            log::info("pmzone.test:   {} zone: no free max-order block outside section {}",
+            log::info("PmZone:   {} zone: no free max-order block outside section {}",
                       mm::to_string(zone.zone_type()), first_section);
         }
 
@@ -158,8 +148,7 @@ namespace {
         return later != nullptr;
     }
 
-    auto pmzone_test_command(int, char **) -> int {
-        Tally tally;
+    KTEST(PmZone, FreedBlocksCoalesceAcrossSections) {
         usize spanning = 0;
         usize checked = 0;
 
@@ -169,29 +158,20 @@ namespace {
                     return;
                 }
                 spanning += 1;
-                if (check_zone(tally, zone)) {
+                if (check_zone(zone)) {
                     checked += 1;
                 }
             });
         });
 
         if (spanning == 0) {
-            log::info("pmzone.test:   no zone spans two sections; nothing to check");
+            log::info("PmZone:   no zone spans two sections; nothing to check");
         } else {
-            verdict(tally, checked != 0,
-                    "some zone spanning two sections had a free max-order block past its first");
+            EXPECT_TRUE(
+                checked != 0,
+                "some zone spanning two sections had a free max-order block past its first");
         }
-
-        if (tally.failed != 0) {
-            log::error("pmzone.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("pmzone.test: ok -- {} checks", tally.passed);
-        return 0;
     }
+
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(PmZoneTest, "pmzone.test", ours::pmzone_test_command,
-             "check that a zone's free blocks coalesce in every memmap section it spans");

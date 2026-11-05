@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `dpc.test`: a CPU's Dpc workers stopped and started again
+// Dpc.StopsAndStartsWorkers: a CPU's Dpc workers stopped and started again
 // (DpcRunner::stop_workers(), step 1 of .agents/tasks/cpu-hotplug/PLAN.md),
 // on the highest online CPU, which taking a CPU offline will do first. What
 // it checks, in order:
@@ -18,8 +18,8 @@
 //     there (DpcRunner::take_over_from(), what taking the CPU offline does
 //     once it has stopped), and runs it.
 //
-// A console command rather than a host test: the workers are threads, and
-// what is checked is where and whether the scheduler runs them.
+// Why an in-kernel test: the workers are threads, and what is checked is
+// where and whether the scheduler runs them.
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/dpc.hpp>
@@ -29,8 +29,8 @@
 
 #include <atomic>
 
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -46,22 +46,6 @@ namespace {
     constexpr auto SETTLE = Milliseconds(20);
     /// What the thread that exits while the workers are stopped returns.
     constexpr i32 RETCODE = 7;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> bool {
-        if (ok) {
-            tally.passed += 1;
-            log::info("dpc.test: pass  {}", name);
-            return true;
-        }
-        tally.failed += 1;
-        log::error("dpc.test: FAIL  {}", name);
-        return false;
-    }
 
     auto deadline_after(Duration const delta) -> time::Deadline {
         return time::Deadline::at(time::SteadyClock::now() + delta);
@@ -157,65 +141,63 @@ namespace {
         return poll_until([&state] { return state.enqueued.load(std::memory_order_acquire); });
     }
 
-    auto dpc_test_command(int, char **) -> int {
-        Tally tally;
-
+    KTEST(Dpc, StopsAndStartsWorkers) {
         auto target = CpuNum{0};
         Cpu::online_mask().for_each([&target](CpuNum const cpu) { target = cpu; });
-        log::info("dpc.test: stopping the Dpc workers of CPU {}", target);
+        log::info("Dpc: stopping the Dpc workers of CPU {}", target);
 
         auto *const state = new (mm::GAF_KERNEL) State();
-        if (state == nullptr) {
-            log::error("dpc.test: FAILED -- no memory for the test's state");
-            return 1;
-        }
+        ASSERT_NONNULL(state, "allocate the test's state");
 
-        auto ok = verdict(tally,
-                          enqueue_on(*state, target, state->before_dpc) && poll_until([state] {
-                              return state->before.runs.load(std::memory_order_acquire) == 1;
-                          }) &&
-                              state->before.ran_on.load(std::memory_order_relaxed) == target,
-                          "a Dpc enqueued on the CPU runs there");
+        auto ok = true;
+        auto const first_ran = enqueue_on(*state, target, state->before_dpc) && poll_until([state] {
+                                   return state->before.runs.load(std::memory_order_acquire) == 1;
+                               }) &&
+                               state->before.ran_on.load(std::memory_order_relaxed) == target;
+        EXPECT_TRUE(first_ran, "a Dpc enqueued on the CPU runs there");
+        ok = ok && first_ran;
 
-        auto const stopped = DpcRunner::stop_workers(target, deadline_after(LOST_AFTER));
-        if (!verdict(tally, stopped == Status::Ok, "its workers stop")) {
-            log::error("dpc.test: FAILED -- stop_workers answered {}; the CPU's Dpcs wait",
-                       to_string(stopped));
-            return 1;
-        }
-        ok &= verdict(
-            tally, DpcRunner::stop_workers(target, deadline_after(LOST_AFTER)) == Status::BadState,
-            "a second stop finds no workers");
+        // If the stop fails, the CPU's Dpc workers may still hold a Dpc from
+        // |state|, so this failure path leaks the state rather than freeing it
+        // under them.
+        ASSERT_OK(DpcRunner::stop_workers(target, deadline_after(LOST_AFTER)), "its workers stop");
 
-        ok &= verdict(tally, enqueue_on(*state, target, state->stopped_dpc),
-                      "a Dpc is enqueued on it while they are stopped");
+        auto const second_stopped = DpcRunner::stop_workers(target, deadline_after(LOST_AFTER));
+        EXPECT_EQ(second_stopped, Status::BadState, "a second stop finds no workers");
+        ok = ok && second_stopped == Status::BadState;
+
+        auto const queued = enqueue_on(*state, target, state->stopped_dpc);
+        EXPECT_TRUE(queued, "a Dpc is enqueued on it while they are stopped");
+        ok = ok && queued;
         auto _ = Thread::Current::sleep_for(SETTLE, task::Interruptible::No);
-        ok &= verdict(tally,
-                      state->stopped.runs.load(std::memory_order_acquire) == 0 &&
-                          state->stopped_dpc.state() == Dpc::State::Queued,
-                      "and stays queued, not run");
+        auto const stayed_queued = state->stopped.runs.load(std::memory_order_acquire) == 0 &&
+                                   state->stopped_dpc.state() == Dpc::State::Queued;
+        EXPECT_TRUE(stayed_queued, "and stays queued, not run");
+        ok = ok && stayed_queued;
 
         auto *const exiting = spawn_on(target, "dpc.test/exit", exit_routine, nullptr, false);
         auto retcode = i32{0};
-        ok &= verdict(tally,
-                      exiting != nullptr &&
-                          exiting->join(&retcode, deadline_after(SETTLE)) == Status::TimeOut,
-                      "a thread that exits there cannot be joined yet");
+        auto const cannot_join = exiting != nullptr &&
+                                 exiting->join(&retcode, deadline_after(SETTLE)) == Status::TimeOut;
+        EXPECT_TRUE(cannot_join, "a thread that exits there cannot be joined yet");
+        ok = ok && cannot_join;
 
         DpcRunner::start_workers(target);
-        ok &= verdict(tally,
-                      poll_until([state] {
-                          return state->stopped.runs.load(std::memory_order_acquire) != 0;
-                      }) &&
-                          state->stopped.ran_on.load(std::memory_order_relaxed) == target,
-                      "once they start again, the queued Dpc runs there");
+        auto const queued_ran = poll_until([state] {
+                                    return state->stopped.runs.load(std::memory_order_acquire) != 0;
+                                }) &&
+                                state->stopped.ran_on.load(std::memory_order_relaxed) == target;
+        EXPECT_TRUE(queued_ran, "once they start again, the queued Dpc runs there");
+        ok = ok && queued_ran;
         auto _ = Thread::Current::sleep_for(SETTLE, task::Interruptible::No);
-        ok &= verdict(tally, state->stopped.runs.load(std::memory_order_acquire) == 1, "once");
-        ok &= verdict(tally,
-                      exiting != nullptr &&
-                          exiting->join(&retcode, deadline_after(LOST_AFTER)) == Status::Ok &&
-                          retcode == RETCODE,
-                      "and the exited thread is joined with its return code");
+        auto const ran_once = state->stopped.runs.load(std::memory_order_acquire) == 1;
+        EXPECT_TRUE(ran_once, "once");
+        ok = ok && ran_once;
+        auto const joined = exiting != nullptr &&
+                            exiting->join(&retcode, deadline_after(LOST_AFTER)) == Status::Ok &&
+                            retcode == RETCODE;
+        EXPECT_TRUE(joined, "and the exited thread is joined with its return code");
+        ok = ok && joined;
 
         // Another CPU to take over from this one, if there is one.
         Cpu::online_mask().for_each([state, target](CpuNum const cpu) {
@@ -225,35 +207,31 @@ namespace {
         });
         if (state->taker != INVALID_CPU_NUM) {
             state->taken = target;
-            ok &=
-                verdict(tally,
-                        DpcRunner::stop_workers(target, deadline_after(LOST_AFTER)) == Status::Ok &&
-                            enqueue_on(*state, target, state->moved_dpc),
-                        "with the workers stopped again, a Dpc is queued there");
+            auto const moved_queued =
+                DpcRunner::stop_workers(target, deadline_after(LOST_AFTER)) == Status::Ok &&
+                enqueue_on(*state, target, state->moved_dpc);
+            EXPECT_TRUE(moved_queued, "with the workers stopped again, a Dpc is queued there");
+            ok = ok && moved_queued;
             auto *const taker =
                 spawn_on(state->taker, "dpc.test/take-over", take_over_routine, state, false);
-            ok &= verdict(tally,
-                          taker != nullptr &&
-                              taker->join(nullptr, deadline_after(LOST_AFTER)) == Status::Ok &&
-                              poll_until([state] {
-                                  return state->moved.runs.load(std::memory_order_acquire) == 1;
-                              }) &&
-                              state->moved.ran_on.load(std::memory_order_relaxed) == state->taker,
-                          "and another CPU takes it over and runs it");
+            auto const taken = taker != nullptr &&
+                               taker->join(nullptr, deadline_after(LOST_AFTER)) == Status::Ok &&
+                               poll_until([state] {
+                                   return state->moved.runs.load(std::memory_order_acquire) == 1;
+                               }) &&
+                               state->moved.ran_on.load(std::memory_order_relaxed) == state->taker;
+            EXPECT_TRUE(taken, "and another CPU takes it over and runs it");
+            ok = ok && taken;
             DpcRunner::start_workers(target);
         }
 
         if (!ok) {
-            log::error("dpc.test: FAILED -- {} of {} checks; the test's state is leaked",
-                       tally.failed, tally.passed + tally.failed);
-            return 1;
+            // A Dpc may still be queued on |state|, so the test leaks it rather
+            // than freeing it under the worker that runs it.
+            FAIL("a check failed; leaking the test's state");
         }
         delete state;
-        log::info("dpc.test: ok -- {} checks", tally.passed);
-        return 0;
     }
+
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(DpcTest, "dpc.test", ours::dpc_test_command,
-             "stop the highest CPU's Dpc workers and start them again");
