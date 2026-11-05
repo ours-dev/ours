@@ -92,8 +92,19 @@ namespace {
     }
 
     auto run_topology_checks(Tally &tally) -> void {
-        auto const cpu = mm::CpuLocal::current_cpu();
-        auto const nid = mm::current_node();
+        // The CPU and its node are two reads, and the test is that the second
+        // answers for the CPU the first named. This thread is not pinned, and an
+        // idle CPU can take it between the reads, so they are made with
+        // interrupts off, as check_local_fallback() does. Only these two need
+        // it: every other mm::current_node() in this file is used as a node
+        // number the test then passes on, never compared with a CPU.
+        auto cpu = CpuNum{};
+        auto nid = NodeId{};
+        {
+            arch::AutoInterruptDisabler irq;
+            cpu = mm::CpuLocal::current_cpu();
+            nid = mm::current_node();
+        }
         log::info("pmnode.test:   cpu{} is on node {}; {} node(s) online", cpu, nid,
                   PmNode::num_online_nodes());
 

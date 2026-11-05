@@ -8,6 +8,7 @@
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 
+#include <arch/auto_interrupt_disabler.hpp>
 #include <arch/interrupt.hpp>
 #include <gktl/counter.hpp>
 #include <gktl/init_hook.hpp>
@@ -468,9 +469,27 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmFault::Cause cause, usize extr
     // ASSERT rather than DEBUG_ASSERT for the reason the fault entry stops the
     // kernel in release builds as well: with the check compiled out, a violation
     // does not fail, it hangs on a mutex that can never be released to it.
-    ASSERT(sync::SpinLock::num_held_cpu() == 0,
+    //
+    // The count is a fact about the CPU the caller is on, and a soft fault
+    // arrives with interrupts and preemption on: a thread preempted inside the
+    // read can be taken by an idle CPU and resume on another, having resolved
+    // the CPU on one and loaded the slot on the other. That reads the first
+    // CPU's count, non-zero whenever it is inside a spin lock or an interrupt
+    // handler, and this assertion would stop a kernel that did nothing wrong.
+    // So it is read once, with interrupts off, and the assertion tests and
+    // reports that one value (ASSERT renders its message only after the test
+    // failed, so a second read there could differ from the first).
+    //
+    // The block ends before the next assertion, which needs interrupts as the
+    // caller left them.
+    usize num_spin_locks = 0;
+    {
+        arch::AutoInterruptDisabler irq;
+        num_spin_locks = sync::SpinLock::num_held_cpu();
+    }
+    ASSERT(num_spin_locks == 0,
            "page fault at {:#x} resolved with {} spin lock(s) held on this CPU", va,
-           sync::SpinLock::num_held_cpu());
+           num_spin_locks);
     ASSERT(!arch::irqs_disabled(), "page fault at {:#x} resolved with interrupts disabled", va);
 
     auto status = Status::Ok;

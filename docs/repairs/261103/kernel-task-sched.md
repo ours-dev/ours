@@ -304,26 +304,6 @@ None, this project's own design.
 **Acceptance**
 A test changes the priority of a thread while another CPU moves it (a stress with `steal()` running) and ends with the queue counts equal to the queues' contents.
 
-## 29. The page-fault spin-lock assertion reads a per-CPU count from a thread that can move
-
-**Severity**
-Medium: a panic in a release image, in a window of a few instructions.
-
-**Symptom**
-`VmAspace::page_fault_internal()` (`kernel/mm/vm_aspace.cpp`) runs `ASSERT(sync::SpinLock::num_held_cpu() == 0, ...)` and reads the count again for its message. `num_held_cpu()` is a `gktl::Counter::get()`, which resolves the CPU in two steps (`CpuLocal::with_current()`), and a soft fault (`Thread::Current::soft_fault()`, from a user copy) arrives with interrupts and preemption on. A thread preempted between the two steps and taken by another CPU reads the first CPU's count, which is non-zero when that CPU is inside a spin lock or an interrupt, and the assertion stops the kernel. The hardware-fault entry is not affected (interrupts are off). A reviewer's reading, not run.
-
-**Cause**
-The check is meaningful for the CPU the thread is on, and nothing keeps the thread on it.
-
-**Change**
-Read the count with interrupts off (`arch::AutoInterruptDisabler` in a block of its own, the second assertion needs them on), or in a form that names the CPU.
-
-**Reference**
-None, this project's own design.
-
-**Acceptance**
-The count is read where the thread cannot move; `vmosnapshot.test` and `usercopy.test` pass.
-
 ## 30. `DpcRunner::enqueue()` resolves the CPU twice
 
 **Severity**
@@ -363,26 +343,6 @@ None, this project's own design.
 
 **Acceptance**
 The function states or enforces its context, with a caller of it as the reason.
-
-## 32. `pmnode.test` reads the CPU and its node in an unpinned thread
-
-**Severity**
-Low: a test that can fail on a four-node machine for a reason that is not a bug.
-
-**Symptom**
-`pm_node_test.cpp` (around line 95) reads `current_cpu()` and then `mm::current_node()` in the kshell thread, which is not pinned, and compares them with the placement table. A thread moved between the reads makes `node_of(cpu)` differ from the node read. The other `current_node()` expectations in the file (around lines 455, 503, 532 and 715) assume the same. `check_local_fallback` wraps its reads in `AutoInterruptDisabler`, which is the pattern. Invisible on a one-node machine; on `NUMA=1` it passed in 3 of 3 runs after `steal()` was added. A reviewer's reading, not run.
-
-**Cause**
-The test assumed the thread stays on its CPU.
-
-**Change**
-Read both with interrupts off, or pin the test thread.
-
-**Reference**
-None, this project's own test.
-
-**Acceptance**
-`NUMA=1 kshell_run.py --out out/numa.x86 pmnode.test` passes 20 runs in a row with idle CPUs.
 
 ## 33. A remote write of a CPU's preemption state is not atomic
 
