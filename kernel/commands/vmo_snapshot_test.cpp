@@ -56,6 +56,7 @@
 #include <ours/time/clock.hpp>
 #include <ours/vma.hpp>
 
+#include <array>
 #include <atomic>
 
 #include <cstring>
@@ -849,6 +850,46 @@ namespace {
 
     auto poke(ustl::Arc<mm::VmObjectPaged> &vmo, usize const page_index, u32 const word) -> bool {
         return vmo->write(&word, page_index * PAGE_SIZE, sizeof(word)) == Status::Ok;
+    }
+
+    auto check_slice_bounds(Tally &tally) -> void {
+        constexpr auto TAIL = PAGE_SIZE - sizeof(u64);
+        constexpr u64 OLD = 0x1122'3344'5566'7788;
+        ustl::Arc<mm::VmObjectPaged> parent;
+        ustl::Arc<mm::VmObjectPaged> slice;
+        auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE,
+                                                    mm::VmoFlags::Lazy, &parent) == Status::Ok &&
+                          parent->store_u64(TAIL, OLD) == Status::Ok &&
+                          parent->create_slice(0, PAGE_SIZE, &slice) == Status::Ok;
+        verdict(tally, made, "a one-page view sits over a larger VMO");
+        if (!made) {
+            return;
+        }
+        std::array<u64, 2> buffer{1, 2};
+        u64 tail = 0;
+        verdict(tally,
+                slice->write(buffer.data(), TAIL, sizeof(buffer)) == Status::OutOfRange &&
+                    slice->read(buffer.data(), TAIL, sizeof(buffer)) == Status::OutOfRange &&
+                    buffer[0] == 1 && buffer[1] == 2 &&
+                    parent->read(&tail, TAIL, sizeof(tail)) == Status::Ok && tail == OLD,
+                "a copy beyond the slice leaves both the buffer and the backing intact");
+        verdict(tally,
+                slice->commit_range(0, 2 * PAGE_SIZE, mm::VmObject::CommitOptions::None) ==
+                        Status::OutOfRange &&
+                    parent->committed_pages(PAGE_SIZE, PAGE_SIZE) == 0 &&
+                    slice->committed_pages(PAGE_SIZE, PAGE_SIZE) == 0,
+                "commit and committed-page queries stay inside the slice");
+        PhysAddr pa{};
+        verdict(tally,
+                slice->lookup_contiguous(1, PAGE_SIZE, &pa) == Status::InvArgs &&
+                    slice->lookup_contiguous(0, 2 * PAGE_SIZE, &pa) == Status::OutOfRange &&
+                    parent->lookup_contiguous(0, 2 * PAGE_SIZE, &pa) == Status::BadState,
+                "physical lookup distinguishes alignment, bounds and missing backing");
+        verdict(tally,
+                slice->unpin_range(0, 0) == Status::InvArgs &&
+                    slice->unpin_range(PAGE_SIZE, PAGE_SIZE) == Status::OutOfRange &&
+                    slice->store_u64(TAIL + 1, OLD) == Status::InvArgs,
+                "invalid unpin and atomic store requests are rejected");
     }
 
     // Zero markers: slots that say their page is zero and hold none, put by hand
@@ -2341,6 +2382,7 @@ namespace {
         check_narrowing_protect(tally);
         check_widen_reads_entry_again(tally);
         check_shared_views(tally);
+        check_slice_bounds(tally);
         check_clone_of_mapped_object(tally);
         check_zero_markers(tally);
         check_create_clone(tally);

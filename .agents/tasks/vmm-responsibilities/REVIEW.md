@@ -69,3 +69,7 @@ A failed tree insertion leaves the active state clear and returns before registr
 ## Permanent residency repair
 
 The COW node rejects clone and transfer before it changes slots. The VMO still validates and translates the requested window. The contiguous VMO suite exercised the node directly and checked that a rejected transfer left the splice list fresh.
+
+## Coverage follow-up
+
+The regression cases check state visible to callers after failure, including retained objects, rolled-back page requests and page protections. The host allocator replacement is limited to construction of the test range tracker. Both development images booted, all 163 host tests and all 46 instrumented kernel test commands passed. The four repairs reached 70/70 executable changed lines, and the VMM scope measured 4173/4763 lines. The remaining gaps include kernel allocation failures, exceptional pager and reclaim branches, and legacy unsupported methods.

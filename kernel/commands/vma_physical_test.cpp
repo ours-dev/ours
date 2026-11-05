@@ -25,6 +25,7 @@
 // command table does not encode '_'.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/cfg.hpp>
+#include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
@@ -109,6 +110,38 @@ namespace {
         verdict(tally, made, "a region, a physical VMO and a paged VMO are made");
 
         if (made) {
+            auto vmo = window.dispatcher()->vmo();
+            PhysAddr first{};
+            verdict(tally,
+                    vmo->lookup_contiguous(1, PAGE_SIZE, &first) == Status::Ok &&
+                        first == phys + 1 &&
+                        vmo->lookup_contiguous(0, 0, &first) == Status::InvArgs &&
+                        vmo->lookup_contiguous(PAGES * PAGE_SIZE, 1, &first) == Status::OutOfRange,
+                    "a physical window resolves byte offsets and rejects invalid lengths");
+            verdict(tally,
+                    vmo->commit_range(0, PAGES * PAGE_SIZE) == Status::Ok &&
+                        vmo->commit_range(PAGES * PAGE_SIZE, PAGE_SIZE) == Status::OutOfRange,
+                    "committing a physical window checks bounds without allocating frames");
+
+            auto root = aspace->root_vma();
+            constexpr auto READ =
+                mm::MmuFlags::Readable | mm::MmuFlags::User | mm::MmuFlags::Discache;
+            auto alias = root->map_phys(phys, VirtAddr::Anywhere, PAGE_SIZE, READ,
+                                        mm::MapOptions::Resident, "physical read alias");
+            verdict(tally, alias.is_ok(), "the kernel mapping helper installs a physical window");
+            if (alias) {
+                auto const address = (*alias)->base();
+                auto const writable = READ | mm::MmuFlags::Writable;
+                verdict(tally,
+                        root->protect(address, PAGE_SIZE, writable) == Status::Ok &&
+                            aspace->soft_fault(address, mm::VmfCause::Write) == Status::Ok,
+                        "a write fault can widen a physical mapping after protect");
+                auto const entry = entry_at(*aspace, address);
+                verdict(tally,
+                        entry.present && entry.pa == phys && (entry.flags & writable) == writable,
+                        "widening preserves the physical frame and its uncached attribute");
+            }
+
             constexpr auto OPTIONS = VmOptions::PermRead | VmOptions::PermWrite |
                                      VmOptions::CanMapRead | VmOptions::CanMapWrite;
             auto const physical = region.dispatcher()->map(OPTIONS, 0, *window.dispatcher(), 0,

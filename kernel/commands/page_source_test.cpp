@@ -462,13 +462,16 @@ namespace {
             VmoReadUser,
             /// vmo->commit_range() of [|offset|, |offset| + |len|).
             VmoCommit,
+
+            /// vmo->pin_range() of [|offset|, |offset| + |len|).
+            VmoPin,
         };
 
         Kind kind = Kind::Load;
         VirtAddr va{};
         mm::VmObjectPaged *vmo = nullptr;
         u64 offset = 0;
-        /// How much a VmoCommit commits.
+        /// Length of the commit or pin request.
         u64 len = 0;
         /// Written, or read back.
         u64 value = 0;
@@ -501,6 +504,9 @@ namespace {
             case Access::Kind::VmoCommit:
                 access.status = access.vmo->commit_range(access.offset, access.len,
                                                          mm::VmObject::CommitOptions::None);
+                break;
+            case Access::Kind::VmoPin:
+                access.status = access.vmo->pin_range(access.offset, access.len);
                 break;
         }
         return 0;
@@ -767,7 +773,7 @@ namespace {
         auto &provider = *rig.provider;
 
         ustl::Arc<mm::VmObjectPaged> vmo;
-        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 2 * P,
+        if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 3 * P,
                                                                mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
             log::error("pagesource.test: could not make the VMO to populate: {}",
@@ -778,12 +784,22 @@ namespace {
         verdict(tally, supply(*vmo, P, P) == Status::Ok,
                 "page 1 of an object with a source is supplied, page 0 is not");
 
-        auto const sent_before = provider.nr_sent();
         auto root = aspace.root_vma();
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_with_vmo(VirtAddr::Anywhere, 2 * P, 0, flags,
-                                          mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
-                                          mm::MapOptions::Resident, "pagesource.test populate");
+        auto const where = root->base() + 16_mb;
+        auto const commit = root->map_with_vmo(where, 2 * P, 0, flags, mm::VmaFlags::PermMask, vmo,
+                                               mm::MapOptions::Commit, "pager commit");
+        ustl::Arc<mm::VmMapping> leftover;
+        verdict(tally,
+                commit.is_err() && commit.unwrap_err() == Status::ShouldWait &&
+                    aspace.find_mapping(where, &leftover) == Status::NotFound &&
+                    source.nr_raised() == 0 && provider.nr_queued() == 0,
+                "a failed immediate commit releases the address and withdraws its request");
+
+        auto const sent_before = provider.nr_sent();
+        auto mapping = root->map_with_vmo(where, 2 * P, 0, flags, mm::VmaFlags::PermMask,
+                                          ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Resident,
+                                          "pagesource.test populate");
         verdict(tally, mapping.is_ok(), "a populate mapping of it is made");
         if (mapping.is_err()) {
             return;
@@ -810,6 +826,27 @@ namespace {
             verdict(tally, done && reader.status == Status::Ok && reader.value == pattern(0),
                     "the read resumes and reads the supplied bytes");
         }
+
+        // The pin reaches page 1 before waiting for the missing page 2.
+        provider.set_wait_limit(Milliseconds(50));
+        auto const pin_status = vmo->pin_range(P, 2 * P);
+        provider.set_wait_limit(LOST_AFTER);
+        verdict(tally,
+                pin_status == Status::TimeOut && vmo->unpin_range(P, P) == Status::BadState &&
+                    vmo->committed_pages(P, P) == 1 && source.nr_raised() == 0,
+                "a pin that times out rolls back the prefix without discarding its pages");
+        Access pin{
+            .kind = Access::Kind::VmoPin, .vmo = vmo.as_ptr_mut(), .offset = P, .len = 2 * P};
+        auto *const thread = start(&aspace, &pin);
+        auto const waiting = poll_until([&] { return source.nr_raised() == 1; });
+        verdict(tally, waiting && is(provider.take(), 2 * P, P),
+                "a retry waits for only the unsupplied page");
+        verdict(tally, supply(*vmo, 2 * P, P) == Status::Ok, "the missing pin page is supplied");
+        auto const done = thread != nullptr && finish(thread, source);
+        verdict(tally,
+                done && pin.status == Status::Ok && vmo->unpin_range(P, 2 * P) == Status::Ok &&
+                    vmo->unpin_range(P, 2 * P) == Status::BadState,
+                "the resumed pin holds each page exactly once");
 
         auto _ = root->unmap(base, 2 * P);
     }

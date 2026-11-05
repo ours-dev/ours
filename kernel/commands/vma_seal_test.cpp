@@ -73,6 +73,70 @@ namespace {
         return vmo;
     }
 
+    auto check_protect_preflight(Tally &tally, mm::VmAspace &aspace) -> void {
+        constexpr auto READ = mm::MmuFlags::Readable | mm::MmuFlags::User;
+        constexpr auto RW = READ | mm::MmuFlags::Writable;
+        constexpr auto RX = READ | mm::MmuFlags::Executable;
+        constexpr auto BASE = USER_ASPACE_BASE + 48_mb;
+        auto root = aspace.root_vma();
+        auto first =
+            root->map_with_vmo(BASE, 3 * PAGE_SIZE, 0, RW, mm::VmaFlags::PermMask,
+                               make_vmo(3 * PAGE_SIZE), mm::MapOptions::Commit, "writable");
+        auto neighbor =
+            root->map_with_vmo(BASE + 3 * PAGE_SIZE, PAGE_SIZE, 0, READ, mm::VmaFlags::Read,
+                               make_vmo(PAGE_SIZE), mm::MapOptions::Lazy, "read ceiling");
+        verdict(tally, first.is_ok() && neighbor.is_ok(),
+                "adjacent mappings have different permission ceilings");
+        if (!first || !neighbor) {
+            return;
+        }
+        auto const middle = BASE + PAGE_SIZE;
+        PhysAddr pa{};
+        mm::MmuFlags entry_flags{};
+        verdict(tally,
+                root->protect(BASE, 4 * PAGE_SIZE, RX) == Status::InvArgs &&
+                    aspace.arch_aspace().query(middle, &pa, &entry_flags) == Status::Ok &&
+                    !!(entry_flags & mm::MmuFlags::Writable),
+                "a neighbor's ceiling refuses the whole protect before write is removed");
+        verdict(tally,
+                root->protect(middle, PAGE_SIZE, READ) == Status::Ok &&
+                    root->protect(middle, PAGE_SIZE, RW) == Status::Ok,
+                "restoring the middle page returns it to the neighboring protection");
+        auto &mapping = **first;
+        Guard guard{mapping.get_lock()};
+        usize regions = 0;
+        mapping.for_each_protection_range_locked([&](VirtAddr, usize, mm::MmuFlags) { ++regions; });
+        verdict(tally, regions == 1, "equal protection spans coalesce after restoration");
+    }
+
+    auto check_registration_undo(Tally &tally, mm::VmAspace &aspace) -> void {
+        auto root = aspace.root_vma();
+        constexpr auto RX = mm::MmuFlags::Readable | mm::MmuFlags::Executable | mm::MmuFlags::User;
+        auto code = root->map_with_vmo(
+            VirtAddr::Anywhere, PAGE_SIZE, 0, RX, mm::VmaFlags::PermMask, make_vmo(PAGE_SIZE),
+            mm::MapOptions::Sealed | mm::MapOptions::Commit, "test code");
+        auto const claimed = code.is_ok() && aspace.claim_vdso();
+        verdict(tally, claimed, "the address space accepts one sealed code registration");
+        if (!claimed) {
+            return;
+        }
+        auto const address = (*code)->base();
+        aspace.set_vdso(*code);
+        verdict(tally,
+                aspace.vdso().as_ptr() == code->as_ptr() && aspace.vdso_contains(address, 1) &&
+                    !aspace.claim_vdso(),
+                "the registration retains its mapping and disallows a second claim");
+        verdict(tally,
+                root->destroy_child(**code) == Status::Ok && !aspace.vdso() &&
+                    !aspace.vdso_contains(address, 1),
+                "undoing the mapping withdraws the address space's registration");
+        auto const reclaimed = aspace.claim_vdso();
+        verdict(tally, reclaimed, "withdrawal makes the claim reusable");
+        if (reclaimed) {
+            aspace.release_vdso();
+        }
+    }
+
     auto vmaseal_test_command(int, char **) -> int {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
@@ -110,6 +174,7 @@ namespace {
             return 1;
         }
         ustl::Arc<mm::VmMapping> duplicate;
+        ustl::Arc<mm::VmArea> duplicate_area;
         {
             Guard guard{root->get_lock()};
             auto const status = mm::VmMapping::create(root.as_ptr_mut(), PLAIN, PAGE_SIZE, PERMS,
@@ -117,6 +182,12 @@ namespace {
                                                       "duplicate mapping", &duplicate);
             verdict(tally, status == Status::AlreadyExists && !duplicate,
                     "failed tree insertion does not publish a mapping");
+            verdict(tally,
+                    mm::VmArea::create(PLAIN, PAGE_SIZE, PERMS, root.as_ptr_mut(),
+                                       aspace.as_ptr_mut(), "duplicate area",
+                                       &duplicate_area) == Status::AlreadyExists &&
+                        !duplicate_area,
+                    "failed tree insertion does not publish a sub-area");
         }
         verdict(tally,
                 root->reserve(SEALED + PAGE_SIZE, PAGE_SIZE, flags, "overlap") ==
@@ -127,6 +198,26 @@ namespace {
                 aspace->find_mapping(PLAIN, &found) == Status::Ok &&
                     found.as_ptr() == plain->as_ptr(),
                 "the original mapping survives the rejected insertion");
+        verdict(tally,
+                root->protect(PLAIN, 0, flags) == Status::InvArgs &&
+                    root->protect(root->last() + 1, PAGE_SIZE, flags) == Status::InvArgs &&
+                    root->protect(PLAIN, PAGE_SIZE, mm::MmuFlags::User) == Status::InvArgs,
+                "protect rejects empty ranges, ranges outside the area and invalid permissions");
+        auto &plain_mapping = **plain;
+        verdict(tally,
+                plain_mapping.map(PLAIN, 0, mm::MapOptions::Resident) == Status::InvArgs &&
+                    plain_mapping.map(PLAIN + PAGE_SIZE, PAGE_SIZE, mm::MapOptions::Resident) ==
+                        Status::InvArgs &&
+                    plain_mapping.protect(PLAIN, 0, flags) == Status::InvArgs &&
+                    plain_mapping.protect(PLAIN + PAGE_SIZE, PAGE_SIZE, flags) == Status::InvArgs &&
+                    plain_mapping.protect(PLAIN, PAGE_SIZE, mm::MmuFlags::User) ==
+                        Status::InvArgs &&
+                    plain_mapping.unmap(PLAIN, 0, mm::UnmapOptions::None) == Status::InvArgs &&
+                    plain_mapping.unmap(PLAIN + PAGE_SIZE, PAGE_SIZE, mm::UnmapOptions::None) ==
+                        Status::InvArgs,
+                "a direct mapping operation validates its range and permissions");
+        verdict(tally, aspace->soft_fault(PLAIN, mm::VmfCause::Absent) == Status::Ok,
+                "fault lookup caches the plain mapping before teardown");
         auto inside =
             area->map_with_vmo(AREA + PAGE_SIZE, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
                                mm::MapOptions::Sealed, "vmaseal.test inside");
@@ -164,10 +255,40 @@ namespace {
         verdict(tally, root->unmap(PLAIN, PAGE_SIZE) == Status::Ok,
                 "unmap of the plain mapping is Ok");
         verdict(tally, !plain.unwrap()->is_active(), "and the plain mapping is gone");
+        verdict(tally, aspace->soft_fault(PLAIN, mm::VmfCause::Absent) == Status::NotFound,
+                "the next fault cannot find the removed mapping in the address-space cache");
+        verdict(tally,
+                plain_mapping.map(PLAIN, PAGE_SIZE, mm::MapOptions::Resident) == Status::BadState &&
+                    plain_mapping.protect(PLAIN, PAGE_SIZE, flags) == Status::BadState &&
+                    plain_mapping.unmap(PLAIN, PAGE_SIZE, mm::UnmapOptions::None) ==
+                        Status::BadState &&
+                    root->destroy_child(plain_mapping) == Status::BadState,
+                "a retained mapping cannot be changed or destroyed again after removal");
+
+        check_protect_preflight(tally, *aspace);
+        check_registration_undo(tally, *aspace);
 
         // The sealed ones are in the address space when it goes.
         verdict(tally, aspace->destroy() == Status::Ok,
                 "the address space, sealed mappings and all, can be destroyed");
+        ustl::Arc<mm::VmArea> after_destroy;
+        verdict(tally,
+                root->create_subvma(AREA, PAGE_SIZE, PERMS, "after destroy", &after_destroy) ==
+                        Status::BadState &&
+                    root->protect(SEALED, PAGE_SIZE, flags) == Status::BadState &&
+                    root->unmap(SEALED, PAGE_SIZE) == Status::BadState &&
+                    aspace->find_mapping(SEALED, &found) == Status::BadState &&
+                    aspace->destroy() == Status::BadState,
+                "retained area and address-space references reject operations after teardown");
+        {
+            Guard guard{root->get_lock()};
+            verdict(tally,
+                    mm::VmArea::create(AREA, PAGE_SIZE, PERMS, root.as_ptr_mut(),
+                                       aspace.as_ptr_mut(), "inactive parent",
+                                       &after_destroy) == Status::BadState &&
+                        !after_destroy,
+                    "direct registration rejects an inactive parent");
+        }
 
         if (tally.failed != 0) {
             log::error("vmaseal.test: FAILED -- {} of {} checks", tally.failed,
