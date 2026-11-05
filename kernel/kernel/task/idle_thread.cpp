@@ -222,7 +222,14 @@ auto IdleThread::run() -> void {
                 claim({.current = State::Running, .target = State::Offline}, State::Leaving)) {
                 go_offline_and_halt();
             }
-            if (!scheduler.num_runnable()) {
+            // Nothing queued here: before sleeping, take a thread that waits
+            // behind another on a busier CPU. A CPU looks when it goes idle
+            // and when it has just come back (come_back() enters this loop
+            // without picking a thread, so a look in the pick would miss it).
+            // One that has already halted takes no tick and looks again only
+            // when an interrupt wakes it (item 23 of
+            // docs/repairs/261103/kernel-task-sched.md).
+            if (!scheduler.num_runnable() && !Scheduler::Current::steal()) {
                 // Preemption off across the halt, so that the interrupt
                 // ending it does not switch away from here on its way out:
                 // the time read after the halt is then the halt's end, not

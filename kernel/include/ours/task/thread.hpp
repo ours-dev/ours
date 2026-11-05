@@ -736,10 +736,12 @@ namespace task {
         /// PI-locked section. If spawn_etc() on the same CPU held this lock
         /// with interrupts on, a tick could preempt it mid-section; the exiting
         /// thread would then spin on a lock whose holder sits in this CPU's run
-        /// queue (Scheduler::steal_work_from() is a stub, so no other CPU takes
-        /// it), and this CPU never reschedules while it spins with interrupts
+        /// queue, and this CPU never reschedules while it spins with interrupts
         /// off: a hang in dbg_0, SpinLock::acquire()'s !is_held() assertion in
-        /// dbg_1. Once any holder runs with interrupts off, all of them must.
+        /// dbg_1. Another CPU might take the holder (Scheduler::Current::steal()
+        /// does so only for an idle CPU, and not for a queue of one), so it
+        /// does not save this. Once any holder runs with interrupts off, all of
+        /// them must.
         static sync::SpinLock SPAWNED_THREADS_LOCK;
 
       public:

@@ -832,3 +832,93 @@ None (predictions are paused)
 - Why can a spinner that shares its CPU with two others make no progress for 100 ms without being stranded?
 - Why can round-robin not show a zero in this test, and what makes Fair able to?
 - What does the poll fail on that the fixed window failed on, and how long does each take?
+
+## Title: An idle CPU takes a queued thread from another CPU, its own NUMA node first (2026-11-05)
+
+**Files**
+- `kernel/kernel/task/sched/scheduler.cpp` — new `Scheduler::Current::steal()`, `num_steal_looks()` and `num_steals()`; the counters `SCHEDULE_STEAL_LOOKS` and `SCHEDULE_STEALS`; the thresholds `STEAL_MIN_RUNNABLE_SAME_NODE` (2) and `STEAL_MIN_RUNNABLE_OTHER_NODE` (3), in the unnamed namespace; includes `ours/mm/cpu_node_map.hpp`
+- `kernel/include/ours/task/sched/scheduler.hpp` — the declarations (`steal()` is `[[nodiscard]]`), and a note on the stub `steal_work_from()` saying what pulls today
+- `kernel/kernel/task/idle_thread.cpp` — the idle loop calls `Scheduler::Current::steal()` when `num_runnable()` is zero, before it halts
+- `kernel/commands/steal_test.cpp` — new `steal.test`; `kernel/commands/BUILD.gn` lists it
+- `kernel/mm/include/ours/mm/cpu_local.hpp`, `kernel/include/ours/task/thread.hpp`, `kernel/commands/hotplug_test.cpp` — three comments that said no CPU takes a queued thread, now false (the first is a warning about exactly this change; its text now says what the audit of the callers found)
+- `docs/repairs/261103/kernel-task-sched.md` — item 21 is deleted (the number is kept); items 22 to 26 and 28 to 33 are new (27 was the audit, done); the header is edited
+- `.agents/tasks/sched-facade/DESIGN.md` — the Fair bullet
+
+**Symptom**
+No CPU took a queued thread from another. A thread was placed when it became runnable (a start or a wakeup) or when its CPU went offline, by `select_target_cpu()`, and then stayed on that CPU's queue however idle the others were. Observed on 2026-11-05 with `hotplug.test` instrumented: eight always-running spinners on four CPUs, CPU 3 taken offline, its two spinners go to the survivors, which hold 3, 3 and 2; when CPU 3 returns it gets nothing (by inference from the identical spinner-to-CPU map of the second round, not observed). Round-robin and Fair alike.
+
+**Cause**
+`Scheduler::steal_work_from()` was a stub returning null, called at the end of `pick_next_thread()`. Two things make the obvious fix, filling in that stub, the wrong place here:
+1. **Who looks, and when.** An idle CPU runs `IdleThread::run()`, which halts when `num_runnable()` is zero and takes no tick. A CPU that comes back online enters that loop through `IdleThread::come_back()` and does not call `pick_next_thread()` first; `Current::reactivate()` only sets the state to Active under the run queue lock. So a pull that lives in the pick does not run at come-back time (a later preemption of the CPU would reach it, but nothing guarantees one). The loop is where "this CPU has nothing to run" is decided on every path, so that is where the CPU looks. What it does not cover is a CPU that has already halted: it looks again only when an interrupt wakes it (repair item 23).
+2. **Locks.** A pull needs the victim's run queue lock; the pick holds the thief's. No order of run queue locks is defined, and two CPUs pulling from each other under their own locks would take them in opposite orders and deadlock. The idle loop holds none, so the pull can follow `Scheduler::Current::deactivate()`'s shape, one lock at a time: take the victim's lock, detach the thread (`deactivate_thread()`, which makes it Migrating and takes it off the queue), drop it, take the own lock, `activate_thread()`. Between the two the thread is in neither queue and its `m_curr_cpu` still names the victim: the window `deactivate()` has between its own two locks. Two things reach a thread there and are not kept out: `set_cpu_affinity()` installs a mask with no run queue lock, so a mask that excludes the thief, installed after `steal()` checked it, leaves the thread queued on the thief (repair item 25; `deactivate()` re-selects the destination, so its window is shorter); and `Scheduler::Pi::common()` takes the victim's lock by `m_curr_cpu` and would dequeue a thread that is not there (repair item 26; nothing calls it today).
+
+The choice of victim is made on a racy hint, `num_runnable()` (the count of queued threads, the running one included), read without the victim's lock as `select_target_cpu()` reads it, and confirmed under the lock, where the depth is checked again (two thieves that read the same count must not both take from a queue that had enough for one) and the victim's queue is walked (`for_each_thread`), skipping the thread the victim has nominated to run next (a directed yield), any thread that is not Ready and is only still in a Fair queue (`SCHED_DELAY_DEQUEUE`, off by default, leaves asleep, parked, suspended and dead threads in the tree until their lag runs out), and any thread whose affinity mask, intersected with the active CPUs, does not contain this CPU. A hint that turned stale just finds nothing and the CPU halts.
+
+**Why the node comes first.** A thread that has run on a node has its memory there. Taking one from a CPU on the same node costs a cache refill; from another node, every access to what it has allocated crosses the interconnect. So `steal()` picks two candidates, the deepest queue on this node and the deepest elsewhere, and tries the same node first (so the order is two buckets, not the "deepest overall"). The two have different thresholds: on the same node one running and one waiting is enough (2); from another node a second waiting thread is asked for (3), so a single waiting thread is not dragged across just to shave one slice of latency. The numbers are guesses, recorded as item 24.
+
+**Fair.** `Fair::dequeue_thread()` records the thread's lag against the victim's weighted mean on the way out and `enqueue_thread()` goes through `adjust_vlag()`, which places it against the thief's, so the move needs no edit in `fair.*`. Four things about it are worth knowing: the lag is carried unscaled between the two means (item 18, which a move between CPUs exercises and a wakeup on one CPU does not); the walk visits a Fair queue in deadline order, so the first thread that may run here is the one the victim would pick next only for round-robin (the comment in `steal()` says what each queue's order is); under `SCHED_DELAY_DEQUEUE`, which no lane in this record builds, the Fair tree also holds delayed sleepers, parked, suspended and dead threads, which `steal()` skips by taking only Ready ones; and `Fair::dequeue_thread()` calls `update_thread()` on the victim's running thread from the thief's CPU, which charges it against the victim's clock. The first version of `steal()` passed `SkipClock` to the victim's dequeue, so that charge used a clock last read when the victim last scheduled, up to a slice old, and the lag recorded for the stolen thread was understated by what the victim's thread had run since. It does not pass it now, and the dequeue reads the victim's clock under the victim's lock, as `do_unpark_thread()` does for a remote enqueue. (`Scheduler::Migrator::move_queued_thread()` also dequeues remotely with `SkipClock` and has no callers, so `steal()` is the first remote Fair dequeue.) What remains is that `update_thread()` can mark a preemption pending on the victim's thread from the thief's CPU with a non-atomic write (item 33).
+
+**Change**
+```cpp
+// idle_thread.cpp, before
+if (!scheduler.num_runnable()) {
+    // halt ...
+    continue;
+}
+// after
+if (!scheduler.num_runnable() && !Scheduler::Current::steal()) {
+    // halt ...
+    continue;
+}
+```
+```cpp
+// scheduler.cpp, the shape of steal(); the full text is in the file
+auto Scheduler::Current::steal() -> bool {
+    SCHEDULE_STEAL_LOOKS.add(1);
+    // deepest same-node and deepest other-node candidates, from num_runnable()
+    peek_active_mask().for_each([&](CpuNum const cpu) { ... });
+    auto *thread = detach_from(same_node_cpu);   // victim's lock only
+    if (thread == nullptr) { thread = detach_from(other_node_cpu); }
+    if (thread == nullptr) { return false; }
+    { Guard<SpinLock, IrqSave> guard{self.get_lock()}; self.activate_thread(thread, EnqueueOptions::None); }
+    SCHEDULE_STEALS.add(1);
+    return true;                                  // the idle thread reschedules to it
+}
+```
+The walk takes only a Ready thread, checks the victim's depth again under its lock, and lets the dequeue read the victim's clock. Two per-CPU counters, `schedule.steal_looks` and `schedule.steals`, with accessors `num_steal_looks(cpu)` and `num_steals(cpu)` (the shape of `IdleThread::num_halts()`), so a test can tell a CPU that looked and declined from one that was never woken.
+
+Rejected: filling in `steal_work_from()` in the pick (Zircon's place: `Scheduler::DequeueThread()` drops its queue lock around `StealWork()` with `CallUnlocked`), because it does not run at come-back time and needs the own lock dropped in the middle of the pick, a change to the pick that is item 22's to decide; one lock held across both queues, ruled out by the missing lock order; one threshold for every victim, for lack of a reason to send a thread across nodes for one slice.
+
+**Reference**
+Zircon `Scheduler::StealWork()` and its caller `Scheduler::DequeueThread()` (`scheduler.cc`, local Fuchsia checkout, read on 2026-11-05): a pull when the CPU would otherwise idle, victims in the order of a search set by cache distance, one victim's lock at a time, and a cross-cluster gate `kInterClusterThreshold` of two milliseconds of queued time. Differences here: the trigger is the idle loop, not the pick; the gate is a count, not queued time; the order is two buckets (this node, other nodes), not a distance. Linux `sched_balance_newidle()` and `sched_balance_rq()` (`kernel/sched/fair.c`; names confirmed, bodies not read). Local: `Scheduler::Current::deactivate()` for the two-phase move; `mm::CpuNodeMap::node_of()` for the node.
+
+**Verification**
+- `steal.test` (new) takes a pair of CPUs, a victim that holds the queue and a thief that is idle and halted, once for the highest two CPUs on one node and once for the highest pair on two nodes, whichever the machine has. Per pair, three rounds, each with fresh spinners started pinned to the victim: (1) three that are then allowed on the thief, the thief is woken by a reschedule request, and one must be seen on it and counted by `num_steals()`; (2) two such, taken only if the pair is on one node (from another node, nothing seen on the thief and `num_steals()` unchanged for 300 ms), and the thief's `num_steal_looks()` must have risen, which says it looked; (3) three that stay pinned to the victim, which the thief must look at and take none of. The spinners never sleep or wake, so a spinner on the thief got there by a take, not a placement: `Thread::resume()` honours the pin, and `set_cpu_affinity()` does not move a thread whose current CPU is still allowed (`migrate_thread()` is a stub).
+- Default machine (all CPUs on one node, `out/fair-lane`): 2 runs, 15 checks each, ok. Fair lane (`out/fair-on`, `sched_normal_discipline="fair"`): 1 run, 15 checks, ok. Four-node machine (`mm_numa=true`, `NUMA=1`, `out/numa.x86`; CPUs 6 and 5 on one node, 7 and 6 on two): 3 runs, 30 checks each, ok, so one run covers both thresholds. After the tightening described under Change (Ready-only, depth rechecked, victim clock read) the same: 3 runs of 30 checks on the four-node machine, 1 run of 15 on the Fair lane.
+- Negative controls on the four-node machine (run on the first version and again on the final code, with the same results), each restored and compared with `cmp`: `steal()` disabled after the look is counted: 5 of 30 fail (the take, the take count and, on one node, the take of the single waiting thread); the affinity test skipped: 3 of 30 fail (the pinned round on one node, and, on two, round 1, where CPU 1, which the spinners are not allowed on, took one: the filter is what keeps it out); the cross-node threshold lowered from 3 to 2: 1 of 30 fails ("and left it, from another node").
+- The broad set (`idle sleep semaphore threadjoin dpc timer timershare tickreplace mutex.stress preempt hotplug irq interrupt steal`, all `.test` but `mutex.stress`) in one `kshell_run.py` invocation: ok on the default lane, the Fair lane and the four-node lane, before the tightening once each and after it three times each (9 of 9). `pmnode.test` on the four-node machine, 3 of 3, and `vmosnapshot.test` and `usercopy.test` on the default lane after it.
+- `boot_check.py`: default lane dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44/8/0, 7/7 required), host-tests PASS (173 passed); Fair lane and four-node machine (`NUMA=1`), `--no-tests`: dbg PASS (46/5/0), rel PASS (44/8/0, 7/7).
+- `scripts/format_cpp.py --check` and `scripts/format_gn.py --check` are clean; clang-tidy (`-p out/fair-lane`, header filter on `scheduler.hpp`) on `scheduler.cpp`, `idle_thread.cpp` and `steal_test.cpp` reports nothing on a line of this change; what it reports is old (`idle_thread.cpp:156` and `:161`, the lambdas' names, and `scheduler.cpp:457`, the stub's `return 0;`).
+- Not measured: any benefit. QEMU TCG has no remote-memory latency, so no run can show the node preference paying off, and the thresholds are untested against data (item 24). Not observed: the 3, 3, 2, 0 split of `hotplug.test` becoming 2, 3, 2, 1 after the CPU returns; `hotplug.test` passes but does not print the counts. Not run: `SCHED_DELAY_DEQUEUE`, the narrowed-affinity window and the priority-inheritance window (items 25 and 26).
+- `waitqueue.test` run alone hangs (5 of 5, `no "waitqueue.test: ok" within 60s`) on the default lane, yet passed when it was one of 15 tests in a single `kshell_run.py` invocation on the default and the Fair lane. It also hung with `steal()` disabled and with the four files of this change reverted to HEAD, so it is not this change's; the cause is not investigated and it is left out of the set above.
+- Two rounds of independent read-only review. Round 1 (three lenses: concurrency, test power and claims, conventions) lost its concurrency lens to a usage limit; the other two found: the first draft's pinned-thread check could pass without the filter (it depended on which thread was at the head: replaced by round 3), the "not taken" round had no proof the thief looked (the counters), the Migrating-window text overstated (rewritten, items 25 and 26), "Fair needs no edit" and "waiting the longest" overstated (above, and the comment), the header comment for `steal()` and the change title wrong about the busiest CPU (fixed), three stale comments elsewhere (fixed), a global array shared by rounds, two ternaries, a `[[nodiscard]]`, the constants' names, a Linux function named wrongly and the "3, 3, 2, 1" count (all fixed). Round 2 re-ran the concurrency lens and audited every caller of `CpuLocal::access()`. The concurrency lens argued these safe: the context-switch hand-off (the thief spins on the thread's PI lock until the victim has saved its stack), the victim going offline mid-steal, wakeups, kills and joins in the Migrating window, and the idle loop's halt after a take. What it found was fixed here (non-Ready threads in a Fair tree; the stale clock; the depth not rechecked under the lock) or recorded: the affinity window (item 25, certain), the priority-inheritance window (item 26, certain, latent), the non-atomic preemption write (item 33, speculative), one deep queue of pinned threads hiding a shallower queue that has a thread to give (item 23). The audit found every one-argument `access()` caller non-preemptible, and four unsafe derived uses, none of them changed here: `Timer::cancel()` (item 28, a stack frame freed under a running handler), the page-fault assertion (item 29, a release-image panic), `DpcRunner::enqueue()` and `ChainLockTransaction::current()` (items 30 and 31, latent), and `pmnode.test` (item 32).
+
+**Deliberately not done**
+- A balance among busy CPUs and a pull at the pick (item 22), a kick for a halted idle CPU (item 23): a split like 2, 3, 2, 1 stays.
+- The thresholds' data (item 24), and a queued-time gate in place of the count.
+- The affinity and priority-inheritance windows (items 25 and 26), and the four uses of a stale CPU number that the audit found (items 28 to 32): `Timer::cancel()` and the page-fault assertion are in other subsystems and are one-line guards each, and they are reachable now that a preempted thread can move (item 28 is memory-unsafe in a window of a few instructions); they are for their own commits and sessions, and this change does not make them wait or fix them.
+- More than one thread per attempt: the idle thread reschedules to what it got, and if the victim still has two waiting the CPU is no longer idle, so it does not look again until it is.
+- Deleting `steal_work_from()`: it is scaffolding for a pull at the pick, now with a comment saying so.
+- Fair's carried lag (item 18) and the preemption-state write of its `update_thread()` (item 33): the user's code.
+- A known rare flake in `steal.test`: the victim's count must be exactly two when the thief looks in round 2 on two nodes, and any other runnable thread on the victim at that instant (a worker pinned there) makes it three; the window is microseconds, and the final test's runs above (4 on the four-node machine, 3 on the default lane, 2 on the Fair lane, the broad set included) have not shown it.
+
+**How it was found**
+The user chose work stealing (item 21) from the repairs list, then argued for the idle thread as the place ("那我们在IdleThread里面偷吧") after the first design question (idle loop or pick) exposed that `come_back()` skips the pick, and asked why the cluster was not considered ("为什么不考虑CPU簇亲和性问题"), which led to the node-first order and to `CpuNodeMap`, which my first answer had wrongly said did not exist. The two rounds of independent review found most of the defects listed under Verification.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why does a CPU that comes back online not reach the stub that was in `pick_next_thread()`, and what in the idle loop does reach it?
+- Why does `steal()` hold the victim's lock and its own lock one after the other and never both, and what is the thread in between, and who can still reach it there?
+- Why is the cross-node threshold higher than the same-node one, and what would you have to measure to choose the numbers?

@@ -695,9 +695,14 @@ class CpuLocal::Current {
     /// before it or after it, and either way it reads the slot of the CPU the
     /// caller is on at that instant -- for Thread::Current, the caller itself.
     ///
-    /// Nothing moves a preempted thread to another CPU yet --
-    /// Scheduler::steal_work_from() is a stub -- so the two-load form had not
-    /// failed; the first load balancer would have made it fail.
+    /// A CPU with nothing to run now takes a queued thread from another
+    /// (Scheduler::Current::steal()), a preempted one included, so a thread
+    /// preempted between the two loads can resume on another CPU: the two-load
+    /// form is only for a caller that cannot be preempted, with preemption or
+    /// interrupts off. Every caller of the one-argument form was read on
+    /// 2026-11-05 and is such a caller (ChainLockTransaction::current() has
+    /// none to check); the forms built on a CPU read in two steps are not,
+    /// and are items 28 to 31 of docs/repairs/261103/kernel-task-sched.md.
     ///
     /// The test is whether T is a scalar, not only whether it fits: a class
     /// that happens to be small is still an object, and a copy of it would

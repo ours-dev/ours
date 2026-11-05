@@ -63,6 +63,7 @@
 #include <ours/cpu.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
+#include <ours/mm/cpu_node_map.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/sched/features.hpp>
@@ -106,6 +107,22 @@ namespace {
     GKTL_COUNTER(SCHEDULE_IDLE_PAST, "schedule.idle_past");
     GKTL_COUNTER(SCHEDULE_PREEMPT_PAST, "schedule.preempt_past");
     GKTL_COUNTER(SCHEDULE_YIELD_PAST, "schedule.yield_past");
+    GKTL_COUNTER(SCHEDULE_STEAL_LOOKS, "schedule.steal_looks");
+    GKTL_COUNTER(SCHEDULE_STEALS, "schedule.steals");
+
+    /// How many threads a CPU must hold, the one it runs counted
+    /// (Scheduler::num_runnable()), for a CPU with nothing to run to take one
+    /// from it, when it is on the same NUMA node as the CPU taking. One running
+    /// and one waiting is enough: the waiting one is behind a whole slice, and
+    /// on the same node it loses only its cache.
+    constexpr usize STEAL_MIN_RUNNABLE_SAME_NODE = 2;
+
+    /// The same, when the CPU is on another node. The thread leaves the memory
+    /// it has been working on, so a second one waiting is asked for. There is no
+    /// estimate of how long a thread has been queued here, only the count, and
+    /// both numbers are first guesses to be measured on real hardware (item 24
+    /// of docs/repairs/261103/kernel-task-sched.md).
+    constexpr usize STEAL_MIN_RUNNABLE_OTHER_NODE = 3;
 
 } // namespace
 
@@ -1040,6 +1057,125 @@ auto Scheduler::Current::deactivate() -> void {
             }));
     }
     reschedule_mask(moved_to);
+}
+
+/// A pull, by a CPU with nothing to run, from the CPU with the most threads on
+/// its own node, or failing that from another node's. The
+/// hold-one-lock-at-a-time shape is deactivate()'s: no order of run queue locks
+/// is defined, and two CPUs stealing from each other would deadlock on the first
+/// one that took both.
+///
+/// While the thread is Migrating it is in neither queue, and its m_curr_cpu
+/// still names the victim. That is the window deactivate() has between its two
+/// locks, and this one is as long. What can reach the thread meanwhile is not
+/// kept out by it: set_cpu_affinity() installs a mask without any run queue
+/// lock, so a mask that excludes this CPU, installed after the walk below
+/// checked it, leaves the thread queued here; and the priority-inheritance walk
+/// (Scheduler::Pi::common()) takes the victim's lock by m_curr_cpu and does not
+/// ask whether the thread is queued there. Both are open for deactivate() too
+/// (items 25 and 26 of docs/repairs/261103/kernel-task-sched.md).
+auto Scheduler::Current::num_steal_looks(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(SCHEDULE_STEAL_LOOKS.get(cpu));
+}
+
+auto Scheduler::Current::num_steals(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(SCHEDULE_STEALS.get(cpu));
+}
+
+auto Scheduler::Current::steal() -> bool {
+    DEBUG_ASSERT(arch::irqs_disabled());
+    auto &self = get();
+    self.m_canary.verify<Self>();
+    DEBUG_ASSERT(self.m_run_queue.m_curr_thread == self.m_idle_thread,
+                 "a CPU steals when it has nothing to run, in its idle thread");
+    SCHEDULE_STEAL_LOOKS.add(1);
+
+    auto const here = self.m_run_queue.m_which_cpu;
+    auto const here_node = mm::CpuNodeMap::node_of(here);
+
+    // Two candidates, the deepest queue on this node and the deepest elsewhere.
+    // A hint: read without the victim's lock, as select_target_cpu() reads the
+    // same count, and confirmed by the walk of the victim's queue below.
+    auto same_node_cpu = INVALID_CPU_NUM;
+    auto same_node_most = STEAL_MIN_RUNNABLE_SAME_NODE - 1;
+    auto other_node_cpu = INVALID_CPU_NUM;
+    auto other_node_most = STEAL_MIN_RUNNABLE_OTHER_NODE - 1;
+    peek_active_mask().for_each([&](CpuNum const cpu) {
+        if (cpu == here) {
+            return;
+        }
+        auto const queued = get(cpu).num_runnable();
+        if (mm::CpuNodeMap::node_of(cpu) == here_node) {
+            if (queued > same_node_most) {
+                same_node_most = queued;
+                same_node_cpu = cpu;
+            }
+        } else if (queued > other_node_most) {
+            other_node_most = queued;
+            other_node_cpu = cpu;
+        }
+    });
+
+    // Detaches one thread that may run here from |victim_cpu|'s queue, or
+    // answers null.
+    auto const detach_from = [&](CpuNum const victim_cpu, usize const min_runnable) -> Thread * {
+        if (victim_cpu == INVALID_CPU_NUM) {
+            return nullptr;
+        }
+        auto &victim = get(victim_cpu);
+        Guard<SpinLock, IrqSave> guard{victim.get_lock()};
+        // The count that chose the victim was read without its lock: another
+        // CPU may have taken a thread since, and two CPUs that read the same
+        // count must not both take from a queue that had enough for one.
+        if (!victim.is_state_active() || victim.num_runnable() < min_runnable) {
+            return nullptr;
+        }
+        // The first queued thread that may run here, in the order the
+        // discipline's queue walks (first in, first out for round-robin, by
+        // deadline for Fair). Only a Ready one: Fair's delayed dequeue leaves a
+        // thread that is asleep, parked, suspended or dead in its tree until
+        // its lag runs out, and that is not a thread to run. Not the thread
+        // the victim has nominated to run next (a directed yield), and not one
+        // pinned to the victim.
+        Thread *thread = nullptr;
+        victim.m_run_queue.for_each_thread([&](Thread &queued) {
+            if (&queued == victim.m_run_queue.m_next_thread || !queued.is_state_ready()) {
+                return true;
+            }
+            auto const may_run_here = queued.scheduling_entity()
+                                          .cpu_affinity()
+                                          .get_available_mask(peek_active_mask())
+                                          .test(here);
+            if (!may_run_here) {
+                return true;
+            }
+            thread = &queued;
+            return false;
+        });
+        if (thread != nullptr) {
+            // Not SkipClock: this is the victim's queue, and its clock was last
+            // read when it last scheduled, which may be a slice ago. The
+            // dequeue charges the victim's running thread and records the
+            // lag of the one that leaves against the clock it reads.
+            victim.deactivate_thread(thread, DequeueOptions::None);
+        }
+        return thread;
+    };
+
+    auto *thread = detach_from(same_node_cpu, STEAL_MIN_RUNNABLE_SAME_NODE);
+    if (thread == nullptr) {
+        thread = detach_from(other_node_cpu, STEAL_MIN_RUNNABLE_OTHER_NODE);
+    }
+    if (thread == nullptr) {
+        return false;
+    }
+
+    {
+        Guard<SpinLock, IrqSave> guard{self.get_lock()};
+        self.activate_thread(thread, EnqueueOptions::None);
+    }
+    SCHEDULE_STEALS.add(1);
+    return true;
 }
 
 auto Scheduler::Current::reactivate() -> void {

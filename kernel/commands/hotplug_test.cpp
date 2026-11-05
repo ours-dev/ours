@@ -296,8 +296,9 @@ namespace {
         // no progress, however much the others make. A spinner waits for its
         // turn behind the others on its CPU, and with three on one CPU that is
         // two slices, and four if a discipline lets each run two in a row: more
-        // than OFFLINE_FOR, and a thread stays on the CPU it was placed on, so
-        // the ones that have to share are the same throughout. The test
+        // than OFFLINE_FOR, and no CPU is idle while the offline one is away
+        // (every survivor runs spinners, so none takes a thread from another),
+        // so the ones that have to share are the same throughout. The test
         // therefore waits for every spinner to move, as long as LOST_AFTER: a
         // stranded one is the one that never does.
         u64 rounds_before[MAX_SPINNERS];

@@ -44,6 +44,7 @@ source_set("commands") {
     "preempt_test.cpp",
     "resource_test.cpp",
     "sleep_test.cpp",
+    "steal_test.cpp",
     "thread_join_test.cpp",
     "tick_replace_test.cpp",
     "timer_share_test.cpp",

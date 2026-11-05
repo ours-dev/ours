@@ -347,6 +347,10 @@ class Scheduler {
     /// [MP] Attempts to steal work from other busy CPUs spcified by |mask| and move it
     /// to the local run queues. Returns a pointer to the stolen thread that is now
     /// associated with the local Scheduler instance, or nullptr is no work was stolen.
+    ///
+    /// A stub, kept for a pull at the pick, while this CPU is running a thread
+    /// that is about to give it up. The pull that exists is Current::steal(), by
+    /// the idle thread: it needs no run queue lock held across the pick.
     auto steal_work_from(CpuMask const &mask) -> Thread *;
 
     /// [MP] Takes migrating_threads_lock only long enough to swap the list
@@ -440,6 +444,31 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     /// The CPU is back: Active again, under its run queue lock. On the CPU,
     /// interrupts off.
     static auto reactivate() -> void;
+
+    /// This CPU has nothing to run: take one queued thread from another active
+    /// CPU. The deepest queue on this CPU's NUMA node is tried first, and one
+    /// thread waiting behind the one it runs is enough there; failing that, the
+    /// deepest queue on another node, which has to have two waiting. The thread
+    /// has to be one that may run here. Called by the idle thread before it
+    /// halts, with interrupts off; true when a thread was moved here and is
+    /// queued, so that the idle thread has something to reschedule to. A caller
+    /// that drops the answer would halt with a thread queued.
+    ///
+    /// The victim is picked from the CPUs' queue depths, read without their
+    /// locks, so it is a hint that the walk of the victim's queue, under its
+    /// lock, confirms. The move is two steps, each under one run queue lock and
+    /// never both, as deactivate() does it: the thread leaves the victim's
+    /// queue (Migrating), then joins this one.
+    [[nodiscard]]
+    static auto steal() -> bool;
+
+    /// How many times |cpu| has looked for a thread to take (calls of steal()),
+    /// and how many it took, for a test to tell a CPU that looked and found
+    /// nothing from one that never looked. Read while |cpu| may be counting.
+    [[nodiscard]]
+    static auto num_steal_looks(CpuNum cpu) -> u64;
+    [[nodiscard]]
+    static auto num_steals(CpuNum cpu) -> u64;
 
   private:
     friend class Thread;
