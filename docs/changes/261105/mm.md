@@ -526,3 +526,46 @@ None.
 **Three questions you should be able to answer**
 
 None.
+
+## Name VMO-backed mapping map_vmo (2026-11-05)
+
+**Files**
+
+- `kernel/mm/include/ours/mm/vm_area.hpp` and `kernel/mm/vm_area.cpp` expose map_vmo.
+- Kernel stack, heap, VMA dispatcher, benchmark and command callers use the new name.
+
+**Symptom**
+
+The map_with_vmo spelling was longer than the selected verb-object vocabulary for the VMM interface.
+
+**Cause**
+
+The interface maps a VMO window into a virtual area. The VMO is the operation's direct object.
+
+**Change**
+
+Rename `VmArea::map_with_vmo(...)` to `VmArea::map_vmo(...)` and update all code references and nearby comments.
+
+**Reference**
+
+None. The user selected map_vmo and retained create_subvma for child area creation.
+
+**Verification**
+
+The mapping arguments, defaults and rollback bodies are preserved. LLVM 23 clang-format and clang-tidy checked all sixteen C++ files. Both images booted, 163 host tests passed and all six focused mapping and snapshot commands passed.
+
+**Deliberately not done**
+
+None.
+
+**How it was found**
+
+The user accepted map_vmo in item eleven of the VMM naming list.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+None.

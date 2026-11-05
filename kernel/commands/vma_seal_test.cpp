@@ -80,12 +80,10 @@ namespace {
         constexpr auto RX = READ | mm::MmuFlags::Executable;
         constexpr auto BASE = USER_ASPACE_BASE + 48_mb;
         auto root = aspace.root_vma();
-        auto first =
-            root->map_with_vmo(BASE, 3 * PAGE_SIZE, 0, RW, mm::VmaFlags::PermMask,
-                               make_vmo(3 * PAGE_SIZE), mm::MapOptions::Commit, "writable");
-        auto neighbor =
-            root->map_with_vmo(BASE + 3 * PAGE_SIZE, PAGE_SIZE, 0, READ, mm::VmaFlags::Read,
-                               make_vmo(PAGE_SIZE), mm::MapOptions::Lazy, "read ceiling");
+        auto first = root->map_vmo(BASE, 3 * PAGE_SIZE, 0, RW, mm::VmaFlags::PermMask,
+                                   make_vmo(3 * PAGE_SIZE), mm::MapOptions::Commit, "writable");
+        auto neighbor = root->map_vmo(BASE + 3 * PAGE_SIZE, PAGE_SIZE, 0, READ, mm::VmaFlags::Read,
+                                      make_vmo(PAGE_SIZE), mm::MapOptions::Lazy, "read ceiling");
         verdict(tally, first.is_ok() && neighbor.is_ok(),
                 "adjacent mappings have different permission ceilings");
         if (!first || !neighbor) {
@@ -113,9 +111,9 @@ namespace {
     auto check_registration_undo(Tally &tally, mm::VmAspace &aspace) -> void {
         auto root = aspace.root_vma();
         constexpr auto RX = mm::MmuFlags::Readable | mm::MmuFlags::Executable | mm::MmuFlags::User;
-        auto code = root->map_with_vmo(
-            VirtAddr::Anywhere, PAGE_SIZE, 0, RX, mm::VmaFlags::PermMask, make_vmo(PAGE_SIZE),
-            mm::MapOptions::Sealed | mm::MapOptions::Commit, "test code");
+        auto code = root->map_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, RX, mm::VmaFlags::PermMask,
+                                  make_vmo(PAGE_SIZE),
+                                  mm::MapOptions::Sealed | mm::MapOptions::Commit, "test code");
         auto const claimed = code.is_ok() && aspace.claim_vdso();
         verdict(tally, claimed, "the address space accepts one sealed code registration");
         if (!claimed) {
@@ -147,9 +145,9 @@ namespace {
         constexpr auto READ = mm::MmuFlags::Readable | mm::MmuFlags::User;
         constexpr auto RW = READ | mm::MmuFlags::Writable;
         auto root = aspace.root_vma();
-        auto mapped = root->map_with_vmo(BASE, PAGES * PAGE_SIZE, 0, RW, mm::VmaFlags::PermMask,
-                                         make_vmo(PAGES * PAGE_SIZE), mm::MapOptions::Commit,
-                                         "protection allocation");
+        auto mapped = root->map_vmo(BASE, PAGES * PAGE_SIZE, 0, RW, mm::VmaFlags::PermMask,
+                                    make_vmo(PAGES * PAGE_SIZE), mm::MapOptions::Commit,
+                                    "protection allocation");
         verdict(tally, mapped.is_ok(), "a writable mapping for protection tree growth");
         if (!mapped) {
             return;
@@ -187,9 +185,9 @@ namespace {
         constexpr usize PAGES = 32;
         constexpr auto READ = mm::MmuFlags::Readable | mm::MmuFlags::User;
         auto root = aspace.root_vma();
-        auto mapped = root->map_with_vmo(BASE, PAGES * PAGE_SIZE, 0, READ, mm::VmaFlags::PermMask,
-                                         make_vmo(PAGES * PAGE_SIZE), mm::MapOptions::Commit,
-                                         "unmap allocation");
+        auto mapped =
+            root->map_vmo(BASE, PAGES * PAGE_SIZE, 0, READ, mm::VmaFlags::PermMask,
+                          make_vmo(PAGES * PAGE_SIZE), mm::MapOptions::Commit, "unmap allocation");
         verdict(tally, mapped.is_ok(), "a committed mapping for partial unmap");
         if (!mapped) {
             return;
@@ -303,8 +301,8 @@ namespace {
             bool failed = false;
             {
                 AllocationFailure failure(entry.site, entry.skip);
-                auto mapped = parent->map_with_vmo(BASE, PAGE_SIZE, 0, READ, PERMS, vmo,
-                                                   mm::MapOptions::Commit, entry.description);
+                auto mapped = parent->map_vmo(BASE, PAGE_SIZE, 0, READ, PERMS, vmo,
+                                              mm::MapOptions::Commit, entry.description);
                 failed =
                     mapped.is_err() && mapped.unwrap_err() == entry.error && failure.triggered();
             }
@@ -316,8 +314,8 @@ namespace {
                         aspace.arch_aspace().query(BASE, &pa, &flags) == Status::NotFound,
                     entry.description);
         }
-        auto retried = parent->map_with_vmo(BASE, PAGE_SIZE, 0, READ, PERMS, vmo,
-                                            mm::MapOptions::Commit, "mapping retry");
+        auto retried = parent->map_vmo(BASE, PAGE_SIZE, 0, READ, PERMS, vmo, mm::MapOptions::Commit,
+                                       "mapping retry");
         verdict(tally, retried.is_ok(), "the same address can be mapped after every failed step");
     }
 
@@ -337,9 +335,8 @@ namespace {
         {
             // The first batch is installed and the next one has begun when the last page fails.
             AllocationFailure failure(AllocationSite::Frame, PAGES - 1);
-            auto mapped =
-                root->map_with_vmo(BASE, PAGES * PAGE_SIZE, 0, READ, mm::VmaFlags::PermMask, vmo,
-                                   mm::MapOptions::Commit, "failed partial map");
+            auto mapped = root->map_vmo(BASE, PAGES * PAGE_SIZE, 0, READ, mm::VmaFlags::PermMask,
+                                        vmo, mm::MapOptions::Commit, "failed partial map");
             failed =
                 mapped.is_err() && mapped.unwrap_err() == Status::OutOfMem && failure.triggered();
         }
@@ -354,8 +351,8 @@ namespace {
         verdict(tally,
                 failed && unmapped && aspace.find_mapping(BASE, &leftover) == Status::NotFound,
                 "an allocation failure withdraws the mapping and every installed PTE");
-        auto retried = root->map_with_vmo(BASE, PAGES * PAGE_SIZE, 0, READ, mm::VmaFlags::PermMask,
-                                          vmo, mm::MapOptions::Commit, "partial map retry");
+        auto retried = root->map_vmo(BASE, PAGES * PAGE_SIZE, 0, READ, mm::VmaFlags::PermMask, vmo,
+                                     mm::MapOptions::Commit, "partial map retry");
         verdict(tally, retried.is_ok(), "the same window can be remapped after partial failure");
     }
 
@@ -365,9 +362,8 @@ namespace {
         constexpr auto BASE = USER_ASPACE_BASE + 128_mb;
         constexpr auto RW = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto vmo = make_vmo(PAGE_SIZE);
-        auto mapped =
-            aspace.root_vma()->map_with_vmo(BASE, PAGE_SIZE, 0, RW, mm::VmaFlags::PermMask, vmo,
-                                            mm::MapOptions::Lazy, "failed demand map");
+        auto mapped = aspace.root_vma()->map_vmo(BASE, PAGE_SIZE, 0, RW, mm::VmaFlags::PermMask,
+                                                 vmo, mm::MapOptions::Lazy, "failed demand map");
         verdict(tally, mapped.is_ok(), "a lazy mapping for page-table allocation failure");
         if (!mapped) {
             return;
@@ -414,11 +410,10 @@ namespace {
 
         Tally tally;
 
-        auto sealed =
-            root->map_with_vmo(SEALED, 2 * PAGE_SIZE, 0, flags, PERMS, make_vmo(2 * PAGE_SIZE),
-                               mm::MapOptions::Sealed, "vmaseal.test sealed");
-        auto plain = root->map_with_vmo(PLAIN, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
-                                        mm::MapOptions::Lazy, "vmaseal.test plain");
+        auto sealed = root->map_vmo(SEALED, 2 * PAGE_SIZE, 0, flags, PERMS, make_vmo(2 * PAGE_SIZE),
+                                    mm::MapOptions::Sealed, "vmaseal.test sealed");
+        auto plain = root->map_vmo(PLAIN, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
+                                   mm::MapOptions::Lazy, "vmaseal.test plain");
         ustl::Arc<mm::VmArea> area;
         auto const area_status = root->create_subvma(
             AREA, 4 * PAGE_SIZE, PERMS | mm::VmaFlags::CanMapSpecific, "vmaseal.test area", &area);
@@ -474,8 +469,8 @@ namespace {
         verdict(tally, aspace->soft_fault(PLAIN, mm::VmFault::Cause::Absent) == Status::Ok,
                 "fault lookup caches the plain mapping before teardown");
         auto inside =
-            area->map_with_vmo(AREA + PAGE_SIZE, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
-                               mm::MapOptions::Sealed, "vmaseal.test inside");
+            area->map_vmo(AREA + PAGE_SIZE, PAGE_SIZE, 0, flags, PERMS, make_vmo(PAGE_SIZE),
+                          mm::MapOptions::Sealed, "vmaseal.test inside");
         verdict(tally, inside.is_ok(), "a sealed mapping is made inside the sub-area");
 
         verdict(tally, root->unmap(SEALED, 2 * PAGE_SIZE) == Status::AccessDenied,

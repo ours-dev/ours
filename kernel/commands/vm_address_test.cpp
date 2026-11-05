@@ -31,9 +31,8 @@ namespace {
         -> void {
         auto root = aspace.root_vma();
         auto const map = [&vmo](mm::VmArea &area, VirtAddr const where) {
-            return area.map_with_vmo(where, PAGE_SIZE, 0, mm::MmuFlags::Readable,
-                                     mm::VmaFlags::PermMask, vmo, mm::MapOptions::Lazy,
-                                     "vmaddress.test");
+            return area.map_vmo(where, PAGE_SIZE, 0, mm::MmuFlags::Readable, mm::VmaFlags::PermMask,
+                                vmo, mm::MapOptions::Lazy, "vmaddress.test");
         };
         auto const zero = map(*root, VirtAddr{});
         tally.check(zero.is_ok() && (*zero)->base() == VirtAddr{},
@@ -90,8 +89,8 @@ namespace {
         constexpr auto PERMS = mm::VmaFlags::PermMask;
         auto root = aspace.root_vma();
         auto const map = [&](usize const size) {
-            return root->map_with_vmo(VirtAddr::Anywhere, size, 0, READ, PERMS, vmo, LAZY,
-                                      "invalid window");
+            return root->map_vmo(VirtAddr::Anywhere, size, 0, READ, PERMS, vmo, LAZY,
+                                 "invalid window");
         };
         auto const empty = map(0);
         auto const full = map(2 * PAGE_SIZE);
@@ -128,9 +127,8 @@ namespace {
             return;
         }
         ustl::Arc<mm::VmArea> wider;
-        auto const bad_mapping =
-            read_only->map_with_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, WRITE, PERMS, vmo, LAZY,
-                                    "invalid initial permissions");
+        auto const bad_mapping = read_only->map_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, WRITE, PERMS,
+                                                    vmo, LAZY, "invalid initial permissions");
         tally.check(bad_mapping.is_err() && bad_mapping.unwrap_err() == Status::InvArgs &&
                         read_only->create_subvma(VirtAddr::Anywhere, PAGE_SIZE, mm::VmaFlags::Write,
                                                  "invalid child permissions",

@@ -382,7 +382,7 @@ namespace {
             mm::VmObjectPaged::create(WAITABLE, 3 * P, mm::VmoFlags::Lazy, &vmo) == Status::Ok;
         VirtAddr base{};
         if (made) {
-            auto mapping = aspace->root_vma()->map_with_vmo(
+            auto mapping = aspace->root_vma()->map_vmo(
                 VirtAddr::Anywhere, 3 * P, 0, rw, mm::VmaFlags::PermMask,
                 ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Lazy, "mempressure.test");
             if (mapping.is_ok()) {

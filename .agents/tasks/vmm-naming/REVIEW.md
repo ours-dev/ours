@@ -14,6 +14,8 @@ Compare each diff with the user's selected name, search all declarations and cal
 
 - lookup_cursor_locked retains the existing lock annotations, and PageLookup retains its fields and all result paths. Both images, 163 host tests and five COW and pager commands passed.
 
+- map_vmo has the same signature and body as map_with_vmo after formatting. Stack, heap and dispatcher callers compiled, both images and 163 host tests passed, and six mapping commands passed.
+
 ## High severity
 
 None.

@@ -80,7 +80,7 @@ class VmArea final: public VmAreaOrMapping {
     /// Internally the *_locked helpers were already absolute, so the
     /// conversions did not buy anything even inside the class.
 
-    /// Create a sub-VMA at |where|, with the same placement rules as map_with_vmo().
+    /// Create a sub-VMA at |where|, with the same placement rules as map_vmo().
     ///
     /// |vmaf| is the new area's allowance, and it may narrow this area's but
     /// never widen it. Narrowing is the point: it is the ceiling every
@@ -122,8 +122,8 @@ class VmArea final: public VmAreaOrMapping {
     /// The mapping is registered before the selected mode installs entries.
     /// Lazy registers it for demand faults. A failed immediate installation
     /// tears the mapping down before returning its error.
-    auto map_with_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
-                      ustl::Arc<VmObject> vmo, MapOptions option, char const *name)
+    auto map_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
+                 ustl::Arc<VmObject> vmo, MapOptions option, char const *name)
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
     /// Tear down everything mapped in [base, base + size). AccessDenied, with

@@ -143,9 +143,9 @@ auto vmalloc(usize const size, Gaf const alloc_flags) -> void * {
 
     // The pinned VMO already owns its pages. Install those pages now so
     // kernel accesses to this allocation never need to fault them in.
-    auto mapping = WINDOW->map_with_vmo(VirtAddr::Anywhere, rounded, 0, MMU_FLAGS,
-                                        ours::mm::VmaFlags::PermMask, vmo,
-                                        ours::mm::MapOptions::Resident, "vmalloc");
+    auto mapping =
+        WINDOW->map_vmo(VirtAddr::Anywhere, rounded, 0, MMU_FLAGS, ours::mm::VmaFlags::PermMask,
+                        vmo, ours::mm::MapOptions::Resident, "vmalloc");
     if (mapping.is_err()) {
         // The VMO's last reference goes with this return, and ~VmCowPages
         // gives its pages back -- which is only true since that destructor

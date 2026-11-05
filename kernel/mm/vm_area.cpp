@@ -325,7 +325,7 @@ auto VmArea::map_phys(PhysAddr phys_base, VirtAddr where, usize size, MmuFlags m
         return ustl::err(status);
     }
 
-    return map_with_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
+    return map_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
 }
 
 auto VmArea::map_anon(VirtAddr where, usize size, MmuFlags mmuf, MapOptions options,
@@ -347,11 +347,11 @@ auto VmArea::map_anon(VirtAddr where, usize size, MmuFlags mmuf, MapOptions opti
         return ustl::err(status);
     }
 
-    return map_with_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
+    return map_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
 }
 
-auto VmArea::map_with_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
-                          ustl::Arc<VmObject> vmo, MapOptions option, char const *name)
+auto VmArea::map_vmo(VirtAddr where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
+                     ustl::Arc<VmObject> vmo, MapOptions option, char const *name)
     -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 

@@ -319,9 +319,9 @@ namespace {
         }
         auto *const previous = attach(aspace.as_ptr_mut());
         auto root = aspace->root_vma();
-        auto mapping = root->map_with_vmo(
-            VirtAddr::Anywhere, 2 * P, 0, mm::MmuFlags::Readable | mm::MmuFlags::User,
-            mm::VmaFlags::PermMask, vmo, mm::MapOptions::Resident, "pagequeues.test");
+        auto mapping =
+            root->map_vmo(VirtAddr::Anywhere, 2 * P, 0, mm::MmuFlags::Readable | mm::MmuFlags::User,
+                          mm::VmaFlags::PermMask, vmo, mm::MapOptions::Resident, "pagequeues.test");
         auto const first = filed_at(*vmo, 0);
         auto const second = filed_at(*vmo, P);
         if (mapping.is_err() || !first.page || !second.page) {

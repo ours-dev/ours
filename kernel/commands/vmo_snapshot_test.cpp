@@ -294,13 +294,13 @@ namespace {
         }
 
         // Committed, so the page tables hold entries to change.
-        auto writable = root->map_with_vmo(RW_AT, 3 * PAGE_SIZE, 0, rw, PERMS, vmo,
-                                           mm::MapOptions::Resident, "remove-write rw");
-        auto read_only = root->map_with_vmo(RO_AT, 2 * PAGE_SIZE, 0, ro, PERMS, ro_vmo,
-                                            mm::MapOptions::Resident, "remove-write ro");
+        auto writable = root->map_vmo(RW_AT, 3 * PAGE_SIZE, 0, rw, PERMS, vmo,
+                                      mm::MapOptions::Resident, "remove-write rw");
+        auto read_only = root->map_vmo(RO_AT, 2 * PAGE_SIZE, 0, ro, PERMS, ro_vmo,
+                                       mm::MapOptions::Resident, "remove-write ro");
         // Mapped, not committed: no entries yet.
-        auto lazy = root->map_with_vmo(LAZY_AT, 2 * PAGE_SIZE, 0, rw, PERMS, lazy_vmo,
-                                       mm::MapOptions::Lazy, "remove-write lazy");
+        auto lazy = root->map_vmo(LAZY_AT, 2 * PAGE_SIZE, 0, rw, PERMS, lazy_vmo,
+                                  mm::MapOptions::Lazy, "remove-write lazy");
         verdict(tally, writable.is_ok() && read_only.is_ok() && lazy.is_ok(),
                 "the mappings are made");
         if (!(writable.is_ok() && read_only.is_ok() && lazy.is_ok())) {
@@ -371,11 +371,10 @@ namespace {
                                                            &shared_vmo) == Status::Ok;
         verdict(tally, shared_made, "an object to map twice is made");
         if (shared_made) {
-            auto full = root->map_with_vmo(FULL_AT, 3 * PAGE_SIZE, 0, rw, PERMS, shared_vmo,
-                                           mm::MapOptions::Resident, "remove-write full");
-            auto window =
-                root->map_with_vmo(WIN_AT, 2 * PAGE_SIZE, PAGE_SIZE, rw, PERMS, shared_vmo,
-                                   mm::MapOptions::Resident, "remove-write window");
+            auto full = root->map_vmo(FULL_AT, 3 * PAGE_SIZE, 0, rw, PERMS, shared_vmo,
+                                      mm::MapOptions::Resident, "remove-write full");
+            auto window = root->map_vmo(WIN_AT, 2 * PAGE_SIZE, PAGE_SIZE, rw, PERMS, shared_vmo,
+                                        mm::MapOptions::Resident, "remove-write window");
             verdict(tally, full.is_ok() && window.is_ok(), "the whole and the window are mapped");
             if (full.is_ok() && window.is_ok()) {
                 remove_write(shared_vmo, 2 * PAGE_SIZE, PAGE_SIZE);
@@ -441,8 +440,8 @@ namespace {
         verdict(tally, made, "an object for the protect checks is made");
         if (made) {
             static constexpr u8 PATTERN[4] = {0xde, 0xad, 0xbe, 0xef};
-            auto mapped = root->map_with_vmo(AT, 2 * PAGE_SIZE, 0, rw, PERMS, vmo,
-                                             mm::MapOptions::Resident, "protect checks");
+            auto mapped = root->map_vmo(AT, 2 * PAGE_SIZE, 0, rw, PERMS, vmo,
+                                        mm::MapOptions::Resident, "protect checks");
             verdict(tally, mapped.is_ok() && vmo->write(PATTERN, 0, sizeof(PATTERN)) == Status::Ok,
                     "it is mapped writable and holds a pattern");
             if (mapped.is_ok()) {
@@ -500,8 +499,8 @@ namespace {
         auto const code_made =
             mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, COMMITTED, &code) == Status::Ok;
         if (code_made) {
-            auto code_mapped = root->map_with_vmo(CODE_AT, PAGE_SIZE, 0, rx, PERMS, code,
-                                                  mm::MapOptions::Resident, "code");
+            auto code_mapped = root->map_vmo(CODE_AT, PAGE_SIZE, 0, rx, PERMS, code,
+                                             mm::MapOptions::Resident, "code");
             verdict(tally, code_mapped.is_ok() && is_executable(aspace, CODE_AT),
                     "an executable mapping has an executable entry");
             if (code_mapped.is_ok()) {
@@ -575,9 +574,8 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> code;
         auto const made =
             mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, COMMITTED, &code) == Status::Ok;
-        auto mapped =
-            aspace->root_vma()->map_with_vmo(CODE_AT, PAGE_SIZE, 0, rx, mm::VmaFlags::PermMask,
-                                             code, mm::MapOptions::Resident, "widen check");
+        auto mapped = aspace->root_vma()->map_vmo(CODE_AT, PAGE_SIZE, 0, rx, mm::VmaFlags::PermMask,
+                                                  code, mm::MapOptions::Resident, "widen check");
         // Execute off the entry, and the mapping allowing it again: a fetch
         // widens the entry.
         auto const ready = made && mapped.is_ok() &&
@@ -666,10 +664,10 @@ namespace {
                 "nested slices share the original COW node");
         gone = nullptr;
 
-        auto whole_map = root->map_with_vmo(WHOLE_AT, 3 * PAGE_SIZE, 0, rw, PERMS, whole,
-                                            mm::MapOptions::Resident, "whole view");
-        auto slice_map = root->map_with_vmo(SLICE_AT, 2 * PAGE_SIZE, 0, rw, PERMS, slice,
-                                            mm::MapOptions::Resident, "last two pages");
+        auto whole_map = root->map_vmo(WHOLE_AT, 3 * PAGE_SIZE, 0, rw, PERMS, whole,
+                                       mm::MapOptions::Resident, "whole view");
+        auto slice_map = root->map_vmo(SLICE_AT, 2 * PAGE_SIZE, 0, rw, PERMS, slice,
+                                       mm::MapOptions::Resident, "last two pages");
         // A slice of the first page, mapped too: it is over the pages but shows none the
         // first operation is about.
         ustl::Arc<mm::VmObjectPaged> first;
@@ -678,8 +676,8 @@ namespace {
         if (!first_made) {
             return;
         }
-        auto first_map = root->map_with_vmo(FIRST_AT, PAGE_SIZE, 0, rw, PERMS, first,
-                                            mm::MapOptions::Resident, "first page");
+        auto first_map = root->map_vmo(FIRST_AT, PAGE_SIZE, 0, rw, PERMS, first,
+                                       mm::MapOptions::Resident, "first page");
         verdict(tally, whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok(),
                 "the object and both slices are mapped");
         if (!(whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok())) {
@@ -790,8 +788,8 @@ namespace {
         if (made) {
             static constexpr u8 BEFORE[4] = {0x11, 0x22, 0x33, 0x44};
             static constexpr u8 AFTER[4] = {0xaa, 0xbb, 0xcc, 0xdd};
-            auto mapped = root->map_with_vmo(AT, 3 * PAGE_SIZE, 0, rw, PERMS, vmo,
-                                             mm::MapOptions::Resident, "clone checks");
+            auto mapped = root->map_vmo(AT, 3 * PAGE_SIZE, 0, rw, PERMS, vmo,
+                                        mm::MapOptions::Resident, "clone checks");
             verdict(tally, mapped.is_ok() && vmo->write(BEFORE, 0, sizeof(BEFORE)) == Status::Ok,
                     "it is mapped writable and holds a pattern");
             if (mapped.is_ok()) {
@@ -1232,15 +1230,15 @@ namespace {
         verdict(tally, made, "a sparse object and its clone are made");
         if (made) {
             // Not committed: nothing is mapped until it is touched.
-            auto mapped = root->map_with_vmo(AT, 5 * PAGE_SIZE, 0, rw, PERMS, child,
-                                             mm::MapOptions::Lazy, "mapped clone");
+            auto mapped = root->map_vmo(AT, 5 * PAGE_SIZE, 0, rw, PERMS, child,
+                                        mm::MapOptions::Lazy, "mapped clone");
             verdict(tally, mapped.is_ok(),
                     "the clone is mapped read-write, and nothing is in "
                     "the page tables yet");
             if (mapped.is_ok()) {
                 constexpr auto ALIAS = AT + 8 * PAGE_SIZE;
-                auto alias = root->map_with_vmo(ALIAS, 5 * PAGE_SIZE, 0, rw, PERMS, child,
-                                                mm::MapOptions::Lazy, "clone alias");
+                auto alias = root->map_vmo(ALIAS, 5 * PAGE_SIZE, 0, rw, PERMS, child,
+                                           mm::MapOptions::Lazy, "clone alias");
                 verdict(tally, alias.is_ok(), "a second mapping covers the same clone");
                 Node parent_pages = parent->cow_pages();
                 auto const shared = lookup(parent_pages, false, 0);
@@ -1371,8 +1369,8 @@ namespace {
 
             // Populated the way a program asks for it (VmOptions::MapRange): the page
             // tables are filled in when the mapping is made, and nothing is committed.
-            auto mapped = root->map_with_vmo(AT, 4 * PAGE_SIZE, 0, rw, PERMS, child,
-                                             mm::MapOptions::Resident, "populated clone");
+            auto mapped = root->map_vmo(AT, 4 * PAGE_SIZE, 0, rw, PERMS, child,
+                                        mm::MapOptions::Resident, "populated clone");
             verdict(tally, mapped.is_ok(),
                     "the clone is mapped read-write with Populate, and its page tables are "
                     "filled in");
@@ -1424,8 +1422,8 @@ namespace {
                                                          mm::VmoFlags::Lazy, &lazy) == Status::Ok &&
                                poke(lazy, 1, 0x6100'0000);
         auto const populated =
-            lazy_made && root->map_with_vmo(LAZY_AT, 3 * PAGE_SIZE, 0, rw, PERMS, lazy,
-                                            mm::MapOptions::Resident, "lazy populate")
+            lazy_made && root->map_vmo(LAZY_AT, 3 * PAGE_SIZE, 0, rw, PERMS, lazy,
+                                       mm::MapOptions::Resident, "lazy populate")
                              .is_ok();
         verdict(tally,
                 populated && !present(LAZY_AT) && is_writable(aspace, LAZY_AT + PAGE_SIZE) &&
@@ -1439,32 +1437,32 @@ namespace {
             constexpr auto UNKNOWN = static_cast<mm::MapOptions>(7_bit);
             for (auto const mode:
                  {mm::MapOptions::Lazy, mm::MapOptions::Resident, mm::MapOptions::Commit}) {
-                auto const outside = root->map_with_vmo(CHECK_AT, PAGE_SIZE, 3 * PAGE_SIZE, rw,
-                                                        PERMS, lazy, mode, "outside VMO");
-                auto const crosses = root->map_with_vmo(CHECK_AT, PAGE_SIZE + 1, 2 * PAGE_SIZE, rw,
-                                                        PERMS, lazy, mode, "past VMO end");
+                auto const outside = root->map_vmo(CHECK_AT, PAGE_SIZE, 3 * PAGE_SIZE, rw, PERMS,
+                                                   lazy, mode, "outside VMO");
+                auto const crosses = root->map_vmo(CHECK_AT, PAGE_SIZE + 1, 2 * PAGE_SIZE, rw,
+                                                   PERMS, lazy, mode, "past VMO end");
                 verdict(tally,
                         outside.is_err() && outside.unwrap_err() == Status::OutOfRange &&
                             crosses.is_err() && crosses.unwrap_err() == Status::OutOfRange,
                         "every map mode rejects an invalid VMO window before registration");
             }
-            auto const unaligned = root->map_with_vmo(CHECK_AT, PAGE_SIZE, 1, rw, PERMS, lazy,
-                                                      mm::MapOptions::Lazy, "unaligned VMO");
+            auto const unaligned = root->map_vmo(CHECK_AT, PAGE_SIZE, 1, rw, PERMS, lazy,
+                                                 mm::MapOptions::Lazy, "unaligned VMO");
             verdict(tally, unaligned.is_err() && unaligned.unwrap_err() == Status::InvArgs,
                     "a VMO byte offset must be page-aligned");
-            auto const conflicting = root->map_with_vmo(
+            auto const conflicting = root->map_vmo(
                 CHECK_AT, PAGE_SIZE, PAGE_SIZE, rw, PERMS, lazy,
                 mm::MapOptions::Resident | mm::MapOptions::Commit, "conflicting map modes");
             auto const unknown =
-                root->map_with_vmo(CHECK_AT, PAGE_SIZE, PAGE_SIZE, rw, PERMS, lazy,
-                                   mm::MapOptions::Resident | UNKNOWN, "unknown map flag");
+                root->map_vmo(CHECK_AT, PAGE_SIZE, PAGE_SIZE, rw, PERMS, lazy,
+                              mm::MapOptions::Resident | UNKNOWN, "unknown map flag");
             verdict(tally,
                     conflicting.is_err() && conflicting.unwrap_err() == Status::InvArgs &&
                         unknown.is_err() && unknown.unwrap_err() == Status::InvArgs,
                     "creation rejects conflicting modes and unknown bits");
 
-            auto registered = root->map_with_vmo(CHECK_AT, PAGE_SIZE, PAGE_SIZE, rw, PERMS, lazy,
-                                                 mm::MapOptions::Lazy, "lazy map");
+            auto registered = root->map_vmo(CHECK_AT, PAGE_SIZE, PAGE_SIZE, rw, PERMS, lazy,
+                                            mm::MapOptions::Lazy, "lazy map");
             verdict(tally, registered.is_ok() && !present(CHECK_AT),
                     "invalid options left the range free, and Lazy leaves the PTE absent");
             if (registered) {
@@ -1489,8 +1487,8 @@ namespace {
         auto copied = false;
         if (clone_made) {
             auto mapping =
-                root->map_with_vmo(CLONE_AT, 2 * PAGE_SIZE, 0, rw, PERMS, child,
-                                   mm::MapOptions::Commit | mm::MapOptions::Sealed, "commit clone");
+                root->map_vmo(CLONE_AT, 2 * PAGE_SIZE, 0, rw, PERMS, child,
+                              mm::MapOptions::Commit | mm::MapOptions::Sealed, "commit clone");
             committed = mapping.is_ok() && (*mapping)->is_sealed();
             Node parent_pages = parent->cow_pages();
             Node child_pages = child->cow_pages();
@@ -1761,8 +1759,8 @@ namespace {
                                                     &run->object) == Status::Ok &&
                           poke(run->object, 0, 0x6000'0000) &&
                           aspace->root_vma()
-                              ->map_with_vmo(AT, PAGE_SIZE, 0, rw, PERMS, run->object,
-                                             mm::MapOptions::Resident, "shootdown")
+                              ->map_vmo(AT, PAGE_SIZE, 0, rw, PERMS, run->object,
+                                        mm::MapOptions::Resident, "shootdown")
                               .is_ok() &&
                           is_writable(aspace, AT);
         verdict(tally, made, "an object of one page is mapped writable, its entry filled in");
@@ -1883,8 +1881,8 @@ namespace {
         auto root = mm::VmAspace::kernel_aspace()->root_vma();
         run.remap_made =
             root->unmap(run.at, PAGE_SIZE) == Status::Ok &&
-            root->map_with_vmo(run.at, PAGE_SIZE, 0, kernel_mapping_flags(), mm::VmaFlags::PermMask,
-                               run.after, mm::MapOptions::Resident, "vmosnapshot.test after")
+            root->map_vmo(run.at, PAGE_SIZE, 0, kernel_mapping_flags(), mm::VmaFlags::PermMask,
+                          run.after, mm::MapOptions::Resident, "vmosnapshot.test after")
                 .is_ok();
         // Set whatever happened, so that the reader is never left waiting.
         run.remapped.store(true, std::memory_order_release);
@@ -1911,9 +1909,9 @@ namespace {
             poke(run->before, 0, OLD_KERNEL_WORD) && poke(run->after, 0, NEW_KERNEL_WORD);
         ustl::Arc<mm::VmMapping> mapping;
         if (made) {
-            auto mapped = root->map_with_vmo(
-                VirtAddr::Anywhere, PAGE_SIZE, 0, kernel_mapping_flags(), mm::VmaFlags::PermMask,
-                run->before, mm::MapOptions::Resident, "vmosnapshot.test before");
+            auto mapped = root->map_vmo(VirtAddr::Anywhere, PAGE_SIZE, 0, kernel_mapping_flags(),
+                                        mm::VmaFlags::PermMask, run->before,
+                                        mm::MapOptions::Resident, "vmosnapshot.test before");
             if (mapped.is_ok()) {
                 mapping = mapped.unwrap();
             }

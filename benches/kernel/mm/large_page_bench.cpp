@@ -98,9 +98,9 @@ namespace {
                 return status;
             }
             auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-            auto mapped = m_aspace->root_vma()->map_with_vmo(
-                VirtAddr::Anywhere, SIZE, 0, rw, mm::VmaFlags::PermMask, m_vmo,
-                mm::MapOptions::Lazy, "largepage.bench");
+            auto mapped = m_aspace->root_vma()->map_vmo(VirtAddr::Anywhere, SIZE, 0, rw,
+                                                        mm::VmaFlags::PermMask, m_vmo,
+                                                        mm::MapOptions::Lazy, "largepage.bench");
             if (mapped.is_err()) {
                 return mapped.unwrap_err();
             }

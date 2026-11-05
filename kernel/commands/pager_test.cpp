@@ -234,9 +234,9 @@ namespace {
 
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_with_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
-                                          ustl::Arc<mm::VmObject>(pager.vmo), mm::MapOptions::Lazy,
-                                          "pager.test");
+        auto mapping =
+            root->map_vmo(VirtAddr::Anywhere, 4 * P, 0, rw, mm::VmaFlags::PermMask,
+                          ustl::Arc<mm::VmObject>(pager.vmo), mm::MapOptions::Lazy, "pager.test");
         if (mapping.is_err()) {
             verdict(tally, false, "the VMO is mapped");
             return;
@@ -311,9 +311,9 @@ namespace {
         }
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-        auto mapping = root->map_with_vmo(VirtAddr::Anywhere, P, 0, rw, mm::VmaFlags::PermMask,
-                                          ustl::Arc<mm::VmObject>(pager.vmo), mm::MapOptions::Lazy,
-                                          "pager.test overtime");
+        auto mapping = root->map_vmo(VirtAddr::Anywhere, P, 0, rw, mm::VmaFlags::PermMask,
+                                     ustl::Arc<mm::VmObject>(pager.vmo), mm::MapOptions::Lazy,
+                                     "pager.test overtime");
         if (mapping.is_err()) {
             verdict(tally, false, "the VMO with the short overtime is mapped");
             return;
@@ -541,9 +541,8 @@ namespace {
             auto vmo = made.vmo.dispatcher()->vmo();
             auto root = aspace.root_vma();
             auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
-            auto mapping =
-                root->map_with_vmo(VirtAddr::Anywhere, 2 * P, 0, rw, mm::VmaFlags::PermMask, vmo,
-                                   mm::MapOptions::Lazy, "pager.test pager first");
+            auto mapping = root->map_vmo(VirtAddr::Anywhere, 2 * P, 0, rw, mm::VmaFlags::PermMask,
+                                         vmo, mm::MapOptions::Lazy, "pager.test pager first");
             if (mapping.is_err()) {
                 verdict(tally, false, "the VMO that outlives its pager is mapped");
                 return;

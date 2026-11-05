@@ -340,9 +340,9 @@ namespace {
         // the lock dropped. A regression here shows up as a command that never
         // finishes.
         {
-            auto self = root->map_with_vmo(VirtAddr::Anywhere, 2 * PAGE_SIZE, 0, flags,
-                                           mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
-                                           mm::MapOptions::Lazy, "usercopy.test self");
+            auto self = root->map_vmo(VirtAddr::Anywhere, 2 * PAGE_SIZE, 0, flags,
+                                      mm::VmaFlags::PermMask, ustl::Arc<mm::VmObject>(vmo),
+                                      mm::MapOptions::Lazy, "usercopy.test self");
             if (self.is_err()) {
                 log::error("usercopy.test: could not map the VMO: {}",
                            static_cast<int>(self.unwrap_err()));

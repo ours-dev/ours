@@ -33,9 +33,9 @@ auto Stack::init(usize size) -> Status {
     DEBUG_ASSERT(rvma);
 
     // Every page must be the stack's own and mapped before the stack is used.
-    auto mapping = rvma->map_with_vmo(VirtAddr::Anywhere, size, 0,
-                                      MmuFlags::Readable | MmuFlags::Writable, VmaFlags::PermMask,
-                                      ustl::move(vmo), MapOptions::Commit, "k-stack-mapping");
+    auto mapping =
+        rvma->map_vmo(VirtAddr::Anywhere, size, 0, MmuFlags::Readable | MmuFlags::Writable,
+                      VmaFlags::PermMask, ustl::move(vmo), MapOptions::Commit, "k-stack-mapping");
     if (mapping.is_err()) {
         return mapping.unwrap_err();
     }

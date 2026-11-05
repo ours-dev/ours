@@ -255,8 +255,8 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     if (registers_vdso && !m_vma->aspace()->claim_vdso()) {
         return ktl::err(Status::AccessDenied);
     }
-    auto mapping = m_vma->map_with_vmo(where, rounded, vmo_offset, mmuf, ceiling, vmo.vmo(),
-                                       map_options, name);
+    auto mapping =
+        m_vma->map_vmo(where, rounded, vmo_offset, mmuf, ceiling, vmo.vmo(), map_options, name);
     if (mapping.is_err()) {
         if (registers_vdso) {
             m_vma->aspace()->release_vdso();
