@@ -81,7 +81,7 @@ The lanes of the verification matrix cover each row.
 | Model | keep decision (ii), the tick only for periodic work; Linux's: a builder's choice of periodic and nohz, the tick checks the slice, the deadline is the optional precise end | the user's | None (predictions are paused) | Linux's model, two modes chosen by the builder (the user, 2026-11-06) |
 | The end of a slice | the deadline in both modes; the tick checks it, the deadline optional (`sched_hptick`) | the user's | None | the tick checks it, `sched_hptick` is the precise end (the user, 2026-11-06) |
 | The busy tick in nohz | always on a busy CPU; only while a consumer wants it | the user's | None | always (the user, 2026-11-06) |
-| Defaults of the dev images | `nohz` with `sched_hptick` on (the idle-power timing, `preempt.test`'s 65 ms turns); `nohz` with it off (Linux's default) | nohz with hptick on, and the other three rows on lanes | None | |
+| Defaults of the dev images | `nohz` with `sched_hptick` on (the idle-power timing, `preempt.test`'s 65 ms turns); `nohz` with it off (Linux's default) | nohz with hptick on, and the other three rows on lanes | None | nohz with `sched_hptick` on; the other three rows on lanes (the user, 2026-11-06) |
 | The build argument | `sched_tick_mode = "periodic" or "nohz"` replacing `sched_nohz`; also a boot override like Linux's `nohz=off` | the build argument; the override later if wanted | None | |
 | Shape of the tick in one-shot | a second slot in `TimerQueue`; a `Timer` | the slot | None | |
 | Where the idle/busy edge is (nohz) | the pick; the idle loop | the pick | None | |
