@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `steal.test`: a CPU with nothing to run takes a queued thread from a busier
-// CPU (Scheduler::steal_work_from(), called by the idle thread before it halts,
-// or by any CPU on another's scheduler), and where the NUMA node boundary
-// falls. With one CPU holding the queue (the victim) and another idle and
-// halted (the thief), each of a pair of CPUs on one node and a pair on two
-// (when the machine has them):
+// Steal.IdleCpuTakesQueuedThreadsByNodeAndAffinity: a CPU with nothing to run
+// takes a queued thread from a busier CPU (Scheduler::steal_work_from(),
+// called by the idle thread before it halts, or by any CPU on another's
+// scheduler), and where the NUMA node boundary falls. With one CPU holding
+// the queue (the victim) and another idle and halted (the thief), each of a
+// pair of CPUs on one node and a pair on two (when the machine has them):
 //
 //   - three threads that may run on either CPU, started pinned to the victim
 //     and then let go: the thief is woken by a reschedule request and one of
@@ -47,8 +47,8 @@
 #include <atomic>
 
 #include <arch/auto_interrupt_disabler.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -111,21 +111,6 @@ namespace {
         usize m_before;
         bool m_set = false;
     };
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("steal.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("steal.test: FAIL  {}", name);
-    }
 
     /// One spinning thread and the CPUs it has been seen on, one bit each.
     struct Spinner {
@@ -212,15 +197,15 @@ namespace {
     /// Runs |round| on |pair|: the spinners start on the victim, the thief is
     /// woken by a reschedule request or by the call of a CPU that is not its
     /// own, and the thief is watched.
-    auto run_round(Tally &tally, Pair const pair, Round &round) -> void {
+    auto run_round(Pair const pair, Round &round) -> void {
         // The threads that are kept off the thief by their affinity, and then
         // the ones that run on it.
         auto const foreign = round.movable + round.pinned + round.heavy;
         auto const total = foreign + round.on_thief;
         auto *const state = new (mm::ALLOC_KERNEL) State();
         if (state == nullptr) {
-            log::error("steal.test: FAILED -- no memory for the test's state");
-            return;
+            log::error("steal: no memory for the test's state");
+            FAIL("allocate the test's state");
         }
 
         Thread *threads[MAX_SPINNERS]{};
@@ -245,7 +230,7 @@ namespace {
             // only says whether it was, and nothing here depends on that.
             auto _ = threads[i]->resume();
         }
-        verdict(tally, spawned, "the spinners start on one CPU");
+        EXPECT_TRUE(spawned, "the spinners start on one CPU");
 
         // The sleep result says only whether it was cut short, and the
         // interruptible mode is off, so it cannot be.
@@ -254,7 +239,7 @@ namespace {
         for (usize i = 0; i < foreign; ++i) {
             kept_off &= !seen_on(state->spinners[i], pair.thief);
         }
-        verdict(tally, kept_off, "none runs on the other CPU while its affinity keeps it off");
+        EXPECT_TRUE(kept_off, "none runs on the other CPU while its affinity keeps it off");
 
         for (usize i = 0; i < round.movable; ++i) {
             if (threads[i] != nullptr) {
@@ -312,7 +297,7 @@ namespace {
                       threads[i]->join(nullptr, time::Deadline::at(time::SteadyClock::now() +
                                                                    LOST_AFTER)) == Status::Ok;
         }
-        verdict(tally, joined, "the spinners are joined");
+        EXPECT_TRUE(joined, "the spinners are joined");
         if (joined) {
             delete state;
         }
@@ -364,11 +349,11 @@ namespace {
     /// the test thread itself is runnable. Each thread weighs the same, so the
     /// first is taken, and one more for each whole thread the mean has left,
     /// up to the tier's batch: total / cpus, at least 1 and at most the batch.
-    auto many_round(Tally &tally, Pair const pair, usize const total) -> void {
+    auto many_round(Pair const pair, usize const total) -> void {
         static_assert(MAX_SPINNERS >= 20, "the largest round starts twenty threads");
         // Long enough for every thread taken to have had a turn on the thief.
         Round many{.movable = total, .watch = MANY_WATCH, .stop_at_first = false};
-        run_round(tally, pair, many);
+        run_round(pair, many);
 
         usize cpus = 1;
         usize batch = 1;
@@ -389,12 +374,12 @@ namespace {
             }
             return taken;
         };
-        log::info("steal.test: took {} of {}, the mean over {} CPUs allows {} to {}, batch {}",
+        log::info("steal: took {} of {}, the mean over {} CPUs allows {} to {}, batch {}",
                   many.steals, total, cpus, share(total), share(total + 1), batch);
-        verdict(tally, many.steals >= share(total) && many.steals <= share(total + 1),
-                "the idle CPU takes its share of the mean");
-        verdict(tally, many.movable_seen_count == many.steals,
-                "and the threads it took are the ones seen running on it");
+        EXPECT_TRUE(many.steals >= share(total) && many.steals <= share(total + 1),
+                    "the idle CPU takes its share of the mean");
+        EXPECT_EQ(many.movable_seen_count, many.steals,
+                  "and the threads it took are the ones seen running on it");
     }
 
     /// A third CPU of the thief's view, other than the thief, the victim and
@@ -433,10 +418,10 @@ namespace {
     /// does not halt next to a waiting thread because other load raised the
     /// mean. (Four such threads would make that CPU the busiest, a victim whose
     /// threads cannot move, and hide this one: repair item 23.)
-    auto heavy_round(Tally &tally, Pair const pair) -> void {
+    auto heavy_round(Pair const pair) -> void {
         auto const third = third_cpu(pair);
         if (third == INVALID_CPU_NUM) {
-            log::info("steal.test: no third CPU in the thief's view, the heavy round is not run");
+            log::info("steal: no third CPU in the thief's view, the heavy round is not run");
             return;
         }
         Round heavy{.movable = 3,
@@ -444,10 +429,11 @@ namespace {
                     .heavy_cpu = third,
                     .watch = NOT_TAKEN_FOR,
                     .stop_at_first = false};
-        run_round(tally, pair, heavy);
-        log::info("steal.test: with a heavy thread on CPU {}, took {} of 3", third, heavy.steals);
-        verdict(tally, heavy.steals == 1,
-                "the idle CPU takes the one waiting thread although the mean is above its victim");
+        run_round(pair, heavy);
+        log::info("steal: with a heavy thread on CPU {}, took {} of 3", third, heavy.steals);
+        EXPECT_EQ(heavy.steals, u64{1},
+                  "the idle CPU takes the one waiting thread although the mean is above its "
+                  "victim");
     }
 
     /// The test thread kept on one CPU for the length of a scope, so that the
@@ -489,9 +475,9 @@ namespace {
     /// named; the mean is over the set the call may take from, not over the
     /// machine; the victim is not among the CPUs it may take from; the thief is
     /// running something, and so must take no more than the mean leaves it.
-    auto remote_rounds(Tally &tally, Pair const pair) -> void {
+    auto remote_rounds(Pair const pair) -> void {
         CallerHome const home{third_cpu(pair)};
-        log::info("steal.test: remote rounds, called from CPU {} (thief {}, victim {})", home.cpu(),
+        log::info("steal: remote rounds, called from CPU {} (thief {}, victim {})", home.cpu(),
                   pair.thief, pair.victim);
         auto kind = sched_domain::TierKind::OtherNode;
         if (pair.same_node) {
@@ -502,21 +488,21 @@ namespace {
             Round round{.movable = 3, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
             round.look = Round::Look::Remote;
             round.victims = CpuMask::of(pair.victim);
-            run_round(tally, pair, round);
-            verdict(tally, home.cpu() == INVALID_CPU_NUM || round.caller == home.cpu(),
-                    "the call was made from a CPU outside the pair");
-            log::info("steal.test: first seen on the thief {} us after the call",
+            run_round(pair, round);
+            EXPECT_TRUE(home.cpu() == INVALID_CPU_NUM || round.caller == home.cpu(),
+                        "the call was made from a CPU outside the pair");
+            log::info("steal: first seen on the thief {} us after the call",
                       static_cast<i64>(round.first_seen.count() / 1000));
-            verdict(tally, round.taken >= 1, "a call on the thief's scheduler takes a thread");
+            EXPECT_GE(round.taken, 1u, "a call on the thief's scheduler takes a thread");
             // The count kept for the thief, whoever made the call.
-            verdict(tally, round.steals == round.taken && round.looks >= 1,
-                    "and it is counted for the thief");
-            verdict(tally, round.movable_seen_count == round.taken,
-                    "and the threads taken are the ones seen running on it");
+            EXPECT_TRUE(round.steals == round.taken && round.looks >= 1,
+                        "and it is counted for the thief");
+            EXPECT_EQ(round.movable_seen_count, round.taken,
+                      "and the threads taken are the ones seen running on it");
             // A thief that is halted is woken by the call. One that is not
             // looks at its queue when its next timer fires.
-            verdict(tally, round.first_seen > Duration::zero() && round.first_seen < REMOTE_WAKE,
-                    "and the thief that was halted runs them at once");
+            EXPECT_TRUE(round.first_seen > Duration::zero() && round.first_seen < REMOTE_WAKE,
+                        "and the thief that was halted runs them at once");
         }
 
         {
@@ -527,13 +513,12 @@ namespace {
             Round round{.movable = 8, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
             round.look = Round::Look::Remote;
             round.victims = CpuMask::of(pair.victim);
-            run_round(tally, pair, round);
+            run_round(pair, round);
             auto const batch = StealPolicy::max_batch(kind);
-            log::info("steal.test: the mean over the set the call may take from: took {} of 8, "
+            log::info("steal: the mean over the set the call may take from: took {} of 8, "
                       "batch {}",
                       round.taken, batch);
-            verdict(tally, round.taken == batch,
-                    "the mean of a call is over the CPUs it may take from");
+            EXPECT_EQ(round.taken, batch, "the mean of a call is over the CPUs it may take from");
         }
 
         {
@@ -547,14 +532,14 @@ namespace {
             Round round{.movable = 3, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
             round.look = Round::Look::Remote;
             round.victims = others;
-            run_round(tally, pair, round);
+            run_round(pair, round);
             // Judged by the call's answer. The thief is a CPU like the others,
             // and anything that wakes it (another subsystem's timer, an IPI)
             // makes its own idle thread look with the whole machine in view,
             // which takes the threads this round has queued: so what it counts
             // and what is seen on it are not the call's.
-            verdict(tally, round.taken == 0 && round.looks >= 1,
-                    "a call that may not take from the victim takes nothing");
+            EXPECT_TRUE(round.taken == 0 && round.looks >= 1,
+                        "a call that may not take from the victim takes nothing");
         }
 
         {
@@ -566,7 +551,7 @@ namespace {
             Round round{
                 .movable = 3, .on_thief = 1, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
             round.look = Round::Look::Remote;
-            run_round(tally, pair, round);
+            run_round(pair, round);
 
             usize cpus = 1;
             for (auto const &domain: task::sched::domains_of(pair.thief).view()) {
@@ -579,16 +564,16 @@ namespace {
             if (cpus == 2) {
                 most = 1;
             }
-            log::info("steal.test: a busy thief with {} CPUs in view took {} of 3, at most {}",
-                      cpus, round.taken, most);
-            verdict(tally, round.taken <= most && round.looks >= 1,
-                    "a thief that is running something takes only what fits the mean");
+            log::info("steal: a busy thief with {} CPUs in view took {} of 3, at most {}", cpus,
+                      round.taken, most);
+            EXPECT_TRUE(round.taken <= most && round.looks >= 1,
+                        "a thief that is running something takes only what fits the mean");
         }
     }
 
     /// The knobs steer the look. Each is set, a round is run, and the knob is
     /// put back: stealing off, the batch at one, the threshold above the queue.
-    auto knob_rounds(Tally &tally, Pair const pair) -> void {
+    auto knob_rounds(Pair const pair) -> void {
         auto kind = sched_domain::TierKind::OtherNode;
         if (pair.same_node) {
             kind = sched_domain::TierKind::SameNode;
@@ -596,52 +581,51 @@ namespace {
 
         {
             KnobSetting const off{sched_domain::Knob::Enabled, 0};
-            verdict(tally, off.took(), "stealing is switched off");
+            EXPECT_TRUE(off.took(), "stealing is switched off");
             Round round{.movable = 3, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
-            run_round(tally, pair, round);
-            verdict(tally,
-                    round.set_up && round.looks == 0 && round.steals == 0 &&
-                        !round.movable_seen_on_thief,
-                    "and the idle CPU does not look");
+            run_round(pair, round);
+            EXPECT_TRUE(round.set_up && round.looks == 0 && round.steals == 0 &&
+                            !round.movable_seen_on_thief,
+                        "and the idle CPU does not look");
         }
 
         {
             KnobSetting const one{sched_domain::max_batch_knob(kind), 1};
-            verdict(tally, one.took(), "the batch is set to one");
+            EXPECT_TRUE(one.took(), "the batch is set to one");
             // The expectation of many_round() reads the knob: a batch of one. The
             // round tells the knob from the mean only while twenty threads over the
             // CPUs in view leave two or more (up to ten CPUs); on a bigger machine
             // it passes whatever the knob says.
-            many_round(tally, pair, 20);
+            many_round(pair, 20);
         }
 
         {
             KnobSetting const high{sched_domain::min_runnable_knob(kind), 9};
-            verdict(tally, high.took(), "the threshold is set above the queue");
+            EXPECT_TRUE(high.took(), "the threshold is set above the queue");
             Round round{.movable = 3, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
-            run_round(tally, pair, round);
-            verdict(tally, round.looks >= 1 && round.steals == 0 && !round.movable_seen_on_thief,
-                    "and a queue shorter than it is looked at and left");
+            run_round(pair, round);
+            EXPECT_TRUE(round.looks >= 1 && round.steals == 0 && !round.movable_seen_on_thief,
+                        "and a queue shorter than it is looked at and left");
         }
     }
 
-    auto test_pair(Tally &tally, Pair const pair) -> void {
+    auto test_pair(Pair const pair) -> void {
         char const *node = "another";
         if (pair.same_node) {
             node = "the same";
         }
-        log::info("steal.test: CPU {} has the queue, CPU {} is idle, on {} node", pair.victim,
+        log::info("steal: CPU {} has the queue, CPU {} is idle, on {} node", pair.victim,
                   pair.thief, node);
 
         // Three queue up behind the one running: worth taking from any node.
         Round deep{.movable = 3};
-        run_round(tally, pair, deep);
-        verdict(tally, deep.movable_seen_on_thief, "an idle CPU takes a thread that waits");
-        verdict(tally, deep.steals >= 1, "and counts it");
+        run_round(pair, deep);
+        EXPECT_TRUE(deep.movable_seen_on_thief, "an idle CPU takes a thread that waits");
+        EXPECT_GE(deep.steals, u64{1}, "and counts it");
         // The time it spent: some, and the longest call no longer than all of them.
         auto const in_all = Scheduler::Current::steal_nanoseconds(pair.thief);
         auto const longest = Scheduler::Current::longest_steal_nanoseconds(pair.thief);
-        verdict(tally, in_all > 0 && longest > 0 && longest <= in_all, "and times its looks");
+        EXPECT_TRUE(in_all > 0 && longest > 0 && longest <= in_all, "and times its looks");
 
         // One waits behind the one running: taken on the same node only.
         Round shallow{.movable = 2};
@@ -649,39 +633,38 @@ namespace {
             shallow.watch = NOT_TAKEN_FOR;
             shallow.stop_at_first = false;
         }
-        run_round(tally, pair, shallow);
-        verdict(tally, shallow.looks >= 1, "the idle CPU looked at the one that waits");
+        run_round(pair, shallow);
+        EXPECT_GE(shallow.looks, u64{1}, "the idle CPU looked at the one that waits");
         if (pair.same_node) {
-            verdict(tally, shallow.movable_seen_on_thief, "and took it, from its own node");
+            EXPECT_TRUE(shallow.movable_seen_on_thief, "and took it, from its own node");
         } else {
-            verdict(tally, !shallow.movable_seen_on_thief && shallow.steals == 0,
-                    "and left it, from another node");
+            EXPECT_TRUE(!shallow.movable_seen_on_thief && shallow.steals == 0,
+                        "and left it, from another node");
         }
 
         // Threads that may not run on the thief: it looks, and takes none.
         Round pinned{.pinned = 3, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
-        run_round(tally, pair, pinned);
-        verdict(tally, pinned.looks >= 1, "the idle CPU looked at a queue of pinned threads");
-        verdict(tally, !pinned.pinned_seen_on_thief && pinned.steals == 0, "and took none of them");
+        run_round(pair, pinned);
+        EXPECT_GE(pinned.looks, u64{1}, "the idle CPU looked at a queue of pinned threads");
+        EXPECT_TRUE(!pinned.pinned_seen_on_thief && pinned.steals == 0, "and took none of them");
 
         // Eight queue up behind the one running: the thief takes its share of the
         // mean, which is less than a full batch.
-        many_round(tally, pair, 8);
+        many_round(pair, 8);
         // Twenty: more than a full batch is the mean's share on a machine of up
         // to five CPUs, and the batch is what is taken.
-        many_round(tally, pair, 20);
+        many_round(pair, 20);
 
-        heavy_round(tally, pair);
+        heavy_round(pair);
 
-        knob_rounds(tally, pair);
+        knob_rounds(pair);
 
-        remote_rounds(tally, pair);
+        remote_rounds(pair);
     }
 
-    auto steal_test_command(int, char **) -> int {
+    KTEST(Steal, IdleCpuTakesQueuedThreadsByNodeAndAffinity) {
         if (Cpu::online_mask().count() < 2) {
-            log::info("steal.test: ok -- 0 checks, one CPU only");
-            return 0;
+            KTEST_SKIP("one CPU only");
         }
 
         // The rounds are written for the defaults of the knobs: an image that
@@ -704,22 +687,9 @@ namespace {
 
         Pair pairs[2];
         auto const found = find_pairs(pairs);
-        Tally tally;
         for (usize i = 0; i < found; ++i) {
-            test_pair(tally, pairs[i]);
+            test_pair(pairs[i]);
         }
-
-        if (tally.failed != 0) {
-            log::error("steal.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("steal.test: ok -- {} checks", tally.passed);
-        return 0;
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(StealTest, "steal.test", ours::steal_test_command,
-             "check that an idle CPU takes a queued thread from a busier one, by node and by "
-             "affinity");

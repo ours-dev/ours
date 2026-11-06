@@ -103,6 +103,55 @@ kernel_test("bti") {
   deps = _HEADER_DEPS
 }
 
+kernel_test("pager") {
+  sources = [ "pager_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("large_page") {
+  sources = [ "large_page_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("hotplug") {
+  sources = [ "hotplug_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("steal") {
+  sources = [ "steal_test.cpp" ]
+  deps = _HEADER_DEPS + [
+           "//kernel/lib/gktl:headers",
+           "//kernel/lib/obi:headers",
+           "//kernel/lib/sched_domain:headers",
+         ]
+}
+
+kernel_test("irq_revoke") {
+  sources = [ "irq_revoke_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("page_reclaim") {
+  sources = [ "page_reclaim_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("tick_replace") {
+  sources = [ "tick_replace_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("pm_node") {
+  sources = [ "pm_node_test.cpp" ]
+  deps = _HEADER_DEPS + [
+           "//kernel/lib/gktl:headers",
+           "//kernel/lib/numa:headers",
+           "//kernel/lib/obi:headers",
+           "//kernel/lib/sched_domain:headers",
+         ]
+}
+
 kernel_test("pm_zone") {
   sources = [ "pm_zone_test.cpp" ]
   deps = _HEADER_DEPS
@@ -198,12 +247,20 @@ source_set("kernel.tests") {
     ":page_queues",
     ":pin_lines",
     ":bti",
+    ":hotplug",
     ":irq_rcu",
+    ":irq_revoke",
     ":ioport",
+    ":large_page",
     ":memory_pressure",
+    ":page_reclaim",
+    ":pager",
+    ":pm_node",
     ":preempt",
     ":resource",
     ":sleep",
+    ":steal",
+    ":tick_replace",
     ":timer",
     ":tick_broadcast",
     ":user_copy",

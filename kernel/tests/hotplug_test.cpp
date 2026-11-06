@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `hotplug.test`: the highest online CPU taken offline, halted, and brought
-// back through the AP trampoline, twice (task::take_cpu_offline(),
-// task::bring_cpu_online(); steps 2 and 3 of .agents/tasks/cpu-hotplug/
-// PLAN.md). Without CPU hotplug built in, only that both answer
-// NotSupported. What it checks, in order:
+// Hotplug.TakesACpuOfflineAndBringsItBackTwice: the highest online CPU taken
+// offline, halted, and brought back through the AP trampoline, twice
+// (task::take_cpu_offline(), task::bring_cpu_online(); steps 2 and 3 of
+// .agents/tasks/cpu-hotplug/PLAN.md). Without CPU hotplug built in, only that
+// both answer NotSupported. What it checks, in order:
 //
 //   - the refusals: a CPU that is not possible (InvArgs), the boot CPU
 //     (NotSupported), bringing back a CPU that is online (BadState);
@@ -53,8 +53,8 @@
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <ustl/option.hpp>
 
@@ -76,22 +76,6 @@ namespace {
     /// Spinners per online CPU, so that some are on every CPU.
     constexpr usize SPINNERS_PER_CPU = 2;
     constexpr usize MAX_SPINNERS = SPINNERS_PER_CPU * MAX_CPU;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> bool {
-        if (ok) {
-            tally.passed += 1;
-            log::info("hotplug.test: pass  {}", name);
-            return true;
-        }
-        tally.failed += 1;
-        log::error("hotplug.test: FAIL  {}", name);
-        return false;
-    }
 
     auto deadline_after(Duration const delta) -> time::Deadline {
         return time::Deadline::at(time::SteadyClock::now() + delta);
@@ -234,7 +218,7 @@ namespace {
     /// A thread pinned to the target runs there and wakes there from a sleep,
     /// and a Dpc it enqueues there runs there: the CPU's timers and Dpc
     /// workers run.
-    auto check_runs_there(Tally &tally, State &state) -> void {
+    auto check_runs_there(State &state) -> void {
         auto const target = state.target;
         state.dpc_runs.store(0, std::memory_order_relaxed);
         auto *const dpc = new (mm::ALLOC_KERNEL) Dpc(dpc_routine, &state);
@@ -245,14 +229,13 @@ namespace {
                 spawn("hotplug.test/pinned", pinned_routine, &arg, ustl::Option<CpuNum>(target));
         }
         auto const joined = join(pinned);
-        verdict(tally,
-                joined && state.pinned_ran_on.load(std::memory_order_relaxed) == target &&
-                    state.pinned_woke_on.load(std::memory_order_relaxed) == target,
-                "a thread pinned to it runs there, and wakes there from a sleep");
+        EXPECT_TRUE(joined && state.pinned_ran_on.load(std::memory_order_relaxed) == target &&
+                        state.pinned_woke_on.load(std::memory_order_relaxed) == target,
+                    "a thread pinned to it runs there, and wakes there from a sleep");
         auto const dpc_ran =
             poll_until([&state] { return state.dpc_runs.load(std::memory_order_acquire) == 1; }) &&
             state.dpc_ran_on.load(std::memory_order_relaxed) == target;
-        verdict(tally, dpc_ran, "a Dpc enqueued there runs there");
+        EXPECT_TRUE(dpc_ran, "a Dpc enqueued there runs there");
         if (dpc_ran) {
             delete dpc;
         }
@@ -260,37 +243,36 @@ namespace {
 
     /// One round trip. False when the CPU could not be brought back, after
     /// which nothing more is tried.
-    auto round_trip(Tally &tally, State &state, u32 const round) -> bool {
+    auto round_trip(State &state, u32 const round) -> bool {
         auto const target = state.target;
-        log::info("hotplug.test: round {}: CPU {}", round, target);
+        log::info("hotplug: round {}: CPU {}", round, target);
 
         // The sleeper, asleep on the target.
         state.asleep_there.store(false, std::memory_order_relaxed);
         state.woke.store(false, std::memory_order_relaxed);
         auto *const sleeper =
             spawn("hotplug.test/sleeper", sleeper_routine, &state, ustl::Option<CpuNum>(target));
-        verdict(tally, sleeper != nullptr && poll_until([&state] {
-                           return state.asleep_there.load(std::memory_order_acquire);
-                       }),
-                "a thread falls asleep on the CPU");
+        EXPECT_TRUE(sleeper != nullptr && poll_until([&state] {
+                        return state.asleep_there.load(std::memory_order_acquire);
+                    }),
+                    "a thread falls asleep on the CPU");
 
         auto const offline = task::take_cpu_offline(target, deadline_after(LOST_AFTER));
         auto const offline_at = time::SteadyClock::now();
         state.offline.store(true, std::memory_order_release);
-        verdict(tally, offline == Status::Ok, "the CPU goes offline");
-        verdict(tally, offline_at < state.slept_at + SLEEP_FOR,
-                "while the thread sleeps there, its timer on the CPU's queue");
-        verdict(tally,
-                !Cpu::is_online(target) && !task::Scheduler::peek_active_mask().test(target) &&
-                    IdleThread::Current::get(target).state() == IdleThread::State::Offline &&
-                    IdleThread::Current::get(target).has_halted(),
-                "and is neither online nor active, and its idle thread says Offline and halted");
+        EXPECT_OK(offline, "the CPU goes offline");
+        EXPECT_TRUE(offline_at < state.slept_at + SLEEP_FOR,
+                    "while the thread sleeps there, its timer on the CPU's queue");
+        EXPECT_TRUE(
+            !Cpu::is_online(target) && !task::Scheduler::peek_active_mask().test(target) &&
+                IdleThread::Current::get(target).state() == IdleThread::State::Offline &&
+                IdleThread::Current::get(target).has_halted(),
+            "and is neither online nor active, and its idle thread says Offline and halted");
 
-        verdict(tally,
-                join(sleeper) && state.woke_on.load(std::memory_order_relaxed) != target &&
-                    state.woke_at - state.slept_at >= SLEEP_FOR &&
-                    state.woke_at - state.slept_at < SLEEP_FOR + WAKE_LATE_BY,
-                "the thread asleep there wakes on time, elsewhere");
+        EXPECT_TRUE(join(sleeper) && state.woke_on.load(std::memory_order_relaxed) != target &&
+                        state.woke_at - state.slept_at >= SLEEP_FOR &&
+                        state.woke_at - state.slept_at < SLEEP_FOR + WAKE_LATE_BY,
+                    "the thread asleep there wakes on time, elsewhere");
 
         // Each spinner on its own: one left queued on the offline CPU makes
         // no progress, however much the others make. A spinner waits for its
@@ -318,27 +300,26 @@ namespace {
         for (usize i = 0; i < state.num_spinners; ++i) {
             ran_there |= state.spinners[i].ran_there_offline.load(std::memory_order_relaxed);
         }
-        verdict(tally, !ran_there, "no spinner runs on it while it is offline");
-        verdict(tally, all_went_on, "and every spinner goes on elsewhere");
+        EXPECT_TRUE(!ran_there, "no spinner runs on it while it is offline");
+        EXPECT_TRUE(all_went_on, "and every spinner goes on elsewhere");
 
         std::atomic<u32> answered{0};
         IpiService::sync_exec(cpu_possible_mask(), count_task, &answered);
-        verdict(tally,
-                answered.load(std::memory_order_relaxed) ==
-                    static_cast<u32>(Cpu::online_mask().count()),
-                "a sync_exec() over every possible CPU returns, answered by the online ones");
+        EXPECT_EQ(answered.load(std::memory_order_relaxed),
+                  static_cast<u32>(Cpu::online_mask().count()),
+                  "a sync_exec() over every possible CPU returns, answered by the online ones");
 
         state.offline.store(false, std::memory_order_release);
         auto const online = task::bring_cpu_online(target);
-        if (!verdict(tally, online == Status::Ok, "the CPU comes back")) {
+        EXPECT_OK(online, "the CPU comes back");
+        if (online != Status::Ok) {
             return false;
         }
-        verdict(tally,
-                Cpu::is_online(target) && task::Scheduler::peek_active_mask().test(target) &&
-                    IdleThread::Current::get(target).state() == IdleThread::State::Running,
-                "and is online and active again");
+        EXPECT_TRUE(Cpu::is_online(target) && task::Scheduler::peek_active_mask().test(target) &&
+                        IdleThread::Current::get(target).state() == IdleThread::State::Running,
+                    "and is online and active again");
 
-        check_runs_there(tally, state);
+        check_runs_there(state);
         return true;
     }
 
@@ -382,7 +363,7 @@ namespace {
     /// idle, is moved there as the target goes offline (Scheduler::Current::
     /// deactivate()). With no tick, an idle CPU sleeps until something wakes
     /// it, so the move has to.
-    auto check_moved_to_idle(Tally &tally, CpuNum const target) -> void {
+    auto check_moved_to_idle(CpuNum const target) -> void {
         auto helper = INVALID_CPU_NUM;
         Cpu::online_mask().for_each([&helper, target](CpuNum const cpu) {
             if (cpu != target && cpu != time::ClockSource::Default::cpunum() && cpu != Cpu::id()) {
@@ -390,7 +371,7 @@ namespace {
             }
         });
         if (helper == INVALID_CPU_NUM) {
-            log::info("hotplug.test: the move to an idle CPU is skipped -- no CPU to spare");
+            log::info("hotplug: the move to an idle CPU is skipped -- no CPU to spare");
             return;
         }
 
@@ -401,7 +382,8 @@ namespace {
         auto const there = mover != nullptr && poll_until([] {
                                return MOVER.on_target.load(std::memory_order_acquire);
                            });
-        if (!verdict(tally, there, "a thread runs on the CPU, free to move to one idle CPU")) {
+        EXPECT_TRUE(there, "a thread runs on the CPU, free to move to one idle CPU");
+        if (!there) {
             return;
         }
         mover->set_cpu_affinity_hard(CpuMask::of(target) | CpuMask::of(helper));
@@ -414,15 +396,14 @@ namespace {
         auto waited = Duration{};
         if (moved) {
             waited = MOVER.first_elsewhere - MOVER.last_on_target;
-            log::info("hotplug.test: moved to CPU {}, off the CPU for {} us",
+            log::info("hotplug: moved to CPU {}, off the CPU for {} us",
                       MOVER.elsewhere.load(std::memory_order_relaxed), waited.count() / 1000);
         }
-        verdict(tally,
-                moved && MOVER.elsewhere.load(std::memory_order_relaxed) == helper &&
-                    waited <= MOVED_RUNS_WITHIN,
-                "the CPU goes offline, and the thread runs on the idle CPU at once");
-        verdict(tally, join(mover), "the moved thread is joined");
-        verdict(tally, task::bring_cpu_online(target) == Status::Ok, "the CPU comes back");
+        EXPECT_TRUE(moved && MOVER.elsewhere.load(std::memory_order_relaxed) == helper &&
+                        waited <= MOVED_RUNS_WITHIN,
+                    "the CPU goes offline, and the thread runs on the idle CPU at once");
+        EXPECT_TRUE(join(mover), "the moved thread is joined");
+        EXPECT_OK(task::bring_cpu_online(target), "the CPU comes back");
     }
 
     /// A sampling session across a CPU going offline: stopped while the CPU
@@ -433,7 +414,7 @@ namespace {
     /// it moved with the CPU's queue, the stop would not reach it, an offline
     /// CPU being no target of its IPI, and the second start would find it
     /// still queued on the CPU that took it, which Timer::activate() asserts.
-    auto check_sampler(Tally &tally, CpuNum const target) -> void {
+    auto check_sampler(CpuNum const target) -> void {
         constexpr auto CONFIG = SamplerConfig{
             .period = SAMPLER_MAX_PERIOD,
             .buffer_size = sizeof(SamplerRecord),
@@ -444,26 +425,25 @@ namespace {
         auto rights = Rights::None;
         auto const made = object::SamplerDispatcher::create(CONFIG, &session, &rights);
         if (made == Status::AlreadyExists) {
-            log::info("hotplug.test: the sampler check is skipped -- another session holds the "
+            log::info("hotplug: the sampler check is skipped -- another session holds the "
                       "claim");
             return;
         }
         auto const started_at = time::SteadyClock::now();
-        if (!verdict(tally, made == Status::Ok && session.dispatcher()->start() == Status::Ok,
-                     "a sampling session starts")) {
+        auto const started = made == Status::Ok && session.dispatcher()->start() == Status::Ok;
+        EXPECT_TRUE(started, "a sampling session starts");
+        if (!started) {
             return;
         }
-        verdict(tally, task::take_cpu_offline(target, deadline_after(LOST_AFTER)) == Status::Ok,
-                "the CPU goes offline while it samples");
-        verdict(tally, session.dispatcher()->stop() == Status::Ok,
-                "the session stops while the CPU is away");
-        verdict(tally, task::bring_cpu_online(target) == Status::Ok, "the CPU comes back");
-        verdict(tally, time::SteadyClock::now() - started_at < Nanoseconds(SAMPLER_MAX_PERIOD),
-                "all within one period, before any of its timers fired");
-        verdict(tally,
-                session.dispatcher()->start() == Status::Ok &&
-                    session.dispatcher()->stop() == Status::Ok,
-                "and the session starts again at once, arming the CPU, and stops");
+        EXPECT_OK(task::take_cpu_offline(target, deadline_after(LOST_AFTER)),
+                  "the CPU goes offline while it samples");
+        EXPECT_OK(session.dispatcher()->stop(), "the session stops while the CPU is away");
+        EXPECT_OK(task::bring_cpu_online(target), "the CPU comes back");
+        EXPECT_TRUE(time::SteadyClock::now() - started_at < Nanoseconds(SAMPLER_MAX_PERIOD),
+                    "all within one period, before any of its timers fired");
+        EXPECT_TRUE(session.dispatcher()->start() == Status::Ok &&
+                        session.dispatcher()->stop() == Status::Ok,
+                    "and the session starts again at once, arming the CPU, and stops");
     }
 
     /// How long a transition is given in the checks that make it miss.
@@ -494,7 +474,7 @@ namespace {
     /// the hotplug lock, as take_cpu_offline() asks it: through
     /// take_cpu_offline() the blocker would hold up the Dpc workers' stop
     /// first, and the transition would not be asked for at all.
-    auto check_offline_withdrawn(Tally &tally, State &state) -> void {
+    auto check_offline_withdrawn(State &state) -> void {
         auto const target = state.target;
         BLOCKER.holding.store(false, std::memory_order_relaxed);
         BLOCKER.release.store(false, std::memory_order_relaxed);
@@ -503,7 +483,8 @@ namespace {
         auto const holding = blocker != nullptr && poll_until([] {
                                  return BLOCKER.holding.load(std::memory_order_acquire);
                              });
-        if (!verdict(tally, holding, "a thread holds the CPU with preemption off")) {
+        EXPECT_TRUE(holding, "a thread holds the CPU with preemption off");
+        if (!holding) {
             BLOCKER.release.store(true, std::memory_order_release);
             join(blocker);
             return;
@@ -515,27 +496,26 @@ namespace {
             Guard<sync::Mutex> guard{task::cpu_hotplug_lock()};
             asked = idler.transition(IdleThread::State::Offline, deadline_after(WITHDRAW_AFTER));
         }
-        verdict(tally, asked == Status::TimeOut,
-                "asked to go offline, the CPU misses the deadline");
-        verdict(tally,
-                idler.state() == IdleThread::State::Running && !idler.has_pending_transition() &&
-                    Cpu::is_online(target) && task::Scheduler::peek_active_mask().test(target),
-                "and the transition is withdrawn: online, active, and asked nothing");
+        EXPECT_TRUE(asked == Status::TimeOut, "asked to go offline, the CPU misses the deadline");
+        EXPECT_TRUE(idler.state() == IdleThread::State::Running &&
+                        !idler.has_pending_transition() && Cpu::is_online(target) &&
+                        task::Scheduler::peek_active_mask().test(target),
+                    "and the transition is withdrawn: online, active, and asked nothing");
 
         BLOCKER.release.store(true, std::memory_order_release);
-        verdict(tally, join(blocker), "the thread that held it is joined");
-        check_runs_there(tally, state);
+        EXPECT_TRUE(join(blocker), "the thread that held it is joined");
+        check_runs_there(state);
     }
 
     /// A start whose deadline has passed by the time the start-up IPIs are
     /// sent: it is withdrawn while the CPU is on its way in. The CPU arrives,
     /// finds nothing asked of it, and halts again (IdleThread::come_back());
     /// it stays offline, and a second start brings it back.
-    auto check_start_withdrawn(Tally &tally, State &state) -> void {
+    auto check_start_withdrawn(State &state) -> void {
         auto const target = state.target;
-        if (!verdict(tally,
-                     task::take_cpu_offline(target, deadline_after(LOST_AFTER)) == Status::Ok,
-                     "the CPU goes offline")) {
+        auto const offline = task::take_cpu_offline(target, deadline_after(LOST_AFTER));
+        EXPECT_OK(offline, "the CPU goes offline");
+        if (offline != Status::Ok) {
             return;
         }
 
@@ -551,29 +531,27 @@ namespace {
             // which takes this thread being held up between the start-up
             // IPIs and the next few instructions. Put back as
             // bring_cpu_online() would have.
-            log::info("hotplug.test: the CPU arrived before its start could be withdrawn; that "
+            log::info("hotplug: the CPU arrived before its start could be withdrawn; that "
                       "case is not made");
             DpcRunner::start_workers(target);
             return;
         }
-        verdict(tally, started == Status::TimeOut,
-                "started with its deadline already passed, the CPU misses it");
-        verdict(tally, poll_until([&idler] { return idler.has_halted(); }),
-                "and, arriving late, halts again");
-        verdict(tally,
-                !Cpu::is_online(target) && !task::Scheduler::peek_active_mask().test(target) &&
-                    idler.state() == IdleThread::State::Offline,
-                "and stays offline");
-        if (!verdict(tally, task::bring_cpu_online(target) == Status::Ok,
-                     "a second start brings it back")) {
+        EXPECT_TRUE(started == Status::TimeOut,
+                    "started with its deadline already passed, the CPU misses it");
+        EXPECT_TRUE(poll_until([&idler] { return idler.has_halted(); }),
+                    "and, arriving late, halts again");
+        EXPECT_TRUE(!Cpu::is_online(target) && !task::Scheduler::peek_active_mask().test(target) &&
+                        idler.state() == IdleThread::State::Offline,
+                    "and stays offline");
+        auto const online = task::bring_cpu_online(target);
+        EXPECT_OK(online, "a second start brings it back");
+        if (online != Status::Ok) {
             return;
         }
-        check_runs_there(tally, state);
+        check_runs_there(state);
     }
 
-    auto hotplug_test_command(int, char **) -> int {
-        Tally tally;
-
+    KTEST(Hotplug, TakesACpuOfflineAndBringsItBackTwice) {
         auto target = INVALID_CPU_NUM;
         Cpu::online_mask().for_each([&target](CpuNum const cpu) {
             if (cpu != time::ClockSource::Default::cpunum()) {
@@ -581,39 +559,26 @@ namespace {
             }
         });
         if (target == INVALID_CPU_NUM) {
-            log::info("hotplug.test: ok -- no CPU but the boot CPU, nothing to take offline");
-            return 0;
+            KTEST_SKIP("no CPU but the boot CPU, nothing to take offline");
         }
 
 #ifndef CONFIG_CPU_HOTPLUG
-        verdict(tally,
-                task::take_cpu_offline(target, deadline_after(LOST_AFTER)) ==
-                        Status::NotSupported &&
-                    task::bring_cpu_online(target) == Status::NotSupported,
-                "without CPU hotplug built in, both answer NotSupported");
-        if (tally.failed != 0) {
-            log::error("hotplug.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("hotplug.test: ok -- {} checks, cpu_hotplug=false", tally.passed);
-        return 0;
+        EXPECT_TRUE(task::take_cpu_offline(target, deadline_after(LOST_AFTER)) ==
+                            Status::NotSupported &&
+                        task::bring_cpu_online(target) == Status::NotSupported,
+                    "without CPU hotplug built in, both answer NotSupported");
+        return;
 #endif
-        verdict(tally,
-                task::take_cpu_offline(MAX_CPU, deadline_after(LOST_AFTER)) == Status::InvArgs,
-                "a CPU that is not possible is InvArgs");
-        verdict(tally,
-                task::take_cpu_offline(time::ClockSource::Default::cpunum(),
-                                       deadline_after(LOST_AFTER)) == Status::NotSupported,
-                "the boot CPU is NotSupported");
-        verdict(tally, task::bring_cpu_online(target) == Status::BadState,
-                "bringing back a CPU that is online is BadState");
+        EXPECT_TRUE(task::take_cpu_offline(MAX_CPU, deadline_after(LOST_AFTER)) == Status::InvArgs,
+                    "a CPU that is not possible is InvArgs");
+        EXPECT_TRUE(task::take_cpu_offline(time::ClockSource::Default::cpunum(),
+                                           deadline_after(LOST_AFTER)) == Status::NotSupported,
+                    "the boot CPU is NotSupported");
+        EXPECT_TRUE(task::bring_cpu_online(target) == Status::BadState,
+                    "bringing back a CPU that is online is BadState");
 
         auto *const state = new (mm::ALLOC_KERNEL) State();
-        if (state == nullptr) {
-            log::error("hotplug.test: FAILED -- no memory for the test's state");
-            return 1;
-        }
+        ASSERT_NONNULL(state, "allocate the test's state");
         state->target = target;
         state->num_spinners = SPINNERS_PER_CPU * Cpu::online_mask().count();
         auto spawned = true;
@@ -623,17 +588,17 @@ namespace {
                 spawn("hotplug.test/spin", spinner_routine, &SPINNER_ARGS[i], ustl::NONE);
             spawned &= state->spinner_threads[i] != nullptr;
         }
-        verdict(tally, spawned, "spinners start on every CPU");
+        EXPECT_TRUE(spawned, "spinners start on every CPU");
         auto _ = Thread::Current::sleep_for(OFFLINE_FOR, task::Interruptible::No);
         auto some_there = false;
         for (usize i = 0; i < state->num_spinners; ++i) {
             some_there |= state->spinners[i].ran_there.load(std::memory_order_relaxed);
         }
-        verdict(tally, some_there, "some of them on the CPU to be taken offline");
+        EXPECT_TRUE(some_there, "some of them on the CPU to be taken offline");
 
-        auto back = round_trip(tally, *state, 1);
+        auto back = round_trip(*state, 1);
         if (back) {
-            back = round_trip(tally, *state, 2);
+            back = round_trip(*state, 2);
         }
 
         state->stop.store(true, std::memory_order_release);
@@ -641,28 +606,17 @@ namespace {
         for (usize i = 0; i < state->num_spinners; ++i) {
             joined &= join(state->spinner_threads[i]);
         }
-        verdict(tally, joined, "the spinners are joined");
+        EXPECT_TRUE(joined, "the spinners are joined");
         // With nothing else running: the CPU moved to has to be idle, and the
         // offline and back fit in one sampling period.
         if (back) {
-            check_moved_to_idle(tally, target);
-            check_sampler(tally, target);
-            check_offline_withdrawn(tally, *state);
-            check_start_withdrawn(tally, *state);
+            check_moved_to_idle(target);
+            check_sampler(target);
+            check_offline_withdrawn(*state);
+            check_start_withdrawn(*state);
         }
 
-        if (tally.failed != 0) {
-            log::error("hotplug.test: FAILED -- {} of {} checks; the test's state is leaked",
-                       tally.failed, tally.passed + tally.failed);
-            return 1;
-        }
         delete state;
-        log::info("hotplug.test: ok -- {} checks", tally.passed);
-        return 0;
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(
-    HotplugTest, "hotplug.test", ours::hotplug_test_command,
-    "take the highest CPU offline and bring it back, twice, with threads and timers on it");

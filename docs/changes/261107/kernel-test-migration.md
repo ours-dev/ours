@@ -71,3 +71,40 @@ None.
 - Why does `EXPECT_EQ` stay off `Status`/`Rights` comparisons in these tests?
 - What runs now that the volume manager's LV serves ours.block.Block and user_copy's checks are booted?
 - Why are setup failures in void helpers `FAIL` but in non-void helpers `EXPECT_TRUE(false, ...)` + return?
+
+## Batch 4: eight more console tests become ktest suites (2026-11-07)
+
+**Files**
+- `kernel/tests/{pager,large_page,hotplug,steal,irq_revoke,page_reclaim,tick_replace,pm_node}_test.cpp` — moved from `kernel/commands/`, one `KTEST` each.
+- The two BUILD.gn files — the eight move between the targets; pm_node pulls numa's and sched_domain's header surfaces, steal pulls gktl/obi/sched_domain (the steal_policy pattern).
+
+**Symptom**
+Latent: the same Tally/verdict boilerplate, on the next eight off the size-ordered list (610-947 lines).
+
+**Cause**
+The migration is incremental.
+
+**Change**
+The established pattern. Three conversions carry notes. page_reclaim's `--target-node` flag had no ktest analog: its targeted-reclaim check now runs unconditionally and its no-memory-only-node exit is a per-case skip in a log line (a whole-test KTEST_SKIP would mark the default single-node image's run skipped for ever). hotplug's helper-internal "skipped" exits stay log-and-return for the same reason -- they skip one case, not the test -- and its old leak-on-failure line is gone because EXPECT semantics let `delete state` always run. pm_node's `--exhaust-remote` is the first migration through the run-options mechanism (step 2's): `ktest::has_option("exhaust-remote")`.
+
+The audit compared every verdict message verbatim, stitching adjacent literals: pager 19/19 (six setup failures as imperative FAILs), large_page 23/23 (three), hotplug 33/33, steal 27/27, irq_revoke 46/46, page_reclaim 32/32, tick_replace 27/27, pm_node 46/46 plus two runtime-named checks riding `"{}"`.
+
+**Reference**
+Batches 1-3 and the interface design; the run-options design (step 2 of the migration plan).
+
+**Verification**
+`ktest list` 50 tests. On the dbg image: Pager, LargePage, Hotplug, Steal, IrqRevoke, PageReclaim, TickReplace, PmNode each `ran=1 passed=1`. boot_check: dbg 46/5/0, rel 44/8/0 7/7 required, host-tests 183/0.
+
+**Deliberately not done**
+Nothing in this batch; the six large files and the finale follow.
+
+**How it was found**
+None (mechanical); the pager/large_page/hotplug agent was relaunched once after hitting the session concurrency limit.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does page_reclaim's targeted-reclaim case skip per-case instead of marking the test skipped?
+- What did pm_node's migration use the run-options mechanism for?
+- Why did hotplug's leak-on-failure line disappear, and why is that strictly better?

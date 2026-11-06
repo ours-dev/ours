@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `tickreplace.test`: a CPU whose tick device refuses a deadline gives it up
-// by itself and keeps its timers.
+// TickReplace.GivesUpARefusingDeviceAndKeepsItsTimers: a CPU whose tick device
+// refuses a deadline gives it up by itself and keeps its timers.
 //
 // One CPU, the last, is given a device that refuses every deadline and is
 // rated above the local APIC timer, so enrolling it makes the CPU take it
@@ -54,11 +54,12 @@
 // image can run the test four times; the fifth run finds it full and fails.
 //
 // Needs kernel.time.oneshot and a global device that can be armed for one
-// instant; without them it says so and passes.
+// instant; without them the test is skipped.
 //
-// A console command rather than a unit test for the reason mutex.stress
-// gives. It is named *.test so that scripts/kshell_run.py waits for its
-// verdict line, as for timershare.test.
+// Why an in-kernel test: the tick mode, the enrolled devices and the timer
+// queue's refusal counts exist only in a booted kernel, and the replacement
+// shows only on the CPU whose device refused -- a host test has none of them
+// to give or take away.
 #include <ours/arch/time.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/alloc_flags.hpp>
@@ -73,8 +74,8 @@
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -100,21 +101,6 @@ namespace {
     constexpr usize SIXTH_ATTEMPTS = 3;
     constexpr auto BETWEEN_ATTEMPTS = Milliseconds(100);
     constexpr auto POLL_INTERVAL = Milliseconds(5);
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("tickreplace.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("tickreplace.test: FAIL  {}", name);
-    }
 
     /// A device that is rated above every real one, takes any mode, and
     /// refuses to be armed for any instant.
@@ -321,7 +307,7 @@ namespace {
         /// there was none to be had.
         FakeGlobalDevice *fake = nullptr;
         TickBroadcast *fake_group = nullptr;
-        /// Asks the command's thread to raise the fake device's interrupt, on a
+        /// Asks the test's thread to raise the fake device's interrupt, on a
         /// CPU that is not |cpu|; taken back when it has.
         std::atomic<bool> raise_interrupt{false};
         std::atomic<bool> raised_elsewhere{false};
@@ -677,7 +663,7 @@ namespace {
     }
 
     /// Raises the fake device's interrupt here, which is the CPU that runs
-    /// the command and is not a member, so the group reaches the member by
+    /// the test and is not a member, so the group reaches the member by
     /// IPI as it does for the real device. With interrupts off, as a handler
     /// runs. False if this is the member's own CPU, where it would not.
     auto raise_interrupt_here(Result &result) -> bool {
@@ -706,46 +692,36 @@ namespace {
         }
     }
 
-    auto tick_replace_command(int, char **) -> int {
-        Tally tally;
-
+    KTEST(TickReplace, GivesUpARefusingDeviceAndKeepsItsTimers) {
         if (!TickDevice::Current::is_mode_oneshot()) {
-            log::info("tickreplace.test: ok -- skipped, kernel.time.oneshot is off");
-            return 0;
+            KTEST_SKIP("kernel.time.oneshot is off");
         }
         Find find;
         ClockEventDevice::for_each_enrolled(find_global, &find);
         auto const num_cpus = Cpu::num_online_cpus();
         if (find.global == nullptr || num_cpus < 2) {
-            log::info("tickreplace.test: ok -- skipped, needs a global timer device and a CPU "
-                      "besides the boot CPU");
-            return 0;
+            KTEST_SKIP("needs a global timer device and a CPU besides the boot CPU");
         }
         auto *const group = TickBroadcast::for_device(*find.global);
-        if (group == nullptr) {
-            log::error("tickreplace.test: FAILED -- the global device has no broadcast group");
-            return 1;
-        }
+        ASSERT_NONNULL(group, "the global device has a broadcast group");
 
         auto *const result = new (mm::ALLOC_KERNEL) Result{};
-        if (result == nullptr) {
-            log::error("tickreplace.test: FAILED -- out of memory");
-            return 1;
-        }
+        // On failure the state is never allocated, so there is nothing to
+        // unwind; on a later failure the test's state is leaked, which the
+        // old command's non-zero exit said too.
+        ASSERT_NONNULL(result, "allocate the test's state");
         result->cpu = static_cast<CpuNum>(num_cpus - 1);
         result->group = group;
         fake_global(*result);
         if (result->fake == nullptr) {
-            log::info("tickreplace.test:   no group is left for the fake global device; the "
+            log::info("tickreplace:   no group is left for the fake global device; the "
                       "fifth case is skipped");
         }
 
         auto *const thread =
             task::Thread::spawn("tickreplace", worker, result, task::DEFAULT_PRIORITY);
-        if (thread == nullptr) {
-            log::error("tickreplace.test: FAILED -- cannot spawn the worker; leaking the case");
-            return 1;
-        }
+        // On failure |result| leaks, as it does on a failure below.
+        ASSERT_NONNULL(thread, "spawn the worker");
         thread->set_cpu_affinity_hard(CpuMask::of(result->cpu));
         // detach() and resume() separately: detach_and_resume() is declared
         // but has no definition yet.
@@ -755,9 +731,7 @@ namespace {
         auto const give_up = SteadyClock::now() + GIVE_UP;
         while (!result->done.load(std::memory_order_acquire)) {
             if (SteadyClock::now() >= give_up) {
-                log::error("tickreplace.test: FAILED -- CPU[{}] did not finish; leaking the case",
-                           result->cpu);
-                return 1;
+                FAIL("CPU[{}] did not finish; leaking the case", result->cpu);
             }
             if (result->raise_interrupt.load(std::memory_order_acquire) &&
                 raise_interrupt_here(*result)) {
@@ -766,61 +740,51 @@ namespace {
             auto _ = task::Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No);
         }
 
-        log::info("tickreplace.test: CPU[{}], global device {}", result->cpu, find.global->name());
-        verdict(tally, result->own_back,
-                "refused by the device it was given, the CPU goes back to its own");
-        verdict(tally, result->first_failed, "and the device that refused is marked failed");
-        verdict(tally, result->first_fired == SAMPLES, "and its timers fire");
-        verdict(tally, result->on_group,
-                "with its own device failed too, the CPU moves to the global device");
-        verdict(tally, result->second_failed, "and the second refusing device is marked failed");
-        verdict(tally, result->second_fired == SAMPLES, "and its timers fire there");
-        verdict(tally, result->restored, "it is put back on its own device afterwards");
-        verdict(tally, !group->has_member(result->cpu), "and has left the group");
-        verdict(tally, result->third_back,
-                "a device that stops taking the mode is tried once, and the CPU goes back to its "
-                "own");
-        verdict(tally, result->fading_failed, "and that device is marked failed");
-        verdict(tally, result->third_fired == SAMPLES, "and its timers fire");
-        verdict(tally, result->first_refusals == TickDevice::ATTEMPTS_BEFORE_RETIRING,
-                "a device that refuses every time is asked three times before it is retired");
-        verdict(tally, result->flaky_kept,
-                "a device that refuses twice and then works keeps the tick");
-        verdict(tally, !result->flaky_failed, "and is not marked failed");
-        verdict(tally, result->flaky_refusals == TickDevice::ATTEMPTS_BEFORE_RETIRING - 1,
-                "after the two refusals the timer queue counted");
+        log::info("tickreplace: CPU[{}], global device {}", result->cpu, find.global->name());
+        EXPECT_TRUE(result->own_back,
+                    "refused by the device it was given, the CPU goes back to its own");
+        EXPECT_TRUE(result->first_failed, "and the device that refused is marked failed");
+        EXPECT_EQ(result->first_fired, SAMPLES, "and its timers fire");
+        EXPECT_TRUE(result->on_group,
+                    "with its own device failed too, the CPU moves to the global device");
+        EXPECT_TRUE(result->second_failed, "and the second refusing device is marked failed");
+        EXPECT_EQ(result->second_fired, SAMPLES, "and its timers fire there");
+        EXPECT_TRUE(result->restored, "it is put back on its own device afterwards");
+        EXPECT_TRUE(!group->has_member(result->cpu), "and has left the group");
+        EXPECT_TRUE(result->third_back,
+                    "a device that stops taking the mode is tried once, and the CPU goes back "
+                    "to its own");
+        EXPECT_TRUE(result->fading_failed, "and that device is marked failed");
+        EXPECT_EQ(result->third_fired, SAMPLES, "and its timers fire");
+        EXPECT_EQ(result->first_refusals, TickDevice::ATTEMPTS_BEFORE_RETIRING,
+                  "a device that refuses every time is asked three times before it is retired");
+        EXPECT_TRUE(result->flaky_kept,
+                    "a device that refuses twice and then works keeps the tick");
+        EXPECT_TRUE(!result->flaky_failed, "and is not marked failed");
+        EXPECT_EQ(result->flaky_refusals, TickDevice::ATTEMPTS_BEFORE_RETIRING - 1,
+                  "after the two refusals the timer queue counted");
         if (result->fake != nullptr) {
-            verdict(tally, result->fifth_joined, "a CPU joins the group of a global device");
-            verdict(tally, result->raised_elsewhere.load(std::memory_order_acquire),
-                    "and its device is raised by hand on a CPU that is not a member");
-            verdict(tally, result->fifth_left,
-                    "the group's device refuses in the group's own interrupt, and the member "
-                    "leaves the group");
-            verdict(tally, result->fifth_on_own, "and is on its own device");
-            verdict(tally, result->fifth_failed, "and the group's device is marked failed");
-            verdict(tally, result->fifth_fired == SAMPLES, "and its timers fire");
+            EXPECT_TRUE(result->fifth_joined, "a CPU joins the group of a global device");
+            EXPECT_TRUE(result->raised_elsewhere.load(std::memory_order_acquire),
+                        "and its device is raised by hand on a CPU that is not a member");
+            EXPECT_TRUE(result->fifth_left,
+                        "the group's device refuses in the group's own interrupt, and the member "
+                        "leaves the group");
+            EXPECT_TRUE(result->fifth_on_own, "and is on its own device");
+            EXPECT_TRUE(result->fifth_failed, "and the group's device is marked failed");
+            EXPECT_EQ(result->fifth_fired, SAMPLES, "and its timers fire");
         }
-        verdict(tally, result->sixth_taken, "a CPU takes a device that works for now");
-        verdict(tally, result->sixth_refused,
-                "the device refuses the deadline a pick sets, within three tries");
-        verdict(tally, result->sixth_on_own,
-                "the device refuses a preemption deadline set by a pick, and the CPU goes back "
-                "to its own");
-        verdict(tally, result->sixth_failed, "and the device that refused is marked failed");
-        verdict(tally, result->sixth_fired == SAMPLES, "and its timers fire");
-        verdict(tally, result->refusals >= 3, "each refusal was counted by the timer queue");
+        EXPECT_TRUE(result->sixth_taken, "a CPU takes a device that works for now");
+        EXPECT_TRUE(result->sixth_refused,
+                    "the device refuses the deadline a pick sets, within three tries");
+        EXPECT_TRUE(result->sixth_on_own,
+                    "the device refuses a preemption deadline set by a pick, and the CPU goes "
+                    "back to its own");
+        EXPECT_TRUE(result->sixth_failed, "and the device that refused is marked failed");
+        EXPECT_EQ(result->sixth_fired, SAMPLES, "and its timers fire");
+        EXPECT_GE(result->refusals, 3u, "each refusal was counted by the timer queue");
 
         delete result;
-        if (tally.failed != 0) {
-            log::error("tickreplace.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("tickreplace.test: ok -- {} checks", tally.passed);
-        return 0;
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(TickReplaceTest, "tickreplace.test", ours::tick_replace_command,
-             "give a CPU a tick device that refuses, and check it replaces it");
