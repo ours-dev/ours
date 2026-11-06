@@ -108,3 +108,38 @@ None.
 - Why does page_reclaim's targeted-reclaim case skip per-case instead of marking the test skipped?
 - What did pm_node's migration use the run-options mechanism for?
 - Why did hotplug's leak-on-failure line disappear, and why is that strictly better?
+
+## Batch 5: the six largest console tests become ktest suites (2026-11-07)
+
+**Files**
+- `kernel/tests/{irq_registry,interrupt,interrupt_line,page_source,irq,vmo_snapshot}_test.cpp` — moved from `kernel/commands/`, one `KTEST` each (947-2541 lines of source; 461 old verdicts audited).
+- The two BUILD.gn files — the six move between the targets; the interrupt suites pull arch headers.
+
+**Symptom**
+Latent: the last Tally/verdict holdouts, each 947-2541 lines.
+
+**Cause**
+The migration is incremental; these are the tail of the size list.
+
+**Change**
+The established pattern, at scale. The audit compared every verdict message verbatim with adjacent literals stitched: irq_registry 36/36, interrupt 77/77, interrupt_line 61/61, page_source 43/43 (four setup failures as imperative FAILs), irq 91/91, vmo_snapshot 91/91 (eleven, plus `check_direct_write`'s runtime description riding `"{}"`). interrupt.test's `[ROUNDS]` argument is dropped with the fixed 200-round default -- the run-options mechanism exists for when a round count is wanted; the four argument-takers move to the finale batch. machine-shape skips stayed case-level log-and-return throughout (a mid-test KTEST_SKIP marks the whole test skipped).
+
+**Reference**
+Batches 1-4 and the interface design.
+
+**Verification**
+`ktest list` 56 tests. On the dbg image: IrqRegistry, Interrupt, InterruptLine, PageSource, Irq, VmoSnapshot each `ran=1 passed=1`. boot_check: dbg 46/5/0, rel 44/8/0 7/7 required, host-tests 183/0.
+
+**Deliberately not done**
+The finale batch: idle.test (in idle.cpp), mutex.stress, and the four argument-takers (interrupt via options -- done here as fixed-rounds instead -- port, thread_join, timershare) through the run-options mechanism, then the legacy runner rules and the cov_kernel scrape come off.
+
+**How it was found**
+None (mechanical); interrupt_test's PortWaiter lost its `port` member in conversion and the build caught it before boot.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does interrupt.test migrate with a fixed round count instead of the run-options mechanism its old `[ROUNDS]` argument maps to?
+- Where does a mid-test machine-shape skip land, and what would KTEST_SKIP there do to the whole suite's verdict?
+- What did the 461-verdict audit compare, and what did it let through on purpose?

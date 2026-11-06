@@ -152,6 +152,36 @@ kernel_test("pm_node") {
          ]
 }
 
+kernel_test("irq_registry") {
+  sources = [ "irq_registry_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("interrupt") {
+  sources = [ "interrupt_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("interrupt_line") {
+  sources = [ "interrupt_line_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("page_source") {
+  sources = [ "page_source_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("irq") {
+  sources = [ "irq_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("vmo_snapshot") {
+  sources = [ "vmo_snapshot_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
 kernel_test("pm_zone") {
   sources = [ "pm_zone_test.cpp" ]
   deps = _HEADER_DEPS
@@ -248,12 +278,17 @@ source_set("kernel.tests") {
     ":pin_lines",
     ":bti",
     ":hotplug",
+    ":interrupt",
+    ":interrupt_line",
+    ":irq",
     ":irq_rcu",
     ":irq_revoke",
+    ":irq_registry",
     ":ioport",
     ":large_page",
     ":memory_pressure",
     ":page_reclaim",
+    ":page_source",
     ":pager",
     ":pm_node",
     ":preempt",
@@ -272,6 +307,7 @@ source_set("kernel.tests") {
     ":vma_undo",
     ":vma_wx",
     ":vmo_contiguous",
+    ":vmo_snapshot",
     ":vmo_pin",
     ":wait_queue",
     "//kernel/lib/ktest",

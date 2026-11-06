@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `pagesource.test`: pages that come from a provider -- asked for by a page
-// fault, merged when several threads ask for the same ones, supplied or failed
-// later, and waited on in between.
+// PageSource.FaultsWaitForAProvider: pages that come from a provider -- asked
+// for by a page fault, merged when several threads ask for the same ones,
+// supplied or failed later, and waited on in between.
 //
 // A test provider stands in for whoever has the content. It only queues what
-// it is sent; the command itself plays the pager: it takes requests off that
+// it is sent; the test itself plays the pager: it takes requests off that
 // queue and answers them with VmObjectPaged::supply_pages() or
 // PageSource::on_pages_failed(). That keeps every step in one place and in a
 // known order, so the checks can say exactly what the provider should have
@@ -37,10 +37,10 @@
 //     fault fails without asking, a supply is refused; and the provider's
 //     owner id, as a VMO reports it.
 //
-// Why a console command: what is under test is a thread put to sleep inside a
+// Why an in-kernel test: what is under test is a thread put to sleep inside a
 // page fault the MMU raised, which no host test can produce. The faulting
-// threads are kernel threads attached to the test's address space, as
-// usercopy.test's command thread is.
+// threads are kernel threads attached to the test's address space, as in
+// usercopy.test.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/alloc_flags.hpp>
@@ -61,8 +61,8 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <user_copy/user_copy.hpp>
 #include <ustl/option.hpp>
@@ -76,21 +76,6 @@ namespace {
 
     constexpr auto LOST_AFTER = Seconds(5);
     constexpr auto POLL_INTERVAL = Milliseconds(1);
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("pagesource.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("pagesource.test: FAIL  {}", name);
-    }
 
     auto deadline_after(Duration const delta) -> time::Deadline {
         return time::Deadline::at(time::SteadyClock::now() + delta);
@@ -245,14 +230,13 @@ namespace {
 
     /// PageSource alone. Each request here is signalled before it is waited
     /// on, so every wait() returns at once.
-    auto check_source(Tally &tally) -> void {
+    auto check_source() -> void {
         constexpr u64 P = PAGE_SIZE;
 
         Rig rig;
         if (auto const status = make_rig(&rig); Status::Ok != status) {
-            log::error("pagesource.test: could not make a page source: {}", to_string(status));
-            tally.failed += 1;
-            return;
+            log::error("pagesource: could not make a page source: {}", to_string(status));
+            FAIL("make a page source");
         }
         auto &source = *rig.source;
         auto &provider = *rig.provider;
@@ -268,28 +252,28 @@ namespace {
                             source.request_pages(2 * P, 4 * P, &b) == Status::ShouldWait &&
                             source.request_pages(6 * P, 2 * P, &c) == Status::ShouldWait &&
                             source.request_pages(4 * P, 4 * P, &d) == Status::ShouldWait;
-        verdict(tally, raised, "request_pages() answers ShouldWait");
-        verdict(tally, provider.nr_sent() == 3 && source.nr_raised() == 4,
-                "a request that starts inside an outstanding one is not sent");
+        EXPECT_TRUE(raised, "request_pages() answers ShouldWait");
+        EXPECT_TRUE(provider.nr_sent() == 3 && source.nr_raised() == 4,
+                    "a request that starts inside an outstanding one is not sent");
 
         auto const first = provider.take();
         auto const second = provider.take();
         auto const third = provider.take();
-        verdict(tally, is(first, 0, 4 * P) && is(second, 6 * P, 2 * P) && is(third, 4 * P, 2 * P),
-                "a request that runs into an outstanding one stops where it starts");
+        EXPECT_TRUE(is(first, 0, 4 * P) && is(second, 6 * P, 2 * P) && is(third, 4 * P, 2 * P),
+                    "a request that runs into an outstanding one stops where it starts");
 
         source.on_pages_supplied(0, 2 * P);
-        verdict(tally, source.nr_raised() == 4, "a partial supply completes nothing");
+        EXPECT_EQ(source.nr_raised(), usize{4}, "a partial supply completes nothing");
 
         source.on_pages_supplied(2 * P, 2 * P);
-        verdict(tally, source.nr_raised() == 2, "the rest completes the request and its waiter");
-        verdict(tally, a.wait(false) == Status::Ok && b.wait(false) == Status::Ok,
-                "the request and its waiter both see Ok");
+        EXPECT_EQ(source.nr_raised(), usize{2}, "the rest completes the request and its waiter");
+        EXPECT_TRUE(a.wait(false) == Status::Ok && b.wait(false) == Status::Ok,
+                    "the request and its waiter both see Ok");
 
         source.on_pages_failed(4 * P, 4 * P, Status::BadState);
-        verdict(tally, source.nr_raised() == 0, "a failure completes the requests it covers");
-        verdict(tally, c.wait(false) == Status::BadState && d.wait(false) == Status::BadState,
-                "a failed request reports the failure");
+        EXPECT_EQ(source.nr_raised(), usize{0}, "a failure completes the requests it covers");
+        EXPECT_TRUE(c.wait(false) == Status::BadState && d.wait(false) == Status::BadState,
+                    "a failed request reports the failure");
 
         // e is sent, f waits on it. Withdrawing e must not strand f: f takes
         // its place in the provider's queue, and nothing new is sent.
@@ -299,14 +283,13 @@ namespace {
         auto _ = source.request_pages(0, 2 * P, &f);
         auto const sent_before = provider.nr_sent();
         e.cancel();
-        verdict(tally,
-                provider.nr_sent() == sent_before && provider.nr_queued() == 1 &&
-                    source.nr_raised() == 1,
-                "withdrawing a request someone waits on hands its place to the waiter");
-        verdict(tally, is(provider.take(), 0, 2 * P), "the waiter asks for the same range");
+        EXPECT_TRUE(provider.nr_sent() == sent_before && provider.nr_queued() == 1 &&
+                        source.nr_raised() == 1,
+                    "withdrawing a request someone waits on hands its place to the waiter");
+        EXPECT_TRUE(is(provider.take(), 0, 2 * P), "the waiter asks for the same range");
         source.on_pages_supplied(0, 2 * P);
-        verdict(tally, f.wait(false) == Status::Ok && source.nr_raised() == 0,
-                "the waiter is completed by the supply");
+        EXPECT_TRUE(f.wait(false) == Status::Ok && source.nr_raised() == 0,
+                    "the waiter is completed by the supply");
 
         // A waiter that leaves changes nothing for the request it waited on.
         PageRequest g;
@@ -314,21 +297,21 @@ namespace {
         auto _ = source.request_pages(0, P, &g);
         auto _ = source.request_pages(0, P, &h);
         h.cancel();
-        verdict(tally, source.nr_raised() == 1 && provider.nr_queued() == 1,
-                "a waiter that leaves only leaves");
+        EXPECT_TRUE(source.nr_raised() == 1 && provider.nr_queued() == 1,
+                    "a waiter that leaves only leaves");
         g.cancel();
-        verdict(tally, source.nr_raised() == 0 && provider.nr_queued() == 0,
-                "the last one leaves the provider too");
+        EXPECT_TRUE(source.nr_raised() == 0 && provider.nr_queued() == 0,
+                    "the last one leaves the provider too");
 
         PageRequest i;
         auto _ = source.request_pages(0, P, &i);
         source.close();
-        verdict(tally, i.wait(false) == Status::Ok && source.nr_raised() == 0,
-                "closing completes what is outstanding");
+        EXPECT_TRUE(i.wait(false) == Status::Ok && source.nr_raised() == 0,
+                    "closing completes what is outstanding");
         PageRequest j;
-        verdict(tally, source.request_pages(0, P, &j) == Status::BadState,
-                "a closed source raises nothing");
-        verdict(tally, provider.closed(), "the provider hears of detach and close");
+        EXPECT_TRUE(source.request_pages(0, P, &j) == Status::BadState,
+                    "a closed source raises nothing");
+        EXPECT_TRUE(provider.closed(), "the provider hears of detach and close");
     }
 
     auto is_zero(mm::VmPage *const page) -> bool {
@@ -351,39 +334,36 @@ namespace {
     /// The analysis cannot tie `node->lock()` to the lock the cursor and the
     /// supply require; it is held from the guard to the end.
     TA_NO_THREAD_SAFETY_ANALYSIS
-    auto check_zero_markers(Tally &tally) -> void {
+    auto check_zero_markers() -> void {
         constexpr u64 P = PAGE_SIZE;
 
         Rig rig;
         ustl::Arc<mm::VmCowPages> node;
         if (make_rig(&rig) != Status::Ok ||
             mm::VmCowPages::with_source(rig.source, mm::ALLOC_USER, 3 * P, &node) != Status::Ok) {
-            verdict(tally, false, "a node with a source is made for the marker checks");
-            return;
+            FAIL("allocate a node with a source for the marker checks");
         }
         auto &provider = *rig.provider;
         Guard guard{node->lock()};
 
-        verdict(tally, node->add_zero_marker_locked(1) == Status::Ok,
-                "a zero marker is put at page 1");
+        EXPECT_TRUE(node->add_zero_marker_locked(1) == Status::Ok,
+                    "a zero marker is put at page 1");
         {
             auto cursor = node->lookup_cursor_locked(P, P);
             mm::MultiPageRequest request;
             auto const read = cursor.require_page(false, 1, &request);
-            verdict(tally,
-                    read && read->page == mm::get_zero_page() && !read->writable &&
-                        provider.nr_sent() == 0 && node->nr_pages_locked() == 0,
-                    "a read of it is the zero page, read-only, and asks the provider nothing");
+            EXPECT_TRUE(read && read->page == mm::get_zero_page() && !read->writable &&
+                            provider.nr_sent() == 0 && node->nr_pages_locked() == 0,
+                        "a read of it is the zero page, read-only, and asks the provider nothing");
         }
         {
             // Withdrawn when |request| goes, at the end of the block.
             auto cursor = node->lookup_cursor_locked(0, 3 * P);
             mm::MultiPageRequest request;
             auto const read = cursor.require_page(false, 3, &request);
-            verdict(tally,
-                    read.is_err() && read.unwrap_err() == Status::ShouldWait &&
-                        is(provider.take(), 0, P),
-                    "a request for the pages before it stops at it");
+            EXPECT_TRUE(read.is_err() && read.unwrap_err() == Status::ShouldWait &&
+                            is(provider.take(), 0, P),
+                        "a request for the pages before it stops at it");
         }
         {
             mm::VmPageSpliceList pages(1);
@@ -398,20 +378,19 @@ namespace {
             auto cursor = node->lookup_cursor_locked(P, P);
             mm::MultiPageRequest request;
             auto const read = cursor.require_page(false, 1, &request);
-            verdict(tally,
-                    supplied && read && read->page == mm::get_zero_page() &&
-                        node->nr_pages_locked() == 0,
-                    "a page supplied over it is thrown away, and it still reads as zero");
+            EXPECT_TRUE(supplied && read && read->page == mm::get_zero_page() &&
+                            node->nr_pages_locked() == 0,
+                        "a page supplied over it is thrown away, and it still reads as zero");
         }
         {
             auto cursor = node->lookup_cursor_locked(P, P);
             mm::MultiPageRequest request;
             auto const written = cursor.require_page(true, 1, &request);
-            verdict(tally,
-                    written && written->writable && written->page != mm::get_zero_page() &&
-                        is_zero(written->page) && node->nr_pages_locked() == 1 &&
-                        provider.nr_sent() == 1,
-                    "a write of it gets a zeroed page in its place, and asks the provider nothing");
+            EXPECT_TRUE(
+                written && written->writable && written->page != mm::get_zero_page() &&
+                    is_zero(written->page) && node->nr_pages_locked() == 1 &&
+                    provider.nr_sent() == 1,
+                "a write of it gets a zeroed page in its place, and asks the provider nothing");
         }
     }
 
@@ -526,14 +505,14 @@ namespace {
 
     /// Joins |thread|. One that is still asleep after LOST_AFTER is waiting on
     /// a request nobody will answer: closing the source wakes it, its retry
-    /// fails, and it exits, so |access| is never left in use when the command
+    /// fails, and it exits, so |access| is never left in use when the test
     /// returns.
     auto finish(Thread *const thread, PageSource &source) -> bool {
         i32 retcode = 0;
         if (thread->join(&retcode, deadline_after(LOST_AFTER)) == Status::Ok) {
             return true;
         }
-        log::error("pagesource.test: an access did not finish; closing the source");
+        log::error("pagesource: an access did not finish; closing the source");
         source.close();
         auto _ = thread->join(&retcode, time::Deadline::infinite());
         return false;
@@ -542,8 +521,7 @@ namespace {
     /// The VMO's own copies of pages 4 to 6, none of them supplied yet: each
     /// sleeps until its page is, and then copies the supplied bytes. Then a
     /// commit of pages 7 and 8, which waits for each in turn.
-    auto check_copies(Tally &tally, mm::VmAspace &aspace, Rig &rig, mm::VmObjectPaged &vmo)
-        -> void {
+    auto check_copies(mm::VmAspace &aspace, Rig &rig, mm::VmObjectPaged &vmo) -> void {
         constexpr u64 P = PAGE_SIZE;
         constexpr u64 WRITTEN = 0x7e57'c0b1'e500'0005;
 
@@ -555,14 +533,14 @@ namespace {
             Access reader{.kind = Access::Kind::VmoRead, .vmo = &vmo, .offset = 4 * P + 16};
             auto *const thread = start(&aspace, &reader);
             auto const asked = poll_until([&] { return source.nr_raised() == 1; });
-            verdict(tally, asked && is(provider.take(), 4 * P, P),
-                    "read() of a page nobody supplied asks for it");
-            verdict(tally, supply(vmo, 4 * P, P) == Status::Ok, "page 4 is supplied");
+            EXPECT_TRUE(asked && is(provider.take(), 4 * P, P),
+                        "read() of a page nobody supplied asks for it");
+            EXPECT_TRUE(supply(vmo, 4 * P, P) == Status::Ok, "page 4 is supplied");
             auto const done = thread != nullptr && finish(thread, source);
-            log::info("pagesource.test:   read(): {} read {:#x}", to_string(reader.status),
+            log::info("pagesource:   read(): {} read {:#x}", to_string(reader.status),
                       reader.value);
-            verdict(tally, done && reader.status == Status::Ok && reader.value == pattern(4 * P),
-                    "read() waits for the page and returns its bytes");
+            EXPECT_TRUE(done && reader.status == Status::Ok && reader.value == pattern(4 * P),
+                        "read() waits for the page and returns its bytes");
         }
 
         // write(), at the start of page 5.
@@ -571,18 +549,17 @@ namespace {
                 .kind = Access::Kind::VmoWrite, .vmo = &vmo, .offset = 5 * P, .value = WRITTEN};
             auto *const thread = start(&aspace, &writer);
             auto const asked = poll_until([&] { return source.nr_raised() == 1; });
-            verdict(tally, asked && is(provider.take(), 5 * P, P),
-                    "write() to a page nobody supplied asks for it");
-            verdict(tally, supply(vmo, 5 * P, P) == Status::Ok, "page 5 is supplied");
+            EXPECT_TRUE(asked && is(provider.take(), 5 * P, P),
+                        "write() to a page nobody supplied asks for it");
+            EXPECT_TRUE(supply(vmo, 5 * P, P) == Status::Ok, "page 5 is supplied");
             auto const done = thread != nullptr && finish(thread, source);
             u64 words[2] = {};
             auto const read = vmo.read(words, 5 * P, sizeof(words));
-            log::info("pagesource.test:   write(): {}, page 5 holds {:#x} {:#x}",
+            log::info("pagesource:   write(): {}, page 5 holds {:#x} {:#x}",
                       to_string(writer.status), words[0], words[1]);
-            verdict(tally,
-                    done && writer.status == Status::Ok && read == Status::Ok &&
-                        words[0] == WRITTEN && words[1] == pattern(5 * P),
-                    "write() waits for the page and lands on it");
+            EXPECT_TRUE(done && writer.status == Status::Ok && read == Status::Ok &&
+                            words[0] == WRITTEN && words[1] == pattern(5 * P),
+                        "write() waits for the page and lands on it");
         }
 
         // read_user() of page 6 into a user buffer that is not there yet
@@ -593,10 +570,8 @@ namespace {
                                                       mm::MmuFlags::User,
                                                   mm::MapOptions::Lazy, "pagesource.test buffer");
         if (buffer.is_err()) {
-            log::error("pagesource.test: could not map the buffer: {}",
-                       to_string(buffer.unwrap_err()));
-            tally.failed += 1;
-            return;
+            log::error("pagesource: could not map the buffer: {}", to_string(buffer.unwrap_err()));
+            FAIL("map the read_user buffer");
         }
         auto const buffer_base = buffer.unwrap()->base();
         {
@@ -604,14 +579,14 @@ namespace {
                 .kind = Access::Kind::VmoReadUser, .va = buffer_base, .vmo = &vmo, .offset = 6 * P};
             auto *const thread = start(&aspace, &reader);
             auto const asked = poll_until([&] { return source.nr_raised() == 1; });
-            verdict(tally, asked && is(provider.take(), 6 * P, P),
-                    "read_user() of a page nobody supplied asks for it");
-            verdict(tally, supply(vmo, 6 * P, P) == Status::Ok, "page 6 is supplied");
+            EXPECT_TRUE(asked && is(provider.take(), 6 * P, P),
+                        "read_user() of a page nobody supplied asks for it");
+            EXPECT_TRUE(supply(vmo, 6 * P, P) == Status::Ok, "page 6 is supplied");
             auto const done = thread != nullptr && finish(thread, source);
-            log::info("pagesource.test:   read_user(): {} read {:#x}", to_string(reader.status),
+            log::info("pagesource:   read_user(): {} read {:#x}", to_string(reader.status),
                       reader.value);
-            verdict(tally, done && reader.status == Status::Ok && reader.value == pattern(6 * P),
-                    "read_user() waits for the page, then fills the user buffer");
+            EXPECT_TRUE(done && reader.status == Status::Ok && reader.value == pattern(6 * P),
+                        "read_user() waits for the page, then fills the user buffer");
         }
         auto _ = aspace.root_vma()->unmap(buffer_base, P);
 
@@ -622,24 +597,23 @@ namespace {
                 .kind = Access::Kind::VmoCommit, .vmo = &vmo, .offset = 7 * P, .len = 2 * P};
             auto *const thread = start(&aspace, &committer);
             auto const first = poll_until([&] { return source.nr_raised() == 1; });
-            verdict(tally, first && is(provider.take(), 7 * P, P),
-                    "commit_range() of pages nobody supplied asks for the first");
-            verdict(tally, supply(vmo, 7 * P, P) == Status::Ok, "page 7 is supplied");
+            EXPECT_TRUE(first && is(provider.take(), 7 * P, P),
+                        "commit_range() of pages nobody supplied asks for the first");
+            EXPECT_TRUE(supply(vmo, 7 * P, P) == Status::Ok, "page 7 is supplied");
             auto const second = poll_until([&] { return source.nr_raised() == 1; });
-            verdict(tally, second && is(provider.take(), 8 * P, P),
-                    "the commit goes on from page 8 and asks for it");
-            verdict(tally, supply(vmo, 8 * P, P) == Status::Ok, "page 8 is supplied");
+            EXPECT_TRUE(second && is(provider.take(), 8 * P, P),
+                        "the commit goes on from page 8 and asks for it");
+            EXPECT_TRUE(supply(vmo, 8 * P, P) == Status::Ok, "page 8 is supplied");
             auto const done = thread != nullptr && finish(thread, source);
-            log::info("pagesource.test:   commit_range(): {}, {} page(s) committed",
+            log::info("pagesource:   commit_range(): {}, {} page(s) committed",
                       to_string(committer.status), vmo.committed_pages(7 * P, 2 * P));
-            verdict(tally,
-                    done && committer.status == Status::Ok &&
-                        vmo.committed_pages(7 * P, 2 * P) == 2,
-                    "commit_range() waits for each page and commits both");
+            EXPECT_TRUE(done && committer.status == Status::Ok &&
+                            vmo.committed_pages(7 * P, 2 * P) == 2,
+                        "commit_range() waits for each page and commits both");
         }
     }
 
-    auto check_faults(Tally &tally, mm::VmAspace &aspace, Rig &rig) -> void {
+    auto check_faults(mm::VmAspace &aspace, Rig &rig) -> void {
         constexpr u64 P = PAGE_SIZE;
         constexpr u64 WRITTEN = 0x0123'4567'89ab'cdef;
 
@@ -652,9 +626,8 @@ namespace {
         if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 9 * P,
                                                                mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
-            log::error("pagesource.test: could not make the VMO: {}", to_string(status));
-            tally.failed += 1;
-            return;
+            log::error("pagesource: could not make the VMO: {}", to_string(status));
+            FAIL("make the VMO");
         }
 
         auto root = aspace.root_vma();
@@ -663,10 +636,8 @@ namespace {
             root->map_vmo(VirtAddr::Anywhere, 4 * P, 0, flags, mm::VmaFlags::PermMask,
                           ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Lazy, "pagesource.test");
         if (mapping.is_err()) {
-            log::error("pagesource.test: could not map the VMO: {}",
-                       to_string(mapping.unwrap_err()));
-            tally.failed += 1;
-            return;
+            log::error("pagesource: could not map the VMO: {}", to_string(mapping.unwrap_err()));
+            FAIL("map the VMO");
         }
         auto const base = mapping.unwrap()->base();
 
@@ -675,15 +646,15 @@ namespace {
             Access reader{.va = base};
             auto *const thread = start(&aspace, &reader);
             auto const asked = poll_until([&] { return source.nr_raised() == 1; });
-            verdict(tally, asked && provider.nr_sent() == 1,
-                    "a read fault on a page nobody supplied asks the provider");
-            verdict(tally, is(provider.take(), 0, P), "it asks for the page that faulted");
-            verdict(tally, supply(*vmo, 0, P) == Status::Ok, "the page is supplied");
+            EXPECT_TRUE(asked && provider.nr_sent() == 1,
+                        "a read fault on a page nobody supplied asks the provider");
+            EXPECT_TRUE(is(provider.take(), 0, P), "it asks for the page that faulted");
+            EXPECT_TRUE(supply(*vmo, 0, P) == Status::Ok, "the page is supplied");
             auto const done = thread != nullptr && finish(thread, source);
-            log::info("pagesource.test:   reader: {} read {:#x}", to_string(reader.status),
+            log::info("pagesource:   reader: {} read {:#x}", to_string(reader.status),
                       reader.value);
-            verdict(tally, done && reader.status == Status::Ok && reader.value == pattern(0),
-                    "the fault resumes and reads the supplied bytes");
+            EXPECT_TRUE(done && reader.status == Status::Ok && reader.value == pattern(0),
+                        "the fault resumes and reads the supplied bytes");
         }
 
         // Three readers, page 1: one request between them.
@@ -694,17 +665,17 @@ namespace {
                 threads[n] = start(&aspace, &readers[n]);
             }
             auto const asked = poll_until([&] { return source.nr_raised() == 3; });
-            verdict(tally, asked && provider.nr_sent() == 2 && provider.nr_queued() == 1,
-                    "three faults on one page send one request");
-            verdict(tally, is(provider.take(), P, P), "it asks for that page");
-            verdict(tally, supply(*vmo, P, P) == Status::Ok, "the page is supplied once");
+            EXPECT_TRUE(asked && provider.nr_sent() == 2 && provider.nr_queued() == 1,
+                        "three faults on one page send one request");
+            EXPECT_TRUE(is(provider.take(), P, P), "it asks for that page");
+            EXPECT_TRUE(supply(*vmo, P, P) == Status::Ok, "the page is supplied once");
             auto all_read = true;
             for (usize n = 0; n < 3; ++n) {
                 auto const done = threads[n] != nullptr && finish(threads[n], source);
                 all_read = all_read && done && readers[n].status == Status::Ok &&
                            readers[n].value == pattern(P);
             }
-            verdict(tally, all_read, "all three resume and read the same bytes");
+            EXPECT_TRUE(all_read, "all three resume and read the same bytes");
         }
 
         // One reader, page 2, and the page fails.
@@ -712,11 +683,11 @@ namespace {
             Access reader{.va = base + 2 * P};
             auto *const thread = start(&aspace, &reader);
             auto const asked = poll_until([&] { return source.nr_raised() == 1; });
-            verdict(tally, asked && is(provider.take(), 2 * P, P), "page 2 is asked for");
+            EXPECT_TRUE(asked && is(provider.take(), 2 * P, P), "page 2 is asked for");
             source.on_pages_failed(2 * P, P, Status::BadState);
             auto const done = thread != nullptr && finish(thread, source);
-            log::info("pagesource.test:   failed reader: {}", to_string(reader.status));
-            verdict(tally, done && reader.status != Status::Ok, "a failed page fails the fault");
+            log::info("pagesource:   failed reader: {}", to_string(reader.status));
+            EXPECT_TRUE(done && reader.status != Status::Ok, "a failed page fails the fault");
         }
 
         // One writer, page 3: it needs the content before it can write.
@@ -724,18 +695,17 @@ namespace {
             Access writer{.kind = Access::Kind::Store, .va = base + 3 * P + 8, .value = WRITTEN};
             auto *const thread = start(&aspace, &writer);
             auto const asked = poll_until([&] { return source.nr_raised() == 1; });
-            verdict(tally, asked && is(provider.take(), 3 * P, P),
-                    "a write fault asks for the content first");
-            verdict(tally, supply(*vmo, 3 * P, P) == Status::Ok, "page 3 is supplied");
+            EXPECT_TRUE(asked && is(provider.take(), 3 * P, P),
+                        "a write fault asks for the content first");
+            EXPECT_TRUE(supply(*vmo, 3 * P, P) == Status::Ok, "page 3 is supplied");
             auto const done = thread != nullptr && finish(thread, source);
             u64 words[2] = {};
             auto const read = vmo->read(words, 3 * P, sizeof(words));
-            log::info("pagesource.test:   writer: {}, page 3 holds {:#x} {:#x}",
+            log::info("pagesource:   writer: {}, page 3 holds {:#x} {:#x}",
                       to_string(writer.status), words[0], words[1]);
-            verdict(tally,
-                    done && writer.status == Status::Ok && read == Status::Ok &&
-                        words[0] == pattern(3 * P) && words[1] == WRITTEN,
-                    "the write lands on the supplied page");
+            EXPECT_TRUE(done && writer.status == Status::Ok && read == Status::Ok &&
+                            words[0] == pattern(3 * P) && words[1] == WRITTEN,
+                        "the write lands on the supplied page");
         }
 
         // Page 2 again, failed above and still missing, and this time nobody
@@ -748,19 +718,19 @@ namespace {
             auto *const thread = start(&aspace, &reader);
             auto const done = thread != nullptr && finish(thread, source);
             provider.set_wait_limit(LOST_AFTER);
-            log::info("pagesource.test:   unanswered reader: {}", to_string(reader.status));
-            verdict(tally,
-                    done && reader.status != Status::Ok && provider.nr_sent() == sent_before + 1,
-                    "a fault nobody answers times out and fails");
-            verdict(tally, source.nr_raised() == 0 && provider.nr_queued() == 0,
-                    "the timed-out request is withdrawn from the source and the provider");
+            log::info("pagesource:   unanswered reader: {}", to_string(reader.status));
+            EXPECT_TRUE(done && reader.status != Status::Ok &&
+                            provider.nr_sent() == sent_before + 1,
+                        "a fault nobody answers times out and fails");
+            EXPECT_TRUE(source.nr_raised() == 0 && provider.nr_queued() == 0,
+                        "the timed-out request is withdrawn from the source and the provider");
         }
 
-        verdict(tally, supply(*vmo, 0, P) == Status::Ok && source.nr_raised() == 0,
-                "a page supplied twice keeps the first and wakes nobody");
+        EXPECT_TRUE(supply(*vmo, 0, P) == Status::Ok && source.nr_raised() == 0,
+                    "a page supplied twice keeps the first and wakes nobody");
 
-        check_copies(tally, aspace, rig, *vmo);
-        verdict(tally, provider.nr_queued() == 0, "nothing is left with the provider");
+        check_copies(aspace, rig, *vmo);
+        EXPECT_EQ(provider.nr_queued(), usize{0}, "nothing is left with the provider");
 
         auto _ = root->unmap(base, 4 * P);
     }
@@ -768,7 +738,7 @@ namespace {
     /// A populate mapping of a VMO with a source, half supplied: it maps the
     /// supplied page and asks the provider for nothing, and the page nobody
     /// supplied is left to a fault, which asks for it.
-    auto check_populate(Tally &tally, mm::VmAspace &aspace, Rig &rig) -> void {
+    auto check_populate(mm::VmAspace &aspace, Rig &rig) -> void {
         constexpr u64 P = PAGE_SIZE;
         auto &source = *rig.source;
         auto &provider = *rig.provider;
@@ -777,13 +747,11 @@ namespace {
         if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 3 * P,
                                                                mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
-            log::error("pagesource.test: could not make the VMO to populate: {}",
-                       to_string(status));
-            tally.failed += 1;
-            return;
+            log::error("pagesource: could not make the VMO to populate: {}", to_string(status));
+            FAIL("make the VMO to populate");
         }
-        verdict(tally, supply(*vmo, P, P) == Status::Ok,
-                "page 1 of an object with a source is supplied, page 0 is not");
+        EXPECT_TRUE(supply(*vmo, P, P) == Status::Ok,
+                    "page 1 of an object with a source is supplied, page 0 is not");
 
         auto root = aspace.root_vma();
         auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
@@ -791,72 +759,68 @@ namespace {
         auto const commit = root->map_vmo(where, 2 * P, 0, flags, mm::VmaFlags::PermMask, vmo,
                                           mm::MapOptions::Commit, "pager commit");
         ustl::Arc<mm::VmMapping> leftover;
-        verdict(tally,
-                commit.is_err() && commit.unwrap_err() == Status::ShouldWait &&
-                    aspace.find_mapping(where, &leftover) == Status::NotFound &&
-                    source.nr_raised() == 0 && provider.nr_queued() == 0,
-                "a failed immediate commit releases the address and withdraws its request");
+        EXPECT_TRUE(commit.is_err() && commit.unwrap_err() == Status::ShouldWait &&
+                        aspace.find_mapping(where, &leftover) == Status::NotFound &&
+                        source.nr_raised() == 0 && provider.nr_queued() == 0,
+                    "a failed immediate commit releases the address and withdraws its request");
 
         auto const partial = root->map_vmo(where, 2 * P, P, flags, mm::VmaFlags::PermMask, vmo,
                                            mm::MapOptions::Commit, "partial commit");
         PhysAddr pa{};
         mm::MmuFlags mmuf{};
-        verdict(tally,
-                partial.is_err() && partial.unwrap_err() == Status::ShouldWait &&
-                    aspace.find_mapping(where, &leftover) == Status::NotFound &&
-                    aspace.arch_aspace().query(where, &pa, &mmuf) == Status::NotFound &&
-                    source.nr_raised() == 0 && provider.nr_queued() == 0,
-                "a pager hole after a resident page leaves no mapping or outstanding request");
+        EXPECT_TRUE(partial.is_err() && partial.unwrap_err() == Status::ShouldWait &&
+                        aspace.find_mapping(where, &leftover) == Status::NotFound &&
+                        aspace.arch_aspace().query(where, &pa, &mmuf) == Status::NotFound &&
+                        source.nr_raised() == 0 && provider.nr_queued() == 0,
+                    "a pager hole after a resident page leaves no mapping or outstanding request");
 
         auto const sent_before = provider.nr_sent();
         auto mapping = root->map_vmo(where, 2 * P, 0, flags, mm::VmaFlags::PermMask,
                                      ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Resident,
                                      "pagesource.test populate");
-        verdict(tally, mapping.is_ok(), "a populate mapping of it is made");
+        EXPECT_TRUE(mapping.is_ok(), "a populate mapping of it is made");
         if (mapping.is_err()) {
             return;
         }
         auto const base = mapping.unwrap()->base();
         auto const supplied_mapped = aspace.arch_aspace().query(base + P, &pa, &mmuf) == Status::Ok;
         auto const missing_mapped = aspace.arch_aspace().query(base, &pa, &mmuf) == Status::Ok;
-        verdict(tally,
-                supplied_mapped && !missing_mapped && provider.nr_sent() == sent_before &&
-                    source.nr_raised() == 0,
-                "it maps the supplied page, leaves the other to fault, and asks the provider for "
-                "nothing");
+        EXPECT_TRUE(
+            supplied_mapped && !missing_mapped && provider.nr_sent() == sent_before &&
+                source.nr_raised() == 0,
+            "it maps the supplied page, leaves the other to fault, and asks the provider for "
+            "nothing");
 
         {
             Access reader{.va = base};
             auto *const thread = start(&aspace, &reader);
             auto const asked = poll_until([&] { return source.nr_raised() == 1; });
-            verdict(tally, asked && is(provider.take(), 0, P),
-                    "a read of the page left out asks the provider for it");
-            verdict(tally, supply(*vmo, 0, P) == Status::Ok, "it is supplied");
+            EXPECT_TRUE(asked && is(provider.take(), 0, P),
+                        "a read of the page left out asks the provider for it");
+            EXPECT_TRUE(supply(*vmo, 0, P) == Status::Ok, "it is supplied");
             auto const done = thread != nullptr && finish(thread, source);
-            verdict(tally, done && reader.status == Status::Ok && reader.value == pattern(0),
-                    "the read resumes and reads the supplied bytes");
+            EXPECT_TRUE(done && reader.status == Status::Ok && reader.value == pattern(0),
+                        "the read resumes and reads the supplied bytes");
         }
 
         // The pin reaches page 1 before waiting for the missing page 2.
         provider.set_wait_limit(Milliseconds(50));
         auto const pin_status = vmo->pin_range(P, 2 * P);
         provider.set_wait_limit(LOST_AFTER);
-        verdict(tally,
-                pin_status == Status::TimeOut && vmo->unpin_range(P, P) == Status::BadState &&
-                    vmo->committed_pages(P, P) == 1 && source.nr_raised() == 0,
-                "a pin that times out rolls back the prefix without discarding its pages");
+        EXPECT_TRUE(pin_status == Status::TimeOut && vmo->unpin_range(P, P) == Status::BadState &&
+                        vmo->committed_pages(P, P) == 1 && source.nr_raised() == 0,
+                    "a pin that times out rolls back the prefix without discarding its pages");
         Access pin{
             .kind = Access::Kind::VmoPin, .vmo = vmo.as_ptr_mut(), .offset = P, .len = 2 * P};
         auto *const thread = start(&aspace, &pin);
         auto const waiting = poll_until([&] { return source.nr_raised() == 1; });
-        verdict(tally, waiting && is(provider.take(), 2 * P, P),
-                "a retry waits for only the unsupplied page");
-        verdict(tally, supply(*vmo, 2 * P, P) == Status::Ok, "the missing pin page is supplied");
+        EXPECT_TRUE(waiting && is(provider.take(), 2 * P, P),
+                    "a retry waits for only the unsupplied page");
+        EXPECT_TRUE(supply(*vmo, 2 * P, P) == Status::Ok, "the missing pin page is supplied");
         auto const done = thread != nullptr && finish(thread, source);
-        verdict(tally,
-                done && pin.status == Status::Ok && vmo->unpin_range(P, 2 * P) == Status::Ok &&
-                    vmo->unpin_range(P, 2 * P) == Status::BadState,
-                "the resumed pin holds each page exactly once");
+        EXPECT_TRUE(done && pin.status == Status::Ok && vmo->unpin_range(P, 2 * P) == Status::Ok &&
+                        vmo->unpin_range(P, 2 * P) == Status::BadState,
+                    "the resumed pin holds each page exactly once");
 
         auto _ = root->unmap(base, 2 * P);
     }
@@ -876,7 +840,7 @@ namespace {
     /// took into one with a source, the way a pager hands over content it
     /// prepared: a page, a zero marker, a gap and a page, the last over a page
     /// supplied before, while a read waits on the gap.
-    auto check_take_and_supply(Tally &tally, mm::VmAspace &aspace, Rig &rig) -> void {
+    auto check_take_and_supply(mm::VmAspace &aspace, Rig &rig) -> void {
         constexpr u64 P = PAGE_SIZE;
         constexpr u64 AUX_WORD = 0x7a00'0000'0000'0000;
         auto &source = *rig.source;
@@ -904,8 +868,8 @@ namespace {
         PhysAddr frame0{};
         auto const aux_ready =
             aux_made && aux_map.is_ok() && present_at(aux_map.unwrap()->base(), &frame0);
-        verdict(tally, aux_ready,
-                "an anonymous object holds a page, a zero marker, nothing, and a page, mapped");
+        EXPECT_TRUE(aux_ready,
+                    "an anonymous object holds a page, a zero marker, nothing, and a page, mapped");
 
         // The object with a source: page 3 supplied already, page 2 waited on.
         ustl::Arc<mm::VmObjectPaged> dst;
@@ -919,8 +883,8 @@ namespace {
                 auto const status = supply(*dst, 3 * P, P);
                 failed = status == Status::OutOfMem && failure.triggered();
             }
-            verdict(tally, failed && dst->committed_pages(3 * P, P) == 0,
-                    "a failed supply leaves the target slot empty");
+            EXPECT_TRUE(failed && dst->committed_pages(3 * P, P) == 0,
+                        "a failed supply leaves the target slot empty");
 #endif
             dst_made = supply(*dst, 3 * P, P) == Status::Ok;
         }
@@ -928,70 +892,66 @@ namespace {
                                      ustl::Arc<mm::VmObject>(dst), mm::MapOptions::Lazy,
                                      "pagesource.test dst");
         if (!aux_ready || !dst_made || dst_map.is_err()) {
-            verdict(tally, false, "an object with a source, page 3 supplied, is mapped");
-            return;
+            FAIL("map an object with a source, page 3 supplied");
         }
         auto const dst_base = dst_map.unwrap()->base();
         Access reader{.va = dst_base + 2 * P};
         auto *const thread = start(&aspace, &reader);
         auto const asked = poll_until([&] { return source.nr_raised() == 1; });
-        verdict(tally, asked && is(provider.take(), 2 * P, P), "a read of its page 2 waits");
+        EXPECT_TRUE(asked && is(provider.take(), 2 * P, P), "a read of its page 2 waits");
 
         // The hand-over.
         mm::VmPageSpliceList pages(4);
         auto const taken = aux->take_pages(0, 4 * P, &pages) == Status::Ok;
         PhysAddr unused{};
         auto const aux_base = aux_map.unwrap()->base();
-        verdict(tally,
-                taken && aux->committed_pages(0, 4 * P) == 0 && !present_at(aux_base, &unused) &&
-                    !present_at(aux_base + 3 * P, &unused),
-                "take_pages() leaves the object nothing in the range, and its mapping no entry");
+        EXPECT_TRUE(
+            taken && aux->committed_pages(0, 4 * P) == 0 && !present_at(aux_base, &unused) &&
+                !present_at(aux_base + 3 * P, &unused),
+            "take_pages() leaves the object nothing in the range, and its mapping no entry");
         auto const sent_before = provider.nr_sent();
-        verdict(tally,
-                dst->supply_pages(0, 4 * P, &pages, mm::VmObject::SupplyOption::Default) ==
-                    Status::Ok,
-                "what it took is supplied to the object with the source");
+        EXPECT_TRUE(dst->supply_pages(0, 4 * P, &pages, mm::VmObject::SupplyOption::Default) ==
+                        Status::Ok,
+                    "what it took is supplied to the object with the source");
 
         auto const done = thread != nullptr && finish(thread, source);
-        verdict(tally, done && reader.status == Status::Ok && reader.value == 0,
-                "the gap arrives as a zero marker: the read waiting on it wakes and reads zero");
+        EXPECT_TRUE(
+            done && reader.status == Status::Ok && reader.value == 0,
+            "the gap arrives as a zero marker: the read waiting on it wakes and reads zero");
 
         u64 got[4] = {};
         auto const read_all = dst->read(&got[0], 0, sizeof(u64)) == Status::Ok &&
                               dst->read(&got[1], P, sizeof(u64)) == Status::Ok &&
                               dst->read(&got[2], 2 * P, sizeof(u64)) == Status::Ok &&
                               dst->read(&got[3], 3 * P, sizeof(u64)) == Status::Ok;
-        log::info("pagesource.test:   after the hand-over: {:#x} {:#x} {:#x} {:#x}", got[0], got[1],
+        log::info("pagesource:   after the hand-over: {:#x} {:#x} {:#x} {:#x}", got[0], got[1],
                   got[2], got[3]);
-        verdict(tally,
-                read_all && got[0] == words[0] && got[1] == 0 && got[2] == 0 &&
-                    got[3] == pattern(3 * P) && provider.nr_sent() == sent_before &&
-                    dst->committed_pages(0, 4 * P) == 2,
-                "page 0 has the bytes it left with, pages 1 and 2 are zero without a page, page "
-                "3 keeps what was supplied first, and the provider is asked nothing");
+        EXPECT_TRUE(
+            read_all && got[0] == words[0] && got[1] == 0 && got[2] == 0 &&
+                got[3] == pattern(3 * P) && provider.nr_sent() == sent_before &&
+                dst->committed_pages(0, 4 * P) == 2,
+            "page 0 has the bytes it left with, pages 1 and 2 are zero without a page, page "
+            "3 keeps what was supplied first, and the provider is asked nothing");
         PhysAddr frame0_now{};
-        verdict(tally,
-                aspace.soft_fault(dst_base, mm::VmFault::Cause::Absent) == Status::Ok &&
-                    present_at(dst_base, &frame0_now) && frame0_now == frame0,
-                "page 0 is the very frame the anonymous object had: moved, not copied");
+        EXPECT_TRUE(aspace.soft_fault(dst_base, mm::VmFault::Cause::Absent) == Status::Ok &&
+                        present_at(dst_base, &frame0_now) && frame0_now == frame0,
+                    "page 0 is the very frame the anonymous object had: moved, not copied");
 
         // What take_pages() refuses.
         mm::VmPageSpliceList from_source(1);
-        verdict(tally, dst->take_pages(0, P, &from_source) == Status::NotSupported,
-                "nothing is taken from an object with a source");
+        EXPECT_TRUE(dst->take_pages(0, P, &from_source) == Status::NotSupported,
+                    "nothing is taken from an object with a source");
         mm::VmPageSpliceList wrong_length(2);
         mm::VmPageSpliceList past_end(2);
-        verdict(tally,
-                aux->take_pages(0, P, &wrong_length) == Status::InvArgs &&
-                    aux->take_pages(3 * P, 2 * P, &past_end) == Status::OutOfRange,
-                "a list of the wrong length is InvArgs, a range past the end OutOfRange");
+        EXPECT_TRUE(aux->take_pages(0, P, &wrong_length) == Status::InvArgs &&
+                        aux->take_pages(3 * P, 2 * P, &past_end) == Status::OutOfRange,
+                    "a list of the wrong length is InvArgs, a range past the end OutOfRange");
         ustl::Arc<mm::VmObjectPaged> pinned;
         mm::VmPageSpliceList from_pinned(1);
-        verdict(tally,
-                mm::VmObjectPaged::create(mm::ALLOC_USER, P, mm::VmoFlags::Pinned, &pinned) ==
-                        Status::Ok &&
-                    pinned->take_pages(0, P, &from_pinned) == Status::BadState,
-                "and a pinned object is BadState");
+        EXPECT_TRUE(mm::VmObjectPaged::create(mm::ALLOC_USER, P, mm::VmoFlags::Pinned, &pinned) ==
+                            Status::Ok &&
+                        pinned->take_pages(0, P, &from_pinned) == Status::BadState,
+                    "and a pinned object is BadState");
 
         auto _ = root->unmap(aux_base, 4 * P);
         auto _ = root->unmap(dst_base, 4 * P);
@@ -1002,7 +962,7 @@ namespace {
     /// fault on a missing page fails without asking the provider, and a supply
     /// is refused. And the owner id the provider chose reaches the VMO and its
     /// slice, and a VMO with no source has none.
-    auto check_detach(Tally &tally, mm::VmAspace &aspace, Rig &rig) -> void {
+    auto check_detach(mm::VmAspace &aspace, Rig &rig) -> void {
         constexpr u64 P = PAGE_SIZE;
         auto &source = *rig.source;
         auto &provider = *rig.provider;
@@ -1011,9 +971,8 @@ namespace {
         if (auto const status = mm::VmObjectPaged::with_source(rig.source, mm::ALLOC_USER, 3 * P,
                                                                mm::VmoFlags::Lazy, &vmo);
             Status::Ok != status) {
-            log::error("pagesource.test: could not make the VMO to detach: {}", to_string(status));
-            tally.failed += 1;
-            return;
+            log::error("pagesource: could not make the VMO to detach: {}", to_string(status));
+            FAIL("make the VMO to detach");
         }
         ustl::Arc<mm::VmObjectPaged> slice;
         ustl::Arc<mm::VmObjectPaged> plain;
@@ -1025,56 +984,52 @@ namespace {
         if (owners) {
             slice_owner = slice->source_owner_id();
         }
-        verdict(tally,
-                owners && vmo_owner.is_some() && *vmo_owner == TEST_OWNER &&
-                    slice_owner.is_some() && *slice_owner == TEST_OWNER &&
-                    plain->source_owner_id().is_none(),
-                "the provider's owner id reaches the VMO and its slice; a VMO with no source has "
-                "none");
+        EXPECT_TRUE(
+            owners && vmo_owner.is_some() && *vmo_owner == TEST_OWNER && slice_owner.is_some() &&
+                *slice_owner == TEST_OWNER && plain->source_owner_id().is_none(),
+            "the provider's owner id reaches the VMO and its slice; a VMO with no source has "
+            "none");
 
-        verdict(tally, supply(*vmo, 0, P) == Status::Ok, "page 0 is supplied, pages 1 and 2 not");
+        EXPECT_TRUE(supply(*vmo, 0, P) == Status::Ok, "page 0 is supplied, pages 1 and 2 not");
         auto root = aspace.root_vma();
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
         auto mapping = root->map_vmo(VirtAddr::Anywhere, 3 * P, 0, rw, mm::VmaFlags::PermMask,
                                      ustl::Arc<mm::VmObject>(vmo), mm::MapOptions::Lazy,
                                      "pagesource.test detach");
         if (mapping.is_err()) {
-            verdict(tally, false, "the VMO to detach is mapped");
-            return;
+            FAIL("map the VMO to detach");
         }
         auto const base = mapping.unwrap()->base();
 
         Access waiting{.va = base + P};
         auto *const thread = start(&aspace, &waiting);
         auto const asked = poll_until([&] { return source.nr_raised() == 1; });
-        verdict(tally, asked && is(provider.take(), P, P), "a read of page 1 waits");
+        EXPECT_TRUE(asked && is(provider.take(), P, P), "a read of page 1 waits");
 
         vmo->detach_source();
         auto const done = thread != nullptr && finish(thread, source);
-        log::info("pagesource.test:   the waiting read after detach: {}",
-                  to_string(waiting.status));
-        verdict(tally, done && waiting.status != Status::Ok && provider.detached(),
-                "detaching fails the read waiting on page 1, and tells the provider");
+        log::info("pagesource:   the waiting read after detach: {}", to_string(waiting.status));
+        EXPECT_TRUE(done && waiting.status != Status::Ok && provider.detached(),
+                    "detaching fails the read waiting on page 1, and tells the provider");
 
         u64 word = 0;
-        verdict(tally, vmo->read(&word, 0, sizeof(word)) == Status::Ok && word == pattern(0),
-                "page 0, supplied before, still reads (D5: what was supplied stays)");
+        EXPECT_TRUE(vmo->read(&word, 0, sizeof(word)) == Status::Ok && word == pattern(0),
+                    "page 0, supplied before, still reads (D5: what was supplied stays)");
 
         auto const sent_before = provider.nr_sent();
         Access late{.va = base + 2 * P};
         auto *const late_thread = start(&aspace, &late);
         auto const late_done = late_thread != nullptr && finish(late_thread, source);
-        verdict(tally,
-                late_done && late.status != Status::Ok && provider.nr_sent() == sent_before &&
-                    source.nr_raised() == 0,
-                "a fault on page 2 fails at once, and asks the provider nothing");
-        verdict(tally, supply(*vmo, 2 * P, P) == Status::BadState, "and a supply is refused");
+        EXPECT_TRUE(late_done && late.status != Status::Ok && provider.nr_sent() == sent_before &&
+                        source.nr_raised() == 0,
+                    "a fault on page 2 fails at once, and asks the provider nothing");
+        EXPECT_TRUE(supply(*vmo, 2 * P, P) == Status::BadState, "and a supply is refused");
 
         auto _ = root->unmap(base, 3 * P);
     }
 
 #if MM_TEST_ALLOC_FAILURE
-    auto check_creation_failures(Tally &tally) -> void {
+    auto check_creation_failures() -> void {
         using mm::test::AllocationFailure;
         using mm::test::AllocationSite;
         struct Case {
@@ -1089,8 +1044,7 @@ namespace {
         for (auto const &test: CASES) {
             Rig rig;
             if (make_rig(&rig) != Status::Ok) {
-                verdict(tally, false, "a source for failed VMO creation is made");
-                return;
+                FAIL("allocate a source for failed VMO creation");
             }
             ustl::Arc<mm::VmObjectPaged> vmo;
             bool failed;
@@ -1100,87 +1054,54 @@ namespace {
                     rig.source, mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy, &vmo);
                 failed = status == Status::OutOfMem && failure.triggered();
             }
-            verdict(tally, failed && !vmo && rig.provider->closed(),
-                    "a failed pager VMO creation closes the source and publishes no VMO");
+            EXPECT_TRUE(failed && !vmo && rig.provider->closed(),
+                        "a failed pager VMO creation closes the source and publishes no VMO");
         }
     }
 #endif
 
-    auto pagesource_test_command(int, char **) -> int {
-        Tally tally;
-        check_source(tally);
-        check_zero_markers(tally);
+    KTEST(PageSource, FaultsWaitForAProvider) {
+        check_source();
+        check_zero_markers();
 #if MM_TEST_ALLOC_FAILURE
-        check_creation_failures(tally);
+        check_creation_failures();
 #endif
 
         ustl::Arc<mm::VmAspace> aspace;
-        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
-                                                     mm::VmasKind::User, mm::VmasFlags::None,
-                                                     "pagesource.test", &aspace);
-            status != Status::Ok) {
-            log::error("pagesource.test: could not create an address space: {}", to_string(status));
-            return 1;
-        }
+        ASSERT_OK(mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                       mm::VmasKind::User, mm::VmasFlags::None, "pagesource.test",
+                                       &aspace),
+                  "create an address space");
 
         Rig rig;
-        if (auto const status = make_rig(&rig); Status::Ok != status) {
-            log::error("pagesource.test: could not make a page source: {}", to_string(status));
-            tally.failed += 1;
-        } else {
-            check_faults(tally, *aspace, rig);
-        }
+        ASSERT_OK(make_rig(&rig), "make a page source for the fault checks");
+        check_faults(*aspace, rig);
 
         // A source of its own: the one above was closed when its VMO went.
         Rig populate_rig;
-        if (auto const status = make_rig(&populate_rig); Status::Ok != status) {
-            log::error("pagesource.test: could not make a page source: {}", to_string(status));
-            tally.failed += 1;
-        } else {
-            check_populate(tally, *aspace, populate_rig);
-        }
+        ASSERT_OK(make_rig(&populate_rig), "make a page source for the populate checks");
+        check_populate(*aspace, populate_rig);
 
         // And one for the hand-over, for the same reason.
         Rig take_rig;
-        if (auto const status = make_rig(&take_rig); Status::Ok != status) {
-            log::error("pagesource.test: could not make a page source: {}", to_string(status));
-            tally.failed += 1;
-        } else {
-            check_take_and_supply(tally, *aspace, take_rig);
-        }
+        ASSERT_OK(make_rig(&take_rig), "make a page source for the hand-over");
+        check_take_and_supply(*aspace, take_rig);
 
         // And one to detach.
         Rig detach_rig;
-        if (auto const status = make_rig(&detach_rig); Status::Ok != status) {
-            log::error("pagesource.test: could not make a page source: {}", to_string(status));
-            tally.failed += 1;
-        } else {
-            check_detach(tally, *aspace, detach_rig);
-        }
+        ASSERT_OK(make_rig(&detach_rig), "make a page source for the detach checks");
+        check_detach(*aspace, detach_rig);
 
         if (auto const status = aspace->destroy(); status != Status::Ok) {
-            log::error("pagesource.test: could not destroy the address space: {}",
-                       to_string(status));
-            tally.failed += 1;
+            log::error("pagesource: could not destroy the address space: {}", to_string(status));
         }
         aspace.reset();
 
         // The VMO is gone: unmapped, and the test's own reference dropped when
         // check_faults() returned. Its pages closed the source as they went.
         if (rig.provider != nullptr) {
-            verdict(tally, rig.provider->closed(), "the VMO closes its source when it goes");
+            EXPECT_TRUE(rig.provider->closed(), "the VMO closes its source when it goes");
         }
-
-        if (tally.failed != 0) {
-            log::error("pagesource.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("pagesource.test: ok -- {} checks", tally.passed);
-        return 0;
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(PageSourceTest, "pagesource.test", ours::pagesource_test_command,
-             "pagesource.test: page faults that wait for a provider to supply the page");
