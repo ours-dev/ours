@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `btistress.test`: the BTI, its pins and their tokens, from several CPUs at
-// once. bti.test checks what each call does; this checks that the calls do not
-// break each other, which no single thread can show.
+// BtiStress.RacesDoNotBreakEachOther: the BTI, its pins and their tokens,
+// from several CPUs at once. bti.test checks what each call does; this checks
+// that the calls do not break each other, which no single thread can show.
 //
 // Two races, each run on three CPUs:
 //
@@ -31,9 +31,9 @@
 // The test closes a BTI's last handle and then releases its quarantine itself,
 // so the log has "leaked" warnings that are not leaks.
 //
-// A console command rather than a unit test for the reason mutex.stress gives.
-// The name has no underscore for the reason usercopy.test's does not: gktl's
-// command table does not encode '_'.
+// Why an in-kernel test: the races need kernel threads pinned to separate
+// CPUs on the kernel's own BTI, for the reason mutex.stress gives -- a host
+// test has neither the threads nor the dispatcher.
 #include <ours/cpu.hpp>
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -48,8 +48,8 @@
 #include <utility>
 
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <ustl/rc.hpp>
 
@@ -260,7 +260,7 @@ namespace {
             auto *const thread = task::Thread::spawn("bti-stress", worker_routine, &workers[i],
                                                      task::DEFAULT_PRIORITY);
             if (thread == nullptr) {
-                log::warn("btistress.test: could not spawn a worker for {}", name);
+                log::warn("btistress: could not spawn a worker for {}", name);
                 return false;
             }
             thread->set_cpu_affinity_hard(CpuMask::of(static_cast<CpuNum>((i + 1) % num_cpus)));
@@ -281,29 +281,26 @@ namespace {
             auto _ = task::Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No);
         }
         if (state.finished.load(std::memory_order_acquire) < WORKERS) {
-            log::error("btistress.test: STUCK -- {} of {} workers finished in {}",
+            log::error("btistress: STUCK -- {} of {} workers finished in {}",
                        state.finished.load(std::memory_order_acquire), WORKERS, name);
             return false;
         }
         return true;
     }
 
-    auto bti_stress_command(int, char **) -> int {
+    KTEST(BtiStress, RacesDoNotBreakEachOther) {
         if (Cpu::num_online_cpus() < 2) {
-            log::warn("btistress.test: needs at least two online CPUs, have {}",
-                      Cpu::num_online_cpus());
-            return 1;
+            KTEST_SKIP("needs at least two online CPUs");
         }
 
         // Heap, not the stack: on the failure path stuck threads still point at
-        // them after this command returns, so they are leaked rather than popped.
+        // them after the test returns, so they are leaked rather than popped.
         auto *const state = new (mm::ALLOC_KERNEL) State{};
         auto *const slots = new (mm::ALLOC_KERNEL) Slot[TOKENS]{};
         auto *const workers = new (mm::ALLOC_KERNEL) Worker[WORKERS]{};
-        if (state == nullptr || slots == nullptr || workers == nullptr) {
-            log::warn("btistress.test: out of memory");
-            return 1;
-        }
+        ASSERT_NONNULL(state, "allocate the race's state");
+        ASSERT_NONNULL(slots, "allocate the token slots");
+        ASSERT_NONNULL(workers, "allocate the worker arguments");
         state->slots = slots;
 
         object::KernelHandle<object::IommuDispatcher> iommu;
@@ -311,24 +308,14 @@ namespace {
         if (object::IommuDispatcher::create(IommuType::Stub, 0, iommu, rights) != Status::Ok ||
             object::BtiDispatcher::create(iommu.dispatcher(), 1, state->bti_handle, rights) !=
                 Status::Ok) {
-            log::error("btistress.test: could not make an IOMMU and a BTI");
-            return 1;
+            FAIL("make an IOMMU and a BTI");
         }
         state->bti = state->bti_handle.dispatcher();
-
-        usize failures = 0;
-        auto check = [&](bool const ok, char const *const what) {
-            if (!ok) {
-                failures += 1;
-                log::error("btistress.test: FAIL  {}", what);
-            }
-        };
 
         // ---- the first race
         if (mm::VmObjectPaged::create(mm::ALLOC_USER, TOKENS * P, mm::VmoFlags::Lazy,
                                       &state->vmo) != Status::Ok) {
-            log::error("btistress.test: could not make a VMO");
-            return 1;
+            FAIL("make a VMO");
         }
         auto const options = BtiPinOptions::PermRead | BtiPinOptions::PermWrite;
         for (usize pass = 0; pass < PASSES; ++pass) {
@@ -341,7 +328,7 @@ namespace {
                 slot.token = slot.handle.dispatcher();
                 slot.expected = phys_of(*state->vmo, i);
             }
-            check(pinned_all && state->bti->pin_count() == TOKENS, "the tokens are pinned");
+            EXPECT_TRUE(pinned_all && state->bti->pin_count() == TOKENS, "the tokens are pinned");
             for (auto &count: state->arrived) {
                 count.store(0, std::memory_order_relaxed);
             }
@@ -349,19 +336,20 @@ namespace {
             workers[1] = {state, Role::Close};
             workers[2] = {state, Role::Query};
             if (!run_race(*state, workers, "the tokens")) {
-                return 1;
+                FAIL("the workers finish; leaking the race's state");
             }
 
             auto const quarantined = state->bti->quarantine_count();
-            check(state->violations.load() == 0, "an address asked for was wrong, or not BadState");
-            check(state->bti->pin_count() == quarantined,
-                  "a pin is left that is not in the quarantine");
-            check(nr_pinned(*state->vmo) == quarantined,
-                  "the pages pinned are not the pins in the quarantine");
+            EXPECT_TRUE(state->violations.load() == 0,
+                        "an address asked for was wrong, or not BadState");
+            EXPECT_TRUE(state->bti->pin_count() == quarantined,
+                        "a pin is left that is not in the quarantine");
+            EXPECT_TRUE(nr_pinned(*state->vmo) == quarantined,
+                        "the pages pinned are not the pins in the quarantine");
             state->bti->release_quarantine();
-            check(state->bti->pin_count() == 0 && nr_pinned(*state->vmo) == 0,
-                  "a release does not leave nothing pinned and nothing counted");
-            log::info("btistress.test: pass {}: {} of {} pins ended in the quarantine", pass,
+            EXPECT_TRUE(state->bti->pin_count() == 0 && nr_pinned(*state->vmo) == 0,
+                        "a release does not leave nothing pinned and nothing counted");
+            log::info("btistress: pass {}: {} of {} pins ended in the quarantine", pass,
                       quarantined, TOKENS);
             for (usize i = 0; i < TOKENS; ++i) {
                 slots[i].token = {};
@@ -372,38 +360,27 @@ namespace {
         // ---- the second race
         if (mm::VmObjectPaged::create(mm::ALLOC_USER, PAGES * P, mm::VmoFlags::Lazy, &state->vmo) !=
             Status::Ok) {
-            log::error("btistress.test: could not make a VMO");
-            return 1;
+            FAIL("make a VMO");
         }
         workers[0] = {state, Role::Pin};
         workers[1] = {state, Role::Release};
         workers[2] = {state, Role::Orphan};
         if (!run_race(*state, workers, "pin, release and the last handle")) {
-            return 1;
+            FAIL("the workers finish; leaking the race's state");
         }
-        check(state->violations.load() == 0, "a pin answered neither Ok nor BadState");
-        check(state->pins_ok.load() + state->pins_refused.load() == PINS,
-              "a pin is unaccounted for");
+        EXPECT_TRUE(state->violations.load() == 0, "a pin answered neither Ok nor BadState");
+        EXPECT_TRUE(state->pins_ok.load() + state->pins_refused.load() == PINS,
+                    "a pin is unaccounted for");
         // Closing the BTI's last handle is half way, so some pins were made
         // after it, and every one of those was refused.
-        check(state->pins_refused.load() > 0, "no pin was refused after the last handle closed");
-        check(state->pins_ok.load() > 0, "no pin was made before the last handle closed");
+        EXPECT_TRUE(state->pins_refused.load() > 0,
+                    "no pin was refused after the last handle closed");
+        EXPECT_TRUE(state->pins_ok.load() > 0, "no pin was made before the last handle closed");
         state->bti->release_quarantine();
-        check(state->bti->pin_count() == 0 && nr_pinned(*state->vmo) == 0,
-              "a release does not leave nothing pinned and nothing counted");
-        log::info("btistress.test: {} pins made, {} refused", state->pins_ok.load(),
+        EXPECT_TRUE(state->bti->pin_count() == 0 && nr_pinned(*state->vmo) == 0,
+                    "a release does not leave nothing pinned and nothing counted");
+        log::info("btistress: {} pins made, {} refused", state->pins_ok.load(),
                   state->pins_refused.load());
-
-        if (failures != 0) {
-            log::error("btistress.test: FAILED -- {} checks", failures);
-            return 1;
-        }
-        log::info("btistress.test: ok");
-        return 0;
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(BtiStressTest, "btistress.test", ours::bti_stress_command,
-             "race token unpin, token close and address queries, then pin against release and "
-             "the BTI's last handle");

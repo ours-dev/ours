@@ -14,7 +14,6 @@
 
 source_set("commands") {
   sources = [
-    "bti_stress_test.cpp",
     "bti_test.cpp",
     "cov.cpp",
     "cpu.cpp",
@@ -24,7 +23,6 @@ source_set("commands") {
     "interrupt_line_test.cpp",
     "interrupt_test.cpp",
     "ioport_test.cpp",
-    "irq_controller_test.cpp",
     "irq_rcu_test.cpp",
     "irq_registry_test.cpp",
     "irq_revoke_test.cpp",
@@ -34,16 +32,12 @@ source_set("commands") {
     "log.cpp",
     "memory_pressure_test.cpp",
     "mutex_stress.cpp",
-    "page_queues_test.cpp",
     "page_reclaim_test.cpp",
     "page_source_test.cpp",
     "pager_test.cpp",
-    "pin_lines_test.cpp",
     "pm_node_test.cpp",
     "port_test.cpp",
-    "preempt_test.cpp",
     "resource_test.cpp",
-    "sleep_test.cpp",
     "steal_policy.cpp",
     "steal_test.cpp",
     "thread_join_test.cpp",

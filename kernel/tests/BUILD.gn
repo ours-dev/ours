@@ -38,6 +38,36 @@ kernel_test("vma_phys") {
   deps = _HEADER_DEPS
 }
 
+kernel_test("preempt") {
+  sources = [ "preempt_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("sleep") {
+  sources = [ "sleep_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("pin_lines") {
+  sources = [ "pin_lines_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("page_queues") {
+  sources = [ "page_queues_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("irq_controller") {
+  sources = [ "irq_controller_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("bti_stress") {
+  sources = [ "bti_stress_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
 kernel_test("pm_zone") {
   sources = [ "pm_zone_test.cpp" ]
   deps = _HEADER_DEPS
@@ -128,6 +158,12 @@ source_set("kernel.tests") {
     ":sched_domain",
     ":steal_policy",
     ":pm_zone",
+    ":bti_stress",
+    ":irq_controller",
+    ":page_queues",
+    ":pin_lines",
+    ":preempt",
+    ":sleep",
     ":tick_broadcast",
     ":tick_fallback",
     ":vm_address",
