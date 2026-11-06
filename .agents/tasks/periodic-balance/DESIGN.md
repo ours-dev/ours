@@ -44,14 +44,20 @@ next period   every CPU is at the mean: nothing
 ```
 The same timeline with form A needs the discount above, or it ends 3/1/2/2.
 
-**Counterparts.** Linux: `sched_balance_trigger()` raises `SCHED_SOFTIRQ` from each CPU's tick; `sched_balance_domains()` walks the domains of the CPU whose interval has passed; `should_we_balance()` lets one CPU of a group do it; `sched_balance_rq(this_cpu, this_rq, ...)` pulls for `this_rq`, which is the shape `steal_work_from()` has now. Linux balances per CPU, from that CPU's own tick: form B's shape. Zircon, in `kernel/kernel/scheduler.cc` of the local Fuchsia checkout, balances when a thread is placed (`Scheduler::FindTargetCpu()`) and when a CPU goes idle (`Scheduler::StealWork()`); a search of the file for "periodic" and "rebalance" finds nothing, so this part has no Zircon counterpart. Linux also lets a task be taken when half of its load fits the imbalance (`detach_tasks()`), which is the slack the strict "must fit" of `PullBudget` lacks; it is a separate question (below).
+**Counterparts.** Linux: `sched_balance_trigger()` raises `SCHED_SOFTIRQ` from each CPU's tick; `sched_balance_domains()` walks the domains of the CPU whose interval has passed; `should_we_balance()` lets one CPU of a group do it; `sched_balance_rq(this_cpu, this_rq, ...)` pulls for `this_rq`, which is the shape `steal_work_from()` has now. Linux balances per CPU, from that CPU's own tick: form B's shape. Zircon, in `kernel/kernel/scheduler.cc` of the local Fuchsia checkout, balances when a thread is placed (`Scheduler::FindTargetCpu()`) and when a CPU goes idle (`Scheduler::StealWork()`); a search of the file for "periodic" and "rebalance" finds nothing, so this part has no Zircon counterpart. What Linux does about the problems this design met, read in `kernel/sched/fair.c` of the local checkout:
+- *One balancer per thief.* Each CPU balances only for itself (`sched_balance_rq(this_cpu, this_rq, ...)`), from its own tick (`scheduler_tick()` calls `sched_balance_trigger()`, which raises `SCHED_SOFTIRQ` when `rq->next_balance` has passed). That is form B. There is no balancer thread.
+- *Two balancers for one group.* `should_we_balance()` elects one CPU of a group (the first idle CPU, else the group's designated CPU) and the others stop (`continue_balancing = 0`). Domains above the node level take a global try-lock instead, `sched_balance_running` (`atomic_try_cmpxchg_acquire`), and a pass that finds it taken is skipped and not retried: the flag of form A, and the comment says the same.
+- *Never two run queue locks.* `detach_tasks()` under the source's lock, `attach_tasks()` under the destination's: what `steal_work_from()` does.
+- *Halted CPUs.* A tickless idle CPU does not tick, so a busy CPU's tick may kick one idle CPU by IPI (`nohz_balancer_kick()`), which then balances for all the idle ones (`nohz_idle_balance()`): one wake-up in place of every halted CPU's. A model for item 23 if waking every CPU each period costs too much.
+- *Hotplug.* No arming protocol: `sched_balance_trigger()` returns on a CPU that is not active, and `should_we_balance()` tolerates a pass that began as the CPU went away. Balancing rides on the tick every CPU has; here the arming hole below exists because form B adds a timer of its own.
+- *The strict fit.* `detach_tasks()` skips a task whose load, shifted right by `sd->nr_balance_failed`, exceeds the imbalance: strict while balances succeed, loosening by halves after each failed attempt, so a pass that keeps finding an imbalance it cannot fix eventually takes the thread. Intervals are adaptive too (`get_sd_balance_interval()`: longer when the CPU is busy, doubled after a failure up to `max_interval`). Both are non-goals here and the open questions below.
 
 ## Alternatives considered
 - **A DPC per CPU**, queued from a timer: the machinery of form B and a thread besides, with the thread's weight.
 - **One worker thread per CPU:** N threads that sleep to do microseconds of work, each with the weight problem.
 - **Instead of the overlap flag**, re-read the thief's load under its lock before queuing and give the excess back to the victim (a third lock step, and the threads Migrating for longer); or leave the rule with the caller. Rejected: the flag is a few lines and needs no undo. Not needed at all in form B.
 - **Making a pass skip idle CPUs**, which have their idle thread: the idle thread looks once and then halts (item 23); a visit is what looks again.
-- **A looser fit for a busy thief** (take a thread when half of it fits, as Linux's `detach_tasks()`): it would let CPU 1 above take its thread with a deficit of 0.96 but not with 0.25, so it does not fix form A by itself, and it changes what every busy look does. Kept as a question.
+- **A looser fit for a busy thief** (a fixed fraction of a thread, or Linux's backoff on failed attempts, `nr_balance_failed`): with a deficit of 0.96 it takes the thread, with 0.25 it does not, so it does not fix form A by itself, and it changes what every busy look does. Kept as a question.
 
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
@@ -59,7 +65,7 @@ The same timeline with form A needs the discount above, or it ends 3/1/2/2.
 | Form of the trigger | A, a global worker thread (with the discount and the flag); B, a timer on each CPU | B: it has no thread, so the mean is the real mean, it needs no flag or discount, it cannot be stranded, it costs nothing when off, and the hook pattern exists in the lockup detector. A keeps the global view the user pictured | None (predictions are paused) | A on 2026-11-06, before the finding; reopened |
 | Default of the period | off (0); a value | off, so that nothing that exists changes until it is measured | None | |
 | Whether idle CPUs are visited | yes; no | yes: the visit is what looks again for a halted CPU | None | |
-| Whether a busy thief may take a thread that half fits | no (strict, as now); yes (Linux's slack) | no, until a measurement asks for it | None | |
+| Whether a busy thief may take a thread that does not quite fit | no (strict, as now); yes, loosening by halves after each pass that failed to take (Linux's `nr_balance_failed`) | no, until a measurement asks for it | None | |
 | The overlap, if form A | a flag per thief; re-read and give back; the caller's rule | the flag | None | |
 
 ## Testing and verification
@@ -71,6 +77,7 @@ The same timeline with form A needs the discount above, or it ends 3/1/2/2.
 - Cannot be verified here: the cost of a pass on a machine with many CPUs (a pass is linear in them; QEMU has four or eight), and form A's late passes under a load that never lets the worker run.
 
 ## Open questions
-- Whether the strict fit is right for a busy thief, or the half-thread slack of Linux, once passes run: measure what the settled splits look like.
+- Whether the strict fit is right for a busy thief, or a backoff on failed passes as Linux's `nr_balance_failed`, once passes run: measure what the settled splits look like.
+- Whether the scheduler already has a periodic per-CPU hook that busy CPUs take (`TickSched`, `kernel/include/ours/time/tick_sched.hpp`) that a pass could ride on, as Linux's does, instead of a timer of its own: that would remove the arming protocol and the hotplug hook. Not established; read before step 2.
 - What the default period should be once the measurement of `steal-policy-measure` has the setting in its sweep.
 - Whether a pass should stop early when nothing was taken for some passes, to stop waking CPUs: not needed on this machine.
