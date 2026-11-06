@@ -738,7 +738,7 @@ namespace task {
         /// thread would then spin on a lock whose holder sits in this CPU's run
         /// queue, and this CPU never reschedules while it spins with interrupts
         /// off: a hang in dbg_0, SpinLock::acquire()'s !is_held() assertion in
-        /// dbg_1. Another CPU might take the holder (Scheduler::Current::steal()
+        /// dbg_1. Another CPU might take the holder (Scheduler::Current::steal_work_from()
         /// does so only for an idle CPU, and not for a queue of one), so it
         /// does not save this. Once any holder runs with interrupts off, all of
         /// them must.

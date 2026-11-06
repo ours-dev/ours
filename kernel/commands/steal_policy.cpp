@@ -3,10 +3,11 @@
 //
 // `steal.policy`: the numbers that steer a CPU with nothing to run when it
 // looks for threads to take (task::sched::StealPolicy), and how often each
-// CPU has looked and taken.
+// CPU has looked and taken, and how long it took.
 //
 //   steal.policy                 each knob with its value, default and range,
-//                                then each online CPU's looks and takes
+//                                then each online CPU's looks, takes and the time
+//                                it spent in steal_work_from()
 //   steal.policy <name> <value>  sets a knob; a name that is none, or a value
 //                                out of the knob's range, changes nothing and is
 //                                logged as an error, so that a script that sweeps
@@ -62,9 +63,12 @@ namespace {
                       StealPolicy::get(knob), info.default_value, info.lowest, info.highest);
         }
         Cpu::online_mask().for_each([](CpuNum const cpu) -> void {
-            log::info("steal.policy: cpu {}: looked {} times, took {} threads", cpu,
-                      Scheduler::Current::num_steal_looks(cpu),
-                      Scheduler::Current::num_steals(cpu));
+            log::info("steal.policy: cpu {}: looked {} times, took {} threads, {} ns in all, "
+                      "longest {} ns",
+                      cpu, Scheduler::Current::num_steal_looks(cpu),
+                      Scheduler::Current::num_steals(cpu),
+                      Scheduler::Current::steal_nanoseconds(cpu),
+                      Scheduler::Current::longest_steal_nanoseconds(cpu));
         });
         return 0;
     }

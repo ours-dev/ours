@@ -25,9 +25,9 @@
   `TA_REQUIRES(rq.lock())` on its own functions. One discipline outranks
   another if its enumerator is later (Deadline over Normal), not by address.
 - Work stealing is a pull by the idle thread, before it halts
-  (`Scheduler::Current::steal()`, called from `IdleThread::run()`; the user's
-  call of 2026-11-05). Not in `pick_next_thread()`, which is where Zircon puts
-  it: a CPU that comes back online enters the idle loop through
+  (`Scheduler::Current::steal_work_from()`, called from `IdleThread::run()`;
+  the user's call of 2026-11-05). Not in `pick_next_thread()`, which is where
+  Zircon puts it: a CPU that comes back online enters the idle loop through
   `IdleThread::come_back()` and never picks, and a pull from the pick would have
   to drop the CPU's own run queue lock in the middle of the pick. It moves a
   thread in two steps, each under one run queue lock and never both, as

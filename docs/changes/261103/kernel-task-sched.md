@@ -1129,3 +1129,93 @@ None (predictions are paused)
 - Why are relaxed atomics enough for five knobs that change while looks are running, and what would make them not enough?
 - Why does `set()` check the range, and what would a value out of range reach if it did not?
 - Why do `MAX_BATCH` and `MAX_SCAN` stay constants when the batch they bound is a knob?
+
+## Title: steal() times each look, per CPU, for the measurement of the knobs (2026-11-05)
+
+**Files**
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `StealTimer`, the counters `schedule.steal_ns` (sum) and `schedule.steal_max_ns` (largest), and `Scheduler::Current::steal_nanoseconds()` and `longest_steal_nanoseconds()`
+- `kernel/commands/steal_policy.cpp` — the per-CPU lines of `steal.policy` show the time in all and the longest
+- `kernel/commands/steal_test.cpp` — one more check, "and times its looks"
+- `.agents/tasks/steal-policy-measure/DESIGN.md`, `PLAN.md` — the measurement method and its steps (the first step is this one)
+
+**Symptom**
+The cost of a look, the time `steal()` runs with interrupts off and holds the victim's run queue lock, could not be read. The measurement asked for by repair item 24 has three questions (does stealing help, how many threads and how deep a queue, what it costs) and the third had no instrument: the counters said how often a CPU looked and how many threads it took, not for how long.
+
+**Cause**
+`steal()` was written for the result, not for the measurement. The time of a section of a few microseconds cannot be had from outside: a sampling profile does not see it, and the bench cannot call `steal()` itself, which asserts that its caller is the idle thread. It has to be read at the two ends of the call, inside it.
+
+**Change**
+```cpp
+// steal(), after the policy says stealing is on and the look is counted
+StealTimer const timer;   // its destructor adds the time to the counters, on every way out
+```
+A look with stealing off returns before the timer, so it adds nothing. The sum is a Sum counter, the longest a Max counter, both per CPU as the others are. The cost is two reads of the steady clock on the idle path only. What the figures hold includes about one clock read, and on this machine the clock moves in steps of 1 us (every figure printed is a multiple of 1000 ns), so a look of a few hundred nanoseconds reads as zero or one step: only the sums over many looks, and the longest, mean anything.
+
+**Reference**
+None, this project's own measurement.
+
+**Verification**
+- One run of `steal.policy` after `steal.test` on the default lane: CPU 2, the thief, `looked 232 times, took 19 threads, 2256000 ns in all, longest 302000 ns`; CPU 0, with the shell, `looked 2349 times, 5863000 ns, longest 291000 ns`, about 2.5 us a look, mostly the clock reads. The longest figures (126 to 302 us) are the host: a vCPU of the emulator descheduled in the middle of a look.
+- `steal.test`: default and Fair lanes 46 checks, four-node machine 92, ok. The negative control, the timer removed from `steal()`: `steal.test: FAIL  and times its looks`, restored and compared with `cmp`.
+- The 12 console tests: 12 of 12 on the default and the Fair lanes; the rest of the verification is in the next bullet when it finishes.
+
+**Deliberately not done**
+- A histogram of the looks: the sum and the longest are what the comparison between settings needs.
+- Timing the part of a look that holds the victim's lock apart from the rest: the lock is held for the walk and the dequeues, which is most of a look that takes something, and a finer split needs a clock read inside the lock.
+
+**How it was found**
+The user chose the measurement method on 2026-11-05 (`.agents/tasks/steal-policy-measure/DESIGN.md`), and the counters were its second decision.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why can the time of a look not be measured from outside `steal()`?
+- Why does a look with stealing off not add to the counters, and why does that matter for the comparison of on against off?
+- What can a sum of nanoseconds that moves in steps of 1000 tell, and what can it not?
+
+## Title: steal_work_from() is the one way to take work, and the stub in the pick is gone (2026-11-06)
+
+**Files**
+- `kernel/include/ours/task/sched/scheduler.hpp`, `kernel/kernel/task/sched/scheduler.cpp` — the private stub `Scheduler::steal_work_from(CpuMask const &) -> Thread *` and its call at the end of `pick_next_thread()` are deleted; `Scheduler::Current::steal()` is now `Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize`, which answers how many threads it took
+- `kernel/kernel/task/idle_thread.cpp` — the idle loop calls it with `Cpu::online_mask()`
+- Comments that named `steal()`: `kernel/include/ours/task/thread.hpp`, `kernel/include/ours/task/sched/domains.hpp`, `kernel/mm/include/ours/mm/cpu_local.hpp`, `kernel/commands/steal_test.cpp`, `kernel/commands/steal_policy.cpp`, `.agents/skills/kernel-design/references/task.md`, `.agents/tasks/sched-facade/DESIGN.md`
+- `docs/repairs/261103/kernel-task-sched.md` — item 22 no longer says the pick calls a stub, and records the decision against a pull in the pick
+
+**Symptom**
+Work stealing had two names. `Scheduler::steal_work_from()` was a stub that returned null, called at the end of `pick_next_thread()`, and the pull that exists was written as `Scheduler::Current::steal()`, called by the idle thread. A reader of `pick_next_thread()` was told by the call that it takes work from another CPU, and it took none; a reader of the idle loop met a function with another name. The user asked why the stub was not the implementation (2026-11-05) and then decided: no strategy for stealing in the pick, and the `steal_work_from` interface becomes the main one.
+
+**Cause**
+The stub sat in the wrong place for the work. The pick runs with the CPU's own run queue lock held, and a take needs the victim's; no order of run queue locks is defined, so two CPUs taking from each other would deadlock (A holds A's and wants B's while B holds B's and wants A's). Zircon gets around it by dropping the lock around `StealWork()` in `Scheduler::DequeueThread()`, which for this pick means restructuring it. And a CPU that comes back online enters the idle loop through `IdleThread::come_back()` without picking, so a pull in the pick never reaches the CPU that most needs one. The first implementation went where those two things allowed (the idle loop) and left the stub behind as scaffolding, which it should not have done without asking: it made the dead name the one at the call site that reads like the main path.
+
+**Change**
+```cpp
+// before: two names, one of them dead
+//   pick_next_thread():   if (auto *const next = steal_work_from(Cpu::online_mask()); next) { ... }   // always null
+//   IdleThread::run():    ... && !Scheduler::Current::steal()
+// after: one
+//   IdleThread::run():    ... && 0 == Scheduler::Current::steal_work_from(Cpu::online_mask())
+```
+`steal_work_from(victims)` keeps the shape the stub declared: a set of CPUs to take from, and a count where the stub gave a pointer (a take is now up to a batch of threads, so a pointer to one no longer says it). The scan of each tier is cut to `victims`, and so is the mean. The idle thread passes every online CPU, so the behaviour is unchanged. The stub's call in `pick_next_thread()` never took anything, so the pick behaves as before. The doc comment of the function says why the pull is not in the pick.
+
+**Reference**
+Zircon `Scheduler::StealWork()` (`scheduler.cc`), the name this follows, called from `Scheduler::DequeueThread()`.
+
+**Verification**
+- The 12 console tests (`preempt idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace`, split with `${=T}`): 12 of 12 on the default, Fair and four-node lanes; `ktest all` `ran=29 passed=28 failed=0 skipped=1` on the three; `boot_check.py`: default dbg PASS (46/5/0), rel PASS (44/8/0, 7/7), host-tests PASS (181); Fair lane and four-node machine, `--no-tests`, dbg and rel PASS. clang-tidy reports nothing on a line of this change, and `scheduler.cpp:444`, the stub's `return 0;` that it used to report, is gone.
+- `steal.test` is the check of behaviour, unchanged except for the comment that names the function: it reaches the function through the idle thread only.
+
+**Deliberately not done**
+- A test of `victims`: the function is called only from the idle loop, with every online CPU, and the test cannot call it (it asserts that its caller is the idle thread), so the narrowing is not exercised by anything. The parameter is the stub's own, kept so that the interface the user named keeps its shape.
+- A pull in the pick, or a balance from the tick (repair item 22).
+
+**How it was found**
+The user's question on 2026-11-05, "为什么不实现steal_from_*那个方法而转去实现一个steal？", and then the decision, "那就不在pick里面实现偷的策略了，直接让steal_from那个接口成为主要接口".
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why could the stub not be filled in where it was called?
+- Why does a pull in the idle loop reach a CPU that comes back online, and one in the pick not?
+- What does a count say about a take that a pointer to a thread did not?

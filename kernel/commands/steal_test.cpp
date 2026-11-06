@@ -2,7 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 //
 // `steal.test`: a CPU with nothing to run takes a queued thread from a busier
-// CPU (Scheduler::Current::steal(), called by the idle thread before it halts),
+// CPU (Scheduler::Current::steal_work_from(), called by the idle thread before it halts),
 // and where the NUMA node boundary falls. With one CPU holding the queue (the
 // victim) and another idle and halted (the thief), each of a pair of CPUs on
 // one node and a pair on two (when the machine has them):
@@ -447,6 +447,10 @@ namespace {
         run_round(tally, pair, deep);
         verdict(tally, deep.movable_seen_on_thief, "an idle CPU takes a thread that waits");
         verdict(tally, deep.steals >= 1, "and counts it");
+        // The time it spent: some, and the longest call no longer than all of them.
+        auto const in_all = Scheduler::Current::steal_nanoseconds(pair.thief);
+        auto const longest = Scheduler::Current::longest_steal_nanoseconds(pair.thief);
+        verdict(tally, in_all > 0 && longest > 0 && longest <= in_all, "and times its looks");
 
         // One waits behind the one running: taken on the same node only.
         Round shallow{.movable = 2};

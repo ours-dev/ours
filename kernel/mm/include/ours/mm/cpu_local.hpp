@@ -696,7 +696,7 @@ class CpuLocal::Current {
     /// caller is on at that instant -- for Thread::Current, the caller itself.
     ///
     /// A CPU with nothing to run now takes a queued thread from another
-    /// (Scheduler::Current::steal()), a preempted one included, so a thread
+    /// (Scheduler::Current::steal_work_from()), a preempted one included, so a thread
     /// preempted between the two loads can resume on another CPU: the two-load
     /// form is only for a caller that cannot be preempted, with preemption or
     /// interrupts off. Every caller of the one-argument form was read on

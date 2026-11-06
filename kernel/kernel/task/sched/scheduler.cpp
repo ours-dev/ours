@@ -110,6 +110,28 @@ namespace {
     GKTL_COUNTER(SCHEDULE_YIELD_PAST, "schedule.yield_past");
     GKTL_COUNTER(SCHEDULE_STEAL_LOOKS, "schedule.steal_looks");
     GKTL_COUNTER(SCHEDULE_STEALS, "schedule.steals");
+    GKTL_COUNTER(SCHEDULE_STEAL_NS, "schedule.steal_ns");
+    GKTL_COUNTER_DEFINE(SCHEDULE_STEAL_MAX_NS, "schedule.steal_max_ns", Max);
+
+    /// Adds the time from its construction to its destruction to the counters
+    /// of the time steal_work_from() takes, on whichever way it leaves. The reading
+    /// includes about one read of the steady clock.
+    class StealTimer final {
+      public:
+        StealTimer() : m_start(time::SteadyClock::now()) {}
+        StealTimer(StealTimer const &) = delete;
+        auto operator=(StealTimer const &) -> StealTimer & = delete;
+
+        ~StealTimer() {
+            auto const ns =
+                static_cast<isize>(Nanoseconds(time::SteadyClock::now() - m_start).count());
+            SCHEDULE_STEAL_NS.add(ns);
+            auto _ = SCHEDULE_STEAL_MAX_NS.max(ns);
+        }
+
+      private:
+        decltype(time::SteadyClock::now()) m_start;
+    };
 
 } // namespace
 
@@ -440,10 +462,6 @@ auto Scheduler::migrate_thread(Thread *thread) -> void {
     }
 }
 
-auto Scheduler::steal_work_from(CpuMask const &mask) -> Thread * {
-    return 0;
-}
-
 auto Scheduler::process_migrating_threads(SchedTime now) -> void {
     Thread::MigratingList migrating_threads;
     {
@@ -529,10 +547,6 @@ auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
             next) {
             return next;
         }
-    }
-
-    if (auto *const next = steal_work_from(Cpu::online_mask()); next) {
-        return next;
     }
 
     if (curr->is_state_running()) {
@@ -1054,6 +1068,14 @@ auto Scheduler::Current::num_steals(CpuNum const cpu) -> u64 {
     return static_cast<u64>(SCHEDULE_STEALS.get(cpu));
 }
 
+auto Scheduler::Current::steal_nanoseconds(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(SCHEDULE_STEAL_NS.get(cpu));
+}
+
+auto Scheduler::Current::longest_steal_nanoseconds(CpuNum const cpu) -> u64 {
+    return static_cast<u64>(SCHEDULE_STEAL_MAX_NS.get(cpu));
+}
+
 /// A pull, by a CPU with nothing to run, from the tiers of its scheduling
 /// domains (domains_of()), the nearest first: in each, the CPU with the most
 /// load among those that hold as many threads as the policy asks for a tier of
@@ -1073,16 +1095,17 @@ auto Scheduler::Current::num_steals(CpuNum const cpu) -> u64 {
 /// (Scheduler::Pi::common()) takes the victim's lock by m_curr_cpu and does not
 /// ask whether the thread is queued there. Both are open for deactivate() too
 /// (items 25 and 26 of docs/repairs/261103/kernel-task-sched.md).
-auto Scheduler::Current::steal() -> bool {
+auto Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize {
     DEBUG_ASSERT(arch::irqs_disabled());
     auto &self = get();
     self.m_canary.verify<Self>();
     DEBUG_ASSERT(self.m_run_queue.m_curr_thread == self.m_idle_thread,
                  "a CPU steals when it has nothing to run, in its idle thread");
     if (!StealPolicy::enabled()) {
-        return false;
+        return 0;
     }
     SCHEDULE_STEAL_LOOKS.add(1);
+    StealTimer const timer;
 
     auto const here = self.m_run_queue.m_which_cpu;
     auto const here_load = self.load();
@@ -1174,7 +1197,7 @@ auto Scheduler::Current::steal() -> bool {
         auto const tier_batch = StealPolicy::max_batch(domain.kind);
         auto victim_cpu = INVALID_CPU_NUM;
         Weight busiest{};
-        (domain.span & peek_active_mask()).for_each([&](CpuNum const cpu) {
+        (domain.span & peek_active_mask() & victims).for_each([&](CpuNum const cpu) {
             auto const &other = get(cpu);
             auto const load = other.load();
             total += load;
@@ -1193,7 +1216,7 @@ auto Scheduler::Current::steal() -> bool {
         }
     }
     if (taken == 0) {
-        return false;
+        return 0;
     }
 
     {
@@ -1205,7 +1228,7 @@ auto Scheduler::Current::steal() -> bool {
         }
     }
     SCHEDULE_STEALS.add(static_cast<isize>(taken));
-    return true;
+    return taken;
 }
 
 auto Scheduler::Current::reactivate() -> void {

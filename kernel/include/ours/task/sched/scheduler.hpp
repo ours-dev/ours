@@ -353,15 +353,6 @@ class Scheduler {
         return schedule.template call<Dispatch>(std::forward<Args>(args)...);
     }
 
-    /// [MP] Attempts to steal work from other busy CPUs spcified by |mask| and move it
-    /// to the local run queues. Returns a pointer to the stolen thread that is now
-    /// associated with the local Scheduler instance, or nullptr is no work was stolen.
-    ///
-    /// A stub, kept for a pull at the pick, while this CPU is running a thread
-    /// that is about to give it up. The pull that exists is Current::steal(), by
-    /// the idle thread: it needs no run queue lock held across the pick.
-    auto steal_work_from(CpuMask const &mask) -> Thread *;
-
     /// [MP] Takes migrating_threads_lock only long enough to swap the list
     /// out, then works on the private copy unlocked. Same TA_EXCLUDES logic as
     /// do_unpark_thread(): the lock is acquired and released within.
@@ -454,9 +445,12 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     /// interrupts off.
     static auto reactivate() -> void;
 
-    /// This CPU has nothing to run: take queued threads from another active
-    /// CPU, as many as bring this one up to the mean load of the CPUs it looks
-    /// at, and no more than the victim holds above that mean. False at once when
+    /// This CPU has nothing to run: take queued threads from the CPUs of
+    /// |victims|, as many as bring this one up to the mean load of the CPUs it
+    /// looks at, and no more than the victim holds above that mean. This is the
+    /// scheduler's one way of taking work from another CPU; the idle thread
+    /// calls it with every online CPU. |victims| narrows what is looked at,
+    /// the mean included. False at once when
     /// StealPolicy has stealing off. The tiers of this CPU's scheduling domains
     /// are tried nearest first (domains_of()); in each, the victim is the CPU
     /// with the most load among those that hold as many threads as the policy
@@ -466,9 +460,15 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     /// others while they fit what is left, and no more than the tier's batch,
     /// among the first sched_domain::MAX_SCAN of the victim's queue. The threads
     /// have to be ones that may run here. Called by the idle thread before it
-    /// halts, with interrupts off; true when threads were moved here and are
-    /// queued, so that the idle thread has something to reschedule to. A caller
-    /// that drops the answer would halt with a thread queued.
+    /// halts, with interrupts off; answers how many threads were moved here and
+    /// are queued, so that the idle thread has something to reschedule to when
+    /// it is not none. A caller that drops the answer would halt with a thread
+    /// queued.
+    ///
+    /// Not in pick_next_thread(), where the pick holds this CPU's run queue lock
+    /// and a take needs the victim's: with no order of the two defined, two CPUs
+    /// taking from each other would deadlock, and a CPU that comes back online
+    /// enters the idle loop without picking (the user's call, 2026-11-05).
     ///
     /// The victim and the mean are picked from the CPUs' loads, read without
     /// their locks, so they are a hint that the victim's own load, read under
@@ -476,9 +476,9 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     /// under one run queue lock and never both, as deactivate() does it: the
     /// threads leave the victim's queue (Migrating), then join this one.
     [[nodiscard]]
-    static auto steal() -> bool;
+    static auto steal_work_from(CpuMask const &victims) -> usize;
 
-    /// How many times |cpu| has looked for threads to take (calls of steal()),
+    /// How many times |cpu| has looked for threads to take (calls of steal_work_from()),
     /// and how many threads it took in all, for a test to tell a CPU that looked
     /// and found nothing from one that never looked. Read while |cpu| may be
     /// counting.
@@ -486,6 +486,17 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     static auto num_steal_looks(CpuNum cpu) -> u64;
     [[nodiscard]]
     static auto num_steals(CpuNum cpu) -> u64;
+
+    /// How long |cpu| has spent in steal_work_from() in all, and in its longest call, in
+    /// nanoseconds of the steady clock: the time it held the victim's lock with
+    /// interrupts off is part of it. Each reading includes about one read of
+    /// the clock, and an emulator's clock is slow, so the figures are
+    /// comparisons between settings on one machine, not times a machine would
+    /// give. Calls with stealing off are not counted.
+    [[nodiscard]]
+    static auto steal_nanoseconds(CpuNum cpu) -> u64;
+    [[nodiscard]]
+    static auto longest_steal_nanoseconds(CpuNum cpu) -> u64;
 
   private:
     friend class Thread;

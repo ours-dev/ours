@@ -208,13 +208,13 @@ No reference to `SCHED_NOHZ` or `sched_nohz` outside the history.
 Medium: an idle CPU is served now, but a split among CPUs that all have work stays as it is; round-robin and Fair alike.
 
 **Symptom**
-`Scheduler::Current::steal()` runs only when a CPU has nothing to run (the idle loop), so a CPU that runs one thread never looks at the others. In `hotplug.test`, eight spinners on four CPUs, one CPU offline and back: the survivors hold 3, 3 and 2, the returning CPU takes one and the counts are 2, 3, 2, 1 (by inference from the code, not observed: the test does not print them), and they stay so for as long as the spinners run, where an even split is 2, 2, 2, 2. A pick-time pull does not exist either: `pick_next_thread()` still calls the stub `steal_work_from()`.
+`Scheduler::Current::steal_work_from()` runs only when a CPU has nothing to run (the idle loop), so a CPU that runs one thread never looks at the others. In `hotplug.test`, eight spinners on four CPUs, one CPU offline and back: the survivors hold 3, 3 and 2, the returning CPU takes one and the counts are 2, 3, 2, 1 (by inference from the code, not observed: the test does not print them), and they stay so for as long as the spinners run, where an even split is 2, 2, 2, 2. There is no pull in `pick_next_thread()`, and the user decided on 2026-11-05 not to put one there (the pick holds the CPU's run queue lock, a take needs the victim's, and a CPU that comes back never picks).
 
 **Cause**
 The idle loop was chosen as the place for a pull because it holds no run queue lock and is entered on every path a CPU becomes idle (including `IdleThread::come_back()`). That serves the CPU that has nothing; it does not serve one that has less than its neighbour.
 
 **Change**
-The author's, with options to put to the user: a periodic balance from the tick (Linux `sched_balance_domains()` and `sched_balance_rq()`), a pull at the pick (Zircon `Scheduler::DequeueThread()` calls `StealWork()` inside `queue_guard.CallUnlocked(...)`, with its own queue lock dropped and interrupts still off; it saves a switch to the idle thread and back, and does not run at come-back time), or a push when a queue grows. Each needs the own lock dropped inside the pick, or a tick-side step with its own cost; none is chosen.
+The author's, with options to put to the user: a periodic balance from the tick (Linux `sched_balance_domains()` and `sched_balance_rq()`), or a push when a queue grows; each a tick-side or enqueue-side step with its own cost, and none is chosen, but both would call `Scheduler::Current::steal_work_from()` or its two-step move. A pull at the pick (Zircon `Scheduler::DequeueThread()` calls `StealWork()` inside `queue_guard.CallUnlocked(...)`, with its own queue lock dropped) was decided against by the user on 2026-11-05.
 
 **Reference**
 Linux `sched_balance_domains()` and `sched_balance_rq()` (`kernel/sched/fair.c`, local checkout; names confirmed, bodies not read for this item); Zircon `Scheduler::StealWork()` (`scheduler.cc`).
