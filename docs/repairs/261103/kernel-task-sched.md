@@ -228,7 +228,7 @@ In `hotplug.test`, after `bring_cpu_online()` the spinner counts per online CPU 
 Low: a queue that reaches the threshold after the CPU halted is served late, not never, since a CPU's own wakeups and the first timer tick bring it back.
 
 **Symptom**
-An idle CPU that finds no queue deep enough halts with no tick (`IdleThread::run()`) and looks again only when an interrupt wakes it. `steal.test` sends the reschedule request by hand for that reason: after the test widens the spinners' affinity, nothing else tells the thief that the victim's queue is now stealable. Read off the code, shown by the test, not measured for how long a real case waits.
+An idle CPU that finds no queue deep enough halts with no tick (`IdleThread::run()`) and looks again only when an interrupt wakes it. `steal.test` sends the reschedule request by hand for that reason: after the test widens the spinners' affinity, nothing else tells the thief that the victim's queue is now stealable. Read off the code, shown by the test, not measured for how long a real case waits. `steal.policy` no longer wakes the other CPUs after it sets a knob (2026-11-06), so a CPU that halted before the change uses the new value from the next time something wakes it.
 
 **Cause**
 `steal()` is called once per pass through the idle loop, and the loop blocks in `hlt`. Nothing wakes an idle CPU when another CPU's queue grows past the threshold: placement (`select_target_cpu()`) prefers the least loaded CPU, so new threads go to idle CPUs, and the remaining cases are a thread whose affinity was widened, a thread that wakes onto a busy CPU because it last ran there, and threads that were pinned.

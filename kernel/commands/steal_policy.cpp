@@ -14,14 +14,13 @@
 //                                a knob sees the refusal
 //
 // A setting takes effect at the next look of any CPU; nothing has to stop. A CPU
-// that is halted looks when something wakes it, and a change of a setting is
-// something: every other online CPU is sent a reschedule request after it, so
-// that an idle one looks at once under the new setting. It is the way to sweep a
-// threshold or a batch without building another image (kernel.sched.steal.<name>
-// on the command line gives the first value).
+// that is halted looks when something wakes it, and a change of a setting does
+// not: it is used the next time that CPU is woken (item 23 of
+// docs/repairs/261103/kernel-task-sched.md). It is the way to sweep a threshold
+// or a batch without building another image (kernel.sched.steal.<name> on the
+// command line gives the first value).
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/ipi_service.hpp>
 #include <ours/task/sched/domains.hpp>
 #include <ours/task/sched/scheduler.hpp>
 
@@ -73,16 +72,6 @@ namespace {
         return 0;
     }
 
-    /// Asks every other online CPU to reschedule, so that one that is halted
-    /// runs its idle loop again and looks under the setting just made.
-    auto wake_idle_cpus() -> void {
-        Cpu::online_mask().for_each([](CpuNum const cpu) -> void {
-            if (cpu != Cpu::id()) {
-                IpiService::send_resched(cpu);
-            }
-        });
-    }
-
     auto steal_policy_command(int argc, char **argv) -> int {
         if (argc == 1) {
             return show();
@@ -104,7 +93,6 @@ namespace {
             return 1;
         }
         log::info("steal.policy: {} = {}", info.name, StealPolicy::get(knob));
-        wake_idle_cpus();
         return 0;
     }
 } // namespace

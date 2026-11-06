@@ -1288,3 +1288,46 @@ None (predictions are paused)
 - Which four things did the function take from the calling CPU, and what goes wrong for each when the caller is another CPU?
 - Why does a thief that is running a thread have to fit what it takes in the mean, while an idle one takes the first thread whatever it weighs?
 - Why is the thief re-checked for `Active` under its own lock, and what happens to the threads when it is not?
+
+## Title: steal.policy no longer sends a reschedule request to every CPU after a change (2026-11-06)
+
+**Files**
+- `kernel/commands/steal_policy.cpp` — `wake_idle_cpus()` and its call are gone; the header comment says what a change of a setting does now
+- `docs/repairs/261103/kernel-task-sched.md` — item 23 says that the command no longer wakes the halted CPUs
+
+**Symptom**
+`python3 scripts/kshell_run.py --out out/numa.x86 steal.policy ...` on the eight-CPU machine, with `steal.policy` as the first command, was reported as a hang by a background loop that waited for the prompt: the runner did not see it. The command's own output was fine.
+
+**Cause**
+After a knob was set, the command sent `IpiService::send_resched()` to each of the seven other CPUs so that a halted CPU would look under the new setting at once. Each send prints an `IPI-Resched on CPU[n]` trace line from the arch layer, on the console, from whichever CPU sends it; seven of them in a row come from different CPUs while the shell is printing its prompt. That the interleaved lines are what the runner's prompt detection lost track of is read from the symptom (it came with `steal.policy` as the first command on eight CPUs and went with the wake), not from the runner's code. The wake was a convenience for a sweep of the knobs and was not needed by anything that measures: a workload that starts after the change wakes the CPUs it uses by placing threads on them.
+
+**Change**
+```cpp
+// before
+log::info("steal.policy: {} = {}", info.name, StealPolicy::get(knob));
+wake_idle_cpus();   // send_resched() to every other online CPU
+// after
+log::info("steal.policy: {} = {}", info.name, StealPolicy::get(knob));
+```
+A CPU that halted before the change uses the new value the next time something wakes it (item 23), which for the measurement is the start of the workload. The alternative, keeping the wake and silencing the trace line, would have changed the arch layer's logging for a console command's sake.
+
+**Reference**
+None, this project's own tool.
+
+**Verification**
+- `kshell_run.py --out out/numa.x86 steal.policy "steal.policy max-batch-same-node 2" "steal.policy max-batch-same-node 4" steal.test` with `NUMA=1`, three runs: all four commands `ok` each time, with `steal.policy` first. Default lane, `steal.policy enabled 0`, `enabled 1`, `steal.test`: ok.
+- `StealPolicy.*` ktests are unaffected (they do not call the command); not re-run separately, covered by the `ktest all` of the preceding commit.
+
+**Deliberately not done**
+- Waking the halted CPUs by some other means (a quiet IPI): nothing needs it yet, and item 23 is where a CPU that looks again on its own is decided.
+
+**How it was found**
+A background loop that ran `steal.policy` as its first command on the eight-CPU lane and reported a hang that was not one. It was announced to the user on 2026-11-06 as a separate change.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why could seven IPI trace lines from seven CPUs disturb a prompt, and what in the symptom shows that they did?
+- What does a CPU that halted before a knob changed do with the new value, and when?
+- Why did no measurement need the wake?
