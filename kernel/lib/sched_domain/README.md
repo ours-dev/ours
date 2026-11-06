@@ -1,6 +1,6 @@
 # sched_domain
 
-The scheduling domains of a CPU: the nested sets of CPUs it looks at for work, nearest first, each with its own parameters. The scheduler walks them instead of asking the memory manager which node a CPU is on every time it looks.
+The scheduling domains of a CPU: the nested sets of CPUs it looks at for work, nearest first, each of a kind that a policy sets the knobs of (a name, a default and a range each, here; the value is the kernel's). The scheduler walks them instead of asking the memory manager which node a CPU is on every time it looks.
 
 ## Layout
 

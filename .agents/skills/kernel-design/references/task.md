@@ -24,22 +24,40 @@
   carries `TA_REQUIRES(get_lock())` and a discipline declares
   `TA_REQUIRES(rq.lock())` on its own functions. One discipline outranks
   another if its enumerator is later (Deadline over Normal), not by address.
-- Work stealing is a pull by the idle thread, before it halts
-  (`Scheduler::Current::steal()`, called from `IdleThread::run()`; the user's
-  call of 2026-11-05). Not in `pick_next_thread()`, which is where Zircon puts
-  it: a CPU that comes back online enters the idle loop through
-  `IdleThread::come_back()` and never picks, and a pull from the pick would have
-  to drop the CPU's own run queue lock in the middle of the pick. It moves a
-  thread in two steps, each under one run queue lock and never both, as
+- Work stealing is a pull by a CPU for itself, made by its idle thread before it
+  halts (`Scheduler::steal_work_from()`, a member of the thief's scheduler,
+  called from `IdleThread::run()`; the user's call of 2026-11-05) and callable
+  by any CPU on any CPU's scheduler, so that a load balancer can make one CPU
+  take work for another (the user's call of 2026-11-06). It holds preemption off
+  for the whole call, takes no lock on entry, and two calls at once for one
+  thief are not serialised (repair item 36). Not in `pick_next_thread()`, which
+  is where Zircon puts it: a CPU that comes back online enters the idle loop
+  through `IdleThread::come_back()` and never picks, and a pull from the pick
+  would have to drop the CPU's own run queue lock in the middle of the pick. It
+  moves a thread in two steps, each under one run queue lock and never both, as
   `Scheduler::Current::deactivate()` does; no order of run queue locks is
   defined. What the scheduler looks at is a table, not a question to the memory
   manager: `domains_of(cpu)` (`kernel/lib/sched_domain`, built once from the
   node table in `kernel/kernel/task/sched/domains.cpp`, the one file of the
-  scheduler that knows `mm::CpuNodeMap`), the CPU's tiers nearest first, each
-  with the queue depth that makes a CPU in it worth taking from (the user's
-  call of 2026-11-05; it is the role of Linux's `sched_domain` and Zircon's
-  `CpuSearchSet`). A new kind of distance is one more tier built there, and the
-  numbers are data, so that they can be measured and later set from outside.
+  scheduler that knows `mm::CpuNodeMap`), the CPU's tiers nearest first, each of
+  a kind (the user's call of 2026-11-05; it is the role of Linux's
+  `sched_domain` and Zircon's `CpuSearchSet`). A new kind of distance is one
+  more kind of tier, built there, and its knobs. The numbers that say how deep a
+  queue must be to be worth taking from and how many threads one look takes are
+  knobs, named by `sched_domain::Knob` with a default and a range, kept by
+  `task::sched::StealPolicy` as relaxed atomics (each is valid alone, so no
+  snapshot is needed), given a first value by `kernel.sched.steal.<name>` boot
+  options and changed while the machine runs by the `steal.policy` console
+  command (the user's call of 2026-11-05). A user-space interface to them waits
+  for a user-space consumer that needs one. How many threads a look takes is a
+  load-balancing calculation, not a constant (the user's call of 2026-11-05):
+  enough to bring the CPU up to the mean load of itself and the tiers so far,
+  and no more than the victim holds above that mean
+  (`sched_domain::pull_amount()`, after Linux's `calculate_imbalance()`), the
+  first thread whatever it weighs for a CPU with nothing to run, and every
+  thread while it fits for a CPU running something (`sched_domain::PullBudget`).
+  Load is the run queue's weight sum for now; the calculation reads one
+  `load()`, so a sampled load can replace it.
 - Numerics follow Zircon: weights and times are `ffl::Fixed`
   (`SchedWeight` is `ffl::Fixed<int64_t, 10>`, a fraction in (0, 1]). No Linux
   integer weights, no `wmult` reciprocal table. Read

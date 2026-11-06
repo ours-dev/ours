@@ -93,6 +93,15 @@ kernel_test("semaphore") {
   deps = _HEADER_DEPS
 }
 
+kernel_test("steal_policy") {
+  sources = [ "steal_policy_test.cpp" ]
+  deps = _HEADER_DEPS + [
+           "//kernel/lib/gktl:headers",
+           "//kernel/lib/obi:headers",
+           "//kernel/lib/sched_domain:headers",
+         ]
+}
+
 kernel_test("sched_domain") {
   sources = [ "sched_domain_test.cpp" ]
   deps = _HEADER_DEPS + [
@@ -117,6 +126,7 @@ source_set("kernel.tests") {
     ":sampler_claim",
     ":semaphore",
     ":sched_domain",
+    ":steal_policy",
     ":pm_zone",
     ":tick_broadcast",
     ":tick_fallback",

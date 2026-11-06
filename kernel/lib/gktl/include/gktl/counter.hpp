@@ -83,6 +83,26 @@ class Counter {
         });
     }
 
+    /// Adds |delta| to |cpu|'s count, from any CPU: the count a CPU keeps for
+    /// work done on its behalf by another. An atomic add, as the add above is,
+    /// so the two do not lose one another's.
+    auto add(ours::CpuNum const cpu, isize const delta) const -> void {
+        std::atomic_ref slot_ref{ours::mm::CpuLocal::access(slot(), cpu)};
+        slot_ref.fetch_add(delta, std::memory_order_relaxed);
+    }
+
+    /// Raises |cpu|'s count to |value| if it is lower, from any CPU, by a
+    /// compare-and-swap. Not to be mixed with the one-argument max() on the
+    /// same counter: that one reads and writes in two steps, and can put back
+    /// a lower value over one that this raised in between.
+    auto max(ours::CpuNum const cpu, isize const value) const -> void {
+        std::atomic_ref slot_ref{ours::mm::CpuLocal::access(slot(), cpu)};
+        auto seen = slot_ref.load(std::memory_order_relaxed);
+        while (seen < value &&
+               !slot_ref.compare_exchange_weak(seen, value, std::memory_order_relaxed)) {
+        }
+    }
+
     auto max(isize value) const -> isize {
         return ours::mm::CpuLocal::with_current(slot(), [value](ours::CpuNum, isize &slot) {
             std::atomic_ref slot_ref{slot};

@@ -994,3 +994,436 @@ None (predictions are paused)
 - Why is the builder a pure function in its own header-only library, and what would break if it were a compiled source?
 - Why does a tier list every possible CPU and `steal()` cut it to the active ones, and not the other way round?
 - What does the scheduler no longer know, and which one file still knows it?
+
+## Title: An idle CPU takes the threads that bring it to the mean load, not one (2026-11-05)
+
+**Files**
+- `kernel/lib/sched_domain/include/sched_domain/sched_domain.hpp` — `Domain` gains `max_batch` (1 to `MAX_BATCH`, 8); `Thresholds` becomes `Parameters` of `TierParams {min_runnable, max_batch}`; new `pull_amount()` (how much load to take), `PullBudget` (which threads of the victim's queue make it up) and `MAX_SCAN` (32, how many of a queue one look examines)
+- `kernel/lib/sched_domain/test/sched_domain_test.cpp`, `test/BUILD.gn` — 18 more host tests (28 in all), using the kernel's own `ffl::Fixed<i64, 16>` as the load
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `steal()` samples the loads, takes the mean, and moves a batch; new `Scheduler::load()`; the counter `schedule.steals` now counts threads
+- `kernel/kernel/task/sched/domains.cpp` — the tiers' batch sizes (`STEAL_MAX_BATCH_*`, 4)
+- `kernel/commands/steal_test.cpp`, `kernel/commands/BUILD.gn` — three rounds: eight threads, twenty, and a heavy thread on a third CPU; the command links the library's headers
+- `kernel/tests/sched_domain_test.cpp` — the ktest also checks each tier's `min_runnable` and `max_batch`
+- `.agents/skills/kernel-design/references/task.md`, `.agents/tasks/sched-facade/DESIGN.md`, `docs/repairs/261103/kernel-task-sched.md` (items 18, 23, 24, 26)
+
+**Symptom**
+`steal()` took one thread per look, whatever the imbalance. Eight threads on CPU 0 of four, the other three CPUs idle and looking once each as they go idle: 5, 1, 1, 1, by the arithmetic of the old code, not run. A CPU that has taken one thread is no longer idle and does not look again until it is (repair item 22), so what it took is what it gets. The user's objection, 2026-11-05: one has no basis; it should follow a load-balancing algorithm, with the load sampled.
+
+**Cause**
+"One" is a constant standing in for a quantity: how far the CPU is from where a balanced machine would have it. A balanced machine has every CPU at the mean load of the CPUs that share the work, so a CPU with less takes what lifts it to the mean, and the CPU it takes from gives up what it holds above the mean, no more: past the mean the roles swap and the next look takes the threads back. Both bounds are needed. Taking only what the idle CPU lacks over-takes when the victim is barely above the mean (the victim ends below it); taking only what the busy CPU has in excess over-takes when there are several idle CPUs (each of them takes the whole excess, and the first one ends above the mean).
+
+| look | loads of CPU 0 to 3 | mean | min(victim − mean, mean − own) | after |
+|---|---|---|---|---|
+| CPU 1 | 8, 0, 0, 0 | 2 | min(6, 2) = 2 | 6, 2, 0, 0 |
+| CPU 2 | 6, 2, 0, 0 | 2 | min(4, 2) = 2 | 4, 2, 2, 0 |
+| CPU 3 | 4, 2, 2, 0 | 2 | min(2, 2) = 2 | 2, 2, 2, 2 |
+
+Four things the formula alone does not settle:
+1. **The threads are lumps, and the amount can be none.** A mean of 0.6 of a thread asks for nothing, and so does a mean raised by load that cannot move (a heavy thread on a third CPU, pinned threads of a nearer tier): the victim is not above it. Either would send an idle CPU back to halt with a thread waiting. So the first thread is taken whatever it weighs and whatever the amount, provided the victim holds as many threads as the tier asks for (`min_runnable` is at least two: the one it runs and one waiting), and each later one only if it fits what is left, which also stops a heavy thread being carried past the mean for the sake of a light one behind it.
+2. **A batch is capped, and so is the look.** `max_batch` bounds how many threads are in neither queue at once. The walk of the victim's queue is done with its lock held and interrupts off, and a queue of threads that cannot move would be walked to its end by every CPU that looks, so the walk is cut at `MAX_SCAN` threads, taken or not. The old code walked to the end only when nothing could be taken.
+3. **Which CPUs make the mean.** The thief and every CPU of the tiers up to the one with the victim, which is what nested domains give: a CPU that a nearer tier already looked at counts in the mean of the farther one. With the thief and a tier of two (three CPUs, the three-CPU node of the four-node machine) and eight threads the mean is 2.67 and two threads; over all eight CPUs of that machine it is 1 and one thread. This was chosen for fidelity to nested domains; no run tells it from a mean over the victim's tier alone, which is 8/6 or 8/5 on the same machine and also one thread (they part at about twelve threads).
+4. **Everything sampled is stale.** The loads are read without the CPUs' locks. Under the victim's lock the count is asked again, and the amount is recomputed from the victim's load as it is then, so two idle CPUs that read the same sample do not both take what only one's worth was above the mean.
+
+**Change**
+```cpp
+// before: one thread
+thread = detach_from(victim_cpu, domain.min_runnable);   // walk the queue, take the first that may run here
+// after: the mean decides
+total += other.load(); cpus += 1;                         // for each active CPU of the tier
+taken = detach_from(victim_cpu, domain, total / cpus);    // pull_amount(), then a PullBudget over the queue
+```
+`pull_amount(here, busiest, average)` is `min(busiest - average, average - here)` when both are positive, and zero otherwise. `PullBudget(amount, max_batch)` is offered the victim's threads in the order its queue walks them and answers which to take; its first answer is yes whatever the amount. The victim is the CPU with the most load among those holding at least `min_runnable` threads, not the one with the most threads. The load is `Scheduler::load()`, the run queue's `m_total_weight` (the weight of the threads it holds, the running one counted): proportional to the thread count when the weights are equal, and with different priorities a heavy thread counts for what it is. The calculation reads only that one function, so the sampled load the user proposed replaces it without touching the calculation. The batch is dequeued from the victim with the first call reading the victim's clock and the rest skipping it, then enqueued on the thief under one hold of its lock. The counter `schedule.steals` counts threads, so `steal.test` compares it with the mean's count.
+
+Rejected: half the difference (it takes four of eight on the first look, and reaches the mean only after more looks that the idle CPU may not make); the count of the victim's excess alone; a constant batch; a fraction of the victim's load; recomputing the mean after each thread (a second hold of the victim's lock per thread, and the same answer for equal weights); trying the next busiest CPU of a tier when the first gives nothing (repair item 23).
+
+**Reference**
+Linux, `kernel/sched/fair.c` (local checkout). This is the formula of the periodic balance, applied to the pull of an idle CPU, which is not what Linux does there. `calculate_imbalance()`: its last branch, reached when the local group is fully busy or overloaded, ends in `env->imbalance = min((busiest->avg_load - sds->avg_load) * busiest->group_capacity, (sds->avg_load - local->avg_load) * local->group_capacity) / SCHED_CAPACITY_SCALE`, with a comment saying that neither side is pushed past the mean; `detach_tasks()` subtracts each task's load from `env->imbalance` and skips a task that is more than is left, and its loop is bounded by `loop_max = min(sysctl_sched_nr_migrate, busiest->nr_running)`, which counts the tasks examined, as `MAX_SCAN` does here, not the tasks taken. A CPU that has just gone idle has spare capacity, so its group takes an earlier branch of `calculate_imbalance()`, a count of tasks halved, with a fallback to one task when the amount comes out as nothing and the busiest group has one waiting; and `detach_tasks()` stops after the first task when the CPU is newly idle on a preemptible kernel, to keep the lock short, and never takes the last. Linux's newly-idle pull therefore takes one; this design takes more because the user asked for a load-balancing calculation, and keeps Linux's own safeguards (a bounded examine, a fallback to one thread). Zircon's `Scheduler::StealWork()` takes one thread. Differences here: the groups are CPUs, with no capacity; the mean is over the tiers so far, which Linux gets from nested domains; the load is a weight sum, where Linux's is a decayed average of runnable time.
+
+**Verification**
+- Host tests: 28 in `sched_domain`, 18 new in this step. `pull_amount()` (the share of the mean, the cap by the victim's excess, nothing at or above the mean, nothing when the busiest is not above it, a fraction of a thread, plain counts, and the table above played to the end, which ends 2, 2, 2, 2); `PullBudget` (first thread whatever it weighs and with no amount, later ones must fit, a heavy one skipped and a light one behind it taken, the batch and one thread short of it, a batch of none read as one); and the batch carried by each tier, cut to `MAX_BATCH` and raised to 1.
+- `steal.test`: default lane and Fair lane, 29 checks each, ok; four-node machine, 58 checks, ok. Per pair three new rounds. Eight threads on the victim: `took 2 of 8, the mean over 4 CPUs allows 2 to 2` (default and Fair), `took 2 of 8 ... over 3 CPUs allows 2 to 3` (the pair on one node of the four-node machine), `took 1 of 8 ... over 8 CPUs allows 1 to 1` (the pair on two). Twenty threads, where the batch binds: `took 4 of 20` over 4 and over 3 CPUs, `took 2 of 20` over 8. A heavy thread on a third CPU, raising the mean above the victim: `took 1 of 3` on every pair. Each round also checks that the threads counted are the ones seen running on the thief.
+- Negative controls, each restored and compared with `cmp`: the batch fixed at one thread: the eight and the twenty rounds fail; the tier's batch ignored (`MAX_BATCH` instead): the twenty round fails (`took 5 of 20`, `took 6 of 20` over 3 CPUs, 4 allowed); the amount-is-none guard put back (no amount, no thread): the heavy round fails (`took 0 of 3`); the whole of the victim's load taken in place of the mean: the eight and the heavy rounds fail; the rule that later threads must fit removed: two host tests fail, and `steal.test` cannot see it (equal threads over four CPUs leave nothing over); `done()` one thread early: one host test fails. The `MAX_SCAN` cut has no test that fails without it.
+- The 12 console tests (`idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace preempt`, split with `${=T}`): 11 ok on the default lane and on the four-node machine, 12 on the Fair lane. The one that fails is `preempt.test`, when the host is loaded by a QEMU of another worktree holding a core (load average 4.7); in the entry of the scheduling domains it was measured with `steal()` returning false at its top, 6 solo runs each way, 1 ok and 5 fail both. It was not repeated with the batch, but the batch cannot reach it: its spinners are pinned to one CPU. `ktest all` `ran=25 passed=24 failed=0 skipped=1` on the three lanes.
+- `boot_check.py`: default lane dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44/8/0, 7/7), host-tests PASS (181 passed); Fair lane and four-node machine, `--no-tests`: dbg PASS (46/5/0), rel PASS (44/8/0, 7/7). `format_cpp.py`, `format_gn.py` and `lint_docs.py` clean, no added line over 100 columns; clang-tidy reports nothing on a line of this change.
+- Not measured: whether a batch helps or costs (a benchmark is the next question: repair item 24 lists it); whether a thread of unequal weight is chosen well beyond the heavy round (host-tested; the test threads otherwise have the default priority). Not run: the hotplug return (3, 3, 2, 0): by the formula the returning CPU takes one thread, to 2, 3, 2, 1, and stays there (item 22).
+
+**Deliberately not done**
+- The sampled, decayed load: the calculation is written over `load()` so that it can replace the weight sum, but the structure and its update cost are a performance item (repair item 24).
+- A look again after a take, and the periodic balance (item 22): the example above is balanced because three CPUs each look once.
+- Trying the next busiest CPU of a tier when the busiest has nothing to give (item 23): found by this step's own test, which had to use one heavy thread rather than four so as not to run into it.
+- Setting `max_batch` and the thresholds from outside the kernel (the knobs are the next step, a struct and one accessor).
+- Balancing by groups of CPUs (a node against a node) as Linux does at its outer levels: the outer tier is a flat set of CPUs, and the mean is taken over them.
+
+**How it was found**
+The user, 2026-11-05: always taking one is "不太对劲", the number should come from a load-balancing algorithm over sampled data ("按照负载均衡算法来计算要偷几个"). The formula was read in Linux's `calculate_imbalance()` and `detach_tasks()`. Two independent reviews of the first version found: a walk with no bound under the victim's lock; a victim above the gate but not above the mean sending the thief back to halt (the amount-is-none rule); a batch of 0 that never takes; and several statements in the record that were wrong or unsupported (the mean's justification, the Linux reference, the arithmetic of two examples). The heavy round was added for the second, and its first form (four heavy threads) found the shadowing of item 23.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why is the amount `min(victim − mean, mean − own)` and not either term alone, and what happens to the machine in each case?
+- Why does the first thread go to the thief whatever the mean says, and which round of `steal.test` fails if it does not?
+- Why does the walk of the victim's queue have a bound of its own, when `max_batch` already limits how many threads are taken?
+
+## Title: The work-stealing numbers are knobs: a boot option gives each its first value and a console command changes it (2026-11-05)
+
+**Files**
+- `kernel/lib/sched_domain/include/sched_domain/sched_domain.hpp` — `Domain` is now `{span, kind}` with `TierKind {SameNode, OtherNode}`; the numbers left it. New `Knob` (five), `KnobInfo`, `knob_info()` (name, default, range), `knob_accepts()`, `find_knob()`, `min_runnable_knob()` and `max_batch_knob()`. `Parameters`, `TierParams` and `make_domain()` are gone; `build_domains()` takes no parameters
+- `kernel/lib/sched_domain/test/sched_domain_test.cpp`, `README.md` — 35 host tests (7 more than before; the parameter tests replaced by knob tests, the table pinned as literals)
+- `kernel/include/ours/task/sched/domains.hpp`, `kernel/kernel/task/sched/domains.cpp` — `task::sched::StealPolicy` (get, set, enabled, min_runnable, max_batch) over five relaxed atomics; the hook that builds the domains first gives the knobs their values
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `steal()` returns at once when stealing is off, and reads the threshold and the batch of each tier from the policy at each look
+- `kernel/include/ours/boot/options.hpp`, `kernel/top/boot_options.cpp` — the options `kernel.sched.steal.{enabled,min-runnable-same-node,min-runnable-other-node,max-batch-same-node,max-batch-other-node}`; `parse_digits()` is factored out of `parse_count()`
+- `kernel/commands/steal_policy.cpp`, `kernel/commands/BUILD.gn` — the console command `steal.policy`; after a change it sends every other online CPU a reschedule request
+- `kernel/commands/steal_test.cpp` — three rounds that set a knob, run a round and put it back; the test pins every knob to its default for its length
+- `kernel/tests/steal_policy_test.cpp`, `kernel/tests/sched_domain_test.cpp`, `kernel/tests/BUILD.gn` — four new ktests, `StealPolicy.*` (3) and `BootOptions.TheStealOptionsAreReadByIndex`, and `SchedDomains.MatchTheNodeTable`, which now checks each tier's kind
+- `.agents/skills/kernel-design/references/task.md`, `docs/repairs/261103/kernel-task-sched.md` (items 24 and 34)
+
+**Symptom**
+Five numbers steered work stealing and were constants in `domains.cpp`: the two thresholds, the two batches, and there was no switch. Each was a first guess (repair item 24), and the way to find better ones is to try several, which meant editing the source and building another image per value; stealing could not be turned off to compare. The user's wish, 2026-11-05: the settings should be data the scheduler owns, configurable, and later adjustable from user space.
+
+**Cause**
+The numbers were written as code because the first versions had one value each. A number to be measured is a parameter, and a parameter needs three things the constant did not give: a name, a range that keeps a setting meaningful (a threshold below two never has a thread waiting behind the running one, a batch of none takes nothing), and a place to change it from. The code that uses a value clamps it as well, so a wrong range would not break it; the range is for the person typing.
+
+The design splits the three. The library knows what a knob is called, its default and its range (`knob_info()`), and which knob belongs to which kind of tier: that is pure and host-tested, with the table pinned as literals. The kernel keeps the values (`StealPolicy`), takes the first from the boot options, and lets a console command change them. A tier carries its kind and no numbers, so changing a number is one word and no table is rebuilt.
+
+Why relaxed atomics are enough, which is the question a runtime-changeable setting asks: the invariant to protect is that a look never uses a value its knob does not accept. `set()` checks the range before it stores (a knob that does not exist has an empty range, so it stores nothing), and a boot value out of range is refused and logged, so every value ever stored is valid. Nothing else relates one knob to another, so a look that reads the new threshold with the old batch is one of the settings someone could have asked for. The writers are the boot hook, the console command (the console is one thread that runs one command at a time) and the tests, which put a knob back as they found it. Two writers at once would land in some order, one after the other; the one thing that is not safe is a test's restore, which would overwrite a setting made meanwhile, so a test runs alone. Each look reads the threshold and the batch of a tier once, so one tier is seen with one pair of values for the whole of its walk. A snapshot of all five (a seqlock) would be needed only if some value had to agree with another, and none does.
+
+**Change**
+```cpp
+// before: constants in domains.cpp, copied into every Domain at boot
+constexpr usize STEAL_MIN_RUNNABLE_SAME_NODE = 2;      // ... and three more
+// after: a name, a default and a range in the library; a value in the kernel
+KNOBS[i].store(info.default_value);                      // then the boot option, if the knob accepts it
+auto const min_runnable = StealPolicy::min_runnable(domain.kind);   // read at each look
+```
+The options are `kernel.sched.steal.<name>`, `enabled` taking the boolean words (and, bare, meaning true, as the flags do) and the others a decimal count; one that is no count, is 4294967295 (the mark of "not given") or is out of the knob's range, is logged and the default is kept, like any other boot option. That the options are the knobs, one for one and in order, is a `static_assert` in `domains.cpp`, since the parse works by index. The thresholds' floor is 2, not 1: with 1 a CPU running a single heavy thread would qualify as a victim, outrank one that has a thread waiting, and leave the idle CPU with nothing (the shadowing of repair item 23). They are parsed by `setup_options()` before any initialisation level, and read by the hook at `InitLevel::Threading`. Before that hook every knob reads 0, so stealing is off and a look that comes early finds nothing, as it does with no domains. `steal.policy` with no argument lists the knobs with their value, default and range and each online CPU's looks and takes; `steal.policy <name> <value>` sets one and then asks every other online CPU to reschedule, so that an idle CPU, which looks only when something wakes it (item 23), looks under the new setting at once. A name that is none or a value out of range changes nothing, is logged as an error (so a script that sweeps sees it) and returns 1. `MAX_BATCH` and `MAX_SCAN` stay constants: they are sizes of arrays and bounds of a walk under a lock. The load metric is not a knob.
+
+Rejected: a struct of the five values read as a snapshot (a seqlock for nothing); keeping the numbers in `Domain` and rebuilding the table on a change (a rebuild that must be safe against looks on other CPUs); a user-space interface now (nothing needs it yet).
+
+**Reference**
+Linux exposes its work-balancing numbers as run-time files: `nr_migrate` and `migration_cost_ns` are `debugfs_create_u32(..., 0644, ...)` in `kernel/sched/debug.c` (local checkout, read on 2026-11-05), written with a plain store like these. Here a write is checked against a range first. Zircon's kernel options (`zircon/kernel/lib/boot-options`, its README) are members of a `BootOptions` that physboot fills from the command line with `BootOptions::Set` and hands to the kernel proper, which reads them; a grep of `zircon/kernel` for a setter called while the kernel runs found none outside the tests, but it was a grep, and a reviewer believed there is one.
+
+**Verification**
+- Host tests: 35 in `sched_domain`. The knob tests: the table as literals (name, default and range of each of the five), every knob has a unique name that finds it, a name must match whole to find one (`enabledx`, a name cut short, a trailing space and a capital find nothing), a name that is none leaves its argument, a value is in range at both ends and nowhere beyond, a knob that does not exist has nothing in its range, thresholds start at 2, the batch cannot exceed `MAX_BATCH`, `enabled` is 0 or 1, and each kind of tier has its own knobs.
+- Ktests: `BootOptions.TheStealOptionsAreReadByIndex` (well-formed command lines only: a malformed one is logged as an error, which `ktest` takes for a failure), `StealPolicy.EveryKnobIsInItsRangeAfterBoot`, `...ASettingIsReadBackAndARefusedOneChangesNothing` and `...TheAccessorsReadTheKnobsOfTheirKind` (the last two put the knobs back), and `SchedDomains.MatchTheNodeTable`, edited to check the kind. `ktest all` `ran=29 passed=28 failed=0 skipped=1` on the default, the Fair and the four-node lanes.
+- `steal.test`: default and Fair lanes 45 checks, four-node machine 90, ok, with every knob pinned to its default for the length of the test. Three new rounds per pair: stealing off (the idle CPU does not look: `looks` is 0 and nothing is taken), the batch set to one (`took 1 of 20 ... allows 1 to 1, batch 1`), the threshold set to 9 (a queue of three is looked at and left).
+- The boot options, end to end (the malformed cases, which a ktest cannot hold): the debug image's command line was given `kernel.sched.steal.max-batch-same-node=2`, `min-runnable-other-node=7`, `max-batch-other-node=99` and `min-runnable-same-node=abc`; `steal.policy` then listed 2 and 7 as given, and the other two at their defaults, with `boot: kernel.sched.steal.max-batch-other-node=99 is not between 1 and 8, keeping 4` and `... =abc is not a count, keeping the default` in the log. The image file was restored and compared.
+- Negative controls, each restored and compared with `cmp`: the `enabled` check removed (`steal.test` fails "and the idle CPU does not look"); the batch knob ignored (the batch-of-one round fails: `took 4 of 20` against 1); the threshold knob ignored (the threshold round fails); `set()` without the range check (`StealPolicy.ASettingIsReadBack...` fails 18 checks); the default of `enabled` changed to 0 (`Knob.TheTableSaysWhatEachKnobIs`); two option names swapped in `BootOptions::STEAL_OPTIONS` (the build stops on the `static_assert`).
+- The 12 console tests (`preempt idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace`, split with `${=T}`): 12 of 12 on the default, Fair and four-node lanes (an earlier run of the same set with the knob rounds added, in the order that puts `tickreplace` before `preempt`, failed `preempt.test` on all three: item 34). With `tickreplace.test` before `preempt.test`, `preempt.test` fails on all three (repair item 34); alone it passed 8 of 8, 4 with stealing on and 4 after `steal.policy enabled 0`, the runtime switch used for the comparison.
+- `boot_check.py`: default lane dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44/8/0, 7/7), host-tests PASS (181 passed); Fair lane and four-node machine, `--no-tests`: dbg PASS (46/5/0), rel PASS (44/8/0, 7/7). `format_cpp.py`, `format_gn.py` and `lint_docs.py` clean, no line over 100 columns; clang-tidy reports nothing on a line of this change.
+- Not run: a concurrent write while looks are running (the relaxed read is argued, not stressed); the effect of the reschedule requests `steal.policy` sends (an idle CPU looking at once after a change) beyond the command running; `enabled=false` through the boot options.
+
+**Deliberately not done**
+- A user-space interface to the knobs: no syscall or object property until a user-space consumer needs one (kernel-design). The structure is meant for it: the writer is `StealPolicy::set()`.
+- The load metric as a knob: the sampled, decayed load is a performance item (repair item 24), and it replaces `Scheduler::load()`, not a number.
+- Persisting a runtime setting across boots: the image's command line is for that.
+- Making `MAX_BATCH` and `MAX_SCAN` settable.
+
+**How it was found**
+The user chose runtime modification over boot-only after the step was introduced. The need came from the measurement that repair item 24 asks for: each candidate value is a sweep, and a sweep through `kshell_run.py` should not need an image per point.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why are relaxed atomics enough for five knobs that change while looks are running, and what would make them not enough?
+- Why does `set()` check the range, and what would a value out of range reach if it did not?
+- Why do `MAX_BATCH` and `MAX_SCAN` stay constants when the batch they bound is a knob?
+
+## Title: steal() times each look, per CPU, for the measurement of the knobs (2026-11-05)
+
+**Files**
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `StealTimer`, the counters `schedule.steal_ns` (sum) and `schedule.steal_max_ns` (largest), and `Scheduler::Current::steal_nanoseconds()` and `longest_steal_nanoseconds()`
+- `kernel/commands/steal_policy.cpp` — the per-CPU lines of `steal.policy` show the time in all and the longest
+- `kernel/commands/steal_test.cpp` — one more check, "and times its looks"
+- `.agents/tasks/steal-policy-measure/DESIGN.md`, `PLAN.md` — the measurement method and its steps (the first step is this one)
+
+**Symptom**
+The cost of a look, the time `steal()` runs with interrupts off and holds the victim's run queue lock, could not be read. The measurement asked for by repair item 24 has three questions (does stealing help, how many threads and how deep a queue, what it costs) and the third had no instrument: the counters said how often a CPU looked and how many threads it took, not for how long.
+
+**Cause**
+`steal()` was written for the result, not for the measurement. The time of a section of a few microseconds cannot be had from outside: a sampling profile does not see it, and the bench cannot call `steal()` itself, which asserts that its caller is the idle thread. It has to be read at the two ends of the call, inside it.
+
+**Change**
+```cpp
+// steal(), after the policy says stealing is on and the look is counted
+StealTimer const timer;   // its destructor adds the time to the counters, on every way out
+```
+A look with stealing off returns before the timer, so it adds nothing. The sum is a Sum counter, the longest a Max counter, both per CPU as the others are. The cost is two reads of the steady clock on the idle path only. What the figures hold includes about one clock read, and on this machine the clock moves in steps of 1 us (every figure printed is a multiple of 1000 ns), so a look of a few hundred nanoseconds reads as zero or one step: only the sums over many looks, and the longest, mean anything.
+
+**Reference**
+None, this project's own measurement.
+
+**Verification**
+- One run of `steal.policy` after `steal.test` on the default lane: CPU 2, the thief, `looked 232 times, took 19 threads, 2256000 ns in all, longest 302000 ns`; CPU 0, with the shell, `looked 2349 times, 5863000 ns, longest 291000 ns`, about 2.5 us a look, mostly the clock reads. The longest figures (126 to 302 us) are the host: a vCPU of the emulator descheduled in the middle of a look.
+- `steal.test`: default and Fair lanes 46 checks, four-node machine 92, ok. The negative control, the timer removed from `steal()`: `steal.test: FAIL  and times its looks`, restored and compared with `cmp`.
+- The 12 console tests: 12 of 12 on the default and the Fair lanes; the rest of the verification is in the next bullet when it finishes.
+
+**Deliberately not done**
+- A histogram of the looks: the sum and the longest are what the comparison between settings needs.
+- Timing the part of a look that holds the victim's lock apart from the rest: the lock is held for the walk and the dequeues, which is most of a look that takes something, and a finer split needs a clock read inside the lock.
+
+**How it was found**
+The user chose the measurement method on 2026-11-05 (`.agents/tasks/steal-policy-measure/DESIGN.md`), and the counters were its second decision.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why can the time of a look not be measured from outside `steal()`?
+- Why does a look with stealing off not add to the counters, and why does that matter for the comparison of on against off?
+- What can a sum of nanoseconds that moves in steps of 1000 tell, and what can it not?
+
+## Title: steal_work_from() is the one way to take work, and the stub in the pick is gone (2026-11-06)
+
+**Files**
+- `kernel/include/ours/task/sched/scheduler.hpp`, `kernel/kernel/task/sched/scheduler.cpp` — the private stub `Scheduler::steal_work_from(CpuMask const &) -> Thread *` and its call at the end of `pick_next_thread()` are deleted; `Scheduler::Current::steal()` is now `Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize`, which answers how many threads it took
+- `kernel/kernel/task/idle_thread.cpp` — the idle loop calls it with `Cpu::online_mask()`
+- Comments that named `steal()`: `kernel/include/ours/task/thread.hpp`, `kernel/include/ours/task/sched/domains.hpp`, `kernel/mm/include/ours/mm/cpu_local.hpp`, `kernel/commands/steal_test.cpp`, `kernel/commands/steal_policy.cpp`, `.agents/skills/kernel-design/references/task.md`, `.agents/tasks/sched-facade/DESIGN.md`
+- `docs/repairs/261103/kernel-task-sched.md` — item 22 no longer says the pick calls a stub, and records the decision against a pull in the pick
+
+**Symptom**
+Work stealing had two names. `Scheduler::steal_work_from()` was a stub that returned null, called at the end of `pick_next_thread()`, and the pull that exists was written as `Scheduler::Current::steal()`, called by the idle thread. A reader of `pick_next_thread()` was told by the call that it takes work from another CPU, and it took none; a reader of the idle loop met a function with another name. The user asked why the stub was not the implementation (2026-11-05) and then decided: no strategy for stealing in the pick, and the `steal_work_from` interface becomes the main one.
+
+**Cause**
+The stub sat in the wrong place for the work. The pick runs with the CPU's own run queue lock held, and a take needs the victim's; no order of run queue locks is defined, so two CPUs taking from each other would deadlock (A holds A's and wants B's while B holds B's and wants A's). Zircon gets around it by dropping the lock around `StealWork()` in `Scheduler::DequeueThread()`, which for this pick means restructuring it. And a CPU that comes back online enters the idle loop through `IdleThread::come_back()` without picking, so a pull in the pick never reaches the CPU that most needs one. The first implementation went where those two things allowed (the idle loop) and left the stub behind as scaffolding, which it should not have done without asking: it made the dead name the one at the call site that reads like the main path.
+
+**Change**
+```cpp
+// before: two names, one of them dead
+//   pick_next_thread():   if (auto *const next = steal_work_from(Cpu::online_mask()); next) { ... }   // always null
+//   IdleThread::run():    ... && !Scheduler::Current::steal()
+// after: one
+//   IdleThread::run():    ... && 0 == Scheduler::Current::steal_work_from(Cpu::online_mask())
+```
+`steal_work_from(victims)` keeps the shape the stub declared: a set of CPUs to take from, and a count where the stub gave a pointer (a take is now up to a batch of threads, so a pointer to one no longer says it). The scan of each tier is cut to `victims`, and so is the mean. The idle thread passes every online CPU, so the behaviour is unchanged. The stub's call in `pick_next_thread()` never took anything, so the pick behaves as before. The doc comment of the function says why the pull is not in the pick.
+
+**Reference**
+Zircon `Scheduler::StealWork()` (`scheduler.cc`), the name this follows, called from `Scheduler::DequeueThread()`.
+
+**Verification**
+- The 12 console tests (`preempt idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace`, split with `${=T}`): 12 of 12 on the default, Fair and four-node lanes; `ktest all` `ran=29 passed=28 failed=0 skipped=1` on the three; `boot_check.py`: default dbg PASS (46/5/0), rel PASS (44/8/0, 7/7), host-tests PASS (181); Fair lane and four-node machine, `--no-tests`, dbg and rel PASS. clang-tidy reports nothing on a line of this change, and `scheduler.cpp:444`, the stub's `return 0;` that it used to report, is gone.
+- `steal.test` is the check of behaviour, unchanged except for the comment that names the function: it reaches the function through the idle thread only.
+
+**Deliberately not done**
+- A test of `victims`: the function is called only from the idle loop, with every online CPU, and the test cannot call it (it asserts that its caller is the idle thread), so the narrowing is not exercised by anything. The parameter is the stub's own, kept so that the interface the user named keeps its shape.
+- A pull in the pick, or a balance from the tick (repair item 22).
+
+**How it was found**
+The user's question on 2026-11-05, "为什么不实现steal_from_*那个方法而转去实现一个steal？", and then the decision, "那就不在pick里面实现偷的策略了，直接让steal_from那个接口成为主要接口".
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why could the stub not be filled in where it was called?
+- Why does a pull in the idle loop reach a CPU that comes back online, and one in the pick not?
+- What does a count say about a take that a pointer to a thread did not?
+
+## Title: steal_work_from() is a member of Scheduler, so any CPU can make any CPU take work (2026-11-06)
+
+**Files**
+- `kernel/include/ours/task/sched/scheduler.hpp`, `kernel/kernel/task/sched/scheduler.cpp` — `Scheduler::Current::steal_work_from(victims)` (static, the calling CPU is the thief) becomes `Scheduler::steal_work_from(victims)` (a member, the scheduler it is called on is the thief); the doc comment says what a caller on another CPU may rely on
+- `kernel/kernel/task/idle_thread.cpp` — the idle loop calls it on its own scheduler
+- `kernel/lib/sched_domain/include/sched_domain/sched_domain.hpp`, `kernel/lib/sched_domain/test/sched_domain_test.cpp` — `PullBudget` gets `first_is_free`: the first thread is taken whatever it weighs only when the thief has nothing to run; two host tests for the other case
+- `kernel/lib/gktl/include/gktl/counter.hpp` — `Counter::add(cpu, delta)` and `Counter::max(cpu, value)`, which name the CPU whose counter is bumped
+- `kernel/commands/steal_test.cpp` — `Round::Look::Remote`, `Round::victims`, `Round::on_thief`, `Round::caller`, `Round::first_seen`, `CallerHome` and `remote_rounds()`: the first test of the `victims` parameter, made from a CPU outside the pair
+- `docs/repairs/261103/kernel-task-sched.md` — new item 36, two calls for one thief at once
+- Comments and documents that named the static form or said that only an idle CPU looks: `kernel/include/ours/task/thread.hpp`, `kernel/include/ours/task/sched/domains.hpp`, `kernel/lib/sched_domain/include/sched_domain/sched_domain.hpp`, `kernel/commands/steal_policy.cpp`, `kernel/mm/include/ours/mm/cpu_local.hpp`, `.agents/skills/kernel-design/references/task.md`, `.agents/tasks/sched-facade/DESIGN.md`, `.agents/tasks/steal-policy-measure/{DESIGN,PLAN}.md`, `docs/repairs/261103/kernel-task-sched.md` (item 22)
+
+**Symptom**
+Latent, cannot be triggered today: the only caller is the idle thread, which passes its own CPU. The user asked why the function was static (2026-11-06): with a load-balancing mechanism later, CPU A should be able to call CPU B's interface and bring the system to a balanced state as a whole. As a static function that could not be done: "the thief" was whichever CPU ran the code.
+
+**Cause**
+The function read the calling CPU in four places and treated it as the thief: the run queue it locked (`Current::get()`), the CPU number its counters were bumped for (`CpuLocal` slots of the calling CPU), the `load()` it compared with the victims' loads, and the CPU it woke at the end. Each is right for the idle thread and wrong for a balancer on another CPU: the pulled threads would be queued on the caller, the counters would credit the caller, and the mean would be taken for the caller's load. There was also an assumption nobody wrote down: the thief cannot go offline during the call, because it is the thread's own CPU running with interrupts off. A caller on another CPU has no such guarantee, and between the victim step and the thief step the thief can have been deactivated by hotplug, which would leave the threads on a queue that nothing serves.
+
+**Change**
+```cpp
+// before: the thief is the CPU that runs the code
+//   static auto Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize;
+//   IdleThread::run():  ... && 0 == Scheduler::Current::steal_work_from(Cpu::online_mask())
+// after: the thief is the scheduler the call is made on
+//   auto Scheduler::steal_work_from(CpuMask const &victims) -> usize;
+//   IdleThread::run():  ... && 0 == scheduler.steal_work_from(Cpu::online_mask())
+//   a balancer:         Scheduler::Current::get(cpu_b).steal_work_from(mask)
+```
+What follows from the thief being a parameter:
+- The thief's CPU is `m_run_queue.m_which_cpu`, and the victims are reached with `Current::get(cpu)`. The counters are bumped with `Counter::add(here, 1)` and `Counter::max(here, ns)` for that CPU, so the figures say what each CPU's scheduler did whoever asked.
+- A thief that is not `Active` takes nothing, and is checked again under its own lock when the threads join its queue. If it went offline in between, the threads go to active CPUs with `find_active_scheduler_for()`, as `Scheduler::Current::deactivate()` does, and the call answers 0.
+- Preemption is off from the first step to the last (`AutoPreemptDisabler`, declared before the timer so that a preemption it lets in at the end is not billed to the look). A caller that was switched out between the victim step and the thief step would leave up to a batch of threads on no queue for as long as it waited to run again, a slice at least; the idle thread calls with interrupts off and never had that window. It also makes `Cpu::id()`, which `reschedule_mask()` reads, the caller's CPU for the whole call.
+- The thief is woken with `reschedule_mask(CpuMask::of(here))` when it is not the caller's CPU, so a caller that batches its requests (`eager_resched_disabled_count`) batches this one too. Nothing is asked of the caller's own CPU: if it was idle the caller is its idle loop, which acts on the count; if it was running something, what it took waits its turn behind it, as what any other CPU queued there would. `IpiService::send_resched(here)`, which this replaces, drops the local CPU and assumes the caller has recorded a pending request, which this path did not.
+- A thief that is running something is not idle. `PullBudget` now knows it: the first thread is free only for an idle thief, so a busy thief takes only what fits the mean (`min(victim - mean, mean - here)`), and takes nothing when the mean leaves it nothing. Before, the idle thread was the only caller, so "the first thread is free" was true of every call and nobody had to ask. The idle test reads the thief's `load()` once at the start: a thread that arrives meanwhile makes the answer stale, and a stale "idle" costs one thread that did not strictly fit.
+- The mean is over the thief and the CPUs of the tiers that are in `victims`. A caller that passes one victim gets a mean over two CPUs; that is the meaning of "balance these", and `steal_test` computes its expectation from it.
+
+Rejected: keeping the static function and adding a `Scheduler &thief` parameter. It is the same thing with the receiver written as an argument, and the doc comment, the counters and `is_state_active()` would all be about an argument instead of `this`.
+
+**Reference**
+Zircon `Scheduler::StealWork()` runs on the CPU that is looking (`this` is the thief), so it does not meet this case. The case follows Linux `sched_balance_rq(this_cpu, this_rq, sd, idle, ...)`, which names `this_rq`, the run queue that pulls, as a parameter and is also called from `sched_balance_domains()` (the tick) and `sched_balance_newidle()` (the idle path), and `pull` in `detach_tasks()`/`attach_tasks()` is the same two steps with one lock at a time here.
+
+**Verification**
+- Host tests: 37 in `sched_domain_test` (two new for `first_is_free`), `host-tests` 181 passed.
+- `steal.test`: 66 checks on the default and Fair lanes and 132 on the four-node lane, three runs on each after the last change, all passed. Five rounds are the call made on the thief's scheduler from the test thread, which is kept on a CPU outside the pair (CPU 0 on four CPUs, CPU 4 on the four-node machine, logged): an idle thief takes a thread, it is counted for the thief, the threads taken are the ones seen on it, and a thief that was halted runs them within 8 ms (1.5 ms measured, 13 to 72 ms for a thief left to its next timer); the mean is over the set the call may take from (eight threads, a set of the victim alone, the batch of four is taken); a set without the victim takes nothing; and a thief running a thread of its own takes only what fits the mean (none with more than two CPUs in view).
+- The 12 console tests (`preempt idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace`, `preempt` first and `tickreplace` last): 12 of 12 on the default, Fair and four-node lanes. `ktest all` `ran=29 passed=28 failed=0 skipped=1` on the three. `boot_check.py`: default dbg PASS (46/5/0), rel PASS (44/8/0, 7/7), host-tests PASS; Fair and four-node `--no-tests`, dbg and rel PASS.
+- Negative controls, each patched in and restored (`cmp` against a copy): the thief always counted as idle makes "a thief that is running something takes only what fits the mean" fail; the `victims` mask ignored in the tier scan makes "a call that may not take from the victim takes nothing" fail; the mean taken over the whole tier with the candidates still limited to `victims` makes "the mean of a call is over the CPUs it may take from" fail (2 of 8 taken, not 4); no wake of a remote thief makes "the thief that was halted runs them at once" fail in four runs of four (43 to 55 ms). A first bound of 15 ms did not: one unwoken thief ran it in 13 ms, so the bound is 8.
+- clang-tidy reports nothing on a line of this change; `scripts/format_cpp.py --check` is clean.
+- Not measured: a caller that is preempted. The test calls with preemption on, but a switch inside the window needs a timer at the wrong moment and shows only as a thread that runs late; the preemption-off scope is read off the code.
+
+**Deliberately not done**
+- Serialising two calls for one thief (item 36): each reads the thief's load once, so two at once can take up to twice the mean. The idle thread is the only caller outside the tests, and which of the options (a flag per thief, a re-read under the thief's lock that hands the excess back, or the caller's rule) is the user's to choose.
+- A balancer that calls it. The interface is what was asked for; nothing calls it from another CPU outside the test (repair item 22 lists the periodic balance and the push).
+- A test of the offline fallback: it needs a hotplug between the two steps. It is the code of `deactivate()` reached by another door, which `hotplug.test` runs. Nor are the time counters' crediting of the thief tested on the remote path.
+- The busy-thief round on a machine of two CPUs: the right answer is one thread, the bound is "at most one", and the host tests (`ACpuThatIsRunningSomethingMustFitEverythingItTakes`) are what pin the rule there. With three or more CPUs in view it asserts none.
+- The remote mask round judges the call's answer only. The thief's own idle thread looks too whenever anything wakes it (on the four-node lane it did, once, in the mask round of the cross-node pair, and took a thread; what woke it was not found) and takes what the round queued, so its counters and what is seen on it are not the call's. Counting the call's own looks separately would need a counter per caller; the answer is what the contract is about.
+- Making the accessors (`num_steal_looks()`, `num_steals()` and the two nanosecond figures) members: they read a CPU by number from outside, as `Scheduler::Current::get(cpu)` does, and stay where they are.
+
+**How it was found**
+An independent read-only review of the first version (three reviewers, one lens each: remote-call safety, the arithmetic, the tests and records) found, and this entry fixes: preemption was disabled only after both lock steps (the window above; two reviewers, one called it high); the wake was not asked of a caller's own CPU and ignored batching; no `TA_EXCLUDES(get_lock())` on a function that takes the lock; the remote rounds did not control or record the caller's CPU, which on two CPUs was the thief's, and the mask round's third CPU could be the thief or the CPU the test thread ran on; three comments that said only an idle CPU looks and that the time counters are the CPU's own; and nothing tested that a halted thief is woken by the call. It also found that two calls for one thief at once overshoot the mean (item 36, not fixed) and that the busy-thief round is weak at two CPUs (not fixed). The first review run failed on the 5-hour usage limit and returned nothing; a nothing is not a clean review, and it was run again.
+
+The user's question on 2026-11-06, "为啥要用静态函数的方式实现这个函数？我在想如果以后有负载均衡的机制，可以让CPU A上调用CPU B的这个接口，直接让系统整体达成一个比较平衡的状态。", and the decision, "改成成员函数". Making it a member exposed the first-thread rule as an idle-thief rule: the first remote round of a busy thief took a thread the mean did not give it, which the debug print `here=2549 victim=7647 avg=5098` showed was the pull amount of a two-CPU mean (the call's mask held one victim), not a wrong amount; the test's expectation of "CPUs in view" was the mistake, and the round now passes the whole machine.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Which four things did the function take from the calling CPU, and what goes wrong for each when the caller is another CPU?
+- Why does a thief that is running a thread have to fit what it takes in the mean, while an idle one takes the first thread whatever it weighs?
+- Why is the thief re-checked for `Active` under its own lock, and what happens to the threads when it is not?
+
+## Title: steal.policy no longer sends a reschedule request to every CPU after a change (2026-11-06)
+
+**Files**
+- `kernel/commands/steal_policy.cpp` — `wake_idle_cpus()` and its call are gone; the header comment says what a change of a setting does now
+- `docs/repairs/261103/kernel-task-sched.md` — item 23 says that the command no longer wakes the halted CPUs
+
+**Symptom**
+`python3 scripts/kshell_run.py --out out/numa.x86 steal.policy ...` on the eight-CPU machine, with `steal.policy` as the first command, was reported as a hang by a background loop that waited for the prompt: the runner did not see it. The command's own output was fine.
+
+**Cause**
+After a knob was set, the command sent `IpiService::send_resched()` to each of the seven other CPUs so that a halted CPU would look under the new setting at once. Each send prints an `IPI-Resched on CPU[n]` trace line from the arch layer, on the console, from whichever CPU sends it; seven of them in a row come from different CPUs while the shell is printing its prompt. That the interleaved lines are what the runner's prompt detection lost track of is read from the symptom (it came with `steal.policy` as the first command on eight CPUs and went with the wake), not from the runner's code. The wake was a convenience for a sweep of the knobs and was not needed by anything that measures: a workload that starts after the change wakes the CPUs it uses by placing threads on them.
+
+**Change**
+```cpp
+// before
+log::info("steal.policy: {} = {}", info.name, StealPolicy::get(knob));
+wake_idle_cpus();   // send_resched() to every other online CPU
+// after
+log::info("steal.policy: {} = {}", info.name, StealPolicy::get(knob));
+```
+A CPU that halted before the change uses the new value the next time something wakes it (item 23), which for the measurement is the start of the workload. The alternative, keeping the wake and silencing the trace line, would have changed the arch layer's logging for a console command's sake.
+
+**Reference**
+None, this project's own tool.
+
+**Verification**
+- `kshell_run.py --out out/numa.x86 steal.policy "steal.policy max-batch-same-node 2" "steal.policy max-batch-same-node 4" steal.test` with `NUMA=1`, three runs: all four commands `ok` each time, with `steal.policy` first. Default lane, `steal.policy enabled 0`, `enabled 1`, `steal.test`: ok.
+- `StealPolicy.*` ktests are unaffected (they do not call the command); not re-run separately, covered by the `ktest all` of the preceding commit.
+
+**Deliberately not done**
+- Waking the halted CPUs by some other means (a quiet IPI): nothing needs it yet, and item 23 is where a CPU that looks again on its own is decided.
+
+**How it was found**
+A background loop that ran `steal.policy` as its first command on the eight-CPU lane and reported a hang that was not one. It was announced to the user on 2026-11-06 as a separate change.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why could seven IPI trace lines from seven CPUs disturb a prompt, and what in the symptom shows that they did?
+- What does a CPU that halted before a knob changed do with the new value, and when?
+- Why did no measurement need the wake?
+
+## Title: steal.bench measures where eight threads end up and how much work gets done under each work-stealing setting (2026-11-06)
+
+**Files**
+- `benches/kernel/sched/steal_bench.cpp`, `benches/kernel/sched/BUILD.gn`, `benches/kernel/BUILD.gn` — the console command `steal.bench [all] [csv] [rounds=N]`, workloads W1 and W2 of the measurement design, linked through `//benches/kernel:commands`
+- `.agents/tasks/steal-policy-measure/DESIGN.md`, `PLAN.md` — W1's criterion is "settled" (the user's decision, 2026-11-06), the first run, what the harness cannot tell
+
+**Symptom**
+Latent, no defect: the five work-stealing knobs can be changed while the machine runs (`0b327369`) and the look has counters (`33ba43ba`), but nothing ran a sweep, so repair item 24 (the thresholds and batches are first guesses) had no way to be answered with data.
+
+**Cause**
+Not a mistake to correct. The design of 2026-11-05 specified W1 as "the time until the workers per CPU differ by at most one and stay so for 50 ms". Working out the example before building (the user asked for step 2 to be introduced first) showed that criterion cannot be met: an idle CPU looks once, when woken (repair item 23), and the mean it reaches for counts every CPU of its tier, the controller's included, which cannot hold a worker. Eight workers on one CPU and the defaults give 4/2/2, and nobody looks again. The criterion would have timed out in every configuration, the stealing-off control included, and told nothing. The user chose a "settled" criterion instead: where the workers are when nothing has moved for 50 ms, and how fair that is.
+
+**Change**
+One command, one round per (round, configuration), seven configurations interleaved (off, the defaults, batch 1, 2, 8, same-node threshold 3 and 4):
+```text
+before each round   set the five knobs (the defaults, then the configuration's own)
+calibration         one worker alone on CPU 1 for 500 ms: what a CPU gives a worker
+W1/W2               8 workers pinned to CPU 1, 100 ms to queue and let CPUs 2, 3 halt,
+                    allow CPUs 1 to 3, send a reschedule request to CPUs 2 and 3,
+                    poll every 1 ms for 2 s where each worker is (Thread::curr_cpu())
+rows                w1 settle, settled, moved, spread, slowest; w2 cpus
+```
+A worker's CPU is the scheduler that holds it, running or queued, because the CPU it last ran on would hide a worker that was taken and waits a slice behind another on the thief. The controller is pinned to the first online CPU and the workers to the next three; the knobs are put back as they were when the command ends. The first round is a warm-up and is not in the raw rows; seven rounds a boot give six rows per metric and configuration, thirty over five boots as the design says. Rejected: recording the CPU in the worker (accurate only after it has run there once, a slice late for the second worker on a thief), and measuring where the workers are by the CPUs they were last seen on.
+
+**Reference**
+None. The harness follows `benches/kernel/time/preemption_deadline_bench.cpp` (the `bench::Run` convention, the `csv` rows, the command name without an underscore) and the worker and pinning patterns of `steal.test`.
+
+**Verification**
+- A run of seven rounds on the default lane (`steal.bench all csv`, 139 s, `--command-timeout 300`): 252 raw rows, 6 of each metric for each of the 7 configurations. Off: 8/0/0, nothing moved, 0.95 to 1.0 CPUs (the negative control sees the absence of stealing). Defaults: 4/2/2 in five of six rounds, 2.9 CPUs, 4 moved. Batch 1: 6/1/1 in all six, 2 moved. Same-node thresholds 3 and 4: spread 2 in all rounds but one of `min3` (4). Batch 2 and 8 gave 4/2/2 as the defaults in the two-round runs that preceded it.
+- One round on the Fair lane and one on the four-node lane: runs; on eight CPUs the mean reaches CPUs that hold no worker and every configuration ends 6/1/1 (the warning says so). `rounds=0` prints the usage line.
+- `boot_check.py`: default dbg PASS (46/5/0), rel PASS (44/8/0, 7/7), host-tests PASS (181); Fair and four-node lanes `--no-tests` dbg and rel PASS. `steal.test` ok on the four-node lane after the build. clang-tidy reports nothing on the file; `format_cpp.py --check` and `format_gn.py --check` are clean.
+- An independent read-only review (three reviewers: validity of the numbers, lifetimes and robustness, fit with the repository). It found and this entry fixes: the default of six rounds gave 25 samples, not 30; the header called 3/3/2 the end on four CPUs; `w1 slowest` was described as reaching 1; `bench::Run` was asked per workload and not per metric, with a ternary and a faked argv; `Crew::finish()` was not `[[nodiscard]]`; `rounds=1` with `csv` printed nothing without saying so. It also named what is left as limits (the design records them): the slice quantisation of `w1 slowest`, the one-worker baseline of `w2 cpus`, the shared cache lines of the workers' records, and the unlocked read of `curr_cpu()`.
+- The thresholds are not distinguished by these workloads (below).
+
+**Deliberately not done**
+- Distinguishing `min3`, `min4` from the defaults. Eight workers queue on one CPU, deeper than any threshold swept, so the result is the same by construction. A queue of about the threshold's depth (3 or 4 workers on the victim) would tell them apart; that is a shallow variant of W1 or W3, and a question for the user (DESIGN.md, open questions).
+- A baseline of three workers at once for `w2 cpus`, which would make 3.0 reachable on an emulator. It departs from the design's "one worker alone", and the comparison between configurations does not need it.
+- W3 (latency of sleeping threads) and W4 (the cost rows from the counters): step 3.
+- A guard against a second `steal.bench` or `steal.test` running at the same time: the kshell runs one command at a time.
+
+**How it was found**
+Introducing the step to the user: the arithmetic of the example (CPU 2 takes 2 of 8 with the mean at 2, then CPU 3 takes 2, and 4/2/2 is a fixed point) showed the planned criterion unreachable before any code existed; the first run then matched the prediction (4/2/2, 6/1/1, 8/0/0) and showed the thresholds are not exercised.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why does eight workers on one CPU end 4/2/2 with the defaults, and why does nobody take a further thread?
+- Why is `w2 cpus` almost the same for batch 1 and batch 8, and which metric shows the difference?
+- Why can this workload not tell a same-node threshold of 3 from 4, and what queue would?
+
+## Title: steal.bench adds a shallow queue, where the thresholds show (2026-11-06)
+
+**Files**
+- `benches/kernel/sched/steal_bench.cpp` — `Config::workers`, eight more configurations (`3w` and `4w` with off, the defaults, `min3`, `min4`), `MAX_WORKERS`, a compile-time check that every configuration fits it
+- `.agents/tasks/steal-policy-measure/DESIGN.md` — the sweep is fifteen configurations; the open question about the thresholds is closed
+
+**Symptom**
+`min3` and `min4` gave the same result as the defaults in `steal.bench`: eight workers on one CPU queue deeper than any threshold swept, so the thresholds (repair item 24) could not be told apart by W1 and W2. The report would have had to write "not distinguished" for two of the five knobs.
+
+**Cause**
+The threshold asks how many threads a CPU must hold, the one it runs counted, for another to take one from it. A queue of eight satisfies every value from 2 to 4, and with it every look. The knob only decides on a queue of about its own depth, so the sweep needs one: three or four workers on the first CPU. A batch of more than one cannot show there either: a look takes the one thread the mean leaves room for, so the shallow cases are off, the defaults and the two thresholds only.
+
+**Change**
+```text
+before   7 configurations, all with 8 workers
+after    + 3w and 4w: off, default, min3, min4  (a worker count in each Config)
+         the mean rule predicts, per CPU (CPU 1 runs the workers; CPU 2 looks, then CPU 3):
+           3w default 1/1/1   3w min3 2/1/0   3w min4 3/0/0   (min3: after one take CPU 1 holds 2)
+           4w default 2/1/1   4w min3 2/1/1   4w min4 3/1/0   (min4: after one take CPU 1 holds 3)
+```
+A default run is fifteen configurations of 2.7 s for seven rounds, 284 s, so it takes `kshell_run.py --command-timeout 600`.
+
+**Reference**
+None.
+
+**Verification**
+- The prediction above was written before the run. Two rounds on the default lane gave exactly it (which of CPU 2 and CPU 3 took the one thread of `3w min3` varied, 2/0/1 or 2/1/0, with the same spread): off 3/0/0 and 4/0/0 with 1.0 CPU, `3w default` 1/1/1 with 3.0 CPUs, `3w min4` 3/0/0 with 1.0, `3w min3` 2.0 CPUs, `4w default` and `4w min3` 2/1/1 with 2.9, `4w min4` 3/1/0 with 2.0. One round on the Fair lane gave the same. The first round of the default lane read 1.58 CPUs for `3w min4` where 1.0 is the answer; it is the warm-up round and was 0.996 in the next, and the Fair lane read 0.994.
+- `boot_check.py`: default dbg PASS (46/5/0), rel PASS (44/8/0, 7/7), host-tests PASS (181); Fair and four-node lanes `--no-tests` dbg and rel PASS. clang-tidy reports nothing on the file.
+- Not reviewed separately: the change is a table, a loop bound and a comment, on a file the review of the preceding entry covered.
+
+**Deliberately not done**
+- Batches on the shallow queue, and the other-node threshold: the first cannot show, the second needs a node boundary that QEMU's timing does not model.
+- A full run of the sweep: that is step 4.
+
+**How it was found**
+The first run of `steal.bench` (preceding entry): `min3` and `min4` equal to the defaults, in every round.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why can a queue of eight not tell a threshold of 3 from 4, and a queue of three can?
+- Why does `3w min3` stop at one thread taken when `3w default` takes two?
+- Why is no batch swept on the shallow queue?

@@ -1,6 +1,6 @@
 # kernel-task-sched outstanding repairs
 
-Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, item 20, found while the Fair lane was brought up, and items 22 to 26, 30, 31 and 33 to 35, left by the idle-thread steal (item 27, the audit of the callers of `CpuLocal::access()`, was done and became items 28 to 33; items 28, 29 and 32 were fixed the same day in their own commits), are at the end; item 21, work stealing, was fixed on 2026-11-05). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile; they are wrong or missing, or (item 8) a question for the author. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
+Fair (`fair.hpp`, `fair.cpp`) is the author's, and off by default (`sched_normal_discipline` is `"rr"`). It was renamed onto the current framework on 2026-11-03, mechanically, and its two `deadline()` lines were then given the virtual-clock reading the author chose (`docs/changes/261103/kernel-task-sched.md`). The direction of the weights, the scale of the average, the clock the run queue reads, the queue's zero and its running thread were fixed on 2026-11-03 (`docs/changes/261103/kernel-task-sched.md`); their items 1, 2, 3, 5, 6, 15 and 16 are gone (item 5 is the three helpers that now take their `RunQueue`, item 15 the exact `WeightedTime` sum), and items 4 and 12, `FairRunQueue::for_each` and the preemption-timer block, were fixed on 2026-11-04. The numbers are not reused, because the change records cite them (so they are not contiguous, and items 13, 14, 17 and 18, which those fixes left open, item 20, found while the Fair lane was brought up, and items 22 to 26, 30, 31 and 33 to 38, left by the idle-thread steal (item 27, the audit of the callers of `CpuLocal::access()`, was done and became items 28 to 33; items 28, 29 and 32 were fixed the same day in their own commits), are at the end; item 21, work stealing, was fixed on 2026-11-05). What is left is below. With `SCHED_NORMAL_DISCIPLINE_FAIR` on, `fair.cpp` and `scheduler.cpp` have no diagnostics: Fair compiles, links and boots in a lane built with `--args 'sched_normal_discipline="fair"'` (`tools/set.py bringup.x86 --out out/fair-on ...`). Items 7 to 11 compile; they are wrong or missing, or (item 8) a question for the author. Every claim below was read off the code, and the arithmetic was recomputed from the constants, except those marked observed, which were run in that lane.
 
 ## 7. A thread that was never enqueued has a slice of zero
 
@@ -168,7 +168,7 @@ A test that nominates a thread queued on another CPU, and one that wakes a delay
 Low: the effect is a fraction of a request of service, and Fair is off by default.
 
 **Symptom**
-`Fair::adjust_vlag()` places a thread at `avg_vruntime() - vlag`, and the block meant to adjust `vlag` (`if (vlag != SchedDuration{0}) { // Adjust the vlag. }`) is empty. The lag was measured against the mean with the thread in it (`update_vlag()` before the dequeue) and is applied against the mean without it, which is shifted toward the other threads: a thread that left with a lag of -6.1 ms beside one equal-weight thread comes back with -3.1 ms, exactly `W / (W + w)` of it, in a model that a reviewer ran on 2026-11-04. Read and modelled, not run.
+`Fair::adjust_vlag()` places a thread at `avg_vruntime() - vlag`, and the block meant to adjust `vlag` (`if (vlag != SchedDuration{0}) { // Adjust the vlag. }`) is empty. The lag was measured against the mean with the thread in it (`update_vlag()` before the dequeue) and is applied against the mean without it (and, for the threads of one `steal()` batch, against a victim's mean that shrinks with each dequeue and a thief's that grows with each enqueue, so two threads that were level can arrive apart by the lag of the first: read from `Fair::adjust_vlag()` and `dequeue_thread()`, not run), which is shifted toward the other threads: a thread that left with a lag of -6.1 ms beside one equal-weight thread comes back with -3.1 ms, exactly `W / (W + w)` of it, in a model that a reviewer ran on 2026-11-04. Read and modelled, not run.
 
 **Cause**
 The stub was left for the author. The mean moves when the thread joins, so the lag in terms of the new mean is the old one scaled by `(W + w) / W`.
@@ -208,13 +208,13 @@ No reference to `SCHED_NOHZ` or `sched_nohz` outside the history.
 Medium: an idle CPU is served now, but a split among CPUs that all have work stays as it is; round-robin and Fair alike.
 
 **Symptom**
-`Scheduler::Current::steal()` runs only when a CPU has nothing to run (the idle loop), so a CPU that runs one thread never looks at the others. In `hotplug.test`, eight spinners on four CPUs, one CPU offline and back: the survivors hold 3, 3 and 2, the returning CPU takes one and the counts are 2, 3, 2, 1 (by inference from the code, not observed: the test does not print them), and they stay so for as long as the spinners run, where an even split is 2, 2, 2, 2. A pick-time pull does not exist either: `pick_next_thread()` still calls the stub `steal_work_from()`.
+`Scheduler::steal_work_from()` runs only when a CPU has nothing to run (the idle loop), so a CPU that runs one thread never looks at the others. In `hotplug.test`, eight spinners on four CPUs, one CPU offline and back: the survivors hold 3, 3 and 2, the returning CPU takes one and the counts are 2, 3, 2, 1 (by inference from the code, not observed: the test does not print them), and they stay so for as long as the spinners run, where an even split is 2, 2, 2, 2. There is no pull in `pick_next_thread()`, and the user decided on 2026-11-05 not to put one there (the pick holds the CPU's run queue lock, a take needs the victim's, and a CPU that comes back never picks).
 
 **Cause**
 The idle loop was chosen as the place for a pull because it holds no run queue lock and is entered on every path a CPU becomes idle (including `IdleThread::come_back()`). That serves the CPU that has nothing; it does not serve one that has less than its neighbour.
 
 **Change**
-The author's, with options to put to the user: a periodic balance from the tick (Linux `sched_balance_domains()` and `sched_balance_rq()`), a pull at the pick (Zircon `Scheduler::DequeueThread()` calls `StealWork()` inside `queue_guard.CallUnlocked(...)`, with its own queue lock dropped and interrupts still off; it saves a switch to the idle thread and back, and does not run at come-back time), or a push when a queue grows. Each needs the own lock dropped inside the pick, or a tick-side step with its own cost; none is chosen.
+The author's, with options to put to the user: a periodic balance from the tick (Linux `sched_balance_domains()` and `sched_balance_rq()`), or a push when a queue grows; each a tick-side or enqueue-side step with its own cost, and none is chosen, but both would call `Scheduler::steal_work_from()` or its two-step move. A pull at the pick (Zircon `Scheduler::DequeueThread()` calls `StealWork()` inside `queue_guard.CallUnlocked(...)`, with its own queue lock dropped) was decided against by the user on 2026-11-05.
 
 **Reference**
 Linux `sched_balance_domains()` and `sched_balance_rq()` (`kernel/sched/fair.c`, local checkout; names confirmed, bodies not read for this item); Zircon `Scheduler::StealWork()` (`scheduler.cc`).
@@ -228,12 +228,12 @@ In `hotplug.test`, after `bring_cpu_online()` the spinner counts per online CPU 
 Low: a queue that reaches the threshold after the CPU halted is served late, not never, since a CPU's own wakeups and the first timer tick bring it back.
 
 **Symptom**
-An idle CPU that finds no queue deep enough halts with no tick (`IdleThread::run()`) and looks again only when an interrupt wakes it. `steal.test` sends the reschedule request by hand for that reason: after the test widens the spinners' affinity, nothing else tells the thief that the victim's queue is now stealable. Read off the code, shown by the test, not measured for how long a real case waits.
+An idle CPU that finds no queue deep enough halts with no tick (`IdleThread::run()`) and looks again only when an interrupt wakes it. `steal.test` sends the reschedule request by hand for that reason: after the test widens the spinners' affinity, nothing else tells the thief that the victim's queue is now stealable. Read off the code, shown by the test, not measured for how long a real case waits. `steal.policy` no longer wakes the other CPUs after it sets a knob (2026-11-06), so a CPU that halted before the change uses the new value from the next time something wakes it.
 
 **Cause**
 `steal()` is called once per pass through the idle loop, and the loop blocks in `hlt`. Nothing wakes an idle CPU when another CPU's queue grows past the threshold: placement (`select_target_cpu()`) prefers the least loaded CPU, so new threads go to idle CPUs, and the remaining cases are a thread whose affinity was widened, a thread that wakes onto a busy CPU because it last ran there, and threads that were pinned.
 
-`steal()` also tries only the deepest queue of each node class, so a deep queue of threads that may not run here (all pinned to it) hides a shallower one that has a thread to give: the idle CPU halts with that thread waiting a slice behind the other CPU's running one. Read off the code, not run.
+`steal()` also tries only the busiest eligible CPU of each tier, so a queue of threads that may not run here (all pinned to it) hides a shallower one that has a thread to give: the idle CPU halts with that thread waiting a slice behind the other CPU's running one. Seen on 2026-11-05 in `steal.test` with four highest-priority threads pinned to a third CPU of the thief's node: that CPU was the busiest, nothing on it could move, and `took 0 of 3` from the real victim (with one such thread the CPU does not qualify, and the round passes). A fix tries the next busiest CPU of the tier when the first gives nothing, bounded.
 
 **Change**
 The author's: when a thread is queued on a CPU that already runs one, kick an idle CPU that could take it (Linux has a kick for idle balance, `nohz_balancer_kick()`, from memory; Zircon sends a reschedule IPI from `Scheduler::Insert()` to a CPU picked by `FindTargetCpu()` for the same purpose, from memory), or poll from a tick that the idle CPU keeps while another CPU has a queue. Neither is chosen.
@@ -250,13 +250,13 @@ A test that widens the affinity of a waiting thread with no reschedule request s
 Low: a performance choice with a safe direction, since a threshold that is too high steals less and a too-low one only moves a thread early.
 
 **Symptom**
-`STEAL_MIN_RUNNABLE_SAME_NODE = 2` and `STEAL_MIN_RUNNABLE_OTHER_NODE = 3` (`domains.cpp`, the `min_runnable` of the two tiers `sched_domain::build_domains()` makes) count the running thread, so one waiting thread is enough on the same node and a second is asked for from another. They were chosen by reasoning, not by data. The QEMU machine used for all runs has no remote-memory latency (TCG), so no run to date can show a difference; `steal.test` checks which side of the node boundary the count decides, not whether the number is right, nor the order (the same node before another). The count also ignores how long a thread has waited, which Zircon's cross-cluster test uses (`kInterClusterThreshold`, two milliseconds of queued time).
+The knobs `min-runnable-same-node` (default 2) and `min-runnable-other-node` (default 3) (`sched_domain::knob_info()`, kept by `StealPolicy`) count the running thread, so one waiting thread is enough on the same node and a second is asked for from another. They were chosen by reasoning, not by data. The QEMU machine used for all runs has no remote-memory latency (TCG), so no run to date can show a difference; `steal.test` checks which side of the node boundary the count decides, not whether the number is right, nor the order (the same node before another). The count also ignores how long a thread has waited, which Zircon's cross-cluster test uses (`kInterClusterThreshold`, two milliseconds of queued time). The knobs `max-batch-same-node` and `max-batch-other-node` (4 each), the most threads one look takes, are guesses of the same kind, and the load itself is the run queue's weight sum, an instantaneous value (a sampled, decayed load is the candidate to measure it against).
 
 **Cause**
 No estimate of queued time exists in the scheduler, and no real NUMA machine has run this kernel.
 
 **Change**
-Per CLAUDE.md, before changing anything: take the measurement first and put each candidate to the user, with its mechanism and cost. The measurement is the time to the first run of a stolen thread and the throughput of a memory-bound workload split over two nodes, for thresholds of 2, 3 and 4 and for a queued-time gate; the report goes in `docs/perf/<YYMMDD>/sched-steal-threshold.md` with its raw samples (`scripts/perf_stats.py`).
+Per CLAUDE.md, before changing anything: take the measurement first and put each candidate to the user, with its mechanism and cost. The knobs exist since 2026-11-05, so a sweep is a loop of `kshell_run.py --out <dir> "steal.policy <name> <value>" <workload>` (or an image command line with `kernel.sched.steal.<name>=<value>`) and needs no rebuild. The measurement is the time to the first run of a stolen thread and the throughput of a memory-bound workload split over two nodes, for thresholds of 2, 3 and 4, batches of 1, 2, 4 and 8, the weight sum against a sampled load, and a queued-time gate; the report goes in `docs/perf/<YYMMDD>/sched-steal-threshold.md` with its raw samples (`scripts/perf_stats.py`).
 
 **Reference**
 Zircon `Scheduler::StealWork()` and its search set ordered by cache distance (`scheduler.cc`); Linux `sched_balance_newidle()`, which gives up when `this_rq->avg_idle < sd->max_newidle_lb_cost` (`kernel/sched/fair.c`, local checkout, read on 2026-11-05).
@@ -290,7 +290,7 @@ A test narrows the hard affinity of a queued spinner to another CPU and sees it 
 Medium: not reached today, since nothing calls `Scheduler::Pi::common()`.
 
 **Symptom**
-Latent, cannot be triggered today: nothing calls `Scheduler::Pi::common()`. It reads the thread's `curr_cpu()`, takes that CPU's run queue lock and, for a Ready thread, dequeues and re-enqueues it. A thread in the Migrating window (taken off a queue by `deactivate_thread()` and not yet queued again) still names its old CPU, and is Ready, so the walk would dequeue it from a queue it is not in: `Scheduler::dequeue_thread()` decrements `m_num_queued_threads` and `m_total_weight` without a membership test, and the re-enqueue would put the thread on the old CPU's queue while it is activated on another. Read off the code, not run. The window is `deactivate()`'s and `steal()`'s.
+Latent, cannot be triggered today: nothing calls `Scheduler::Pi::common()`. (A drift in `m_num_queued_threads` or `m_total_weight` hurts more since `steal()`: they used to be written and not read to decide anything, and now choose a victim and an amount. The window is also up to `MAX_BATCH` threads wide, and a thread waits there for the ones before it to be queued on the thief.) It reads the thread's `curr_cpu()`, takes that CPU's run queue lock and, for a Ready thread, dequeues and re-enqueues it. A thread in the Migrating window (taken off a queue by `deactivate_thread()` and not yet queued again) still names its old CPU, and is Ready, so the walk would dequeue it from a queue it is not in: `Scheduler::dequeue_thread()` decrements `m_num_queued_threads` and `m_total_weight` without a membership test, and the re-enqueue would put the thread on the old CPU's queue while it is activated on another. Read off the code, not run. The window is `deactivate()`'s and `steal()`'s.
 
 **Cause**
 `assert_thread_in_scheduler()` checks the CPU, not the queue, and the Migrating transient state is not looked at.
@@ -370,7 +370,7 @@ None, this project's own design.
 Low: a test that depends on the order of the tests before it; the kernel is not shown to be wrong.
 
 **Symptom**
-`python3 scripts/kshell_run.py --out out/<dir> tickreplace.test preempt.test` ends with `preempt.test: FAIL  no turn runs past its slices` and `FAIL  most turns are a whole number of slices` (one run: 12 turns, 2 of them a whole number of slices, the longest 69937 us, the probe timer 1320 us late), in the default, Fair and four-node lanes alike. After `idle`, `sleep`, `threadjoin`, `timer`, `timershare` or `mutex.stress` instead, it passes, and alone it passes. With `Scheduler::Current::steal()` returning false at its top it fails the same, so it is not the work stealing. Observed on 2026-11-05 while a batch was being rerun; `preempt.test` was fixed on the same day for a different failure (`docs/changes/261103/kernel-task-sched.md`).
+`python3 scripts/kshell_run.py --out out/<dir> tickreplace.test preempt.test` ends with `preempt.test: FAIL  no turn runs past its slices` and `FAIL  most turns are a whole number of slices` (one run: 12 turns, 2 of them a whole number of slices, the longest 69937 us, the probe timer 1320 us late), in the default, Fair and four-node lanes alike. After `idle`, `sleep`, `threadjoin`, `timer`, `timershare` or `mutex.stress` instead, it passes, and alone it passes. With `Scheduler::Current::steal()` returning false at its top it fails the same, so it is not the work stealing. Observed on 2026-11-05 while a batch was being rerun; `preempt.test` was fixed on the same day for a different failure (`docs/changes/261103/kernel-task-sched.md`). Seen again on all three lanes with `... steal.test tickreplace.test preempt.test` as a batch, while `preempt.test` alone passed 8 of 8 (4 with stealing on, 4 with `steal.policy enabled 0` typed first), and 12 of 12 on all three lanes with `preempt.test` first and `tickreplace.test` last.
 
 **Cause**
 Not established. `tickreplace.test` replaces the tick device of the CPUs; if it leaves a different device or mode behind (a coarser timer, a longer lateness), a turn that `preempt.test` expects to end within its slice plus the lateness it measures runs longer. A guess from the symptom, not read.
@@ -403,3 +403,63 @@ Linux rebuilds its sched domains on a topology change with `rebuild_sched_domain
 
 **Acceptance**
 A test moves a CPU to another node through `PmNode::set_cpu_node()` and `steal.test` sees the new tier of that CPU, or the item is closed by the first caller of `set_cpu_node()` doing so.
+
+## 36. Two calls of `steal_work_from()` for one thief at once can take twice the mean
+
+**Severity**
+Medium: not reached today, since the only caller outside the tests is the thief's own idle thread, which runs one call at a time.
+
+**Symptom**
+Latent, cannot be triggered today. `Scheduler::steal_work_from()` reads the thief's load once, at its start, without the thief's lock, and takes from the victim as much as brings the thief up to the mean from that reading. Two calls for one thief at once (its idle thread, and a balancer on another CPU, or two balancers) both read the load as it was before either took anything. Example: four CPUs, a victim with eight threads (mean two), the thief idle: both calls compute a pull of two and both take it, and the thief ends with four threads, the victim with four, and two other CPUs with none, against two each. The second call's victim check under the victim's lock re-reads the victim's load, so the victim is not drawn below the mean, but nothing re-reads the thief's. Read off the code and reasoned, not run (the review of the member-function conversion, 2026-11-06).
+
+**Cause**
+The function was written for one caller per thief: the idle thread of the CPU itself, with interrupts off. It became callable on any CPU's scheduler by any CPU (2026-11-06) without a rule for callers that overlap. The two steps are done under one run queue lock each and never both, so the thief's lock is not held across the look, and the thief's load cannot be checked at the point where it matters (after the victim step, where undoing the take is not possible).
+
+**Change**
+The author's, with options: serialise per thief, with a flag in the scheduler that a call takes at its start and a second call that finds it set answers 0 (the idle thread then halts, and the other call's wake-up brings it back); or re-read the thief's load under its lock before the threads are queued and hand the excess back to the victim (a third lock step, and the threads are Migrating for longer); or leave the rule with the caller, as the doc comment says now, until a balancer exists. None is chosen.
+
+**Reference**
+Linux `sched_balance_rq()` is called for one `this_rq` by that CPU's own softirq or idle path, and `should_we_balance()` picks one CPU of a domain to balance it, which is the serialisation per group; it is not per thief.
+
+**Acceptance**
+A test calls `steal_work_from()` on one thief from two CPUs at once (or the thief's idle thread and a caller) and the thief ends within one thread of the mean, or the item is closed by the first balancer stating how it avoids overlap.
+
+## 37. `mutex.stress` hung once on the four-node machine, with work stealing on, and has not been reproduced
+
+**Severity**
+Medium, for want of a cause: one observation. It would be high if it is a lost wake-up or a thread left on no queue, which is what a bug in the steal would look like, and nothing if it is the emulator's load.
+
+**Symptom**
+In one batch of console tests on the four-node lane (`NUMA=1`, eight CPUs, `out/numa.x86`), `mutex.stress` did not finish within its command timeout and the run was reported as a hang. Nothing else about it was kept: the log was overwritten by the next run, so there is no lockup report and no list of what each CPU was doing. Repeated afterwards: 12 runs with the machine otherwise idle and 30 with a second QEMU holding a host core, all with stealing on, did not hang. A comparison with stealing off was started and abandoned, because the `steal.policy` command that switched it off woke every CPU with an IPI and the runner then misread the console (since removed, 2026-11-06), so no run with stealing off says anything. The batch was run before the member-function conversion of `steal_work_from()`; the runs that did not reproduce it were run before and after.
+
+**Cause**
+Not established. Candidates, none read or run: a thread left Migrating or on no queue by the window between the two steps of a take (items 25 and 26 are open for that window); a take that moved a thread a mutex owner or a waiter depends on to a CPU that then did not run it (item 23, a halted CPU looks only when woken); load on the host. The test is the one that creates the most contention on blocked and woken threads, which is why it is the one that would show a lost thread.
+
+**Change**
+Run it in a loop until it hangs and read what the lockup detector prints: `kshell_run.py` sends `nmi` after 15 seconds of silence and leaves the report in its log, which is the evidence this item lacks (the skill `verify` has the loop and says each run overwrites the last, so stop at the first failure). Run the same loop with `steal.policy enabled 0` as the first command to tell the steal from the load.
+
+**Reference**
+None, this project's own test.
+
+**Acceptance**
+Either 100 runs on the four-node lane with stealing on and none hangs (and the item is closed as unreproduced, with the count), or a run hangs and the lockup report is read into this item's Cause.
+
+## 38. A thread woken as its CPU goes offline can be queued on a CPU that no longer runs it
+
+**Severity**
+Low: a window of microseconds per CPU going offline, and the thread is served again when that CPU returns or another wake-up moves it; it would matter for a thread that is the only one doing something (a balancing worker).
+
+**Symptom**
+Latent, found by reading, not run. `Scheduler::unpark_thread()` (`scheduler.cpp`) asks `select_target_cpu()` for a CPU, which reads the Active mask, and then `do_unpark_thread()` takes that CPU's lock and queues the thread with `activate_thread()`. Nothing re-checks, under that lock, that the CPU is still Active. `Scheduler::Current::deactivate()` clears Active under the same lock and then drains the queue, once. A wake that picks the CPU before `deactivate()` clears Active and takes the lock after it has drained leaves the thread Ready on a queue that nothing will serve until the CPU is brought back online; `reschedule_mask()` skips an inactive CPU, so no IPI is sent either. A comment at the end of `select_target_cpu()` says `do_unpark_thread()` "re-selects through `find_active_scheduler_for()` when the thread actually becomes runnable"; the code does not.
+
+**Cause**
+`deactivate()` and the two paths that move a thread to another CPU (`Scheduler::Current::deactivate()`'s own hand-over and `steal_work_from()`'s fallback) go through `find_active_scheduler_for()`, which takes the target's lock and tests Active under it. The wake-up path was written before that existed and was left with the comment of the plan.
+
+**Change**
+The author's, with options: place the thread through `find_active_scheduler_for()` in `unpark_thread()` and `do_unpark_thread()`, as the other two paths do (the lambda queues it and `unpark_preempt()`s it under the target's lock); or test `is_state_active()` under the lock in `do_unpark_thread()` and re-select on a miss. None is chosen.
+
+**Reference**
+Zircon `Scheduler::UnblockCommon()` (`kernel/kernel/scheduler.cc`, local checkout) loops: `FindTargetCpu()`, take that scheduler's lock, insert the thread only `if (target->IsSchedulerActiveLocked())`, otherwise count a retry (`IncFindTargetCpuRetriesKcounter()`) and choose again. That is the re-check under the lock that the wake-up path here lacks.
+
+**Acceptance**
+`hotplug.test` with a thread that wakes every few hundred microseconds on the CPU being taken offline never leaves it unserved (a counter of wakes against runs), or the item is closed by the wake-up path using `find_active_scheduler_for()`.

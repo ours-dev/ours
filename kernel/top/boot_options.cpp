@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include <logz4/log.hpp>
+#include <ustl/option.hpp>
 
 namespace ours::boot {
 namespace {
@@ -36,31 +37,38 @@ namespace {
         buffer[value.size()] = '\0';
     }
 
-    /// Reads `value` as a decimal count into `out`.
+    /// `value` as a decimal count, or none.
     ///
-    /// Digits only, as many as a u32 holds: no sign, no unit, no base
-    /// prefix. Anything else keeps what `out` had, and says so, like a
-    /// boolean outside its grammar.
-    auto parse_count(std::string_view const option, std::string_view const value, u32 &out)
-        -> void {
+    /// Digits only, as many as a u32 holds: no sign, no unit, no base prefix.
+    auto parse_digits(std::string_view const value) -> ustl::Option<u32> {
         auto count = u64{0};
-        auto valid = !value.empty();
+        if (value.empty()) {
+            return ustl::NONE;
+        }
         for (auto const c: value) {
             if (c < '0' || c > '9') {
-                valid = false;
-                break;
+                return ustl::NONE;
             }
             count = count * 10 + static_cast<u64>(c - '0');
             if (count > std::numeric_limits<u32>::max()) {
-                valid = false;
-                break;
+                return ustl::NONE;
             }
         }
-        if (!valid) {
+        return ustl::Option<u32>(static_cast<u32>(count));
+    }
+
+    /// Reads `value` as a decimal count into `out`.
+    ///
+    /// Anything that is not one keeps what `out` had, and says so, like a
+    /// boolean outside its grammar.
+    auto parse_count(std::string_view const option, std::string_view const value, u32 &out)
+        -> void {
+        auto const count = parse_digits(value);
+        if (count.is_none()) {
             log::error("boot: {}={} is not a count, keeping {}", option, value, out);
             return;
         }
-        out = static_cast<u32>(count);
+        out = count.value();
     }
 } // namespace
 
@@ -117,6 +125,43 @@ auto BootOptions::apply(obi::CommandLineView const &cmdline) -> void {
          }) {
         if (auto const value = cmdline.value(option); value.is_some()) {
             parse_count(option, value.value(), out);
+        }
+    }
+
+    // The work-stealing knobs: a boolean, then counts.
+    for (usize i = 0; i < NUM_STEAL_OPTIONS; ++i) {
+        auto const option = STEAL_OPTIONS[i];
+        if (0 == i) {
+            // A boolean, read as the flags are: the bare key means true.
+            if (cmdline.contains(option)) {
+                m_steal[i] = 1;
+            }
+        }
+        auto const value = cmdline.value(option);
+        if (value.is_none()) {
+            continue;
+        }
+        if (0 != i) {
+            // The knob's default is not known here, so a value that is no count
+            // leaves the option unset, and the reader keeps its default. The
+            // one number that is the mark of "unset" is refused too.
+            auto const count = parse_digits(value.value());
+            if (count.is_none() || STEAL_UNSET == count.value()) {
+                log::error("boot: {}={} is not a count, keeping the default", option,
+                           value.value());
+                continue;
+            }
+            m_steal[i] = count.value();
+            continue;
+        }
+        auto const parsed = obi::CommandLineView::parse_bool(value.value());
+        if (parsed.is_none()) {
+            log::error("boot: {}={} is not a boolean, keeping the default", option, value.value());
+            continue;
+        }
+        m_steal[i] = 0;
+        if (parsed.value()) {
+            m_steal[i] = 1;
         }
     }
 }

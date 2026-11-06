@@ -50,6 +50,13 @@ namespace {
                 });
                 EXPECT_TRUE(on_node.none() || on_node == domain.span,
                             "a tier is the CPUs of the node or the CPUs of the others");
+                if (on_node.any()) {
+                    EXPECT_EQ(domain.kind, sched_domain::TierKind::SameNode,
+                              "the tier of the node is of the kind of the node");
+                } else {
+                    EXPECT_EQ(domain.kind, sched_domain::TierKind::OtherNode,
+                              "and the tier of the others is of the kind of the others");
+                }
                 seen |= domain.span;
             }
             EXPECT_TRUE(seen == expected, "the tiers together are every other possible CPU");
