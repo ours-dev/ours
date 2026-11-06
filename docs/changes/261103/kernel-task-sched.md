@@ -1331,3 +1331,54 @@ None (predictions are paused)
 - Why could seven IPI trace lines from seven CPUs disturb a prompt, and what in the symptom shows that they did?
 - What does a CPU that halted before a knob changed do with the new value, and when?
 - Why did no measurement need the wake?
+
+## Title: steal.bench measures where eight threads end up and how much work gets done under each work-stealing setting (2026-11-06)
+
+**Files**
+- `benches/kernel/sched/steal_bench.cpp`, `benches/kernel/sched/BUILD.gn`, `benches/kernel/BUILD.gn` — the console command `steal.bench [all] [csv] [rounds=N]`, workloads W1 and W2 of the measurement design, linked through `//benches/kernel:commands`
+- `.agents/tasks/steal-policy-measure/DESIGN.md`, `PLAN.md` — W1's criterion is "settled" (the user's decision, 2026-11-06), the first run, what the harness cannot tell
+
+**Symptom**
+Latent, no defect: the five work-stealing knobs can be changed while the machine runs (`0b327369`) and the look has counters (`33ba43ba`), but nothing ran a sweep, so repair item 24 (the thresholds and batches are first guesses) had no way to be answered with data.
+
+**Cause**
+Not a mistake to correct. The design of 2026-11-05 specified W1 as "the time until the workers per CPU differ by at most one and stay so for 50 ms". Working out the example before building (the user asked for step 2 to be introduced first) showed that criterion cannot be met: an idle CPU looks once, when woken (repair item 23), and the mean it reaches for counts every CPU of its tier, the controller's included, which cannot hold a worker. Eight workers on one CPU and the defaults give 4/2/2, and nobody looks again. The criterion would have timed out in every configuration, the stealing-off control included, and told nothing. The user chose a "settled" criterion instead: where the workers are when nothing has moved for 50 ms, and how fair that is.
+
+**Change**
+One command, one round per (round, configuration), seven configurations interleaved (off, the defaults, batch 1, 2, 8, same-node threshold 3 and 4):
+```text
+before each round   set the five knobs (the defaults, then the configuration's own)
+calibration         one worker alone on CPU 1 for 500 ms: what a CPU gives a worker
+W1/W2               8 workers pinned to CPU 1, 100 ms to queue and let CPUs 2, 3 halt,
+                    allow CPUs 1 to 3, send a reschedule request to CPUs 2 and 3,
+                    poll every 1 ms for 2 s where each worker is (Thread::curr_cpu())
+rows                w1 settle, settled, moved, spread, slowest; w2 cpus
+```
+A worker's CPU is the scheduler that holds it, running or queued, because the CPU it last ran on would hide a worker that was taken and waits a slice behind another on the thief. The controller is pinned to the first online CPU and the workers to the next three; the knobs are put back as they were when the command ends. The first round is a warm-up and is not in the raw rows; seven rounds a boot give six rows per metric and configuration, thirty over five boots as the design says. Rejected: recording the CPU in the worker (accurate only after it has run there once, a slice late for the second worker on a thief), and measuring where the workers are by the CPUs they were last seen on.
+
+**Reference**
+None. The harness follows `benches/kernel/time/preemption_deadline_bench.cpp` (the `bench::Run` convention, the `csv` rows, the command name without an underscore) and the worker and pinning patterns of `steal.test`.
+
+**Verification**
+- A run of seven rounds on the default lane (`steal.bench all csv`, 139 s, `--command-timeout 300`): 252 raw rows, 6 of each metric for each of the 7 configurations. Off: 8/0/0, nothing moved, 0.95 to 1.0 CPUs (the negative control sees the absence of stealing). Defaults: 4/2/2 in five of six rounds, 2.9 CPUs, 4 moved. Batch 1: 6/1/1 in all six, 2 moved. Same-node thresholds 3 and 4: spread 2 in all rounds but one of `min3` (4). Batch 2 and 8 gave 4/2/2 as the defaults in the two-round runs that preceded it.
+- One round on the Fair lane and one on the four-node lane: runs; on eight CPUs the mean reaches CPUs that hold no worker and every configuration ends 6/1/1 (the warning says so). `rounds=0` prints the usage line.
+- `boot_check.py`: default dbg PASS (46/5/0), rel PASS (44/8/0, 7/7), host-tests PASS (181); Fair and four-node lanes `--no-tests` dbg and rel PASS. `steal.test` ok on the four-node lane after the build. clang-tidy reports nothing on the file; `format_cpp.py --check` and `format_gn.py --check` are clean.
+- An independent read-only review (three reviewers: validity of the numbers, lifetimes and robustness, fit with the repository). It found and this entry fixes: the default of six rounds gave 25 samples, not 30; the header called 3/3/2 the end on four CPUs; `w1 slowest` was described as reaching 1; `bench::Run` was asked per workload and not per metric, with a ternary and a faked argv; `Crew::finish()` was not `[[nodiscard]]`; `rounds=1` with `csv` printed nothing without saying so. It also named what is left as limits (the design records them): the slice quantisation of `w1 slowest`, the one-worker baseline of `w2 cpus`, the shared cache lines of the workers' records, and the unlocked read of `curr_cpu()`.
+- The thresholds are not distinguished by these workloads (below).
+
+**Deliberately not done**
+- Distinguishing `min3`, `min4` from the defaults. Eight workers queue on one CPU, deeper than any threshold swept, so the result is the same by construction. A queue of about the threshold's depth (3 or 4 workers on the victim) would tell them apart; that is a shallow variant of W1 or W3, and a question for the user (DESIGN.md, open questions).
+- A baseline of three workers at once for `w2 cpus`, which would make 3.0 reachable on an emulator. It departs from the design's "one worker alone", and the comparison between configurations does not need it.
+- W3 (latency of sleeping threads) and W4 (the cost rows from the counters): step 3.
+- A guard against a second `steal.bench` or `steal.test` running at the same time: the kshell runs one command at a time.
+
+**How it was found**
+Introducing the step to the user: the arithmetic of the example (CPU 2 takes 2 of 8 with the mean at 2, then CPU 3 takes 2, and 4/2/2 is a fixed point) showed the planned criterion unreachable before any code existed; the first run then matched the prediction (4/2/2, 6/1/1, 8/0/0) and showed the thresholds are not exercised.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why does eight workers on one CPU end 4/2/2 with the defaults, and why does nobody take a further thread?
+- Why is `w2 cpus` almost the same for batch 1 and batch 8, and which metric shows the difference?
+- Why can this workload not tell a same-node threshold of 3 from 4, and what queue would?

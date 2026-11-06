@@ -1,7 +1,7 @@
 # steal-policy-measure: steps to measure the work-stealing knobs
 
 **Date**: 2026-11-05
-**Status**: Proposed
+**Status**: In progress (steps 1 and 2 done)
 
 ## Request
 The user, 2026-11-05: design the measurement of the work-stealing knobs (`设计测量方法`), then "按推荐定" for its three decisions. Scope: the first round on QEMU, W1 to W4, with the look-duration counters. Ends at the report; changing a default is a separate decision that the report informs.

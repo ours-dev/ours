@@ -21,6 +21,7 @@ cpp_interface("bench") {
 group("commands") {
   deps = [
     "mm:large-page-bench",
+    "sched:steal-bench",
     "time:preemption-deadline-bench",
   ]
   visibility = [ "//kernel/top:*" ]
