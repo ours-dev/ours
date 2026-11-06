@@ -1,0 +1,13 @@
+# Host-side tests. These link googletest and run on the build machine, so
+# they exercise the library's own logic rather than anything that needs a
+# booted kernel.
+executable("volume") {
+  testonly = true
+  sources = [ "volume_test.cpp" ]
+  deps = [
+    "//system/lib/volume",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
