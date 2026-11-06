@@ -23,7 +23,7 @@ Non-goals: the value of preferring a CPU on the same node, which rests on remote
 | W1 balance | 8 workers pinned to CPU 1, then allowed on CPUs 1 to 3 | time until the largest difference of workers per CPU is at most 1 and stays so for 50 ms; threads moved (`schedule.steals`); workers per CPU at the end | any machine |
 | W2 throughput | as W1, a fixed 2 s window | total iterations of all workers, over the iterations of one worker alone on one CPU: the effective number of CPUs | any machine |
 | W3 latency | one worker on each of CPUs 1 to 3 and 6 threads that sleep 5 ms and run 100 us | time from wake to run, p50 and p99; threads moved | relative values on any machine |
-| W4 cost | during W1 | time inside `steal()` per CPU: the sum and the longest (`schedule.steal_ns`, `schedule.steal_max_ns`) | absolute values need hardware; counts any machine |
+| W4 cost | during W1 | time inside `steal_work_from()` per thief: the sum and the longest (`schedule.steal_ns`, `schedule.steal_max_ns`) | absolute values need hardware; counts any machine |
 
 **Sweep.** Seven configurations: stealing off; the defaults (`min-runnable-same-node` 2, `min-runnable-other-node` 3, both batches 4); the batch at 1, 2 and 8 with the thresholds at their defaults; the same-node threshold at 3 and at 4 with the batches at their defaults. A batch of 1 stands for the old behaviour of one thread per look. Thirty samples a configuration and workload: five boots of six rounds, the first round of a boot dropped as warm-up, the configurations interleaved so that a drift of the host falls on all of them.
 
@@ -31,13 +31,13 @@ Non-goals: the value of preferring a CPU on the same node, which rests on remote
 
 **Validity.** The off configuration must show no balance (W1 times out, W2 is close to 1 CPU): a harness that cannot see the absence of stealing cannot see its presence. The host's load average goes into the comment line of every batch of samples, and a batch taken while another process held a core is discarded and taken again (a `qemu` of another worktree already made `preempt.test` fail that way on 2026-11-05).
 
-**The counters.** `steal()` times each look with the steady clock and adds the nanoseconds to `schedule.steal_ns` and the longest to `schedule.steal_max_ns`, per CPU. They cost two clock reads on the idle path only (looks of a disabled policy return before the first), and what they report includes about one clock read.
+**The counters.** `steal_work_from()` times each look with the steady clock and adds the nanoseconds to `schedule.steal_ns` and the longest to `schedule.steal_max_ns`, per thief, whichever CPU made the call. They cost two clock reads on a look (looks of a disabled policy return before the first), and what they report includes about one clock read. The call holds preemption off, so a caller that may be preempted does not add the time it waited to run to the figures.
 
 ## Alternatives considered
 - Measuring on a real machine first: none is at hand, and the algorithm-level questions do not need one.
 - One boot per configuration: ten times the wall time for the same samples, with boot-to-boot noise mixed into the comparison.
-- Timing a look from outside (the bench calling `steal()`): `steal()` asserts that its caller is the idle thread.
-- A tracer for the time in `steal()`: a sampling profile cannot see a section of a few microseconds, and the counters are permanent and cheap.
+- Timing a look from outside (the bench around `steal_work_from()`): the call can be made on any CPU's scheduler since 2026-11-06, but a time taken around it holds the caller's own clock reads and, from another CPU, the cost of reaching the scheduler; the counters measure the look itself, with preemption off.
+- A tracer for the time in `steal_work_from()`: a sampling profile cannot see a section of a few microseconds, and the counters are permanent and cheap.
 
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |

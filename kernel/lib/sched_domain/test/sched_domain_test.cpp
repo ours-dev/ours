@@ -208,14 +208,14 @@ TEST(PullAmount, TheMeanSettlesAnEightThreadMachineInThreeLooks) {
 }
 
 TEST(PullBudget, TheFirstThreadIsTakenWhateverItWeighs) {
-    PullBudget<Load> budget{threads(1) / 2, 4};
+    PullBudget<Load> budget{threads(1) / 2, 4, true};
     EXPECT_TRUE(budget.offer(threads(3)));
     EXPECT_EQ(budget.taken(), 1u);
     EXPECT_TRUE(budget.done());
 }
 
 TEST(PullBudget, LaterThreadsMustFitWhatIsLeft) {
-    PullBudget<Load> budget{threads(5) / 2, 4};
+    PullBudget<Load> budget{threads(5) / 2, 4, true};
     EXPECT_TRUE(budget.offer(threads(1)));
     EXPECT_TRUE(budget.offer(threads(1)));
     EXPECT_FALSE(budget.done());
@@ -224,7 +224,7 @@ TEST(PullBudget, LaterThreadsMustFitWhatIsLeft) {
 }
 
 TEST(PullBudget, AHeavyThreadIsSkippedAndALightOneBehindItTaken) {
-    PullBudget<Load> budget{threads(2), 4};
+    PullBudget<Load> budget{threads(2), 4, true};
     EXPECT_TRUE(budget.offer(threads(1)));
     EXPECT_FALSE(budget.offer(threads(3))) << "more than is left";
     EXPECT_TRUE(budget.offer(threads(1)));
@@ -232,7 +232,7 @@ TEST(PullBudget, AHeavyThreadIsSkippedAndALightOneBehindItTaken) {
 }
 
 TEST(PullBudget, StopsAtTheBatch) {
-    PullBudget<Load> budget{threads(100), 3};
+    PullBudget<Load> budget{threads(100), 3, true};
     EXPECT_TRUE(budget.offer(threads(1)));
     EXPECT_TRUE(budget.offer(threads(1)));
     EXPECT_TRUE(budget.offer(threads(1)));
@@ -242,7 +242,7 @@ TEST(PullBudget, StopsAtTheBatch) {
 }
 
 TEST(PullBudget, IsNotDoneOneThreadBeforeTheBatchIsFull) {
-    PullBudget<Load> budget{threads(100), 3};
+    PullBudget<Load> budget{threads(100), 3, true};
     EXPECT_TRUE(budget.offer(threads(1)));
     EXPECT_TRUE(budget.offer(threads(1)));
     EXPECT_FALSE(budget.done()) << "one more is allowed";
@@ -251,14 +251,14 @@ TEST(PullBudget, IsNotDoneOneThreadBeforeTheBatchIsFull) {
 }
 
 TEST(PullBudget, TakesTheFirstThreadEvenWhenNothingIsToBeMoved) {
-    PullBudget<Load> budget{threads(0), 4};
+    PullBudget<Load> budget{threads(0), 4, true};
     EXPECT_TRUE(budget.offer(threads(1)));
     EXPECT_FALSE(budget.offer(threads(1))) << "and nothing after it";
     EXPECT_TRUE(budget.done());
 }
 
 TEST(PullBudget, ABatchOfNoneIsABatchOfOne) {
-    PullBudget<Load> budget{threads(100), 0};
+    PullBudget<Load> budget{threads(100), 0, true};
     EXPECT_TRUE(budget.offer(threads(1)));
     EXPECT_FALSE(budget.offer(threads(1)));
     EXPECT_TRUE(budget.done());
@@ -369,8 +369,24 @@ TEST(Knob, EachKindOfTierHasItsOwnKnobs) {
     EXPECT_EQ(sched_domain::max_batch_knob(TierKind::OtherNode), Knob::MaxBatchOtherNode);
 }
 
+TEST(PullBudget, ACpuThatIsRunningSomethingMustFitEverythingItTakes) {
+    PullBudget<Load> budget{threads(1) / 2, 4, false};
+    EXPECT_FALSE(budget.done());
+    EXPECT_FALSE(budget.offer(threads(1))) << "more than is left, and the first has no claim";
+    EXPECT_TRUE(budget.offer(threads(1) / 4));
+    EXPECT_TRUE(budget.offer(threads(1) / 4));
+    EXPECT_TRUE(budget.done());
+}
+
+TEST(PullBudget, ACpuThatIsRunningSomethingTakesNothingWhenNothingIsToMove) {
+    PullBudget<Load> budget{threads(0), 4, false};
+    EXPECT_TRUE(budget.done());
+    EXPECT_FALSE(budget.offer(threads(1)));
+    EXPECT_EQ(budget.taken(), 0u);
+}
+
 TEST(PullBudget, NothingIsDoneBeforeTheFirstOffer) {
-    PullBudget<Load> budget{threads(0), 4};
+    PullBudget<Load> budget{threads(0), 4, true};
     EXPECT_FALSE(budget.done());
 }
 

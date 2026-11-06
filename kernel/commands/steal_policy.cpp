@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `steal.policy`: the numbers that steer a CPU with nothing to run when it
-// looks for threads to take (task::sched::StealPolicy), and how often each
-// CPU has looked and taken, and how long it took.
+// `steal.policy`: the numbers that steer a CPU when it looks for threads to
+// take (task::sched::StealPolicy), and how often each CPU has looked and
+// taken, and how long its looks took, whichever CPU made them.
 //
 //   steal.policy                 each knob with its value, default and range,
 //                                then each online CPU's looks, takes and the time

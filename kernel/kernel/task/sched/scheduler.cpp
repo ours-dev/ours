@@ -118,18 +118,21 @@ namespace {
     /// includes about one read of the steady clock.
     class StealTimer final {
       public:
-        StealTimer() : m_start(time::SteadyClock::now()) {}
+        /// |cpu| is the CPU the time is counted for, which is not always the
+        /// CPU that runs it.
+        explicit StealTimer(CpuNum const cpu) : m_cpu(cpu), m_start(time::SteadyClock::now()) {}
         StealTimer(StealTimer const &) = delete;
         auto operator=(StealTimer const &) -> StealTimer & = delete;
 
         ~StealTimer() {
             auto const ns =
                 static_cast<isize>(Nanoseconds(time::SteadyClock::now() - m_start).count());
-            SCHEDULE_STEAL_NS.add(ns);
-            auto _ = SCHEDULE_STEAL_MAX_NS.max(ns);
+            SCHEDULE_STEAL_NS.add(m_cpu, ns);
+            SCHEDULE_STEAL_MAX_NS.max(m_cpu, ns);
         }
 
       private:
+        CpuNum m_cpu;
         decltype(time::SteadyClock::now()) m_start;
     };
 
@@ -1076,15 +1079,25 @@ auto Scheduler::Current::longest_steal_nanoseconds(CpuNum const cpu) -> u64 {
     return static_cast<u64>(SCHEDULE_STEAL_MAX_NS.get(cpu));
 }
 
-/// A pull, by a CPU with nothing to run, from the tiers of its scheduling
-/// domains (domains_of()), the nearest first: in each, the CPU with the most
-/// load among those that hold as many threads as the policy asks for a tier of
-/// its kind (StealPolicy; nothing at all when it has stealing off), and of its
-/// threads as much as brings this CPU up to the mean
-/// (sched_domain::pull_amount()), or the one thread that is waiting when the
-/// mean is not above the victim. The hold-one-lock-at-a-time shape is
-/// deactivate()'s: no order of run queue locks is defined, and two CPUs
-/// stealing from each other would deadlock on the first one that took both.
+/// A pull for this CPU, from the tiers of its scheduling domains
+/// (domains_of()), the nearest first: in each, the CPU with the most load among
+/// those that hold as many threads as the policy asks for a tier of its kind
+/// (StealPolicy; nothing at all when it has stealing off), and of its threads as
+/// much as brings this CPU up to the mean (sched_domain::pull_amount()), or the
+/// one thread that is waiting when the mean is not above the victim and this CPU
+/// has nothing to run. The hold-one-lock-at-a-time shape is deactivate()'s: no
+/// order of run queue locks is defined, and two CPUs stealing from each other
+/// would deadlock on the first one that took both. Nothing in it depends on
+/// which CPU runs it: no lock is held on entry, the counters are this CPU's
+/// whoever bumps them, and the wake-up that the threads need is asked for at the
+/// end.
+///
+/// The caller may be preempted, so the call holds preemption off from its first
+/// step to its last: a caller switched out between the two steps would leave
+/// the threads on no queue for as long as it waits to run again, a slice at
+/// least. Interrupts are not held off (the idle thread, which calls it with
+/// them off, has the shorter window of deactivate(); any other caller takes the
+/// few interrupts that land between the two locks).
 ///
 /// While the thread is Migrating it is in neither queue, and its m_curr_cpu
 /// still names the victim. That is the window deactivate() has between its two
@@ -1095,20 +1108,32 @@ auto Scheduler::Current::longest_steal_nanoseconds(CpuNum const cpu) -> u64 {
 /// (Scheduler::Pi::common()) takes the victim's lock by m_curr_cpu and does not
 /// ask whether the thread is queued there. Both are open for deactivate() too
 /// (items 25 and 26 of docs/repairs/261103/kernel-task-sched.md).
-auto Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize {
-    DEBUG_ASSERT(arch::irqs_disabled());
-    auto &self = get();
-    self.m_canary.verify<Self>();
-    DEBUG_ASSERT(self.m_run_queue.m_curr_thread == self.m_idle_thread,
-                 "a CPU steals when it has nothing to run, in its idle thread");
-    if (!StealPolicy::enabled()) {
+///
+/// Two calls at once for one thief are not serialised: each takes the thief's
+/// load as it was before either took anything, so together they can take up to
+/// twice what the mean calls for (item 36 of the same document). Today the
+/// thief's own idle thread is the only caller outside the tests; a balancer
+/// serialises its calls for a thief, or the function does.
+auto Scheduler::steal_work_from(CpuMask const &victims) -> usize {
+    m_canary.verify<Self>();
+    // A CPU that is not active takes nothing: it is going offline, or has not
+    // started, and what it took would wait on a queue nobody serves.
+    if (!StealPolicy::enabled() || !is_state_active()) {
         return 0;
     }
-    SCHEDULE_STEAL_LOOKS.add(1);
-    StealTimer const timer;
+    // Declared before the timer, so it is released after the timer has read
+    // the clock: a preemption it lets in is not part of the look. Cpu::id() is
+    // also the CPU the caller is on from here to the end.
+    AutoPreemptDisabler const no_preemption;
+    auto const here = m_run_queue.m_which_cpu;
+    SCHEDULE_STEAL_LOOKS.add(here, 1);
+    StealTimer const timer{here};
 
-    auto const here = self.m_run_queue.m_which_cpu;
-    auto const here_load = self.load();
+    auto const here_load = load();
+    // Nothing queued and nothing running: the idle thread is not in the weight.
+    // Read once; a thread that arrives meanwhile makes the answer stale, and a
+    // stale "idle" costs one thread taken that did not strictly fit.
+    auto const here_is_idle = !(Weight{} < here_load);
 
     // The threads taken from one victim, between its queue and this one.
     std::array<Thread *, sched_domain::MAX_BATCH> batch{};
@@ -1118,7 +1143,7 @@ auto Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize {
     // it call for, and answers how many.
     auto const detach_from = [&](CpuNum const victim_cpu, usize const min_runnable,
                                  usize const tier_batch, Weight const &average) -> usize {
-        auto &victim = get(victim_cpu);
+        auto &victim = Current::get(victim_cpu);
         Guard<SpinLock, IrqSave> guard{victim.get_lock()};
         // What chose the victim was read without its lock: another CPU may
         // have taken from it since, and two CPUs that read the same load must
@@ -1127,7 +1152,8 @@ auto Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize {
         // is what guarantees a thread waiting behind the one it runs, and so
         // that the amount may be none: a mean that is raised by load that
         // cannot move (a heavy thread elsewhere, pinned threads of a nearer
-        // tier) does not send this CPU back to halt with that thread waiting.
+        // tier) does not send an idle CPU back to halt with that thread
+        // waiting.
         if (!victim.is_state_active() || victim.num_runnable() < min_runnable) {
             return 0;
         }
@@ -1144,7 +1170,7 @@ auto Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize {
         if (max_batch > batch.size()) {
             max_batch = batch.size();
         }
-        sched_domain::PullBudget<Weight> budget{amount, max_batch};
+        sched_domain::PullBudget<Weight> budget{amount, max_batch, here_is_idle};
         usize count = 0;
         usize scanned = 0;
         victim.m_run_queue.for_each_thread([&](Thread &queued) {
@@ -1198,7 +1224,7 @@ auto Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize {
         auto victim_cpu = INVALID_CPU_NUM;
         Weight busiest{};
         (domain.span & peek_active_mask() & victims).for_each([&](CpuNum const cpu) {
-            auto const &other = get(cpu);
+            auto const &other = Current::get(cpu);
             auto const load = other.load();
             total += load;
             cpus += 1;
@@ -1219,15 +1245,48 @@ auto Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize {
         return 0;
     }
 
+    bool queued_here = false;
     {
-        Guard<SpinLock, IrqSave> guard{self.get_lock()};
-        auto options = EnqueueOptions::None;
-        for (usize i = 0; i < taken; ++i) {
-            self.activate_thread(batch[i], options);
-            options = EnqueueOptions::SkipClock;
+        Guard<SpinLock, IrqSave> guard{get_lock()};
+        // Checked under the lock that deactivate() takes to clear Active: if
+        // this CPU went offline since the look began, the threads are not
+        // queued here, where nothing would run them.
+        if (is_state_active()) {
+            auto options = EnqueueOptions::None;
+            for (usize i = 0; i < taken; ++i) {
+                activate_thread(batch[i], options);
+                options = EnqueueOptions::SkipClock;
+            }
+            queued_here = true;
         }
     }
-    SCHEDULE_STEALS.add(static_cast<isize>(taken));
+
+    if (!queued_here) {
+        CpuMask moved_to;
+        for (usize i = 0; i < taken; ++i) {
+            moved_to.set(find_active_scheduler_for(
+                batch[i], [](Thread *const moved, Scheduler *const target) {
+                    // find_active_scheduler_for() calls this holding |target|'s
+                    // lock, which the analysis cannot follow into a lambda.
+                    target->m_run_queue.m_rqlock.assert_held();
+                    target->activate_thread(moved, EnqueueOptions::None);
+                    target->unpark_preempt(moved, UnparkOptions::None);
+                }));
+        }
+        reschedule_mask(moved_to);
+        return 0;
+    }
+    SCHEDULE_STEALS.add(here, static_cast<isize>(taken));
+
+    // A CPU that is halted looks at its queue when something wakes it, so a
+    // thief that is not the caller's CPU is asked to reschedule, through the
+    // caller's batching of requests as any wake-up is. Nothing is asked of the
+    // caller's own CPU. If it was idle the caller is its idle loop, which acts
+    // on the count; if it was running something, what it took waits its turn
+    // behind it, as what any other CPU queued there would.
+    if (here != Cpu::id()) {
+        reschedule_mask(CpuMask::of(here));
+    }
     return taken;
 }
 

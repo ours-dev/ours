@@ -12,7 +12,7 @@ The user, 2026-11-05: design the measurement of the work-stealing knobs (`设计
 | See DESIGN.md | | | | 2026-11-05 |
 
 ## Steps
-1. **The counters and this task's documents.** `schedule.steal_ns` and `schedule.steal_max_ns` in `steal()`, their accessors, a line in `steal.policy`, a check in `steal.test`. Verified with the three lanes and `boot_check.py`; one commit.
+1. **The counters and this task's documents.** `schedule.steal_ns` and `schedule.steal_max_ns` in `steal_work_from()`, their accessors, a line in `steal.policy`, a check in `steal.test`. Verified with the three lanes and `boot_check.py`; one commit.
 2. **`steal.bench` with W1 and W2.** The workers, the controller, the sampling of workers per CPU, the CSV rows; the off configuration as the negative control. Verified by running it and reading the rows; one commit.
 3. **W3 and W4.** The sleeping threads and the latency samples; the cost rows from the counters. One commit.
 4. **The run and the report.** The sweep, the raw samples in `docs/perf/<YYMMDD>/steal-policy/`, the statistics through `scripts/perf_stats.py`, the report from `docs/perf/TEMPLATE.md`. The user reads it and decides each stage.

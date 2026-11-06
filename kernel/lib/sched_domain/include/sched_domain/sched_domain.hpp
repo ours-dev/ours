@@ -115,8 +115,8 @@ static_assert(MAX_DOMAINS >= 2, "the builder makes a tier for the node and one f
 /// kernel's (the boot options give it a first value and a console command
 /// changes it while the machine runs).
 enum class Knob : u32 {
-    /// Whether a CPU with nothing to run looks for threads to take at all: 0
-    /// or 1.
+    /// Whether a CPU looks for threads to take at all, when its idle thread
+    /// does or when another CPU asks it to: 0 or 1.
     Enabled,
 
     /// How many threads a CPU on the owner's node must hold, the one it runs
@@ -301,20 +301,21 @@ constexpr auto pull_amount(Load const &here, Load const &busiest, Load const &av
 /// The threads of one victim to take, offered in the order its queue walks
 /// them, against an amount of load to move.
 ///
-/// The first thread offered is taken whatever it weighs, and even when the
-/// amount is none. The CPU that looks has nothing to run and the victim has a
-/// thread waiting; a mean that is a fraction of one thread (many idle CPUs
-/// share the machine's load), or one raised by load that cannot be taken (a
-/// heavy thread elsewhere, pinned threads of a nearer tier), would otherwise
-/// send it back to halt with the thread still waiting. Every later one is taken
-/// only if it fits in what is left, so that a heavy thread is not carried past
-/// the mean for the sake of a light one behind it, and at most |max_batch| in
-/// all (at least one: 0 is read as 1).
+/// For a CPU that has nothing to run, the first thread offered is taken
+/// whatever it weighs, and even when the amount is none (|first_is_free|). That
+/// CPU would otherwise go back to halt with a thread waiting on the victim, as
+/// a mean that is a fraction of one thread (many idle CPUs share the machine's
+/// load), or one raised by load that cannot be taken (a heavy thread elsewhere,
+/// pinned threads of a nearer tier), would make it. A CPU that is running
+/// something has no such claim: every thread it takes must fit. Every thread
+/// after the first fits what is left, so that a heavy thread is not carried
+/// past the mean for the sake of a light one behind it, and at most
+/// |max_batch| are taken in all (at least one: 0 is read as 1).
 template <typename Load>
 class PullBudget {
   public:
-    constexpr PullBudget(Load const &amount, usize const max_batch)
-        : m_left(amount), m_max_batch(max_batch) {
+    constexpr PullBudget(Load const &amount, usize const max_batch, bool const first_is_free)
+        : m_left(amount), m_max_batch(max_batch), m_first_is_free(first_is_free) {
         if (m_max_batch < 1) {
             m_max_batch = 1;
         }
@@ -327,7 +328,7 @@ class PullBudget {
         if (m_taken >= m_max_batch) {
             return false;
         }
-        if (m_taken > 0 && m_left < load) {
+        if ((m_taken > 0 || !m_first_is_free) && m_left < load) {
             return false;
         }
         if (load < m_left) {
@@ -343,7 +344,8 @@ class PullBudget {
     /// something was taken and nothing is left to move.
     [[nodiscard]]
     constexpr auto done() const -> bool {
-        return m_taken >= m_max_batch || (m_taken > 0 && !(Load{} < m_left));
+        auto const spent = !(Load{} < m_left);
+        return m_taken >= m_max_batch || (spent && (m_taken > 0 || !m_first_is_free));
     }
 
     [[nodiscard]]
@@ -354,6 +356,7 @@ class PullBudget {
   private:
     Load m_left;
     usize m_max_batch;
+    bool m_first_is_free;
     usize m_taken = 0;
 };
 

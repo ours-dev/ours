@@ -1219,3 +1219,72 @@ None (predictions are paused)
 - Why could the stub not be filled in where it was called?
 - Why does a pull in the idle loop reach a CPU that comes back online, and one in the pick not?
 - What does a count say about a take that a pointer to a thread did not?
+
+## Title: steal_work_from() is a member of Scheduler, so any CPU can make any CPU take work (2026-11-06)
+
+**Files**
+- `kernel/include/ours/task/sched/scheduler.hpp`, `kernel/kernel/task/sched/scheduler.cpp` — `Scheduler::Current::steal_work_from(victims)` (static, the calling CPU is the thief) becomes `Scheduler::steal_work_from(victims)` (a member, the scheduler it is called on is the thief); the doc comment says what a caller on another CPU may rely on
+- `kernel/kernel/task/idle_thread.cpp` — the idle loop calls it on its own scheduler
+- `kernel/lib/sched_domain/include/sched_domain/sched_domain.hpp`, `kernel/lib/sched_domain/test/sched_domain_test.cpp` — `PullBudget` gets `first_is_free`: the first thread is taken whatever it weighs only when the thief has nothing to run; two host tests for the other case
+- `kernel/lib/gktl/include/gktl/counter.hpp` — `Counter::add(cpu, delta)` and `Counter::max(cpu, value)`, which name the CPU whose counter is bumped
+- `kernel/commands/steal_test.cpp` — `Round::Look::Remote`, `Round::victims`, `Round::on_thief`, `Round::caller`, `Round::first_seen`, `CallerHome` and `remote_rounds()`: the first test of the `victims` parameter, made from a CPU outside the pair
+- `docs/repairs/261103/kernel-task-sched.md` — new item 36, two calls for one thief at once
+- Comments and documents that named the static form or said that only an idle CPU looks: `kernel/include/ours/task/thread.hpp`, `kernel/include/ours/task/sched/domains.hpp`, `kernel/lib/sched_domain/include/sched_domain/sched_domain.hpp`, `kernel/commands/steal_policy.cpp`, `kernel/mm/include/ours/mm/cpu_local.hpp`, `.agents/skills/kernel-design/references/task.md`, `.agents/tasks/sched-facade/DESIGN.md`, `.agents/tasks/steal-policy-measure/{DESIGN,PLAN}.md`, `docs/repairs/261103/kernel-task-sched.md` (item 22)
+
+**Symptom**
+Latent, cannot be triggered today: the only caller is the idle thread, which passes its own CPU. The user asked why the function was static (2026-11-06): with a load-balancing mechanism later, CPU A should be able to call CPU B's interface and bring the system to a balanced state as a whole. As a static function that could not be done: "the thief" was whichever CPU ran the code.
+
+**Cause**
+The function read the calling CPU in four places and treated it as the thief: the run queue it locked (`Current::get()`), the CPU number its counters were bumped for (`CpuLocal` slots of the calling CPU), the `load()` it compared with the victims' loads, and the CPU it woke at the end. Each is right for the idle thread and wrong for a balancer on another CPU: the pulled threads would be queued on the caller, the counters would credit the caller, and the mean would be taken for the caller's load. There was also an assumption nobody wrote down: the thief cannot go offline during the call, because it is the thread's own CPU running with interrupts off. A caller on another CPU has no such guarantee, and between the victim step and the thief step the thief can have been deactivated by hotplug, which would leave the threads on a queue that nothing serves.
+
+**Change**
+```cpp
+// before: the thief is the CPU that runs the code
+//   static auto Scheduler::Current::steal_work_from(CpuMask const &victims) -> usize;
+//   IdleThread::run():  ... && 0 == Scheduler::Current::steal_work_from(Cpu::online_mask())
+// after: the thief is the scheduler the call is made on
+//   auto Scheduler::steal_work_from(CpuMask const &victims) -> usize;
+//   IdleThread::run():  ... && 0 == scheduler.steal_work_from(Cpu::online_mask())
+//   a balancer:         Scheduler::Current::get(cpu_b).steal_work_from(mask)
+```
+What follows from the thief being a parameter:
+- The thief's CPU is `m_run_queue.m_which_cpu`, and the victims are reached with `Current::get(cpu)`. The counters are bumped with `Counter::add(here, 1)` and `Counter::max(here, ns)` for that CPU, so the figures say what each CPU's scheduler did whoever asked.
+- A thief that is not `Active` takes nothing, and is checked again under its own lock when the threads join its queue. If it went offline in between, the threads go to active CPUs with `find_active_scheduler_for()`, as `Scheduler::Current::deactivate()` does, and the call answers 0.
+- Preemption is off from the first step to the last (`AutoPreemptDisabler`, declared before the timer so that a preemption it lets in at the end is not billed to the look). A caller that was switched out between the victim step and the thief step would leave up to a batch of threads on no queue for as long as it waited to run again, a slice at least; the idle thread calls with interrupts off and never had that window. It also makes `Cpu::id()`, which `reschedule_mask()` reads, the caller's CPU for the whole call.
+- The thief is woken with `reschedule_mask(CpuMask::of(here))` when it is not the caller's CPU, so a caller that batches its requests (`eager_resched_disabled_count`) batches this one too. Nothing is asked of the caller's own CPU: if it was idle the caller is its idle loop, which acts on the count; if it was running something, what it took waits its turn behind it, as what any other CPU queued there would. `IpiService::send_resched(here)`, which this replaces, drops the local CPU and assumes the caller has recorded a pending request, which this path did not.
+- A thief that is running something is not idle. `PullBudget` now knows it: the first thread is free only for an idle thief, so a busy thief takes only what fits the mean (`min(victim - mean, mean - here)`), and takes nothing when the mean leaves it nothing. Before, the idle thread was the only caller, so "the first thread is free" was true of every call and nobody had to ask. The idle test reads the thief's `load()` once at the start: a thread that arrives meanwhile makes the answer stale, and a stale "idle" costs one thread that did not strictly fit.
+- The mean is over the thief and the CPUs of the tiers that are in `victims`. A caller that passes one victim gets a mean over two CPUs; that is the meaning of "balance these", and `steal_test` computes its expectation from it.
+
+Rejected: keeping the static function and adding a `Scheduler &thief` parameter. It is the same thing with the receiver written as an argument, and the doc comment, the counters and `is_state_active()` would all be about an argument instead of `this`.
+
+**Reference**
+Zircon `Scheduler::StealWork()` runs on the CPU that is looking (`this` is the thief), so it does not meet this case. The case follows Linux `sched_balance_rq(this_cpu, this_rq, sd, idle, ...)`, which names `this_rq`, the run queue that pulls, as a parameter and is also called from `sched_balance_domains()` (the tick) and `sched_balance_newidle()` (the idle path), and `pull` in `detach_tasks()`/`attach_tasks()` is the same two steps with one lock at a time here.
+
+**Verification**
+- Host tests: 37 in `sched_domain_test` (two new for `first_is_free`), `host-tests` 181 passed.
+- `steal.test`: 66 checks on the default and Fair lanes and 132 on the four-node lane, three runs on each after the last change, all passed. Five rounds are the call made on the thief's scheduler from the test thread, which is kept on a CPU outside the pair (CPU 0 on four CPUs, CPU 4 on the four-node machine, logged): an idle thief takes a thread, it is counted for the thief, the threads taken are the ones seen on it, and a thief that was halted runs them within 8 ms (1.5 ms measured, 13 to 72 ms for a thief left to its next timer); the mean is over the set the call may take from (eight threads, a set of the victim alone, the batch of four is taken); a set without the victim takes nothing; and a thief running a thread of its own takes only what fits the mean (none with more than two CPUs in view).
+- The 12 console tests (`preempt idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace`, `preempt` first and `tickreplace` last): 12 of 12 on the default, Fair and four-node lanes. `ktest all` `ran=29 passed=28 failed=0 skipped=1` on the three. `boot_check.py`: default dbg PASS (46/5/0), rel PASS (44/8/0, 7/7), host-tests PASS; Fair and four-node `--no-tests`, dbg and rel PASS.
+- Negative controls, each patched in and restored (`cmp` against a copy): the thief always counted as idle makes "a thief that is running something takes only what fits the mean" fail; the `victims` mask ignored in the tier scan makes "a call that may not take from the victim takes nothing" fail; the mean taken over the whole tier with the candidates still limited to `victims` makes "the mean of a call is over the CPUs it may take from" fail (2 of 8 taken, not 4); no wake of a remote thief makes "the thief that was halted runs them at once" fail in four runs of four (43 to 55 ms). A first bound of 15 ms did not: one unwoken thief ran it in 13 ms, so the bound is 8.
+- clang-tidy reports nothing on a line of this change; `scripts/format_cpp.py --check` is clean.
+- Not measured: a caller that is preempted. The test calls with preemption on, but a switch inside the window needs a timer at the wrong moment and shows only as a thread that runs late; the preemption-off scope is read off the code.
+
+**Deliberately not done**
+- Serialising two calls for one thief (item 36): each reads the thief's load once, so two at once can take up to twice the mean. The idle thread is the only caller outside the tests, and which of the options (a flag per thief, a re-read under the thief's lock that hands the excess back, or the caller's rule) is the user's to choose.
+- A balancer that calls it. The interface is what was asked for; nothing calls it from another CPU outside the test (repair item 22 lists the periodic balance and the push).
+- A test of the offline fallback: it needs a hotplug between the two steps. It is the code of `deactivate()` reached by another door, which `hotplug.test` runs. Nor are the time counters' crediting of the thief tested on the remote path.
+- The busy-thief round on a machine of two CPUs: the right answer is one thread, the bound is "at most one", and the host tests (`ACpuThatIsRunningSomethingMustFitEverythingItTakes`) are what pin the rule there. With three or more CPUs in view it asserts none.
+- The remote mask round judges the call's answer only. The thief's own idle thread looks too whenever anything wakes it (on the four-node lane it did, once, in the mask round of the cross-node pair, and took a thread; what woke it was not found) and takes what the round queued, so its counters and what is seen on it are not the call's. Counting the call's own looks separately would need a counter per caller; the answer is what the contract is about.
+- Making the accessors (`num_steal_looks()`, `num_steals()` and the two nanosecond figures) members: they read a CPU by number from outside, as `Scheduler::Current::get(cpu)` does, and stay where they are.
+
+**How it was found**
+An independent read-only review of the first version (three reviewers, one lens each: remote-call safety, the arithmetic, the tests and records) found, and this entry fixes: preemption was disabled only after both lock steps (the window above; two reviewers, one called it high); the wake was not asked of a caller's own CPU and ignored batching; no `TA_EXCLUDES(get_lock())` on a function that takes the lock; the remote rounds did not control or record the caller's CPU, which on two CPUs was the thief's, and the mask round's third CPU could be the thief or the CPU the test thread ran on; three comments that said only an idle CPU looks and that the time counters are the CPU's own; and nothing tested that a halted thief is woken by the call. It also found that two calls for one thief at once overshoot the mean (item 36, not fixed) and that the busy-thief round is weak at two CPUs (not fixed). The first review run failed on the 5-hour usage limit and returned nothing; a nothing is not a clean review, and it was run again.
+
+The user's question on 2026-11-06, "为啥要用静态函数的方式实现这个函数？我在想如果以后有负载均衡的机制，可以让CPU A上调用CPU B的这个接口，直接让系统整体达成一个比较平衡的状态。", and the decision, "改成成员函数". Making it a member exposed the first-thread rule as an idle-thief rule: the first remote round of a busy thief took a thread the mean did not give it, which the debug print `here=2549 victim=7647 avg=5098` showed was the pull amount of a two-CPU mean (the call's mask held one victim), not a wrong amount; the test's expectation of "CPUs in view" was the mistake, and the round now passes the whole machine.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Which four things did the function take from the calling CPU, and what goes wrong for each when the caller is another CPU?
+- Why does a thief that is running a thread have to fit what it takes in the mean, while an idle one takes the first thread whatever it weighs?
+- Why is the thief re-checked for `Active` under its own lock, and what happens to the threads when it is not?

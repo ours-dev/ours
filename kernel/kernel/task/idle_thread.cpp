@@ -229,8 +229,7 @@ auto IdleThread::run() -> void {
             // One that has already halted takes no tick and looks again only
             // when an interrupt wakes it (item 23 of
             // docs/repairs/261103/kernel-task-sched.md).
-            if (!scheduler.num_runnable() &&
-                0 == Scheduler::Current::steal_work_from(Cpu::online_mask())) {
+            if (!scheduler.num_runnable() && 0 == scheduler.steal_work_from(Cpu::online_mask())) {
                 // Preemption off across the halt, so that the interrupt
                 // ending it does not switch away from here on its way out:
                 // the time read after the halt is then the halt's end, not

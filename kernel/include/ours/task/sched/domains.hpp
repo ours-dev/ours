@@ -5,7 +5,7 @@
 ///
 /// The scheduler reads this table and nothing else to know what is near. Where
 /// the table comes from is in domains.cpp and nowhere else, so the code that
-/// walks the tiers (Scheduler::Current::steal_work_from()) never asks the memory manager
+/// walks the tiers (Scheduler::steal_work_from()) never asks the memory manager
 /// about nodes, and a kind of distance that has no source yet is one more tier
 /// built there. The numbers that steer the walk are StealPolicy's.
 #ifndef OURS_TASK_SCHED_DOMAINS_HPP
@@ -62,7 +62,8 @@ class StealPolicy {
     [[nodiscard]]
     static auto set(sched_domain::Knob knob, usize value) -> bool;
 
-    /// Whether a CPU with nothing to run looks for threads to take.
+    /// Whether a CPU looks for threads to take: its idle thread, or a call on
+    /// its scheduler from another CPU.
     [[nodiscard]]
     static auto enabled() -> bool {
         return 0 != get(sched_domain::Knob::Enabled);

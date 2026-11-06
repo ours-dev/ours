@@ -2,10 +2,11 @@
 /// Copyright (c) 2026 ours Developers
 //
 // `steal.test`: a CPU with nothing to run takes a queued thread from a busier
-// CPU (Scheduler::Current::steal_work_from(), called by the idle thread before it halts),
-// and where the NUMA node boundary falls. With one CPU holding the queue (the
-// victim) and another idle and halted (the thief), each of a pair of CPUs on
-// one node and a pair on two (when the machine has them):
+// CPU (Scheduler::steal_work_from(), called by the idle thread before it halts,
+// or by any CPU on another's scheduler), and where the NUMA node boundary
+// falls. With one CPU holding the queue (the victim) and another idle and
+// halted (the thief), each of a pair of CPUs on one node and a pair on two
+// (when the machine has them):
 //
 //   - three threads that may run on either CPU, started pinned to the victim
 //     and then let go: the thief is woken by a reschedule request and one of
@@ -21,7 +22,12 @@
 //   - eight threads that may run on either: the thief takes its share of the
 //     mean load of the CPUs it looks at, which is a number of threads that
 //     depends on how many CPUs those are (two of eight over four CPUs, one over
-//     eight), not one.
+//     eight), not one;
+//   - the same call made from a CPU outside the pair on the thief's scheduler
+//     (remote_rounds()): the thief takes, the count is the thief's, a set of
+//     CPUs that has not the victim gives nothing, the mean is over the set the
+//     call may take from, and a thief that is running something takes only what
+//     fits.
 //
 // The thief's own counts of looks and takes (Scheduler::Current::
 // num_steal_looks(), num_steals()) tell a thief that looked and declined from
@@ -31,6 +37,7 @@
 #include <ours/ipi_service.hpp>
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cpu_node_map.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/sched/common.hpp>
 #include <ours/task/sched/domains.hpp>
 #include <ours/task/sched/scheduler.hpp>
@@ -46,6 +53,7 @@
 
 namespace ours {
 namespace {
+    using task::AutoPreemptDisabler;
     using task::Thread;
     using task::sched::Scheduler;
     using task::sched::StealPolicy;
@@ -55,6 +63,14 @@ namespace {
     /// Long enough for the threads to be queued behind the one running, and
     /// for the other CPU to have halted.
     constexpr auto SETTLE = Milliseconds(100);
+
+    /// How soon a halted thief that a remote call woke must be running what it
+    /// took. Woken, it did in 1.5 ms on the emulator; left to its next timer it
+    /// took 13 to 72 ms. The poll's resolution is a millisecond and the
+    /// emulator's CPUs share the host's, so the bound is five times the first
+    /// and under the second.
+    constexpr auto REMOTE_WAKE = Milliseconds(8);
+
     /// How long a take that must not happen is waited for. The thief looks
     /// once, when the reschedule request wakes it, and what it does is decided
     /// within microseconds; this is a margin, and the thief's count of looks
@@ -162,6 +178,19 @@ namespace {
         /// load that cannot move, and a lot of it.
         usize heavy = 0;
         CpuNum heavy_cpu = INVALID_CPU_NUM;
+        /// Threads of the default priority pinned to the thief: it is running
+        /// something, so it is not idle.
+        usize on_thief = 0;
+
+        /// How the thief is told to look: by a reschedule request, as a wakeup
+        /// would, or by this test calling steal_work_from() on its scheduler
+        /// from another CPU, for the CPUs of |victims|.
+        enum class Look { Ipi, Remote };
+        Look look = Look::Ipi;
+        CpuMask victims = Cpu::online_mask();
+        /// What the remote call answered, and the CPU it was made on.
+        usize taken = 0;
+        CpuNum caller = INVALID_CPU_NUM;
         /// How long to watch the thief for a spinner; the watch ends early
         /// when |stop_at_first| and one of the movable ones has been seen.
         Duration watch = LOST_AFTER;
@@ -169,6 +198,9 @@ namespace {
 
         bool set_up = false;
         bool movable_seen_on_thief = false;
+        /// How long after the thief was asked to look the first movable one was
+        /// seen on it, to the poll's resolution; none until one is.
+        Duration first_seen = Duration::zero();
         /// How many of the movable ones were seen on the thief by the end of
         /// the watch.
         usize movable_seen_count = 0;
@@ -178,9 +210,13 @@ namespace {
     };
 
     /// Runs |round| on |pair|: the spinners start on the victim, the thief is
-    /// woken by a reschedule request, and the thief is watched.
+    /// woken by a reschedule request or by the call of a CPU that is not its
+    /// own, and the thief is watched.
     auto run_round(Tally &tally, Pair const pair, Round &round) -> void {
-        auto const total = round.movable + round.pinned + round.heavy;
+        // The threads that are kept off the thief by their affinity, and then
+        // the ones that run on it.
+        auto const foreign = round.movable + round.pinned + round.heavy;
+        auto const total = foreign + round.on_thief;
         auto *const state = new (mm::ALLOC_KERNEL) State();
         if (state == nullptr) {
             log::error("steal.test: FAILED -- no memory for the test's state");
@@ -190,12 +226,13 @@ namespace {
         Thread *threads[MAX_SPINNERS]{};
         auto spawned = true;
         for (usize i = 0; i < total; ++i) {
-            auto const is_heavy = i >= round.movable + round.pinned;
             auto priority = task::DEFAULT_PRIORITY;
             auto cpu = pair.victim;
-            if (is_heavy) {
+            if (i >= round.movable + round.pinned && i < foreign) {
                 priority = task::HIGHEST_PRIORITY;
                 cpu = round.heavy_cpu;
+            } else if (i >= foreign) {
+                cpu = pair.thief;
             }
             threads[i] =
                 Thread::spawn("steal.test/spin", spinner_routine, &state->spinners[i], priority);
@@ -214,7 +251,7 @@ namespace {
         // interruptible mode is off, so it cannot be.
         auto _ = Thread::Current::sleep_for(SETTLE, task::Interruptible::No);
         auto kept_off = true;
-        for (usize i = 0; i < total; ++i) {
+        for (usize i = 0; i < foreign; ++i) {
             kept_off &= !seen_on(state->spinners[i], pair.thief);
         }
         verdict(tally, kept_off, "none runs on the other CPU while its affinity keeps it off");
@@ -226,17 +263,31 @@ namespace {
             }
         }
 
-        // The thief is idle and halted, with no tick: it looks at the queues
-        // when something wakes it, so the test wakes it, as the reschedule
-        // request a real wakeup would send.
+        // An idle thief is halted, with no tick: it looks at the queues when
+        // something wakes it, so the test wakes it, as the reschedule request a
+        // real wakeup would send.
         auto const looks_before = Scheduler::Current::num_steal_looks(pair.thief);
         auto const steals_before = Scheduler::Current::num_steals(pair.thief);
-        IpiService::send_resched(pair.thief);
+        if (round.look == Round::Look::Ipi) {
+            IpiService::send_resched(pair.thief);
+        } else {
+            // From this CPU on the thief's scheduler. An idle thief is halted
+            // and is woken by the call when it takes something. The CPU is
+            // read with preemption off, so that it is the one the call is made
+            // on.
+            AutoPreemptDisabler const no_preemption;
+            round.caller = Cpu::id();
+            round.taken = Scheduler::Current::get(pair.thief).steal_work_from(round.victims);
+        }
 
-        auto const give_up = time::SteadyClock::now() + round.watch;
+        auto const asked_at = time::SteadyClock::now();
+        auto const give_up = asked_at + round.watch;
         while (time::SteadyClock::now() < give_up) {
             for (usize i = 0; i < round.movable; ++i) {
                 round.movable_seen_on_thief |= seen_on(state->spinners[i], pair.thief);
+            }
+            if (round.movable_seen_on_thief && round.first_seen == Duration::zero()) {
+                round.first_seen = time::SteadyClock::now() - asked_at;
             }
             if (round.movable_seen_on_thief && round.stop_at_first) {
                 break;
@@ -248,7 +299,7 @@ namespace {
                 round.movable_seen_count += 1;
             }
         }
-        for (usize i = round.movable; i < total; ++i) {
+        for (usize i = round.movable; i < foreign; ++i) {
             round.pinned_seen_on_thief |= seen_on(state->spinners[i], pair.thief);
         }
         round.looks = Scheduler::Current::num_steal_looks(pair.thief) - looks_before;
@@ -346,13 +397,17 @@ namespace {
                 "and the threads it took are the ones seen running on it");
     }
 
-    /// A third CPU of the thief's view, other than the victim: the first one
-    /// in the tiers up to the one with the victim. INVALID_CPU_NUM on a machine
-    /// of two.
-    auto third_cpu(Pair const pair) -> CpuNum {
+    /// A third CPU of the thief's view, other than the thief, the victim and
+    /// |except|: the first one in the tiers up to the one with the victim.
+    /// INVALID_CPU_NUM when there is none.
+    auto third_cpu(Pair const pair, CpuNum const except = INVALID_CPU_NUM) -> CpuNum {
         for (auto const &domain: task::sched::domains_of(pair.thief).view()) {
             auto others = domain.span & Cpu::online_mask();
             others.set(pair.victim, false);
+            others.set(pair.thief, false);
+            if (except != INVALID_CPU_NUM) {
+                others.set(except, false);
+            }
             auto found = INVALID_CPU_NUM;
             others.for_each([&](CpuNum const cpu) {
                 if (found == INVALID_CPU_NUM) {
@@ -393,6 +448,142 @@ namespace {
         log::info("steal.test: with a heavy thread on CPU {}, took {} of 3", third, heavy.steals);
         verdict(tally, heavy.steals == 1,
                 "the idle CPU takes the one waiting thread although the mean is above its victim");
+    }
+
+    /// The test thread kept on one CPU for the length of a scope, so that the
+    /// calls it makes are made from a CPU that is neither the thief nor the
+    /// victim. Nothing is done on a machine that has no such CPU: the calls are
+    /// then made wherever the thread is, and the rounds do not claim otherwise.
+    class CallerHome {
+      public:
+        explicit CallerHome(CpuNum const cpu) : m_cpu(cpu) {
+            if (m_cpu == INVALID_CPU_NUM) {
+                return;
+            }
+            Thread::Current::get()->set_cpu_affinity_hard(CpuMask::of(m_cpu));
+            // The thread moves at its next reschedule, which the sleep is.
+            auto _ = Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No);
+        }
+
+        ~CallerHome() {
+            if (m_cpu != INVALID_CPU_NUM) {
+                Thread::Current::get()->set_cpu_affinity_hard(cpu_all_mask());
+            }
+        }
+
+        CallerHome(CallerHome const &) = delete;
+        auto operator=(CallerHome const &) -> CallerHome & = delete;
+
+        [[nodiscard]]
+        auto cpu() const -> CpuNum {
+            return m_cpu;
+        }
+
+      private:
+        CpuNum m_cpu;
+    };
+
+    /// The scheduler of the thief is called from a CPU that is not its own,
+    /// which is not the thief's idle thread: a balancer on one CPU making
+    /// another take work. Four rounds: the thief is idle and the victim is
+    /// named; the mean is over the set the call may take from, not over the
+    /// machine; the victim is not among the CPUs it may take from; the thief is
+    /// running something, and so must take no more than the mean leaves it.
+    auto remote_rounds(Tally &tally, Pair const pair) -> void {
+        CallerHome const home{third_cpu(pair)};
+        log::info("steal.test: remote rounds, called from CPU {} (thief {}, victim {})", home.cpu(),
+                  pair.thief, pair.victim);
+        auto kind = sched_domain::TierKind::OtherNode;
+        if (pair.same_node) {
+            kind = sched_domain::TierKind::SameNode;
+        }
+
+        {
+            Round round{.movable = 3, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
+            round.look = Round::Look::Remote;
+            round.victims = CpuMask::of(pair.victim);
+            run_round(tally, pair, round);
+            verdict(tally, home.cpu() == INVALID_CPU_NUM || round.caller == home.cpu(),
+                    "the call was made from a CPU outside the pair");
+            log::info("steal.test: first seen on the thief {} us after the call",
+                      static_cast<i64>(round.first_seen.count() / 1000));
+            verdict(tally, round.taken >= 1, "a call on the thief's scheduler takes a thread");
+            // The count kept for the thief, whoever made the call.
+            verdict(tally, round.steals == round.taken && round.looks >= 1,
+                    "and it is counted for the thief");
+            verdict(tally, round.movable_seen_count == round.taken,
+                    "and the threads taken are the ones seen running on it");
+            // A thief that is halted is woken by the call. One that is not
+            // looks at its queue when its next timer fires.
+            verdict(tally, round.first_seen > Duration::zero() && round.first_seen < REMOTE_WAKE,
+                    "and the thief that was halted runs them at once");
+        }
+
+        {
+            // Eight wait on the victim and the set holds the victim alone: the
+            // mean is over the thief and the victim, four threads' worth, and
+            // the batch is what is taken. A mean over the machine would leave
+            // two on four CPUs and one on eight.
+            Round round{.movable = 8, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
+            round.look = Round::Look::Remote;
+            round.victims = CpuMask::of(pair.victim);
+            run_round(tally, pair, round);
+            auto const batch = StealPolicy::max_batch(kind);
+            log::info("steal.test: the mean over the set the call may take from: took {} of 8, "
+                      "batch {}",
+                      round.taken, batch);
+            verdict(tally, round.taken == batch,
+                    "the mean of a call is over the CPUs it may take from");
+        }
+
+        {
+            // The victim is not in the set the call may take from: a CPU of the
+            // thief's view that is not the victim, or none at all.
+            auto others = CpuMask{};
+            auto const other = third_cpu(pair, home.cpu());
+            if (other != INVALID_CPU_NUM) {
+                others = CpuMask::of(other);
+            }
+            Round round{.movable = 3, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
+            round.look = Round::Look::Remote;
+            round.victims = others;
+            run_round(tally, pair, round);
+            // Judged by the call's answer. The thief is a CPU like the others,
+            // and anything that wakes it (another subsystem's timer, an IPI)
+            // makes its own idle thread look with the whole machine in view,
+            // which takes the threads this round has queued: so what it counts
+            // and what is seen on it are not the call's.
+            verdict(tally, round.taken == 0 && round.looks >= 1,
+                    "a call that may not take from the victim takes nothing");
+        }
+
+        {
+            // The thief runs a thread of its own, and every CPU is in view.
+            // Of four threads on two CPUs the mean is two and the thief is one
+            // short, so it takes one that fits. With more CPUs in view the
+            // mean is above the thief by less than one thread, and it takes
+            // none. An idle thief would take one in both.
+            Round round{
+                .movable = 3, .on_thief = 1, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
+            round.look = Round::Look::Remote;
+            run_round(tally, pair, round);
+
+            usize cpus = 1;
+            for (auto const &domain: task::sched::domains_of(pair.thief).view()) {
+                cpus += (domain.span & Cpu::online_mask()).count();
+                if (domain.span.test(pair.victim)) {
+                    break;
+                }
+            }
+            usize most = 0;
+            if (cpus == 2) {
+                most = 1;
+            }
+            log::info("steal.test: a busy thief with {} CPUs in view took {} of 3, at most {}",
+                      cpus, round.taken, most);
+            verdict(tally, round.taken <= most && round.looks >= 1,
+                    "a thief that is running something takes only what fits the mean");
+        }
     }
 
     /// The knobs steer the look. Each is set, a round is run, and the knob is
@@ -483,6 +674,8 @@ namespace {
         heavy_round(tally, pair);
 
         knob_rounds(tally, pair);
+
+        remote_rounds(tally, pair);
     }
 
     auto steal_test_command(int, char **) -> int {
