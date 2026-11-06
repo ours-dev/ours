@@ -48,6 +48,11 @@ kernel_test("sleep") {
   deps = _HEADER_DEPS
 }
 
+kernel_test("user_copy") {
+  sources = [ "user_copy_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
 kernel_test("pin_lines") {
   sources = [ "pin_lines_test.cpp" ]
   deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
@@ -65,6 +70,36 @@ kernel_test("irq_controller") {
 
 kernel_test("bti_stress") {
   sources = [ "bti_stress_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("irq_rcu") {
+  sources = [ "irq_rcu_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("timer") {
+  sources = [ "timer_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("ioport") {
+  sources = [ "ioport_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("memory_pressure") {
+  sources = [ "memory_pressure_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("resource") {
+  sources = [ "resource_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("bti") {
+  sources = [ "bti_test.cpp" ]
   deps = _HEADER_DEPS
 }
 
@@ -162,9 +197,16 @@ source_set("kernel.tests") {
     ":irq_controller",
     ":page_queues",
     ":pin_lines",
+    ":bti",
+    ":irq_rcu",
+    ":ioport",
+    ":memory_pressure",
     ":preempt",
+    ":resource",
     ":sleep",
+    ":timer",
     ":tick_broadcast",
+    ":user_copy",
     ":tick_fallback",
     ":vm_address",
     ":vma_phys",

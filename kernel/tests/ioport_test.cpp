@@ -1,9 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `ioport.test`: the I/O bitmap behind ioports_request and ioports_release
-// (.agents/tasks/microkernel-interrupts/PLAN.md, step 10), as the TSS a CPU
-// consults on every in and out from ring 3 shows it.
+// Ioport.PortsFollowTheAspaceAndReloadOnOtherCpus: the I/O bitmap behind
+// ioports_request and ioports_release (.agents/tasks/microkernel-interrupts/
+// PLAN.md, step 10), as the TSS a CPU consults on every in and out from ring 3
+// shows it.
 //
 //   - The runs: on a user address space of the test's own, opens and closes
 //     that stand alone, touch, overlap, swallow several runs, trim runs and
@@ -23,7 +24,7 @@
 //     reload off with interrupts, switches to another address space after
 //     the runs changed; the switch closes the port the runs no longer name.
 //
-// A console command because what is checked is the bitmap the CPU consults,
+// Why an in-kernel test: what is checked is the bitmap the CPU consults,
 // which only the kernel can read, and the reload needs two CPUs. Ring 0 is
 // not asked about ports, so the test opens and closes them without touching
 // a device. The shell's ioport check covers the system calls and a process
@@ -45,8 +46,8 @@
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <ustl/option.hpp>
 #include <ustl/rc.hpp>
@@ -68,21 +69,6 @@ namespace {
 
     /// Generous for the reason mutex.stress's STUCK_AFTER is: QEMU's TCG.
     constexpr auto LOST_AFTER = Seconds(5);
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("ioport.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("ioport.test: FAIL  {}", name);
-    }
 
     /// Spins until |condition| holds or LOST_AFTER has passed.
     template <typename Condition>
@@ -119,21 +105,10 @@ namespace {
         for (u32 port = 0; port < WINDOW; ++port) {
             auto const open = IoBitmap::open_here(port);
             if (open != model[port]) {
-                log::error("ioport.test:   after {}: port {:#x} is {}, expected {}", after, port,
-                           open, model[port]);
+                log::error("ioport:   after {}: port {:#x} is {}, expected {}", after, port, open,
+                           model[port]);
                 return false;
             }
-        }
-        return true;
-    }
-
-    auto user_aspace(char const *const name, ustl::Arc<mm::VmAspace> *const out) -> bool {
-        auto const status =
-            mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE, mm::VmasKind::User,
-                                 mm::VmasFlags::None, name, out);
-        if (status != Status::Ok) {
-            log::error("ioport.test: could not create an address space: {}", to_string(status));
-            return false;
         }
         return true;
     }
@@ -184,7 +159,7 @@ namespace {
     /// The steps above on |aspace|, which the calling thread is on, each
     /// compared with the model; then the last port there is, and the
     /// arguments. Leaves the last two runs open, for the switch check.
-    auto check_runs(Tally &tally, mm::VmAspace &aspace, Model &model) -> void {
+    auto check_runs(mm::VmAspace &aspace, Model &model) -> void {
         auto &arch_aspace = aspace.arch_aspace();
         auto failed_step = static_cast<char const *>(nullptr);
         for (auto const &step: RUN_STEPS) {
@@ -198,7 +173,7 @@ namespace {
                 model[port] = step.open;
             }
             if (status != Status::Ok) {
-                log::error("ioport.test:   {} answered {}", step.name, to_string(status));
+                log::error("ioport:   {} answered {}", step.name, to_string(status));
                 failed_step = step.name;
                 break;
             }
@@ -208,10 +183,10 @@ namespace {
             }
         }
         if (failed_step != nullptr) {
-            log::error("ioport.test:   the runs went wrong at \"{}\"", failed_step);
+            log::error("ioport:   the runs went wrong at \"{}\"", failed_step);
         }
-        verdict(tally, failed_step == nullptr,
-                "opens and closes leave open what a bit per port says, and nothing beside it");
+        EXPECT_TRUE(failed_step == nullptr,
+                    "opens and closes leave open what a bit per port says, and nothing beside it");
 
         constexpr auto LAST = X86Tss::NUM_IO_PORTS - 1;
         auto const opened = arch_aspace.open_ioports(LAST - 7, 8) == Status::Ok;
@@ -228,28 +203,32 @@ namespace {
             task::AutoPreemptDisabler no_preemption;
             closed_at_top = !IoBitmap::open_here(LAST);
         }
-        verdict(tally, opened && open_at_top && closed_below && reclosed && closed_at_top,
-                "the last port opens and closes like any other");
+        EXPECT_TRUE(opened && open_at_top && closed_below && reclosed && closed_at_top,
+                    "the last port opens and closes like any other");
 
         auto const past = arch_aspace.open_ioports(LAST, 2);
         auto const empty = arch_aspace.open_ioports(0x20, 0);
-        verdict(tally, past == Status::InvArgs, "a range past the last port is InvArgs");
-        verdict(tally, empty == Status::Ok && window_is(model, "an empty open"),
-                "an empty range changes nothing");
+        EXPECT_EQ(past, Status::InvArgs, "a range past the last port is InvArgs");
+        EXPECT_TRUE(empty == Status::Ok && window_is(model, "an empty open"),
+                    "an empty range changes nothing");
     }
 
     /// The test's ports follow it from one address space to the next.
-    auto check_switch(Tally &tally, mm::VmAspace &aspace, mm::VmAspace &kernel_aspace,
-                      Model const &model) -> void {
+    auto check_switch(mm::VmAspace &aspace, mm::VmAspace &kernel_aspace, Model const &model)
+        -> void {
         constexpr Model NONE{};
 
         attach(&kernel_aspace);
-        verdict(tally, window_is(NONE, "switching to the kernel's address space"),
-                "the kernel's address space opens none of them");
+        EXPECT_TRUE(window_is(NONE, "switching to the kernel's address space"),
+                    "the kernel's address space opens none of them");
 
         ustl::Arc<mm::VmAspace> other;
-        if (!user_aspace("ioport.test.other", &other)) {
-            verdict(tally, false, "create a second address space");
+        auto const created =
+            mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE, mm::VmasKind::User,
+                                 mm::VmasFlags::None, "ioport.test.other", &other);
+        if (created != Status::Ok) {
+            log::error("ioport: could not create an address space: {}", to_string(created));
+            EXPECT_TRUE(false, "create a second address space");
             attach(&aspace);
             return;
         }
@@ -257,18 +236,17 @@ namespace {
         auto const none_in_other = window_is(NONE, "switching to another address space");
         attach(&aspace);
         auto const open_again = window_is(model, "switching back");
-        verdict(tally, none_in_other, "another address space opens none of them");
-        verdict(tally, open_again, "switching back opens them again");
+        EXPECT_TRUE(none_in_other, "another address space opens none of them");
+        EXPECT_TRUE(open_again, "switching back opens them again");
 
         attach(&kernel_aspace);
         if (auto const status = other->destroy(); status != Status::Ok) {
-            log::error("ioport.test: could not destroy the second address space: {}",
-                       to_string(status));
+            log::error("ioport: could not destroy the second address space: {}", to_string(status));
         }
         attach(&aspace);
     }
 
-    /// What the observer on the other CPU and the command share.
+    /// What the observer on the other CPU and the test share.
     struct ReloadCase {
         mm::VmAspace *kernel_aspace;
         std::atomic<bool> stop{false};
@@ -276,10 +254,10 @@ namespace {
         /// Whether RELOAD_PORT was open, at the read |reads| counts.
         std::atomic<bool> open{false};
         std::atomic<usize> reads{0};
-        /// The switch made while a close is on its way: the command asks for
+        /// The switch made while a close is on its way: the test asks for
         /// it (|hold|), the observer has interrupts off (|held|), and what the
         /// observer saw: its TSS stale before the switch, and RELOAD_PORT
-        /// still open after it. Read by the command once |done| is set.
+        /// still open after it. Read by the test once |done| is set.
         std::atomic<bool> hold{false};
         std::atomic<bool> held{false};
         bool saw_stale = false;
@@ -289,7 +267,7 @@ namespace {
     /// The window IoBitmap's version is there for, made on purpose: the
     /// observer's CPU switches to another address space after a close has
     /// changed the runs and before the close's reload reaches it. Interrupts
-    /// are off from before the command closes until after the switch, so the
+    /// are off from before the test closes until after the switch, so the
     /// reload's interrupt waits, and the close cannot return before then.
     ///
     /// The switch has to close RELOAD_PORT although the runs no longer name
@@ -309,7 +287,7 @@ namespace {
 
     /// Runs in the test's address space, set before it was resumed, on a CPU
     /// of its own, and reads RELOAD_PORT's bit in that CPU's TSS in a loop,
-    /// until the command says stop, or asks for the switch while stale.
+    /// until the test says stop, or asks for the switch while stale.
     auto observe_loop(void *const arg) -> i32 {
         auto &c = *static_cast<ReloadCase *>(arg);
         while (!c.stop.load(std::memory_order_acquire) && !c.hold.load(std::memory_order_acquire)) {
@@ -322,14 +300,14 @@ namespace {
             c.reads.fetch_add(1, std::memory_order_release);
             arch::spin_hint();
         }
-        // Off the test's address space before saying so: once the command
+        // Off the test's address space before saying so: once the test
         // sees |done| it destroys it.
         if (c.hold.load(std::memory_order_acquire)) {
             switch_while_stale(c);
         } else {
             attach(c.kernel_aspace);
         }
-        // Last touch of |c|: once the command sees this, it frees it.
+        // Last touch of |c|: once the test sees this, it frees it.
         c.done.store(true, std::memory_order_release);
         return 0;
     }
@@ -345,24 +323,24 @@ namespace {
         return c.open.load(std::memory_order_relaxed);
     }
 
-    /// The command runs on the kernel's address space here, so the only CPU
+    /// The test runs on the kernel's address space here, so the only CPU
     /// running the test's is the observer's: the reload reaches it through
     /// an interrupt, not as the caller's own share of sync_exec().
     ///
     /// Answers whether no observer is left: one that did not stop may still
     /// run in |aspace|, which the caller must then not free.
     [[nodiscard]]
-    auto check_reload(Tally &tally, mm::VmAspace &aspace, mm::VmAspace &kernel_aspace) -> bool {
+    auto check_reload(mm::VmAspace &aspace, mm::VmAspace &kernel_aspace) -> bool {
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 2) {
-            log::warn("ioport.test:   skipped the reload check: it needs two online CPUs, have {}",
+            log::warn("ioport:   skipped the reload check: it needs two online CPUs, have {}",
                       num_cpus);
             return true;
         }
 
         auto *const c = new (mm::ALLOC_KERNEL) ReloadCase{};
         if (c == nullptr) {
-            verdict(tally, false, "allocate the reload case");
+            EXPECT_TRUE(false, "allocate the reload case");
             return true;
         }
         c->kernel_aspace = &kernel_aspace;
@@ -370,7 +348,7 @@ namespace {
         auto *const observer =
             task::Thread::spawn("ioport-test-observer", observe_loop, c, task::DEFAULT_PRIORITY);
         if (observer == nullptr) {
-            verdict(tally, false, "spawn the observer");
+            EXPECT_TRUE(false, "spawn the observer");
             delete c;
             return true;
         }
@@ -384,7 +362,7 @@ namespace {
 
         auto const running =
             spin_until([c] { return c->reads.load(std::memory_order_acquire) != 0; });
-        verdict(tally, running, "the observer runs in the test's address space");
+        EXPECT_TRUE(running, "the observer runs in the test's address space");
 
         auto &arch_aspace = aspace.arch_aspace();
         auto before = ustl::Option<bool>();
@@ -421,62 +399,50 @@ namespace {
 
         c->stop.store(true, std::memory_order_release);
         if (!spin_until([c] { return c->done.load(std::memory_order_acquire); })) {
-            log::error("ioport.test:   the observer did not stop; leaking its state and the test's "
+            log::error("ioport:   the observer did not stop; leaking its state and the test's "
                        "address space");
-            verdict(tally, false, "the observer stops");
+            EXPECT_TRUE(false, "the observer stops");
             return false;
         }
         auto const saw_stale = c->saw_stale;
         auto const open_after_switch = c->open_after_switch;
         delete c;
 
-        verdict(tally, before.is_some() && !*before, "the port starts closed on the other CPU");
-        verdict(tally, opened.is_some() && *opened,
-                "a port opened here is open on the other CPU when the open returns");
-        verdict(tally, closed.is_some() && !*closed, "and closed there when the close returns");
-        verdict(tally, !open_here, "this CPU, on another address space, never opens it");
-        verdict(tally, reopened.is_some() && *reopened && closed_while_held && saw_stale,
-                "the other CPU switches away while a close's reload is on its way to it");
-        verdict(tally, !open_after_switch,
-                "and that switch closes the port, though the runs no longer name it");
+        EXPECT_TRUE(before.is_some() && !*before, "the port starts closed on the other CPU");
+        EXPECT_TRUE(opened.is_some() && *opened,
+                    "a port opened here is open on the other CPU when the open returns");
+        EXPECT_TRUE(closed.is_some() && !*closed, "and closed there when the close returns");
+        EXPECT_TRUE(!open_here, "this CPU, on another address space, never opens it");
+        EXPECT_TRUE(reopened.is_some() && *reopened && closed_while_held && saw_stale,
+                    "the other CPU switches away while a close's reload is on its way to it");
+        EXPECT_TRUE(!open_after_switch,
+                    "and that switch closes the port, though the runs no longer name it");
         return true;
     }
 
-    auto ioport_test_command(int, char **) -> int {
-        Tally tally;
-
+    KTEST(Ioport, PortsFollowTheAspaceAndReloadOnOtherCpus) {
         ustl::Arc<mm::VmAspace> aspace;
-        if (!user_aspace("ioport.test", &aspace)) {
-            return 1;
-        }
+        ASSERT_OK(mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                       mm::VmasKind::User, mm::VmasFlags::None, "ioport.test",
+                                       &aspace),
+                  "create the address space");
         auto *const previous = attach(aspace.as_ptr_mut());
 
         Model model{};
-        check_runs(tally, *aspace, model);
-        check_switch(tally, *aspace, *previous, model);
+        check_runs(*aspace, model);
+        check_switch(*aspace, *previous, model);
 
         // On the thread's own address space for the rest, and before the
         // test's goes, so that nothing is left running on tables being freed.
         attach(previous);
-        if (!check_reload(tally, *aspace, *previous)) {
+        if (!check_reload(*aspace, *previous)) {
             // The observer may still run on these tables, so they are leaked
             // with its state rather than freed under it.
             auto _ = aspace.into_raw();
         } else if (auto const status = aspace->destroy(); status != Status::Ok) {
-            log::error("ioport.test: could not destroy the address space: {}", to_string(status));
-            tally.failed += 1;
+            log::error("ioport: could not destroy the address space: {}", to_string(status));
+            EXPECT_TRUE(false, "the address space is destroyed");
         }
-
-        if (tally.failed != 0) {
-            log::error("ioport.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("ioport.test: ok -- {} checks", tally.passed);
-        return 0;
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(IoportTest, "ioport.test", ours::ioport_test_command,
-             "open and close I/O ports in an address space of the test's own and check the TSS");

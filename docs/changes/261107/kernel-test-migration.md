@@ -36,3 +36,38 @@ None.
 - Why is Preempt skipped rather than converted with wider bounds, and what would widening it silently have hidden?
 - Why can an assertion's message not take a `char const*` variable, and what is the pattern for a runtime name?
 - What does the audit script compare, and why is a message-count diff alone not enough?
+
+## Batch 3: seven more console tests become ktest suites (2026-11-07)
+
+**Files**
+- `kernel/tests/{user_copy,irq_rcu,timer,ioport,memory_pressure,resource,bti}_test.cpp` — moved from `kernel/commands/`, one `KTEST` each.
+- The two BUILD.gn files — the seven move between the targets.
+
+**Symptom**
+Latent: the same Tally/verdict boilerplate as batch 2's list, on the next seven off the size-ordered list (448-610 lines).
+
+**Cause**
+The migration is incremental.
+
+**Change**
+The established pattern. user_copy's conversion is the one with teeth: its checks run on a real user address space the test attaches its own thread to, and the whole-volume path btreefs uses makes this the first booted exercise of `Thread::Current::soft_fault()` and the capturing copies since the volume round. The audit again compared every verdict message verbatim (13/13 in user_copy, 22/22 irq_rcu, 12/12 timer, 18/18 ioport, 20/20 memory_pressure with setup failures as imperative FAILs, 16/16 resource, 33/33 bti stitched across adjacent literals). Status and Rights have no `std::formatter`, so the agents used `EXPECT_TRUE(cond, msg)` for those and named `EXPECT_EQ` only where both sides print — the committed batch-1/2 practice.
+
+**Reference**
+Batches 1-2 and the interface design; LVM round's btreefs whole-volume path is what makes user_copy's on-target run load-bearing.
+
+**Verification**
+`ktest list` 42 tests. On the dbg image: UserCopy, IrqRcu, Timer, Ioport, MemoryPressure, Resource, Bti each `ran=1 passed=1`. boot_check: dbg 46/5/0, rel 44/8/0 7/7 required, host-tests 183/0.
+
+**Deliberately not done**
+`port.test` takes run options — finale batch.
+
+**How it was found**
+None (mechanical).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does `EXPECT_EQ` stay off `Status`/`Rights` comparisons in these tests?
+- What runs now that the volume manager's LV serves ours.block.Block and user_copy's checks are booted?
+- Why are setup failures in void helpers `FAIL` but in non-void helpers `EXPECT_TRUE(false, ...)` + return?
