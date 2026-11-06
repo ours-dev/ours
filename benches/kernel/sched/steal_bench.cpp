@@ -2,10 +2,11 @@
 /// Copyright (c) 2026 ours Developers
 //
 // `steal.bench`: what the work-stealing knobs do to eight threads that start
-// on one CPU (.agents/tasks/steal-policy-measure/DESIGN.md, workloads W1 and
-// W2). A controller on the first online CPU starts the workers on the next
-// one, lets the others halt, then allows the workers on the next three CPUs and
-// wakes the two new ones with a reschedule request, as a wakeup would. The
+// on one CPU, and to three or four (.agents/tasks/steal-policy-measure/
+// DESIGN.md, workloads W1 and W2). A controller on the first online CPU starts
+// the workers on the next one, lets the others halt, then allows the workers on
+// the next three CPUs and wakes the two new ones with a reschedule request, as
+// a wakeup would. The
 // workers are a register-only loop, so how fast one runs does not depend on a
 // cache. For a window of two seconds from that moment it watches where the
 // workers are, and measures:
@@ -16,7 +17,8 @@
 //   w1 moved     the threads the thieves took (schedule.steals), in all.
 //   w1 spread    the most workers on one of the three CPUs less the fewest, at
 //                the end. Three CPUs hold eight workers as 3/3/2, a spread of
-//                one; nobody stealing leaves 8/0/0, a spread of eight.
+//                one; nobody stealing leaves 8/0/0, a spread of eight. Three
+//                workers spread one each (0) or not, four as 2/1/1 (1) or not.
 //   w1 slowest   the progress of the slowest worker over the mean progress of
 //                the eight: near 1 when each had its share of a CPU. A thread
 //                runs in slices of 64 ms, and the window holds about 31 of
@@ -48,12 +50,13 @@
 //
 // `csv` also prints every raw sample, one line each, as `steal.bench: csv:
 // case,metric,unit,value`: the rows a performance report keeps
-// (docs/perf/TEMPLATE.md). The case is the configuration. `rounds` is the
-// number of rounds, seven if not given, the warm-up included: six rows of each
-// metric and configuration a boot, thirty over five boots. A round of one
-// configuration takes 2.7 s of waiting, so the default is about 132 s, longer
-// than `kshell_run.py`'s default command timeout: pass `--command-timeout
-// 300`. One round is the warm-up alone and prints no rows.
+// (docs/perf/TEMPLATE.md). The case is the configuration, with `3w` or `4w` in
+// front of it when the workers are three or four and not eight. `rounds` is
+// the number of rounds, seven if not given, the warm-up included: six rows of
+// each metric and configuration a boot, thirty over five boots. A round of one
+// configuration takes 2.7 s of waiting and there are fifteen, so the default is
+// about 284 s, longer than `kshell_run.py`'s default command timeout: pass
+// `--command-timeout 600`. One round is the warm-up alone and prints no rows.
 //
 // Written for a machine of four CPUs: the controller's, which holds no worker
 // and is in the mean the thieves reach, and the three of the workers. That mean
@@ -89,7 +92,8 @@ namespace {
     using task::sched::StealPolicy;
     using time::SteadyClock;
 
-    constexpr usize WORKERS = 8;
+    /// The most workers a configuration starts.
+    constexpr usize MAX_WORKERS = 8;
     constexpr usize WORKER_CPUS = 3;
     /// The controller's CPU and the workers'.
     constexpr usize CPUS_NEEDED = WORKER_CPUS + 1;
@@ -124,6 +128,8 @@ namespace {
     /// One configuration: the knobs it sets away from their defaults.
     struct Config {
         char const *name;
+        /// How many workers start on the first CPU.
+        usize workers;
         usize count;
         Knob knobs[2];
         usize values[2];
@@ -131,15 +137,39 @@ namespace {
 
     /// Stealing off is the negative control: it must show no balance. A batch
     /// of one stands for the old behaviour of one thread per look.
+    ///
+    /// Eight workers queue deeper than any threshold swept, so the thresholds
+    /// show only on a queue of about their depth: three or four workers, where
+    /// the run queue holds as many threads, the one running counted, as a
+    /// threshold asks for. A batch of more than one cannot show there, since a
+    /// look takes the one thread the mean leaves room for.
     constexpr Config CONFIGS[] = {
-        {"off", 1, {Knob::Enabled, Knob::Enabled}, {0, 0}},
-        {"default", 0, {Knob::Enabled, Knob::Enabled}, {0, 0}},
-        {"batch1", 2, {Knob::MaxBatchSameNode, Knob::MaxBatchOtherNode}, {1, 1}},
-        {"batch2", 2, {Knob::MaxBatchSameNode, Knob::MaxBatchOtherNode}, {2, 2}},
-        {"batch8", 2, {Knob::MaxBatchSameNode, Knob::MaxBatchOtherNode}, {8, 8}},
-        {"min3", 1, {Knob::MinRunnableSameNode, Knob::MinRunnableSameNode}, {3, 3}},
-        {"min4", 1, {Knob::MinRunnableSameNode, Knob::MinRunnableSameNode}, {4, 4}},
+        {"off", 8, 1, {Knob::Enabled, Knob::Enabled}, {0, 0}},
+        {"default", 8, 0, {Knob::Enabled, Knob::Enabled}, {0, 0}},
+        {"batch1", 8, 2, {Knob::MaxBatchSameNode, Knob::MaxBatchOtherNode}, {1, 1}},
+        {"batch2", 8, 2, {Knob::MaxBatchSameNode, Knob::MaxBatchOtherNode}, {2, 2}},
+        {"batch8", 8, 2, {Knob::MaxBatchSameNode, Knob::MaxBatchOtherNode}, {8, 8}},
+        {"min3", 8, 1, {Knob::MinRunnableSameNode, Knob::MinRunnableSameNode}, {3, 3}},
+        {"min4", 8, 1, {Knob::MinRunnableSameNode, Knob::MinRunnableSameNode}, {4, 4}},
+        {"3w off", 3, 1, {Knob::Enabled, Knob::Enabled}, {0, 0}},
+        {"3w default", 3, 0, {Knob::Enabled, Knob::Enabled}, {0, 0}},
+        {"3w min3", 3, 1, {Knob::MinRunnableSameNode, Knob::MinRunnableSameNode}, {3, 3}},
+        {"3w min4", 3, 1, {Knob::MinRunnableSameNode, Knob::MinRunnableSameNode}, {4, 4}},
+        {"4w off", 4, 1, {Knob::Enabled, Knob::Enabled}, {0, 0}},
+        {"4w default", 4, 0, {Knob::Enabled, Knob::Enabled}, {0, 0}},
+        {"4w min3", 4, 1, {Knob::MinRunnableSameNode, Knob::MinRunnableSameNode}, {3, 3}},
+        {"4w min4", 4, 1, {Knob::MinRunnableSameNode, Knob::MinRunnableSameNode}, {4, 4}},
     };
+
+    constexpr auto workers_fit() -> bool {
+        for (auto const &config: CONFIGS) {
+            if (config.workers == 0 || config.workers > MAX_WORKERS) {
+                return false;
+            }
+        }
+        return true;
+    }
+    static_assert(workers_fit());
 
     /// The knobs as they were, put back when the command ends.
     class SavedKnobs {
@@ -208,7 +238,7 @@ namespace {
 
     struct State {
         std::atomic<bool> stop{false};
-        Worker workers[WORKERS];
+        Worker workers[MAX_WORKERS];
 
         State() {
             for (auto &worker: workers) {
@@ -319,7 +349,7 @@ namespace {
 
       private:
         State *m_state = nullptr;
-        Thread *m_threads[WORKERS]{};
+        Thread *m_threads[MAX_WORKERS]{};
         usize m_count = 0;
     };
 
@@ -384,12 +414,13 @@ namespace {
         }
 
         Crew crew;
-        if (!crew.start(WORKERS, cpus[1])) {
+        auto const workers = config.workers;
+        if (!crew.start(workers, cpus[1])) {
             log::error("steal.bench: {}: the workers did not start", config.name);
             return false;
         }
         sleep_for(SETTLE);
-        for (usize i = 0; i < WORKERS; ++i) {
+        for (usize i = 0; i < workers; ++i) {
             if (crew.cpu_of(i) != cpus[1]) {
                 log::error("steal.bench: {}: worker {} is on CPU {}, not CPU {}", config.name, i,
                            crew.cpu_of(i), cpus[1]);
@@ -398,8 +429,8 @@ namespace {
         }
 
         // The moment they are allowed to move.
-        u64 before[WORKERS];
-        for (usize i = 0; i < WORKERS; ++i) {
+        u64 before[MAX_WORKERS];
+        for (usize i = 0; i < workers; ++i) {
             before[i] = crew.iterations(i);
         }
         auto const steals_before = steals_in_all(cpus);
@@ -413,8 +444,8 @@ namespace {
             IpiService::send_resched(cpus[i]);
         }
 
-        CpuNum seen[WORKERS];
-        for (usize i = 0; i < WORKERS; ++i) {
+        CpuNum seen[MAX_WORKERS];
+        for (usize i = 0; i < workers; ++i) {
             seen[i] = cpus[1];
         }
         auto last_change = started;
@@ -423,7 +454,7 @@ namespace {
         while (now < ends) {
             sleep_for(POLL_INTERVAL);
             now = SteadyClock::now();
-            for (usize i = 0; i < WORKERS; ++i) {
+            for (usize i = 0; i < workers; ++i) {
                 auto const where = crew.cpu_of(i);
                 if (where != seen[i]) {
                     seen[i] = where;
@@ -434,10 +465,10 @@ namespace {
 
         // Read before the workers stop, so that stopping them is not in the
         // window.
-        u64 progress[WORKERS];
+        u64 progress[MAX_WORKERS];
         u64 total = 0;
         u64 slowest = 0;
-        for (usize i = 0; i < WORKERS; ++i) {
+        for (usize i = 0; i < workers; ++i) {
             progress[i] = crew.iterations(i) - before[i];
             total += progress[i];
             if (i == 0 || progress[i] < slowest) {
@@ -458,7 +489,7 @@ namespace {
         out.moved = steals_after - steals_before;
         out.settle_us = static_cast<u64>((last_change - started).count() / 1000);
         out.settled = (now - last_change) >= STABLE_FOR;
-        for (usize i = 0; i < WORKERS; ++i) {
+        for (usize i = 0; i < workers; ++i) {
             for (usize c = 0; c < WORKER_CPUS; ++c) {
                 if (seen[i] == cpus[1 + c]) {
                     out.per_cpu[c] += 1;
@@ -476,7 +507,7 @@ namespace {
             }
         }
         out.spread = most - fewest;
-        out.slowest_milli = slowest * WORKERS * 1000 / total;
+        out.slowest_milli = slowest * workers * 1000 / total;
         out.cpus_milli = total * 1000 / alone;
         return true;
     }

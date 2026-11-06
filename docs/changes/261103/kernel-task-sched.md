@@ -1382,3 +1382,48 @@ None (predictions are paused)
 - Why does eight workers on one CPU end 4/2/2 with the defaults, and why does nobody take a further thread?
 - Why is `w2 cpus` almost the same for batch 1 and batch 8, and which metric shows the difference?
 - Why can this workload not tell a same-node threshold of 3 from 4, and what queue would?
+
+## Title: steal.bench adds a shallow queue, where the thresholds show (2026-11-06)
+
+**Files**
+- `benches/kernel/sched/steal_bench.cpp` — `Config::workers`, eight more configurations (`3w` and `4w` with off, the defaults, `min3`, `min4`), `MAX_WORKERS`, a compile-time check that every configuration fits it
+- `.agents/tasks/steal-policy-measure/DESIGN.md` — the sweep is fifteen configurations; the open question about the thresholds is closed
+
+**Symptom**
+`min3` and `min4` gave the same result as the defaults in `steal.bench`: eight workers on one CPU queue deeper than any threshold swept, so the thresholds (repair item 24) could not be told apart by W1 and W2. The report would have had to write "not distinguished" for two of the five knobs.
+
+**Cause**
+The threshold asks how many threads a CPU must hold, the one it runs counted, for another to take one from it. A queue of eight satisfies every value from 2 to 4, and with it every look. The knob only decides on a queue of about its own depth, so the sweep needs one: three or four workers on the first CPU. A batch of more than one cannot show there either: a look takes the one thread the mean leaves room for, so the shallow cases are off, the defaults and the two thresholds only.
+
+**Change**
+```text
+before   7 configurations, all with 8 workers
+after    + 3w and 4w: off, default, min3, min4  (a worker count in each Config)
+         the mean rule predicts, per CPU (CPU 1 runs the workers; CPU 2 looks, then CPU 3):
+           3w default 1/1/1   3w min3 2/1/0   3w min4 3/0/0   (min3: after one take CPU 1 holds 2)
+           4w default 2/1/1   4w min3 2/1/1   4w min4 3/1/0   (min4: after one take CPU 1 holds 3)
+```
+A default run is fifteen configurations of 2.7 s for seven rounds, 284 s, so it takes `kshell_run.py --command-timeout 600`.
+
+**Reference**
+None.
+
+**Verification**
+- The prediction above was written before the run. Two rounds on the default lane gave exactly it (which of CPU 2 and CPU 3 took the one thread of `3w min3` varied, 2/0/1 or 2/1/0, with the same spread): off 3/0/0 and 4/0/0 with 1.0 CPU, `3w default` 1/1/1 with 3.0 CPUs, `3w min4` 3/0/0 with 1.0, `3w min3` 2.0 CPUs, `4w default` and `4w min3` 2/1/1 with 2.9, `4w min4` 3/1/0 with 2.0. One round on the Fair lane gave the same. The first round of the default lane read 1.58 CPUs for `3w min4` where 1.0 is the answer; it is the warm-up round and was 0.996 in the next, and the Fair lane read 0.994.
+- `boot_check.py`: default dbg PASS (46/5/0), rel PASS (44/8/0, 7/7), host-tests PASS (181); Fair and four-node lanes `--no-tests` dbg and rel PASS. clang-tidy reports nothing on the file.
+- Not reviewed separately: the change is a table, a loop bound and a comment, on a file the review of the preceding entry covered.
+
+**Deliberately not done**
+- Batches on the shallow queue, and the other-node threshold: the first cannot show, the second needs a node boundary that QEMU's timing does not model.
+- A full run of the sweep: that is step 4.
+
+**How it was found**
+The first run of `steal.bench` (preceding entry): `min3` and `min4` equal to the defaults, in every round.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why can a queue of eight not tell a threshold of 3 from 4, and a queue of three can?
+- Why does `3w min3` stop at one thread taken when `3w default` takes two?
+- Why is no batch swept on the shallow queue?
