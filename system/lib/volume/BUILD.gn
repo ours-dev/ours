@@ -29,8 +29,27 @@ cpp_interface("headers") {
   visibility = [ "*" ]
 }
 
+# The LV as a block server: the same ours.block.Block the device drivers
+# speak, whose requests the mapping splits into runs and drives through
+# one prot::block::Client per PV. Header-only: the server is a template
+# over its own type, as block-server's is.
+cpp_interface("lv_server") {
+  public = [ "include/volume/lv_server.hpp" ]
+  public_deps = [
+    ":headers",
+    "//system/lib/block-server:headers",
+    "//system/lib/loop:headers",
+    "//system/lib/protocols:block_client.headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
 # Host unit tests; wired into //:default.
 group("tests") {
   testonly = true
-  public_deps = [ "test:volume($host_toolchain)" ]
+  public_deps = [
+    "test:lv_server($host_toolchain)",
+    "test:volume($host_toolchain)",
+  ]
 }

@@ -330,6 +330,101 @@ TEST(VolumeGroup, StripeMissingLegReadsNotFound) {
     EXPECT_EQ(group.map(0, 0).unwrap_err(), Status::NotFound);
 }
 
+/// The request splitter: a linear LV's request crossing the extent
+/// boundary splits in two, a striped LV's request never crosses a chunk
+/// while the chunk holds the protocol's largest request, and the range's
+/// end refuses.
+TEST(VolumeGroup, MapRuns) {
+    auto linear = lv_with("lin");
+    linear.kind = Kind::Linear;
+    linear.sector_count = 2 * u64{EXTENT_SECTORS};
+    auto linear_segments = std::array<Segment, 2>{Segment{.lv = 0,
+                                                          .pv = 0,
+                                                          .role = 0,
+                                                          .first_logical = 0,
+                                                          .first_physical = 0,
+                                                          .extent_count = 1},
+                                                  Segment{.lv = 0,
+                                                          .pv = 1,
+                                                          .role = 0,
+                                                          .first_logical = 1,
+                                                          .first_physical = 3,
+                                                          .extent_count = 1}};
+    auto striped = lv_with("st");
+    striped.kind = Kind::Striped;
+    striped.chunk_sectors = 8;
+    striped.stripe_count = 2;
+    striped.sector_count = 2 * u64{EXTENT_SECTORS};
+    auto striped_segments = std::array<Segment, 2>{Segment{.lv = 1,
+                                                           .pv = 0,
+                                                           .role = static_cast<u16>(Kind::Striped),
+                                                           .first_logical = 0,
+                                                           .first_physical = 1,
+                                                           .extent_count = 1},
+                                                   Segment{.lv = 1,
+                                                           .pv = 1,
+                                                           .role = static_cast<u16>(Kind::Striped),
+                                                           .first_logical = 1,
+                                                           .first_physical = 2,
+                                                           .extent_count = 1}};
+    auto lv_list = std::array<Lv, 2>{linear, striped};
+
+    auto group = volume::VolumeGroup{};
+    ASSERT_EQ(
+        group.add_pv(pv_header(0, 4, lv_list, std::span<Segment const>{linear_segments}.first(1))),
+        Status::Ok);
+    ASSERT_EQ(
+        group.add_pv(pv_header(1, 4, lv_list, std::span<Segment const>{linear_segments}.last(1))),
+        Status::Ok);
+    // The striped legs' segments: each PV's header carries its own.
+    auto group_striped = [&] {
+        auto g = volume::VolumeGroup{};
+        // PV 0 carries the linear extent 0 and the striped leg 0; PV 1,
+        // the linear extent 1 and the striped leg 1. The headers below
+        // gather both LVs' segments the way real ones would.
+        auto pv0_segments = std::array<Segment, 2>{linear_segments[0], striped_segments[0]};
+        auto pv1_segments = std::array<Segment, 2>{linear_segments[1], striped_segments[1]};
+        EXPECT_EQ(g.add_pv(pv_header(0, 4, lv_list, std::span<Segment const>{pv0_segments})),
+                  Status::Ok);
+        EXPECT_EQ(g.add_pv(pv_header(1, 4, lv_list, std::span<Segment const>{pv1_segments})),
+                  Status::Ok);
+        return g;
+    }();
+
+    // A linear request crossing the seam: sector 2045, four sectors --
+    // three on PV 0's extent 0, one on PV 1's extent 3.
+    auto runs = std::array<volume::Run, 8>{};
+    auto made = usize{0};
+    ASSERT_EQ(group.map_runs(0, EXTENT_SECTORS - 3, 4, runs, made), Status::Ok);
+    ASSERT_EQ(made, 2u);
+    EXPECT_EQ(runs[0].pv, 0u);
+    EXPECT_EQ(runs[0].first_sector, EXTENT_SECTORS - 3);
+    EXPECT_EQ(runs[0].count, 3u);
+    EXPECT_EQ(runs[1].pv, 1u);
+    EXPECT_EQ(runs[1].first_sector, 3 * u64{EXTENT_SECTORS});
+    EXPECT_EQ(runs[1].count, 1u);
+
+    // A striped request inside one chunk: one run, on the chunk's leg.
+    ASSERT_EQ(group_striped.map_runs(1, 2, 3, runs, made), Status::Ok);
+    ASSERT_EQ(made, 1u);
+    EXPECT_EQ(runs[0].pv, 0u);
+    EXPECT_EQ(runs[0].first_sector, u64{EXTENT_SECTORS} + 2);
+
+    // A striped request that crosses a chunk boundary: two runs, legs in
+    // order.
+    ASSERT_EQ(group_striped.map_runs(1, 6, 4, runs, made), Status::Ok);
+    ASSERT_EQ(made, 2u);
+    EXPECT_EQ(runs[0].pv, 0u);
+    EXPECT_EQ(runs[0].count, 2u);
+    EXPECT_EQ(runs[1].pv, 1u);
+    EXPECT_EQ(runs[1].first_sector, 2 * u64{EXTENT_SECTORS});
+    EXPECT_EQ(runs[1].count, 2u);
+
+    // Past the end, and an empty count.
+    EXPECT_EQ(group.map_runs(0, 2 * u64{EXTENT_SECTORS} - 1, 2, runs, made), Status::InvArgs);
+    EXPECT_EQ(group.map_runs(0, 0, 0, runs, made), Status::InvArgs);
+}
+
 /// The CRC matches the GPT's: a known answer, the string "123456789"'s
 /// CRC-32, so one table walks both and the maker script shares it.
 TEST(VolumeCrc, KnownAnswer) {

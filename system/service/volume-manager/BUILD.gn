@@ -1,0 +1,61 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/component_manifest.gni")
+import("//system/user_executable.gni")
+
+assert(
+    toolchain_environment == "user",
+    "system/service/volume-manager must be built in a //build/toolchain/ours:user-* toolchain")
+
+# The logical volume layer (the LVM round): it scans the block devices
+# root.cm routes to it for PV headers, assembles the volume group through
+# system/lib/volume, and serves the group's logical volumes as
+# ours.block.Block -- the same protocol the drivers speak, so the
+# filesystem on top cannot tell an LV from a disk and does not have to.
+user_executable("volume-manager") {
+  visibility = [
+    ":*",
+    "//kernel/products/image/*",
+  ]
+  sources = [ "volume_manager.cpp" ]
+  deps = [
+    "//system/lib/ddk",
+    "//system/lib/fsio",
+    "//system/lib/ioservice:outgoing",
+    "//system/lib/loop",
+    "//system/lib/protocols:block_client.headers",
+    "//system/lib/volume:lv_server",
+    "//system/lib/volume",
+  ]
+}
+
+component_manifest("volume-manager.cm") {
+  visibility = [ "//kernel/products/image/*" ]
+  program = ":volume-manager"
+  manifest = {
+    use = [
+      {
+        protocol = "ours.block.Pv"
+        type = "ours.block.Block"
+      },
+      {
+        protocol = "ours.block.Pv2"
+        type = "ours.block.Block"
+      },
+    ]
+    capabilities = [
+      {
+        protocol = "ours.block.Block"
+      },
+    ]
+    expose = [
+      {
+        protocol = "ours.block.Block"
+        from = "self"
+      },
+    ]
+  }
+}

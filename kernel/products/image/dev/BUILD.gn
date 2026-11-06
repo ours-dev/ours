@@ -56,6 +56,11 @@ _user_programs = [
   # the machine gained a device. Not a component, so root.cm does not bring
   # it; the shell's namespace carries both controls.
   "//system/app/pci-rescan",
+
+  # The logical volume layer (the LVM round): it scans the block devices
+  # routed to it for PV headers, assembles the volume group, and serves
+  # the group's logical volume as ours.block.Block for the filesystem.
+  "//system/service/volume-manager",
 ]
 
 if (defined(ours.with)) {
@@ -175,6 +180,11 @@ component_manifest("root.cm") {
       manifest = "//system/driver/nvme:nvme.cm"
       startup = "eager"
     },
+    {
+      name = "volume-manager"
+      manifest = "//system/service/volume-manager:volume-manager.cm"
+      startup = "eager"
+    },
   ]
   manifest = {
     offer = [
@@ -221,12 +231,13 @@ component_manifest("root.cm") {
         rights = [ "rw*" ]
       },
 
-      # The block device's protocol, to the filesystem that lays a volume on
-      # the ours-fs partition. routing_checks reaches the same device for
-      # its table and block checks; the two clients write nothing shared.
+      # The logical volume's protocol, to the filesystem: the volume
+      # manager serves the group's LV as ours.block.Block, and the volume
+      # laid on it is the LV's own -- the filesystem's logical addressing
+      # ends here, at the mapping, not at a disk.
       {
         protocol = "ours.block.Block"
-        from = "#virtio-blk"
+        from = "#volume-manager"
         to = [ "#btreefs" ]
       },
 
@@ -360,7 +371,7 @@ component_manifest("root.cm") {
       # disk, and finds the route answer NotFound when it does not.
       {
         protocol = "ours.block.Block"
-        from = "#virtio-blk"
+        from = "#volume-manager"
         to = [ "#routing_checks" ]
       },
 
@@ -372,6 +383,23 @@ component_manifest("root.cm") {
         from = "#nvme"
         to = [ "#routing_checks" ]
         as = "ours.block.Nvme"
+      },
+
+      # The block devices as potential PVs, to the volume-manager: one
+      # offer per driver, each under the name its manifest's use names.
+      # A device without a PV header is skipped by the scan; a disk this
+      # machine does not carry is a route that answers NotFound.
+      {
+        protocol = "ours.block.Block"
+        from = "#virtio-blk"
+        to = [ "#volume-manager" ]
+        as = "ours.block.Pv"
+      },
+      {
+        protocol = "ours.block.Block"
+        from = "#nvme"
+        to = [ "#volume-manager" ]
+        as = "ours.block.Pv2"
       },
 
       # The device registry's publish protocol, to the drivers that put their

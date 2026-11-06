@@ -251,6 +251,11 @@ class Filesystem final {
     /// False when there is no volume to serve, an answer and not a failure.
     auto mount() -> bool;
 
+    /// Opens the volume over the whole device -- |blocks| 512-byte sectors
+    /// from LBA 0, the logical volume's own shape -- laid out fresh when it
+    /// carries none. The body mount() shares.
+    auto mount_whole(u64 blocks) -> bool;
+
     auto inode_of(u64 object) -> ustl::Result<ours_btreefs::InodeValue, Status>;
     auto find_child(u64 directory, std::string_view name)
         -> ustl::Result<ours_btreefs::DirentValue, Status>;
@@ -1105,14 +1110,27 @@ auto handle(usize const index) -> loop::Action {
     return loop::Action::Close;
 }
 
-/// The disk's ours-fs partition: the volume is opened on it or laid on it
-/// fresh, and the root directory is made when the volume is empty. Answers
-/// false when there is no disk to serve, which is an answer and not a
-/// failure.
+/// The disk's ours-fs partition -- or, when the device names no partition
+/// table at all, the whole device: a logical volume is a block device with
+/// no table, and the volume is the LV's own. The volume is opened on it or
+/// laid on it fresh, and the root directory is made when the volume is
+/// empty. Answers false when there is no disk to serve, which is an answer
+/// and not a failure.
 auto Filesystem::mount() -> bool {
     // The partition table, through the client: a Client is a Reader.
     auto partitions = std::array<ours_gpt::Partition, 16>{};
     auto const table = ours_gpt::read(m_client, 512, std::span{partitions});
+    if (table.is_err() && table.unwrap_err() == Status::NotFound) {
+        // No table: the device is a whole volume -- the volume manager's
+        // LV -- whose sectors start at 0 and whose count GetInfo names.
+        auto const info = m_client.get_info();
+        if (info.is_err()) {
+            auto _ = ort::debug_line(
+                {"btreefs: the volume names no geometry: ", ours::to_string(info.unwrap_err())});
+            return false;
+        }
+        return mount_whole(info->blocks);
+    }
     if (table.is_err()) {
         auto _ =
             ort::debug_line({"btreefs: no partition table: ", ours::to_string(table.unwrap_err())});
@@ -1132,6 +1150,12 @@ auto Filesystem::mount() -> bool {
     m_tx.init(*m_adapter, m_volume);
     auto const blocks =
         (partition->last_lba - partition->first_lba + 1) * 512 / ours_btreefs::BLOCK_BYTES;
+    return mount_whole(blocks);
+}
+
+/// The whole-device path mount()'s partition path shares: the volume over
+/// |blocks| 4 KiB blocks through the adapter mount() initialized.
+auto Filesystem::mount_whole(u64 const blocks) -> bool {
     auto const bitmap_blocks = static_cast<u32>((blocks + 8 * ours_btreefs::BLOCK_BYTES - 1) /
                                                 (8 * ours_btreefs::BLOCK_BYTES));
 

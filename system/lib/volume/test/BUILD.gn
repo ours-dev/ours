@@ -1,11 +1,31 @@
-# Host-side tests. These link googletest and run on the build machine, so
-# they exercise the library's own logic rather than anything that needs a
-# booted kernel.
+# The volume library's host tests: the codec and the mapping on plain
+# bytes, and the LV block server on the fake kernel -- its requests split
+# across two fake PV providers the pump plays, one pattern per PV.
 executable("volume") {
   testonly = true
   sources = [ "volume_test.cpp" ]
   deps = [
     "//system/lib/volume",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+executable("lv_server") {
+  testonly = true
+  sources = [ "lv_server_test.cpp" ]
+  deps = [
+    "//system/lib/block-server",
+    "//system/lib/ioservice:outgoing",
+    "//system/lib/loop",
+    "//system/lib/ort:headers",
+    "//system/lib/protocols",
+    "//system/lib/protocols:block_client.headers",
+    "//system/lib/rpc:headers",
+    "//system/lib/testing/fake_kernel",
+    "//system/lib/volume",
+    "//system/lib/wire",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]

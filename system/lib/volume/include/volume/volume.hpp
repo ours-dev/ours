@@ -133,6 +133,16 @@ struct PvSector {
     u64 sector = 0;
 };
 
+/// A run of LV sectors that maps contiguously onto one PV: what a block
+/// request splits into. A request on a linear LV crosses an extent
+/// boundary at most; on a striped LV whose chunk is at least the
+/// protocol's largest request (7 sectors), never.
+struct Run {
+    u32 pv = 0;
+    u64 first_sector = 0;
+    u32 count = 0;
+};
+
 /// One PV of the group, as the assembler holds it: the header the PV's
 /// own sectors answered with.
 struct PvEntry {
@@ -189,6 +199,16 @@ class VolumeGroup {
     /// incomplete group's missing piece.
     [[nodiscard]]
     auto map(u16 const lv, u64 const sector) const -> ustl::Result<PvSector, ours::Status>;
+
+    /// The request's runs: the |count| sectors from |first_sector| split
+    /// into the contiguous-on-one-PV pieces a block server issues one PV
+    /// call each. The runs are in logical order and coalesced; |out|
+    /// carries them and |made| says how many. InvArgs past the LV's end,
+    /// for an empty count, or when |out| cannot hold the split (seven
+    /// sectors split at every sector at worst); NotFound through map's.
+    [[nodiscard]]
+    auto map_runs(u16 const lv, u64 const first_sector, u32 const count, std::span<Run> out,
+                  usize &made) const -> ours::Status;
 
   private:
     std::array<PvEntry, 8> m_pvs{};

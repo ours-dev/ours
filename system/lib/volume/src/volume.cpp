@@ -372,4 +372,29 @@ auto VolumeGroup::map(u16 const lv, u64 const sector) const -> ustl::Result<PvSe
     }
     return ustl::err(Status::NotFound);
 }
+
+auto VolumeGroup::map_runs(u16 const lv_index, u64 const first_sector, u32 const count,
+                           std::span<Run> out, usize &made) const -> Status {
+    made = 0;
+    if (count == 0) {
+        return Status::InvArgs;
+    }
+    for (auto offset = u32{0}; offset < count; ++offset) {
+        auto const at = map(lv_index, first_sector + offset);
+        if (at.is_err()) {
+            return at.unwrap_err();
+        }
+        if (made > 0 && out[made - 1].pv == at->pv &&
+            out[made - 1].first_sector + out[made - 1].count == at->sector) {
+            out[made - 1].count += 1;
+            continue;
+        }
+        if (made == out.size()) {
+            return Status::InvArgs;
+        }
+        out[made] = Run{.pv = at->pv, .first_sector = at->sector, .count = 1};
+        made += 1;
+    }
+    return Status::Ok;
+}
 } // namespace volume

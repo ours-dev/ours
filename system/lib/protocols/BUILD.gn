@@ -60,6 +60,19 @@ cpp_interface("headers") {
   visibility = [ "*" ]
 }
 
+# The block client's header is its own interface, not gated to the user
+# toolchain: prot::block::Client is header-only -- the codec, the pipeline
+# and the calls are all inline -- so anything may subclass around it, the
+# volume library's LV server among them.
+cpp_interface("block_client.headers") {
+  public = [ "include/prot/block_client.hpp" ]
+  public_deps = [
+    ":headers",
+    "//system/lib/rpc:headers",
+  ]
+  visibility = [ "*" ]
+}
+
 # The client side: the calls with their plumbing, over one connected channel.
 # Its own target, apart from "headers", because it makes system calls and so
 # builds in a user toolchain only, while the codecs alone build in the host
