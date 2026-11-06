@@ -456,10 +456,11 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
 
     /// This CPU has nothing to run: take queued threads from another active
     /// CPU, as many as bring this one up to the mean load of the CPUs it looks
-    /// at, and no more than the victim holds above that mean. The tiers of this
-    /// CPU's scheduling domains are tried nearest first (domains_of()); in each,
-    /// the victim is the CPU with the most load among those that hold as many
-    /// threads as the tier asks for, the one they run counted. The mean is over
+    /// at, and no more than the victim holds above that mean. False at once when
+    /// StealPolicy has stealing off. The tiers of this CPU's scheduling domains
+    /// are tried nearest first (domains_of()); in each, the victim is the CPU
+    /// with the most load among those that hold as many threads as the policy
+    /// asks for a tier of its kind, the one they run counted. The mean is over
     /// this CPU and every CPU of the tiers up to that one. The first thread is
     /// taken whatever it weighs, even when the mean is not above the victim; the
     /// others while they fit what is left, and no more than the tier's batch,

@@ -1064,3 +1064,68 @@ None (predictions are paused)
 - Why is the amount `min(victim − mean, mean − own)` and not either term alone, and what happens to the machine in each case?
 - Why does the first thread go to the thief whatever the mean says, and which round of `steal.test` fails if it does not?
 - Why does the walk of the victim's queue have a bound of its own, when `max_batch` already limits how many threads are taken?
+
+## Title: The work-stealing numbers are knobs: a boot option gives each its first value and a console command changes it (2026-11-05)
+
+**Files**
+- `kernel/lib/sched_domain/include/sched_domain/sched_domain.hpp` — `Domain` is now `{span, kind}` with `TierKind {SameNode, OtherNode}`; the numbers left it. New `Knob` (five), `KnobInfo`, `knob_info()` (name, default, range), `knob_accepts()`, `find_knob()`, `min_runnable_knob()` and `max_batch_knob()`. `Parameters`, `TierParams` and `make_domain()` are gone; `build_domains()` takes no parameters
+- `kernel/lib/sched_domain/test/sched_domain_test.cpp`, `README.md` — 35 host tests (7 more than before; the parameter tests replaced by knob tests, the table pinned as literals)
+- `kernel/include/ours/task/sched/domains.hpp`, `kernel/kernel/task/sched/domains.cpp` — `task::sched::StealPolicy` (get, set, enabled, min_runnable, max_batch) over five relaxed atomics; the hook that builds the domains first gives the knobs their values
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `steal()` returns at once when stealing is off, and reads the threshold and the batch of each tier from the policy at each look
+- `kernel/include/ours/boot/options.hpp`, `kernel/top/boot_options.cpp` — the options `kernel.sched.steal.{enabled,min-runnable-same-node,min-runnable-other-node,max-batch-same-node,max-batch-other-node}`; `parse_digits()` is factored out of `parse_count()`
+- `kernel/commands/steal_policy.cpp`, `kernel/commands/BUILD.gn` — the console command `steal.policy`; after a change it sends every other online CPU a reschedule request
+- `kernel/commands/steal_test.cpp` — three rounds that set a knob, run a round and put it back; the test pins every knob to its default for its length
+- `kernel/tests/steal_policy_test.cpp`, `kernel/tests/sched_domain_test.cpp`, `kernel/tests/BUILD.gn` — four new ktests, `StealPolicy.*` (3) and `BootOptions.TheStealOptionsAreReadByIndex`, and `SchedDomains.MatchTheNodeTable`, which now checks each tier's kind
+- `.agents/skills/kernel-design/references/task.md`, `docs/repairs/261103/kernel-task-sched.md` (items 24 and 34)
+
+**Symptom**
+Five numbers steered work stealing and were constants in `domains.cpp`: the two thresholds, the two batches, and there was no switch. Each was a first guess (repair item 24), and the way to find better ones is to try several, which meant editing the source and building another image per value; stealing could not be turned off to compare. The user's wish, 2026-11-05: the settings should be data the scheduler owns, configurable, and later adjustable from user space.
+
+**Cause**
+The numbers were written as code because the first versions had one value each. A number to be measured is a parameter, and a parameter needs three things the constant did not give: a name, a range that keeps a setting meaningful (a threshold below two never has a thread waiting behind the running one, a batch of none takes nothing), and a place to change it from. The code that uses a value clamps it as well, so a wrong range would not break it; the range is for the person typing.
+
+The design splits the three. The library knows what a knob is called, its default and its range (`knob_info()`), and which knob belongs to which kind of tier: that is pure and host-tested, with the table pinned as literals. The kernel keeps the values (`StealPolicy`), takes the first from the boot options, and lets a console command change them. A tier carries its kind and no numbers, so changing a number is one word and no table is rebuilt.
+
+Why relaxed atomics are enough, which is the question a runtime-changeable setting asks: the invariant to protect is that a look never uses a value its knob does not accept. `set()` checks the range before it stores (a knob that does not exist has an empty range, so it stores nothing), and a boot value out of range is refused and logged, so every value ever stored is valid. Nothing else relates one knob to another, so a look that reads the new threshold with the old batch is one of the settings someone could have asked for. The writers are the boot hook, the console command (the console is one thread that runs one command at a time) and the tests, which put a knob back as they found it. Two writers at once would land in some order, one after the other; the one thing that is not safe is a test's restore, which would overwrite a setting made meanwhile, so a test runs alone. Each look reads the threshold and the batch of a tier once, so one tier is seen with one pair of values for the whole of its walk. A snapshot of all five (a seqlock) would be needed only if some value had to agree with another, and none does.
+
+**Change**
+```cpp
+// before: constants in domains.cpp, copied into every Domain at boot
+constexpr usize STEAL_MIN_RUNNABLE_SAME_NODE = 2;      // ... and three more
+// after: a name, a default and a range in the library; a value in the kernel
+KNOBS[i].store(info.default_value);                      // then the boot option, if the knob accepts it
+auto const min_runnable = StealPolicy::min_runnable(domain.kind);   // read at each look
+```
+The options are `kernel.sched.steal.<name>`, `enabled` taking the boolean words (and, bare, meaning true, as the flags do) and the others a decimal count; one that is no count, is 4294967295 (the mark of "not given") or is out of the knob's range, is logged and the default is kept, like any other boot option. That the options are the knobs, one for one and in order, is a `static_assert` in `domains.cpp`, since the parse works by index. The thresholds' floor is 2, not 1: with 1 a CPU running a single heavy thread would qualify as a victim, outrank one that has a thread waiting, and leave the idle CPU with nothing (the shadowing of repair item 23). They are parsed by `setup_options()` before any initialisation level, and read by the hook at `InitLevel::Threading`. Before that hook every knob reads 0, so stealing is off and a look that comes early finds nothing, as it does with no domains. `steal.policy` with no argument lists the knobs with their value, default and range and each online CPU's looks and takes; `steal.policy <name> <value>` sets one and then asks every other online CPU to reschedule, so that an idle CPU, which looks only when something wakes it (item 23), looks under the new setting at once. A name that is none or a value out of range changes nothing, is logged as an error (so a script that sweeps sees it) and returns 1. `MAX_BATCH` and `MAX_SCAN` stay constants: they are sizes of arrays and bounds of a walk under a lock. The load metric is not a knob.
+
+Rejected: a struct of the five values read as a snapshot (a seqlock for nothing); keeping the numbers in `Domain` and rebuilding the table on a change (a rebuild that must be safe against looks on other CPUs); a user-space interface now (nothing needs it yet).
+
+**Reference**
+Linux exposes its work-balancing numbers as run-time files: `nr_migrate` and `migration_cost_ns` are `debugfs_create_u32(..., 0644, ...)` in `kernel/sched/debug.c` (local checkout, read on 2026-11-05), written with a plain store like these. Here a write is checked against a range first. Zircon's kernel options (`zircon/kernel/lib/boot-options`, its README) are members of a `BootOptions` that physboot fills from the command line with `BootOptions::Set` and hands to the kernel proper, which reads them; a grep of `zircon/kernel` for a setter called while the kernel runs found none outside the tests, but it was a grep, and a reviewer believed there is one.
+
+**Verification**
+- Host tests: 35 in `sched_domain`. The knob tests: the table as literals (name, default and range of each of the five), every knob has a unique name that finds it, a name must match whole to find one (`enabledx`, a name cut short, a trailing space and a capital find nothing), a name that is none leaves its argument, a value is in range at both ends and nowhere beyond, a knob that does not exist has nothing in its range, thresholds start at 2, the batch cannot exceed `MAX_BATCH`, `enabled` is 0 or 1, and each kind of tier has its own knobs.
+- Ktests: `BootOptions.TheStealOptionsAreReadByIndex` (well-formed command lines only: a malformed one is logged as an error, which `ktest` takes for a failure), `StealPolicy.EveryKnobIsInItsRangeAfterBoot`, `...ASettingIsReadBackAndARefusedOneChangesNothing` and `...TheAccessorsReadTheKnobsOfTheirKind` (the last two put the knobs back), and `SchedDomains.MatchTheNodeTable`, edited to check the kind. `ktest all` `ran=29 passed=28 failed=0 skipped=1` on the default, the Fair and the four-node lanes.
+- `steal.test`: default and Fair lanes 45 checks, four-node machine 90, ok, with every knob pinned to its default for the length of the test. Three new rounds per pair: stealing off (the idle CPU does not look: `looks` is 0 and nothing is taken), the batch set to one (`took 1 of 20 ... allows 1 to 1, batch 1`), the threshold set to 9 (a queue of three is looked at and left).
+- The boot options, end to end (the malformed cases, which a ktest cannot hold): the debug image's command line was given `kernel.sched.steal.max-batch-same-node=2`, `min-runnable-other-node=7`, `max-batch-other-node=99` and `min-runnable-same-node=abc`; `steal.policy` then listed 2 and 7 as given, and the other two at their defaults, with `boot: kernel.sched.steal.max-batch-other-node=99 is not between 1 and 8, keeping 4` and `... =abc is not a count, keeping the default` in the log. The image file was restored and compared.
+- Negative controls, each restored and compared with `cmp`: the `enabled` check removed (`steal.test` fails "and the idle CPU does not look"); the batch knob ignored (the batch-of-one round fails: `took 4 of 20` against 1); the threshold knob ignored (the threshold round fails); `set()` without the range check (`StealPolicy.ASettingIsReadBack...` fails 18 checks); the default of `enabled` changed to 0 (`Knob.TheTableSaysWhatEachKnobIs`); two option names swapped in `BootOptions::STEAL_OPTIONS` (the build stops on the `static_assert`).
+- The 12 console tests (`preempt idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace`, split with `${=T}`): 12 of 12 on the default, Fair and four-node lanes (an earlier run of the same set with the knob rounds added, in the order that puts `tickreplace` before `preempt`, failed `preempt.test` on all three: item 34). With `tickreplace.test` before `preempt.test`, `preempt.test` fails on all three (repair item 34); alone it passed 8 of 8, 4 with stealing on and 4 after `steal.policy enabled 0`, the runtime switch used for the comparison.
+- `boot_check.py`: default lane dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44/8/0, 7/7), host-tests PASS (181 passed); Fair lane and four-node machine, `--no-tests`: dbg PASS (46/5/0), rel PASS (44/8/0, 7/7). `format_cpp.py`, `format_gn.py` and `lint_docs.py` clean, no line over 100 columns; clang-tidy reports nothing on a line of this change.
+- Not run: a concurrent write while looks are running (the relaxed read is argued, not stressed); the effect of the reschedule requests `steal.policy` sends (an idle CPU looking at once after a change) beyond the command running; `enabled=false` through the boot options.
+
+**Deliberately not done**
+- A user-space interface to the knobs: no syscall or object property until a user-space consumer needs one (kernel-design). The structure is meant for it: the writer is `StealPolicy::set()`.
+- The load metric as a knob: the sampled, decayed load is a performance item (repair item 24), and it replaces `Scheduler::load()`, not a number.
+- Persisting a runtime setting across boots: the image's command line is for that.
+- Making `MAX_BATCH` and `MAX_SCAN` settable.
+
+**How it was found**
+The user chose runtime modification over boot-only after the step was introduced. The need came from the measurement that repair item 24 asks for: each candidate value is a sweep, and a sweep through `kshell_run.py` should not need an image per point.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why are relaxed atomics enough for five knobs that change while looks are running, and what would make them not enough?
+- Why does `set()` check the range, and what would a value out of range reach if it did not?
+- Why do `MAX_BATCH` and `MAX_SCAN` stay constants when the batch they bound is a knob?

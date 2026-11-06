@@ -36,11 +36,17 @@
   manager: `domains_of(cpu)` (`kernel/lib/sched_domain`, built once from the
   node table in `kernel/kernel/task/sched/domains.cpp`, the one file of the
   scheduler that knows `mm::CpuNodeMap`), the CPU's tiers nearest first, each
-  with the queue depth that makes a CPU in it worth taking from and the most
-  threads one look takes (the user's call of 2026-11-05; it is the role of
-  Linux's `sched_domain` and Zircon's `CpuSearchSet`). A new kind of distance
-  is one more tier built there, and the numbers are data, so that they can be
-  measured and later set from outside. How many threads a look takes is a
+  of a kind (the user's call of 2026-11-05; it is the role of Linux's
+  `sched_domain` and Zircon's `CpuSearchSet`). A new kind of distance is one
+  more kind of tier, built there, and its knobs. The numbers that say how deep
+  a queue must be to be worth taking from and how many threads one look takes
+  are knobs, named by
+  `sched_domain::Knob` with a default and a range, kept by
+  `task::sched::StealPolicy` as relaxed atomics (each is valid alone, so no
+  snapshot is needed), given a first value by `kernel.sched.steal.<name>` boot
+  options and changed while the machine runs by the `steal.policy` console
+  command (the user's call of 2026-11-05). A user-space interface to them waits
+  for a user-space consumer that needs one. How many threads a look takes is a
   load-balancing calculation, not a constant (the user's call of 2026-11-05):
   enough to bring the CPU up to the mean load of itself and the tiers so far,
   and no more than the victim holds above that mean

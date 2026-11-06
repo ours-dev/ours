@@ -15,18 +15,15 @@ using sched_domain::CpuNum;
 using sched_domain::Domain;
 using sched_domain::Domains;
 using Load = ffl::Fixed<i64, 16>;
+using sched_domain::Knob;
 using sched_domain::MAX_BATCH;
 using sched_domain::MAX_DOMAINS;
-using sched_domain::Parameters;
 using sched_domain::pull_amount;
 using sched_domain::PullBudget;
+using sched_domain::TierKind;
 
 // The shapes below name CPUs up to 7.
 static_assert(ours::MAX_CPU >= 8, "the test machines have up to eight CPUs");
-
-// Different numbers for the two kinds of tier, so that a swap shows.
-constexpr auto PARAMS = Parameters{.same_node = {.min_runnable = 2, .max_batch = 4},
-                                   .other_node = {.min_runnable = 3, .max_batch = 6}};
 
 /// The CPUs of |cpus| as a mask.
 auto mask_of(std::vector<CpuNum> const &cpus) -> CpuMask {
@@ -43,32 +40,30 @@ auto domains_on(std::vector<int> const &nodes, CpuNum const owner) -> Domains {
     for (CpuNum cpu = 0; cpu < nodes.size(); ++cpu) {
         possible.set(cpu);
     }
-    return build_domains(
-        owner, possible, [&nodes](CpuNum const cpu) { return nodes[cpu]; }, PARAMS);
+    return build_domains(owner, possible, [&nodes](CpuNum const cpu) { return nodes[cpu]; });
 }
 
 TEST(SchedDomain, OneNodeHasOneTier) {
     auto const domains = domains_on({0, 0, 0, 0}, 0);
     ASSERT_EQ(domains.count(), 1u);
     EXPECT_TRUE(domains.view()[0].span == mask_of({1, 2, 3}));
-    EXPECT_EQ(domains.view()[0].min_runnable, PARAMS.same_node.min_runnable);
+    EXPECT_EQ(domains.view()[0].kind, TierKind::SameNode);
 }
 
 TEST(SchedDomain, TwoNodesHaveTheNodeFirstAndTheRestAfter) {
     auto const domains = domains_on({0, 0, 1, 1}, 0);
     ASSERT_EQ(domains.count(), 2u);
     EXPECT_TRUE(domains.view()[0].span == mask_of({1}));
-    EXPECT_EQ(domains.view()[0].min_runnable, PARAMS.same_node.min_runnable);
-    EXPECT_EQ(domains.view()[0].max_batch, PARAMS.same_node.max_batch);
+    EXPECT_EQ(domains.view()[0].kind, TierKind::SameNode);
     EXPECT_TRUE(domains.view()[1].span == mask_of({2, 3}));
-    EXPECT_EQ(domains.view()[1].min_runnable, PARAMS.other_node.min_runnable);
+    EXPECT_EQ(domains.view()[1].kind, TierKind::OtherNode);
 }
 
 TEST(SchedDomain, AnOwnerAloneOnItsNodeHasNoNodeTier) {
     auto const domains = domains_on({0, 1, 1, 1}, 0);
     ASSERT_EQ(domains.count(), 1u);
     EXPECT_TRUE(domains.view()[0].span == mask_of({1, 2, 3}));
-    EXPECT_EQ(domains.view()[0].min_runnable, PARAMS.other_node.min_runnable);
+    EXPECT_EQ(domains.view()[0].kind, TierKind::OtherNode);
 }
 
 TEST(SchedDomain, TheViewIsTheOwnersOwn) {
@@ -81,9 +76,9 @@ TEST(SchedDomain, TheViewIsTheOwnersOwn) {
 TEST(SchedDomain, AFullListRefusesAnotherTier) {
     Domains domains;
     for (usize i = 0; i < MAX_DOMAINS; ++i) {
-        EXPECT_TRUE(domains.push(Domain{.span = mask_of({1}), .min_runnable = 1}));
+        EXPECT_TRUE(domains.push(Domain{.span = mask_of({1}), .kind = TierKind::SameNode}));
     }
-    EXPECT_FALSE(domains.push(Domain{.span = mask_of({2}), .min_runnable = 1}));
+    EXPECT_FALSE(domains.push(Domain{.span = mask_of({2}), .kind = TierKind::SameNode}));
     EXPECT_EQ(domains.count(), MAX_DOMAINS);
 }
 
@@ -95,10 +90,10 @@ TEST(SchedDomain, ACpuThatCannotExistIsInNoTier) {
     CpuMask const possible = mask_of({0, 2});
     std::array<int, 3> const nodes = {0, 0, 1};
     auto const domains =
-        build_domains(0, possible, [&nodes](CpuNum const cpu) { return nodes[cpu]; }, PARAMS);
+        build_domains(0, possible, [&nodes](CpuNum const cpu) { return nodes[cpu]; });
     ASSERT_EQ(domains.count(), 1u);
     EXPECT_TRUE(domains.view()[0].span == mask_of({2}));
-    EXPECT_EQ(domains.view()[0].min_runnable, PARAMS.other_node.min_runnable);
+    EXPECT_EQ(domains.view()[0].kind, TierKind::OtherNode);
 }
 
 TEST(SchedDomain, CpusNobodyHasPlacedCountAsOneNode) {
@@ -142,30 +137,14 @@ TEST(SchedDomain, EachCpuIsInTheTierOfItsKindOfDistance) {
         auto const domains = domains_on(nodes, owner);
         for (auto const &domain: domains.view()) {
             domain.span.for_each([&](CpuNum const cpu) {
-                auto expected = PARAMS.other_node.min_runnable;
+                auto expected = TierKind::OtherNode;
                 if (nodes[cpu] == nodes[owner]) {
-                    expected = PARAMS.same_node.min_runnable;
+                    expected = TierKind::SameNode;
                 }
-                EXPECT_EQ(domain.min_runnable, expected)
-                    << "CPU " << cpu << " seen from CPU " << owner;
+                EXPECT_EQ(domain.kind, expected) << "CPU " << cpu << " seen from CPU " << owner;
             });
         }
     }
-}
-
-TEST(SchedDomain, ABatchIsCutToTheMostAThreadCanHold) {
-    CpuMask possible = mask_of({0, 1});
-    auto const huge = Parameters{.same_node = {.min_runnable = 2, .max_batch = 1000},
-                                 .other_node = {.min_runnable = 3, .max_batch = 1000}};
-    auto const domains = build_domains(0, possible, [](CpuNum) { return 0; }, huge);
-    ASSERT_EQ(domains.count(), 1u);
-    EXPECT_EQ(domains.view()[0].max_batch, MAX_BATCH);
-}
-
-TEST(SchedDomain, TheOtherTierCarriesItsOwnBatch) {
-    auto const domains = domains_on({0, 0, 1, 1}, 0);
-    ASSERT_EQ(domains.count(), 2u);
-    EXPECT_EQ(domains.view()[1].max_batch, PARAMS.other_node.max_batch);
 }
 
 // The load of n equal threads, as the scheduler weighs them.
@@ -285,13 +264,109 @@ TEST(PullBudget, ABatchOfNoneIsABatchOfOne) {
     EXPECT_TRUE(budget.done());
 }
 
-TEST(SchedDomain, ABatchOfNoneInTheParametersIsOne) {
-    CpuMask const possible = mask_of({0, 1});
-    auto const none = Parameters{.same_node = {.min_runnable = 2, .max_batch = 0},
-                                 .other_node = {.min_runnable = 3, .max_batch = 0}};
-    auto const domains = build_domains(0, possible, [](CpuNum) { return 0; }, none);
-    ASSERT_EQ(domains.count(), 1u);
-    EXPECT_EQ(domains.view()[0].max_batch, 1u);
+TEST(Knob, EveryKnobHasAUniqueNameThatFindsIt) {
+    for (usize i = 0; i < sched_domain::NUM_KNOBS; ++i) {
+        auto const knob = static_cast<Knob>(i);
+        auto const name = sched_domain::knob_info(knob).name;
+        EXPECT_FALSE(name.empty());
+        Knob found = Knob::Enabled;
+        ASSERT_TRUE(sched_domain::find_knob(name, found)) << name;
+        EXPECT_EQ(found, knob) << name;
+    }
+}
+
+TEST(Knob, TheTableSaysWhatEachKnobIs) {
+    // Pinned as literals: the names are the console command's and the boot
+    // options', the defaults are what the kernel does when nobody says.
+    struct Row {
+        Knob knob;
+        char const *name;
+        usize default_value;
+        usize lowest;
+        usize highest;
+    };
+    std::array<Row, 5> const rows = {{
+        {Knob::Enabled, "enabled", 1, 0, 1},
+        {Knob::MinRunnableSameNode, "min-runnable-same-node", 2, 2, 1024},
+        {Knob::MinRunnableOtherNode, "min-runnable-other-node", 3, 2, 1024},
+        {Knob::MaxBatchSameNode, "max-batch-same-node", 4, 1, 8},
+        {Knob::MaxBatchOtherNode, "max-batch-other-node", 4, 1, 8},
+    }};
+    ASSERT_EQ(rows.size(), sched_domain::NUM_KNOBS);
+    for (auto const &row: rows) {
+        auto const info = sched_domain::knob_info(row.knob);
+        EXPECT_EQ(info.name, row.name);
+        EXPECT_EQ(info.default_value, row.default_value) << row.name;
+        EXPECT_EQ(info.lowest, row.lowest) << row.name;
+        EXPECT_EQ(info.highest, row.highest) << row.name;
+    }
+    EXPECT_EQ(MAX_BATCH, 8u);
+}
+
+TEST(Knob, ANameMustMatchWholeToFindAKnob) {
+    Knob found = Knob::Enabled;
+    EXPECT_FALSE(sched_domain::find_knob("enabledx", found));
+    EXPECT_FALSE(sched_domain::find_knob("max-batch-same-nod", found));
+    EXPECT_FALSE(sched_domain::find_knob("max-batch-same-node ", found));
+    EXPECT_FALSE(sched_domain::find_knob("Enabled", found));
+}
+
+TEST(Knob, ANonKnobHasNothingInItsRange) {
+    auto const nothing = static_cast<Knob>(sched_domain::NUM_KNOBS + 2);
+    for (usize value: {usize{0}, usize{1}, usize{4}, usize{1024}}) {
+        EXPECT_FALSE(sched_domain::knob_accepts(nothing, value)) << value;
+    }
+}
+
+TEST(Knob, ANameThatIsNotAKnobFindsNothing) {
+    Knob found = Knob::MaxBatchOtherNode;
+    EXPECT_FALSE(sched_domain::find_knob("max-batch", found));
+    EXPECT_FALSE(sched_domain::find_knob("", found));
+    EXPECT_EQ(found, Knob::MaxBatchOtherNode) << "and leaves what it was given";
+}
+
+TEST(Knob, EveryDefaultIsAValueTheKnobAccepts) {
+    for (usize i = 0; i < sched_domain::NUM_KNOBS; ++i) {
+        auto const knob = static_cast<Knob>(i);
+        EXPECT_TRUE(sched_domain::knob_accepts(knob, sched_domain::knob_info(knob).default_value));
+    }
+}
+
+TEST(Knob, ARangeIncludesBothEndsAndNothingBeyond) {
+    for (usize i = 0; i < sched_domain::NUM_KNOBS; ++i) {
+        auto const knob = static_cast<Knob>(i);
+        auto const info = sched_domain::knob_info(knob);
+        EXPECT_TRUE(sched_domain::knob_accepts(knob, info.lowest));
+        EXPECT_TRUE(sched_domain::knob_accepts(knob, info.highest));
+        EXPECT_FALSE(sched_domain::knob_accepts(knob, info.highest + 1));
+        if (info.lowest > 0) {
+            EXPECT_FALSE(sched_domain::knob_accepts(knob, info.lowest - 1));
+        }
+    }
+}
+
+TEST(Knob, TheBatchNeverExceedsWhatTheCallerKeepsRoomFor) {
+    EXPECT_TRUE(sched_domain::knob_accepts(Knob::MaxBatchSameNode, MAX_BATCH));
+    EXPECT_FALSE(sched_domain::knob_accepts(Knob::MaxBatchSameNode, MAX_BATCH + 1));
+    EXPECT_FALSE(sched_domain::knob_accepts(Knob::MaxBatchOtherNode, 0));
+    EXPECT_FALSE(sched_domain::knob_accepts(Knob::MinRunnableSameNode, 0));
+    EXPECT_FALSE(sched_domain::knob_accepts(Knob::MinRunnableSameNode, 1))
+        << "a thread must wait behind the running one";
+    EXPECT_FALSE(sched_domain::knob_accepts(Knob::MinRunnableOtherNode, 1));
+    EXPECT_TRUE(sched_domain::knob_accepts(Knob::MinRunnableOtherNode, 2));
+}
+
+TEST(Knob, EnabledIsOffOrOn) {
+    EXPECT_TRUE(sched_domain::knob_accepts(Knob::Enabled, 0));
+    EXPECT_TRUE(sched_domain::knob_accepts(Knob::Enabled, 1));
+    EXPECT_FALSE(sched_domain::knob_accepts(Knob::Enabled, 2));
+}
+
+TEST(Knob, EachKindOfTierHasItsOwnKnobs) {
+    EXPECT_EQ(sched_domain::min_runnable_knob(TierKind::SameNode), Knob::MinRunnableSameNode);
+    EXPECT_EQ(sched_domain::min_runnable_knob(TierKind::OtherNode), Knob::MinRunnableOtherNode);
+    EXPECT_EQ(sched_domain::max_batch_knob(TierKind::SameNode), Knob::MaxBatchSameNode);
+    EXPECT_EQ(sched_domain::max_batch_knob(TierKind::OtherNode), Knob::MaxBatchOtherNode);
 }
 
 TEST(PullBudget, NothingIsDoneBeforeTheFirstOffer) {

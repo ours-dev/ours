@@ -3,9 +3,11 @@
 #ifndef OURS_BOOT_OPTIONS_HPP
 #define OURS_BOOT_OPTIONS_HPP 1
 
+#include <array>
 #include <string_view>
 
 #include <obi/command_line_view.hpp>
+#include <ustl/option.hpp>
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::boot {
@@ -71,6 +73,18 @@ class BootOptions final {
     /// How often each node's page queues age; see page_aging_seconds().
     static constexpr std::string_view PAGE_AGING_OPTION{"kernel.mm.page-aging-seconds"};
     static constexpr u32 DEFAULT_PAGE_AGING_SECONDS{5};
+
+    /// The knobs of work stealing, `kernel.sched.steal.<name>`, in the order
+    /// of sched_domain::Knob, which names them, gives each its default and says
+    /// what it may be; see steal_option().
+    static constexpr usize NUM_STEAL_OPTIONS{5};
+    static constexpr std::array<std::string_view, NUM_STEAL_OPTIONS> STEAL_OPTIONS{
+        "kernel.sched.steal.enabled",
+        "kernel.sched.steal.min-runnable-same-node",
+        "kernel.sched.steal.min-runnable-other-node",
+        "kernel.sched.steal.max-batch-same-node",
+        "kernel.sched.steal.max-batch-other-node",
+    };
 
     /// What each of them is when absent.
     static constexpr u32 DEFAULT_OOM_OUT_OF_MEMORY_MB{50};
@@ -262,7 +276,25 @@ class BootOptions final {
         return m_page_aging_seconds;
     }
 
+    /// What the image's command line said of the |index|-th work-stealing knob
+    /// (STEAL_OPTIONS), or none if it said nothing of it, or something the
+    /// option does not take. The first is a boolean (1 for the words
+    /// CommandLineView::parse_bool() reads as true, 0 for false), the others a
+    /// count. The value is not checked against what the knob accepts: that is
+    /// the knob's (sched_domain::knob_accepts()), and the reader that sets it
+    /// says so when it refuses.
+    [[nodiscard]]
+    auto steal_option(usize const index) const -> ustl::Option<u32> {
+        if (index >= NUM_STEAL_OPTIONS || STEAL_UNSET == m_steal[index]) {
+            return ustl::NONE;
+        }
+        return ustl::Option<u32>(m_steal[index]);
+    }
+
   private:
+    /// A steal option that the command line did not give.
+    static constexpr u32 STEAL_UNSET{0xFFFFFFFF};
+
     /// The yes/no options, as one word. Written only by apply(), which
     /// setup_options() runs once on the boot CPU before anything reads them;
     /// read-only after.
@@ -302,6 +334,9 @@ class BootOptions final {
     u32 m_oom_debounce_mb{DEFAULT_OOM_DEBOUNCE_MB};
     u32 m_oom_hysteresis_seconds{DEFAULT_OOM_HYSTERESIS_SECONDS};
     u32 m_page_aging_seconds{DEFAULT_PAGE_AGING_SECONDS};
+
+    std::array<u32, NUM_STEAL_OPTIONS> m_steal{STEAL_UNSET, STEAL_UNSET, STEAL_UNSET, STEAL_UNSET,
+                                               STEAL_UNSET};
 };
 
 /// Parses the image's command line into the options options() returns.

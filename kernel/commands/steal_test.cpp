@@ -48,6 +48,7 @@ namespace ours {
 namespace {
     using task::Thread;
     using task::sched::Scheduler;
+    using task::sched::StealPolicy;
 
     constexpr auto LOST_AFTER = Seconds(5);
     constexpr auto POLL_INTERVAL = Milliseconds(1);
@@ -67,6 +68,33 @@ namespace {
     constexpr usize MAX_SPINNERS = 20;
     /// A spinner's CPUs are one bit each of a 32-bit word.
     static_assert(MAX_CPU <= 32, "a spinner records the CPUs it ran on in a u32");
+
+    /// Sets a knob for as long as it lives, and puts it back as it was.
+    class KnobSetting {
+      public:
+        KnobSetting(sched_domain::Knob const knob, usize const value)
+            : m_knob(knob), m_before(StealPolicy::get(knob)) {
+            m_set = StealPolicy::set(knob, value);
+        }
+        KnobSetting(KnobSetting const &) = delete;
+        auto operator=(KnobSetting const &) -> KnobSetting & = delete;
+        ~KnobSetting() {
+            // The value saved was one the knob held, so it is in its range and the
+            // knob takes it; there is nowhere to report a refusal from here.
+            auto _ = StealPolicy::set(m_knob, m_before);
+        }
+
+        /// Whether the knob took the value.
+        [[nodiscard]]
+        auto took() const -> bool {
+            return m_set;
+        }
+
+      private:
+        sched_domain::Knob m_knob;
+        usize m_before;
+        bool m_set = false;
+    };
 
     struct Tally {
         usize passed = 0;
@@ -296,7 +324,7 @@ namespace {
         for (auto const &domain: task::sched::domains_of(pair.thief).view()) {
             cpus += (domain.span & Cpu::online_mask()).count();
             if (domain.span.test(pair.victim)) {
-                batch = domain.max_batch;
+                batch = StealPolicy::max_batch(domain.kind);
                 break;
             }
         }
@@ -367,6 +395,45 @@ namespace {
                 "the idle CPU takes the one waiting thread although the mean is above its victim");
     }
 
+    /// The knobs steer the look. Each is set, a round is run, and the knob is
+    /// put back: stealing off, the batch at one, the threshold above the queue.
+    auto knob_rounds(Tally &tally, Pair const pair) -> void {
+        auto kind = sched_domain::TierKind::OtherNode;
+        if (pair.same_node) {
+            kind = sched_domain::TierKind::SameNode;
+        }
+
+        {
+            KnobSetting const off{sched_domain::Knob::Enabled, 0};
+            verdict(tally, off.took(), "stealing is switched off");
+            Round round{.movable = 3, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
+            run_round(tally, pair, round);
+            verdict(tally,
+                    round.set_up && round.looks == 0 && round.steals == 0 &&
+                        !round.movable_seen_on_thief,
+                    "and the idle CPU does not look");
+        }
+
+        {
+            KnobSetting const one{sched_domain::max_batch_knob(kind), 1};
+            verdict(tally, one.took(), "the batch is set to one");
+            // The expectation of many_round() reads the knob: a batch of one. The
+            // round tells the knob from the mean only while twenty threads over the
+            // CPUs in view leave two or more (up to ten CPUs); on a bigger machine
+            // it passes whatever the knob says.
+            many_round(tally, pair, 20);
+        }
+
+        {
+            KnobSetting const high{sched_domain::min_runnable_knob(kind), 9};
+            verdict(tally, high.took(), "the threshold is set above the queue");
+            Round round{.movable = 3, .watch = NOT_TAKEN_FOR, .stop_at_first = false};
+            run_round(tally, pair, round);
+            verdict(tally, round.looks >= 1 && round.steals == 0 && !round.movable_seen_on_thief,
+                    "and a queue shorter than it is looked at and left");
+        }
+    }
+
     auto test_pair(Tally &tally, Pair const pair) -> void {
         char const *node = "another";
         if (pair.same_node) {
@@ -410,6 +477,8 @@ namespace {
         many_round(tally, pair, 20);
 
         heavy_round(tally, pair);
+
+        knob_rounds(tally, pair);
     }
 
     auto steal_test_command(int, char **) -> int {
@@ -417,6 +486,24 @@ namespace {
             log::info("steal.test: ok -- 0 checks, one CPU only");
             return 0;
         }
+
+        // The rounds are written for the defaults of the knobs: an image that
+        // sets one on its command line, or `steal.policy` run before this, would
+        // fail them for no fault of the code. So each is set to its default for
+        // the length of the test, and put back as it was.
+        auto const default_of = [](sched_domain::Knob const knob) -> usize {
+            return sched_domain::knob_info(knob).default_value;
+        };
+        KnobSetting const enabled{sched_domain::Knob::Enabled,
+                                  default_of(sched_domain::Knob::Enabled)};
+        KnobSetting const same_min{sched_domain::Knob::MinRunnableSameNode,
+                                   default_of(sched_domain::Knob::MinRunnableSameNode)};
+        KnobSetting const other_min{sched_domain::Knob::MinRunnableOtherNode,
+                                    default_of(sched_domain::Knob::MinRunnableOtherNode)};
+        KnobSetting const same_batch{sched_domain::Knob::MaxBatchSameNode,
+                                     default_of(sched_domain::Knob::MaxBatchSameNode)};
+        KnobSetting const other_batch{sched_domain::Knob::MaxBatchOtherNode,
+                                      default_of(sched_domain::Knob::MaxBatchOtherNode)};
 
         Pair pairs[2];
         auto const found = find_pairs(pairs);

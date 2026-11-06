@@ -3,40 +3,25 @@
 ///
 /// Where the scheduling domains come from: the memory manager's table of which
 /// node each CPU is on, read once. This is the only file of the scheduler that
-/// knows the table exists.
+/// knows the table exists. And where the policy that steers the walk of them
+/// lives: the value of each knob, its first value from the boot options.
 #include <ours/assert.hpp>
+#include <ours/boot/options.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_node_map.hpp>
 #include <ours/task/sched/domains.hpp>
 
 #include <array>
+#include <atomic>
+#include <string_view>
+#include <utility>
 
 #include <gktl/init_hook.hpp>
+#include <logz4/log.hpp>
 
 namespace ours::task::sched {
 namespace {
-    /// How many threads a CPU must hold, the one it runs counted
-    /// (Scheduler::num_runnable()), for a CPU with nothing to run to take one
-    /// from it, when it is on the same NUMA node as the CPU taking. One running
-    /// and one waiting is enough: the waiting one is behind a whole slice, and
-    /// on the same node it loses only its cache.
-    constexpr usize STEAL_MIN_RUNNABLE_SAME_NODE = 2;
-
-    /// The same, when the CPU is on another node. The thread leaves the memory
-    /// it has been working on, so a second one waiting is asked for. There is no
-    /// estimate of how long a thread has been queued here, only the count, and
-    /// both numbers are first guesses to be measured on real hardware (item 24
-    /// of docs/repairs/261103/kernel-task-sched.md).
-    constexpr usize STEAL_MIN_RUNNABLE_OTHER_NODE = 3;
-
-    /// The most threads one look takes from a CPU on the same node, and from a
-    /// CPU on another. It bounds the time the threads are in neither queue and
-    /// the dequeues done with the victim's lock held (the walk that picks them
-    /// has a bound of its own, sched_domain::MAX_SCAN). Four is a first guess,
-    /// for the same reason as the numbers above (item 24 of
-    /// docs/repairs/261103/kernel-task-sched.md).
-    constexpr usize STEAL_MAX_BATCH_SAME_NODE = 4;
-    constexpr usize STEAL_MAX_BATCH_OTHER_NODE = 4;
+    using sched_domain::Knob;
 
     /// Written once by build_all_domains(), while one CPU runs, and only read
     /// after. Indexed by the CPU that owns the tiers. Empty from the first
@@ -44,32 +29,99 @@ namespace {
     /// hook below has run.
     constinit std::array<sched_domain::Domains, MAX_CPU> DOMAINS;
 
+    /// The value of each knob, indexed by sched_domain::Knob. Zero from the
+    /// first instruction, which for `enabled` is off: a look for work that
+    /// comes before the hook below has run finds nothing, as it does with no
+    /// domains. Each is a word of its own; see StealPolicy.
+    constinit std::array<std::atomic<usize>, sched_domain::NUM_KNOBS> KNOBS{};
+
+    /// The boot options are the knobs, one for one and in the knobs' order:
+    /// `kernel.sched.steal.` and the knob's name. The options are parsed where
+    /// the knobs are not known, by index, so a mismatch would give a value to
+    /// the wrong knob without a word; this is why it is a compile-time check.
+    constexpr auto options_match_knobs() -> bool {
+        constexpr std::string_view PREFIX{"kernel.sched.steal."};
+        if (boot::BootOptions::NUM_STEAL_OPTIONS != sched_domain::NUM_KNOBS) {
+            return false;
+        }
+        for (usize i = 0; i < sched_domain::NUM_KNOBS; ++i) {
+            auto const option = boot::BootOptions::STEAL_OPTIONS[i];
+            auto const name = sched_domain::knob_info(static_cast<Knob>(i)).name;
+            if (!option.starts_with(PREFIX) || option.substr(PREFIX.size()) != name) {
+                return false;
+            }
+        }
+        return true;
+    }
+    static_assert(options_match_knobs(),
+                  "BootOptions::STEAL_OPTIONS must name the sched_domain knobs, in their order");
+    /// The boot options read the first one as a boolean and the rest as counts.
+    static_assert(std::to_underlying(Knob::Enabled) == 0, "the boolean option is the first");
+
+    /// The first value of every knob: its default, then what the image's
+    /// command line says of it, if that is a value the knob accepts. One that
+    /// is not is said and left at the default, like any other boot option. The
+    /// defaults are first guesses to be measured (item 24 of
+    /// docs/repairs/261103/kernel-task-sched.md).
+    auto init_knobs() -> void {
+        auto const &options = boot::options();
+        for (usize i = 0; i < sched_domain::NUM_KNOBS; ++i) {
+            auto const knob = static_cast<Knob>(i);
+            auto const info = sched_domain::knob_info(knob);
+            KNOBS[i].store(info.default_value, std::memory_order_relaxed);
+
+            auto const given = options.steal_option(i);
+            if (given.is_none()) {
+                continue;
+            }
+            if (!StealPolicy::set(knob, given.value())) {
+                log::error("boot: {}={} is not between {} and {}, keeping {}",
+                           boot::BootOptions::STEAL_OPTIONS[i], given.value(), info.lowest,
+                           info.highest, info.default_value);
+            }
+        }
+    }
+
     auto build_all_domains() -> void {
-        auto const parameters = sched_domain::Parameters{
-            .same_node = {.min_runnable = STEAL_MIN_RUNNABLE_SAME_NODE,
-                          .max_batch = STEAL_MAX_BATCH_SAME_NODE},
-            .other_node = {.min_runnable = STEAL_MIN_RUNNABLE_OTHER_NODE,
-                           .max_batch = STEAL_MAX_BATCH_OTHER_NODE},
-        };
         auto const &possible = Cpu::possible_mask();
         DEBUG_ASSERT(possible.any(), "the table is built before the possible CPUs are known");
         possible.for_each([&](CpuNum const cpu) {
             DOMAINS[cpu] = sched_domain::build_domains(
-                cpu, possible, [](CpuNum const other) { return mm::CpuNodeMap::node_of(other); },
-                parameters);
+                cpu, possible, [](CpuNum const other) { return mm::CpuNodeMap::node_of(other); });
         });
+    }
+
+    auto init_steal() -> void {
+        init_knobs();
+        build_all_domains();
     }
 
     /// After the MADT parse has filled the possible mask and the node table
     /// has placed every CPU in it (PmNode::claim_possible_cpus(), at
     /// InitLevel::Irq + 1), and before the other CPUs start: main.cpp announces
     /// Threading, which runs this, and only then creates the thread that calls
-    /// init_platform() and with it x86_bring_aps().
-    GKTL_INIT_HOOK(BuildSchedDomains, build_all_domains, gktl::InitLevel::Threading);
+    /// init_platform() and with it x86_bring_aps(). The boot options were
+    /// parsed before any level.
+    GKTL_INIT_HOOK(InitSteal, init_steal, gktl::InitLevel::Threading);
 } // namespace
 
 auto domains_of(CpuNum const cpu) -> sched_domain::Domains const & {
     DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
     return DOMAINS[cpu];
+}
+
+auto StealPolicy::get(sched_domain::Knob const knob) -> usize {
+    DEBUG_ASSERT(std::to_underlying(knob) < sched_domain::NUM_KNOBS, "not a knob");
+    return KNOBS[std::to_underlying(knob)].load(std::memory_order_relaxed);
+}
+
+auto StealPolicy::set(sched_domain::Knob const knob, usize const value) -> bool {
+    // A value that is not a knob's is refused too: nothing is in the range of
+    // a knob that does not exist.
+    if (!sched_domain::knob_accepts(knob, value)) {
+        return false;
+    }
+    KNOBS[std::to_underlying(knob)].store(value, std::memory_order_relaxed);
+    return true;
 }
 } // namespace ours::task::sched

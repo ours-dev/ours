@@ -2,14 +2,16 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// The scheduling domains of a CPU: the nested sets of CPUs it looks at for
-/// work, nearest first, each with its own parameters.
+/// work, nearest first, each of a kind that a policy sets the parameters of.
 ///
 /// Pure. The scheduler asks for a CPU's domains instead of asking the memory
-/// manager which node a CPU is on every time it looks, so what it looks at and
-/// how deep a queue has to be before it is worth taking from are data, built
-/// once from the topology, rather than code. A new kind of distance (CPUs that
-/// share a cache, CPUs of one package) is one more tier here and no change to
-/// the code that walks them.
+/// manager which node a CPU is on every time it looks, so what it looks at is
+/// data, built once from the topology, rather than code; and the numbers that
+/// say how deep a queue has to be before it is worth taking from, and how many
+/// threads a look takes, are knobs with a name, a default and a range, here, and
+/// their value is the kernel's to keep. A new kind of distance (CPUs that
+/// share a cache, CPUs of one package) is one more kind of tier and its knobs,
+/// and no change to the code that walks them.
 ///
 /// Header only: there is nothing here that needs a translation unit of its own.
 /// A CpuMask is MAX_CPU bits wide, and MAX_CPU is a build parameter the kernel
@@ -23,6 +25,7 @@
 #include <concepts>
 #include <functional>
 #include <span>
+#include <string_view>
 
 #include <ours/cpu_mask.hpp>
 #include <ours/types.hpp>
@@ -31,6 +34,15 @@ namespace sched_domain {
 using ours::CpuMask;
 using ours::CpuNum;
 
+/// What a tier is, which says which knobs apply to the CPUs in it.
+enum class TierKind : u32 {
+    /// The CPUs on the owner's node.
+    SameNode,
+
+    /// The CPUs on every other node.
+    OtherNode,
+};
+
 /// One tier of a CPU's view of the machine.
 struct Domain {
     /// The CPUs in this tier, the CPU the list belongs to excluded. Every CPU
@@ -38,17 +50,10 @@ struct Domain {
     /// the tier intersects it with the CPUs that are active at that moment.
     CpuMask span;
 
-    /// How many threads a CPU of this tier must hold, the one it runs counted,
-    /// for the owner to take one from it. The nearer the tier, the cheaper the
-    /// move, so the lower the number it can afford. At least 1: a CPU with no
-    /// thread has none to give, and 0 is read as 1.
-    usize min_runnable = 0;
-
-    /// The most threads the owner takes from a CPU of this tier in one look. It
-    /// bounds how long the threads taken are in neither queue and how long the
-    /// victim's lock is held to take them off. At least 1 and at most
-    /// MAX_BATCH: 0 is read as 1.
-    usize max_batch = 1;
+    /// What the tier is, which says which knobs apply to its CPUs. The nearer the
+    /// kind, the cheaper the move, so by default the fewer threads a CPU of it
+    /// has to hold to be worth taking from; nothing keeps the knobs in that order.
+    TierKind kind = TierKind::SameNode;
 };
 
 /// The most threads one look takes, whatever a tier asks for: the room a caller
@@ -103,29 +108,128 @@ class Domains {
 
 static_assert(MAX_DOMAINS >= 2, "the builder makes a tier for the node and one for the rest");
 
-/// What a tier asks for.
-struct TierParams {
-    usize min_runnable = 0;
-    usize max_batch = 0;
+/// The numbers a policy sets, each by a name.
+///
+/// The library knows what a knob is called, what it is when nobody has said,
+/// and what it may be; where its value is kept, and how it is changed, is the
+/// kernel's (the boot options give it a first value and a console command
+/// changes it while the machine runs).
+enum class Knob : u32 {
+    /// Whether a CPU with nothing to run looks for threads to take at all: 0
+    /// or 1.
+    Enabled,
+
+    /// How many threads a CPU on the owner's node must hold, the one it runs
+    /// counted, for the owner to take one from it. At least 2: a thread waits
+    /// behind the running one only then, and a CPU with a single heavy thread
+    /// would otherwise be chosen as the victim ahead of one that has a thread
+    /// to give.
+    MinRunnableSameNode,
+
+    /// The same, on another node.
+    MinRunnableOtherNode,
+
+    /// The most threads one look takes from a CPU on the owner's node.
+    MaxBatchSameNode,
+
+    /// The same, from a CPU on another node.
+    MaxBatchOtherNode,
 };
 
-/// The parameters of each kind of tier.
-struct Parameters {
-    TierParams same_node;
-    TierParams other_node;
+/// How many knobs there are.
+inline constexpr usize NUM_KNOBS = 5;
+
+/// The most a threshold may be: a number of threads no run queue holds.
+inline constexpr usize MAX_MIN_RUNNABLE = 1024;
+
+/// The least a threshold may be: the running thread and one waiting.
+inline constexpr usize MIN_MIN_RUNNABLE = 2;
+
+/// What a knob is.
+struct KnobInfo {
+    /// The name the boot options (`kernel.sched.steal.<name>`) and the console
+    /// command call it by.
+    std::string_view name;
+    usize default_value = 0;
+    /// The values it accepts, both ends included.
+    usize lowest = 0;
+    usize highest = 0;
 };
 
-/// A tier with |params|, its batch cut to MAX_BATCH.
 [[nodiscard]]
-constexpr auto make_domain(CpuMask const &span, TierParams const &params) -> Domain {
-    auto max_batch = params.max_batch;
-    if (max_batch > MAX_BATCH) {
-        max_batch = MAX_BATCH;
+constexpr auto knob_info(Knob const knob) -> KnobInfo {
+    switch (knob) {
+        case Knob::Enabled:
+            return {.name = "enabled", .default_value = 1, .lowest = 0, .highest = 1};
+        case Knob::MinRunnableSameNode:
+            return {.name = "min-runnable-same-node",
+                    .default_value = 2,
+                    .lowest = MIN_MIN_RUNNABLE,
+                    .highest = MAX_MIN_RUNNABLE};
+        case Knob::MinRunnableOtherNode:
+            return {.name = "min-runnable-other-node",
+                    .default_value = 3,
+                    .lowest = MIN_MIN_RUNNABLE,
+                    .highest = MAX_MIN_RUNNABLE};
+        case Knob::MaxBatchSameNode:
+            return {.name = "max-batch-same-node",
+                    .default_value = 4,
+                    .lowest = 1,
+                    .highest = MAX_BATCH};
+        case Knob::MaxBatchOtherNode:
+            return {.name = "max-batch-other-node",
+                    .default_value = 4,
+                    .lowest = 1,
+                    .highest = MAX_BATCH};
     }
-    if (max_batch < 1) {
-        max_batch = 1;
+    // Not a knob: a range nothing is in.
+    return {.name = {}, .default_value = 0, .lowest = 1, .highest = 0};
+}
+
+/// Whether |value| is one the knob accepts.
+[[nodiscard]]
+constexpr auto knob_accepts(Knob const knob, usize const value) -> bool {
+    auto const info = knob_info(knob);
+    return info.lowest <= value && value <= info.highest;
+}
+
+/// The knob called |name|: true and |knob| set, or false.
+[[nodiscard]]
+constexpr auto find_knob(std::string_view const name, Knob &knob) -> bool {
+    for (usize i = 0; i < NUM_KNOBS; ++i) {
+        auto const candidate = static_cast<Knob>(i);
+        if (knob_info(candidate).name == name) {
+            knob = candidate;
+            return true;
+        }
     }
-    return Domain{.span = span, .min_runnable = params.min_runnable, .max_batch = max_batch};
+    return false;
+}
+
+/// The knob that sets how many threads a CPU of a tier of |kind| must hold.
+[[nodiscard]]
+constexpr auto min_runnable_knob(TierKind const kind) -> Knob {
+    // Every kind is named, so that a new kind is a warning here until it has
+    // knobs of its own.
+    switch (kind) {
+        case TierKind::SameNode:
+            return Knob::MinRunnableSameNode;
+        case TierKind::OtherNode:
+            return Knob::MinRunnableOtherNode;
+    }
+    return Knob::MinRunnableOtherNode;
+}
+
+/// The knob that sets the most threads a look takes from a tier of |kind|.
+[[nodiscard]]
+constexpr auto max_batch_knob(TierKind const kind) -> Knob {
+    switch (kind) {
+        case TierKind::SameNode:
+            return Knob::MaxBatchSameNode;
+        case TierKind::OtherNode:
+            return Knob::MaxBatchOtherNode;
+    }
+    return Knob::MaxBatchOtherNode;
 }
 
 /// The domains of |owner|, from a table of nodes.
@@ -144,8 +248,7 @@ template <typename NodeOf>
     requires std::invocable<NodeOf const &, CpuNum> &&
              std::equality_comparable<std::invoke_result_t<NodeOf const &, CpuNum>>
 [[nodiscard]]
-auto build_domains(CpuNum const owner, CpuMask const &possible, NodeOf const &node_of,
-                   Parameters const &parameters) -> Domains {
+auto build_domains(CpuNum const owner, CpuMask const &possible, NodeOf const &node_of) -> Domains {
     auto const owner_node = node_of(owner);
 
     CpuMask same_node;
@@ -165,10 +268,10 @@ auto build_domains(CpuNum const owner, CpuMask const &possible, NodeOf const &no
     // static_assert above).
     Domains domains;
     if (same_node.any()) {
-        auto _ = domains.push(make_domain(same_node, parameters.same_node));
+        auto _ = domains.push(Domain{.span = same_node, .kind = TierKind::SameNode});
     }
     if (other_nodes.any()) {
-        auto _ = domains.push(make_domain(other_nodes, parameters.other_node));
+        auto _ = domains.push(Domain{.span = other_nodes, .kind = TierKind::OtherNode});
     }
     return domains;
 }
