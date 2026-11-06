@@ -33,7 +33,14 @@ Non-goals: a better load metric (the weight sum stays); an interval per scheduli
 - One caller per thief: a CPU's handler is the only periodic caller of its scheduler, and the idle thread calls with interrupts off, so the handler cannot meet it. Repair item 36 does not arise for these callers (it stays open for a remote caller). The timer wakes a halted CPU every period, so a halted CPU looks again (item 23). The race of item 38 does not touch a timer.
 - The cost: a pull in an interrupt handler with interrupts off, for the length of one look (the idle path is the same length, also with interrupts off); the timers to arm, move and cancel with the CPUs; the global view ("CPU A balances the system") is not what this does, though the remote call stays there for a balancer that wants it.
 
-**Timeline of a pass in form B** (4 CPUs, all busy, 5/1/1/1, mean 2, period 20 ms; each CPU's timer fires within a period of the others, in any order):
+**Form C: ride the slice end** (what Linux does with the tick, found by reading `TickSched` and the scheduler's deadline code on 2026-11-06).
+- There is no periodic tick to ride on by default. `TickSched::on_tick()` runs only when a CPU's tick device is Periodic, and then it only runs the timer queue (`A tick no longer drives the scheduler`); the dev images and our lanes boot with `kernel.time.oneshot` (`time_oneshot = true` in `kernel/kernel_params.gni`), where a CPU has no tick at all.
+- What a busy CPU does have is the end of its slice. `Scheduler::set_next_thread()` arms the preemption deadline on every pick of a thread that is not the idle thread, "the running thread picked again included, and nothing ticks to see whether the slice is over", and the idle thread clears it. `TimerQueue::run_expired_timers()` calls `Scheduler::Current::on_preemption_deadline()` in that CPU's timer interrupt, with interrupts off and the queue's lock dropped. So every busy CPU takes a scheduler interrupt once a slice (64 ms for round-robin) and a halted one takes none: the same split Linux has between a busy CPU's tick and the idle CPUs that `nohz` leaves alone.
+- A pass is then a few lines in that function: if the knob is non-zero and `now >= next_balance` (a per-CPU value, touched only by its own CPU), set `next_balance = now + period` and call `steal_work_from(Cpu::online_mask())` on the CPU's own scheduler. No timer is armed, moved or cancelled, so there is no arming protocol, no hotplug hook and no cost when the knob is 0 (one relaxed load); a CPU that goes offline simply stops taking slice ends, and `steal_work_from()` already answers 0 for a CPU that is not active.
+- The same caller properties as form B: the pull runs in the interrupt of the thief itself, in the context of a thread that is already counted in its load, with one caller per thief and no lock held on entry. The lock order is the run queue locks only: the queue's lock is dropped before `on_preemption_deadline()` runs (`timer_queue.cpp`), so there is no timer-queue-then-run-queue order to invert against `set_next_thread()`'s run-queue-then-timer-queue one.
+- The cost: the period cannot be shorter than a slice (a smaller `balance-period-ms` means every slice end), a CPU whose slice is long is balanced rarely, and the halted CPUs are not visited, so repair item 23 stays (the idle looks and a later nohz-style kick are its answers). The balance sits in a scheduler function, which is the layer it belongs to.
+
+**Timeline of a pass in forms B and C** (4 CPUs, all busy, 5/1/1/1, mean 2, period 20 ms; each CPU's timer fires within a period of the others, in any order):
 ```text
 CPU 1 fires   here 1 < mean 2; CPU 0 holds 5 (>= min-runnable 2): pull = min(5 - 2, 2 - 1) = 1;
               CPU 1 is running a thread, so the thread must fit: takes 1                      -> 4/2/1/1
@@ -42,7 +49,7 @@ CPU 3 fires   pull = min(3 - 2, 2 - 1) = 1: takes 1                             
 CPU 0 fires   here 2, not below the mean: nothing
 next period   every CPU is at the mean: nothing
 ```
-The same timeline with form A needs the discount above, or it ends 3/1/2/2.
+The same timeline with form A needs the discount above, or it ends 3/1/2/2. In form C each CPU's pull comes at its own slice end, 64 ms apart and not in lock step, so the order is whichever slice ends first; the end state is the same.
 
 **Counterparts.** Linux: `sched_balance_trigger()` raises `SCHED_SOFTIRQ` from each CPU's tick; `sched_balance_domains()` walks the domains of the CPU whose interval has passed; `should_we_balance()` lets one CPU of a group do it; `sched_balance_rq(this_cpu, this_rq, ...)` pulls for `this_rq`, which is the shape `steal_work_from()` has now. Linux balances per CPU, from that CPU's own tick: form B's shape. Zircon, in `kernel/kernel/scheduler.cc` of the local Fuchsia checkout, balances when a thread is placed (`Scheduler::FindTargetCpu()`) and when a CPU goes idle (`Scheduler::StealWork()`); a search of the file for "periodic" and "rebalance" finds nothing, so this part has no Zircon counterpart. What Linux does about the problems this design met, read in `kernel/sched/fair.c` of the local checkout:
 - *One balancer per thief.* Each CPU balances only for itself (`sched_balance_rq(this_cpu, this_rq, ...)`), from its own tick (`scheduler_tick()` calls `sched_balance_trigger()`, which raises `SCHED_SOFTIRQ` when `rq->next_balance` has passed). That is form B. There is no balancer thread.
@@ -53,6 +60,7 @@ The same timeline with form A needs the discount above, or it ends 3/1/2/2.
 - *The strict fit.* `detach_tasks()` skips a task whose load, shifted right by `sd->nr_balance_failed`, exceeds the imbalance: strict while balances succeed, loosening by halves after each failed attempt, so a pass that keeps finding an imbalance it cannot fix eventually takes the thread. Intervals are adaptive too (`get_sd_balance_interval()`: longer when the CPU is busy, doubled after a failure up to `max_interval`). Both are non-goals here and the open questions below.
 
 ## Alternatives considered
+- **Riding `TickSched::on_tick()`:** it is called only for a Periodic tick device, which the default images do not use.
 - **A DPC per CPU**, queued from a timer: the machinery of form B and a thread besides, with the thread's weight.
 - **One worker thread per CPU:** N threads that sleep to do microseconds of work, each with the weight problem.
 - **Instead of the overlap flag**, re-read the thief's load under its lock before queuing and give the excess back to the victim (a third lock step, and the threads Migrating for longer); or leave the rule with the caller. Rejected: the flag is a few lines and needs no undo. Not needed at all in form B.
@@ -62,7 +70,7 @@ The same timeline with form A needs the discount above, or it ends 3/1/2/2.
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| Form of the trigger | A, a global worker thread (with the discount and the flag); B, a timer on each CPU | B: it has no thread, so the mean is the real mean, it needs no flag or discount, it cannot be stranded, it costs nothing when off, and the hook pattern exists in the lockup detector. A keeps the global view the user pictured | None (predictions are paused) | A on 2026-11-06, before the finding; reopened |
+| Form of the trigger | A, a global worker thread (with the discount and the flag); B, a timer on each CPU; C, the slice end of each busy CPU | C: no thread (the mean is the real mean), no timer (no arming protocol or hotplug hook), nothing when off, the shape Linux has, and it is where a busy CPU already takes an interrupt. B if a period under a slice, or a visit to halted CPUs, is wanted. A keeps the global view the user pictured | None (predictions are paused) | A on 2026-11-06, before the finding; reopened |
 | Default of the period | off (0); a value | off, so that nothing that exists changes until it is measured | None | |
 | Whether idle CPUs are visited | yes; no | yes: the visit is what looks again for a halted CPU | None | |
 | Whether a busy thief may take a thread that does not quite fit | no (strict, as now); yes, loosening by halves after each pass that failed to take (Linux's `nr_balance_failed`) | no, until a measurement asks for it | None | |
@@ -78,6 +86,6 @@ The same timeline with form A needs the discount above, or it ends 3/1/2/2.
 
 ## Open questions
 - Whether the strict fit is right for a busy thief, or a backoff on failed passes as Linux's `nr_balance_failed`, once passes run: measure what the settled splits look like.
-- Whether the scheduler already has a periodic per-CPU hook that busy CPUs take (`TickSched`, `kernel/include/ours/time/tick_sched.hpp`) that a pass could ride on, as Linux's does, instead of a timer of its own: that would remove the arming protocol and the hotplug hook. Not established; read before step 2.
+- Whether a period shorter than a slice is ever wanted (it would need form B, or a second deadline in the timer queue for the next balance). The measurement of `steal-policy-measure` decides.
 - What the default period should be once the measurement of `steal-policy-measure` has the setting in its sweep.
 - Whether a pass should stop early when nothing was taken for some passes, to stop waking CPUs: not needed on this machine.
