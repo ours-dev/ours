@@ -62,6 +62,9 @@ source_set("commands") {
 
     # `lockup status` asks the detector for its notes.
     "//kernel/lib/lockup_detector:headers",
+
+    # steal.test reads the scheduling domains the steal walks.
+    "//kernel/lib/sched_domain:headers",
     "//kernel/lib/user_copy",
     "//kernel/mm:headers",
     "//kernel/object:headers",

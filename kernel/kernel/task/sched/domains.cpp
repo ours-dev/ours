@@ -29,6 +29,15 @@ namespace {
     /// of docs/repairs/261103/kernel-task-sched.md).
     constexpr usize STEAL_MIN_RUNNABLE_OTHER_NODE = 3;
 
+    /// The most threads one look takes from a CPU on the same node, and from a
+    /// CPU on another. It bounds the time the threads are in neither queue and
+    /// the dequeues done with the victim's lock held (the walk that picks them
+    /// has a bound of its own, sched_domain::MAX_SCAN). Four is a first guess,
+    /// for the same reason as the numbers above (item 24 of
+    /// docs/repairs/261103/kernel-task-sched.md).
+    constexpr usize STEAL_MAX_BATCH_SAME_NODE = 4;
+    constexpr usize STEAL_MAX_BATCH_OTHER_NODE = 4;
+
     /// Written once by build_all_domains(), while one CPU runs, and only read
     /// after. Indexed by the CPU that owns the tiers. Empty from the first
     /// instruction, by constinit, because a look for work may come before the
@@ -36,16 +45,18 @@ namespace {
     constinit std::array<sched_domain::Domains, MAX_CPU> DOMAINS;
 
     auto build_all_domains() -> void {
-        auto const thresholds = sched_domain::Thresholds{
-            .same_node = STEAL_MIN_RUNNABLE_SAME_NODE,
-            .other_node = STEAL_MIN_RUNNABLE_OTHER_NODE,
+        auto const parameters = sched_domain::Parameters{
+            .same_node = {.min_runnable = STEAL_MIN_RUNNABLE_SAME_NODE,
+                          .max_batch = STEAL_MAX_BATCH_SAME_NODE},
+            .other_node = {.min_runnable = STEAL_MIN_RUNNABLE_OTHER_NODE,
+                           .max_batch = STEAL_MAX_BATCH_OTHER_NODE},
         };
         auto const &possible = Cpu::possible_mask();
         DEBUG_ASSERT(possible.any(), "the table is built before the possible CPUs are known");
         possible.for_each([&](CpuNum const cpu) {
             DOMAINS[cpu] = sched_domain::build_domains(
                 cpu, possible, [](CpuNum const other) { return mm::CpuNodeMap::node_of(other); },
-                thresholds);
+                parameters);
         });
     }
 

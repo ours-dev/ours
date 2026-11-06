@@ -994,3 +994,73 @@ None (predictions are paused)
 - Why is the builder a pure function in its own header-only library, and what would break if it were a compiled source?
 - Why does a tier list every possible CPU and `steal()` cut it to the active ones, and not the other way round?
 - What does the scheduler no longer know, and which one file still knows it?
+
+## Title: An idle CPU takes the threads that bring it to the mean load, not one (2026-11-05)
+
+**Files**
+- `kernel/lib/sched_domain/include/sched_domain/sched_domain.hpp` — `Domain` gains `max_batch` (1 to `MAX_BATCH`, 8); `Thresholds` becomes `Parameters` of `TierParams {min_runnable, max_batch}`; new `pull_amount()` (how much load to take), `PullBudget` (which threads of the victim's queue make it up) and `MAX_SCAN` (32, how many of a queue one look examines)
+- `kernel/lib/sched_domain/test/sched_domain_test.cpp`, `test/BUILD.gn` — 18 more host tests (28 in all), using the kernel's own `ffl::Fixed<i64, 16>` as the load
+- `kernel/kernel/task/sched/scheduler.cpp`, `kernel/include/ours/task/sched/scheduler.hpp` — `steal()` samples the loads, takes the mean, and moves a batch; new `Scheduler::load()`; the counter `schedule.steals` now counts threads
+- `kernel/kernel/task/sched/domains.cpp` — the tiers' batch sizes (`STEAL_MAX_BATCH_*`, 4)
+- `kernel/commands/steal_test.cpp`, `kernel/commands/BUILD.gn` — three rounds: eight threads, twenty, and a heavy thread on a third CPU; the command links the library's headers
+- `kernel/tests/sched_domain_test.cpp` — the ktest also checks each tier's `min_runnable` and `max_batch`
+- `.agents/skills/kernel-design/references/task.md`, `.agents/tasks/sched-facade/DESIGN.md`, `docs/repairs/261103/kernel-task-sched.md` (items 18, 23, 24, 26)
+
+**Symptom**
+`steal()` took one thread per look, whatever the imbalance. Eight threads on CPU 0 of four, the other three CPUs idle and looking once each as they go idle: 5, 1, 1, 1, by the arithmetic of the old code, not run. A CPU that has taken one thread is no longer idle and does not look again until it is (repair item 22), so what it took is what it gets. The user's objection, 2026-11-05: one has no basis; it should follow a load-balancing algorithm, with the load sampled.
+
+**Cause**
+"One" is a constant standing in for a quantity: how far the CPU is from where a balanced machine would have it. A balanced machine has every CPU at the mean load of the CPUs that share the work, so a CPU with less takes what lifts it to the mean, and the CPU it takes from gives up what it holds above the mean, no more: past the mean the roles swap and the next look takes the threads back. Both bounds are needed. Taking only what the idle CPU lacks over-takes when the victim is barely above the mean (the victim ends below it); taking only what the busy CPU has in excess over-takes when there are several idle CPUs (each of them takes the whole excess, and the first one ends above the mean).
+
+| look | loads of CPU 0 to 3 | mean | min(victim − mean, mean − own) | after |
+|---|---|---|---|---|
+| CPU 1 | 8, 0, 0, 0 | 2 | min(6, 2) = 2 | 6, 2, 0, 0 |
+| CPU 2 | 6, 2, 0, 0 | 2 | min(4, 2) = 2 | 4, 2, 2, 0 |
+| CPU 3 | 4, 2, 2, 0 | 2 | min(2, 2) = 2 | 2, 2, 2, 2 |
+
+Four things the formula alone does not settle:
+1. **The threads are lumps, and the amount can be none.** A mean of 0.6 of a thread asks for nothing, and so does a mean raised by load that cannot move (a heavy thread on a third CPU, pinned threads of a nearer tier): the victim is not above it. Either would send an idle CPU back to halt with a thread waiting. So the first thread is taken whatever it weighs and whatever the amount, provided the victim holds as many threads as the tier asks for (`min_runnable` is at least two: the one it runs and one waiting), and each later one only if it fits what is left, which also stops a heavy thread being carried past the mean for the sake of a light one behind it.
+2. **A batch is capped, and so is the look.** `max_batch` bounds how many threads are in neither queue at once. The walk of the victim's queue is done with its lock held and interrupts off, and a queue of threads that cannot move would be walked to its end by every CPU that looks, so the walk is cut at `MAX_SCAN` threads, taken or not. The old code walked to the end only when nothing could be taken.
+3. **Which CPUs make the mean.** The thief and every CPU of the tiers up to the one with the victim, which is what nested domains give: a CPU that a nearer tier already looked at counts in the mean of the farther one. With the thief and a tier of two (three CPUs, the three-CPU node of the four-node machine) and eight threads the mean is 2.67 and two threads; over all eight CPUs of that machine it is 1 and one thread. This was chosen for fidelity to nested domains; no run tells it from a mean over the victim's tier alone, which is 8/6 or 8/5 on the same machine and also one thread (they part at about twelve threads).
+4. **Everything sampled is stale.** The loads are read without the CPUs' locks. Under the victim's lock the count is asked again, and the amount is recomputed from the victim's load as it is then, so two idle CPUs that read the same sample do not both take what only one's worth was above the mean.
+
+**Change**
+```cpp
+// before: one thread
+thread = detach_from(victim_cpu, domain.min_runnable);   // walk the queue, take the first that may run here
+// after: the mean decides
+total += other.load(); cpus += 1;                         // for each active CPU of the tier
+taken = detach_from(victim_cpu, domain, total / cpus);    // pull_amount(), then a PullBudget over the queue
+```
+`pull_amount(here, busiest, average)` is `min(busiest - average, average - here)` when both are positive, and zero otherwise. `PullBudget(amount, max_batch)` is offered the victim's threads in the order its queue walks them and answers which to take; its first answer is yes whatever the amount. The victim is the CPU with the most load among those holding at least `min_runnable` threads, not the one with the most threads. The load is `Scheduler::load()`, the run queue's `m_total_weight` (the weight of the threads it holds, the running one counted): proportional to the thread count when the weights are equal, and with different priorities a heavy thread counts for what it is. The calculation reads only that one function, so the sampled load the user proposed replaces it without touching the calculation. The batch is dequeued from the victim with the first call reading the victim's clock and the rest skipping it, then enqueued on the thief under one hold of its lock. The counter `schedule.steals` counts threads, so `steal.test` compares it with the mean's count.
+
+Rejected: half the difference (it takes four of eight on the first look, and reaches the mean only after more looks that the idle CPU may not make); the count of the victim's excess alone; a constant batch; a fraction of the victim's load; recomputing the mean after each thread (a second hold of the victim's lock per thread, and the same answer for equal weights); trying the next busiest CPU of a tier when the first gives nothing (repair item 23).
+
+**Reference**
+Linux, `kernel/sched/fair.c` (local checkout). This is the formula of the periodic balance, applied to the pull of an idle CPU, which is not what Linux does there. `calculate_imbalance()`: its last branch, reached when the local group is fully busy or overloaded, ends in `env->imbalance = min((busiest->avg_load - sds->avg_load) * busiest->group_capacity, (sds->avg_load - local->avg_load) * local->group_capacity) / SCHED_CAPACITY_SCALE`, with a comment saying that neither side is pushed past the mean; `detach_tasks()` subtracts each task's load from `env->imbalance` and skips a task that is more than is left, and its loop is bounded by `loop_max = min(sysctl_sched_nr_migrate, busiest->nr_running)`, which counts the tasks examined, as `MAX_SCAN` does here, not the tasks taken. A CPU that has just gone idle has spare capacity, so its group takes an earlier branch of `calculate_imbalance()`, a count of tasks halved, with a fallback to one task when the amount comes out as nothing and the busiest group has one waiting; and `detach_tasks()` stops after the first task when the CPU is newly idle on a preemptible kernel, to keep the lock short, and never takes the last. Linux's newly-idle pull therefore takes one; this design takes more because the user asked for a load-balancing calculation, and keeps Linux's own safeguards (a bounded examine, a fallback to one thread). Zircon's `Scheduler::StealWork()` takes one thread. Differences here: the groups are CPUs, with no capacity; the mean is over the tiers so far, which Linux gets from nested domains; the load is a weight sum, where Linux's is a decayed average of runnable time.
+
+**Verification**
+- Host tests: 28 in `sched_domain`, 18 new in this step. `pull_amount()` (the share of the mean, the cap by the victim's excess, nothing at or above the mean, nothing when the busiest is not above it, a fraction of a thread, plain counts, and the table above played to the end, which ends 2, 2, 2, 2); `PullBudget` (first thread whatever it weighs and with no amount, later ones must fit, a heavy one skipped and a light one behind it taken, the batch and one thread short of it, a batch of none read as one); and the batch carried by each tier, cut to `MAX_BATCH` and raised to 1.
+- `steal.test`: default lane and Fair lane, 29 checks each, ok; four-node machine, 58 checks, ok. Per pair three new rounds. Eight threads on the victim: `took 2 of 8, the mean over 4 CPUs allows 2 to 2` (default and Fair), `took 2 of 8 ... over 3 CPUs allows 2 to 3` (the pair on one node of the four-node machine), `took 1 of 8 ... over 8 CPUs allows 1 to 1` (the pair on two). Twenty threads, where the batch binds: `took 4 of 20` over 4 and over 3 CPUs, `took 2 of 20` over 8. A heavy thread on a third CPU, raising the mean above the victim: `took 1 of 3` on every pair. Each round also checks that the threads counted are the ones seen running on the thief.
+- Negative controls, each restored and compared with `cmp`: the batch fixed at one thread: the eight and the twenty rounds fail; the tier's batch ignored (`MAX_BATCH` instead): the twenty round fails (`took 5 of 20`, `took 6 of 20` over 3 CPUs, 4 allowed); the amount-is-none guard put back (no amount, no thread): the heavy round fails (`took 0 of 3`); the whole of the victim's load taken in place of the mean: the eight and the heavy rounds fail; the rule that later threads must fit removed: two host tests fail, and `steal.test` cannot see it (equal threads over four CPUs leave nothing over); `done()` one thread early: one host test fails. The `MAX_SCAN` cut has no test that fails without it.
+- The 12 console tests (`idle sleep threadjoin timer timershare mutex.stress hotplug irq interrupt steal tickreplace preempt`, split with `${=T}`): 11 ok on the default lane and on the four-node machine, 12 on the Fair lane. The one that fails is `preempt.test`, when the host is loaded by a QEMU of another worktree holding a core (load average 4.7); in the entry of the scheduling domains it was measured with `steal()` returning false at its top, 6 solo runs each way, 1 ok and 5 fail both. It was not repeated with the batch, but the batch cannot reach it: its spinners are pinned to one CPU. `ktest all` `ran=25 passed=24 failed=0 skipped=1` on the three lanes.
+- `boot_check.py`: default lane dbg PASS (46 passed, 5 skipped, 0 failed), rel PASS (44/8/0, 7/7), host-tests PASS (181 passed); Fair lane and four-node machine, `--no-tests`: dbg PASS (46/5/0), rel PASS (44/8/0, 7/7). `format_cpp.py`, `format_gn.py` and `lint_docs.py` clean, no added line over 100 columns; clang-tidy reports nothing on a line of this change.
+- Not measured: whether a batch helps or costs (a benchmark is the next question: repair item 24 lists it); whether a thread of unequal weight is chosen well beyond the heavy round (host-tested; the test threads otherwise have the default priority). Not run: the hotplug return (3, 3, 2, 0): by the formula the returning CPU takes one thread, to 2, 3, 2, 1, and stays there (item 22).
+
+**Deliberately not done**
+- The sampled, decayed load: the calculation is written over `load()` so that it can replace the weight sum, but the structure and its update cost are a performance item (repair item 24).
+- A look again after a take, and the periodic balance (item 22): the example above is balanced because three CPUs each look once.
+- Trying the next busiest CPU of a tier when the busiest has nothing to give (item 23): found by this step's own test, which had to use one heavy thread rather than four so as not to run into it.
+- Setting `max_batch` and the thresholds from outside the kernel (the knobs are the next step, a struct and one accessor).
+- Balancing by groups of CPUs (a node against a node) as Linux does at its outer levels: the outer tier is a flat set of CPUs, and the mean is taken over them.
+
+**How it was found**
+The user, 2026-11-05: always taking one is "不太对劲", the number should come from a load-balancing algorithm over sampled data ("按照负载均衡算法来计算要偷几个"). The formula was read in Linux's `calculate_imbalance()` and `detach_tasks()`. Two independent reviews of the first version found: a walk with no bound under the victim's lock; a victim above the gate but not above the mean sending the thief back to halt (the amount-is-none rule); a batch of 0 that never takes; and several statements in the record that were wrong or unsupported (the mean's justification, the Linux reference, the arithmetic of two examples). The heavy round was added for the second, and its first form (four heavy threads) found the shadowing of item 23.
+
+**The user's prediction**
+None (predictions are paused)
+
+**Three questions you should be able to answer**
+- Why is the amount `min(victim − mean, mean − own)` and not either term alone, and what happens to the machine in each case?
+- Why does the first thread go to the thief whatever the mean says, and which round of `steal.test` fails if it does not?
+- Why does the walk of the victim's queue have a bound of its own, when `max_batch` already limits how many threads are taken?

@@ -11,6 +11,7 @@ executable("sched_domain") {
   defines = [ "MP_MAX_CPUS=16" ]
   deps = [
     "//kernel/lib/sched_domain",
+    "//system/lib/ffl:headers",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]

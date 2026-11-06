@@ -38,6 +38,9 @@ namespace {
             CpuMask seen;
             for (auto const &domain: domains.view()) {
                 EXPECT_TRUE(domain.span.any(), "a tier is never empty");
+                EXPECT_TRUE(domain.min_runnable >= 1, "a tier asks for a thread to take");
+                EXPECT_TRUE(domain.max_batch >= 1 && domain.max_batch <= sched_domain::MAX_BATCH,
+                            "a tier takes at least one and at most what a batch holds");
                 EXPECT_TRUE((seen & domain.span).none(), "no CPU is in two tiers");
                 EXPECT_FALSE(domain.span.test(cpu), "a CPU is in no tier of its own");
 

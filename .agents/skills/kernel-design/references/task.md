@@ -36,10 +36,18 @@
   manager: `domains_of(cpu)` (`kernel/lib/sched_domain`, built once from the
   node table in `kernel/kernel/task/sched/domains.cpp`, the one file of the
   scheduler that knows `mm::CpuNodeMap`), the CPU's tiers nearest first, each
-  with the queue depth that makes a CPU in it worth taking from (the user's
-  call of 2026-11-05; it is the role of Linux's `sched_domain` and Zircon's
-  `CpuSearchSet`). A new kind of distance is one more tier built there, and the
-  numbers are data, so that they can be measured and later set from outside.
+  with the queue depth that makes a CPU in it worth taking from and the most
+  threads one look takes (the user's call of 2026-11-05; it is the role of
+  Linux's `sched_domain` and Zircon's `CpuSearchSet`). A new kind of distance
+  is one more tier built there, and the numbers are data, so that they can be
+  measured and later set from outside. How many threads a look takes is a
+  load-balancing calculation, not a constant (the user's call of 2026-11-05):
+  enough to bring the CPU up to the mean load of itself and the tiers so far,
+  and no more than the victim holds above that mean
+  (`sched_domain::pull_amount()`, after Linux's `calculate_imbalance()`), the
+  first thread whatever it weighs and the rest while they fit
+  (`sched_domain::PullBudget`). Load is the run queue's weight sum for now;
+  the calculation reads one `load()`, so a sampled load can replace it.
 - Numerics follow Zircon: weights and times are `ffl::Fixed`
   (`SchedWeight` is `ffl::Fixed<int64_t, 10>`, a fraction in (0, 1]). No Linux
   integer weights, no `wmult` reciprocal table. Read

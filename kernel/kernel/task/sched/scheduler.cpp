@@ -75,6 +75,7 @@
 #include <ours/time/clock.hpp>
 #include <ours/time/timer_queue.hpp>
 
+#include <array>
 #include <atomic>
 #include <utility>
 
@@ -1055,8 +1056,11 @@ auto Scheduler::Current::num_steals(CpuNum const cpu) -> u64 {
 
 /// A pull, by a CPU with nothing to run, from the tiers of its scheduling
 /// domains (domains_of()), the nearest first: in each, the CPU with the most
-/// threads, if it has as many as the tier asks for. The hold-one-lock-at-a-time
-/// shape is deactivate()'s: no order of run queue locks is defined, and two CPUs
+/// load among those that hold as many threads as the tier asks for, and of its
+/// threads as much as brings this CPU up to the mean
+/// (sched_domain::pull_amount()), or the one thread that is waiting when the
+/// mean is not above the victim. The hold-one-lock-at-a-time shape is
+/// deactivate()'s: no order of run queue locks is defined, and two CPUs
 /// stealing from each other would deadlock on the first one that took both.
 ///
 /// While the thread is Migrating it is in neither queue, and its m_curr_cpu
@@ -1077,83 +1081,122 @@ auto Scheduler::Current::steal() -> bool {
     SCHEDULE_STEAL_LOOKS.add(1);
 
     auto const here = self.m_run_queue.m_which_cpu;
+    auto const here_load = self.load();
 
-    // Detaches one thread that may run here from |victim_cpu|'s queue, or
-    // answers null.
-    auto const detach_from = [&](CpuNum const victim_cpu, usize const min_runnable) -> Thread * {
-        if (victim_cpu == INVALID_CPU_NUM) {
-            return nullptr;
-        }
+    // The threads taken from one victim, between its queue and this one.
+    std::array<Thread *, sched_domain::MAX_BATCH> batch{};
+
+    // Detaches into |batch| the threads that may run here from |victim_cpu|'s
+    // queue, as many as the victim's load above |average| and this CPU's below
+    // it call for, and answers how many.
+    auto const detach_from = [&](CpuNum const victim_cpu, sched_domain::Domain const &domain,
+                                 Weight const &average) -> usize {
         auto &victim = get(victim_cpu);
         Guard<SpinLock, IrqSave> guard{victim.get_lock()};
-        // The count that chose the victim was read without its lock: another
-        // CPU may have taken a thread since, and two CPUs that read the same
-        // count must not both take from a queue that had enough for one.
-        if (!victim.is_state_active() || victim.num_runnable() < min_runnable) {
-            return nullptr;
+        // What chose the victim was read without its lock: another CPU may
+        // have taken from it since, and two CPUs that read the same load must
+        // not both take what only one's worth was above the mean. So the count
+        // and the amount are asked again, of the load as it is now. The count
+        // is what guarantees a thread waiting behind the one it runs, and so
+        // that the amount may be none: a mean that is raised by load that
+        // cannot move (a heavy thread elsewhere, pinned threads of a nearer
+        // tier) does not send this CPU back to halt with that thread waiting.
+        if (!victim.is_state_active() || victim.num_runnable() < domain.min_runnable) {
+            return 0;
         }
-        // The first queued thread that may run here, in the order the
-        // discipline's queue walks (first in, first out for round-robin, by
-        // deadline for Fair). Only a Ready one: Fair's delayed dequeue leaves a
-        // thread that is asleep, parked, suspended or dead in its tree until
-        // its lag runs out, and that is not a thread to run. Not the thread
-        // the victim has nominated to run next (a directed yield), and not one
-        // pinned to the victim.
-        Thread *thread = nullptr;
+        auto const amount = sched_domain::pull_amount(here_load, victim.load(), average);
+
+        // Threads of the victim's queue, in the order the discipline's queue
+        // walks (first in, first out for round-robin, by deadline for Fair). Only
+        // a Ready one: Fair's delayed dequeue leaves a thread that is asleep,
+        // parked, suspended or dead in its tree until its lag runs out, and that
+        // is not a thread to run. Not the thread the victim has nominated to run
+        // next (a directed yield), and not one pinned to the victim. Which of
+        // them to take is the budget's: see sched_domain::PullBudget.
+        auto max_batch = domain.max_batch;
+        if (max_batch > batch.size()) {
+            max_batch = batch.size();
+        }
+        sched_domain::PullBudget<Weight> budget{amount, max_batch};
+        usize count = 0;
+        usize scanned = 0;
         victim.m_run_queue.for_each_thread([&](Thread &queued) {
+            // The walk is cut at MAX_SCAN threads whatever they are: it is done
+            // with the victim's lock held and interrupts off.
+            scanned += 1;
+            auto const more = scanned < sched_domain::MAX_SCAN;
             if (&queued == victim.m_run_queue.m_next_thread || !queued.is_state_ready()) {
-                return true;
+                return more;
             }
             auto const may_run_here = queued.scheduling_entity()
                                           .cpu_affinity()
                                           .get_available_mask(peek_active_mask())
                                           .test(here);
             if (!may_run_here) {
-                return true;
+                return more;
             }
-            thread = &queued;
-            return false;
+            if (budget.offer(queued.scheduling_entity().weight())) {
+                batch[count] = &queued;
+                count += 1;
+            }
+            return more && !budget.done();
         });
-        if (thread != nullptr) {
-            // Not SkipClock: this is the victim's queue, and its clock was last
-            // read when it last scheduled, which may be a slice ago. The
-            // dequeue charges the victim's running thread and records the
-            // lag of the one that leaves against the clock it reads.
-            victim.deactivate_thread(thread, DequeueOptions::None);
+
+        // Off the queue after the walk, not during it. The first dequeue reads
+        // the victim's clock, which was last read when it last scheduled, up to
+        // a slice ago: it charges the victim's running thread and records the
+        // lag of the one that leaves against that reading. The rest follow it.
+        auto options = DequeueOptions::None;
+        for (usize i = 0; i < count; ++i) {
+            victim.deactivate_thread(batch[i], options);
+            options = DequeueOptions::SkipClock;
         }
-        return thread;
+        return count;
     };
 
-    // Each tier in turn, nearest first, until one gives a thread. The deepest
-    // queue in a tier is a hint: read without the victim's lock, as
-    // select_target_cpu() reads the same count, and confirmed by the walk of
-    // the victim's queue under it. A tier lists every CPU that may ever exist,
-    // so it is cut to the ones active now.
-    Thread *thread = nullptr;
+    // Each tier in turn, nearest first, until one gives a thread. The mean is
+    // over this CPU and every CPU of the tiers so far, so a CPU that a nearer
+    // tier already looked at counts in the mean of the farther one. The loads
+    // are hints, read without the CPUs' locks, as select_target_cpu() reads the
+    // count. A tier lists every CPU that may ever exist, so it is cut to the
+    // ones active now.
+    auto total = here_load;
+    usize cpus = 1;
+    usize taken = 0;
     for (auto const &domain: domains_of(here).view()) {
         auto victim_cpu = INVALID_CPU_NUM;
-        usize deepest = 0;
+        Weight busiest{};
         (domain.span & peek_active_mask()).for_each([&](CpuNum const cpu) {
-            auto const queued = get(cpu).num_runnable();
-            if (queued >= domain.min_runnable && queued > deepest) {
-                deepest = queued;
+            auto const &other = get(cpu);
+            auto const load = other.load();
+            total += load;
+            cpus += 1;
+            if (other.num_runnable() >= domain.min_runnable && busiest < load) {
+                busiest = load;
                 victim_cpu = cpu;
             }
         });
-        thread = detach_from(victim_cpu, domain.min_runnable);
-        if (thread != nullptr) {
+        if (victim_cpu == INVALID_CPU_NUM) {
+            continue;
+        }
+        taken = detach_from(victim_cpu, domain, total / static_cast<i64>(cpus));
+        if (taken != 0) {
             break;
         }
     }
-    if (thread == nullptr) {
+    if (taken == 0) {
         return false;
     }
 
     {
         Guard<SpinLock, IrqSave> guard{self.get_lock()};
-        self.activate_thread(thread, EnqueueOptions::None);
+        auto options = EnqueueOptions::None;
+        for (usize i = 0; i < taken; ++i) {
+            self.activate_thread(batch[i], options);
+            options = EnqueueOptions::SkipClock;
+        }
     }
-    SCHEDULE_STEALS.add(1);
+    SCHEDULE_STEALS.add(static_cast<isize>(taken));
     return true;
 }
 

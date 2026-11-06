@@ -141,6 +141,15 @@ class Scheduler {
         return m_run_queue.m_num_queued_threads;
     }
 
+    /// The weight of the threads this CPU holds, the one it runs counted:
+    /// num_runnable() weighed. Read from another CPU it is a hint, as the count
+    /// is, and exact under this CPU's run queue lock.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto load() const -> Weight {
+        return m_run_queue.m_total_weight;
+    }
+
     FORCE_INLINE
     auto is_state_active() const -> bool {
         return STATES[usize(State::Active)]
@@ -445,26 +454,33 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     /// interrupts off.
     static auto reactivate() -> void;
 
-    /// This CPU has nothing to run: take one queued thread from another active
-    /// CPU. The tiers of this CPU's scheduling domains are tried nearest first
-    /// (domains_of()); in each, the deepest queue is taken from if it holds as
-    /// many threads as the tier asks for, the one it runs counted. The thread
-    /// has to be one that may run here. Called by the idle thread before it
-    /// halts, with interrupts off; true when a thread was moved here and is
+    /// This CPU has nothing to run: take queued threads from another active
+    /// CPU, as many as bring this one up to the mean load of the CPUs it looks
+    /// at, and no more than the victim holds above that mean. The tiers of this
+    /// CPU's scheduling domains are tried nearest first (domains_of()); in each,
+    /// the victim is the CPU with the most load among those that hold as many
+    /// threads as the tier asks for, the one they run counted. The mean is over
+    /// this CPU and every CPU of the tiers up to that one. The first thread is
+    /// taken whatever it weighs, even when the mean is not above the victim; the
+    /// others while they fit what is left, and no more than the tier's batch,
+    /// among the first sched_domain::MAX_SCAN of the victim's queue. The threads
+    /// have to be ones that may run here. Called by the idle thread before it
+    /// halts, with interrupts off; true when threads were moved here and are
     /// queued, so that the idle thread has something to reschedule to. A caller
     /// that drops the answer would halt with a thread queued.
     ///
-    /// The victim is picked from the CPUs' queue depths, read without their
-    /// locks, so it is a hint that the walk of the victim's queue, under its
-    /// lock, confirms. The move is two steps, each under one run queue lock and
-    /// never both, as deactivate() does it: the thread leaves the victim's
-    /// queue (Migrating), then joins this one.
+    /// The victim and the mean are picked from the CPUs' loads, read without
+    /// their locks, so they are a hint that the victim's own load, read under
+    /// its lock, confirms before anything is taken. The move is two steps, each
+    /// under one run queue lock and never both, as deactivate() does it: the
+    /// threads leave the victim's queue (Migrating), then join this one.
     [[nodiscard]]
     static auto steal() -> bool;
 
-    /// How many times |cpu| has looked for a thread to take (calls of steal()),
-    /// and how many it took, for a test to tell a CPU that looked and found
-    /// nothing from one that never looked. Read while |cpu| may be counting.
+    /// How many times |cpu| has looked for threads to take (calls of steal()),
+    /// and how many threads it took in all, for a test to tell a CPU that looked
+    /// and found nothing from one that never looked. Read while |cpu| may be
+    /// counting.
     [[nodiscard]]
     static auto num_steal_looks(CpuNum cpu) -> u64;
     [[nodiscard]]
