@@ -100,6 +100,10 @@ group("default") {
     # submit path, over a fake device whose ports answer from arrays.
     "//system/lib/virtio:tests($host_toolchain)",
 
+    # The volume library: the header's codec and the extent mapping, over
+    # hand-computed answers for the linear and the striped shapes.
+    "//system/lib/volume:tests($host_toolchain)",
+
     # The rpc core: call round trip, epitaph translation, peer-closed, the
     # txid wrap, the stray handle, on the fake kernel.
     "//system/lib/rpc:tests($host_toolchain)",

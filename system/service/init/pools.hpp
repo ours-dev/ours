@@ -23,8 +23,9 @@ namespace init {
 /// Component instances, the root's own among them (D27: 8 components; dev
 /// has outgrown the design's count with the filesystem component, and the
 /// next component bumps this with its own: the ACPI route service did,
-/// then the NVMe driver, then the device registry).
-inline constexpr auto MAX_INSTANCES = usize{13};
+/// then the NVMe driver, then the device registry, then the volume
+/// manager).
+inline constexpr auto MAX_INSTANCES = usize{14};
 
 /// /boot connections: namespace entries the root binds, and every Open and
 /// Clone through them (D27: 128).
@@ -51,8 +52,10 @@ inline constexpr auto MAX_RESOURCE_CONNECTIONS = usize{4};
 
 /// Nodes of /boot: one per BootFS file and one per directory on the way.
 /// Each file also costs the root one handle, its slice, so this bounds that
-/// charge too.
-inline constexpr auto MAX_BOOT_NODES = usize{256};
+/// charge too. Dev's BootFS carries some thirty files; the bound leaves
+/// room several times over, and every node here is a handle the client
+/// budget below does not get.
+inline constexpr auto MAX_BOOT_NODES = usize{200};
 
 /// Protocol uses one component may have: each is a service node of its
 /// /svc. The design does not size them; 15 matches MAX_DIRECTORY_USES.

@@ -1,0 +1,55 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# The volume group's on-disk metadata and the extent mapping: how logical
+# volumes address physical ones, linear and striped. A PV is extents; an
+# LV is a mapping -- segments naming (pv, first extent, count) -- and the
+# header at each PV's first sectors carries its own segments, double
+# written and CRC'd like the GPT's. Bytes alone, no system call: the
+# codec and the mapping build in every toolchain, the host one included,
+# where their tests run; the volume-manager assembles a group from the
+# PVs its routes hand it and serves each LV as ours.block.Block.
+source_set("volume") {
+  sources = [ "src/volume.cpp" ]
+  public_deps = [ ":headers" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/volume/volume.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# The LV as a block server: the same ours.block.Block the device drivers
+# speak, whose requests the mapping splits into runs and drives through
+# one prot::block::Client per PV. Header-only: the server is a template
+# over its own type, as block-server's is.
+cpp_interface("lv_server") {
+  public = [ "include/volume/lv_server.hpp" ]
+  public_deps = [
+    ":headers",
+    "//system/lib/block-server:headers",
+    "//system/lib/loop:headers",
+    "//system/lib/protocols:block_client.headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [
+    "test:lv_server($host_toolchain)",
+    "test:volume($host_toolchain)",
+  ]
+}
