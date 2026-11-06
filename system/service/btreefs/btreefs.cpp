@@ -1123,13 +1123,20 @@ auto Filesystem::mount() -> bool {
     if (table.is_err() && table.unwrap_err() == Status::NotFound) {
         // No table: the device is a whole volume -- the volume manager's
         // LV -- whose sectors start at 0 and whose count GetInfo names.
+        // The geometry is in 512-byte sectors; the volume's blocks are
+        // 4 KiB.
         auto const info = m_client.get_info();
         if (info.is_err()) {
             auto _ = ort::debug_line(
                 {"btreefs: the volume names no geometry: ", ours::to_string(info.unwrap_err())});
             return false;
         }
-        return mount_whole(info->blocks);
+        // The adapter and the transaction store, before anything touches
+        // the device: the whole-volume path's only difference from the
+        // partition's is the offset.
+        m_adapter.init(m_client, 0);
+        m_tx.init(*m_adapter, m_volume);
+        return mount_whole(info->blocks * prot::block::BLOCK_SIZE / ours_btreefs::BLOCK_BYTES);
     }
     if (table.is_err()) {
         auto _ =

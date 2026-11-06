@@ -35,6 +35,7 @@
 /// device tree's work (dev/class/block), a later round's.
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
+#include <ours/time.hpp>
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
 
@@ -48,6 +49,7 @@
 #include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
+#include <ort/spin_hint.hpp>
 #include <ort/startup.hpp>
 #include <prot/block.hpp>
 #include <ustl/lazy_init.hpp>
@@ -96,13 +98,17 @@ auto read_pv_header(prot::block::Client &client, volume::Header &header) -> Stat
     return Status::NotFound;
 }
 
+/// The PV clients, constructed in place on the scan's ends: the process
+/// carries no heap, and the clients' buffers live here for its life.
+constinit std::array<ustl::LazyInit<prot::block::Client>, MAX_PVS> PV_CLIENTS{};
+
 /// The scan's answer: the headers that joined -- in route order, each
 /// naming the PV index its group gives it -- and the client ends they
 /// were read through, still open; the component constructs its clients
 /// on them.
 struct Scan {
     std::array<volume::Header, MAX_PVS> headers{};
-    std::array<Uandle, MAX_PVS> client_ends{};
+    std::array<prot::block::Client *, MAX_PVS> clients{};
     usize count = 0;
 };
 
@@ -126,16 +132,19 @@ auto scan() -> Scan {
             auto _ = ours::handle_close(client_end);
             continue;
         }
-        auto client = prot::block::Client{client_end};
+        // The probing client is the kept one: constructed in place, it
+        // reads the header now and serves the LV server for the
+        // component's life.
+        auto &kept = *PV_CLIENTS[scan.count].init(client_end);
         auto header = volume::Header{};
-        if (read_pv_header(client, header) != Status::Ok) {
+        if (read_pv_header(kept, header) != Status::Ok) {
             // A plain disk, or a gone one: not ours, skipped -- the
             // client end goes with it.
             auto _ = ours::handle_close(client_end);
             continue;
         }
         scan.headers[scan.count] = header;
-        scan.client_ends[scan.count] = client_end;
+        scan.clients[scan.count] = &kept;
         scan.count += 1;
     }
     return scan;
@@ -154,7 +163,6 @@ constinit ustl::LazyInit<Served::Storage> SERVER_STORAGE;
 constinit std::array<loop::Slot, SLOTS> SLOT_STORAGE{};
 /// The PV clients, constructed in place on the scan's ends: the process
 /// carries no heap, and the clients' buffers live here for its life.
-constinit std::array<ustl::LazyInit<prot::block::Client>, MAX_PVS> PV_CLIENTS{};
 
 } // namespace
 
@@ -165,12 +173,39 @@ auto main(int, char **) -> int {
         return 1;
     }
 
-    auto const found = scan();
+    // The scan races the drivers' own boot: the root starts its children
+    // one after another, and a driver's block protocol appears in its
+    // outgoing only once its first rescan has claimed the disk. The scan
+    // is redone until the group completes or the seconds run out -- the
+    // bounded wait the nvme driver spins on its controller with -- and
+    // each round's failed ends close, so a retry starts clean.
     auto group = volume::VolumeGroup{};
-    for (auto index = usize{0}; index < found.count; ++index) {
-        if (auto const added = group.add_pv(found.headers[index]); added != Status::Ok) {
-            auto _ = ort::debug_line({"volume-manager: a PV refused: ", ours::to_string(added)});
+    auto found = scan();
+    auto const started = ours::clock_get_monotonic();
+    for (;;) {
+        for (auto index = usize{0}; index < found.count; ++index) {
+            if (auto const added = group.add_pv(found.headers[index]); added != Status::Ok) {
+                auto _ =
+                    ort::debug_line({"volume-manager: a PV refused: ", ours::to_string(added)});
+            }
         }
+        if (group.is_complete()) {
+            break;
+        }
+        auto const now = ours::clock_get_monotonic();
+        if (now - started > 5'000'000) {
+            break;
+        }
+        // The wait between rounds: a quarter-second of spins, wall-clock,
+        // so the drivers behind the routes see a visitor and not a
+        // hammer -- the devices answer at their own pace, and a resident
+        // scanner that reads a device thousands of times a second is a
+        // denial of service to whoever shares it.
+        while (ours::clock_get_monotonic() - now < 250'000) {
+            ort::spin_hint();
+        }
+        group = volume::VolumeGroup{};
+        found = scan();
     }
     if (!group.is_complete()) {
         // No complete group: an answer, not a failure -- the routes to
@@ -200,8 +235,7 @@ auto main(int, char **) -> int {
     // them one call at a time.
     std::array<prot::block::Client *, MAX_PVS> pv_clients{};
     for (auto index = usize{0}; index < found.count; ++index) {
-        auto const pv = found.headers[index].pv_index;
-        pv_clients[pv] = PV_CLIENTS[index].init(found.client_ends[index]);
+        pv_clients[found.headers[index].pv_index] = found.clients[index];
     }
     auto const pv_span = std::span<prot::block::Client *const>{pv_clients}.first(found.count);
 

@@ -2096,6 +2096,17 @@ auto check_block() -> void {
         return;
     }
 
+    // A logical volume's block 0 is the filesystem's own superblock: the
+    // volume IS the filesystem, and a raw write past its superblock would
+    // be corruption, not a check -- the file checks on /disk ran the stack
+    // end to end, and the raw ones stop here.
+    constexpr auto BTREEFS_SIGNATURE = std::string_view{"BTREEFS"};
+    if (std::string_view{reinterpret_cast<char const *>(block.data()), BTREEFS_SIGNATURE.size()} ==
+        BTREEFS_SIGNATURE) {
+        auto _ = ort::debug_line("routing_checks: a logical volume, raw block checks skipped");
+        return;
+    }
+
     // Not the plain disk's magic. A GPT disk's block 0 is its protective
     // MBR, and check_gpt() takes that shape: one probe of LBA 1 says which
     // disk this is. The plain checks stop here; the write check below runs
