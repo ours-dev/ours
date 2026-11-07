@@ -121,6 +121,21 @@ namespace {
         return schedule;
     }
 
+    /// Retry CPU selection if the target went inactive before we locked its run queue.
+    template <auto SelectCpu, typename F, typename... Args>
+    auto find_active_scheduler_for(Thread *thread, F f, Args &&...args) -> CpuNum {
+        while (true) {
+            auto const target_cpu = SelectCpu(thread);
+            auto &self = Scheduler::Current::get(target_cpu);
+
+            Guard<SpinLock, IrqSave> guard{self.get_lock()};
+            if (self.is_state_active()) {
+                f(thread, &self, ustl::forward<Args>(args)...);
+                return target_cpu;
+            }
+        }
+    }
+
     GKTL_COUNTER(SCHEDULE_IDLE_PAST, "schedule.idle_past");
     GKTL_COUNTER(SCHEDULE_PREEMPT_PAST, "schedule.preempt_past");
     GKTL_COUNTER(SCHEDULE_YIELD_PAST, "schedule.yield_past");
@@ -483,7 +498,7 @@ auto Scheduler::process_migrating_threads(SchedTime now) -> void {
         migrating_threads.pop_front();
 
         // To insert
-        auto const target_cpu = Self::find_active_scheduler_for(
+        auto const target_cpu = find_active_scheduler_for<select_target_cpu>(
             to_migrate, [](Thread *thread, Scheduler *self) { self->finish_transition(thread); });
 
         to_resched.set(target_cpu);
@@ -604,6 +619,7 @@ auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
     // skipped: calling it would trap, which a CPU that ran out of work reached
     // once as a jump through a null pointer into the zero page, with no fault
     // and no message.
+    constexpr auto NUM_DISCIPLINE = std::to_underlying(Discipline::Count);
     for (auto index = usize{0}; index < NUM_DISCIPLINE; ++index) {
         auto const discipline = static_cast<Discipline>(index);
         auto const schedule = find_schedule(discipline);
@@ -1048,20 +1064,6 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     return target_cpu;
 }
 
-template <typename F, typename... Args>
-auto Scheduler::find_active_scheduler_for(Thread *thread, F f, Args &&...args) -> CpuNum {
-    while (true) {
-        auto const target_cpu = Self::select_target_cpu(thread);
-        auto &self = Scheduler::Current::get(target_cpu);
-
-        Guard<SpinLock, IrqSave> guard{self.get_lock()};
-        if (self.is_state_active()) {
-            f(thread, &self, ustl::forward<Args>(args)...);
-            return target_cpu;
-        }
-    }
-}
-
 /// The Active bit is the gate find_active_scheduler_for() reads under the
 /// target's run queue lock before it places a thread; clearing it under this
 /// CPU's lock means a placement either landed before -- and the thread is in
@@ -1113,8 +1115,8 @@ auto Scheduler::Current::deactivate() -> void {
             }
             self.deactivate_thread(thread, DequeueOptions::SkipClock);
         }
-        moved_to.set(
-            find_active_scheduler_for(thread, [](Thread *const moved, Scheduler *const target) {
+        moved_to.set(find_active_scheduler_for<select_target_cpu>(
+            thread, [](Thread *const moved, Scheduler *const target) {
                 // find_active_scheduler_for() calls this holding |target|'s
                 // lock, which the analysis cannot follow into a lambda.
                 target->m_run_queue.m_rqlock.assert_held();
@@ -1326,7 +1328,7 @@ auto Scheduler::steal_work_from(CpuMask const &victims) -> usize {
     if (!queued_here) {
         CpuMask moved_to;
         for (usize i = 0; i < taken; ++i) {
-            moved_to.set(find_active_scheduler_for(
+            moved_to.set(find_active_scheduler_for<select_target_cpu>(
                 batch[i], [](Thread *const moved, Scheduler *const target) {
                     // find_active_scheduler_for() calls this holding |target|'s
                     // lock, which the analysis cannot follow into a lambda.

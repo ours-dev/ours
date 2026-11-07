@@ -12,6 +12,8 @@ The named accessor checks the supplied queue's capability. The compiler rejected
 
 The follow-up moved both lookups to internal linkage and moved the two handover definitions without changing their bodies or lock declarations. Symbol checks on both built scheduler objects found no externally linked lookup and found both handover symbols for the PI caller. Both QEMU images and the host suite passed.
 
+The subsequent active-scheduler cleanup kept the retry loop and placement callback inside the original guard scope. The selector retains access to the thread's private scheduling entity. The new private assertion declaration compiled in both Scheduler and its nested Pi implementation. Hotplug, Steal and WaitQueue passed under QEMU with four CPUs.
+
 ## High severity
 
 None

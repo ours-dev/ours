@@ -122,8 +122,6 @@ class Scheduler {
     INIT_CODE
     auto init(CpuNum cpunum) -> void;
 
-    auto assert_thread_in_scheduler(Thread *thread) -> void;
-
     /// The Scheduler that owns |rq|.
     ///
     /// A RunQueue is a member of exactly one Scheduler, so this is the same
@@ -216,17 +214,13 @@ class Scheduler {
   private:
     class Migrator;
 
-    /// [MP]
-    template <typename F, typename... Args>
-    static auto find_active_scheduler_for(Thread *thread, F f, Args &&...args) -> CpuNum;
+    auto assert_thread_in_scheduler(Thread *thread) -> void;
 
     static auto reschedule(CpuNum cpu) -> void;
 
     static auto reschedule_mask(CpuMask const &mask) -> void;
 
-    /// Assign a CPU on which the given |thread| will run.
-    /// It first attempt to use specific method |SelectTargetCpu|.
-    /// If got a invalid CPU number, it will adopts fallback method.
+    /// Ask the discipline for a CPU, then fall back to the affinity and load checks.
     static auto select_target_cpu(Thread *thread) -> CpuNum;
 
     /// The core internal scheduling routine. Regardless whether IRQ and preemption was either
@@ -398,8 +392,6 @@ class Scheduler {
     gktl::Canary m_canary{this};
     RunQueue m_run_queue;
     usize m_num_switches;
-
-    static constexpr auto NUM_DISCIPLINE = std::to_underlying(Discipline::Count);
 
     Thread *m_idle_thread;
 

@@ -100,3 +100,50 @@ None
 - Why did the inline header need to see the lookup declaration?
 - Which names does the PI translation unit need after the move?
 - How does an anonymous namespace restrict lookup linkage?
+
+## Keep active scheduler selection local (2026-11-07)
+
+**Files**
+- `kernel/kernel/task/sched/scheduler.cpp` keeps the active-scheduler retry helper and the discipline count near their uses.
+- `kernel/include/ours/task/sched/scheduler.hpp` makes the internal thread-residency assertion private.
+
+**Symptom**
+The scheduler class declared a retry helper and a discipline count used only in its implementation. The residency assertion was public even though only Scheduler and its nested Pi implementation called it.
+
+**Cause**
+The active-scheduler retry helper was a static member to call the CPU selector implicitly. The retry itself only needs a candidate CPU, the target scheduler's lock and Active state, and a callback that places the thread. The CPU selector needs Scheduler's access to the thread's private scheduling entity.
+
+**Change**
+Before:
+
+```cpp
+auto const target_cpu = Self::find_active_scheduler_for(to_migrate, place);
+```
+
+After:
+
+```cpp
+auto const target_cpu = find_active_scheduler_for<select_target_cpu>(to_migrate, place);
+```
+
+The retry helper is in the anonymous namespace. Binding the private selector as a template argument keeps the selection policy at its existing access level. The helper still chooses a candidate, takes its run queue lock, checks Active under that lock, and calls the placement callback with the lock held. The discipline count is local to the loop that uses it.
+
+**Reference**
+Zircon selects a candidate in `Scheduler::FindTargetCpu()` in `zircon/kernel/kernel/scheduler.cc`. Its retry helper is `Scheduler::FindActiveSchedulerForThread()` in `zircon/kernel/include/kernel/scheduler.h`.
+
+**Verification**
+Changed-line clang-format passed and clang-tidy produced no diagnostics on the changed lines. The Fair configuration passed syntax checks for `scheduler.cpp` and `scheduler_pi.cpp`. QEMU dbg passed 46 shell checks with 5 skipped. QEMU rel passed 44 shell checks with 8 skipped and reached all 7 required markers. All 183 host tests and the four-CPU Hotplug, Steal and WaitQueue kernel tests passed.
+
+**Deliberately not done**
+The CPU selector and reschedule helper retain the private-member access needed to read a thread's scheduling entity and verify its canary, respectively.
+
+**How it was found**
+A call-site search isolated the retry helper's users and the two users of the residency assertion. A syntax probe of file-local CPU selection identified the private access to `Thread::scheduling_entity()`.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Which state is rechecked after taking the run queue lock?
+- Which access privilege belongs to the CPU selector?
+- Why can the nested Pi implementation still call the residency assertion?
