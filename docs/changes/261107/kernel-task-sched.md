@@ -193,3 +193,50 @@ None
 - Which function picks the candidate CPU?
 - What lock does the callback run under?
 - What value does the helper return?
+
+## Drop the second Idling update at context switch completion (2026-11-07)
+
+**Files**
+- `kernel/kernel/task/sched/scheduler.cpp` removes the post-switch Idling write and updates the resumed and first-run call sites.
+- `kernel/include/ours/task/sched/scheduler.hpp` declares the parameterless completion helper.
+
+**Symptom**
+A context switch updated the CPU's Idling bit during the thread handover and again on the incoming stack.
+
+**Cause**
+`put_prev_thread()` clears the bit when the outgoing thread is the idle thread. `set_next_thread()` sets it when the chosen thread is the idle thread. The completion path recalculated the same bit and wrote it through the shared mask's atomic read-modify-write loop. The current scheduler has no reader of that mask.
+
+**Change**
+Before:
+
+```cpp
+Self::complete_context_switch(curr);
+```
+
+After:
+
+```cpp
+Self::complete_context_switch();
+```
+
+The helper consumes `m_prev_thread` from the scheduler of the CPU running the incoming thread and releases that outgoing thread's PI lock. Both a resumed thread and a new thread reach this helper. The current CPU lookup matters because a thread can resume on a different CPU.
+
+**Reference**
+Zircon `Scheduler::LockHandoffInternal()` handles the outgoing thread lock after the switch, including the first-run path through `Scheduler::TrampolineLockHandoff()`.
+
+**Verification**
+Changed-line clang-format passed. Clang-tidy reported no diagnostics on changed lines. The Fair configuration compiled scheduler.cpp in syntax-only mode. QEMU dbg passed 46 shell checks and rel passed 44. The host suite passed all 183 tests. ThreadJoin, WaitQueue and Hotplug each passed on four CPUs.
+
+**Deliberately not done**
+None
+
+**How it was found**
+Compared the writes to `State::Idling` and checked for readers of the mask.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Which operation records entry into the idle thread?
+- Why does completion fetch the scheduler of the CPU executing it?
+- How does a first-run thread reach the completion helper?

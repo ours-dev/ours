@@ -182,7 +182,7 @@ auto Scheduler::trampoline_handoff() -> void {
     // thread's PI lock finds it already held by this CPU and dies on
     // `!is_held()`. The scheduler's tick did exactly that, on the first tick
     // of the boot.
-    Self::complete_context_switch(current_thread);
+    Self::complete_context_switch();
     current_thread->get_pi_lock().release();
 
     // And then on, here, explicitly -- nothing else will do it. A thread that
@@ -643,13 +643,11 @@ auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
     return m_idle_thread;
 }
 
-auto Scheduler::complete_context_switch(Thread *curr) -> void {
+auto Scheduler::complete_context_switch() -> void {
     Self &self = Scheduler::Current::get();
 
     auto const prev_thread = std::exchange(self.m_run_queue.m_prev_thread, nullptr);
     prev_thread->get_pi_lock().release();
-
-    self.set_state(State::Idling, curr == self.m_idle_thread);
 }
 
 auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
@@ -676,34 +674,10 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     get_lock().release();
     Thread::switch_thread(curr, next);
 
-    // Except with those newly spawned threads, which entried Thread::trampoline,
-    // every threads should go back to here and then run.
-    //
-    // And there are following things about local variables to note:
-    //  1. |next| after context switch is in unknown state, which inable to be used again.
-    //  2. |curr| after context switch is the **real** current thread.
-    //  3. |curr| before context switch was cached in |m_run_queue.scheduling_entity.prev_thread|.
-    //
-    // Everything past the switch belongs to whichever CPU is running this
-    // thread *now*, which is why complete_context_switch() asks
-    // Current::get() rather than using `this`. `this` is the scheduler of the
-    // CPU this thread was on when it went into the switch; a thread that
-    // sleeps here is placed again by select_target_cpu() when it is woken,
-    // and that is free to answer with another CPU, leaving `this` pointing at
-    // a scheduler belonging to someone else.
-    //
-    // Note that this is not only about prev_thread. complete_context_switch()
-    // also does set_state(State::Idling, curr == m_idle_thread), and both the
-    // state and m_idle_thread are the resuming CPU's. So handing the previous
-    // thread across in a register -- the arch switch overwriting one of its
-    // arguments with the thread it switched away from -- would remove the
-    // field but not this lookup; see
-    // docs/changes/260912/task-arch-seam.md for why that trade was declined.
-    //
-    // trampoline_handoff() -- the other way out of a switch, for a thread that
-    // has never run before -- has always asked Current::get(). The two exits
-    // from the same switch disagreed; this is the one that was wrong.
-    Self::complete_context_switch(curr);
+    // A parked thread can resume on a different CPU. Complete the switch
+    // using the scheduler of that CPU. A thread running for the first
+    // time reaches the same completion from trampoline_handoff().
+    Self::complete_context_switch();
 }
 
 auto Scheduler::update_runtime() -> void {
