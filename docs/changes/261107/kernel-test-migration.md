@@ -143,3 +143,38 @@ None.
 - Why does interrupt.test migrate with a fixed round count instead of the run-options mechanism its old `[ROUNDS]` argument maps to?
 - Where does a mid-test machine-shape skip land, and what would KTEST_SKIP there do to the whole suite's verdict?
 - What did the 461-verdict audit compare, and what did it let through on purpose?
+
+## The finale batch: the last five console tests, and the migration is done (2026-11-07)
+
+**Files**
+- `kernel/tests/{idle,idle? no — mutex_stress,port,thread_join,timer_share}_test.cpp` — idle.test extracted from idle.cpp into kernel/tests/idle_test.cpp (idle.cpp keeps idle.stats and its command), mutex_stress.cpp moved whole, and port/thread_join/timer_share moved with their arguments mapped to run options.
+- The two BUILD.gn files — the five move between the targets.
+
+**Symptom**
+Latent: the last five holdouts, and the two verdict paths (`kshell_run.py`'s `<name>: ok` rule, `cov_kernel.py`'s GKTL scrape) still alive for them.
+
+**Cause**
+The migration's tail; the four argument-takers waited for the run-options mechanism.
+
+**Change**
+The established pattern, plus the option mappings the plan promised: `port.test [ROUNDS]` → `ktest::option_usize("rounds", 200)` with an explicit `rounds must be at least one` guard (the old usage-error catch); `threadjoin.test stress N` → `option_usize("stress", 0)` + `option_usize("n", 2000)` (2000 grounded in the change records' historical stress runs; the six contract checks always run, stress adds rounds); `timershare.test big` → `ktest::has_option("big")`. idle.test's extraction leaves idle.cpp's idle.stats machinery and its own command untouched; mutex_stress's `[rounds]` is fixed at 20000 (interrupt.test's fixed-rounds precedent).
+
+**Reference**
+Batches 1-5; the run-options design (step 2 of the plan).
+
+**Verification**
+`ktest list` 61 tests; Idle, MutexStress, Port, ThreadJoin, TimerShare each `ran=1 passed=1` on the dbg image; `ktest all` reports `ran=61 passed=59 failed=0 skipped=2` (Preempt's re-measurement skip and Ktest.SkipIsReported). boot_check: dbg 46/5/0, rel 44/8/0 7/7 required, host-tests 183/0.
+
+**Deliberately not done**
+Deleting `kshell_run.py`'s legacy rule and `cov_kernel.py`'s scrape, and closing the repair items, are the next commit -- they are the acceptance's second half and touch scripts the kernel tree does not own.
+
+**How it was found**
+None (mechanical).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Where did port.test's ROUNDS argument go, and what guards an explicit 0?
+- Why is threadjoin's N default 2000, and where is that grounded?
+- What does idle.cpp still own after the extraction, and why does idle_test.cpp duplicate its helpers?

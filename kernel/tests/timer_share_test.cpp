@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `timershare.test`: how much of a CPU a thread keeps when a periodic timer whose
-// callback is slower than its period runs on that CPU.
+// TimerShare.NotStarvedByASlowerTimer: how much of a CPU a thread keeps when
+// a periodic timer whose callback is slower than its period runs on that CPU.
 //
 // A timer of period P whose callback takes C ends each callback with
 // forward(P), which puts the next deadline on the first multiple of P after the
@@ -15,7 +15,7 @@
 //     s = g / (C + g)
 //
 // of the CPU, interrupt entry and exit left out
-// (docs/architecture/timer/callback-cpu-share.md). This command measures s.
+// (docs/architecture/timer/callback-cpu-share.md). This test measures s.
 //
 // One thread is pinned to one CPU, with preemption off so that only an
 // interrupt can take the CPU from it. It does a fixed amount of work and times
@@ -34,18 +34,15 @@
 // ended. A guard-less timer can leave the thread so little CPU that it never
 // gets to stop the timer, and a measurement that cannot end is not one.
 //
-// A console command rather than a unit test for the reason mutex.stress gives:
-// what is measured is the scheduler and the interrupt path together. It is
-// named *.test so that scripts/kshell_run.py waits for its verdict line and
-// not for the shell's prompt, which the dbg image's logging threads break up;
-// the name has no dot or underscore for the reason vmaseal.test's does not.
+// An in-kernel test rather than a unit test for the reason mutex.stress
+// gives: what is measured is the scheduler and the interrupt path together.
 //
 // What it asserts is only that the thread is not starved: the formula's share
 // is a number to compare with, not one to hold the kernel to; the guard that
 // holds the device off after a slow pass (TimerQueue::m_hold_off_until)
 // promises a half, which is what `big` holds it to.
 //
-// `timershare.test big` measures much slower callbacks, 0.5 to 4 ms. The
+// The `big` option measures much slower callbacks, 0.5 to 4 ms. The
 // emulated timer cannot interrupt faster than about every 160 us, so the gap
 // the thread gets without the guard is that and not the formula's g, and the
 // share is g_eff / (C + g_eff) for that g_eff: 24 %, 11 %, 4 % and 4 % at
@@ -68,12 +65,11 @@
 #include <array>
 #include <atomic>
 #include <iterator>
-#include <string_view>
 
 #include <arch/spin_hint.hpp>
 #include <arch/tick.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -111,7 +107,7 @@ namespace {
     /// loaded ones, and a CPU the host had briefly sped up looked starved. The
     /// shares are reported at their best and at their median.
     ///
-    /// A command that runs for more than about four seconds on the dbg image
+    /// A test that runs for more than about four seconds on the dbg image
     /// is not seen to finish by scripts/kshell_run.py, which loses its prompt
     /// in the log lines of the threads that log forever (mutex.stress 4500
     /// does the same). Three points of this size take about two.
@@ -223,7 +219,7 @@ namespace {
 
         // For the whole measurement and not only each timing: between two
         // timings the scheduler would hand this CPU to the dbg image's
-        // logging thread for a full slice, and the command took three seconds
+        // logging thread for a full slice, and the test took three seconds
         // to do about one second of measuring.
         task::AutoPreemptDisabler const no_preemption;
 
@@ -283,7 +279,7 @@ namespace {
         -> bool {
         auto *const run = new (mm::ALLOC_KERNEL) Run{};
         if (run == nullptr) {
-            log::error("timershare.test: out of memory");
+            log::error("timershare: out of memory");
             return false;
         }
         auto const passes_before = time::TimerQueue::num_held_passes(cpu);
@@ -292,7 +288,7 @@ namespace {
         run->give_up_targets = give_up_targets;
         run->tsc_hz = apic_tsc_hz();
         if (run->tsc_hz == 0) {
-            log::error("timershare.test: the TSC's rate is not known");
+            log::error("timershare: the TSC's rate is not known");
             delete run;
             return false;
         }
@@ -300,7 +296,7 @@ namespace {
         auto *const thread =
             task::Thread::spawn("timer-share", share_thread, run, task::DEFAULT_PRIORITY);
         if (thread == nullptr) {
-            log::error("timershare.test: cannot spawn the measuring thread");
+            log::error("timershare: cannot spawn the measuring thread");
             delete run;
             return false;
         }
@@ -313,8 +309,7 @@ namespace {
         auto const give_up = SteadyClock::now() + LOST_AFTER;
         while (!run->done.load(std::memory_order_acquire)) {
             if (SteadyClock::now() >= give_up) {
-                log::error(
-                    "timershare.test: the measuring thread did not finish; leaking its case");
+                log::error("timershare: the measuring thread did not finish; leaking its case");
                 return false;
             }
             auto _ = task::Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No);
@@ -349,7 +344,7 @@ namespace {
         auto const read_ns = ns_of_tsc(run->read_tsc, run->tsc_hz);
         auto const alone_us = ns_of_tsc(run->base_tsc[REPEATS / 2], run->tsc_hz) / 1000;
         log::info(
-            "timershare.test: P {} us, C asked {} us, took {}.{} us: the thread kept {}.{} % of "
+            "timershare: P {} us, C asked {} us, took {}.{} us: the thread kept {}.{} % of "
             "its CPU at best and {}.{} % at the median (formula for that C: {}.{} %), one "
             "callback every {}.{} us; a clock read takes {}.{} us; the work alone takes {} us",
             PERIOD_NS / 1000, cost_ns / 1000, callback_ns / 1000, (callback_ns % 1000) / 100,
@@ -364,30 +359,23 @@ namespace {
         if (passes != 0) {
             average_held_us = (time::TimerQueue::held_off_ns(cpu) - held_before) / passes / 1000;
         }
-        log::info("timershare.test:   C {} us leaves the thread {} us between two callbacks; {} "
+        log::info("timershare:   C {} us leaves the thread {} us between two callbacks; {} "
                   "passes held the device off for {} us on average",
                   cost_ns / 1000, gap_us, passes, average_held_us);
         delete run;
         return true;
     }
 
-    auto timer_share_command(int const argc, char **const argv) -> int {
-        auto const big = argc > 1 && std::string_view(argv[1]) == "big";
-        if (argc > 1 && !big) {
-            log::error("timershare.test: FAILED -- usage: timershare.test [big]");
-            return 1;
-        }
-
+    KTEST(TimerShare, NotStarvedByASlowerTimer) {
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 2) {
-            log::error("timershare.test: FAILED -- needs a second CPU for the thread to be "
-                       "measured on");
-            return 1;
+            KTEST_SKIP("needs a second CPU for the thread to be measured on");
         }
-        // Any CPU but the command's own; the thread is pinned there.
+        // Any CPU but the test's own; the thread is pinned there.
         auto const cpu = static_cast<CpuNum>(num_cpus - 1);
 
         // The same loop for both lists, over a pointer and a count.
+        auto const big = ktest::has_option("big");
         u64 const *costs = std::data(COSTS_NS);
         usize num_costs = std::size(COSTS_NS);
         auto give_up_targets = GIVE_UP_TARGETS;
@@ -410,22 +398,9 @@ namespace {
                 }
             }
         }
-        if (measured != num_costs) {
-            log::error("timershare.test: FAILED -- {} of {} runs measured", measured, num_costs);
-            return 1;
-        }
-        if (starved != 0) {
-            log::error("timershare.test: FAILED -- the thread kept under {}.{} % of its CPU in {} "
-                       "run(s)",
-                       floor_tenths / 10, floor_tenths % 10, starved);
-            return 1;
-        }
-        log::info("timershare.test: ok -- {} runs, the thread never kept under {}.{} %", measured,
-                  floor_tenths / 10, floor_tenths % 10);
-        return 0;
+        EXPECT_EQ(measured, num_costs, "{} of {} runs measured", measured, num_costs);
+        EXPECT_EQ(starved, 0u, "the thread kept under {}.{} % of its CPU in {} run(s)",
+                  floor_tenths / 10, floor_tenths % 10, starved);
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(TimerShare, "timershare.test", ours::timer_share_command,
-             "measure the CPU a thread keeps under a periodic timer slower than its period");

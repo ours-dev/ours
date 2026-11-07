@@ -1,9 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `threadjoin.test [stress ROUNDS]`: Thread::join() and detach() against the
-// contract on their declarations (kernel/include/ours/task/thread.hpp) and
-// design option B (.agents/tasks/thread-join/DESIGN.md).
+// ThreadJoin.JoinAndDetachFollowTheirContract: Thread::join() and detach()
+// against the contract on their declarations
+// (kernel/include/ours/task/thread.hpp) and design option B
+// (.agents/tasks/thread-join/DESIGN.md).
 //
 //   - joining a thread that has already exited returns its return code;
 //   - joining a thread that is still running waits for it to exit;
@@ -14,15 +15,16 @@
 //   - joining a detached thread answers BadState;
 //   - detach() of a thread that has already exited reaps it.
 //
-// `stress ROUNDS` adds, per round, one joinable thread per CPU, each joined
-// at once, so exits race joins on every CPU. Run it on dbg_1, where lockdep
-// and the PI-lock assertions are compiled in.
+// The `stress` run option adds, per round, one joinable thread per CPU, each
+// joined at once, so exits race joins on every CPU; `n=<rounds>` says how
+// many, 2000 without it, the count the recorded stress runs used. Run it on
+// dbg_1, where lockdep and the PI-lock assertions are compiled in.
 //
 // Each case is written so that a join() that did not reap its thread leaves
 // the shared state leaked rather than freed under a thread that may still use
 // it: a broken join() shows up as a failed check, not as a use after free.
 //
-// A console command rather than a unit test for the reason mutex.stress
+// An in-kernel test rather than a unit test for the reason mutex.stress
 // gives: a join's slow path is the scheduler.
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
@@ -32,10 +34,9 @@
 #include <ours/time/clock.hpp>
 
 #include <atomic>
-#include <string_view>
 
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -49,21 +50,10 @@ namespace {
     constexpr auto RUN_FOR = Milliseconds(20);
     /// The deadline of a join that is meant to time out.
     constexpr auto SHORT_WAIT = Milliseconds(10);
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("threadjoin.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("threadjoin.test: FAIL  {}", name);
-    }
+    /// The stress round count when a run picked `stress` without `n`: the
+    /// count every recorded stress run used (2000 rounds of one thread per
+    /// CPU took about five seconds on the dbg image).
+    constexpr usize DEFAULT_STRESS_ROUNDS = 2000;
 
     /// Polls |condition| until it holds or LOST_AFTER has passed.
     template <typename Condition>
@@ -117,8 +107,8 @@ namespace {
             auto _ = Thread::Current::sleep_for(RUN_FOR, task::Interruptible::No);
         }
         // Read before |returning| is published: a detached thread's state is
-        // freed by the command as soon as it sees that, so nothing may read
-        // |t| after it.
+        // freed by the test as soon as it sees that, so nothing may read |t|
+        // after it.
         auto const retcode = t.retcode;
         t.returning_at = time::SteadyClock::now();
         t.returning.store(true, std::memory_order_release);
@@ -146,42 +136,41 @@ namespace {
             delete target;
             return;
         }
-        log::error("threadjoin.test:   the thread was not reaped; leaking its state");
+        log::error("threadjoin:   the thread was not reaped; leaking its state");
     }
 
-    auto check_join_after_exit(Tally &tally) -> void {
+    auto check_join_after_exit() -> void {
         auto *const target = new (mm::ALLOC_KERNEL) Target{};
         target->retcode = 42;
         auto *const thread = spawn_joinable(target);
         if (thread == nullptr) {
-            verdict(tally, false, "spawn a joinable thread");
             delete target;
-            return;
+            FAIL("spawn a joinable thread");
         }
-        if (!poll_until([thread] { return is_dead(thread); })) {
-            verdict(tally, false, "the thread exits");
+        auto const exited = poll_until([thread] { return is_dead(thread); });
+        EXPECT_TRUE(exited, "the thread exits");
+        if (!exited) {
             settle(target, false);
             return;
         }
 
         i32 retcode = -1;
         auto const status = thread->join(&retcode, time::Deadline::infinite());
-        log::info("threadjoin.test:   join after exit answered {}, retcode {}", to_string(status),
+        log::info("threadjoin:   join after exit answered {}, retcode {}", to_string(status),
                   retcode);
-        verdict(tally, status == Status::Ok && retcode == 42,
-                "joining a thread that has exited returns its return code");
+        EXPECT_TRUE(status == Status::Ok && retcode == 42,
+                    "joining a thread that has exited returns its return code");
         settle(target, status == Status::Ok);
     }
 
-    auto check_join_waits(Tally &tally) -> void {
+    auto check_join_waits() -> void {
         auto *const target = new (mm::ALLOC_KERNEL) Target{};
         target->retcode = 7;
         target->run_a_while = true;
         auto *const thread = spawn_joinable(target);
         if (thread == nullptr) {
-            verdict(tally, false, "spawn a joinable thread");
             delete target;
-            return;
+            FAIL("spawn a joinable thread");
         }
 
         i32 retcode = -1;
@@ -190,33 +179,32 @@ namespace {
         auto const waited = status == Status::Ok &&
                             target->returning.load(std::memory_order_acquire) &&
                             joined_at >= target->returning_at;
-        verdict(tally, waited && retcode == 7,
-                "joining a running thread waits for it to exit, then returns its return code");
+        EXPECT_TRUE(waited && retcode == 7,
+                    "joining a running thread waits for it to exit, then returns its return code");
         settle(target, status == Status::Ok);
     }
 
-    auto check_join_times_out(Tally &tally) -> void {
+    auto check_join_times_out() -> void {
         auto *const target = new (mm::ALLOC_KERNEL) Target{};
         target->retcode = 3;
         target->wait_for_release = true;
         auto *const thread = spawn_joinable(target);
         if (thread == nullptr) {
-            verdict(tally, false, "spawn a joinable thread");
             delete target;
-            return;
+            FAIL("spawn a joinable thread");
         }
 
         i32 retcode = -1;
         auto const started = time::SteadyClock::now();
         auto const first = thread->join(&retcode, deadline_after(SHORT_WAIT));
         auto const elapsed = time::SteadyClock::now() - started;
-        verdict(tally, first == Status::TimeOut && retcode == -1 && elapsed >= SHORT_WAIT,
-                "a join that reaches its deadline answers TimeOut and leaves retcode alone");
+        EXPECT_TRUE(first == Status::TimeOut && retcode == -1 && elapsed >= SHORT_WAIT,
+                    "a join that reaches its deadline answers TimeOut and leaves retcode alone");
 
         target->release.signal();
         auto const second = thread->join(&retcode, time::Deadline::infinite());
-        verdict(tally, second == Status::Ok && retcode == 3,
-                "and gives its claim back: a second join reaps the thread");
+        EXPECT_TRUE(second == Status::Ok && retcode == 3,
+                    "and gives its claim back: a second join reaps the thread");
         settle(target, second == Status::Ok);
     }
 
@@ -233,12 +221,12 @@ namespace {
         auto &j = *static_cast<Joiner *>(arg);
         j.joining.store(true, std::memory_order_release);
         j.status = j.target_thread->join(&j.retcode, time::Deadline::infinite());
-        // Last touch of |j|: once the command sees this, it frees it.
+        // Last touch of |j|: once the test sees this, it frees it.
         j.done.store(true, std::memory_order_release);
         return 0;
     }
 
-    auto check_one_reaper(Tally &tally) -> void {
+    auto check_one_reaper() -> void {
         auto *const target = new (mm::ALLOC_KERNEL) Target{};
         auto *const joiner = new (mm::ALLOC_KERNEL) Joiner{};
         target->retcode = 4;
@@ -246,20 +234,18 @@ namespace {
 
         auto *const thread = spawn_joinable(target);
         if (thread == nullptr) {
-            verdict(tally, false, "spawn a joinable thread");
             delete target;
             delete joiner;
-            return;
+            FAIL("spawn a joinable thread");
         }
         joiner->target_thread = thread;
         auto *const joiner_thread =
             Thread::spawn("join-test-joiner", joiner_routine, joiner, task::DEFAULT_PRIORITY);
         if (joiner_thread == nullptr) {
-            verdict(tally, false, "spawn the joiner");
             target->release.signal();
             settle(target, false);
             delete joiner;
-            return;
+            FAIL("spawn the joiner");
         }
         auto _ = joiner_thread->detach();
         auto _ = joiner_thread->resume();
@@ -271,43 +257,42 @@ namespace {
                    (joiner->joining.load(std::memory_order_acquire) && is_parked(joiner_thread));
         });
         auto const claimed = parked && !joiner->done.load(std::memory_order_acquire);
-        verdict(tally, claimed, "the joiner waits in join()");
+        EXPECT_TRUE(claimed, "the joiner waits in join()");
 
         if (claimed) {
             i32 retcode = -1;
             auto const second = thread->join(&retcode, deadline_after(SHORT_WAIT));
-            verdict(tally, second == Status::BadState,
-                    "a second join while one is in progress answers BadState");
-            verdict(tally, thread->detach() == Status::BadState,
-                    "and so does detach(): the joiner holds the claim");
+            EXPECT_TRUE(second == Status::BadState,
+                        "a second join while one is in progress answers BadState");
+            EXPECT_TRUE(thread->detach() == Status::BadState,
+                        "and so does detach(): the joiner holds the claim");
         }
 
         target->release.signal();
         auto const finished =
             poll_until([joiner] { return joiner->done.load(std::memory_order_acquire); });
         auto const reaped = finished && joiner->status == Status::Ok;
-        verdict(tally, reaped && joiner->retcode == 4, "the joiner reaps the thread");
+        EXPECT_TRUE(reaped && joiner->retcode == 4, "the joiner reaps the thread");
         settle(target, reaped);
         if (finished) {
             delete joiner;
         }
     }
 
-    auto check_join_of_detached(Tally &tally) -> void {
+    auto check_join_of_detached() -> void {
         auto *const target = new (mm::ALLOC_KERNEL) Target{};
         target->wait_for_release = true;
         auto *const thread = spawn_joinable(target);
         if (thread == nullptr) {
-            verdict(tally, false, "spawn a joinable thread");
             delete target;
-            return;
+            FAIL("spawn a joinable thread");
         }
         auto const detached = thread->detach();
-        verdict(tally, detached == Status::Ok, "a running thread can be detached");
+        EXPECT_TRUE(detached == Status::Ok, "a running thread can be detached");
 
         i32 retcode = -1;
         auto const status = thread->join(&retcode, deadline_after(SHORT_WAIT));
-        verdict(tally, status == Status::BadState, "joining a detached thread answers BadState");
+        EXPECT_TRUE(status == Status::BadState, "joining a detached thread answers BadState");
 
         // Detached, it frees itself once released, and stops reading
         // |target| once it says it is returning.
@@ -317,28 +302,28 @@ namespace {
         settle(target, returned);
     }
 
-    auto check_detach_after_exit(Tally &tally) -> void {
+    auto check_detach_after_exit() -> void {
         auto *const target = new (mm::ALLOC_KERNEL) Target{};
         auto *const thread = spawn_joinable(target);
         if (thread == nullptr) {
-            verdict(tally, false, "spawn a joinable thread");
             delete target;
-            return;
+            FAIL("spawn a joinable thread");
         }
-        if (!poll_until([thread] { return is_dead(thread); })) {
-            verdict(tally, false, "the thread exits");
+        auto const exited = poll_until([thread] { return is_dead(thread); });
+        EXPECT_TRUE(exited, "the thread exits");
+        if (!exited) {
             settle(target, false);
             return;
         }
         auto const status = thread->detach();
-        verdict(tally, status == Status::Ok, "detach() of a thread that has exited reaps it");
+        EXPECT_TRUE(status == Status::Ok, "detach() of a thread that has exited reaps it");
         settle(target, status == Status::Ok);
     }
 
     /// Per round, one joinable thread per CPU, joined in spawn order as soon
     /// as all are spawned: the early ones have exited, the late ones are still
     /// starting, so both join paths run, and exits race joins on every CPU.
-    auto check_stress(Tally &tally, usize const rounds) -> void {
+    auto check_stress(usize const rounds) -> void {
         auto const num_cpus = Cpu::num_online_cpus();
         constexpr usize MAX_CPUS = 64;
         auto width = num_cpus;
@@ -371,48 +356,24 @@ namespace {
             }
         }
         auto const elapsed = time::SteadyClock::now() - started;
-        log::info("threadjoin.test:   stress: {} round(s) x {} thread(s) in {} ms, {} bad", rounds,
+        log::info("threadjoin:   stress: {} round(s) x {} thread(s) in {} ms, {} bad", rounds,
                   width, duration_cast<Milliseconds>(elapsed).count(), bad);
-        verdict(tally, bad == 0, "every stressed join reaps its thread with its return code");
+        EXPECT_TRUE(bad == 0, "every stressed join reaps its thread with its return code");
     }
 
-    auto parse_rounds(int argc, char **argv) -> usize {
-        if (argc < 3 || std::string_view(argv[1]) != "stress") {
-            return 0;
+    KTEST(ThreadJoin, JoinAndDetachFollowTheirContract) {
+        check_join_after_exit();
+        check_join_waits();
+        check_join_times_out();
+        check_one_reaper();
+        check_join_of_detached();
+        check_detach_after_exit();
+        // The old command ran the stress rounds only when the console line
+        // said `stress ROUNDS`; the option keeps that, with `n` for the round
+        // count.
+        if (ktest::option_usize("stress", 0) != 0) {
+            check_stress(ktest::option_usize("n", DEFAULT_STRESS_ROUNDS));
         }
-        usize rounds = 0;
-        for (auto const c: std::string_view(argv[2])) {
-            if (c < '0' || c > '9') {
-                return 0;
-            }
-            rounds = rounds * 10 + static_cast<usize>(c - '0');
-        }
-        return rounds;
-    }
-
-    auto threadjoin_test_command(int argc, char **argv) -> int {
-        Tally tally;
-
-        check_join_after_exit(tally);
-        check_join_waits(tally);
-        check_join_times_out(tally);
-        check_one_reaper(tally);
-        check_join_of_detached(tally);
-        check_detach_after_exit(tally);
-        if (auto const rounds = parse_rounds(argc, argv); rounds != 0) {
-            check_stress(tally, rounds);
-        }
-
-        if (tally.failed != 0) {
-            log::error("threadjoin.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("threadjoin.test: ok -- {} checks", tally.passed);
-        return 0;
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(ThreadJoinTest, "threadjoin.test", ours::threadjoin_test_command,
-             "threadjoin.test [stress ROUNDS]: join and detach against their contract");
