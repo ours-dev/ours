@@ -14,6 +14,8 @@ The follow-up moved both lookups to internal linkage and moved the two handover 
 
 The subsequent active-scheduler cleanup kept the retry loop and placement callback inside the original guard scope. The selector retains access to the thread's private scheduling entity. The new private assertion declaration compiled in both Scheduler and its nested Pi implementation. Hotplug, Steal and WaitQueue passed under QEMU with four CPUs.
 
+The rename to `with_target_scheduler()` was checked by comparing all non-comment source lines after normalizing the old spelling. The callback and guard are identical. Both QEMU images and the host suite passed.
+
 ## High severity
 
 None

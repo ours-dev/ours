@@ -147,3 +147,49 @@ None
 - Which state is rechecked after taking the run queue lock?
 - Which access privilege belongs to the CPU selector?
 - Why can the nested Pi implementation still call the residency assertion?
+
+## Name the thread placement callback helper with_target_scheduler (2026-11-07)
+
+**Files**
+- `kernel/kernel/task/sched/scheduler.cpp` renames the local helper and updates its callers and comments.
+
+**Symptom**
+`find_active_scheduler_for()` reads like a lookup, while its callers supply the work to perform on the selected scheduler.
+
+**Cause**
+The helper uses the CPU selector to pick a candidate. It takes that scheduler's run queue lock, retries if the scheduler is inactive, and invokes the callback while the lock is held. The name described only the search.
+
+**Change**
+Before:
+
+```cpp
+auto const target_cpu = find_active_scheduler_for<select_target_cpu>(to_migrate, place);
+```
+
+After:
+
+```cpp
+auto const target_cpu = with_target_scheduler<select_target_cpu>(to_migrate, place);
+```
+
+`target` identifies the scheduler chosen for the thread. `with` signals that the helper runs the callback within the lock scope. The helper returns the chosen CPU after the callback runs. The unpark comment now refers to its actual CPU selection path.
+
+**Reference**
+Zircon's corresponding helper is `Scheduler::FindActiveSchedulerForThread()` in `zircon/kernel/include/kernel/scheduler.h`. This project's spelling puts the callback contract in the name.
+
+**Verification**
+Changed-line clang-format passed and clang-tidy produced no diagnostics on the changed lines. QEMU dbg passed 46 shell checks with 5 skipped. QEMU rel passed 44 shell checks with 8 skipped and reached all 7 required markers. All 183 host tests passed.
+
+**Deliberately not done**
+None
+
+**How it was found**
+None
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Which function picks the candidate CPU?
+- What lock does the callback run under?
+- What value does the helper return?

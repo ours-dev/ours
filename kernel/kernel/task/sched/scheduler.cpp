@@ -121,9 +121,10 @@ namespace {
         return schedule;
     }
 
-    /// Retry CPU selection if the target went inactive before we locked its run queue.
+    /// Run the callback with an active scheduler's run queue locked and return its CPU.
+    /// Retry CPU selection if the target went inactive before the lock was taken.
     template <auto SelectCpu, typename F, typename... Args>
-    auto find_active_scheduler_for(Thread *thread, F f, Args &&...args) -> CpuNum {
+    auto with_target_scheduler(Thread *thread, F f, Args &&...args) -> CpuNum {
         while (true) {
             auto const target_cpu = SelectCpu(thread);
             auto &self = Scheduler::Current::get(target_cpu);
@@ -498,7 +499,7 @@ auto Scheduler::process_migrating_threads(SchedTime now) -> void {
         migrating_threads.pop_front();
 
         // To insert
-        auto const target_cpu = find_active_scheduler_for<select_target_cpu>(
+        auto const target_cpu = with_target_scheduler<select_target_cpu>(
             to_migrate, [](Thread *thread, Scheduler *self) { self->finish_transition(thread); });
 
         to_resched.set(target_cpu);
@@ -1022,9 +1023,8 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
 
     // The Active mask is tried first, and not merely because an inactive
     // scheduler is one that has not declared itself ready for threads:
-    // find_active_scheduler_for() spins until the CPU it is handed reports
-    // Active, so answering with an inactive CPU that never activates would
-    // livelock it rather than misplace a thread.
+    // with_target_scheduler() retries until it locks an active scheduler.
+    // Repeatedly choosing an inactive CPU could livelock it.
     target_cpu = pick_least_loaded(affinity.get_available_mask(peek_active_mask()));
     if (target_cpu != INVALID_CPU_NUM) {
         return target_cpu;
@@ -1042,9 +1042,8 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     // where it last ran, or, for one that has never run, the CPU creating it.
     // That is the answer `starting_cpu` was computed for before this fallback
     // was left half-written: with no better idea, leave a thread where it
-    // already is. Nothing is decided for good here either way:
-    // do_unpark_thread() re-selects through find_active_scheduler_for() when
-    // the thread actually becomes runnable.
+    // already is. The unpark path can choose again when the thread becomes
+    // runnable.
     auto const last_cpu = se.last_cpu();
     auto const starting_cpu = last_cpu == INVALID_CPU_NUM ? Cpu::id() : last_cpu;
 
@@ -1064,12 +1063,12 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     return target_cpu;
 }
 
-/// The Active bit is the gate find_active_scheduler_for() reads under the
+/// The Active bit is the gate with_target_scheduler() reads under the
 /// target's run queue lock before it places a thread; clearing it under this
 /// CPU's lock means a placement either landed before -- and the thread is in
 /// the queue walked below -- or sees the CPU inactive and goes elsewhere.
 ///
-/// The lock is dropped around each move: find_active_scheduler_for() takes
+/// The lock is dropped around each move: with_target_scheduler() takes
 /// the target's run queue lock, and holding two run queue locks at once is
 /// what two CPUs moving threads at each other would deadlock on. The thread
 /// is Migrating in between, as for Migrator::move_queued_thread().
@@ -1115,9 +1114,9 @@ auto Scheduler::Current::deactivate() -> void {
             }
             self.deactivate_thread(thread, DequeueOptions::SkipClock);
         }
-        moved_to.set(find_active_scheduler_for<select_target_cpu>(
+        moved_to.set(with_target_scheduler<select_target_cpu>(
             thread, [](Thread *const moved, Scheduler *const target) {
-                // find_active_scheduler_for() calls this holding |target|'s
+                // with_target_scheduler() calls this holding |target|'s
                 // lock, which the analysis cannot follow into a lambda.
                 target->m_run_queue.m_rqlock.assert_held();
                 target->activate_thread(moved, EnqueueOptions::None);
@@ -1328,9 +1327,9 @@ auto Scheduler::steal_work_from(CpuMask const &victims) -> usize {
     if (!queued_here) {
         CpuMask moved_to;
         for (usize i = 0; i < taken; ++i) {
-            moved_to.set(find_active_scheduler_for<select_target_cpu>(
+            moved_to.set(with_target_scheduler<select_target_cpu>(
                 batch[i], [](Thread *const moved, Scheduler *const target) {
-                    // find_active_scheduler_for() calls this holding |target|'s
+                    // with_target_scheduler() calls this holding |target|'s
                     // lock, which the analysis cannot follow into a lambda.
                     target->m_run_queue.m_rqlock.assert_held();
                     target->activate_thread(moved, EnqueueOptions::None);
