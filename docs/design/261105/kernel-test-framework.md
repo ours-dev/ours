@@ -31,7 +31,7 @@ Non-goals:
 
 - Host tests: they stay GoogleTest executables discovered by `scripts/host_tests.py`; no new framework for them.
 - A user-space test framework: the shell's self-checks (`system/app/shell/shell_tests.cpp`) and the boot checks stay as they are.
-- Fixtures (`SetUp`/`TearDown`, suite setup, global environment), parameterized tests, typed tests, matchers, shuffle, repeat, sharding.
+- Fixtures (`SetUp`/`TearDown`, suite setup, global environment), parameterized tests, typed tests, matchers. Shuffle, repeat and sharding left this list on 2026-11-07 as runner options of `ktest all` (see the run-options paragraph under Design); the GoogleTest-style machinery around them did not.
 - Death tests and kernel-fault recovery in v1: a later increment is sketched under Design ("Death tests and kernel faults"), and the reason there is no in-kernel recovery is recorded under Alternatives.
 - Per-test isolation: no dedicated thread, no fresh address space, no per-test timeout, no parallel execution. A test runs on the kshell thread while the other CPUs keep running, exactly as the console-command tests do today.
 - Running tests at boot, in `verify`, or from user space.
@@ -147,6 +147,8 @@ ktest <selection> [name=value ...]   the run also carries options for the tests 
 
 Run options (added 2026-11-05, after the migration start; the user chose this over splitting the argument-taking tests, decision B of `.agents/tasks/kernel-test-migration/PLAN.md`). A token after the selection is `name=value`, or `name` alone for a presence-only flag; the runner parses at most `MAX_RUN_OPTIONS` of them and logs each as `ktest: OPTION name=value` before the first test. A test reads them with `ktest::option`, `ktest::option_usize` and `ktest::has_option`, and must pass a fallback of its own, so `ktest all` and a bare `ktest <filter>` keep the ordinary configuration; `option_usize` reports a malformed value at error level and uses the fallback, which fails the run rather than silently changing what is tested. `ktest list` takes no options. The values point into the console line and are valid only while the run lasts. This is what lets the four commands that took console arguments (`interrupt.test [ROUNDS]`, `port.test [ROUNDS]`, `threadjoin.test stress N`, `timershare.test big`) migrate as ordinary tests instead of growing a second, per-test argument path.
 
+Runner options (added 2026-11-07): `ktest all` itself takes three, parsed like the other tokens but interpreted by the runner rather than handed to the tests, and valid only with `all` — a filter run carrying any of them is an ERROR. `shuffle[=SEED]` runs the selection in a Fisher-Yates order drawn from a splitmix64 sequence seeded by `SEED` (hex with an `0x` prefix, decimal without; a fixed default when bare) and logs it once as `ktest: SHUFFLE seed=0x... order=...`, the order being the registry indices that will run, the same positions `ktest list` prints. `repeat=N` runs the whole selection `N` times, the SUMMARY counting every execution; `repeat=0` is an error, since `ran=0` already means nothing matched. `shard=M/N` runs only the tests whose registry index `i` satisfies `i % N == M` (0-based, `N > 0`, `M < N`, else an error). The shard predicate runs on the registry index, not the shuffled position, so a shard's membership never depends on the seed; the shuffle then orders the shard's tests, and one shuffle serves every repeat pass. On the host, `kshell_run.py` keeps its `ran == listed` check for every run except those carrying `repeat=` or `shard=`, which change what the count means.
+
 The filter is split on `:`; a token beginning with `-` is a negative pattern, every other token is a positive one, and no positive token means `*`. Each pattern is matched against the full `Suite.Name` with a linear glob where `*` matches any run of characters and `?` matches one. Examples: `ktest SamplerClaim.*`, `ktest Sched.*:-Sched.Slow`, `ktest Semaphore.*:Vma*`. This is GoogleTest's grammar with the token classification made per-token (`src/gtest.cc:820-880`), which is what a shell without quoting can express. The words `all`, `list` and `?` are reserved.
 
 Events of one `ktest <selection>`:
@@ -162,6 +164,7 @@ Exact grammar the host parses (every line is through `logz4`, so it carries the 
 ```text
 ktest: TEST SamplerClaim.ClaimsOnce
 ktest: RUN SamplerClaim.ClaimsOnce
+ktest: SHUFFLE seed=0x243f6a8885a308d3 order=17,3,42,0,29,8
 ktest: FAIL SamplerClaim.ClaimsOnce kernel/tests/sampler_claim_test.cpp:42: claimed == 1: expected 1, actual 2
 ktest: FAILED SamplerClaim.ClaimsOnce (1 of 3 checks failed)
 ktest: OK Semaphore.WakesEachWaiter (1204 us)
@@ -172,7 +175,7 @@ ktest: SUMMARY ran=3 passed=2 failed=1 skipped=0
 
 Properties, and why they are safe:
 
-- Ordering is section order, hence the link order of the test objects; it is deterministic for a given target and not alphabetical.
+- Ordering is section order, hence the link order of the test objects; it is deterministic for a given target and not alphabetical — unless the run carries `shuffle`, which orders the selection by its seed instead, still deterministically.
 - No locking. The section is immutable after link; the run state is on the runner's stack and only the test thread touches its fields; the console runs one command at a time (`kernel/lib/kshell/kshell/shell.cpp` reads one line and dispatches it). The publication pointer is atomic only so that a mistaken assertion from a worker thread cannot be a data race while it is being diagnosed. A file-static `bool running` guards accidental re-entry, and a future second caller (a syscall, say) would need a lock before it is allowed.
 - No heap. Listing, filtering, counting and formatting use the stack and fixed buffers; hsien's runner allocates nothing either; tests themselves may allocate with `new (mm::GAF_KERNEL)` as they do today.
 - Reuse, not reimplementation: the record type, the context, the failure reporting and the per-record accounting are hsien's. The kernel-facing layer adds declaration, framing, selection, formatting and the command, which is the part hsien's July design left to "the hidden runner" and never got to.

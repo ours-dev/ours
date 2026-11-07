@@ -42,7 +42,10 @@ tests linked in, a duplicate test name, a usage error) ends at its
 away rather than after the command timeout. For `ktest` and `ktest all` the
 script first types `ktest list` and requires the summary's ran= to equal the
 number of "ktest: TEST" lines: a test that stops being linked in fails the run
-instead of silently disappearing from it. `ktest list` itself passes when the
+instead of silently disappearing from it. A run that carries repeat= or
+shard= skips that list and the count check, because running the selection
+more than once, or a part of it, is what the option asked for; shuffle only
+reorders, so it keeps the check. `ktest list` itself passes when the
 prompt comes back with at least one test listed. While any `ktest` command
 runs, console silence is a hang, as for `lockup spin all`: the script sends the
 NMI and the lockup report is the diagnosis. Every other command's rules are
@@ -458,6 +461,18 @@ def ktest_runs_all(command: str) -> bool:
     return bool(words) and words[0] == "ktest" and (len(words) == 1 or words[1] == "all")
 
 
+def ktest_count_varies(command: str) -> bool:
+    """Whether a `ktest all` run's summary ran= may differ from the number of
+    listed tests: repeat= runs the selection more than once and shard= runs
+    part of it, so the list-count equality says nothing there. shuffle only
+    reorders, so a run without repeat or shard still checks the count."""
+    words = command.split()
+    if words[:2] != ["ktest", "all"] or len(words) == 2:
+        return False
+    return any(word == "repeat" or word.startswith("repeat=")
+               or word == "shard" or word.startswith("shard=") for word in words[2:])
+
+
 def ktest_summaries(lines: list[str]) -> list[dict[str, int]]:
     """Every "ktest: SUMMARY" line among |lines|, as parsed counts."""
     summaries = []
@@ -491,7 +506,9 @@ def judge_ktest_list(command: str, lines: list[str]) -> bool:
 
 def judge_ktest_run(command: str, lines: list[str], expected: int | None) -> bool:
     """Says whether a `ktest` run passed. |expected| is the count a preceding
-    `ktest list` gave, or None when a filter makes the count unknown."""
+    `ktest list` gave, or None when the run's count is not the list's: a
+    filter selects part of it, and repeat= or shard= changes how many
+    executions the summary counts."""
     summaries = ktest_summaries(lines)
     if len(summaries) != 1:
         errors = [l for l in lines if ERROR_LINE.search(l)]
@@ -782,9 +799,11 @@ def main(argv: list[str]) -> int:
 
             # A run of everything is listed first, so the summary has a count
             # to check itself against: a test that is no longer linked in
-            # then fails the run instead of silently disappearing from it.
+            # then fails the run instead of silently disappearing from it. A
+            # run with repeat= or shard= skips the list: its summary counts
+            # executions, not listed tests.
             expected = None
-            if ktest_run and ktest_runs_all(command):
+            if ktest_run and ktest_runs_all(command) and not ktest_count_varies(command):
                 console.keep()
                 console.type("ktest list")
                 listed = console.wait_for(re.compile(re.escape(PROMPT)),

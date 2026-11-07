@@ -8,6 +8,7 @@ executable("ktest-test") {
     "filter_test.cpp",
     "format_test.cpp",
     "options_test.cpp",
+    "plan_test.cpp",
     "summary_test.cpp",
   ]
   deps = [

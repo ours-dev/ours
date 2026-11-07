@@ -49,6 +49,16 @@ class Classify(unittest.TestCase):
         for command in ("ktest Ktest.*", "ktest Ktest.* rounds=256"):
             self.assertFalse(kshell_run.ktest_runs_all(command))
 
+    def test_count_varies_for_repeat_and_shard(self):
+        for command in ("ktest all repeat=2", "ktest all repeat", "ktest all shard=1/2",
+                        "ktest all shard", "ktest all shuffle repeat=2",
+                        "ktest all shuffle=5 shard=0/3"):
+            self.assertTrue(kshell_run.ktest_count_varies(command), command)
+        for command in ("ktest", "ktest all", "ktest list", "ktest all shuffle",
+                        "ktest all shuffle=305419896", "ktest all rounds=256",
+                        "ktest Ktest.* repeat=2"):
+            self.assertFalse(kshell_run.ktest_count_varies(command), command)
+
 
 class EndPattern(unittest.TestCase):
     def test_a_run_ends_at_its_summary_or_its_error(self):
@@ -103,6 +113,15 @@ class JudgeRun(unittest.TestCase):
     def test_passing_filtered_run_has_no_expected_count(self):
         lines = self.run_lines("ktest: SUMMARY ran=1 passed=1 failed=0 skipped=0")
         self.assertTrue(quiet(kshell_run.judge_ktest_run, "ktest Ktest.*", lines, None))
+
+    def test_passing_repeat_run_has_no_expected_count(self):
+        # repeat= and shard= runs are passed expected=None: their summary
+        # counts executions, which is the option's point, so the list-count
+        # equality is not required of them.
+        lines = self.run_lines("ktest: SUMMARY ran=6 passed=6 failed=0 skipped=0")
+        self.assertTrue(quiet(kshell_run.judge_ktest_run, "ktest all repeat=3", lines, None))
+        lines = self.run_lines("ktest: SUMMARY ran=31 passed=30 failed=0 skipped=1")
+        self.assertTrue(quiet(kshell_run.judge_ktest_run, "ktest all shard=1/2", lines, None))
 
     def test_failed_test(self):
         lines = self.run_lines("ktest: SUMMARY ran=1 passed=0 failed=1 skipped=0",
