@@ -182,6 +182,31 @@ kernel_test("vmo_snapshot") {
   deps = _HEADER_DEPS
 }
 
+kernel_test("idle") {
+  sources = [ "idle_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("mutex_stress") {
+  sources = [ "mutex_stress.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("port") {
+  sources = [ "port_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("thread_join") {
+  sources = [ "thread_join_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("timer_share") {
+  sources = [ "timer_share_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
 kernel_test("pm_zone") {
   sources = [ "pm_zone_test.cpp" ]
   deps = _HEADER_DEPS
@@ -278,6 +303,7 @@ source_set("kernel.tests") {
     ":pin_lines",
     ":bti",
     ":hotplug",
+    ":idle",
     ":interrupt",
     ":interrupt_line",
     ":irq",
@@ -287,16 +313,20 @@ source_set("kernel.tests") {
     ":ioport",
     ":large_page",
     ":memory_pressure",
+    ":mutex_stress",
     ":page_reclaim",
     ":page_source",
     ":pager",
     ":pm_node",
+    ":port",
     ":preempt",
     ":resource",
     ":sleep",
     ":steal",
+    ":thread_join",
     ":tick_replace",
     ":timer",
+    ":timer_share",
     ":tick_broadcast",
     ":user_copy",
     ":tick_fallback",

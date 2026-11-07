@@ -20,11 +20,7 @@ source_set("commands") {
     "idle.cpp",
     "lockup.cpp",
     "log.cpp",
-    "mutex_stress.cpp",
-    "port_test.cpp",
     "steal_policy.cpp",
-    "thread_join_test.cpp",
-    "timer_share_test.cpp",
   ]
   deps = [
     "//kernel/lib/gktl",

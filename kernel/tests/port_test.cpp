@@ -1,9 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `port.test [ROUNDS]`: a port's observers against the port's tear-down
-// (docs/design/260924/userspace-filesystem.md section 7.4). dbg image only:
-// it is the one with a kernel shell, and with the assertions this relies on.
+// Port.TearDownRacesItsObservers: a port's observers against the port's
+// tear-down (docs/design/260924/userspace-filesystem.md section 7.4). dbg
+// image only: it is the one with a kernel shell, and with the assertions this
+// relies on. The `rounds` run option says how many rounds to race (200
+// without it).
 //
 // The shell checks every answer a program can see from a port. What it
 // cannot do is race: it has one thread. This races the two things that can
@@ -44,7 +46,7 @@
 // destroyed. A table of its own, driven to the limit and past it, then the
 // port's handle closed: the port must be gone.
 //
-// A console command rather than a host test for the reason mutex.stress
+// An in-kernel test rather than a host test for the reason mutex.stress
 // gives: the race is between CPUs.
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
@@ -57,11 +59,10 @@
 #include <ours/time/clock.hpp>
 
 #include <atomic>
-#include <string_view>
 
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -192,7 +193,7 @@ namespace {
 
         if (!arm(*round, round->raced_end, raced_handle(*round), RACED) ||
             !arm(*round, round->stranded_end, stranded_handle(*round), STRANDED)) {
-            log::error("port.test:   round {}: arming a wait failed", index);
+            log::error("port:   round {}: arming a wait failed", index);
             // No thread has the round yet. Freeing it closes the port first,
             // which tears down whatever was armed.
             delete round;
@@ -202,7 +203,7 @@ namespace {
         auto *const closer = spawn_on("port-test-closer", closer_routine, round, closer_cpu);
         auto *const ender = spawn_on("port-test-ender", ender_routine, round, ender_cpu);
         if (closer == nullptr || ender == nullptr) {
-            log::error("port.test:   round {}: spawning a thread failed", index);
+            log::error("port:   round {}: spawning a thread failed", index);
             // The one that did start is waiting for |go|: let it run, wait
             // for it, and only then free what it uses.
             round->go.store(true, std::memory_order_release);
@@ -210,7 +211,7 @@ namespace {
                 i32 ignored = 0;
                 if (thread != nullptr &&
                     thread->join(&ignored, time::Deadline::infinite()) != Status::Ok) {
-                    log::error("port.test:   joining it failed; leaking the round");
+                    log::error("port:   joining it failed; leaking the round");
                     return false;
                 }
             }
@@ -226,16 +227,14 @@ namespace {
         auto const joined = closer->join(&retcode, time::Deadline::infinite()) == Status::Ok &&
                             ender->join(&retcode, time::Deadline::infinite()) == Status::Ok;
         if (!joined) {
-            log::error("port.test:   round {}: joining a thread failed; leaking the round", index);
+            log::error("port:   round {}: joining a thread failed; leaking the round", index);
             return false;
         }
 
         // Every observer is gone, the stranded ones by the tear-down alone.
         // One left registered would hold the port.
         auto const gone = weak.expired();
-        if (!gone) {
-            log::error("port.test:   round {}: the port outlived its last handle", index);
-        }
+        EXPECT_TRUE(gone, "round {}: the port outlived its last handle", index);
 
         // The channel ends go here (the raced one already, in a cancel
         // round). In dbg, ~Dispatcher asserts that nothing is still linked on
@@ -246,10 +245,10 @@ namespace {
 
     /// HandleTable::attach_port_observer() at the limit: the observer it made
     /// for a refused wait must be freed, or it would hold the port for ever.
-    auto check_refusal() -> bool {
+    auto check_refusal() -> void {
         auto table = ustl::Arc<HandleTable>::adopt(new (mm::ALLOC_KERNEL) HandleTable());
         if (!table) {
-            return false;
+            FAIL("allocate the handle table");
         }
         KernelHandle<PortDispatcher> port;
         KernelHandle<ChannelDispatcher> end0;
@@ -258,13 +257,13 @@ namespace {
         Rights end_rights = Rights::None;
         if (PortDispatcher::create(PortCreateOptions::None, &port, &port_rights) != Status::Ok ||
             ChannelDispatcher::create(&end0, &end1, &end_rights) != Status::Ok) {
-            return false;
+            FAIL("make the port and channel ends for the refusal checks");
         }
         auto const weak = port.dispatcher().downgrade();
         auto port_handle = Handle::make(KernelHandle<Dispatcher>(ustl::move(port)), port_rights);
         auto end_handle = Handle::make(KernelHandle<Dispatcher>(ustl::move(end1)), end_rights);
         if (!port_handle || !end_handle) {
-            return false;
+            FAIL("make the port and end handles");
         }
         auto const port_value = table->add(ustl::move(port_handle));
         auto const end_value = table->add(ustl::move(end_handle));
@@ -298,10 +297,10 @@ namespace {
             auto const closed = table->remove(end_value);
         }
 
-        log::info("port.test:   {} waits armed through a handle table before NoResource; the "
+        log::info("port:   {} waits armed through a handle table before NoResource; the "
                   "port {} once its handle closed",
                   armed, gone ? "was destroyed" : "OUTLIVED its handle");
-        return ok && gone;
+        EXPECT_TRUE(ok && gone, "a wait refused at the limit was not freed");
     }
 
     /// A kernel object with one packet of its own, as a pager's proxy will be:
@@ -342,97 +341,68 @@ namespace {
     /// Packets a kernel object owns (PortDispatcher::queue()): handed out and
     /// handed back, queued again from free(), taken back with
     /// cancel_queued(), and refused or dropped once the port has no handles.
-    auto check_owned_packets() -> bool {
+    auto check_owned_packets() -> void {
         constexpr u64 KEY = 0x0be1'0000'0000'0001;
         KernelHandle<PortDispatcher> handle;
         Rights rights = Rights::None;
         if (PortDispatcher::create(PortCreateOptions::None, &handle, &rights) != Status::Ok) {
-            log::error("port.test:   no port for the owned-packet checks");
-            return false;
+            FAIL("make the port the owned-packet checks run against");
         }
         // A reference that is not a handle, so the port can be asked after
         // its last handle is gone.
         auto port = handle.dispatcher();
         TestOwner owner(KEY);
-        auto ok = true;
-        auto const check = [&ok](bool const passed, char const *const name) {
-            if (!passed) {
-                log::error("port.test:   FAIL  {}", name);
-                ok = false;
-                return;
-            }
-            log::info("port.test:   pass  {}", name);
-        };
 
         PortPacket out{};
-        check(port->queue(owner.packet()) == Status::Ok && port->dequeue(0, &out) == Status::Ok &&
-                  out.key == KEY && owner.nr_freed == 1,
-              "a queued packet is read with its key, and handed back to its owner once");
+        EXPECT_TRUE(port->queue(owner.packet()) == Status::Ok &&
+                        port->dequeue(0, &out) == Status::Ok && out.key == KEY &&
+                        owner.nr_freed == 1,
+                    "a queued packet is read with its key, and handed back to its owner once");
 
         owner.requeue_to = port.as_ptr_mut();
         auto const first =
             port->queue(owner.packet()) == Status::Ok && port->dequeue(0, &out) == Status::Ok;
         auto const again =
             owner.requeued == Status::Ok && port->dequeue(0, &out) == Status::Ok && out.key == KEY;
-        check(first && again && owner.nr_freed == 3,
-              "free() runs with the port's lock let go: the owner queues the packet again from it, "
-              "and it is read again");
+        EXPECT_TRUE(first && again && owner.nr_freed == 3,
+                    "free() runs with the port's lock let go: the owner queues the packet again "
+                    "from it, and it is read again");
 
-        check(port->queue(owner.packet()) == Status::Ok && port->cancel_queued(owner.packet()) &&
-                  owner.nr_freed == 3 && !port->cancel_queued(owner.packet()) &&
-                  port->dequeue(0, &out) == Status::TimeOut,
-              "cancel_queued() takes a queued packet back with no free(), only once, and leaves "
-              "nothing to read");
-        check(port->queue(owner.packet()) == Status::Ok && port->dequeue(0, &out) == Status::Ok &&
-                  !port->cancel_queued(owner.packet()) && owner.nr_freed == 4,
-              "a packet already read cannot be cancelled: free() has it");
+        EXPECT_TRUE(port->queue(owner.packet()) == Status::Ok &&
+                        port->cancel_queued(owner.packet()) && owner.nr_freed == 3 &&
+                        !port->cancel_queued(owner.packet()) &&
+                        port->dequeue(0, &out) == Status::TimeOut,
+                    "cancel_queued() takes a queued packet back with no free(), only once, and "
+                    "leaves nothing to read");
+        EXPECT_TRUE(port->queue(owner.packet()) == Status::Ok &&
+                        port->dequeue(0, &out) == Status::Ok &&
+                        !port->cancel_queued(owner.packet()) && owner.nr_freed == 4,
+                    "a packet already read cannot be cancelled: free() has it");
 
         // The last handle goes with the packet queued: dropped, and handed
         // back once.
-        check(port->queue(owner.packet()) == Status::Ok, "the packet is queued once more");
+        EXPECT_TRUE(port->queue(owner.packet()) == Status::Ok, "the packet is queued once more");
         handle.reset(ustl::Arc<PortDispatcher>());
-        check(owner.nr_freed == 5, "the port's last handle going drops it, handed back once");
-        check(port->queue(owner.packet()) == Status::BadHandle && owner.nr_freed == 5 &&
-                  !port->cancel_queued(owner.packet()),
-              "after that, queue() refuses it and keeps no part of it");
-        return ok;
+        EXPECT_TRUE(owner.nr_freed == 5, "the port's last handle going drops it, handed back once");
+        EXPECT_TRUE(port->queue(owner.packet()) == Status::BadHandle && owner.nr_freed == 5 &&
+                        !port->cancel_queued(owner.packet()),
+                    "after that, queue() refuses it and keeps no part of it");
     }
 
-    auto parse_rounds(int const argc, char **const argv) -> usize {
-        if (argc < 2) {
-            return DEFAULT_ROUNDS;
-        }
-        usize rounds = 0;
-        for (auto const c: std::string_view(argv[1])) {
-            if (c < '0' || c > '9') {
-                return 0;
-            }
-            rounds = rounds * 10 + static_cast<usize>(c - '0');
-        }
-        return rounds;
-    }
-
-    auto port_test_command(int argc, char **argv) -> int {
-        auto const rounds = parse_rounds(argc, argv);
+    KTEST(Port, TearDownRacesItsObservers) {
+        auto const rounds = ktest::option_usize("rounds", DEFAULT_ROUNDS);
         if (rounds == 0) {
-            log::error("port.test: usage: port.test [ROUNDS]");
-            return 1;
+            FAIL("rounds must be at least one");
         }
 
-        auto failed = false;
-        if (!check_owned_packets()) {
-            failed = true;
-        }
-        if (!check_refusal()) {
-            log::error("port.test:   a wait refused at the limit was not freed");
-            failed = true;
-        }
+        check_owned_packets();
+        check_refusal();
 
         auto const num_cpus = Cpu::num_online_cpus();
         auto const closer_cpu = CpuNum{0};
         auto const ender_cpu = num_cpus > 1 ? CpuNum{1} : CpuNum{0};
         if (num_cpus < 2) {
-            log::warn("port.test: one CPU online; the two threads take turns rather than race");
+            log::warn("port: one CPU online; the two threads take turns rather than race");
         }
 
         auto const before = PortDispatcher::tear_down_counts();
@@ -448,33 +418,16 @@ namespace {
         auto const torn_down = static_cast<usize>(after.torn_down - before.torn_down);
         auto const yielded = static_cast<usize>(after.yielded - before.yielded);
 
-        log::info("port.test:   {} round(s) x ({} raced + {} stranded) waits on CPUs {} and {} in "
+        log::info("port:   {} round(s) x ({} raced + {} stranded) waits on CPUs {} and {} in "
                   "{} ms: {} torn down, {} callbacks yielded to the tear-down, {} bad round(s)",
                   rounds, RACED, STRANDED, closer_cpu, ender_cpu,
                   duration_cast<Milliseconds>(elapsed).count(), torn_down, yielded, bad);
-        if (bad != 0) {
-            log::error("port.test:   {} bad round(s)", bad);
-            failed = true;
-        }
-        if (torn_down < rounds * STRANDED) {
-            log::error("port.test:   the tear-down freed {} observers, fewer than the {} stranded",
-                       torn_down, rounds * STRANDED);
-            failed = true;
-        }
-        if (num_cpus > 1 && yielded == 0) {
-            log::error("port.test:   no callback ever met the tear-down; the race was not "
-                       "exercised");
-            failed = true;
-        }
-        if (failed) {
-            log::error("port.test: FAILED");
-            return 1;
-        }
-        log::info("port.test: ok");
-        return 0;
+        EXPECT_EQ(bad, 0u, "{} bad round(s)", bad);
+        EXPECT_GE(torn_down, rounds * STRANDED,
+                  "the tear-down freed {} observers, fewer than the {} stranded", torn_down,
+                  rounds * STRANDED);
+        EXPECT_TRUE(num_cpus < 2 || yielded != 0,
+                    "no callback ever met the tear-down; the race was not exercised");
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(PortTest, "port.test", ours::port_test_command,
-             "port.test [ROUNDS]: race a closing port's tear-down against its observers");

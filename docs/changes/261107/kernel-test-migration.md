@@ -143,3 +143,75 @@ None.
 - Why does interrupt.test migrate with a fixed round count instead of the run-options mechanism its old `[ROUNDS]` argument maps to?
 - Where does a mid-test machine-shape skip land, and what would KTEST_SKIP there do to the whole suite's verdict?
 - What did the 461-verdict audit compare, and what did it let through on purpose?
+
+## The finale batch: the last five console tests, and the migration is done (2026-11-07)
+
+**Files**
+- `kernel/tests/{idle,idle? no — mutex_stress,port,thread_join,timer_share}_test.cpp` — idle.test extracted from idle.cpp into kernel/tests/idle_test.cpp (idle.cpp keeps idle.stats and its command), mutex_stress.cpp moved whole, and port/thread_join/timer_share moved with their arguments mapped to run options.
+- The two BUILD.gn files — the five move between the targets.
+
+**Symptom**
+Latent: the last five holdouts, and the two verdict paths (`kshell_run.py`'s `<name>: ok` rule, `cov_kernel.py`'s GKTL scrape) still alive for them.
+
+**Cause**
+The migration's tail; the four argument-takers waited for the run-options mechanism.
+
+**Change**
+The established pattern, plus the option mappings the plan promised: `port.test [ROUNDS]` → `ktest::option_usize("rounds", 200)` with an explicit `rounds must be at least one` guard (the old usage-error catch); `threadjoin.test stress N` → `option_usize("stress", 0)` + `option_usize("n", 2000)` (2000 grounded in the change records' historical stress runs; the six contract checks always run, stress adds rounds); `timershare.test big` → `ktest::has_option("big")`. idle.test's extraction leaves idle.cpp's idle.stats machinery and its own command untouched; mutex_stress's `[rounds]` is fixed at 20000 (interrupt.test's fixed-rounds precedent).
+
+**Reference**
+Batches 1-5; the run-options design (step 2 of the plan).
+
+**Verification**
+`ktest list` 61 tests; Idle, MutexStress, Port, ThreadJoin, TimerShare each `ran=1 passed=1` on the dbg image; `ktest all` reports `ran=61 passed=59 failed=0 skipped=2` (Preempt's re-measurement skip and Ktest.SkipIsReported). boot_check: dbg 46/5/0, rel 44/8/0 7/7 required, host-tests 183/0.
+
+**Deliberately not done**
+Deleting `kshell_run.py`'s legacy rule and `cov_kernel.py`'s scrape, and closing the repair items, are the next commit -- they are the acceptance's second half and touch scripts the kernel tree does not own.
+
+**How it was found**
+None (mechanical).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Where did port.test's ROUNDS argument go, and what guards an explicit 0?
+- Why is threadjoin's N default 2000, and where is that grounded?
+- What does idle.cpp still own after the extraction, and why does idle_test.cpp duplicate its helpers?
+
+## The acceptance: the legacy verdict paths come off (2026-11-07)
+
+**Files**
+- `scripts/kshell_run.py` — the `<name>: ok` rule and its judge branch are gone; a command's verdict is the ktest grammar or the prompt.
+- `scripts/cov_kernel.py` — the GKTL_COMMAND scrape (`TEST_COMMAND`, `test_commands()`) and its call are gone; every test is discovered from `ktest list`.
+- `scripts/test_kshell_run.py` — the one case that pinned the deleted rule goes; the other 19 stand.
+- `docs/repairs/261105/kernel-test-framework.md` — item 1 (the migration) closed; 2 (alloc-failure false failure) and 3 (the stale hang report) renumber and stay: 3's subject is the message a migrated test's OLD name now reads as, which the acceptance's own change created and a friendlier verdict message should fix.
+
+**Symptom**
+Latent: two verdict paths for kernel tests, one per vintage.
+
+**Cause**
+The migration was incremental by design; the legacy paths were the price of shipping the interface first.
+
+**Change**
+Deletion only: the rules and the scrape describe commands that no longer exist. `cov_kernel.py` re-run on this tree enumerates all 61 tests from `ktest list` and completes (70.8% lines kernel-wide); `test_kshell_run.py` 19/19; `ktest all` `ran=61 passed=59 failed=0 skipped=2`.
+
+**Reference**
+The acceptance in docs/repairs/261105/kernel-test-framework.md, as the migration plan's last line wrote it.
+
+**Verification**
+As above; `boot_check.py` dbg 46/5/0, rel 44/8/0 7/7 required, host-tests 183/0 (the kshell changes ride the host suite).
+
+**Deliberately not done**
+Repair item 1 (alloc-failure expected-diagnostics) -- it needs an interface decision and predates this migration's scope.
+
+**How it was found**
+The runner's own host suite caught the deletion: its case for the old rule failed the moment the rule was gone, which is the test doing its job.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is a command that prints nothing now judged ok, and what makes that safe?
+- Where does cov_kernel learn the test names it runs?
+- Which repair items survive, and why?

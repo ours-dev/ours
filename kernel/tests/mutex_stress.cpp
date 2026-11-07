@@ -1,8 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `mutex.stress [rounds]`: hammer one sync::Mutex from three threads pinned
-// to three different CPUs, and report whether every thread came back.
+// MutexStress.AllWorkersFinishBeforeTheTimeout: hammer one sync::Mutex from
+// three threads pinned to three different CPUs, and check that every thread
+// came back.
 //
 // It exists for one bug class: the lost wakeup, where a contender decides to
 // park, the owner releases before the contender is on the queue, and the
@@ -21,9 +22,8 @@
 // read-spin-write, so two threads inside at once lose increments, and
 // holder() must name the thread that just acquired.
 //
-// This is a console command because it has not moved to the kernel test
-// interface (//kernel/lib/ktest) yet, and a mutex cannot be tested on the
-// host: its slow path is the scheduler.
+// Why an in-kernel test: a mutex cannot be tested on the host -- its slow
+// path is the scheduler.
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/alloc_flags.hpp>
@@ -32,11 +32,10 @@
 #include <ours/time/clock.hpp>
 
 #include <atomic>
-#include <string_view>
 
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -44,7 +43,7 @@ namespace {
     constexpr usize DEFAULT_ROUNDS = 20000;
     constexpr usize NUM_WORKERS = 3;
 
-    /// How long the command waits for the workers before calling them stuck.
+    /// How long the test waits for the workers before calling them stuck.
     /// Generous on purpose: under QEMU's TCG every park and wake is a pair of
     /// context switches on emulated CPUs -- the default run takes about three
     /// seconds there -- and a false "stuck" would send someone hunting a bug
@@ -90,42 +89,21 @@ namespace {
             state.counter = before + 1;
         }
 
-        // Last thing this thread does with |state|: once the command sees
+        // Last thing this thread does with |state|: once the test sees
         // all three here, it frees it.
         state.finished.fetch_add(1, std::memory_order_release);
         return 0;
     }
 
-    auto parse_rounds(int argc, char **argv) -> usize {
-        if (argc < 2) {
-            return DEFAULT_ROUNDS;
-        }
-
-        usize rounds = 0;
-        for (auto const c: std::string_view(argv[1])) {
-            if (c < '0' || c > '9') {
-                return 0;
-            }
-            rounds = rounds * 10 + static_cast<usize>(c - '0');
-        }
-        return rounds;
-    }
-
-    auto mutex_stress_command(int argc, char **argv) -> int {
-        auto const rounds = parse_rounds(argc, argv);
-        if (rounds == 0) {
-            log::warn("mutex.stress: rounds must be a positive decimal number");
-            return 1;
-        }
-
+    KTEST(MutexStress, AllWorkersFinishBeforeTheTimeout) {
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 2) {
-            log::warn("mutex.stress: needs at least two online CPUs, have {}", num_cpus);
-            return 1;
+            KTEST_SKIP("needs at least two online CPUs");
         }
+        auto const rounds = DEFAULT_ROUNDS;
 
         // Heap, not the stack: on the failure path the stuck threads still
-        // point at it after this command returns, so it has to be leaked
+        // point at it after the test returns, so it has to be leaked
         // rather than popped.
         auto *const state = new (mm::ALLOC_KERNEL) StressState{};
         auto *const workers = new (mm::ALLOC_KERNEL) Worker[NUM_WORKERS]{
@@ -133,22 +111,18 @@ namespace {
             {state, 64},
             {state, 0},
         };
-        if (state == nullptr || workers == nullptr) {
-            log::warn("mutex.stress: out of memory");
-            return 1;
-        }
+        ASSERT_NONNULL(state, "allocate the stress state");
+        ASSERT_NONNULL(workers, "allocate the worker arguments");
         state->rounds = rounds;
 
         auto const started = time::SteadyClock::now();
         for (usize i = 0; i < NUM_WORKERS; ++i) {
             auto *const thread = task::Thread::spawn("mutex-stress", worker_routine, &workers[i],
                                                      task::DEFAULT_PRIORITY);
-            if (thread == nullptr) {
-                // The ones already running still count down |finished|; there
-                // is no way to call them back, so leave the state to them.
-                log::warn("mutex.stress: could not spawn worker {}", i);
-                return 1;
-            }
+            // On failure the ones already running still count down
+            // |finished|; there is no way to call them back, so the state is
+            // left to them.
+            ASSERT_NONNULL(thread, "spawn worker {}", i);
             // One CPU each, skipping CPU 0 when there are enough to spare, so
             // the contention is real parallelism and not time-slicing.
             thread->set_cpu_affinity_hard(CpuMask::of(static_cast<CpuNum>((i + 1) % num_cpus)));
@@ -170,10 +144,10 @@ namespace {
             // A worker parked and never woke. Leak the state: it is still
             // somebody's mutex.
             auto *const holder = state->mutex.holder();
-            log::error("mutex.stress: STUCK -- {}/{} workers finished after {} ms, holder {}",
+            log::error("mutexstress: STUCK -- {}/{} workers finished after {} ms, holder {}",
                        finished, NUM_WORKERS, duration_cast<Milliseconds>(elapsed).count(),
                        static_cast<void *>(holder));
-            return 1;
+            FAIL("all three workers finish before the timeout; leaking the state");
         }
 
         auto const expected = rounds * NUM_WORKERS;
@@ -182,18 +156,10 @@ namespace {
         delete[] workers;
         delete state;
 
-        if (counter != expected || violations != 0) {
-            log::error("mutex.stress: FAILED -- counter {} (expected {}), {} holder mismatches",
-                       counter, expected, violations);
-            return 1;
-        }
-
-        log::info("mutex.stress: ok -- {} rounds x {} threads in {} us", rounds, NUM_WORKERS,
+        EXPECT_EQ(counter, expected, "no increment is lost, so no two threads were inside at once");
+        EXPECT_EQ(violations, 0u, "holder() names the thread that just acquired");
+        log::info("mutexstress: {} rounds x {} threads in {} us", rounds, NUM_WORKERS,
                   duration_cast<Microseconds>(elapsed).count());
-        return 0;
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(MutexStress, "mutex.stress", ours::mutex_stress_command,
-             "mutex.stress [rounds]: contend one sync::Mutex from three CPUs")
