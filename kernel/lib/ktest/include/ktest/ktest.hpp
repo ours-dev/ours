@@ -10,6 +10,7 @@
 #include <ktest/assertions.hpp>
 #include <ktest/environment.hpp>
 #include <ktest/fixture.hpp>
+#include <ktest/instantiate.hpp>
 #include <ktest/options.hpp>
 
 #include <source_location>

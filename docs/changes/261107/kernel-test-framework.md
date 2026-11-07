@@ -65,3 +65,70 @@ None.
 1. Why does a fixture test need no change at all in the runner's verdict logic, and where does the "SetUp failed, skip the body" decision actually live?
 2. Where does the fixture object live, and what two things would have broken if the macro had built it on the heap inside a static initializer instead?
 3. If a suite's records are split across translation units — `Foo.A`, `Bar.X`, `Foo.B` in section order — what makes the suite teardown still run exactly once, after `Foo.B`?
+
+## Title: parameterized and typed tests — one declaration, one record per value or type (2026-11-07)
+
+**Files**
+
+- `kernel/lib/ktest/include/ktest/instantiate.hpp` — new: `ktest::internal::ParamSource` (the `GetParam()` holder), `InstantiationName` (the compile-time `Suite.Name/N` string), `RecordBlock` (the constexpr records array), `TypeList`, and the five macros `KTEST_VALUE_PARAM`, `KTEST_P`, `KTEST_F_P`, `KTEST_TYPE_LIST`, `KTEST_T`.
+- `kernel/lib/ktest/include/ktest/fixture.hpp` — `run_fixture` takes trailing construction arguments (`Args &&...args` forwarded to `std::construct_at`), so a parameterized test's object can be built with its table value; `KTEST_F` passes none and its behavior is unchanged.
+- `kernel/lib/ktest/include/ktest/ktest.hpp` — includes the new header, so one include still gives a test everything.
+- `kernel/lib/ktest/test/host_shim.hpp`, `host_shim.cpp` — new: the runner stand-in (the six `ktest::internal` functions, the shared state, `run_record`) moved out of `fixture_test.cpp` so two host files can drive records.
+- `kernel/lib/ktest/test/fixture_test.cpp` — loses its private stand-in, keeps every check.
+- `kernel/lib/ktest/test/instantiate_test.cpp` — new: the host suite, 14 cases against the real macro expansions.
+- `kernel/tests/ktest_param_test.cpp` — new: the booted smoke (a `KTEST_P` over 3 values, a `KTEST_F_P` over 2, a `KTEST_T` over 2 types).
+- `kernel/lib/ktest/BUILD.gn`, `kernel/lib/ktest/test/BUILD.gn`, `kernel/tests/BUILD.gn` — the new header, the shim + host file, the `ktest_param` target (and its place in the `kernel.tests` aggregate).
+- `.clang-tidy` — `GetParam` joins `SetUp`/`TearDown` in the method-case exemption: GoogleTest's API vocabulary the interface re-exports.
+- `kernel/lib/ktest/README.md`, `docs/design/261105/kernel-test-framework.md` — the feature documented where the fixture layer is.
+
+**Symptom**
+
+None — this is feature batch 3. v1 filed parameterized and typed tests under non-goals (`docs/design/261105/kernel-test-framework.md`), so the only way to run one body over many values or types was to hand-write one `KTEST` per instantiation and keep the tables in sync by hand.
+
+**Cause**
+
+GoogleTest's parameterized machinery (ValueParametrizedTestSuite, TYPED_TEST) builds its records at dynamic-init time through a per-test static initializer and a heap-allocated registry, which is the exact mechanism this framework's registration rule rules out — "a linker section, not a per-test static initializer" (`fixture.hpp`'s rationale, the design's Registration section). What was missing was a way to keep the GoogleTest contract (one body per declaration, one record per value or type, `/N` names) with records that are constant-initialized parts of the image: the count of records is known only to the compiler (it is the table's length), so a macro that cannot count could not simply write N records the way `KTEST` writes one.
+
+**Change**
+
+- The count problem is solved the way the records problem was: in the type system, not the preprocessor. One `KTEST_P(Suite, Name)` expands to the test class, and a constexpr records block built by expanding a `std::make_integer_sequence<usize, Suite_ParamBase::COUNT>` — the table's length, read at compile time through the class `KTEST_VALUE_PARAM(Suite, int, MyValues, 1, 42, 99)` declares. Each expansion instantiates a `Holder<Index>` whose `TestRecord` is `{name, &invoke<Index>, location}`, with the name built by a `consteval` constructor that appends `/` and the decimal index to the `Suite.Name` prefix — the string arithmetic the runner's own decimal writer does, hoisted into the image. The whole block lands in `.hsien.tests` as one constexpr object; the section walk stays a flat array of `TestRecord` because every element is `sizeof(TestRecord)` apart and the block's alignment is the record's, so no padding can land between the section's objects.
+- The body reads the current value with `GetParam()` (the GoogleTest spelling, chosen over a `value_` member because it cannot collide with a fixture member in the composed macro). The class `KTEST_VALUE_PARAM` declares (`Suite_ParamBase`) derives from `ktest::internal::ParamSource<Type>` and carries the table's type, length and elements; `KTEST_P` derives its test class from `ktest::Fixture` and that base, `KTEST_F_P` from the author's fixture and that base. The param base deliberately does not derive from `Fixture`: it does, then `KTEST_F_P`'s object would carry two `Fixture` subobjects and `test->SetUp()` would be ambiguous. The adapter's only change is that `run_fixture` now forwards trailing construction arguments to `std::construct_at`, so the object is born with its table value and the whole `KTEST_F` lifecycle — fresh object per record, SetUp, body, TearDown — comes free.
+- Typed tests are the same machinery over types instead of values: `KTEST_TYPE_LIST(Suite, (A, B, C))` declares a `TypeList`, and `KTEST_T(Suite, Name)`'s block builder pairs each type with its list position in one pack expansion (`Holder<Index, T>::RECORD...` over `TypeList<Types...>` and an integer sequence), so no index-of-type lookup is needed. The body is a static function template whose parameter is named `T`.
+- The runner changed by zero lines: each instantiation is an ordinary `TestRecord`, so duplicate detection, filtering (globs match the `/N` suffix like any other character), sharding (the record's section index), shuffling, the suite plan (a `KTEST_P` suite's prefix is its records' suite) and the summary count treat instantiations exactly like plain tests.
+- Two compile-time traps the first expansion hit, both worth remembering: an in-class `static constexpr` member's initializer cannot instantiate its own class's member templates (`BLOCK` is now called from the namespace-scope block variable, after the class is complete), and a macro parameter named `name` is substituted inside the field designator `.name` (`KTEST_T`'s parameters are spelled `suite_token`/`name_token`, like `KTEST_P_INSTANTIATE`'s).
+
+**Reference**
+
+GoogleTest 1.18.0, `TEST_P`/`INSTANTIATE_TEST_SUITE_P`/`TYPED_TEST_SUITE` (`vendor/googletest/googletest/include/gtest/internal/gtest-internal.h`, the `GTEST_TEST_` expansion and the parameterized registries built in `ParameterizedTestSuiteInfo::RegisterTests()`), and its `/N`-suffixed instantiation names (`src/gtest.cc`, `TestNameSuffix`). Deliberately different: the records are a constexpr array in the image instead of entries a dynamic-init pass appends to a heap registry, the table is a plain constexpr array the author names instead of a `::testing::Values` generator, the instantiation name is the prefix plus `/N` without GoogleTest's middle segment (the generator's name carries no information the filter cannot express), and `KTEST_VALUE_PARAM` binds the table to its suite at declaration so no separate instantiation statement exists to forget.
+
+**Verification**
+
+- Host: `ktest-test` 60 cases green (14 new); `scripts/cov_host.py` — `instantiate.hpp` 100 % lines (15/15; the two block-builder bodies are `consteval`, so they are compile-time only and no longer counted as unreachable runtime lines), `fixture.hpp` 96.5 % (137/142).
+- Boot: `boot_check.py` green (dbg 46/5/0, rel 44/8/0, host-tests 183/0).
+- `ktest list` names 77 tests (was 67): the 10 new instantiations listed by name — `KtestParam.ValueIsPositive/0` through `/2`, `KtestParam.ValueIsOneOfTheTables/0` through `/2`, `KtestParamFixture.SeesFixtureAndParameter/0..1`, `KtestTyped.SizeIsKnown/0..1`.
+- `ktest KtestParam.*`: `ok, 6 ran, 6 passed, 0 skipped`. `ktest KtestParamFixture.*`: `ok, 2 ran, 2 passed`. `ktest KtestTyped.*`: `ok, 2 ran, 2 passed` (the first smoke draft failed record `/1` honestly — `alignof` of an empty class is 1, not its declared constant's — which is the coverage build proving the checks run per type).
+- One instantiation: `ktest KtestParam.ValueIsPositive/1` → `ok, 1 ran, 1 passed`. Shard over the whole registry: `ktest all shard=76/77` → exactly one record. Shuffle: `ktest all shuffle=1 shard=1/77` → a `SHUFFLE` line whose order is registry indices and one green record.
+- `ktest all`: `ok, 77 ran, 75 passed, 0 failed, 2 skipped` — `ran` equals the `ktest list` count, and the two skips are the pre-existing ones (`Ktest.SkipIsReported`, one tick test), so the instantiations added ten passing entries and no verdict-shape change.
+- clang-tidy clean on every touched file (the pre-existing `hsien/test.hpp` naming noise is unchanged); `format_cpp.py`/`format_gn.py` clean; `gn check` reached through the builds above.
+
+**Deliberately not done**
+
+- `KTEST_F_T` (fixture + typed composition): the typed body is a free static function template, not a member of a fixture-derived class; composing the two would need a second base-and-ctor shape for little value this round. The fixture batch's `KTEST_F_P` covers the shared-state need.
+- A middle name segment for instantiations (GoogleTest's `Suite/GeneratorName.Name/N`): the `/N` suffix alone is what filters need, and the generator name has no reader in this grammar.
+- A per-instantiation value printer in failure lines: a failed check already prints the expression text and both values through the assertion layer; the record name carries `/N`.
+- Empty tables and type lists: `RecordBlock`'s `static_assert` rejects them at compile time (a zero-length array would not link); no diagnostic text beyond the assert.
+- `GetParam()` outside a test body (in a helper the body calls): the helper has no `this` of the test class, which is the same caveat GoogleTest documents; nothing reports it specially.
+
+**How it was found**
+
+None.
+
+**The user's prediction**
+
+None.
+
+**Three questions you should be able to answer**
+
+1. The macro cannot count the table's values, so where does the record count actually come from at compile time, and what one expression turns a table's length into `Suite.Name/0..N-1` records?
+2. Why must `Suite_ParamBase` not derive from `ktest::Fixture` for `KTEST_F_P` to work, and what would a body see if the two fixtures each carried their own `Fixture` subobject?
+3. The records block is one object in `.hsien.tests`, not N separate records — what two facts about its layout keep the runner's flat section walk correct?

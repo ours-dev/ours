@@ -17,6 +17,7 @@
 #include <memory>
 #include <source_location>
 #include <string_view>
+#include <utility>
 
 #include <gktl/types.hpp>
 #include <hsien/test.hpp>
@@ -259,11 +260,17 @@ namespace internal {
     /// at the static storage the macro reserved, SetUp, the body when SetUp
     /// left nothing broken, TearDown, destroy. Every failure — in SetUp, the
     /// body or TearDown — lands in |context|, so the runner's verdict covers
-    /// the whole lifecycle and reads like a plain test's.
-    template <typename Test, typename Body>
-    auto run_fixture(::hsien::Context &context, void *const storage, Body &&body) -> void {
+    /// the whole lifecycle and reads like a plain test's. The trailing
+    /// |args| are the construction arguments: none for a `KTEST_F`, whose
+    /// object only aggregates a default-constructible fixture, and the
+    /// instantiation's table value for the parameterized macros, whose object
+    /// derives from the suite's KTEST_VALUE_PARAM base beside the fixture.
+    template <typename Test, typename Body, typename... Args>
+    auto run_fixture(::hsien::Context &context, void *const storage, Body &&body, Args &&...args)
+        -> void {
         BindScope const scope(context);
-        auto *const test = std::construct_at(static_cast<Test *>(storage));
+        auto *const test =
+            std::construct_at(static_cast<Test *>(storage), std::forward<Args>(args)...);
         auto const failures_before_setup = context.failure_count();
         test->SetUp();
         auto *const state = current_state();

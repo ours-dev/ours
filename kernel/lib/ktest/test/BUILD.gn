@@ -1,13 +1,16 @@
 # Host-side tests. These link googletest and run on the build machine, so
 # they exercise the parts of the interface that need no booted kernel: the
 # selection grammar, the failure-message formatting, the counting the
-# SUMMARY line reports, and the fixture lifecycle the KTEST_F adapters run.
+# SUMMARY line reports, the fixture lifecycle the KTEST_F adapters run, and
+# the instantiation records the KTEST_P/KTEST_T families declare.
 executable("ktest-test") {
   testonly = true
   sources = [
     "filter_test.cpp",
     "format_test.cpp",
     "fixture_test.cpp",
+    "host_shim.cpp",
+    "instantiate_test.cpp",
     "options_test.cpp",
     "plan_test.cpp",
     "summary_test.cpp",

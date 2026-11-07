@@ -33,9 +33,10 @@ CheckOptions:
     value: lower_case
   # GoogleTest's fixture vocabulary, which the kernel test interface adopts
   # (ktest::Fixture and ktest::Environment, and every override in every test
-  # file): the two names are the API, not a lapse of this config's snake case.
+  # file), and its parameterized-test accessor ktest's ParamSource re-exports:
+  # the names are the API, not a lapse of this config's snake case.
   - key: readability-identifier-naming.MethodIgnoredRegexp
-    value: ^(SetUp|TearDown)$
+    value: ^(SetUp|TearDown|GetParam)$
   - key: readability-identifier-naming.ParameterCase
     value: lower_case
 

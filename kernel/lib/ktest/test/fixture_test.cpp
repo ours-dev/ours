@@ -7,9 +7,9 @@
 // macro expansions driven through hsien's own record loop.
 //
 // The runner's kernel-only half — the six ktest::internal functions
-// runner.cpp defines and the framing around them — stands in here as a
-// published RunState and two small "run one record / one hook" helpers,
-// which is the seam the booted runner implements.
+// runner.cpp defines and the framing around them — stands in host_shim.hpp,
+// shared with the suite's other file, so that both drive records the same
+// way the booted runner does.
 //
 // This file includes ktest.hpp first, so the fixture bodies write the
 // KTEST_-prefixed assertion spellings — the machinery under test — while the
@@ -18,6 +18,8 @@
 // silenced here alone.
 #include <ktest/environment.hpp>
 #include <ktest/ktest.hpp>
+
+#include "host_shim.hpp"
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmacro-redefined"
@@ -36,96 +38,9 @@
 
 namespace {
 
-/// The published state the stand-in runner frames every record with; the
-/// shim below reads it exactly as runner.cpp reads its own.
-ktest::internal::RunState *HOST_PUBLISHED = nullptr;
-
-/// Every failure the run's assertions record, as the booted runner would
-/// print them; the cases assert on the count and sometimes the text.
-std::vector<std::string> FAILURES;
-
-/// Framework errors — an assertion with no test running and the like —
-/// which a well-behaved case never causes.
-usize FRAMEWORK_ERRORS = 0;
-
 /// Scratch strings the too-many-suites case needs outliving its arrays.
 std::vector<std::string> NAMES;
 std::vector<std::string> SUITES;
-
-auto note_failure(hsien::Failure const &failure) -> void {
-    FAILURES.push_back(std::string{failure.test_name} + ": " + failure.message);
-}
-
-hsien::Reporter REPORTER{&note_failure};
-
-} // namespace
-
-namespace ktest::internal {
-
-auto current_state() -> RunState * {
-    return HOST_PUBLISHED;
-}
-
-auto on_test_thread() -> bool {
-    return true;
-}
-
-auto framework_error(char const *what) -> void {
-    FRAMEWORK_ERRORS += 1;
-    FAILURES.push_back(std::string{"framework: "} + what);
-}
-
-auto bind_context(::hsien::Context &context) -> void {
-    if (HOST_PUBLISHED != nullptr) {
-        HOST_PUBLISHED->context = &context;
-    }
-}
-
-auto unbind_context() -> void {
-    if (HOST_PUBLISHED != nullptr) {
-        HOST_PUBLISHED->context = nullptr;
-    }
-}
-
-auto record_skip(char const *reason) -> void {
-    if (HOST_PUBLISHED == nullptr) {
-        framework_error("KTEST_SKIP ran with no test running");
-        return;
-    }
-    auto const text = std::string_view{reason};
-    auto const room = sizeof(HOST_PUBLISHED->skip_reason) - 1;
-    auto const count = text.size() < room ? text.size() : room;
-    for (auto i = usize{0}; i < count; ++i) {
-        HOST_PUBLISHED->skip_reason[i] = text[i];
-    }
-    HOST_PUBLISHED->skip_reason[count] = '\0';
-    HOST_PUBLISHED->skipped = true;
-}
-
-} // namespace ktest::internal
-
-namespace {
-
-/// What one record's run produced: the failures its assertions recorded
-/// and whether it asked to be skipped — the inputs the booted runner
-/// turns into the FAILED/SKIP/OK verdict.
-struct RunOutcome {
-    usize failures{};
-    bool skipped{};
-};
-
-/// Runs one record the way the runner frames a test: publish the state,
-/// hand the record to hsien's loop, publish nothing again.
-auto run_record(hsien::TestRecord const &record) -> RunOutcome {
-    ktest::internal::RunState state;
-    HOST_PUBLISHED = &state;
-    hsien::run(&record, &record + 1, REPORTER);
-    HOST_PUBLISHED = nullptr;
-    auto outcome = RunOutcome{};
-    outcome.failures = state.checks;
-    outcome.skipped = state.skipped;
-    return outcome;
-}
 
 /// Runs one suite hook the way the runner frames one: a published state
 /// and a context the hook's assertions record into.
@@ -136,10 +51,6 @@ auto run_hook(ktest::internal::SuiteHook const &hook) -> void {
     hook.invoke(context);
     HOST_PUBLISHED = nullptr;
 }
-
-/// What the fixture tests did, in order. Every step of every fixture in
-/// this file appends here, so a case can assert the exact sequence.
-std::vector<std::string> LOG;
 
 /// A selection that takes every record, for cases that hand a plan an
 /// explicit range instead of the run's filter.

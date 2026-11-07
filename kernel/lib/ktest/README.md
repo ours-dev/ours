@@ -13,11 +13,11 @@ the assertions, the selection grammar and the command.
     src/             the runner and the `ktest` command
     test/            host-side tests, built with googletest
 
-`filter.hpp`, `format.hpp`, `summary.hpp`, `fixture.hpp` and `environment.hpp`
-include no kernel header, so the host tests exercise them without a booted
-kernel — the fixture tests there drive the real macro expansions; `ktest.hpp`,
-`assertions.hpp` and `run_state.hpp` are the kernel-facing half and are
-compiled only for the kernel toolchain.
+`filter.hpp`, `format.hpp`, `summary.hpp`, `fixture.hpp`, `instantiate.hpp` and
+`environment.hpp` include no kernel header, so the host tests exercise them
+without a booted kernel — the fixture and instantiation tests there drive the
+real macro expansions; `ktest.hpp`, `assertions.hpp` and `run_state.hpp` are
+the kernel-facing half and are compiled only for the kernel toolchain.
 
 ## Writing a test
 
@@ -74,6 +74,34 @@ the failure semantics are in `fixture.hpp` and `environment.hpp`.
 literals compare as pointers, not characters; compare `std::string_view`s when
 the content is what the check is about. `EXPECT_OK` is the spelling for a
 `Status`, and prints the status through its `to_string`.
+
+One body run over many values takes `KTEST_VALUE_PARAM` and `KTEST_P`, and one
+body over many types takes `KTEST_TYPE_LIST` and `KTEST_T`. Each instantiation
+is its own test named `Suite.Name/0`, `Suite.Name/1`, ... — the runner lists,
+reports, times and filters them exactly like plain tests, and a filter token
+names one instantiation by its suffix:
+
+```cpp
+KTEST_VALUE_PARAM(MySuite, int, MyValues, 1, 42, 99);
+
+KTEST_P(MySuite, ReadsItsValue) {
+    EXPECT_GT(GetParam(), 0);
+}
+
+KTEST_TYPE_LIST(MyTypes, (ByteBox, IntBox));
+
+KTEST_T(MyTypes, SizeIsKnown) {
+    EXPECT_GE(sizeof(T), alignof(T));
+}
+```
+
+The body is a member of a class derived from the suite's param base (a
+`ktest::Fixture` for `KTEST_P`), so `GetParam()` is the current table value;
+`KTEST_F_P(MyFixture, Name)` composes it with a fixture, and the body sees the
+fixture's `SetUp`-built members beside `GetParam()`. The value table and the
+type list are constexpr declarations in the test file — nothing is allocated,
+and the records are parts of the image. The details and the naming rules are
+in `instantiate.hpp`.
 
 ## Running
 
