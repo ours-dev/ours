@@ -103,6 +103,28 @@ type list are constexpr declarations in the test file — nothing is allocated,
 and the records are parts of the image. The details and the naming rules are
 in `instantiate.hpp`.
 
+A test whose whole report is the kernel dying takes `KTEST_DEATH(Suite,
+Name)`: the body is expected to panic the kernel, and the panic is the
+verdict. Its record is the same `hsien::TestRecord` a `KTEST` declares, but
+in a section of its own — `.ktest.death` — that the live registry never
+walks, so `ktest all` and a filter run never run one and a normal run's
+SUMMARY does not count it. `ktest list` prints the death registry under
+`ktest: DEATH` lines after the live tests. A body that returns without
+panicking is reported FAILED: a death test that leaves the machine alive is
+what failed.
+
+```cpp
+KTEST_DEATH(KtestDeath, PanicsOnDemand) {
+    ours::panic("ktest: death test reached its panic");
+}
+```
+
+The machine does not come back from a passing death test, so the host drives
+one per fresh boot: `scripts/kshell_run.py ktest death` reads the list off
+one boot's `ktest list`, then reboots the image for each test, types its
+name, and judges the boot — the panic report that follows the runner's
+`ktest: DEATH` line passes, the command ending at its SUMMARY fails.
+
 ## Running
 
 On the dbg image's kernel shell:
@@ -113,6 +135,7 @@ ktest all             same
 ktest list            list the registry (also `ktest ?`)
 ktest <filter>        run the tests whose full name matches the filter
 ktest <selection> [name=value ...]   ... with options for the tests that read them
+ktest death [filter]  run the death tests; the first panic ends the machine
 ```
 
 A run may carry options after its selection: `name=value` tokens, or a bare

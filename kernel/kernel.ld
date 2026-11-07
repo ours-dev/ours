@@ -189,6 +189,17 @@ SECTIONS {
         KEEP(*(SORT_BY_ALIGNMENT(.ktest.suite_hooks)))
         PROVIDE_HIDDEN(__ktest_suite_hooks_end = .);
 
+        /* ktest death-test records (kernel/lib/ktest's KTEST_DEATH, the same
+         * hsien::TestRecord the live tests carry, in a section of its own).
+         * The live registry's walk never reads here, so `ktest all` and a
+         * filter run cannot run a death test; `ktest death <name>` does, and
+         * the panic it ends in is the verdict, which is why the host gives
+         * each one a fresh boot. KEEP for the same reason as the registries
+         * above: walking this range is the only reference to a record. */
+        PROVIDE_HIDDEN(__ktest_death_start = .);
+        KEEP(*(SORT_BY_ALIGNMENT(.ktest.death)))
+        PROVIDE_HIDDEN(__ktest_death_end = .);
+
         PROVIDE_HIDDEN(__gktl_counter_desc_start = .);
         *(.gktl.counter.descs*)
         PROVIDE_HIDDEN(__gktl_counter_desc_end = .);

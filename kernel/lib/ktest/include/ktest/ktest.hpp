@@ -49,4 +49,36 @@
 
 #define KTEST(suite, name) KTEST_DEFINE(suite, name, __LINE__)
 
+/// Defines one death test named `Suite.Name`: a body expected to panic the
+/// kernel, which is the verdict the host judges. The record is the same
+/// `hsien::TestRecord` a `KTEST` declares, but it lands in a second section,
+/// `.ktest.death`, that the live registry never walks — so `ktest all` and a
+/// filter run never run one, and a normal run's SUMMARY does not count them.
+/// `ktest death <name>` runs the ones its filter selects, and the first panic
+/// ends the machine, which is why the host drives one death test per fresh
+/// boot and reads the list off `ktest list`'s `ktest: DEATH` lines.
+///
+/// The expansion is the `KTEST` one: a static body, an adapter that binds the
+/// runtime's Context, and a record. Assertions inside are pointless but
+/// harmless — the body's whole report is the panic — and a body that returns
+/// without panicking is reported FAILED by the runner, since a death test
+/// that leaves the machine alive is what failed.
+#define KTEST_DEATH(suite, name) KTEST_DEATH_DEFINE(suite, name, __LINE__)
+
+#define KTEST_DEATH_DEFINE(suite_token, name_token, line_number)                                   \
+    static void KTEST_JOIN(ktest_death_body_, line_number)();                                      \
+    namespace {                                                                                    \
+    void KTEST_JOIN(ktest_death_invoke_, line_number)(::hsien::Context & context) {                \
+        ::ktest::internal::BindScope const scope(context);                                         \
+        KTEST_JOIN(ktest_death_body_, line_number)();                                              \
+    }                                                                                              \
+    KTEST_RECORD_SECTION(".ktest.death")                                                           \
+    FORCE_USED static ::hsien::TestRecord const KTEST_JOIN(ktest_death_record_, line_number) = {   \
+        .name = #suite_token "." #name_token,                                                      \
+        .invoke = KTEST_JOIN(ktest_death_invoke_, line_number),                                    \
+        .location = ::std::source_location::current(),                                             \
+    };                                                                                             \
+    }                                                                                              \
+    static void KTEST_JOIN(ktest_death_body_, line_number)()
+
 #endif // #ifndef KTEST_KTEST_HPP

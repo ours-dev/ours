@@ -34,6 +34,13 @@ namespace ktest {
 extern "C" internal::SuiteHook ktest_suite_hooks_start[] asm("__ktest_suite_hooks_start");
 extern "C" internal::SuiteHook ktest_suite_hooks_end[] asm("__ktest_suite_hooks_end");
 
+/// The death-test section (kernel/lib/ktest's KTEST_DEATH), the same
+/// hsien::TestRecord as the live tests but in a section of its own: the
+/// live walk below never touches it, so `ktest all` and a filter run
+/// cannot run a death test, and only the `death` selection reads here.
+extern "C" ::hsien::TestRecord ktest_death_start[] asm("__ktest_death_start");
+extern "C" ::hsien::TestRecord ktest_death_end[] asm("__ktest_death_end");
+
 namespace {
 
     /// The test the runner is executing, published for the adapter and the
@@ -167,6 +174,17 @@ namespace {
         }
     }
 
+    /// Prints the death registry after the live one, one `DEATH` line per
+    /// test. The heading is the host's handle on the list: `ktest all` never
+    /// runs these, so the host reads the names here and gives each one a
+    /// fresh boot of its own.
+    auto list_death_tests(hsien::TestRecord const *const begin, hsien::TestRecord const *const end)
+        -> void {
+        for (auto const *record = begin; record != end; ++record) {
+            log::info("ktest: DEATH {}", record->name);
+        }
+    }
+
     /// What one environment step needs: the reporter its assertions report
     /// through, and which half of the stage is running.
     struct EnvironmentFraming {
@@ -257,6 +275,56 @@ namespace {
                   std::string_view{SHUFFLE_TEXT});
     }
 
+    /// Runs the death tests |filter| selects. The first one that does its job
+    /// panics the machine, so the walk below never reaches a second test and
+    /// a full sweep is the host's job: one fresh boot per test, each given
+    /// `ktest death <name>`. None of the live run's machinery applies — no
+    /// environments, suite hooks or plan: a body that ends in a panic leaves
+    /// nothing behind to tear down, and the machine does not come back.
+    ///
+    /// A body that *returns* is the failure here, the reverse of a live
+    /// test's: the runner reports it FAILED, walks on to the next match and
+    /// ends at a SUMMARY the host reads as "did not die".
+    auto run_death_tests(std::string_view const filter) -> int {
+        auto const *const begin = ktest_death_start;
+        auto const *const end = ktest_death_end;
+        if (begin == end) {
+            log::error("ktest: ERROR no death tests are linked into this kernel");
+            return 1;
+        }
+        if (reject_duplicates(begin, end)) {
+            return 1;
+        }
+        auto reporter = hsien::Reporter{&report};
+        auto summary = Summary{};
+        for (auto const *record = begin; record != end; ++record) {
+            if (!matches_filter(record->name, filter)) {
+                continue;
+            }
+            // The line the host matches before it looks for the panic: it
+            // says the body was reached, so a report after it is the body's
+            // death and not some unrelated one.
+            log::info("ktest: DEATH {}", record->name);
+            internal::RunState state;
+            CURRENT_STATE.store(&state, std::memory_order_relaxed);
+            OWNER_THREAD.store(::ours::task::Thread::Current::get(), std::memory_order_relaxed);
+            hsien::run(record, record + 1, reporter);
+            CURRENT_STATE.store(nullptr, std::memory_order_relaxed);
+            OWNER_THREAD.store(nullptr, std::memory_order_relaxed);
+            log::error("ktest: FAILED {} (a death test must panic; it returned)", record->name);
+            summary.record(true, false);
+        }
+        if (summary.ran == 0) {
+            log::error("ktest: ERROR no death test matches \"{}\"", filter);
+            return 1;
+        }
+        log::info("ktest: SUMMARY ran={} passed={} failed={} skipped={}", summary.ran,
+                  summary.passed, summary.failed, summary.skipped);
+        // This line is only reachable when a body returned: a death run that
+        // reached its verdict is a failed one.
+        return 1;
+    }
+
     auto ktest_command(int const argc, char **const argv) -> int {
         if (RUNNING) {
             log::error("ktest: ERROR a test run is already in progress");
@@ -264,6 +332,17 @@ namespace {
         }
         RunnerScope const scope;
         OPTION_COUNT = 0;
+
+        // The death selection is its own command shape: one optional filter,
+        // no options, none of the live run's plan. It reads its own section,
+        // so a kernel without live tests still runs its death tests.
+        if (argc >= 2 && std::string_view{argv[1]} == "death") {
+            if (argc > 3) {
+                log::error("ktest: ERROR usage: ktest death [filter]");
+                return 1;
+            }
+            return run_death_tests(argc > 2 ? std::string_view{argv[2]} : std::string_view{});
+        }
 
         auto const *const begin = hsien::section_begin();
         auto const *const end = hsien::section_end();
@@ -299,14 +378,19 @@ namespace {
             }
             auto parsed = Option{};
             if (!parse_option(argv[i], parsed)) {
-                log::error("ktest: ERROR usage: ktest [all|list|?|<filter>] [name=value ...]");
+                log::error(
+                    "ktest: ERROR usage: ktest [all|list|?|death|<filter>] [name=value ...]");
                 return 1;
             }
             OPTIONS[OPTION_COUNT] = parsed;
             OPTION_COUNT += 1;
         }
         if (list_only) {
+            if (reject_duplicates(ktest_death_start, ktest_death_end)) {
+                return 1;
+            }
             list_tests(begin, end);
+            list_death_tests(ktest_death_start, ktest_death_end);
             return 0;
         }
         auto plan = RunPlan{};
@@ -543,4 +627,4 @@ auto option_usize(std::string_view const name, usize const fallback) -> usize {
 } // namespace ktest
 
 GKTL_COMMAND(Ktest, "ktest", ktest::ktest_command,
-             "run the kernel tests: ktest [all|list|?|<filter>]");
+             "run the kernel tests: ktest [all|list|?|death|<filter>]");

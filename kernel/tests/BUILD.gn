@@ -7,6 +7,14 @@ kernel_test("framework") {
   sources = [ "ktest_test.cpp" ]
 }
 
+# The death-test smoke: its record lands in `.ktest.death`, the section the
+# live registry never walks, so `ktest all` runs one test fewer than this file
+# declares. `ktest death KtestDeath.PanicsOnDemand` runs it, and it ends the
+# machine -- the host drives one death test per fresh boot.
+kernel_test("ktest_death") {
+  sources = [ "ktest_death_test.cpp" ]
+}
+
 kernel_test("ktest_fixture") {
   sources = [ "ktest_fixture_test.cpp" ]
 }
@@ -300,6 +308,7 @@ source_set("kernel.tests") {
     ":dpc",
     ":framework",
     ":irq_domain",
+    ":ktest_death",
     ":ktest_fixture",
     ":ktest_param",
     ":sampler_claim",
