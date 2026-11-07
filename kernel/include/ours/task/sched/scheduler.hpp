@@ -369,13 +369,6 @@ class Scheduler {
     TA_REQUIRES(get_lock())
     auto evaluate_next_thread(Thread *curr) -> Thread *;
 
-    /// The schedule of a discipline that must be implemented.
-    static auto schedule_of(Discipline discipline) -> ustl::Ref<Schedule>;
-
-    /// Looks up a discipline that may be unimplemented and returns an empty
-    /// reference in that case.
-    static auto find_schedule(Discipline discipline) -> ustl::Ref<Schedule>;
-
     /// [MP] Takes migrating_threads_lock only long enough to swap the list
     /// out, then works on the private copy unlocked. Same TA_EXCLUDES logic as
     /// do_unpark_thread(): the lock is acquired and released within.

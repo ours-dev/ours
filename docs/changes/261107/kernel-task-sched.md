@@ -48,3 +48,55 @@ None
 - Why is the run queue the source of the capability in the accessor's annotation?
 - How can an accessor call the erased function after the original `Ref` temporary has expired?
 - Which lookup should a caller use when some disciplines may be unimplemented?
+
+## Keep discipline lookup local to scheduler.cpp (2026-11-07)
+
+**Files**
+- `kernel/kernel/task/sched/scheduler.cpp` defines both lookups in its anonymous namespace and implements the two handover members.
+- `kernel/include/ours/task/sched/scheduler.hpp` and `kernel/include/ours/task/sched/schedule.hpp` drop the lookup declarations and the reference to the old member function.
+- `kernel/include/ours/task/sched/scheduler_inline.hpp` is removed and `kernel/kernel/task/sched/scheduler_pi.cpp` uses the existing Scheduler declarations.
+
+**Symptom**
+The two discipline lookup helpers were private members of Scheduler, with their declarations visible in every translation unit including the scheduler header.
+
+**Cause**
+The definitions of `put_prev_thread()` and `set_next_thread()` were in an inline header. Those definitions called `schedule_of()`, so the shared header needed its declaration even though callers in the PI implementation only needed the handover members.
+
+**Change**
+Before, the scheduler class declared the lookup.
+
+```cpp
+static auto schedule_of(Discipline discipline) -> ustl::Ref<Schedule>;
+```
+
+Now both lookups live beside the discipline objects in the anonymous namespace in `scheduler.cpp`. The handover definitions moved into the same file and retain `FORCE_INLINE` for the local scheduling path. The PI translation unit can call those members through their existing declarations.
+
+```cpp
+namespace {
+    auto schedule_of(Discipline const discipline) -> ustl::Ref<Schedule> {
+        auto const schedule = find_schedule(discipline);
+        DEBUG_ASSERT(schedule, "No schedule for discipline[{}]", std::to_underlying(discipline));
+        return schedule;
+    }
+}
+```
+
+**Reference**
+None, this project's own design. The erased discipline lookup belongs to the translation unit that selects and calls the discipline.
+
+**Verification**
+Changed-line clang-format and clang-tidy passed for the surviving C++ files. The Fair configuration passed syntax checks for `scheduler.cpp` and `scheduler_pi.cpp`. QEMU dbg passed 46 shell checks with 5 skipped. QEMU rel passed 44 shell checks with 8 skipped and reached all 7 required markers. The host suite passed all 183 tests.
+
+**Deliberately not done**
+None
+
+**How it was found**
+A search for `schedule_of` and `find_schedule` showed that the shared handover definitions were the only lookup callers outside `scheduler.cpp`.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why did the inline header need to see the lookup declaration?
+- Which names does the PI translation unit need after the move?
+- How does an anonymous namespace restrict lookup linkage?

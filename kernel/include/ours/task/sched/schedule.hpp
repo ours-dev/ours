@@ -75,7 +75,7 @@ USTL_ENABLE_ENUM_BITMASK(DequeueOptions);
 /// What the scheduler asks of a discipline, as an interface in the sense of
 /// ustl::Dyn: a discipline is a plain class that has these member functions,
 /// with no base class and no virtual function, and the Scheduler reaches it
-/// through a ustl::Ref<Schedule> (Scheduler::schedule_of()).
+/// through a ustl::Ref<Schedule>.
 ///
 /// Five methods are required, because no discipline can do without them:
 /// enqueue_thread, dequeue_thread, evaluate_next_thread, on_thread_tick and

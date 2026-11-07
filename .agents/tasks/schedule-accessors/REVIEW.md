@@ -10,6 +10,8 @@ Reviewed the Ref accessor and every migrated Schedule call against the C++ and s
 
 The named accessor checks the supplied queue's capability. The compiler rejected an enqueue call holding another queue's lock. The host test verifies that a saved accessor owns its borrowed handle even after the original Ref temporary expires.
 
+The follow-up moved both lookups to internal linkage and moved the two handover definitions without changing their bodies or lock declarations. Symbol checks on both built scheduler objects found no externally linked lookup and found both handover symbols for the PI caller. Both QEMU images and the host suite passed.
+
 ## High severity
 
 None

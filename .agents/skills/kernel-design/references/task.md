@@ -15,8 +15,9 @@
 - A discipline is a plain class with no base class and no virtual function,
   reached through a `ustl::Ref<Schedule>` (`ustl/dyn.hpp`; the user's call of
   2026-11-03, design in `.agents/tasks/sched-facade/DESIGN.md`).
-  `Scheduler::find_schedule(Discipline)` switches over the closed enum and
-  returns an empty reference for an unimplemented discipline (Deadline today).
+  Both lookup helpers live in the anonymous namespace in `scheduler.cpp`.
+  `find_schedule(Discipline)` switches over the closed enum and returns an
+  empty reference for an unimplemented discipline (Deadline today).
   `schedule_of()` requires an implemented discipline and asserts in debug
   builds. Five methods are required (`enqueue_thread`, `dequeue_thread`,
   `evaluate_next_thread`, `on_thread_tick`, `num_queued`); the others are
