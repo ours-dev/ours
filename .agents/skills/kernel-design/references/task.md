@@ -15,15 +15,17 @@
 - A discipline is a plain class with no base class and no virtual function,
   reached through a `ustl::Ref<Schedule>` (`ustl/dyn.hpp`; the user's call of
   2026-11-03, design in `.agents/tasks/sched-facade/DESIGN.md`).
-  `Scheduler::schedule_of(Discipline)` is a `switch` over the closed enum, and
-  a discipline that is not implemented (Deadline today) is an empty reference
-  that traps. Five methods are required (`enqueue_thread`, `dequeue_thread`,
+  `Scheduler::find_schedule(Discipline)` switches over the closed enum and
+  returns an empty reference for an unimplemented discipline (Deadline today).
+  `schedule_of()` requires an implemented discipline and asserts in debug
+  builds. Five methods are required (`enqueue_thread`, `dequeue_thread`,
   `evaluate_next_thread`, `on_thread_tick`, `num_queued`); the others are
-  optional and their defaults sit beside them in `schedule.hpp`. The thread-
-  safety analysis cannot follow an erased call, so `Scheduler::call_schedule<>`
-  carries `TA_REQUIRES(get_lock())` and a discipline declares
-  `TA_REQUIRES(rq.lock())` on its own functions. One discipline outranks
-  another if its enumerator is later (Deadline over Normal), not by address.
+  optional and their defaults sit beside them in `schedule.hpp`. The named
+  accessor (the user's call of 2026-11-07) carries the call-site lock
+  requirement. `TA_REQUIRES(first.lock())` in the declaration names the
+  supplied run queue, and concrete methods can use `TA_REQUIRES(rq.lock())`
+  to check their bodies. One discipline outranks another if its enumerator
+  is later (Deadline over Normal), not by address.
 - Work stealing is a pull by a CPU for itself, made by its idle thread before it
   halts (`Scheduler::steal_work_from()`, a member of the thief's scheduler,
   called from `IdleThread::run()`; the user's call of 2026-11-05) and callable

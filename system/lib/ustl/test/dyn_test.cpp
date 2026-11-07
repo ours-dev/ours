@@ -111,20 +111,20 @@ auto test_dispatch() -> void {
 
     assert(a.call<Bump>(5) == 5);
     assert(counter.count == 5); // the object itself changed, not a copy
-    assert(b.call<Bump>(7) == 107);
+    assert(b->bump(7) == 107);
     assert(bare.count == 107);
     assert(counter.count == 5); // and each reference reached its own object
 
-    assert(std::strcmp(a.call<Name>(), "counter") == 0);
-    assert(std::strcmp(b.call<Name>(), "bare") == 0);
+    assert(std::strcmp(a->name(), "counter") == 0);
+    assert(std::strcmp(b->name(), "bare") == 0);
 }
 
 auto test_result_is_a_reference() -> void {
     Counter counter;
     ustl::Ref<Counting> const ref = counter;
 
-    static_assert(std::is_same_v<decltype(ref.call<Peek>()), int &>);
-    ref.call<Peek>() = 42;
+    static_assert(std::is_same_v<decltype(ref->peek()), int &>);
+    ref->peek() = 42;
     assert(counter.count == 42);
 }
 
@@ -136,15 +136,15 @@ auto test_optional_methods() -> void {
 
     // The object's own member where it has one...
     a.call<Bump>(3);
-    a.call<Reset>();
+    a->reset();
     assert(counter.count == 0);
     assert(counter.resets == 1);
     assert(a.call<Limit>() == 10);
 
     // ...and the default where it has not, written once with the method.
-    b.call<Reset>();
+    b->reset();
     assert(bare.count == 100);
-    assert(b.call<Limit>() == -1);
+    assert(b->limit() == -1);
 }
 
 auto test_empty_and_rebinding() -> void {
@@ -166,6 +166,9 @@ auto test_empty_and_rebinding() -> void {
     ustl::Ref<Counting> const copy = ref;
     assert(copy.call<Bump>(1) == 102);
     assert(bare.count == 102);
+
+    auto const access = ustl::Ref<Counting>{bare}.operator->();
+    assert(access->bump(1) == 103);
 }
 
 // What an Own is tested with: a type that counts the objects alive, with the

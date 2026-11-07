@@ -26,7 +26,7 @@ inline auto Scheduler::put_prev_thread(Thread *prev) -> void {
     // "prefer where it last ran" was reading a field frozen at construction.
     ctx.m_last_cpu = m_run_queue.m_which_cpu;
 
-    call_schedule<PutPrevThread>(ctx.discipline(), m_run_queue, prev);
+    schedule_of(ctx.discipline())->put_prev_thread(m_run_queue, prev);
 }
 
 /// No precondition on m_run_queue.m_curr_thread here. This used to assert that it
@@ -52,7 +52,7 @@ inline auto Scheduler::set_next_thread(Thread *next) -> void {
     // enqueue_thread() never sees.
     ctx.m_curr_cpu = m_run_queue.m_which_cpu;
 
-    call_schedule<SetNextThread>(ctx.discipline(), m_run_queue, next);
+    schedule_of(ctx.discipline())->set_next_thread(m_run_queue, next);
 
     // The slice the discipline has just started ends at this CPU's preemption
     // deadline, so it is set on every pick, the running thread picked again

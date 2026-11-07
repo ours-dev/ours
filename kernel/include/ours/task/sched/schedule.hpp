@@ -83,32 +83,28 @@ USTL_ENABLE_ENUM_BITMASK(DequeueOptions);
 /// answer written beside the method below -- nothing, or a status -- once,
 /// where the method is declared, instead of in every discipline.
 ///
-/// Which lock an entry point is called under is on the discipline's own
-/// declaration: `TA_REQUIRES(rq.lock())` on those called under the run queue
-/// lock. The analysis does not check a call through the erased reference, so the
-/// check is made one step before it, in Scheduler::call_schedule(), which
-/// requires the lock itself. Every parameter named |rq| is the run queue whose
-/// lock that is: a clang thread-safety attribute names an expression, and there
-/// is no expression for an unnamed parameter.
+/// The named accessors check the caller's lock before the erased call. In their
+/// annotations |first| is the RunQueue argument. A discipline can also declare
+/// `TA_REQUIRES(rq.lock())` on its implementation to check the body.
 
 /// [Required] Insert |thread| to runqueue.
 ///
 /// Return Status::Ok if enqueue action really happened.
-USTL_DYN_MEMBER(EnqueueThread, enqueue_thread);
+USTL_DYN_MEMBER(EnqueueThread, enqueue_thread, TA_REQUIRES(first.lock()));
 
 /// [Required] Remove |thread| from runqueue.
 ///
 /// Return Status::Ok if dequeue action really happened. Status::Delayed if delay
 /// to dequeue.
-USTL_DYN_MEMBER(DequeueThread, dequeue_thread);
+USTL_DYN_MEMBER(DequeueThread, dequeue_thread, TA_REQUIRES(first.lock()));
 
 /// [Required] The thread that should run next on |rq|'s CPU, or null if this
 /// discipline has none.
-USTL_DYN_MEMBER(EvaluateNextThread, evaluate_next_thread);
+USTL_DYN_MEMBER(EvaluateNextThread, evaluate_next_thread, TA_REQUIRES(first.lock()));
 
 /// [Required] The scheduling clock ticked while |curr| ran; |queued| says
 /// whether it is on the run queue.
-USTL_DYN_MEMBER(OnThreadTick, on_thread_tick);
+USTL_DYN_MEMBER(OnThreadTick, on_thread_tick, TA_REQUIRES(first.lock()));
 
 /// [Required] Number of threads queued on |rq|'s CPU for this discipline.
 ///
@@ -118,30 +114,32 @@ USTL_DYN_MEMBER(OnThreadTick, on_thread_tick);
 /// precisely the assumption that broke every cross-CPU wakeup, since
 /// Scheduler::do_unpark_thread() runs on the waker and manipulates the
 /// target's queues.
-USTL_DYN_MEMBER(NumQueued, num_queued);
+USTL_DYN_MEMBER(NumQueued, num_queued, TA_REQUIRES(first.lock()));
 
 /// [Optional, does nothing] |curr| yields the CPU.
-USTL_DYN_MEMBER_OR(YieldThread, yield_thread, ustl::dyn::Ignore{});
+USTL_DYN_MEMBER_OR(YieldThread, yield_thread, ustl::dyn::Ignore{}, TA_REQUIRES(first.lock()));
 
 /// [Optional, Status::NotSupported] |curr| yields to |next| in particular.
-USTL_DYN_MEMBER_OR(YieldToThread, yield_to_thread, ustl::dyn::Returns<Status::NotSupported>{});
+USTL_DYN_MEMBER_OR(YieldToThread, yield_to_thread, ustl::dyn::Returns<Status::NotSupported>{},
+                   TA_REQUIRES(first.lock()));
 
 /// [Optional, Status::Unimplemented] Evaluate whether preempt the thread |curr|
 /// with given |thread|. Return Status::Ok if able to preempt.
-USTL_DYN_MEMBER_OR(UnparkPreempt, unpark_preempt, ustl::dyn::Returns<Status::Unimplemented>{});
+USTL_DYN_MEMBER_OR(UnparkPreempt, unpark_preempt, ustl::dyn::Returns<Status::Unimplemented>{},
+                   TA_REQUIRES(first.lock()));
 
 /// [Optional, does nothing] |prev| stops being the running thread.
-USTL_DYN_MEMBER_OR(PutPrevThread, put_prev_thread, ustl::dyn::Ignore{});
+USTL_DYN_MEMBER_OR(PutPrevThread, put_prev_thread, ustl::dyn::Ignore{}, TA_REQUIRES(first.lock()));
 
 /// [Optional, does nothing] |next| becomes the running thread.
-USTL_DYN_MEMBER_OR(SetNextThread, set_next_thread, ustl::dyn::Ignore{});
+USTL_DYN_MEMBER_OR(SetNextThread, set_next_thread, ustl::dyn::Ignore{}, TA_REQUIRES(first.lock()));
 
 /// [Optional, does nothing] Update the scheduluing data of thread |curr|.
-USTL_DYN_MEMBER_OR(UpdateThread, update_thread, ustl::dyn::Ignore{});
+USTL_DYN_MEMBER_OR(UpdateThread, update_thread, ustl::dyn::Ignore{}, TA_REQUIRES(first.lock()));
 
 /// [Optional, Status::Unimplemented] Replace the base profile of |thread|.
 USTL_DYN_MEMBER_OR(OverrideThreadBaseProfile, override_thread_base_profile,
-                   ustl::dyn::Returns<Status::Unimplemented>{});
+                   ustl::dyn::Returns<Status::Unimplemented>{}, TA_REQUIRES(first.lock()));
 
 /// [Optional, does nothing] |thread| was created, or is the thread a CPU booted
 /// on, and belongs to this discipline.
@@ -151,7 +149,8 @@ USTL_DYN_MEMBER_OR(OnThreadInit, on_thread_init, ustl::dyn::Ignore{});
 USTL_DYN_MEMBER_OR(OnThreadDead, on_thread_dead, ustl::dyn::Ignore{});
 
 /// [Optional, does nothing] |thread| was just woken and enqueued.
-USTL_DYN_MEMBER_OR(OnThreadUnpark, on_thread_unpark, ustl::dyn::Ignore{});
+USTL_DYN_MEMBER_OR(OnThreadUnpark, on_thread_unpark, ustl::dyn::Ignore{},
+                   TA_REQUIRES(first.lock()));
 
 /// [Optional, INVALID_CPU_NUM] Attempts to assign a target CPU on which |thread|
 /// will run, among |candidates|. INVALID_CPU_NUM if it has no preference.

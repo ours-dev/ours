@@ -369,36 +369,12 @@ class Scheduler {
     TA_REQUIRES(get_lock())
     auto evaluate_next_thread(Thread *curr) -> Thread *;
 
-    /// The schedule that implements |discipline|, or an empty reference where no
-    /// discipline is implemented (Deadline today). The set of disciplines is
-    /// closed -- it is the enumerators of Discipline -- so this is a plain
-    /// function over them, and adding one is an enumerator, a case and a class.
+    /// The schedule of a discipline that must be implemented.
     static auto schedule_of(Discipline discipline) -> ustl::Ref<Schedule>;
 
-    /// Calls the method |Dispatch| of the schedule of |discipline|, under this
-    /// run queue's lock.
-    ///
-    /// The one place the analysis is asked about the erased call: it does not
-    /// see through a ustl::Ref, so this requires the lock itself, and every
-    /// caller has to show it holds it. A discipline's own functions declare the
-    /// same requirement (`TA_REQUIRES(rq.lock())`), which checks their bodies.
-    template <typename Dispatch, typename... Args>
-    TA_REQUIRES(get_lock())
-    auto call_schedule(Discipline const discipline, Args &&...args) -> decltype(auto) {
-        auto const schedule = schedule_of(discipline);
-        DEBUG_ASSERT(schedule, "No schedule for discipline[{}]", std::to_underlying(discipline));
-        return schedule.template call<Dispatch>(std::forward<Args>(args)...);
-    }
-
-    /// The same for a method that is not called under the run queue lock, and
-    /// from a context that has no Scheduler (select_target_cpu()).
-    template <typename Dispatch, typename... Args>
-    static auto call_schedule_unlocked(Discipline const discipline, Args &&...args)
-        -> decltype(auto) {
-        auto const schedule = schedule_of(discipline);
-        DEBUG_ASSERT(schedule, "No schedule for discipline[{}]", std::to_underlying(discipline));
-        return schedule.template call<Dispatch>(std::forward<Args>(args)...);
-    }
+    /// Looks up a discipline that may be unimplemented and returns an empty
+    /// reference in that case.
+    static auto find_schedule(Discipline discipline) -> ustl::Ref<Schedule>;
 
     /// [MP] Takes migrating_threads_lock only long enough to swap the list
     /// out, then works on the private copy unlocked. Same TA_EXCLUDES logic as
