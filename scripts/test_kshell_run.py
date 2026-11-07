@@ -141,12 +141,5 @@ class JudgeRun(unittest.TestCase):
         self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest all", lines, 1))
 
 
-class ExistingVerdict(unittest.TestCase):
-    def test_a_command_test_still_needs_its_ok_line(self):
-        lines = ["   [.. info] samplerclaim.test: ok -- 3 checks"]
-        self.assertTrue(quiet(kshell_run.judge, "samplerclaim.test", lines))
-        self.assertFalse(quiet(kshell_run.judge, "samplerclaim.test", []))
-
-
 if __name__ == "__main__":
     unittest.main()

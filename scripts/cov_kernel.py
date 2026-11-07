@@ -77,7 +77,6 @@ FNV_OFFSET_BASIS = 0xcbf29ce484222325
 FNV_PRIME = 0x100000001b3
 MASK_64 = (1 << 64) - 1
 
-TEST_COMMAND = re.compile(r'GKTL_COMMAND\(\s*\w+,\s*"([^"]+\.test)"')
 # One line of the test interface's `ktest list` (kernel/lib/ktest/src/runner.cpp).
 KTEST_TEST = re.compile(r"ktest: TEST (\S+)")
 
@@ -154,17 +153,6 @@ def assemble(size: int, chunk: int, pieces: dict[int, bytes]) -> Optional[bytes]
 def ktest_commands(text: str) -> list[str]:
     """The commands that run the tests a `ktest list` printed, one each."""
     return [f"ktest {name}" for name in KTEST_TEST.findall(text)]
-
-
-def test_commands(root: Path) -> list[str]:
-    """The `*.test` console commands that have not migrated to the test
-    interface, from where they are registered."""
-    names: list[str] = []
-    for path in sorted((root / "kernel" / "commands").glob("*.cpp")):
-        for name in TEST_COMMAND.findall(path.read_text()):
-            if name not in names:
-                names.append(name)
-    return names
 
 
 def ensure_configured(root: Path, out: Path) -> None:
@@ -361,7 +349,7 @@ def main(argv: list[str]) -> int:
         logdir = log_directory("ours-covkernel", out.resolve())
         logdir.mkdir(parents=True, exist_ok=True)
         discovered = [] if args.no_tests else discover_ktest_commands(out, logdir)
-        commands = discovered + ([] if args.no_tests else test_commands(ROOT))
+        commands = discovered
         commands += args.command
         say(f"boot       dbg image, then {len(commands)} command(s)")
 

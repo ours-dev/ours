@@ -178,3 +178,40 @@ None.
 - Where did port.test's ROUNDS argument go, and what guards an explicit 0?
 - Why is threadjoin's N default 2000, and where is that grounded?
 - What does idle.cpp still own after the extraction, and why does idle_test.cpp duplicate its helpers?
+
+## The acceptance: the legacy verdict paths come off (2026-11-07)
+
+**Files**
+- `scripts/kshell_run.py` — the `<name>: ok` rule and its judge branch are gone; a command's verdict is the ktest grammar or the prompt.
+- `scripts/cov_kernel.py` — the GKTL_COMMAND scrape (`TEST_COMMAND`, `test_commands()`) and its call are gone; every test is discovered from `ktest list`.
+- `scripts/test_kshell_run.py` — the one case that pinned the deleted rule goes; the other 19 stand.
+- `docs/repairs/261105/kernel-test-framework.md` — item 1 (the migration) closed; 2 (alloc-failure false failure) and 3 (the stale hang report) renumber and stay: 3's subject is the message a migrated test's OLD name now reads as, which the acceptance's own change created and a friendlier verdict message should fix.
+
+**Symptom**
+Latent: two verdict paths for kernel tests, one per vintage.
+
+**Cause**
+The migration was incremental by design; the legacy paths were the price of shipping the interface first.
+
+**Change**
+Deletion only: the rules and the scrape describe commands that no longer exist. `cov_kernel.py` re-run on this tree enumerates all 61 tests from `ktest list` and completes (70.8% lines kernel-wide); `test_kshell_run.py` 19/19; `ktest all` `ran=61 passed=59 failed=0 skipped=2`.
+
+**Reference**
+The acceptance in docs/repairs/261105/kernel-test-framework.md, as the migration plan's last line wrote it.
+
+**Verification**
+As above; `boot_check.py` dbg 46/5/0, rel 44/8/0 7/7 required, host-tests 183/0 (the kshell changes ride the host suite).
+
+**Deliberately not done**
+Repair item 1 (alloc-failure expected-diagnostics) -- it needs an interface decision and predates this migration's scope.
+
+**How it was found**
+The runner's own host suite caught the deletion: its case for the old rule failed the moment the rule was gone, which is the test doing its job.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is a command that prints nothing now judged ok, and what makes that safe?
+- Where does cov_kernel learn the test names it runs?
+- Which repair items survive, and why?
