@@ -21,7 +21,7 @@
 #include <ours/task/config.hpp>
 #include <ours/task/owned_wait_queue.hpp>
 #include <ours/task/preemption_state.hpp>
-#include <ours/task/sched/sched_entity.hpp>
+#include <ours/task/sched/scheduler_state.hpp>
 #include <ours/task/types.hpp>
 #include <ours/task/wait_queue.hpp>
 
@@ -348,12 +348,12 @@ namespace task {
 
         FORCE_INLINE
         auto last_cpu() const -> CpuNum {
-            return m_scheduling_entity.last_cpu();
+            return m_scheduler_state.last_cpu();
         }
 
         FORCE_INLINE
         auto curr_cpu() const -> CpuNum {
-            return m_scheduling_entity.curr_cpu();
+            return m_scheduler_state.curr_cpu();
         }
 
         FORCE_INLINE
@@ -486,8 +486,8 @@ namespace task {
         static auto switch_thread(Self *curr, Self *next) -> void;
 
         FORCE_INLINE
-        static auto of(sched::SchedEntity *se) -> Self * {
-            return ustl::mem::container_of(se, &Self::m_scheduling_entity);
+        static auto of(sched::SchedulerState *se) -> Self * {
+            return ustl::mem::container_of(se, &Self::m_scheduler_state);
         }
 
         FORCE_INLINE
@@ -505,15 +505,20 @@ namespace task {
         ~Thread() = default;
 
         FORCE_INLINE
-        auto scheduling_entity() -> sched::SchedEntity & {
-            return m_scheduling_entity;
+        auto scheduler_state() -> sched::SchedulerState & {
+            return m_scheduler_state;
         }
 
-        /// Migration shim for `fair.*`; see sched/context.hpp for why it is
-        /// here and when to delete it. Nothing else calls this name.
+        /// The accessor still used by the Fair discipline.
         FORCE_INLINE
-        auto scheduling_context() -> sched::SchedEntity & {
-            return scheduling_entity();
+        auto scheduling_entity() -> sched::SchedulerState & {
+            return scheduler_state();
+        }
+
+        /// Compatibility accessor for the older scheduling context name.
+        FORCE_INLINE
+        auto scheduling_context() -> sched::SchedulerState & {
+            return scheduler_state();
         }
 
         FORCE_INLINE
@@ -663,7 +668,7 @@ namespace task {
         /// which no scheduler path satisfied, so it produced 33 warnings per
         /// translation unit and protected nothing. The gap can be closed only
         /// at run time, by asserting that the runqueue's lock is held.
-        sched::SchedEntity m_scheduling_entity;
+        sched::SchedulerState m_scheduler_state;
         PreemptionState m_preemption_state;
 
         /// Self-synchronising: the exit side writes the retcode under the PI
@@ -838,8 +843,8 @@ namespace task {
         }
 
         FORCE_INLINE
-        static auto scheduling_entity() -> sched::SchedEntity & {
-            return Thread::Current::get()->scheduling_entity();
+        static auto scheduler_state() -> sched::SchedulerState & {
+            return Thread::Current::get()->scheduler_state();
         }
 
         FORCE_INLINE

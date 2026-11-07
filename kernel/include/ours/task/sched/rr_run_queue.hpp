@@ -4,7 +4,7 @@
 #define OURS_TASK_SCHED_RR_RUN_QUEUE_HPP 1
 
 #include <ours/compiler.hpp>
-#include <ours/task/sched/sched_entity.hpp>
+#include <ours/task/sched/scheduler_state.hpp>
 
 #include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/list.hpp>
@@ -15,8 +15,8 @@ namespace ours::task::sched {
 /// Held by RunQueue -- the per-CPU object a discipline is handed -- so that
 /// RoundRobin reaches it straight off its own parameter instead of
 /// recovering the whole Scheduler to find it. It is intrusive
-/// through SchedEntity::m_rr_hook, a list hook distinct from the set hook Fair's
-/// RunQueue uses: a SchedEntity is never on both queues, but the two containers
+/// through SchedulerState::m_rr_hook, a list hook distinct from the set hook Fair's
+/// RunQueue uses: a SchedulerState is never on both queues, but the two containers
 /// need different node shapes.
 class RrRunQueue {
     using Self = RrRunQueue;
@@ -28,12 +28,12 @@ class RrRunQueue {
     }
 
     /// Runnable contexts in arrival order; the head is the next to run.
-    auto enqueue(SchedEntity &ctx) -> void;
-    auto dequeue(SchedEntity &ctx) -> void;
+    auto enqueue(SchedulerState &ctx) -> void;
+    auto dequeue(SchedulerState &ctx) -> void;
 
     /// The context at the head of the FIFO, or null when it is empty.
     [[nodiscard]]
-    auto peek() -> SchedEntity *;
+    auto peek() -> SchedulerState *;
 
     [[nodiscard]]
     FORCE_INLINE
@@ -54,7 +54,7 @@ class RrRunQueue {
     }
 
   private:
-    using Queue = ustl::collections::intrusive::List<SchedEntity, SchedEntity::RrQueueOption>;
+    using Queue = ustl::collections::intrusive::List<SchedulerState, SchedulerState::RrQueueOption>;
 
     gktl::Canary m_canary{this};
     Queue m_queue;

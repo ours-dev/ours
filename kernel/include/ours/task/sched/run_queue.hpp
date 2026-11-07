@@ -13,7 +13,7 @@
 #else
 #include <ours/task/sched/rr_run_queue.hpp>
 #endif
-#include <ours/task/sched/sched_entity.hpp>
+#include <ours/task/sched/scheduler_state.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ours/task/thread.hpp>
 
@@ -250,7 +250,7 @@ class RunQueue {
     template <typename Visit>
     auto for_each_thread(Visit &&visit) -> void {
         m_normal_queue.for_each(
-            [&visit](SchedEntity &ctx) -> bool { return visit(*Thread::of(&ctx)); });
+            [&visit](SchedulerState &ctx) -> bool { return visit(*Thread::of(&ctx)); });
     }
 
     CpuNum m_which_cpu;

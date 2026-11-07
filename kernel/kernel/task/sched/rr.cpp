@@ -28,8 +28,8 @@ namespace {
 /// set_next_thread() so that a thread charged mid-slice is not charged for the
 /// same interval twice.
 ///
-/// A member rather than a file-local helper because it reads SchedEntity's private
-/// accounting fields and Thread's private scheduling_entity(); the friendship
+/// A member rather than a file-local helper because it reads SchedulerState's private
+/// accounting fields and Thread's private scheduler_state(); the friendship
 /// both classes extend to RoundRobin does not reach a free function.
 auto RoundRobin::charge(RunQueue &rq, Thread *curr) -> void {
     auto const elapsed = rq.charge_current();
@@ -37,20 +37,20 @@ auto RoundRobin::charge(RunQueue &rq, Thread *curr) -> void {
         return;
     }
 
-    curr->scheduling_entity().m_exec_runtime += elapsed;
+    curr->scheduler_state().m_exec_runtime += elapsed;
 }
 
-auto RrRunQueue::enqueue(SchedEntity &ctx) -> void {
+auto RrRunQueue::enqueue(SchedulerState &ctx) -> void {
     m_queue.push_back(ctx);
     m_num_queued += 1;
 }
 
-auto RrRunQueue::dequeue(SchedEntity &ctx) -> void {
+auto RrRunQueue::dequeue(SchedulerState &ctx) -> void {
     m_queue.erase(ctx);
     m_num_queued -= 1;
 }
 
-auto RrRunQueue::peek() -> SchedEntity * {
+auto RrRunQueue::peek() -> SchedulerState * {
     auto head = m_queue.front();
     return head ? &head.value() : nullptr;
 }
@@ -59,7 +59,7 @@ auto RoundRobin::enqueue_thread(RunQueue &rq, Thread *thread, EnqueueOptions) ->
     auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
-    auto &ctx = thread->scheduling_entity();
+    auto &ctx = thread->scheduler_state();
 
     // The running thread is not on the FIFO -- set_next_thread() took it off
     // -- so an enqueue of it is a request to re-queue, which put_prev_thread()
@@ -77,7 +77,7 @@ auto RoundRobin::dequeue_thread(RunQueue &rq, Thread *thread, DequeueOptions) ->
     auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
-    auto &ctx = thread->scheduling_entity();
+    auto &ctx = thread->scheduler_state();
 
     // Same asymmetry as enqueue: the running thread already left the FIFO at
     // set_next_thread(), so the only thing to record is that it is no longer
@@ -108,7 +108,7 @@ auto RoundRobin::put_prev_thread(RunQueue &rq, Thread *prev) -> void {
     auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
-    auto &ctx = prev->scheduling_entity();
+    auto &ctx = prev->scheduler_state();
     if (!ctx.runqueue_state().is_active()) {
         // Parked, sleeping, dead: dequeue_thread() already recorded it.
         return;
@@ -120,7 +120,7 @@ auto RoundRobin::put_prev_thread(RunQueue &rq, Thread *prev) -> void {
 
 /// |next| is about to run. It leaves the FIFO -- the running thread is not a
 /// member, see enqueue_thread() -- and its slice starts now: prev_runtime is
-/// the baseline SchedEntity::remaining_slice() measures from, so the whole
+/// the baseline SchedulerState::remaining_slice() measures from, so the whole
 /// slice is left and the scheduler sets this CPU's preemption deadline a slice
 /// from now; curr_started_time is where charge() measures elapsed time from.
 /// The running thread picked again, as the one runnable thread is when its
@@ -129,7 +129,7 @@ auto RoundRobin::set_next_thread(RunQueue &rq, Thread *next) -> void {
     auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
-    auto &ctx = next->scheduling_entity();
+    auto &ctx = next->scheduler_state();
     if (ctx.runqueue_state().is_active()) {
         queue.dequeue(ctx);
     }
@@ -155,7 +155,7 @@ auto RoundRobin::yield_thread(RunQueue &rq, Thread *curr) -> void {
 auto RoundRobin::yield_to_thread(RunQueue &rq, Thread *curr, Thread *next) -> Status {
     rq.queue<Discipline::Normal>().verify();
 
-    if (!next->scheduling_entity().runqueue_state().is_active()) {
+    if (!next->scheduler_state().runqueue_state().is_active()) {
         return Status::BadState;
     }
 
@@ -168,7 +168,7 @@ auto RoundRobin::yield_to_thread(RunQueue &rq, Thread *curr, Thread *next) -> St
 /// in this discipline ever scales it. Timeslice::length() would otherwise read
 /// a zero base, and every pick would set the CPU's preemption deadline to now.
 auto RoundRobin::on_thread_init(RunQueue &rq, Thread *thread) -> void {
-    auto &timeslice = thread->scheduling_entity().m_timeslice;
+    auto &timeslice = thread->scheduler_state().m_timeslice;
     if (!timeslice.is_custom_timeslice()) {
         timeslice.m_base = static_cast<u32>(scheduling_period().raw());
     }

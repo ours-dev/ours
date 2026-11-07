@@ -4,8 +4,8 @@
 #define OURS_TASK_SCHED_RR_HPP 1
 
 #include <ours/task/sched/rr_run_queue.hpp>
-#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/schedule.hpp>
+#include <ours/task/sched/scheduler_state.hpp>
 
 #include <gktl/canary.hpp>
 

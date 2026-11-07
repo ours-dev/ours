@@ -21,7 +21,7 @@ class Scheduler::Pi {
 template <typename Upstream, typename UpdateDynamicParams>
 auto Scheduler::Pi::common(Upstream &upstream, Thread &thread,
                            UpdateDynamicParams update_dynamic_params) -> void {
-    auto &context = thread.scheduling_entity();
+    auto &context = thread.scheduler_state();
     auto &profile = context.m_profile;
 
     // Is the thread in active state?

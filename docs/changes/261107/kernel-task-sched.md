@@ -240,3 +240,53 @@ None
 - Which operation records entry into the idle thread?
 - Why does completion fetch the scheduler of the CPU executing it?
 - How does a first-run thread reach the completion helper?
+
+## Name the per-thread scheduling state SchedulerState (2026-11-07)
+
+**Files**
+- `kernel/include/ours/task/sched/scheduler_state.hpp` defines the per-thread scheduling state.
+- `kernel/include/ours/task/thread.hpp` and `kernel/kernel/task/thread.cpp` give the field and its accessors the same spelling.
+- `kernel/include/ours/task/sched/rr.hpp`, `rr_run_queue.hpp`, `run_queue.hpp` and `scheduler.hpp` use the canonical type and header.
+- `kernel/kernel/task/sched/rr.cpp`, `scheduler.cpp` and `scheduler_pi.cpp`, plus `kernel/kernel/task/wait_queue.cpp` and `owned_wait_queue.cpp`, use the renamed state.
+- `kernel/include/ours/task/sched/sched_entity.hpp` and `context.hpp` forward older type spellings to the canonical definition.
+
+**Symptom**
+The thread's two state objects used different naming patterns. The waiting state was `WaiterState` and the scheduler's per-thread state was `SchedEntity`.
+
+**Cause**
+The latter spelling described the object's use as a queue entry. The object also holds the thread's affinity, profile, CPU residency, accounting and discipline state. The name needs to cover those responsibilities together.
+
+**Change**
+Before:
+
+```cpp
+sched::SchedEntity m_scheduling_entity;
+```
+
+After:
+
+```cpp
+sched::SchedulerState m_scheduler_state;
+```
+
+The type now lives in `sched/scheduler_state.hpp` and callers use `scheduler_state()`. Fair can compile through the old header alias and the private forwarding accessor. The prior `Context` spelling also resolves to the same type.
+
+**Reference**
+Zircon embeds `SchedulerState` and `WaitQueueCollection::ThreadState` in `Thread` in `zircon/kernel/include/kernel/thread.h`. Ours uses `WaiterState` for its waiting state.
+
+**Verification**
+Changed-line clang-format passed and clang-tidy reported only existing diagnostics. A byte comparison after normalizing the type name and header guard matched the previous state definition. Both QEMU images booted in the RR and Fair configurations. In each configuration, dbg passed 46 shell checks, rel passed 44 and reached all 7 required markers, and all 183 host tests passed.
+
+**Deliberately not done**
+None
+
+**How it was found**
+The user compared the per-thread waiting state and scheduler state and chose to align their names.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Which facts live in `SchedulerState` beyond queue membership?
+- How does the older Fair spelling reach the canonical type?
+- How does the scheduler recover the owning thread from its embedded state?

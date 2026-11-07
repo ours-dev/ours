@@ -67,9 +67,9 @@
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/sched/domains.hpp>
 #include <ours/task/sched/features.hpp>
-#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/schedule.hpp>
 #include <ours/task/sched/scheduler.hpp>
+#include <ours/task/sched/scheduler_state.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer_queue.hpp>
@@ -201,7 +201,7 @@ auto Scheduler::trampoline_handoff() -> void {
 
 auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNum target_cpu)
     -> void {
-    auto &context = thread->scheduling_entity();
+    auto &context = thread->scheduler_state();
 
     {
         Guard<SpinLock, IrqSave> thread_guard{thread->get_pi_lock()};
@@ -250,7 +250,7 @@ auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNu
         // The discipline is read off the thread and the schedule looked up by
         // it, so nothing binds one to the other first and there is no pointer
         // to call through before that happened.
-        schedule_of(thread->scheduling_entity().discipline())
+        schedule_of(thread->scheduler_state().discipline())
             ->on_thread_init(self.m_run_queue, thread);
     }
 }
@@ -261,7 +261,7 @@ auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
     auto &self = Scheduler::Current::get(cpunum);
     self.m_canary.verify<Self>();
 
-    auto &context = thread->scheduling_entity();
+    auto &context = thread->scheduler_state();
     Guard<SpinLock, IrqSave> thread_guard{thread->get_pi_lock()};
 
     // The thread is where it is and stays there: hard-pinned to |cpunum| the
@@ -291,7 +291,7 @@ auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
 
 auto Scheduler::on_thread_dead(Thread *thread) -> void {
     [[maybe_unused]]
-    auto &ctx = thread->scheduling_entity();
+    auto &ctx = thread->scheduler_state();
     // schedule_of(ctx.discipline())->on_thread_dead(m_run_queue, thread);
 }
 
@@ -412,7 +412,7 @@ auto Scheduler::init(CpuNum cpunum) -> void {
 
 auto Scheduler::assert_thread_in_scheduler(Thread *thread) -> void {
     [[maybe_unused]]
-    auto &ctx = thread->scheduling_entity();
+    auto &ctx = thread->scheduler_state();
 
     DEBUG_ASSERT(ctx.curr_cpu() == m_run_queue.m_which_cpu);
 }
@@ -452,7 +452,7 @@ auto Scheduler::set_cpu_affinity(Thread *thread, CpuMask const &affinity, CpuAff
     -> void {
     DEBUG_ASSERT(CpuAffinity::Kind::Soft == kind || CpuAffinity::Kind::Hard == kind);
 
-    auto &so = thread->scheduling_entity();
+    auto &so = thread->scheduler_state();
     switch (kind) {
         using enum CpuAffinity::Kind;
         case Hard:
@@ -475,7 +475,7 @@ auto Scheduler::set_cpu_affinity(Thread *thread, CpuMask const &affinity, CpuAff
 
 auto Scheduler::migrate_thread(Thread *thread) -> void {
     [[maybe_unused]]
-    auto &ctx = thread->scheduling_entity();
+    auto &ctx = thread->scheduler_state();
 
     if (thread->is_state_ready()) {
         // Dequeue from the scheduler which it is on and Enqueue
@@ -509,7 +509,7 @@ auto Scheduler::process_migrating_threads(SchedTime now) -> void {
 }
 
 auto Scheduler::finish_transition(Thread *thread) -> void {
-    auto &rqs = thread->scheduling_entity().runqueue_state();
+    auto &rqs = thread->scheduler_state().runqueue_state();
     DEBUG_ASSERT(rqs.is_transient_state_migrating());
 
     using TransientState = RunQueueState::TransientState;
@@ -528,7 +528,7 @@ auto Scheduler::put_prev_thread(Thread *prev) -> void {
         prev->set_state_ready();
     }
 
-    auto &ctx = prev->scheduling_entity();
+    auto &ctx = prev->scheduler_state();
 
     // It ran here, so this is where it last ran. Nothing wrote m_last_cpu
     // except init_first_thread(), which only ever runs for a CPU's idler and
@@ -554,7 +554,7 @@ auto Scheduler::set_next_thread(Thread *next) -> void {
     }
     next->set_state_running();
 
-    auto &ctx = next->scheduling_entity();
+    auto &ctx = next->scheduler_state();
 
     // The running thread belongs to this CPU. It is not enough to record this
     // at enqueue: a discipline takes the thread it is about to run *off* its
@@ -606,7 +606,7 @@ auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
         return nominated;
     }
 
-    if (auto const discipline = curr->scheduling_entity().discipline();
+    if (auto const discipline = curr->scheduler_state().discipline();
         discipline == Discipline::Normal &&
         schedule_of(discipline)->num_queued(m_run_queue) == m_run_queue.m_num_queued_threads) {
         if (auto *const next = schedule_of(discipline)->evaluate_next_thread(m_run_queue, curr);
@@ -703,7 +703,7 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     auto const is_mode_preempt = Mode::Preempt == mode;
     auto const is_involuntary = is_mode_preempt || curr->is_state_running();
 
-    auto &so = curr->scheduling_entity();
+    auto &so = curr->scheduler_state();
     auto &rqs = so.runqueue_state();
 
     rqs.set_transient_state_rescheduling();
@@ -766,7 +766,7 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
         return;
     }
 
-    curr->scheduling_entity().metric().inc_context_switch_count(is_involuntary);
+    curr->scheduler_state().metric().inc_context_switch_count(is_involuntary);
     m_num_switches += 1;
 
     // Note `m_spinlock` (namely lock of runqueue) will be droped in Self::switch_context.
@@ -785,7 +785,7 @@ auto Scheduler::enqueue_thread(Thread *thread, EnqueueOptions options) -> Status
         m_run_queue.m_clock_source.update_clock();
     }
 
-    auto &so = thread->scheduling_entity();
+    auto &so = thread->scheduler_state();
     auto const status = schedule_of(so.discipline())->enqueue_thread(m_run_queue, thread, options);
     if (Status::Ok != status) {
         return status;
@@ -815,7 +815,7 @@ auto Scheduler::dequeue_thread(Thread *thread, DequeueOptions options) -> Status
     if (!!(options & DequeueOptions::Save)) {
     }
 
-    auto &so = thread->scheduling_entity();
+    auto &so = thread->scheduler_state();
     auto const status = schedule_of(so.discipline())->dequeue_thread(m_run_queue, thread, options);
     if (Status::Ok != status) {
         return status;
@@ -831,7 +831,7 @@ auto Scheduler::activate_thread(Thread *thread, EnqueueOptions options) -> void 
 
     m_canary.verify<Self>();
 
-    auto &rqs = thread->scheduling_entity().runqueue_state();
+    auto &rqs = thread->scheduler_state().runqueue_state();
     if (rqs.is_transient_state_migrating()) {
         options |= EnqueueOptions::Migrated;
     }
@@ -848,7 +848,7 @@ auto Scheduler::deactivate_thread(Thread *thread, DequeueOptions options) -> voi
 
     m_canary.verify<Self>();
 
-    auto &rqs = thread->scheduling_entity().runqueue_state();
+    auto &rqs = thread->scheduler_state().runqueue_state();
     rqs.set_transient_state_migrating();
 
     // Without DequeueOptions::Sleep no schedule delays a dequeue (Fair delays
@@ -909,7 +909,7 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void 
         unpark_preempt(thread, options);
     }
 
-    schedule_of(thread->scheduling_entity().discipline())->on_thread_unpark(m_run_queue, thread);
+    schedule_of(thread->scheduler_state().discipline())->on_thread_unpark(m_run_queue, thread);
 }
 
 /// Asks whether the thread just inserted should preempt what the target CPU is
@@ -918,8 +918,8 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void 
 /// lock.
 auto Scheduler::unpark_preempt(Thread *thread, UnparkOptions options) -> void {
     auto const current_thread = m_run_queue.m_curr_thread;
-    auto const x_discipline = thread->scheduling_entity().discipline();
-    auto const y_discipline = current_thread->scheduling_entity().discipline();
+    auto const x_discipline = thread->scheduler_state().discipline();
+    auto const y_discipline = current_thread->scheduler_state().discipline();
 
     auto &preemption_state = current_thread->preemption_state();
     if (x_discipline == y_discipline) {
@@ -947,7 +947,7 @@ auto Scheduler::unpark_preempt(Thread *thread, UnparkOptions options) -> void {
 auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     DEBUG_ASSERT(thread);
 
-    auto &se = thread->scheduling_entity();
+    auto &se = thread->scheduler_state();
 
     // Only ask a discipline that is implemented. "No discipline" and "the
     // discipline has no preference" want the same answer, and the fallback below
@@ -1075,8 +1075,8 @@ auto Scheduler::Current::deactivate() -> void {
         {
             Guard<SpinLock, IrqSave> guard{self.get_lock()};
             self.m_run_queue.for_each_thread([&thread](Thread &queued) {
-                auto const elsewhere = queued.scheduling_entity().cpu_affinity().get_available_mask(
-                    peek_active_mask());
+                auto const elsewhere =
+                    queued.scheduler_state().cpu_affinity().get_available_mask(peek_active_mask());
                 if (elsewhere.none()) {
                     return true;
                 }
@@ -1218,14 +1218,14 @@ auto Scheduler::steal_work_from(CpuMask const &victims) -> usize {
             if (&queued == victim.m_run_queue.m_next_thread || !queued.is_state_ready()) {
                 return more;
             }
-            auto const may_run_here = queued.scheduling_entity()
+            auto const may_run_here = queued.scheduler_state()
                                           .cpu_affinity()
                                           .get_available_mask(peek_active_mask())
                                           .test(here);
             if (!may_run_here) {
                 return more;
             }
-            if (budget.offer(queued.scheduling_entity().weight())) {
+            if (budget.offer(queued.scheduler_state().weight())) {
                 batch[count] = &queued;
                 count += 1;
             }
@@ -1367,7 +1367,7 @@ auto Scheduler::Current::yield_thread(Thread *current) -> void {
 
     DEBUG_ASSERT(current == self.m_run_queue.m_curr_thread);
 
-    auto &so = current->scheduling_entity();
+    auto &so = current->scheduler_state();
     {
         // The runqueue lock has to be dropped before reschedule_common(): that
         // routine takes get_lock() itself and hands it on to switch_context().
@@ -1392,8 +1392,8 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
 
     DEBUG_ASSERT(curr == self.m_run_queue.m_curr_thread);
 
-    auto &curr_so = curr->scheduling_entity();
-    auto &next_so = thread->scheduling_entity();
+    auto &curr_so = curr->scheduler_state();
+    auto &next_so = thread->scheduler_state();
 
     Status yielded;
     {
