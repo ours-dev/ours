@@ -290,3 +290,50 @@ None
 - Which facts live in `SchedulerState` beyond queue membership?
 - How does the older Fair spelling reach the canonical type?
 - How does the scheduler recover the owning thread from its embedded state?
+
+## Remove the old Thread scheduler state accessors (2026-11-07)
+
+**Files**
+- `kernel/include/ours/task/thread.hpp` removes `scheduling_entity()` and `scheduling_context()`.
+- `kernel/kernel/task/sched/fair.cpp` uses `scheduler_state()` directly.
+
+**Symptom**
+Thread exposed three spellings for the same embedded scheduler state.
+
+**Cause**
+The older methods were forwarding accessors from earlier state names. Fair was the remaining caller of `scheduling_entity()`.
+
+**Change**
+Before:
+
+```cpp
+auto &ctx = thread->scheduling_entity();
+```
+
+After:
+
+```cpp
+auto &ctx = thread->scheduler_state();
+```
+
+The twelve Fair call sites now use the canonical accessor. Each call still reaches the embedded scheduler state through the same access and lock context.
+
+**Reference**
+Zircon `Thread::scheduler_state()` accesses the thread's embedded `SchedulerState` in `zircon/kernel/include/kernel/thread.h`.
+
+**Verification**
+Changed-line clang-format passed. Clang-tidy reported no diagnostics on edited lines. The Fair diff matches exactly the twelve accessor substitutions. Both development images booted with RR and with Fair. Each configuration passed 46 dbg shell checks, 44 rel shell checks and 183 host tests.
+
+**Deliberately not done**
+None
+
+**How it was found**
+Searched for both forwarding accessor spellings and checked the remaining callers.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Which accessor is the single entry to the thread's scheduler state?
+- Which discipline still used the forwarding accessor?
+- Why is the access migration a mechanical change?

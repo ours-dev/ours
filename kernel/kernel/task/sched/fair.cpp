@@ -203,7 +203,7 @@ auto Fair::update_thread(RunQueue &runtime, Thread *curr) -> void {
     // preempted on this tick whether or not the clock advanced since the last.
     auto const elapsed = runtime.charge_current();
 
-    auto &ctx = curr->scheduling_entity();
+    auto &ctx = curr->scheduler_state();
 
     ctx.m_exec_runtime += elapsed;
     ctx.m_fair.vruntime += to_virtual_time(elapsed, ctx.weight());
@@ -251,7 +251,7 @@ auto Fair::dequeue_thread(RunQueue &runtime, Thread *thread, DequeueOptions opti
     auto const is_current_thread = thread == current_thread;
     update_thread(runtime, current_thread);
 
-    auto &ctx = thread->scheduling_entity();
+    auto &ctx = thread->scheduler_state();
     if constexpr (SCHED_DELAY_DEQUEUE) {
         if (try_to_delay_dequeue(runtime, ctx, options)) {
             return Status::Delayed;
@@ -275,7 +275,7 @@ auto Fair::enqueue_thread(RunQueue &runtime, Thread *thread, EnqueueOptions opti
     auto const current_thread = runtime.current_thread();
     auto const is_current_thread = thread == current_thread;
 
-    auto &ctx = thread->scheduling_entity();
+    auto &ctx = thread->scheduler_state();
 
     // Re-enqueueing |current| typeically refers to dequeueing and then immediately
     // dequeueing the thread again. This mainly updates ctxme internal scheduling parameters,
@@ -311,13 +311,13 @@ auto Fair::on_thread_tick(RunQueue &runtime, Thread *curr, bool queued) -> void 
 auto Fair::on_thread_init(RunQueue &runtime, Thread *thread) -> void {
     runtime.queue<Discipline::Normal>().verify();
     [[maybe_unused]]
-    auto &ctx = thread->scheduling_entity();
+    auto &ctx = thread->scheduler_state();
 }
 
 auto Fair::on_thread_dead(RunQueue &runtime, Thread *thread) -> void {
     runtime.queue<Discipline::Normal>().verify();
     [[maybe_unused]]
-    auto &ctx = thread->scheduling_entity();
+    auto &ctx = thread->scheduler_state();
 }
 
 /// The thread has just been made runnable again. By the time this runs
@@ -330,7 +330,7 @@ auto Fair::on_thread_unpark(RunQueue &runtime, Thread *thread) -> void {
     // Where the wakeup landed. Nothing else records this, and it is what a
     // future select_target_cpu() needs to keep a woken thread near the cpu
     // that woke it rather than scattering it across the machine.
-    thread->scheduling_entity().m_wake_cpu = runtime.which_cpu();
+    thread->scheduler_state().m_wake_cpu = runtime.which_cpu();
 }
 
 /// In order to provide latency guarantees for different request sizes
@@ -348,7 +348,7 @@ auto Fair::evaluate_next_thread(RunQueue &runtime, Thread *curr) -> Thread * {
     // behind the waiters, who were charged in full when they last stopped: a
     // waiter is then ahead of the mean, ineligible, and the running thread is
     // picked again for another whole slice.
-    auto &curr_entity = curr->scheduling_entity();
+    auto &curr_entity = curr->scheduler_state();
     if (curr_entity.discipline() == Discipline::Normal &&
         curr_entity.runqueue_state().is_active()) {
         update_thread(runtime, curr);
@@ -372,7 +372,7 @@ auto Fair::put_prev_thread(RunQueue &runtime, Thread *prev) -> void {
     auto &rq = runtime.queue<Discipline::Normal>();
     rq.verify();
 
-    auto &ctx = prev->scheduling_entity();
+    auto &ctx = prev->scheduler_state();
 
     // The thread |prev| was not been deactivated via Scheduler::deactivate_thread().
     // Therefore now it is still on our runqueue. It is charged while it is still
@@ -409,7 +409,7 @@ auto Fair::set_next_object(RunQueue &runtime, SchedEntity &ctx) -> void {
 auto Fair::set_next_thread(RunQueue &runtime, Thread *next) -> void {
     runtime.queue<Discipline::Normal>().verify();
 
-    auto &ctx = next->scheduling_entity();
+    auto &ctx = next->scheduler_state();
     set_next_object(runtime, ctx);
 }
 
@@ -434,7 +434,7 @@ auto Fair::yield_thread(RunQueue &runtime, Thread *curr) -> void {
     // up-to-date vruntime rather than a stale one.
     update_thread(runtime, curr);
 
-    auto &ctx = curr->scheduling_entity();
+    auto &ctx = curr->scheduler_state();
     ctx.m_fair.vdeadline += to_virtual_time(ctx.m_timeslice.length(), ctx.weight());
 
     runtime.mark_preempt_pending();
@@ -443,7 +443,7 @@ auto Fair::yield_thread(RunQueue &runtime, Thread *curr) -> void {
 auto Fair::yield_to_thread(RunQueue &runtime, Thread *curr, Thread *next) -> Status {
     runtime.queue<Discipline::Normal>().verify();
 
-    if (!next->scheduling_entity().runqueue_state().is_active()) {
+    if (!next->scheduler_state().runqueue_state().is_active()) {
         // Received a inactive thread.
         return Status::BadState;
     }
@@ -482,7 +482,7 @@ auto Fair::override_thread_base_profile(RunQueue &runtime, Thread *thread,
     auto &rq = runtime.queue<Discipline::Normal>();
     rq.verify();
 
-    auto &ctx = thread->scheduling_entity();
+    auto &ctx = thread->scheduler_state();
     auto const queued = ctx.runqueue_state().is_active();
     if (queued) {
         update_thread(runtime, thread);

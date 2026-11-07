@@ -509,18 +509,6 @@ namespace task {
             return m_scheduler_state;
         }
 
-        /// The accessor still used by the Fair discipline.
-        FORCE_INLINE
-        auto scheduling_entity() -> sched::SchedulerState & {
-            return scheduler_state();
-        }
-
-        /// Compatibility accessor for the older scheduling context name.
-        FORCE_INLINE
-        auto scheduling_context() -> sched::SchedulerState & {
-            return scheduler_state();
-        }
-
         FORCE_INLINE
         auto set_state_ready() -> void {
             ktl::write_once(m_state, State::Ready);

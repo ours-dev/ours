@@ -10,6 +10,8 @@ Reviewed the canonical state definition and every renamed caller. Compared the n
 
 The Fair type alias and private forwarding accessor refer to the same scheduling state used by the framework. Both Fair images booted. The compiler resolves the owning-thread lookup through the renamed field.
 
+The accessor cleanup moved all twelve Fair calls to `scheduler_state()`. A byte comparison confirmed that these calls were the only edits to Fair. Both configurations passed the boot and host tests.
+
 ## High severity
 
 None

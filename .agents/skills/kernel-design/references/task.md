@@ -72,8 +72,8 @@
 - `Thread` keeps `WaiterState` for waiting and `sched::SchedulerState` for
   scheduling (the user's naming choice, 2026-11-07). Use
   `sched/scheduler_state.hpp` and `Thread::scheduler_state()` in the
-  framework. The old `SchedEntity` name and `scheduling_entity()` are
-  compatibility spellings for Fair.
+  framework. The old `SchedEntity` type spelling is a compatibility alias
+  for Fair.
 - Never propose a global thread lock. `Thread` (`m_pi_lock`,
   `m_resource_lock`), `WaitQueue` (`m_lock`) and each per-CPU run queue
   (`rqlock`) lock separately. What is missing is the protocol for taking an
