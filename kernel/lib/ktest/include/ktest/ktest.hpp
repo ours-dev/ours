@@ -8,6 +8,8 @@
 #define KTEST_KTEST_HPP 1
 
 #include <ktest/assertions.hpp>
+#include <ktest/environment.hpp>
+#include <ktest/fixture.hpp>
 #include <ktest/options.hpp>
 
 #include <source_location>
@@ -18,7 +20,9 @@
 /// Defines one test named `Suite.Name`. The braced body that follows is a
 /// plain `void()` function; the suite is a naming prefix and carries no state
 /// of its own, which is what lets a test file declare several independent
-/// tests without a fixture class.
+/// tests without a fixture class. A suite whose tests share state takes a
+/// fixture instead: `KTEST_F` and the suite hooks live in fixture.hpp, which
+/// this header includes.
 ///
 /// The record lands in `.hsien.tests`, the section the runtime's section
 /// reader already bounds, so no registration runs and no dynamic

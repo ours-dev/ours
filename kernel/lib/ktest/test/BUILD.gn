@@ -1,17 +1,22 @@
 # Host-side tests. These link googletest and run on the build machine, so
 # they exercise the parts of the interface that need no booted kernel: the
-# selection grammar, the failure-message formatting, and the counting the
-# SUMMARY line reports.
+# selection grammar, the failure-message formatting, the counting the
+# SUMMARY line reports, and the fixture lifecycle the KTEST_F adapters run.
 executable("ktest-test") {
   testonly = true
   sources = [
     "filter_test.cpp",
     "format_test.cpp",
+    "fixture_test.cpp",
     "options_test.cpp",
     "plan_test.cpp",
     "summary_test.cpp",
   ]
   deps = [
+    # hsien's runner, so the fixture tests drive the real macro expansions
+    # through the runtime's own record loop.
+    "//system/lib/hsien",
+    "//kernel/lib/ktest:environment",
     "//kernel/lib/ktest:headers",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",

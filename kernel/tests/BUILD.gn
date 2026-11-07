@@ -7,6 +7,10 @@ kernel_test("framework") {
   sources = [ "ktest_test.cpp" ]
 }
 
+kernel_test("ktest_fixture") {
+  sources = [ "ktest_fixture_test.cpp" ]
+}
+
 # The header surfaces the migrated tests reach. The implementations are in the
 # kernel the tests are linked into, so these are header-only dependencies.
 _HEADER_DEPS = [
@@ -292,6 +296,7 @@ source_set("kernel.tests") {
     ":dpc",
     ":framework",
     ":irq_domain",
+    ":ktest_fixture",
     ":sampler_claim",
     ":semaphore",
     ":sched_domain",

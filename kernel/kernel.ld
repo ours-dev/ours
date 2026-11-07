@@ -180,6 +180,15 @@ SECTIONS {
         KEEP(*(SORT_BY_ALIGNMENT(.hsien.tests)))
         PROVIDE_HIDDEN(__hsien_tests_end = .);
 
+        /* ktest suite hook records (kernel/lib/ktest's SuiteHook, emitted by
+         * KTEST_SUITE_SETUP and KTEST_SUITE_TEARDOWN). The `ktest` command
+         * reads them on demand like the hsien records above, so they cannot
+         * live in the .init tail either. KEEP for the same reason: walking
+         * this range is the only reference to a record. */
+        PROVIDE_HIDDEN(__ktest_suite_hooks_start = .);
+        KEEP(*(SORT_BY_ALIGNMENT(.ktest.suite_hooks)))
+        PROVIDE_HIDDEN(__ktest_suite_hooks_end = .);
+
         PROVIDE_HIDDEN(__gktl_counter_desc_start = .);
         *(.gktl.counter.descs*)
         PROVIDE_HIDDEN(__gktl_counter_desc_end = .);

@@ -7,7 +7,9 @@
 // lines are the host's contract: `RUN`, `OK`, `FAIL`, `FAILED`, `SKIP`,
 // `TEST`, `ERROR`, the `SHUFFLE` line a shuffled run opens with, and the
 // final `SUMMARY`.
+#include <ktest/environment.hpp>
 #include <ktest/filter.hpp>
+#include <ktest/fixture.hpp>
 #include <ktest/options.hpp>
 #include <ktest/run_plan.hpp>
 #include <ktest/run_state.hpp>
@@ -24,6 +26,14 @@
 #include <ours/time/clock.hpp>
 
 namespace ktest {
+
+/// The suite hook section (kernel/lib/ktest's SuiteHook, emitted by
+/// KTEST_SUITE_SETUP and KTEST_SUITE_TEARDOWN), bounded by the linker script
+/// the way the hsien records are. Read on demand, so it lives in
+/// `.data.rel.ro` and not in the .init tail.
+extern "C" internal::SuiteHook ktest_suite_hooks_start[] asm("__ktest_suite_hooks_start");
+extern "C" internal::SuiteHook ktest_suite_hooks_end[] asm("__ktest_suite_hooks_end");
+
 namespace {
 
     /// The test the runner is executing, published for the adapter and the
@@ -97,11 +107,35 @@ namespace {
         return false;
     }
 
+    /// Runs one hook — a suite's or an environment's SetUp or TearDown — the
+    /// way a test runs, minus the test: a published state and a context the
+    /// hook's assertions record into, no RUN or OK line, and nothing added to
+    /// the summary. True when nothing in the hook failed.
+    template <typename Step>
+    auto run_hook(char const *const name, Step &&step, hsien::Reporter &reporter) -> bool {
+        internal::RunState state;
+        CURRENT_STATE.store(&state, std::memory_order_relaxed);
+        OWNER_THREAD.store(::ours::task::Thread::Current::get(), std::memory_order_relaxed);
+        auto context = ::hsien::Context{name, reporter};
+        internal::BindScope const scope(context);
+        step(context);
+        CURRENT_STATE.store(nullptr, std::memory_order_relaxed);
+        OWNER_THREAD.store(nullptr, std::memory_order_relaxed);
+        return context.failure_count() == 0;
+    }
+
     /// One selected test: publish the state, run it through the runtime,
-    /// then print the verdict and add it to the summary.
-    auto run_test(hsien::TestRecord const &record, hsien::Reporter &reporter, Summary &summary)
-        -> void {
+    /// then print the verdict and add it to the summary. |pre_failed| reports
+    /// a test the run decided not to start — a suite or environment setup
+    /// failed ahead of it — with the reason in the place the check counts go.
+    auto run_test(hsien::TestRecord const &record, hsien::Reporter &reporter, Summary &summary,
+                  char const *const pre_failed = nullptr) -> void {
         log::info("ktest: RUN {}", record.name);
+        if (pre_failed != nullptr) {
+            log::error("ktest: FAILED {} ({})", record.name, pre_failed);
+            summary.record(true, false);
+            return;
+        }
 
         internal::RunState state;
         CURRENT_STATE.store(&state, std::memory_order_relaxed);
@@ -131,6 +165,38 @@ namespace {
         for (auto const *record = begin; record != end; ++record) {
             log::info("ktest: TEST {}", record->name);
         }
+    }
+
+    /// What one environment step needs: the reporter its assertions report
+    /// through, and which half of the stage is running.
+    struct EnvironmentFraming {
+        hsien::Reporter *reporter;
+        bool setup;
+    };
+
+    /// The step the environment walk calls: runs the environment's SetUp or
+    /// TearDown framed like a hook, and logs the one error line a failure
+    /// needs. True when nothing in the step failed.
+    auto run_environment_step(Environment &environment, void *const context) -> bool {
+        auto &framing = *static_cast<EnvironmentFraming *>(context);
+        auto const *name = "ktest.EnvironmentTearDown";
+        if (framing.setup) {
+            name = "ktest.EnvironmentSetUp";
+        }
+        auto const ok = run_hook(
+            name,
+            [&](::hsien::Context &) {
+                if (framing.setup) {
+                    environment.SetUp();
+                } else {
+                    environment.TearDown();
+                }
+            },
+            *framing.reporter);
+        if (!framing.setup && !ok) {
+            log::error("ktest: ERROR the environment teardown failed");
+        }
+        return ok;
     }
 
     /// Appends |value| in decimal at |length|. The guard keeps a wrong caller
@@ -294,7 +360,48 @@ namespace {
         }
         auto reporter = hsien::Reporter{&report};
         auto summary = Summary{};
+
+        // The run's global stage: every registered environment's SetUp, in
+        // registration order, before the first test; the TearDowns unwind
+        // them after the last, however the run went. A registration dropped
+        // at boot is reported here, where the run can fail on it, rather
+        // than silently passing without the stage.
+        auto &registry = internal::environments();
+        if (registry.dropped != 0) {
+            log::error("ktest: ERROR {} test environment(s) were dropped at boot: the registry "
+                       "holds at most {}",
+                       registry.dropped, MAX_ENVIRONMENTS);
+        }
+        auto environment_run = internal::EnvironmentRun{};
+        auto framing = EnvironmentFraming{&reporter, true};
+        auto const environments_ok = environment_run.set_up(run_environment_step, &framing);
+        if (!environments_ok) {
+            log::error("ktest: ERROR the environment setup failed; every test will be reported "
+                       "failed without running");
+        }
+        framing.setup = false;
+        auto tear_environments = [&]() -> void {
+            environment_run.tear_down(run_environment_step, &framing);
+        };
+
+        // The suite hooks frame one pass: a suite's setup runs once before
+        // its first test of the pass and its teardown once after the last, so
+        // a repeat hands every suite a fresh stage each pass. A run that
+        // failed an environment setup reports its tests without running
+        // either them or the suite hooks around them.
         for (auto pass = usize{0}; pass < plan.repeat; ++pass) {
+            auto suites =
+                internal::SuitePlan{ktest_suite_hooks_start, ktest_suite_hooks_end, begin, end,
+                                    [&](hsien::TestRecord const &record, usize const index) {
+                                        return matches_filter(record.name, filter) &&
+                                               in_shard(index, plan.shard_index, plan.shard_count);
+                                    }};
+            if (!suites.valid()) {
+                log::error("ktest: ERROR a suite declares a hook twice, or more suites carry "
+                           "hooks than a run tracks");
+                tear_environments();
+                return 1;
+            }
             for (auto pos = usize{0}; pos < count; ++pos) {
                 auto index = pos;
                 if (plan.shuffle) {
@@ -305,9 +412,31 @@ namespace {
                     !in_shard(index, plan.shard_index, plan.shard_count)) {
                     continue;
                 }
-                run_test(record, reporter, summary);
+                if (!environments_ok) {
+                    run_test(record, reporter, summary, "the environment setup failed");
+                    continue;
+                }
+                if (auto *const setup = suites.before(record.name); setup != nullptr) {
+                    if (!run_hook(setup->name, setup->invoke, reporter)) {
+                        suites.poison(record.name);
+                        log::error("ktest: ERROR the suite setup {} failed; its tests will not "
+                                   "run",
+                                   setup->name);
+                    }
+                }
+                if (suites.poisoned(record.name)) {
+                    run_test(record, reporter, summary, "its suite setup failed");
+                } else {
+                    run_test(record, reporter, summary);
+                }
+                if (auto *const teardown = suites.after(record.name); teardown != nullptr) {
+                    if (!run_hook(teardown->name, teardown->invoke, reporter)) {
+                        log::error("ktest: ERROR the suite teardown {} failed", teardown->name);
+                    }
+                }
             }
         }
+        tear_environments();
         if (summary.ran == 0) {
             if (plan.shard_count > 1) {
                 log::error("ktest: ERROR no test falls in shard {}/{} among {} tests",

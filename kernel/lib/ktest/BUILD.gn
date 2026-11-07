@@ -8,7 +8,9 @@ import("//build/cpp/cpp_interface.gni")
 cpp_interface("headers") {
   public = [
     "include/ktest/assertions.hpp",
+    "include/ktest/environment.hpp",
     "include/ktest/filter.hpp",
+    "include/ktest/fixture.hpp",
     "include/ktest/format.hpp",
     "include/ktest/ktest.hpp",
     "include/ktest/options.hpp",
@@ -20,6 +22,15 @@ cpp_interface("headers") {
     "//kernel/lib/gktl:headers",
     "//system/lib/hsien:headers",
   ]
+  visibility = [ "*" ]
+}
+
+# The environment registry. One fixed table with no kernel dependency, so the
+# host tests link the same definition the runner walks.
+source_set("environment") {
+  testonly = true
+  sources = [ "src/environment.cpp" ]
+  public_deps = [ ":headers" ]
   visibility = [ "*" ]
 }
 
@@ -35,6 +46,7 @@ source_set("ktest") {
     # request through the object layer's.
     "//kernel/mm:headers",
     "//kernel/object:headers",
+    ":environment",
     "//system/lib/hsien",
     "//system/lib/logz4:headers",
   ]

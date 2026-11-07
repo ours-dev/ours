@@ -13,10 +13,11 @@ the assertions, the selection grammar and the command.
     src/             the runner and the `ktest` command
     test/            host-side tests, built with googletest
 
-`filter.hpp`, `format.hpp` and `summary.hpp` include no kernel header, so the
-host tests exercise them without a booted kernel; `ktest.hpp`, `assertions.hpp`
-and `run_state.hpp` are the kernel-facing half and are compiled only for the
-kernel toolchain.
+`filter.hpp`, `format.hpp`, `summary.hpp`, `fixture.hpp` and `environment.hpp`
+include no kernel header, so the host tests exercise them without a booted
+kernel — the fixture tests there drive the real macro expansions; `ktest.hpp`,
+`assertions.hpp` and `run_state.hpp` are the kernel-facing half and are
+compiled only for the kernel toolchain.
 
 ## Writing a test
 
@@ -36,6 +37,38 @@ returns from the current function, `ADD_FAILURE`/`FAIL` record unconditionally,
 and `KTEST_SKIP("reason")` marks a test this machine cannot exercise. Assertions
 run on the test thread only; a worker thread publishes its result for the test
 thread to assert on.
+
+A suite whose tests share state declares a fixture instead, and each test takes
+`KTEST_F`:
+
+```cpp
+class MyFixture : public ktest::Fixture {
+  public:
+    usize ready{};
+
+    void SetUp() override {
+        ready = 3;
+    }
+
+    void TearDown() override {
+        // undo SetUp; runs even after a failed check
+    }
+};
+
+KTEST_F(MyFixture, ReadsWhatSetUpWrote) {
+    EXPECT_EQ(this->ready, 3u);
+}
+```
+
+The body is a member of a class derived from the fixture, so it reads the
+fixture's members through `this`; the fixture must be default constructible and
+its members the bodies touch are `protected:` or public, as in GoogleTest. The
+object is built in the macro's own static storage — a fresh one per test, SetUp
+before the body, TearDown after it however the body ended. `KTEST_SUITE_SETUP(MyFixture)`
+and `KTEST_SUITE_TEARDOWN(MyFixture)` run once around all of the suite's tests,
+and `ktest::Environment` stages registered through `ktest::add_environment` run
+once around the whole run; both print nothing unless they fail. The details and
+the failure semantics are in `fixture.hpp` and `environment.hpp`.
 
 `EXPECT_EQ` compares its operands with the language's `==`, so two C string
 literals compare as pointers, not characters; compare `std::string_view`s when
