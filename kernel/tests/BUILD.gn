@@ -38,6 +38,150 @@ kernel_test("vma_phys") {
   deps = _HEADER_DEPS
 }
 
+kernel_test("preempt") {
+  sources = [ "preempt_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("sleep") {
+  sources = [ "sleep_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("user_copy") {
+  sources = [ "user_copy_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("pin_lines") {
+  sources = [ "pin_lines_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("page_queues") {
+  sources = [ "page_queues_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("irq_controller") {
+  sources = [ "irq_controller_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("bti_stress") {
+  sources = [ "bti_stress_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("irq_rcu") {
+  sources = [ "irq_rcu_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("timer") {
+  sources = [ "timer_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("ioport") {
+  sources = [ "ioport_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("memory_pressure") {
+  sources = [ "memory_pressure_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("resource") {
+  sources = [ "resource_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("bti") {
+  sources = [ "bti_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("pager") {
+  sources = [ "pager_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("large_page") {
+  sources = [ "large_page_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("hotplug") {
+  sources = [ "hotplug_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("steal") {
+  sources = [ "steal_test.cpp" ]
+  deps = _HEADER_DEPS + [
+           "//kernel/lib/gktl:headers",
+           "//kernel/lib/obi:headers",
+           "//kernel/lib/sched_domain:headers",
+         ]
+}
+
+kernel_test("irq_revoke") {
+  sources = [ "irq_revoke_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("page_reclaim") {
+  sources = [ "page_reclaim_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("tick_replace") {
+  sources = [ "tick_replace_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("pm_node") {
+  sources = [ "pm_node_test.cpp" ]
+  deps = _HEADER_DEPS + [
+           "//kernel/lib/gktl:headers",
+           "//kernel/lib/numa:headers",
+           "//kernel/lib/obi:headers",
+           "//kernel/lib/sched_domain:headers",
+         ]
+}
+
+kernel_test("irq_registry") {
+  sources = [ "irq_registry_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("interrupt") {
+  sources = [ "interrupt_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("interrupt_line") {
+  sources = [ "interrupt_line_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("page_source") {
+  sources = [ "page_source_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
+kernel_test("irq") {
+  sources = [ "irq_test.cpp" ]
+  deps = _HEADER_DEPS + [ "//kernel/lib/arch:headers" ]
+}
+
+kernel_test("vmo_snapshot") {
+  sources = [ "vmo_snapshot_test.cpp" ]
+  deps = _HEADER_DEPS
+}
+
 kernel_test("pm_zone") {
   sources = [ "pm_zone_test.cpp" ]
   deps = _HEADER_DEPS
@@ -128,7 +272,33 @@ source_set("kernel.tests") {
     ":sched_domain",
     ":steal_policy",
     ":pm_zone",
+    ":bti_stress",
+    ":irq_controller",
+    ":page_queues",
+    ":pin_lines",
+    ":bti",
+    ":hotplug",
+    ":interrupt",
+    ":interrupt_line",
+    ":irq",
+    ":irq_rcu",
+    ":irq_revoke",
+    ":irq_registry",
+    ":ioport",
+    ":large_page",
+    ":memory_pressure",
+    ":page_reclaim",
+    ":page_source",
+    ":pager",
+    ":pm_node",
+    ":preempt",
+    ":resource",
+    ":sleep",
+    ":steal",
+    ":tick_replace",
+    ":timer",
     ":tick_broadcast",
+    ":user_copy",
     ":tick_fallback",
     ":vm_address",
     ":vma_phys",
@@ -137,6 +307,7 @@ source_set("kernel.tests") {
     ":vma_undo",
     ":vma_wx",
     ":vmo_contiguous",
+    ":vmo_snapshot",
     ":vmo_pin",
     ":wait_queue",
     "//kernel/lib/ktest",

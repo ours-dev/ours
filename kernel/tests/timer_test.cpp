@@ -1,7 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `timer.test`: two things about timers.
+// Timer.ForwardLatenessHoldOffAndRestartCancel: what Timer::forward() does to
+// a deadline, how late a short timer fires, what a slow pass does to the next
+// one, and what cancel() does to a timer that has just restarted.
 //
 // Timer::forward(), the arithmetic a periodic timer keeps its phase by. It
 // moves a deadline on by whole intervals until it is ahead of `now`, and
@@ -49,8 +51,8 @@
 // nobody cancelled, must have run again, and a timer armed afterwards must
 // still fire.
 //
-// A console command rather than a unit test because Timer's arming goes
-// through the per-CPU TimerQueue, which a host test cannot stand up.
+// Why an in-kernel test: Timer's arming goes through the per-CPU TimerQueue,
+// which a host test cannot stand up.
 #include <ours/cpu.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/tick_device.hpp>
@@ -63,7 +65,7 @@
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -104,49 +106,33 @@ namespace {
     constexpr auto RESTART_PERIOD = Milliseconds(2);
     constexpr auto WATCH_AFTER_CANCEL = Milliseconds(30);
 
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
     auto idle(Timer *) -> Timer::HandlerResult {
         return Timer::HandlerResult::Handled;
     }
 
     /// Forwards a timer whose deadline is |deadline| to |now|, and checks the
-    /// count and where the deadline ended up.
-    auto check_forward(Tally &tally, char const *const name, TimePoint<> const deadline,
-                       TimePoint<> const now, u64 const expect_overrun,
-                       TimePoint<> const expect_deadline) -> void {
+    /// count and where the deadline ended up. The case's name doubles as the
+    /// assertion's message, passed as a format argument: a message is a
+    /// consteval format string, so a runtime name cannot be one.
+    auto check_forward(char const *const name, TimePoint<> const deadline, TimePoint<> const now,
+                       u64 const expect_overrun, TimePoint<> const expect_deadline) -> void {
         Timer timer;
         timer.activate(Deadline::at(deadline), idle);
         auto _ = timer.cancel();
 
         auto const overrun = timer.forward(now, INTERVAL);
         auto const moved_to = timer.deadline().when();
-        if (overrun == expect_overrun && moved_to == expect_deadline) {
-            tally.passed += 1;
-            log::info("timer.test: pass  {}", name);
-            return;
+        auto const moved = overrun == expect_overrun && moved_to == expect_deadline;
+        if (!moved) {
+            log::error("timer:   {}: overrun {} (want {}), deadline moved by {} ns (want {})", name,
+                       overrun, expect_overrun, (moved_to - deadline).count(),
+                       (expect_deadline - deadline).count());
         }
-        tally.failed += 1;
-        log::error("timer.test: FAIL  {}: overrun {} (want {}), deadline moved by {} ns (want {})",
-                   name, overrun, expect_overrun, (moved_to - deadline).count(),
-                   (expect_deadline - deadline).count());
-    }
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("timer.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("timer.test: FAIL  {}", name);
+        EXPECT_TRUE(moved, "{}", name);
     }
 
     /// Written by the timer's handler, in the timer interrupt, and read by the
-    /// command once |done| says so.
+    /// test once |done| says so.
     struct Fired {
         TimePoint<> at;
         std::atomic<bool> done{false};
@@ -177,7 +163,7 @@ namespace {
         }();
 
         // Either way: waits out a handler still running, after which |fired|
-        // and |timer| are the command's again.
+        // and |timer| are the test's again.
         auto _ = timer.cancel();
         if (arrived) {
             lateness = fired.at - deadline;
@@ -185,7 +171,7 @@ namespace {
         return arrived;
     }
 
-    auto check_lateness(Tally &tally) -> void {
+    auto check_lateness() -> void {
         // A difference and not the count since boot: another test (tickreplace.test)
         // refuses deadlines on purpose, and would fail this one if it ran first.
         auto const refused_before = TimerQueue::num_refused_programs();
@@ -202,7 +188,7 @@ namespace {
                 num_fired += 1;
             }
         }
-        verdict(tally, num_fired == SAMPLES, "every timer fired");
+        EXPECT_EQ(num_fired, SAMPLES, "every timer fired");
         if (num_fired == 0) {
             return;
         }
@@ -214,26 +200,26 @@ namespace {
         if (oneshot) {
             device_mode = "one-shot";
         }
-        log::info("timer.test:   {} us timers fired {} to {} us late, median {} us ({} samples, "
+        log::info("timer:   {} us timers fired {} to {} us late, median {} us ({} samples, "
                   "tick device {})",
                   duration_cast<Microseconds>(REQUESTED).count(),
                   duration_cast<Microseconds>(lateness[0]).count(),
                   duration_cast<Microseconds>(lateness[num_fired - 1]).count(),
                   duration_cast<Microseconds>(median).count(), num_fired, device_mode);
-        verdict(tally, lateness[0] >= Duration::zero(), "none fired before its deadline");
+        EXPECT_GE(lateness[0], Duration::zero(), "none fired before its deadline");
 
         if (oneshot) {
-            verdict(tally, median < ONESHOT_MEDIAN_LIMIT,
-                    "one-shot: the median lateness is under a fifth of a tick");
+            EXPECT_LT(median, ONESHOT_MEDIAN_LIMIT,
+                      "one-shot: the median lateness is under a fifth of a tick");
         }
 
         // On every CPU while this ran, not only for these samples.
-        verdict(tally, TimerQueue::num_refused_programs() == refused_before,
-                "no tick device refused a deadline meanwhile");
+        EXPECT_EQ(TimerQueue::num_refused_programs(), refused_before,
+                  "no tick device refused a deadline meanwhile");
     }
 
     /// Written by the two callbacks, in the timer interrupt, and read by the
-    /// command once the flags say so.
+    /// test once the flags say so.
     struct SlowPass {
         TimePoint<> a_ended;
         TimePoint<> b_began;
@@ -291,12 +277,11 @@ namespace {
         return arrived;
     }
 
-    auto check_hold_off(Tally &tally) -> void {
+    auto check_hold_off() -> void {
         // In Periodic mode the device is not armed for a timer's deadline: A
         // and B wait for the same tick and run in one pass.
         if (!TickDevice::Current::is_mode_oneshot()) {
-            log::info("timer.test:   the hold-off check needs kernel.time.oneshot; skipped");
-            return;
+            KTEST_SKIP("the hold-off check needs kernel.time.oneshot");
         }
 
         usize ran = 0;
@@ -321,21 +306,21 @@ namespace {
                 held += 1;
             }
         }
-        verdict(tally, ran == HOLD_OFF_TRIALS, "both timers of every trial fired");
-        verdict(tally, counted != 0,
-                "B fell due during A's pass and ran in an interrupt of its own, in some trial");
+        EXPECT_EQ(ran, HOLD_OFF_TRIALS, "both timers of every trial fired");
+        EXPECT_GT(counted, usize{0},
+                  "B fell due during A's pass and ran in an interrupt of its own, in some trial");
         if (counted != 0) {
-            log::info("timer.test:   after a {} us pass, the next interrupt came {} us later at "
+            log::info("timer:   after a {} us pass, the next interrupt came {} us later at "
                       "the soonest ({} of {} trials counted)",
                       duration_cast<Microseconds>(SLOW_PASS).count(),
                       duration_cast<Microseconds>(shortest).count(), counted, ran);
         }
-        verdict(tally, counted != 0 && held == counted,
-                "and it came no sooner than about the pass's own length after the pass");
+        EXPECT_TRUE(counted != 0 && held == counted,
+                    "and it came no sooner than about the pass's own length after the pass");
     }
 
-    /// Written by the callbacks, in the timer interrupt, and read by the
-    /// command once |b_done| says so.
+    /// Written by the callbacks, in the timer interrupt, and read by the test
+    /// once |b_done| says so.
     struct RestartCancel {
         Timer *a = nullptr;
         CpuNum cpu = 0;
@@ -362,7 +347,7 @@ namespace {
         return true;
     }
 
-    auto check_restart_cancel(Tally &tally) -> void {
+    auto check_restart_cancel() -> void {
         RestartCancel trial;
         auto *const pt = &trial;
         Timer a;
@@ -404,14 +389,14 @@ namespace {
         }
 
         auto const b_ran = wait_for(trial.b_done, SteadyClock::now() + TRIAL_GIVE_UP);
-        verdict(tally, b_ran, "restart: the timer that cancels ran");
+        EXPECT_TRUE(b_ran, "restart: the timer that cancels ran");
         if (b_ran) {
-            verdict(tally,
-                    trial.a_runs_seen_by_b == 1 && trial.r_runs_seen_by_b == 1 &&
-                        trial.pass_of_a == trial.pass_of_b && trial.pass_of_r == trial.pass_of_b,
-                    "restart: both restarting timers ran, in the same pass as the third");
-            verdict(tally, trial.cancel_stopped_next_run,
-                    "restart: cancelling the restarted timer stops its next run");
+            EXPECT_TRUE(trial.a_runs_seen_by_b == 1 && trial.r_runs_seen_by_b == 1 &&
+                            trial.pass_of_a == trial.pass_of_b &&
+                            trial.pass_of_r == trial.pass_of_b,
+                        "restart: both restarting timers ran, in the same pass as the third");
+            EXPECT_TRUE(trial.cancel_stopped_next_run,
+                        "restart: cancelling the restarted timer stops its next run");
         }
 
         // A cancelled timer that stayed queued would run again within a period.
@@ -419,10 +404,10 @@ namespace {
         while (SteadyClock::now() < watch_until) {
             arch::spin_hint();
         }
-        verdict(tally, trial.a_runs.load(std::memory_order_relaxed) == 1 && !a.is_linked(),
-                "restart: the cancelled timer is out of the queue and never ran again");
-        verdict(tally, trial.r_runs.load(std::memory_order_relaxed) >= 2,
-                "restart: the timer nobody cancelled ran again");
+        EXPECT_TRUE(trial.a_runs.load(std::memory_order_relaxed) == 1 && !a.is_linked(),
+                    "restart: the cancelled timer is out of the queue and never ran again");
+        EXPECT_GE(trial.r_runs.load(std::memory_order_relaxed), u32{2},
+                  "restart: the timer nobody cancelled ran again");
 
         // All out of the way before the check that the queue still works.
         auto _ = a.cancel();
@@ -434,41 +419,28 @@ namespace {
             pt->c_done.store(true, std::memory_order_release);
             return Timer::HandlerResult::Handled;
         });
-        verdict(tally, wait_for(trial.c_done, SteadyClock::now() + TRIAL_GIVE_UP),
-                "restart: a timer armed afterwards still fires");
+        EXPECT_TRUE(wait_for(trial.c_done, SteadyClock::now() + TRIAL_GIVE_UP),
+                    "restart: a timer armed afterwards still fires");
         auto _ = c.cancel();
     }
 
-    auto timer_test_command(int, char **) -> int {
-        Tally tally;
+    KTEST(Timer, ForwardLatenessHoldOffAndRestartCancel) {
         auto const deadline = SteadyClock::now() + FAR_AHEAD;
 
-        check_forward(tally, "before the deadline: nothing moves", deadline,
-                      deadline - Milliseconds(1), 0, deadline);
-        check_forward(tally, "exactly at the deadline: one interval", deadline, deadline, 1,
+        check_forward("before the deadline: nothing moves", deadline, deadline - Milliseconds(1), 0,
+                      deadline);
+        check_forward("exactly at the deadline: one interval", deadline, deadline, 1,
                       deadline + INTERVAL);
-        check_forward(tally, "half an interval late: one interval", deadline,
-                      deadline + INTERVAL / 2, 1, deadline + INTERVAL);
-        check_forward(tally, "exactly on the next deadline: two intervals", deadline,
-                      deadline + INTERVAL, 2, deadline + 2 * INTERVAL);
-        check_forward(tally, "two and a half intervals late: three intervals", deadline,
+        check_forward("half an interval late: one interval", deadline, deadline + INTERVAL / 2, 1,
+                      deadline + INTERVAL);
+        check_forward("exactly on the next deadline: two intervals", deadline, deadline + INTERVAL,
+                      2, deadline + 2 * INTERVAL);
+        check_forward("two and a half intervals late: three intervals", deadline,
                       deadline + 5 * INTERVAL / 2, 3, deadline + 3 * INTERVAL);
 
-        check_lateness(tally);
-        check_hold_off(tally);
-        check_restart_cancel(tally);
-
-        if (tally.failed != 0) {
-            log::error("timer.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("timer.test: ok -- {} checks", tally.passed);
-        return 0;
+        check_lateness();
+        check_hold_off();
+        check_restart_cancel();
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(TimerTest, "timer.test", ours::timer_test_command,
-             "forward a timer's deadline, measure how late short timers fire, and cancel a "
-             "restarted timer");

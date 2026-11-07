@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `sleep.test`: what becomes of a thread in Thread::Current::sleep_etc() when
-// a suspend reaches it before its deadline.
+// Sleep.SuspendBeforeDeadline: what becomes of a thread in
+// Thread::Current::sleep_etc() when a suspend reaches it before its deadline.
 //
 //   - An interruptible sleeper wakes early and reads InternalIrqRetry, not
 //     Ok, which would say it slept its full time.
@@ -25,8 +25,8 @@
 // sleeper waits on that CPU's run queue, unable to run, while its timer fires
 // in the hog's interrupts.
 //
-// A console command rather than a unit test for the reason mutex.stress
-// gives: a sleep's slow path is the scheduler.
+// Why an in-kernel test: a sleep's slow path is the scheduler, so a host test
+// can neither put a kernel thread to sleep nor suspend it while it sleeps.
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/alloc_flags.hpp>
@@ -38,13 +38,13 @@
 #include <atomic>
 
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
 namespace {
-    /// How long a sleeper sleeps. Long against everything the command does
+    /// How long a sleeper sleeps. Long against everything the test does
     /// before its suspend -- spawning threads and seeing each one settle,
     /// under QEMU's TCG -- so that the suspend lands well before the deadline.
     constexpr auto SLEEP = Milliseconds(100);
@@ -53,21 +53,6 @@ namespace {
     constexpr auto HOLD_PAST_DEADLINE = Milliseconds(20);
     constexpr auto LOST_AFTER = Seconds(5);
     constexpr auto POLL_INTERVAL = Milliseconds(1);
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("sleep.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("sleep.test: FAIL  {}", name);
-    }
 
     /// Polls |condition| until it holds or LOST_AFTER has passed.
     template <typename Condition>
@@ -82,9 +67,9 @@ namespace {
         return true;
     }
 
-    /// Shared between the command, the sleeper and, when there is one, the
-    /// hog. On the heap: on a failure path the threads still point at it
-    /// after the command has given up, and it is leaked rather than popped.
+    /// Shared between the test, the sleeper and, when there is one, the hog.
+    /// On the heap: on a failure path the threads still point at it after the
+    /// test has given up, and it is leaked rather than popped.
     struct SleepCase {
         explicit SleepCase(task::Interruptible const interruptible)
             : interruptible(interruptible) {}
@@ -97,7 +82,7 @@ namespace {
         TimePoint<> woken_at;
         std::atomic<bool> sleeping{false};
         std::atomic<bool> woken{false};
-        /// Ends the sleeper's last wait, once the command has resumed it.
+        /// Ends the sleeper's last wait, once the test has resumed it.
         sync::Event release;
         std::atomic<bool> sleeper_done{false};
 
@@ -132,8 +117,8 @@ namespace {
         auto &c = *static_cast<SleepCase *>(arg);
         {
             task::AutoPreemptDisabler const no_preemption;
-            // Published with preemption already off: once the command sees
-            // it, nothing else can run on this CPU, the woken sleeper included.
+            // Published with preemption already off: once the test sees it,
+            // nothing else can run on this CPU, the woken sleeper included.
             c.hogging.store(true, std::memory_order_release);
 
             auto const until = c.deadline + HOLD_PAST_DEADLINE;
@@ -170,21 +155,21 @@ namespace {
 
     /// Spawns |c|'s sleeper on |cpu| and waits until it is asleep. Null if it
     /// did not get there; |c| is then the sleeper's, or freed if it never ran.
-    auto start_sleeper(Tally &tally, SleepCase *const c, CpuNum const cpu) -> task::Thread * {
+    auto start_sleeper(SleepCase *const c, CpuNum const cpu) -> task::Thread * {
         auto *const thread = spawn_on("sleep-test", sleeper, c, cpu);
         if (thread == nullptr) {
-            verdict(tally, false, "spawn the sleeper");
+            EXPECT_TRUE(false, "spawn the sleeper");
             delete c;
             return nullptr;
         }
         // |thread| is alive until it sets |sleeper_done|, which it does only
-        // after the command signals |release|.
+        // after the test signals |release|.
         auto const asleep = poll_until([c, thread] {
             return c->sleeping.load(std::memory_order_acquire) && is_asleep(thread);
         });
-        verdict(tally, asleep, "the sleeper is asleep");
+        EXPECT_TRUE(asleep, "the sleeper is asleep");
         if (!asleep) {
-            log::error("sleep.test:   leaking the case; the sleeper may still use it");
+            log::error("sleep:   leaking the case; the sleeper may still use it");
             return nullptr;
         }
         return thread;
@@ -192,11 +177,11 @@ namespace {
 
     /// Waits for |c|'s sleeper to wake, resumes it and lets it finish. False
     /// if it did not; |c| is then leaked, and freed otherwise.
-    auto finish_sleeper(Tally &tally, SleepCase *const c, task::Thread *const thread) -> bool {
+    auto finish_sleeper(SleepCase *const c, task::Thread *const thread) -> bool {
         auto const woken = poll_until([c] { return c->woken.load(std::memory_order_acquire); });
-        verdict(tally, woken, "the sleeper runs again");
+        EXPECT_TRUE(woken, "the sleeper runs again");
         if (!woken) {
-            log::error("sleep.test:   leaking the case; the sleeper may still use it");
+            log::error("sleep:   leaking the case; the sleeper may still use it");
             return false;
         }
 
@@ -208,106 +193,99 @@ namespace {
             return c->sleeper_done.load(std::memory_order_acquire) &&
                    c->hog_done.load(std::memory_order_acquire);
         });
-        verdict(tally, finished, "its threads finish");
+        EXPECT_TRUE(finished, "its threads finish");
         if (!finished) {
-            log::error("sleep.test:   leaking the case; a thread may still use it");
+            log::error("sleep:   leaking the case; a thread may still use it");
             return false;
         }
         return true;
     }
 
-    auto check_early_wake(Tally &tally) -> void {
+    auto check_early_wake() -> void {
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 2) {
-            verdict(tally, false, "needs a second CPU for the sleeper and the hog");
-            return;
+            KTEST_SKIP("needs a second CPU for the sleeper and the hog");
         }
-        // Any CPU but the command's own would do; the hog's spinning keeps
-        // the command off it anyway once it starts.
+        // Any CPU but the test's own would do; the hog's spinning keeps the
+        // test off it anyway once it starts.
         auto const cpu = static_cast<CpuNum>(num_cpus - 1);
 
         auto *const c = new (mm::ALLOC_KERNEL) SleepCase{task::Interruptible::Yes};
         if (c == nullptr) {
-            verdict(tally, false, "allocate the early-wake case");
-            return;
+            FAIL("allocate the early-wake case");
         }
-        auto *const thread = start_sleeper(tally, c, cpu);
+        auto *const thread = start_sleeper(c, cpu);
         if (thread == nullptr) {
             return;
         }
 
         if (spawn_on("sleep-test-hog", hog, c, cpu) == nullptr) {
-            verdict(tally, false, "spawn the hog");
-            log::error("sleep.test:   leaking the case; the sleeper still uses it");
-            return;
+            log::error("sleep:   leaking the case; the sleeper still uses it");
+            FAIL("spawn the hog");
         }
         if (!poll_until([c] { return c->hogging.load(std::memory_order_acquire); })) {
-            verdict(tally, false, "the hog takes the sleeper's CPU");
-            log::error("sleep.test:   leaking the case; the sleeper still uses it");
-            return;
+            log::error("sleep:   leaking the case; the sleeper still uses it");
+            FAIL("the hog takes the sleeper's CPU");
         }
 
         auto const suspended_at = time::SteadyClock::now();
         auto _ = thread->suspend();
-        verdict(tally, suspended_at < c->deadline,
-                "the suspend lands before the deadline (otherwise nothing was tested)");
+        EXPECT_LT(suspended_at, c->deadline,
+                  "the suspend lands before the deadline (otherwise nothing was tested)");
 
         // The sleeper is now Ready on the hog's CPU, its timer still armed:
         // the timer fires there at the deadline, and the sleeper runs only
         // once the hog lets go.
-        if (!finish_sleeper(tally, c, thread)) {
+        if (!finish_sleeper(c, thread)) {
             return;
         }
-        log::info("sleep.test:   the early-woken sleep answered {}, {} us before its deadline",
+        log::info("sleep:   the early-woken sleep answered {}, {} us before its deadline",
                   to_string(c->woken_status),
                   duration_cast<Microseconds>(c->deadline - suspended_at).count());
-        verdict(tally, c->woken_status == Status::InternalIrqRetry,
-                "an interruptible sleep a suspend ends answers InternalIrqRetry, not Ok");
+        EXPECT_EQ(c->woken_status, Status::InternalIrqRetry,
+                  "an interruptible sleep a suspend ends answers InternalIrqRetry, not Ok");
         delete c;
     }
 
-    auto check_uninterruptible_sleep(Tally &tally) -> void {
+    auto check_uninterruptible_sleep() -> void {
         auto *const c = new (mm::ALLOC_KERNEL) SleepCase{task::Interruptible::No};
         if (c == nullptr) {
-            verdict(tally, false, "allocate the uninterruptible case");
-            return;
+            FAIL("allocate the uninterruptible case");
         }
         c->hog_done.store(true, std::memory_order_relaxed);
 
-        auto *const thread = start_sleeper(tally, c, Cpu::id());
+        auto *const thread = start_sleeper(c, Cpu::id());
         if (thread == nullptr) {
             return;
         }
 
         auto _ = thread->suspend();
-        if (!finish_sleeper(tally, c, thread)) {
+        if (!finish_sleeper(c, thread)) {
             return;
         }
-        log::info("sleep.test:   the uninterruptible sleep answered {}, {} us past its deadline",
+        log::info("sleep:   the uninterruptible sleep answered {}, {} us past its deadline",
                   to_string(c->woken_status),
                   duration_cast<Microseconds>(c->woken_at - c->deadline).count());
-        verdict(tally, c->woken_at >= c->deadline,
-                "a suspend does not end a sleep that is not interruptible");
-        verdict(tally, c->woken_status == Status::Ok, "and that sleep answers Ok");
+        EXPECT_GE(c->woken_at, c->deadline,
+                  "a suspend does not end a sleep that is not interruptible");
+        EXPECT_EQ(c->woken_status, Status::Ok, "and that sleep answers Ok");
         delete c;
     }
 
     /// A sleeper spawned and never resumed, then suspended or killed (|kill|)
     /// while it is still Initial.
-    auto check_signal_before_start(Tally &tally, bool const kill) -> void {
+    auto check_signal_before_start(bool const kill) -> void {
         auto *const c = new (mm::ALLOC_KERNEL) SleepCase{task::Interruptible::Yes};
         if (c == nullptr) {
-            verdict(tally, false, "allocate the never-ran case");
-            return;
+            FAIL("allocate the never-ran case");
         }
         c->hog_done.store(true, std::memory_order_relaxed);
 
         auto *const thread =
             task::Thread::spawn("sleep-test-initial", sleeper, c, task::DEFAULT_PRIORITY);
         if (thread == nullptr) {
-            verdict(tally, false, "spawn the never-ran sleeper");
             delete c;
-            return;
+            FAIL("spawn the never-ran sleeper");
         }
         auto _ = thread->detach();
 
@@ -317,39 +295,26 @@ namespace {
         } else {
             auto _ = thread->suspend();
         }
-        if (!finish_sleeper(tally, c, thread)) {
+        if (!finish_sleeper(c, thread)) {
             return;
         }
 
         auto const want = kill ? Status::InternalIrqKilled : Status::InternalIrqRetry;
-        log::info("sleep.test:   the never-ran sleeper, {} first, answered {}",
+        log::info("sleep:   the never-ran sleeper, {} first, answered {}",
                   kill ? "killed" : "suspended", to_string(c->woken_status));
-        verdict(tally, c->woken_status == want,
-                kill ? "a thread killed before it ran starts, and its sleep answers "
-                       "InternalIrqKilled"
-                     : "a thread suspended before it ran starts, and its sleep answers "
-                       "InternalIrqRetry");
+        EXPECT_EQ(c->woken_status, want, "{}",
+                  kill ? "a thread killed before it ran starts, and its sleep answers "
+                         "InternalIrqKilled"
+                       : "a thread suspended before it ran starts, and its sleep answers "
+                         "InternalIrqRetry");
         delete c;
     }
 
-    auto sleep_test_command(int, char **) -> int {
-        Tally tally;
-
-        check_early_wake(tally);
-        check_uninterruptible_sleep(tally);
-        check_signal_before_start(tally, false);
-        check_signal_before_start(tally, true);
-
-        if (tally.failed != 0) {
-            log::error("sleep.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("sleep.test: ok -- {} checks", tally.passed);
-        return 0;
+    KTEST(Sleep, SuspendBeforeDeadline) {
+        check_early_wake();
+        check_uninterruptible_sleep();
+        check_signal_before_start(false);
+        check_signal_before_start(true);
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(SleepTest, "sleep.test", ours::sleep_test_command,
-             "wake a sleeping thread early and check what it reads, and its timer");

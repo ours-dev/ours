@@ -1,9 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `mempressure.test`: the PMM's gate in front of the allocations that can
-// wait, the free-memory signal for whoever watches memory, and the VMOs that
-// wait at the gate, and the memory watchdog (.agents/tasks/memory-pressure).
+// MemoryPressure.TheGateTheSignalAndTheWatchdog: the PMM's gate in front of
+// the allocations that can wait, the free-memory signal for whoever watches
+// memory, and the VMOs that wait at the gate, and the memory watchdog
+// (.agents/tasks/memory-pressure).
 //
 //   - with no delay level, a CanWait allocation is served;
 //   - with the level above free memory, a CanWait allocation shuts the gate
@@ -27,7 +28,7 @@
 // (MemoryWatchdog::Hold), which arms it for itself again afterwards; the
 // checks of the watchdog end with the boot levels back.
 //
-// Why a console command: the gate counts the real zones' free frames, and a
+// Why an in-kernel test: the gate counts the real zones' free frames, and a
 // waiter is a real thread asleep on the real event.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/alloc_flags.hpp>
@@ -45,7 +46,7 @@
 
 #include <array>
 
-#include <gktl/command.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <user_copy/user_copy.hpp>
 #include <ustl/rc.hpp>
@@ -61,28 +62,13 @@ namespace {
     /// signalled, before the check looks.
     constexpr auto SETTLE = Milliseconds(200);
     /// How long one wait of a waiter lasts: a waiter the gate never wakes
-    /// gives up after it rather than holding the console.
+    /// gives up after it rather than holding the test for ever.
     constexpr auto LOST_AFTER = Seconds(5);
 
     /// Frames taken, or given back, to move free memory across a bound,
     /// against a bound this many frames away.
     constexpr usize NR_CROSSING = 64;
     constexpr usize MARGIN = NR_CROSSING / 2;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("mempressure.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("mempressure.test: FAIL  {}", name);
-    }
 
     auto deadline_after(Duration const delta) -> time::Deadline {
         return time::Deadline::at(time::SteadyClock::now() + delta);
@@ -163,19 +149,20 @@ namespace {
         return false;
     }
 
-    auto check_gate(Tally &tally) -> void {
+    auto check_gate() -> void {
         open_gate();
         auto served = mm::alloc_frames(WAITABLE);
-        verdict(tally, !!served, "with no delay level, a CanWait allocation is served");
+        EXPECT_TRUE(!!served, "with no delay level, a CanWait allocation is served");
         if (served) {
             mm::free_frames(*served, 0);
         }
 
         auto const shut = shut_gate();
         auto plain = mm::alloc_frames(mm::ALLOC_USER);
-        verdict(tally, shut && !!plain,
-                "below the delay level a CanWait allocation answers ShouldWait, and one without "
-                "CanWait is served");
+        EXPECT_TRUE(
+            shut && !!plain,
+            "below the delay level a CanWait allocation answers ShouldWait, and one without "
+            "CanWait is served");
         if (plain) {
             mm::free_frames(*plain, 0);
         }
@@ -183,10 +170,10 @@ namespace {
         auto const by_node = mm::alloc_frames(mm::current_node(), WAITABLE, 0);
         auto address = PhysAddr::Invalid;
         auto const with_address = mm::alloc_frames(WAITABLE, &address);
-        verdict(tally,
-                !by_node && by_node.unwrap_err() == Status::ShouldWait && !with_address &&
-                    with_address.unwrap_err() == Status::ShouldWait && address == PhysAddr::Invalid,
-                "block overloads share pressure admission and keep outputs on ShouldWait");
+        EXPECT_TRUE(!by_node && by_node.unwrap_err() == Status::ShouldWait && !with_address &&
+                        with_address.unwrap_err() == Status::ShouldWait &&
+                        address == PhysAddr::Invalid,
+                    "block overloads share pressure admission and keep outputs on ShouldWait");
         for (auto const &result: {by_node, with_address}) {
             if (result) {
                 mm::free_frames(*result, 0);
@@ -194,44 +181,42 @@ namespace {
         }
     }
 
-    auto check_waiter(Tally &tally) -> void {
+    auto check_waiter() -> void {
         auto const shut = shut_gate();
         Waiter waiter;
         auto *const thread = start(&waiter);
         if (thread == nullptr) {
-            verdict(tally, false, "a waiter thread is started");
             open_gate();
-            return;
+            FAIL("start a waiter thread");
         }
         auto const asleep = still_waiting(thread);
         open_gate();
         auto const ended = finish(thread);
-        verdict(tally,
-                shut && asleep && ended && waiter.status == Status::Ok && waiter.frame != nullptr,
-                "a waiter sleeps while the gate is shut, and wakes with a frame when it opens");
+        EXPECT_TRUE(shut && asleep && ended && waiter.status == Status::Ok &&
+                        waiter.frame != nullptr,
+                    "a waiter sleeps while the gate is shut, and wakes with a frame when it opens");
         if (waiter.frame != nullptr) {
             mm::free_frames(waiter.frame, 0);
         }
     }
 
-    auto check_refusal(Tally &tally) -> void {
+    auto check_refusal() -> void {
         auto const shut = shut_gate();
         Waiter waiter;
         auto *const thread = start(&waiter);
         if (thread == nullptr) {
-            verdict(tally, false, "a waiter thread is started");
             open_gate();
-            return;
+            FAIL("start a waiter thread");
         }
         auto const asleep = still_waiting(thread);
         refuse();
         auto const ended = finish(thread);
         auto refused = mm::alloc_frames(WAITABLE);
-        verdict(tally,
-                shut && asleep && ended && waiter.status == Status::OutOfMem &&
-                    waiter.frame == nullptr && !refused && refused.unwrap_err() == Status::OutOfMem,
-                "with delayed allocations refused, a waiter wakes with OutOfMem, and a CanWait "
-                "allocation below the level fails at once");
+        EXPECT_TRUE(shut && asleep && ended && waiter.status == Status::OutOfMem &&
+                        waiter.frame == nullptr && !refused &&
+                        refused.unwrap_err() == Status::OutOfMem,
+                    "with delayed allocations refused, a waiter wakes with OutOfMem, and a CanWait "
+                    "allocation below the level fails at once");
         if (waiter.frame != nullptr) {
             mm::free_frames(waiter.frame, 0);
         }
@@ -241,7 +226,7 @@ namespace {
         open_gate();
     }
 
-    auto check_timeout(Tally &tally) -> void {
+    auto check_timeout() -> void {
         auto const shut = shut_gate();
         auto const deadline = deadline_after(SETTLE);
         auto result = mm::wait_for_frame_allocation(WAITABLE, deadline, true);
@@ -250,14 +235,14 @@ namespace {
             result = mm::wait_for_frame_allocation(WAITABLE, deadline, true);
         }
         open_gate();
-        verdict(tally, shut && !result && result.unwrap_err() == Status::TimeOut,
-                "an interruptible allocation wait times out while the gate stays shut");
+        EXPECT_TRUE(shut && !result && result.unwrap_err() == Status::TimeOut,
+                    "an interruptible allocation wait times out while the gate stays shut");
         if (result) {
             mm::free_frames(*result, 0);
         }
     }
 
-    auto check_signal(Tally &tally) -> void {
+    auto check_signal() -> void {
         sync::Event watched;
         sync::Event rejected;
         // Free memory pushed below the lower bound by allocations.
@@ -276,13 +261,13 @@ namespace {
             mm::PmNode::free_frames(&*rolled_back);
         }
         auto const quiet = watched.wait(deadline_after(SETTLE)) == Status::TimeOut;
-        verdict(tally, armed_low && invalid && quiet,
-                "a partial withdrawal is rolled back before pressure is sampled");
+        EXPECT_TRUE(armed_low && invalid && quiet,
+                    "a partial withdrawal is rolled back before pressure is sampled");
 
         auto batch = mm::PmNode::alloc_frames_bulk(mm::ALLOC_USER, NR_CROSSING);
         auto const low = watched.wait(deadline_after(SETTLE)) == Status::Ok;
-        verdict(tally, armed_low && batch && batch->size() == NR_CROSSING && low,
-                "a direct PmNode batch below the lower bound signals the event");
+        EXPECT_TRUE(armed_low && batch && batch->size() == NR_CROSSING && low,
+                    "a direct PmNode batch below the lower bound signals the event");
         watched.unsignal();
 
         // And above the upper bound by frees.
@@ -293,11 +278,11 @@ namespace {
             mm::PmNode::free_frames(&*batch);
         }
         auto const high = watched.wait(deadline_after(SETTLE)) == Status::Ok;
-        verdict(tally, armed_high && high,
-                "a direct PmNode list return above the upper bound signals the event");
+        EXPECT_TRUE(armed_high && high,
+                    "a direct PmNode list return above the upper bound signals the event");
         open_gate();
-        verdict(tally, !stale_low && !stale_high && low,
-                "stale bounds are rejected without replacing the armed event");
+        EXPECT_TRUE(!stale_low && !stale_high && low,
+                    "stale bounds are rejected without replacing the armed event");
     }
 
     /// One use of a user VMO's page, by a thread of its own: it sleeps while
@@ -340,7 +325,7 @@ namespace {
     /// Runs |access| in a thread of |aspace| with the gate shut, and opens it
     /// once the thread is asleep. Whether it slept, and finished once the
     /// gate opened. One that is still asleep then is woken with a refusal, so
-    /// that the command never waits on it for ever.
+    /// that the test never waits on it for ever.
     auto run_shut(mm::VmAspace *const aspace, VmoAccess *const access) -> bool {
         auto const shut = shut_gate();
         auto *const thread =
@@ -358,14 +343,14 @@ namespace {
         if (thread->join(&retcode, deadline_after(LOST_AFTER)) == Status::Ok) {
             return shut && asleep;
         }
-        log::error("mempressure.test: an access slept on after the gate opened; refusing it");
+        log::error("mempressure: an access slept on after the gate opened; refusing it");
         refuse();
         auto _ = thread->join(&retcode, time::Deadline::infinite());
         open_gate();
         return false;
     }
 
-    auto check_vmo(Tally &tally) -> void {
+    auto check_vmo() -> void {
         constexpr u64 P = PAGE_SIZE;
 
         ustl::Arc<mm::VmAspace> aspace;
@@ -373,8 +358,7 @@ namespace {
                                                      mm::VmasKind::User, mm::VmasFlags::None,
                                                      "mempressure.test", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the VMO checks is made");
-            return;
+            FAIL("make an address space for the VMO checks");
         }
         ustl::Arc<mm::VmObjectPaged> vmo;
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
@@ -390,9 +374,8 @@ namespace {
             }
         }
         if (base == VirtAddr{0}) {
-            verdict(tally, false, "a user VMO is made and mapped");
             auto _ = aspace->destroy();
-            return;
+            FAIL("make and map a user VMO");
         }
 
         // Whether the page at |offset| reads |value| back.
@@ -407,25 +390,26 @@ namespace {
                         .offset = 0,
                         .value = 0x5107'e000'0000'0001};
         auto const stored = run_shut(aspace.as_ptr_mut(), &store);
-        verdict(tally, stored && store.status == Status::Ok && holds(0, store.value),
-                "a store to a user VMO's mapping sleeps while the gate is shut, and lands once "
-                "it opens");
+        EXPECT_TRUE(stored && store.status == Status::Ok && holds(0, store.value),
+                    "a store to a user VMO's mapping sleeps while the gate is shut, and lands once "
+                    "it opens");
 
         VmoAccess write{.kind = VmoAccess::Kind::Write,
                         .vmo = vmo.as_ptr_mut(),
                         .offset = P,
                         .value = 0x5107'e000'0000'0002};
         auto const written = run_shut(aspace.as_ptr_mut(), &write);
-        verdict(tally, written && write.status == Status::Ok && holds(P, write.value),
-                "a write of a user VMO sleeps while the gate is shut, and lands once it opens");
+        EXPECT_TRUE(written && write.status == Status::Ok && holds(P, write.value),
+                    "a write of a user VMO sleeps while the gate is shut, and lands once it opens");
 
         VmoAccess commit{.kind = VmoAccess::Kind::Commit, .vmo = vmo.as_ptr_mut(), .offset = 2 * P};
         auto const committed = run_shut(aspace.as_ptr_mut(), &commit);
-        verdict(tally, committed && commit.status == Status::Ok && holds(2 * P, 0),
-                "a commit of a user VMO sleeps while the gate is shut, and commits once it opens");
+        EXPECT_TRUE(committed && commit.status == Status::Ok && holds(2 * P, 0),
+                    "a commit of a user VMO sleeps while the gate is shut, and commits once it "
+                    "opens");
 
-        verdict(tally, aspace->destroy() == Status::Ok,
-                "the address space of the VMO checks is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                    "the address space of the VMO checks is destroyed");
     }
 
     /// Whether the watchdog declares |expected| within LOST_AFTER.
@@ -433,7 +417,7 @@ namespace {
         auto const give_up = time::SteadyClock::now() + LOST_AFTER;
         while (mm::MemoryWatchdog::get().pressure() != expected) {
             if (time::SteadyClock::now() >= give_up) {
-                log::error("mempressure.test: the watchdog says {}, not {}",
+                log::error("mempressure: the watchdog says {}, not {}",
                            mm::to_string(mm::MemoryWatchdog::get().pressure()),
                            mm::to_string(expected));
                 return false;
@@ -443,7 +427,7 @@ namespace {
         return true;
     }
 
-    auto check_watchdog(Tally &tally) -> void {
+    auto check_watchdog() -> void {
         using mm::MemoryPressure;
         using mm::MemoryWatchdog;
         // These move the levels to where free memory is and look at what the
@@ -460,15 +444,15 @@ namespace {
         };
         auto &watchdog = MemoryWatchdog::get();
         auto const boot = mm::MemoryPressureLevels::from_boot_options();
-        verdict(tally, settles_at(MemoryPressure::Normal),
-                "with the boot levels, the watchdog finds Normal pressure");
+        EXPECT_TRUE(settles_at(MemoryPressure::Normal),
+                    "with the boot levels, the watchdog finds Normal pressure");
 
         auto const free = mm::approx_free_frame_count();
         auto const moved_levels = at(free - 3 * K, free - K, free + K);
         auto const moved = moved_levels && watchdog.set_levels(*moved_levels) == Status::Ok &&
                            settles_at(MemoryPressure::Warning);
-        verdict(tally, moved,
-                "with free memory moved under the Warning level, the pressure is Warning");
+        EXPECT_TRUE(moved,
+                    "with free memory moved under the Warning level, the pressure is Warning");
 
         std::array<mm::PmFrame *, 2 * K> frames{};
         usize taken = 0;
@@ -485,9 +469,9 @@ namespace {
             mm::free_frames(frames[i], 0);
         }
         auto const back = settles_at(MemoryPressure::Warning);
-        verdict(tally, taken == 2 * K && critical && back,
-                "allocations past the Critical level make it Critical, and the frees bring it "
-                "back to Warning");
+        EXPECT_TRUE(taken == 2 * K && critical && back,
+                    "allocations past the Critical level make it Critical, and the frees bring it "
+                    "back to Warning");
 
         auto const now = mm::approx_free_frame_count();
         auto const oom_levels = at(now + K, now + 3 * K, now + 5 * K);
@@ -495,9 +479,9 @@ namespace {
                               settles_at(MemoryPressure::OutOfMemory);
         auto refused = mm::alloc_frames(WAITABLE);
         auto served = mm::alloc_frames(mm::ALLOC_USER);
-        verdict(tally, declared && !refused && refused.unwrap_err() == Status::OutOfMem && !!served,
-                "at OutOfMemory an allocation that could wait is refused, and one that could not "
-                "is served");
+        EXPECT_TRUE(declared && !refused && refused.unwrap_err() == Status::OutOfMem && !!served,
+                    "at OutOfMemory an allocation that could wait is refused, and one that could "
+                    "not is served");
         if (refused) {
             mm::free_frames(*refused, 0);
         }
@@ -508,40 +492,27 @@ namespace {
         auto const restored = watchdog.set_levels(boot);
         auto const normal = restored == Status::Ok && settles_at(MemoryPressure::Normal);
         auto waited = mm::alloc_frames(WAITABLE);
-        verdict(tally, normal && !!waited,
-                "with the boot levels back, the pressure is Normal and an allocation that could "
-                "wait is served");
+        EXPECT_TRUE(normal && !!waited,
+                    "with the boot levels back, the pressure is Normal and an allocation that "
+                    "could wait is served");
         if (waited) {
             mm::free_frames(*waited, 0);
         }
     }
 
-    auto mempressure_test_command(int, char **) -> int {
-        Tally tally;
+    KTEST(MemoryPressure, TheGateTheSignalAndTheWatchdog) {
         {
             // These drive the gate and the signal by hand.
             mm::MemoryWatchdog::Hold hold{mm::MemoryWatchdog::get()};
-            check_gate(tally);
-            check_waiter(tally);
-            check_refusal(tally);
-            check_timeout(tally);
-            check_signal(tally);
-            check_vmo(tally);
+            check_gate();
+            check_waiter();
+            check_refusal();
+            check_timeout();
+            check_signal();
+            check_vmo();
             open_gate();
         }
-        check_watchdog(tally);
-
-        if (tally.failed != 0) {
-            log::error("mempressure.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("mempressure.test: ok -- {} checks", tally.passed);
-        return 0;
+        check_watchdog();
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(MemoryPressureTest, "mempressure.test", ours::mempressure_test_command,
-             "check the PMM's gate for allocations that can wait, its free-memory signal, and "
-             "the memory watchdog");

@@ -1,9 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `interruptline.test`: interrupt objects on a physical line
-// (.agents/tasks/microkernel-interrupts/PLAN.md, step 11). dbg image only: it
-// is the one with a kernel shell, and with the assertions this relies on.
+// InterruptLine.CreateDeliveryMaskingAndTeardownOnAPhysicalLine: interrupt
+// objects on a physical line (.agents/tasks/microkernel-interrupts/PLAN.md,
+// step 11). dbg image only: it is the one with a kernel shell, and with the
+// assertions this relies on.
 //
 // The line is ISA 3, COM2's: QEMU has no COM2 with a single -serial, the
 // platform programs the line masked, and no kernel driver is on it. Nothing
@@ -69,8 +70,8 @@
 //     and only then takes L1 to detach, so each waits for the other in one
 //     order only.
 //
-// A console command rather than a unit test: the handler's path is the
-// interrupt entry, the irq layer and the scheduler's wakeups, on real CPUs.
+// Why an in-kernel test: the handler's path is the interrupt entry, the irq
+// layer and the scheduler's wakeups, on real CPUs.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
 #include <ours/interrupt.hpp>
@@ -93,8 +94,8 @@
 
 #include <arch/spin_hint.hpp>
 #include <arch/x86/interrupt.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -116,31 +117,6 @@ namespace {
     constexpr usize MODE_RACE_ROUNDS = 200;
     /// How many wrong rounds of the mode race are logged one by one.
     constexpr usize MODE_RACE_LOGGED = 5;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("interruptline.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("interruptline.test: FAIL  {}", name);
-    }
-
-    /// Whether |got| is |want|, logging both when it is not.
-    auto answered(Tally &tally, Status const got, Status const want, char const *const name)
-        -> void {
-        if (got != want) {
-            log::error("interruptline.test:   {} answered {}, expected {}", name, to_string(got),
-                       to_string(want));
-        }
-        verdict(tally, got == want, name);
-    }
 
     /// The free line, by the number the irq layer names it: q35 has no
     /// override for ISA 3, so it is GSI 3.
@@ -242,18 +218,17 @@ namespace {
     /// Starts a thread waiting on |interrupt| and waits until it has parked.
     /// Null if it did not get there; whatever is left then is destroyed or
     /// leaked, and logged.
-    auto park_waiter(Tally &tally, ustl::Arc<InterruptDispatcher> interrupt, Waiter **const out)
-        -> Thread * {
+    auto park_waiter(ustl::Arc<InterruptDispatcher> interrupt, Waiter **const out) -> Thread * {
         auto *const waiter = new (mm::ALLOC_KERNEL) Waiter{};
         if (waiter == nullptr) {
-            verdict(tally, false, "allocate a waiter");
+            EXPECT_TRUE(false, "allocate a waiter");
             return nullptr;
         }
         waiter->interrupt = interrupt;
         auto *const thread =
             Thread::spawn("interruptline-waiter", waiter_routine, waiter, task::DEFAULT_PRIORITY);
         if (thread == nullptr) {
-            verdict(tally, false, "spawn a waiter");
+            EXPECT_TRUE(false, "spawn a waiter");
             delete waiter;
             return nullptr;
         }
@@ -262,13 +237,13 @@ namespace {
             return waiter->waiting.load(std::memory_order_acquire) && is_parked(thread);
         });
         if (!parked) {
-            verdict(tally, false, "a wait with nothing pending parks");
+            EXPECT_TRUE(false, "a wait with nothing pending parks");
             // Whatever it is doing, a destroy ends its wait.
             auto _ = interrupt->destroy();
             if (joined(thread)) {
                 delete waiter;
             } else {
-                log::error("interruptline.test:   leaking a waiter; its thread may still use it");
+                log::error("interruptline:   leaking a waiter; its thread may still use it");
             }
             return nullptr;
         }
@@ -280,14 +255,14 @@ namespace {
     /// leaked, if the thread never ended.
     auto reap(Thread *const thread, Waiter *const waiter) -> bool {
         if (!joined(thread)) {
-            log::error("interruptline.test:   leaking a waiter; its thread may still use it");
+            log::error("interruptline:   leaking a waiter; its thread may still use it");
             return false;
         }
         delete waiter;
         return true;
     }
 
-    auto check_timer_line(Tally &tally) -> void {
+    auto check_timer_line() -> void {
         auto const before = irq::trigger_mode(timer_line());
         KernelHandle<InterruptDispatcher> interrupt;
         auto rights = Rights::None;
@@ -297,14 +272,14 @@ namespace {
                                                             InterruptOptions::ModeLevelHigh);
         auto const after = irq::trigger_mode(timer_line());
 
-        answered(tally, plain, Status::AccessDenied, "the timer's line refuses an object");
-        answered(tally, level, Status::AccessDenied,
-                 "and one that would set its mode, before setting it");
-        verdict(tally, irq::is_kernel_owned(timer_line()),
-                "the timer's line is the kernel's own: Permanent");
-        verdict(tally, !irq::is_kernel_owned(free_line()), "the free line is not");
-        verdict(tally, !irq::is_kernel_owned(VIrqNum::Invalid),
-                "and VIrqNum::Invalid, which is no line, is not");
+        EXPECT_TRUE(plain == Status::AccessDenied, "the timer's line refuses an object");
+        EXPECT_TRUE(level == Status::AccessDenied,
+                    "and one that would set its mode, before setting it");
+        EXPECT_TRUE(irq::is_kernel_owned(timer_line()),
+                    "the timer's line is the kernel's own: Permanent");
+        EXPECT_TRUE(!irq::is_kernel_owned(free_line()), "the free line is not");
+        EXPECT_TRUE(!irq::is_kernel_owned(VIrqNum::Invalid),
+                    "and VIrqNum::Invalid, which is no line, is not");
         // Every line the machine has: the timer's is the only one.
         auto owned = usize{0};
         for (u32 source = 0; source < 256; ++source) {
@@ -314,46 +289,45 @@ namespace {
                 owned += 1;
             }
         }
-        verdict(tally, owned == 1, "and it is the only line of the machine that is");
-        verdict(tally,
-                before.is_ok() && after.is_ok() && *before == irq::TriggerMode::Edge &&
-                    *after == irq::TriggerMode::Edge,
-                "the timer's line is still edge-triggered after both");
+        EXPECT_EQ(owned, usize{1}, "and it is the only line of the machine that is");
+        EXPECT_TRUE(before.is_ok() && after.is_ok() && *before == irq::TriggerMode::Edge &&
+                        *after == irq::TriggerMode::Edge,
+                    "the timer's line is still edge-triggered after both");
     }
 
-    auto check_take_line(Tally &tally) -> void {
+    auto check_take_line() -> void {
         KernelHandle<InterruptDispatcher> first;
         KernelHandle<InterruptDispatcher> second;
-        answered(tally, make(&first), Status::Ok, "an object takes the free line");
+        EXPECT_TRUE(make(&first) == Status::Ok, "an object takes the free line");
         if (!first.dispatcher()) {
             return;
         }
-        answered(tally, make(&second), Status::AlreadyBound,
-                 "a second object on the line answers AlreadyBound");
-        answered(tally, make(&second, InterruptOptions::ModeEdgeHigh), Status::AlreadyBound,
-                 "so does one that would set the line's mode");
+        EXPECT_TRUE(make(&second) == Status::AlreadyBound,
+                    "a second object on the line answers AlreadyBound");
+        EXPECT_TRUE(make(&second, InterruptOptions::ModeEdgeHigh) == Status::AlreadyBound,
+                    "so does one that would set the line's mode");
 
         auto const from = now();
         auto const result = fire();
         auto const to = now();
         auto at = Instant{-1};
         auto const waited = first.dispatcher()->wait(&at);
-        verdict(tally, result == irq::IrqReturn::WakeThread,
-                "a dispatch on the line is handled, and wakes the object's thread (WakeThread)");
-        verdict(tally, waited == Status::Ok && at >= from && at <= to,
-                "by the first object: a wait takes it, with a time from while it came in");
-        answered(tally, first.dispatcher()->trigger(1), Status::BadState,
-                 "an object on a line cannot be triggered by hand");
+        EXPECT_TRUE(result == irq::IrqReturn::WakeThread,
+                    "a dispatch on the line is handled, and wakes the object's thread "
+                    "(WakeThread)");
+        EXPECT_TRUE(waited == Status::Ok && at >= from && at <= to,
+                    "by the first object: a wait takes it, with a time from while it came in");
+        EXPECT_TRUE(first.dispatcher()->trigger(1) == Status::BadState,
+                    "an object on a line cannot be triggered by hand");
     }
 
-    auto check_wakes_waiter(Tally &tally, bool const by_ipi, char const *const name) -> void {
+    auto check_wakes_waiter(bool const by_ipi, char const *const name) -> void {
         KernelHandle<InterruptDispatcher> interrupt;
         if (make(&interrupt) != Status::Ok) {
-            verdict(tally, false, "take the line for a waiter");
-            return;
+            FAIL("take the line for a waiter");
         }
         Waiter *waiter = nullptr;
-        auto *const thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
+        auto *const thread = park_waiter(interrupt.dispatcher(), &waiter);
         if (thread == nullptr) {
             return;
         }
@@ -365,17 +339,16 @@ namespace {
         }
         auto const ended = joined(thread);
         auto const to = now();
-        verdict(tally, ended, name);
+        EXPECT_TRUE(ended, "{}", name);
         if (!ended) {
             // A destroy ends the wait; then it is reaped or leaked.
             auto _ = interrupt.dispatcher()->destroy();
             auto _ = reap(thread, waiter);
             return;
         }
-        verdict(tally,
-                waiter->status == Status::Ok && waiter->timestamp >= from &&
-                    waiter->timestamp <= to,
-                "the woken wait returns a time from while the interrupt came in");
+        EXPECT_TRUE(waiter->status == Status::Ok && waiter->timestamp >= from &&
+                        waiter->timestamp <= to,
+                    "the woken wait returns a time from while the interrupt came in");
         delete waiter;
     }
 
@@ -392,7 +365,7 @@ namespace {
                packet.interrupt.timestamp <= to;
     }
 
-    auto check_port(Tally &tally) -> void {
+    auto check_port() -> void {
         KernelHandle<InterruptDispatcher> interrupt;
         KernelHandle<PortDispatcher> port;
         auto rights = Rights::None;
@@ -400,8 +373,7 @@ namespace {
             PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
                 Status::Ok ||
             interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
-            verdict(tally, false, "take the line and bind it to a port");
-            return;
+            FAIL("take the line and bind it to a port");
         }
         auto &object = *interrupt.dispatcher();
         auto &queue = *port.dispatcher();
@@ -410,30 +382,30 @@ namespace {
         auto const first_from = now();
         auto _ = fire();
         auto const first_to = now();
-        verdict(tally,
-                queue.dequeue(0, &packet) == Status::Ok && is_packet(packet, first_from, first_to),
-                "bound, an interrupt sends a packet with the key and its time");
+        EXPECT_TRUE(queue.dequeue(0, &packet) == Status::Ok &&
+                        is_packet(packet, first_from, first_to),
+                    "bound, an interrupt sends a packet with the key and its time");
 
         auto const fold_from = now();
         auto _ = fire();
         auto const fold_to = now();
         auto _ = fire();
-        verdict(tally, queue.dequeue(0, &packet) == Status::TimeOut,
-                "two more before the ack send nothing");
-        answered(tally, object.ack(), Status::Ok, "the ack");
-        verdict(tally,
-                queue.dequeue(0, &packet) == Status::Ok && is_packet(packet, fold_from, fold_to),
-                "sends them as one packet, with the first one's time");
-        answered(tally, object.ack(), Status::Ok, "and the next ack has nothing to send");
+        EXPECT_TRUE(queue.dequeue(0, &packet) == Status::TimeOut,
+                    "two more before the ack send nothing");
+        EXPECT_TRUE(object.ack() == Status::Ok, "the ack");
+        EXPECT_TRUE(queue.dequeue(0, &packet) == Status::Ok &&
+                        is_packet(packet, fold_from, fold_to),
+                    "sends them as one packet, with the first one's time");
+        EXPECT_TRUE(object.ack() == Status::Ok, "and the next ack has nothing to send");
 
         auto const raised_from = now();
         raise();
         auto const read = read_within(queue, &packet);
         auto const raised_to = now();
-        verdict(tally, read && is_packet(packet, raised_from, raised_to),
-                "an interrupt raised through the interrupt entry sends its packet too");
-        answered(tally, object.ack(), Status::Ok, "which is acked");
-        verdict(tally, queue.dequeue(0, &packet) == Status::TimeOut, "leaving the port empty");
+        EXPECT_TRUE(read && is_packet(packet, raised_from, raised_to),
+                    "an interrupt raised through the interrupt entry sends its packet too");
+        EXPECT_TRUE(object.ack() == Status::Ok, "which is acked");
+        EXPECT_TRUE(queue.dequeue(0, &packet) == Status::TimeOut, "leaving the port empty");
     }
 
     // A platform vector, and so in the interrupt entry's platform range,
@@ -447,7 +419,7 @@ namespace {
     /// class and below, the free line's among them, and the second would
     /// never come in. Preemption stays off across the two sends, so both
     /// reach the same CPU.
-    auto check_vector_without_line(Tally &tally) -> void {
+    auto check_vector_without_line() -> void {
         KernelHandle<InterruptDispatcher> interrupt;
         KernelHandle<PortDispatcher> port;
         auto rights = Rights::None;
@@ -455,9 +427,7 @@ namespace {
             PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
                 Status::Ok ||
             interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
-            verdict(tally, false,
-                    "take the line and bind it to a port, beside a vector no line has");
-            return;
+            FAIL("take the line and bind it to a port, beside a vector no line has");
         }
         auto const unowned = static_cast<arch::IrqVec>(
             static_cast<usize>(arch::IrqVec::PlatformIrqMin) + NO_SUCH_LINE);
@@ -471,115 +441,110 @@ namespace {
         }
         auto const read = read_within(*port.dispatcher(), &packet);
         auto const to = now();
-        verdict(tally, irq::spurious_count(VIrqNum{NO_SUCH_LINE}).is_none(),
-                "a vector past every line has no line");
-        verdict(tally, read && is_packet(packet, from, to),
-                "raised before the line's own, it is ended by the root handler: the line's "
-                "interrupt still comes in");
+        EXPECT_TRUE(irq::spurious_count(VIrqNum{NO_SUCH_LINE}).is_none(),
+                    "a vector past every line has no line");
+        EXPECT_TRUE(read && is_packet(packet, from, to),
+                    "raised before the line's own, it is ended by the root handler: the line's "
+                    "interrupt still comes in");
     }
 
-    auto check_destroy(Tally &tally) -> void {
+    auto check_destroy() -> void {
         KernelHandle<InterruptDispatcher> interrupt;
         if (make(&interrupt) != Status::Ok) {
-            verdict(tally, false, "take the line for the destroy");
-            return;
+            FAIL("take the line for the destroy");
         }
         Waiter *waiter = nullptr;
-        auto *const thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
+        auto *const thread = park_waiter(interrupt.dispatcher(), &waiter);
         if (thread == nullptr) {
             return;
         }
-        answered(tally, interrupt.dispatcher()->destroy(), Status::Ok, "a destroy");
+        EXPECT_TRUE(interrupt.dispatcher()->destroy() == Status::Ok, "a destroy");
         if (!joined(thread)) {
-            log::error("interruptline.test:   leaking a waiter; its thread may still use it");
-            verdict(tally, false, "wakes the parked waiter");
+            log::error("interruptline:   leaking a waiter; its thread may still use it");
+            EXPECT_TRUE(false, "wakes the parked waiter");
             return;
         }
-        verdict(tally, waiter->status == Status::Cancelled,
-                "wakes the parked waiter with Cancelled");
+        EXPECT_TRUE(waiter->status == Status::Cancelled, "wakes the parked waiter with Cancelled");
         delete waiter;
 
         auto const spurious_before = irq::spurious_count(free_line());
         auto const result = fire();
         auto const spurious_after = irq::spurious_count(free_line());
-        verdict(tally,
-                result == irq::IrqReturn::None && spurious_before.is_some() &&
-                    spurious_after.is_some() && *spurious_after == *spurious_before + 1,
-                "and lets the line go: a dispatch finds nobody on it");
+        EXPECT_TRUE(result == irq::IrqReturn::None && spurious_before.is_some() &&
+                        spurious_after.is_some() && *spurious_after == *spurious_before + 1,
+                    "and lets the line go: a dispatch finds nobody on it");
 
         // The handle is still open; the line is free all the same.
         KernelHandle<InterruptDispatcher> next;
-        answered(tally, make(&next), Status::Ok, "a create takes the line again");
+        EXPECT_TRUE(make(&next) == Status::Ok, "a create takes the line again");
         // Closing the destroyed object's last handle destroys nothing more:
         // the new owner keeps its line.
         interrupt = KernelHandle<InterruptDispatcher>();
         KernelHandle<InterruptDispatcher> third;
-        answered(tally, make(&third), Status::AlreadyBound,
-                 "closing the destroyed object's handle leaves the new owner the line");
+        EXPECT_TRUE(make(&third) == Status::AlreadyBound,
+                    "closing the destroyed object's handle leaves the new owner the line");
 
         // The last handle going destroys the object, which lets the line go.
         next = KernelHandle<InterruptDispatcher>();
-        answered(tally, make(&third), Status::Ok, "the last handle going lets the line go");
+        EXPECT_TRUE(make(&third) == Status::Ok, "the last handle going lets the line go");
     }
 
     /// The kernel taking the line away from the object, as the removal of
     /// the line's domain does (irq::revoke_line_for_test()): the object is
     /// destroyed from the line's side, with the line's lock held, and its own
     /// destroy() that follows still has to be safe.
-    auto check_revoked(Tally &tally) -> void {
+    auto check_revoked() -> void {
         KernelHandle<InterruptDispatcher> interrupt;
         if (make(&interrupt) != Status::Ok) {
-            verdict(tally, false, "take the line for the revoke");
-            return;
+            FAIL("take the line for the revoke");
         }
         Waiter *waiter = nullptr;
-        auto *const thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
+        auto *const thread = park_waiter(interrupt.dispatcher(), &waiter);
         if (thread == nullptr) {
             return;
         }
-        answered(tally, irq::revoke_line_for_test(free_line()), Status::Ok,
-                 "the kernel takes the line away");
+        EXPECT_TRUE(irq::revoke_line_for_test(free_line()) == Status::Ok,
+                    "the kernel takes the line away");
         if (!joined(thread)) {
-            log::error("interruptline.test:   leaking a waiter; its thread may still use it");
-            verdict(tally, false, "wakes the parked waiter");
+            log::error("interruptline:   leaking a waiter; its thread may still use it");
+            EXPECT_TRUE(false, "wakes the parked waiter");
             // The line stays marked for the rest of the boot otherwise, and
             // every later check on it would fail for it.
             irq::unmark_dying_for_test(free_line());
             return;
         }
-        verdict(tally, waiter->status == Status::Cancelled, "a parked waiter wakes with Cancelled");
+        EXPECT_TRUE(waiter->status == Status::Cancelled, "a parked waiter wakes with Cancelled");
         delete waiter;
 
         Instant timestamp = 0;
-        answered(tally, interrupt.dispatcher()->wait(&timestamp), Status::Cancelled,
-                 "a later wait answers Cancelled");
+        EXPECT_TRUE(interrupt.dispatcher()->wait(&timestamp) == Status::Cancelled,
+                    "a later wait answers Cancelled");
         KernelHandle<InterruptDispatcher> other;
-        answered(tally, make(&other), Status::NoResource,
-                 "a line marked for removal refuses an object");
-        verdict(tally, irq::spurious_count(free_line()).is_some(),
-                "though the line is still there");
+        EXPECT_TRUE(make(&other) == Status::NoResource,
+                    "a line marked for removal refuses an object");
+        EXPECT_TRUE(irq::spurious_count(free_line()).is_some(), "though the line is still there");
 
         // The object's own destroy, which the last handle going makes, finds
         // the line gone from it already and waits for the removal to be done.
-        answered(tally, interrupt.dispatcher()->destroy(), Status::Ok,
-                 "a destroy after the revoke answers Ok");
-        answered(tally, interrupt.dispatcher()->destroy(), Status::Ok, "and a second one");
+        EXPECT_TRUE(interrupt.dispatcher()->destroy() == Status::Ok,
+                    "a destroy after the revoke answers Ok");
+        EXPECT_TRUE(interrupt.dispatcher()->destroy() == Status::Ok, "and a second one");
 
         irq::unmark_dying_for_test(free_line());
-        answered(tally, make(&other), Status::Ok, "once unmarked the line takes an object again");
+        EXPECT_TRUE(make(&other) == Status::Ok, "once unmarked the line takes an object again");
         // Closing the revoked object's handle leaves the new owner the line.
         interrupt = KernelHandle<InterruptDispatcher>();
         KernelHandle<InterruptDispatcher> third;
-        answered(tally, make(&third), Status::AlreadyBound,
-                 "and closing the revoked object's handle leaves the new owner the line");
+        EXPECT_TRUE(make(&third) == Status::AlreadyBound,
+                    "and closing the revoked object's handle leaves the new owner the line");
         other = KernelHandle<InterruptDispatcher>();
-        answered(tally, make(&third), Status::Ok, "which goes when its last handle does");
+        EXPECT_TRUE(make(&third) == Status::Ok, "which goes when its last handle does");
         third = KernelHandle<InterruptDispatcher>();
     }
 
     /// Bound to a port, the object has a packet queued that the revoke takes
     /// back, as destroy() does, and says nothing more.
-    auto check_revoked_bound(Tally &tally) -> void {
+    auto check_revoked_bound() -> void {
         KernelHandle<InterruptDispatcher> interrupt;
         KernelHandle<PortDispatcher> port;
         auto rights = Rights::None;
@@ -587,28 +552,27 @@ namespace {
             PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
                 Status::Ok ||
             interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
-            verdict(tally, false, "take the line and bind it to a port for the revoke");
-            return;
+            FAIL("take the line and bind it to a port for the revoke");
         }
         auto &object = *interrupt.dispatcher();
         auto &queue = *port.dispatcher();
 
         auto _ = fire();
-        answered(tally, irq::revoke_line_for_test(free_line()), Status::Ok,
-                 "the kernel takes the line away from a bound object with a packet queued");
+        EXPECT_TRUE(irq::revoke_line_for_test(free_line()) == Status::Ok,
+                    "the kernel takes the line away from a bound object with a packet queued");
         auto packet = PortPacket{};
-        verdict(tally, queue.dequeue(0, &packet) == Status::TimeOut,
-                "the queued packet is taken back from the port");
-        answered(tally, object.ack(), Status::Cancelled, "and an ack answers Cancelled");
-        answered(tally, object.destroy(), Status::Ok, "a destroy after the revoke answers Ok");
+        EXPECT_TRUE(queue.dequeue(0, &packet) == Status::TimeOut,
+                    "the queued packet is taken back from the port");
+        EXPECT_TRUE(object.ack() == Status::Cancelled, "and an ack answers Cancelled");
+        EXPECT_TRUE(object.destroy() == Status::Ok, "a destroy after the revoke answers Ok");
 
         irq::unmark_dying_for_test(free_line());
         interrupt = KernelHandle<InterruptDispatcher>();
         KernelHandle<InterruptDispatcher> next;
-        answered(tally, make(&next), Status::Ok, "the line is free once it is unmarked");
+        EXPECT_TRUE(make(&next) == Status::Ok, "the line is free once it is unmarked");
     }
 
-    auto check_modes(Tally &tally) -> void {
+    auto check_modes() -> void {
         auto mode_after = [](InterruptOptions const mode) -> ustl::Option<irq::TriggerMode> {
             KernelHandle<InterruptDispatcher> interrupt;
             if (make(&interrupt, mode) != Status::Ok) {
@@ -626,12 +590,12 @@ namespace {
         // which is how irq.test expects to find it too.
         auto const edge = mode_after(InterruptOptions::ModeEdgeHigh);
 
-        verdict(tally, level.is_some() && *level == irq::TriggerMode::Level,
-                "a level mode makes the line level-triggered");
-        verdict(tally, kept.is_some() && *kept == irq::TriggerMode::Level,
-                "the default mode leaves it so");
-        verdict(tally, edge.is_some() && *edge == irq::TriggerMode::Edge,
-                "an edge mode makes it edge-triggered again");
+        EXPECT_TRUE(level.is_some() && *level == irq::TriggerMode::Level,
+                    "a level mode makes the line level-triggered");
+        EXPECT_TRUE(kept.is_some() && *kept == irq::TriggerMode::Level,
+                    "the default mode leaves it so");
+        EXPECT_TRUE(edge.is_some() && *edge == irq::TriggerMode::Edge,
+                    "an edge mode makes it edge-triggered again");
     }
 
     /// A level object, unbound: an interrupt masks its line before the wait
@@ -640,42 +604,41 @@ namespace {
     /// interrupt came since, which that wait takes, leaving the line masked.
     /// The next interrupt, with a wait parked, masks the line again and wakes
     /// it.
-    auto check_level_mask_unbound(Tally &tally) -> void {
+    auto check_level_mask_unbound() -> void {
         KernelHandle<InterruptDispatcher> interrupt;
         if (make(&interrupt, InterruptOptions::ModeLevelHigh) != Status::Ok) {
-            verdict(tally, false, "take the line in a level mode");
-            return;
+            FAIL("take the line in a level mode");
         }
-        verdict(tally, line_unmasked(), "a level object's line is unmasked once it is created");
+        EXPECT_TRUE(line_unmasked(), "a level object's line is unmasked once it is created");
 
         auto _ = fire();
-        verdict(tally, line_masked(), "a level interrupt masks the line");
+        EXPECT_TRUE(line_masked(), "a level interrupt masks the line");
         auto at = Instant{-1};
         auto const taken = interrupt.dispatcher()->wait(&at);
-        verdict(tally, taken == Status::Ok && line_masked(),
-                "and the line stays masked once a wait has taken the interrupt");
+        EXPECT_TRUE(taken == Status::Ok && line_masked(),
+                    "and the line stays masked once a wait has taken the interrupt");
 
         // One more before the ack: the next wait acks the last interrupt and
         // takes this one at once, and the object is owed an ack for it, so
         // nothing may unmask the line in between.
         auto _ = fire();
         auto const retaken = interrupt.dispatcher()->wait(&at);
-        verdict(tally, retaken == Status::Ok && line_masked(),
-                "a wait that takes the interrupt since leaves the line masked");
+        EXPECT_TRUE(retaken == Status::Ok && line_masked(),
+                    "a wait that takes the interrupt since leaves the line masked");
 
         // The next wait finds nothing pending: it is the ack of the one the
         // last wait took, unmasks the line, and parks.
         Waiter *waiter = nullptr;
-        auto *const thread = park_waiter(tally, interrupt.dispatcher(), &waiter);
+        auto *const thread = park_waiter(interrupt.dispatcher(), &waiter);
         if (thread == nullptr) {
             return;
         }
-        verdict(tally, line_unmasked(), "the next wait acks it: it unmasks the line and parks");
+        EXPECT_TRUE(line_unmasked(), "the next wait acks it: it unmasks the line and parks");
 
         auto _ = fire();
         auto const ended = joined(thread);
-        verdict(tally, ended && waiter->status == Status::Ok && line_masked(),
-                "an interrupt with that wait parked masks the line again and wakes it");
+        EXPECT_TRUE(ended && waiter->status == Status::Ok && line_masked(),
+                    "an interrupt with that wait parked masks the line again and wakes it");
         if (!ended) {
             // A destroy ends the wait; then it is reaped or leaked.
             auto _ = interrupt.dispatcher()->destroy();
@@ -690,7 +653,7 @@ namespace {
     /// more to send. An interrupt raised through the interrupt entry, in
     /// interrupt context, masks it as a dispatch does, and the destroy masks
     /// the line it lets go.
-    auto check_level_mask_bound(Tally &tally) -> void {
+    auto check_level_mask_bound() -> void {
         KernelHandle<InterruptDispatcher> interrupt;
         KernelHandle<PortDispatcher> port;
         auto rights = Rights::None;
@@ -698,8 +661,7 @@ namespace {
             PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
                 Status::Ok ||
             interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
-            verdict(tally, false, "take the line in a level mode and bind it to a port");
-            return;
+            FAIL("take the line in a level mode and bind it to a port");
         }
         auto &object = *interrupt.dispatcher();
         auto &queue = *port.dispatcher();
@@ -707,16 +669,16 @@ namespace {
 
         auto _ = fire();
         auto const sent = queue.dequeue(0, &packet) == Status::Ok;
-        verdict(tally, sent && line_masked(),
-                "bound, a level interrupt masks the line as its packet goes out");
+        EXPECT_TRUE(sent && line_masked(),
+                    "bound, a level interrupt masks the line as its packet goes out");
 
         // One more before the ack: it waits for the ack, which sends it.
         auto _ = fire();
         auto const resent = object.ack() == Status::Ok && queue.dequeue(0, &packet) == Status::Ok;
-        verdict(tally, resent && line_masked(),
-                "an ack that sends the interrupt since leaves the line masked");
-        answered(tally, object.ack(), Status::Ok, "the next ack, with nothing to send");
-        verdict(tally, line_unmasked(), "unmasks the line");
+        EXPECT_TRUE(resent && line_masked(),
+                    "an ack that sends the interrupt since leaves the line masked");
+        EXPECT_TRUE(object.ack() == Status::Ok, "the next ack, with nothing to send");
+        EXPECT_TRUE(line_unmasked(), "unmasks the line");
 
         // The mask is polled for, as the packet is. The line's flow masks the
         // line before the handler queues the packet, so the mask should be in
@@ -727,16 +689,15 @@ namespace {
         raise();
         auto const read = read_within(queue, &packet);
         auto const masked = read && poll_until([] { return line_masked(); });
-        verdict(tally, masked,
-                "an interrupt raised through the interrupt entry masks the line too");
+        EXPECT_TRUE(masked, "an interrupt raised through the interrupt entry masks the line too");
         auto const acked = object.ack();
-        verdict(tally, acked == Status::Ok && line_unmasked(), "and its ack unmasks it");
+        EXPECT_TRUE(acked == Status::Ok && line_unmasked(), "and its ack unmasks it");
 
         // Unmasked here, so only the destroy can mask the line: nobody is on
         // it afterwards to service a device that holds it raised.
         auto const destroyed = object.destroy();
-        verdict(tally, destroyed == Status::Ok && line_masked(),
-                "a destroy masks the level line it lets go");
+        EXPECT_TRUE(destroyed == Status::Ok && line_masked(),
+                    "a destroy masks the level line it lets go");
     }
 
     std::atomic<InterruptDispatcher *> COMPLETION_TARGET{nullptr};
@@ -751,7 +712,7 @@ namespace {
         auto _ = fire(); // Establish newer work before the old completion takes L1.
     }
 
-    auto check_completion_revalidation(Tally &tally) -> void {
+    auto check_completion_revalidation() -> void {
         {
             KernelHandle<InterruptDispatcher> interrupt;
             KernelHandle<PortDispatcher> port;
@@ -760,45 +721,43 @@ namespace {
                 PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
                     Status::Ok ||
                 interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
-                verdict(tally, false, "prepare the bound completion interleaving");
-                return;
+                FAIL("prepare the bound completion interleaving");
             }
             auto &object = *interrupt.dispatcher();
             auto &queue = *port.dispatcher();
             auto packet = PortPacket{};
             auto _ = fire();
-            verdict(tally, queue.dequeue(0, &packet) == Status::Ok && line_masked(),
-                    "the first packet leaves the deferred line masked");
+            EXPECT_TRUE(queue.dequeue(0, &packet) == Status::Ok && line_masked(),
+                        "the first packet leaves the deferred line masked");
 
             COMPLETION_TARGET.store(&object, std::memory_order_release);
             InterruptDispatcher::set_interleave_hook_for_test(interrupt_before_completion);
             auto const acked = object.ack();
             InterruptDispatcher::set_interleave_hook_for_test(nullptr);
             COMPLETION_TARGET.store(nullptr, std::memory_order_release);
-            verdict(tally,
-                    acked == Status::Ok && queue.dequeue(0, &packet) == Status::Ok && line_masked(),
-                    "an old ack cannot unmask newer work admitted before completion");
-            verdict(tally, object.ack() == Status::Ok && line_unmasked(),
-                    "the new packet's own ack reopens the line");
+            EXPECT_TRUE(acked == Status::Ok && queue.dequeue(0, &packet) == Status::Ok &&
+                            line_masked(),
+                        "an old ack cannot unmask newer work admitted before completion");
+            EXPECT_TRUE(object.ack() == Status::Ok && line_unmasked(),
+                        "the new packet's own ack reopens the line");
         }
         {
             KernelHandle<InterruptDispatcher> interrupt;
             if (make(&interrupt, InterruptOptions::ModeLevelHigh) != Status::Ok) {
-                verdict(tally, false, "prepare the wait completion interleaving");
-                return;
+                FAIL("prepare the wait completion interleaving");
             }
             auto &object = *interrupt.dispatcher();
             auto timestamp = Instant{0};
             auto _ = fire();
-            answered(tally, object.wait(&timestamp), Status::Ok, "take the first interrupt");
+            EXPECT_TRUE(object.wait(&timestamp) == Status::Ok, "take the first interrupt");
 
             COMPLETION_TARGET.store(&object, std::memory_order_release);
             InterruptDispatcher::set_interleave_hook_for_test(interrupt_before_completion);
             auto const waited = object.wait(&timestamp);
             InterruptDispatcher::set_interleave_hook_for_test(nullptr);
             COMPLETION_TARGET.store(nullptr, std::memory_order_release);
-            verdict(tally, waited == Status::Ok && line_masked(),
-                    "wait-as-ack cannot unmask an interrupt injected before completion");
+            EXPECT_TRUE(waited == Status::Ok && line_masked(),
+                        "wait-as-ack cannot unmask an interrupt injected before completion");
         }
     }
 
@@ -808,11 +767,11 @@ namespace {
     /// that come meanwhile. Creating it with an edge mode also puts the line
     /// back to how the platform programmed it, as irq.test expects to find
     /// it.
-    auto check_edge_mask(Tally &tally) -> void {
+    auto check_edge_mask() -> void {
         auto never_masked = true;
         auto const look = [&never_masked](char const *const after) {
             if (!line_unmasked()) {
-                log::error("interruptline.test:   the edge line is not unmasked after {}", after);
+                log::error("interruptline:   the edge line is not unmasked after {}", after);
                 never_masked = false;
             }
         };
@@ -820,8 +779,7 @@ namespace {
         {
             KernelHandle<InterruptDispatcher> interrupt;
             if (make(&interrupt, InterruptOptions::ModeEdgeHigh) != Status::Ok) {
-                verdict(tally, false, "take the line in an edge mode");
-                return;
+                FAIL("take the line in an edge mode");
             }
             look("its create");
             auto _ = fire();
@@ -842,8 +800,7 @@ namespace {
             PortDispatcher::create(PortCreateOptions::BindToInterrupt, &port, &rights) !=
                 Status::Ok ||
             interrupt.dispatcher()->bind(port.dispatcher(), PACKET_KEY) != Status::Ok) {
-            verdict(tally, false, "take the line in an edge mode and bind it to a port");
-            return;
+            FAIL("take the line in an edge mode and bind it to a port");
         }
         auto &object = *interrupt.dispatcher();
         auto &queue = *port.dispatcher();
@@ -863,14 +820,14 @@ namespace {
         auto _ = object.ack();
         look("its ack");
 
-        verdict(tally, never_masked,
-                "an edge object's line is never masked: not by its create, an interrupt, a "
-                "wait, a packet or an ack");
+        EXPECT_TRUE(never_masked,
+                    "an edge object's line is never masked: not by its create, an interrupt, a "
+                    "wait, a packet or an ack");
 
         // Its destroy is the one thing that masks it, as it lets the line go.
         auto const destroyed = object.destroy();
-        verdict(tally, destroyed == Status::Ok && line_masked(),
-                "a destroy masks the edge line it lets go");
+        EXPECT_TRUE(destroyed == Status::Ok && line_masked(),
+                    "a destroy masks the edge line it lets go");
     }
 
     auto mode_name(irq::TriggerMode const mode) -> char const * {
@@ -945,25 +902,24 @@ namespace {
             }
         }
         if (!all_joined) {
-            log::error("interruptline.test:   a racer did not stop; leaking the race");
+            log::error("interruptline:   a racer did not stop; leaking the race");
             return false;
         }
         delete race;
         return true;
     }
 
-    auto check_mode_race(Tally &tally) -> void {
+    auto check_mode_race() -> void {
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 2) {
-            log::warn("interruptline.test:   skipped the mode race: it needs two online CPUs, "
+            log::warn("interruptline:   skipped the mode race: it needs two online CPUs, "
                       "have {}",
                       num_cpus);
             return;
         }
         auto *const race = new (mm::ALLOC_KERNEL) ModeRace{};
         if (race == nullptr) {
-            verdict(tally, false, "allocate the mode race");
-            return;
+            FAIL("allocate the mode race");
         }
         race->racers[0].race = race;
         race->racers[0].mode = InterruptOptions::ModeEdgeHigh;
@@ -985,7 +941,7 @@ namespace {
             threads[i] = Thread::spawn("interruptline-race", race_loop, &race->racers[i],
                                        task::DEFAULT_PRIORITY);
             if (threads[i] == nullptr) {
-                verdict(tally, false, "spawn the racers");
+                EXPECT_TRUE(false, "spawn the racers");
                 auto _ = stop_racers(race, threads);
                 return;
             }
@@ -1002,7 +958,7 @@ namespace {
             race->round.store(round, std::memory_order_release);
             if (!poll_until(
                     [race] { return race->finished.load(std::memory_order_acquire) == 2; })) {
-                log::error("interruptline.test:   round {} never finished", round);
+                log::error("interruptline:   round {} never finished", round);
                 break;
             }
             judged += 1;
@@ -1016,7 +972,7 @@ namespace {
             if (!first_won && !second_won) {
                 not_one_winner += 1;
                 if (not_one_winner <= MODE_RACE_LOGGED) {
-                    log::error("interruptline.test:   round {}: the {} create answered {}, the {} "
+                    log::error("interruptline:   round {}: the {} create answered {}, the {} "
                                "create {}",
                                round, mode_name(first.asked), to_string(first.status),
                                mode_name(second.asked), to_string(second.status));
@@ -1036,7 +992,7 @@ namespace {
                         if (now_mode.is_ok()) {
                             now_name = mode_name(*now_mode);
                         }
-                        log::error("interruptline.test:   round {}: the {} create took the line, "
+                        log::error("interruptline:   round {}: the {} create took the line, "
                                    "which is {}",
                                    round, mode_name(asked), now_name);
                     }
@@ -1049,7 +1005,7 @@ namespace {
         }
 
         if (!stop_racers(race, threads)) {
-            verdict(tally, false, "the racers stop");
+            EXPECT_TRUE(false, "the racers stop");
             return;
         }
         // Back to how the platform programmed the line, edge and active high,
@@ -1059,41 +1015,40 @@ namespace {
             return make(&restore, InterruptOptions::ModeEdgeHigh) == Status::Ok;
         }();
 
-        log::info("interruptline.test:   {} rounds of the mode race on CPUs {} and {}: edge took "
+        log::info("interruptline:   {} rounds of the mode race on CPUs {} and {}: edge took "
                   "the line {} times, level {}; {} left it in the other's mode, {} had no one "
                   "winner",
                   judged, cpus[0], cpus[1], wins[0], wins[1], wrong_mode, not_one_winner);
-        verdict(tally, judged == MODE_RACE_ROUNDS, "every round of the mode race finishes");
-        verdict(tally, not_one_winner == 0,
-                "each round, one create takes the line and the other answers AlreadyBound");
-        verdict(tally, wrong_mode == 0,
-                "and the line signals as the create that took it asked, never as the other");
-        verdict(tally, edge_mode, "the line is put back to edge after the race");
+        EXPECT_EQ(judged, MODE_RACE_ROUNDS, "every round of the mode race finishes");
+        EXPECT_EQ(not_one_winner, usize{0},
+                  "each round, one create takes the line and the other answers AlreadyBound");
+        EXPECT_EQ(wrong_mode, usize{0},
+                  "and the line signals as the create that took it asked, never as the other");
+        EXPECT_TRUE(edge_mode, "the line is put back to edge after the race");
     }
 
-    auto check_refusals(Tally &tally) -> void {
+    auto check_refusals() -> void {
         KernelHandle<InterruptDispatcher> interrupt;
         auto rights = Rights::None;
-        answered(tally,
-                 InterruptEventDispatcher::create(&interrupt, &rights, VIrqNum{ISA_IRQ_SERIAL2},
-                                                  InterruptOptions::Virtual),
-                 Status::InvArgs, "a physical line refuses Virtual");
-        answered(tally, make(&interrupt, static_cast<InterruptOptions>(5U << 1)), Status::InvArgs,
-                 "and a mode that names none");
+        EXPECT_TRUE(InterruptEventDispatcher::create(&interrupt, &rights, VIrqNum{ISA_IRQ_SERIAL2},
+                                                     InterruptOptions::Virtual) == Status::InvArgs,
+                    "a physical line refuses Virtual");
+        EXPECT_TRUE(make(&interrupt, static_cast<InterruptOptions>(5U << 1)) == Status::InvArgs,
+                    "and a mode that names none");
         // 0x1 was RemapIrq, retired: the bit is reserved and refused, and the
         // refusal comes before the line is looked at.
-        answered(tally,
-                 InterruptEventDispatcher::create(&interrupt, &rights, free_line(),
-                                                  static_cast<InterruptOptions>(0x1)),
-                 Status::InvArgs, "the retired RemapIrq bit");
-        answered(tally,
-                 InterruptEventDispatcher::create(&interrupt, &rights, VIrqNum{NO_SUCH_LINE},
-                                                  InterruptOptions::ModeDefault),
-                 Status::NoResource, "a number no line has answers NoResource");
-        answered(tally,
-                 InterruptEventDispatcher::create(&interrupt, &rights, VIrqNum{NO_SUCH_LINE},
-                                                  InterruptOptions::ModeEdgeHigh),
-                 Status::NoResource, "with a mode as well");
+        EXPECT_TRUE(InterruptEventDispatcher::create(&interrupt, &rights, free_line(),
+                                                     static_cast<InterruptOptions>(0x1)) ==
+                        Status::InvArgs,
+                    "the retired RemapIrq bit");
+        EXPECT_TRUE(InterruptEventDispatcher::create(&interrupt, &rights, VIrqNum{NO_SUCH_LINE},
+                                                     InterruptOptions::ModeDefault) ==
+                        Status::NoResource,
+                    "a number no line has answers NoResource");
+        EXPECT_TRUE(InterruptEventDispatcher::create(&interrupt, &rights, VIrqNum{NO_SUCH_LINE},
+                                                     InterruptOptions::ModeEdgeHigh) ==
+                        Status::NoResource,
+                    "with a mode as well");
     }
 
     /// The thread raising the line on another CPU, and the test thread
@@ -1114,23 +1069,22 @@ namespace {
         return 0;
     }
 
-    auto check_teardown(Tally &tally) -> void {
+    auto check_teardown() -> void {
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 2) {
-            log::warn("interruptline.test:   skipped the teardown race: it needs two online CPUs, "
+            log::warn("interruptline:   skipped the teardown race: it needs two online CPUs, "
                       "have {}",
                       num_cpus);
             return;
         }
         auto *const teardown = new (mm::ALLOC_KERNEL) Teardown{};
         if (teardown == nullptr) {
-            verdict(tally, false, "allocate the teardown race");
-            return;
+            FAIL("allocate the teardown race");
         }
         auto *const raiser =
             Thread::spawn("interruptline-raise", raise_loop, teardown, task::DEFAULT_PRIORITY);
         if (raiser == nullptr) {
-            verdict(tally, false, "spawn the raiser");
+            EXPECT_TRUE(false, "spawn the raiser");
             delete teardown;
             return;
         }
@@ -1164,55 +1118,41 @@ namespace {
 
         teardown->stop.store(true, std::memory_order_release);
         if (!joined(raiser)) {
-            log::error("interruptline.test:   the raiser did not stop; leaking its state");
-            verdict(tally, false, "the raiser stops");
+            log::error("interruptline:   the raiser did not stop; leaking its state");
+            EXPECT_TRUE(false, "the raiser stops");
             return;
         }
-        log::info("interruptline.test:   {} rounds, {} objects reached by {} interrupts",
+        log::info("interruptline:   {} rounds, {} objects reached by {} interrupts",
                   TEARDOWN_ROUNDS, reached, teardown->raised.load(std::memory_order_relaxed));
         delete teardown;
-        verdict(tally, made == TEARDOWN_ROUNDS,
-                "every round's object takes the line the last one let go");
-        verdict(tally, reached == TEARDOWN_ROUNDS,
-                "another CPU's interrupts reach every one before it is destroyed");
+        EXPECT_EQ(made, TEARDOWN_ROUNDS, "every round's object takes the line the last one let go");
+        EXPECT_EQ(reached, TEARDOWN_ROUNDS,
+                  "another CPU's interrupts reach every one before it is destroyed");
     }
 
-    auto interruptline_test_command(int, char **) -> int {
-        Tally tally;
-        check_timer_line(tally);
-        check_take_line(tally);
-        check_wakes_waiter(tally, false, "a dispatch wakes a parked waiter");
-        check_wakes_waiter(tally, true, "an interrupt raised by IPI wakes a parked waiter");
-        check_port(tally);
-        check_vector_without_line(tally);
-        check_destroy(tally);
-        check_revoked(tally);
-        check_revoked_bound(tally);
-        check_modes(tally);
-        check_level_mask_unbound(tally);
-        check_level_mask_bound(tally);
-        check_completion_revalidation(tally);
-        check_edge_mask(tally);
-        check_mode_race(tally);
-        check_refusals(tally);
-        check_teardown(tally);
+    KTEST(InterruptLine, CreateDeliveryMaskingAndTeardownOnAPhysicalLine) {
+        check_timer_line();
+        check_take_line();
+        check_wakes_waiter(false, "a dispatch wakes a parked waiter");
+        check_wakes_waiter(true, "an interrupt raised by IPI wakes a parked waiter");
+        check_port();
+        check_vector_without_line();
+        check_destroy();
+        check_revoked();
+        check_revoked_bound();
+        check_modes();
+        check_level_mask_unbound();
+        check_level_mask_bound();
+        check_completion_revalidation();
+        check_edge_mask();
+        check_mode_race();
+        check_refusals();
+        check_teardown();
 
         // Whatever happened above, the line is free again: every object was
         // destroyed with its last handle.
         KernelHandle<InterruptDispatcher> last;
-        answered(tally, make(&last), Status::Ok, "the line is free at the end");
-
-        if (tally.failed != 0) {
-            log::error("interruptline.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("interruptline.test: ok -- {} checks", tally.passed);
-        return 0;
+        EXPECT_TRUE(make(&last) == Status::Ok, "the line is free at the end");
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(InterruptLineTest, "interruptline.test", ours::interruptline_test_command,
-             "interrupt objects on ISA 3: create, delivery, ack, destroy, and destroy racing "
-             "another CPU's interrupts");

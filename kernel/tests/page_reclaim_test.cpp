@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `pagereclaim.test`: the pages a page source supplied are given back, the
-// oldest first, and asked of the source again when they are needed
-// (.agents/tasks/page-reclaim, step 4).
+// PageReclaim.GivesPagesBackOldestFirstAndAsksAgain: the pages a page source
+// supplied are given back, the oldest first, and asked of the source again
+// when they are needed (.agents/tasks/page-reclaim, step 4).
 //
 //   - PageQueues::reclaim() evicts the oldest reclaimable pages first, and no
 //     more than it was asked for;
@@ -38,7 +38,7 @@
 //   - at OutOfMemory the watchdog has them given back on its own thread before
 //     it refuses the allocations that could wait, and does not refuse them.
 //
-// Why a console command: the queues are the real nodes', filled by the real
+// Why an in-kernel test: the queues are the real nodes', filled by the real
 // VMO paths, and the stress needs threads.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/alloc_flags.hpp>
@@ -60,10 +60,9 @@
 #include <ours/task/thread.hpp>
 
 #include <atomic>
-#include <string_view>
 
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <user_copy/user_copy.hpp>
 #include <ustl/rc.hpp>
@@ -72,21 +71,6 @@ namespace ours {
 namespace {
     using Kind = mm::PageQueues::PageKind;
     constexpr u64 P = PAGE_SIZE;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("pagereclaim.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("pagereclaim.test: FAIL  {}", name);
-    }
 
     /// A provider nobody answers, which counts the requests made of it: the
     /// test supplies the pages itself.
@@ -219,7 +203,7 @@ namespace {
         return read.is_err() && read.unwrap_err() == Status::ShouldWait;
     }
 
-    auto check_order_and_refetch(Tally &tally) -> void {
+    auto check_order_and_refetch() -> void {
         CountingProvider *provider = nullptr;
         auto vmo = make_vmo(4, &provider);
         auto const baseline = nr_reclaimable();
@@ -229,64 +213,59 @@ namespace {
                                   [](mm::PmNode &node) { node.page_queues().rotate(); });
         auto const supplied_more = supplied && supply(*vmo, 2, 2);
         if (!supplied_more) {
-            verdict(tally, false, "a VMO of four supplied pages is made");
-            return;
+            FAIL("a VMO of four supplied pages is made");
         }
         auto const first = filed_at(*vmo, 0);
         if (!first.page) {
-            verdict(tally, false, "the first page is there");
-            return;
+            FAIL("the first page is there");
         }
         auto &queues = queues_of(*first.page);
-        verdict(tally, nr_reclaimable() == baseline + 4,
-                "the four pages are reclaimable, and nothing else is on the node's queues");
+        EXPECT_EQ(nr_reclaimable(), baseline + 4,
+                  "the four pages are reclaimable, and nothing else is on the node's queues");
 
         auto const freed = queues.reclaim(2);
-        verdict(tally,
-                freed == 2 && !filed_at(*vmo, 0).page && !filed_at(*vmo, 1).page &&
-                    filed_at(*vmo, 2).page && filed_at(*vmo, 3).page,
-                "reclaim(2) evicts the two oldest pages and no others");
+        EXPECT_TRUE(freed == 2 && !filed_at(*vmo, 0).page && !filed_at(*vmo, 1).page &&
+                        filed_at(*vmo, 2).page && filed_at(*vmo, 3).page,
+                    "reclaim(2) evicts the two oldest pages and no others");
 
         auto const asked_before = provider->nr_sent();
         auto const evicted_asked = is_asked_for(*vmo, 0);
         auto const asked_after = provider->nr_sent();
         // A page that is there is read, not asked for.
         auto const kept_asked = is_asked_for(*vmo, 2);
-        verdict(tally,
-                evicted_asked && asked_after == asked_before + 1 && !kept_asked &&
-                    provider->nr_sent() == asked_after,
-                "an evicted page is asked of its page source again, a page kept is not");
+        EXPECT_TRUE(evicted_asked && asked_after == asked_before + 1 && !kept_asked &&
+                        provider->nr_sent() == asked_after,
+                    "an evicted page is asked of its page source again, a page kept is not");
 
         u64 word = 0;
         auto const again = supply(*vmo, 0, 1) && word_at(*vmo, 0, &word);
-        verdict(tally, again && word == pattern(0) && filed_at(*vmo, 0).kind == Kind::Reclaimable,
-                "supplied again, an evicted page reads as before and is reclaimable");
+        EXPECT_TRUE(again && word == pattern(0) && filed_at(*vmo, 0).kind == Kind::Reclaimable,
+                    "supplied again, an evicted page reads as before and is reclaimable");
 
         // Page 3 written: it is the VMO's own now, not the source's.
         u64 const mine = 0x0dd5'ca1e'0dd5'ca1e;
         auto const wrote = vmo->write(&mine, 3 * P, sizeof(mine)) == Status::Ok;
         auto const dirty = filed_at(*vmo, 3);
-        verdict(tally, wrote && dirty.kind == Kind::Anonymous,
-                "a page written leaves the reclaimable queues");
+        EXPECT_TRUE(wrote && dirty.kind == Kind::Anonymous,
+                    "a page written leaves the reclaimable queues");
 
         auto const rest = queues.reclaim(100);
         u64 back = 0;
-        verdict(tally,
-                rest == 2 && !filed_at(*vmo, 0).page && !filed_at(*vmo, 1).page &&
-                    !filed_at(*vmo, 2).page && filed_at(*vmo, 3).page == dirty.page &&
-                    word_at(*vmo, 3, &back) && back == mine,
-                "reclaim(100) evicts every page but the written one, which keeps what was written");
+        EXPECT_TRUE(rest == 2 && !filed_at(*vmo, 0).page && !filed_at(*vmo, 1).page &&
+                        !filed_at(*vmo, 2).page && filed_at(*vmo, 3).page == dirty.page &&
+                        word_at(*vmo, 3, &back) && back == mine,
+                    "reclaim(100) evicts every page but the written one, which keeps what was "
+                    "written");
     }
 
-    auto check_mappings(Tally &tally) -> void {
+    auto check_mappings() -> void {
         CountingProvider *provider = nullptr;
         auto vmo = make_vmo(2, &provider);
         ustl::Arc<mm::VmAspace> aspace;
         if (!vmo || !supply(*vmo, 0, 2) ||
             mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE, mm::VmasKind::User,
                                  mm::VmasFlags::None, "pagereclaim.test", &aspace) != Status::Ok) {
-            verdict(tally, false, "a VMO and a user address space are made");
-            return;
+            FAIL("a VMO and a user address space are made");
         }
         auto root = aspace->root_vma();
         auto mapping = root->map_vmo(
@@ -294,44 +273,40 @@ namespace {
             mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
             mm::VmaFlags::PermMask, vmo, mm::MapOptions::Resident, "pagereclaim.test");
         auto const page = filed_at(*vmo, 1).page;
-        if (mapping.is_err() || !page) {
-            verdict(tally, false, "the VMO is mapped");
-        } else {
+        auto const mapped = mapping.is_ok() && page != nullptr;
+        EXPECT_TRUE(mapped, "the VMO is mapped");
+        if (mapped) {
             auto const base = mapping.unwrap()->base();
             PhysAddr pa{};
             mm::MmuFlags flags{};
-            auto const mapped = aspace->arch_aspace().query(base + P, &pa, &flags) == Status::Ok;
-            verdict(tally,
-                    mapped && pa == mm::frame_to_phys(page) && !(flags & mm::MmuFlags::Writable),
-                    "a page of a page source is mapped read-only, though the mapping allows write");
+            EXPECT_TRUE(aspace->arch_aspace().query(base + P, &pa, &flags) == Status::Ok &&
+                            pa == mm::frame_to_phys(page) && !(flags & mm::MmuFlags::Writable),
+                        "a page of a page source is mapped read-only, though the mapping allows "
+                        "write");
 
             auto const freed = queues_of(*page).reclaim(2);
             auto const gone = aspace->arch_aspace().query(base + P, &pa, &flags);
-            verdict(tally, freed == 2 && gone == Status::NotFound,
-                    "an evicted page is taken out of the mapping");
+            EXPECT_TRUE(freed == 2 && gone == Status::NotFound,
+                        "an evicted page is taken out of the mapping");
         }
-        if (aspace->destroy() != Status::Ok) {
-            verdict(tally, false, "the address space is destroyed");
-        }
+        EXPECT_TRUE(aspace->destroy() == Status::Ok, "the address space is destroyed");
     }
 
     /// A pin hands a page of a page source to a device that may write it, and
     /// pin_range() takes the page through require_owned_page(), which marks it
     /// written. The unpin has to keep that mark: filed as the source's content
     /// again, the page would be evicted and what the device wrote lost.
-    auto check_unpin_keeps_the_write(Tally &tally) -> void {
+    auto check_unpin_keeps_the_write() -> void {
         CountingProvider *provider = nullptr;
         auto vmo = make_vmo(2, &provider);
         if (!vmo || !supply(*vmo, 0, 2)) {
-            verdict(tally, false, "a VMO of two supplied pages is made");
-            return;
+            FAIL("a VMO of two supplied pages is made");
         }
         auto const pinned = vmo->pin_range(0, P) == Status::Ok;
         auto const page = filed_at(*vmo, 0).page;
-        verdict(tally,
-                pinned && page && filed_at(*vmo, 0).kind == Kind::Pinned &&
-                    filed_at(*vmo, 1).kind == Kind::Reclaimable,
-                "a page pinned is on the pinned queue, the page beside it stays reclaimable");
+        EXPECT_TRUE(pinned && page && filed_at(*vmo, 0).kind == Kind::Pinned &&
+                        filed_at(*vmo, 1).kind == Kind::Reclaimable,
+                    "a page pinned is on the pinned queue, the page beside it stays reclaimable");
         if (!page) {
             return;
         }
@@ -341,15 +316,14 @@ namespace {
         *reinterpret_cast<u64 *>(mm::PhysMap::phys_to_virt(mm::frame_to_phys(page))) = device;
 
         auto const unpinned = vmo->unpin_range(0, P) == Status::Ok;
-        verdict(tally, unpinned && filed_at(*vmo, 0).kind == Kind::Anonymous,
-                "a page unpinned is written, not reclaimable");
+        EXPECT_TRUE(unpinned && filed_at(*vmo, 0).kind == Kind::Anonymous,
+                    "a page unpinned is written, not reclaimable");
 
         auto const freed = queues_of(*page).reclaim(100);
         u64 back = 0;
-        verdict(tally,
-                freed == 1 && filed_at(*vmo, 0).page == page && !filed_at(*vmo, 1).page &&
-                    word_at(*vmo, 0, &back) && back == device,
-                "reclaim(100) evicts the page never pinned, and keeps what the device wrote");
+        EXPECT_TRUE(freed == 1 && filed_at(*vmo, 0).page == page && !filed_at(*vmo, 1).page &&
+                        word_at(*vmo, 0, &back) && back == device,
+                    "reclaim(100) evicts the page never pinned, and keeps what the device wrote");
     }
 
     struct Stress {
@@ -374,14 +348,13 @@ namespace {
         return 0;
     }
 
-    auto check_lifetime(Tally &tally) -> void {
+    auto check_lifetime() -> void {
         Stress stress;
         auto const before = nr_reclaimable();
         auto *const worker =
             task::Thread::spawn("reclaim-stress", stress_routine, &stress, task::DEFAULT_PRIORITY);
         if (!worker || worker->resume() != Status::Ok) {
-            verdict(tally, false, "the thread that makes and drops VMOs is started");
-            return;
+            FAIL("the thread that makes and drops VMOs is started");
         }
         usize freed = 0;
         while (!stress.done.load(std::memory_order_acquire)) {
@@ -392,11 +365,10 @@ namespace {
         }
         i32 code = 0;
         auto const joined = worker->join(&code, time::Deadline::infinite()) == Status::Ok;
-        log::info("pagereclaim.test:   {} VMOs made, {} pages evicted while they were dropped",
+        log::info("pagereclaim:   {} VMOs made, {} pages evicted while they were dropped",
                   stress.made.load(), freed);
-        verdict(tally,
-                joined && code == 0 && stress.made.load() == 400 && nr_reclaimable() == before,
-                "VMOs dropped while a reclaimer looks at their pages leave nothing behind");
+        EXPECT_TRUE(joined && code == 0 && stress.made.load() == 400 && nr_reclaimable() == before,
+                    "VMOs dropped while a reclaimer looks at their pages leave nothing behind");
     }
 
     /// A VMO of |nr_pages| anonymous pages, nothing committed.
@@ -413,7 +385,7 @@ namespace {
         return vmo.write(&value, index * P, sizeof(value)) == Status::Ok;
     }
 
-    auto check_zero_dedup(Tally &tally) -> void {
+    auto check_zero_dedup() -> void {
         auto vmo = make_anonymous(6);
         constexpr u64 SOMETHING = 0x5eed'0000'0000'0001;
         // Pages 0 and 1 committed and zero, 2 written, 3 written zero and then
@@ -421,22 +393,19 @@ namespace {
         if (!vmo || !write_word(*vmo, 0, 0) || !write_word(*vmo, 1, 0) ||
             !write_word(*vmo, 2, SOMETHING) || !write_word(*vmo, 3, 0) ||
             !write_word(*vmo, 3, SOMETHING)) {
-            verdict(tally, false, "an anonymous VMO with zero and written pages is made");
-            return;
+            FAIL("an anonymous VMO with zero and written pages is made");
         }
         auto const first = filed_at(*vmo, 0);
         if (!first.page || first.kind != Kind::AnonymousZeroFork ||
             vmo->committed_pages(0, 6 * P) != 4) {
-            verdict(tally, false, "the committed pages are on the zero-fork queue");
-            return;
+            FAIL("the committed pages are on the zero-fork queue");
         }
         auto &queues = queues_of(*first.page);
 
         auto const freed = queues.dedup_zero_pages(~usize{0});
-        verdict(tally,
-                freed >= 2 && !filed_at(*vmo, 0).page && !filed_at(*vmo, 1).page &&
-                    vmo->committed_pages(0, 6 * P) == 2,
-                "pages committed with zeros become zero markers and are freed");
+        EXPECT_TRUE(freed >= 2 && !filed_at(*vmo, 0).page && !filed_at(*vmo, 1).page &&
+                        vmo->committed_pages(0, 6 * P) == 2,
+                    "pages committed with zeros become zero markers and are freed");
 
         u64 a = 1;
         u64 b = 1;
@@ -444,25 +413,22 @@ namespace {
         u64 d = 0;
         auto const read = word_at(*vmo, 0, &a) && word_at(*vmo, 1, &b) && word_at(*vmo, 2, &c) &&
                           word_at(*vmo, 3, &d);
-        verdict(tally,
-                read && a == 0 && b == 0 && c == SOMETHING && d == SOMETHING &&
-                    filed_at(*vmo, 2).kind == Kind::Anonymous &&
-                    filed_at(*vmo, 3).kind == Kind::Anonymous,
-                "every byte reads as before; a page with something in it is left, and not looked "
-                "at again");
+        EXPECT_TRUE(read && a == 0 && b == 0 && c == SOMETHING && d == SOMETHING &&
+                        filed_at(*vmo, 2).kind == Kind::Anonymous &&
+                        filed_at(*vmo, 3).kind == Kind::Anonymous,
+                    "every byte reads as before; a page with something in it is left, and not "
+                    "looked at again");
 
         queues.dedup_zero_pages(~usize{0});
-        verdict(tally,
-                vmo->committed_pages(0, 6 * P) == 2 && filed_at(*vmo, 2).page &&
-                    filed_at(*vmo, 3).page,
-                "a second pass leaves them where they are");
+        EXPECT_TRUE(vmo->committed_pages(0, 6 * P) == 2 && filed_at(*vmo, 2).page &&
+                        filed_at(*vmo, 3).page,
+                    "a second pass leaves them where they are");
 
         u64 e = 0;
         auto const rewritten = write_word(*vmo, 0, SOMETHING) && word_at(*vmo, 0, &e);
-        verdict(tally,
-                rewritten && e == SOMETHING && vmo->committed_pages(0, 6 * P) == 3 &&
-                    filed_at(*vmo, 0).kind == Kind::AnonymousZeroFork,
-                "a write to a marker commits a new page");
+        EXPECT_TRUE(rewritten && e == SOMETHING && vmo->committed_pages(0, 6 * P) == 3 &&
+                        filed_at(*vmo, 0).kind == Kind::AnonymousZeroFork,
+                    "a write to a marker commits a new page");
     }
 
     /// Puts the calling thread on |next| and loads its page tables, and hands
@@ -477,14 +443,13 @@ namespace {
         return previous;
     }
 
-    auto check_zero_mapped(Tally &tally) -> void {
+    auto check_zero_mapped() -> void {
         auto vmo = make_anonymous(2);
         ustl::Arc<mm::VmAspace> aspace;
         if (!vmo || !write_word(*vmo, 0, 0) ||
             mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE, mm::VmasKind::User,
                                  mm::VmasFlags::None, "pagereclaim.test", &aspace) != Status::Ok) {
-            verdict(tally, false, "a VMO with a zero page and a user address space are made");
-            return;
+            FAIL("a VMO with a zero page and a user address space are made");
         }
         auto root = aspace->root_vma();
         auto mapping = root->map_vmo(
@@ -492,22 +457,21 @@ namespace {
             mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
             mm::VmaFlags::PermMask, vmo, mm::MapOptions::Resident, "pagereclaim.test");
         auto const page = filed_at(*vmo, 0).page;
-        if (mapping.is_err() || !page) {
-            verdict(tally, false, "the VMO is mapped");
-        } else {
+        auto const mapped = mapping.is_ok() && page != nullptr;
+        EXPECT_TRUE(mapped, "the VMO is mapped");
+        if (mapped) {
             auto const base = mapping.unwrap()->base();
             PhysAddr pa{};
             mm::MmuFlags flags{};
-            auto const mapped = aspace->arch_aspace().query(base, &pa, &flags) == Status::Ok &&
-                                pa == mm::frame_to_phys(page) && !!(flags & mm::MmuFlags::Writable);
+            auto const present = aspace->arch_aspace().query(base, &pa, &flags) == Status::Ok &&
+                                 pa == mm::frame_to_phys(page) &&
+                                 !!(flags & mm::MmuFlags::Writable);
             queues_of(*page).dedup_zero_pages(~usize{0});
             auto const gone = aspace->arch_aspace().query(base, &pa, &flags);
-            verdict(tally, mapped && gone == Status::NotFound,
-                    "a zero page is taken out of the mapping that shows it");
+            EXPECT_TRUE(present && gone == Status::NotFound,
+                        "a zero page is taken out of the mapping that shows it");
         }
-        if (aspace->destroy() != Status::Ok) {
-            verdict(tally, false, "the address space is destroyed");
-        }
+        EXPECT_TRUE(aspace->destroy() == Status::Ok, "the address space is destroyed");
     }
 
     struct Race {
@@ -546,14 +510,13 @@ namespace {
         return 0;
     }
 
-    auto check_zero_race(Tally &tally) -> void {
+    auto check_zero_race() -> void {
         auto vmo = make_anonymous(RACE_PAGES);
         ustl::Arc<mm::VmAspace> aspace;
         if (!vmo ||
             mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE, mm::VmasKind::User,
                                  mm::VmasFlags::None, "pagereclaim.test", &aspace) != Status::Ok) {
-            verdict(tally, false, "a VMO and a user address space are made for the race");
-            return;
+            FAIL("a VMO and a user address space are made for the race");
         }
         auto root = aspace->root_vma();
         auto mapping =
@@ -561,16 +524,16 @@ namespace {
                           mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User,
                           mm::VmaFlags::PermMask, vmo, mm::MapOptions::Lazy, "pagereclaim.test");
         Race race;
-        if (mapping.is_err()) {
-            verdict(tally, false, "the VMO is mapped for the race");
-        } else {
+        auto const mapped = mapping.is_ok();
+        EXPECT_TRUE(mapped, "the VMO is mapped for the race");
+        if (mapped) {
             race.aspace = aspace.as_ptr_mut();
             race.base = mapping.unwrap()->base();
             auto *const writer =
                 task::Thread::spawn("zero-writer", race_routine, &race, task::DEFAULT_PRIORITY);
-            if (!writer || writer->resume() != Status::Ok) {
-                verdict(tally, false, "the thread that writes is started");
-            } else {
+            auto const started = writer != nullptr && writer->resume() == Status::Ok;
+            EXPECT_TRUE(started, "the thread that writes is started");
+            if (started) {
                 usize freed = 0;
                 while (!race.done.load(std::memory_order_acquire)) {
                     mm::PmNode::for_each_node(mm::PmNode::State::Online,
@@ -581,17 +544,16 @@ namespace {
                 }
                 i32 code = 0;
                 auto const joined = writer->join(&code, time::Deadline::infinite()) == Status::Ok;
-                log::info("pagereclaim.test:   {} writes, {} lost, {} zero pages freed meanwhile",
+                log::info("pagereclaim:   {} writes, {} lost, {} zero pages freed meanwhile",
                           race.rounds.load(), race.lost.load(), freed);
-                verdict(tally,
-                        joined && code == 0 && race.rounds.load() == RACE_ROUNDS &&
-                            race.lost.load() == 0 && freed != 0,
-                        "a program writing a page while it is deduplicated never loses the write");
+                EXPECT_TRUE(joined && code == 0 && race.rounds.load() == RACE_ROUNDS &&
+                                race.lost.load() == 0 && freed != 0,
+                            "a program writing a page while it is deduplicated never loses the "
+                            "write");
             }
         }
-        if (aspace->destroy() != Status::Ok) {
-            verdict(tally, false, "the address space is destroyed after the race");
-        }
+        EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                    "the address space is destroyed after the race");
     }
 
     /// Waits for |done| to hold, up to a few seconds.
@@ -646,7 +608,7 @@ namespace {
         }
     };
 
-    auto check_pressure(Tally &tally) -> void {
+    auto check_pressure() -> void {
         auto &watchdog = mm::MemoryWatchdog::get();
         auto const boot = mm::MemoryPressureLevels::from_boot_options();
 
@@ -657,8 +619,7 @@ namespace {
         // 9 more when that is only the Warning below it.
         Giveable giveable;
         if (!giveable.make()) {
-            verdict(tally, false, "zero pages and pager pages are made for the reclaimer");
-            return;
+            FAIL("zero pages and pager pages are made for the reclaimer");
         }
         auto const use_levels = [&](usize const out_of_memory, usize const critical,
                                     usize const warning) -> Status {
@@ -675,27 +636,25 @@ namespace {
         auto _ = task::Thread::Current::sleep_for(Milliseconds(300), task::Interruptible::No);
         auto const zero_left = giveable.nr_zero();
         auto const pager_left = giveable.nr_pager();
-        log::info("pagereclaim.test:   asked at Critical: {} of {} zero pages left, {} of {} pager "
+        log::info("pagereclaim:   asked at Critical: {} of {} zero pages left, {} of {} pager "
                   "pages left",
                   zero_left, PRESSURE_PAGES, pager_left, PRESSURE_PAGES);
-        verdict(tally,
-                started && zero_left != 0 && zero_left <= PRESSURE_PAGES - 10 &&
-                    pager_left == PRESSURE_PAGES,
-                "at Critical the reclaimer gives back about what is asked, zero pages first");
+        EXPECT_TRUE(started && zero_left != 0 && zero_left <= PRESSURE_PAGES - 10 &&
+                        pager_left == PRESSURE_PAGES,
+                    "at Critical the reclaimer gives back about what is asked, zero pages first");
 
         // Asked for more than there is: the zero pages go, and then the pager's.
         free = mm::approx_free_frame_count();
         set = use_levels(free - 40, free + 200, free + 209);
         auto const drained = set == Status::Ok &&
                              settle([&] { return giveable.nr_zero() + giveable.nr_pager() == 0; });
-        verdict(tally, drained,
-                "asked for more than the zero pages, it gives back pager pages too");
+        EXPECT_TRUE(drained, "asked for more than the zero pages, it gives back pager pages too");
 
         // OutOfMemory, with pages to give: given back before anything is
         // refused, and the pressure that is found afterwards is declared.
         Giveable more;
         if (!more.make()) {
-            verdict(tally, false, "pages are made for the reclaimer at OutOfMemory");
+            EXPECT_TRUE(false, "pages are made for the reclaimer at OutOfMemory");
             auto _ = watchdog.set_levels(boot);
             return;
         }
@@ -704,9 +663,9 @@ namespace {
         auto const gave = set == Status::Ok && settle([&] { return more.nr_zero() < 64; });
         auto const served = mm::alloc_frames(mm::ALLOC_USER_VMO);
         auto const pressure = watchdog.pressure();
-        verdict(tally, gave && pressure != mm::MemoryPressure::OutOfMemory && !!served,
-                "at OutOfMemory with pages to give, they are given back, and an allocation that "
-                "could wait is served");
+        EXPECT_TRUE(gave && pressure != mm::MemoryPressure::OutOfMemory && !!served,
+                    "at OutOfMemory with pages to give, they are given back, and an allocation "
+                    "that could wait is served");
         if (served) {
             mm::free_frames(*served, 0);
         }
@@ -715,7 +674,7 @@ namespace {
         settle([&] { return watchdog.pressure() == mm::MemoryPressure::Normal; });
     }
 
-    auto check_targeted_reclaim(Tally &tally) -> void {
+    auto check_targeted_reclaim() -> void {
         auto const local = mm::current_node();
         NodeId remote = MAX_NODES;
         for (NodeId nid = 0; nid < MAX_NODES; ++nid) {
@@ -726,7 +685,8 @@ namespace {
             }
         }
         if (remote == MAX_NODES) {
-            verdict(tally, false, "targeted reclaim needs a memory-only node");
+            log::info("pagereclaim: targeted reclaim needs a memory-only node, the case is "
+                      "skipped");
             return;
         }
 
@@ -736,8 +696,7 @@ namespace {
         auto remote_vmo = make_vmo(1, &remote_provider);
         if (!local_vmo || !remote_vmo || !supply(*local_vmo, 0, 1, local) ||
             !supply(*remote_vmo, 0, 1, remote)) {
-            verdict(tally, false, "prepare one reclaimable pager page on each node");
-            return;
+            FAIL("prepare one reclaimable pager page on each node");
         }
 
         mm::PmFrame::List held;
@@ -769,40 +728,21 @@ namespace {
             }
         }
         mm::free_frames(&held);
-        verdict(
-            tally, globally_normal && exhausted && evicted && retried && kept_local,
-            "a node-only shortage reclaims and resupplies a page without evicting the other node");
+        EXPECT_TRUE(globally_normal && exhausted && evicted && retried && kept_local,
+                    "a node-only shortage reclaims and resupplies a page without evicting the "
+                    "other node");
     }
 
-    auto pagereclaim_test_command(int argc, char **argv) -> int {
-        if (argc > 2 || (argc == 2 && std::string_view(argv[1]) != "--target-node")) {
-            log::error("usage: pagereclaim.test [--target-node]");
-            return 1;
-        }
-        Tally tally;
-        if (argc == 2) {
-            check_targeted_reclaim(tally);
-        }
-        check_order_and_refetch(tally);
-        check_mappings(tally);
-        check_unpin_keeps_the_write(tally);
-        check_lifetime(tally);
-        check_zero_dedup(tally);
-        check_zero_mapped(tally);
-        check_zero_race(tally);
-        check_pressure(tally);
-
-        if (tally.failed != 0) {
-            log::error("pagereclaim.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("pagereclaim.test: ok -- {} checks", tally.passed);
-        return 0;
+    KTEST(PageReclaim, GivesPagesBackOldestFirstAndAsksAgain) {
+        check_targeted_reclaim();
+        check_order_and_refetch();
+        check_mappings();
+        check_unpin_keeps_the_write();
+        check_lifetime();
+        check_zero_dedup();
+        check_zero_mapped();
+        check_zero_race();
+        check_pressure();
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(
-    PageReclaimTest, "pagereclaim.test", ours::pagereclaim_test_command,
-    "check that pages a page source supplied are given back oldest first, and asked again");

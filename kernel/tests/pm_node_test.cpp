@@ -1,8 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 ///
-/// `pmnode.test`: checks the physical-memory node layer on the machine it runs
-/// on -- whatever node layout that is, one node or several.
+/// PmNode.MatchesTheMachineItRunsOn: checks the physical-memory node layer on
+/// the machine it runs on -- whatever node layout that is, one node or
+/// several.
 ///
 /// What it covers, and why each part is here:
 ///
@@ -28,8 +29,9 @@
 ///     now, almost unchanged.
 ///   - contains(). Declared for a long time and defined only recently.
 ///   - Fragment and bulk allocation. alloc_frames_fragment() used to loop for
-///     ever on an even page count. Use --exhaust-remote from an idle guest
-///     with a memory-only NUMA node to check fallback and partial rollback.
+///     ever on an even page count. Use the exhaust-remote option from an idle
+///     guest with a memory-only NUMA node to check fallback and partial
+///     rollback.
 ///   - Static allocation. Direct class calls honor node restrictions, errors,
 ///     and allocation-disable state, and release without a node instance.
 ///   - Count helpers. Both direct-map overloads round three pages up to a
@@ -37,9 +39,8 @@
 ///   - AllocState. A thread that disabled allocation must be
 ///     refused on the node-less path and on the path that names a node alike.
 ///
-/// A kshell command rather than a host test for the same reason usercopy.test
-/// is one: PmNode is built on EarlyMem and the buddy, which exist only in a
-/// booted kernel.
+/// Why an in-kernel test: PmNode is built on EarlyMem and the buddy, which
+/// exist only in a booted kernel.
 #include <ours/cpu.hpp>
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -58,8 +59,8 @@
 #include <string_view>
 
 #include <arch/auto_interrupt_disabler.hpp>
-#include <gktl/command.hpp>
 #include <gktl/counter.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <numa/fallback_order.hpp>
 #include <numa/topology.hpp>
@@ -76,22 +77,7 @@ namespace {
     using numa::Topology;
     using ours::NodeMask;
 
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("pmnode.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("pmnode.test: FAIL  {}", name);
-    }
-
-    auto run_topology_checks(Tally &tally) -> void {
+    auto run_topology_checks() -> void {
         // The CPU and its node are two reads, and the test is that the second
         // answers for the CPU the first named. This thread is not pinned, and an
         // idle CPU can take it between the reads, so they are made with
@@ -105,19 +91,19 @@ namespace {
             cpu = mm::CpuLocal::current_cpu();
             nid = mm::current_node();
         }
-        log::info("pmnode.test:   cpu{} is on node {}; {} node(s) online", cpu, nid,
+        log::info("pmnode:   cpu{} is on node {}; {} node(s) online", cpu, nid,
                   PmNode::num_online_nodes());
 
-        verdict(tally, nid < MAX_NODES && PmNode::node(nid) != nullptr,
-                "the calling CPU resolves to a node that exists");
+        EXPECT_TRUE(nid < MAX_NODES && PmNode::node(nid) != nullptr,
+                    "the calling CPU resolves to a node that exists");
         // There is one current_node() now. It used to be three -- a
         // NumaTopology::current_node(), mm::current_node() wrapping it, and
         // the table read -- and this case compared all three. With the
         // topology's own gone, what is left to check is that the wrapper
         // really reads the placement table for the calling CPU rather than
         // answering from somewhere else.
-        verdict(tally, nid == mm::CpuNodeMap::node_of(cpu),
-                "current_node() is the placement table's answer for the calling CPU");
+        EXPECT_EQ(nid, mm::CpuNodeMap::node_of(cpu),
+                  "current_node() is the placement table's answer for the calling CPU");
 
         // Only the CPUs the firmware actually placed. The two tables mean
         // different things now that the running placement is the node layer's
@@ -155,23 +141,24 @@ namespace {
                     unmoved = false;
                 }
             });
-        log::info("pmnode.test:   {} of {} possible CPU(s) were placed by firmware", declared_cpus,
+        log::info("pmnode:   {} of {} possible CPU(s) were placed by firmware", declared_cpus,
                   Cpu::possible_mask().count());
         if (memoryless_cpus != 0) {
-            log::info("pmnode.test:   {} of them on a node with no memory", memoryless_cpus);
+            log::info("pmnode:   {} of them on a node with no memory", memoryless_cpus);
         }
-        verdict(tally, unmoved,
-                "no CPU the firmware placed on a node that exists has been moved off it");
-        verdict(tally, rehomed,
-                "every CPU the firmware placed on a node with no memory runs from one that exists");
+        EXPECT_TRUE(unmoved,
+                    "no CPU the firmware placed on a node that exists has been moved off it");
+        EXPECT_TRUE(rehomed,
+                    "every CPU the firmware placed on a node with no memory runs from one that "
+                    "exists");
 
         auto const online = PmNode::num_online_nodes();
-        verdict(tally, online >= 1 && online == PmNode::node_online_mask().count(),
-                "num_online_nodes() counts the Online mask");
+        EXPECT_TRUE(online >= 1 && online == PmNode::node_online_mask().count(),
+                    "num_online_nodes() counts the Online mask");
     }
 
     /// The checks one node's ZoneList must pass; see the file comment.
-    auto check_zone_list(Tally &tally, PmNode &node) -> void {
+    auto check_zone_list(PmNode &node) -> void {
         auto const nid = node.nid();
         auto const *const list = node.zone_list();
 
@@ -201,8 +188,8 @@ namespace {
             last_type = type;
             visited += 1;
         });
-        verdict(tally, by_type_ok && visited == local_count && local_count >= 1,
-                "a node's local zones are its own, one per type, walked in type order");
+        EXPECT_TRUE(by_type_ok && visited == local_count && local_count >= 1,
+                    "a node's local zones are its own, one per type, walked in type order");
 
         // Fallback order: own zones first, in the same order.
         auto const fallback = list->fallback();
@@ -214,7 +201,7 @@ namespace {
             }
             index += 1;
         });
-        verdict(tally, head_ok, "a node's fallback order starts with its own zones");
+        EXPECT_TRUE(head_ok, "a node's fallback order starts with its own zones");
 
         // No zone twice, every zone on an online node.
         auto unique_ok = true;
@@ -228,7 +215,7 @@ namespace {
                 }
             }
         }
-        verdict(tally, unique_ok, "no zone appears twice in a fallback order");
+        EXPECT_TRUE(unique_ok, "no zone appears twice in a fallback order");
 
         // Remote zones nearest node first.
         auto distance_ok = true;
@@ -241,16 +228,16 @@ namespace {
             }
             last_distance = distance;
         }
-        verdict(tally, distance_ok, "remote zones follow, nearest node first");
+        EXPECT_TRUE(distance_ok, "remote zones follow, nearest node first");
     }
 
-    auto check_fallback_orders(Tally &tally, NodeId const nid) -> void {
+    auto check_fallback_orders(NodeId const nid) -> void {
         auto const &online = PmNode::node_online_mask();
         auto const members = online & PmNode::node_memory_mask();
 
-        // Static: MAX_NODES rows is kilobytes on a NUMA build, and a kshell
-        // command runs on an ordinary thread stack. Single-threaded, like the
-        // rest of this test.
+        // Static: MAX_NODES rows is kilobytes on a NUMA build, and a ktest
+        // runs on an ordinary thread stack. Single-threaded, like the rest of
+        // this test.
         static numa::FallbackOrders orders;
         numa::build_fallback_orders(online, members, &orders);
 
@@ -276,8 +263,9 @@ namespace {
                 }
             }
         });
-        verdict(tally, route_ok && hops == expected,
-                "build_fallback_orders() lists every other node with memory once, nearest first");
+        EXPECT_TRUE(route_ok && hops == expected,
+                    "build_fallback_orders() lists every other node with memory once, nearest "
+                    "first");
 
         // No members, so nothing can be a hop -- but every node in the first
         // set still gets a row, and here every row must be empty.
@@ -287,8 +275,8 @@ namespace {
         // landing at the same stack address -- true on one machine, false on
         // the next. One table, so the row compared is the row filled.
         numa::build_fallback_orders(online, NodeMask{}, &orders);
-        verdict(tally, orders[nid].begin() == orders[nid].end(),
-                "build_fallback_orders() with no members leaves an empty order");
+        EXPECT_TRUE(orders[nid].begin() == orders[nid].end(),
+                    "build_fallback_orders() with no members leaves an empty order");
     }
 
     auto count_selected(mm::ZoneCandidates const &selector) -> usize {
@@ -305,7 +293,7 @@ namespace {
                                    mm::AllocRequest::Origin{.node = node.nid(), .cpu = Cpu::id()});
     }
 
-    auto check_zone_candidates(Tally &tally, PmNode &node) -> void {
+    auto check_zone_candidates(PmNode &node) -> void {
         auto const *const list = node.zone_list();
 
         usize local_count = 0;
@@ -322,8 +310,8 @@ namespace {
         // selector must step over them rather than stop or dereference one.
         auto const all = request_for(node, mm::ALLOC_KERNEL);
         mm::ZoneCandidates const holes{list->local_zones(), all};
-        verdict(tally, count_selected(holes) == local_count,
-                "ZoneCandidates steps over the holes in the by-type array");
+        EXPECT_EQ(count_selected(holes), local_count,
+                  "ZoneCandidates steps over the holes in the by-type array");
 
         // Node filter: excluding this node leaves only the remote zones.
         auto without_local = all.allowed_nodes();
@@ -338,8 +326,8 @@ namespace {
             }
             remote += 1;
         }
-        verdict(tally, remote_ok && remote == list->fallback().size() - local_count,
-                "ZoneCandidates's node mask filters out the excluded node");
+        EXPECT_TRUE(remote_ok && remote == list->fallback().size() - local_count,
+                    "ZoneCandidates's node mask filters out the excluded node");
 
         // Upper bound: Dma as the ceiling yields only Dma zones.
         auto const low_only = all.with_zone_range(all.lowest_zone(), ZoneType::Dma);
@@ -352,8 +340,8 @@ namespace {
             }
             dma += 1;
         }
-        verdict(tally, upper_ok && dma == dma_count,
-                "ZoneCandidates's upper bound filters out higher zone types");
+        EXPECT_TRUE(upper_ok && dma == dma_count,
+                    "ZoneCandidates's upper bound filters out higher zone types");
 
         // Lower bound, which the walk this replaced stored and never read: a
         // floor of Dma32 must keep a caller off the Dma zones entirely. This
@@ -368,8 +356,8 @@ namespace {
             }
             above += 1;
         }
-        verdict(tally, lower_ok && above == list->fallback().size() - dma_count,
-                "ZoneCandidates's lower bound keeps a caller off the zones below it");
+        EXPECT_TRUE(lower_ok && above == list->fallback().size() - dma_count,
+                    "ZoneCandidates's lower bound keeps a caller off the zones below it");
 
         // Gaf::ThisNode, through the path that serves it: resolve_request()
         // narrows the request's node mask, so the selector over the whole
@@ -386,14 +374,14 @@ namespace {
             }
             local_selected += 1;
         }
-        log::info("pmnode.test:   ThisNode selected {} of {} zone(s) in the fallback order",
+        log::info("pmnode:   ThisNode selected {} of {} zone(s) in the fallback order",
                   local_selected, list->fallback().size());
-        verdict(tally, this_node_ok && local_selected == local_count,
-                "Gaf::ThisNode narrows the request's node mask, and the selector "
-                "honours it");
+        EXPECT_TRUE(this_node_ok && local_selected == local_count,
+                    "Gaf::ThisNode narrows the request's node mask, and the selector "
+                    "honours it");
     }
 
-    auto check_contains(Tally &tally, PmNode &node) -> void {
+    auto check_contains(PmNode &node) -> void {
         auto ok = true;
         for (usize i = 0; i < NR_ZONES_PER_NODE; ++i) {
             auto const type = ZoneType(i);
@@ -411,11 +399,11 @@ namespace {
                 ok = false; // No such order.
             }
         }
-        verdict(tally, ok,
-                "contains() follows the zone, says no without one, and no past the top order");
+        EXPECT_TRUE(ok,
+                    "contains() follows the zone, says no without one, and no past the top order");
     }
 
-    auto check_fragment_and_bulk(Tally &tally) -> void {
+    auto check_fragment_and_bulk() -> void {
         // Even counts first: they are the ones that used to hang.
         auto fragment_ok = true;
         for (usize const n: {usize(2), usize(6), usize(8), usize(5), usize(1)}) {
@@ -430,15 +418,15 @@ namespace {
                 blocks += 1;
                 pages += usize{1} << frame.order();
             }
-            log::info("pmnode.test:   alloc_frames_fragment({}) -> {} block(s), {} page(s)", n,
-                      blocks, pages);
+            log::info("pmnode:   alloc_frames_fragment({}) -> {} block(s), {} page(s)", n, blocks,
+                      pages);
             if (pages != n || blocks != static_cast<usize>(ustl::popcount(n))) {
                 fragment_ok = false;
             }
             mm::free_frames(&*result);
         }
-        verdict(tally, fragment_ok,
-                "alloc_frames_fragment() returns one block per set bit, n pages in all");
+        EXPECT_TRUE(fragment_ok,
+                    "alloc_frames_fragment() returns one block per set bit, n pages in all");
 
         PmFrame::List list;
         auto bulk_ok =
@@ -453,10 +441,10 @@ namespace {
             frames += 1;
         }
         mm::free_frames(&list);
-        verdict(tally, bulk_ok && frames == 4, "alloc_frames_bulk() returns n single frames");
+        EXPECT_TRUE(bulk_ok && frames == 4, "alloc_frames_bulk() returns n single frames");
     }
 
-    auto check_static_allocation(Tally &tally) -> void {
+    auto check_static_allocation() -> void {
         auto const release = [](ktl::Result<PmFrame *> const &result) {
             if (result && *result) {
                 PmNode::free_frames(*result, (*result)->order());
@@ -466,27 +454,27 @@ namespace {
         auto const nid = mm::current_node();
 
         auto implicit = PmNode::alloc_frames(alloc_flags);
-        verdict(tally, implicit && *implicit && (*implicit)->order() == 0,
-                "static allocation needs no node instance");
+        EXPECT_TRUE(implicit && *implicit && (*implicit)->order() == 0,
+                    "static allocation needs no node instance");
         release(implicit);
 
         auto local = PmNode::alloc_frames(alloc_flags | mm::Gaf::ThisNode);
-        verdict(tally, local && *local, "ThisNode also accepts the implicit home");
+        EXPECT_TRUE(local && *local, "ThisNode also accepts the implicit home");
         release(local);
 
         auto explicit_home = PmNode::alloc_frames(nid, alloc_flags | mm::Gaf::ThisNode);
-        verdict(tally, explicit_home && *explicit_home && (*explicit_home)->nid() == nid,
-                "static allocation honors an explicit home and ThisNode");
+        EXPECT_TRUE(explicit_home && *explicit_home && (*explicit_home)->nid() == nid,
+                    "static allocation honors an explicit home and ThisNode");
         release(explicit_home);
 
         auto empty = PmNode::alloc_frames(nid, alloc_flags, 0, NodeMask{});
-        verdict(tally, !empty && empty.unwrap_err() == Status::OutOfMem,
-                "static allocation cannot escape an empty allowed-node set");
+        EXPECT_TRUE(!empty && empty.unwrap_err() == Status::OutOfMem,
+                    "static allocation cannot escape an empty allowed-node set");
         release(empty);
 
         auto oversized = PmNode::alloc_frames(nid, alloc_flags, MAX_FRAME_ORDER + 1);
-        verdict(tally, !oversized && oversized.unwrap_err() == Status::InvArgs,
-                "static allocation rejects an order past the maximum");
+        EXPECT_TRUE(!oversized && oversized.unwrap_err() == Status::InvArgs,
+                    "static allocation rejects an order past the maximum");
         release(oversized);
 
         auto remote_nodes = PmNode::node_memory_mask();
@@ -494,30 +482,29 @@ namespace {
         if (remote_nodes.any()) {
             auto pinned =
                 PmNode::alloc_frames(nid, alloc_flags | mm::Gaf::ThisNode, 0, remote_nodes);
-            verdict(tally, !pinned && pinned.unwrap_err() == Status::OutOfMem,
-                    "ThisNode fails when the allowed mask excludes the requested node");
+            EXPECT_TRUE(!pinned && pinned.unwrap_err() == Status::OutOfMem,
+                        "ThisNode fails when the allowed mask excludes the requested node");
             release(pinned);
 
             auto remote = PmNode::alloc_frames(nid, alloc_flags, 0, remote_nodes);
-            verdict(tally, remote && *remote && remote_nodes.test((*remote)->nid()),
-                    "static allocation reaches another node permitted by the mask");
+            EXPECT_TRUE(remote && *remote && remote_nodes.test((*remote)->nid()),
+                        "static allocation reaches another node permitted by the mask");
             release(remote);
         } else {
-            log::info("pmnode.test: skip  cross-node allocation needs multiple memory nodes");
+            log::info("pmnode: skip  cross-node allocation needs multiple memory nodes");
         }
     }
 
     // The low bit allocates a page before the high bit requests an unsupported block.
     constexpr auto PARTIAL_FRAGMENT_COUNT = usize{1} + (usize{1} << (MAX_FRAME_ORDER + 1));
 
-    auto check_batch_errors(Tally &tally) -> void {
+    auto check_batch_errors() -> void {
         auto const nid = mm::current_node();
         auto const flags = mm::ALLOC_KERNEL;
         auto empty_fragment = PmNode::alloc_frames_fragment(NodeId(MAX_NODES), flags, 0);
         auto empty_bulk = PmNode::alloc_frames_bulk(flags, 0);
-        verdict(tally,
-                empty_fragment && empty_fragment->empty() && empty_bulk && empty_bulk->empty(),
-                "zero-page batch requests return empty lists");
+        EXPECT_TRUE(empty_fragment && empty_fragment->empty() && empty_bulk && empty_bulk->empty(),
+                    "zero-page batch requests return empty lists");
         if (empty_fragment) {
             PmNode::free_frames(&*empty_fragment);
         }
@@ -526,28 +513,27 @@ namespace {
         }
 
         auto fragment = mm::alloc_frames_fragment(flags, PARTIAL_FRAGMENT_COUNT, NodeMask::of(nid));
-        verdict(tally, !fragment && fragment.unwrap_err() == Status::InvArgs,
-                "a fragment request fails when a later block exceeds the maximum order");
+        EXPECT_TRUE(!fragment && fragment.unwrap_err() == Status::InvArgs,
+                    "a fragment request fails when a later block exceeds the maximum order");
         if (fragment) {
             mm::free_frames(&*fragment);
         }
 
         PmFrame::List list;
         auto const status = mm::alloc_frames(nid, flags, &list, 1, NodeMask{});
-        verdict(tally, status == Status::OutOfMem && list.empty(),
-                "the bulk interface reports an exhausted candidate set");
+        EXPECT_TRUE(status == Status::OutOfMem && list.empty(),
+                    "the bulk interface reports an exhausted candidate set");
         mm::free_frames(&list);
     }
 
-    auto check_node_queries(Tally &tally) -> void {
+    auto check_node_queries() -> void {
         auto const nid = mm::current_node();
         auto *const node = PmNode::node(nid);
-        verdict(tally,
-                node && mm::num_nodes() == PmNode::num_nodes() &&
-                    mm::node_work_cpus(nid) == node->work_cpus() &&
-                    mm::node_soft_affinity(nid) == &node->soft_affinity() &&
-                    mm::node_hard_affinity(nid) == &node->hard_affinity(),
-                "PMM topology queries describe the current node");
+        EXPECT_TRUE(node && mm::num_nodes() == PmNode::num_nodes() &&
+                        mm::node_work_cpus(nid) == node->work_cpus() &&
+                        mm::node_soft_affinity(nid) == &node->soft_affinity() &&
+                        mm::node_hard_affinity(nid) == &node->hard_affinity(),
+                    "PMM topology queries describe the current node");
         for (NodeId absent = 0; absent < MAX_NODES; ++absent) {
             if (PmNode::node(absent)) {
                 continue;
@@ -555,13 +541,12 @@ namespace {
             auto single = PmNode::alloc_frames(absent, mm::ALLOC_KERNEL);
             auto bulk = PmNode::alloc_frames_bulk(absent, mm::ALLOC_KERNEL, 1);
             auto fragment = PmNode::alloc_frames_fragment(absent, mm::ALLOC_KERNEL, 1);
-            verdict(tally,
-                    !mm::node_work_cpus(absent).any() && !mm::node_hard_affinity(absent) &&
-                        !mm::node_soft_affinity(absent) && !single &&
-                        single.unwrap_err() == Status::InvArgs && !bulk &&
-                        bulk.unwrap_err() == Status::InvArgs && !fragment &&
-                        fragment.unwrap_err() == Status::InvArgs,
-                    "queries and allocation handle an absent node ID");
+            EXPECT_TRUE(!mm::node_work_cpus(absent).any() && !mm::node_hard_affinity(absent) &&
+                            !mm::node_soft_affinity(absent) && !single &&
+                            single.unwrap_err() == Status::InvArgs && !bulk &&
+                            bulk.unwrap_err() == Status::InvArgs && !fragment &&
+                            fragment.unwrap_err() == Status::InvArgs,
+                        "queries and allocation handle an absent node ID");
             if (single) {
                 PmNode::free_frames(*single, (*single)->order());
             }
@@ -658,13 +643,12 @@ namespace {
         return ok && zone.num_free_frames() == 1 && zone.count_free_frames() == 1;
     }
 
-    auto check_exhausted_node(Tally &tally, NodeId const nid) -> void {
+    auto check_exhausted_node(NodeId const nid) -> void {
         auto const flags = mm::ALLOC_KERNEL | mm::Gaf::ThisNode;
         auto const mask = NodeMask::of(nid);
         auto const reserved = PmNode::alloc_frames(nid, flags, 0, mask);
         if (!reserved) {
-            verdict(tally, false, "reserve a page on the memory-only node");
-            return;
+            FAIL("reserve a page on the memory-only node");
         }
 
         PmFrame::List held;
@@ -687,8 +671,9 @@ namespace {
                              !zone->watermark_ok(0, PmZone::Watermark::Min);
         PmNode::free_frames(last, 0);
         if (Cpu::num_online_cpus() >= 2) {
-            verdict(tally, drained && check_zone_inventory(*zone),
-                    "two CPUs keep an exhausted zone's free count within its one-page inventory");
+            EXPECT_TRUE(drained && check_zone_inventory(*zone),
+                        "two CPUs keep an exhausted zone's free count within its one-page "
+                        "inventory");
         }
         auto bulk = PmNode::alloc_frames_bulk(nid, flags, 2, mask);
         auto const rejected = !bulk && bulk.unwrap_err() == Status::OutOfMem;
@@ -713,59 +698,58 @@ namespace {
         }
         PmNode::free_frames(&held);
 
-        verdict(tally, pinned_failed, "ThisNode fails after exhausting the requested node");
-        verdict(tally, drained && counted_local,
-                "fallback from the exhausted remote home supplies and counts a local page");
-        verdict(tally, rejected && restored_last, "a partial bulk allocation returns its page");
-        verdict(tally, invalid && fragment_restored_last,
-                "a partial fragment allocation returns its page");
+        EXPECT_TRUE(pinned_failed, "ThisNode fails after exhausting the requested node");
+        EXPECT_TRUE(drained && counted_local,
+                    "fallback from the exhausted remote home supplies and counts a local page");
+        EXPECT_TRUE(rejected && restored_last, "a partial bulk allocation returns its page");
+        EXPECT_TRUE(invalid && fragment_restored_last,
+                    "a partial fragment allocation returns its page");
     }
 
-    auto check_remote_exhaustion(Tally &tally) -> void {
+    auto check_remote_exhaustion() -> void {
         // Run from an idle guest. Target a memory-only node so CPUs retain their local memory.
         auto const home = mm::current_node();
         for (NodeId nid = 0; nid < MAX_NODES; ++nid) {
             if (nid != home && PmNode::node_memory_mask().test(nid) &&
                 !mm::node_work_cpus(nid).any()) {
                 mm::MemoryReclaimer::Pause pause{mm::MemoryReclaimer::get()};
-                check_exhausted_node(tally, nid);
+                check_exhausted_node(nid);
                 return;
             }
         }
-        verdict(tally, false, "remote exhaustion needs a memory-only node");
+        KTEST_SKIP("remote exhaustion needs a memory-only node");
     }
 
-    auto check_address_helpers(Tally &tally) -> void {
+    auto check_address_helpers() -> void {
         auto const flags = mm::ALLOC_KERNEL;
         auto addr = PhysAddr::Invalid;
         auto const frame = mm::alloc_frames(flags, &addr);
-        verdict(tally, frame && addr == mm::frame_to_phys(*frame),
-                "allocation writes the physical address of the returned frame");
+        EXPECT_TRUE(frame && addr == mm::frame_to_phys(*frame),
+                    "allocation writes the physical address of the returned frame");
         if (frame) {
             mm::free_frames(mm::frame_to_virt(*frame), 0);
         }
 
         auto const without_addr = mm::alloc_frames(flags, nullptr);
-        verdict(tally, !!without_addr, "the physical address output is optional");
+        EXPECT_TRUE(!!without_addr, "the physical address output is optional");
         if (without_addr) {
             mm::free_frames(*without_addr, 0);
         }
 
         addr = PhysAddr::Invalid;
         auto const invalid = mm::alloc_frames(flags, &addr, MAX_FRAME_ORDER + 1);
-        verdict(tally,
-                !invalid && invalid.unwrap_err() == Status::InvArgs && addr == PhysAddr::Invalid,
-                "invalid order is reported and the physical address output is preserved");
+        EXPECT_TRUE(!invalid && invalid.unwrap_err() == Status::InvArgs &&
+                        addr == PhysAddr::Invalid,
+                    "invalid order is reported and the physical address output is preserved");
         if (invalid) {
             mm::free_frames(*invalid, (*invalid)->order());
         }
     }
 
-    auto check_count_helpers(Tally &tally) -> void {
-        auto const check = [&tally](u8 *const bytes, NodeId const expected_node,
-                                    char const *const name) {
+    auto check_count_helpers() -> void {
+        auto const check = [](u8 *const bytes, NodeId const expected_node, char const *const name) {
             if (!bytes) {
-                verdict(tally, false, name);
+                FAIL("{}", name);
                 return;
             }
 
@@ -785,7 +769,7 @@ namespace {
 
             // Release the actual allocation even if its geometry was wrong.
             mm::free_frames(frame, order);
-            verdict(tally, ok, name);
+            EXPECT_TRUE(ok, "{}", name);
         };
 
         auto const alloc_flags = mm::ALLOC_KERNEL | mm::Gaf::Zero;
@@ -796,7 +780,7 @@ namespace {
               "node-specific get_frames_n() honors the node and rounds the count");
     }
 
-    auto check_disabled_allocation(Tally &tally) -> void {
+    auto check_disabled_allocation() -> void {
         auto &state = task::Thread::Current::alloc_state();
 
         state.disable();
@@ -810,25 +794,24 @@ namespace {
         state.enable();
 
         auto const after = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, 0);
-        verdict(tally,
-                !nodeless && nodeless.unwrap_err() == Status::AccessDenied && !by_node &&
-                    by_node.unwrap_err() == Status::AccessDenied,
-                "the facade reports AccessDenied with or without an explicit node");
-        verdict(tally, !!after, "enabling it again lets the allocation through");
-        verdict(tally, table == PhysAddr{0}, "page-table allocation respects disabled allocation");
+        EXPECT_TRUE(!nodeless && nodeless.unwrap_err() == Status::AccessDenied && !by_node &&
+                        by_node.unwrap_err() == Status::AccessDenied,
+                    "the facade reports AccessDenied with or without an explicit node");
+        EXPECT_TRUE(!!after, "enabling it again lets the allocation through");
+        EXPECT_TRUE(table == PhysAddr{0}, "page-table allocation respects disabled allocation");
         if (table != PhysAddr{0}) {
             mm::free_page_table(table, PAGE_SIZE);
         }
-        verdict(tally, !bytes && !local_bytes, "typed allocation returns nullptr when disabled");
+        EXPECT_TRUE(!bytes && !local_bytes, "typed allocation returns nullptr when disabled");
         for (auto *const ptr: {bytes, local_bytes}) {
             if (ptr) {
                 mm::free_frames(mm::virt_to_frame(ptr), 0);
             }
         }
-        verdict(tally,
-                !direct && direct.unwrap_err() == Status::AccessDenied && !direct_home &&
-                    direct_home.unwrap_err() == Status::AccessDenied,
-                "static allocation enforces the thread's disabled state with or without a home");
+        EXPECT_TRUE(!direct && direct.unwrap_err() == Status::AccessDenied && !direct_home &&
+                        direct_home.unwrap_err() == Status::AccessDenied,
+                    "static allocation enforces the thread's disabled state with or without a "
+                    "home");
         for (auto const &result: {direct, direct_home}) {
             if (result && *result) {
                 PmNode::free_frames(*result, (*result)->order());
@@ -843,42 +826,25 @@ namespace {
         }
     }
 
-    auto pmnode_test_command(int argc, char **argv) -> int {
-        if (argc > 2 || (argc == 2 && std::string_view(argv[1]) != "--exhaust-remote")) {
-            log::error("usage: pmnode.test [--exhaust-remote]");
-            return 1;
-        }
-        Tally tally;
-
-        run_topology_checks(tally);
-        PmNode::for_each_node(PmNode::State::Online, [&tally](PmNode &node) {
-            log::info("pmnode.test: node {}", node.nid());
-            check_zone_list(tally, node);
-            check_fallback_orders(tally, node.nid());
-            check_zone_candidates(tally, node);
-            check_contains(tally, node);
+    KTEST(PmNode, MatchesTheMachineItRunsOn) {
+        run_topology_checks();
+        PmNode::for_each_node(PmNode::State::Online, [](PmNode &node) {
+            log::info("pmnode: node {}", node.nid());
+            check_zone_list(node);
+            check_fallback_orders(node.nid());
+            check_zone_candidates(node);
+            check_contains(node);
         });
-        check_fragment_and_bulk(tally);
-        check_batch_errors(tally);
-        check_node_queries(tally);
-        if (argc == 2) {
-            check_remote_exhaustion(tally);
+        check_fragment_and_bulk();
+        check_batch_errors();
+        check_node_queries();
+        if (ktest::has_option("exhaust-remote")) {
+            check_remote_exhaustion();
         }
-        check_count_helpers(tally);
-        check_address_helpers(tally);
-        check_static_allocation(tally);
-        check_disabled_allocation(tally);
-
-        if (tally.failed != 0) {
-            log::error("pmnode.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("pmnode.test: ok -- {} checks", tally.passed);
-        return 0;
+        check_count_helpers();
+        check_address_helpers();
+        check_static_allocation();
+        check_disabled_allocation();
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(PmNodeTest, "pmnode.test", ours::pmnode_test_command,
-             "check the physical-memory node layer: topology, zone lists, allocation");

@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `irqrevoke.test`: the kernel taking a line away from its actions
-// (irq::Line::mark_dying(), revoke(), unmark_dying(); .agents/tasks/
-// irq-multi-arch/PLAN.md, step 9). dbg image only: it is the one with a
-// kernel shell. The lines are descriptors of the test's own, outside the line
-// table, bound to a chip that only counts, except in the race, which uses a
-// line table of its own; the interrupt objects on a real line are
+// IrqRevoke.TakingALineAwayFromItsActions: the kernel taking a line away from
+// its actions (irq::Line::mark_dying(), revoke(), unmark_dying();
+// .agents/tasks/irq-multi-arch/PLAN.md, step 9). dbg image only: it is the one
+// with a kernel shell. The lines are descriptors of the test's own, outside
+// the line table, bound to a chip that only counts, except in the race, which
+// uses a line table of its own; the interrupt objects on a real line are
 // interruptline.test's. What it checks:
 //
 //   - revoke() tells every action, once, with the line's number (not its
@@ -44,11 +44,11 @@
 
 #include <arch/interrupt.hpp>
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <kernel/kernel/irq/domain.hpp>
 #include <kernel/kernel/irq/line.hpp>
 #include <kernel/kernel/irq/line_access.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <ustl/views/span.hpp>
 
@@ -68,22 +68,6 @@ namespace {
     /// takes, in spins.
     constexpr u32 RACE_DELAY_SPINS = 400;
     constexpr u32 RACE_HOOK_SPINS = 600;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-        usize skipped = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("irqrevoke.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("irqrevoke.test: FAIL  {}", name);
-    }
 
     // NOLINTBEGIN(readability-identifier-naming)
     std::atomic<u64> MASKS{0};
@@ -251,20 +235,19 @@ namespace {
                    Status::Ok;
     }
 
-    auto check_tells_every_action(Tally &tally) -> void {
+    auto check_tells_every_action() -> void {
         auto *const line = own_line();
         if (line == nullptr) {
-            verdict(tally, false, "make the line");
-            return;
+            FAIL("make the line");
         }
         Owner first(irq::RegistrationOptions::Shared, &owner_cancel);
         Owner second(irq::RegistrationOptions::Shared, &owner_cancel);
         auto const attached =
             line->attach(first.action) == Status::Ok && line->attach(second.action) == Status::Ok;
-        verdict(tally, attached, "two shared actions with hooks take the line");
+        EXPECT_TRUE(attached, "two shared actions with hooks take the line");
 
         auto const marked = line->mark_dying();
-        verdict(tally, marked == Status::Ok, "the line is marked");
+        EXPECT_TRUE(marked == Status::Ok, "the line is marked");
         if (marked != Status::Ok) {
             auto _ = line->detach(first.action); // Clean-up; the check above is the result.
             auto _ = line->detach(second.action);
@@ -276,27 +259,23 @@ namespace {
         line->revoke();
         auto const masks = MASKS.load(std::memory_order_relaxed) - masks_before;
 
-        verdict(tally,
-                first.told.load() == 1 && second.told.load() == 1 &&
-                    first.told_with.load() == OWN_LINE && second.told_with.load() == OWN_LINE,
-                "each action is told once, with the line's number and not the pin's");
-        verdict(tally, first.on_line_in_hook.load() && second.on_line_in_hook.load(),
-                "and was still on that line, as its owner reads it, while it was told");
-        verdict(tally,
-                first.irqs_off_in_hook.load() && first.preempt_off_in_hook.load() &&
-                    second.irqs_off_in_hook.load() && second.preempt_off_in_hook.load(),
-                "with interrupts and preemption off, as a hook is promised");
-        verdict(tally, !first.action.is_attached() && !second.action.is_attached(),
-                "then both are off the line");
-        verdict(tally,
-                line->detach(first.action) == Status::NotFound &&
-                    line->detach(second.action) == Status::NotFound,
-                "and a detach answers NotFound");
-        verdict(tally, masks == 1, "the line is masked, once");
-        verdict(tally,
-                line->handle_irq(irq::Eoi::Skip) == irq::IrqReturn::None &&
-                    first.handled.load() == 0 && second.handled.load() == 0,
-                "and no action handles an interrupt on it");
+        EXPECT_TRUE(first.told.load() == 1 && second.told.load() == 1 &&
+                        first.told_with.load() == OWN_LINE && second.told_with.load() == OWN_LINE,
+                    "each action is told once, with the line's number and not the pin's");
+        EXPECT_TRUE(first.on_line_in_hook.load() && second.on_line_in_hook.load(),
+                    "and was still on that line, as its owner reads it, while it was told");
+        EXPECT_TRUE(first.irqs_off_in_hook.load() && first.preempt_off_in_hook.load() &&
+                        second.irqs_off_in_hook.load() && second.preempt_off_in_hook.load(),
+                    "with interrupts and preemption off, as a hook is promised");
+        EXPECT_TRUE(!first.action.is_attached() && !second.action.is_attached(),
+                    "then both are off the line");
+        EXPECT_TRUE(line->detach(first.action) == Status::NotFound &&
+                        line->detach(second.action) == Status::NotFound,
+                    "and a detach answers NotFound");
+        EXPECT_EQ(masks, u64{1}, "the line is masked, once");
+        EXPECT_TRUE(line->handle_irq(irq::Eoi::Skip) == irq::IrqReturn::None &&
+                        first.handled.load() == 0 && second.handled.load() == 0,
+                    "and no action handles an interrupt on it");
 
         // What the revoked line is left with: it was Shared, and takes an
         // exclusive action as it would any empty line, then refuses a shared.
@@ -305,17 +284,16 @@ namespace {
         Owner sharer(irq::RegistrationOptions::Shared, &owner_cancel);
         auto const took = line->attach(exclusive.action);
         auto const refused = line->attach(sharer.action);
-        verdict(tally, took == Status::Ok && refused == Status::AlreadyBound,
-                "a line that was Shared takes an exclusive action and refuses a shared one");
+        EXPECT_TRUE(took == Status::Ok && refused == Status::AlreadyBound,
+                    "a line that was Shared takes an exclusive action and refuses a shared one");
         auto _ = line->detach(exclusive.action); // Clean-up; the answers above are the result.
         delete line;
     }
 
-    auto check_dying_refuses(Tally &tally) -> void {
+    auto check_dying_refuses() -> void {
         auto *const line = own_line();
         if (line == nullptr) {
-            verdict(tally, false, "make the line");
-            return;
+            FAIL("make the line");
         }
         Owner owner(irq::RegistrationOptions::None, &owner_cancel);
         auto const marked = line->mark_dying();
@@ -330,126 +308,115 @@ namespace {
         auto const unmasked = line->unmask();
         auto const configured = line->configure(irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
 
-        verdict(tally, marked == Status::Ok, "an empty line is marked");
-        verdict(tally,
-                plain == Status::NoResource && with_mode.is_err() &&
-                    with_mode.unwrap_err() == Status::NoResource && !owner.action.is_attached(),
-                "attach(), with a mode or without, answers NoResource");
-        verdict(tally, unmasked == Status::NoResource && configured == Status::NoResource,
-                "so do unmask() and configure()");
-        verdict(tally,
-                CONFIGURES.load(std::memory_order_relaxed) == configures &&
-                    UNMASKS.load(std::memory_order_relaxed) == unmasks,
-                "without the chip being asked to configure or unmask");
-        verdict(tally, line->mask() == Status::Ok, "mask() still works");
+        EXPECT_TRUE(marked == Status::Ok, "an empty line is marked");
+        EXPECT_TRUE(plain == Status::NoResource && with_mode.is_err() &&
+                        with_mode.unwrap_err() == Status::NoResource && !owner.action.is_attached(),
+                    "attach(), with a mode or without, answers NoResource");
+        EXPECT_TRUE(unmasked == Status::NoResource && configured == Status::NoResource,
+                    "so do unmask() and configure()");
+        EXPECT_TRUE(CONFIGURES.load(std::memory_order_relaxed) == configures &&
+                        UNMASKS.load(std::memory_order_relaxed) == unmasks,
+                    "without the chip being asked to configure or unmask");
+        EXPECT_TRUE(line->mask() == Status::Ok, "mask() still works");
 
         line->unmark_dying();
-        verdict(tally, line->attach(owner.action) == Status::Ok && line->unmask() == Status::Ok,
-                "unmark_dying() gives the line back");
+        EXPECT_TRUE(line->attach(owner.action) == Status::Ok && line->unmask() == Status::Ok,
+                    "unmark_dying() gives the line back");
         auto _ = line->detach(owner.action); // Clean-up; the check above is the result.
         delete line;
     }
 
     /// The Permanent line and its owner are leaked, one pair per run: the
     /// action can never come off.
-    auto check_refuses_permanent(Tally &tally) -> void {
+    auto check_refuses_permanent() -> void {
         auto *const line = own_line();
         auto *const owner =
             new (mm::ALLOC_KERNEL) Owner(irq::RegistrationOptions::Permanent, &owner_cancel);
         if (line == nullptr || owner == nullptr) {
-            verdict(tally, false, "make the Permanent line");
-            return;
+            FAIL("make the Permanent line");
         }
         auto const attached = line->attach(owner->action);
-        verdict(tally, attached == Status::Ok, "a Permanent action takes the line");
+        EXPECT_TRUE(attached == Status::Ok, "a Permanent action takes the line");
         auto const unmasks = UNMASKS.load(std::memory_order_relaxed);
-        verdict(tally,
-                line->check_revocable() == Status::AlreadyBound &&
-                    line->mark_dying() == Status::AlreadyBound,
-                "a Permanent line refuses the mark, even with a hook");
-        verdict(tally,
-                line->unmask() == Status::Ok &&
-                    UNMASKS.load(std::memory_order_relaxed) == unmasks + 1,
-                "and the refusal left no mark: the line still unmasks");
-        verdict(tally, owner->told.load() == 0 && owner->action.is_attached(),
-                "and its action is left on it, untold");
+        EXPECT_TRUE(line->check_revocable() == Status::AlreadyBound &&
+                        line->mark_dying() == Status::AlreadyBound,
+                    "a Permanent line refuses the mark, even with a hook");
+        EXPECT_TRUE(line->unmask() == Status::Ok &&
+                        UNMASKS.load(std::memory_order_relaxed) == unmasks + 1,
+                    "and the refusal left no mark: the line still unmasks");
+        EXPECT_TRUE(owner->told.load() == 0 && owner->action.is_attached(),
+                    "and its action is left on it, untold");
     }
 
-    auto check_refuses_hookless(Tally &tally) -> void {
+    auto check_refuses_hookless() -> void {
         auto *const line = own_line();
         if (line == nullptr) {
-            verdict(tally, false, "make the line");
-            return;
+            FAIL("make the line");
         }
         Owner hooked(irq::RegistrationOptions::Shared, &owner_cancel);
         Owner hookless(irq::RegistrationOptions::Shared, nullptr);
         auto const attached = line->attach(hooked.action) == Status::Ok &&
                               line->attach(hookless.action) == Status::Ok;
-        verdict(tally, attached, "a shared line takes an action with a hook and one without");
+        EXPECT_TRUE(attached, "a shared line takes an action with a hook and one without");
 
         auto const unmasks = UNMASKS.load(std::memory_order_relaxed);
-        verdict(tally,
-                line->check_revocable() == Status::AlreadyBound &&
-                    line->mark_dying() == Status::AlreadyBound,
-                "the one without refuses the mark");
-        verdict(tally,
-                line->unmask() == Status::Ok &&
-                    UNMASKS.load(std::memory_order_relaxed) == unmasks + 1,
-                "and the refusal left no mark: the line still unmasks");
+        EXPECT_TRUE(line->check_revocable() == Status::AlreadyBound &&
+                        line->mark_dying() == Status::AlreadyBound,
+                    "the one without refuses the mark");
+        EXPECT_TRUE(line->unmask() == Status::Ok &&
+                        UNMASKS.load(std::memory_order_relaxed) == unmasks + 1,
+                    "and the refusal left no mark: the line still unmasks");
 
         auto const dropped = line->detach(hookless.action);
         auto const marked = line->mark_dying();
-        verdict(tally, dropped == Status::Ok && marked == Status::Ok,
-                "once it is gone the line is marked");
+        EXPECT_TRUE(dropped == Status::Ok && marked == Status::Ok,
+                    "once it is gone the line is marked");
         if (marked != Status::Ok) {
             auto _ = line->detach(hooked.action); // Clean-up; the check above is the result.
             delete line;
             return;
         }
         line->revoke();
-        verdict(tally, hooked.told.load() == 1 && hookless.told.load() == 0,
-                "and revoked: the hooked action is told, the one that left is not");
+        EXPECT_TRUE(hooked.told.load() == 1 && hookless.told.load() == 0,
+                    "and revoked: the hooked action is told, the one that left is not");
         delete line;
     }
 
     /// A Oneshot level line that is held: its action answered WakeThread, so
     /// the flow masked the line and left it held until a finalize.
-    auto check_held_line(Tally &tally) -> void {
+    auto check_held_line() -> void {
         auto *const line = own_line(LEVEL_CHIP);
         if (line == nullptr) {
-            verdict(tally, false, "make the level line");
-            return;
+            FAIL("make the level line");
         }
         Owner owner(irq::RegistrationOptions::Oneshot, &owner_cancel);
         owner.wake = true;
         auto const attached = line->attach(owner.action);
         auto const woke = line->handle_irq(irq::Eoi::Skip);
         auto unmasks = UNMASKS.load(std::memory_order_relaxed);
-        verdict(tally, attached == Status::Ok && woke == irq::IrqReturn::WakeThread,
-                "a Oneshot action on a level line is woken and holds the line");
-        verdict(tally,
-                line->unmask() == Status::Ok && UNMASKS.load(std::memory_order_relaxed) == unmasks,
-                "a held line stays masked through an unmask");
+        EXPECT_TRUE(attached == Status::Ok && woke == irq::IrqReturn::WakeThread,
+                    "a Oneshot action on a level line is woken and holds the line");
+        EXPECT_TRUE(line->unmask() == Status::Ok &&
+                        UNMASKS.load(std::memory_order_relaxed) == unmasks,
+                    "a held line stays masked through an unmask");
 
         // The removal is refused further on and rolled back, while the owner
         // acks: the finalize is not lost, and the line is not left held.
         auto const marked = line->mark_dying();
         line->finalize_oneshot(owner.action);
         line->unmark_dying();
-        verdict(tally,
-                marked == Status::Ok && UNMASKS.load(std::memory_order_relaxed) == unmasks + 1,
-                "a finalize on a marked line unmasks it");
+        EXPECT_TRUE(marked == Status::Ok && UNMASKS.load(std::memory_order_relaxed) == unmasks + 1,
+                    "a finalize on a marked line unmasks it");
         unmasks = UNMASKS.load(std::memory_order_relaxed);
-        verdict(tally,
-                line->unmask() == Status::Ok &&
-                    UNMASKS.load(std::memory_order_relaxed) == unmasks + 1,
-                "and the line is no longer held once unmarked");
+        EXPECT_TRUE(line->unmask() == Status::Ok &&
+                        UNMASKS.load(std::memory_order_relaxed) == unmasks + 1,
+                    "and the line is no longer held once unmarked");
 
         // A removal that goes through leaves no hold for the next owner.
         auto const woke_again = line->handle_irq(irq::Eoi::Skip);
         auto const marked_again = line->mark_dying();
         if (marked_again != Status::Ok) {
-            verdict(tally, false, "the held line is marked");
+            EXPECT_TRUE(false, "the held line is marked");
             auto _ = line->detach(owner.action); // Clean-up; the check above is the result.
             delete line;
             return;
@@ -459,11 +426,10 @@ namespace {
         Owner next(irq::RegistrationOptions::Oneshot, &owner_cancel);
         auto const taken = line->attach(next.action);
         unmasks = UNMASKS.load(std::memory_order_relaxed);
-        verdict(tally,
-                woke_again == irq::IrqReturn::WakeThread && taken == Status::Ok &&
-                    line->unmask() == Status::Ok &&
-                    UNMASKS.load(std::memory_order_relaxed) == unmasks + 1,
-                "a revoked line that was held is not held by the next owner");
+        EXPECT_TRUE(woke_again == irq::IrqReturn::WakeThread && taken == Status::Ok &&
+                        line->unmask() == Status::Ok &&
+                        UNMASKS.load(std::memory_order_relaxed) == unmasks + 1,
+                    "a revoked line that was held is not held by the next owner");
         auto _ = line->detach(next.action); // Clean-up; the check above is the result.
         delete line;
     }
@@ -480,14 +446,13 @@ namespace {
         return 1;
     }
 
-    /// The command thread runs on |main_cpu| for this case. The handler holds
-    /// its CPU with interrupts off until the revoke is announced, so a command
+    /// The test thread runs on the first CPU for this case. The handler holds
+    /// its CPU with interrupts off until the revoke is announced, so a test
     /// thread sharing that CPU could not announce it.
-    auto check_barrier(Tally &tally, CpuNum const dispatch_cpu) -> void {
+    auto check_barrier(CpuNum const dispatch_cpu) -> void {
         auto *const line = own_line();
         if (line == nullptr) {
-            verdict(tally, false, "make the line");
-            return;
+            FAIL("make the line");
         }
         Hold hold;
         Owner owner(irq::RegistrationOptions::None, &owner_cancel);
@@ -504,8 +469,8 @@ namespace {
             auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
         }
         auto const in_flight = hold.entered.load(std::memory_order_acquire);
-        verdict(tally, attached && marked == Status::Ok && in_flight,
-                "a handler of the line is in flight on another CPU");
+        EXPECT_TRUE(attached && marked == Status::Ok && in_flight,
+                    "a handler of the line is in flight on another CPU");
         if (!attached || marked != Status::Ok || !in_flight) {
             hold.revoking.store(true, std::memory_order_release);
             if (join_within(thread)) {
@@ -520,18 +485,18 @@ namespace {
         line->revoke();
         auto const returned_at_revoke = hold.returned.load(std::memory_order_acquire);
 
-        verdict(tally, !returned_before && returned_at_revoke,
-                "revoke() returns only after the handler has, which was still running");
-        verdict(tally, owner.handler_returned_in_hook.load() && owner.told.load() == 1,
-                "and the hook is told after it");
-        if (join_within(thread)) {
+        EXPECT_TRUE(!returned_before && returned_at_revoke,
+                    "revoke() returns only after the handler has, which was still running");
+        EXPECT_TRUE(owner.handler_returned_in_hook.load() && owner.told.load() == 1,
+                    "and the hook is told after it");
+        auto const ended = join_within(thread);
+        EXPECT_TRUE(ended, "the dispatching thread ends");
+        if (ended) {
             delete line;
-        } else {
-            verdict(tally, false, "the dispatching thread ends");
         }
     }
 
-    /// One round at a time: main builds the owner and says go, the remover
+    /// One round at a time: the test builds the owner and says go, the remover
     /// revokes through the table, the owner detaches through it after a delay
     /// of its own. The table is the test's own, made once per run and kept:
     /// a table cannot be freed.
@@ -611,13 +576,12 @@ namespace {
         return true;
     }
 
-    auto check_race(Tally &tally, CpuNum const remover_cpu, CpuNum const detacher_cpu) -> void {
+    auto check_race(CpuNum const remover_cpu, CpuNum const detacher_cpu) -> void {
         auto *const table = new (mm::ALLOC_KERNEL) irq::Domain();
         constexpr std::array<HIrqNum, 1> NUMBERS{OWN_HWIRQ};
         if (table == nullptr ||
             table->init(ustl::views::Span<HIrqNum const>(NUMBERS), CHIP) != Status::Ok) {
-            verdict(tally, false, "make the race's line table");
-            return;
+            FAIL("make the race's line table");
         }
         RACE.table = table;
         RACE.virq = table->irq_for_source(OWN_HWIRQ);
@@ -675,72 +639,50 @@ namespace {
         RACE.stop.store(true, std::memory_order_release);
         auto const joined = join_within(remover) && join_within(detacher);
 
-        log::info("irqrevoke.test: {} rounds, the owner's detach won {}, the revoke won {}",
-                  RACE_ROUNDS, RACE.owner_won.load(), RACE.remover_won.load());
-        verdict(tally, ran && joined, "every round ran and both threads ended");
-        verdict(tally, RACE.violations.load() == 0,
-                "a detach never answered before the revoke was done with the owner");
-        verdict(tally, RACE.owner_won.load() + RACE.remover_won.load() == RACE_ROUNDS,
-                "and every round ended one way or the other");
-        verdict(tally, RACE.remover_won.load() > 0,
-                "and the detach did land after the revoke took the action");
+        log::info("irqrevoke: {} rounds, the owner's detach won {}, the revoke won {}", RACE_ROUNDS,
+                  RACE.owner_won.load(), RACE.remover_won.load());
+        EXPECT_TRUE(ran && joined, "every round ran and both threads ended");
+        EXPECT_EQ(RACE.violations.load(), u32{0},
+                  "a detach never answered before the revoke was done with the owner");
+        EXPECT_EQ(RACE.owner_won.load() + RACE.remover_won.load(), RACE_ROUNDS,
+                  "and every round ended one way or the other");
+        EXPECT_GT(RACE.remover_won.load(), u32{0},
+                  "and the detach did land after the revoke took the action");
     }
 
-    auto irq_revoke_test_command(int, char **) -> int {
-        Tally tally;
-
-        check_tells_every_action(tally);
-        check_dying_refuses(tally);
-        check_refuses_permanent(tally);
-        check_refuses_hookless(tally);
-        check_held_line(tally);
+    KTEST(IrqRevoke, TakingALineAwayFromItsActions) {
+        check_tells_every_action();
+        check_dying_refuses();
+        check_refuses_permanent();
+        check_refuses_hookless();
+        check_held_line();
 
         auto const online = Cpu::online_mask();
         if (online.count() < 2) {
-            log::info("irqrevoke.test: one CPU only, the barrier and the race are skipped");
-            tally.skipped += 2;
-        } else {
-            auto first = INVALID_CPU_NUM;
-            auto second = INVALID_CPU_NUM;
-            online.for_each([&first, &second](CpuNum const cpu) {
-                if (first == INVALID_CPU_NUM) {
-                    first = cpu;
-                } else if (second == INVALID_CPU_NUM) {
-                    second = cpu;
-                }
-            });
-
-            // On the first CPU for the barrier, away from the handler's.
-            auto *const self = Thread::Current::get();
-            self->set_cpu_affinity_hard(CpuMask::of(first));
-            auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
-            if (Cpu::id() != first) {
-                log::error("irqrevoke.test: FAILED -- the command did not move to CPU {}", first);
-                self->set_cpu_affinity_hard(cpu_possible_mask());
-                return 1;
+            KTEST_SKIP("one CPU only, the barrier and the race are skipped");
+        }
+        auto first = INVALID_CPU_NUM;
+        auto second = INVALID_CPU_NUM;
+        online.for_each([&first, &second](CpuNum const cpu) {
+            if (first == INVALID_CPU_NUM) {
+                first = cpu;
+            } else if (second == INVALID_CPU_NUM) {
+                second = cpu;
             }
-            check_barrier(tally, second);
+        });
+
+        // On the first CPU for the barrier, away from the handler's.
+        auto *const self = Thread::Current::get();
+        self->set_cpu_affinity_hard(CpuMask::of(first));
+        auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::No);
+        if (Cpu::id() != first) {
             self->set_cpu_affinity_hard(cpu_possible_mask());
+            FAIL("the test thread did not move to CPU {}", first);
+        }
+        check_barrier(second);
+        self->set_cpu_affinity_hard(cpu_possible_mask());
 
-            check_race(tally, first, second);
-        }
-
-        if (tally.failed != 0) {
-            log::error("irqrevoke.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        if (tally.skipped != 0) {
-            log::info("irqrevoke.test: ok -- {} checks, {} case(s) skipped", tally.passed,
-                      tally.skipped);
-            return 0;
-        }
-        log::info("irqrevoke.test: ok -- {} checks", tally.passed);
-        return 0;
+        check_race(first, second);
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(IrqRevokeTest, "irqrevoke.test", ours::irq_revoke_test_command,
-             "the kernel taking a line away: revoke() tells each action and takes it off, a dying "
-             "line refuses new work, and a detach racing a revoke never outruns it");

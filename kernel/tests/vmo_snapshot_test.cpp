@@ -1,8 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `vmosnapshot.test`: check what a VmCowPages that hangs under another one
-// sees, by building small trees by hand and asking their cursors for pages.
+// VmoSnapshot.WhatANodeUnderAnotherSees: check what a VmCowPages that hangs
+// under another one sees, by building small trees by hand and asking their
+// cursors for pages.
 //
 // What it covers, and only that:
 //
@@ -31,11 +32,7 @@
 // copies one), a write, a clone, a destruction that merges. Each of those is a
 // later step of .agents/tasks/vmo-snapshot-child and adds its checks here.
 //
-// Why a console command: the tree has no in-kernel unittest runtime yet (see
-// usercopy.test), and these are kernel objects that no host test can build.
-//
-// The name has no underscore for the reason usercopy.test's does not: gktl's
-// command table does not encode '_'.
+// Why an in-kernel test: these are kernel objects that no host test can build.
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
@@ -63,8 +60,8 @@
 #include <cstring>
 
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
+#include <ktest/ktest.hpp>
 #include <ktl/result.hpp>
 #include <logz4/log.hpp>
 #include <user_copy/user_copy.hpp>
@@ -76,21 +73,6 @@ namespace {
     using mm::VmPage;
     using Node = ustl::Arc<VmCowPages>;
     using Found = VmCowPages::Cursor::PageLookup;
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("vmosnapshot.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("vmosnapshot.test: FAIL  {}", name);
-    }
 
     // The analysis cannot tie `node->lock()` to the `m_lock` that lookup_cursor_locked()
     // requires: it sees two expressions through two calls of Arc::operator->().
@@ -262,14 +244,13 @@ namespace {
     // Removing Write from the page tables of the mappings of an object, from the
     // object's side: which pages it reaches, what it leaves, and what it does
     // not touch.
-    auto check_remove_write(Tally &tally) -> void {
+    auto check_remove_write() -> void {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
                                                      mm::VmasKind::User, mm::VmasFlags::None,
                                                      "vmosnapshot.test", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the remove-write checks is made");
-            return;
+            FAIL("allocate an address space for the remove-write checks");
         }
         auto root = aspace->root_vma();
         constexpr auto PERMS = mm::VmaFlags::PermMask;
@@ -288,7 +269,7 @@ namespace {
                                                     &ro_vmo) == Status::Ok &&
                           mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE,
                                                     mm::VmoFlags::Lazy, &lazy_vmo) == Status::Ok;
-        verdict(tally, made, "three VMOs for the remove-write checks are made");
+        EXPECT_TRUE(made, "three VMOs for the remove-write checks are made");
         if (!made) {
             return;
         }
@@ -301,34 +282,30 @@ namespace {
         // Mapped, not committed: no entries yet.
         auto lazy = root->map_vmo(LAZY_AT, 2 * PAGE_SIZE, 0, rw, PERMS, lazy_vmo,
                                   mm::MapOptions::Lazy, "remove-write lazy");
-        verdict(tally, writable.is_ok() && read_only.is_ok() && lazy.is_ok(),
-                "the mappings are made");
+        EXPECT_TRUE(writable.is_ok() && read_only.is_ok() && lazy.is_ok(), "the mappings are made");
         if (!(writable.is_ok() && read_only.is_ok() && lazy.is_ok())) {
             return;
         }
-        verdict(
-            tally,
-            is_writable(aspace, RW_AT) && is_writable(aspace, RW_AT + PAGE_SIZE) &&
-                is_writable(aspace, RW_AT + 2 * PAGE_SIZE) && !is_writable(aspace, RO_AT) &&
-                is_readable(aspace, RO_AT),
-            "the committed mappings have entries: writable in the writable one, not in the other");
+        EXPECT_TRUE(is_writable(aspace, RW_AT) && is_writable(aspace, RW_AT + PAGE_SIZE) &&
+                        is_writable(aspace, RW_AT + 2 * PAGE_SIZE) && !is_writable(aspace, RO_AT) &&
+                        is_readable(aspace, RO_AT),
+                    "the committed mappings have entries: writable in the writable one, not in the "
+                    "other");
 
         // One page of three. What is left is exactly what the entry had, less
         // Write: nothing else changes, and above all nothing is added, which is
         // what makes this different from protect().
         auto const before = pte_flags(aspace, RW_AT + PAGE_SIZE);
         remove_write(vmo, PAGE_SIZE, PAGE_SIZE);
-        verdict(
-            tally,
-            is_writable(aspace, RW_AT) && !is_writable(aspace, RW_AT + PAGE_SIZE) &&
-                is_readable(aspace, RW_AT + PAGE_SIZE) &&
-                is_writable(aspace, RW_AT + 2 * PAGE_SIZE),
-            "removing Write from one page takes it from that page only, and leaves it readable");
+        EXPECT_TRUE(is_writable(aspace, RW_AT) && !is_writable(aspace, RW_AT + PAGE_SIZE) &&
+                        is_readable(aspace, RW_AT + PAGE_SIZE) &&
+                        is_writable(aspace, RW_AT + 2 * PAGE_SIZE),
+                    "removing Write from one page takes it from that page only, and leaves it "
+                    "readable");
         auto const after = pte_flags(aspace, RW_AT + PAGE_SIZE);
-        verdict(tally,
-                before.is_some() && after.is_some() &&
-                    *after == (*before & ~mm::MmuFlags::Writable),
-                "and leaves the entry exactly as it was, less Write");
+        EXPECT_TRUE(before.is_some() && after.is_some() &&
+                        *after == (*before & ~mm::MmuFlags::Writable),
+                    "and leaves the entry exactly as it was, less Write");
 
         // Idempotent, and a range that names nothing the mapping shows changes nothing.
         // Doing it again is a restriction of an entry that already lacks what is taken,
@@ -336,30 +313,28 @@ namespace {
         remove_write(vmo, PAGE_SIZE, PAGE_SIZE);
         remove_write(vmo, 3 * PAGE_SIZE, 4 * PAGE_SIZE);
         auto const again = pte_flags(aspace, RW_AT + PAGE_SIZE);
-        verdict(tally,
-                is_writable(aspace, RW_AT) && is_writable(aspace, RW_AT + 2 * PAGE_SIZE) &&
-                    again.is_some() && *again == *after,
-                "doing it again, or for a range past the object, changes nothing at all");
+        EXPECT_TRUE(is_writable(aspace, RW_AT) && is_writable(aspace, RW_AT + 2 * PAGE_SIZE) &&
+                        again.is_some() && *again == *after,
+                    "doing it again, or for a range past the object, changes nothing at all");
 
         // The other objects' mappings are not touched by this one's.
         remove_write(ro_vmo, 0, 2 * PAGE_SIZE);
-        verdict(tally,
-                is_writable(aspace, RW_AT) && !is_writable(aspace, RO_AT) &&
-                    is_readable(aspace, RO_AT),
-                "a read-only mapping keeps what it has, and another object's is not reached");
+        EXPECT_TRUE(is_writable(aspace, RW_AT) && !is_writable(aspace, RO_AT) &&
+                        is_readable(aspace, RO_AT),
+                    "a read-only mapping keeps what it has, and another object's is not reached");
 
         // A mapping with no entries yet: nothing to change, and nothing goes wrong.
         remove_write(lazy_vmo, 0, 2 * PAGE_SIZE);
-        verdict(tally, !pte_flags(aspace, LAZY_AT).is_some(),
-                "a mapping with no entries is left with none");
+        EXPECT_TRUE(!pte_flags(aspace, LAZY_AT).is_some(),
+                    "a mapping with no entries is left with none");
 
         // The whole object, with a length that reaches the end of the address space.
         remove_write(vmo, 0, ~usize{0});
-        verdict(tally,
-                !is_writable(aspace, RW_AT) && !is_writable(aspace, RW_AT + PAGE_SIZE) &&
-                    !is_writable(aspace, RW_AT + 2 * PAGE_SIZE) && is_readable(aspace, RW_AT) &&
-                    is_readable(aspace, RW_AT + 2 * PAGE_SIZE),
-                "the whole object, with a length that does not fit, takes Write from every page");
+        EXPECT_TRUE(
+            !is_writable(aspace, RW_AT) && !is_writable(aspace, RW_AT + PAGE_SIZE) &&
+                !is_writable(aspace, RW_AT + 2 * PAGE_SIZE) && is_readable(aspace, RW_AT) &&
+                is_readable(aspace, RW_AT + 2 * PAGE_SIZE),
+            "the whole object, with a length that does not fit, takes Write from every page");
 
         // Two mappings of one object that show different parts of it: the whole,
         // and two pages from its page 1. A range is in the object's bytes, so it
@@ -369,25 +344,25 @@ namespace {
         constexpr auto WIN_AT = FULL_AT + 8 * PAGE_SIZE;
         auto const shared_made = mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE, COMMITTED,
                                                            &shared_vmo) == Status::Ok;
-        verdict(tally, shared_made, "an object to map twice is made");
+        EXPECT_TRUE(shared_made, "an object to map twice is made");
         if (shared_made) {
             auto full = root->map_vmo(FULL_AT, 3 * PAGE_SIZE, 0, rw, PERMS, shared_vmo,
                                       mm::MapOptions::Resident, "remove-write full");
             auto window = root->map_vmo(WIN_AT, 2 * PAGE_SIZE, PAGE_SIZE, rw, PERMS, shared_vmo,
                                         mm::MapOptions::Resident, "remove-write window");
-            verdict(tally, full.is_ok() && window.is_ok(), "the whole and the window are mapped");
+            EXPECT_TRUE(full.is_ok() && window.is_ok(), "the whole and the window are mapped");
             if (full.is_ok() && window.is_ok()) {
                 remove_write(shared_vmo, 2 * PAGE_SIZE, PAGE_SIZE);
-                verdict(tally,
-                        is_writable(aspace, FULL_AT) && is_writable(aspace, FULL_AT + PAGE_SIZE) &&
-                            !is_writable(aspace, FULL_AT + 2 * PAGE_SIZE) &&
-                            is_writable(aspace, WIN_AT) && !is_writable(aspace, WIN_AT + PAGE_SIZE),
-                        "the object's page 2 loses Write in both mappings, at the address each "
-                        "shows it at");
+                EXPECT_TRUE(
+                    is_writable(aspace, FULL_AT) && is_writable(aspace, FULL_AT + PAGE_SIZE) &&
+                        !is_writable(aspace, FULL_AT + 2 * PAGE_SIZE) &&
+                        is_writable(aspace, WIN_AT) && !is_writable(aspace, WIN_AT + PAGE_SIZE),
+                    "the object's page 2 loses Write in both mappings, at the address each "
+                    "shows it at");
             }
         }
 
-        verdict(tally, aspace->destroy() == Status::Ok, "the address space is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok, "the address space is destroyed");
     }
 
     // Puts the calling thread on |next| and loads its page tables, as usercopy.test
@@ -416,14 +391,13 @@ namespace {
     // is given is added by the first access that needs it, in the fault path:
     // which is what keeps a page that was made read-only for a reason from being
     // made writable by anyone asking for the permissions the mapping has.
-    auto check_narrowing_protect(Tally &tally) -> void {
+    auto check_narrowing_protect() -> void {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
                                                      mm::VmasKind::User, mm::VmasFlags::None,
                                                      "vmosnapshot.test protect", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the protect checks is made");
-            return;
+            FAIL("allocate an address space for the protect checks");
         }
         auto *const previous = attach(aspace.as_ptr_mut());
 
@@ -437,13 +411,13 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> vmo;
         auto const made =
             mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE, COMMITTED, &vmo) == Status::Ok;
-        verdict(tally, made, "an object for the protect checks is made");
+        EXPECT_TRUE(made, "an object for the protect checks is made");
         if (made) {
             static constexpr u8 PATTERN[4] = {0xde, 0xad, 0xbe, 0xef};
             auto mapped = root->map_vmo(AT, 2 * PAGE_SIZE, 0, rw, PERMS, vmo,
                                         mm::MapOptions::Resident, "protect checks");
-            verdict(tally, mapped.is_ok() && vmo->write(PATTERN, 0, sizeof(PATTERN)) == Status::Ok,
-                    "it is mapped writable and holds a pattern");
+            EXPECT_TRUE(mapped.is_ok() && vmo->write(PATTERN, 0, sizeof(PATTERN)) == Status::Ok,
+                        "it is mapped writable and holds a pattern");
             if (mapped.is_ok()) {
                 auto mapping = mapped.unwrap();
                 auto const pa0 = entry_pa(aspace, AT);
@@ -451,43 +425,40 @@ namespace {
                 // A page made read-only for a reason stays read-only through a protect()
                 // that asks for what the mapping already allows.
                 remove_write(vmo, 0, PAGE_SIZE);
-                verdict(tally, mapping->protect(AT, 2 * PAGE_SIZE, rw) == Status::Ok,
-                        "protect() to the permissions the mapping has is accepted");
-                verdict(tally, !is_writable(aspace, AT) && is_writable(aspace, AT + PAGE_SIZE),
-                        "and does not give Write back to the page that lost it");
+                EXPECT_TRUE(mapping->protect(AT, 2 * PAGE_SIZE, rw) == Status::Ok,
+                            "protect() to the permissions the mapping has is accepted");
+                EXPECT_TRUE(!is_writable(aspace, AT) && is_writable(aspace, AT + PAGE_SIZE),
+                            "and does not give Write back to the page that lost it");
 
                 // The permission is added by the access that needs it: same frame, same bytes.
-                verdict(tally, task::Thread::Current::soft_fault(AT, WRITE) == Status::Ok,
-                        "a write to the read-only page is resolved by the fault path");
+                EXPECT_TRUE(task::Thread::Current::soft_fault(AT, WRITE) == Status::Ok,
+                            "a write to the read-only page is resolved by the fault path");
                 u8 back[4] = {};
-                verdict(tally,
-                        is_writable(aspace, AT) && entry_pa(aspace, AT) == pa0 &&
-                            vmo->read(back, 0, sizeof(back)) == Status::Ok &&
-                            std::memcmp(back, PATTERN, sizeof(back)) == 0,
-                        "which leaves it writable, on the same frame, with the bytes it had");
+                EXPECT_TRUE(is_writable(aspace, AT) && entry_pa(aspace, AT) == pa0 &&
+                                vmo->read(back, 0, sizeof(back)) == Status::Ok &&
+                                std::memcmp(back, PATTERN, sizeof(back)) == 0,
+                            "which leaves it writable, on the same frame, with the bytes it had");
 
                 // Narrowing takes effect at once, on every entry.
-                verdict(tally, mapping->protect(AT, 2 * PAGE_SIZE, ro) == Status::Ok,
-                        "protect() to read-only is accepted");
-                verdict(tally,
-                        !is_writable(aspace, AT) && !is_writable(aspace, AT + PAGE_SIZE) &&
-                            is_readable(aspace, AT) && is_readable(aspace, AT + PAGE_SIZE),
-                        "and takes Write from every entry at once");
-                verdict(tally,
-                        task::Thread::Current::soft_fault(AT + PAGE_SIZE, WRITE) != Status::Ok &&
-                            !is_writable(aspace, AT + PAGE_SIZE),
-                        "a write to a mapping that no longer allows it is refused, and the entry "
-                        "stays");
+                EXPECT_TRUE(mapping->protect(AT, 2 * PAGE_SIZE, ro) == Status::Ok,
+                            "protect() to read-only is accepted");
+                EXPECT_TRUE(!is_writable(aspace, AT) && !is_writable(aspace, AT + PAGE_SIZE) &&
+                                is_readable(aspace, AT) && is_readable(aspace, AT + PAGE_SIZE),
+                            "and takes Write from every entry at once");
+                EXPECT_TRUE(
+                    task::Thread::Current::soft_fault(AT + PAGE_SIZE, WRITE) != Status::Ok &&
+                        !is_writable(aspace, AT + PAGE_SIZE),
+                    "a write to a mapping that no longer allows it is refused, and the entry "
+                    "stays");
 
                 // Widening again does not touch the entries; the write does.
-                verdict(tally,
-                        mapping->protect(AT, 2 * PAGE_SIZE, rw) == Status::Ok &&
-                            !is_writable(aspace, AT + PAGE_SIZE),
-                        "protect() back to read-write leaves the entries read-only");
-                verdict(tally,
-                        task::Thread::Current::soft_fault(AT + PAGE_SIZE, WRITE) == Status::Ok &&
-                            is_writable(aspace, AT + PAGE_SIZE) && !is_writable(aspace, AT),
-                        "and the first write to a page adds Write to that page only");
+                EXPECT_TRUE(mapping->protect(AT, 2 * PAGE_SIZE, rw) == Status::Ok &&
+                                !is_writable(aspace, AT + PAGE_SIZE),
+                            "protect() back to read-write leaves the entries read-only");
+                EXPECT_TRUE(task::Thread::Current::soft_fault(AT + PAGE_SIZE, WRITE) ==
+                                    Status::Ok &&
+                                is_writable(aspace, AT + PAGE_SIZE) && !is_writable(aspace, AT),
+                            "and the first write to a page adds Write to that page only");
             }
         }
 
@@ -501,28 +472,26 @@ namespace {
         if (code_made) {
             auto code_mapped = root->map_vmo(CODE_AT, PAGE_SIZE, 0, rx, PERMS, code,
                                              mm::MapOptions::Resident, "code");
-            verdict(tally, code_mapped.is_ok() && is_executable(aspace, CODE_AT),
-                    "an executable mapping has an executable entry");
+            EXPECT_TRUE(code_mapped.is_ok() && is_executable(aspace, CODE_AT),
+                        "an executable mapping has an executable entry");
             if (code_mapped.is_ok()) {
                 auto code_mapping = code_mapped.unwrap();
-                verdict(tally,
-                        code_mapping->protect(CODE_AT, PAGE_SIZE, ro) == Status::Ok &&
-                            !is_executable(aspace, CODE_AT) &&
-                            code_mapping->protect(CODE_AT, PAGE_SIZE, rx) == Status::Ok &&
-                            !is_executable(aspace, CODE_AT),
-                        "protect() to read-only takes Execute from the entry and back to "
-                        "executable does not give it back");
-                verdict(tally,
-                        task::Thread::Current::soft_fault(
-                            CODE_AT, mm::VmFault::Cause::Instruction) == Status::Ok &&
-                            is_executable(aspace, CODE_AT) && !is_writable(aspace, CODE_AT),
-                        "an instruction fetch adds Execute to the entry, and no Write");
+                EXPECT_TRUE(code_mapping->protect(CODE_AT, PAGE_SIZE, ro) == Status::Ok &&
+                                !is_executable(aspace, CODE_AT) &&
+                                code_mapping->protect(CODE_AT, PAGE_SIZE, rx) == Status::Ok &&
+                                !is_executable(aspace, CODE_AT),
+                            "protect() to read-only takes Execute from the entry and back to "
+                            "executable does not give it back");
+                EXPECT_TRUE(task::Thread::Current::soft_fault(
+                                CODE_AT, mm::VmFault::Cause::Instruction) == Status::Ok &&
+                                is_executable(aspace, CODE_AT) && !is_writable(aspace, CODE_AT),
+                            "an instruction fetch adds Execute to the entry, and no Write");
             }
         }
 
         attach(previous);
-        verdict(tally, aspace->destroy() == Status::Ok,
-                "the address space of the protect checks is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                    "the address space of the protect checks is destroyed");
     }
 
     /// A fault taken on another thread, in |aspace|: what soft_fault() answered.
@@ -557,14 +526,13 @@ namespace {
     // instruction fetch waits for it with the entry it read, and unmaps the
     // entry meanwhile, as take_pages() does first: the fetch must not map the
     // frame it read back.
-    auto check_widen_reads_entry_again(Tally &tally) -> void {
+    auto check_widen_reads_entry_again() -> void {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
                                                      mm::VmasKind::User, mm::VmasFlags::None,
                                                      "vmosnapshot.test widen", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the widen check is made");
-            return;
+            FAIL("allocate an address space for the widen check");
         }
         auto *const previous = attach(aspace.as_ptr_mut());
 
@@ -582,7 +550,7 @@ namespace {
                            mapped.unwrap()->protect(CODE_AT, PAGE_SIZE, ro) == Status::Ok &&
                            mapped.unwrap()->protect(CODE_AT, PAGE_SIZE, rx) == Status::Ok &&
                            pte_flags(aspace, CODE_AT).is_some() && !is_executable(aspace, CODE_AT);
-        verdict(tally, ready, "a mapped page whose entry lacks the Execute its mapping allows");
+        EXPECT_TRUE(ready, "a mapped page whose entry lacks the Execute its mapping allows");
         if (ready) {
             Fault fault{.va = CODE_AT, .cause = mm::VmFault::Cause::Instruction};
             auto parked = false;
@@ -606,21 +574,20 @@ namespace {
                 i32 retcode = 0;
                 auto _ = thread->join(&retcode, time::Deadline::infinite());
             }
-            verdict(tally, parked && unmapped,
-                    "a fetch waits for the object's lock with the entry it read, which is "
-                    "unmapped meanwhile");
-            verdict(tally, fault.status == Status::Ok && !pte_flags(aspace, CODE_AT).is_some(),
-                    "the fetch leaves the entry unmapped instead of mapping its frame back");
-            verdict(tally,
-                    task::Thread::Current::soft_fault(CODE_AT, mm::VmFault::Cause::Instruction) ==
-                            Status::Ok &&
-                        is_executable(aspace, CODE_AT),
-                    "and the fetch retried maps the object's page, executable");
+            EXPECT_TRUE(parked && unmapped,
+                        "a fetch waits for the object's lock with the entry it read, which is "
+                        "unmapped meanwhile");
+            EXPECT_TRUE(fault.status == Status::Ok && !pte_flags(aspace, CODE_AT).is_some(),
+                        "the fetch leaves the entry unmapped instead of mapping its frame back");
+            EXPECT_TRUE(task::Thread::Current::soft_fault(
+                            CODE_AT, mm::VmFault::Cause::Instruction) == Status::Ok &&
+                            is_executable(aspace, CODE_AT),
+                        "and the fetch retried maps the object's page, executable");
         }
 
         attach(previous);
-        verdict(tally, aspace->destroy() == Status::Ok,
-                "the address space of the widen check is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                    "the address space of the widen check is destroyed");
     }
 
     TA_NO_THREAD_SAFETY_ANALYSIS
@@ -632,14 +599,13 @@ namespace {
 
     // Objects over the same pages: a slice shares its parent's pages and has its own
     // mappings, and an operation on the pages reaches all of them.
-    auto check_shared_views(Tally &tally) -> void {
+    auto check_shared_views() -> void {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
                                                      mm::VmasKind::User, mm::VmasFlags::None,
                                                      "vmosnapshot.test views", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the shared view checks is made");
-            return;
+            FAIL("allocate an address space for the shared view checks");
         }
         auto root = aspace->root_vma();
         constexpr auto PERMS = mm::VmaFlags::PermMask;
@@ -655,13 +621,13 @@ namespace {
                                                     &whole) == Status::Ok &&
                           whole->create_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok &&
                           slice->create_slice(0, PAGE_SIZE, &gone) == Status::Ok;
-        verdict(tally, made, "an object, a slice and a nested slice are made");
+        EXPECT_TRUE(made, "an object, a slice and a nested slice are made");
         if (!made) {
             return;
         }
         auto const cow = whole->cow_pages();
-        verdict(tally, slice->cow_pages() == cow && gone->cow_pages() == cow,
-                "nested slices share the original COW node");
+        EXPECT_TRUE(slice->cow_pages() == cow && gone->cow_pages() == cow,
+                    "nested slices share the original COW node");
         gone = nullptr;
 
         auto whole_map = root->map_vmo(WHOLE_AT, 3 * PAGE_SIZE, 0, rw, PERMS, whole,
@@ -672,34 +638,33 @@ namespace {
         // first operation is about.
         ustl::Arc<mm::VmObjectPaged> first;
         auto const first_made = whole->create_slice(0, PAGE_SIZE, &first) == Status::Ok;
-        verdict(tally, first_made, "a slice of the first page is made");
+        EXPECT_TRUE(first_made, "a slice of the first page is made");
         if (!first_made) {
             return;
         }
         auto first_map = root->map_vmo(FIRST_AT, PAGE_SIZE, 0, rw, PERMS, first,
                                        mm::MapOptions::Resident, "first page");
-        verdict(tally, whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok(),
-                "the object and both slices are mapped");
+        EXPECT_TRUE(whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok(),
+                    "the object and both slices are mapped");
         if (!(whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok())) {
             return;
         }
 
         // The pages' second page: the object's page 1, the slice's page 0.
         operate_cow_range(cow, PAGE_SIZE, PAGE_SIZE, mm::RangeOp::RemoveWrite);
-        verdict(tally,
-                is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + PAGE_SIZE) &&
-                    is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
-                    !is_writable(aspace, SLICE_AT) && is_writable(aspace, SLICE_AT + PAGE_SIZE),
-                "an operation on the pages takes Write from the page in the object's mapping "
-                "and in the slice's, each at its own offset, and from no other");
-        verdict(tally, is_writable(aspace, FIRST_AT),
-                "and not from a slice that does not show that page");
+        EXPECT_TRUE(is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + PAGE_SIZE) &&
+                        is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
+                        !is_writable(aspace, SLICE_AT) && is_writable(aspace, SLICE_AT + PAGE_SIZE),
+                    "an operation on the pages takes Write from the page in the object's mapping "
+                    "and in the slice's, each at its own offset, and from no other");
+        EXPECT_TRUE(is_writable(aspace, FIRST_AT),
+                    "and not from a slice that does not show that page");
 
         operate_cow_range(cow, 0, ~usize{0}, mm::RangeOp::RemoveWrite);
-        verdict(tally,
-                !is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
-                    !is_writable(aspace, SLICE_AT + PAGE_SIZE) && !is_writable(aspace, FIRST_AT),
-                "the whole range takes it from every mapping of every object over the pages");
+        EXPECT_TRUE(
+            !is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
+                !is_writable(aspace, SLICE_AT + PAGE_SIZE) && !is_writable(aspace, FIRST_AT),
+            "the whole range takes it from every mapping of every object over the pages");
 
         // The same walk unmapping, what take_pages() does to the pages it takes:
         // the pages' third page, the object's page 2 and the slice's page 1.
@@ -707,25 +672,23 @@ namespace {
             return pte_flags(aspace, va).is_some();
         };
         operate_cow_range(cow, 2 * PAGE_SIZE, PAGE_SIZE, mm::RangeOp::Unmap);
-        verdict(tally,
-                !present(WHOLE_AT + 2 * PAGE_SIZE) && !present(SLICE_AT + PAGE_SIZE) &&
-                    present(WHOLE_AT) && present(WHOLE_AT + PAGE_SIZE) && present(SLICE_AT) &&
-                    present(FIRST_AT),
-                "an unmap of the pages takes the page out of the object's mapping and the "
-                "slice's, each at its own offset, and nothing else");
-        verdict(tally,
-                aspace->soft_fault(WHOLE_AT + 2 * PAGE_SIZE, mm::VmFault::Cause::Absent) ==
-                        Status::Ok &&
-                    present(WHOLE_AT + 2 * PAGE_SIZE),
-                "the mapping still allows the page: a read maps it again");
+        EXPECT_TRUE(!present(WHOLE_AT + 2 * PAGE_SIZE) && !present(SLICE_AT + PAGE_SIZE) &&
+                        present(WHOLE_AT) && present(WHOLE_AT + PAGE_SIZE) && present(SLICE_AT) &&
+                        present(FIRST_AT),
+                    "an unmap of the pages takes the page out of the object's mapping and the "
+                    "slice's, each at its own offset, and nothing else");
+        EXPECT_TRUE(aspace->soft_fault(WHOLE_AT + 2 * PAGE_SIZE, mm::VmFault::Cause::Absent) ==
+                            Status::Ok &&
+                        present(WHOLE_AT + 2 * PAGE_SIZE),
+                    "the mapping still allows the page: a read maps it again");
         operate_cow_range(cow, 0, ~usize{0}, mm::RangeOp::Unmap);
-        verdict(tally,
-                !present(WHOLE_AT) && !present(WHOLE_AT + PAGE_SIZE) &&
-                    !present(WHOLE_AT + 2 * PAGE_SIZE) && !present(SLICE_AT) && !present(FIRST_AT),
-                "the whole range unmaps every mapping of every object over the pages");
+        EXPECT_TRUE(!present(WHOLE_AT) && !present(WHOLE_AT + PAGE_SIZE) &&
+                        !present(WHOLE_AT + 2 * PAGE_SIZE) && !present(SLICE_AT) &&
+                        !present(FIRST_AT),
+                    "the whole range unmaps every mapping of every object over the pages");
 
         auto const removed_whole = root->unmap(WHOLE_AT, 3 * PAGE_SIZE);
-        verdict(tally, removed_whole == Status::Ok, "the original view is unmapped");
+        EXPECT_TRUE(removed_whole == Status::Ok, "the original view is unmapped");
         if (removed_whole == Status::Ok) {
             whole = nullptr;
 
@@ -736,24 +699,24 @@ namespace {
                 aspace->soft_fault(FIRST_AT, mm::VmFault::Cause::Absent) == Status::Ok &&
                 present(SLICE_AT) && present(FIRST_AT);
             operate_cow_range(cow, 0, PAGE_SIZE, mm::RangeOp::Unmap);
-            verdict(tally, refaulted && present(SLICE_AT) && !present(FIRST_AT),
-                    "the successor forwards notifications outside its own window");
+            EXPECT_TRUE(refaulted && present(SLICE_AT) && !present(FIRST_AT),
+                        "the successor forwards notifications outside its own window");
 
             auto const removed_slice = root->unmap(SLICE_AT, 2 * PAGE_SIZE);
-            verdict(tally, removed_slice == Status::Ok, "the successor is unmapped");
+            EXPECT_TRUE(removed_slice == Status::Ok, "the successor is unmapped");
             if (removed_slice == Status::Ok) {
                 slice = nullptr;
                 auto const refaulted_first =
                     aspace->soft_fault(FIRST_AT, mm::VmFault::Cause::Absent) == Status::Ok &&
                     present(FIRST_AT);
                 operate_cow_range(cow, 0, PAGE_SIZE, mm::RangeOp::Unmap);
-                verdict(tally, refaulted_first && !present(FIRST_AT),
-                        "the last view receives notifications after a second handoff");
+                EXPECT_TRUE(refaulted_first && !present(FIRST_AT),
+                            "the last view receives notifications after a second handoff");
             }
         }
 
-        verdict(tally, aspace->destroy() == Status::Ok,
-                "the address space of the shared view checks is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                    "the address space of the shared view checks is destroyed");
     }
 
     auto holds_bytes(Node &node, u8 const (&bytes)[4]) -> bool {
@@ -765,14 +728,13 @@ namespace {
     // The clone of the pages of a mapped object, end to end: Write comes off the
     // object's mappings when the pages become shared, and the first write through
     // the mapping gets a page of its own, while the clone keeps the old one.
-    auto check_clone_of_mapped_object(Tally &tally) -> void {
+    auto check_clone_of_mapped_object() -> void {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
                                                      mm::VmasKind::User, mm::VmasFlags::None,
                                                      "vmosnapshot.test clone", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the clone checks is made");
-            return;
+            FAIL("allocate an address space for the clone checks");
         }
         auto *const previous = attach(aspace.as_ptr_mut());
 
@@ -784,59 +746,56 @@ namespace {
         ustl::Arc<mm::VmObjectPaged> vmo;
         auto const made =
             mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE, COMMITTED, &vmo) == Status::Ok;
-        verdict(tally, made, "an object to clone is made");
+        EXPECT_TRUE(made, "an object to clone is made");
         if (made) {
             static constexpr u8 BEFORE[4] = {0x11, 0x22, 0x33, 0x44};
             static constexpr u8 AFTER[4] = {0xaa, 0xbb, 0xcc, 0xdd};
             auto mapped = root->map_vmo(AT, 3 * PAGE_SIZE, 0, rw, PERMS, vmo,
                                         mm::MapOptions::Resident, "clone checks");
-            verdict(tally, mapped.is_ok() && vmo->write(BEFORE, 0, sizeof(BEFORE)) == Status::Ok,
-                    "it is mapped writable and holds a pattern");
+            EXPECT_TRUE(mapped.is_ok() && vmo->write(BEFORE, 0, sizeof(BEFORE)) == Status::Ok,
+                        "it is mapped writable and holds a pattern");
             if (mapped.is_ok()) {
                 auto const old_pa = entry_pa(aspace, AT);
                 Node pages = vmo->cow_pages();
                 Node clone;
-                verdict(tally, clone_of(pages, 0, 3, clone) == Status::Ok,
-                        "the pages of the object are cloned");
-                verdict(tally,
-                        !is_writable(aspace, AT) && !is_writable(aspace, AT + PAGE_SIZE) &&
-                            !is_writable(aspace, AT + 2 * PAGE_SIZE) && is_readable(aspace, AT) &&
-                            entry_pa(aspace, AT) == old_pa,
-                        "Write is off every entry of the object's mapping, on the frames it had");
+                EXPECT_TRUE(clone_of(pages, 0, 3, clone) == Status::Ok,
+                            "the pages of the object are cloned");
+                EXPECT_TRUE(
+                    !is_writable(aspace, AT) && !is_writable(aspace, AT + PAGE_SIZE) &&
+                        !is_writable(aspace, AT + 2 * PAGE_SIZE) && is_readable(aspace, AT) &&
+                        entry_pa(aspace, AT) == old_pa,
+                    "Write is off every entry of the object's mapping, on the frames it had");
 
                 // The mapping still allows the write; the fault path resolves it with a page
                 // of the object's own.
-                verdict(tally,
-                        task::Thread::Current::soft_fault(AT, mm::VmFault::Cause::Write) ==
-                            Status::Ok,
-                        "a write through the mapping is resolved");
-                verdict(tally,
-                        is_writable(aspace, AT) && entry_pa(aspace, AT) != old_pa &&
-                            !is_writable(aspace, AT + PAGE_SIZE),
-                        "the entry is writable on a frame of its own, and the other pages are not");
+                EXPECT_TRUE(task::Thread::Current::soft_fault(AT, mm::VmFault::Cause::Write) ==
+                                Status::Ok,
+                            "a write through the mapping is resolved");
+                EXPECT_TRUE(
+                    is_writable(aspace, AT) && entry_pa(aspace, AT) != old_pa &&
+                        !is_writable(aspace, AT + PAGE_SIZE),
+                    "the entry is writable on a frame of its own, and the other pages are not");
                 u8 seen[4] = {};
-                verdict(tally,
-                        vmo->read(seen, 0, sizeof(seen)) == Status::Ok &&
-                            std::memcmp(seen, BEFORE, sizeof(seen)) == 0,
-                        "the object's page holds the bytes it had, copied");
+                EXPECT_TRUE(vmo->read(seen, 0, sizeof(seen)) == Status::Ok &&
+                                std::memcmp(seen, BEFORE, sizeof(seen)) == 0,
+                            "the object's page holds the bytes it had, copied");
 
                 // Writes to the object's page do not reach the clone's.
-                verdict(tally, vmo->write(AFTER, 0, sizeof(AFTER)) == Status::Ok,
-                        "the object writes its page");
+                EXPECT_TRUE(vmo->write(AFTER, 0, sizeof(AFTER)) == Status::Ok,
+                            "the object writes its page");
                 auto const mine = lookup(pages, false, 0);
                 auto const theirs = lookup(clone, false, 0);
-                verdict(tally,
-                        mine && theirs && mine->page != theirs->page && mine->writable &&
-                            !theirs->writable && holds_bytes(pages, AFTER) &&
-                            holds_bytes(clone, BEFORE),
-                        "and the clone still sees the bytes from before the clone, in the page "
-                        "the object gave up");
+                EXPECT_TRUE(mine && theirs && mine->page != theirs->page && mine->writable &&
+                                !theirs->writable && holds_bytes(pages, AFTER) &&
+                                holds_bytes(clone, BEFORE),
+                            "and the clone still sees the bytes from before the clone, in the page "
+                            "the object gave up");
             }
         }
 
         attach(previous);
-        verdict(tally, aspace->destroy() == Status::Ok,
-                "the address space of the clone checks is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                    "the address space of the clone checks is destroyed");
     }
 
     // Four bytes at the start of a page of an object, as a number: what the
@@ -853,7 +812,7 @@ namespace {
         return vmo->write(&word, page_index * PAGE_SIZE, sizeof(word)) == Status::Ok;
     }
 
-    auto check_slice_bounds(Tally &tally) -> void {
+    auto check_slice_bounds() -> void {
         constexpr auto TAIL = PAGE_SIZE - sizeof(u64);
         constexpr u64 OLD = 0x1122'3344'5566'7788;
         ustl::Arc<mm::VmObjectPaged> parent;
@@ -862,39 +821,35 @@ namespace {
                                                     mm::VmoFlags::Lazy, &parent) == Status::Ok &&
                           parent->store_u64(TAIL, OLD) == Status::Ok &&
                           parent->create_slice(0, PAGE_SIZE, &slice) == Status::Ok;
-        verdict(tally, made, "a one-page view sits over a larger VMO");
+        EXPECT_TRUE(made, "a one-page view sits over a larger VMO");
         if (!made) {
             return;
         }
         std::array<u64, 2> buffer{1, 2};
         u64 tail = 0;
-        verdict(tally,
-                slice->write(buffer.data(), TAIL, sizeof(buffer)) == Status::OutOfRange &&
-                    slice->read(buffer.data(), TAIL, sizeof(buffer)) == Status::OutOfRange &&
-                    buffer[0] == 1 && buffer[1] == 2 &&
-                    parent->read(&tail, TAIL, sizeof(tail)) == Status::Ok && tail == OLD,
-                "a copy beyond the slice leaves both the buffer and the backing intact");
-        verdict(tally,
-                slice->commit_range(0, 2 * PAGE_SIZE, mm::VmObject::CommitOptions::None) ==
-                        Status::OutOfRange &&
-                    parent->committed_pages(PAGE_SIZE, PAGE_SIZE) == 0 &&
-                    slice->committed_pages(PAGE_SIZE, PAGE_SIZE) == 0,
-                "commit and committed-page queries stay inside the slice");
+        EXPECT_TRUE(slice->write(buffer.data(), TAIL, sizeof(buffer)) == Status::OutOfRange &&
+                        slice->read(buffer.data(), TAIL, sizeof(buffer)) == Status::OutOfRange &&
+                        buffer[0] == 1 && buffer[1] == 2 &&
+                        parent->read(&tail, TAIL, sizeof(tail)) == Status::Ok && tail == OLD,
+                    "a copy beyond the slice leaves both the buffer and the backing intact");
+        EXPECT_TRUE(slice->commit_range(0, 2 * PAGE_SIZE, mm::VmObject::CommitOptions::None) ==
+                            Status::OutOfRange &&
+                        parent->committed_pages(PAGE_SIZE, PAGE_SIZE) == 0 &&
+                        slice->committed_pages(PAGE_SIZE, PAGE_SIZE) == 0,
+                    "commit and committed-page queries stay inside the slice");
         PhysAddr pa{};
-        verdict(tally,
-                slice->lookup_contiguous(1, PAGE_SIZE, &pa) == Status::InvArgs &&
-                    slice->lookup_contiguous(0, 2 * PAGE_SIZE, &pa) == Status::OutOfRange &&
-                    parent->lookup_contiguous(0, 2 * PAGE_SIZE, &pa) == Status::BadState,
-                "physical lookup distinguishes alignment, bounds and missing backing");
-        verdict(tally,
-                slice->unpin_range(0, 0) == Status::InvArgs &&
-                    slice->unpin_range(PAGE_SIZE, PAGE_SIZE) == Status::OutOfRange &&
-                    slice->store_u64(TAIL + 1, OLD) == Status::InvArgs,
-                "invalid unpin and atomic store requests are rejected");
+        EXPECT_TRUE(slice->lookup_contiguous(1, PAGE_SIZE, &pa) == Status::InvArgs &&
+                        slice->lookup_contiguous(0, 2 * PAGE_SIZE, &pa) == Status::OutOfRange &&
+                        parent->lookup_contiguous(0, 2 * PAGE_SIZE, &pa) == Status::BadState,
+                    "physical lookup distinguishes alignment, bounds and missing backing");
+        EXPECT_TRUE(slice->unpin_range(0, 0) == Status::InvArgs &&
+                        slice->unpin_range(PAGE_SIZE, PAGE_SIZE) == Status::OutOfRange &&
+                        slice->store_u64(TAIL + 1, OLD) == Status::InvArgs,
+                    "invalid unpin and atomic store requests are rejected");
     }
 
 #if MM_TEST_ALLOC_FAILURE
-    auto check_merge_allocation_failure(Tally &tally) -> void {
+    auto check_merge_allocation_failure() -> void {
         using mm::test::AllocationFailure;
         using mm::test::AllocationSite;
         enum class Slot { Page, Marker };
@@ -902,16 +857,14 @@ namespace {
             Node survivor;
             Node retiring;
             if (!make(survivor, 1)) {
-                verdict(tally, false, "a node for merge failure is made");
-                return;
+                FAIL("allocate a node for merge failure");
             }
             VmPage *original = nullptr;
             auto const prepared = slot == Slot::Marker
                                       ? add_marker(survivor, 0) == Status::Ok
                                       : (original = fill(survivor, 0, 0x75)) != nullptr;
             if (!prepared || clone_of(survivor, 0, 1, retiring) != Status::Ok) {
-                verdict(tally, false, "both leaves share a populated hidden node");
-                return;
+                FAIL("make both leaves share a populated hidden node");
             }
             auto const *const parent = parent_of(survivor);
             bool triggered;
@@ -922,17 +875,16 @@ namespace {
             }
             auto const preserved = slot == Slot::Marker ? reads_zero_page(survivor, 0)
                                                         : reads_lenders_page(survivor, 0, original);
-            verdict(tally, triggered && parent && parent_of(survivor) == parent && preserved,
-                    "a failed merge keeps the original slot visible through the hidden node");
+            EXPECT_TRUE(triggered && parent && parent_of(survivor) == parent && preserved,
+                        "a failed merge keeps the original slot visible through the hidden node");
             auto writable = lookup(survivor, true, 0);
-            verdict(tally,
-                    writable && writable->writable &&
-                        holds_only(writable->page, slot == Slot::Marker ? 0 : 0x75),
-                    "a survivor of a failed merge can materialize a writable page");
+            EXPECT_TRUE(writable && writable->writable &&
+                            holds_only(writable->page, slot == Slot::Marker ? 0 : 0x75),
+                        "a survivor of a failed merge can materialize a writable page");
         }
     }
 
-    auto check_eager_creation_failure(Tally &tally) -> void {
+    auto check_eager_creation_failure() -> void {
         using mm::test::AllocationFailure;
         using mm::test::AllocationSite;
         ustl::Arc<mm::VmObjectPaged> vmo;
@@ -944,15 +896,14 @@ namespace {
                                                           mm::VmoFlags::Pinned, &vmo);
             failed = status == Status::OutOfMem && failure.triggered();
         }
-        verdict(tally, failed && !vmo, "partial eager commit publishes no VMO");
-        verdict(tally,
-                mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE, mm::VmoFlags::Pinned,
-                                          &vmo) == Status::Ok &&
-                    vmo->committed_pages(0, 2 * PAGE_SIZE) == 2,
-                "eager creation succeeds after allocation recovers");
+        EXPECT_TRUE(failed && !vmo, "partial eager commit publishes no VMO");
+        EXPECT_TRUE(mm::VmObjectPaged::create(mm::ALLOC_USER, 2 * PAGE_SIZE, mm::VmoFlags::Pinned,
+                                              &vmo) == Status::Ok &&
+                        vmo->committed_pages(0, 2 * PAGE_SIZE) == 2,
+                    "eager creation succeeds after allocation recovers");
     }
 
-    auto check_clone_allocation_failures(Tally &tally) -> void {
+    auto check_clone_allocation_failures() -> void {
         using mm::test::AllocationFailure;
         using mm::test::AllocationSite;
         constexpr u32 ORIGINAL = 0xA0B0'C0D0;
@@ -960,7 +911,7 @@ namespace {
         auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, PAGE_SIZE, mm::VmoFlags::Lazy,
                                                     &source) == Status::Ok &&
                           poke(source, 0, ORIGINAL);
-        verdict(tally, made, "a populated VMO for allocation failure during clone");
+        EXPECT_TRUE(made, "a populated VMO for allocation failure during clone");
         if (!made) {
             return;
         }
@@ -973,14 +924,14 @@ namespace {
                 auto const status = source->create_clone(0, PAGE_SIZE, &clone);
                 failed = status == Status::OutOfMem && !clone && failure.triggered();
             }
-            verdict(tally, failed && peek(source, 0) == ORIGINAL && parent_of(pages) == nullptr,
-                    "a failed clone preserves the source frame and removes any transient parent");
+            EXPECT_TRUE(
+                failed && peek(source, 0) == ORIGINAL && parent_of(pages) == nullptr,
+                "a failed clone preserves the source frame and removes any transient parent");
         }
         ustl::Arc<mm::VmObjectPaged> clone;
-        verdict(tally,
-                source->create_clone(0, PAGE_SIZE, &clone) == Status::Ok && clone &&
-                    peek(clone, 0) == ORIGINAL,
-                "clone succeeds after allocation recovers");
+        EXPECT_TRUE(source->create_clone(0, PAGE_SIZE, &clone) == Status::Ok && clone &&
+                        peek(clone, 0) == ORIGINAL,
+                    "clone succeeds after allocation recovers");
     }
 #endif
 
@@ -989,33 +940,32 @@ namespace {
     // page; a write puts a zeroed page in its place; it hides the page of an
     // ancestor from a read and a write; and a clone, and the merge after the
     // cloned node dies, carry it to the nodes that see it.
-    auto check_zero_markers(Tally &tally) -> void {
+    auto check_zero_markers() -> void {
         Node lone;
         if (!make(lone, 2)) {
-            verdict(tally, false, "a node for the marker checks is made");
-            return;
+            FAIL("allocate a node for the marker checks");
         }
-        verdict(tally, add_marker(lone, 0) == Status::Ok && reads_zero_page(lone, 0),
-                "a marker in a node with no relatives reads as the zero page, and is no page");
-        verdict(tally, writes_zeroed_page(lone, 0),
-                "a write of it gets a zeroed page of the node's own in its place");
-        verdict(tally,
-                add_marker(lone, 0) == Status::AlreadyExists && add_marker(lone, 1) == Status::Ok &&
-                    add_marker(lone, 1) == Status::AlreadyExists,
-                "a marker is refused over a page and over another marker");
+        EXPECT_TRUE(add_marker(lone, 0) == Status::Ok && reads_zero_page(lone, 0),
+                    "a marker in a node with no relatives reads as the zero page, and is no page");
+        EXPECT_TRUE(writes_zeroed_page(lone, 0),
+                    "a write of it gets a zeroed page of the node's own in its place");
+        EXPECT_TRUE(add_marker(lone, 0) == Status::AlreadyExists &&
+                        add_marker(lone, 1) == Status::Ok &&
+                        add_marker(lone, 1) == Status::AlreadyExists,
+                    "a marker is refused over a page and over another marker");
 
         // A marker in a child hides its parent's page.
         Node parent;
         Node child;
         auto const made = make(parent, 1) && make_child(parent, 0, 1, 1, false, child);
         auto *const above = fill(parent, 0, 0xA1);
-        verdict(tally, made && above != nullptr && add_marker(child, 0) == Status::Ok,
-                "a parent with a page, and a child with a marker over it");
+        EXPECT_TRUE(made && above != nullptr && add_marker(child, 0) == Status::Ok,
+                    "a parent with a page, and a child with a marker over it");
         if (made && above != nullptr) {
-            verdict(tally, reads_zero_page(child, 0),
-                    "the child reads zero, not the parent's page");
-            verdict(tally, writes_zeroed_page(child, 0) && holds_only(above, 0xA1),
-                    "a write gets zeros, not a copy of the parent's page, which stays as it was");
+            EXPECT_TRUE(reads_zero_page(child, 0), "the child reads zero, not the parent's page");
+            EXPECT_TRUE(
+                writes_zeroed_page(child, 0) && holds_only(above, 0xA1),
+                "a write gets zeros, not a copy of the parent's page, which stays as it was");
         }
 
         // A marker in a parent is zero for its child.
@@ -1023,10 +973,10 @@ namespace {
         Node under;
         auto const made_under = make(marked, 1) && make_child(marked, 0, 1, 1, false, under) &&
                                 add_marker(marked, 0) == Status::Ok;
-        verdict(tally, made_under && reads_zero_page(under, 0),
-                "a child reads its parent's marker as the zero page");
-        verdict(tally, made_under && writes_zeroed_page(under, 0) && reads_zero_page(marked, 0),
-                "a write gets a zeroed page in the child, and the parent keeps its marker");
+        EXPECT_TRUE(made_under && reads_zero_page(under, 0),
+                    "a child reads its parent's marker as the zero page");
+        EXPECT_TRUE(made_under && writes_zeroed_page(under, 0) && reads_zero_page(marked, 0),
+                    "a write gets a zeroed page in the child, and the parent keeps its marker");
 
         // A clone of a node with a marker: the marker moves into the hidden node
         // with the rest of the node's store, and hides the page above from both.
@@ -1038,20 +988,19 @@ namespace {
         auto const made_tree = make(top, 2) && make_child(top, 0, 2, 2, false, node);
         auto *const hidden = fill(top, 0, 0xB1);
         auto *const seen = fill(top, 1, 0xB2);
-        verdict(tally,
-                made_tree && hidden != nullptr && seen != nullptr &&
-                    add_marker(node, 0) == Status::Ok && clone_of(node, 0, 2, clone) == Status::Ok,
-                "a node with a marker over a page of its parent's is cloned");
+        EXPECT_TRUE(made_tree && hidden != nullptr && seen != nullptr &&
+                        add_marker(node, 0) == Status::Ok &&
+                        clone_of(node, 0, 2, clone) == Status::Ok,
+                    "a node with a marker over a page of its parent's is cloned");
         if (clone) {
-            verdict(tally,
-                    reads_zero_page(clone, 0) && reads_zero_page(node, 0) &&
-                        reads_lenders_page(clone, 1, seen),
-                    "both read zero under the marker, and the page beside it");
+            EXPECT_TRUE(reads_zero_page(clone, 0) && reads_zero_page(node, 0) &&
+                            reads_lenders_page(clone, 1, seen),
+                        "both read zero under the marker, and the page beside it");
             node = nullptr;
-            verdict(tally,
-                    parent_of(clone) == top.as_ptr() && reads_zero_page(clone, 0) &&
-                        reads_lenders_page(clone, 1, seen),
-                    "after the merge the clone still reads zero there, under the parent's page");
+            EXPECT_TRUE(
+                parent_of(clone) == top.as_ptr() && reads_zero_page(clone, 0) &&
+                    reads_lenders_page(clone, 1, seen),
+                "after the merge the clone still reads zero there, under the parent's page");
         }
 
         // A marker put on a clone over the hidden node's page: the clone stops
@@ -1064,25 +1013,24 @@ namespace {
         auto *const shared = fill(viewed, 0, 0xC1);
         auto const cloned =
             made_view && shared != nullptr && clone_of(viewed, 0, 1, marked_clone) == Status::Ok;
-        verdict(tally, cloned && shared->share_count() == 1,
-                "a node and its clone both see one page of the hidden node: a count of one");
+        EXPECT_TRUE(cloned && shared->share_count() == 1,
+                    "a node and its clone both see one page of the hidden node: a count of one");
         if (cloned) {
             auto const before = shared->share_count();
             auto const added = add_marker(marked_clone, 0) == Status::Ok;
-            log::info("vmosnapshot.test:   the page's count: {} before the marker, {} after",
-                      before, shared->share_count());
-            verdict(tally,
-                    added && reads_zero_page(marked_clone, 0) && shared->share_count() == 0 &&
-                        reads_lenders_page(viewed, 0, shared),
-                    "a marker on the clone over that page stops the clone viewing it: the count "
-                    "drops to zero, and the node still reads the page");
+            log::info("vmosnapshot:   the page's count: {} before the marker, {} after", before,
+                      shared->share_count());
+            EXPECT_TRUE(
+                added && reads_zero_page(marked_clone, 0) && shared->share_count() == 0 &&
+                    reads_lenders_page(viewed, 0, shared),
+                "a marker on the clone over that page stops the clone viewing it: the count "
+                "drops to zero, and the node still reads the page");
             marked_clone = nullptr;
             auto const after = lookup(viewed, false, 0);
-            verdict(tally,
-                    parent_of(viewed) == nullptr && after && after->page == shared &&
-                        after->writable && holds_only(shared, 0xC1),
-                    "when the clone goes, the hidden node merges into the node, and the page "
-                    "becomes the node's own");
+            EXPECT_TRUE(parent_of(viewed) == nullptr && after && after->page == shared &&
+                            after->writable && holds_only(shared, 0xC1),
+                        "when the clone goes, the hidden node merges into the node, and the page "
+                        "becomes the node's own");
         }
 
         // A marker is the node's own content when a clone decides where to hang:
@@ -1095,123 +1043,111 @@ namespace {
         Node second;
         auto const made_leaf = make(base, 1) && make_child(base, 0, 1, 1, false, leaf);
         auto *const base_page = fill(base, 0, 0xC1);
-        verdict(tally,
-                made_leaf && base_page != nullptr && clone_of(leaf, 0, 1, first) == Status::Ok &&
-                    add_marker(leaf, 0) == Status::Ok && clone_of(leaf, 0, 1, second) == Status::Ok,
-                "a node is cloned, given a marker, and cloned again");
+        EXPECT_TRUE(
+            made_leaf && base_page != nullptr && clone_of(leaf, 0, 1, first) == Status::Ok &&
+                add_marker(leaf, 0) == Status::Ok && clone_of(leaf, 0, 1, second) == Status::Ok,
+            "a node is cloned, given a marker, and cloned again");
         if (first && second) {
-            verdict(tally,
-                    reads_zero_page(second, 0) && reads_lenders_page(first, 0, base_page) &&
-                        parent_of(second) != parent_of(first),
-                    "the second clone sees the marker, the first still sees the page");
+            EXPECT_TRUE(reads_zero_page(second, 0) && reads_lenders_page(first, 0, base_page) &&
+                            parent_of(second) != parent_of(first),
+                        "the second clone sees the marker, the first still sees the page");
         }
     }
 
     // The clone of an object, through the object's own interface: what it reads, what
     // is not shared after a write on either side, what it may not see, and what is
     // refused.
-    auto check_create_clone(Tally &tally) -> void {
+    auto check_create_clone() -> void {
         ustl::Arc<mm::VmObjectPaged> parent;
         auto const made = mm::VmObjectPaged::create(mm::ALLOC_USER, 3 * PAGE_SIZE,
                                                     mm::VmoFlags::Lazy, &parent) == Status::Ok;
-        verdict(tally, made, "an object to clone is made");
+        EXPECT_TRUE(made, "an object to clone is made");
         if (!made) {
             return;
         }
-        verdict(tally, poke(parent, 0, 0x1100'0001) && poke(parent, 1, 0x1200'0002),
-                "it holds two pages and a hole");
+        EXPECT_TRUE(poke(parent, 0, 0x1100'0001) && poke(parent, 1, 0x1200'0002),
+                    "it holds two pages and a hole");
 
         ustl::Arc<mm::VmObjectPaged> child;
-        verdict(tally, parent->create_clone(0, 3 * PAGE_SIZE, &child) == Status::Ok,
-                "it is cloned");
-        verdict(tally,
-                peek(child, 0) == 0x1100'0001 && peek(child, 1) == 0x1200'0002 &&
-                    peek(child, 2) == 0,
-                "the clone reads what the object held: its pages, and zero for the hole");
+        EXPECT_TRUE(parent->create_clone(0, 3 * PAGE_SIZE, &child) == Status::Ok, "it is cloned");
+        EXPECT_TRUE(peek(child, 0) == 0x1100'0001 && peek(child, 1) == 0x1200'0002 &&
+                        peek(child, 2) == 0,
+                    "the clone reads what the object held: its pages, and zero for the hole");
 
         // Neither sees the other's writes after the clone.
-        verdict(tally, poke(child, 0, 0xc000'0001) && poke(parent, 1, 0x9900'0002),
-                "the clone writes its page 0 and the object its page 1");
-        verdict(tally,
-                peek(child, 0) == 0xc000'0001 && peek(parent, 0) == 0x1100'0001 &&
-                    peek(parent, 1) == 0x9900'0002 && peek(child, 1) == 0x1200'0002,
-                "each reads its own write and the other's page as it was at the clone");
+        EXPECT_TRUE(poke(child, 0, 0xc000'0001) && poke(parent, 1, 0x9900'0002),
+                    "the clone writes its page 0 and the object its page 1");
+        EXPECT_TRUE(peek(child, 0) == 0xc000'0001 && peek(parent, 0) == 0x1100'0001 &&
+                        peek(parent, 1) == 0x9900'0002 && peek(child, 1) == 0x1200'0002,
+                    "each reads its own write and the other's page as it was at the clone");
 
         // A later clone sees the object as it is then; a second clone of the same object.
         ustl::Arc<mm::VmObjectPaged> second;
-        verdict(tally, parent->create_clone(PAGE_SIZE, 2 * PAGE_SIZE, &second) == Status::Ok,
-                "the object is cloned again, from its page 1");
-        verdict(tally,
-                peek(second, 0) == 0x9900'0002 && peek(second, 1) == 0 &&
-                    peek(child, 1) == 0x1200'0002,
-                "the second clone reads the object as it is now, and the first is unchanged");
+        EXPECT_TRUE(parent->create_clone(PAGE_SIZE, 2 * PAGE_SIZE, &second) == Status::Ok,
+                    "the object is cloned again, from its page 1");
+        EXPECT_TRUE(peek(second, 0) == 0x9900'0002 && peek(second, 1) == 0 &&
+                        peek(child, 1) == 0x1200'0002,
+                    "the second clone reads the object as it is now, and the first is unchanged");
 
         // A clone longer than the object reads zero past its end.
         ustl::Arc<mm::VmObjectPaged> longer;
-        verdict(tally, parent->create_clone(0, 5 * PAGE_SIZE, &longer) == Status::Ok,
-                "a clone longer than the object is made");
-        verdict(tally,
-                peek(longer, 0) == 0x1100'0001 && peek(longer, 3) == 0 && peek(longer, 4) == 0 &&
-                    poke(longer, 4, 0x4400'0004) && peek(longer, 4) == 0x4400'0004 &&
-                    peek(parent, 2) == 0,
-                "it reads zero past the object's end, and a write there is its own");
+        EXPECT_TRUE(parent->create_clone(0, 5 * PAGE_SIZE, &longer) == Status::Ok,
+                    "a clone longer than the object is made");
+        EXPECT_TRUE(peek(longer, 0) == 0x1100'0001 && peek(longer, 3) == 0 &&
+                        peek(longer, 4) == 0 && poke(longer, 4, 0x4400'0004) &&
+                        peek(longer, 4) == 0x4400'0004 && peek(parent, 2) == 0,
+                    "it reads zero past the object's end, and a write there is its own");
 
         // A clone of a clone.
         ustl::Arc<mm::VmObjectPaged> grand;
-        verdict(tally,
-                child->create_clone(0, 3 * PAGE_SIZE, &grand) == Status::Ok &&
-                    peek(grand, 0) == 0xc000'0001 && peek(grand, 1) == 0x1200'0002,
-                "a clone of a clone reads what the clone held");
+        EXPECT_TRUE(child->create_clone(0, 3 * PAGE_SIZE, &grand) == Status::Ok &&
+                        peek(grand, 0) == 0xc000'0001 && peek(grand, 1) == 0x1200'0002,
+                    "a clone of a clone reads what the clone held");
 
         // Refusals.
         ustl::Arc<mm::VmObjectPaged> none;
-        verdict(tally,
-                parent->create_clone(1, PAGE_SIZE, &none) == Status::InvArgs &&
-                    parent->create_clone(0, 1, &none) == Status::InvArgs &&
-                    parent->create_clone(4 * PAGE_SIZE, PAGE_SIZE, &none) == Status::InvArgs,
-                "an offset or size that is not page aligned, and an offset past the end, are "
-                "refused");
+        EXPECT_TRUE(parent->create_clone(1, PAGE_SIZE, &none) == Status::InvArgs &&
+                        parent->create_clone(0, 1, &none) == Status::InvArgs &&
+                        parent->create_clone(4 * PAGE_SIZE, PAGE_SIZE, &none) == Status::InvArgs,
+                    "an offset or size that is not page aligned, and an offset past the end, are "
+                    "refused");
         ustl::Arc<mm::VmObjectPaged> pinned;
-        verdict(tally,
-                mm::VmObjectPaged::create(mm::ALLOC_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
-                                          &pinned) == Status::Ok &&
-                    pinned->create_clone(0, PAGE_SIZE, &none) == Status::BadState,
-                "an object with pinned pages is refused: BadState");
+        EXPECT_TRUE(mm::VmObjectPaged::create(mm::ALLOC_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
+                                              &pinned) == Status::Ok &&
+                        pinned->create_clone(0, PAGE_SIZE, &none) == Status::BadState,
+                    "an object with pinned pages is refused: BadState");
 
         // A slice: the clone of a window does not see the pages past it.
         ustl::Arc<mm::VmObjectPaged> whole;
         ustl::Arc<mm::VmObjectPaged> slice;
         ustl::Arc<mm::VmObjectPaged> of_slice;
-        verdict(tally,
-                mm::VmObjectPaged::create(mm::ALLOC_USER, 4 * PAGE_SIZE, mm::VmoFlags::Lazy,
-                                          &whole) == Status::Ok &&
-                    poke(whole, 0, 0x2100'0000) && poke(whole, 1, 0x2200'0000) &&
-                    poke(whole, 2, 0x2300'0000) && poke(whole, 3, 0x2400'0000) &&
-                    whole->create_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok,
-                "an object and a slice of its pages 1 and 2 are made");
-        verdict(tally, slice->create_clone(0, 3 * PAGE_SIZE, &of_slice) == Status::Ok,
-                "the slice is cloned, to more than it shows");
-        verdict(tally,
-                peek(of_slice, 0) == 0x2200'0000 && peek(of_slice, 1) == 0x2300'0000 &&
-                    peek(of_slice, 2) == 0,
-                "the clone reads the slice's pages, and zero past the slice, not the object's "
-                "page after it");
-        verdict(tally,
-                poke(whole, 1, 0x7700'0000) && poke(slice, 1, 0x7800'0000) &&
-                    peek(of_slice, 0) == 0x2200'0000 && peek(of_slice, 1) == 0x2300'0000,
-                "a write through the object or the slice does not reach the clone of the slice");
+        EXPECT_TRUE(mm::VmObjectPaged::create(mm::ALLOC_USER, 4 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                              &whole) == Status::Ok &&
+                        poke(whole, 0, 0x2100'0000) && poke(whole, 1, 0x2200'0000) &&
+                        poke(whole, 2, 0x2300'0000) && poke(whole, 3, 0x2400'0000) &&
+                        whole->create_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok,
+                    "an object and a slice of its pages 1 and 2 are made");
+        EXPECT_TRUE(slice->create_clone(0, 3 * PAGE_SIZE, &of_slice) == Status::Ok,
+                    "the slice is cloned, to more than it shows");
+        EXPECT_TRUE(peek(of_slice, 0) == 0x2200'0000 && peek(of_slice, 1) == 0x2300'0000 &&
+                        peek(of_slice, 2) == 0,
+                    "the clone reads the slice's pages, and zero past the slice, not the object's "
+                    "page after it");
+        EXPECT_TRUE(
+            poke(whole, 1, 0x7700'0000) && poke(slice, 1, 0x7800'0000) &&
+                peek(of_slice, 0) == 0x2200'0000 && peek(of_slice, 1) == 0x2300'0000,
+            "a write through the object or the slice does not reach the clone of the slice");
     }
 
     // The clone behind a mapping: a read maps the shared page read-only, on the frame
     // the object holds; a write to it, or to a page not yet mapped, gets a page of its own.
-    auto check_mapped_clone(Tally &tally) -> void {
+    auto check_mapped_clone() -> void {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
                                                      mm::VmasKind::User, mm::VmasFlags::None,
                                                      "vmosnapshot.test mapped clone", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the mapped clone checks is made");
-            return;
+            FAIL("allocate an address space for the mapped clone checks");
         }
         auto *const previous = attach(aspace.as_ptr_mut());
 
@@ -1227,35 +1163,32 @@ namespace {
                           poke(parent, 0, 0x3100'0000) && poke(parent, 1, 0x3200'0000) &&
                           poke(parent, 2, 0x3300'0000) &&
                           parent->create_clone(0, 5 * PAGE_SIZE, &child) == Status::Ok;
-        verdict(tally, made, "a sparse object and its clone are made");
+        EXPECT_TRUE(made, "a sparse object and its clone are made");
         if (made) {
             // Not committed: nothing is mapped until it is touched.
             auto mapped = root->map_vmo(AT, 5 * PAGE_SIZE, 0, rw, PERMS, child,
                                         mm::MapOptions::Lazy, "mapped clone");
-            verdict(tally, mapped.is_ok(),
-                    "the clone is mapped read-write, and nothing is in "
-                    "the page tables yet");
+            EXPECT_TRUE(mapped.is_ok(), "the clone is mapped read-write, and nothing is in "
+                                        "the page tables yet");
             if (mapped.is_ok()) {
                 constexpr auto ALIAS = AT + 8 * PAGE_SIZE;
                 auto alias = root->map_vmo(ALIAS, 5 * PAGE_SIZE, 0, rw, PERMS, child,
                                            mm::MapOptions::Lazy, "clone alias");
-                verdict(tally, alias.is_ok(), "a second mapping covers the same clone");
+                EXPECT_TRUE(alias.is_ok(), "a second mapping covers the same clone");
                 Node parent_pages = parent->cow_pages();
                 auto const shared = lookup(parent_pages, false, 0);
-                verdict(tally,
-                        task::Thread::Current::soft_fault(AT, mm::VmFault::Cause::Absent) ==
-                            Status::Ok,
-                        "a read of the clone's page 0 is resolved");
-                verdict(tally,
-                        shared && entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
-                            !is_writable(aspace, AT) && is_readable(aspace, AT),
-                        "it maps the page the object holds, read-only, in a mapping that "
-                        "allows Write");
-                verdict(tally,
-                        alias.is_ok() &&
-                            aspace->soft_fault(ALIAS, mm::VmFault::Cause::Absent) == Status::Ok &&
-                            entry_pa(aspace, ALIAS) == entry_pa(aspace, AT),
-                        "both mappings initially point to the inherited frame");
+                EXPECT_TRUE(task::Thread::Current::soft_fault(AT, mm::VmFault::Cause::Absent) ==
+                                Status::Ok,
+                            "a read of the clone's page 0 is resolved");
+                EXPECT_TRUE(shared && entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
+                                !is_writable(aspace, AT) && is_readable(aspace, AT),
+                            "it maps the page the object holds, read-only, in a mapping that "
+                            "allows Write");
+                EXPECT_TRUE(alias.is_ok() &&
+                                aspace->soft_fault(ALIAS, mm::VmFault::Cause::Absent) ==
+                                    Status::Ok &&
+                                entry_pa(aspace, ALIAS) == entry_pa(aspace, AT),
+                            "both mappings initially point to the inherited frame");
 
 #if MM_TEST_ALLOC_FAILURE
                 using mm::test::AllocationSite;
@@ -1266,39 +1199,36 @@ namespace {
                         auto const status = aspace->soft_fault(AT, mm::VmFault::Cause::Write);
                         failed = status == Status::OutOfMem && failure.triggered();
                     }
-                    verdict(tally,
-                            failed && shared &&
-                                entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
-                                entry_pa(aspace, ALIAS) == entry_pa(aspace, AT) &&
-                                !is_writable(aspace, AT),
-                            "a failed fork preserves both inherited mappings and permissions");
+                    EXPECT_TRUE(failed && shared &&
+                                    entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
+                                    entry_pa(aspace, ALIAS) == entry_pa(aspace, AT) &&
+                                    !is_writable(aspace, AT),
+                                "a failed fork preserves both inherited mappings and permissions");
                 }
 #endif
 
                 // A write to that entry gets the clone a page of its own.
-                verdict(tally,
-                        task::Thread::Current::soft_fault(AT, mm::VmFault::Cause::Write) ==
-                            Status::Ok,
-                        "a write to it is resolved");
-                verdict(tally,
-                        is_writable(aspace, AT) && shared &&
-                            entry_pa(aspace, AT) != mm::frame_to_phys(shared->page) &&
-                            peek(child, 0) == 0x3100'0000 && peek(parent, 0) == 0x3100'0000,
-                        "the entry is writable on another frame, holding the bytes copied, and "
-                        "the object's page is as it was");
-                verdict(tally,
-                        !is_readable(aspace, ALIAS) &&
-                            aspace->soft_fault(ALIAS, mm::VmFault::Cause::Absent) == Status::Ok &&
-                            entry_pa(aspace, ALIAS) == entry_pa(aspace, AT),
-                        "the alias faults back in on the writer's new frame");
+                EXPECT_TRUE(task::Thread::Current::soft_fault(AT, mm::VmFault::Cause::Write) ==
+                                Status::Ok,
+                            "a write to it is resolved");
+                EXPECT_TRUE(is_writable(aspace, AT) && shared &&
+                                entry_pa(aspace, AT) != mm::frame_to_phys(shared->page) &&
+                                peek(child, 0) == 0x3100'0000 && peek(parent, 0) == 0x3100'0000,
+                            "the entry is writable on another frame, holding the bytes copied, and "
+                            "the object's page is as it was");
+                EXPECT_TRUE(!is_readable(aspace, ALIAS) &&
+                                aspace->soft_fault(ALIAS, mm::VmFault::Cause::Absent) ==
+                                    Status::Ok &&
+                                entry_pa(aspace, ALIAS) == entry_pa(aspace, AT),
+                            "the alias faults back in on the writer's new frame");
 
                 // A write to a page that was never mapped goes straight to a page of its own.
-                verdict(tally,
-                        task::Thread::Current::soft_fault(
-                            AT + PAGE_SIZE,
-                            mm::VmFault::Cause::Write | mm::VmFault::Cause::Absent) == Status::Ok &&
-                            is_writable(aspace, AT + PAGE_SIZE) && peek(child, 1) == 0x3200'0000,
-                        "a write to an unmapped page is mapped writable, on a copy");
+                EXPECT_TRUE(task::Thread::Current::soft_fault(
+                                AT + PAGE_SIZE, mm::VmFault::Cause::Write |
+                                                    mm::VmFault::Cause::Absent) == Status::Ok &&
+                                is_writable(aspace, AT + PAGE_SIZE) &&
+                                peek(child, 1) == 0x3200'0000,
+                            "a write to an unmapped page is mapped writable, on a copy");
 
                 auto const check_direct_write = [&](usize const index, char const *description) {
                     auto const address = AT + index * PAGE_SIZE;
@@ -1306,21 +1236,20 @@ namespace {
                     auto const prefaulted =
                         aspace->soft_fault(address, mm::VmFault::Cause::Absent) == Status::Ok &&
                         aspace->soft_fault(alias_address, mm::VmFault::Cause::Absent) == Status::Ok;
-                    verdict(tally,
-                            prefaulted && poke(child, index, 0xA0) &&
-                                !is_readable(aspace, address) &&
-                                !is_readable(aspace, alias_address) &&
-                                aspace->soft_fault(alias_address, mm::VmFault::Cause::Absent) ==
-                                    Status::Ok &&
-                                peek(child, index) == 0xA0,
-                            description);
+                    EXPECT_TRUE(prefaulted && poke(child, index, 0xA0) &&
+                                    !is_readable(aspace, address) &&
+                                    !is_readable(aspace, alias_address) &&
+                                    aspace->soft_fault(alias_address, mm::VmFault::Cause::Absent) ==
+                                        Status::Ok &&
+                                    peek(child, index) == 0xA0,
+                                "{}", description);
                 };
                 check_direct_write(2, "a direct VMO write invalidates both inherited entries");
-                verdict(tally, peek(parent, 2) == 0x3300'0000,
-                        "the other snapshot keeps the original content");
+                EXPECT_TRUE(peek(parent, 2) == 0x3300'0000,
+                            "the other snapshot keeps the original content");
                 Node child_pages = child->cow_pages();
-                verdict(tally, add_marker(child_pages, 3) == Status::Ok,
-                        "the clone has a local zero marker");
+                EXPECT_TRUE(add_marker(child_pages, 3) == Status::Ok,
+                            "the clone has a local zero marker");
                 check_direct_write(3, "materializing a local marker invalidates both zero entries");
                 check_direct_write(4,
                                    "materializing an inherited hole invalidates both zero entries");
@@ -1328,21 +1257,20 @@ namespace {
         }
 
         attach(previous);
-        verdict(tally, aspace->destroy() == Status::Ok,
-                "the address space of the mapped clone checks is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                    "the address space of the mapped clone checks is destroyed");
     }
 
     // A clone whose page tables are filled in at once (VmMapping::map()): what they
     // hold is the pages the clone has -- its own writable, the shared ones
     // read-only -- without a page copied, and a hole is left to fault.
-    auto check_committed_clone_mapping(Tally &tally) -> void {
+    auto check_committed_clone_mapping() -> void {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
                                                      mm::VmasKind::User, mm::VmasFlags::None,
                                                      "vmosnapshot.test committed clone", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the committed clone checks is made");
-            return;
+            FAIL("allocate an address space for the committed clone checks");
         }
         auto root = aspace->root_vma();
         constexpr auto PERMS = mm::VmaFlags::PermMask;
@@ -1356,56 +1284,54 @@ namespace {
                           poke(parent, 0, 0x5100'0000) && poke(parent, 1, 0x5200'0000) &&
                           parent->create_clone(0, 4 * PAGE_SIZE, &child) == Status::Ok &&
                           poke(child, 1, 0x5a00'0000);
-        verdict(tally, made,
-                "an object of three pages, a clone of it four pages long, and a write to the "
-                "clone's page 1 are made");
+        EXPECT_TRUE(made,
+                    "an object of three pages, a clone of it four pages long, and a write to the "
+                    "clone's page 1 are made");
         if (made) {
             Node parent_pages = parent->cow_pages();
             Node child_pages = child->cow_pages();
             auto const shared = lookup(parent_pages, false, 0);
             auto const own_before = pages_in(child_pages, child_pages.as_ptr());
-            verdict(tally, shared && own_before == 1,
-                    "the clone holds one page of its own, the one it wrote");
+            EXPECT_TRUE(shared && own_before == 1,
+                        "the clone holds one page of its own, the one it wrote");
 
             // Populated the way a program asks for it (VmOptions::MapRange): the page
             // tables are filled in when the mapping is made, and nothing is committed.
             auto mapped = root->map_vmo(AT, 4 * PAGE_SIZE, 0, rw, PERMS, child,
                                         mm::MapOptions::Resident, "populated clone");
-            verdict(tally, mapped.is_ok(),
-                    "the clone is mapped read-write with Populate, and its page tables are "
-                    "filled in");
+            EXPECT_TRUE(mapped.is_ok(),
+                        "the clone is mapped read-write with Populate, and its page tables are "
+                        "filled in");
             if (mapped.is_ok() && shared) {
-                verdict(tally,
-                        entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
-                            !is_writable(aspace, AT) && is_readable(aspace, AT),
-                        "a page the clone only sees is mapped on the object's frame, read-only");
-                verdict(tally,
-                        is_writable(aspace, AT + PAGE_SIZE) && is_readable(aspace, AT + PAGE_SIZE),
-                        "the page it wrote is mapped writable, in the middle of the run");
-                verdict(tally,
-                        pte_flags(aspace, AT + 2 * PAGE_SIZE).is_none() &&
-                            pte_flags(aspace, AT + 3 * PAGE_SIZE).is_none(),
-                        "a hole of the object and a page past its end are left to fault: there "
-                        "is no page to map");
-                verdict(tally, pages_in(child_pages, child_pages.as_ptr()) == own_before,
-                        "and mapping the clone copied nothing: it still holds the one page");
+                EXPECT_TRUE(
+                    entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
+                        !is_writable(aspace, AT) && is_readable(aspace, AT),
+                    "a page the clone only sees is mapped on the object's frame, read-only");
+                EXPECT_TRUE(is_writable(aspace, AT + PAGE_SIZE) &&
+                                is_readable(aspace, AT + PAGE_SIZE),
+                            "the page it wrote is mapped writable, in the middle of the run");
+                EXPECT_TRUE(pte_flags(aspace, AT + 2 * PAGE_SIZE).is_none() &&
+                                pte_flags(aspace, AT + 3 * PAGE_SIZE).is_none(),
+                            "a hole of the object and a page past its end are left to fault: there "
+                            "is no page to map");
+                EXPECT_TRUE(pages_in(child_pages, child_pages.as_ptr()) == own_before,
+                            "and mapping the clone copied nothing: it still holds the one page");
             }
         }
-        verdict(tally, aspace->destroy() == Status::Ok,
-                "the address space of the committed clone checks is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                    "the address space of the committed clone checks is destroyed");
     }
 
     // What VmMapping::map() maps. Without MapOptions::Commit, the pages an object
     // has and nothing else: a hole is left to fault, and nothing is committed.
     // With it, every page made the object's own first: a clone's are copies.
-    auto check_map_options(Tally &tally) -> void {
+    auto check_map_options() -> void {
         ustl::Arc<mm::VmAspace> aspace;
         if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
                                                      mm::VmasKind::User, mm::VmasFlags::None,
                                                      "vmosnapshot.test map options", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the map option checks is made");
-            return;
+            FAIL("allocate an address space for the map option checks");
         }
         auto root = aspace->root_vma();
         constexpr auto PERMS = mm::VmaFlags::PermMask;
@@ -1425,12 +1351,11 @@ namespace {
             lazy_made && root->map_vmo(LAZY_AT, 3 * PAGE_SIZE, 0, rw, PERMS, lazy,
                                        mm::MapOptions::Resident, "lazy populate")
                              .is_ok();
-        verdict(tally,
-                populated && !present(LAZY_AT) && is_writable(aspace, LAZY_AT + PAGE_SIZE) &&
-                    !present(LAZY_AT + 2 * PAGE_SIZE) &&
-                    lazy->committed_pages(0, 3 * PAGE_SIZE) == 1,
-                "without Commit, a populate maps the page the object has, leaves its holes to "
-                "fault, and commits nothing");
+        EXPECT_TRUE(populated && !present(LAZY_AT) && is_writable(aspace, LAZY_AT + PAGE_SIZE) &&
+                        !present(LAZY_AT + 2 * PAGE_SIZE) &&
+                        lazy->committed_pages(0, 3 * PAGE_SIZE) == 1,
+                    "without Commit, a populate maps the page the object has, leaves its holes to "
+                    "fault, and commits nothing");
 
         if (lazy_made) {
             constexpr auto CHECK_AT = LAZY_AT + 4 * PAGE_SIZE;
@@ -1441,39 +1366,36 @@ namespace {
                                                    lazy, mode, "outside VMO");
                 auto const crosses = root->map_vmo(CHECK_AT, PAGE_SIZE + 1, 2 * PAGE_SIZE, rw,
                                                    PERMS, lazy, mode, "past VMO end");
-                verdict(tally,
-                        outside.is_err() && outside.unwrap_err() == Status::OutOfRange &&
-                            crosses.is_err() && crosses.unwrap_err() == Status::OutOfRange,
-                        "every map mode rejects an invalid VMO window before registration");
+                EXPECT_TRUE(outside.is_err() && outside.unwrap_err() == Status::OutOfRange &&
+                                crosses.is_err() && crosses.unwrap_err() == Status::OutOfRange,
+                            "every map mode rejects an invalid VMO window before registration");
             }
             auto const unaligned = root->map_vmo(CHECK_AT, PAGE_SIZE, 1, rw, PERMS, lazy,
                                                  mm::MapOptions::Lazy, "unaligned VMO");
-            verdict(tally, unaligned.is_err() && unaligned.unwrap_err() == Status::InvArgs,
-                    "a VMO byte offset must be page-aligned");
+            EXPECT_TRUE(unaligned.is_err() && unaligned.unwrap_err() == Status::InvArgs,
+                        "a VMO byte offset must be page-aligned");
             auto const conflicting = root->map_vmo(
                 CHECK_AT, PAGE_SIZE, PAGE_SIZE, rw, PERMS, lazy,
                 mm::MapOptions::Resident | mm::MapOptions::Commit, "conflicting map modes");
             auto const unknown =
                 root->map_vmo(CHECK_AT, PAGE_SIZE, PAGE_SIZE, rw, PERMS, lazy,
                               mm::MapOptions::Resident | UNKNOWN, "unknown map flag");
-            verdict(tally,
-                    conflicting.is_err() && conflicting.unwrap_err() == Status::InvArgs &&
-                        unknown.is_err() && unknown.unwrap_err() == Status::InvArgs,
-                    "creation rejects conflicting modes and unknown bits");
+            EXPECT_TRUE(conflicting.is_err() && conflicting.unwrap_err() == Status::InvArgs &&
+                            unknown.is_err() && unknown.unwrap_err() == Status::InvArgs,
+                        "creation rejects conflicting modes and unknown bits");
 
             auto registered = root->map_vmo(CHECK_AT, PAGE_SIZE, PAGE_SIZE, rw, PERMS, lazy,
                                             mm::MapOptions::Lazy, "lazy map");
-            verdict(tally, registered.is_ok() && !present(CHECK_AT),
-                    "invalid options left the range free, and Lazy leaves the PTE absent");
+            EXPECT_TRUE(registered.is_ok() && !present(CHECK_AT),
+                        "invalid options left the range free, and Lazy leaves the PTE absent");
             if (registered) {
                 auto &mapping = **registered;
                 auto const lazy_status = mapping.map(CHECK_AT, PAGE_SIZE, mm::MapOptions::Lazy);
                 auto const sealed_status = mapping.map(
                     CHECK_AT, PAGE_SIZE, mm::MapOptions::Resident | mm::MapOptions::Sealed);
-                verdict(tally,
-                        lazy_status == Status::InvArgs && sealed_status == Status::InvArgs &&
-                            !present(CHECK_AT),
-                        "explicit installation rejects Lazy and creation flags");
+                EXPECT_TRUE(lazy_status == Status::InvArgs && sealed_status == Status::InvArgs &&
+                                !present(CHECK_AT),
+                            "explicit installation rejects Lazy and creation flags");
             }
         }
 
@@ -1496,14 +1418,14 @@ namespace {
             copied = shared && entry_pa(aspace, CLONE_AT) != mm::frame_to_phys(shared->page) &&
                      pages_in(child_pages, child_pages.as_ptr()) == 2;
         }
-        verdict(tally,
-                committed && copied && is_writable(aspace, CLONE_AT) &&
-                    is_writable(aspace, CLONE_AT + PAGE_SIZE),
-                "with Commit, every page is made the object's own first: the clone's are copies, "
-                "mapped writable");
+        EXPECT_TRUE(
+            committed && copied && is_writable(aspace, CLONE_AT) &&
+                is_writable(aspace, CLONE_AT + PAGE_SIZE),
+            "with Commit, every page is made the object's own first: the clone's are copies, "
+            "mapped writable");
 
-        verdict(tally, aspace->destroy() == Status::Ok,
-                "the address space of the map option checks is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                    "the address space of the map option checks is destroyed");
     }
 
     /// What one slot popped from a splice list was: a page, whose first word
@@ -1542,7 +1464,7 @@ namespace {
     // The clone's own marker goes where nothing is above it: a marker over an
     // ancestor's page put by hand would hide the page without counting the
     // clone out of its viewers, which only take_pages() and a write do.
-    auto check_take_from_clone(Tally &tally) -> void {
+    auto check_take_from_clone() -> void {
         constexpr u64 P = PAGE_SIZE;
         ustl::Arc<mm::VmObjectPaged> origin;
         ustl::Arc<mm::VmObjectPaged> clone;
@@ -1560,9 +1482,9 @@ namespace {
             Node clone_pages = clone->cow_pages();
             made = add_marker(clone_pages, 4) == Status::Ok;
         }
-        verdict(tally, made,
-                "an origin with three pages and a marker, and a clone that wrote page 1 and "
-                "marked page 4");
+        EXPECT_TRUE(made,
+                    "an origin with three pages and a marker, and a clone that wrote page 1 and "
+                    "marked page 4");
         if (!made) {
             return;
         }
@@ -1583,44 +1505,40 @@ namespace {
                 auto const status = clone->take_pages(0, 5 * P, &pages);
                 failed = status == Status::OutOfMem && failure.triggered();
             }
-            verdict(tally,
-                    failed && pages.is_fresh() && peek(clone, 0) == 0x7100'0000 &&
-                        peek(clone, 1) == 0x7b00'0000 && peek(origin, 0) == 0x7100'0000,
-                    "a failed splice leaves the transfer list empty and preserves both views");
+            EXPECT_TRUE(failed && pages.is_fresh() && peek(clone, 0) == 0x7100'0000 &&
+                            peek(clone, 1) == 0x7b00'0000 && peek(origin, 0) == 0x7100'0000,
+                        "a failed splice leaves the transfer list empty and preserves both views");
         }
 #endif
-        verdict(tally, clone->take_pages(0, 5 * P, &pages) == Status::Ok,
-                "take_pages() of the whole clone succeeds");
+        EXPECT_TRUE(clone->take_pages(0, 5 * P, &pages) == Status::Ok,
+                    "take_pages() of the whole clone succeeds");
         Popped popped[5] = {};
         for (auto &slot: popped) {
             slot = pop_slot(pages);
         }
-        log::info("vmosnapshot.test:   taken: {} {:#x}, {} {:#x}, {} {:#x}, {}, {}",
+        log::info("vmosnapshot:   taken: {} {:#x}, {} {:#x}, {} {:#x}, {}, {}",
                   static_cast<int>(popped[0].kind), popped[0].word,
                   static_cast<int>(popped[1].kind), popped[1].word,
                   static_cast<int>(popped[2].kind), popped[2].word,
                   static_cast<int>(popped[3].kind), static_cast<int>(popped[4].kind));
-        verdict(tally,
-                popped[0].kind == Popped::Kind::Page && popped[0].word == 0x7100'0000 &&
-                    popped[0].frame != shared_frame && popped[2].kind == Popped::Kind::Page &&
-                    popped[2].word == 0x7300'0000,
-                "pages 0 and 2, seen through the hidden node, come out as copies of its own");
-        verdict(tally, popped[1].kind == Popped::Kind::Page && popped[1].word == 0x7b00'0000,
-                "the page it wrote comes out as it was");
-        verdict(tally,
-                popped[3].kind == Popped::Kind::Gap && popped[4].kind == Popped::Kind::ZeroMarker,
-                "the marker further up is a gap, and its own marker comes out as a marker");
+        EXPECT_TRUE(popped[0].kind == Popped::Kind::Page && popped[0].word == 0x7100'0000 &&
+                        popped[0].frame != shared_frame && popped[2].kind == Popped::Kind::Page &&
+                        popped[2].word == 0x7300'0000,
+                    "pages 0 and 2, seen through the hidden node, come out as copies of its own");
+        EXPECT_TRUE(popped[1].kind == Popped::Kind::Page && popped[1].word == 0x7b00'0000,
+                    "the page it wrote comes out as it was");
+        EXPECT_TRUE(popped[3].kind == Popped::Kind::Gap &&
+                        popped[4].kind == Popped::Kind::ZeroMarker,
+                    "the marker further up is a gap, and its own marker comes out as a marker");
 
-        verdict(tally,
-                peek(clone, 0) == 0 && peek(clone, 1) == 0 && peek(clone, 2) == 0 &&
-                    peek(clone, 3) == 0 && peek(clone, 4) == 0 &&
-                    pages_in(clone_pages, clone_pages.as_ptr()) == 0,
-                "the clone reads zero everywhere and holds no page: markers hide the hidden "
-                "node's pages");
-        verdict(tally,
-                peek(origin, 0) == 0x7100'0000 && peek(origin, 1) == 0x7200'0000 &&
-                    peek(origin, 2) == 0x7300'0000 && peek(origin, 3) == 0,
-                "the origin still sees what it saw");
+        EXPECT_TRUE(peek(clone, 0) == 0 && peek(clone, 1) == 0 && peek(clone, 2) == 0 &&
+                        peek(clone, 3) == 0 && peek(clone, 4) == 0 &&
+                        pages_in(clone_pages, clone_pages.as_ptr()) == 0,
+                    "the clone reads zero everywhere and holds no page: markers hide the hidden "
+                    "node's pages");
+        EXPECT_TRUE(peek(origin, 0) == 0x7100'0000 && peek(origin, 1) == 0x7200'0000 &&
+                        peek(origin, 2) == 0x7300'0000 && peek(origin, 3) == 0,
+                    "the origin still sees what it saw");
 
         mm::VmPageSpliceList again(3);
         auto const taken_again = clone->take_pages(0, 3 * P, &again) == Status::Ok;
@@ -1628,22 +1546,21 @@ namespace {
         for (auto &slot: markers) {
             slot = pop_slot(again);
         }
-        verdict(tally,
-                taken_again && markers[0].kind == Popped::Kind::ZeroMarker &&
-                    markers[1].kind == Popped::Kind::ZeroMarker &&
-                    markers[2].kind == Popped::Kind::ZeroMarker && peek(clone, 0) == 0 &&
-                    peek(clone, 2) == 0,
-                "taken again, the markers come out and stay, still hiding the hidden node's "
-                "pages");
+        EXPECT_TRUE(taken_again && markers[0].kind == Popped::Kind::ZeroMarker &&
+                        markers[1].kind == Popped::Kind::ZeroMarker &&
+                        markers[2].kind == Popped::Kind::ZeroMarker && peek(clone, 0) == 0 &&
+                        peek(clone, 2) == 0,
+                    "taken again, the markers come out and stay, still hiding the hidden node's "
+                    "pages");
 
         auto taken_by_write = false;
         if (poke(origin, 0, 0x7c00'0000)) {
             auto const own = lookup(origin_pages, false, 0);
             taken_by_write = own && mm::frame_to_phys(own->page) == shared_frame && own->writable;
         }
-        verdict(tally, taken_by_write,
-                "and the origin, the last to see page 0 now, takes it on a write instead of "
-                "copying it");
+        EXPECT_TRUE(taken_by_write,
+                    "and the origin, the last to see page 0 now, takes it on a write instead of "
+                    "copying it");
     }
 
     // A TLB shootdown, run on two CPUs at once. The writer, pinned to one CPU,
@@ -1732,10 +1649,10 @@ namespace {
         return true;
     }
 
-    auto check_shootdown(Tally &tally) -> void {
+    auto check_shootdown() -> void {
         auto const cpus = Cpu::num_online_cpus();
         if (cpus < 2) {
-            log::info("vmosnapshot.test: the shootdown checks need two CPUs, have {}", cpus);
+            log::info("vmosnapshot: the shootdown checks need two CPUs, have {}", cpus);
             return;
         }
 
@@ -1744,8 +1661,7 @@ namespace {
                                                      mm::VmasKind::User, mm::VmasFlags::None,
                                                      "vmosnapshot.test shootdown", &aspace);
             status != Status::Ok) {
-            verdict(tally, false, "an address space for the shootdown checks is made");
-            return;
+            FAIL("allocate an address space for the shootdown checks");
         }
         constexpr auto PERMS = mm::VmaFlags::PermMask;
         auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
@@ -1763,11 +1679,11 @@ namespace {
                                         mm::MapOptions::Resident, "shootdown")
                               .is_ok() &&
                           is_writable(aspace, AT);
-        verdict(tally, made, "an object of one page is mapped writable, its entry filled in");
+        EXPECT_TRUE(made, "an object of one page is mapped writable, its entry filled in");
         if (!made) {
             delete run;
-            verdict(tally, aspace->destroy() == Status::Ok,
-                    "the address space of the shootdown checks is destroyed");
+            EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                        "the address space of the shootdown checks is destroyed");
             return;
         }
         run->aspace = aspace.as_ptr_mut();
@@ -1794,24 +1710,24 @@ namespace {
             auto _ = task::Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
         }
         auto const finished = spawned && run->finished.load(std::memory_order_acquire) == 2;
-        verdict(tally, finished, "the writer and the cloner both ran, on two CPUs, and finished");
+        EXPECT_TRUE(finished, "the writer and the cloner both ran, on two CPUs, and finished");
         if (!finished) {
             // Leaked, with the address space: a thread may still be using both.
             auto _ = aspace.into_raw();
             return;
         }
 
-        verdict(tally, run->first_write && !run->waited_out && run->clone_status == Status::Ok,
-                "the writer's first write goes through, and the clone is made while it waits");
-        verdict(tally, run->second_refused,
-                "its next write, with no switch in between, faults: the clone on the other CPU "
-                "shot down the writable translation it held");
-        verdict(tally, run->clone && peek(run->clone, 0) == BEFORE_CLONE,
-                "the clone holds what the page held when it was made, not a write after it");
+        EXPECT_TRUE(run->first_write && !run->waited_out && run->clone_status == Status::Ok,
+                    "the writer's first write goes through, and the clone is made while it waits");
+        EXPECT_TRUE(run->second_refused,
+                    "its next write, with no switch in between, faults: the clone on the other CPU "
+                    "shot down the writable translation it held");
+        EXPECT_TRUE(run->clone && peek(run->clone, 0) == BEFORE_CLONE,
+                    "the clone holds what the page held when it was made, not a write after it");
 
         delete run;
-        verdict(tally, aspace->destroy() == Status::Ok,
-                "the address space of the shootdown checks is destroyed");
+        EXPECT_TRUE(aspace->destroy() == Status::Ok,
+                    "the address space of the shootdown checks is destroyed");
     }
 
     // The same for the kernel's own address space, whose translations every CPU
@@ -1890,10 +1806,10 @@ namespace {
         return 0;
     }
 
-    auto check_kernel_shootdown(Tally &tally) -> void {
+    auto check_kernel_shootdown() -> void {
         auto const cpus = Cpu::num_online_cpus();
         if (cpus < 2) {
-            log::info("vmosnapshot.test: the kernel shootdown checks need two CPUs, have {}", cpus);
+            log::info("vmosnapshot: the kernel shootdown checks need two CPUs, have {}", cpus);
             return;
         }
 
@@ -1916,8 +1832,9 @@ namespace {
                 mapping = mapped.unwrap();
             }
         }
-        verdict(tally, made && mapping,
-                "two kernel objects of one page are made, and the first is mapped in the kernel");
+        EXPECT_TRUE(
+            made && mapping,
+            "two kernel objects of one page are made, and the first is mapped in the kernel");
         if (!made || !mapping) {
             delete run;
             return;
@@ -1941,137 +1858,124 @@ namespace {
             auto _ = task::Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
         }
         auto const finished = spawned && run->finished.load(std::memory_order_acquire) == 2;
-        verdict(tally, finished, "the reader and the remapper both ran, on two CPUs, and finished");
+        EXPECT_TRUE(finished, "the reader and the remapper both ran, on two CPUs, and finished");
         if (!finished) {
             // Leaked: a thread may still be using it.
             return;
         }
 
-        verdict(tally, run->first == OLD_KERNEL_WORD && !run->waited_out && run->remap_made,
-                "the reader reads the first object, and the remap is made while it waits");
-        verdict(tally, run->second == NEW_KERNEL_WORD,
-                "its next read, with no switch in between, finds the second object: the unmap "
-                "on the other CPU shot down the translation it held");
+        EXPECT_TRUE(run->first == OLD_KERNEL_WORD && !run->waited_out && run->remap_made,
+                    "the reader reads the first object, and the remap is made while it waits");
+        EXPECT_TRUE(run->second == NEW_KERNEL_WORD,
+                    "its next read, with no switch in between, finds the second object: the unmap "
+                    "on the other CPU shot down the translation it held");
 
-        verdict(tally, root->unmap(run->at, PAGE_SIZE) == Status::Ok,
-                "the kernel mapping of the shootdown checks is taken down");
+        EXPECT_TRUE(root->unmap(run->at, PAGE_SIZE) == Status::Ok,
+                    "the kernel mapping of the shootdown checks is taken down");
         delete run;
     }
 
-    auto vmosnapshot_test_command(int, char **) -> int {
-        Tally tally;
-
+    KTEST(VmoSnapshot, WhatANodeUnderAnotherSees) {
         // A parent of three pages: 0 and 1 hold something, 2 is a hole.
         Node parent;
         if (!make(parent, 3)) {
-            log::error("vmosnapshot.test: could not make the parent");
-            return 1;
+            log::error("vmosnapshot: could not make the parent");
+            FAIL("make the parent");
         }
         auto *const p0 = fill(parent, 0, 0xA0);
         auto *const p1 = fill(parent, 1, 0xA1);
-        verdict(tally, p0 && p1 && p0 != p1 && nr_pages(parent) == 2,
-                "the parent holds two pages and a hole");
-        if (tally.failed != 0) {
-            log::error("vmosnapshot.test: FAILED -- setup");
-            return 1;
-        }
+        ASSERT_TRUE(p0 && p1 && p0 != p1 && nr_pages(parent) == 2,
+                    "the parent holds two pages and a hole");
 
         // The zero page, on its own: every later "reads as zero" is a claim
         // about this one page.
-        verdict(tally, mm::get_zero_page() != nullptr && holds_only(mm::get_zero_page(), 0),
-                "ZERO_PAGE exists and is all zeros");
+        EXPECT_TRUE(mm::get_zero_page() != nullptr && holds_only(mm::get_zero_page(), 0),
+                    "ZERO_PAGE exists and is all zeros");
 
         // A child larger than its parent: sees all three of the parent's pages,
         // and has two more that the parent cannot reach.
         Node child;
-        verdict(tally, make_child(parent, 0, 3, 5, false, child), "a child of the parent is made");
-        verdict(tally, &child->lock() == &parent->lock(),
-                "the child takes the parent's lock, not one of its own");
-        verdict(tally, reads_lenders_page(child, 0, p0) && holds_only(p0, 0xA0),
-                "the child reads the parent's page 0, read-only, and allocates nothing");
-        verdict(tally, reads_lenders_page(child, 1, p1), "and page 1");
-        verdict(tally, reads_zero_page(child, 2),
-                "a page the parent has a hole for reads as the zero page");
-        verdict(tally, reads_zero_page(child, 3) && reads_zero_page(child, 4),
-                "and so does everything past the parent's end");
-        verdict(tally, nr_pages(child) == 0, "and the child still holds no page of its own");
+        EXPECT_TRUE(make_child(parent, 0, 3, 5, false, child), "a child of the parent is made");
+        EXPECT_TRUE(&child->lock() == &parent->lock(),
+                    "the child takes the parent's lock, not one of its own");
+        EXPECT_TRUE(reads_lenders_page(child, 0, p0) && holds_only(p0, 0xA0),
+                    "the child reads the parent's page 0, read-only, and allocates nothing");
+        EXPECT_TRUE(reads_lenders_page(child, 1, p1), "and page 1");
+        EXPECT_TRUE(reads_zero_page(child, 2),
+                    "a page the parent has a hole for reads as the zero page");
+        EXPECT_TRUE(reads_zero_page(child, 3) && reads_zero_page(child, 4),
+                    "and so does everything past the parent's end");
+        EXPECT_EQ(nr_pages(child), usize{0}, "and the child still holds no page of its own");
 
         // The parent offset: the child's page 0 is the parent's page 1, and its
         // limit cuts it off after two pages.
         Node shifted;
-        verdict(tally, make_child(parent, 1, 2, 3, false, shifted), "a child at a parent offset");
-        verdict(tally, reads_lenders_page(shifted, 0, p1), "its page 0 is the parent's page 1");
-        verdict(tally, reads_zero_page(shifted, 1), "its page 1 is the parent's hole, so zero");
-        verdict(tally, reads_zero_page(shifted, 2), "and its page 2 is past its limit");
+        EXPECT_TRUE(make_child(parent, 1, 2, 3, false, shifted), "a child at a parent offset");
+        EXPECT_TRUE(reads_lenders_page(shifted, 0, p1), "its page 0 is the parent's page 1");
+        EXPECT_TRUE(reads_zero_page(shifted, 1), "its page 1 is the parent's hole, so zero");
+        EXPECT_TRUE(reads_zero_page(shifted, 2), "and its page 2 is past its limit");
 
         // A limit the caller did not check: longer than the child and than what
         // the parent has from that offset. It is clamped, not refused.
         Node clamped;
-        verdict(tally, make_child(parent, 1, 100, 8, false, clamped),
-                "a child with a limit longer than either side is made");
-        verdict(tally, reads_lenders_page(clamped, 0, p1) && reads_zero_page(clamped, 7),
-                "and reads as if the limit had been clamped");
+        EXPECT_TRUE(make_child(parent, 1, 100, 8, false, clamped),
+                    "a child with a limit longer than either side is made");
+        EXPECT_TRUE(reads_lenders_page(clamped, 0, p1) && reads_zero_page(clamped, 7),
+                    "and reads as if the limit had been clamped");
 
         // A misaligned argument is refused.
         Node refused;
-        verdict(tally,
-                VmCowPages::create_child(parent, 1, PAGE_SIZE, PAGE_SIZE, VmCowPages::Flags::None,
-                                         &refused) == Status::InvArgs,
-                "an offset that is not page aligned is refused");
+        EXPECT_TRUE(VmCowPages::create_child(parent, 1, PAGE_SIZE, PAGE_SIZE,
+                                             VmCowPages::Flags::None, &refused) == Status::InvArgs,
+                    "an offset that is not page aligned is refused");
 
         // A chain: the grandchild's offset and limit compose with its parent's.
         Node grandchild;
-        verdict(tally, make_child(child, 0, 5, 5, false, grandchild),
-                "a child of the child is made");
-        verdict(tally, &grandchild->lock() == &parent->lock(),
-                "and it is in the same tree, with the same lock");
-        verdict(tally,
-                reads_lenders_page(grandchild, 0, p0) && reads_lenders_page(grandchild, 1, p1),
-                "it reads the pages two hops up");
-        verdict(tally, reads_zero_page(grandchild, 3),
-                "the middle node's limit stops the walk: page 3 is past the child's limit");
+        EXPECT_TRUE(make_child(child, 0, 5, 5, false, grandchild), "a child of the child is made");
+        EXPECT_TRUE(&grandchild->lock() == &parent->lock(),
+                    "and it is in the same tree, with the same lock");
+        EXPECT_TRUE(reads_lenders_page(grandchild, 0, p0) && reads_lenders_page(grandchild, 1, p1),
+                    "it reads the pages two hops up");
+        EXPECT_TRUE(reads_zero_page(grandchild, 3),
+                    "the middle node's limit stops the walk: page 3 is past the child's limit");
         Node offset_chain;
-        verdict(tally, make_child(shifted, 0, 2, 2, false, offset_chain),
-                "a child of the shifted child is made");
-        verdict(tally, reads_lenders_page(offset_chain, 0, p1),
-                "its page 0 is the shifted child's page 0, which is the parent's page 1");
+        EXPECT_TRUE(make_child(shifted, 0, 2, 2, false, offset_chain),
+                    "a child of the shifted child is made");
+        EXPECT_TRUE(reads_lenders_page(offset_chain, 0, p1),
+                    "its page 0 is the shifted child's page 0, which is the parent's page 1");
 
         // Two children of one parent see the same page.
         Node sibling;
-        verdict(tally, make_child(parent, 0, 3, 3, false, sibling), "a second child is made");
-        verdict(tally, reads_lenders_page(sibling, 0, p0) && reads_lenders_page(child, 0, p0),
-                "two children of one parent read the same page");
+        EXPECT_TRUE(make_child(parent, 0, 3, 3, false, sibling), "a second child is made");
+        EXPECT_TRUE(reads_lenders_page(sibling, 0, p0) && reads_lenders_page(child, 0, p0),
+                    "two children of one parent read the same page");
 
         // A hidden node.
         Node hidden;
-        verdict(tally, make_child(parent, 0, 3, 3, true, hidden) && hidden->is_hidden(),
-                "a hidden child is made");
-        verdict(tally, !child->is_hidden(), "and an ordinary one is not hidden");
-        verdict(tally,
-                lookup(hidden, true, 0).is_err() &&
-                    lookup(hidden, true, 0).unwrap_err() == Status::BadState,
-                "a writer is refused by a hidden node, even where it has a page to show");
-        verdict(tally, reads_lenders_page(hidden, 0, p0) && reads_zero_page(hidden, 2),
-                "a hidden node reads through to its parent like any other");
+        EXPECT_TRUE(make_child(parent, 0, 3, 3, true, hidden) && hidden->is_hidden(),
+                    "a hidden child is made");
+        EXPECT_TRUE(!child->is_hidden(), "and an ordinary one is not hidden");
+        EXPECT_TRUE(lookup(hidden, true, 0).is_err() &&
+                        lookup(hidden, true, 0).unwrap_err() == Status::BadState,
+                    "a writer is refused by a hidden node, even where it has a page to show");
+        EXPECT_TRUE(reads_lenders_page(hidden, 0, p0) && reads_zero_page(hidden, 2),
+                    "a hidden node reads through to its parent like any other");
         Node below_hidden;
-        verdict(tally,
-                make_child(hidden, 0, 3, 3, false, below_hidden) &&
-                    reads_lenders_page(below_hidden, 1, p1),
-                "and a node below it reads through both");
+        EXPECT_TRUE(make_child(hidden, 0, 3, 3, false, below_hidden) &&
+                        reads_lenders_page(below_hidden, 1, p1),
+                    "and a node below it reads through both");
 
         // A node with no relatives is what it always was.
         Node alone;
-        verdict(tally, make(alone, 2), "a node with no relatives is made");
-        verdict(tally, &alone->lock() != &parent->lock(), "and it has a lock of its own");
+        EXPECT_TRUE(make(alone, 2), "a node with no relatives is made");
+        EXPECT_TRUE(&alone->lock() != &parent->lock(), "and it has a lock of its own");
         auto const first = lookup(alone, false, 1);
-        verdict(tally,
-                first && first->writable && first->page != mm::get_zero_page() &&
-                    nr_pages(alone) == 1 && holds_only(first->page, 0),
-                "a read of its hole commits a zeroed page of its own, writable");
+        EXPECT_TRUE(first && first->writable && first->page != mm::get_zero_page() &&
+                        nr_pages(alone) == 1 && holds_only(first->page, 0),
+                    "a read of its hole commits a zeroed page of its own, writable");
         auto const again = lookup(alone, false, 1);
-        verdict(tally,
-                again && again->page == first->page && again->writable && nr_pages(alone) == 1,
-                "and the next read finds that page");
+        EXPECT_TRUE(again && again->page == first->page && again->writable && nr_pages(alone) == 1,
+                    "and the next read finds that page");
 
         // The list of children: each node made under a parent is on its list,
         // and leaves it when it dies.
@@ -2079,255 +1983,233 @@ namespace {
         Node kid_a;
         Node kid_b;
         Node kid_c;
-        verdict(tally,
-                make(family, 2) && make_child(family, 0, 2, 2, false, kid_a) &&
-                    make_child(family, 0, 2, 2, false, kid_b) &&
-                    make_child(family, 1, 1, 1, true, kid_c),
-                "a parent and three children are made");
-        verdict(tally, nr_children(family) == 3, "the parent lists all three");
-        verdict(tally, nr_children(kid_a) == 0, "and a child with none of its own lists none");
+        EXPECT_TRUE(make(family, 2) && make_child(family, 0, 2, 2, false, kid_a) &&
+                        make_child(family, 0, 2, 2, false, kid_b) &&
+                        make_child(family, 1, 1, 1, true, kid_c),
+                    "a parent and three children are made");
+        EXPECT_EQ(nr_children(family), usize{3}, "the parent lists all three");
+        EXPECT_EQ(nr_children(kid_a), usize{0}, "and a child with none of its own lists none");
         kid_b = nullptr;
-        verdict(tally, nr_children(family) == 2, "a child that dies leaves the list");
+        EXPECT_EQ(nr_children(family), usize{2}, "a child that dies leaves the list");
         Node kid_a_child;
-        verdict(tally, make_child(kid_a, 0, 2, 2, false, kid_a_child),
-                "a child of a child is made");
-        verdict(tally, nr_children(kid_a) == 1 && nr_children(family) == 2,
-                "it is on its own parent's list, not on its grandparent's");
+        EXPECT_TRUE(make_child(kid_a, 0, 2, 2, false, kid_a_child), "a child of a child is made");
+        EXPECT_TRUE(nr_children(kid_a) == 1 && nr_children(family) == 2,
+                    "it is on its own parent's list, not on its grandparent's");
         kid_a = nullptr;
-        verdict(tally, nr_children(family) == 2 && reads_zero_page(kid_a_child, 0),
-                "a child whose parent handle is dropped stays on the grandparent's list, alive");
+        EXPECT_TRUE(
+            nr_children(family) == 2 && reads_zero_page(kid_a_child, 0),
+            "a child whose parent handle is dropped stays on the grandparent's list, alive");
         kid_a_child = nullptr;
-        verdict(tally, nr_children(family) == 1,
-                "and leaves it when it dies, taking its parent with it");
+        EXPECT_EQ(nr_children(family), usize{1},
+                  "and leaves it when it dies, taking its parent with it");
         kid_c = nullptr;
-        verdict(tally, nr_children(family) == 0, "the parent ends up with none");
+        EXPECT_EQ(nr_children(family), usize{0}, "the parent ends up with none");
 
         // The clone. A node that holds pages is cloned: its pages move into a
         // new hidden node above it, and it and the clone hang under that.
         Node origin;
-        verdict(tally, make(origin, 3), "a node to clone is made");
+        EXPECT_TRUE(make(origin, 3), "a node to clone is made");
         auto *const o0 = fill(origin, 0, 0xC0);
         auto *const o1 = fill(origin, 1, 0xC1);
-        verdict(tally, o0 && o1 && pages_in(origin, origin.as_ptr()) == 2,
-                "it holds two pages and a hole");
+        EXPECT_TRUE(o0 && o1 && pages_in(origin, origin.as_ptr()) == 2,
+                    "it holds two pages and a hole");
         Node clone1;
-        verdict(tally, clone_of(origin, 0, 3, clone1) == Status::Ok, "it is cloned");
+        EXPECT_TRUE(clone_of(origin, 0, 3, clone1) == Status::Ok, "it is cloned");
         auto const *const shared = parent_of(origin);
-        verdict(tally, shared != nullptr && shared->is_hidden() && parent_of(clone1) == shared,
-                "the node and its clone hang under one hidden node");
-        verdict(tally, &clone1->lock() == &origin->lock(), "in one tree, under one lock");
-        verdict(tally, pages_in(origin, origin.as_ptr()) == 0 && pages_in(origin, shared) == 2,
-                "the pages moved up into the hidden node, and the node holds none");
-        verdict(tally, children_in(origin, shared) == 2, "which lists the node and the clone");
-        verdict(tally, o0->share_count() == 1 && o1->share_count() == 1,
-                "each page both of them see has one more viewer");
-        verdict(tally,
-                reads_lenders_page(origin, 0, o0) && reads_lenders_page(clone1, 0, o0) &&
-                    reads_lenders_page(clone1, 1, o1) && reads_zero_page(clone1, 2),
-                "both read the same pages, and the hole as zero");
-        verdict(tally, holds_only(o0, 0xC0) && holds_only(o1, 0xC1),
-                "and the bytes are what was written before the clone");
+        EXPECT_TRUE(shared != nullptr && shared->is_hidden() && parent_of(clone1) == shared,
+                    "the node and its clone hang under one hidden node");
+        EXPECT_TRUE(&clone1->lock() == &origin->lock(), "in one tree, under one lock");
+        EXPECT_TRUE(pages_in(origin, origin.as_ptr()) == 0 && pages_in(origin, shared) == 2,
+                    "the pages moved up into the hidden node, and the node holds none");
+        EXPECT_EQ(children_in(origin, shared), usize{2}, "which lists the node and the clone");
+        EXPECT_TRUE(o0->share_count() == 1 && o1->share_count() == 1,
+                    "each page both of them see has one more viewer");
+        EXPECT_TRUE(reads_lenders_page(origin, 0, o0) && reads_lenders_page(clone1, 0, o0) &&
+                        reads_lenders_page(clone1, 1, o1) && reads_zero_page(clone1, 2),
+                    "both read the same pages, and the hole as zero");
+        EXPECT_TRUE(holds_only(o0, 0xC0) && holds_only(o1, 0xC1),
+                    "and the bytes are what was written before the clone");
 
         // A second clone of the same node finds it holds nothing and hangs
         // under the same hidden node: no new one, and no chain.
         Node clone2;
-        verdict(tally, clone_of(origin, 0, 3, clone2) == Status::Ok, "it is cloned again");
-        verdict(tally,
-                parent_of(clone2) == shared && parent_of(origin) == shared &&
-                    children_in(origin, shared) == 3 && pages_in(origin, shared) == 2,
-                "the second clone hangs under the same hidden node");
-        verdict(tally, o0->share_count() == 2 && o1->share_count() == 2,
-                "and the pages have one more viewer again");
+        EXPECT_TRUE(clone_of(origin, 0, 3, clone2) == Status::Ok, "it is cloned again");
+        EXPECT_TRUE(parent_of(clone2) == shared && parent_of(origin) == shared &&
+                        children_in(origin, shared) == 3 && pages_in(origin, shared) == 2,
+                    "the second clone hangs under the same hidden node");
+        EXPECT_TRUE(o0->share_count() == 2 && o1->share_count() == 2,
+                    "and the pages have one more viewer again");
 
         // A window: only the page it can see gains a viewer.
         Node window;
-        verdict(tally, clone_of(origin, 1, 1, window) == Status::Ok, "a one-page window is cloned");
-        verdict(tally,
-                reads_lenders_page(window, 0, o1) && o0->share_count() == 2 &&
-                    o1->share_count() == 3,
-                "its page 0 is the node's page 1, and only that page gained a viewer");
+        EXPECT_TRUE(clone_of(origin, 1, 1, window) == Status::Ok, "a one-page window is cloned");
+        EXPECT_TRUE(reads_lenders_page(window, 0, o1) && o0->share_count() == 2 &&
+                        o1->share_count() == 3,
+                    "its page 0 is the node's page 1, and only that page gained a viewer");
 
         // A window longer than the node: the rest reads as zero.
         Node longer;
-        verdict(tally, clone_of(origin, 0, 5, longer) == Status::Ok,
-                "a clone longer than the node");
-        verdict(tally,
-                reads_lenders_page(longer, 1, o1) && reads_zero_page(longer, 2) &&
-                    reads_zero_page(longer, 4) && o0->share_count() == 3 && o1->share_count() == 4,
-                "reads the node, then zero past its end");
+        EXPECT_TRUE(clone_of(origin, 0, 5, longer) == Status::Ok, "a clone longer than the node");
+        EXPECT_TRUE(reads_lenders_page(longer, 1, o1) && reads_zero_page(longer, 2) &&
+                        reads_zero_page(longer, 4) && o0->share_count() == 3 &&
+                        o1->share_count() == 4,
+                    "reads the node, then zero past its end");
 
         // A clone of a clone: the clone holds nothing, so this one hangs there too.
         Node of_clone;
-        verdict(tally, clone_of(clone1, 0, 3, of_clone) == Status::Ok, "a clone of a clone");
-        verdict(tally,
-                parent_of(of_clone) == shared && children_in(origin, shared) == 6 &&
-                    reads_lenders_page(of_clone, 0, o0),
-                "hangs under the same hidden node, six nodes under it now");
+        EXPECT_TRUE(clone_of(clone1, 0, 3, of_clone) == Status::Ok, "a clone of a clone");
+        EXPECT_TRUE(parent_of(of_clone) == shared && children_in(origin, shared) == 6 &&
+                        reads_lenders_page(of_clone, 0, o0),
+                    "hangs under the same hidden node, six nodes under it now");
 
         // Refused.
         Node refused_clone;
-        verdict(tally, clone_of(origin, 0, 1, refused_clone) == Status::Ok && refused_clone,
-                "a clone is made for the refusals");
+        EXPECT_TRUE(clone_of(origin, 0, 1, refused_clone) == Status::Ok && refused_clone,
+                    "a clone is made for the refusals");
         Node refused_hidden;
         Node hidden_source;
-        verdict(tally,
-                make(hidden_source, 1) && make_child(hidden_source, 0, 1, 1, true, refused_hidden),
-                "a hidden node is made");
-        verdict(tally, clone_of(refused_hidden, 0, 1, refused_clone) == Status::BadState,
-                "a hidden node cannot be cloned");
+        EXPECT_TRUE(make(hidden_source, 1) &&
+                        make_child(hidden_source, 0, 1, 1, true, refused_hidden),
+                    "a hidden node is made");
+        EXPECT_TRUE(clone_of(refused_hidden, 0, 1, refused_clone) == Status::BadState,
+                    "a hidden node cannot be cloned");
         {
             Node misaligned;
-            verdict(tally, clone_raw(origin, 1, PAGE_SIZE, misaligned) == Status::InvArgs,
-                    "an offset that is not page aligned is refused");
-            verdict(tally, clone_raw(origin, 0, 1, misaligned) == Status::InvArgs,
-                    "and so is a size that is not");
+            EXPECT_TRUE(clone_raw(origin, 1, PAGE_SIZE, misaligned) == Status::InvArgs,
+                        "an offset that is not page aligned is refused");
+            EXPECT_TRUE(clone_raw(origin, 0, 1, misaligned) == Status::InvArgs,
+                        "and so is a size that is not");
         }
 
         // A clone of a node with nothing at all still gets a hidden node above,
         // because what the node writes later must not reach the clone.
         Node blank;
         Node blank_clone;
-        verdict(tally, make(blank, 2) && clone_of(blank, 0, 2, blank_clone) == Status::Ok,
-                "a node with no pages is cloned");
+        EXPECT_TRUE(make(blank, 2) && clone_of(blank, 0, 2, blank_clone) == Status::Ok,
+                    "a node with no pages is cloned");
         auto const *const blank_hidden = parent_of(blank);
-        verdict(tally,
-                blank_hidden != nullptr && blank_hidden->is_hidden() &&
-                    parent_of(blank_clone) == blank_hidden && pages_in(blank, blank_hidden) == 0 &&
-                    children_in(blank, blank_hidden) == 2 && reads_zero_page(blank, 0) &&
-                    reads_zero_page(blank_clone, 1),
-                "it gets one, empty, and both read zero");
+        EXPECT_TRUE(blank_hidden != nullptr && blank_hidden->is_hidden() &&
+                        parent_of(blank_clone) == blank_hidden &&
+                        pages_in(blank, blank_hidden) == 0 &&
+                        children_in(blank, blank_hidden) == 2 && reads_zero_page(blank, 0) &&
+                        reads_zero_page(blank_clone, 1),
+                    "it gets one, empty, and both read zero");
 
         // The write. A node that writes a page it sees only through the hidden
         // node above it gets a page of its own: a copy while someone else still
         // sees the page, the page itself when it is the last.
         Node w_origin;
-        verdict(tally, make(w_origin, 3), "a node to write through is made");
+        EXPECT_TRUE(make(w_origin, 3), "a node to write through is made");
         auto *const w0 = fill(w_origin, 0, 0xD0);
         auto *const w1 = fill(w_origin, 1, 0xD1);
         Node w_a;
         Node w_b;
-        verdict(tally,
-                w0 && w1 && clone_of(w_origin, 0, 3, w_a) == Status::Ok &&
-                    clone_of(w_origin, 0, 3, w_b) == Status::Ok,
-                "it holds two pages and has two clones");
+        EXPECT_TRUE(w0 && w1 && clone_of(w_origin, 0, 3, w_a) == Status::Ok &&
+                        clone_of(w_origin, 0, 3, w_b) == Status::Ok,
+                    "it holds two pages and has two clones");
         auto const *const w_hidden = parent_of(w_origin);
-        verdict(tally,
-                w_hidden != nullptr && pages_in(w_origin, w_hidden) == 2 &&
-                    w0->share_count() == 2 && w1->share_count() == 2,
-                "three nodes see each page, so each has a count of two");
+        EXPECT_TRUE(w_hidden != nullptr && pages_in(w_origin, w_hidden) == 2 &&
+                        w0->share_count() == 2 && w1->share_count() == 2,
+                    "three nodes see each page, so each has a count of two");
 
         // The first writer of a page others still see gets a copy.
         auto const wrote_a = lookup(w_a, true, 0);
-        verdict(tally,
-                wrote_a && wrote_a->writable && wrote_a->page != w0 &&
-                    holds_only(wrote_a->page, 0xD0) && nr_pages(w_a) == 1 &&
-                    w0->share_count() == 1 && pages_in(w_origin, w_hidden) == 2,
-                "the first writer of a shared page gets a copy of it, and the page stays");
+        EXPECT_TRUE(wrote_a && wrote_a->writable && wrote_a->page != w0 &&
+                        holds_only(wrote_a->page, 0xD0) && nr_pages(w_a) == 1 &&
+                        w0->share_count() == 1 && pages_in(w_origin, w_hidden) == 2,
+                    "the first writer of a shared page gets a copy of it, and the page stays");
         std::memset(bytes_of(wrote_a->page), 0xEE, PAGE_SIZE);
-        verdict(tally,
-                holds_only(w0, 0xD0) && reads_lenders_page(w_b, 0, w0) &&
-                    reads_lenders_page(w_origin, 0, w0),
-                "what it writes does not reach the page the others read");
+        EXPECT_TRUE(holds_only(w0, 0xD0) && reads_lenders_page(w_b, 0, w0) &&
+                        reads_lenders_page(w_origin, 0, w0),
+                    "what it writes does not reach the page the others read");
         auto const again_a = lookup(w_a, false, 0);
-        verdict(tally,
-                again_a && again_a->page == wrote_a->page && again_a->writable &&
-                    holds_only(again_a->page, 0xEE),
-                "and it reads its own page afterwards, writable");
+        EXPECT_TRUE(again_a && again_a->page == wrote_a->page && again_a->writable &&
+                        holds_only(again_a->page, 0xEE),
+                    "and it reads its own page afterwards, writable");
 
         // The second writer forks as well: one other viewer is still there.
         auto const wrote_b = lookup(w_b, true, 0);
-        verdict(tally,
-                wrote_b && wrote_b->page != w0 && wrote_b->page != wrote_a->page &&
-                    holds_only(wrote_b->page, 0xD0) && w0->share_count() == 0 &&
-                    pages_in(w_origin, w_hidden) == 2,
-                "the second writer forks too, and the count is now zero");
+        EXPECT_TRUE(wrote_b && wrote_b->page != w0 && wrote_b->page != wrote_a->page &&
+                        holds_only(wrote_b->page, 0xD0) && w0->share_count() == 0 &&
+                        pages_in(w_origin, w_hidden) == 2,
+                    "the second writer forks too, and the count is now zero");
 
         // The last node that sees the page takes it: nothing is copied.
         auto const wrote_o = lookup(w_origin, true, 0);
-        verdict(tally,
-                wrote_o && wrote_o->page == w0 && wrote_o->writable &&
-                    pages_in(w_origin, w_hidden) == 1 && nr_pages(w_origin) == 1 &&
-                    holds_only(w0, 0xD0),
-                "the last node that sees a page takes the page itself, and the hidden node "
-                "lets go of it");
+        EXPECT_TRUE(wrote_o && wrote_o->page == w0 && wrote_o->writable &&
+                        pages_in(w_origin, w_hidden) == 1 && nr_pages(w_origin) == 1 &&
+                        holds_only(w0, 0xD0),
+                    "the last node that sees a page takes the page itself, and the hidden node "
+                    "lets go of it");
 
         // The other order, on page 1: two forks and then the take.
         auto const o1w = lookup(w_origin, true, 1);
         auto const a1w = lookup(w_a, true, 1);
         auto const b1w = lookup(w_b, true, 1);
-        verdict(tally,
-                o1w && a1w && b1w && o1w->page != w1 && a1w->page != w1 && b1w->page == w1 &&
-                    w1->share_count() == 0 && pages_in(w_origin, w_hidden) == 0 &&
-                    holds_only(o1w->page, 0xD1) && holds_only(a1w->page, 0xD1) &&
-                    holds_only(w1, 0xD1),
-                "whoever writes last takes the page, whichever node that is");
+        EXPECT_TRUE(o1w && a1w && b1w && o1w->page != w1 && a1w->page != w1 && b1w->page == w1 &&
+                        w1->share_count() == 0 && pages_in(w_origin, w_hidden) == 0 &&
+                        holds_only(o1w->page, 0xD1) && holds_only(a1w->page, 0xD1) &&
+                        holds_only(w1, 0xD1),
+                    "whoever writes last takes the page, whichever node that is");
 
         // A hole, and the zero tail, are allocated, not copied.
         auto const hole = lookup(w_a, true, 2);
-        verdict(tally,
-                hole && hole->writable && hole->page != mm::get_zero_page() &&
-                    holds_only(hole->page, 0) && nr_pages(w_a) == 3,
-                "a write to a hole gets a zeroed page of its own");
+        EXPECT_TRUE(hole && hole->writable && hole->page != mm::get_zero_page() &&
+                        holds_only(hole->page, 0) && nr_pages(w_a) == 3,
+                    "a write to a hole gets a zeroed page of its own");
         auto const tail = lookup(longer, true, 4);
-        verdict(tally,
-                tail && tail->writable && tail->page != mm::get_zero_page() &&
-                    holds_only(tail->page, 0) && nr_pages(longer) == 1,
-                "and so does a write past the end of what the clone can see");
+        EXPECT_TRUE(tail && tail->writable && tail->page != mm::get_zero_page() &&
+                        holds_only(tail->page, 0) && nr_pages(longer) == 1,
+                    "and so does a write past the end of what the clone can see");
 
         // A page a node that is not hidden holds is only ever copied.
         auto const before_pages = nr_pages(parent);
         auto const under_plain = lookup(child, true, 0);
-        verdict(tally,
-                under_plain && under_plain->page != p0 && holds_only(under_plain->page, 0xA0) &&
-                    nr_pages(parent) == before_pages && p0->share_count() == 0 &&
-                    nr_pages(child) == 1,
-                "a page held by a node that is not hidden is copied, never taken, and its count "
-                "is left alone");
+        EXPECT_TRUE(
+            under_plain && under_plain->page != p0 && holds_only(under_plain->page, 0xA0) &&
+                nr_pages(parent) == before_pages && p0->share_count() == 0 && nr_pages(child) == 1,
+            "a page held by a node that is not hidden is copied, never taken, and its count "
+            "is left alone");
 
         // Two windows of one node that do not overlap: two programs' segments of
         // one boot image. They hang under one hidden node and share nothing but
         // the lock; what each reads, writes and counts is its own.
         Node image;
-        verdict(tally, make(image, 6), "a six-page image is made");
+        EXPECT_TRUE(make(image, 6), "a six-page image is made");
         VmPage *img[6] = {};
         for (usize i = 0; i < 6; ++i) {
             img[i] = fill(image, i, static_cast<u8>(0x30 + i));
         }
         Node seg_x;
         Node seg_y;
-        verdict(tally,
-                img[5] != nullptr && clone_of(image, 1, 2, seg_x) == Status::Ok &&
-                    clone_of(image, 4, 2, seg_y) == Status::Ok,
-                "two windows of it, pages 1-2 and 4-5, are cloned");
+        EXPECT_TRUE(img[5] != nullptr && clone_of(image, 1, 2, seg_x) == Status::Ok &&
+                        clone_of(image, 4, 2, seg_y) == Status::Ok,
+                    "two windows of it, pages 1-2 and 4-5, are cloned");
         auto const *const image_hidden = parent_of(image);
-        verdict(tally,
-                image_hidden != nullptr && parent_of(seg_x) == image_hidden &&
-                    parent_of(seg_y) == image_hidden && children_in(image, image_hidden) == 3 &&
-                    pages_in(image, image_hidden) == 6,
-                "both hang under the one hidden node, which holds all six pages");
-        verdict(tally,
-                img[0]->share_count() == 0 && img[1]->share_count() == 1 &&
-                    img[2]->share_count() == 1 && img[3]->share_count() == 0 &&
-                    img[4]->share_count() == 1 && img[5]->share_count() == 1,
-                "each window's pages have one more viewer, and the pages in neither have none");
-        verdict(tally,
-                reads_lenders_page(seg_x, 0, img[1]) && reads_lenders_page(seg_x, 1, img[2]) &&
-                    reads_lenders_page(seg_y, 0, img[4]) && reads_lenders_page(seg_y, 1, img[5]),
-                "each window reads its own pages of the image");
+        EXPECT_TRUE(image_hidden != nullptr && parent_of(seg_x) == image_hidden &&
+                        parent_of(seg_y) == image_hidden && children_in(image, image_hidden) == 3 &&
+                        pages_in(image, image_hidden) == 6,
+                    "both hang under the one hidden node, which holds all six pages");
+        EXPECT_TRUE(img[0]->share_count() == 0 && img[1]->share_count() == 1 &&
+                        img[2]->share_count() == 1 && img[3]->share_count() == 0 &&
+                        img[4]->share_count() == 1 && img[5]->share_count() == 1,
+                    "each window's pages have one more viewer, and the pages in neither have none");
+        EXPECT_TRUE(reads_lenders_page(seg_x, 0, img[1]) && reads_lenders_page(seg_x, 1, img[2]) &&
+                        reads_lenders_page(seg_y, 0, img[4]) &&
+                        reads_lenders_page(seg_y, 1, img[5]),
+                    "each window reads its own pages of the image");
 
         // A write in one window does not touch the other's pages or counts.
         auto const x_wrote = lookup(seg_x, true, 0);
-        verdict(tally,
-                x_wrote && x_wrote->page != img[1] && holds_only(x_wrote->page, 0x31) &&
-                    img[1]->share_count() == 0 && img[4]->share_count() == 1 &&
-                    img[5]->share_count() == 1 && reads_lenders_page(seg_y, 0, img[4]),
-                "a write in the first window forks its page and leaves the second's alone");
+        EXPECT_TRUE(x_wrote && x_wrote->page != img[1] && holds_only(x_wrote->page, 0x31) &&
+                        img[1]->share_count() == 0 && img[4]->share_count() == 1 &&
+                        img[5]->share_count() == 1 && reads_lenders_page(seg_y, 0, img[4]),
+                    "a write in the first window forks its page and leaves the second's alone");
         auto const y_wrote = lookup(seg_y, true, 1);
-        verdict(tally,
-                y_wrote && y_wrote->page != img[5] && holds_only(y_wrote->page, 0x35) &&
-                    img[5]->share_count() == 0 && img[2]->share_count() == 1 &&
-                    reads_lenders_page(seg_x, 1, img[2]),
-                "and a write in the second forks its page and leaves the first's alone");
+        EXPECT_TRUE(y_wrote && y_wrote->page != img[5] && holds_only(y_wrote->page, 0x35) &&
+                        img[5]->share_count() == 0 && img[2]->share_count() == 1 &&
+                        reads_lenders_page(seg_x, 1, img[2]),
+                    "and a write in the second forks its page and leaves the first's alone");
 
         // The image itself sees every page, so once a window has left a page
         // the image is the last to see it, and takes it; the pages no window
@@ -2335,148 +2217,134 @@ namespace {
         auto const image_1 = lookup(image, true, 1);
         auto const image_0 = lookup(image, true, 0);
         auto const image_3 = lookup(image, true, 3);
-        verdict(tally,
-                image_1 && image_0 && image_3 && image_1->page == img[1] &&
-                    image_0->page == img[0] && image_3->page == img[3] &&
-                    pages_in(image, image_hidden) == 3 && img[2]->share_count() == 1 &&
-                    img[4]->share_count() == 1,
-                "the image takes the pages nobody else still sees, and the rest stay shared");
-        verdict(tally,
-                holds_only(img[0], 0x30) && holds_only(img[1], 0x31) && holds_only(img[3], 0x33) &&
-                    reads_lenders_page(seg_x, 1, img[2]) && reads_lenders_page(seg_y, 0, img[4]),
-                "and the windows still read the pages that stayed");
+        EXPECT_TRUE(image_1 && image_0 && image_3 && image_1->page == img[1] &&
+                        image_0->page == img[0] && image_3->page == img[3] &&
+                        pages_in(image, image_hidden) == 3 && img[2]->share_count() == 1 &&
+                        img[4]->share_count() == 1,
+                    "the image takes the pages nobody else still sees, and the rest stay shared");
+        EXPECT_TRUE(holds_only(img[0], 0x30) && holds_only(img[1], 0x31) &&
+                        holds_only(img[3], 0x33) && reads_lenders_page(seg_x, 1, img[2]) &&
+                        reads_lenders_page(seg_y, 0, img[4]),
+                    "and the windows still read the pages that stayed");
 
         // Death. A leaf that dies is one viewer fewer of what it sees: a page it
         // was the last to see is freed, and the count of any other drops. A hidden
         // node left with one child is merged into it.
         Node dsrc;
-        verdict(tally, make(dsrc, 3), "a node for the death checks is made");
+        EXPECT_TRUE(make(dsrc, 3), "a node for the death checks is made");
         auto *const d0 = fill(dsrc, 0, 0x50);
         auto *const d1 = fill(dsrc, 1, 0x51);
         Node da;
         Node db;
-        verdict(tally,
-                d0 && d1 && clone_of(dsrc, 0, 3, da) == Status::Ok &&
-                    clone_of(dsrc, 0, 3, db) == Status::Ok,
-                "it has two pages and two clones");
+        EXPECT_TRUE(d0 && d1 && clone_of(dsrc, 0, 3, da) == Status::Ok &&
+                        clone_of(dsrc, 0, 3, db) == Status::Ok,
+                    "it has two pages and two clones");
         auto const *const d_hidden = parent_of(dsrc);
-        verdict(tally,
-                d_hidden != nullptr && d0->share_count() == 2 && d1->share_count() == 2 &&
-                    children_in(dsrc, d_hidden) == 3,
-                "three nodes see each page");
+        EXPECT_TRUE(d_hidden != nullptr && d0->share_count() == 2 && d1->share_count() == 2 &&
+                        children_in(dsrc, d_hidden) == 3,
+                    "three nodes see each page");
         da = nullptr;
-        verdict(tally,
-                d0->share_count() == 1 && d1->share_count() == 1 &&
-                    children_in(dsrc, d_hidden) == 2 && pages_in(dsrc, d_hidden) == 2 &&
-                    parent_of(dsrc) == d_hidden,
-                "one clone dies: each page has one viewer fewer, and the hidden node, with two "
-                "children left, stays");
+        EXPECT_TRUE(d0->share_count() == 1 && d1->share_count() == 1 &&
+                        children_in(dsrc, d_hidden) == 2 && pages_in(dsrc, d_hidden) == 2 &&
+                        parent_of(dsrc) == d_hidden,
+                    "one clone dies: each page has one viewer fewer, and the hidden node, with two "
+                    "children left, stays");
         db = nullptr;
-        verdict(tally,
-                parent_of(dsrc) == nullptr && nr_pages(dsrc) == 2 && d0->share_count() == 0 &&
-                    d1->share_count() == 0,
-                "the other dies: the hidden node is merged away and the node that is left has "
-                "no parent");
+        EXPECT_TRUE(parent_of(dsrc) == nullptr && nr_pages(dsrc) == 2 && d0->share_count() == 0 &&
+                        d1->share_count() == 0,
+                    "the other dies: the hidden node is merged away and the node that is left has "
+                    "no parent");
         auto const d_own = lookup(dsrc, false, 0);
-        verdict(tally,
-                d_own && d_own->page == d0 && d_own->writable && holds_only(d0, 0x50) &&
-                    holds_only(d1, 0x51),
-                "and it holds the very pages, writable, not copies");
+        EXPECT_TRUE(d_own && d_own->page == d0 && d_own->writable && holds_only(d0, 0x50) &&
+                        holds_only(d1, 0x51),
+                    "and it holds the very pages, writable, not copies");
 
         // The last viewer of a page frees it, and the hidden node stays while others remain.
         Node ea;
         Node eb;
         Node esrc;
-        verdict(tally, make(esrc, 2), "a node for the last-viewer checks is made");
+        EXPECT_TRUE(make(esrc, 2), "a node for the last-viewer checks is made");
         auto *const e0 = fill(esrc, 0, 0x54);
-        verdict(tally,
-                e0 && clone_of(esrc, 0, 2, ea) == Status::Ok &&
-                    clone_of(esrc, 0, 2, eb) == Status::Ok,
-                "it has a page and two clones");
+        EXPECT_TRUE(e0 && clone_of(esrc, 0, 2, ea) == Status::Ok &&
+                        clone_of(esrc, 0, 2, eb) == Status::Ok,
+                    "it has a page and two clones");
         auto const *const e_hidden = parent_of(esrc);
         auto const e_src_wrote = lookup(esrc, true, 0);
         auto const e_a_wrote = lookup(ea, true, 0);
-        verdict(tally,
-                e_src_wrote && e_a_wrote && e_src_wrote->page != e0 && e_a_wrote->page != e0 &&
-                    e0->share_count() == 0 && pages_in(esrc, e_hidden) == 1,
-                "the other two write it, and only the last clone still sees the page in the "
-                "hidden node");
+        EXPECT_TRUE(e_src_wrote && e_a_wrote && e_src_wrote->page != e0 && e_a_wrote->page != e0 &&
+                        e0->share_count() == 0 && pages_in(esrc, e_hidden) == 1,
+                    "the other two write it, and only the last clone still sees the page in the "
+                    "hidden node");
         eb = nullptr;
-        verdict(tally,
-                pages_in(esrc, e_hidden) == 0 && children_in(esrc, e_hidden) == 2 &&
-                    parent_of(esrc) == e_hidden,
-                "the last viewer dies: the page is freed, and the hidden node stays for the "
-                "two that are left");
+        EXPECT_TRUE(pages_in(esrc, e_hidden) == 0 && children_in(esrc, e_hidden) == 2 &&
+                        parent_of(esrc) == e_hidden,
+                    "the last viewer dies: the page is freed, and the hidden node stays for the "
+                    "two that are left");
 
         // The source dies first, and the window it was cloned for is all that is kept.
         Node fsrc;
         Node fwin;
-        verdict(tally, make(fsrc, 4), "a node for the source-dies checks is made");
+        EXPECT_TRUE(make(fsrc, 4), "a node for the source-dies checks is made");
         VmPage *f[4] = {};
         for (usize i = 0; i < 4; ++i) {
             f[i] = fill(fsrc, i, static_cast<u8>(0x70 + i));
         }
-        verdict(tally, f[3] != nullptr && clone_of(fsrc, 1, 1, fwin) == Status::Ok,
-                "a one-page window of it is cloned");
+        EXPECT_TRUE(f[3] != nullptr && clone_of(fsrc, 1, 1, fwin) == Status::Ok,
+                    "a one-page window of it is cloned");
         fsrc = nullptr;
         auto const f_own = lookup(fwin, false, 0);
-        verdict(tally,
-                parent_of(fwin) == nullptr && nr_pages(fwin) == 1 && f_own && f_own->page == f[1] &&
-                    f_own->writable && holds_only(f[1], 0x71),
-                "the source dies: the window is left with its page, moved and not copied, and no "
-                "parent");
+        EXPECT_TRUE(
+            parent_of(fwin) == nullptr && nr_pages(fwin) == 1 && f_own && f_own->page == f[1] &&
+                f_own->writable && holds_only(f[1], 0x71),
+            "the source dies: the window is left with its page, moved and not copied, and no "
+            "parent");
 
         // A merge composes the offsets and limits, and leaves the counts as they were.
         Node rsrc;
-        verdict(tally, make(rsrc, 4), "a node for the merge checks is made");
+        EXPECT_TRUE(make(rsrc, 4), "a node for the merge checks is made");
         VmPage *r[4] = {};
         for (usize i = 0; i < 4; ++i) {
             r[i] = fill(rsrc, i, static_cast<u8>(0x60 + i));
         }
         Node rc1;
-        verdict(tally, r[3] != nullptr && clone_of(rsrc, 1, 2, rc1) == Status::Ok,
-                "a two-page window of it, at page 1, is cloned");
+        EXPECT_TRUE(r[3] != nullptr && clone_of(rsrc, 1, 2, rc1) == Status::Ok,
+                    "a two-page window of it, at page 1, is cloned");
         auto const *const r_top = parent_of(rsrc);
         auto const rc1_wrote = lookup(rc1, true, 0);
         Node rc2;
-        verdict(tally, rc1_wrote && clone_of(rc1, 0, 2, rc2) == Status::Ok,
-                "the window writes its page 0 and is cloned in turn");
+        EXPECT_TRUE(rc1_wrote && clone_of(rc1, 0, 2, rc2) == Status::Ok,
+                    "the window writes its page 0 and is cloned in turn");
         auto const *const r_mid = parent_of(rc1);
-        verdict(tally,
-                r_mid != nullptr && r_mid != r_top && parent_of(rc2) == r_mid &&
-                    parent_of_node(rsrc, r_mid) == r_top && rc1_wrote->page->share_count() == 1 &&
-                    r[2]->share_count() == 2,
-                "the clone of a node that holds a page gets a hidden node of its own, below "
-                "the first, and counts the pages it sees");
+        EXPECT_TRUE(r_mid != nullptr && r_mid != r_top && parent_of(rc2) == r_mid &&
+                        parent_of_node(rsrc, r_mid) == r_top &&
+                        rc1_wrote->page->share_count() == 1 && r[2]->share_count() == 2,
+                    "the clone of a node that holds a page gets a hidden node of its own, below "
+                    "the first, and counts the pages it sees");
         rc2 = nullptr;
-        verdict(tally,
-                parent_of(rc1) == r_top && children_in(rsrc, r_top) == 2 &&
-                    rc1_wrote->page->share_count() == 0 && r[2]->share_count() == 1 &&
-                    nr_pages(rc1) == 1,
-                "the clone dies: the hidden node between is merged away, and the window hangs "
-                "under the first again with the counts left as if it had never been");
+        EXPECT_TRUE(parent_of(rc1) == r_top && children_in(rsrc, r_top) == 2 &&
+                        rc1_wrote->page->share_count() == 0 && r[2]->share_count() == 1 &&
+                        nr_pages(rc1) == 1,
+                    "the clone dies: the hidden node between is merged away, and the window hangs "
+                    "under the first again with the counts left as if it had never been");
         auto const rc1_own = lookup(rc1, false, 0);
-        verdict(tally,
-                rc1_own && rc1_own->page == rc1_wrote->page && rc1_own->writable &&
-                    holds_only(rc1_own->page, 0x61) && reads_lenders_page(rc1, 1, r[2]),
-                "and the window still reads its own page, and the page above it that the "
-                "composed offset points to");
+        EXPECT_TRUE(rc1_own && rc1_own->page == rc1_wrote->page && rc1_own->writable &&
+                        holds_only(rc1_own->page, 0x61) && reads_lenders_page(rc1, 1, r[2]),
+                    "and the window still reads its own page, and the page above it that the "
+                    "composed offset points to");
 
         // The new hidden node takes the node's place on its parent's list.
         Node top;
         Node under_top;
         Node under_top_clone;
-        verdict(tally,
-                make(top, 2) && make_child(top, 0, 2, 2, false, under_top) &&
-                    children_in(top, top.as_ptr()) == 1,
-                "a node under a parent is made");
-        verdict(tally, clone_of(under_top, 0, 2, under_top_clone) == Status::Ok, "and cloned");
+        EXPECT_TRUE(make(top, 2) && make_child(top, 0, 2, 2, false, under_top) &&
+                        children_in(top, top.as_ptr()) == 1,
+                    "a node under a parent is made");
+        EXPECT_TRUE(clone_of(under_top, 0, 2, under_top_clone) == Status::Ok, "and cloned");
         auto const *const between = parent_of(under_top);
-        verdict(tally,
-                between != nullptr && between->is_hidden() &&
-                    parent_of(under_top_clone) == between && children_in(top, top.as_ptr()) == 1 &&
-                    children_in(top, between) == 2,
-                "the hidden node stands between them, and the parent still lists one child");
+        EXPECT_TRUE(between != nullptr && between->is_hidden() &&
+                        parent_of(under_top_clone) == between &&
+                        children_in(top, top.as_ptr()) == 1 && children_in(top, between) == 2,
+                    "the hidden node stands between them, and the parent still lists one child");
 
         // The hidden node and its pages outlive every handle but one.
         origin = nullptr;
@@ -2484,58 +2352,45 @@ namespace {
         clone2 = nullptr;
         window = nullptr;
         of_clone = nullptr;
-        verdict(tally,
-                reads_lenders_page(longer, 0, o0) && reads_lenders_page(longer, 1, o1) &&
-                    holds_only(o0, 0xC0),
-                "with every other handle dropped the last clone still reads the pages");
+        EXPECT_TRUE(reads_lenders_page(longer, 0, o0) && reads_lenders_page(longer, 1, o1) &&
+                        holds_only(o0, 0xC0),
+                    "with every other handle dropped the last clone still reads the pages");
 
         // The last handle to the parent goes; the children keep the tree.
         Node orphan_parent;
         Node orphan;
         auto const made =
             make(orphan_parent, 1) && make_child(orphan_parent, 0, 1, 1, false, orphan);
-        verdict(tally, made, "a parent and its child are made for the last check");
+        EXPECT_TRUE(made, "a parent and its child are made for the last check");
         if (made) {
             auto *const kept = fill(orphan_parent, 0, 0xB0);
             auto *const lock = &orphan->lock();
             orphan_parent = nullptr;
-            verdict(
-                tally,
-                kept != nullptr && &orphan->lock() == lock && reads_lenders_page(orphan, 0, kept) &&
-                    holds_only(kept, 0xB0),
-                "a child whose parent handle is dropped still reads it, and still has its lock");
+            EXPECT_TRUE(kept != nullptr && &orphan->lock() == lock &&
+                            reads_lenders_page(orphan, 0, kept) && holds_only(kept, 0xB0),
+                        "a child whose parent handle is dropped still reads it, and still has its "
+                        "lock");
         }
 
-        check_remove_write(tally);
-        check_narrowing_protect(tally);
-        check_widen_reads_entry_again(tally);
-        check_shared_views(tally);
-        check_slice_bounds(tally);
+        check_remove_write();
+        check_narrowing_protect();
+        check_widen_reads_entry_again();
+        check_shared_views();
+        check_slice_bounds();
 #if MM_TEST_ALLOC_FAILURE
-        check_eager_creation_failure(tally);
-        check_clone_allocation_failures(tally);
-        check_merge_allocation_failure(tally);
+        check_eager_creation_failure();
+        check_clone_allocation_failures();
+        check_merge_allocation_failure();
 #endif
-        check_clone_of_mapped_object(tally);
-        check_zero_markers(tally);
-        check_create_clone(tally);
-        check_mapped_clone(tally);
-        check_committed_clone_mapping(tally);
-        check_map_options(tally);
-        check_take_from_clone(tally);
-        check_shootdown(tally);
-        check_kernel_shootdown(tally);
-
-        if (tally.failed != 0) {
-            log::error("vmosnapshot.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("vmosnapshot.test: ok -- {} checks", tally.passed);
-        return 0;
+        check_clone_of_mapped_object();
+        check_zero_markers();
+        check_create_clone();
+        check_mapped_clone();
+        check_committed_clone_mapping();
+        check_map_options();
+        check_take_from_clone();
+        check_shootdown();
+        check_kernel_shootdown();
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(VmoSnapshotTest, "vmosnapshot.test", ours::vmosnapshot_test_command,
-             "check what a VmCowPages under another one sees: lender's pages, zeros, its lock");

@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `pinlines.test`: every IO-APIC pin has an interrupt line, and a line is
-// named by its virq, not by the pin's GSI
+// PinLines.PinsHaveLinesNamedByVirq: every IO-APIC pin has an interrupt line,
+// and a line is named by its virq, not by the pin's GSI
 // (.agents/tasks/interrupt-system/PLAN.md, steps I2 and I3). dbg image only:
 // it is the one with a kernel shell.
 //
@@ -37,8 +37,8 @@
 // is interruptline.test's, on ISA 3; what this shows is that a pin the
 // platform used to leave alone is now a line like that one.
 //
-// A console command rather than a unit test: the pins are the machine's own,
-// read from its IO-APICs.
+// Why an in-kernel test: the pins are the machine's own, read from its
+// IO-APICs.
 #include <ours/arch/apic.hpp>
 #include <ours/interrupt.hpp>
 #include <ours/irq/domain.hpp>
@@ -52,7 +52,7 @@
 #include <type_traits>
 
 #include <arch/x86/interrupt.hpp>
-#include <gktl/command.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -72,29 +72,13 @@ namespace {
     constexpr auto LAST_GSI =
         usize(arch::IrqVec::PlatformIrqMax) - usize(arch::IrqVec::PlatformIrqMin);
 
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("pinlines.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("pinlines.test: FAIL  {}", name);
-    }
-
     /// Whether |got| is |want|, logging both when it is not.
-    auto answered(Tally &tally, Status const got, Status const want, char const *const name)
-        -> void {
+    auto answered(Status const got, Status const want, char const *const name) -> void {
         if (got != want) {
-            log::error("pinlines.test:   {} answered {}, expected {}", name, to_string(got),
+            log::error("pinlines:   {} answered {}, expected {}", name, to_string(got),
                        to_string(want));
         }
-        verdict(tally, got == want, name);
+        EXPECT_EQ(want, got, "{}", name);
     }
 
     /// What the irq layer answers when asked how line |line| signals: Ok if
@@ -118,7 +102,7 @@ namespace {
         }
     }
 
-    auto check_pins_have_lines(Tally &tally) -> void {
+    auto check_pins_have_lines() -> void {
         auto pins = usize{0};
         auto with_line = usize{0};
         auto past_vectors = usize{0};
@@ -132,17 +116,17 @@ namespace {
                 with_line += 1;
                 return;
             }
-            log::error("pinlines.test:   GSI {} has no line", static_cast<u32>(gsi));
+            log::error("pinlines:   GSI {} has no line", static_cast<u32>(gsi));
         });
-        log::info("pinlines.test:   {} pins, {} with a line, {} past the platform vectors", pins,
+        log::info("pinlines:   {} pins, {} with a line, {} past the platform vectors", pins,
                   with_line, past_vectors);
 
-        verdict(tally, pins > arch::NUM_ISA_IRQS, "the machine has pins past the ISA range");
-        verdict(tally, with_line + past_vectors == pins,
-                "every pin within the platform vectors has a line");
+        EXPECT_GT(pins, arch::NUM_ISA_IRQS, "the machine has pins past the ISA range");
+        EXPECT_EQ(with_line + past_vectors, pins,
+                  "every pin within the platform vectors has a line");
     }
 
-    auto check_domain(Tally &tally) -> void {
+    auto check_domain() -> void {
         auto checked = usize{0};
         auto not_inverse = usize{0};
         auto equal = usize{0};
@@ -168,7 +152,7 @@ namespace {
             }
             if (irq::source_for_irq(virq) != gsi) {
                 not_inverse += 1;
-                log::error("pinlines.test:   GSI {} -> virq {} -> GSI {}", static_cast<u32>(gsi),
+                log::error("pinlines:   GSI {} -> virq {} -> GSI {}", static_cast<u32>(gsi),
                            static_cast<u32>(virq), static_cast<u32>(irq::source_for_irq(virq)));
             }
             auto below = u32{0};
@@ -179,46 +163,37 @@ namespace {
             });
             if (virq != static_cast<VIrqNum>(first_id + below)) {
                 misplaced += 1;
-                log::error("pinlines.test:   GSI {} has virq {}, expected {}",
-                           static_cast<u32>(gsi), static_cast<u32>(virq), first_id + below);
+                log::error("pinlines:   GSI {} has virq {}, expected {}", static_cast<u32>(gsi),
+                           static_cast<u32>(virq), first_id + below);
             }
         });
-        log::info("pinlines.test:   {} GSIs map to virqs from {}", checked,
-                  static_cast<u32>(first_id));
+        log::info("pinlines:   {} GSIs map to virqs from {}", checked, static_cast<u32>(first_id));
 
-        verdict(tally, checked != 0, "there are GSIs to map");
-        verdict(tally, not_inverse == 0, "each GSI's virq maps back to it");
-        verdict(tally, equal == 0, "and is not the GSI");
-        verdict(tally, misplaced == 0,
-                "the virqs are consecutive in the order of the GSIs, from past the highest");
+        EXPECT_NE(checked, usize{0}, "there are GSIs to map");
+        EXPECT_EQ(not_inverse, usize{0}, "each GSI's virq maps back to it");
+        EXPECT_EQ(equal, usize{0}, "and is not the GSI");
+        EXPECT_EQ(misplaced, usize{0},
+                  "the virqs are consecutive in the order of the GSIs, from past the highest");
 
         // The ends of both tables: one past the last pin, one either side of
         // the virqs.
         auto const last_virq = static_cast<VIrqNum>(first_id + checked - 1);
-        verdict(tally,
-                irq::irq_for_source(irq::DomainId::Root,
-                                    static_cast<HIrqNum>(static_cast<u32>(highest_gsi) + 1)) ==
-                    VIrqNum::Invalid,
-                "the hardware number past the last pin has no virq");
-        verdict(tally,
-                irq::source_for_irq(static_cast<VIrqNum>(static_cast<u32>(last_virq) + 1)) ==
-                    HIrqNum::Invalid,
-                "the number past the last virq has no hardware number");
-        verdict(tally, irq::source_for_irq(static_cast<VIrqNum>(first_id - 1)) == HIrqNum::Invalid,
-                "the number before the first virq has none");
-        verdict(tally,
-                !irq::root_source_exists_for_test(
-                    static_cast<HIrqNum>(static_cast<u32>(highest_gsi) + 1)),
-                "an interrupt on the hardware number past the last pin finds no line");
-        verdict(tally,
-                irq::irq_for_source(irq::DomainId::Root, HIrqNum::Invalid) == VIrqNum::Invalid,
-                "the invalid hardware number has no virq");
-        verdict(tally, irq::source_for_irq(VIrqNum::Invalid) == HIrqNum::Invalid,
-                "the invalid virq has no hardware number");
-        verdict(tally,
-                irq::irq_for_source(irq::DomainId::Root, static_cast<HIrqNum>(LAST_GSI + 1)) ==
-                    VIrqNum::Invalid,
-                "a hardware number past the platform vectors has no virq");
+        EXPECT_EQ(irq::irq_for_source(irq::DomainId::Root,
+                                      static_cast<HIrqNum>(static_cast<u32>(highest_gsi) + 1)),
+                  VIrqNum::Invalid, "the hardware number past the last pin has no virq");
+        EXPECT_EQ(irq::source_for_irq(static_cast<VIrqNum>(static_cast<u32>(last_virq) + 1)),
+                  HIrqNum::Invalid, "the number past the last virq has no hardware number");
+        EXPECT_EQ(irq::source_for_irq(static_cast<VIrqNum>(first_id - 1)), HIrqNum::Invalid,
+                  "the number before the first virq has none");
+        EXPECT_FALSE(irq::root_source_exists_for_test(
+                         static_cast<HIrqNum>(static_cast<u32>(highest_gsi) + 1)),
+                     "an interrupt on the hardware number past the last pin finds no line");
+        EXPECT_EQ(irq::irq_for_source(irq::DomainId::Root, HIrqNum::Invalid), VIrqNum::Invalid,
+                  "the invalid hardware number has no virq");
+        EXPECT_EQ(irq::source_for_irq(VIrqNum::Invalid), HIrqNum::Invalid,
+                  "the invalid virq has no hardware number");
+        EXPECT_EQ(irq::irq_for_source(irq::DomainId::Root, static_cast<HIrqNum>(LAST_GSI + 1)),
+                  VIrqNum::Invalid, "a hardware number past the platform vectors has no virq");
     }
 
     /// The ISA IRQs, whose pins the MADT's overrides may move. The line each
@@ -228,38 +203,36 @@ namespace {
     /// isa_irq_line() and use whatever it answers. The cascade, ISA 2,
     /// carries no device and names none, and nor does a number past the ISA
     /// IRQs, one that wraps as 8 bits included.
-    auto check_isa_lines(Tally &tally) -> void {
+    auto check_isa_lines() -> void {
         auto wrong = usize{0};
         for (auto isa = u32{0}; isa < arch::NUM_ISA_IRQS; ++isa) {
             auto const line = platform::isa_irq_line(isa);
             if (isa == ISA_IRQ_PIC2) {
                 if (line != VIrqNum::Invalid) {
                     wrong += 1;
-                    log::error("pinlines.test:   the cascade names line {}",
-                               static_cast<u32>(line));
+                    log::error("pinlines:   the cascade names line {}", static_cast<u32>(line));
                 }
                 continue;
             }
             auto const pin = apic_io_isa_to_global(static_cast<u8>(isa));
             if (irq::source_for_irq(line) != pin) {
                 wrong += 1;
-                log::error("pinlines.test:   ISA {} gave line {}, pin {}; the MADT says pin {}",
-                           isa, static_cast<u32>(line), static_cast<u32>(irq::source_for_irq(line)),
+                log::error("pinlines:   ISA {} gave line {}, pin {}; the MADT says pin {}", isa,
+                           static_cast<u32>(line), static_cast<u32>(irq::source_for_irq(line)),
                            static_cast<u32>(pin));
             }
         }
-        verdict(tally, wrong == 0,
-                "each ISA IRQ names the line made for the pin the MADT sends it to, the cascade "
-                "none");
-        verdict(tally,
-                platform::isa_irq_line(arch::NUM_ISA_IRQS) == VIrqNum::Invalid &&
-                    platform::isa_irq_line(200) == VIrqNum::Invalid &&
-                    platform::isa_irq_line(0x100) == VIrqNum::Invalid &&
-                    platform::isa_irq_line(0x103) == VIrqNum::Invalid,
-                "a number past the ISA IRQs is no ISA IRQ, one that wraps as 8 bits included");
+        EXPECT_EQ(wrong, usize{0},
+                  "each ISA IRQ names the line made for the pin the MADT sends it to, the cascade "
+                  "none");
+        EXPECT_TRUE(platform::isa_irq_line(arch::NUM_ISA_IRQS) == VIrqNum::Invalid &&
+                        platform::isa_irq_line(200) == VIrqNum::Invalid &&
+                        platform::isa_irq_line(0x100) == VIrqNum::Invalid &&
+                        platform::isa_irq_line(0x103) == VIrqNum::Invalid,
+                    "a number past the ISA IRQs is no ISA IRQ, one that wraps as 8 bits included");
     }
 
-    auto check_pins_are_idle(Tally &tally) -> void {
+    auto check_pins_are_idle() -> void {
         auto checked = usize{0};
         auto not_masked = usize{0};
         auto not_level = usize{0};
@@ -273,24 +246,24 @@ namespace {
             auto const masked = irq::is_masked_for_test(virq);
             if (!masked.is_ok() || !*masked) {
                 not_masked += 1;
-                log::error("pinlines.test:   GSI {} (virq {}) is not masked", static_cast<u32>(gsi),
+                log::error("pinlines:   GSI {} (virq {}) is not masked", static_cast<u32>(gsi),
                            static_cast<u32>(virq));
             }
             auto const mode = irq::trigger_mode(virq);
             if (!mode.is_ok() || *mode != irq::TriggerMode::Level) {
                 not_level += 1;
-                log::error("pinlines.test:   GSI {} (virq {}) does not signal level",
+                log::error("pinlines:   GSI {} (virq {}) does not signal level",
                            static_cast<u32>(gsi), static_cast<u32>(virq));
             }
         });
-        log::info("pinlines.test:   {} pins from the ISA range up", checked);
+        log::info("pinlines:   {} pins from the ISA range up", checked);
 
-        verdict(tally, checked != 0, "there are pins from the ISA range up to look at");
-        verdict(tally, not_masked == 0, "each of them is masked");
-        verdict(tally, not_level == 0, "and signals level-triggered, as PCI does");
+        EXPECT_NE(checked, usize{0}, "there are pins from the ISA range up to look at");
+        EXPECT_EQ(not_masked, usize{0}, "each of them is masked");
+        EXPECT_EQ(not_level, usize{0}, "and signals level-triggered, as PCI does");
     }
 
-    auto check_numbers_without_lines(Tally &tally) -> void {
+    auto check_numbers_without_lines() -> void {
         // A GSI is no virq: every virq is past every GSI, so a program that
         // takes one for the other finds no line instead of another pin's.
         auto gsi_lines = usize{0};
@@ -301,29 +274,27 @@ namespace {
             }
             if (line_status(static_cast<VIrqNum>(gsi)) != Status::NoResource) {
                 gsi_lines += 1;
-                log::error("pinlines.test:   the number {} names a line", static_cast<u32>(gsi));
+                log::error("pinlines:   the number {} names a line", static_cast<u32>(gsi));
             }
             highest_virq = std::max(highest_virq, irq::irq_for_source(irq::DomainId::Root, gsi));
         });
-        verdict(tally, gsi_lines == 0, "a GSI used as a virq names no line");
+        EXPECT_EQ(gsi_lines, usize{0}, "a GSI used as a virq names no line");
 
-        answered(tally, line_status(static_cast<VIrqNum>(static_cast<u32>(highest_virq) + 1)),
+        answered(line_status(static_cast<VIrqNum>(static_cast<u32>(highest_virq) + 1)),
                  Status::NoResource, "the number past the last virq names no line");
-        answered(tally, line_status(static_cast<VIrqNum>(LAST_GSI + 1)), Status::NoResource,
+        answered(line_status(static_cast<VIrqNum>(LAST_GSI + 1)), Status::NoResource,
                  "a number past the platform vectors names no line");
-        answered(tally, line_status(VIrqNum::Invalid), Status::InvArgs,
-                 "the invalid number is refused");
+        answered(line_status(VIrqNum::Invalid), Status::InvArgs, "the invalid number is refused");
     }
 
-    auto check_object_on_a_pin(Tally &tally) -> void {
+    auto check_object_on_a_pin() -> void {
         // GSI 16, the first pin past the ISA range. On q35 a PCI function at
         // slot 0 to 24 is wired to GSI 20 to 23 (slot + pin, modulo 4, past
         // 20), so a device attached with DISK= does not hold this one.
         auto const gsi = static_cast<HIrqNum>(arch::NUM_ISA_IRQS);
         auto const pin = irq::irq_for_source(irq::DomainId::Root, gsi);
         if (static_cast<usize>(gsi) > LAST_GSI || pin == VIrqNum::Invalid) {
-            verdict(tally, false, "there is a pin just past the ISA range to take");
-            return;
+            KTEST_SKIP("no pin just past the ISA range to take");
         }
 
         KernelHandle<InterruptDispatcher> first;
@@ -331,7 +302,7 @@ namespace {
         auto rights = Rights::None;
         auto const created =
             InterruptEventDispatcher::create(&first, &rights, pin, InterruptOptions::ModeLevelLow);
-        answered(tally, created, Status::Ok,
+        answered(created, Status::Ok,
                  "an object takes the first pin past the ISA range by its virq, level-low");
         if (created != Status::Ok) {
             return;
@@ -339,48 +310,34 @@ namespace {
 
         auto const again =
             InterruptEventDispatcher::create(&second, &rights, pin, InterruptOptions::ModeLevelLow);
-        answered(tally, again, Status::AlreadyBound, "a second object on it answers AlreadyBound");
+        answered(again, Status::AlreadyBound, "a second object on it answers AlreadyBound");
 
         auto const mode = irq::trigger_mode(pin);
-        verdict(tally, mode.is_ok() && *mode == irq::TriggerMode::Level,
-                "the pin signals level-triggered while the object has it");
+        EXPECT_TRUE(mode.is_ok() && *mode == irq::TriggerMode::Level,
+                    "the pin signals level-triggered while the object has it");
         auto const held = irq::is_masked_for_test(pin);
-        verdict(tally, held.is_ok() && !*held, "and is unmasked, as a level object's line is");
+        EXPECT_TRUE(held.is_ok() && !*held, "and is unmasked, as a level object's line is");
 
         auto _ = first.dispatcher()->destroy();
         auto const let_go = irq::is_masked_for_test(pin);
-        verdict(tally, let_go.is_ok() && *let_go, "a destroy lets the pin go masked");
+        EXPECT_TRUE(let_go.is_ok() && *let_go, "a destroy lets the pin go masked");
 
         KernelHandle<InterruptDispatcher> retaken;
         auto const taken_again = InterruptEventDispatcher::create(&retaken, &rights, pin,
                                                                   InterruptOptions::ModeLevelLow);
-        answered(tally, taken_again, Status::Ok, "and an object takes the pin again");
+        answered(taken_again, Status::Ok, "and an object takes the pin again");
         if (taken_again == Status::Ok) {
             auto _ = retaken.dispatcher()->destroy();
         }
     }
 
-    auto pin_lines_test_command(int, char **) -> int {
-        Tally tally;
-
-        check_pins_have_lines(tally);
-        check_domain(tally);
-        check_isa_lines(tally);
-        check_pins_are_idle(tally);
-        check_numbers_without_lines(tally);
-        check_object_on_a_pin(tally);
-
-        if (tally.failed != 0) {
-            log::error("pinlines.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("pinlines.test: ok -- {} checks", tally.passed);
-        return 0;
+    KTEST(PinLines, PinsHaveLinesNamedByVirq) {
+        check_pins_have_lines();
+        check_domain();
+        check_isa_lines();
+        check_pins_are_idle();
+        check_numbers_without_lines();
+        check_object_on_a_pin();
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(PinLinesTest, "pinlines.test", ours::pin_lines_test_command,
-             "check that every IO-APIC pin has a line named by a virq that is not its GSI, and "
-             "that an object takes one the ISA lines do not reach");

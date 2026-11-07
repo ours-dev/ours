@@ -1,7 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `irq.test`: the irq layer's registration rules and its detach barrier.
+// Irq.RegistrationRulesAndTheDetachBarrier: the irq layer's registration rules
+// and its detach barrier.
 //
 //   - A second registration on the PIT's line answers AlreadyBound, shared
 //     or not.
@@ -65,8 +66,8 @@
 // IPI over and over, each delivery waiting on the end of the one before,
 // and on rel the keyboard's keys keep coming.
 //
-// A console command rather than a unit test because the irq layer has no
-// host test target, and the barrier needs two CPUs and the real spin lock.
+// Why an in-kernel test: the irq layer has no host test target, and the
+// barrier needs two CPUs and the real spin lock.
 #include <ours/arch/apic.hpp>
 #include <ours/cpu.hpp>
 #include <ours/irq/entry.hpp>
@@ -84,10 +85,10 @@
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/interrupt.hpp>
 #include <arch/spin_hint.hpp>
-#include <gktl/command.hpp>
 #include <heap/new.hpp>
 #include <kernel/kernel/irq/domain.hpp>
 #include <kernel/kernel/irq/line.hpp>
+#include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -125,24 +126,9 @@ namespace {
     constexpr auto LOST_AFTER = Seconds(5);
 
     /// How long a handler holds the idle line in the line lock check: long
-    /// enough that the command, on another CPU, sees it start and makes its
+    /// enough that the test, on another CPU, sees it start and makes its
     /// call well before it ends, even under TCG.
     constexpr auto HOLD_FOR = Milliseconds(20);
-
-    struct Tally {
-        usize passed = 0;
-        usize failed = 0;
-    };
-
-    auto verdict(Tally &tally, bool const ok, char const *const name) -> void {
-        if (ok) {
-            tally.passed += 1;
-            log::info("irq.test: pass  {}", name);
-            return;
-        }
-        tally.failed += 1;
-        log::error("irq.test: FAIL  {}", name);
-    }
 
     /// What a test action's handler records: its context.
     struct Probe {
@@ -270,7 +256,7 @@ namespace {
         }
     }
 
-    auto check_pit_line_is_taken(Tally &tally) -> void {
+    auto check_pit_line_is_taken() -> void {
         Probe probe;
         irq::Registration exclusive{
             {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
@@ -282,11 +268,11 @@ namespace {
         drop_if_attached(exclusive);
         drop_if_attached(shared);
 
-        log::info("irq.test:   a second PIT registration answered {}, a shared one {}",
+        log::info("irq:   a second PIT registration answered {}, a shared one {}",
                   to_string(exclusive_status), to_string(shared_status));
-        verdict(tally, exclusive_status == Status::AlreadyBound,
-                "a second registration on the PIT's line answers AlreadyBound");
-        verdict(tally, shared_status == Status::AlreadyBound, "so does a shared one");
+        EXPECT_TRUE(exclusive_status == Status::AlreadyBound,
+                    "a second registration on the PIT's line answers AlreadyBound");
+        EXPECT_TRUE(shared_status == Status::AlreadyBound, "so does a shared one");
     }
 
     /// The actions of the test's own Permanent line, with the context they
@@ -317,12 +303,11 @@ namespace {
     /// interrupt reaches it, bound to the counting chip. The line and its
     /// case are leaked, one pair per run: the Permanent action can never come
     /// off.
-    auto check_permanent_line(Tally &tally) -> void {
+    auto check_permanent_line() -> void {
         auto *const line = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         auto *const c = new (mm::ALLOC_KERNEL) PermanentCase{};
         if (line == nullptr || c == nullptr) {
-            verdict(tally, false, "allocate the Permanent line");
-            return;
+            FAIL("allocate the Permanent line");
         }
         auto const bound = line->init(PIN_CHIP);
 
@@ -330,16 +315,15 @@ namespace {
         PIN_MASKED.store(false, std::memory_order_relaxed);
         auto const invalid_mode = line->attach(
             c->permanent_shared, irq::LineMode{irq::TriggerMode::Level, irq::Polarity::ActiveLow});
-        verdict(tally, invalid_mode.is_err() && invalid_mode.unwrap_err() == Status::InvArgs,
-                "Permanent with Shared is refused before setting a mode");
-        verdict(tally,
-                !c->permanent_shared.is_attached() &&
-                    PIN_TRIGGER.load(std::memory_order_relaxed) == irq::TriggerMode::Edge &&
-                    !PIN_MASKED.load(std::memory_order_relaxed),
-                "invalid policy changes neither attachment nor controller state");
+        EXPECT_TRUE(invalid_mode.is_err() && invalid_mode.unwrap_err() == Status::InvArgs,
+                    "Permanent with Shared is refused before setting a mode");
+        EXPECT_TRUE(!c->permanent_shared.is_attached() &&
+                        PIN_TRIGGER.load(std::memory_order_relaxed) == irq::TriggerMode::Edge &&
+                        !PIN_MASKED.load(std::memory_order_relaxed),
+                    "invalid policy changes neither attachment nor controller state");
         auto const invalid_plain = line->attach(c->permanent_shared);
-        verdict(tally, invalid_plain == Status::InvArgs && !c->permanent_shared.is_attached(),
-                "Permanent with Shared is refused on an empty line");
+        EXPECT_TRUE(invalid_plain == Status::InvArgs && !c->permanent_shared.is_attached(),
+                    "Permanent with Shared is refused on an empty line");
 
         irq::Registration unknown{{.handle = &probe_handler},
                                   &c->probe,
@@ -353,20 +337,19 @@ namespace {
         if (unknown.is_attached()) {
             auto _ = line->detach(unknown); // Keep a failed policy check isolated.
         }
-        verdict(tally,
-                unknown_plain == Status::InvArgs && unknown_mode.is_err() &&
-                    unknown_mode.unwrap_err() == Status::InvArgs,
-                "unknown registration option bits are refused by both attach forms");
+        EXPECT_TRUE(unknown_plain == Status::InvArgs && unknown_mode.is_err() &&
+                        unknown_mode.unwrap_err() == Status::InvArgs,
+                    "unknown registration option bits are refused by both attach forms");
 
         irq::Registration missing_ready{
             {.handle = &probe_handler}, &c->probe, irq::RegistrationOptions::Oneshot};
         auto const missing_plain = line->attach(missing_ready);
         auto const missing_mode = line->attach(
             missing_ready, irq::LineMode{irq::TriggerMode::Level, irq::Polarity::ActiveLow});
-        verdict(tally,
-                missing_plain == Status::InvArgs && missing_mode.is_err() &&
-                    missing_mode.unwrap_err() == Status::InvArgs && !missing_ready.is_attached(),
-                "deferred registration requires a completion readiness callback");
+        EXPECT_TRUE(missing_plain == Status::InvArgs && missing_mode.is_err() &&
+                        missing_mode.unwrap_err() == Status::InvArgs &&
+                        !missing_ready.is_attached(),
+                    "deferred registration requires a completion readiness callback");
 
         // A Permanent action never joins an occupied line, even one whose
         // occupant shares, with a request that says Shared too.
@@ -385,31 +368,28 @@ namespace {
         auto const result = line->handle_irq(irq::Eoi::Send);
         auto const eois = EOIS_SENT.load(std::memory_order_relaxed) - eois_before;
 
-        verdict(tally,
-                occupied_status == Status::Ok && join_status == Status::InvArgs &&
-                    leave_status == Status::Ok,
-                "invalid registration policy is refused on occupied lines too");
-        verdict(tally, oneshot_status == Status::InvArgs && !c->permanent_oneshot.is_attached(),
-                "a Permanent action that says Oneshot is refused");
-        verdict(tally, attach_status == Status::Ok, "a Permanent action takes an empty line");
-        verdict(tally,
-                exclusive_status == Status::AlreadyBound && shared_status == Status::AlreadyBound,
-                "a Permanent line refuses every other attach");
-        verdict(tally, detach_status == Status::AlreadyBound && c->permanent.is_attached(),
-                "and refuses to let its action go: attach kept the flag");
-        verdict(tally,
-                result == irq::IrqReturn::Handled && c->probe.calls.load() == 1 &&
-                    c->other_probe.calls.load() == 0,
-                "its guarded dispatch reaches the registration");
-        verdict(tally,
-                c->probe.held_locks.load(std::memory_order_relaxed) != 0 &&
-                    c->probe.preemption_disabled.load(std::memory_order_relaxed),
-                "Permanent dispatch holds a spin lock with preemption disabled");
-        verdict(tally, bound == Status::Ok && eois == 1,
-                "and ends the interrupt through the line's chip, once");
+        EXPECT_TRUE(occupied_status == Status::Ok && join_status == Status::InvArgs &&
+                        leave_status == Status::Ok,
+                    "invalid registration policy is refused on occupied lines too");
+        EXPECT_TRUE(oneshot_status == Status::InvArgs && !c->permanent_oneshot.is_attached(),
+                    "a Permanent action that says Oneshot is refused");
+        EXPECT_TRUE(attach_status == Status::Ok, "a Permanent action takes an empty line");
+        EXPECT_TRUE(exclusive_status == Status::AlreadyBound &&
+                        shared_status == Status::AlreadyBound,
+                    "a Permanent line refuses every other attach");
+        EXPECT_TRUE(detach_status == Status::AlreadyBound && c->permanent.is_attached(),
+                    "and refuses to let its action go: attach kept the flag");
+        EXPECT_TRUE(result == irq::IrqReturn::Handled && c->probe.calls.load() == 1 &&
+                        c->other_probe.calls.load() == 0,
+                    "its guarded dispatch reaches the registration");
+        EXPECT_TRUE(c->probe.held_locks.load(std::memory_order_relaxed) != 0 &&
+                        c->probe.preemption_disabled.load(std::memory_order_relaxed),
+                    "Permanent dispatch holds a spin lock with preemption disabled");
+        EXPECT_TRUE(bound == Status::Ok && eois == 1,
+                    "and ends the interrupt through the line's chip, once");
     }
 
-    auto check_idle_line_repeatedly(Tally &tally) -> void {
+    auto check_idle_line_repeatedly() -> void {
         Probe probe;
         Probe other_probe;
         irq::Registration action{
@@ -449,17 +429,17 @@ namespace {
             }
         }
 
-        log::info("irq.test:   {} rounds on line {}", ROUNDS, static_cast<u32>(idle_line()));
-        verdict(tally, attach_failures == 0, "an idle line takes an action every round");
-        verdict(tally, second_attach_failures == 0,
-                "a second exclusive action answers AlreadyBound every round");
-        verdict(tally, dispatch_failures == 0 && other_probe.calls.load() == 0,
-                "a dispatch reaches the attached action, and only it");
-        verdict(tally, detach_failures == 0, "detach takes the action off every round");
-        verdict(tally, redetach_failures == 0, "a second detach answers NotFound");
+        log::info("irq:   {} rounds on line {}", ROUNDS, static_cast<u32>(idle_line()));
+        EXPECT_EQ(attach_failures, usize{0}, "an idle line takes an action every round");
+        EXPECT_EQ(second_attach_failures, usize{0},
+                  "a second exclusive action answers AlreadyBound every round");
+        EXPECT_TRUE(dispatch_failures == 0 && other_probe.calls.load() == 0,
+                    "a dispatch reaches the attached action, and only it");
+        EXPECT_EQ(detach_failures, usize{0}, "detach takes the action off every round");
+        EXPECT_EQ(redetach_failures, usize{0}, "a second detach answers NotFound");
     }
 
-    auto check_shared_then_exclusive(Tally &tally) -> void {
+    auto check_shared_then_exclusive() -> void {
         Probe first_probe;
         Probe second_probe;
         irq::Registration first{
@@ -481,36 +461,33 @@ namespace {
         auto const after_status = irq::attach(idle_line(), exclusive);
         drop_if_attached(exclusive);
 
-        verdict(tally, first_status == Status::Ok && second_status == Status::Ok,
-                "two shared actions hold one line");
-        verdict(tally, exclusive_status == Status::AlreadyBound,
-                "an exclusive one cannot join them");
-        verdict(tally,
-                result == irq::IrqReturn::Handled && first_probe.calls.load() == 1 &&
-                    second_probe.calls.load() == 1,
-                "a dispatch on a shared line calls every action");
-        verdict(tally, after_status == Status::Ok,
-                "once they are gone an exclusive one takes the line: detach cleared Shared");
+        EXPECT_TRUE(first_status == Status::Ok && second_status == Status::Ok,
+                    "two shared actions hold one line");
+        EXPECT_TRUE(exclusive_status == Status::AlreadyBound, "an exclusive one cannot join them");
+        EXPECT_TRUE(result == irq::IrqReturn::Handled && first_probe.calls.load() == 1 &&
+                        second_probe.calls.load() == 1,
+                    "a dispatch on a shared line calls every action");
+        EXPECT_TRUE(after_status == Status::Ok,
+                    "once they are gone an exclusive one takes the line: detach cleared Shared");
     }
 
-    auto check_spurious(Tally &tally) -> void {
+    auto check_spurious() -> void {
         auto const before = irq::spurious_count(idle_line());
         auto const result = irq::handle_irq_for_test(idle_line());
         auto const after = irq::spurious_count(idle_line());
 
-        verdict(tally, result == irq::IrqReturn::None,
-                "a dispatch on an empty line answers None, not Handled");
-        verdict(tally, before.is_some() && after.is_some() && *after == *before + 1,
-                "and the line counts it as spurious");
+        EXPECT_TRUE(result == irq::IrqReturn::None,
+                    "a dispatch on an empty line answers None, not Handled");
+        EXPECT_TRUE(before.is_some() && after.is_some() && *after == *before + 1,
+                    "and the line counts it as spurious");
     }
 
     /// On a line of the test's own, outside the table, bound to the counting
     /// chip, so the ends of interrupt are counted and no controller sees one.
-    auto check_end_of_interrupt(Tally &tally) -> void {
+    auto check_end_of_interrupt() -> void {
         auto *const line = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
-            verdict(tally, false, "allocate the counting line");
-            return;
+            FAIL("allocate the counting line");
         }
         Probe probe;
         irq::Registration action{
@@ -537,18 +514,17 @@ namespace {
         irq::Domain table;
         auto const refused = table.init(ustl::views::Span(numbers), NO_EOI_CHIP);
 
-        verdict(tally, bound == Status::Ok && attached == Status::Ok && detached == Status::Ok,
-                "bind the counting chip, take the line and give it back");
-        verdict(tally, handled == irq::IrqReturn::Handled && after_handled == before + 1,
-                "a dispatch ends its interrupt through the line's chip, once");
-        verdict(tally,
-                played == irq::IrqReturn::Handled && after_played == after_handled &&
-                    probe.calls.load() == 2,
-                "a played dispatch runs the actions and ends nothing");
-        verdict(tally, unhandled == irq::IrqReturn::None && after_unhandled == after_played + 1,
-                "an interrupt no action handled is ended all the same");
-        verdict(tally, refused == Status::InvArgs,
-                "the line table refuses a chip that cannot end an interrupt");
+        EXPECT_TRUE(bound == Status::Ok && attached == Status::Ok && detached == Status::Ok,
+                    "bind the counting chip, take the line and give it back");
+        EXPECT_TRUE(handled == irq::IrqReturn::Handled && after_handled == before + 1,
+                    "a dispatch ends its interrupt through the line's chip, once");
+        EXPECT_TRUE(played == irq::IrqReturn::Handled && after_played == after_handled &&
+                        probe.calls.load() == 2,
+                    "a played dispatch runs the actions and ends nothing");
+        EXPECT_TRUE(unhandled == irq::IrqReturn::None && after_unhandled == after_played + 1,
+                    "an interrupt no action handled is ended all the same");
+        EXPECT_TRUE(refused == Status::InvArgs,
+                    "the line table refuses a chip that cannot end an interrupt");
     }
 
     /// A line of the test's own, outside the table, bound to `chip`; null if
@@ -583,7 +559,7 @@ namespace {
 
     /// How a line's flow follows its pin's mode: as it is bound, by
     /// configure() and by attach() with a mode.
-    auto check_flow_selection(Tally &tally) -> void {
+    auto check_flow_selection() -> void {
         PIN_TRIGGER.store(irq::TriggerMode::Level, std::memory_order_relaxed);
         auto *const level_line = own_line(PIN_CHIP);
         PIN_TRIGGER.store(irq::TriggerMode::Edge, std::memory_order_relaxed);
@@ -593,8 +569,7 @@ namespace {
             delete level_line;
             delete line;
             delete modeless_line;
-            verdict(tally, false, "make the lines for flow selection");
-            return;
+            FAIL("make the lines for flow selection");
         }
         auto const bound_level = level_line->dispatch_trigger();
         auto const bound_edge = line->dispatch_trigger();
@@ -636,31 +611,27 @@ namespace {
         delete line;
         PIN_TRIGGER.store(irq::TriggerMode::Edge, std::memory_order_relaxed);
 
-        log::info("irq.test:   bound: a level pin runs {}, an edge pin {}, a chip with no mode {}",
+        log::info("irq:   bound: a level pin runs {}, an edge pin {}, a chip with no mode {}",
                   flow_name(bound_level), flow_name(bound_edge), flow_name(bound_modeless));
-        verdict(tally,
-                bound_level == irq::TriggerMode::Level && bound_edge == irq::TriggerMode::Edge,
-                "a line bound to its chip runs the flow of how its pin signals");
-        verdict(tally, bound_modeless == irq::TriggerMode::Edge,
-                "a chip that cannot say how its pin signals gives the edge flow");
-        verdict(tally,
-                to_level == Status::Ok && after_level == irq::TriggerMode::Level &&
-                    to_edge == Status::Ok && after_edge == irq::TriggerMode::Edge,
-                "configure moves the line's flow with its mode, there and back");
-        verdict(tally,
-                occupied == Status::Ok && refused == Status::AlreadyBound &&
-                    after_refused == irq::TriggerMode::Edge && left == Status::Ok,
-                "a configure refused on an occupied line leaves its flow");
-        verdict(tally,
-                level_attach.is_ok() && *level_attach == irq::TriggerMode::Level &&
-                    after_level_attach == irq::TriggerMode::Level && level_detach == Status::Ok &&
-                    edge_attach.is_ok() && *edge_attach == irq::TriggerMode::Edge &&
-                    after_edge_attach == irq::TriggerMode::Edge && edge_detach == Status::Ok,
-                "attach with a mode gives the line that mode's flow");
-        verdict(tally,
-                read_attach.is_ok() && *read_attach == irq::TriggerMode::Level &&
-                    after_read_attach == irq::TriggerMode::Level && read_detach == Status::Ok,
-                "attach without one reads the mode and gives the line its flow");
+        EXPECT_TRUE(bound_level == irq::TriggerMode::Level && bound_edge == irq::TriggerMode::Edge,
+                    "a line bound to its chip runs the flow of how its pin signals");
+        EXPECT_TRUE(bound_modeless == irq::TriggerMode::Edge,
+                    "a chip that cannot say how its pin signals gives the edge flow");
+        EXPECT_TRUE(to_level == Status::Ok && after_level == irq::TriggerMode::Level &&
+                        to_edge == Status::Ok && after_edge == irq::TriggerMode::Edge,
+                    "configure moves the line's flow with its mode, there and back");
+        EXPECT_TRUE(occupied == Status::Ok && refused == Status::AlreadyBound &&
+                        after_refused == irq::TriggerMode::Edge && left == Status::Ok,
+                    "a configure refused on an occupied line leaves its flow");
+        EXPECT_TRUE(level_attach.is_ok() && *level_attach == irq::TriggerMode::Level &&
+                        after_level_attach == irq::TriggerMode::Level &&
+                        level_detach == Status::Ok && edge_attach.is_ok() &&
+                        *edge_attach == irq::TriggerMode::Edge &&
+                        after_edge_attach == irq::TriggerMode::Edge && edge_detach == Status::Ok,
+                    "attach with a mode gives the line that mode's flow");
+        EXPECT_TRUE(read_attach.is_ok() && *read_attach == irq::TriggerMode::Level &&
+                        after_read_attach == irq::TriggerMode::Level && read_detach == Status::Ok,
+                    "attach without one reads the mode and gives the line its flow");
     }
 
     /// What one dispatch on a line of the test's own did to its pin.
@@ -694,7 +665,7 @@ namespace {
 
     /// What each flow does to the pin: a line nobody is on is masked and its
     /// interrupt ended; one with an action is left as it was.
-    auto check_flow_masking(Tally &tally) -> void {
+    auto check_flow_masking() -> void {
         PIN_TRIGGER.store(irq::TriggerMode::Level, std::memory_order_relaxed);
         auto *const level_line = own_line(PIN_CHIP);
         PIN_TRIGGER.store(irq::TriggerMode::Edge, std::memory_order_relaxed);
@@ -702,8 +673,7 @@ namespace {
         if (level_line == nullptr || edge_line == nullptr) {
             delete level_line;
             delete edge_line;
-            verdict(tally, false, "make the lines for the flows' masks");
-            return;
+            FAIL("make the lines for the flows' masks");
         }
         auto const flows_ok = level_line->dispatch_trigger() == irq::TriggerMode::Level &&
                               edge_line->dispatch_trigger() == irq::TriggerMode::Edge;
@@ -752,19 +722,17 @@ namespace {
             return d.result == irq::IrqReturn::Handled && d.masked == d.masked_before &&
                    d.masks == 0 && d.eois == 1;
         };
-        verdict(tally, flows_ok, "the two lines run the level and the edge flow");
-        verdict(tally, unclaimed(level_unclaimed) && unclaimed(edge_unclaimed),
-                "an interrupt on a line nobody is on masks it, then ends it, on either flow");
-        verdict(tally, played(level_played) && played(edge_played),
-                "a played one masks it too, and ends nothing");
-        verdict(tally,
-                level_attached == Status::Ok && edge_attached == Status::Ok &&
-                    claimed(level_claimed) && claimed(edge_claimed) &&
-                    claimed(level_claimed_masked) && claimed(edge_claimed_masked) &&
-                    level_detached == Status::Ok && edge_detached == Status::Ok,
-                "a line with an action is neither masked nor unmasked by its flow, on either");
-        verdict(tally, refused == Status::InvArgs,
-                "the line table refuses a chip that cannot mask");
+        EXPECT_TRUE(flows_ok, "the two lines run the level and the edge flow");
+        EXPECT_TRUE(unclaimed(level_unclaimed) && unclaimed(edge_unclaimed),
+                    "an interrupt on a line nobody is on masks it, then ends it, on either flow");
+        EXPECT_TRUE(played(level_played) && played(edge_played),
+                    "a played one masks it too, and ends nothing");
+        EXPECT_TRUE(level_attached == Status::Ok && edge_attached == Status::Ok &&
+                        claimed(level_claimed) && claimed(edge_claimed) &&
+                        claimed(level_claimed_masked) && claimed(edge_claimed_masked) &&
+                        level_detached == Status::Ok && edge_detached == Status::Ok,
+                    "a line with an action is neither masked nor unmasked by its flow, on either");
+        EXPECT_TRUE(refused == Status::InvArgs, "the line table refuses a chip that cannot mask");
     }
 
     /// What the irq layer can show of the chip binding: the calls reach a
@@ -773,7 +741,7 @@ namespace {
     /// IO-APIC entry are read back: the trigger mode, through trigger_mode(),
     /// and the mask bit, through is_masked_for_test(), each from the entry
     /// itself, so a mask or an unmask that never reached the pin shows.
-    auto check_line_control(Tally &tally) -> void {
+    auto check_line_control() -> void {
         Probe probe;
         irq::Registration action{
             {.handle = &probe_handler}, &probe, irq::RegistrationOptions::None};
@@ -812,8 +780,7 @@ namespace {
         // A line of the test's own, outside the table, which no chip drives.
         auto *const line = new (mm::ALLOC_KERNEL) irq::Line(HIrqNum{7}, OWN_LINE);
         if (line == nullptr) {
-            verdict(tally, false, "allocate the line with no chip");
-            return;
+            FAIL("allocate the line with no chip");
         }
         auto const chipless_mask = line->mask();
         auto const chipless_configure =
@@ -822,42 +789,39 @@ namespace {
         auto const chipless_mask_read = line->is_masked();
         delete line;
 
-        log::info("irq.test:   configure on the PIT's line answered {}, on an occupied line {}",
+        log::info("irq:   configure on the PIT's line answered {}, on an occupied line {}",
                   to_string(pit_status), to_string(occupied_status));
-        verdict(tally, no_line_status == Status::NoResource && invalid_status == Status::InvArgs,
-                "mask and unmask answer NoResource for no line, InvArgs for the invalid number");
-        verdict(tally,
-                mask_status == Status::Ok && unmask_status == Status::Ok &&
-                    remask_status == Status::Ok,
-                "mask and unmask go through the idle line's chip");
-        verdict(tally,
-                mask_read.is_ok() && *mask_read && unmask_read.is_ok() && !*unmask_read &&
-                    remask_read.is_ok() && *remask_read,
-                "the idle line's IO-APIC entry reads masked, unmasked and masked after each");
-        verdict(tally, pit_status == Status::AlreadyBound,
-                "configure is refused on the PIT's Permanent line");
-        verdict(tally, attach_status == Status::Ok && occupied_status == Status::AlreadyBound,
-                "configure is refused on a line someone is on");
-        verdict(tally, level_status == Status::Ok && edge_status == Status::Ok,
-                "configure goes through an empty line's chip, there and back");
-        verdict(tally,
-                level_read.is_ok() && *level_read == irq::TriggerMode::Level && edge_read.is_ok() &&
-                    *edge_read == irq::TriggerMode::Edge,
-                "trigger_mode reads back what configure set, each time");
-        verdict(tally, pit_read.is_ok() && *pit_read == irq::TriggerMode::Edge,
-                "and reads the PIT's line as the platform programmed it: edge");
-        verdict(tally, no_line_read.is_err() && no_line_read.unwrap_err() == Status::NoResource,
-                "trigger_mode answers NoResource for no line");
-        verdict(tally,
-                no_line_mask_read.is_err() && no_line_mask_read.unwrap_err() == Status::NoResource,
-                "is_masked_for_test answers NoResource for no line");
-        verdict(tally,
-                chipless_mask == Status::NotSupported &&
-                    chipless_configure == Status::NotSupported && chipless_read.is_err() &&
-                    chipless_read.unwrap_err() == Status::NotSupported &&
-                    chipless_mask_read.is_err() &&
-                    chipless_mask_read.unwrap_err() == Status::NotSupported,
-                "a line with no chip answers NotSupported, its mask read as well");
+        EXPECT_TRUE(
+            no_line_status == Status::NoResource && invalid_status == Status::InvArgs,
+            "mask and unmask answer NoResource for no line, InvArgs for the invalid number");
+        EXPECT_TRUE(mask_status == Status::Ok && unmask_status == Status::Ok &&
+                        remask_status == Status::Ok,
+                    "mask and unmask go through the idle line's chip");
+        EXPECT_TRUE(mask_read.is_ok() && *mask_read && unmask_read.is_ok() && !*unmask_read &&
+                        remask_read.is_ok() && *remask_read,
+                    "the idle line's IO-APIC entry reads masked, unmasked and masked after each");
+        EXPECT_TRUE(pit_status == Status::AlreadyBound,
+                    "configure is refused on the PIT's Permanent line");
+        EXPECT_TRUE(attach_status == Status::Ok && occupied_status == Status::AlreadyBound,
+                    "configure is refused on a line someone is on");
+        EXPECT_TRUE(level_status == Status::Ok && edge_status == Status::Ok,
+                    "configure goes through an empty line's chip, there and back");
+        EXPECT_TRUE(level_read.is_ok() && *level_read == irq::TriggerMode::Level &&
+                        edge_read.is_ok() && *edge_read == irq::TriggerMode::Edge,
+                    "trigger_mode reads back what configure set, each time");
+        EXPECT_TRUE(pit_read.is_ok() && *pit_read == irq::TriggerMode::Edge,
+                    "and reads the PIT's line as the platform programmed it: edge");
+        EXPECT_TRUE(no_line_read.is_err() && no_line_read.unwrap_err() == Status::NoResource,
+                    "trigger_mode answers NoResource for no line");
+        EXPECT_TRUE(no_line_mask_read.is_err() &&
+                        no_line_mask_read.unwrap_err() == Status::NoResource,
+                    "is_masked_for_test answers NoResource for no line");
+        EXPECT_TRUE(chipless_mask == Status::NotSupported &&
+                        chipless_configure == Status::NotSupported && chipless_read.is_err() &&
+                        chipless_read.unwrap_err() == Status::NotSupported &&
+                        chipless_mask_read.is_err() &&
+                        chipless_mask_read.unwrap_err() == Status::NotSupported,
+                    "a line with no chip answers NotSupported, its mask read as well");
     }
 
     /// What a Oneshot test action's handler answers, and what it saw. Atomic
@@ -909,7 +873,7 @@ namespace {
     /// masked. The edge flow, a chip that cannot unmask and a finalize on a
     /// line that is not Oneshot are checked here too, on lines that cost
     /// nothing to set up.
-    auto check_oneshot_on_pin(Tally &tally) -> void {
+    auto check_oneshot_on_pin() -> void {
         PIN_TRIGGER.store(irq::TriggerMode::Level, std::memory_order_relaxed);
         auto *const level_line = own_line(PIN_CHIP);
         PIN_TRIGGER.store(irq::TriggerMode::Edge, std::memory_order_relaxed);
@@ -919,8 +883,7 @@ namespace {
             delete level_line;
             delete edge_line;
             delete counting_line;
-            verdict(tally, false, "make the lines for Oneshot");
-            return;
+            FAIL("make the lines for Oneshot");
         }
 
         OneshotProbe probe;
@@ -977,27 +940,24 @@ namespace {
         delete edge_line;
         delete counting_line;
 
-        verdict(tally,
-                level_attached == Status::Ok && woke.result == irq::IrqReturn::WakeThread &&
-                    woke_saw_masked && woke.masks == 1 && woke.masked && woke.eois == 1 &&
-                    woke.eois_unmasked == 0,
-                "WakeThread on a Oneshot level line: masked before the action, ended masked");
-        verdict(tally,
-                !finalized_masked && handled.result == irq::IrqReturn::Handled &&
-                    handled_saw_masked && handled.masks == 1 && !handled.masked &&
-                    handled.eois == 1 && level_detached == Status::Ok,
-                "after the finalize, one the action handles is masked around it, unmasked after");
-        verdict(tally,
-                edge_attached == Status::Ok && edge_woke.result == irq::IrqReturn::WakeThread &&
-                    !edge_saw_masked && edge_woke.masks == 0 && !edge_woke.masked &&
-                    edge_woke.eois == 1 && edge_detached == Status::Ok,
-                "an edge line ignores Oneshot: WakeThread leaves it unmasked");
-        verdict(tally, refused == Status::NotSupported && !counting_action.is_attached(),
-                "a line whose chip cannot unmask refuses a Oneshot action");
-        verdict(tally,
-                plain_attached == Status::Ok && plain_finalize_masked &&
-                    plain_detached == Status::Ok,
-                "a finalize on a line that is not Oneshot does nothing: the line stays masked");
+        EXPECT_TRUE(level_attached == Status::Ok && woke.result == irq::IrqReturn::WakeThread &&
+                        woke_saw_masked && woke.masks == 1 && woke.masked && woke.eois == 1 &&
+                        woke.eois_unmasked == 0,
+                    "WakeThread on a Oneshot level line: masked before the action, ended masked");
+        EXPECT_TRUE(
+            !finalized_masked && handled.result == irq::IrqReturn::Handled && handled_saw_masked &&
+                handled.masks == 1 && !handled.masked && handled.eois == 1 &&
+                level_detached == Status::Ok,
+            "after the finalize, one the action handles is masked around it, unmasked after");
+        EXPECT_TRUE(edge_attached == Status::Ok && edge_woke.result == irq::IrqReturn::WakeThread &&
+                        !edge_saw_masked && edge_woke.masks == 0 && !edge_woke.masked &&
+                        edge_woke.eois == 1 && edge_detached == Status::Ok,
+                    "an edge line ignores Oneshot: WakeThread leaves it unmasked");
+        EXPECT_TRUE(refused == Status::NotSupported && !counting_action.is_attached(),
+                    "a line whose chip cannot unmask refuses a Oneshot action");
+        EXPECT_TRUE(plain_attached == Status::Ok && plain_finalize_masked &&
+                        plain_detached == Status::Ok,
+                    "a finalize on a line that is not Oneshot does nothing: the line stays masked");
     }
 
     /// Oneshot on a real line: the idle line, set level and active high, read
@@ -1005,7 +965,7 @@ namespace {
     /// so in that mode it stays deasserted and the line may be unmasked, as
     /// interruptline.test unmasks it; the interrupts are played through
     /// handle_irq_for_test(), which ends none at the controller.
-    auto check_oneshot_idle_line(Tally &tally) -> void {
+    auto check_oneshot_idle_line() -> void {
         OneshotProbe probe;
         irq::Registration action{
             {.handle = &oneshot_handler, .ready = [](void *) -> bool { return true; }},
@@ -1092,39 +1052,37 @@ namespace {
         auto const restored =
             irq::configure(idle_line(), irq::TriggerMode::Edge, irq::Polarity::ActiveHigh);
 
-        verdict(tally, shared_status == Status::InvArgs && !shared.is_attached(),
-                "an action that says Oneshot and Shared is refused");
-        verdict(tally, attached.is_ok() && *attached == irq::TriggerMode::Level && unmasked,
-                "a Oneshot action takes the idle line, set level, and its owner unmasks it");
-        verdict(tally, woke == irq::IrqReturn::WakeThread && woke_saw_masked && woke_masked,
-                "WakeThread masks the line before the action and leaves it masked: held");
-        verdict(tally, spurious_after == spurious_before,
-                "WakeThread counts as handled, not as spurious");
-        verdict(tally, held_unmask == Status::Ok && held_unmask_masked,
-                "while held, unmask answers Ok and leaves the line masked");
-        verdict(tally, while_held == irq::IrqReturn::Handled && held_masked,
-                "and held stays: one the action handles itself leaves the line masked");
-        verdict(tally, finalized_unmasked, "finalize_oneshot clears held and unmasks the line");
-        verdict(tally, handled == irq::IrqReturn::Handled && handled_saw_masked && handled_unmasked,
-                "not held, one the action handles is masked around it and unmasked after");
-        verdict(tally,
-                rewoke == irq::IrqReturn::WakeThread && detached == Status::Ok &&
-                    late_finalize_masked,
-                "a finalize after the detach does nothing: the line stays masked");
-        verdict(tally,
-                reattached.is_ok() && reunmasked && next_handled == irq::IrqReturn::Handled &&
-                    next_unmasked,
-                "detach cleared held: the next owner's interrupt unmasks the line");
-        verdict(tally,
-                next_woke == irq::IrqReturn::WakeThread && stale_finalize_masked &&
-                    own_finalize_unmasked,
-                "a stale finalize leaves the next owner's held line masked; its own unmasks it");
-        verdict(tally, last_detached == Status::Ok && last_masked && restored == Status::Ok,
-                "the last action's detach masks the line, which goes back to edge");
+        EXPECT_TRUE(shared_status == Status::InvArgs && !shared.is_attached(),
+                    "an action that says Oneshot and Shared is refused");
+        EXPECT_TRUE(attached.is_ok() && *attached == irq::TriggerMode::Level && unmasked,
+                    "a Oneshot action takes the idle line, set level, and its owner unmasks it");
+        EXPECT_TRUE(woke == irq::IrqReturn::WakeThread && woke_saw_masked && woke_masked,
+                    "WakeThread masks the line before the action and leaves it masked: held");
+        EXPECT_TRUE(spurious_after == spurious_before,
+                    "WakeThread counts as handled, not as spurious");
+        EXPECT_TRUE(held_unmask == Status::Ok && held_unmask_masked,
+                    "while held, unmask answers Ok and leaves the line masked");
+        EXPECT_TRUE(while_held == irq::IrqReturn::Handled && held_masked,
+                    "and held stays: one the action handles itself leaves the line masked");
+        EXPECT_TRUE(finalized_unmasked, "finalize_oneshot clears held and unmasks the line");
+        EXPECT_TRUE(handled == irq::IrqReturn::Handled && handled_saw_masked && handled_unmasked,
+                    "not held, one the action handles is masked around it and unmasked after");
+        EXPECT_TRUE(rewoke == irq::IrqReturn::WakeThread && detached == Status::Ok &&
+                        late_finalize_masked,
+                    "a finalize after the detach does nothing: the line stays masked");
+        EXPECT_TRUE(reattached.is_ok() && reunmasked && next_handled == irq::IrqReturn::Handled &&
+                        next_unmasked,
+                    "detach cleared held: the next owner's interrupt unmasks the line");
+        EXPECT_TRUE(
+            next_woke == irq::IrqReturn::WakeThread && stale_finalize_masked &&
+                own_finalize_unmasked,
+            "a stale finalize leaves the next owner's held line masked; its own unmasks it");
+        EXPECT_TRUE(last_detached == Status::Ok && last_masked && restored == Status::Ok,
+                    "the last action's detach masks the line, which goes back to edge");
     }
 
-    /// Shared between the command and its dispatcher thread. On the heap: a
-    /// dispatcher that never stops still points at it after the command has
+    /// Shared between the test and its dispatcher thread. On the heap: a
+    /// dispatcher that never stops still points at it after the test has
     /// given up, so on that path it is leaked rather than popped.
     struct BarrierCase {
         std::atomic<bool> stop{false};
@@ -1145,7 +1103,7 @@ namespace {
             }
             arch::spin_hint();
         }
-        // Last touch of |c|: once the command sees this, it frees it.
+        // Last touch of |c|: once the test sees this, it frees it.
         c.done.store(true, std::memory_order_release);
         return 0;
     }
@@ -1194,7 +1152,7 @@ namespace {
         auto &c = *static_cast<HoldCase *>(arg);
         // The handler records all the check reads; its answer is Handled.
         auto _ = irq::handle_irq_for_test(idle_line());
-        // Last touch of |c|: once the command sees this, it frees it.
+        // Last touch of |c|: once the test sees this, it frees it.
         c.done.store(true, std::memory_order_release);
         return 0;
     }
@@ -1209,18 +1167,18 @@ namespace {
     auto waits_for_handler(CpuNum const cpu, Call const &call, char const *const name) -> bool {
         auto *const c = new (mm::ALLOC_KERNEL) HoldCase{};
         if (c == nullptr) {
-            log::error("irq.test:   allocating the {} case failed", name);
+            log::error("irq:   allocating the {} case failed", name);
             return false;
         }
         if (irq::attach(idle_line(), c->action) != Status::Ok) {
-            log::error("irq.test:   the {} case could not take the idle line", name);
+            log::error("irq:   the {} case could not take the idle line", name);
             delete c;
             return false;
         }
         auto *const dispatcher =
             task::Thread::spawn("irq-test-hold", dispatch_held, c, task::DEFAULT_PRIORITY);
         if (dispatcher == nullptr) {
-            log::error("irq.test:   spawning the {} case's dispatcher failed", name);
+            log::error("irq:   spawning the {} case's dispatcher failed", name);
             drop_if_attached(c->action);
             delete c;
             return false;
@@ -1250,14 +1208,13 @@ namespace {
         }
 
         if (!spin_until([c] { return c->done.load(std::memory_order_acquire); })) {
-            log::error("irq.test:   the {} case's dispatcher did not finish; leaking its state",
-                       name);
+            log::error("irq:   the {} case's dispatcher did not finish; leaking its state", name);
             return false;
         }
         auto const detached = irq::detach(c->action);
         delete c;
 
-        log::info("irq.test:   {}: from another CPU {}, called while the handler held the line "
+        log::info("irq:   {}: from another CPU {}, called while the handler held the line "
                   "{}, did its work {}, returned after the handler {}",
                   name, on_other_cpu, called_while_held, did, returned_after);
         return detached == Status::Ok && called_while_held && did && returned_after;
@@ -1268,10 +1225,10 @@ namespace {
     /// dispatch's handler has finished. The idle line runs the edge flow
     /// here, which neither masks nor unmasks a line with an action, so each
     /// call is the only write of the pin in its round, read back after it.
-    auto check_mask_takes_line_lock(Tally &tally) -> void {
+    auto check_mask_takes_line_lock() -> void {
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 2) {
-            log::warn("irq.test:   skipped the line lock check: it needs two online CPUs, have {}",
+            log::warn("irq:   skipped the line lock check: it needs two online CPUs, have {}",
                       num_cpus);
             return;
         }
@@ -1283,23 +1240,23 @@ namespace {
             cpu, [] { return irq::unmask(idle_line()) == Status::Ok && idle_unmasked(); },
             "unmask");
 
-        verdict(tally, mask_waits,
-                "mask waits for a handler of the line on another CPU: it takes the line's lock");
-        verdict(tally, unmask_waits, "so does unmask");
+        EXPECT_TRUE(
+            mask_waits,
+            "mask waits for a handler of the line on another CPU: it takes the line's lock");
+        EXPECT_TRUE(unmask_waits, "so does unmask");
     }
 
-    auto check_detach_barrier(Tally &tally) -> void {
+    auto check_detach_barrier() -> void {
         auto const num_cpus = Cpu::num_online_cpus();
         if (num_cpus < 2) {
-            log::warn("irq.test:   skipped the barrier check: it needs two online CPUs, have {}",
+            log::warn("irq:   skipped the barrier check: it needs two online CPUs, have {}",
                       num_cpus);
             return;
         }
 
         auto *const c = new (mm::ALLOC_KERNEL) BarrierCase{};
         if (c == nullptr) {
-            verdict(tally, false, "allocate the barrier case");
-            return;
+            FAIL("allocate the barrier case");
         }
 
         Probe probe;
@@ -1311,7 +1268,7 @@ namespace {
         auto *const dispatcher =
             task::Thread::spawn("irq-test-dispatch", dispatch_loop, c, task::DEFAULT_PRIORITY);
         if (dispatcher == nullptr) {
-            verdict(tally, false, "spawn the dispatcher");
+            EXPECT_TRUE(false, "spawn the dispatcher");
             delete c;
             return;
         }
@@ -1362,9 +1319,8 @@ namespace {
         c->stop.store(true, std::memory_order_release);
         auto const stopped = spin_until([c] { return c->done.load(std::memory_order_acquire); });
         if (!stopped) {
-            log::error("irq.test:   the dispatcher did not stop; leaking its state");
-            verdict(tally, false, "the dispatcher stops");
-            return;
+            log::error("irq:   the dispatcher did not stop; leaking its state");
+            FAIL("the dispatcher stops");
         }
 
         auto const handled = c->handled.load(std::memory_order_relaxed);
@@ -1372,18 +1328,18 @@ namespace {
         auto const spurious = spurious_on(idle_line()) - spurious_before;
         delete c;
 
-        log::info("irq.test:   {} rounds, {} dispatches handled, {} found the line empty",
+        log::info("irq:   {} rounds, {} dispatches handled, {} found the line empty",
                   BARRIER_ROUNDS, handled, unhandled);
-        verdict(tally, detach_failures == 0, "attach and detach succeed under dispatch");
-        verdict(tally, unreached == 0, "a dispatch on another CPU reaches the action");
-        verdict(tally, in_flight_after_detach == 0, "no handler is in flight when detach returns");
-        verdict(tally, ran_after_detach == 0, "no handler runs after detach returns");
-        verdict(tally, handled == probe.calls.load(std::memory_order_relaxed),
-                "every handled dispatch ran the handler once");
-        verdict(tally, spurious == unhandled, "every unhandled dispatch counted as spurious");
+        EXPECT_EQ(detach_failures, usize{0}, "attach and detach succeed under dispatch");
+        EXPECT_EQ(unreached, usize{0}, "a dispatch on another CPU reaches the action");
+        EXPECT_EQ(in_flight_after_detach, usize{0}, "no handler is in flight when detach returns");
+        EXPECT_EQ(ran_after_detach, usize{0}, "no handler runs after detach returns");
+        EXPECT_EQ(handled, probe.calls.load(std::memory_order_relaxed),
+                  "every handled dispatch ran the handler once");
+        EXPECT_EQ(spurious, unhandled, "every unhandled dispatch counted as spurious");
     }
 
-    auto check_nested_entry(Tally &tally) -> void {
+    auto check_nested_entry() -> void {
         auto entered_outer = false;
         auto entered_inner = false;
         auto restored_outer = false;
@@ -1414,43 +1370,27 @@ namespace {
                                 state.preemption_disabled_count() == preemption &&
                                 state.eager_resched_disabled_count() == eager;
         }
-        verdict(tally, entered_outer,
-                "outer trap publishes its frame and raises both disable counts");
-        verdict(tally, entered_inner,
-                "nested trap preserves the outer frame and nests both counts");
-        verdict(tally, restored_outer, "inner exit restores the outer frame and cannot preempt");
-        verdict(tally, restored_original, "outer exit restores the original frame and both counts");
+        EXPECT_TRUE(entered_outer, "outer trap publishes its frame and raises both disable counts");
+        EXPECT_TRUE(entered_inner, "nested trap preserves the outer frame and nests both counts");
+        EXPECT_TRUE(restored_outer, "inner exit restores the outer frame and cannot preempt");
+        EXPECT_TRUE(restored_original, "outer exit restores the original frame and both counts");
     }
 
-    auto irq_test_command(int, char **) -> int {
-        Tally tally;
-
-        check_nested_entry(tally);
-        check_pit_line_is_taken(tally);
-        check_permanent_line(tally);
-        check_idle_line_repeatedly(tally);
-        check_shared_then_exclusive(tally);
-        check_spurious(tally);
-        check_end_of_interrupt(tally);
-        check_flow_selection(tally);
-        check_flow_masking(tally);
-        check_line_control(tally);
-        check_oneshot_on_pin(tally);
-        check_oneshot_idle_line(tally);
-        check_mask_takes_line_lock(tally);
-        check_detach_barrier(tally);
-
-        if (tally.failed != 0) {
-            log::error("irq.test: FAILED -- {} of {} checks", tally.failed,
-                       tally.passed + tally.failed);
-            return 1;
-        }
-        log::info("irq.test: ok -- {} checks", tally.passed);
-        return 0;
+    KTEST(Irq, RegistrationRulesAndTheDetachBarrier) {
+        check_nested_entry();
+        check_pit_line_is_taken();
+        check_permanent_line();
+        check_idle_line_repeatedly();
+        check_shared_then_exclusive();
+        check_spurious();
+        check_end_of_interrupt();
+        check_flow_selection();
+        check_flow_masking();
+        check_line_control();
+        check_oneshot_on_pin();
+        check_oneshot_idle_line();
+        check_mask_takes_line_lock();
+        check_detach_barrier();
     }
 } // namespace
 } // namespace ours
-
-GKTL_COMMAND(IrqTest, "irq.test", ours::irq_test_command,
-             "attach, detach, mask and configure an idle line, hold it Oneshot, and check the "
-             "PIT's line is Permanent");
