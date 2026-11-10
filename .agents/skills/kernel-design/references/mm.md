@@ -273,9 +273,17 @@ a step is in, the code still has the shape described above.
   outside the zone lock. `PmNode` has no static allocation or release
   operation. The static layer was a second entry with the same signature that
   skipped admission, and no production code called it.
-- A caller says where through one `Placement{home, nodes}` aggregate that
-  defaults to the calling CPU's node and every online node. Do not add an
-  overload per constraint: a new constraint (an address ceiling) is a field.
+- The public PMM interface takes primitive parameters, as Linux's
+  `alloc_pages()` and Zircon's `pmm_alloc_page()` do: a `Gaf`, an order or a
+  count, a node id. Never a compound structure as a parameter; the user
+  rejected a `FrameRequest` and a `Placement` aggregate on 2026-11-10. One
+  function with trailing defaults (`home = ANY_NODE`, `nodes`) replaces the
+  paired overloads, and whatever else a caller wants (zone ceiling,
+  mobility, floor) is a `Gaf` bit behind a preset, not a new parameter.
+- Interfaces come in symmetric pairs (`alloc_frames`/`free_frames`,
+  `pin_frame`/`unpin_frame`, `take_block`/`return_block`), and each object
+  has one boundary: say what it owns and what it never does before adding a
+  method to it.
 - `PmNode` is one node: its `ZoneList`, `PageQueues` and CPU masks. The node
   table and the state masks are file-scope data behind free functions, and
   CPU membership (publish, claim, move) belongs to `CpuNodeMap`.
