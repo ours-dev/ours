@@ -67,28 +67,35 @@ auto unpin_frame(PmFrame *frame) -> Status;
 
 Inside the allocator the resolved `AllocRequest` stays: it is an internal value built once from these parameters, as Linux's `struct alloc_context` is, and no caller sees it.
 
-### Gaf: one word for everything a caller wants
+### Gaf: four bits, each with one reader
 
-`Gaf` is a set of independent bits, as `gfp_t` is, grouped by the stage of the pipeline that reads them. Callers write a preset.
+`Gaf` is the one word for what a caller wants beyond size and node. It stays a set of bits, as `gfp_t` and Zircon's `PMM_ALLOC_FLAG_*` are, and it is cut to what a microkernel needs (the user's goal, restated 2026-11-10).
 
-| Group | Bits | Meaning | Counterpart |
+| Bit | Meaning | Read by | Counterpart |
 |---|---|---|---|
-| Zone | `Dma`, `Dma32` | an address ceiling; the highest zone type the request may use. Neither bit means up to `Normal` | `__GFP_DMA`, `__GFP_DMA32`; Zircon `PMM_ALLOC_FLAG_LO_MEM` |
-| Mobility | `Movable`, `Reclaimable` | which free lists the block comes from. Neither bit means `Unmovable` | `__GFP_MOVABLE`, `__GFP_RECLAIMABLE` |
-| Floor | `CanBlock`, `MemAlloc` | the watermark the request may not take a zone below: Low with `CanBlock`, none with `MemAlloc`, Min otherwise | `__GFP_DIRECT_RECLAIM`, `__GFP_MEMALLOC` |
-| Shortage | `CanWait` | answer `ShouldWait` and let the caller wait | Zircon `PMM_ALLOC_FLAG_CAN_WAIT` |
-| Place | `ThisNode` | the home node and no other | `__GFP_THISNODE` |
-| Content | `Zero`, `Compound` | zero the block; stamp its tail frames so that any frame of it leads to the head | `__GFP_ZERO`, `__GFP_COMP` |
+| `Zero` | the block is zeroed | `prepare_alloc()` | `__GFP_ZERO` |
+| `CanWait` | the request may be put off: it may not take a zone below Low, and below that it is answered `ShouldWait`. Without it the floor is Min and the answer is `OutOfMem` | the resolver, the entry | Zircon `PMM_ALLOC_FLAG_CAN_WAIT` |
+| `Movable` | the frame will belong to a VMO, an owner that can give it up when asked: it comes from the movable free lists | the resolver, then the zone as a `MigrateType` | `__GFP_MOVABLE` |
+| `Dma32` | the frame lies below 4 GiB | the resolver, as the request's highest zone | `__GFP_DMA32`, Zircon `PMM_ALLOC_FLAG_LO_MEM` |
 
 | Preset | Bits | Asked by |
 |---|---|---|
-| `ALLOC_KERNEL` | `CanBlock` | object cache, stacks, kernel data |
-| `ALLOC_ATOMIC` | none | callers that cannot block; page tables add `Zero` |
-| `ALLOC_USER` | `CanBlock`, `Movable`, `Zero` | pages a process can see |
+| `ALLOC_KERNEL` | none | object cache, stacks, kernel data; page tables add `Zero` |
+| `ALLOC_USER` | `Movable`, `Zero` | pages a process can see |
 | `ALLOC_USER_VMO` | `ALLOC_USER`, `CanWait` | pages of a VMO, which may be delayed under pressure |
-| `ALLOC_RECLAIMER` | `MemAlloc` | the reclaimer's own allocations |
 
-`Dma`, `Dma32` and `Movable` are bits the original interface had and lost because nothing passed them; they come back with a reader each. `Compound` settles when tail frames are stamped: the object cache and a large page ask for it, and a block about to be split does not pay for 511 stamps.
+Why the rest of `gfp_t` has no counterpart here: each of those bits exists in Linux because drivers and filesystems allocate inside the kernel, and here they do not.
+
+| Linux dimension | Why a monolithic kernel needs it | Here |
+|---|---|---|
+| `__GFP_DIRECT_RECLAIM`, `__GFP_IO`, `__GFP_FS` (may the allocation block and reclaim) | an allocation can recurse into a filesystem or a driver while reclaiming | reclaim is above the PMM and writeback belongs to a user pager, so the allocator never blocks; `Gaf::CanBlock` has no reader and goes |
+| `__GFP_HIGH`, `GFP_ATOMIC`, `__GFP_MEMALLOC` (deeper reserves) | drivers allocate in interrupt context, and reclaim itself allocates | interrupt paths in the kernel do not allocate; one floor for requests that cannot wait is enough |
+| `__GFP_RECLAIMABLE` | dentry and inode caches | no such cache; mobility is two-valued, a VMO's frame or not |
+| `__GFP_DMA` | ISA devices | a device gets memory through a contiguous VMO, and only the 4 GiB line matters |
+| `__GFP_THISNODE` | `gfp_t` passes through layers that carry no node mask | the entry has a `nodes` parameter: one node only is `NodeMask::of(nid)`; `Gaf::ThisNode` has no production caller and goes |
+| `__GFP_COMP` | many callers take a high-order block and split it themselves | splitting happens inside the allocator (`alloc_frames_contiguous()`), so every block above order 0 handed out is kept whole and always has its tails stamped |
+
+`CanBlock` and `ThisNode` are bits of the present interface; removing them is the user's decision (E2). The `Dma` zone and `MigrateType::Reclaimable` stay as they are, without a flag, until something needs to ask for them.
 
 ### Symmetric pairs, by object
 
@@ -118,7 +125,7 @@ Inside the allocator the resolved `AllocRequest` stays: it is an internal value 
 | the seam (`mm::` functions) | nothing but the node table, at file scope | the one entry: resolve the request, pick the home node, run the gates | touches a buddy, holds a zone lock |
 | `CpuNodeMap` | which node each CPU is on | where is this CPU | allocates |
 
-`Gaf` is read in two places only: the resolver, which turns it into the request's zone ceiling, mobility and floor, and `prepare_alloc()`, which reads `Zero` and `Compound`. A zone is handed an order, a mobility and a floor, never a `Gaf`.
+`Gaf` is read in two places only: the resolver, which turns it into the request's zone ceiling, mobility and floor, and `prepare_alloc()`, which reads `Zero`. A zone is handed an order, a mobility and a floor, never a `Gaf`.
 
 ### One allocation
 
@@ -140,7 +147,7 @@ The list forms run the same stages once per block inside one rollback scope. Rel
 **A block is a first-class thing (F2).** The head frame of an allocated block records its order; `FrameBuddy::acquire_inner()` already writes it, and the design makes it a contract. Consequences:
 
 - `free_frames()` takes no order. A caller cannot free a block at the wrong order.
-- The allocator stamps the tail frames of a `Compound` block (`compound_offset`) in `prepare_alloc()` and clears them in `prepare_free()`. The object cache stops doing it.
+- The allocator stamps the tail frames of every block above order 0 it hands out (`compound_offset`) in `prepare_alloc()` and clears them in `prepare_free()`. The object cache stops doing it.
 - `split_block(PmFrame *, usize to_order = 0)` turns one block into independent blocks of a lower order, each a head with its own order. A VMO splitting a 2 MiB block uses it, and so does `alloc_frames_contiguous()`, which takes a block, splits it and returns the surplus itself.
 
 **Holding a frame (F1).** A pin says: this frame's physical location and its content must stay. It is a property of the frame whatever its role, so the count moves from `page::VmmBody::pinned_count` to the header, into the reference word that has one writer and no reader today. `pin_frame()` and `unpin_frame()` require the caller to hold the lock of the frame's owner.
@@ -160,7 +167,7 @@ Proposed; Z1 to Z3 are open. A zone is the stock of one pfn span and the judge o
 - `take_range(start_pfn, n)` succeeds only when the whole range is free. A named physical range uses it now, and a mover clearing a range later.
 - `adopt(start_pfn, end_pfn)` is the one door frames enter stock by: the boot handoff, the init area, and hot add. It counts the frames as managed and observes no pressure. `retire()` is its inverse, for hot removal.
 - The walk goes from the highest zone a request may use downwards (Z2), so that Dma is the last resort and not the first (`docs/repairs/261028/mm.md` item 1).
-- The watermarks each mean one thing (Z3): High is where reclaim stops; Low is where it is woken, and the floor of a request with `CanBlock`; Min is the floor of a request without it; a request with `MemAlloc` has no floor. The counterpart is Linux's `zone_watermark_ok()` with `lowmem_reserve[]`.
+- The watermarks each mean one thing (Z3): High is where reclaim stops; Low is where it is woken, and the floor of a request with `CanWait`; Min is the floor of a request without it. The counterpart is Linux's `zone_watermark_ok()` with `lowmem_reserve[]`.
 
 ### PmNode
 
@@ -171,7 +178,7 @@ To be decided after the zone (N1). The shape under discussion: a placement domai
 | Feature | Lands in |
 |---|---|
 | Eviction and swap | the frame's pin, the node's pressure domain |
-| 2 MiB pages | the zone's lists by order and mobility, `Gaf::Compound`, `split_block()` |
+| 2 MiB pages | the zone's lists by order and mobility, the tail stamps, `split_block()` |
 | Memory below 4 GiB | `Gaf::Dma32`, read by the resolver and applied by the candidate walk |
 | Aligned contiguous allocation | `alloc_frames_contiguous()`, `split_block()`, later `PmZone::take_range()` |
 | Compaction, hot removal | `PmZone::take_range()` and `retire()`, the frame's pin, the owner asked by role |
@@ -198,10 +205,10 @@ To be decided after the zone (N1). The shape under discussion: a placement domai
 | F1. How a pin is made safe against movers | (a) the count is in the frame header, whatever the role, and is read and written under the owner's lock, which every mover also takes; (b) an atomic word that a pin raises and a mover freezes, with no owner lock | (a). Reclaim already adopts the owner, takes its lock and looks again; every mover follows the same path. The cost is that `pin_frame()` requires the owner's lock | None | **(a)**, 2026-11-10 |
 | F2. Whether a block is a first-class thing | (a) the caller remembers the order and the object cache stamps tails; (b) the allocator stamps order and tails, `free_frames()` takes no order, `split_block()` is added | (b). Large pages and contiguous VMOs both take a block, split it and return the parts | None | **(b)**, 2026-11-10 |
 | E1. The style of the public interface | (a) one `FrameRequest` structure and a list of blocks each way; (b) primitive parameters as in Linux and Zircon, one function per result kind | (a) at first | None | **(b)**, 2026-11-10, the user's rule |
-| E2. What `Gaf` carries | (a) the independent bits tabled above, grouped by reader, with presets; (b) only today's four bits, with further parameters for zone, mobility and floor | (a). One word says everything beyond size and node, as `gfp_t` does, and no signature grows | None | |
+| E2. What `Gaf` carries | (a) four bits, `Zero`, `CanWait`, `Movable` and `Dma32`, with `CanBlock` and `ThisNode` removed; (b) eleven bits covering every `gfp_t` dimension; (c) today's four bits unchanged | (a). A microkernel has no in-kernel driver or filesystem, which is what the other `gfp_t` bits serve; (a) has as many bits as today and each has a reader | None | |
 | Z1. How far mobility grouping goes | (a) the request and `take_block()` carry `MigrateType` now and the buddy keeps one list per order until large pages need more; (b) lists per order and type, a type per pageblock, and stealing whole blocks, now; (c) none | (a). It is a ceiling on large-page availability, so the user's to decide; (a) fixes the interface and leaves the mechanism until there is fragmentation to measure | None | |
 | Z2. The order of the zone walk | (a) from the highest usable zone down, with low zones protected by a reserve; (b) from the lowest up, as today | (a) | None | |
-| Z3. What each watermark means | (a) High stops reclaim, Low wakes it and is the floor with `CanBlock`, Min is the floor without it, `MemAlloc` has none; (b) one floor | (a). It is what the `Watermark` comments and `Gaf::CanBlock` intended and nothing reads | None | |
+| Z3. What each watermark means | (a) High stops reclaim, Low wakes it and is the floor with `CanWait`, Min is the floor without it; (b) one floor | (a). A request that can be put off is stopped first, and the kernel's own requests keep the band between Low and Min | None | |
 
 ## Testing and verification
 
