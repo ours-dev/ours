@@ -35,23 +35,72 @@ Non-goals:
 
 ## Design
 
-### The request, by dimension
+### The public seam: one pair, one request
 
-Each dimension is read by one stage of the pipeline and by nothing else.
+The user's constraints (2026-11-10): the interface is symmetric, the outside sees one method, flag parameters converge, and each object has a boundary that is not mixed.
 
-| Dimension | Today | Redesigned | Read by |
+```cpp
+struct FrameRequest {
+    Gaf flags = ALLOC_KERNEL;                   // who is asking, plus Zero and CanWait
+    FrameShape shape = FrameShape::block(0);    // what
+    Placement where = {};                       // where
+};
+
+auto alloc_frames(FrameRequest const &) -> ktl::Result<PmFrame::List>;
+auto free_frames(PmFrame::List &) -> void;
+
+auto pin_frame(PmFrame *) -> Status;
+auto unpin_frame(PmFrame *) -> Status;
+```
+
+The currency in both directions is a list of blocks, each head carrying its own order (F2). One block is a list of one. `free_frames()` takes what `alloc_frames()` gave, or any part of it, and needs nothing else.
+
+- `FrameShape` is built by name: `block(order)`, `pages(n)` for `n` independent frames, `run(n, align_log2)` for `n` adjacent independent frames, `exact(n)` for exactly `n` pages as one block per set bit, and later `range(phys, n)`.
+- `Placement` is `{home, nodes, strict, below}`. `strict` replaces `Gaf::ThisNode`, which is about place and has no production caller. `below` is an address ceiling and resolves to the highest zone type allowed.
+- `Gaf` stops being a set of independent bits. It names a class and carries two modifiers:
+
+| Class | Asked by | Mobility | Floor | Content |
+|---|---|---|---|---|
+| `Kernel` | object cache, stacks, kernel data | `Unmovable` | Low | as asked |
+| `PageTable` | page tables, callers that cannot block | `Unmovable` | Min | zeroed |
+| `User` | pages of a VMO | `Movable` | Low | zeroed, always |
+| `Reclaimer` | the reclaimer's own allocations | `Unmovable` | none | as asked |
+
+  The modifiers are `Zero` and `CanWait`. Mobility and the floor are derived by the resolver and no caller spells them, so a new dimension adds a column here and no flag. `CanBlock` goes: the class says it. Callers keep writing `ALLOC_KERNEL`, `ALLOC_USER` and `ALLOC_USER_VMO`, which is all production code writes today (74, 13 and 2 uses).
+
+The single-block callers, about 90, use an inline wrapper in the header that builds the request and takes the one block out of the list; `get_frames<T>()` is such a wrapper already. A wrapper is spelling over the one entry and never a second path.
+
+### Symmetric pairs, by object
+
+| Object | In | Out |
+|---|---|---|
+| the seam (`mm::`) | `alloc_frames(request)` | `free_frames(list)` |
+| the seam | `pin_frame(frame)` | `unpin_frame(frame)` |
+| the two gates | `prepare_alloc(frame, request)` | `prepare_free(frame)` |
+| `PmNode` | `take_blocks(request, list)` | none: a frame names its own zone, so release does not pass through a node |
+| `PmNode`, CPU set | `add_cpu(cpu)` | `remove_cpu(cpu)` |
+| `PmZone`, stock | `take_block(order, mobility)` | `return_block(frame)` |
+| `PmZone`, range | `take_range(start_pfn, n)` | `return_block(frame)` per block |
+| `PmZone`, membership | `adopt(start_pfn, end_pfn)` | `retire(start_pfn, end_pfn)`, for hot removal, later |
+| `PmZone`, cache | `fill_cache()` | `drain_cache()` |
+| `FrameBuddy` | `allocate(order)` | `release(frame, pfn)` |
+| `PmFrame` | `pin()`, `become<Body>()`, `mark_reserved()` | `unpin()`, `reset()`, `clear_reserved()` |
+
+### Boundaries
+
+| Object | Owns | Answers | Never |
 |---|---|---|---|
-| Shape | an order | a block; `n` single frames; `n` contiguous frames with an alignment; a named physical range | the zone |
-| Place | home node, node mask | plus an address ceiling, which resolves to the highest zone type allowed | the resolver, the candidate walk |
-| Mobility | none | `Unmovable`, `Movable`, `Reclaimable`, from who is asking | the zone |
-| Reserve floor | `CanBlock`, which nothing reads | the watermark a request may not take a zone below | the candidate walk |
-| On shortage | `CanWait` | fail, or `ShouldWait` | the entry |
-| Content | `Zero` | `Zero`, later a poison check | the gate out of stock |
+| `PmFrame` | one frame's identity (zone type, node, section), its block (order, tail offset), its pin count, its role body | what am I, whose am I, may I be moved | takes a lock, names a `PmZone` or a `PmNode`, links itself anywhere |
+| `FrameBuddy` | the free lists of one span | give me a block of `2^k`; take this block back | locks, counts, decides policy |
+| `PmZone` | the stock of one pfn span: lock, buddy, per-CPU cache, counters, watermarks | may this be taken from me; take; return | chooses between zones, zeroes, reads a placement, wakes a reclaimer |
+| `PmNode` | one node: the order of zones to try, its CPU set, its page queues, its pressure (reclaim wake-up, waiters) | in what order does this request try which zones; am I short | holds the table of nodes, serves a release, prepares a frame |
+| the seam (`mm::` functions) | nothing but the node table, at file scope | the one entry: resolve the request, pick the home node, run the gates | touches a buddy, holds a zone lock |
+| `CpuNodeMap` | which node each CPU is on | where is this CPU | allocates |
 
 ### One allocation
 
 ```text
-mm::alloc_frames(flags, order, placement)   the only entry (D1)
+mm::alloc_frames(request)                   the only entry (D1)
  resolve   -> AllocRequest                  home, policy, ceiling, mobility, floor
  admit     -> each candidate zone answers   watermark for the floor, low-zone reserve
  take      -> the zone's stock              per-CPU cache, then buddy
@@ -59,7 +108,7 @@ mm::alloc_frames(flags, order, placement)   the only entry (D1)
  shortage  -> the home node's pressure      wake reclaim; ShouldWait or OutOfMem
 ```
 
-Release is the mirror: `mm::free_frames(frame)` runs `prepare_free(frame)` (not pinned, not queued, not reserved; tail stamps cleared), returns the block to its zone, and lets the node observe pressure once.
+Release is the mirror: `mm::free_frames(list)` runs `prepare_free(frame)` on each block (not pinned, not queued, not reserved; tail stamps cleared), returns the block to its zone, and lets the node observe pressure once.
 
 `prepare_alloc()` and `prepare_free()` are the two gates every frame passes on its way out of and into stock. Zeroing is in `PmNode::take_block()` today, the role in the buddy, the assertions in `PmNode::return_block()` and the tail stamps in the object cache. The counterparts are Linux's `post_alloc_hook()` and `free_pages_prepare()` in `mm/page_alloc.c`.
 
@@ -67,10 +116,10 @@ Release is the mirror: `mm::free_frames(frame)` runs `prepare_free(frame)` (not 
 
 **A block is a first-class thing (F2).** The head frame of an allocated block records its order; `FrameBuddy::acquire_inner()` already writes it, and the design makes it a contract. Consequences:
 
-- `free_frames(PmFrame *)` takes no order. A caller cannot free a block at the wrong order.
+- `free_frames()` takes no order. A caller cannot free a block at the wrong order.
 - The allocator stamps the tail frames of a block (`compound_offset`) in `prepare_alloc()` and clears them in `prepare_free()`. The object cache stops doing it.
 - `split_block(PmFrame *, usize to_order = 0)` turns one block into independent blocks of a lower order, each a head with its own order. A VMO splitting a 2 MiB block and the contiguous shape both use it.
-- The contiguous shape is the allocator's: `alloc_frames_contiguous(flags, n, align_log2, placement)` answers `n` independent adjacent frames, having taken a block, split it and returned the surplus itself.
+- The contiguous shape is the allocator's: `FrameShape::run(n, align_log2)` answers `n` independent adjacent frames, the allocator having taken a block, split it and returned the surplus itself.
 
 **Holding a frame (F1).** A pin says: this frame's physical location and its content must stay. It is a property of the frame whatever its role, so the count moves from `page::VmmBody::pinned_count` to the header, into the reference word that has one writer and no reader today.
 
@@ -88,7 +137,14 @@ Filing a pinned page on the pinned page queue stays with the VMO: `pin_frame()` 
 
 ### PmZone
 
-To be decided in the next round (Z1 to Z3). The shape under discussion: stock in three layers (the per-CPU cache, the buddy keyed by order and mobility, the watermarks and a reserve for low zones); `take_block(order, mobility)` and `return_block(frame)` for takers; `admits(order, floor, wanted_zone)` as the question a zone answers about itself; `take_range(start_pfn, n)` for a contiguous or named range; `adopt(start_pfn, end_pfn)` as the one door frames enter stock by (the boot handoff, the init area, hot add).
+Proposed; Z1 to Z3 are open. A zone is the stock of one pfn span and the judge of whether something may be taken from it. The stock has three layers: the per-CPU cache, taken without the zone lock (a performance item, built later); the buddy, keyed by order and mobility; and the reserve, which is the three watermarks plus a share held back from requests that could have used a higher zone.
+
+- `take_block(order, mobility)` and `return_block(frame)` move one block under the zone lock.
+- `admits(order, floor, wanted_zone)` is the one question a zone answers about itself: would taking `2^order` frames leave it at or above `floor`, plus its reserve against a request whose `wanted_zone` is above it. The candidate walk asks; the zone never chooses.
+- `take_range(start_pfn, n)` succeeds only when the whole range is free. A named physical range uses it now, and a mover clearing a range later.
+- `adopt(start_pfn, end_pfn)` is the one door frames enter stock by: the boot handoff, the init area, and hot add. It counts the frames as managed and observes no pressure. `retire()` is its inverse, for hot removal.
+- The walk goes from the highest zone a request may use downwards (Z2), so that Dma is the last resort and not the first (`docs/repairs/261028/mm.md` item 1).
+- The watermarks each mean one thing (Z3): High is where reclaim stops, Low is where it is woken and the floor of `Kernel` and `User`, Min is the floor of `PageTable`, and `Reclaimer` has no floor. The counterpart is Linux's `zone_watermark_ok()` with `lowmem_reserve[]`.
 
 ### PmNode
 
@@ -124,6 +180,11 @@ To be decided after the zone (N1). The shape under discussion: a placement domai
 | D3. Scope | (a) structure only, behaviour unchanged; (b) the behaviour debts too | (a) | None | (a), 2026-11-10; withdrawn the same day, when the user reopened the scope |
 | F1. How a pin is made safe against movers | (a) the count is in the frame header, whatever the role, and is read and written under the owner's lock, which every mover also takes; (b) an atomic word that a pin raises and a mover freezes, with no owner lock | (a). Reclaim already adopts the owner, takes its lock and looks again; every mover follows the same path. The cost is that `pin_frame()` requires the owner's lock | None | **(a)**, 2026-11-10 |
 | F2. Whether a block is a first-class thing | (a) the caller remembers the order and the object cache stamps tails; (b) the allocator stamps order and tails, `free_frames()` takes no order, `split_block()` is added | (b). Large pages and contiguous VMOs both take a block, split it and return the parts | None | **(b)**, 2026-11-10 |
+| E1. The currency of the one entry | (a) one signature each way: `alloc_frames(FrameRequest)` answers a list of blocks and `free_frames()` takes one, with inline wrappers for the single-block callers; (b) one name with two signatures, a frame pointer for one block and a list for several | (a). Every shape takes one path, rollback and the pressure observation are written once, and a batch can be taken under one hold of the zone lock. The cost is a wrapper at about 90 single-block callers | None | |
+| E2. What `Gaf` is | (a) a class (`Kernel`, `PageTable`, `User`, `Reclaimer`) plus `Zero` and `CanWait`, with mobility and floor derived, `ThisNode` moved to `Placement::strict` and `CanBlock` gone; (b) independent bits, one more per new dimension | (a). Production writes three presets and nothing else; (b) would add bits for mobility, the floor and the reclaimer | None | |
+| Z1. How far mobility grouping goes | (a) the request and `take_block()` carry `MigrateType` now and the buddy keeps one list per order until large pages need more; (b) lists per order and type, a type per pageblock, and stealing whole blocks, now; (c) none | (a). It is a ceiling on large-page availability, so the user's to decide; (a) fixes the interface and leaves the mechanism until there is fragmentation to measure | None | |
+| Z2. The order of the zone walk | (a) from the highest usable zone down, with low zones protected by a reserve; (b) from the lowest up, as today | (a) | None | |
+| Z3. What each watermark means | (a) High stops reclaim, Low wakes it and is the floor of `Kernel` and `User`, Min is the floor of `PageTable`, `Reclaimer` has none; (b) one floor | (a). It is what the `Watermark` comments and `Gaf::CanBlock` intended and nothing reads | None | |
 
 ## Testing and verification
 
