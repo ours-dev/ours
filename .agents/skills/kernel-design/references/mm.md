@@ -269,19 +269,26 @@ a step is in, the code still has the shape described above.
 
 - The `mm::` free functions in `pmm.cpp` are the one pipeline across nodes:
   gate admission, `resolve_request()`, the home node's member
-  `take_block(request)`, then zeroing, counters and the pressure observation
-  outside the zone lock. `PmNode` has no static allocation or release
-  operation. The static layer was a second entry with the same signature that
-  skipped admission, and no production code called it.
+  `alloc_frames(request)`, then zeroing, counters and the pressure
+  observation outside the zone lock. `PmNode` has no static allocation or
+  release operation. The static layer was a second entry with the same
+  signature that skipped admission, and no production code called it.
+- The layers under the seam carry the seam's names (the user's, 2026-11-10):
+  `PmNode::alloc_frames()` and `free_frames()`, `PmZone::alloc_frames()` and
+  `free_frames()`, private and reached through `friend`. These replace
+  `take_block()` and `return_block()`; access says which layer is the entry,
+  so the name need not.
 - The public PMM interface takes primitive parameters, as Linux's
   `alloc_pages()` and Zircon's `pmm_alloc_page()` do: a `Gaf`, an order or a
   count, a node id. Never a compound structure as a parameter; the user
   rejected a `FrameRequest` and a `Placement` aggregate on 2026-11-10. One
-  function with trailing defaults (`home = ANY_NODE`, `nodes`) replaces the
-  paired overloads, and whatever else a caller wants (zone ceiling,
-  mobility, floor) is a `Gaf` bit behind a preset, not a new parameter.
-- Interfaces come in symmetric pairs (`alloc_frames`/`free_frames`,
-  `pin_frame`/`unpin_frame`, `take_block`/`return_block`), and each object
+  function with a trailing default (`home = ANY_NODE`) replaces the paired
+  overloads, no node mask is a public parameter, and whatever else a caller
+  wants (zone ceiling, mobility, floor) is a `Gaf` bit behind a preset, not
+  a new parameter. `Gaf` keeps `CanBlock`, `CanWait`, `ThisNode` and `Zero`
+  and gains `Movable` and `Dma32`.
+- Interfaces come in symmetric pairs (`alloc_frames`/`free_frames` at every
+  layer, `pin_frame`/`unpin_frame`), and each object
   has one boundary: say what it owns and what it never does before adding a
   method to it.
 - `PmNode` is one node: its `ZoneList`, `PageQueues` and CPU masks. The node

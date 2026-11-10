@@ -106,10 +106,10 @@ The `Dma` zone and `MigrateType::Reclaimable` stay as they are, without a flag, 
 | the seam | `alloc_frames_bulk()`, `_fragment()`, `_contiguous()` | `free_frames(list)` |
 | the seam | `pin_frame(frame)` | `unpin_frame(frame)` |
 | the two gates | `prepare_alloc(frame, request)` | `prepare_free(frame)` |
-| `PmNode` | `take_block(request)` | none: a frame names its own zone, so release does not pass through a node |
+| `PmNode` | `alloc_frames(request)` | `free_frames(frame)` |
 | `PmNode`, CPU set | `add_cpu(cpu)` | `remove_cpu(cpu)` |
-| `PmZone`, stock | `take_block(order, mobility)` | `return_block(frame)` |
-| `PmZone`, range | `take_range(start_pfn, n)` | `return_block(frame)` per block |
+| `PmZone`, stock | `alloc_frames(order, mobility)` | `free_frames(frame)` |
+| `PmZone`, range | `take_range(start_pfn, n)` | `free_frames(frame)` per block |
 | `PmZone`, membership | `adopt(start_pfn, end_pfn)` | `retire(start_pfn, end_pfn)`, for hot removal, later |
 | `PmZone`, cache | `fill_cache()` | `drain_cache()` |
 | `FrameBuddy` | `allocate(order)` | `release(frame, pfn)` |
@@ -122,7 +122,7 @@ The `Dma` zone and `MigrateType::Reclaimable` stay as they are, without a flag, 
 | `PmFrame` | one frame's identity (zone type, node, section), its block (order, tail offset), its pin count, its role body | what am I, whose am I, may I be moved | takes a lock, names a `PmZone` or a `PmNode`, links itself anywhere |
 | `FrameBuddy` | the free lists of one span | give me a block of `2^k`; take this block back | locks, counts, decides policy |
 | `PmZone` | the stock of one pfn span: lock, buddy, per-CPU cache, counters, watermarks | may this be taken from me; take; return | chooses between zones, zeroes, reads a `Gaf`, wakes a reclaimer |
-| `PmNode` | one node: the order of zones to try, its CPU set, its page queues, its pressure (reclaim wake-up, waiters) | in what order does this request try which zones; am I short | holds the table of nodes, serves a release, prepares a frame |
+| `PmNode` | one node: the order of zones to try, its CPU set, its page queues, its pressure (reclaim wake-up, waiters) | in what order does this request try which zones; am I short | holds the table of nodes, prepares a frame |
 | the seam (`mm::` functions) | nothing but the node table, at file scope | the one entry: resolve the request, pick the home node, run the gates | touches a buddy, holds a zone lock |
 | `CpuNodeMap` | which node each CPU is on | where is this CPU | allocates |
 
@@ -132,14 +132,14 @@ The `Dma` zone and `MigrateType::Reclaimable` stay as they are, without a flag, 
 
 The interface an object has in this task is small. The rest is a place kept for a feature, written down so that the feature has one place to go, and not built until the feature is.
 
-Only the seam is visible outside the PMM. `PmNode::take_block()` and `PmZone::take_block()`, `return_block()` and `admits()` are the layers under it: the seam calls the node, the node calls the zone, and nothing else calls either. They are private members reached through `friend`, as `PmNode::take_block()` already is, so that a caller outside cannot skip the seam's admission and gates.
+Only the seam is visible outside the PMM. The layers under it carry the same pair of names (E3): `mm::alloc_frames()` calls `PmNode::alloc_frames()`, which calls `PmZone::alloc_frames()`, and `mm::free_frames()` calls `PmNode::free_frames()` on the frame's node, which calls `PmZone::free_frames()`. Nothing else calls the node's or the zone's. They and `PmZone::admits()` are private members reached through `friend`, as `PmNode::take_block()` is today, so that a caller outside cannot skip the seam's admission and gates. Each layer does one thing under the one name: the seam resolves and prepares, the node chooses a zone and looks at its pressure, the zone moves the block under its lock.
 
 | Object | Built in this task | A slot, built with its feature |
 |---|---|---|
 | the seam | the nine functions above | `alloc_frames_range(phys, n)` |
 | `PmFrame` | block order as a contract, tail stamps by the allocator, the pin count in the header | none |
-| `PmZone` | `take_block(order, mobility)`, `return_block(frame)`, `admits(order, floor, highest_zone)` | `take_range()`, `adopt()` and `retire()`, `fill_cache()` and `drain_cache()` |
-| `PmNode` | `take_block(request)`, `add_cpu()` and `remove_cpu()`, `wake_reclaim(zone)`, `reclaim_target()` | none |
+| `PmZone` | `alloc_frames(order, mobility)`, `free_frames(frame)`, `admits(order, floor, highest_zone)` | `take_range()`, `adopt()` and `retire()`, `fill_cache()` and `drain_cache()` |
+| `PmNode` | `alloc_frames(request)`, `free_frames(frame)`, `add_cpu()` and `remove_cpu()`, `wake_reclaim(zone)`, `reclaim_target()` | none |
 
 ### One allocation
 
@@ -152,7 +152,7 @@ mm::alloc_frames(flags, order, home)         the only entry for one block (D1)
  shortage  -> the home node's pressure       wake reclaim; ShouldWait or OutOfMem
 ```
 
-The list forms run the same stages once per block inside one rollback scope. Release is the mirror: `mm::free_frames()` runs `prepare_free(frame)` (not pinned, not queued, not reserved; tail stamps cleared), returns the block to its zone, and lets the node observe pressure once.
+The list forms run the same stages once per block inside one rollback scope. Release is the mirror: `mm::free_frames()` runs `prepare_free(frame)` (not pinned, not queued, not reserved; tail stamps cleared), and hands the block to `PmNode::free_frames()` on the frame's node, which returns it to the zone and looks at the node's pressure once.
 
 `prepare_alloc()` and `prepare_free()` are the two gates every frame passes on its way out of and into stock. Zeroing is in `PmNode::take_block()` today, the role in the buddy, the assertions in `PmNode::return_block()` and the tail stamps in the object cache. The counterparts are Linux's `post_alloc_hook()` and `free_pages_prepare()` in `mm/page_alloc.c`.
 
@@ -176,7 +176,7 @@ Filing a pinned page on the pinned page queue stays with the VMO: `pin_frame()` 
 
 Decided (Z1 to Z3). A zone is the stock of one pfn span and the judge of whether something may be taken from it. The stock has three layers: the per-CPU cache, taken without the zone lock (a performance item, built later); the buddy, keyed by order and mobility; and the reserve, which is the three watermarks plus a share held back from requests that could have used a higher zone.
 
-- `take_block(order, mobility)` and `return_block(frame)` move one block under the zone lock.
+- `alloc_frames(order, mobility)` and `free_frames(frame)` move one block under the zone lock.
 - `admits(order, floor, wanted_zone)` is the one question a zone answers about itself: would taking `2^order` frames leave it at or above `floor`, plus its reserve against a request whose `wanted_zone` is above it. The candidate walk asks; the zone never chooses.
 - `take_range(start_pfn, n)` succeeds only when the whole range is free. A named physical range uses it now, and a mover clearing a range later.
 - `adopt(start_pfn, end_pfn)` is the one door frames enter stock by: the boot handoff, the init area, and hot add. It counts the frames as managed and observes no pressure. `retire()` is its inverse, for hot removal.
@@ -190,7 +190,8 @@ Decided (N1 to N3). A node is two domains. As a placement domain it owns the ord
 ```cpp
 class PmNode {
     // Placement domain.
-    auto take_block(AllocRequest const &request) -> ustl::Result<PmFrame *, BlockFailure>;
+    auto alloc_frames(AllocRequest const &request) -> ustl::Result<PmFrame *, BlockFailure>;
+    auto free_frames(PmFrame &frame) -> void;
     auto add_cpu(CpuNum cpu) -> void;
     auto remove_cpu(CpuNum cpu) -> void;
 
@@ -201,7 +202,7 @@ class PmNode {
 };
 ```
 
-- `take_block()` walks the node's candidates for the request, asks each zone `admits()` and takes from the first that does.
+- `alloc_frames()` walks the node's candidates for the request, asks each zone `admits()` and takes from the first that does. `free_frames()` returns a block to the zone of this node it came from, and wakes one waiter when that lifts the zone back above Low.
 - `wake_reclaim(zone)` is called by the entry when a walk found a zone below its floor: it marks the node as wanting reclaim and wakes the reclaimer. The counterpart is Linux's `wakeup_kswapd()`.
 - `reclaim_target()` is what the reclaimer asks each node: how many frames its zones are short of High, and zero for a node nobody marked. The mark is the node's (N2); the thread and the order of the walk (zero pages, then pager pages) stay with `MemoryReclaimer`, above the PMM.
 
@@ -211,7 +212,7 @@ One request that waits, on a node that is short:
 alloc_frames(ALLOC_USER_VMO)   every candidate zone is below Low: wake_reclaim(), answer ShouldWait
 caller                         drops its locks, wait_for_frame_allocation(flags, deadline)
 reclaimer                      asks each node reclaim_target(), walks that node's page queues
-free_frames()                  a zone rises above Low: the seam wakes one waiter
+free_frames()                  a zone rises above Low: its node wakes one waiter
 waiter                         retries; on success wakes the next waiter, on ShouldWait sleeps again
 ```
 
@@ -247,7 +248,7 @@ The node table and the state masks are file-scope data behind free functions, an
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D1. Where the pipeline across nodes lives | (a) static `PmNode::alloc_frames()` and `free_frames()`, with `mm::` adding admission; (b) the `mm::` free functions are the pipeline and `PmNode` keeps the member `take_block(request)` | (b). It reverses the choice of 2026-11-04. Production never calls the static layer; it is a second entry that skips admission | None (homework paused) | **(b)**, 2026-11-10 |
+| D1. Where the pipeline across nodes lives | (a) static `PmNode::alloc_frames()` and `free_frames()`, with `mm::` adding admission; (b) the `mm::` free functions are the pipeline and `PmNode` keeps the member `alloc_frames(request)` | (b). It reverses the choice of 2026-11-04. Production never calls the static layer; it is a second entry that skips admission | None (homework paused) | **(b)**, 2026-11-10 |
 | D2. How a caller says where | (a) paired overloads with and without a home, and a trailing `NodeMask`; (b) one `Placement{home, nodes}` aggregate; (c) one function with trailing primitive parameters, `home = ANY_NODE` and `nodes` | (b) at first | None | (b), 2026-11-10; reversed to **(c)** the same day by the user's rule against compound parameters |
 | D3. Scope | (a) structure only, behaviour unchanged; (b) the behaviour debts too | (a) | None | (a), 2026-11-10; withdrawn the same day, when the user reopened the scope |
 | D4. Whether a node mask is a public parameter | (a) yes, a trailing `nodes` on every allocation function, as today; (b) no: `Gaf::ThisNode` for one node, the thread's policy for the rest, the mask internal | (b). Production never passes one, and it is the fourth parameter of every signature | None | **(b)**, 2026-11-10, Claude's judgement as N1; can be reopened |
@@ -255,7 +256,8 @@ The node table and the state masks are file-scope data behind free functions, an
 | F2. Whether a block is a first-class thing | (a) the caller remembers the order and the object cache stamps tails; (b) the allocator stamps order and tails, `free_frames()` takes no order, `split_block()` is added | (b). Large pages and contiguous VMOs both take a block, split it and return the parts | None | **(b)**, 2026-11-10 |
 | E1. The style of the public interface | (a) one `FrameRequest` structure and a list of blocks each way; (b) primitive parameters as in Linux and Zircon, one function per result kind | (a) at first | None | **(b)**, 2026-11-10, the user's rule |
 | E2. What `Gaf` carries | (a) four bits, `Zero`, `CanWait`, `Movable` and `Dma32`, with `CanBlock` and `ThisNode` removed; (b) eleven bits covering every `gfp_t` dimension; (c) today's four bits kept, plus `Movable` and `Dma32` | (a). A microkernel has no in-kernel driver or filesystem, which is what the other `gfp_t` bits serve | None | **(c)**, 2026-11-10: the user keeps `CanBlock` and `ThisNode` |
-| Z1. How far mobility grouping goes | (a) the request and `take_block()` carry `MigrateType` now and the buddy keeps one list per order until large pages need more; (b) lists per order and type, a type per pageblock, and stealing whole blocks, now; (c) none | (a). It is a ceiling on large-page availability, so the user's to decide; (a) fixes the interface and leaves the mechanism until there is fragmentation to measure | None | **(a)**, 2026-11-10 |
+| E3. What the layers under the seam are called | (a) `take_block()` and `return_block()`, the names of 2026-11-04; (b) `alloc_frames()` and `free_frames()` on `PmNode` and on `PmZone`, the seam's own pair | (b). The layers are private, so access says which is the entry and the name need not | None | **(b)**, 2026-11-10, the user's names. `PmNode::free_frames()` is added so that the node has the pair too |
+| Z1. How far mobility grouping goes | (a) the request and `alloc_frames()` carry `MigrateType` now and the buddy keeps one list per order until large pages need more; (b) lists per order and type, a type per pageblock, and stealing whole blocks, now; (c) none | (a). It is a ceiling on large-page availability, so the user's to decide; (a) fixes the interface and leaves the mechanism until there is fragmentation to measure | None | **(a)**, 2026-11-10 |
 | Z2. The order of the zone walk | (a) from the highest usable zone down, with low zones protected by a reserve; (b) from the lowest up, as today | (a) | None | **(a)**, 2026-11-10 |
 | Z3. What each watermark means | (a) High stops reclaim, Low wakes it and is the floor with `CanBlock`, Min is the floor without it; (b) one floor | (a). It is what the `Watermark` comments and `Gaf::CanBlock` say they are for, and it gives the kept bit its reader: a caller that may block is stopped first, and one that may not keeps the band between Low and Min | None | **(a)**, 2026-11-10 |
 | N1. What puts a request off, and what wakes it | (a) one threshold, the zone's Low floor; a release that lifts a zone above Low wakes a waiter; the gate keeps the watchdog's signal and the OutOfMemory refusal, and loses its delay level and Shut state; (b) the zone floor and the machine-wide delay level both, as today | (a). It revises "admission and waits use the global gate" of 2026-11-04: Z3 already makes the zone decide, and two thresholds for one decision can disagree | None | **(a)**, 2026-11-10. The user left N1 to N3 to Claude's judgement; any of them can be reopened |
