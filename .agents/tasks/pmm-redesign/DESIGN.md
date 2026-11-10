@@ -38,29 +38,27 @@ Non-goals:
 
 ### The public seam
 
+Every parameter is primitive and there are at most three, four for a contiguous run: what (`Gaf`), how much, and optionally which node.
+
 ```cpp
-// One block. The core entry; everything else that answers one block is an
-// inline wrapper over it.
-auto alloc_frames(Gaf flags, usize order = 0, NodeId home = ANY_NODE,
-                  NodeMask const &nodes = node_online_mask()) -> ktl::Result<PmFrame *>;
+auto alloc_frames(Gaf flags, usize order = 0, NodeId home = ANY_NODE) -> ktl::Result<PmFrame *>;
 auto free_frames(PmFrame *frame) -> void;
 
-// Several blocks.
-auto alloc_frames_bulk(Gaf flags, usize n, NodeId home = ANY_NODE,
-                       NodeMask const &nodes = node_online_mask()) -> ktl::Result<PmFrame::List>;
-auto alloc_frames_fragment(Gaf flags, usize n, NodeId home = ANY_NODE,
-                           NodeMask const &nodes = node_online_mask())
+auto alloc_frames_bulk(Gaf flags, usize n, NodeId home = ANY_NODE) -> ktl::Result<PmFrame::List>;
+auto alloc_frames_fragment(Gaf flags, usize n, NodeId home = ANY_NODE)
     -> ktl::Result<PmFrame::List>;
-auto alloc_frames_contiguous(Gaf flags, usize n, usize align_log2, NodeId home = ANY_NODE,
-                             NodeMask const &nodes = node_online_mask())
+auto alloc_frames_contiguous(Gaf flags, usize n, usize align_log2, NodeId home = ANY_NODE)
     -> ktl::Result<PmFrame::List>;
 auto free_frames(PmFrame::List *frames) -> void;
 
 auto pin_frame(PmFrame *frame) -> Status;
 auto unpin_frame(PmFrame *frame) -> Status;
+
+auto split_block(PmFrame *frame, usize order = 0) -> void;
 ```
 
-- `alloc_frames()` has the parameters of Linux's `__alloc_pages(gfp, order, preferred_nid, nodemask)`. Trailing defaults replace the paired overloads with and without a home node: a home of `ANY_NODE` means the calling CPU's node, as an id outside the node table already does today. Eleven declarations become four.
+- `alloc_frames()` is Linux's `alloc_pages_node(nid, gfp, order)` with the node last and defaulted, so the paired overloads with and without a home node become one function: a home of `ANY_NODE` means the calling CPU's node, as an id outside the node table already does today. Eleven declarations become four.
+- No node mask is a public parameter (D4). Production code never passes one; "this node only" is `Gaf::ThisNode`, and a wider restriction comes from the calling thread's placement policy. The mask stays in the internal request, where the resolver fills it, and a test reaches it through the resolver.
 - The list forms are Zircon's `pmm_alloc_pages(count, flags, list)` and `pmm_alloc_contiguous(count, flags, align_log2, pa, list)`, and `free_frames(PmFrame::List *)` is its `pmm_free(list)`. `alloc_frames_bulk()` is today's `alloc_frames(NodeId, Gaf, PmFrame::List *, usize)` under its own name.
 - `free_frames()` takes no order, because the head of a block records it (F2).
 - `get_frames<T>()`, `get_frames_n<T>()` and `alloc_frames_n()` stay as inline wrappers. `alloc_page_table()` and `free_page_table()`, `unwire_frame()`, `wait_for_frame_allocation()`, `set_free_memory_signal()` and the two counts do not change.
@@ -104,7 +102,7 @@ The `Dma` zone and `MigrateType::Reclaimable` stay as they are, without a flag, 
 
 | Object | In | Out |
 |---|---|---|
-| the seam (`mm::`) | `alloc_frames(flags, order, home, nodes)` | `free_frames(frame)` |
+| the seam (`mm::`) | `alloc_frames(flags, order, home)` | `free_frames(frame)` |
 | the seam | `alloc_frames_bulk()`, `_fragment()`, `_contiguous()` | `free_frames(list)` |
 | the seam | `pin_frame(frame)` | `unpin_frame(frame)` |
 | the two gates | `prepare_alloc(frame, request)` | `prepare_free(frame)` |
@@ -130,10 +128,21 @@ The `Dma` zone and `MigrateType::Reclaimable` stay as they are, without a flag, 
 
 `Gaf` is read in two places only: the resolver, which turns it into the request's zone ceiling, mobility and floor, and `prepare_alloc()`, which reads `Zero`. A zone is handed an order, a mobility and a floor, never a `Gaf`.
 
+### Built now, and slots for later
+
+The interface an object has in this task is small. The rest is a place kept for a feature, written down so that the feature has one place to go, and not built until the feature is.
+
+| Object | Built in this task | A slot, built with its feature |
+|---|---|---|
+| the seam | the nine functions above | `alloc_frames_range(phys, n)` |
+| `PmFrame` | block order as a contract, tail stamps by the allocator, the pin count in the header | none |
+| `PmZone` | `take_block(order, mobility)`, `return_block(frame)`, `admits(order, floor, highest_zone)` | `take_range()`, `adopt()` and `retire()`, `fill_cache()` and `drain_cache()` |
+| `PmNode` | `take_block(request)`, `add_cpu()` and `remove_cpu()`, `wake_reclaim(zone)`, `reclaim_target()` | none |
+
 ### One allocation
 
 ```text
-mm::alloc_frames(flags, order, home, nodes)  the only entry for one block (D1)
+mm::alloc_frames(flags, order, home)         the only entry for one block (D1)
  resolve   -> AllocRequest                   home, policy, ceiling, mobility, floor
  admit     -> each candidate zone answers    watermark for the floor, low-zone reserve
  take      -> the zone's stock               per-CPU cache, then buddy
@@ -174,7 +183,7 @@ Decided (Z1 to Z3). A zone is the stock of one pfn span and the judge of whether
 
 ### PmNode
 
-Proposed; N1 to N3 are open. A node is two domains. As a placement domain it owns the order in which a request tries zones and the set of CPUs working on it. As a pressure domain it owns its page queues and the record of which of its zones are short. Zircon's `PmmNode` is the counterpart of the second: it holds the free-memory signal, the should-wait state, the page queues and the evictor for its one node. Here those are spread over a gate in `pmm.cpp`, a two-dimensional array inside `MemoryReclaimer` and the node.
+Decided (N1 to N3). A node is two domains. As a placement domain it owns the order in which a request tries zones and the set of CPUs working on it. As a pressure domain it owns its page queues and the record of which of its zones are short. Zircon's `PmmNode` is the counterpart of the second: it holds the free-memory signal, the should-wait state, the page queues and the evictor for its one node. Here those are spread over a gate in `pmm.cpp`, a two-dimensional array inside `MemoryReclaimer` and the node.
 
 ```cpp
 class PmNode {
@@ -185,29 +194,28 @@ class PmNode {
 
     // Pressure domain.
     auto page_queues() -> PageQueues &;
-    auto note_shortage(PmZone const &zone) -> void;
-    auto note_relief(PmZone const &zone) -> void;
+    auto wake_reclaim(PmZone const &zone) -> void;
     auto reclaim_target() -> usize;
 };
 ```
 
 - `take_block()` walks the node's candidates for the request, asks each zone `admits()` and takes from the first that does.
-- `note_shortage(zone)` is called by the entry when a walk found a zone below its floor: it marks the node as wanting reclaim and wakes the reclaimer. `note_relief(zone)` is its inverse, called by a release that brings a zone back above Low: it wakes one waiter.
-- `reclaim_target()` is what the reclaimer asks each node: how many frames its zones are short of High, and zero for a node nobody marked. The pending mark is the node's (N2); the thread and the order of the walk (zero pages, then pager pages) stay with `MemoryReclaimer`, above the PMM.
+- `wake_reclaim(zone)` is called by the entry when a walk found a zone below its floor: it marks the node as wanting reclaim and wakes the reclaimer. The counterpart is Linux's `wakeup_kswapd()`.
+- `reclaim_target()` is what the reclaimer asks each node: how many frames its zones are short of High, and zero for a node nobody marked. The mark is the node's (N2); the thread and the order of the walk (zero pages, then pager pages) stay with `MemoryReclaimer`, above the PMM.
 
 One request that waits, on a node that is short:
 
 ```text
-alloc_frames(ALLOC_USER_VMO)   every candidate zone is below Low: note_shortage(), answer ShouldWait
+alloc_frames(ALLOC_USER_VMO)   every candidate zone is below Low: wake_reclaim(), answer ShouldWait
 caller                         drops its locks, wait_for_frame_allocation(flags, deadline)
 reclaimer                      asks each node reclaim_target(), walks that node's page queues
-free_frames()                  a zone rises above Low: note_relief() wakes one waiter
+free_frames()                  a zone rises above Low: the seam wakes one waiter
 waiter                         retries; on success wakes the next waiter, on ShouldWait sleeps again
 ```
 
-A request is put off by one threshold only, the zone's Low floor (N1). The gate's delay level and its Shut state go, because they are a second, machine-wide threshold for the same decision, and a request confined to one node or to memory below 4 GiB can be short while the machine-wide count is healthy. What stays machine-wide is what is machine-wide: the watchdog's signal over total free memory, from which it reports pressure to user space, and its switch at OutOfMemory that makes every waiter and every later `CanWait` request answer `OutOfMem` (Zircon's `pmm_stop_returning_should_wait()`). A node whose reclaim pass gave nothing back is marked stuck, and a retry there answers `OutOfMem` and not `ShouldWait`, so that a wait ends when nothing can end the shortage.
+A request is put off by one threshold only, the zone's Low floor (N1). The gate's delay level and its Shut state go, because they are a second, machine-wide threshold for the same decision, and a request confined to one node or to memory below 4 GiB can be short while the machine-wide count is healthy. What stays machine-wide is what is machine-wide: the watchdog's signal over total free memory, from which it reports pressure to user space; its switch at OutOfMemory that makes every waiter and every later `CanWait` request answer `OutOfMem` (Zircon's `pmm_stop_returning_should_wait()`); and the waiters, which are one event and not one per node, since a request may fall back to another node and a relief anywhere is a reason to retry.
 
-The waiters are one machine-wide event and not one per node: a request may fall back to another node, so a relief anywhere is a reason to retry.
+A wait has to end when nothing can end the shortage: a node whose reclaim pass gave nothing back is marked stuck, and a retry there answers `OutOfMem` and not `ShouldWait`.
 
 The node table and the state masks are file-scope data behind free functions, and CPU membership (publish, claim, move) belongs to `CpuNodeMap`, as `pmm-layering` D2(a) decided.
 
@@ -240,6 +248,7 @@ The node table and the state masks are file-scope data behind free functions, an
 | D1. Where the pipeline across nodes lives | (a) static `PmNode::alloc_frames()` and `free_frames()`, with `mm::` adding admission; (b) the `mm::` free functions are the pipeline and `PmNode` keeps the member `take_block(request)` | (b). It reverses the choice of 2026-11-04. Production never calls the static layer; it is a second entry that skips admission | None (homework paused) | **(b)**, 2026-11-10 |
 | D2. How a caller says where | (a) paired overloads with and without a home, and a trailing `NodeMask`; (b) one `Placement{home, nodes}` aggregate; (c) one function with trailing primitive parameters, `home = ANY_NODE` and `nodes` | (b) at first | None | (b), 2026-11-10; reversed to **(c)** the same day by the user's rule against compound parameters |
 | D3. Scope | (a) structure only, behaviour unchanged; (b) the behaviour debts too | (a) | None | (a), 2026-11-10; withdrawn the same day, when the user reopened the scope |
+| D4. Whether a node mask is a public parameter | (a) yes, a trailing `nodes` on every allocation function, as today; (b) no: `Gaf::ThisNode` for one node, the thread's policy for the rest, the mask internal | (b). Production never passes one, and it is the fourth parameter of every signature | None | **(b)**, 2026-11-10, Claude's judgement as N1; can be reopened |
 | F1. How a pin is made safe against movers | (a) the count is in the frame header, whatever the role, and is read and written under the owner's lock, which every mover also takes; (b) an atomic word that a pin raises and a mover freezes, with no owner lock | (a). Reclaim already adopts the owner, takes its lock and looks again; every mover follows the same path. The cost is that `pin_frame()` requires the owner's lock | None | **(a)**, 2026-11-10 |
 | F2. Whether a block is a first-class thing | (a) the caller remembers the order and the object cache stamps tails; (b) the allocator stamps order and tails, `free_frames()` takes no order, `split_block()` is added | (b). Large pages and contiguous VMOs both take a block, split it and return the parts | None | **(b)**, 2026-11-10 |
 | E1. The style of the public interface | (a) one `FrameRequest` structure and a list of blocks each way; (b) primitive parameters as in Linux and Zircon, one function per result kind | (a) at first | None | **(b)**, 2026-11-10, the user's rule |
@@ -247,9 +256,9 @@ The node table and the state masks are file-scope data behind free functions, an
 | Z1. How far mobility grouping goes | (a) the request and `take_block()` carry `MigrateType` now and the buddy keeps one list per order until large pages need more; (b) lists per order and type, a type per pageblock, and stealing whole blocks, now; (c) none | (a). It is a ceiling on large-page availability, so the user's to decide; (a) fixes the interface and leaves the mechanism until there is fragmentation to measure | None | **(a)**, 2026-11-10 |
 | Z2. The order of the zone walk | (a) from the highest usable zone down, with low zones protected by a reserve; (b) from the lowest up, as today | (a) | None | **(a)**, 2026-11-10 |
 | Z3. What each watermark means | (a) High stops reclaim, Low wakes it and is the floor with `CanBlock`, Min is the floor without it; (b) one floor | (a). It is what the `Watermark` comments and `Gaf::CanBlock` say they are for, and it gives the kept bit its reader: a caller that may block is stopped first, and one that may not keeps the band between Low and Min | None | **(a)**, 2026-11-10 |
-| N1. What puts a request off, and what wakes it | (a) one threshold, the zone's Low floor; a release that lifts a zone above Low wakes a waiter; the gate keeps the watchdog's signal and the OutOfMemory refusal, and loses its delay level and Shut state; (b) the zone floor and the machine-wide delay level both, as today | (a). It revises "admission and waits use the global gate" of 2026-11-04: Z3 already makes the zone decide, and two thresholds for one decision can disagree | None | |
-| N2. Where the record of a short zone lives | (a) in its node, set by `note_shortage()` and read through `reclaim_target()`; (b) in `MemoryReclaimer`'s array indexed by node and zone type, as today | (a). It is state about the node's zones, and the reclaimer needs only a number from each node | None | |
-| N3. How many reclaim threads | (a) one, serving each marked node in turn, as today; (b) one per node | (a) for now. One per node is a scaling choice and so the user's; nothing in the interface above depends on it | None | |
+| N1. What puts a request off, and what wakes it | (a) one threshold, the zone's Low floor; a release that lifts a zone above Low wakes a waiter; the gate keeps the watchdog's signal and the OutOfMemory refusal, and loses its delay level and Shut state; (b) the zone floor and the machine-wide delay level both, as today | (a). It revises "admission and waits use the global gate" of 2026-11-04: Z3 already makes the zone decide, and two thresholds for one decision can disagree | None | **(a)**, 2026-11-10. The user left N1 to N3 to Claude's judgement; any of them can be reopened |
+| N2. Where the record of a short zone lives | (a) in its node, set by `wake_reclaim()` and read through `reclaim_target()`; (b) in `MemoryReclaimer`'s array indexed by node and zone type, as today | (a). It is state about the node's zones, and the reclaimer needs only a number from each node | None | **(a)**, 2026-11-10, as N1 |
+| N3. How many reclaim threads | (a) one, serving each marked node in turn, as today; (b) one per node | (a) for now. One per node is a scaling choice and so the user's; nothing in the interface above depends on it | None | **(a)**, 2026-11-10, as N1 |
 
 ## Testing and verification
 
