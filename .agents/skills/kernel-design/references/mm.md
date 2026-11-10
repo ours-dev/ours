@@ -261,6 +261,29 @@ A block attempt carries its optional depleted zone in its typed failure.
 The reclaimer stores Idle and Pending as per-zone enum states. Owner-directed
 block return requires a frame reference at the zone boundary.
 
+## PMM allocation pipeline (user decision, 2026-11-10)
+
+This supersedes the static `PmNode` allocation interface above; the design is
+`.agents/tasks/pmm-redesign/DESIGN.md`. It lands one step at a time, so until
+a step is in, the code still has the shape described above.
+
+- The `mm::` free functions in `pmm.cpp` are the one pipeline across nodes:
+  gate admission, `resolve_request()`, the home node's member
+  `take_block(request)`, then zeroing, counters and the pressure observation
+  outside the zone lock. `PmNode` has no static allocation or release
+  operation. The static layer was a second entry with the same signature that
+  skipped admission, and no production code called it.
+- A caller says where through one `Placement{home, nodes}` aggregate that
+  defaults to the calling CPU's node and every online node. Do not add an
+  overload per constraint: a new constraint (an address ceiling) is a field.
+- `PmNode` is one node: its `ZoneList`, `PageQueues` and CPU masks. The node
+  table and the state masks are file-scope data behind free functions, and
+  CPU membership (publish, claim, move) belongs to `CpuNodeMap`.
+- The redesign pass changes structure only. Watermark admission, the zone
+  walk's order and an address ceiling are functional follow-ups; the per-CPU
+  frame cache and the gate's sum over zones are performance items for the
+  user.
+
 ## VMM naming choices (user decision, 2026-11-05)
 
 Keep the address selection name alloc_spot because selecting an address may
