@@ -279,10 +279,14 @@ a step is in, the code still has the shape described above.
 - `PmNode` is one node: its `ZoneList`, `PageQueues` and CPU masks. The node
   table and the state masks are file-scope data behind free functions, and
   CPU membership (publish, claim, move) belongs to `CpuNodeMap`.
-- The redesign pass changes structure only. Watermark admission, the zone
-  walk's order and an address ceiling are functional follow-ups; the per-CPU
-  frame cache and the gate's sum over zones are performance items for the
-  user.
+- The scope of the pass was reopened the same day: the user wants the PMM
+  designed from what it must support later (swap and eviction, large pages,
+  constrained and contiguous allocation, movers), with the node, the zone and
+  the frame kept as the principal objects, not a pruning of what exists.
+- `pin_frame()` and `unpin_frame()` in `pmm.hpp` are planned interfaces, for
+  holding a frame against being swapped out. So are `MigrateType` and the
+  `Movable` and `Dynamic` zone types. An undefined declaration or unused enum
+  in the PMM is a statement of a requirement; design for it, never delete it.
 
 ## VMM naming choices (user decision, 2026-11-05)
 

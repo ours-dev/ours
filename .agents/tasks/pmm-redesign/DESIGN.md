@@ -1,16 +1,18 @@
 # pmm-redesign: one allocation pipeline, and one job for each PMM class
 
 **Date**: 2026-11-10
-**Status**: Accepted
+**Status**: Proposed
 
 ## Problem
+
+Reopened on 2026-11-10, the day it was written: the user judged this pass too shallow, a pruning of what exists and not a design of what the PMM must support. It is being reworked from the PMM's future users (swap and eviction, large pages, constrained and contiguous allocation, movers) with the node, the zone and the frame kept as the principal objects. D1 and D2 stand. `pin_frame()` and `unpin_frame()` are planned interfaces, for holding a frame against being swapped out, and stay.
 
 The user asked for a redesign of the PMM as a whole: which classes exist and what each one's interface is. Earlier tasks (`pmm-layering`, `pmm-responsibilities`, `pmm-static`, `pmm-transfer`, `pmm-naming`) each fixed one seam. The overall shape still has four faults, measured on `a1d37028`:
 
 - **The allocation entry exists twice with one signature.** `mm::alloc_frames()` calls the static `PmNode::alloc_frames()`, which calls the member `PmNode::take_block()`. The two outer layers differ only in the `Gaf::CanWait` admission and the test fault injection. No production code calls the static layer directly. Two tests do, 41 times (`kernel/tests/pm_node_test.cpp` 37, `kernel/tests/memory_pressure_test.cpp` 4), and they reach an entry that skips admission.
 - **`PmNode` is still four things.** It is one node's state, the registry of all nodes (`NODES`, `STATES`, `NUM_NODES`), the allocator across nodes (the static allocation and release operations plus `observe_pressure()`), and the keeper of CPU membership (`publish_cpu()`, `publish_cpus()`, `claim_possible_cpus()`, `set_cpu_node()`). Outside the PMM's own files, 15 uses name `PmNode`, and none of them allocates: they want the registry, CPU membership or bring-up.
 - **`pmm.hpp` declares eleven allocation functions for three contracts.** A block of `2^order` frames, a list of single frames, and an exact page count as blocks. Each exists once without a home node and once with one, each with a trailing `NodeMask`. In production an explicit home is passed three times (`cpu_local.cpp` twice, `object_cache.cpp` once) and a `NodeMask` never. The list form is spelled `alloc_frames(NodeId, Gaf, PmFrame::List *, usize)` and answers a `Status`, unlike its siblings.
-- **Declarations and paths with nothing behind them.** `pin_frame()`, `unpin_frame()`, `cpu_to_node()` and `PmZone::find_frame()` are declared and never defined. The `BelowHighWmark` test in `PmZone::take_block()` has no writer, so it never fires. `apply_thread_policy()` takes the thread's resource lock and then does nothing in every branch. `FreeMemoryGate` is in an anonymous namespace in `pmm.cpp`, which is why `PmNode::observe_pressure()` is defined in `pmm.cpp` and not with the rest of `PmNode`.
+- **Declarations and paths with nothing behind them.** `cpu_to_node()` and `PmZone::find_frame()` are declared and never defined. The `BelowHighWmark` test in `PmZone::take_block()` has no writer, so it never fires. `apply_thread_policy()` takes the thread's resource lock and then does nothing in every branch. `FreeMemoryGate` is in an anonymous namespace in `pmm.cpp`, which is why `PmNode::observe_pressure()` is defined in `pmm.cpp` and not with the rest of `PmNode`.
 
 ## Goals and non-goals
 
@@ -91,7 +93,7 @@ auto unwire_frame(PmFrame *) -> void;
 
 `alloc_frames_n()` and `get_frames_n()` stay as inline helpers over `get_order()`. `alloc_page_table()`, `free_page_table()`, `set_free_memory_signal()`, `approx_free_frame_count()` and `free_frame_count()` do not change.
 
-Removed: `alloc_frames(Gaf, PhysAddr *, usize)`, which only tests call and `frame_to_phys()` replaces; `pin_frame()`, `unpin_frame()` and `cpu_to_node()`, which have no definition. The node queries (`current_node()`, `node_work_cpus()`, the affinity getters, the masks and the counts) move to the node table's header, which `pmm.hpp` includes until its users include it themselves.
+Removed: `alloc_frames(Gaf, PhysAddr *, usize)`, which only tests call and `frame_to_phys()` replaces; and `cpu_to_node()`, which has no definition. The node queries (`current_node()`, `node_work_cpus()`, the affinity getters, the masks and the counts) move to the node table's header, which `pmm.hpp` includes until its users include it themselves.
 
 `Gaf::ThisNode` keeps its contract: the resolver intersects `Placement::nodes` with the home node.
 
