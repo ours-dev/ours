@@ -132,6 +132,8 @@ The `Dma` zone and `MigrateType::Reclaimable` stay as they are, without a flag, 
 
 The interface an object has in this task is small. The rest is a place kept for a feature, written down so that the feature has one place to go, and not built until the feature is.
 
+Only the seam is visible outside the PMM. `PmNode::take_block()` and `PmZone::take_block()`, `return_block()` and `admits()` are the layers under it: the seam calls the node, the node calls the zone, and nothing else calls either. They are private members reached through `friend`, as `PmNode::take_block()` already is, so that a caller outside cannot skip the seam's admission and gates.
+
 | Object | Built in this task | A slot, built with its feature |
 |---|---|---|
 | the seam | the nine functions above | `alloc_frames_range(phys, n)` |
