@@ -163,7 +163,7 @@ Filing a pinned page on the pinned page queue stays with the VMO: `pin_frame()` 
 
 ### PmZone
 
-Proposed; Z1 to Z3 are open. A zone is the stock of one pfn span and the judge of whether something may be taken from it. The stock has three layers: the per-CPU cache, taken without the zone lock (a performance item, built later); the buddy, keyed by order and mobility; and the reserve, which is the three watermarks plus a share held back from requests that could have used a higher zone.
+Decided (Z1 to Z3). A zone is the stock of one pfn span and the judge of whether something may be taken from it. The stock has three layers: the per-CPU cache, taken without the zone lock (a performance item, built later); the buddy, keyed by order and mobility; and the reserve, which is the three watermarks plus a share held back from requests that could have used a higher zone.
 
 - `take_block(order, mobility)` and `return_block(frame)` move one block under the zone lock.
 - `admits(order, floor, wanted_zone)` is the one question a zone answers about itself: would taking `2^order` frames leave it at or above `floor`, plus its reserve against a request whose `wanted_zone` is above it. The candidate walk asks; the zone never chooses.
@@ -174,7 +174,42 @@ Proposed; Z1 to Z3 are open. A zone is the stock of one pfn span and the judge o
 
 ### PmNode
 
-To be decided after the zone (N1). The shape under discussion: a placement domain (zone order, CPU set, policy) and a pressure domain (page queues, this node's reclaim wake-up and its waiters), with the machine-wide gate left as the watchdog's summary. The node table moves to file scope and CPU membership to `CpuNodeMap`, as `pmm-layering` D2(a) decided.
+Proposed; N1 to N3 are open. A node is two domains. As a placement domain it owns the order in which a request tries zones and the set of CPUs working on it. As a pressure domain it owns its page queues and the record of which of its zones are short. Zircon's `PmmNode` is the counterpart of the second: it holds the free-memory signal, the should-wait state, the page queues and the evictor for its one node. Here those are spread over a gate in `pmm.cpp`, a two-dimensional array inside `MemoryReclaimer` and the node.
+
+```cpp
+class PmNode {
+    // Placement domain.
+    auto take_block(AllocRequest const &request) -> ustl::Result<PmFrame *, BlockFailure>;
+    auto add_cpu(CpuNum cpu) -> void;
+    auto remove_cpu(CpuNum cpu) -> void;
+
+    // Pressure domain.
+    auto page_queues() -> PageQueues &;
+    auto note_shortage(PmZone const &zone) -> void;
+    auto note_relief(PmZone const &zone) -> void;
+    auto reclaim_target() -> usize;
+};
+```
+
+- `take_block()` walks the node's candidates for the request, asks each zone `admits()` and takes from the first that does.
+- `note_shortage(zone)` is called by the entry when a walk found a zone below its floor: it marks the node as wanting reclaim and wakes the reclaimer. `note_relief(zone)` is its inverse, called by a release that brings a zone back above Low: it wakes one waiter.
+- `reclaim_target()` is what the reclaimer asks each node: how many frames its zones are short of High, and zero for a node nobody marked. The pending mark is the node's (N2); the thread and the order of the walk (zero pages, then pager pages) stay with `MemoryReclaimer`, above the PMM.
+
+One request that waits, on a node that is short:
+
+```text
+alloc_frames(ALLOC_USER_VMO)   every candidate zone is below Low: note_shortage(), answer ShouldWait
+caller                         drops its locks, wait_for_frame_allocation(flags, deadline)
+reclaimer                      asks each node reclaim_target(), walks that node's page queues
+free_frames()                  a zone rises above Low: note_relief() wakes one waiter
+waiter                         retries; on success wakes the next waiter, on ShouldWait sleeps again
+```
+
+A request is put off by one threshold only, the zone's Low floor (N1). The gate's delay level and its Shut state go, because they are a second, machine-wide threshold for the same decision, and a request confined to one node or to memory below 4 GiB can be short while the machine-wide count is healthy. What stays machine-wide is what is machine-wide: the watchdog's signal over total free memory, from which it reports pressure to user space, and its switch at OutOfMemory that makes every waiter and every later `CanWait` request answer `OutOfMem` (Zircon's `pmm_stop_returning_should_wait()`). A node whose reclaim pass gave nothing back is marked stuck, and a retry there answers `OutOfMem` and not `ShouldWait`, so that a wait ends when nothing can end the shortage.
+
+The waiters are one machine-wide event and not one per node: a request may fall back to another node, so a relief anywhere is a reason to retry.
+
+The node table and the state masks are file-scope data behind free functions, and CPU membership (publish, claim, move) belongs to `CpuNodeMap`, as `pmm-layering` D2(a) decided.
 
 ### Where each planned feature lands
 
@@ -209,9 +244,12 @@ To be decided after the zone (N1). The shape under discussion: a placement domai
 | F2. Whether a block is a first-class thing | (a) the caller remembers the order and the object cache stamps tails; (b) the allocator stamps order and tails, `free_frames()` takes no order, `split_block()` is added | (b). Large pages and contiguous VMOs both take a block, split it and return the parts | None | **(b)**, 2026-11-10 |
 | E1. The style of the public interface | (a) one `FrameRequest` structure and a list of blocks each way; (b) primitive parameters as in Linux and Zircon, one function per result kind | (a) at first | None | **(b)**, 2026-11-10, the user's rule |
 | E2. What `Gaf` carries | (a) four bits, `Zero`, `CanWait`, `Movable` and `Dma32`, with `CanBlock` and `ThisNode` removed; (b) eleven bits covering every `gfp_t` dimension; (c) today's four bits kept, plus `Movable` and `Dma32` | (a). A microkernel has no in-kernel driver or filesystem, which is what the other `gfp_t` bits serve | None | **(c)**, 2026-11-10: the user keeps `CanBlock` and `ThisNode` |
-| Z1. How far mobility grouping goes | (a) the request and `take_block()` carry `MigrateType` now and the buddy keeps one list per order until large pages need more; (b) lists per order and type, a type per pageblock, and stealing whole blocks, now; (c) none | (a). It is a ceiling on large-page availability, so the user's to decide; (a) fixes the interface and leaves the mechanism until there is fragmentation to measure | None | |
-| Z2. The order of the zone walk | (a) from the highest usable zone down, with low zones protected by a reserve; (b) from the lowest up, as today | (a) | None | |
-| Z3. What each watermark means | (a) High stops reclaim, Low wakes it and is the floor with `CanBlock`, Min is the floor without it; (b) one floor | (a). It is what the `Watermark` comments and `Gaf::CanBlock` say they are for, and it gives the kept bit its reader: a caller that may block is stopped first, and one that may not keeps the band between Low and Min | None | |
+| Z1. How far mobility grouping goes | (a) the request and `take_block()` carry `MigrateType` now and the buddy keeps one list per order until large pages need more; (b) lists per order and type, a type per pageblock, and stealing whole blocks, now; (c) none | (a). It is a ceiling on large-page availability, so the user's to decide; (a) fixes the interface and leaves the mechanism until there is fragmentation to measure | None | **(a)**, 2026-11-10 |
+| Z2. The order of the zone walk | (a) from the highest usable zone down, with low zones protected by a reserve; (b) from the lowest up, as today | (a) | None | **(a)**, 2026-11-10 |
+| Z3. What each watermark means | (a) High stops reclaim, Low wakes it and is the floor with `CanBlock`, Min is the floor without it; (b) one floor | (a). It is what the `Watermark` comments and `Gaf::CanBlock` say they are for, and it gives the kept bit its reader: a caller that may block is stopped first, and one that may not keeps the band between Low and Min | None | **(a)**, 2026-11-10 |
+| N1. What puts a request off, and what wakes it | (a) one threshold, the zone's Low floor; a release that lifts a zone above Low wakes a waiter; the gate keeps the watchdog's signal and the OutOfMemory refusal, and loses its delay level and Shut state; (b) the zone floor and the machine-wide delay level both, as today | (a). It revises "admission and waits use the global gate" of 2026-11-04: Z3 already makes the zone decide, and two thresholds for one decision can disagree | None | |
+| N2. Where the record of a short zone lives | (a) in its node, set by `note_shortage()` and read through `reclaim_target()`; (b) in `MemoryReclaimer`'s array indexed by node and zone type, as today | (a). It is state about the node's zones, and the reclaimer needs only a number from each node | None | |
+| N3. How many reclaim threads | (a) one, serving each marked node in turn, as today; (b) one per node | (a) for now. One per node is a scaling choice and so the user's; nothing in the interface above depends on it | None | |
 
 ## Testing and verification
 
@@ -223,4 +261,3 @@ What cannot be verified is that the design extends well. The check of that is wh
 
 - `docs/repairs/261030/mm-pin.md` item 4: a read-only pin of a page-source page still needs a per-page bit to stay reclaimable after the unpin.
 - Whether `alloc_frames_fragment()` keeps a production caller; today only tests call it and `alloc_frames_bulk()`.
-- The node round (N1).
