@@ -161,7 +161,7 @@ auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_to
               min + delta + delta);
 }
 
-auto PmZone::take_block(usize order) -> ustl::Option<PmFrame &> {
+auto PmZone::alloc_frames(usize order) -> ustl::Option<PmFrame &> {
     // A zone below its high watermark is running short, and this gate still
     // has no writer for the flag, so it never fires. It also tests the wrong
     // line: the high watermark is where a zone becomes worth reclaiming, not
@@ -221,7 +221,7 @@ auto PmZone::contains(usize order) -> bool {
     return false;
 }
 
-auto PmZone::return_block(PmFrame &frame, usize order) -> void {
+auto PmZone::free_frames(PmFrame &frame, usize order) -> void {
     if (is_order_within_pcpu_cache_limit(order)) {
         m_frame_cache.with_current([](PcpuCache &cache) {
             // Here no pcpu cache.

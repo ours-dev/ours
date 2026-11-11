@@ -601,10 +601,10 @@ namespace {
             }
             constexpr auto ITERATIONS = usize{8192};
             for (usize i = 0; i < ITERATIONS; ++i) {
-                auto const block = state.zone.take_block(0);
+                auto const block = state.zone.alloc_frames(0);
                 auto const count = state.zone.num_free_frames();
                 if (block) {
-                    state.zone.return_block(block.value(), 0);
+                    state.zone.free_frames(block.value(), 0);
                 }
                 if (count > 1 || state.zone.num_free_frames() > 1) {
                     return 1;

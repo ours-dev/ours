@@ -213,7 +213,7 @@ auto PmNode::take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
 
     ustl::Option<PmZone const &> depleted_zone;
     for (auto &zone: m_zone_list.candidates(request)) {
-        auto const block = zone.take_block(request.order());
+        auto const block = zone.alloc_frames(request.order());
         if (!block) {
             if (order == 0 && !depleted_zone &&
                 zone.num_free_frames() < zone.watermark(PmZone::Watermark::High)) {
@@ -313,7 +313,7 @@ auto PmNode::return_block(PmFrame &frame, usize order) -> void {
     auto *const zone = PmZone::at(frame.nid(), frame.zone());
     DEBUG_ASSERT(zone, "frame {:#x} is in no zone", frame_to_phys(&frame));
 
-    zone->return_block(frame, order);
+    zone->free_frames(frame, order);
 }
 
 auto PmNode::return_blocks(PmFrame::List &list) -> void {

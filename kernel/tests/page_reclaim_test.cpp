@@ -702,7 +702,7 @@ namespace {
         mm::PmFrame::List held;
         mm::PmNode::node(remote)->zone_list()->for_each_local_zone([&held](mm::PmZone &zone) {
             for (usize order = MAX_FRAME_ORDER + 1; order != 0; --order) {
-                while (auto block = zone.take_block(order - 1)) {
+                while (auto block = zone.alloc_frames(order - 1)) {
                     held.push_back(block.value());
                 }
             }
