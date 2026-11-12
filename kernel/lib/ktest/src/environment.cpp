@@ -1,10 +1,14 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// The environment registry. One fixed table, filled by boot-time initializers
-// and walked once per `ktest` run; no heap and no constructor order to depend
-// on, because every registration appends into its own slot.
+// The environment registry and the stages' default framing. One fixed table,
+// filled by boot-time initializers and walked once per `ktest` run; no heap
+// and no constructor order to depend on, because every registration appends
+// into its own slot. The walk frames each stage itself, through the shared
+// stage runner, so no caller passes machinery in.
 #include <ktest/environment.hpp>
+
+#include "run_stage.hpp"
 
 namespace ktest {
 
@@ -13,6 +17,22 @@ Environment::~Environment() = default;
 auto Environment::SetUp() -> void {}
 
 auto Environment::TearDown() -> void {}
+
+auto Environment::set_up_stage(hsien::Reporter &reporter) -> bool {
+    return internal::run_hook(
+        "ktest.EnvironmentSetUp", [&](::hsien::Context &) { SetUp(); }, reporter);
+}
+
+auto Environment::tear_down_stage(hsien::Reporter &reporter) -> void {
+    auto const ok = internal::run_hook(
+        "ktest.EnvironmentTearDown", [&](::hsien::Context &) { TearDown(); }, reporter);
+    if (!ok) {
+        // The walk has nothing left to undo on a failed TearDown; this one
+        // error line is what tells the console the stage did not come down
+        // clean.
+        internal::framework_error("the environment teardown failed");
+    }
+}
 
 namespace {
 
@@ -37,11 +57,11 @@ namespace internal {
         return REGISTRY;
     }
 
-    auto EnvironmentRun::set_up(EnvironmentStep step, void *const context) -> bool {
+    auto EnvironmentRun::set_up(hsien::Reporter &reporter) -> bool {
         auto &registry = environments();
         m_attempted = 0;
         while (m_attempted < registry.count) {
-            auto const ok = step(*registry.entries[m_attempted], context);
+            auto const ok = registry.entries[m_attempted]->set_up_stage(reporter);
             m_attempted += 1;
             if (!ok) {
                 return false;
@@ -50,11 +70,11 @@ namespace internal {
         return true;
     }
 
-    auto EnvironmentRun::tear_down(EnvironmentStep step, void *const context) -> void {
+    auto EnvironmentRun::tear_down(hsien::Reporter &reporter) -> void {
         auto &registry = environments();
         while (m_attempted > 0) {
             m_attempted -= 1;
-            step(*registry.entries[m_attempted], context);
+            registry.entries[m_attempted]->tear_down_stage(reporter);
         }
     }
 

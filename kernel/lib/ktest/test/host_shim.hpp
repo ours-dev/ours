@@ -1,11 +1,13 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// The runner's kernel-only half, stood in for the host suite: the state the
-// stand-in publishes, the failure capture its reporter fills, and the one
-// "run a record" helper the cases drive. The suite's host tests share it so
-// that every file can run real macro expansions through hsien's own record
-// loop, which is the seam the booted runner implements.
+// The runner's kernel-only half, stood in for the host suite: the seam the
+// assertion machinery calls through and the failure capture the stand-in's
+// reporter fills. The suite's host tests share it so that every file can run
+// real macro expansions through hsien's own record loop, which is the seam
+// the booted runner implements. The published state itself is the shared
+// stage runner's (../src/run_stage.hpp), the same slot the booted runner
+// publishes.
 #ifndef KTEST_TEST_HOST_SHIM_HPP
 #define KTEST_TEST_HOST_SHIM_HPP 1
 
@@ -15,10 +17,6 @@
 #include <vector>
 
 #include <hsien/runner.hpp>
-
-/// The published state the stand-in runner frames every record with; the
-/// shim reads it exactly as runner.cpp reads its own.
-extern ktest::internal::RunState *HOST_PUBLISHED;
 
 /// Every failure the run's assertions record, as the booted runner would
 /// print them; the cases assert on the count and sometimes the text.

@@ -16,8 +16,10 @@
 #include <ktest/summary.hpp>
 
 #include <atomic>
+#include <span>
 #include <string_view>
 
+#include "run_stage.hpp"
 #include <gktl/command.hpp>
 #include <hsien/section.hpp>
 #include <logz4/log.hpp>
@@ -43,25 +45,24 @@ extern "C" ::hsien::TestRecord ktest_death_end[] asm("__ktest_death_end");
 
 namespace {
 
-    /// The test the runner is executing, published for the adapter and the
-    /// assertion macros. Only the runner thread writes it, but a worker thread
-    /// that asserts by mistake reads it, so it is atomic: the read that is
-    /// there to diagnose the mistake must not race the store.
-    std::atomic<internal::RunState *> CURRENT_STATE{nullptr};
-
-    /// The thread the published test runs on, for the wrong-thread guard. Same
-    /// reason as CURRENT_STATE.
+    /// The thread the published test or stage runs on, for the wrong-thread
+    /// guard. The stage runner publishes it around each hook and test through
+    /// bind_stage_thread()/unbind_stage_thread(); only the runner thread
+    /// writes it, but a worker thread that asserts by mistake reads it, so it
+    /// is atomic: the read that is there to diagnose the mistake must not race
+    /// the store.
     std::atomic<::ours::task::Thread *> OWNER_THREAD{nullptr};
 
     /// Guards against a second `ktest` entering while one runs. The console
     /// dispatches one line at a time, so this only catches a future caller.
     bool RUNNING = false;
 
-    /// The options the current run was given, published for the tests. They
-    /// point into the console line, which lives for the command, and the run
-    /// happens inside it, so they stay valid while a test can read them.
-    Option OPTIONS[MAX_RUN_OPTIONS];
-    usize OPTION_COUNT = 0;
+    /// The run in progress: the words it was given — published for the tests,
+    /// which read them through has_option()/option()/option_usize() — and the
+    /// iteration plan the runner walks. The words point into the console
+    /// line, which lives for the command, and the run happens inside it, so
+    /// they stay valid while a test can read them.
+    RunPlan ACTIVE_PLAN;
 
     /// The shuffled registry order, filled only by a run that asked for a
     /// shuffle. The re-entry guard makes one run at a time the only writer,
@@ -114,23 +115,6 @@ namespace {
         return false;
     }
 
-    /// Runs one hook — a suite's or an environment's SetUp or TearDown — the
-    /// way a test runs, minus the test: a published state and a context the
-    /// hook's assertions record into, no RUN or OK line, and nothing added to
-    /// the summary. True when nothing in the hook failed.
-    template <typename Step>
-    auto run_hook(char const *const name, Step &&step, hsien::Reporter &reporter) -> bool {
-        internal::RunState state;
-        CURRENT_STATE.store(&state, std::memory_order_relaxed);
-        OWNER_THREAD.store(::ours::task::Thread::Current::get(), std::memory_order_relaxed);
-        auto context = ::hsien::Context{name, reporter};
-        internal::BindScope const scope(context);
-        step(context);
-        CURRENT_STATE.store(nullptr, std::memory_order_relaxed);
-        OWNER_THREAD.store(nullptr, std::memory_order_relaxed);
-        return context.failure_count() == 0;
-    }
-
     /// One selected test: publish the state, run it through the runtime,
     /// then print the verdict and add it to the summary. |pre_failed| reports
     /// a test the run decided not to start — a suite or environment setup
@@ -145,13 +129,13 @@ namespace {
         }
 
         internal::RunState state;
-        CURRENT_STATE.store(&state, std::memory_order_relaxed);
-        OWNER_THREAD.store(::ours::task::Thread::Current::get(), std::memory_order_relaxed);
+        internal::CURRENT_STATE.store(&state, std::memory_order_relaxed);
+        internal::bind_stage_thread();
         auto const started = ::ours::time::SteadyClock::now();
         auto const recorded = hsien::run(&record, &record + 1, reporter);
         auto const elapsed = ::ours::time::SteadyClock::now() - started;
-        CURRENT_STATE.store(nullptr, std::memory_order_relaxed);
-        OWNER_THREAD.store(nullptr, std::memory_order_relaxed);
+        internal::CURRENT_STATE.store(nullptr, std::memory_order_relaxed);
+        internal::unbind_stage_thread();
 
         auto const failed = recorded.failed != 0;
         if (failed) {
@@ -183,38 +167,6 @@ namespace {
         for (auto const *record = begin; record != end; ++record) {
             log::info("ktest: DEATH {}", record->name);
         }
-    }
-
-    /// What one environment step needs: the reporter its assertions report
-    /// through, and which half of the stage is running.
-    struct EnvironmentFraming {
-        hsien::Reporter *reporter;
-        bool setup;
-    };
-
-    /// The step the environment walk calls: runs the environment's SetUp or
-    /// TearDown framed like a hook, and logs the one error line a failure
-    /// needs. True when nothing in the step failed.
-    auto run_environment_step(Environment &environment, void *const context) -> bool {
-        auto &framing = *static_cast<EnvironmentFraming *>(context);
-        auto const *name = "ktest.EnvironmentTearDown";
-        if (framing.setup) {
-            name = "ktest.EnvironmentSetUp";
-        }
-        auto const ok = run_hook(
-            name,
-            [&](::hsien::Context &) {
-                if (framing.setup) {
-                    environment.SetUp();
-                } else {
-                    environment.TearDown();
-                }
-            },
-            *framing.reporter);
-        if (!framing.setup && !ok) {
-            log::error("ktest: ERROR the environment teardown failed");
-        }
-        return ok;
     }
 
     /// Appends |value| in decimal at |length|. The guard keeps a wrong caller
@@ -260,7 +212,7 @@ namespace {
         auto length = usize{0};
         for (auto pos = usize{0}; pos < count; ++pos) {
             auto const index = SHUFFLE_ORDER[pos];
-            if (!in_shard(index, plan.shard_index, plan.shard_count)) {
+            if (!in_shard(index, plan.shard.m, plan.shard.n)) {
                 continue;
             }
             if (length != 0) {
@@ -306,11 +258,11 @@ namespace {
             // death and not some unrelated one.
             log::info("ktest: DEATH {}", record->name);
             internal::RunState state;
-            CURRENT_STATE.store(&state, std::memory_order_relaxed);
-            OWNER_THREAD.store(::ours::task::Thread::Current::get(), std::memory_order_relaxed);
+            internal::CURRENT_STATE.store(&state, std::memory_order_relaxed);
+            internal::bind_stage_thread();
             hsien::run(record, record + 1, reporter);
-            CURRENT_STATE.store(nullptr, std::memory_order_relaxed);
-            OWNER_THREAD.store(nullptr, std::memory_order_relaxed);
+            internal::CURRENT_STATE.store(nullptr, std::memory_order_relaxed);
+            internal::unbind_stage_thread();
             log::error("ktest: FAILED {} (a death test must panic; it returned)", record->name);
             summary.record(true, false);
         }
@@ -325,13 +277,42 @@ namespace {
         return 1;
     }
 
+    /// Logs the one console line a plan rejection maps to, quoting the word
+    /// that broke its rule where the line does. The texts are the host's
+    /// contract: kshell_run.py judges a run by its error lines, and the
+    /// change record pins them.
+    auto report_plan_rejection(PlanRejection const &rejection, usize const word_count) -> void {
+        switch (rejection.fault) {
+            case PlanFault::TooManyWords:
+                log::error("ktest: ERROR at most {} options, got {}", MAX_RUN_OPTIONS, word_count);
+                return;
+            case PlanFault::MalformedWord:
+                log::error(
+                    "ktest: ERROR usage: ktest [all|list|?|death|<filter>] [name=value ...]");
+                return;
+            case PlanFault::RunnerWordOnSelection:
+                log::error("ktest: ERROR shuffle, repeat and shard need \"ktest all\"");
+                return;
+            case PlanFault::BadSeed:
+                log::error("ktest: ERROR shuffle seed is not a number: \"{}\"", rejection.word);
+                return;
+            case PlanFault::BadRepeat:
+                log::error("ktest: ERROR repeat is not a count of at least 1: \"{}\"",
+                           rejection.word);
+                return;
+            case PlanFault::BadShard:
+                log::error("ktest: ERROR shard is not M/N with 0 <= M < N: \"{}\"", rejection.word);
+                return;
+        }
+    }
+
     auto ktest_command(int const argc, char **const argv) -> int {
         if (RUNNING) {
             log::error("ktest: ERROR a test run is already in progress");
             return 1;
         }
         RunnerScope const scope;
-        OPTION_COUNT = 0;
+        ACTIVE_PLAN = RunPlan{};
 
         // The death selection is its own command shape: one optional filter,
         // no options, none of the live run's plan. It reads its own section,
@@ -371,20 +352,36 @@ namespace {
             log::error("ktest: ERROR ktest list takes no options");
             return 1;
         }
-        for (auto i = 2; i < argc; ++i) {
-            if (OPTION_COUNT == MAX_RUN_OPTIONS) {
-                log::error("ktest: ERROR at most {} options, got {}", MAX_RUN_OPTIONS, argc - 2);
-                return 1;
-            }
-            auto parsed = Option{};
-            if (!parse_option(argv[i], parsed)) {
-                log::error(
-                    "ktest: ERROR usage: ktest [all|list|?|death|<filter>] [name=value ...]");
-                return 1;
-            }
-            OPTIONS[OPTION_COUNT] = parsed;
-            OPTION_COUNT += 1;
+
+        // The run's own words, after the selection. The console bounds a
+        // command line at 16 words including the command and the selection,
+        // so the words a run takes fit the fixed array the plan is built
+        // from; a longer list is refused before the plan sees it, with the
+        // count the command actually carried.
+        std::string_view words[MAX_RUN_OPTIONS];
+        auto word_count = usize{0};
+        if (argc > 2) {
+            word_count = static_cast<usize>(argc - 2);
         }
+        if (word_count > MAX_RUN_OPTIONS) {
+            log::error("ktest: ERROR at most {} options, got {}", MAX_RUN_OPTIONS, word_count);
+            return 1;
+        }
+        for (auto i = usize{0}; i < word_count; ++i) {
+            words[i] = argv[2 + i];
+        }
+
+        // The plan: the runner's own words set its fields, and every word is
+        // recorded for the tests, whatever kind it was. A rejected word ends
+        // the command at its error line, before anything ran. The span is
+        // the words the command carried, not the array's extent: the empty
+        // slots past them are not words.
+        auto planned = RunPlan::from_words(std::span{words, word_count}, all_selected);
+        if (planned.is_err()) {
+            report_plan_rejection(planned.unwrap_err(), word_count);
+            return 1;
+        }
+        ACTIVE_PLAN = planned.unwrap();
         if (list_only) {
             if (reject_duplicates(ktest_death_start, ktest_death_end)) {
                 return 1;
@@ -393,43 +390,10 @@ namespace {
             list_death_tests(ktest_death_start, ktest_death_end);
             return 0;
         }
-        auto plan = RunPlan{};
-        for (auto i = usize{0}; i < OPTION_COUNT; ++i) {
-            auto const kind = runner_option(OPTIONS[i].name);
-            if (kind != RunnerOption::Other && !all_selected) {
-                log::error("ktest: ERROR shuffle, repeat and shard need \"ktest all\"");
-                return 1;
-            }
-            switch (kind) {
-                case RunnerOption::Shuffle:
-                    plan.shuffle = true;
-                    if (!parse_seed(OPTIONS[i].value, plan.seed)) {
-                        log::error("ktest: ERROR shuffle seed is not a number: \"{}\"",
-                                   OPTIONS[i].value);
-                        return 1;
-                    }
-                    break;
-                case RunnerOption::Repeat:
-                    if (!parse_decimal(OPTIONS[i].value, plan.repeat) || plan.repeat == 0) {
-                        log::error("ktest: ERROR repeat is not a count of at least 1: \"{}\"",
-                                   OPTIONS[i].value);
-                        return 1;
-                    }
-                    break;
-                case RunnerOption::Shard:
-                    if (!parse_shard(OPTIONS[i].value, plan.shard_index, plan.shard_count) ||
-                        !shard_valid(plan.shard_index, plan.shard_count)) {
-                        log::error("ktest: ERROR shard is not M/N with 0 <= M < N: \"{}\"",
-                                   OPTIONS[i].value);
-                        return 1;
-                    }
-                    break;
-                case RunnerOption::Other:
-                    break;
-            }
-        }
-        for (auto i = usize{0}; i < OPTION_COUNT; ++i) {
-            log::info("ktest: OPTION {}={}", OPTIONS[i].name, OPTIONS[i].value);
+
+        auto const &plan = ACTIVE_PLAN;
+        for (auto i = usize{0}; i < plan.option_count; ++i) {
+            log::info("ktest: OPTION {}={}", plan.options[i].name, plan.options[i].value);
         }
 
         auto const count = static_cast<usize>(end - begin);
@@ -439,7 +403,7 @@ namespace {
                            MAX_SHUFFLE_TESTS);
                 return 1;
             }
-            shuffle_indices(SHUFFLE_ORDER, count, plan.seed);
+            shuffle(std::span{SHUFFLE_ORDER, count}, plan.seed);
             log_shuffle(count, plan);
         }
         auto reporter = hsien::Reporter{&report};
@@ -457,16 +421,12 @@ namespace {
                        registry.dropped, MAX_ENVIRONMENTS);
         }
         auto environment_run = internal::EnvironmentRun{};
-        auto framing = EnvironmentFraming{&reporter, true};
-        auto const environments_ok = environment_run.set_up(run_environment_step, &framing);
+        auto const environments_ok = environment_run.set_up(reporter);
         if (!environments_ok) {
             log::error("ktest: ERROR the environment setup failed; every test will be reported "
                        "failed without running");
         }
-        framing.setup = false;
-        auto tear_environments = [&]() -> void {
-            environment_run.tear_down(run_environment_step, &framing);
-        };
+        auto tear_environments = [&]() -> void { environment_run.tear_down(reporter); };
 
         // The suite hooks frame one pass: a suite's setup runs once before
         // its first test of the pass and its teardown once after the last, so
@@ -478,7 +438,7 @@ namespace {
                 internal::SuitePlan{ktest_suite_hooks_start, ktest_suite_hooks_end, begin, end,
                                     [&](hsien::TestRecord const &record, usize const index) {
                                         return matches_filter(record.name, filter) &&
-                                               in_shard(index, plan.shard_index, plan.shard_count);
+                                               in_shard(index, plan.shard.m, plan.shard.n);
                                     }};
             if (!suites.valid()) {
                 log::error("ktest: ERROR a suite declares a hook twice, or more suites carry "
@@ -493,7 +453,7 @@ namespace {
                 }
                 auto const &record = begin[index];
                 if (!matches_filter(record.name, filter) ||
-                    !in_shard(index, plan.shard_index, plan.shard_count)) {
+                    !in_shard(index, plan.shard.m, plan.shard.n)) {
                     continue;
                 }
                 if (!environments_ok) {
@@ -501,7 +461,7 @@ namespace {
                     continue;
                 }
                 if (auto *const setup = suites.before(record.name); setup != nullptr) {
-                    if (!run_hook(setup->name, setup->invoke, reporter)) {
+                    if (!internal::run_hook(setup->name, setup->invoke, reporter)) {
                         suites.poison(record.name);
                         log::error("ktest: ERROR the suite setup {} failed; its tests will not "
                                    "run",
@@ -514,7 +474,7 @@ namespace {
                     run_test(record, reporter, summary);
                 }
                 if (auto *const teardown = suites.after(record.name); teardown != nullptr) {
-                    if (!run_hook(teardown->name, teardown->invoke, reporter)) {
+                    if (!internal::run_hook(teardown->name, teardown->invoke, reporter)) {
                         log::error("ktest: ERROR the suite teardown {} failed", teardown->name);
                     }
                 }
@@ -522,9 +482,9 @@ namespace {
         }
         tear_environments();
         if (summary.ran == 0) {
-            if (plan.shard_count > 1) {
-                log::error("ktest: ERROR no test falls in shard {}/{} among {} tests",
-                           plan.shard_index, plan.shard_count, count);
+            if (plan.shard.n > 1) {
+                log::error("ktest: ERROR no test falls in shard {}/{} among {} tests", plan.shard.m,
+                           plan.shard.n, count);
             } else {
                 log::error("ktest: ERROR no test matches \"{}\"", filter);
             }
@@ -552,6 +512,14 @@ namespace internal {
 
     auto framework_error(char const *const what) -> void {
         log::error("ktest: ERROR {}", what);
+    }
+
+    auto bind_stage_thread() -> void {
+        OWNER_THREAD.store(::ours::task::Thread::Current::get(), std::memory_order_relaxed);
+    }
+
+    auto unbind_stage_thread() -> void {
+        OWNER_THREAD.store(nullptr, std::memory_order_relaxed);
     }
 
     auto bind_context(::hsien::Context &context) -> void {
@@ -596,32 +564,35 @@ namespace internal {
 } // namespace internal
 
 auto has_option(std::string_view const name) -> bool {
-    return find_option(OPTIONS, OPTION_COUNT, name) != nullptr;
+    return find_option(ACTIVE_PLAN.options, ACTIVE_PLAN.option_count, name) != nullptr;
 }
 
 auto option(std::string_view const name, std::string_view const fallback) -> std::string_view {
-    auto const *const found = find_option(OPTIONS, OPTION_COUNT, name);
-    return found == nullptr ? fallback : found->value;
-}
-
-auto option_usize(std::string_view const name, usize const fallback) -> usize {
-    auto const *const found = find_option(OPTIONS, OPTION_COUNT, name);
+    auto const *const found = find_option(ACTIVE_PLAN.options, ACTIVE_PLAN.option_count, name);
     if (found == nullptr) {
         return fallback;
     }
-    if (found->value.empty()) {
-        log::error("ktest: ERROR option \"{}\" needs a number", name);
+    return found->value;
+}
+
+auto option_usize(std::string_view const name, usize const fallback) -> usize {
+    auto const *const found = find_option(ACTIVE_PLAN.options, ACTIVE_PLAN.option_count, name);
+    if (found == nullptr) {
         return fallback;
     }
-    auto value = usize{0};
-    for (auto const c: found->value) {
-        if (c < '0' || c > '9') {
+    // The one digit primitive: an empty value and a non-number come out of
+    // the same parse as different console lines, so the caller can say which
+    // shape it saw.
+    auto const parsed = parse_u64(found->value);
+    if (parsed.is_err()) {
+        if (found->value.empty()) {
+            log::error("ktest: ERROR option \"{}\" needs a number", name);
+        } else {
             log::error("ktest: ERROR option \"{}\" is not a number: \"{}\"", name, found->value);
-            return fallback;
         }
-        value = value * 10 + static_cast<usize>(c - '0');
+        return fallback;
     }
-    return value;
+    return static_cast<usize>(parsed.unwrap());
 }
 
 } // namespace ktest
