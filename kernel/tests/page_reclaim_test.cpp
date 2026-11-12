@@ -135,7 +135,7 @@ namespace {
             flags |= mm::Gaf::ThisNode;
         }
         for (usize i = 0; i < count; ++i) {
-            auto *const frame = mm::alloc_frames(nid, flags, 0).value_or(nullptr);
+            auto *const frame = mm::alloc_frames(flags, 0, nid).value_or(nullptr);
             if (!frame) {
                 return false;
             }
@@ -711,7 +711,7 @@ namespace {
         auto const levels = mm::MemoryWatchdog::get().levels();
         auto const globally_normal =
             levels.pressure_at(mm::approx_free_frame_count()) == mm::MemoryPressure::Normal;
-        auto const missed = mm::alloc_frames(remote, mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0);
+        auto const missed = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, remote);
         auto const exhausted = !missed && missed.unwrap_err() == Status::OutOfMem;
         if (missed) {
             mm::free_frames(*missed, 0);
@@ -721,7 +721,7 @@ namespace {
         bool retried = false;
         if (evicted) {
             auto const recovered =
-                mm::alloc_frames(remote, mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0);
+                mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, remote);
             if (recovered) {
                 retried = (*recovered)->nid() == remote;
                 mm::free_frames(*recovered, 0);

@@ -167,17 +167,11 @@ namespace {
             mm::free_frames(*plain, 0);
         }
 
-        auto const by_node = mm::alloc_frames(mm::current_node(), WAITABLE, 0);
-        auto address = PhysAddr::Invalid;
-        auto const with_address = mm::alloc_frames(WAITABLE, &address);
-        EXPECT_TRUE(!by_node && by_node.unwrap_err() == Status::ShouldWait && !with_address &&
-                        with_address.unwrap_err() == Status::ShouldWait &&
-                        address == PhysAddr::Invalid,
-                    "block overloads share pressure admission and keep outputs on ShouldWait");
-        for (auto const &result: {by_node, with_address}) {
-            if (result) {
-                mm::free_frames(*result, 0);
-            }
+        auto const by_node = mm::alloc_frames(WAITABLE, 0, mm::current_node());
+        EXPECT_TRUE(!by_node && by_node.unwrap_err() == Status::ShouldWait,
+                    "an allocation that names its home shares pressure admission");
+        if (by_node) {
+            mm::free_frames(*by_node, 0);
         }
     }
 

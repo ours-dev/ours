@@ -56,7 +56,10 @@ namespace {
 
     auto check_two_regions(mm::VmAspace &aspace) -> void {
         PhysAddr phys{};
-        auto *const frames = mm::alloc_frames(mm::ALLOC_KERNEL, &phys, 1).value_or(nullptr);
+        auto *const frames = mm::alloc_frames(mm::ALLOC_KERNEL, 1).value_or(nullptr);
+        if (frames) {
+            phys = mm::frame_to_phys(frames);
+        }
         if (!frames) {
             EXPECT_TRUE(false, "two contiguous frames are allocated");
             return;
@@ -127,8 +130,14 @@ namespace {
 
         PhysAddr first_pa{};
         PhysAddr second_pa{};
-        auto *const first = mm::alloc_frames(mm::ALLOC_KERNEL, &first_pa, 0).value_or(nullptr);
-        auto *const second = mm::alloc_frames(mm::ALLOC_KERNEL, &second_pa, 0).value_or(nullptr);
+        auto *const first = mm::alloc_frames(mm::ALLOC_KERNEL).value_or(nullptr);
+        auto *const second = mm::alloc_frames(mm::ALLOC_KERNEL).value_or(nullptr);
+        if (first) {
+            first_pa = mm::frame_to_phys(first);
+        }
+        if (second) {
+            second_pa = mm::frame_to_phys(second);
+        }
         if (!first || !second) {
             EXPECT_TRUE(false, "two frames are allocated for the overwrite");
             if (first) {

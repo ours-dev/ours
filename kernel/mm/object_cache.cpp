@@ -193,7 +193,7 @@ namespace slab {
 
     auto create(MemCache *owner, void *node_cache, Gaf alloc_flags, usize order, usize size,
                 usize next_offset, NodeId nid) -> Slab * {
-        auto const allocated = mm::alloc_frames(nid, alloc_flags, order);
+        auto const allocated = mm::alloc_frames(alloc_flags, order, nid);
         if (!allocated) {
             return nullptr;
         }

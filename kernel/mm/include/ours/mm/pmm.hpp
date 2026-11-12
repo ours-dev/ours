@@ -117,15 +117,23 @@ constexpr auto get_order(usize n) -> usize {
     return ustl::countr_zero(ustl::bit_ceil(n));
 }
 
-/// Attempt a block allocation, starting on the local node. With CanWait,
-/// pressure can return ShouldWait. The caller releases its locks before waiting.
+/// Allocates one block of 2^|order| frames. |home| is the node the walk
+/// starts from; the default names no node, and the walk then starts on the
+/// calling CPU's node, after the thread's placement policy has had its say.
+/// The other online nodes are tried after the home, nearest first, unless
+/// |flags| carries Gaf::ThisNode.
+///
+/// With Gaf::CanWait, pressure can answer ShouldWait: the caller releases its
+/// locks and calls wait_for_frame_allocation().
 [[nodiscard]]
-auto alloc_frames(Gaf, usize order = 0, NodeMask const & = node_online_mask())
+auto alloc_frames(Gaf flags, usize order = 0, NodeId home = bootmem::ANY_NODE)
     -> ktl::Result<PmFrame *>;
 
-/// Write the frame's physical address on success when |addr| is supplied.
+/// Allocates |n| single frames as a list. On failure every frame already
+/// taken is returned before the error is.
 [[nodiscard]]
-auto alloc_frames(Gaf, PhysAddr *addr, usize order = 0) -> ktl::Result<PmFrame *>;
+auto alloc_frames_bulk(Gaf flags, usize n, NodeId home = bootmem::ANY_NODE)
+    -> ktl::Result<PmFrame::List>;
 
 /// Allocates exactly |n| pages as a list of blocks, one per set bit of |n|:
 /// bit k contributes one block of 2^k contiguous pages, so |n| = 5 yields a
@@ -133,57 +141,22 @@ auto alloc_frames(Gaf, PhysAddr *addr, usize order = 0) -> ktl::Result<PmFrame *
 /// blocks are not contiguous with each other. They are taken smallest first,
 /// and on failure every block already taken is returned before the error is.
 [[nodiscard]]
-auto alloc_frames_fragment(Gaf, usize n, NodeMask const & = node_online_mask())
-    -> ktl::Result<PmFrame::List>;
-
-/// The same with an explicit home node.
-[[nodiscard]]
-auto alloc_frames_fragment(NodeId, Gaf, usize n, NodeMask const & = node_online_mask())
-    -> ktl::Result<PmFrame::List>;
-
-/// Allocates |n| single frames as a list. On failure every frame already
-/// taken is returned before the error is.
-[[nodiscard]]
-auto alloc_frames_bulk(Gaf, usize n, NodeMask const & = node_online_mask())
-    -> ktl::Result<PmFrame::List>;
-
-/// The same with an explicit home node.
-[[nodiscard]]
-auto alloc_frames_bulk(NodeId, Gaf, usize n, NodeMask const & = node_online_mask())
+auto alloc_frames_fragment(Gaf flags, usize n, NodeId home = bootmem::ANY_NODE)
     -> ktl::Result<PmFrame::List>;
 
 /// Allocate one power-of-two block large enough for the requested page count.
 FORCE_INLINE [[nodiscard]]
-inline auto alloc_frames_n(Gaf alloc_flags, usize nr_frames,
-                           NodeMask const &nodes = node_online_mask()) -> ktl::Result<PmFrame *> {
-    return alloc_frames(alloc_flags, get_order(nr_frames), nodes);
-}
-
-/// alloc_frames_bulk() answering a Status, with the frames put on |list|.
-[[nodiscard]]
-auto alloc_frames(NodeId, Gaf, PmFrame::List *, usize, NodeMask const & = node_online_mask())
-    -> Status;
-
-/// The same block allocation protocol with an explicit home node. A node id
-/// outside the node table names no node and starts on the local one.
-[[nodiscard]]
-auto alloc_frames(NodeId, Gaf, usize order = 0, NodeMask const & = node_online_mask())
-    -> ktl::Result<PmFrame *>;
-
-/// Allocate one power-of-two block large enough for the requested page count.
-FORCE_INLINE [[nodiscard]]
-inline auto alloc_frames_n(NodeId nid, Gaf alloc_flags, usize nr_frames,
-                           NodeMask const &nodes = node_online_mask()) -> ktl::Result<PmFrame *> {
-    return alloc_frames(nid, alloc_flags, get_order(nr_frames), nodes);
+inline auto alloc_frames_n(Gaf alloc_flags, usize nr_frames, NodeId home = bootmem::ANY_NODE)
+    -> ktl::Result<PmFrame *> {
+    return alloc_frames(alloc_flags, get_order(nr_frames), home);
 }
 
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
 FORCE_INLINE
-auto get_frames(Gaf alloc_flags, usize order = 0, NodeMask const &nodes = node_online_mask())
-    -> T * {
+auto get_frames(Gaf alloc_flags, usize order = 0, NodeId home = bootmem::ANY_NODE) -> T * {
     DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "use alloc_frames() to handle ShouldWait");
-    if (auto frame = alloc_frames(alloc_flags, order, nodes)) {
+    if (auto frame = alloc_frames(alloc_flags, order, home)) {
         return PhysMap::phys_to_virt<T>(frame_to_phys(*frame));
     }
 
@@ -193,30 +166,8 @@ auto get_frames(Gaf alloc_flags, usize order = 0, NodeMask const &nodes = node_o
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
 FORCE_INLINE
-auto get_frames_n(Gaf alloc_flags, usize nr_frames, NodeMask const &nodes = node_online_mask())
-    -> T * {
-    return get_frames<T>(alloc_flags, get_order(nr_frames), nodes);
-}
-
-template <typename T = u8>
-[[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
-FORCE_INLINE
-auto get_frames(NodeId nid, Gaf alloc_flags, usize order = 0,
-                NodeMask const &nodes = node_online_mask()) -> T * {
-    DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "use alloc_frames() to handle ShouldWait");
-    if (auto frame = alloc_frames(nid, alloc_flags, order, nodes)) {
-        return PhysMap::phys_to_virt<T>(frame_to_phys(*frame));
-    }
-
-    return nullptr;
-}
-
-template <typename T = u8>
-[[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
-FORCE_INLINE
-auto get_frames_n(NodeId nid, Gaf alloc_flags, usize nr_frames,
-                  NodeMask const &nodes = node_online_mask()) -> T * {
-    return get_frames<T>(nid, alloc_flags, get_order(nr_frames), nodes);
+auto get_frames_n(Gaf alloc_flags, usize nr_frames, NodeId home = bootmem::ANY_NODE) -> T * {
+    return get_frames<T>(alloc_flags, get_order(nr_frames), home);
 }
 
 /// A fresh, zeroed page-table page, from whichever allocator is up.

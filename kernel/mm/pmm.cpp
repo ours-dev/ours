@@ -10,6 +10,7 @@
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/priv/alloc_failure.hpp>
+#include <ours/mm/priv/pmm.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -350,7 +351,7 @@ auto node_soft_affinity(NodeId nid) -> CpuMask const * {
 /// See the declaration in pmm.hpp for why the choice lives here.
 auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
     if (pmm_enabled()) {
-        // Through the node-taking overload, so that `node` means the same thing
+        // With |node| as the home, so that `node` means the same thing
         // on both sides of the handover. It used to be read only by the EarlyMem
         // branch below, which made "a table on node N" honoured before the
         // handover and silently ignored after it -- the caller's argument
@@ -361,13 +362,13 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
         // memory it maps, and a table walk is a chain of dependent loads that
         // the hardware cannot overlap.
         //
-        // bootmem::ANY_NODE is >= MAX_NODES, which this overload forwards to
-        // the node-less one, so "no preference" -- every in-tree caller today --
-        // behaves exactly as before, the thread's NUMA policy included
-        // (applied by resolve_home()). The AllocState counter applies either
-        // way: alloc_block() checks it for every caller.
+        // bootmem::ANY_NODE is >= MAX_NODES, which names no node, so "no
+        // preference" -- every in-tree caller today -- starts on the calling
+        // CPU's node, the thread's NUMA policy included (applied by
+        // resolve_home()). The AllocState counter applies either way:
+        // alloc_block() checks it for every caller.
         auto const result =
-            alloc_frames(node, ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE));
+            alloc_frames(ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE), node);
         if (!result) {
             return PhysAddr{0};
         }
@@ -478,130 +479,117 @@ auto node_possible_mask() -> NodeMask const & {
     return PmNode::node_possible_mask();
 }
 
-auto alloc_frames(Gaf alloc_flags, usize order, NodeMask const &fallback)
-    -> ktl::Result<PmFrame *> {
+namespace priv {
+    auto alloc_frames(Gaf alloc_flags, usize const order, NodeId const home, NodeMask const &nodes)
+        -> ktl::Result<PmFrame *> {
 #if MM_TEST_ALLOC_FAILURE
-    if (test::AllocationFailure::hit(test::AllocationSite::Frame)) {
-        return ustl::err(Status::OutOfMem);
-    }
+        // The frame site is a frame asked for with no home named.
+        if (home >= MAX_NODES && test::AllocationFailure::hit(test::AllocationSite::Frame)) {
+            return ustl::err(Status::OutOfMem);
+        }
 #endif
-    return alloc_frames(bootmem::ANY_NODE, alloc_flags, order, fallback);
-}
+        if (!!(alloc_flags & Gaf::CanWait)) {
+            if (auto const status = GATE.admit(); Status::Ok != status) {
+                return ustl::err(status);
+            }
+        }
+        // The gate has answered for CanWait; nothing below reads the bit.
+        alloc_flags = alloc_flags & ~Gaf::CanWait;
 
-auto alloc_frames(Gaf alloc_flags, PhysAddr *addr, usize order) -> ktl::Result<PmFrame *> {
-    auto result = alloc_frames(alloc_flags, order);
-    if (result && addr) {
-        *addr = frame_to_phys(*result);
-    }
-    return result;
-}
-
-auto alloc_frames_fragment(Gaf alloc_flags, usize n, NodeMask const &nodes)
-    -> ktl::Result<PmFrame::List> {
-    return alloc_frames_fragment(bootmem::ANY_NODE, alloc_flags, n, nodes);
-}
-
-auto alloc_frames_fragment(NodeId const nid, Gaf alloc_flags, usize n, NodeMask const &nodes)
-    -> ktl::Result<PmFrame::List> {
-    DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "fragment allocation is immediate");
-
-    auto observation = gktl::defer([] { observe_pressure(); });
-    auto const home = resolve_home(nid, alloc_flags);
-    if (!home) {
-        log::trace("Failed to allocate frame with reason: {}", to_string(home.unwrap_err()));
-        return ustl::err(home.unwrap_err());
-    }
-
-    PmFrame::List list;
-    auto rollback = gktl::defer([&list] { free_blocks(list); });
-    // One bit of |n| per step, whether or not it is set. The shift used to
-    // sit inside the branch that allocates, so the first clear bit was never
-    // shifted out: `continue` bumped the order and tested the same bit again,
-    // for ever. Any even |n| hung here -- n = 2 on its first step.
-    for (usize order = 0; n > 0; order += 1, n >>= 1) {
-        if ((n & 1) == 0) {
-            continue;
+        auto const node = resolve_home(home, alloc_flags);
+        if (!node) {
+            observe_pressure();
+            return ustl::err(node.unwrap_err());
         }
 
-        auto block = alloc_block(**home, alloc_flags, order, nodes);
+        auto const block = alloc_block(**node, alloc_flags, order, nodes);
         if (!block) {
-            log::trace("Failed to allocate frame with reason: {}", to_string(block.error().status));
-            return ustl::err(block.error().status);
+            auto const &failure = block.error();
+            observe_pressure(failure.depleted_zone);
+            return ustl::err(failure.status);
         }
-        list.push_back(*block.unwrap());
-    }
 
-    rollback.cancel();
-    return ustl::ok(ustl::move(list));
-}
-
-auto alloc_frames_bulk(Gaf alloc_flags, usize n, NodeMask const &nodes)
-    -> ktl::Result<PmFrame::List> {
-    return alloc_frames_bulk(bootmem::ANY_NODE, alloc_flags, n, nodes);
-}
-
-auto alloc_frames_bulk(NodeId const nid, Gaf alloc_flags, usize const n, NodeMask const &nodes)
-    -> ktl::Result<PmFrame::List> {
-    DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "batch allocation is immediate");
-
-    auto observation = gktl::defer([] { observe_pressure(); });
-    auto const home = resolve_home(nid, alloc_flags);
-    if (!home) {
-        return ustl::err(home.unwrap_err());
-    }
-
-    PmFrame::List list;
-    auto rollback = gktl::defer([&list] { free_blocks(list); });
-    for (usize i = 0; i < n; ++i) {
-        auto block = alloc_block(**home, alloc_flags, 0, nodes);
-        if (!block) {
-            return ustl::err(block.error().status);
-        }
-        list.push_back(*block.unwrap());
-    }
-
-    rollback.cancel();
-    return ustl::ok(ustl::move(list));
-}
-
-auto alloc_frames(NodeId nid, Gaf alloc_flags, PmFrame::List *list, usize n, NodeMask const &nodes)
-    -> Status {
-    auto result = alloc_frames_bulk(nid, alloc_flags, n, nodes);
-    if (!result) {
-        log::trace("Failed to allocate {} frames with reason: {}", n,
-                   to_string(result.unwrap_err()));
-        return result.unwrap_err();
-    }
-
-    *list = ustl::move(*result);
-    return Status::Ok;
-}
-
-auto alloc_frames(NodeId const nid, Gaf alloc_flags, usize const order, NodeMask const &nodes)
-    -> ktl::Result<PmFrame *> {
-    if (!!(alloc_flags & Gaf::CanWait)) {
-        if (auto const status = GATE.admit(); Status::Ok != status) {
-            return ustl::err(status);
-        }
-    }
-    // The gate has answered for CanWait; nothing below reads the bit.
-    alloc_flags = alloc_flags & ~Gaf::CanWait;
-
-    auto const home = resolve_home(nid, alloc_flags);
-    if (!home) {
         observe_pressure();
-        return ustl::err(home.unwrap_err());
+        return ustl::ok(*block);
     }
 
-    auto const block = alloc_block(**home, alloc_flags, order, nodes);
-    if (!block) {
-        auto const &failure = block.error();
-        observe_pressure(failure.depleted_zone);
-        return ustl::err(failure.status);
+    auto alloc_frames_bulk(Gaf alloc_flags, usize const n, NodeId const home, NodeMask const &nodes)
+        -> ktl::Result<PmFrame::List> {
+        DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "batch allocation is immediate");
+
+        auto observation = gktl::defer([] { observe_pressure(); });
+        auto const node = resolve_home(home, alloc_flags);
+        if (!node) {
+            log::trace("Failed to allocate {} frames with reason: {}", n,
+                       to_string(node.unwrap_err()));
+            return ustl::err(node.unwrap_err());
+        }
+
+        PmFrame::List list;
+        auto rollback = gktl::defer([&list] { free_blocks(list); });
+        for (usize i = 0; i < n; ++i) {
+            auto block = alloc_block(**node, alloc_flags, 0, nodes);
+            if (!block) {
+                log::trace("Failed to allocate {} frames with reason: {}", n,
+                           to_string(block.error().status));
+                return ustl::err(block.error().status);
+            }
+            list.push_back(*block.unwrap());
+        }
+
+        rollback.cancel();
+        return ustl::ok(ustl::move(list));
     }
 
-    observe_pressure();
-    return ustl::ok(*block);
+    auto alloc_frames_fragment(Gaf alloc_flags, usize n, NodeId const home, NodeMask const &nodes)
+        -> ktl::Result<PmFrame::List> {
+        DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "fragment allocation is immediate");
+
+        auto observation = gktl::defer([] { observe_pressure(); });
+        auto const node = resolve_home(home, alloc_flags);
+        if (!node) {
+            log::trace("Failed to allocate frame with reason: {}", to_string(node.unwrap_err()));
+            return ustl::err(node.unwrap_err());
+        }
+
+        PmFrame::List list;
+        auto rollback = gktl::defer([&list] { free_blocks(list); });
+        // One bit of |n| per step, whether or not it is set. The shift used to
+        // sit inside the branch that allocates, so the first clear bit was
+        // never shifted out: `continue` bumped the order and tested the same
+        // bit again, for ever. Any even |n| hung here -- n = 2 on its first
+        // step.
+        for (usize order = 0; n > 0; order += 1, n >>= 1) {
+            if ((n & 1) == 0) {
+                continue;
+            }
+
+            auto block = alloc_block(**node, alloc_flags, order, nodes);
+            if (!block) {
+                log::trace("Failed to allocate frame with reason: {}",
+                           to_string(block.error().status));
+                return ustl::err(block.error().status);
+            }
+            list.push_back(*block.unwrap());
+        }
+
+        rollback.cancel();
+        return ustl::ok(ustl::move(list));
+    }
+} // namespace priv
+
+auto alloc_frames(Gaf const flags, usize const order, NodeId const home) -> ktl::Result<PmFrame *> {
+    return priv::alloc_frames(flags, order, home, node_online_mask());
+}
+
+auto alloc_frames_bulk(Gaf const flags, usize const n, NodeId const home)
+    -> ktl::Result<PmFrame::List> {
+    return priv::alloc_frames_bulk(flags, n, home, node_online_mask());
+}
+
+auto alloc_frames_fragment(Gaf const flags, usize const n, NodeId const home)
+    -> ktl::Result<PmFrame::List> {
+    return priv::alloc_frames_fragment(flags, n, home, node_online_mask());
 }
 
 auto free_frames(PmFrame *frame, usize order) -> void {

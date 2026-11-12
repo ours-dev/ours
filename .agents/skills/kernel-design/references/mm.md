@@ -283,7 +283,9 @@ a step is in, the code still has the shape described above.
   count, a node id. Never a compound structure as a parameter; the user
   rejected a `FrameRequest` and a `Placement` aggregate on 2026-11-10. One
   function with a trailing default (`home = ANY_NODE`) replaces the paired
-  overloads, no node mask is a public parameter, and whatever else a caller
+  overloads, no node mask is a public parameter (the pipeline takes one in
+  `mm::priv`, `ours/mm/priv/pmm.hpp`, for tests and for a thread's placement
+  policy), and whatever else a caller
   wants (zone ceiling, mobility, floor) is a `Gaf` bit behind a preset, not
   a new parameter. `Gaf` keeps `CanBlock`, `CanWait`, `ThisNode` and `Zero`
   and gains `Movable` and `Dma32`.

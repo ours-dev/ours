@@ -58,7 +58,7 @@ auto split_block(PmFrame *frame, usize order = 0) -> void;
 ```
 
 - `alloc_frames()` is Linux's `alloc_pages_node(nid, gfp, order)` with the node last and defaulted, so the paired overloads with and without a home node become one function: a home of `ANY_NODE` means the calling CPU's node, as an id outside the node table already does today. Eleven declarations become four.
-- No node mask is a public parameter (D4). Production code never passes one; "this node only" is `Gaf::ThisNode`, and a wider restriction comes from the calling thread's placement policy. The mask stays in the internal request, where the resolver fills it, and a test reaches it through the resolver.
+- No node mask is a public parameter (D4). Production code never passes one; "this node only" is `Gaf::ThisNode`, and a wider restriction comes from the calling thread's placement policy. The mask stays an input of the pipeline: the three functions exist in `mm::priv` (`ours/mm/priv/pmm.hpp`) with the node set as a last parameter, the public ones call them with every online node, and a test of a restriction the public interface cannot ask for calls the `priv` form.
 - The list forms are Zircon's `pmm_alloc_pages(count, flags, list)` and `pmm_alloc_contiguous(count, flags, align_log2, pa, list)`, and `free_frames(PmFrame::List *)` is its `pmm_free(list)`. `alloc_frames_bulk()` is today's `alloc_frames(NodeId, Gaf, PmFrame::List *, usize)` under its own name.
 - `free_frames()` takes no order, because the head of a block records it (F2).
 - `get_frames<T>()`, `get_frames_n<T>()` and `alloc_frames_n()` stay as inline wrappers. `alloc_page_table()` and `free_page_table()`, `unwire_frame()`, `wait_for_frame_allocation()`, `set_free_memory_signal()` and the two counts do not change.

@@ -98,3 +98,75 @@ None.
 - Why does taking an `AllocRequest` protect the node's layer better than a comment saying "internal", when the function is still public?
 - `PmNode::observe_pressure()` was declared in one file and defined in another. What did that say about where it belonged?
 - A release now passes through the node. What does the node gain from seeing it, and what does it cost?
+
+## One public signature for each allocation shape: flags, amount, home (2026-11-11)
+
+**Files**
+- `kernel/mm/include/ours/mm/pmm.hpp` — `alloc_frames(flags, order = 0, home)`, `alloc_frames_bulk(flags, n, home)`, `alloc_frames_fragment(flags, n, home)`, and `alloc_frames_n()`, `get_frames()`, `get_frames_n()` in the same shape; eleven declarations become six
+- `kernel/mm/include/ours/mm/priv/pmm.hpp` — new: the same three functions with the node set as a parameter, in `mm::priv`
+- `kernel/mm/pmm.cpp` — the bodies move into `mm::priv`; the public functions call them with every online node
+- `kernel/mm/cpu_local.cpp`, `kernel/mm/object_cache.cpp` — the three production calls that name a home node
+- `kernel/tests/pm_node_test.cpp`, `kernel/tests/memory_pressure_test.cpp`, `kernel/tests/page_reclaim_test.cpp`, `kernel/tests/vma_phys_test.cpp` — the new argument order; six calls that need a node set go through `mm::priv`
+
+**Symptom**
+None. Every caller is served as before.
+
+**Cause**
+The public allocation family had grown by doubling. Each shape existed once without a home node and once with the node as a new first parameter, and each of those took a trailing `NodeMask`. The list of single frames was spelled `alloc_frames(NodeId, Gaf, PmFrame::List *, usize)` and answered a `Status` where its siblings answered a `Result`; `alloc_frames(Gaf, PhysAddr *, usize)` existed to save its caller one call of `frame_to_phys()`. A reader had to learn eleven declarations to find three contracts.
+
+The use did not justify the surface. Production code names a home node three times and passes a node set never; only tests passed one. And a node set is not something a caller should choose in the first place: which nodes a request may fall back to is a decision about the machine and the thread, which belongs to the allocator and to the thread's placement policy, while the one restriction a caller legitimately has, "this node and no other", already has a flag.
+
+**Change**
+One function for each shape, every parameter primitive, the home last and defaulted:
+
+```cpp
+// before
+auto alloc_frames(Gaf, usize order = 0, NodeMask const & = node_online_mask());
+auto alloc_frames(NodeId, Gaf, usize order = 0, NodeMask const & = node_online_mask());
+auto alloc_frames(Gaf, PhysAddr *addr, usize order = 0);
+auto alloc_frames(NodeId, Gaf, PmFrame::List *, usize, NodeMask const & = node_online_mask());
+
+// after
+auto alloc_frames(Gaf flags, usize order = 0, NodeId home = bootmem::ANY_NODE);
+auto alloc_frames_bulk(Gaf flags, usize n, NodeId home = bootmem::ANY_NODE);
+```
+
+A home of `ANY_NODE` is not a new convention: an id outside the node table already meant "no node named, start on the local one" in `resolve_home()`. The default argument is what lets one function serve both forms.
+
+The node set stays an input of the pipeline, in `mm::priv`:
+
+```cpp
+namespace ours::mm::priv {
+auto alloc_frames(Gaf flags, usize order, NodeId home, NodeMask const &nodes)
+    -> ktl::Result<PmFrame *>;
+}
+```
+
+The public function is that with `node_online_mask()`. A test of an empty set, or of a set that leaves the home out, includes `ours/mm/priv/pmm.hpp` and calls the `priv` form; it still runs the whole pipeline (the gate, the thread's allocation state, rollback, the pressure observation), which calling `PmNode::alloc_frames()` with a hand-built request would not. Test calls that passed `NodeMask::of(nid)` together with the same home needed no set at all: `Gaf::ThisNode` says it.
+
+Every old call fails to compile rather than changing meaning: a `NodeId` does not convert to a `Gaf`, and a `NodeMask` does not convert to a `NodeId`. The compiler found the two calls in `page_reclaim_test.cpp` that the search had missed.
+
+**Reference**
+Linux `alloc_pages_node(nid, gfp, order)` and `alloc_pages(gfp, order)` over `__alloc_pages(gfp, order, preferred_nid, nodemask)`: the node mask is a parameter of the core and of no convenience entry, and it is filled from the task's memory policy. Zircon `pmm_alloc_page(alloc_flags, page)` and `pmm_alloc_pages(count, alloc_flags, list)`: primitive parameters and nothing else.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree, counts unchanged from the commit before: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 183 passed. The same on four nodes (`out/numa.x86`, `NUMA=1`).
+
+`ktest PmZone.*:PmNode.*:PageReclaim.*:MemoryPressure.*:PageQueues.*:VmoContiguous.*:VmoPin.*:VmaPhys.*` on dbg: 8 ran, 8 passed. `ktest PmZone.*:PmNode.*:MemoryPressure.*:PageReclaim.*` on four nodes: 4 ran, 4 passed. `format_cpp.py --check` is clean; clang-tidy reports nothing in `pmm.cpp`, `cpu_local.cpp`, `object_cache.cpp` or the two `pmm.hpp` headers.
+
+**Deliberately not done**
+- `order` and `home` are both integers, so `alloc_frames(flags, nid, order)` compiles and means something else. A strong `NodeId` would catch it; that is a change across the kernel and not this step's.
+- `free_frames()` keeps its `order` parameter (decision F2).
+- `alloc_frames_contiguous()` and the new `Gaf` bits are not added here.
+- `pm_node_test.cpp` lost its case for the `PhysAddr *` output along with the overload it tested.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is a node set the allocator's and the thread's to decide, and not the caller's? What is the one node restriction a caller does own?
+- Why do the tests call `mm::priv::alloc_frames()` and not `PmNode::alloc_frames()` with a request they build themselves?
+- Why could no old call silently change meaning under the new signature, and which call can?

@@ -348,7 +348,7 @@ auto CpuLocal::Mapper::build_dense(VirtAddr slot, Gaf alloc_flags) -> Status {
                 std::min(usize(ustl::bit_width(remaining)) - 1, usize(MAX_FRAME_ORDER));
             auto const n = usize{1} << order;
 
-            auto const frame = alloc_frames(nid, alloc_flags, order);
+            auto const frame = alloc_frames(alloc_flags, order, nid);
             if (!frame) {
                 // Earlier units stay mapped. Nothing here is ever torn down,
                 // and the only caller that can fail is init(), which panics.
@@ -393,7 +393,7 @@ auto CpuLocal::Mapper::build_scattered() -> Status {
         }
 
         // Zeroed, so a unit's dynamic area starts clean.
-        auto const frame = alloc_frames(nid, mm::ALLOC_KERNEL | mm::Gaf::Zero, order);
+        auto const frame = alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero, order, nid);
         if (!frame) {
             for (auto done = u32(0); done < group; ++done) {
                 free_frames(&m_group_frames[done]);
