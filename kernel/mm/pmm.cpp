@@ -305,6 +305,10 @@ namespace {
                      frame_to_phys(&frame));
         DEBUG_ASSERT(!frame.is_role(page::Role::Vmm) || 0 == frame.page_queue(),
                      "frame {:#x} is freed while still on a page queue", frame_to_phys(&frame));
+        // Whatever its role: a pin says the frame stays where it is, and a
+        // frame on a free list is about to be someone else's.
+        DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} is freed while {} pin(s) hold it",
+                     frame_to_phys(&frame), frame.pin_count());
 
         // A frame goes back to the node that owns it, which the frame names,
         // and not to the node of whoever is freeing it.
@@ -666,6 +670,26 @@ auto adopt_frames(Pfn start, Pfn const end) -> void {
         start += usize{1} << order;
     }
     observe_pressure();
+}
+
+auto pin_frame(PmFrame *const frame) -> Status {
+    DEBUG_ASSERT(frame, "pin requires a frame");
+    if (frame->is_role(page::Role::Pmm)) {
+        return Status::BadState;
+    }
+    if (!frame->pin()) {
+        return Status::NoResource;
+    }
+    return Status::Ok;
+}
+
+auto unpin_frame(PmFrame *const frame) -> Status {
+    DEBUG_ASSERT(frame, "unpin requires a frame");
+    if (frame->pin_count() == 0) {
+        return Status::BadState;
+    }
+    frame->unpin();
+    return Status::Ok;
 }
 
 auto split_block(PmFrame *const frame, usize const order) -> void {

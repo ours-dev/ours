@@ -226,3 +226,81 @@ None.
 - Which four facts about the buddy did `create_contiguous()` have to know, and which of them does it still?
 - Why does the function answer a list when the frames are consecutive descriptors a caller could index?
 - The move changed no cost. What did it change about fixing the costs later?
+
+## A pin is a fact about the frame: pin_frame() and unpin_frame() (2026-11-12)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — the pin count leaves `page::VmmBody` for the header (`m_pins`, with `pin_count()`, `pin()`, `unpin()`); `m_compound` is stored in sixteen bits to make room
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/pmm.cpp` — `pin_frame()` and `unpin_frame()` defined, with their contract; the release path asserts that no frame is freed pinned
+- `kernel/mm/vm_cow_pages.cpp` — `pin_range_locked()` and `unpin_range_locked()` call them; the reads become `pin_count()`
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp` — a comment that named `pinned_count`
+- `kernel/tests/vmo_pin_test.cpp` — reads `pin_count()`
+- `kernel/tests/pm_node_test.cpp` — `PmNode.PinFrameCountsWhateverTheRole`
+
+**Symptom**
+Latent, cannot be triggered today. `pin_frame()` and `unpin_frame()` were declared in `pmm.hpp` and defined nowhere, so the first caller would have failed to link.
+
+**Cause**
+The pin count was a field of the VMM role body, read through `as<page::VmmBody>()`. That placed a fact about the frame inside one of its roles, and three things followed.
+
+Only a VMO's page could be pinned, and only VMO code could ask whether a frame was. Anything that wants to move a frame it found by its address (clearing a range for a contiguous request, compaction, taking memory offline) would have had to learn the frame's role first and then know that role's layout.
+
+The check that a pinned frame is never freed lived in one of the VMO's release functions (`vm_cow_pages.cpp:173`) and nowhere else, so it guarded one path of one role.
+
+And the count's life was tied to the body's. `become<Body>()` zeroes the body, so giving a frame a new role silently dropped its pins. No code did that to a pinned frame, but nothing prevented it either.
+
+**Change**
+The count is in the header, beside the fields every role shares:
+
+```cpp
+// pm_frame.hpp
+mutable std::atomic<u16> m_compound;   // was u32; the largest block has 2^10 frames
+std::atomic<u8> m_pins;                // was page::VmmBody::pinned_count
+```
+
+`mm::pin_frame(frame)` and `mm::unpin_frame(frame)` are the two operations, and the VMO uses them:
+
+```cpp
+// before, in VmCowPages::pin_range_locked()
+if (!page.increase_pinned()) {
+    return Status::NoResource;
+}
+
+// after
+if (auto const status = pin_frame(&page); Status::Ok != status) {
+    return status;
+}
+```
+
+The concurrency rule is unchanged, and now it is written on the function: the caller holds the lock of the frame's owner, and whatever would move the frame takes that lock and reads `pin_count()` under it. A pin therefore either comes first and is seen, or comes after the frame has left its owner and finds nothing to pin. `pin_range_locked()` and `unpin_range_locked()` run under the node's lock as before; moving a page onto and off the pinned queue stays theirs.
+
+`free_block()` asserts `pin_count() == 0` for a frame of any role.
+
+Two things in this change were corrected while it was being made:
+
+- The design put the count in the header's reference word, having read that word as unused. It is not: `slab::create()` takes a reference on the frame and `slab::destroy()` drops it. Nothing reads the count, but it is the object cache's, so it stays whole and the pin count takes a byte from the compound offset's half word instead.
+- The first version raised the limit, since the field was wider. `Bti.ThePinItsTokenAndTheQuarantine` then panicked the kernel. Both it and `VmoPin.PinRangeAndUnpinRange` pin one page 255 times and check that the next pin is `NoResource`; 255 is a contract with two tests behind it. The field is eight bits and the limit is 255, as it was.
+
+**Reference**
+Zircon keeps `pin_count` in `vm_page::object` (`kernel/vm/include/vm/page.h`), five bits wide, written under the VMO's lock by `VmCowPages::PinRangeLocked()`; its movers go through the VMO, so the count can stay in the object's part of the page. Linux counts pins in the folio's reference count (`GUP_PIN_COUNTING_BIAS`) and lets a mover freeze it with `folio_ref_freeze()`, which needs no owner lock; decision F1 of `.agents/tasks/pmm-redesign/DESIGN.md` is why this kernel does not.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree, counts unchanged: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 183 passed. The same on four nodes (`NUMA=1`).
+
+`ktest all` on dbg, default and four-node: 64 ran, 62 passed, 2 skipped; one more than the last step, the new test. It pins a frame with no role twice, puts a role on it and checks the pins are still two, unpins twice, checks that a third unpin is `BadState`, and frees the frame. `VmoPin.PinRangeAndUnpinRange`, `Bti.ThePinItsTokenAndTheQuarantine` and `BtiStress.RacesDoNotBreakEachOther` run the changed VMO paths and pass. `format_cpp.py --check` is clean; clang-tidy reports nothing in `pmm.cpp` or `vm_cow_pages.cpp`, nor on the new lines of `pm_frame.hpp`.
+
+**Deliberately not done**
+- A release build does not clear a leaked pin. If a frame were freed pinned there, where the assertion is compiled out, its next owner would inherit the count; in the body it would have been zeroed by the next `become()`.
+- `docs/repairs/261030/mm-pin.md` item 4, the read-only pin that leaves a page unreclaimable.
+- No mover other than reclaim exists yet, so "every mover reads the count under the owner's lock" has one reader.
+
+**How it was found**
+The limit: `ktest all` stopped with `OURS KERNEL PANIC` and the one line `operator new` inside the BTI test, with no assertion text. That panic is what a log line longer than 256 bytes produces (`docs/repairs/261028/logz4.md` item 1), most likely the message of the test's failed check, so it said nothing about which check. Turning the new assertion in `free_block()` into a log line for one run showed it was not the one firing; a search of the two pin tests for `255` showed what was.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What did `become<Body>()` do to a pinned frame's count before this change, and what does it do now?
+- A reclaimer finds a page on a queue while another thread is about to pin it. Which lock decides the order, and what does each of them see in each order?
+- Why did raising the limit panic the kernel with "operator new" and not with a failed check's message?

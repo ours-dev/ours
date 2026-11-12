@@ -876,6 +876,38 @@ namespace {
         }
     }
 
+    KTEST(PmNode, PinFrameCountsWhateverTheRole) {
+        auto const allocated = mm::alloc_frames(mm::ALLOC_KERNEL);
+        if (!allocated) {
+            FAIL("allocate a frame to pin");
+            return;
+        }
+        // Nobody else knows this frame, so there is no owner's lock to take:
+        // the test is its owner.
+        auto *const frame = *allocated;
+        EXPECT_TRUE(frame->pin_count() == 0, "a frame just allocated holds no pin");
+
+        auto const first = mm::pin_frame(frame);
+        auto const second = mm::pin_frame(frame);
+        EXPECT_TRUE(Status::Ok == first && Status::Ok == second && frame->pin_count() == 2,
+                    "pins count, on a frame with no role");
+
+        // A role is put on over the pins and does not forget them.
+        frame->become<mm::page::MmuBody>();
+        EXPECT_TRUE(frame->pin_count() == 2, "a change of role keeps the pins");
+        frame->set_role(mm::page::Role::None);
+
+        auto const undone = mm::unpin_frame(frame);
+        auto const undone_again = mm::unpin_frame(frame);
+        EXPECT_TRUE(Status::Ok == undone && Status::Ok == undone_again && frame->pin_count() == 0,
+                    "each unpin undoes one pin");
+        EXPECT_TRUE(mm::unpin_frame(frame) == Status::BadState,
+                    "a frame with no pin cannot be unpinned");
+
+        // With no pin left it may go back; a debug build asserts if it could not.
+        mm::free_frames(frame);
+    }
+
     KTEST(PmNode, MatchesTheMachineItRunsOn) {
         run_topology_checks();
         PmNode::for_each_node(PmNode::State::Online, [](PmNode &node) {

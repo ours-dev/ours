@@ -329,8 +329,24 @@ enum class DelayedAllocations : u8 {
 auto set_free_memory_signal(usize lower, usize upper, usize delay_level, sync::Event *event,
                             DelayedAllocations delayed) -> bool;
 
+/// Holds |frame| in place: until the matching unpin_frame() it keeps its
+/// physical address and its content, so nothing may reclaim it, replace it or
+/// move it. Pins count, and a frame is held while it has any.
+///
+/// The caller holds the lock of the frame's owner. That is the whole of the
+/// protocol: whatever would move the frame takes the same lock and looks at
+/// PmFrame::pin_count() under it, so a pin either comes first and is seen, or
+/// comes after the frame has gone from its owner and finds nothing to pin.
+/// Filing a pinned page on its node's pinned queue is the owner's to do.
+///
+/// NoResource when the frame cannot take another pin, and BadState for a
+/// frame on a free list, which nobody owns.
+[[nodiscard]]
 auto pin_frame(PmFrame *frame) -> Status;
 
+/// Undoes one pin_frame(), under the same lock. BadState for a frame that has
+/// no pin.
+[[nodiscard]]
 auto unpin_frame(PmFrame *frame) -> Status;
 
 } // namespace ours::mm

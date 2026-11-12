@@ -697,7 +697,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// when there are no views. VmObjectPaged maintains it under the tree lock.
     VmObjectPaged *m_representative TA_GUARDED(m_lock) = nullptr;
 
-    /// How many of this node's pages hold a pin (pinned_count above zero), kept
+    /// How many of this node's pages hold a pin (a pin count above zero), kept
     /// beside the pages so that the operations a pin forbids, a clone above all,
     /// can ask in one read. Under the tree's lock, as the pins it counts are.
     usize m_nr_pinned_pages TA_GUARDED(m_lock) = 0;
