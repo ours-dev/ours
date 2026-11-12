@@ -274,8 +274,14 @@ class PageFrame {
         m_status.set<Index::Section>(secnum);
         m_status.set<Index::Node>(nid);
         m_status.set<Index::Role>(Role::None);
-        // The one write of the whole field: whatever the descriptor held
-        // before is garbage.
+        // No block yet: a frame is the head of a block only once the buddy
+        // has made one of it, and the buddy writes the order then. Written
+        // here all the same, because free_frames() reads it to learn how much
+        // is being returned, and a frame nothing has allocated must read as a
+        // single frame and not as whatever its storage held.
+        m_status.set<Index::Order>(0);
+        // The one write of the whole Flags field: whatever it held before is
+        // garbage.
         m_status.set<Index::Flags>(Flags::Initialized);
     }
 

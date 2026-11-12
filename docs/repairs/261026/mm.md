@@ -44,26 +44,6 @@ Linux's `SECTIONS_PER_ROOT` in `mm/sparse.c` is `PAGE_SIZE / sizeof(struct mem_s
 **Acceptance**
 A static assertion that `MAPPING_LEVEL * INDEX_BITS` covers `SecNum`'s range for the configured physical address width, and that `BIT(INDEX_BITS) == ENTRIES_PER_SECTION`.
 
-## 5. `PageFrame::init()` never writes the Order field
-
-**Severity**
-Medium. Correct today only because another allocation site happens to zero the memory.
-
-**Symptom**
-Latent. `init()` leaves `Index::Order` holding whatever the descriptor's memory held before, and `FrameBuddy::is_mergeable()` reads `buddy->order()` to decide whether two blocks may be merged. Today `activate_section()` asks for `Gaf::Zero`, so the field reads 0 and the decision is accidentally right.
-
-**Cause**
-`kernel/mm/include/ours/mm/pm_frame.hpp:257-267` writes `Index::ZoneType`, `Index::Section`, `Index::Node`, `Index::Role` and `Index::Flags`, and stops. The comment on the last write says "The one write of the whole field: whatever the descriptor held before is garbage", which is true of the Flags field and reads as if it covered the whole word — it does not. So the descriptor's own initialiser leaves one of the fields the buddy allocator depends on unset, and the invariant is propped up from `kernel/mm/sparse_memmap.cpp` instead. Note that the `Gaf::Zero` on that allocation was itself silently dropped until recently, which is exactly how this would have become live.
-
-**Change**
-Add `m_status.set<Index::Order>(0)` to `init()`, and correct the comment to say which field it is talking about. An `init()` that sets every field it names is also the precondition for ever relaxing the `Gaf::Zero` on the memmap allocation.
-
-**Reference**
-Linux `__init_single_page()` in `mm/mm_init.c` sets every field of `struct page` it is responsible for and does not rely on the allocator having zeroed it; the order of a free block lives separately in `page_private()`, set by `set_buddy_order()` at the moment a block is freed into the buddy.
-
-**Acceptance**
-Read `init()` and confirm every field named in `Index` is either written or documented as not belonging to it. Then boot both images with the `Gaf::Zero` removed from `activate_section()` as a one-off experiment, which must still pass.
-
 ## 6. `FrameBuddy::is_mergeable()` trusts `role` without checking that the descriptor was ever initialised
 
 **Severity**
