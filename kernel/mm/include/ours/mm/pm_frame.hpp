@@ -318,7 +318,7 @@ class PageFrame {
     /// Clears Reserved: one half of taking a frame off the reserved books, which
     /// unwire_frame() does for every frame that leaves them (the init area
     /// freed after boot, the boot image adopted by userboot's VMO). It comes
-    /// before the frame is freed: PmNode::free_frames() asserts that the
+    /// before the frame is freed: mm::free_frames() asserts that the
     /// frame it is given is not reserved.
     FORCE_INLINE
     constexpr auto clear_reserved() -> void {

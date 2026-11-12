@@ -127,8 +127,29 @@ auto alloc_frames(Gaf, usize order = 0, NodeMask const & = node_online_mask())
 [[nodiscard]]
 auto alloc_frames(Gaf, PhysAddr *addr, usize order = 0) -> ktl::Result<PmFrame *>;
 
+/// Allocates exactly |n| pages as a list of blocks, one per set bit of |n|:
+/// bit k contributes one block of 2^k contiguous pages, so |n| = 5 yields a
+/// 1-page block and a 4-page block. Each block is contiguous in itself; the
+/// blocks are not contiguous with each other. They are taken smallest first,
+/// and on failure every block already taken is returned before the error is.
 [[nodiscard]]
-auto alloc_frames_fragment(Gaf, usize, NodeMask const & = node_online_mask())
+auto alloc_frames_fragment(Gaf, usize n, NodeMask const & = node_online_mask())
+    -> ktl::Result<PmFrame::List>;
+
+/// The same with an explicit home node.
+[[nodiscard]]
+auto alloc_frames_fragment(NodeId, Gaf, usize n, NodeMask const & = node_online_mask())
+    -> ktl::Result<PmFrame::List>;
+
+/// Allocates |n| single frames as a list. On failure every frame already
+/// taken is returned before the error is.
+[[nodiscard]]
+auto alloc_frames_bulk(Gaf, usize n, NodeMask const & = node_online_mask())
+    -> ktl::Result<PmFrame::List>;
+
+/// The same with an explicit home node.
+[[nodiscard]]
+auto alloc_frames_bulk(NodeId, Gaf, usize n, NodeMask const & = node_online_mask())
     -> ktl::Result<PmFrame::List>;
 
 /// Allocate one power-of-two block large enough for the requested page count.
@@ -138,14 +159,15 @@ inline auto alloc_frames_n(Gaf alloc_flags, usize nr_frames,
     return alloc_frames(alloc_flags, get_order(nr_frames), nodes);
 }
 
-/// Allocate an immediate list of single frames.
+/// alloc_frames_bulk() answering a Status, with the frames put on |list|.
 [[nodiscard]]
 auto alloc_frames(NodeId, Gaf, PmFrame::List *, usize, NodeMask const & = node_online_mask())
     -> Status;
 
-/// The same block allocation protocol with an explicit home node.
+/// The same block allocation protocol with an explicit home node. A node id
+/// outside the node table names no node and starts on the local one.
 [[nodiscard]]
-auto alloc_frames(NodeId, Gaf, usize, NodeMask const & = node_online_mask())
+auto alloc_frames(NodeId, Gaf, usize order = 0, NodeMask const & = node_online_mask())
     -> ktl::Result<PmFrame *>;
 
 /// Allocate one power-of-two block large enough for the requested page count.
@@ -230,7 +252,7 @@ auto free_page_table(PhysAddr base, usize size) -> void;
 /// Returns |frame|'s block to its zone's buddy allocator. The frame must not
 /// be reserved: a frame stamped Reserved at boot has to go through
 /// unwire_frame() first, or the buddy would hold a frame the reserved counts
-/// still claim (a debug build asserts it, in PmNode::free_frames()).
+/// still claim (a debug build asserts it).
 auto free_frames(PmFrame *frame, usize order = 0) -> void;
 
 /// Takes |frame|, reserved since boot, off the reserved books, so that it can

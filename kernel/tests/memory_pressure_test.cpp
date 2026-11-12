@@ -255,19 +255,19 @@ namespace {
             mm::set_free_memory_signal(0, 0, 0, &rejected, mm::DelayedAllocations::Wait);
         // The first fragment crosses the lower bound before the second fails.
         constexpr auto ROLLBACK = NR_CROSSING | (usize{1} << (MAX_FRAME_ORDER + 1));
-        auto rolled_back = mm::PmNode::alloc_frames_fragment(mm::ALLOC_KERNEL, ROLLBACK);
+        auto rolled_back = mm::alloc_frames_fragment(mm::ALLOC_KERNEL, ROLLBACK);
         auto const invalid = !rolled_back && rolled_back.unwrap_err() == Status::InvArgs;
         if (rolled_back) {
-            mm::PmNode::free_frames(&*rolled_back);
+            mm::free_frames(&*rolled_back);
         }
         auto const quiet = watched.wait(deadline_after(SETTLE)) == Status::TimeOut;
         EXPECT_TRUE(armed_low && invalid && quiet,
                     "a partial withdrawal is rolled back before pressure is sampled");
 
-        auto batch = mm::PmNode::alloc_frames_bulk(mm::ALLOC_USER, NR_CROSSING);
+        auto batch = mm::alloc_frames_bulk(mm::ALLOC_USER, NR_CROSSING);
         auto const low = watched.wait(deadline_after(SETTLE)) == Status::Ok;
         EXPECT_TRUE(armed_low && batch && batch->size() == NR_CROSSING && low,
-                    "a direct PmNode batch below the lower bound signals the event");
+                    "a batch below the lower bound signals the event");
         watched.unsignal();
 
         // And above the upper bound by frees.
@@ -275,11 +275,10 @@ namespace {
         auto const armed_high = mm::set_free_memory_signal(0, during + MARGIN, 0, &watched,
                                                            mm::DelayedAllocations::Wait);
         if (batch) {
-            mm::PmNode::free_frames(&*batch);
+            mm::free_frames(&*batch);
         }
         auto const high = watched.wait(deadline_after(SETTLE)) == Status::Ok;
-        EXPECT_TRUE(armed_high && high,
-                    "a direct PmNode list return above the upper bound signals the event");
+        EXPECT_TRUE(armed_high && high, "a list return above the upper bound signals the event");
         open_gate();
         EXPECT_TRUE(!stale_low && !stale_high && low,
                     "stale bounds are rejected without replacing the armed event");
