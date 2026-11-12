@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/kshell_run.py's `ktest` verdict.
+"""Unit tests for scripts/kshell_run.py's `ktest` verdict, the death tests'
+included.
 
 The verdict is pure logic over the lines a command printed, so it runs here
 rather than on a booted image; the booted runs themselves are exercised by
@@ -48,6 +49,16 @@ class Classify(unittest.TestCase):
             self.assertTrue(kshell_run.ktest_runs_all(command))
         for command in ("ktest Ktest.*", "ktest Ktest.* rounds=256"):
             self.assertFalse(kshell_run.ktest_runs_all(command))
+
+    def test_count_varies_for_repeat_and_shard(self):
+        for command in ("ktest all repeat=2", "ktest all repeat", "ktest all shard=1/2",
+                        "ktest all shard", "ktest all shuffle repeat=2",
+                        "ktest all shuffle=5 shard=0/3"):
+            self.assertTrue(kshell_run.ktest_count_varies(command), command)
+        for command in ("ktest", "ktest all", "ktest list", "ktest all shuffle",
+                        "ktest all shuffle=305419896", "ktest all rounds=256",
+                        "ktest Ktest.* repeat=2"):
+            self.assertFalse(kshell_run.ktest_count_varies(command), command)
 
 
 class EndPattern(unittest.TestCase):
@@ -104,6 +115,15 @@ class JudgeRun(unittest.TestCase):
         lines = self.run_lines("ktest: SUMMARY ran=1 passed=1 failed=0 skipped=0")
         self.assertTrue(quiet(kshell_run.judge_ktest_run, "ktest Ktest.*", lines, None))
 
+    def test_passing_repeat_run_has_no_expected_count(self):
+        # repeat= and shard= runs are passed expected=None: their summary
+        # counts executions, which is the option's point, so the list-count
+        # equality is not required of them.
+        lines = self.run_lines("ktest: SUMMARY ran=6 passed=6 failed=0 skipped=0")
+        self.assertTrue(quiet(kshell_run.judge_ktest_run, "ktest all repeat=3", lines, None))
+        lines = self.run_lines("ktest: SUMMARY ran=31 passed=30 failed=0 skipped=1")
+        self.assertTrue(quiet(kshell_run.judge_ktest_run, "ktest all shard=1/2", lines, None))
+
     def test_failed_test(self):
         lines = self.run_lines("ktest: SUMMARY ran=1 passed=0 failed=1 skipped=0",
                                error("ktest: FAILED Ktest.AssertionsPass (1 of 2 checks failed)"))
@@ -139,6 +159,127 @@ class JudgeRun(unittest.TestCase):
         lines = self.run_lines("ktest: SUMMARY ran=1 passed=1 failed=0 skipped=0",
                                error("some kernel error"))
         self.assertFalse(quiet(kshell_run.judge_ktest_run, "ktest all", lines, 1))
+
+
+BANNER = "OURS KERNEL PANIC"
+DEATH_NAME = "KtestDeath.PanicsOnDemand"
+
+
+def death_command() -> str:
+    return f"ktest death {DEATH_NAME}"
+
+
+def replay() -> str:
+    """What a whole panic report looks like behind the banner and its message:
+    the record ring between its two markers (kernel/top/panic.cpp)."""
+    return ("--- recent log: the last 3 lines ---\n"
+            + info(f"ktest: DEATH {DEATH_NAME}") + "\n"
+            + "--- end of recent log ---\n")
+
+
+class DeathClassify(unittest.TestCase):
+    def test_death_selection_forms(self):
+        for command in ("ktest death", f"ktest death {DEATH_NAME}", "ktest death KtestDeath.*"):
+            self.assertTrue(kshell_run.ktest_deaths(command), command)
+        for command in ("ktest", "ktest all", "ktest list", "ktest Ktest.*", "ktest Death.*"):
+            self.assertFalse(kshell_run.ktest_deaths(command), command)
+
+    def test_death_ends_the_machine(self):
+        for command in ("ktest death", f"ktest death {DEATH_NAME}"):
+            self.assertTrue(kshell_run.ends_machine(command), command)
+        for command in ("ktest list", "ktest all", "ktest Ktest.*"):
+            self.assertFalse(kshell_run.ends_machine(command), command)
+
+
+class DeathFilter(unittest.TestCase):
+    def test_empty_filter_selects_everything(self):
+        self.assertTrue(kshell_run.ktest_filter_matches("", DEATH_NAME))
+
+    def test_globs(self):
+        self.assertTrue(kshell_run.ktest_filter_matches("KtestDeath.*", DEATH_NAME))
+        self.assertTrue(kshell_run.ktest_filter_matches("*Panics*", DEATH_NAME))
+        self.assertTrue(kshell_run.ktest_filter_matches(DEATH_NAME, DEATH_NAME))
+        self.assertTrue(kshell_run.ktest_filter_matches("KtestDeat?.PanicsOnDemand", DEATH_NAME))
+        self.assertFalse(kshell_run.ktest_filter_matches("KtestDeath.*", "Ktest.AssertionsPass"))
+        self.assertFalse(kshell_run.ktest_filter_matches("Ktest?", DEATH_NAME))
+
+    def test_colon_tokens_and_exclusions(self):
+        self.assertTrue(kshell_run.ktest_filter_matches("Ktest.AssertionsPass:KtestDeath.*",
+                                                        DEATH_NAME))
+        self.assertFalse(kshell_run.ktest_filter_matches("-KtestDeath.*", DEATH_NAME))
+        self.assertTrue(kshell_run.ktest_filter_matches("-Ktest.AssertionsPass", DEATH_NAME))
+
+
+class DeathList(unittest.TestCase):
+    def test_names_from_the_list(self):
+        lines = [info("ktest: TEST Ktest.AssertionsPass"),
+                 info(f"ktest: DEATH {DEATH_NAME}")]
+        self.assertEqual(kshell_run.ktest_death_names(lines), [DEATH_NAME])
+
+    def test_no_death_line(self):
+        self.assertEqual(kshell_run.ktest_death_names([info("ktest: TEST Ktest.AssertionsPass")]),
+                         [])
+
+
+class DeathEndPattern(unittest.TestCase):
+    def test_done_matches_a_panic_report_or_the_runner_s_own_end(self):
+        self.assertTrue(kshell_run.KTEST_DEATH_DONE.search(
+            f"{BANNER}\n[1 cpu0 error] ktest: death test reached its panic\n"))
+        self.assertTrue(kshell_run.KTEST_DEATH_DONE.search(
+            "x ktest: SUMMARY ran=1 passed=0 failed=1 skipped=0\n"))
+        self.assertTrue(kshell_run.KTEST_DEATH_DONE.search(
+            "x ktest: ERROR no death tests are linked into this kernel\n"))
+        self.assertFalse(kshell_run.KTEST_DEATH_DONE.search(f"x ktest: DEATH {DEATH_NAME}\n"))
+        self.assertFalse(kshell_run.KTEST_DEATH_DONE.search("x ktest: RUN Ktest.AssertionsPass\n"))
+
+
+class JudgeDeath(unittest.TestCase):
+    def panic_lines(self, *extra: str) -> list[str]:
+        return [info(f"ktest: DEATH {DEATH_NAME}"),
+                BANNER,
+                error("ktest: death test reached its panic"),
+                *extra]
+
+    def test_panic_report_after_the_marker_passes(self):
+        lines = self.panic_lines()
+        self.assertTrue(quiet(kshell_run.judge_ktest_death, death_command(), lines, replay(),
+                              DEATH_NAME))
+
+    def test_panic_without_the_marker_fails(self):
+        lines = [BANNER, error("crash: deliberate panic from the kernel shell")]
+        self.assertFalse(quiet(kshell_run.judge_ktest_death, death_command(), lines, replay(),
+                               DEATH_NAME))
+
+    def test_panic_before_the_marker_fails(self):
+        lines = [BANNER, error("crash: deliberate panic from the kernel shell"),
+                 info(f"ktest: DEATH {DEATH_NAME}")]
+        self.assertFalse(quiet(kshell_run.judge_ktest_death, death_command(), lines, replay(),
+                               DEATH_NAME))
+
+    def test_prompt_between_marker_and_banner_fails(self):
+        # The shell coming back means the body returned and something else
+        # died later: not the death test's panic.
+        lines = [info(f"ktest: DEATH {DEATH_NAME}"), "kshell> ", BANNER,
+                 error("some unrelated panic")]
+        self.assertFalse(quiet(kshell_run.judge_ktest_death, death_command(), lines, replay(),
+                               DEATH_NAME))
+
+    def test_survivor_fails(self):
+        lines = [info(f"ktest: DEATH {DEATH_NAME}"),
+                 error(f"ktest: FAILED {DEATH_NAME} (a death test must panic; it returned)"),
+                 info("ktest: SUMMARY ran=1 passed=0 failed=1 skipped=0")]
+        self.assertFalse(quiet(kshell_run.judge_ktest_death, death_command(), lines, "",
+                               DEATH_NAME))
+
+    def test_message_not_error_level_fails(self):
+        lines = [info(f"ktest: DEATH {DEATH_NAME}"), BANNER, info("not the message")]
+        self.assertFalse(quiet(kshell_run.judge_ktest_death, death_command(), lines, replay(),
+                               DEATH_NAME))
+
+    def test_two_banners_fail(self):
+        lines = self.panic_lines(BANNER)
+        self.assertFalse(quiet(kshell_run.judge_ktest_death, death_command(), lines, "",
+                               DEATH_NAME))
 
 
 if __name__ == "__main__":

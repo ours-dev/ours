@@ -13,10 +13,11 @@ the assertions, the selection grammar and the command.
     src/             the runner and the `ktest` command
     test/            host-side tests, built with googletest
 
-`filter.hpp`, `format.hpp` and `summary.hpp` include no kernel header, so the
-host tests exercise them without a booted kernel; `ktest.hpp`, `assertions.hpp`
-and `run_state.hpp` are the kernel-facing half and are compiled only for the
-kernel toolchain.
+`filter.hpp`, `format.hpp`, `summary.hpp`, `fixture.hpp`, `instantiate.hpp` and
+`environment.hpp` include no kernel header, so the host tests exercise them
+without a booted kernel — the fixture and instantiation tests there drive the
+real macro expansions; `ktest.hpp`, `assertions.hpp` and `run_state.hpp` are
+the kernel-facing half and are compiled only for the kernel toolchain.
 
 ## Writing a test
 
@@ -37,10 +38,92 @@ and `KTEST_SKIP("reason")` marks a test this machine cannot exercise. Assertions
 run on the test thread only; a worker thread publishes its result for the test
 thread to assert on.
 
+A suite whose tests share state declares a fixture instead, and each test takes
+`KTEST_F`:
+
+```cpp
+class MyFixture : public ktest::Fixture {
+  public:
+    usize ready{};
+
+    void SetUp() override {
+        ready = 3;
+    }
+
+    void TearDown() override {
+        // undo SetUp; runs even after a failed check
+    }
+};
+
+KTEST_F(MyFixture, ReadsWhatSetUpWrote) {
+    EXPECT_EQ(this->ready, 3u);
+}
+```
+
+The body is a member of a class derived from the fixture, so it reads the
+fixture's members through `this`; the fixture must be default constructible and
+its members the bodies touch are `protected:` or public, as in GoogleTest. The
+object is built in the macro's own static storage — a fresh one per test, SetUp
+before the body, TearDown after it however the body ended. `KTEST_SUITE_SETUP(MyFixture)`
+and `KTEST_SUITE_TEARDOWN(MyFixture)` run once around all of the suite's tests,
+and `ktest::Environment` stages registered through `ktest::add_environment` run
+once around the whole run; both print nothing unless they fail. The details and
+the failure semantics are in `fixture.hpp` and `environment.hpp`.
+
 `EXPECT_EQ` compares its operands with the language's `==`, so two C string
 literals compare as pointers, not characters; compare `std::string_view`s when
 the content is what the check is about. `EXPECT_OK` is the spelling for a
 `Status`, and prints the status through its `to_string`.
+
+One body run over many values takes `KTEST_VALUE_PARAM` and `KTEST_P`, and one
+body over many types takes `KTEST_TYPE_LIST` and `KTEST_T`. Each instantiation
+is its own test named `Suite.Name/0`, `Suite.Name/1`, ... — the runner lists,
+reports, times and filters them exactly like plain tests, and a filter token
+names one instantiation by its suffix:
+
+```cpp
+KTEST_VALUE_PARAM(MySuite, int, MyValues, 1, 42, 99);
+
+KTEST_P(MySuite, ReadsItsValue) {
+    EXPECT_GT(GetParam(), 0);
+}
+
+KTEST_TYPE_LIST(MyTypes, (ByteBox, IntBox));
+
+KTEST_T(MyTypes, SizeIsKnown) {
+    EXPECT_GE(sizeof(T), alignof(T));
+}
+```
+
+The body is a member of a class derived from the suite's param base (a
+`ktest::Fixture` for `KTEST_P`), so `GetParam()` is the current table value;
+`KTEST_F_P(MyFixture, Name)` composes it with a fixture, and the body sees the
+fixture's `SetUp`-built members beside `GetParam()`. The value table and the
+type list are constexpr declarations in the test file — nothing is allocated,
+and the records are parts of the image. The details and the naming rules are
+in `instantiate.hpp`.
+
+A test whose whole report is the kernel dying takes `KTEST_DEATH(Suite,
+Name)`: the body is expected to panic the kernel, and the panic is the
+verdict. Its record is the same `hsien::TestRecord` a `KTEST` declares, but
+in a section of its own — `.ktest.death` — that the live registry never
+walks, so `ktest all` and a filter run never run one and a normal run's
+SUMMARY does not count it. `ktest list` prints the death registry under
+`ktest: DEATH` lines after the live tests. A body that returns without
+panicking is reported FAILED: a death test that leaves the machine alive is
+what failed.
+
+```cpp
+KTEST_DEATH(KtestDeath, PanicsOnDemand) {
+    ours::panic("ktest: death test reached its panic");
+}
+```
+
+The machine does not come back from a passing death test, so the host drives
+one per fresh boot: `scripts/kshell_run.py ktest death` reads the list off
+one boot's `ktest list`, then reboots the image for each test, types its
+name, and judges the boot — the panic report that follows the runner's
+`ktest: DEATH` line passes, the command ending at its SUMMARY fails.
 
 ## Running
 
@@ -52,6 +135,7 @@ ktest all             same
 ktest list            list the registry (also `ktest ?`)
 ktest <filter>        run the tests whose full name matches the filter
 ktest <selection> [name=value ...]   ... with options for the tests that read them
+ktest death [filter]  run the death tests; the first panic ends the machine
 ```
 
 A run may carry options after its selection: `name=value` tokens, or a bare

@@ -42,11 +42,29 @@ tests linked in, a duplicate test name, a usage error) ends at its
 away rather than after the command timeout. For `ktest` and `ktest all` the
 script first types `ktest list` and requires the summary's ran= to equal the
 number of "ktest: TEST" lines: a test that stops being linked in fails the run
-instead of silently disappearing from it. `ktest list` itself passes when the
+instead of silently disappearing from it. A run that carries repeat= or
+shard= skips that list and the count check, because running the selection
+more than once, or a part of it, is what the option asked for; shuffle only
+reorders, so it keeps the check. `ktest list` itself passes when the
 prompt comes back with at least one test listed. While any `ktest` command
 runs, console silence is a hang, as for `lockup spin all`: the script sends the
 NMI and the lockup report is the diagnosis. Every other command's rules are
 unchanged.
+
+A `ktest death` command is the host's half of the death tests
+(//kernel/lib/ktest's KTEST_DEATH): a death test's body is expected to panic
+the kernel, so no boot can serve two of them. The command first reads the
+death list off this boot's `ktest list` -- its "ktest: DEATH Suite.Name"
+lines -- and then starts a fresh image for each death test the filter
+selects, one boot per test: it types that test's `ktest death <name>` and
+judges the boot. PASS is the panic report that follows the runner's
+"ktest: DEATH" line, judged as crash's is -- banner, an error-level message,
+the ring replay between its markers, one banner in all -- with no shell
+prompt between the marker and the banner. FAIL is the command ending at a
+"ktest: SUMMARY" or "ktest: ERROR" line, which means the body returned and
+the death test did not die, or the console hanging. An image with no death
+tests passes without a reboot; a filter that selects none of the listed
+tests fails. Each boot's log lands beside the first.
 
 A `crash` command (//kernel/commands/crash.cpp) panics the kernel on purpose,
 so it has to be the last command, and it is judged by the panic report it
@@ -147,6 +165,12 @@ KTEST_SUMMARY = re.compile(r"ktest: SUMMARY ran=(\d+) passed=(\d+) failed=(\d+) 
 # a run print instead (empty registry, duplicate name, usage error).
 KTEST_END = re.compile(r"ktest: (?:SUMMARY|ERROR)[^\n]*\n")
 KTEST_TEST = "ktest: TEST "
+# The death registry's heading in a `ktest list`, and a death run's own end:
+# the panic report it leads to -- the banner and the line after it, as for a
+# crash command -- or the runner's end when a body returned and the machine
+# lived, which is the death test's failure.
+KTEST_DEATH_TEST = "ktest: DEATH "
+KTEST_DEATH_DONE = re.compile(re.escape(PANIC_BANNER) + r"[^\n]*\n[^\n]*\n|" + KTEST_END.pattern)
 NOISE = re.compile(LEVEL.format("debug|trace"))
 # The lockup detector's report (//kernel/lib/lockup_detector): every line of
 # its own is an error-level "lockup: " line; a CPU's registers follow its
@@ -225,6 +249,7 @@ class Console:
         self.keeping = False
         self.after = ""  # what came in behind wait_for()'s last match
         self.gone = False
+        self.closed = False  # close() has run: a second one is a no-op
         self.chunks: queue.Queue[bytes | None] = queue.Queue()
         threading.Thread(target=self._read, daemon=True).start()
 
@@ -399,6 +424,9 @@ class Console:
         self.proc.stdin.flush()
 
     def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
         self.proc.kill()
         self.proc.wait()
         self.log.close()
@@ -458,6 +486,34 @@ def ktest_runs_all(command: str) -> bool:
     return bool(words) and words[0] == "ktest" and (len(words) == 1 or words[1] == "all")
 
 
+def ktest_count_varies(command: str) -> bool:
+    """Whether a `ktest all` run's summary ran= may differ from the number of
+    listed tests: repeat= runs the selection more than once and shard= runs
+    part of it, so the list-count equality says nothing there. shuffle only
+    reorders, so a run without repeat or shard still checks the count."""
+    words = command.split()
+    if words[:2] != ["ktest", "all"] or len(words) == 2:
+        return False
+    return any(word == "repeat" or word.startswith("repeat=")
+               or word == "shard" or word.startswith("shard=") for word in words[2:])
+
+
+def ktest_deaths(command: str) -> bool:
+    """Whether |command| invokes the death selection: `ktest death [filter]`.
+    Its first test panics the machine, so the host gives each one a fresh
+    boot, which is a flow of its own in main()."""
+    words = command.split()
+    return len(words) >= 2 and words[0] == "ktest" and words[1] == "death"
+
+
+def ktest_death_filter(command: str) -> str:
+    """The selection words a `ktest death` command carries, joined the way the
+    kernel's filter grammar joins them. Empty for a bare `ktest death`, which
+    selects every death test."""
+    words = command.split()
+    return ":".join(words[2:])
+
+
 def ktest_summaries(lines: list[str]) -> list[dict[str, int]]:
     """Every "ktest: SUMMARY" line among |lines|, as parsed counts."""
     summaries = []
@@ -491,7 +547,9 @@ def judge_ktest_list(command: str, lines: list[str]) -> bool:
 
 def judge_ktest_run(command: str, lines: list[str], expected: int | None) -> bool:
     """Says whether a `ktest` run passed. |expected| is the count a preceding
-    `ktest list` gave, or None when a filter makes the count unknown."""
+    `ktest list` gave, or None when the run's count is not the list's: a
+    filter selects part of it, and repeat= or shard= changes how many
+    executions the summary counts."""
     summaries = ktest_summaries(lines)
     if len(summaries) != 1:
         errors = [l for l in lines if ERROR_LINE.search(l)]
@@ -522,11 +580,92 @@ def judge_ktest_run(command: str, lines: list[str], expected: int | None) -> boo
     return True
 
 
+def ktest_filter_pattern(pattern: str) -> re.Pattern[str]:
+    """One ktest glob -- `*` matches any run of characters, `?` exactly one,
+    every other byte itself (kernel/lib/ktest/filter.hpp) -- as a regex over a
+    full test name."""
+    return re.compile("".join(".*" if c == "*" else "." if c == "?" else re.escape(c)
+                              for c in pattern))
+
+
+def ktest_filter_matches(filter_text: str, name: str) -> bool:
+    """The kernel's selection grammar over a death list: `:`-separated globs,
+    a token beginning with `-` excludes, and with no including token at all
+    everything not excluded matches. The host needs this to decide which of
+    the listed death tests gets a boot of its own; the runner's copy cannot be
+    borrowed, so this is the same rule in the host's language."""
+    if not filter_text:
+        return True
+    has_inclusion = False
+    included = False
+    for token in filter_text.split(":"):
+        if not token:
+            continue
+        if token.startswith("-"):
+            if ktest_filter_pattern(token[1:]).fullmatch(name):
+                return False
+            continue
+        has_inclusion = True
+        if ktest_filter_pattern(token).fullmatch(name):
+            included = True
+    return included or not has_inclusion
+
+
+def ktest_death_names(lines: list[str]) -> list[str]:
+    """The death tests a `ktest list` named, from its `ktest: DEATH` lines."""
+    names = []
+    for line in lines:
+        found = line.find(KTEST_DEATH_TEST)
+        if found < 0:
+            continue
+        rest = line[found + len(KTEST_DEATH_TEST):].strip()
+        if rest:
+            names.append(rest.split()[0])
+    return names
+
+
+def judge_ktest_death(command: str, lines: list[str], after: str, name: str) -> bool:
+    """Says whether the death test |name| died the way a death test should:
+    the runner's "ktest: DEATH <name>" line first -- the body was reached --
+    then one panic report, judged as a crash's is, with no shell prompt in
+    between the two, which is what rules out a body that returned and some
+    unrelated panic after it. |lines| ends with the line after the banner and
+    |after| is what came in the PANIC_SETTLE seconds after that. The
+    runner's own lines before the banner (the DEATH line itself) are not the
+    "nothing before the panic" a crash demands: the runner prints them from
+    the same CPU on purpose."""
+    markers = [i for i, l in enumerate(lines) if f"{KTEST_DEATH_TEST}{name}" in l]
+    banners = [i for i, l in enumerate(lines) if PANIC_BANNER in l]
+    if not markers:
+        print(f'{command}: FAIL, no "{KTEST_DEATH_TEST}{name}" line before the panic; '
+              "the report is not the body's")
+        return False
+    if not banners:
+        print(f"{command}: FAIL, a panic was matched but no banner is in the run's lines")
+        return False
+    if markers[0] > banners[0]:
+        print(f"{command}: FAIL, the panic came before the runner's DEATH line")
+        return False
+    between = [l for l in lines[markers[0]:banners[0]] if PROMPT in l]
+    if between:
+        print(f"{command}: FAIL, the shell prompt came back between the DEATH line and the "
+              f"panic; the body returned first")
+        return False
+    message = panic_message(lines)
+    if not ERROR_CPU.search(message):
+        print(f"{command}: FAIL, the line after the panic banner is not an error-level message")
+        return False
+    return judge_one_panic(command, lines, after)
+
+
 def ends_machine(command: str) -> bool:
     """Whether |command| ends the machine, and so has to be the last: `crash`,
-    which panics, and the lockup commands whose report ends in a panic --
-    `lockup nmi`, and `lockup spin` without a length."""
+    which panics, `ktest death`, whose first death test panics, and the
+    lockup commands whose report ends in a panic -- `lockup nmi`, and
+    `lockup spin` without a length."""
     words = command.split()
+    if ktest_deaths(command):
+        return True
     if words[0] == "crash":
         return True
     return words[0] == "lockup" and (words[1:] == ["nmi"]
@@ -703,6 +842,89 @@ def judge_recovery(console: Console, command: str, lines: list[str], after: str,
     return True
 
 
+def run_death_tests(console: Console, command: str, args, out, logdir) -> bool:
+    """`ktest death`: the host's half. Reads the death list off this boot's
+    `ktest list`, then starts a fresh image for each death test the filter
+    selects -- the first panic ends the machine, so no boot can serve two --
+    types that test's name and judges the boot. True when every death test
+    ran and died; a body that returns, a hang, or a boot that never gets to
+    the shell fails its test."""
+    filter_text = ktest_death_filter(command)
+    console.keep()
+    console.type("ktest list")
+    listed = console.wait_for(re.compile(re.escape(PROMPT)),
+                              time.monotonic() + args.command_timeout)
+    list_lines = show("ktest list (death setup)", console.kept(), args.all)
+    if not listed:
+        print(f"{command}: FAIL, its setup `ktest list` did not return to the prompt "
+              f"within {args.command_timeout:.0f}s")
+        return False
+    deaths = ktest_death_names(list_lines)
+    # This boot only ever reads the list; the boots that follow are new.
+    console.close()
+    print(f"log: {console.log_path}")
+    if not deaths:
+        print(f"{command}: ok, no death tests are linked into this image")
+        return True
+    selection = [name for name in deaths if ktest_filter_matches(filter_text, name)]
+    if not selection:
+        print(f'{command}: FAIL, no death test matches "{filter_text}" among the {len(deaths)} '
+              "listed")
+        return False
+
+    verdicts: list[bool] = []
+    for name in selection:
+        typed = f"ktest death {name}"
+        boot = Console(out, args.image, logdir, args.silence)
+        try:
+            if not boot.wait_for(re.compile(re.escape(END_MARKER)),
+                                 time.monotonic() + args.boot_timeout):
+                if boot.nmi_at is not None:
+                    show(f"boot for {name}, after the nmi", boot.nmi_text(), args.all)
+                    judge_silence("boot", boot)
+                else:
+                    print(f'boot: no "{END_MARKER}" within {args.boot_timeout:.0f}s '
+                          "(or QEMU exited)")
+                verdicts.append(False)
+                continue
+            # From here a quiet console is an idle machine; while the death
+            # run answers, silence is a hang, as for any ktest command.
+            boot.silence = 0
+            boot.drain(SETTLE + args.delay)
+            boot.silence = args.silence
+            boot.keep()
+            boot.type(typed)
+            ended = boot.wait_for(KTEST_DEATH_DONE, time.monotonic() + args.command_timeout,
+                                  through=True)
+            lines = show(typed, boot.kept(), args.all)
+            if not ended:
+                if boot.nmi_at is not None:
+                    judge_silence(typed, boot)
+                else:
+                    print(f"{typed}: FAIL, no death within {args.command_timeout:.0f}s -- "
+                          'neither a panic report nor a "ktest: SUMMARY" line')
+                verdicts.append(False)
+                continue
+            if any(PANIC_BANNER in l for l in lines):
+                after = boot.take(PANIC_SETTLE)
+                verdicts.append(judge_ktest_death(typed, lines, after, name))
+            else:
+                summaries = ktest_summaries(lines)
+                detail = f", {summaries[-1]}" if summaries else ""
+                print(f"{typed}: FAIL, the boot is alive -- the death test did not panic"
+                      f"{detail}")
+                verdicts.append(False)
+        finally:
+            boot.close()
+            print(f"log: {boot.log_path}")
+    if all(verdicts):
+        print(f"{command}: ok, {len(verdicts)} death test(s) panicked as expected, one boot each")
+        return True
+    failed = verdicts.count(False)
+    print(f"{command}: FAIL, {failed} of {len(verdicts)} death test(s) did not die as expected")
+    return False
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("commands", nargs="+", metavar="command", help="a kernel-shell command line")
@@ -753,6 +975,13 @@ def main(argv: list[str]) -> int:
         console.silence = 0
         console.drain(SETTLE + args.delay)
         for command in args.commands:
+            if ktest_deaths(command):
+                # Its own flow: the death list off this boot's `ktest list`,
+                # then one fresh boot per selected test. ends_machine() has
+                # already made it the last command, and each of its boots
+                # ends the machine, so nothing can follow.
+                results.append(run_death_tests(console, command, args, out, logdir))
+                break
             name = command.split()[0]
             test = name.endswith(".test")
             ktest = is_ktest(command)
@@ -782,9 +1011,11 @@ def main(argv: list[str]) -> int:
 
             # A run of everything is listed first, so the summary has a count
             # to check itself against: a test that is no longer linked in
-            # then fails the run instead of silently disappearing from it.
+            # then fails the run instead of silently disappearing from it. A
+            # run with repeat= or shard= skips the list: its summary counts
+            # executions, not listed tests.
             expected = None
-            if ktest_run and ktest_runs_all(command):
+            if ktest_run and ktest_runs_all(command) and not ktest_count_varies(command):
                 console.keep()
                 console.type("ktest list")
                 listed = console.wait_for(re.compile(re.escape(PROMPT)),
