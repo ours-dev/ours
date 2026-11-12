@@ -796,6 +796,41 @@ namespace {
         }
     }
 
+    KTEST(PmNode, SplitBlockMakesBlocksThatAreFreedAlone) {
+        constexpr auto WHOLE = usize{3};
+        constexpr auto NR_FRAMES = usize{1} << WHOLE;
+
+        auto const allocated = mm::alloc_frames(mm::ALLOC_KERNEL, WHOLE);
+        if (!allocated) {
+            FAIL("allocate a block of order {}", WHOLE);
+            return;
+        }
+        auto *const block = *allocated;
+        EXPECT_TRUE(block->order() == WHOLE, "the head of an allocated block records its order");
+
+        // Four blocks of two frames: every other frame is a head of order 1.
+        mm::split_block(block, 1);
+        auto halves_ok = true;
+        for (usize index = 0; index < NR_FRAMES; index += 2) {
+            halves_ok = halves_ok && block[index].order() == 1;
+        }
+        EXPECT_TRUE(halves_ok, "split_block(block, 1) makes four heads of order 1");
+
+        // The first of them again, into two single frames; the others stay.
+        mm::split_block(block);
+        EXPECT_TRUE(block[0].order() == 0 && block[1].order() == 0 && block[2].order() == 1,
+                    "splitting one of the parts leaves the others as they were");
+
+        // Each part is a block of its own now and goes back alone: five frees
+        // for what was one allocation. A debug build asserts in the buddy if
+        // one of them were returned at the wrong size.
+        mm::free_frames(&block[0]);
+        mm::free_frames(&block[1]);
+        for (usize index = 2; index < NR_FRAMES; index += 2) {
+            mm::free_frames(&block[index]);
+        }
+    }
+
     KTEST(PmNode, MatchesTheMachineItRunsOn) {
         run_topology_checks();
         PmNode::for_each_node(PmNode::State::Online, [](PmNode &node) {

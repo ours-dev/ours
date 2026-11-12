@@ -226,6 +226,17 @@ auto free_frames(PmFrame *frame) -> void;
 /// says how much is given.
 auto adopt_frames(Pfn start, Pfn end) -> void;
 
+/// Makes the block |frame| heads into blocks of |order| each: a block of
+/// order k becomes 2^(k - |order|) of them, every one with a head frame that
+/// records |order|, so that each can be kept, handed on or freed alone. With
+/// the default a block becomes single frames.
+///
+/// The one way to return part of a block. free_frames() returns a block
+/// whole and reads how much that is from its head, so the parts have to be
+/// blocks before any of them is freed. The caller owns the block, as an
+/// allocation handed it out, and |order| is at most the block's own.
+auto split_block(PmFrame *frame, usize order = 0) -> void;
+
 /// Takes |frame|, reserved since boot, off the reserved books, so that it can
 /// be owned like a frame the allocator handed out: freed to the buddy
 /// (EarlyMem::reclaim_init_area()) or adopted into a VMO. Clears Reserved and

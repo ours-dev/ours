@@ -107,3 +107,62 @@ None.
 - A block had two records of its order. Which one could be trusted, and why?
 - `create_contiguous()` frees the frames of one block one at a time. What must it do first, and what would go wrong now if it did not?
 - Why do `PmNode::free_frames()` and `PmZone::free_frames()` still take an order?
+
+## split_block() is the one way to make parts of a block (2026-11-12)
+
+**Files**
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/pmm.cpp` — `split_block(PmFrame *frame, usize order = 0)`
+- `kernel/mm/vm_object_paged.cpp` — `create_contiguous()` calls it where it looped over `set_order(0)`
+- `kernel/mm/vm_cow_pages.cpp` — `fill_block_locked()` the same
+- `kernel/tests/pm_node_test.cpp` — `PmNode.SplitBlockMakesBlocksThatAreFreedAlone`
+
+**Symptom**
+Latent, cannot be triggered today. A caller that frees the frames of a block one at a time without first giving each its own order would, since `free_frames()` reads the order from the frame, return some of them at whatever order they last had as the head of some other block.
+
+**Cause**
+A frame's order field is written when the frame becomes the head of a block and is not cleared when it stops being one. A frame that headed an order-3 free block, was merged into a larger one and later handed out as the fifth frame of an order-9 allocation still says 3. That is harmless while it is a tail: nothing reads the order of a tail. It stops being harmless the moment the owner frees that frame alone, because `free_frames()` now takes the field as the size of what is returned and would give the buddy eight frames for one.
+
+Both callers that take a block apart knew this and wrote the same loop before their first single free: `set_order(0)` on every frame of the block. The rule was correct and lived in two call sites as a habit. A third caller would have had to know it too, and nothing would have told it: the frees compile and, with a fresh machine's frames, even work.
+
+**Change**
+The rule becomes a function, and the function is what a caller reaches for:
+
+```cpp
+// before, in create_contiguous() and in fill_block_locked()
+for (usize index = 0; index < nr_frames; ++index) {
+    block[index].set_order(0);
+}
+
+// after
+split_block(block);
+```
+
+`split_block(frame, order)` turns a block of order k into `2^(k - order)` blocks, writing `order` into each new head. It takes no lock: the block is the caller's, and the only other reader of an order field, `FrameBuddy::is_mergeable()`, reads it on frames whose role says they are on a free list, which an owned frame's does not. A debug build asserts that the frame heads a block (its pfn is aligned to the block's order), that it is not on a free list, and that `order` is not above the block's.
+
+After this change the order field has three writers in the kernel: the buddy when it frees a block, the buddy when it hands one out, and `split_block()`.
+
+**Reference**
+Linux `split_page()` in `mm/page_alloc.c`: turns a non-compound order-n page into n order-0 pages, each with its own reference count, for exactly the case of a caller that will free them one by one. Zircon has no counterpart; its `pmm_alloc_contiguous()` answers a list of single pages and never a block.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree, counts unchanged: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 183 passed. The same on four nodes (`NUMA=1`).
+
+`ktest all` on dbg, default and four-node: 62 ran, 60 passed, 2 skipped. The count is one above the last step's because of the new test, which allocates a block of order 3, splits it into four of order 1, splits the first of those into two frames, checks the heads' orders at each stage, and frees the five parts alone. The contiguous VMO and large-page tests, which run both changed callers, are among the 60. `format_cpp.py` left the changed files as they were; clang-tidy reports nothing about the new function or its calls.
+
+Not checked: that the parts coalesce back into one block of order 3. Another allocation can take one of them between the frees and the look.
+
+**Deliberately not done**
+- `PageFrame::set_order()` stays public. With `split_block()` in place nothing outside the buddy needs it, and restricting it is a small change of its own.
+- `alloc_frames_contiguous()`. `create_contiguous()` still takes a whole block, zeroes it and returns the surplus (`docs/repairs/261031/mm.md` item 1).
+- Tail stamps (`compound_offset`) are not touched by a split. Only the object cache stamps tails, and it never splits.
+
+**How it was found**
+Reading the two callers while checking that `free_frames()` could lose its order parameter.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can a tail frame of an allocated block carry a non-zero order, and when does that start to matter?
+- Why does `split_block()` need no lock, although the buddy reads order fields under the zone lock?
+- What made the hand-written loop a weak guarantee, when both callers had it right?

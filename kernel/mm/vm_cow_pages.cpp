@@ -766,8 +766,8 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
     // 512 frames of order 0 from here on, as if each had been allocated alone.
     // The descriptors of one block are contiguous: a block never crosses the
     // memmap's sections (FrameBuddy).
+    split_block(block);
     for (usize i = 0; i < NR_PAGES; ++i) {
-        block[i].set_order(0);
         block[i].become<page::VmmBody>();
     }
 

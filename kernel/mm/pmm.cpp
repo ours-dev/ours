@@ -631,6 +631,27 @@ auto adopt_frames(Pfn start, Pfn const end) -> void {
     observe_pressure();
 }
 
+auto split_block(PmFrame *const frame, usize const order) -> void {
+    DEBUG_ASSERT(frame, "split requires a block");
+    auto const whole = frame->order();
+    DEBUG_ASSERT(order <= whole, "block {:#x} of order {} cannot be split into blocks of order {}",
+                 frame_to_phys(frame), whole, order);
+    DEBUG_ASSERT(!frame->is_role(page::Role::Pmm), "block {:#x} is split while on a free list",
+                 frame_to_phys(frame));
+    DEBUG_ASSERT((frame_to_pfn(frame) & ((usize{1} << whole) - 1)) == 0,
+                 "frame {:#x} does not head a block of order {}", frame_to_phys(frame), whole);
+
+    // No lock: the block is the caller's, and nothing else reads the order of
+    // a frame that is on no free list. The descriptors of one block are
+    // consecutive, since a block never crosses the memmap's sections
+    // (FrameBuddy), so the new heads are reached by indexing from the old one.
+    auto const nr_frames = usize{1} << whole;
+    auto const step = usize{1} << order;
+    for (usize index = 0; index < nr_frames; index += step) {
+        frame[index].set_order(order);
+    }
+}
+
 auto free_frames(PmFrame::List *list) -> void {
     free_blocks(*list);
     observe_pressure();

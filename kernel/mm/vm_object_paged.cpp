@@ -225,9 +225,7 @@ auto VmObjectPaged::create_contiguous(Gaf const alloc_flags, usize const size, u
     // one page at a time, and the pages kept go into the node and are freed
     // one at a time with it.
     auto const nr_frames = usize{1} << order;
-    for (usize index = 0; index < nr_frames; ++index) {
-        block[index].set_order(0);
-    }
+    split_block(block);
     for (usize index = nr_pages; index < nr_frames; ++index) {
         free_frames(&block[index]);
     }
