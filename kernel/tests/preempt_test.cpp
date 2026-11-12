@@ -31,7 +31,7 @@
 #include <ours/ipi_service.hpp>
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/sync/semaphore.hpp>
-#include <ours/task/sched/common.hpp>
+#include <ours/task/scheduler_common.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/cfg.hpp>
 #include <ours/time/clock.hpp>
@@ -225,7 +225,7 @@ namespace {
         auto target = INVALID_CPU_NUM;
         online.for_each([&target](CpuNum const cpu) { target = cpu; });
 
-        auto const slice = Nanoseconds(task::sched::scheduling_period().raw());
+        auto const slice = Nanoseconds(task::scheduling_period().raw());
         // A periodic tick finds a passed deadline at the next tick, not at it.
         auto late = Duration(LATE_ONESHOT);
         auto probe_late = Duration(PROBE_LATE);

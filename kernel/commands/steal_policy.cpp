@@ -2,7 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 //
 // `steal.policy`: the numbers that steer a CPU when it looks for threads to
-// take (task::sched::StealPolicy), and how often each CPU has looked and
+// take (task::StealPolicy), and how often each CPU has looked and
 // taken, and how long its looks took, whichever CPU made them.
 //
 //   steal.policy                 each knob with its value, default and range,
@@ -21,8 +21,8 @@
 // command line gives the first value).
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
-#include <ours/task/sched/domains.hpp>
-#include <ours/task/sched/scheduler.hpp>
+#include <ours/task/scheduler.hpp>
+#include <ours/task/scheduler_domains.hpp>
 
 #include <string_view>
 
@@ -33,8 +33,8 @@
 namespace ours {
 namespace {
     using sched_domain::Knob;
-    using task::sched::Scheduler;
-    using task::sched::StealPolicy;
+    using task::Scheduler;
+    using task::StealPolicy;
 
     /// The most digits a value is given in: no knob takes more than 1024.
     constexpr usize MAX_DIGITS = 6;

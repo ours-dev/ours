@@ -17,7 +17,7 @@
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/cpu_node_map.hpp>
-#include <ours/task/sched/domains.hpp>
+#include <ours/task/scheduler_domains.hpp>
 
 #include <ktest/ktest.hpp>
 
@@ -28,7 +28,7 @@ namespace {
         ASSERT_TRUE(possible.any(), "the possible CPUs are known");
 
         possible.for_each([&](CpuNum const cpu) {
-            auto const &domains = task::sched::domains_of(cpu);
+            auto const &domains = task::domains_of(cpu);
 
             CpuMask expected = possible;
             expected.set(cpu, false);

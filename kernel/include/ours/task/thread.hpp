@@ -21,9 +21,9 @@
 #include <ours/task/config.hpp>
 #include <ours/task/owned_wait_queue.hpp>
 #include <ours/task/preemption_state.hpp>
-#include <ours/task/sched/sched_entity.hpp>
+#include <ours/task/scheduler_state.hpp>
 #include <ours/task/types.hpp>
-#include <ours/task/wait_queue.hpp>
+#include <ours/task/wait_queue_base.hpp>
 
 #include <gktl/canary.hpp>
 #include <ktl/name.hpp>
@@ -51,10 +51,6 @@ namespace object {
 namespace task {
     struct ExceptionContext;
     enum class ExceptionOutcome : u8;
-
-    using sched::DEFAULT_PRIORITY;
-    using sched::HIGHEST_PRIORITY;
-    using sched::LOWEST_PRIORITY;
 
     class TaskState {
         using Self = TaskState;
@@ -153,8 +149,7 @@ namespace task {
         /// why that could not stay. A caller with a non-static member function
         /// or an extra argument wraps it in a captureless lambda, which
         /// converts to a plain function pointer and allocates nothing.
-        static auto spawn(char const *, StartRoutine, void *arg, sched::BaseProfile const &)
-            -> Self *;
+        static auto spawn(char const *, StartRoutine, void *arg, BaseProfile const &) -> Self *;
 
         static auto spawn(char const *, StartRoutine, void *arg, usize priority) -> Self *;
 
@@ -171,9 +166,9 @@ namespace task {
         /// CPUs come up. The answer for a CPU that is not online yet has to
         /// come from the caller, because there is nothing for selection to
         /// read.
-        static auto spawn_etc(KoId, char const *, StartRoutine, void *arg,
-                              sched::BaseProfile const &, TrampolineRoutine, Self *,
-                              CpuNum target_cpu = INVALID_CPU_NUM) -> Status;
+        static auto spawn_etc(KoId, char const *, StartRoutine, void *arg, BaseProfile const &,
+                              TrampolineRoutine, Self *, CpuNum target_cpu = INVALID_CPU_NUM)
+            -> Status;
 
         /// Builds a thread around the execution context that is already running.
         ///
@@ -188,7 +183,7 @@ namespace task {
         /// four steps after task::init_early(). Scheduler::on_thread_init() is
         /// likewise skipped: it does a CPU-indexed Scheduler::Current lookup, and
         /// CpuLocal has only installed the running CPU's offset at this point.
-        static auto create_first(KoId, char const *, sched::BaseProfile const &, Self *) -> void;
+        static auto create_first(KoId, char const *, BaseProfile const &, Self *) -> void;
 
         /// Core method family.
 
@@ -241,7 +236,7 @@ namespace task {
 
         auto set_cpu_affinity_soft(CpuMask const &) -> void;
 
-        auto override_base_profile(sched::BaseProfile const &profile) -> void;
+        auto override_base_profile(BaseProfile const &profile) -> void;
 
         auto bind_user_thread(ustl::Arc<object::ThreadDispatcher> user_thread) -> void;
 
@@ -348,12 +343,12 @@ namespace task {
 
         FORCE_INLINE
         auto last_cpu() const -> CpuNum {
-            return m_scheduling_entity.last_cpu();
+            return m_scheduler_state.last_cpu();
         }
 
         FORCE_INLINE
         auto curr_cpu() const -> CpuNum {
-            return m_scheduling_entity.curr_cpu();
+            return m_scheduler_state.curr_cpu();
         }
 
         FORCE_INLINE
@@ -486,8 +481,8 @@ namespace task {
         static auto switch_thread(Self *curr, Self *next) -> void;
 
         FORCE_INLINE
-        static auto of(sched::SchedEntity *se) -> Self * {
-            return ustl::mem::container_of(se, &Self::m_scheduling_entity);
+        static auto of(SchedulerState *se) -> Self * {
+            return ustl::mem::container_of(se, &Self::m_scheduler_state);
         }
 
         FORCE_INLINE
@@ -500,20 +495,13 @@ namespace task {
             return ustl::mem::container_of(waiter, &Self::m_waiter_state);
         }
 
-        Thread(KoId tid, char const *name, sched::BaseProfile const &profile);
+        Thread(KoId tid, char const *name, BaseProfile const &profile);
 
         ~Thread() = default;
 
         FORCE_INLINE
-        auto scheduling_entity() -> sched::SchedEntity & {
-            return m_scheduling_entity;
-        }
-
-        /// Migration shim for `fair.*`; see sched/context.hpp for why it is
-        /// here and when to delete it. Nothing else calls this name.
-        FORCE_INLINE
-        auto scheduling_context() -> sched::SchedEntity & {
-            return scheduling_entity();
+        auto scheduler_state() -> SchedulerState & {
+            return m_scheduler_state;
         }
 
         FORCE_INLINE
@@ -562,15 +550,15 @@ namespace task {
         friend ArchThread;
         friend IdleThread;
 
-        friend sched::Scheduler;
+        friend Scheduler;
         // For the walk over a CPU's queued threads, which turns each queued
         // context back into its thread (RunQueue::for_each_thread()).
-        friend sched::RunQueue;
-        friend sched::Fair;
-        friend sched::RoundRobin;
+        friend RunQueue;
+        friend Fair;
+        friend RoundRobin;
         friend class object::ProcessDispatcher;
 
-        friend WaitQueue;
+        friend WaitQueueBase;
         friend OwnedWaitQueue;
 
         [[noreturn]]
@@ -663,7 +651,7 @@ namespace task {
         /// which no scheduler path satisfied, so it produced 33 warnings per
         /// translation unit and protected nothing. The gap can be closed only
         /// at run time, by asserting that the runqueue's lock is held.
-        sched::SchedEntity m_scheduling_entity;
+        SchedulerState m_scheduler_state;
         PreemptionState m_preemption_state;
 
         /// Self-synchronising: the exit side writes the retcode under the PI
@@ -838,8 +826,8 @@ namespace task {
         }
 
         FORCE_INLINE
-        static auto scheduling_entity() -> sched::SchedEntity & {
-            return Thread::Current::get()->scheduling_entity();
+        static auto scheduler_state() -> SchedulerState & {
+            return Thread::Current::get()->scheduler_state();
         }
 
         FORCE_INLINE

@@ -206,7 +206,7 @@ This repo has three library tiers, not one flat "the STL":
    never left implicit — e.g. `static Timers TIMERS TA_GUARDED(LOCK);`
    (`kernel/lib/sampler/include/sampler/session.hpp:205`).
    Functions that require a lock held on entry declare `TA_REQUIRES(lock())`
-   (`kernel/include/ours/task/sched/scheduler.hpp`).
+   (`kernel/include/ours/task/scheduler.hpp`).
 
 1. The only spellings are `TA_CAPABILITY`/`TA_GUARDED`/`TA_REQUIRES` (`system/public/ours/compiler.hpp`). The short forms `TA_CAP`/`TA_GUARD`/`TA_REQUIRE` were compatibility macros for pre-refactor headers; their last uses were converted and the macros deleted, so they no longer compile.
 
@@ -243,7 +243,9 @@ This repo has three library tiers, not one flat "the STL":
 
 ### Namespacing
 
-1. Root namespace is `ours::`, with one nested namespace per subsystem — `ours::mm`, `ours::object`, `ours::sync`, `ours::task::sched`, `ours::phys`, `ours::time`, `ours::irq`. Put new subsystem code in `ours::<subsystem>`, not loose in `ours::` directly.
+1. Root namespace is `ours::`, with one nested namespace per subsystem:
+   `ours::mm`, `ours::object`, `ours::sync`, `ours::task`, `ours::phys`,
+   `ours::time`, `ours::irq`. Put new subsystem code in `ours::<subsystem>`.
 
 1. Architecture-specific code lives in its own top-level `arch::`/`arch::paging` namespace, not nested under `ours::`. Architecture selection happens at the GN/build-toolchain level (which arch directory's headers get compiled), not through namespace-based runtime dispatch — see "Build-time polymorphism" below.
 

@@ -1,3 +1,5 @@
+import("//kernel/kernel_params.gni")
+
 source_set("task") {
   sources = [
     "cpu_hotplug.cpp",
@@ -11,9 +13,10 @@ source_set("task") {
     "preemption_state.cpp",
     "thread.cpp",
     "wait_queue.cpp",
+    "wait_queue_base.cpp",
   ]
   deps = [
-    "//kernel/kernel/task/sched",
+    ":scheduler",
 
     # Carried over with the wait queues, which reach for the kernel counters
     # and the lock annotations.
@@ -32,6 +35,34 @@ source_set("task") {
     "//kernel/lib/sampler:request",
     "//kernel/mm:headers",
     "//kernel/object:headers",
+    "//system/lib/lockdep",
+  ]
+  visibility = [ "*" ]
+}
+
+source_set("scheduler") {
+  sources = [
+    "scheduler_domains.cpp",
+    "sched_clock.cpp",
+    "scheduler_features.cpp",
+    "scheduler.cpp",
+    "scheduler_pi.cpp",
+    "scheduler_migrator.cpp",
+  ]
+
+  # The selected discipline provides the normal run queue and schedule.
+  if (sched_normal_discipline == "fair") {
+    sources += [ "fair.cpp" ]
+  } else {
+    sources += [ "rr.cpp" ]
+  }
+  deps = [
+    # ours/task/thread.hpp holds a sampler::StackSampleRequest.
+    "//kernel/lib/sampler:request",
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
+    "//kernel/lib/sched_domain",
+    "//kernel/mm:headers",
     "//system/lib/lockdep",
   ]
   visibility = [ "*" ]

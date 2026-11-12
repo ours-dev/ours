@@ -31,6 +31,7 @@ class AutoPreemptDisabler;
 class AutoEagerReschedDisabler;
 
 class WaiterState;
+class WaitQueueBase;
 class WaitQueue;
 class OwnedWaitQueue;
 

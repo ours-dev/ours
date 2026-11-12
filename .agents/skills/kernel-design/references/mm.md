@@ -261,6 +261,48 @@ A block attempt carries its optional depleted zone in its typed failure.
 The reclaimer stores Idle and Pending as per-zone enum states. Owner-directed
 block return requires a frame reference at the zone boundary.
 
+## PMM allocation pipeline (user decision, 2026-11-10)
+
+This supersedes the static `PmNode` allocation interface above; the design is
+`.agents/tasks/pmm-redesign/DESIGN.md`. It lands one step at a time, so until
+a step is in, the code still has the shape described above.
+
+- The `mm::` free functions in `pmm.cpp` are the one pipeline across nodes:
+  gate admission, `resolve_request()`, the home node's member
+  `alloc_frames(request)`, then zeroing, counters and the pressure
+  observation outside the zone lock. `PmNode` has no static allocation or
+  release operation. The static layer was a second entry with the same
+  signature that skipped admission, and no production code called it.
+- The layers under the seam carry the seam's names (the user's, 2026-11-10):
+  `PmNode::alloc_frames()` and `free_frames()`, `PmZone::alloc_frames()` and
+  `free_frames()`, private and reached through `friend`. These replace
+  `take_block()` and `return_block()`; access says which layer is the entry,
+  so the name need not.
+- The public PMM interface takes primitive parameters, as Linux's
+  `alloc_pages()` and Zircon's `pmm_alloc_page()` do: a `Gaf`, an order or a
+  count, a node id. Never a compound structure as a parameter; the user
+  rejected a `FrameRequest` and a `Placement` aggregate on 2026-11-10. One
+  function with a trailing default (`home = ANY_NODE`) replaces the paired
+  overloads, no node mask is a public parameter, and whatever else a caller
+  wants (zone ceiling, mobility, floor) is a `Gaf` bit behind a preset, not
+  a new parameter. `Gaf` keeps `CanBlock`, `CanWait`, `ThisNode` and `Zero`
+  and gains `Movable` and `Dma32`.
+- Interfaces come in symmetric pairs (`alloc_frames`/`free_frames` at every
+  layer, `pin_frame`/`unpin_frame`), and each object
+  has one boundary: say what it owns and what it never does before adding a
+  method to it.
+- `PmNode` is one node: its `ZoneList`, `PageQueues` and CPU masks. The node
+  table and the state masks are file-scope data behind free functions, and
+  CPU membership (publish, claim, move) belongs to `CpuNodeMap`.
+- The scope of the pass was reopened the same day: the user wants the PMM
+  designed from what it must support later (swap and eviction, large pages,
+  constrained and contiguous allocation, movers), with the node, the zone and
+  the frame kept as the principal objects, not a pruning of what exists.
+- `pin_frame()` and `unpin_frame()` in `pmm.hpp` are planned interfaces, for
+  holding a frame against being swapped out. So are `MigrateType` and the
+  `Movable` and `Dynamic` zone types. An undefined declaration or unused enum
+  in the PMM is a statement of a requirement; design for it, never delete it.
+
 ## VMM naming choices (user decision, 2026-11-05)
 
 Keep the address selection name alloc_spot because selecting an address may

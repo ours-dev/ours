@@ -3,8 +3,8 @@
 #ifndef OURS_TASK_OWNED_WAIT_QUEUE_HPP
 #define OURS_TASK_OWNED_WAIT_QUEUE_HPP 1
 
-#include <ours/task/sched/profiles.hpp>
-#include <ours/task/wait_queue.hpp>
+#include <ours/task/scheduler_profiles.hpp>
+#include <ours/task/wait_queue_base.hpp>
 
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/function.hpp>
@@ -18,8 +18,8 @@ concept PropagatingStream = requires {
         (std::is_same_v<Upstream, OwnedWaitQueue> && std::is_same_v<Downstream, Thread>);
 };
 
-class OwnedWaitQueue: protected WaitQueue {
-    using Base = WaitQueue;
+class OwnedWaitQueue final: public WaitQueueBase {
+    using Base = WaitQueueBase;
     using Self = OwnedWaitQueue;
 
   public:
@@ -56,8 +56,7 @@ class OwnedWaitQueue: protected WaitQueue {
 
     static auto disown_all_queues(Thread *thread) -> void;
 
-    static auto override_thread_base_profile(Thread *thread, sched::BaseProfile const &profile)
-        -> void;
+    static auto override_thread_base_profile(Thread *thread, BaseProfile const &profile) -> void;
 
     OwnedWaitQueue();
 
@@ -76,7 +75,7 @@ class OwnedWaitQueue: protected WaitQueue {
     /// a lock it takes and drops by itself, so whatever the caller checked
     /// beforehand can change before the enqueue, and a waker that runs in that
     /// gap sees an empty queue. Same contract as
-    /// WaitQueue::park_thread_preamble_locked()/park_thread_postamble():
+    /// WaitQueueBase::park_thread_preamble_locked()/park_thread_postamble():
     /// |curr|'s PI lock is held, interrupts and preemption off, across both
     /// halves; the queue lock across the preamble only.
     TA_REQUIRES(get_lock())
@@ -107,17 +106,13 @@ class OwnedWaitQueue: protected WaitQueue {
     ///
     /// Called with the queue lock *dropped*. Waking takes each thread's PI
     /// lock, and in this tree the PI lock is the outer one and the queue lock
-    /// the inner (see WaitQueue::enqueue_waiter), so waking under the queue
+    /// the inner, so waking under the queue
     /// lock would take the two in the wrong order. Hence no "_locked" suffix.
     /// Waking under the queue lock becomes possible only once every lock the
     /// wake needs is already held before it starts, taken up front for the
     /// whole chain.
     template <typename UnparkThreads> // Thread::UnparkList
     auto notify_threads(UnparkThreads threads, INotifyRequeueHook &, NotifyOptions) -> void;
-
-    using Base::get_lock;
-    using Base::is_empty;
-    using Base::peek;
 
   private:
     template <PropagateOp Op, typename Upstream, typename Downstream>
@@ -126,8 +121,8 @@ class OwnedWaitQueue: protected WaitQueue {
 
     template <PropagateOp Op, typename Upstream, typename Downstream>
         requires PropagatingStream<Upstream, Downstream>
-    static auto complete_propagate(Upstream &, Downstream &, sched::InheritedProfile const *,
-                                   sched::InheritedProfile const *, PropagateTag<Op>) -> void;
+    static auto complete_propagate(Upstream &, Downstream &, InheritedProfile const *,
+                                   InheritedProfile const *, PropagateTag<Op>) -> void;
 
     static auto lock_for_owner_replacement(Thread *new_owner, Thread *blocking_thread) -> void;
 
@@ -137,7 +132,7 @@ class OwnedWaitQueue: protected WaitQueue {
     template <typename Applicant>
     static auto unlock_pi_chain_common(Applicant *start, void *stop_point) -> void;
 
-    static auto snapshot_thread_inherited_profile(Thread *thread) -> sched::InheritedProfile;
+    static auto snapshot_thread_inherited_profile(Thread *thread) -> InheritedProfile;
 
     auto park_and_assign_owner_locked(Thread *const curr, time::Deadline const &, Interruptible)
         -> Status;
@@ -146,20 +141,15 @@ class OwnedWaitQueue: protected WaitQueue {
 
     auto reset_owner() -> void;
 
-    friend class WaitQueue;
+    friend class WaitQueueBase;
 
-    /// "Is this really a live OwnedWaitQueue?" is two questions here, not one.
-    /// The canary holds WaitQueue's magic on every instance -- see the note on
-    /// WaitQueue::Type for why it must -- so on its own it says only that the
-    /// storage is still a WaitQueue. Which kind it is, m_type answers.
     FORCE_INLINE
     auto verify_owned() const -> void {
-        m_canary.verify<Base>();
-        DEBUG_ASSERT(Type::Owned == m_type, "an OwnedWaitQueue method on a plain WaitQueue");
+        verify_type(Type::Owned);
     }
 
     Thread *m_owner;
-    sched::InheritedProfile m_ipv;
+    InheritedProfile m_ipv;
 
     ustl::collections::intrusive::ListMemberHook<> m_managed_hook;
 
@@ -168,17 +158,6 @@ class OwnedWaitQueue: protected WaitQueue {
     USTL_DECLARE_LIST(Self, List, ManagedOptions);
 };
 
-template <>
-FORCE_INLINE
-inline auto WaitQueue::as<OwnedWaitQueue>(Self *self) -> OwnedWaitQueue * {
-    DEBUG_ASSERT(self);
-    if (Type::Owned == self->m_type) {
-        // m_type establishes the dynamic type and WaitQueue is the sole base.
-        return reinterpret_cast<OwnedWaitQueue *>(self);
-    }
-
-    return 0;
-}
 } // namespace ours::task
 
 #endif // #ifndef OURS_TASK_OWNED_WAIT_QUEUE_HPP

@@ -32,7 +32,7 @@
 ///                                ustl::Method<Yield, auto(Queue &, Thread *) -> void>>;
 ///
 ///     ustl::Ref<Schedule> schedule = round_robin;
-///     schedule.call<Enqueue>(queue, thread);
+///     schedule->enqueue_thread(queue, thread);
 
 namespace ustl {
 
@@ -97,6 +97,20 @@ namespace detail {
         using Type = std::conditional_t<std::is_same_v<Dispatch, typename Head::Dispatcher>, Head,
                                         typename FindMethod<Dispatch, Tail...>::Type>;
     };
+
+    /// A hand-written dispatch can supply an accessor or use only the tagged call.
+    template <typename Access, typename Dispatch, typename Signature, typename = void>
+    struct MemberAccessor {};
+
+    template <typename Access, typename Dispatch, typename Signature>
+    struct MemberAccessor<Access, Dispatch, Signature,
+                          std::void_t<typename Dispatch::template Accessor<Access, Signature>>>
+        : Dispatch::template Accessor<Access, Signature> {};
+
+    template <typename Dispatch, typename Access, typename... Args>
+    auto call_member(Access const &access, Args &&...args) -> decltype(auto) {
+        return accessor_ref(access).template call<Dispatch>(std::forward<Args>(args)...);
+    }
 } // namespace detail
 
 /// One method of an interface: the dispatch that says how an object answers
@@ -109,6 +123,7 @@ struct Method;
 template <typename Dispatch, typename R, typename... Args>
 struct Method<Dispatch, R(Args...)> {
     using Dispatcher = Dispatch;
+    using Signature = R(Args...);
     using Result = R;
 
     /// What the table holds for this method: the function that calls the
@@ -196,6 +211,24 @@ template <typename... Methods>
 class Ref<Dyn<Methods...>> final {
     using Interface = Dyn<Methods...>;
 
+    /// Combines the named methods and carries a copy of the borrowed handle.
+    class Arrow final: public detail::MemberAccessor<Arrow, typename Methods::Dispatcher,
+                                                     typename Methods::Signature>... {
+      public:
+        explicit constexpr Arrow(Ref const &ref) noexcept : m_ref(ref) {}
+
+        constexpr auto operator->() const noexcept -> Arrow const * {
+            return this;
+        }
+
+      private:
+        friend auto accessor_ref(Arrow const &access) noexcept -> Ref const & {
+            return access.m_ref;
+        }
+
+        Ref m_ref;
+    };
+
   public:
     /// The empty reference. Calling it traps.
     constexpr Ref() noexcept : m_object(nullptr), m_table(&Interface::EMPTY) {}
@@ -208,6 +241,10 @@ class Ref<Dyn<Methods...>> final {
     [[nodiscard]]
     explicit constexpr operator bool() const noexcept {
         return m_table != &Interface::EMPTY;
+    }
+
+    constexpr auto operator->() const noexcept -> Arrow {
+        return Arrow(*this);
     }
 
     /// Calls the method whose dispatch is |Dispatch| on the object. The result
@@ -406,8 +443,31 @@ class Own<Dyn<Methods...>, Size, Align> final {
 
 } // namespace ustl
 
-/// Declares the dispatch |Name| for the method an object answers with its
-/// member function |member|: `Name{}(object, args...)` is
+/// The named entry point has the facade's signature. An optional attribute
+/// can name |first| to check the caller's contract before dispatch.
+#define USTL_DETAIL_DYN_ACCESSOR(Name, member, ...)                                                \
+    template <typename Access, typename Signature>                                                 \
+    struct Accessor;                                                                               \
+                                                                                                   \
+    template <typename Access, typename R>                                                         \
+    struct Accessor<Access, R()> {                                                                 \
+        auto member() const -> R {                                                                 \
+            return ::ustl::detail::call_member<Name>(static_cast<Access const &>(*this));          \
+        }                                                                                          \
+    };                                                                                             \
+                                                                                                   \
+    template <typename Access, typename R, typename First, typename... Args>                       \
+    struct Accessor<Access, R(First, Args...)> {                                                   \
+        __VA_ARGS__                                                                                \
+        auto member(First first, Args... args) const -> R {                                        \
+            return ::ustl::detail::call_member<Name>(static_cast<Access const &>(*this),           \
+                                                     std::forward<First>(first),                   \
+                                                     std::forward<Args>(args)...);                 \
+        }                                                                                          \
+    }
+
+/// Declares the dispatch |Name| and a named accessor for the method an object
+/// answers with its member function |member|. `Name{}(object, args...)` is
 /// `object.member(args...)`, and an object without such a member does not
 /// model an interface that has the method.
 ///
@@ -421,8 +481,10 @@ class Own<Dyn<Methods...>, Size, Align> final {
 /// lambda per method can do, and the lambda's closure type could not be a
 /// template argument without a constant to hold it (the user's call,
 /// 2026-11-03).
-#define USTL_DYN_MEMBER(Name, member)                                                              \
+#define USTL_DYN_MEMBER(Name, member, ...)                                                         \
     struct Name {                                                                                  \
+        USTL_DETAIL_DYN_ACCESSOR(Name, member, __VA_ARGS__);                                       \
+                                                                                                   \
         template <typename Self, typename... Args>                                                 \
         [[clang::no_thread_safety_analysis]]                                                       \
         static constexpr auto                                                                      \
@@ -438,8 +500,10 @@ class Own<Dyn<Methods...>, Size, Align> final {
 /// method's arguments, such as `ustl::dyn::Ignore{}` or
 /// `ustl::dyn::Returns<Status::NotSupported>{}`. Every object models the
 /// method, and the default is written once, where the method is declared.
-#define USTL_DYN_MEMBER_OR(Name, member, fallback)                                                 \
+#define USTL_DYN_MEMBER_OR(Name, member, fallback, ...)                                            \
     struct Name {                                                                                  \
+        USTL_DETAIL_DYN_ACCESSOR(Name, member, __VA_ARGS__);                                       \
+                                                                                                   \
         template <typename Self, typename... Args>                                                 \
         [[clang::no_thread_safety_analysis]]                                                       \
         static constexpr auto operator()([[maybe_unused]] Self &self,                              \

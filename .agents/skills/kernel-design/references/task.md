@@ -2,28 +2,33 @@
 
 ## Scheduler
 
-- Fair (`kernel/kernel/task/sched/fair.*`) is the user's own design and off by
-  default (`sched_normal_discipline` is `"rr"`; a lane built with `"fair"`
-  compiles, links and boots). Bring-up runs on a simple round-robin
-  discipline. Do not edit
-  Fair at all; a refactor whose value depends on changing fair.cpp must be put
-  to the user, not carried out. In the generic scheduler machinery
-  (`scheduler.cpp`, `context.hpp`, `scheduler_inline.hpp`), ask before any fix
-  beyond a plain seeding or ordering defect.
+- The scheduler and its types live directly in `ours::task` (the user's
+  layout choice, 2026-11-07). Headers and sources sit in the task
+  directories, and GN builds the scheduler as `//kernel/kernel/task:scheduler`.
+- Fair (`kernel/kernel/task/fair.cpp` and `kernel/include/ours/task/fair.hpp`)
+  is the user's own design and off by default (`sched_normal_discipline` is
+  `"rr"`; a lane built with `"fair"` compiles, links and boots). Bring-up
+  runs on a simple round-robin discipline. Do not edit Fair at all. A
+  refactor whose value depends on changing `fair.cpp` must be put to the
+  user. In the generic scheduler machinery (`scheduler.cpp`), ask before any
+  fix beyond a plain seeding or ordering defect.
 - The framework around the algorithm may be restructured boldly; what the user
   protects is the scheduling algorithm, not the size of a change.
 - A discipline is a plain class with no base class and no virtual function,
   reached through a `ustl::Ref<Schedule>` (`ustl/dyn.hpp`; the user's call of
   2026-11-03, design in `.agents/tasks/sched-facade/DESIGN.md`).
-  `Scheduler::schedule_of(Discipline)` is a `switch` over the closed enum, and
-  a discipline that is not implemented (Deadline today) is an empty reference
-  that traps. Five methods are required (`enqueue_thread`, `dequeue_thread`,
+  Both lookup helpers live in the anonymous namespace in `scheduler.cpp`.
+  `find_schedule(Discipline)` switches over the closed enum and returns an
+  empty reference for an unimplemented discipline (Deadline today).
+  `schedule_of()` requires an implemented discipline and asserts in debug
+  builds. Five methods are required (`enqueue_thread`, `dequeue_thread`,
   `evaluate_next_thread`, `on_thread_tick`, `num_queued`); the others are
-  optional and their defaults sit beside them in `schedule.hpp`. The thread-
-  safety analysis cannot follow an erased call, so `Scheduler::call_schedule<>`
-  carries `TA_REQUIRES(get_lock())` and a discipline declares
-  `TA_REQUIRES(rq.lock())` on its own functions. One discipline outranks
-  another if its enumerator is later (Deadline over Normal), not by address.
+  optional and their defaults sit beside them in `schedule.hpp`. The named
+  accessor (the user's call of 2026-11-07) carries the call-site lock
+  requirement. `TA_REQUIRES(first.lock())` in the declaration names the
+  supplied run queue, and concrete methods can use `TA_REQUIRES(rq.lock())`
+  to check their bodies. One discipline outranks another if its enumerator
+  is later (Deadline over Normal), not by address.
 - Work stealing is a pull by a CPU for itself, made by its idle thread before it
   halts (`Scheduler::steal_work_from()`, a member of the thief's scheduler,
   called from `IdleThread::run()`; the user's call of 2026-11-05) and callable
@@ -38,14 +43,14 @@
   `Scheduler::Current::deactivate()` does; no order of run queue locks is
   defined. What the scheduler looks at is a table, not a question to the memory
   manager: `domains_of(cpu)` (`kernel/lib/sched_domain`, built once from the
-  node table in `kernel/kernel/task/sched/domains.cpp`, the one file of the
+  node table in `kernel/kernel/task/scheduler_domains.cpp`, the one file of the
   scheduler that knows `mm::CpuNodeMap`), the CPU's tiers nearest first, each of
   a kind (the user's call of 2026-11-05; it is the role of Linux's
   `sched_domain` and Zircon's `CpuSearchSet`). A new kind of distance is one
   more kind of tier, built there, and its knobs. The numbers that say how deep a
   queue must be to be worth taking from and how many threads one look takes are
   knobs, named by `sched_domain::Knob` with a default and a range, kept by
-  `task::sched::StealPolicy` as relaxed atomics (each is valid alone, so no
+  `task::StealPolicy` as relaxed atomics (each is valid alone, so no
   snapshot is needed), given a first value by `kernel.sched.steal.<name>` boot
   options and changed while the machine runs by the `steal.policy` console
   command (the user's call of 2026-11-05). A user-space interface to them waits
@@ -66,8 +71,16 @@
 
 ## Thread and wait-queue locking
 
+- `Thread` keeps `WaiterState` for waiting and `SchedulerState` for
+  scheduling (the user's naming choice, 2026-11-07). Use
+  `ours/task/scheduler_state.hpp` and `Thread::scheduler_state()` in the
+  framework.
+- `WaitQueue` and `OwnedWaitQueue` directly inherit `WaitQueueBase` (the
+  user's layout choice, 2026-11-12). The base owns waiter storage and
+  targeted wake operations, so `WaiterState` records a `WaitQueueBase *`.
+  Concrete queues supply their own notification and ownership operations.
 - Never propose a global thread lock. `Thread` (`m_pi_lock`,
-  `m_resource_lock`), `WaitQueue` (`m_lock`) and each per-CPU run queue
+  `m_resource_lock`), `WaitQueueBase` (`m_lock`) and each per-CPU run queue
   (`rqlock`) lock separately. What is missing is the protocol for taking an
   arbitrary priority-inheritance chain of those locks: Zircon's ChainLock
   (`zircon/system/ulib/concurrent/include/lib/concurrent/chainlock.h`, design in
@@ -261,7 +274,7 @@ decided before it is built:
   of 2026-10-13 (decision ii in `.agents/tasks/idle-power/DESIGN.md`). A
   slice ends at the CPU's preemption deadline, the slot in its `TimerQueue`.
   `Scheduler::set_next_thread()` sets it at every pick, the running thread
-  picked again included, from `SchedEntity::remaining_slice()`, and empties
+  picked again included, from `SchedulerState::remaining_slice()`, and empties
   it for the idle thread, so an idle CPU is woken by its timers alone. A
   passed deadline only asks for a reschedule
   (`Scheduler::Current::on_preemption_deadline()`, Zircon
