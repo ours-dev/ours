@@ -38,6 +38,9 @@ KTEST_VALUE_PARAM(KtestParamFixture, int, FixtureValues, 5, 6);
 KTEST_F_P(KtestParamFixture, SeesFixtureAndParameter) {
     EXPECT_EQ(this->built_in_setup, usize{7}, "the fixture's SetUp ran for this instantiation");
     EXPECT_TRUE(GetParam() > 0);
+    // EXPECT_THAT composes with the fixture and the parameter as any
+    // assertion does: it is the value's own check, nothing fixture-coupled.
+    EXPECT_THAT(GetParam(), ktest::Ge(1), "the record's own table value");
 }
 
 // The typed list and the KTEST_T family over it: one record per type, the

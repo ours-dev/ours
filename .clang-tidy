@@ -37,6 +37,11 @@ CheckOptions:
   # the names are the API, not a lapse of this config's snake case.
   - key: readability-identifier-naming.MethodIgnoredRegexp
     value: ^(SetUp|TearDown|GetParam)$
+  # GoogleTest's matcher vocabulary, which EXPECT_THAT's factories spell the
+  # same way (ktest::Eq(42), ktest::AllOf(m1, m2), ...): the names are the
+  # API, not a lapse of this config's snake case.
+  - key: readability-identifier-naming.FunctionIgnoredRegexp
+    value: ^(Eq|Ne|Lt|Le|Gt|Ge|IsNull|NotNull|Ok|AllOf|AnyOf)$
   - key: readability-identifier-naming.ParameterCase
     value: lower_case
 

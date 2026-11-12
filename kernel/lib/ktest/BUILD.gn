@@ -14,6 +14,7 @@ cpp_interface("headers") {
     "include/ktest/format.hpp",
     "include/ktest/instantiate.hpp",
     "include/ktest/ktest.hpp",
+    "include/ktest/matchers.hpp",
     "include/ktest/options.hpp",
     "include/ktest/run_plan.hpp",
     "include/ktest/run_state.hpp",

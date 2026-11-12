@@ -11,6 +11,7 @@ executable("ktest-test") {
     "fixture_test.cpp",
     "host_shim.cpp",
     "instantiate_test.cpp",
+    "matcher_test.cpp",
     "options_test.cpp",
     "plan_test.cpp",
     "summary_test.cpp",

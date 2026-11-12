@@ -60,6 +60,28 @@ KTEST(Ktest, ReadsRunOptions) {
     }
 }
 
+/// The matcher half of the assertion family: several EXPECT_THAT forms over
+/// freestanding-safe values, all passing. The failure shape is the host
+/// suite's to check exactly; this run only proves the forms compile, bind
+/// their arguments once and pass on target.
+KTEST(Ktest, MatcherSmoke) {
+    auto const value = 6 * 7;
+    EXPECT_THAT(value, ktest::Eq(42));
+    EXPECT_THAT(value, ktest::Ge(42), "the answer is at least itself");
+    EXPECT_THAT(value, ktest::AllOf(ktest::Ge(40), ktest::Le(45)));
+    EXPECT_THAT(value, ktest::AnyOf(ktest::Eq(41), ktest::Eq(42)));
+
+    auto const *const pointer = &value;
+    EXPECT_THAT(pointer, ktest::NotNull());
+    int const *const null_pointer = nullptr;
+    EXPECT_THAT(null_pointer, ktest::IsNull());
+
+    auto const status = ours::Status::Ok;
+    EXPECT_THAT(status, ktest::Ok());
+
+    ASSERT_THAT(value, ktest::Ne(41));
+}
+
 /// The runner's own options -- shuffle, repeat, shard -- reach the tests
 /// through the same accessors as every other option; the iteration they plan
 /// is the runner's alone. Each test below is silent unless its option was
