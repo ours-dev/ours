@@ -1443,7 +1443,7 @@ namespace {
             Popped popped{.kind = Popped::Kind::Page, .word = 0, .frame = mm::frame_to_phys(page)};
             std::memcpy(&popped.word, mm::PhysMap::phys_to_virt<u8>(popped.frame),
                         sizeof(popped.word));
-            mm::free_frames(page, 0);
+            mm::free_frames(page);
             return popped;
         }
         if (slot.is_zero_marker()) {

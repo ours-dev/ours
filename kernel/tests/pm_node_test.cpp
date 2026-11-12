@@ -453,7 +453,7 @@ namespace {
     auto check_home_allocation() -> void {
         auto const release = [](ktl::Result<PmFrame *> const &result) {
             if (result && *result) {
-                mm::free_frames(*result, (*result)->order());
+                mm::free_frames(*result);
             }
         };
         auto const alloc_flags = mm::ALLOC_KERNEL | mm::Gaf::Zero;
@@ -556,7 +556,7 @@ namespace {
                             fragment.unwrap_err() == Status::InvArgs,
                         "queries and allocation handle an absent node ID");
             if (single) {
-                mm::free_frames(*single, (*single)->order());
+                mm::free_frames(*single);
             }
             if (bulk) {
                 mm::free_frames(&*bulk);
@@ -592,7 +592,7 @@ namespace {
         }
 
         auto const counted_local = (*fallback)->nid() == local && hits.get() == before + 1;
-        mm::free_frames(*fallback, 0);
+        mm::free_frames(*fallback);
         return counted_local;
     }
 
@@ -667,7 +667,7 @@ namespace {
         auto const pinned = mm::alloc_frames(flags, 0, nid);
         auto const pinned_failed = !pinned && pinned.unwrap_err() == Status::OutOfMem;
         if (pinned) {
-            mm::free_frames(*pinned, 0);
+            mm::free_frames(*pinned);
         }
         auto const counted_local = check_local_fallback(nid);
 
@@ -676,7 +676,7 @@ namespace {
         auto const drained = zone && zone->count_free_frames() == 0 &&
                              zone->num_free_frames() == 0 &&
                              !zone->watermark_ok(0, PmZone::Watermark::Min);
-        mm::free_frames(last, 0);
+        mm::free_frames(last);
         if (Cpu::num_online_cpus() >= 2) {
             EXPECT_TRUE(drained && check_zone_inventory(*zone),
                         "two CPUs keep an exhausted zone's free count within its one-page "
@@ -690,7 +690,7 @@ namespace {
         auto const restored = mm::alloc_frames(flags, 0, nid);
         auto const restored_last = restored && *restored == last;
         if (restored) {
-            mm::free_frames(*restored, 0);
+            mm::free_frames(*restored);
         }
 
         auto fragment = mm::alloc_frames_fragment(flags, PARTIAL_FRAGMENT_COUNT, nid);
@@ -701,7 +701,7 @@ namespace {
         auto const after_fragment = mm::alloc_frames(flags, 0, nid);
         auto const fragment_restored_last = after_fragment && *after_fragment == last;
         if (after_fragment) {
-            mm::free_frames(*after_fragment, 0);
+            mm::free_frames(*after_fragment);
         }
         mm::free_frames(&held);
 
@@ -749,7 +749,7 @@ namespace {
             }
 
             // Release the actual allocation even if its geometry was wrong.
-            mm::free_frames(frame, order);
+            mm::free_frames(frame);
             EXPECT_TRUE(ok, "{}", name);
         };
 
@@ -784,14 +784,14 @@ namespace {
         EXPECT_TRUE(!bytes && !local_bytes, "typed allocation returns nullptr when disabled");
         for (auto *const ptr: {bytes, local_bytes}) {
             if (ptr) {
-                mm::free_frames(mm::virt_to_frame(ptr), 0);
+                mm::free_frames(mm::virt_to_frame(ptr));
             }
         }
 
         // Freed even if the check above failed, so the test leaks nothing.
         for (auto const &result: {nodeless, by_node, after}) {
             if (result) {
-                mm::free_frames(*result, 0);
+                mm::free_frames(*result);
             }
         }
     }

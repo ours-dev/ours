@@ -142,7 +142,7 @@ namespace {
             *reinterpret_cast<u64 *>(mm::PhysMap::phys_to_virt(mm::frame_to_phys(frame))) =
                 pattern(first + i);
             if (pages.append_page(i, frame) != Status::Ok) {
-                mm::free_frames(frame, 0);
+                mm::free_frames(frame);
                 return false;
             }
         }
@@ -667,7 +667,7 @@ namespace {
                     "at OutOfMemory with pages to give, they are given back, and an allocation "
                     "that could wait is served");
         if (served) {
-            mm::free_frames(*served, 0);
+            mm::free_frames(*served);
         }
 
         auto _ = watchdog.set_levels(boot);
@@ -714,7 +714,7 @@ namespace {
         auto const missed = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, remote);
         auto const exhausted = !missed && missed.unwrap_err() == Status::OutOfMem;
         if (missed) {
-            mm::free_frames(*missed, 0);
+            mm::free_frames(*missed);
         }
         auto const evicted = settle([&] { return remote_vmo->committed_pages(0, P) == 0; });
         auto const kept_local = local_vmo->committed_pages(0, P) == 1;
@@ -724,7 +724,7 @@ namespace {
                 mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, remote);
             if (recovered) {
                 retried = (*recovered)->nid() == remote;
-                mm::free_frames(*recovered, 0);
+                mm::free_frames(*recovered);
             }
         }
         mm::free_frames(&held);

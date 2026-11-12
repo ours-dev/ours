@@ -61,7 +61,7 @@ auto PageRequest::wait(bool const suspendable) -> Status {
 
 AnonymousPageRequest::~AnonymousPageRequest() {
     if (m_frame) {
-        free_frames(m_frame, 0);
+        free_frames(m_frame);
     }
 }
 

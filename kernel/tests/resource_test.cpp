@@ -392,7 +392,7 @@ namespace {
         answered(validate_ranged_resource(resource, RsrcKind::MmIo,
                                           std::to_underlying(mm::frame_to_phys(frame)), page),
                  Status::AccessDenied, "the root refuses a frame the page allocator handed out");
-        mm::free_frames(frame, 0);
+        mm::free_frames(frame);
     }
 
     auto check_mmio_range() -> void {

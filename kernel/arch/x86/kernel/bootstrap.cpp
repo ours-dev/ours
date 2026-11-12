@@ -210,7 +210,7 @@ INIT_CODE
 static auto free_bootstrap16_buffer() -> void {
     for (auto offset = usize{0}; offset < MIN_BOOTSTRAP16_BUFFER_SIZE; offset += PAGE_SIZE) {
         auto const frame = mm::phys_to_frame(BOOTSTRAP16_BUFFER_BASE + offset);
-        mm::free_frames(frame, 0);
+        mm::free_frames(frame);
     }
 }
 GKTL_INIT_HOOK(FreeBootstrap16Buffer, free_bootstrap16_buffer, gktl::InitLevel::Platform);

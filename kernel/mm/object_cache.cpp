@@ -120,7 +120,7 @@ namespace slab {
         // the buddy's merge walk, FrameBuddy::release(), under dbg_1. Every
         // other caller of free_frames() hands frames back in the role they were
         // used in.
-        mm::free_frames(slab, order);
+        mm::free_frames(slab);
     }
 
     /// Where a free object stores the pointer to the next one.
@@ -206,7 +206,7 @@ namespace slab {
         if (auto status = init(frame, owner, node_cache, size, next_offset); Status::Ok != status) {
             stamp_compound_offsets(frame, order, false);
             // Not stamped Pmm here either; see destroy().
-            mm::free_frames(frame, order);
+            mm::free_frames(frame);
             return nullptr;
         }
 

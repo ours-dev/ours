@@ -229,7 +229,7 @@ auto VmObjectPaged::create_contiguous(Gaf const alloc_flags, usize const size, u
         block[index].set_order(0);
     }
     for (usize index = nr_pages; index < nr_frames; ++index) {
-        free_frames(&block[index], 0);
+        free_frames(&block[index]);
     }
 
     auto status = Status::Ok;
@@ -242,7 +242,7 @@ auto VmObjectPaged::create_contiguous(Gaf const alloc_flags, usize const size, u
                 // What went in is the node's and goes with it; what did not, and
                 // this one, is given back here.
                 for (usize rest = index; rest < nr_pages; ++rest) {
-                    free_frames(&block[rest], 0);
+                    free_frames(&block[rest]);
                 }
                 break;
             }

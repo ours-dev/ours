@@ -92,7 +92,7 @@ namespace {
                                             mm::DelayedAllocations::Wait);
         auto const delayed = mm::alloc_frames(WAITABLE);
         if (delayed) {
-            mm::free_frames(*delayed, 0);
+            mm::free_frames(*delayed);
             return false;
         }
         return Status::ShouldWait == delayed.unwrap_err();
@@ -154,7 +154,7 @@ namespace {
         auto served = mm::alloc_frames(WAITABLE);
         EXPECT_TRUE(!!served, "with no delay level, a CanWait allocation is served");
         if (served) {
-            mm::free_frames(*served, 0);
+            mm::free_frames(*served);
         }
 
         auto const shut = shut_gate();
@@ -164,14 +164,14 @@ namespace {
             "below the delay level a CanWait allocation answers ShouldWait, and one without "
             "CanWait is served");
         if (plain) {
-            mm::free_frames(*plain, 0);
+            mm::free_frames(*plain);
         }
 
         auto const by_node = mm::alloc_frames(WAITABLE, 0, mm::current_node());
         EXPECT_TRUE(!by_node && by_node.unwrap_err() == Status::ShouldWait,
                     "an allocation that names its home shares pressure admission");
         if (by_node) {
-            mm::free_frames(*by_node, 0);
+            mm::free_frames(*by_node);
         }
     }
 
@@ -190,7 +190,7 @@ namespace {
                         waiter.frame != nullptr,
                     "a waiter sleeps while the gate is shut, and wakes with a frame when it opens");
         if (waiter.frame != nullptr) {
-            mm::free_frames(waiter.frame, 0);
+            mm::free_frames(waiter.frame);
         }
     }
 
@@ -212,10 +212,10 @@ namespace {
                     "with delayed allocations refused, a waiter wakes with OutOfMem, and a CanWait "
                     "allocation below the level fails at once");
         if (waiter.frame != nullptr) {
-            mm::free_frames(waiter.frame, 0);
+            mm::free_frames(waiter.frame);
         }
         if (refused) {
-            mm::free_frames(*refused, 0);
+            mm::free_frames(*refused);
         }
         open_gate();
     }
@@ -232,7 +232,7 @@ namespace {
         EXPECT_TRUE(shut && !result && result.unwrap_err() == Status::TimeOut,
                     "an interruptible allocation wait times out while the gate stays shut");
         if (result) {
-            mm::free_frames(*result, 0);
+            mm::free_frames(*result);
         }
     }
 
@@ -459,7 +459,7 @@ namespace {
         }
         auto const critical = settles_at(MemoryPressure::Critical);
         for (usize i = 0; i < taken; ++i) {
-            mm::free_frames(frames[i], 0);
+            mm::free_frames(frames[i]);
         }
         auto const back = settles_at(MemoryPressure::Warning);
         EXPECT_TRUE(taken == 2 * K && critical && back,
@@ -476,10 +476,10 @@ namespace {
                     "at OutOfMemory an allocation that could wait is refused, and one that could "
                     "not is served");
         if (refused) {
-            mm::free_frames(*refused, 0);
+            mm::free_frames(*refused);
         }
         if (served) {
-            mm::free_frames(*served, 0);
+            mm::free_frames(*served);
         }
 
         auto const restored = watchdog.set_levels(boot);
@@ -489,7 +489,7 @@ namespace {
                     "with the boot levels back, the pressure is Normal and an allocation that "
                     "could wait is served");
         if (waited) {
-            mm::free_frames(*waited, 0);
+            mm::free_frames(*waited);
         }
     }
 

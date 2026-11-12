@@ -172,7 +172,7 @@ auto VmCowPages::unfile_page(VmPage *const page) -> void {
 auto VmCowPages::free_page(VmPage *const page) -> void {
     DEBUG_ASSERT(page->pinned_count() == 0, "a pinned page is being freed");
     unfile_page(page);
-    free_frames(page, 0);
+    free_frames(page);
 }
 
 VmCowPages::VmCowPages(Gaf alloc_flags, usize size, ustl::Arc<HierarchyState> hierarchy,
@@ -781,7 +781,7 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
                 DEBUG_ASSERT(taken == &block[j]);
             }
             for (usize j = 0; j < NR_PAGES; ++j) {
-                free_frames(&block[j], 0);
+                free_frames(&block[j]);
             }
             return nullptr;
         }
@@ -866,7 +866,7 @@ auto VmCowPages::supply_pages_locked(u64 const offset, u64 const len, VmPageSpli
             // Popped, so the page is this call's to give back when it does not
             // go in: the slot was full, or the map could not grow.
             if (Status::Ok != status) {
-                free_frames(page, 0);
+                free_frames(page);
             }
         } else {
             // A zero marker or a gap: zero either way, and said by the source.
@@ -1155,7 +1155,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
     if (auto const status =
             m_pages.insert_page(PgOff(offset >> PAGE_SHIFT), copy, VmPageList::Tag::Owned);
         Status::Ok != status) {
-        free_frames(copy, 0);
+        free_frames(copy);
         return ktl::err(status);
     }
     file_page_locked(copy, PgOff(offset >> PAGE_SHIFT), Fill::Content);
@@ -1307,7 +1307,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     // allocates a second one over the top of it.
     if (auto const status = m_target->m_pages.insert_page(index(), page, VmPageList::Tag::Owned);
         Status::Ok != status) {
-        free_frames(page, 0);
+        free_frames(page);
         return ktl::err(status);
     }
     m_target->file_page_locked(page, index(), Fill::ZeroFork);

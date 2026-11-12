@@ -414,7 +414,10 @@ auto free_page_table(PhysAddr base, usize size) -> void {
     // discard_all_tables()).
     DEBUG_ASSERT(frame->as<page::MmuBody>().deposits == nullptr,
                  "freeing the page table {:#x} with tables still set aside for it", base);
-    free_frames(frame, get_order(size / PAGE_SIZE));
+    DEBUG_ASSERT(get_order(size / PAGE_SIZE) == frame->order(),
+                 "page table {:#x} of {} bytes was allocated as a block of order {}", base, size,
+                 frame->order());
+    free_frames(frame);
 }
 
 auto free_frame_count() -> usize {
@@ -592,15 +595,12 @@ auto alloc_frames_fragment(Gaf const flags, usize const n, NodeId const home)
     return priv::alloc_frames_fragment(flags, n, home, node_online_mask());
 }
 
-auto free_frames(PmFrame *frame, usize order) -> void {
+auto free_frames(PmFrame *frame) -> void {
     DEBUG_ASSERT(frame, "free requires a frame");
-    // A block is returned whole, as it was handed out. The head records the
-    // order the buddy gave it, so a caller that passes another is returning
-    // either part of a block or frames past its end. Memory that was never a
-    // block comes in through adopt_frames().
-    DEBUG_ASSERT(order == frame->order(),
-                 "frame {:#x} heads a block of order {} and is freed as order {}",
-                 frame_to_phys(frame), frame->order(), order);
+    // A block is returned whole, as it was handed out, and the head records
+    // the order the buddy gave it. Memory that was never a block comes in
+    // through adopt_frames(), which is told a range.
+    auto const order = frame->order();
     log::trace("Free frame({:X}, {})", frame_to_phys(frame), order);
     free_block(*frame, order);
     observe_pressure();

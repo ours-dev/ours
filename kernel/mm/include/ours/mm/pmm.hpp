@@ -200,13 +200,18 @@ auto alloc_page_table(usize size, usize alignment, NodeId node = bootmem::ANY_NO
 /// build asserts it.
 auto free_page_table(PhysAddr base, usize size) -> void;
 
-/// Returns |frame|'s block to its zone's buddy allocator. |frame| is the head
-/// of a block an allocation handed out, and |order| is that block's: the head
-/// records it, and a debug build asserts the two agree. The frame must not
-/// be reserved: a frame stamped Reserved at boot has to go through
-/// unwire_frame() first, or the buddy would hold a frame the reserved counts
-/// still claim (a debug build asserts it).
-auto free_frames(PmFrame *frame, usize order = 0) -> void;
+/// Returns the block |frame| heads to its zone's buddy allocator, whole.
+///
+/// How much that is, is the block's to say and not the caller's: the head
+/// frame records the order the block was handed out at, and that is what goes
+/// back. A caller that wants to return part of a block makes the parts blocks
+/// of their own first, by giving each frame it will free alone the order 0.
+/// A frame nothing has allocated counts as a block of one.
+///
+/// The frame must not be reserved: a frame stamped Reserved at boot has to go
+/// through unwire_frame() first, or the buddy would hold a frame the reserved
+/// counts still claim (a debug build asserts it).
+auto free_frames(PmFrame *frame) -> void;
 
 /// Gives the frames of the pfn range [|start|, |end|) to the buddy allocators
 /// for the first time: memory the boot allocator held and no zone ever handed
@@ -238,8 +243,8 @@ auto adopt_frames(Pfn start, Pfn end) -> void;
 auto unwire_frame(PmFrame *frame) -> void;
 
 FORCE_INLINE
-inline auto free_frames(VirtAddr virt_addr, usize order = 0) -> void {
-    return free_frames(virt_to_frame(virt_addr), order);
+inline auto free_frames(VirtAddr virt_addr) -> void {
+    return free_frames(virt_to_frame(virt_addr));
 }
 
 auto free_frames(PmFrame::List *list) -> void;
