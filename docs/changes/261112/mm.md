@@ -166,3 +166,63 @@ None.
 - Why can a tail frame of an allocated block carry a non-zero order, and when does that start to matter?
 - Why does `split_block()` need no lock, although the buddy reads order fields under the zone lock?
 - What made the hand-written loop a weak guarantee, when both callers had it right?
+
+## A contiguous run is the allocator's to make: alloc_frames_contiguous() (2026-11-12)
+
+**Files**
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/pmm.cpp` — `alloc_frames_contiguous(flags, n, align_log2, home)`
+- `kernel/mm/vm_object_paged.cpp` — `create_contiguous()` calls it and no longer takes a block apart itself
+- `kernel/tests/pm_node_test.cpp` — `PmNode.ContiguousFramesAreAdjacentAlignedAndFreedAlone`
+- `docs/repairs/261031/mm.md` — item 1 says where its code now is
+
+**Symptom**
+None. `create_contiguous()` allocates what it did, the same way.
+
+**Cause**
+"`n` adjacent frames at an alignment" is a request about physical memory, and the VMO was answering it with what it knew of the buddy's insides: that a block of order k is aligned to `2^k` pages, so the order must be the larger of what the count and the alignment need; that the block's descriptors are consecutive, so the frames can be reached by indexing; that the frames past `n` have to be given back; and that each frame needs an order of its own before it is freed alone. Four facts about the allocator, held by a caller.
+
+The cost is not that the VMO had them wrong. It had them right. It is that the next caller with the same need, a driver's buffer or a table for a device, would have to hold the same four facts, and that the allocator could not change any of them (serve a run from two adjacent smaller blocks, return the tail in larger pieces) without finding and changing its callers.
+
+**Change**
+The request has a function, in the caller's terms:
+
+```cpp
+// before, in VmObjectPaged::create_contiguous()
+auto const allocated = alloc_frames(alloc_flags | Gaf::Zero, order);
+auto *const block = *allocated;
+split_block(block);
+for (usize index = nr_pages; index < nr_frames; ++index) {
+    free_frames(&block[index]);
+}
+// ... then block[index] for each page kept
+
+// after
+auto frames = alloc_frames_contiguous(alloc_flags | Gaf::Zero, nr_pages, alignment_log2);
+// ... then the frames of the list, in address order
+```
+
+The body is the VMO's, moved: compute the order, take one block, `split_block()` it, put the first `n` frames on a list, free the rest one at a time. It answers a list and not a pointer to the first frame, so that a caller never indexes from one descriptor to the next; that the descriptors happen to be consecutive is the buddy's fact again.
+
+`create_contiguous()` keeps its own check that the order fits, because it makes that check before it creates the object the frames go into, and answers `NoMemory` for it as before.
+
+**Reference**
+Zircon `pmm_alloc_contiguous(count, alloc_flags, align_log2, pa, list)` in `kernel/vm/pmm.cc`: a count, an alignment, and a list of single pages back. Linux `alloc_contig_pages(nr_pages, gfp, nid, nodemask)`, whose callers free with `free_contig_range()`.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree, counts unchanged: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 183 passed. The same on four nodes (`NUMA=1`).
+
+`ktest all` on dbg, default and four-node: 63 ran, 61 passed, 2 skipped; one more than the last step, the new test. It asks for three frames at a four-page alignment and checks that the list holds three frames of order 0, each one page after the last, the first on a 16 KiB boundary; then that a run of no frames and an alignment no block has are both `InvArgs`. `VmoContiguous.CreatesContiguousMemory`, which runs the changed caller, passes. `format_cpp.py` is clean; clang-tidy reports nothing in `pmm.cpp` or `vm_object_paged.cpp`.
+
+**Deliberately not done**
+The two costs `docs/repairs/261031/mm.md` item 1 records: the whole block is zeroed though only `n` frames are kept, and the tail is returned frame by frame, each with its own trip through the zone lock. They are performance items, to be measured and decided with the user; this change only puts them in one function. Nor does a run wait at the gate: `Gaf::CanWait` is asserted off, as for the other list forms.
+
+**How it was found**
+None. The contiguous shape of `.agents/tasks/pmm-redesign/DESIGN.md`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which four facts about the buddy did `create_contiguous()` have to know, and which of them does it still?
+- Why does the function answer a list when the frames are consecutive descriptors a caller could index?
+- The move changed no cost. What did it change about fixing the costs later?

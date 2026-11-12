@@ -595,6 +595,43 @@ auto alloc_frames_fragment(Gaf const flags, usize const n, NodeId const home)
     return priv::alloc_frames_fragment(flags, n, home, node_online_mask());
 }
 
+auto alloc_frames_contiguous(Gaf const flags, usize const n, usize const align_log2,
+                             NodeId const home) -> ktl::Result<PmFrame::List> {
+    DEBUG_ASSERT(!(flags & Gaf::CanWait), "contiguous allocation is immediate");
+    if (n == 0) {
+        return ustl::err(Status::InvArgs);
+    }
+
+    // A block is aligned to its own size, so one big enough for the alignment
+    // is aligned as asked: the order is the larger of what the count and the
+    // alignment need. An order no block has is refused by alloc_frames().
+    usize align_order = 0;
+    if (align_log2 > PAGE_SHIFT) {
+        align_order = align_log2 - PAGE_SHIFT;
+    }
+    auto const order = std::max(get_order(n), align_order);
+
+    auto const allocated = alloc_frames(flags, order, home);
+    if (!allocated) {
+        return ustl::err(allocated.unwrap_err());
+    }
+    auto *const block = *allocated;
+
+    // Each frame is its own from here, as if it had been allocated alone. The
+    // first |n| are the run; the rest of the block goes back now, one frame at
+    // a time.
+    split_block(block);
+    PmFrame::List run;
+    for (usize index = 0; index < n; ++index) {
+        run.push_back(block[index]);
+    }
+    auto const nr_frames = usize{1} << order;
+    for (usize index = n; index < nr_frames; ++index) {
+        free_frames(&block[index]);
+    }
+    return ustl::ok(ustl::move(run));
+}
+
 auto free_frames(PmFrame *frame) -> void {
     DEBUG_ASSERT(frame, "free requires a frame");
     // A block is returned whole, as it was handed out, and the head records

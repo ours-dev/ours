@@ -2,6 +2,8 @@
 
 ## 1. create_contiguous zeroes and frees a whole block however little of it is kept
 
+Since 2026-11-12 the code this item describes is `mm::alloc_frames_contiguous()` in `kernel/mm/pmm.cpp`, which `VmObjectPaged::create_contiguous()` calls. It was moved as it was: the whole block is still zeroed and the tail still goes back one frame at a time. The candidates below apply to that one function.
+
 **Severity**
 Low: a cost a program holding a BTI with Map can choose, not a wrong result. Measure before any change (the rule for performance items in CLAUDE.md).
 

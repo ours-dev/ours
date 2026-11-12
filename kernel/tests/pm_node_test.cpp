@@ -831,6 +831,51 @@ namespace {
         }
     }
 
+    KTEST(PmNode, ContiguousFramesAreAdjacentAlignedAndFreedAlone) {
+        constexpr auto NR_FRAMES = usize{3};
+        // Four pages: more than the three frames need, so the alignment is
+        // what decides the block.
+        constexpr auto ALIGN_LOG2 = usize{PAGE_SHIFT + 2};
+
+        auto run = mm::alloc_frames_contiguous(mm::ALLOC_KERNEL, NR_FRAMES, ALIGN_LOG2);
+        if (!run) {
+            FAIL("allocate {} contiguous frames", NR_FRAMES);
+            return;
+        }
+
+        usize count = 0;
+        auto ok = true;
+        auto expected = PhysAddr{};
+        for (auto &frame: *run) {
+            auto const phys = mm::frame_to_phys(&frame);
+            if (count == 0) {
+                ok = ok && (static_cast<usize>(phys) & ((usize{1} << ALIGN_LOG2) - 1)) == 0;
+            } else {
+                ok = ok && phys == expected;
+            }
+            ok = ok && frame.order() == 0;
+            expected = phys + PAGE_SIZE;
+            count += 1;
+        }
+        EXPECT_TRUE(ok && count == NR_FRAMES,
+                    "the run is {} single frames, adjacent, the first aligned", NR_FRAMES);
+        mm::free_frames(&*run);
+
+        auto none = mm::alloc_frames_contiguous(mm::ALLOC_KERNEL, 0, PAGE_SHIFT);
+        EXPECT_TRUE(!none && none.unwrap_err() == Status::InvArgs, "a run of no frames is refused");
+        if (none) {
+            mm::free_frames(&*none);
+        }
+
+        auto huge =
+            mm::alloc_frames_contiguous(mm::ALLOC_KERNEL, 1, PAGE_SHIFT + MAX_FRAME_ORDER + 1);
+        EXPECT_TRUE(!huge && huge.unwrap_err() == Status::InvArgs,
+                    "an alignment no block has is refused");
+        if (huge) {
+            mm::free_frames(&*huge);
+        }
+    }
+
     KTEST(PmNode, MatchesTheMachineItRunsOn) {
         run_topology_checks();
         PmNode::for_each_node(PmNode::State::Online, [](PmNode &node) {

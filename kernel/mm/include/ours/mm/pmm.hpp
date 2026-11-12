@@ -144,6 +144,17 @@ auto alloc_frames_bulk(Gaf flags, usize n, NodeId home = bootmem::ANY_NODE)
 auto alloc_frames_fragment(Gaf flags, usize n, NodeId home = bootmem::ANY_NODE)
     -> ktl::Result<PmFrame::List>;
 
+/// Allocates |n| frames that are adjacent in physical memory, the first at an
+/// address aligned to 2^|align_log2| bytes, as a list in address order. Each
+/// frame is a block of its own and is freed alone, like a frame of
+/// alloc_frames_bulk(); only their addresses say they belong together.
+///
+/// The run comes out of one buddy block, so |n| frames and the alignment both
+/// have to fit the largest order: a request that does not is InvArgs.
+[[nodiscard]]
+auto alloc_frames_contiguous(Gaf flags, usize n, usize align_log2, NodeId home = bootmem::ANY_NODE)
+    -> ktl::Result<PmFrame::List>;
+
 /// Allocate one power-of-two block large enough for the requested page count.
 FORCE_INLINE [[nodiscard]]
 inline auto alloc_frames_n(Gaf alloc_flags, usize nr_frames, NodeId home = bootmem::ANY_NODE)
