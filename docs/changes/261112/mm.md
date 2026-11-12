@@ -304,3 +304,64 @@ None.
 - What did `become<Body>()` do to a pinned frame's count before this change, and what does it do now?
 - A reclaimer finds a page on a queue while another thread is about to pin it. Which lock decides the order, and what does each of them see in each order?
 - Why did raising the limit panic the kernel with "operator new" and not with a failed check's message?
+
+## Two gates for a frame leaving and entering stock: prepare_alloc() and prepare_free() (2026-11-12)
+
+**Files**
+- `kernel/mm/pmm.cpp` — `prepare_alloc(frame, request)` and `prepare_free(frame)` in the unnamed namespace; `alloc_block()` and `free_block()` call them; the two locality counters are defined here
+- `kernel/mm/pm_node.cpp` — `PmNode::alloc_frames()` no longer zeroes or counts; the counters and their include go
+- `kernel/mm/include/ours/mm/pm_node.hpp` — the comment on `alloc_frames()` says what it now is
+
+**Symptom**
+None. A block is zeroed and counted as before, by another function.
+
+**Cause**
+What happens to a block between the buddy and its owner was spread over three places with no name for any of it. The node's walk zeroed the block and bumped the local-hit or local-miss counter, because that is where the block was first in hand. The release assertions (not reserved, not on a page queue, not pinned) sat at the top of a helper in `pmm.cpp`. The tail stamps of a compound block are written by the object cache, after the allocation returns.
+
+Each was put where the code happened to be. The consequence is that the next thing of this kind has no obvious place: a poison check on a frame coming off a free list, a record of who owns a frame, the tail stamps if the allocator takes them over. And the node did work that has nothing to do with being a node. Its walk is "which zone"; whether the caller wanted zeroes is not a question about nodes.
+
+**Change**
+Two functions, one for each direction, both run with no zone lock held:
+
+```cpp
+// pmm.cpp
+auto prepare_alloc(PmFrame &frame, AllocRequest const &request) -> void;  // out of stock
+auto prepare_free(PmFrame const &frame) -> void;                          // into stock
+```
+
+`prepare_alloc()` has the zeroing and the counters, moved from `PmNode::alloc_frames()`, and one new debug assertion: a frame leaving a free list holds no pin. That closes the gap the last change recorded, where a release build could free a pinned frame unnoticed; a debug build now sees the leftover count when the frame is next handed out, if it missed it at the free.
+
+`prepare_free()` has the three release assertions, moved from `free_block()`.
+
+`PmNode::alloc_frames()` is now the walk and nothing else:
+
+```cpp
+for (auto &zone: m_zone_list.candidates(request)) {
+    auto const block = zone.alloc_frames(request.order());
+    if (!block) { /* remember the first zone short of High */ continue; }
+    return ustl::ok(&block.value());
+}
+```
+
+**Reference**
+Linux `post_alloc_hook()` and `free_pages_prepare()` in `mm/page_alloc.c`: the two places every page passes between the free lists and its owner, where zeroing (`kernel_init_pages()`), poisoning, KASAN, page-owner tracking and the bad-page checks all live. Zircon does the same checks inline in `PmmNode::AllocPageHelperLocked()` and `PmmNode::FreePageHelperLocked()`.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree, counts unchanged: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 183 passed. The same on four nodes (`NUMA=1`). `ktest all` on dbg, default and four-node: 64 ran, 62 passed, 2 skipped, as before; the count-helper case of `PmNode.MatchesTheMachineItRunsOn` reads a zeroed block back, and passes. `format_cpp.py` left the changed files as they were; clang-tidy reports nothing in `pmm.cpp` or `pm_node.cpp`.
+
+Not run: the `exhaust-remote` case, which is the one that reads the local-hit counter.
+
+**Deliberately not done**
+- The tail stamps stay with the object cache. Stamping in `prepare_alloc()` would also stamp the 511 tails of a large block that `fill_block_locked()` is about to split, which is a cost to measure before it is paid.
+- No poison check and no owner record; the gates are where they would go.
+
+**How it was found**
+None. The gates of `.agents/tasks/pmm-redesign/DESIGN.md`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is zeroing not the node's job, when the node is where the block first appears?
+- Both gates run with no zone lock held. What would it cost to zero a block under the zone lock?
+- What does the new assertion in `prepare_alloc()` catch that the one in `prepare_free()` cannot, and in which build?

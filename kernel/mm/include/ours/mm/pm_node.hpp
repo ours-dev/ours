@@ -263,11 +263,12 @@ class PmNode {
     };
 
     /// The node's layer of mm::alloc_frames(): walks this node's zones in
-    /// fallback order for |request|, whose home this node is, takes one block
-    /// from the first zone that has it, and zeroes it when the request says
-    /// so. Admission, the thread's allocation state and the request itself are
-    /// the caller's: only resolve_request() builds a request, and pmm.cpp is
-    /// where it is called.
+    /// fallback order for |request|, whose home this node is, and takes one
+    /// block from the first zone that has it. That is all of it: the block
+    /// comes back as the zone gave it, and making it ready for its owner is
+    /// the caller's, as are admission, the thread's allocation state and the
+    /// request itself. Only resolve_request() builds a request, and pmm.cpp
+    /// is where it is called.
     [[nodiscard]]
     auto alloc_frames(AllocRequest const &request) -> ustl::Result<PmFrame *, BlockFailure>;
 

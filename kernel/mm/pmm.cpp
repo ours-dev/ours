@@ -21,6 +21,7 @@
 #include <array>
 #include <atomic>
 
+#include <gktl/counter.hpp>
 #include <gktl/defer.hpp>
 #include <logz4/log.hpp>
 #include <numa/topology.hpp>
@@ -193,6 +194,54 @@ namespace {
 } // namespace
 
 namespace {
+    GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
+    GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
+
+    /// The gate every block passes on its way out of stock, with no zone lock
+    /// held: what makes a block the buddy gave into the block the caller asked
+    /// for. The zone moved it and the node chose the zone; neither prepares
+    /// it.
+    auto prepare_alloc(PmFrame &frame, AllocRequest const &request) -> void {
+        // A pin says a frame stays where it is, and this one was on a free
+        // list a moment ago. A count here was left by an owner that freed the
+        // frame pinned, in a build with no assertion to stop it.
+        DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} leaves a free list with {} pin(s)",
+                     frame_to_phys(&frame), frame.pin_count());
+
+        if (!!(request.flags() & Gaf::Zero)) {
+            std::fill_n(frame_to_virt<isize>(&frame),
+                        (usize{1} << request.order()) * PAGE_SIZE / sizeof(isize), 0);
+        }
+
+        // Counted for the node that gave the block, against the node the
+        // asking CPU is on: a block served from elsewhere is a miss whichever
+        // home the walk started from.
+        if (frame.nid() == CpuNodeMap::node_of(request.initiator())) {
+            PM_NODE_LOCAL_HIT.add(1);
+        } else {
+            PM_NODE_LOCAL_MISS.add(1);
+        }
+    }
+
+    /// The gate every block passes on its way into stock, before any lock is
+    /// taken: what must be true of a frame for the buddy to hold it.
+    auto prepare_free(PmFrame const &frame) -> void {
+        // The runtime half of the guard in early_mem.cpp's
+        // free_frames_phys_range(): a reserved frame reaches the buddy only
+        // through unwire_frame(). Nothing else on this path looks at the frame,
+        // so without this a reserved frame would be handed out again still
+        // flagged and still counted.
+        DEBUG_ASSERT(!(frame.flags() & page::Flags::Reserved),
+                     "frame {:#x} is reserved; unwire_frame() it before freeing",
+                     frame_to_phys(&frame));
+        DEBUG_ASSERT(!frame.is_role(page::Role::Vmm) || 0 == frame.page_queue(),
+                     "frame {:#x} is freed while still on a page queue", frame_to_phys(&frame));
+        // Whatever its role: a pin says the frame stays where it is, and a
+        // frame on a free list is about to be someone else's.
+        DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} is freed while {} pin(s) hold it",
+                     frame_to_phys(&frame), frame.pin_count());
+    }
+
     /// Looks at free memory once, after a whole allocation or return and with
     /// no zone lock held: signals the watcher when its bounds were left, and
     /// asks the reclaimer for the node of a zone an allocation found short.
@@ -290,25 +339,16 @@ namespace {
 
         auto const request = resolve_request(
             alloc_flags, order, nodes, AllocRequest::Origin{.node = home.nid(), .cpu = Cpu::id()});
-        return home.alloc_frames(request);
+        auto const block = home.alloc_frames(request);
+        if (block) {
+            prepare_alloc(**block, request);
+        }
+        return block;
     }
 
     /// One block back to the node that owns it, with pressure not looked at.
     auto free_block(PmFrame &frame, usize const order) -> void {
-        // The runtime half of the guard in early_mem.cpp's
-        // free_frames_phys_range(): a reserved frame reaches the buddy only
-        // through unwire_frame(). Nothing else on this path looks at the frame,
-        // so without this a reserved frame would be handed out again still
-        // flagged and still counted.
-        DEBUG_ASSERT(!(frame.flags() & page::Flags::Reserved),
-                     "frame {:#x} is reserved; unwire_frame() it before freeing",
-                     frame_to_phys(&frame));
-        DEBUG_ASSERT(!frame.is_role(page::Role::Vmm) || 0 == frame.page_queue(),
-                     "frame {:#x} is freed while still on a page queue", frame_to_phys(&frame));
-        // Whatever its role: a pin says the frame stays where it is, and a
-        // frame on a free list is about to be someone else's.
-        DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} is freed while {} pin(s) hold it",
-                     frame_to_phys(&frame), frame.pin_count());
+        prepare_free(frame);
 
         // A frame goes back to the node that owns it, which the frame names,
         // and not to the node of whoever is freeing it.

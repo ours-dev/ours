@@ -12,7 +12,6 @@
 
 #include <algorithm>
 
-#include <gktl/counter.hpp>
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
 #include <numa/topology.hpp>
@@ -20,11 +19,6 @@
 #include <ustl/mem/object.hpp>
 #include <ustl/util/enum_sequence.hpp>
 namespace ours::mm {
-namespace {
-    GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
-    GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
-} // namespace
-
 /// Chains the zones of every node in |order| behind this node's own, in the
 /// order given.
 ///
@@ -104,8 +98,6 @@ auto PmNode::alloc_frames(AllocRequest const &request) -> ustl::Result<PmFrame *
     DEBUG_ASSERT(request.home_node() == m_id, "node {} was handed a request whose home is node {}",
                  m_id, request.home_node());
 
-    auto const initiator_node = CpuNodeMap::node_of(request.initiator());
-
     ustl::Option<PmZone const &> depleted_zone;
     for (auto &zone: m_zone_list.candidates(request)) {
         auto const block = zone.alloc_frames(request.order());
@@ -117,17 +109,7 @@ auto PmNode::alloc_frames(AllocRequest const &request) -> ustl::Result<PmFrame *
             continue;
         }
 
-        auto *const frame = &block.value();
-        if (!!(request.flags() & Gaf::Zero)) {
-            std::fill_n(frame_to_virt<isize>(frame),
-                        (usize{1} << request.order()) * PAGE_SIZE / sizeof(isize), 0);
-        }
-        if (frame->nid() == initiator_node) {
-            PM_NODE_LOCAL_HIT.add(1);
-        } else {
-            PM_NODE_LOCAL_MISS.add(1);
-        }
-        return ustl::ok(frame);
+        return ustl::ok(&block.value());
     }
 
     return ustl::err(BlockFailure{.status = Status::OutOfMem, .depleted_zone = depleted_zone});
