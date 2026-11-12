@@ -328,7 +328,7 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
             // the waiter's queue -- and takes this PI lock only afterwards, to
             // unpark it: it is waiting for us, or about to. Leave the wake to it:
             // the signal is set already, and the thread meets it once it
-            // runs. WaitQueue::handle_timeout() returns on a null queue for
+            // runs. WaitQueueBase::handle_timeout() returns on a null queue for
             // the same reason.
             auto const wq = m_waiter_state.wait_queue();
             if (wq == nullptr) {
@@ -653,7 +653,7 @@ auto Thread::Current::sleep_etc(time::Deadline const &deadline, Interruptible in
         }
 
         // The timeout wakes the thread under its PI lock, exactly as
-        // WaitQueue::handle_timeout() does: unsleep() requires the lock, and
+        // WaitQueueBase::handle_timeout() does: unsleep() requires the lock, and
         // trylock_or_cancel() is how a timer handler may take a lock that the
         // thread cancelling the timer might be holding -- it gives up as soon
         // as cancel() has marked the timer, instead of deadlocking against a

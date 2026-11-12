@@ -23,7 +23,7 @@
 #include <ours/task/preemption_state.hpp>
 #include <ours/task/scheduler_state.hpp>
 #include <ours/task/types.hpp>
-#include <ours/task/wait_queue.hpp>
+#include <ours/task/wait_queue_base.hpp>
 
 #include <gktl/canary.hpp>
 #include <ktl/name.hpp>
@@ -558,7 +558,7 @@ namespace task {
         friend RoundRobin;
         friend class object::ProcessDispatcher;
 
-        friend WaitQueue;
+        friend WaitQueueBase;
         friend OwnedWaitQueue;
 
         [[noreturn]]

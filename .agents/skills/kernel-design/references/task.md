@@ -75,8 +75,12 @@
   scheduling (the user's naming choice, 2026-11-07). Use
   `ours/task/scheduler_state.hpp` and `Thread::scheduler_state()` in the
   framework.
+- `WaitQueue` and `OwnedWaitQueue` directly inherit `WaitQueueBase` (the
+  user's layout choice, 2026-11-12). The base owns waiter storage and
+  targeted wake operations, so `WaiterState` records a `WaitQueueBase *`.
+  Concrete queues supply their own notification and ownership operations.
 - Never propose a global thread lock. `Thread` (`m_pi_lock`,
-  `m_resource_lock`), `WaitQueue` (`m_lock`) and each per-CPU run queue
+  `m_resource_lock`), `WaitQueueBase` (`m_lock`) and each per-CPU run queue
   (`rqlock`) lock separately. What is missing is the protocol for taking an
   arbitrary priority-inheritance chain of those locks: Zircon's ChainLock
   (`zircon/system/ulib/concurrent/include/lib/concurrent/chainlock.h`, design in

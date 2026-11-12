@@ -107,10 +107,10 @@ template <typename UnparkThreads>
 auto OwnedWaitQueue::lock_for_notify_operation(usize max_notify, INotifyRequeueHook &hook)
     -> ustl::Option<UnparkThreads> {
     verify_owned();
-    m_lock.assert_held();
+    get_lock().assert_held();
 
     UnparkThreads threads;
-    for (usize i = 0; i < max_notify && !m_waiters.empty(); ++i) {
+    for (usize i = 0; i < max_notify && !is_empty(); ++i) {
         if (!hook.allow()) {
             break;
         }
@@ -192,7 +192,7 @@ auto OwnedWaitQueue::reset_owner() -> void {
 /// re-reads the head until the list runs dry.
 ///
 /// Lock order is the thread's PI lock first and the queue's lock underneath,
-/// the same direction WaitQueue::enqueue_waiter takes them; see the note
+/// the same direction WaitQueueBase::enqueue_waiter takes them; see the note
 /// there.
 TA_NO_THREAD_SAFETY_ANALYSIS
 auto OwnedWaitQueue::disown_all_queues(Thread *thread) -> void {
@@ -224,7 +224,7 @@ auto OwnedWaitQueue::override_thread_base_profile(Thread *thread, BaseProfile co
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> guard{thread->get_pi_lock()};
 
     auto const wq = thread->waiter_state().wait_queue();
-    auto const owq = as<OwnedWaitQueue>(wq);
+    auto const owq = as_owned(wq);
 
     InheritedProfile oldip;
     if (owq) {
@@ -280,7 +280,7 @@ auto OwnedWaitQueue::lock_for_park_and_assign_owner_or_backoff(Thread *const cur
 /// guards.
 ///
 /// The name promises two things and currently delivers one. The parking is
-/// real: it goes through WaitQueue::park_thread(), so the thread leaves the
+/// real: it goes through WaitQueueBase::park_thread(), so the thread leaves the
 /// run queue and the caller's activation does not come back until somebody
 /// notifies it. The owner assignment is not armed, and that is deliberate
 /// rather than forgotten -- see the note below.
@@ -406,7 +406,7 @@ auto OwnedWaitQueue::lock_pi_chain_common(Applicant *start) -> void {
 template <typename Applicant>
 auto OwnedWaitQueue::unlock_pi_chain_common(Applicant *new_owner, void *stop_point) -> void {}
 
-/// Exported to WaitQueue::unpark_thread
+/// Exported to WaitQueueBase::wake_dequeued_thread_locked
 template auto OwnedWaitQueue::begin_propagate(Thread &, OwnedWaitQueue &,
                                               decltype(REMOVE_SINGLE_EDGE_OP)) -> void;
 

@@ -152,7 +152,7 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
     // nobody held and nobody would release, and slept for good.
     //
     // The PI lock goes outside the queue lock, the order the tree uses (see
-    // WaitQueue::enqueue_waiter), and with interrupts and preemption off
+    // WaitQueueBase::enqueue_waiter), and with interrupts and preemption off
     // because the postamble carries it into reschedule_common(). Same shape
     // as Event::wait_etc().
     Guard<SpinLock, IrqSaveAndPreemptDisable> pi_guard{current_thread->get_pi_lock()};
@@ -286,7 +286,7 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
         // what a waiter has to take to join the queue, so holding it here
         // means "nobody is queued" stays true until Available is in m_state.
         // Interrupts off because this is a spin lock the timeout handler can
-        // take from interrupt context (WaitQueue::handle_timeout); nothing
+        // take from interrupt context (WaitQueueBase::handle_timeout); nothing
         // parks on a mutex with a deadline today, but the queue does not know
         // that.
         Guard<SpinLock, IrqSave> guard{m_waiters.get_lock()};

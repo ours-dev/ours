@@ -38,7 +38,7 @@ auto Event::wait_etc(time::Deadline deadline, task::Interruptible interruptible,
     // park_thread() takes the same lock on its way to enqueue_waiter(), and
     // SpinLock does not nest. Taking the queue lock underneath the PI lock is
     // the direction the rest of the tree already uses -- see the note on
-    // WaitQueue::enqueue_waiter.
+    // WaitQueueBase::enqueue_waiter.
     //
     // And the queue lock is held from the check through the enqueue, not
     // dropped in between as it used to be. In that gap a signal() on another

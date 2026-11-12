@@ -13,6 +13,7 @@ source_set("task") {
     "preemption_state.cpp",
     "thread.cpp",
     "wait_queue.cpp",
+    "wait_queue_base.cpp",
   ]
   deps = [
     ":scheduler",
