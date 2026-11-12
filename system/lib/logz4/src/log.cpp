@@ -65,57 +65,6 @@ namespace {
         char *m_end;
     };
 
-    /// A bounded output iterator for std::vformat_to.
-    ///
-    /// vformat_to writes as much as the format string demands, and a bare
-    /// `char *` tells it nothing about where the buffer ends -- one long
-    /// log line would run straight off the end of the line buffer. Bytes
-    /// past the limit are dropped and remembered, so the caller can end a
-    /// cut line with an explicit ellipsis instead of leaving it looking
-    /// complete.
-    class BoundedOutput final {
-      public:
-        using difference_type = std::ptrdiff_t;
-
-        BoundedOutput(char *first, char *last) : m_cursor(first), m_last(last) {}
-
-        auto operator*() -> BoundedOutput & {
-            return *this;
-        }
-        auto operator++() -> BoundedOutput & {
-            return *this;
-        }
-        auto operator++(int) -> BoundedOutput {
-            return *this;
-        }
-
-        auto operator=(char c) -> BoundedOutput & {
-            if (m_cursor < m_last) {
-                *m_cursor++ = c;
-            } else {
-                m_dropped = true;
-            }
-            return *this;
-        }
-
-        [[nodiscard]]
-        auto cursor() const -> char * {
-            return m_cursor;
-        }
-
-        [[nodiscard]]
-        auto dropped() const -> bool {
-            return m_dropped;
-        }
-
-      private:
-        char *m_cursor;
-        char *m_last;
-        /// Whether an append did not fit. The builder's one yes/no fact, so
-        /// it has no word to share, and the cursor cannot say it: a line that
-        /// exactly fills the buffer dropped nothing.
-        bool m_dropped = false;
-    };
 
     /// First field is Time (when the line happened), then cpu, then
     /// severity. The integer is printed as-is; converting units is the
@@ -195,11 +144,17 @@ auto vlog(Logger &logger, Level level, FormatString fmt, ustl::fmt::FormatArgs c
     if (reserve > 4) {
         reserve = 4;
     }
-    auto const body_end = builder.cursor() + (builder.remaining() - reserve);
-    auto const body = ustl::fmt::vformat_to(BoundedOutput{builder.cursor(), body_end}, fmt, args);
+    auto const body_room = static_cast<std::ptrdiff_t>(builder.remaining() - reserve);
+    // The body writes through the direct-pointer path, the one bounded shape
+    // that never reaches an allocator: vformat_to over a class-shaped
+    // iterator buffers through one that silently grows past its first 256
+    // bytes with operator new, and this kernel's operator new is a deliberate
+    // panic. The SHUFFLE line of a `ktest all shuffle` run -- the first log
+    // body long enough to cross that buffer -- died there.
+    auto const body = ustl::fmt::vformat_to_n(builder.cursor(), body_room, fmt, args);
 
-    auto cursor = body.cursor();
-    if (body.dropped()) {
+    auto *cursor = body.out;
+    if (body.size > body_room) {
         for (char c: {'.', '.', '.'}) {
             *cursor++ = c;
         }
