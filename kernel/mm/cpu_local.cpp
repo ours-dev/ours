@@ -837,11 +837,14 @@ auto CpuLocal::init() -> void {
         Self::access(CURRENT_CPUNUM, cpu) = cpu;
     }
 
-    // Move CPU 0 onto its real unit and release the provisional one. Only
-    // that allocation was rounded to a whole buddy order, so this hands back
+    // Move CPU 0 onto its real unit and give the provisional one to the buddy.
+    // It came from the boot allocator before there was a buddy, so it is
+    // adopted, not freed: no allocation ever made a block of it. Only that
+    // allocation was rounded to a whole buddy order, so this hands over
     // exactly what was taken without inflating unit_size() everywhere.
     attach_to_unit(0, CPU_OFFSETS[0]);
-    free_frames(replica, mm::get_order(Mapper::replica_span() / PAGE_SIZE));
+    auto const replica_pfn = frame_to_pfn(virt_to_frame(replica));
+    adopt_frames(replica_pfn, replica_pfn + Mapper::replica_span() / PAGE_SIZE);
 
     bootstrap(CpuMask::of(0));
 }

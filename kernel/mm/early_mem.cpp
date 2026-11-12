@@ -65,32 +65,8 @@ auto EarlyMem::count_present_frames(Pfn start, Pfn end) -> usize {
     return nr_presents;
 }
 
-INIT_CODE
-static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
-    while (start < end) {
-        // Two separate limits, and the alignment one is not optional. A buddy
-        // block of order N is identified by its lowest pfn and finds its partner
-        // at `pfn ^ (1 << N)`; that identity only holds if the block is aligned to
-        // 2^N pages. Hand the allocator a misaligned block and the merge walk
-        // reaches for a "buddy" that belongs to some other block entirely --
-        // which removes a live frame from its list and loses it. A range that
-        // starts anywhere but on a MAX_FRAME_ORDER boundary is the normal case,
-        // so this is not a corner.
-        //
-        // ustl::countr_zero(start) is the largest power of two `start` is
-        // aligned to; the second limit then shrinks that to what is left in the
-        // range.
-        auto order = std::min(usize(MAX_FRAME_ORDER), usize(ustl::countr_zero(start)));
-        while (start + (usize{1} << order) > end) {
-            order -= 1;
-        }
-
-        free_frames(pfn_to_frame(start), order);
-        start += usize{1} << order;
-    }
-}
-
-/// Frees the whole frames inside [start, end), and returns how many.
+/// Gives the whole frames inside [start, end) to the buddy, and returns how
+/// many.
 ///
 /// The start rounds *up* and the end down. A free range can begin or end in
 /// the middle of a frame whose other part is reserved: bootmem keeps
@@ -117,7 +93,7 @@ static auto free_frames_phys_range(PhysAddr start, PhysAddr end) -> usize {
                          "frame {:#x} is reserved but inside a free range", pfn_to_phys(pfn));
         }
     }
-    free_frames_pfn_range(start_pfn, end_pfn);
+    adopt_frames(start_pfn, end_pfn);
     return end_pfn - start_pfn;
 }
 

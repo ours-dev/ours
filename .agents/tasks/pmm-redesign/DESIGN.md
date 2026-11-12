@@ -136,7 +136,7 @@ Only the seam is visible outside the PMM. The layers under it carry the same pai
 
 | Object | Built in this task | A slot, built with its feature |
 |---|---|---|
-| the seam | the nine functions above | `alloc_frames_range(phys, n)` |
+| the seam | the nine functions above, and `adopt_frames(start_pfn, end_pfn)` for memory the buddy has never held | `alloc_frames_range(phys, n)` |
 | `PmFrame` | block order as a contract, tail stamps by the allocator, the pin count in the header | none |
 | `PmZone` | `alloc_frames(order, mobility)`, `free_frames(frame)`, `admits(order, floor, highest_zone)` | `take_range()`, `adopt()` and `retire()`, `fill_cache()` and `drain_cache()` |
 | `PmNode` | `alloc_frames(request)`, `free_frames(frame)`, `add_cpu()` and `remove_cpu()`, `wake_reclaim(zone)`, `reclaim_target()` | none |

@@ -594,8 +594,40 @@ auto alloc_frames_fragment(Gaf const flags, usize const n, NodeId const home)
 
 auto free_frames(PmFrame *frame, usize order) -> void {
     DEBUG_ASSERT(frame, "free requires a frame");
+    // A block is returned whole, as it was handed out. The head records the
+    // order the buddy gave it, so a caller that passes another is returning
+    // either part of a block or frames past its end. Memory that was never a
+    // block comes in through adopt_frames().
+    DEBUG_ASSERT(order == frame->order(),
+                 "frame {:#x} heads a block of order {} and is freed as order {}",
+                 frame_to_phys(frame), frame->order(), order);
     log::trace("Free frame({:X}, {})", frame_to_phys(frame), order);
     free_block(*frame, order);
+    observe_pressure();
+}
+
+auto adopt_frames(Pfn start, Pfn const end) -> void {
+    while (start < end) {
+        // Two separate limits, and the alignment one is not optional. A buddy
+        // block of order N is identified by its lowest pfn and finds its partner
+        // at `pfn ^ (1 << N)`; that identity only holds if the block is aligned to
+        // 2^N pages. Hand the allocator a misaligned block and the merge walk
+        // reaches for a "buddy" that belongs to some other block entirely --
+        // which removes a live frame from its list and loses it. A range that
+        // starts anywhere but on a MAX_FRAME_ORDER boundary is the normal case,
+        // so this is not a corner.
+        //
+        // ustl::countr_zero(start) is the largest power of two `start` is
+        // aligned to; the second limit then shrinks that to what is left in the
+        // range.
+        auto order = std::min(usize(MAX_FRAME_ORDER), usize(ustl::countr_zero(start)));
+        while (start + (usize{1} << order) > end) {
+            order -= 1;
+        }
+
+        free_block(*pfn_to_frame(start), order);
+        start += usize{1} << order;
+    }
     observe_pressure();
 }
 

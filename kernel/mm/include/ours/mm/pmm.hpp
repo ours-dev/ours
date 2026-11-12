@@ -200,11 +200,26 @@ auto alloc_page_table(usize size, usize alignment, NodeId node = bootmem::ANY_NO
 /// build asserts it.
 auto free_page_table(PhysAddr base, usize size) -> void;
 
-/// Returns |frame|'s block to its zone's buddy allocator. The frame must not
+/// Returns |frame|'s block to its zone's buddy allocator. |frame| is the head
+/// of a block an allocation handed out, and |order| is that block's: the head
+/// records it, and a debug build asserts the two agree. The frame must not
 /// be reserved: a frame stamped Reserved at boot has to go through
 /// unwire_frame() first, or the buddy would hold a frame the reserved counts
 /// still claim (a debug build asserts it).
 auto free_frames(PmFrame *frame, usize order = 0) -> void;
+
+/// Gives the frames of the pfn range [|start|, |end|) to the buddy allocators
+/// for the first time: memory the boot allocator held and no zone ever handed
+/// out -- the ranges still free at the handoff, the kernel's `.init*` area
+/// once boot is done, CPU 0's provisional per-CPU unit. The range is cut into
+/// the largest blocks its alignment allows. None of the frames may be
+/// reserved, as for free_frames().
+///
+/// Not free_frames(): that returns a block, and a block is something an
+/// allocation made, with a head frame that records its order. These frames
+/// were never a block, so there is no order to read and the range is what
+/// says how much is given.
+auto adopt_frames(Pfn start, Pfn end) -> void;
 
 /// Takes |frame|, reserved since boot, off the reserved books, so that it can
 /// be owned like a frame the allocator handed out: freed to the buddy

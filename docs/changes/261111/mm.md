@@ -170,3 +170,70 @@ None.
 - Why is a node set the allocator's and the thread's to decide, and not the caller's? What is the one node restriction a caller does own?
 - Why do the tests call `mm::priv::alloc_frames()` and not `PmNode::alloc_frames()` with a request they build themselves?
 - Why could no old call silently change meaning under the new signature, and which call can?
+
+## Memory enters the buddy through adopt_frames(), and a free must match its block (2026-11-11)
+
+**Files**
+- `kernel/mm/include/ours/mm/pmm.hpp` — `adopt_frames(Pfn start, Pfn end)` declared; `free_frames()` documents that the order is the block's
+- `kernel/mm/pmm.cpp` — `adopt_frames()` defined, with the loop that cuts a range into aligned blocks; a debug assertion in `free_frames()` that the order passed is the one the head frame records
+- `kernel/mm/early_mem.cpp` — `free_frames_pfn_range()` goes; `free_frames_phys_range()` calls `adopt_frames()`
+- `kernel/mm/cpu_local.cpp` — CPU 0's provisional unit is adopted, not freed
+
+**Symptom**
+Latent, cannot be triggered today. It would be the moment `free_frames()` stops taking an order and reads it from the head frame (decision F2): these two callers would then return order-0 blocks where they meant order 3 or 5, and all but the first frame of each range would be lost to the allocator.
+
+**Cause**
+`free_frames(frame, order)` was doing two jobs. One is returning a block: an allocation made it, the buddy wrote its order into the head frame when it split it off (`FrameBuddy::acquire_inner()`), and the caller hands the same block back. The other is taking in memory the buddy has never seen: ranges the boot allocator still called free at the handoff, the `.init*` area once boot is over, and the 32 pages CPU 0 ran its per-CPU data on before the real units existed. Those frames were never a block. Nothing wrote an order into them, so their head frames say 0, and the caller computes an order from the range's alignment and passes it in.
+
+While the order is a parameter the two jobs look the same, which is how they came to share a function. They stop looking the same the moment the order is read from the frame, because only one of them has an order there to read.
+
+The two callers were found by measurement, not by reading: a temporary record in `free_frames()` of every caller whose order differed from the head's, over a boot of both images and all 61 kernel tests on the default and the four-node machine. It named `free_frames_pfn_range()` (passed 3, head 0, during the handoff) and `CpuLocal::init()` (passed 5, head 0) and nothing else. The contiguous VMO, the suspect going in, was clean: it sets every frame's order to 0 by hand before it frees them one by one.
+
+**Change**
+Taking memory in gets its own entry, and the range says how much:
+
+```cpp
+// before: early_mem.cpp, and the same shape in cpu_local.cpp
+free_frames(pfn_to_frame(start), order);   // order computed from alignment
+
+// after
+adopt_frames(start_pfn, end_pfn);
+```
+
+`adopt_frames()` is the loop `free_frames_pfn_range()` had, moved into the PMM: cut the range into the largest blocks its alignment allows and hand each to the frame's node. It observes pressure once at the end, where the old path did after every block.
+
+Returning a block now checks the contract it always assumed:
+
+```cpp
+DEBUG_ASSERT(order == frame->order(),
+             "frame {:#x} heads a block of order {} and is freed as order {}",
+             frame_to_phys(frame), frame->order(), order);
+```
+
+Rejected: leaving both callers on `free_frames()` and having each write the order into the head frame first, as the contiguous VMO does. It is two lines instead of a function, but it keeps "taking in" disguised as "returning", and hot-added memory would be the third caller to learn the trick.
+
+**Reference**
+Linux `memblock_free_all()` reaching `__free_pages_core()`, which is not `__free_pages()`: boot memory enters the buddy through its own function, which sets up the pages before the first free. Zircon `PmmNode::AddFreePages()`, separate from `PmmNode::FreePage()`.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree, counts unchanged: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 183 passed. The same on four nodes (`NUMA=1`), and both images boot with `MEM=3072`, where RAM above 4 GiB gives the handoff more ranges to cut.
+
+`ktest all` on dbg, default and four-node: 61 ran, 59 passed, 2 skipped, as before. The assertion is in the dbg image (its message is in the ELF) and not in rel, and it did not fire in any of these runs. `format_cpp.py --check` is clean; clang-tidy reports nothing in `pmm.cpp`, `early_mem.cpp` or `cpu_local.cpp`.
+
+Not covered: paths these runs do not take (error branches, `exhaust-remote`), and a list freed through `free_frames(PmFrame::List *)`, which already reads each head's order and so has nothing to compare.
+
+**Deliberately not done**
+- `free_frames()` keeps its `order` parameter. With the assertion in, removing it is mechanical; it is the next step.
+- `PageFrame::init()` still does not write the order field (`docs/repairs/261026/mm.md` item 5). The assertion holds because the memmap's storage is zeroed; the field should be written before the order becomes the only source.
+- `PmZone::adopt()`, the zone's own entry of the design, is not built: `adopt_frames()` uses the zone's `free_frames()`, which still takes an order.
+
+**How it was found**
+See Cause. The record logged one line per distinct return address, with the address of `unwire_frame()` beside it as an anchor; `llvm-nm` gave the anchor's offset in the unstripped ELF and `llvm-objdump --start-address` named the function around each caller.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the head frame of adopted memory say order 0, and who writes the order of a block that was allocated?
+- What would have happened to CPU 0's provisional unit if `free_frames()` had started reading the order from the frame before this change?
+- Why find the mismatching callers with a record over a boot, and not by reading every caller of `free_frames()`? What does the record not cover?
