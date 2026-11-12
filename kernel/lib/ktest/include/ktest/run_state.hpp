@@ -53,6 +53,14 @@ auto unbind_context() -> void;
 /// so a temporary string is fine; a longer one is truncated.
 auto record_skip(char const *reason) -> void;
 
+/// Publishes the calling thread as the owner of the stage the stage runner is
+/// about to run — the thread the wrong-thread guard answers against — and
+/// unbind_stage_thread() clears it after the stage. The kernel's
+/// implementation tracks the runner thread itself; the host has one thread,
+/// and its stand-in keeps the guard's answer fixed.
+auto bind_stage_thread() -> void;
+auto unbind_stage_thread() -> void;
+
 /// Binds the Context for the lifetime of one test body. The generated
 /// adapter holds one of these around the body it calls.
 class BindScope final {

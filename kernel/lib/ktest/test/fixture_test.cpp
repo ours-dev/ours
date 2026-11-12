@@ -6,10 +6,12 @@
 // once-per-suite decisions and the environment walk, all against the real
 // macro expansions driven through hsien's own record loop.
 //
-// The runner's kernel-only half — the six ktest::internal functions
-// runner.cpp defines and the framing around them — stands in host_shim.hpp,
-// shared with the suite's other file, so that both drive records the same
-// way the booted runner does.
+// The runner's kernel-only half — the ktest::internal seam functions
+// runner.cpp defines, stood in host_shim.hpp — is shared with the suite's
+// other file, so that both drive records the same way the booted runner
+// does. The stage framing itself is the shared stage runner's
+// (../src/run_stage.hpp): the same code the environment's default stages run
+// on the kernel.
 //
 // This file includes ktest.hpp first, so the fixture bodies write the
 // KTEST_-prefixed assertion spellings — the machinery under test — while the
@@ -19,6 +21,7 @@
 #include <ktest/environment.hpp>
 #include <ktest/ktest.hpp>
 
+#include "../src/run_stage.hpp"
 #include "host_shim.hpp"
 
 #pragma clang diagnostic push
@@ -42,14 +45,13 @@ namespace {
 std::vector<std::string> NAMES;
 std::vector<std::string> SUITES;
 
-/// Runs one suite hook the way the runner frames one: a published state
-/// and a context the hook's assertions record into.
-auto run_hook(ktest::internal::SuiteHook const &hook) -> void {
-    ktest::internal::RunState state;
-    HOST_PUBLISHED = &state;
-    auto context = ::hsien::Context{hook.name, REPORTER};
-    hook.invoke(context);
-    HOST_PUBLISHED = nullptr;
+/// Runs one suite hook the way the runner frames one: the shared stage
+/// runner publishes the state and the context the hook's assertions record
+/// into.
+auto run_suite_hook(ktest::internal::SuiteHook const &hook) -> void {
+    // The cases judge a hook by its log and its failure counts; the verdict
+    // the stage runner answers with is theirs to derive.
+    auto _ = ktest::internal::run_hook(hook.name, hook.invoke, REPORTER);
 }
 
 /// A selection that takes every record, for cases that hand a plan an
@@ -68,7 +70,9 @@ struct RegistryReset {
 };
 
 /// A test environment with a name in the log and an optional broken
-/// SetUp, for the walk-order cases.
+/// SetUp, for the walk-order cases. A broken SetUp fails the way a real
+/// one would: it records a failed check, which the stage framing turns
+/// into the walk-stopping answer.
 class NamedEnvironment: public ktest::Environment {
   public:
     bool setup_ok{true};
@@ -78,6 +82,9 @@ class NamedEnvironment: public ktest::Environment {
 
     void SetUp() override {
         LOG.push_back(std::string{m_name} + ".SetUp");
+        if (!setup_ok) {
+            KTEST_RECORD_MESSAGE("the environment could not come up");
+        }
     }
 
     void TearDown() override {
@@ -92,23 +99,15 @@ class NamedEnvironment: public ktest::Environment {
 /// what a stage with no work of its own gets.
 class SilentEnvironment: public ktest::Environment {};
 
-/// The step the walk-order cases register with: calls the environment's
-/// SetUp on the SetUp pass and its TearDown on the TearDown pass, and
-/// answers with the environment's setup_ok there where a failure stops the
-/// walk — the answer the runner derives from the hook's failure count.
-/// |context| points at the pass flag, exactly as the runner's step carries
-/// its framing. An environment that is not a NamedEnvironment has no
-/// setup_ok to ask, and its SetUp never stops the walk.
-auto logging_step(ktest::Environment &environment, void *const context) -> bool {
-    auto const setup = context != nullptr && *static_cast<bool const *>(context);
-    if (setup) {
-        environment.SetUp();
-        auto *const named = dynamic_cast<NamedEnvironment *>(&environment);
-        return named == nullptr || named->setup_ok;
+/// An environment whose TearDown fails: the stage records a failed check,
+/// which the default framing reports and the walk answers with.
+class FailingTearDownEnvironment: public ktest::Environment {
+  public:
+    void TearDown() override {
+        LOG.push_back("failing.TearDown");
+        KTEST_RECORD_MESSAGE("the teardown could not undo the setup");
     }
-    environment.TearDown();
-    return true;
-}
+};
 
 // --- the fixtures and tests the lifecycle cases drive ---
 
@@ -412,7 +411,7 @@ TEST(KtestFixtureSuite, SetupRunsOnceAroundTheSuitesTests) {
     // The run loop's ask-sequence, over the plan, with the real hooks.
     auto *const setup = plan.before(ktest_record_HookedFixture_First.name);
     ASSERT_TRUE(setup != nullptr);
-    run_hook(*setup);
+    run_suite_hook(*setup);
     run_record(ktest_record_HookedFixture_First);
     EXPECT_TRUE(plan.after(ktest_record_HookedFixture_First.name) == nullptr);
     // The suite setup runs once, not per test.
@@ -420,7 +419,7 @@ TEST(KtestFixtureSuite, SetupRunsOnceAroundTheSuitesTests) {
     run_record(ktest_record_HookedFixture_Second);
     auto *const teardown = plan.after(ktest_record_HookedFixture_Second.name);
     ASSERT_TRUE(teardown != nullptr);
-    run_hook(*teardown);
+    run_suite_hook(*teardown);
 
     EXPECT_EQ(HOOKED_SUITE_SETUPS, usize{1});
     ASSERT_EQ(LOG.size(), usize{8});
@@ -601,6 +600,7 @@ TEST(KtestEnvironment, FullRegistryDropsAndCountsTheDrop) {
 TEST(KtestEnvironment, SetUpRunsForwardTeardownReverses) {
     auto reset = RegistryReset{};
     LOG.clear();
+    FAILURES.clear();
     NamedEnvironment a{"a"};
     NamedEnvironment b{"b"};
     NamedEnvironment c{"c"};
@@ -609,11 +609,8 @@ TEST(KtestEnvironment, SetUpRunsForwardTeardownReverses) {
     ASSERT_TRUE(ktest::add_environment(c));
 
     auto run = ktest::internal::EnvironmentRun{};
-    auto setup = true;
-    auto const ok = run.set_up(logging_step, &setup);
-    EXPECT_TRUE(ok);
-    setup = false;
-    run.tear_down(logging_step, &setup);
+    EXPECT_TRUE(run.set_up(REPORTER));
+    run.tear_down(REPORTER);
 
     ASSERT_EQ(LOG.size(), usize{6});
     EXPECT_EQ(LOG[0], "a.SetUp");
@@ -627,6 +624,7 @@ TEST(KtestEnvironment, SetUpRunsForwardTeardownReverses) {
 TEST(KtestEnvironment, FailedSetUpStopsAndTeardownUnwindsThePrefix) {
     auto reset = RegistryReset{};
     LOG.clear();
+    FAILURES.clear();
     NamedEnvironment a{"a"};
     NamedEnvironment b{"b", false};
     NamedEnvironment c{"c"};
@@ -635,12 +633,10 @@ TEST(KtestEnvironment, FailedSetUpStopsAndTeardownUnwindsThePrefix) {
     ASSERT_TRUE(ktest::add_environment(c));
 
     auto run = ktest::internal::EnvironmentRun{};
-    auto setup = true;
-    auto const ok = run.set_up(logging_step, &setup);
-    // The run learns the stage never came up.
-    EXPECT_FALSE(ok);
-    setup = false;
-    run.tear_down(logging_step, &setup);
+    // The run learns the stage never came up: the failed check the broken
+    // SetUp recorded is the walk-stopping answer.
+    EXPECT_FALSE(run.set_up(REPORTER));
+    run.tear_down(REPORTER);
 
     ASSERT_EQ(LOG.size(), usize{4});
     EXPECT_EQ(LOG[0], "a.SetUp");
@@ -655,32 +651,59 @@ TEST(KtestEnvironment, NothingRegisteredIsAnEmptyRun) {
     auto reset = RegistryReset{};
     LOG.clear();
     auto run = ktest::internal::EnvironmentRun{};
-    auto setup = true;
-    EXPECT_TRUE(run.set_up(logging_step, &setup));
-    setup = false;
-    run.tear_down(logging_step, &setup);
+    EXPECT_TRUE(run.set_up(REPORTER));
+    run.tear_down(REPORTER);
     EXPECT_TRUE(LOG.empty());
 }
 
 TEST(KtestEnvironment, AnEnvironmentMayOverrideNothing) {
     auto reset = RegistryReset{};
     LOG.clear();
+    FAILURES.clear();
     NamedEnvironment named{"named"};
     SilentEnvironment silent;
     ASSERT_TRUE(ktest::add_environment(named));
     ASSERT_TRUE(ktest::add_environment(silent));
 
     auto run = ktest::internal::EnvironmentRun{};
-    auto setup = true;
-    EXPECT_TRUE(run.set_up(logging_step, &setup));
-    setup = false;
-    run.tear_down(logging_step, &setup);
+    EXPECT_TRUE(run.set_up(REPORTER));
+    run.tear_down(REPORTER);
 
     // The silent environment takes both defaults: nothing logged from it,
     // and the walk no different for it.
     ASSERT_EQ(LOG.size(), usize{2});
     EXPECT_EQ(LOG[0], "named.SetUp");
     EXPECT_EQ(LOG[1], "named.TearDown");
+}
+
+TEST(KtestEnvironment, FailedTearDownIsReportedAndTheUnwindContinues) {
+    auto reset = RegistryReset{};
+    LOG.clear();
+    FAILURES.clear();
+    auto const framework_errors_before = FRAMEWORK_ERRORS;
+    NamedEnvironment a{"a"};
+    FailingTearDownEnvironment failing;
+    ASSERT_TRUE(ktest::add_environment(a));
+    ASSERT_TRUE(ktest::add_environment(failing));
+
+    auto run = ktest::internal::EnvironmentRun{};
+    EXPECT_TRUE(run.set_up(REPORTER));
+    run.tear_down(REPORTER);
+
+    // The unwind reaches every environment despite the failure, in reverse.
+    ASSERT_EQ(LOG.size(), usize{3});
+    EXPECT_EQ(LOG[0], "a.SetUp");
+    EXPECT_EQ(LOG[1], "failing.TearDown");
+    EXPECT_EQ(LOG[2], "a.TearDown");
+    // The failed teardown reaches the framework-error channel — the one
+    // error line the booted runner's console carries — beside the check it
+    // recorded. The count is put back: a well-behaved case causes no
+    // framework error, which is what the suite's other cases assert.
+    ASSERT_EQ(FRAMEWORK_ERRORS, framework_errors_before + 1);
+    ASSERT_EQ(FAILURES.size(), usize{2});
+    EXPECT_NE(FAILURES.back().find("framework: the environment teardown failed"),
+              std::string::npos);
+    FRAMEWORK_ERRORS = framework_errors_before;
 }
 
 } // namespace

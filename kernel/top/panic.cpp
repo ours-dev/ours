@@ -11,6 +11,7 @@
 #include <arch/halt.hpp>
 #include <logz4/log.hpp>
 #include <logz4/ring.hpp>
+#include <ustl/fmt/format_to.hpp>
 
 namespace ours {
 namespace {
@@ -161,7 +162,13 @@ template <typename String, typename FormatArgs>
 auto vpanic(String fmt, FormatArgs const &args) -> void {
     char buffer[512];
     auto sink = PanicSink{buffer, buffer + sizeof(buffer)};
-    std::vformat_to(PanicSink::Iterator{&sink}, fmt, args);
+    // The direct-pointer shape, the one bounded write the standard machinery
+    // runs without an allocator: a message long enough to make the
+    // class-iterator path grow its formatting buffer would recurse into
+    // operator new -- which panics -- from inside the panic already in
+    // progress.
+    auto const written = ustl::fmt::vformat_to_n(sink.m_out, sink.m_end - sink.m_out, fmt, args);
+    sink.m_out = written.out;
     vpanic(std::string_view(buffer, static_cast<usize>(sink.m_out - buffer)));
 }
 

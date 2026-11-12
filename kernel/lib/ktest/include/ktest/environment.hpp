@@ -8,6 +8,8 @@
 #ifndef KTEST_ENVIRONMENT_HPP
 #define KTEST_ENVIRONMENT_HPP 1
 
+#include <hsien/test.hpp>
+
 namespace ktest {
 
 /// One global stage. Registered before the run that uses it — in the kernel a
@@ -25,6 +27,17 @@ class Environment {
     /// environment overrides only the stage it actually has.
     virtual auto SetUp() -> void;
     virtual auto TearDown() -> void;
+
+    /// Runs the SetUp stage, framed the way the runner frames a hook, and
+    /// answers whether the stage recorded no failure — the answer that stops
+    /// the SetUp pass. The default frames SetUp(); an environment replaces
+    /// the whole stage only when its work is not a SetUp call.
+    virtual auto set_up_stage(hsien::Reporter &reporter) -> bool;
+
+    /// Runs the TearDown stage the same way. The answer is ignored: a failed
+    /// TearDown has nothing left to undo. The default frames TearDown() and
+    /// reports a stage that failed, per the walk's contract.
+    virtual auto tear_down_stage(hsien::Reporter &reporter) -> void;
 };
 
 /// How many environments one registry holds. Every table here is fixed-size;
@@ -49,11 +62,6 @@ namespace internal {
 
     auto environments() -> EnvironmentRegistry &;
 
-    /// One step of the environment walk: the framework calls it with the
-    /// environment and the caller's context. True when the environment's work
-    /// recorded no failure — the answer that stops the SetUp pass.
-    using EnvironmentStep = auto (*)(Environment &environment, void *context) -> bool;
-
     /// One run's environments: the SetUps it ran and how far it got, so the
     /// TearDowns unwind exactly the prefix that was set up, in reverse. The
     /// runner holds one per run and calls set_up() before its tests and
@@ -62,15 +70,14 @@ namespace internal {
     class EnvironmentRun {
       public:
         /// SetUp on each registered environment, in registration order,
-        /// stopping at the first whose |step| answers false. True when every
+        /// stopping at the first whose stage answers false. True when every
         /// registered environment was set up.
-        auto set_up(EnvironmentStep step, void *context) -> bool;
+        auto set_up(hsien::Reporter &reporter) -> bool;
 
         /// TearDown in reverse over the environments whose SetUp ran,
         /// including the one that failed — which is what makes TearDown the
-        /// place to undo a half-finished SetUp. What |step| answers is
-        /// ignored: a failed TearDown has nothing left to undo.
-        auto tear_down(EnvironmentStep step, void *context) -> void;
+        /// place to undo a half-finished SetUp.
+        auto tear_down(hsien::Reporter &reporter) -> void;
 
       private:
         usize m_attempted{};

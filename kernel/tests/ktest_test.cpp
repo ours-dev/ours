@@ -97,10 +97,11 @@ KTEST(Ktest, ReadsShuffleOption) {
     if (!ktest::has_option("shuffle")) {
         return;
     }
-    auto seed = u64{0};
-    EXPECT_TRUE(ktest::parse_seed(ktest::option("shuffle"), seed), "the seed text parses");
+    auto const seed = ktest::parse_seed(ktest::option("shuffle"));
+    ASSERT_TRUE(seed.is_ok(), "the seed text parses");
     if (ktest::has_option("seed")) {
-        EXPECT_EQ(seed, ktest::option_usize("seed", usize{0}), "the seed is what the host passed");
+        EXPECT_EQ(seed.unwrap(), ktest::option_usize("seed", usize{0}),
+                  "the seed is what the host passed");
     }
 }
 
@@ -126,10 +127,8 @@ KTEST(Ktest, ReadsShardOption) {
     if (!ktest::has_option("shard")) {
         return;
     }
-    auto m = usize{0};
-    auto n = usize{0};
-    EXPECT_TRUE(ktest::parse_shard(ktest::option("shard"), m, n), "the shard text parses");
-    EXPECT_TRUE(ktest::shard_valid(m, n), "the shard names a range inside the registry");
+    auto const shard = ktest::Shard::parse(ktest::option("shard"));
+    ASSERT_TRUE(shard.is_ok(), "the shard text parses and names a range inside the registry");
 }
 
 } // namespace
