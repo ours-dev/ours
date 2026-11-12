@@ -1,20 +1,20 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_SCHEDULE_HPP
-#define OURS_TASK_SCHED_SCHEDULE_HPP 1
+#ifndef OURS_TASK_SCHEDULE_HPP
+#define OURS_TASK_SCHEDULE_HPP 1
 
 #include <ours/compiler.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/status.hpp>
-#include <ours/task/sched/config.hpp>
-#include <ours/task/sched/profiles.hpp>
-#include <ours/task/sched/run_queue.hpp>
-#include <ours/task/sched/types.hpp>
+#include <ours/task/run_queue.hpp>
+#include <ours/task/scheduler_config.hpp>
+#include <ours/task/scheduler_profiles.hpp>
+#include <ours/task/scheduler_types.hpp>
 
 #include <ustl/dyn.hpp>
 #include <ustl/util/enum_bits.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 /// [[=bits::Enumask]]
 enum class EnqueueOptions {
     /// Semantics.
@@ -180,6 +180,6 @@ using Schedule = ustl::Dyn<
     ustl::Method<SelectTargetCpu, auto(Thread *, CpuMask const &)->CpuNum>,
     ustl::Method<MigrateThread, auto(Thread *, CpuNum)->Status>>;
 
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // #ifndef OURS_TASK_SCHED_SCHEDULE_HPP
+#endif // #ifndef OURS_TASK_SCHEDULE_HPP

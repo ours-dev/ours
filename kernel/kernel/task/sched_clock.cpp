@@ -1,8 +1,8 @@
-#include <ours/task/sched/sched_clock.hpp>
+#include <ours/task/sched_clock.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer_queue.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 using time::SteadyClock;
 using time::TimerQueue;
 
@@ -65,4 +65,4 @@ auto SchedClock::clear_preemption_deadline() -> void {
     TimerQueue::get().set_preemption_deadline(INFINITE_TIME);
 }
 
-} // namespace ours::task::sched
+} // namespace ours::task

@@ -1,13 +1,13 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_PROFILES_HPP
-#define OURS_TASK_SCHED_PROFILES_HPP 1
+#ifndef OURS_TASK_SCHEDULER_PROFILES_HPP
+#define OURS_TASK_SCHEDULER_PROFILES_HPP 1
 
 #include <ours/compiler.hpp>
-#include <ours/task/sched/common.hpp>
-#include <ours/task/sched/types.hpp>
+#include <ours/task/scheduler_common.hpp>
+#include <ours/task/scheduler_types.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 enum class Discipline {
     Normal,
     Deadline,
@@ -72,6 +72,6 @@ struct Profile {
     InheritedProfile inherited;
 };
 
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // #ifndef OURS_TASK_SCHED_PROFILES_HPP
+#endif // #ifndef OURS_TASK_SCHEDULER_PROFILES_HPP

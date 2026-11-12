@@ -1,15 +1,15 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_RR_HPP
-#define OURS_TASK_SCHED_RR_HPP 1
+#ifndef OURS_TASK_RR_HPP
+#define OURS_TASK_RR_HPP 1
 
-#include <ours/task/sched/rr_run_queue.hpp>
-#include <ours/task/sched/schedule.hpp>
-#include <ours/task/sched/scheduler_state.hpp>
+#include <ours/task/rr_run_queue.hpp>
+#include <ours/task/schedule.hpp>
+#include <ours/task/scheduler_state.hpp>
 
 #include <gktl/canary.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 /// A deliberately plain round-robin discipline for bring-up.
 ///
 /// It exists so the rest of the kernel can be brought up on a scheduler with
@@ -56,6 +56,6 @@ class RoundRobin final {
     static auto charge(RunQueue &, Thread *curr) -> void;
 };
 
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // #ifndef OURS_TASK_SCHED_RR_HPP
+#endif // #ifndef OURS_TASK_RR_HPP

@@ -65,11 +65,11 @@
 #include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/idle_thread.hpp>
-#include <ours/task/sched/domains.hpp>
-#include <ours/task/sched/features.hpp>
-#include <ours/task/sched/schedule.hpp>
-#include <ours/task/sched/scheduler.hpp>
-#include <ours/task/sched/scheduler_state.hpp>
+#include <ours/task/schedule.hpp>
+#include <ours/task/scheduler.hpp>
+#include <ours/task/scheduler_domains.hpp>
+#include <ours/task/scheduler_features.hpp>
+#include <ours/task/scheduler_state.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer_queue.hpp>
@@ -85,7 +85,7 @@
 
 using ours::sync::SpinLock;
 
-namespace ours::task::sched {
+namespace ours::task {
 namespace {
     /// The schedule of the discipline that occupies Discipline::Normal, chosen
     /// at build time the way NormalRunQueue is. A discipline keeps nothing of
@@ -696,7 +696,7 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     assert_thread_in_scheduler(curr);
 
     if constexpr (SCHED_HPTICK) {
-        if (has_feature(sched::Feature::HpTick)) {
+        if (has_feature(Feature::HpTick)) {
         }
     }
 
@@ -1427,4 +1427,4 @@ auto Timeslice::evaluate() -> bool {
     return false;
 }
 
-} // namespace ours::task::sched
+} // namespace ours::task

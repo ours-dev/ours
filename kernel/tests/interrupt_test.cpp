@@ -78,7 +78,7 @@
 #include <ours/object/virtual_interrupt_dispatcher.hpp>
 #include <ours/port.hpp>
 #include <ours/syscall.hpp>
-#include <ours/task/sched/common.hpp>
+#include <ours/task/scheduler_common.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 

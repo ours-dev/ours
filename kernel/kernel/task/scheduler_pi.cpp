@@ -1,9 +1,9 @@
 #include <ours/task/owned_wait_queue.hpp>
 
-#include "ours/task/sched/schedule.hpp"
-#include "ours/task/sched/scheduler.hpp"
+#include "ours/task/schedule.hpp"
+#include "ours/task/scheduler.hpp"
 
-namespace ours::task::sched {
+namespace ours::task {
 /// CRTP base class.
 class Scheduler::Pi {
     using Self = Scheduler::Pi;
@@ -98,4 +98,4 @@ template auto Scheduler::join_node_to_pi_graph(OwnedWaitQueue &, Thread &) -> vo
 
 template auto Scheduler::split_node_from_pi_graph(Thread &, OwnedWaitQueue &) -> void;
 template auto Scheduler::split_node_from_pi_graph(OwnedWaitQueue &, Thread &) -> void;
-} // namespace ours::task::sched
+} // namespace ours::task

@@ -1,16 +1,16 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_FAIR_HPP
-#define OURS_TASK_SCHED_FAIR_HPP 1
+#ifndef OURS_TASK_FAIR_HPP
+#define OURS_TASK_FAIR_HPP 1
 
 #include <ours/compiler.hpp>
-#include <ours/task/sched/sched_entity.hpp>
-#include <ours/task/sched/types.hpp>
+#include <ours/task/scheduler_state.hpp>
+#include <ours/task/scheduler_types.hpp>
 
 #include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 /// Fair (EEVDF) discipline's per-CPU run queue -- all of the Fair
 /// discipline's per-CPU state. Held directly by the per-CPU RunQueue (see
 /// RunQueue::queue<Discipline::Normal>()) rather than through its own CpuLocal
@@ -33,14 +33,14 @@ class FairRunQueue {
         m_canary.verify<Self>();
     }
 
-    auto enqueue_object(SchedEntity &object) -> void;
+    auto enqueue_object(SchedulerState &object) -> void;
 
-    auto dequeue_object(SchedEntity &object) -> void;
+    auto dequeue_object(SchedulerState &object) -> void;
 
     /// |object| is the thread now running on this CPU. It is off the tree, and
     /// part of the average for as long as it is active (`sums()`).
     FORCE_INLINE
-    auto set_current(SchedEntity &object) -> void {
+    auto set_current(SchedulerState &object) -> void {
         current_ = &object;
     }
 
@@ -70,7 +70,7 @@ class FairRunQueue {
 
     /// Returns the lag of |object| relative to this runqueue.
     FORCE_INLINE
-    auto lag_of(SchedEntity &object) -> SchedDuration {
+    auto lag_of(SchedulerState &object) -> SchedDuration {
         return avg_vruntime() - object.vruntime();
     }
 
@@ -79,7 +79,7 @@ class FairRunQueue {
     /// The sum and the weights it is tested against are `sums()`, the same pair
     /// `avg_vruntime()` uses, so the running thread is in both.
     [[nodiscard]]
-    auto is_eligible(SchedEntity const &object) const -> bool;
+    auto is_eligible(SchedulerState const &object) const -> bool;
 
     /// The weights of what is in the mean: the tree and the running thread.
     FORCE_INLINE
@@ -155,25 +155,25 @@ class FairRunQueue {
     [[nodiscard]]
     auto sums() const -> Sums;
 
-    /// |object|'s term in the weighted sum, see sched::weighted_offset().
-    auto term_of(SchedEntity &object) const -> WeightedTime;
+    /// |object|'s term in the weighted sum, see weighted_offset().
+    auto term_of(SchedulerState &object) const -> WeightedTime;
 
     /// Moves the zero by |delta|, and the sum of the tree with it.
     auto update_zero_vruntime(SchedDuration const delta) -> void;
 
     /// Earliest virtual deadline first; the pick takes the first eligible one
     /// (Fair::evaluate_next_thread()).
-    using Lesser = decltype([](SchedEntity const &x, SchedEntity const &y) noexcept {
+    using Lesser = decltype([](SchedulerState const &x, SchedulerState const &y) noexcept {
         return x.virtual_deadline() < y.virtual_deadline();
     });
     using Queue = ustl::collections::intrusive::MultiSet<
-        SchedEntity, ustl::collections::intrusive::ValueTraits<SchedEntity::RunQueueTraits<>>,
+        SchedulerState, ustl::collections::intrusive::ValueTraits<SchedulerState::RunQueueTraits<>>,
         ustl::collections::intrusive::Compare<Lesser>>;
 
     gktl::Canary m_canary{this};
     Queue queue_;
     /// The thread running on this CPU if it is one of Fair's. Not in `queue_`.
-    SchedEntity *current_ = nullptr;
+    SchedulerState *current_ = nullptr;
     /// The weights of what is in `queue_`.
     Weight weight_sum_;
     /// `weight * (vruntime - zero_vruntime_)` summed over what is in `queue_`.
@@ -185,6 +185,6 @@ class FairRunQueue {
     usize m_num_queued = 0;
 };
 
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // #ifndef OURS_TASK_SCHED_FAIR_HPP
+#endif // #ifndef OURS_TASK_FAIR_HPP

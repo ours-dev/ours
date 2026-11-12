@@ -26,7 +26,7 @@ enum class [[nodiscard]] Status : u32 {
     Ok = 0,
 
     /// Kernel-internal, and no system call returns it: the scheduler's answer
-    /// for a dequeue it deferred (task/sched/fair.cpp).
+    /// for a dequeue it deferred (task/fair.cpp).
     Delayed = 1,
 
     /// The host, device, or service is not reachable.

@@ -8,14 +8,14 @@
 /// walks the tiers (Scheduler::steal_work_from()) never asks the memory manager
 /// about nodes, and a kind of distance that has no source yet is one more tier
 /// built there. The numbers that steer the walk are StealPolicy's.
-#ifndef OURS_TASK_SCHED_DOMAINS_HPP
-#define OURS_TASK_SCHED_DOMAINS_HPP 1
+#ifndef OURS_TASK_SCHEDULER_DOMAINS_HPP
+#define OURS_TASK_SCHEDULER_DOMAINS_HPP 1
 
 #include <ours/types.hpp>
 
 #include <sched_domain/sched_domain.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 /// |cpu|'s tiers, nearest first, the CPU itself in none of them.
 ///
 /// Built once, at InitLevel::Threading, before any CPU but the first runs the
@@ -82,6 +82,6 @@ class StealPolicy {
         return get(sched_domain::max_batch_knob(kind));
     }
 };
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // #ifndef OURS_TASK_SCHED_DOMAINS_HPP
+#endif // #ifndef OURS_TASK_SCHEDULER_DOMAINS_HPP

@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/task/sched/rr.hpp>
+#include <ours/task/rr.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 namespace {
     /// The one place the queue is looked up, so every override agrees on which
     /// CPU's it is: the one that owns the RunQueue the entry point was handed.
@@ -182,4 +182,4 @@ auto RoundRobin::num_queued(RunQueue &rq) const -> usize {
     return rq.queue<Discipline::Normal>().num_queued();
 }
 
-} // namespace ours::task::sched
+} // namespace ours::task

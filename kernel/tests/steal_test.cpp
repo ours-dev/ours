@@ -38,9 +38,9 @@
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/cpu_node_map.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
-#include <ours/task/sched/common.hpp>
-#include <ours/task/sched/domains.hpp>
-#include <ours/task/sched/scheduler.hpp>
+#include <ours/task/scheduler.hpp>
+#include <ours/task/scheduler_common.hpp>
+#include <ours/task/scheduler_domains.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
@@ -54,9 +54,9 @@
 namespace ours {
 namespace {
     using task::AutoPreemptDisabler;
+    using task::Scheduler;
+    using task::StealPolicy;
     using task::Thread;
-    using task::sched::Scheduler;
-    using task::sched::StealPolicy;
 
     constexpr auto LOST_AFTER = Seconds(5);
     constexpr auto POLL_INTERVAL = Milliseconds(1);
@@ -357,7 +357,7 @@ namespace {
 
         usize cpus = 1;
         usize batch = 1;
-        for (auto const &domain: task::sched::domains_of(pair.thief).view()) {
+        for (auto const &domain: task::domains_of(pair.thief).view()) {
             cpus += (domain.span & Cpu::online_mask()).count();
             if (domain.span.test(pair.victim)) {
                 batch = StealPolicy::max_batch(domain.kind);
@@ -386,7 +386,7 @@ namespace {
     /// |except|: the first one in the tiers up to the one with the victim.
     /// INVALID_CPU_NUM when there is none.
     auto third_cpu(Pair const pair, CpuNum const except = INVALID_CPU_NUM) -> CpuNum {
-        for (auto const &domain: task::sched::domains_of(pair.thief).view()) {
+        for (auto const &domain: task::domains_of(pair.thief).view()) {
             auto others = domain.span & Cpu::online_mask();
             others.set(pair.victim, false);
             others.set(pair.thief, false);
@@ -554,7 +554,7 @@ namespace {
             run_round(pair, round);
 
             usize cpus = 1;
-            for (auto const &domain: task::sched::domains_of(pair.thief).view()) {
+            for (auto const &domain: task::domains_of(pair.thief).view()) {
                 cpus += (domain.span & Cpu::online_mask()).count();
                 if (domain.span.test(pair.victim)) {
                     break;

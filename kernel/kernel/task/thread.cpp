@@ -78,7 +78,7 @@ auto to_string(Thread::State state) -> char const * {
     }
 }
 
-Thread::Thread(KoId tid, char const *name, sched::BaseProfile const &profile)
+Thread::Thread(KoId tid, char const *name, BaseProfile const &profile)
     // Initializer order follows the member declaration order in thread.hpp.
     : m_arch_thread()
     , m_name(name)
@@ -101,7 +101,7 @@ Thread::Thread(KoId tid, char const *name, sched::BaseProfile const &profile)
     , m_migrating_hook()
     , m_unpark_hook() {}
 
-auto Thread::create_first(KoId tid, char const *name, sched::BaseProfile const &profile, Self *self)
+auto Thread::create_first(KoId tid, char const *name, BaseProfile const &profile, Self *self)
     -> void {
     DEBUG_ASSERT(self);
 
@@ -129,8 +129,8 @@ auto Thread::create_first(KoId tid, char const *name, sched::BaseProfile const &
 }
 
 auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry, void *arg,
-                       sched::BaseProfile const &profile, TrampolineRoutine trampoline_routine,
-                       Self *self, CpuNum target_cpu) -> Status {
+                       BaseProfile const &profile, TrampolineRoutine trampoline_routine, Self *self,
+                       CpuNum target_cpu) -> Status {
     DEBUG_ASSERT(self);
 
     new (self) Self(tid, name, profile);
@@ -176,8 +176,8 @@ auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry, void *arg
     return Status::Ok;
 }
 
-auto Thread::spawn(char const *name, StartRoutine entry, void *arg,
-                   sched::BaseProfile const &profile) -> Self * {
+auto Thread::spawn(char const *name, StartRoutine entry, void *arg, BaseProfile const &profile)
+    -> Self * {
     // FIXME(SmallHuaZi)
     auto const tid = KoIdGenerator::generate();
     if (KOID_INVALID == tid) {
@@ -200,7 +200,7 @@ auto Thread::spawn(char const *name, StartRoutine entry, void *arg,
 }
 
 auto Thread::spawn(char const *name, StartRoutine entry, void *arg, usize priority) -> Self * {
-    return Self::spawn(name, entry, arg, sched::BaseProfile(static_cast<i32>(priority)));
+    return Self::spawn(name, entry, arg, BaseProfile(static_cast<i32>(priority)));
 }
 
 auto Thread::switch_thread(Self *curr, Self *next) -> void {
@@ -471,7 +471,7 @@ auto Thread::set_cpu_affinity_soft(CpuMask const &affinity_mask) -> void {
     Scheduler::set_cpu_affinity(this, affinity_mask, CpuAffinity::Kind::Soft);
 }
 
-auto Thread::override_base_profile(sched::BaseProfile const &profile) -> void {
+auto Thread::override_base_profile(BaseProfile const &profile) -> void {
     m_canary.verify<Self>();
     return OwnedWaitQueue::override_thread_base_profile(this, profile);
 }

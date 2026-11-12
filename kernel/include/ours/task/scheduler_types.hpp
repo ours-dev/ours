@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_TYPES_HPP
-#define OURS_TASK_SCHED_TYPES_HPP 1
+#ifndef OURS_TASK_SCHEDULER_TYPES_HPP
+#define OURS_TASK_SCHEDULER_TYPES_HPP 1
 
 #include <ours/chrono.hpp>
 #include <ours/compiler.hpp>
@@ -11,7 +11,7 @@
 #include <ustl/chrono/duration.hpp>
 #include <ustl/util/enum_bits.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 /// A task's weight: a fixed-point fraction in (0.0, 1.0].
 ///
 /// A weight is a *share*, not a count. Only ratios between weights ever mean
@@ -103,6 +103,6 @@ class RoundRobin;
 
 struct BaseProfile;
 
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // #ifndef OURS_TASK_SCHED_TYPES_HPP
+#endif // #ifndef OURS_TASK_SCHEDULER_TYPES_HPP

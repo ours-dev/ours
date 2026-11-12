@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/task/sched/features.hpp>
+#include <ours/task/scheduler_features.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 /// Answers the runtime form of the same question the SCHED_* switches
 /// answer at compile time.
 ///
@@ -22,4 +22,4 @@ auto has_feature(Feature features) -> bool {
 
     return (enabled & features) == features;
 }
-} // namespace ours::task::sched
+} // namespace ours::task

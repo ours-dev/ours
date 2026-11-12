@@ -1,26 +1,26 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_RUN_QUEUE_HPP
-#define OURS_TASK_SCHED_RUN_QUEUE_HPP 1
+#ifndef OURS_TASK_RUN_QUEUE_HPP
+#define OURS_TASK_RUN_QUEUE_HPP 1
 
 #include <ours/sync/spin_lock.hpp>
-#include <ours/task/sched/sched_clock.hpp>
+#include <ours/task/sched_clock.hpp>
 
 // Whichever discipline occupies Discipline::Normal brings its own queue type
 // with it, so only that one's header is pulled in.
 #if SCHED_NORMAL_DISCIPLINE_FAIR
-#include <ours/task/sched/fair.hpp>
+#include <ours/task/fair.hpp>
 #else
-#include <ours/task/sched/rr_run_queue.hpp>
+#include <ours/task/rr_run_queue.hpp>
 #endif
-#include <ours/task/sched/scheduler_state.hpp>
-#include <ours/task/sched/types.hpp>
+#include <ours/task/scheduler_state.hpp>
+#include <ours/task/scheduler_types.hpp>
 #include <ours/task/thread.hpp>
 
 #include <gktl/canary.hpp>
 #include <ustl/mem/container_of.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 /// The run queue of whichever discipline occupies `Discipline::Normal`.
 ///
 /// RoundRobin and Fair are mutually exclusive -- RoundRobin is the stand-in
@@ -280,6 +280,6 @@ class RunQueue {
     SchedTime m_last_updated_time;
     SchedDuration m_total_expected_runtime;
 };
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // #ifndef OURS_TASK_SCHED_RUN_QUEUE_HPP
+#endif // #ifndef OURS_TASK_RUN_QUEUE_HPP

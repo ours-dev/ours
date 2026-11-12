@@ -1,7 +1,7 @@
-#include <ours/task/sched/schedule.hpp>
-#include <ours/task/sched/scheduler.hpp>
+#include <ours/task/schedule.hpp>
+#include <ours/task/scheduler.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 class Scheduler::Migrator {
   public:
     /// Enters holding |self|'s runqueue lock and returns holding the *target*
@@ -32,4 +32,4 @@ auto Scheduler::Migrator::move_queued_thread(Scheduler *self, Thread *thread, Cp
     self->unpark_preempt(thread, UnparkOptions::None);
 }
 
-} // namespace ours::task::sched
+} // namespace ours::task

@@ -178,7 +178,7 @@ auto IdleThread::init(CpuNum cpunum) -> void {
     // over cpu_possible_mask() before the secondaries are up.
     [[maybe_unused]]
     auto const status = Thread::spawn_etc(KoIdGenerator::generate(), name, dummy_start_routine,
-                                          nullptr, sched::BaseProfile(sched::IDLE_PRIORITY),
+                                          nullptr, BaseProfile(IDLE_PRIORITY),
                                           dummy_trampoline_routine, m_thread.data(), m_cpu);
     DEBUG_ASSERT(Status::Ok == status, "Failed to initialize idler[{}]", m_cpu);
 

@@ -1,17 +1,17 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_COMMON_HPP
-#define OURS_TASK_SCHED_COMMON_HPP 1
+#ifndef OURS_TASK_SCHEDULER_COMMON_HPP
+#define OURS_TASK_SCHEDULER_COMMON_HPP 1
 
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
-#include <ours/task/sched/types.hpp>
+#include <ours/task/scheduler_types.hpp>
 
 #include <array>
 
 #include <ffl/wider.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 /// How much heavier one priority is than the one below it, as an exact ratio.
 ///
 /// 49/40 -- one priority level is worth 22.5% more CPU than the one below it,
@@ -385,6 +385,6 @@ static_assert(
     }(),
     "the running thread is not part of the weighted mean");
 
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // #ifndef OURS_TASK_SCHED_COMMON_HPP
+#endif // #ifndef OURS_TASK_SCHEDULER_COMMON_HPP

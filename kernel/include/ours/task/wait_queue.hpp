@@ -6,7 +6,7 @@
 #include <ours/status.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/sync/types.hpp>
-#include <ours/task/sched/types.hpp>
+#include <ours/task/scheduler_types.hpp>
 #include <ours/task/types.hpp>
 #include <ours/time/timer.hpp>
 #include <ours/types.hpp>
@@ -71,7 +71,7 @@ class WaiterState {
             return seq < other.seq;
         }
 
-        sched::SchedTime vdeadline;
+        SchedTime vdeadline;
         u64 seq;
     };
 

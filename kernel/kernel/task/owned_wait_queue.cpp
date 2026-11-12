@@ -10,8 +10,8 @@
 #include <gktl/counter.hpp>
 #include <ustl/util/tuple.hpp>
 
-using ours::task::sched::BaseProfile;
-using ours::task::sched::InheritedProfile;
+using ours::task::BaseProfile;
+using ours::task::InheritedProfile;
 
 using ustl::traits::IsSameV;
 
@@ -82,7 +82,7 @@ auto OwnedWaitQueue::default_wake_hook() -> INotifyRequeueHook & {
 
 /// Copies out a thread's inherited profile so a propagation can compare the
 /// before and after states; see begin_propagate/complete_propagate.
-auto OwnedWaitQueue::snapshot_thread_inherited_profile(Thread *thread) -> sched::InheritedProfile {
+auto OwnedWaitQueue::snapshot_thread_inherited_profile(Thread *thread) -> InheritedProfile {
     return thread->scheduler_state().m_profile.inherited.snapshot();
 }
 

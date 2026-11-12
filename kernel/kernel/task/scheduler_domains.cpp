@@ -9,7 +9,7 @@
 #include <ours/boot/options.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_node_map.hpp>
-#include <ours/task/sched/domains.hpp>
+#include <ours/task/scheduler_domains.hpp>
 
 #include <array>
 #include <atomic>
@@ -19,7 +19,7 @@
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 namespace {
     using sched_domain::Knob;
 
@@ -124,4 +124,4 @@ auto StealPolicy::set(sched_domain::Knob const knob, usize const value) -> bool 
     KNOBS[std::to_underlying(knob)].store(value, std::memory_order_relaxed);
     return true;
 }
-} // namespace ours::task::sched
+} // namespace ours::task

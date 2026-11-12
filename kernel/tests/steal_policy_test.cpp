@@ -7,7 +7,7 @@
 // `ktest` takes for a failed run, and was read by hand.
 //
 // StealPolicy.*: the knobs that steer a look for threads to take
-// (task::sched::StealPolicy) hold values their ranges accept after boot,
+// (task::StealPolicy) hold values their ranges accept after boot,
 // whatever the image's command line said of them, and set() takes a value in
 // range and refuses one out of it, leaving the knob as it was.
 //
@@ -16,7 +16,7 @@
 // the knob must not fail on that. What is checked is the contract, and each
 // knob is put back as the test found it.
 #include <ours/boot/options.hpp>
-#include <ours/task/sched/domains.hpp>
+#include <ours/task/scheduler_domains.hpp>
 
 #include <string_view>
 
@@ -26,7 +26,7 @@
 namespace ours {
 namespace {
     using sched_domain::Knob;
-    using task::sched::StealPolicy;
+    using task::StealPolicy;
 
     /// Puts a knob back as it was when the test is done with it, however the
     /// test ends.

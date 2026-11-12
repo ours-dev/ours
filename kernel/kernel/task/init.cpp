@@ -43,8 +43,8 @@ namespace {
 /// idlers, including this CPU's, are built later by init().
 INIT_CODE
 auto init_early() -> void {
-    Thread::create_first(KoIdGenerator::generate(), "boot",
-                         sched::BaseProfile(sched::DEFAULT_PRIORITY), BOOT_THREAD.data());
+    Thread::create_first(KoIdGenerator::generate(), "boot", BaseProfile(DEFAULT_PRIORITY),
+                         BOOT_THREAD.data());
     Thread::Current::set(&*BOOT_THREAD);
 
     [[maybe_unused]]

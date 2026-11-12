@@ -1,21 +1,21 @@
-#include <ours/task/sched/config.hpp>
-#include <ours/task/sched/fair.hpp>
-#include <ours/task/sched/features.hpp>
-#include <ours/task/sched/run_queue.hpp>
-#include <ours/task/sched/sched_entity.hpp>
-#include <ours/task/sched/schedule.hpp>
-#include <ours/task/sched/scheduler.hpp>
+#include <ours/task/fair.hpp>
+#include <ours/task/run_queue.hpp>
+#include <ours/task/schedule.hpp>
+#include <ours/task/scheduler.hpp>
+#include <ours/task/scheduler_config.hpp>
+#include <ours/task/scheduler_features.hpp>
+#include <ours/task/scheduler_state.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/tick_device.hpp>
 #include <ours/time/timer_queue.hpp>
 
-#include "ours/task/sched/profiles.hpp"
+#include "ours/task/scheduler_profiles.hpp"
 #include <logz4/log.hpp>
 #include <mtl/ratio.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/mem/address_of.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 class Observer {
     using Self = RunQueue;
 
@@ -24,28 +24,28 @@ class Observer {
 
     static auto on_erase() -> void;
 
-    static auto on_rotate(SchedEntity &before, SchedEntity &after) -> void;
+    static auto on_rotate(SchedulerState &before, SchedulerState &after) -> void;
 
-    static auto propagate(SchedEntity &object, SchedEntity &terminal) -> void;
+    static auto propagate(SchedulerState &object, SchedulerState &terminal) -> void;
 
-    static auto copy(SchedEntity &from, SchedEntity &to) -> void;
+    static auto copy(SchedulerState &from, SchedulerState &to) -> void;
 };
 
 // FairRunQueue itself -- all of Fair's per-CPU state -- is declared in
 // fair.hpp and held directly by the per-CPU RunQueue.
 
-auto FairRunQueue::term_of(SchedEntity &object) const -> WeightedTime {
+auto FairRunQueue::term_of(SchedulerState &object) const -> WeightedTime {
     return weighted_offset(object.vruntime() - zero_vruntime_, object.weight());
 }
 
-auto FairRunQueue::dequeue_object(SchedEntity &object) -> void {
+auto FairRunQueue::dequeue_object(SchedulerState &object) -> void {
     (void)queue_.erase(queue_.iterator_to(object));
 
     weight_sum_ -= object.weight();
     total_vruntime_ -= term_of(object);
 }
 
-auto FairRunQueue::enqueue_object(SchedEntity &object) -> void {
+auto FairRunQueue::enqueue_object(SchedulerState &object) -> void {
     (void)queue_.insert(object);
 
     weight_sum_ += object.weight();
@@ -115,7 +115,7 @@ auto FairRunQueue::avg_vruntime() -> SchedDuration {
 /// The code tests it as `WeightedOwnedVirtualTimeSum >= Weight * (OwnedVirtualTime(i)
 /// - ZeroVirtualTime)` with TotalWeight in the place of Weight, the running thread
 /// counted in the sum and in the weight, without the division.
-auto FairRunQueue::is_eligible(SchedEntity const &object) const -> bool {
+auto FairRunQueue::is_eligible(SchedulerState const &object) const -> bool {
     auto const terms = sums();
     return offset_is_eligible(terms.total, terms.weight, object.vruntime() - zero_vruntime_);
 }
@@ -161,16 +161,16 @@ class Fair final {
     }
 
   private:
-    auto try_to_delay_dequeue(RunQueue &, SchedEntity &, DequeueOptions) -> bool;
+    auto try_to_delay_dequeue(RunQueue &, SchedulerState &, DequeueOptions) -> bool;
 
-    auto adjust_vlag(RunQueue &runtime, SchedEntity &object) -> void;
+    auto adjust_vlag(RunQueue &runtime, SchedulerState &object) -> void;
 
-    auto update_vlag(RunQueue &runtime, SchedEntity &object) -> void;
+    auto update_vlag(RunQueue &runtime, SchedulerState &object) -> void;
 
-    auto set_next_object(RunQueue &runtime, SchedEntity &object) -> void;
+    auto set_next_object(RunQueue &runtime, SchedulerState &object) -> void;
 };
 
-auto Fair::adjust_vlag(RunQueue &runtime, SchedEntity &ctx) -> void {
+auto Fair::adjust_vlag(RunQueue &runtime, SchedulerState &ctx) -> void {
     auto ideal_vruntime = runtime.queue<Discipline::Normal>().avg_vruntime();
     auto vlag = ctx.m_fair.vlag;
 
@@ -190,7 +190,7 @@ auto Fair::adjust_vlag(RunQueue &runtime, SchedEntity &ctx) -> void {
 }
 
 FORCE_INLINE
-auto Fair::update_vlag(RunQueue &runtime, SchedEntity &object) -> void {
+auto Fair::update_vlag(RunQueue &runtime, SchedulerState &object) -> void {
     object.m_fair.vlag = runtime.queue<Discipline::Normal>().lag_of(object);
 }
 
@@ -227,7 +227,7 @@ auto Fair::update_thread(RunQueue &runtime, Thread *curr) -> void {
     }
 }
 
-auto Fair::try_to_delay_dequeue(RunQueue &runtime, SchedEntity &ctx, DequeueOptions options)
+auto Fair::try_to_delay_dequeue(RunQueue &runtime, SchedulerState &ctx, DequeueOptions options)
     -> bool {
     if (!!(DequeueOptions::Delayed & options)) {
         // Check the |ctx| is a delayed scheduling object.
@@ -235,7 +235,7 @@ auto Fair::try_to_delay_dequeue(RunQueue &runtime, SchedEntity &ctx, DequeueOpti
     }
 
     auto delayable = !!(DequeueOptions::Sleep & options);
-    if (sched::has_feature(Feature::DelayDequeue) && delayable &&
+    if (has_feature(Feature::DelayDequeue) && delayable &&
         !runtime.queue<Discipline::Normal>().is_eligible(ctx)) {
         return true;
     }
@@ -387,7 +387,7 @@ auto Fair::put_prev_thread(RunQueue &runtime, Thread *prev) -> void {
     }
 }
 
-auto Fair::set_next_object(RunQueue &runtime, SchedEntity &ctx) -> void {
+auto Fair::set_next_object(RunQueue &runtime, SchedulerState &ctx) -> void {
     auto &rq = runtime.queue<Discipline::Normal>();
     rq.verify();
 
@@ -516,4 +516,4 @@ auto fair_schedule() -> ustl::Ref<Schedule> {
     return ustl::Ref<Schedule>{FAIR_SCHEDULE};
 }
 
-} // namespace ours::task::sched
+} // namespace ours::task

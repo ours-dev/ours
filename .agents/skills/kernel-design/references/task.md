@@ -2,14 +2,16 @@
 
 ## Scheduler
 
-- Fair (`kernel/kernel/task/sched/fair.*`) is the user's own design and off by
-  default (`sched_normal_discipline` is `"rr"`; a lane built with `"fair"`
-  compiles, links and boots). Bring-up runs on a simple round-robin
-  discipline. Do not edit
-  Fair at all; a refactor whose value depends on changing fair.cpp must be put
-  to the user, not carried out. In the generic scheduler machinery
-  (`scheduler.cpp`, `context.hpp`, `scheduler_inline.hpp`), ask before any fix
-  beyond a plain seeding or ordering defect.
+- The scheduler and its types live directly in `ours::task` (the user's
+  layout choice, 2026-11-07). Headers and sources sit in the task
+  directories, and GN builds the scheduler as `//kernel/kernel/task:scheduler`.
+- Fair (`kernel/kernel/task/fair.cpp` and `kernel/include/ours/task/fair.hpp`)
+  is the user's own design and off by default (`sched_normal_discipline` is
+  `"rr"`; a lane built with `"fair"` compiles, links and boots). Bring-up
+  runs on a simple round-robin discipline. Do not edit Fair at all. A
+  refactor whose value depends on changing `fair.cpp` must be put to the
+  user. In the generic scheduler machinery (`scheduler.cpp`), ask before any
+  fix beyond a plain seeding or ordering defect.
 - The framework around the algorithm may be restructured boldly; what the user
   protects is the scheduling algorithm, not the size of a change.
 - A discipline is a plain class with no base class and no virtual function,
@@ -41,14 +43,14 @@
   `Scheduler::Current::deactivate()` does; no order of run queue locks is
   defined. What the scheduler looks at is a table, not a question to the memory
   manager: `domains_of(cpu)` (`kernel/lib/sched_domain`, built once from the
-  node table in `kernel/kernel/task/sched/domains.cpp`, the one file of the
+  node table in `kernel/kernel/task/scheduler_domains.cpp`, the one file of the
   scheduler that knows `mm::CpuNodeMap`), the CPU's tiers nearest first, each of
   a kind (the user's call of 2026-11-05; it is the role of Linux's
   `sched_domain` and Zircon's `CpuSearchSet`). A new kind of distance is one
   more kind of tier, built there, and its knobs. The numbers that say how deep a
   queue must be to be worth taking from and how many threads one look takes are
   knobs, named by `sched_domain::Knob` with a default and a range, kept by
-  `task::sched::StealPolicy` as relaxed atomics (each is valid alone, so no
+  `task::StealPolicy` as relaxed atomics (each is valid alone, so no
   snapshot is needed), given a first value by `kernel.sched.steal.<name>` boot
   options and changed while the machine runs by the `steal.policy` console
   command (the user's call of 2026-11-05). A user-space interface to them waits
@@ -69,11 +71,10 @@
 
 ## Thread and wait-queue locking
 
-- `Thread` keeps `WaiterState` for waiting and `sched::SchedulerState` for
+- `Thread` keeps `WaiterState` for waiting and `SchedulerState` for
   scheduling (the user's naming choice, 2026-11-07). Use
-  `sched/scheduler_state.hpp` and `Thread::scheduler_state()` in the
-  framework. The old `SchedEntity` type spelling is a compatibility alias
-  for Fair.
+  `ours/task/scheduler_state.hpp` and `Thread::scheduler_state()` in the
+  framework.
 - Never propose a global thread lock. `Thread` (`m_pi_lock`,
   `m_resource_lock`), `WaitQueue` (`m_lock`) and each per-CPU run queue
   (`rqlock`) lock separately. What is missing is the protocol for taking an
@@ -269,7 +270,7 @@ decided before it is built:
   of 2026-10-13 (decision ii in `.agents/tasks/idle-power/DESIGN.md`). A
   slice ends at the CPU's preemption deadline, the slot in its `TimerQueue`.
   `Scheduler::set_next_thread()` sets it at every pick, the running thread
-  picked again included, from `SchedEntity::remaining_slice()`, and empties
+  picked again included, from `SchedulerState::remaining_slice()`, and empties
   it for the idle thread, so an idle CPU is woken by its timers alone. A
   passed deadline only asks for a reschedule
   (`Scheduler::Current::on_preemption_deadline()`, Zircon

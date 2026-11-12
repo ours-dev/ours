@@ -1,15 +1,15 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_RR_RUN_QUEUE_HPP
-#define OURS_TASK_SCHED_RR_RUN_QUEUE_HPP 1
+#ifndef OURS_TASK_RR_RUN_QUEUE_HPP
+#define OURS_TASK_RR_RUN_QUEUE_HPP 1
 
 #include <ours/compiler.hpp>
-#include <ours/task/sched/scheduler_state.hpp>
+#include <ours/task/scheduler_state.hpp>
 
 #include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 /// The round-robin discipline's per-CPU state: one FIFO of runnable contexts.
 ///
 /// Held by RunQueue -- the per-CPU object a discipline is handed -- so that
@@ -60,6 +60,6 @@ class RrRunQueue {
     Queue m_queue;
     usize m_num_queued = 0;
 };
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // #ifndef OURS_TASK_SCHED_RR_RUN_QUEUE_HPP
+#endif // #ifndef OURS_TASK_RR_RUN_QUEUE_HPP

@@ -3,7 +3,7 @@
 #ifndef OURS_TASK_OWNED_WAIT_QUEUE_HPP
 #define OURS_TASK_OWNED_WAIT_QUEUE_HPP 1
 
-#include <ours/task/sched/profiles.hpp>
+#include <ours/task/scheduler_profiles.hpp>
 #include <ours/task/wait_queue.hpp>
 
 #include <ustl/collections/intrusive/list.hpp>
@@ -56,8 +56,7 @@ class OwnedWaitQueue: protected WaitQueue {
 
     static auto disown_all_queues(Thread *thread) -> void;
 
-    static auto override_thread_base_profile(Thread *thread, sched::BaseProfile const &profile)
-        -> void;
+    static auto override_thread_base_profile(Thread *thread, BaseProfile const &profile) -> void;
 
     OwnedWaitQueue();
 
@@ -126,8 +125,8 @@ class OwnedWaitQueue: protected WaitQueue {
 
     template <PropagateOp Op, typename Upstream, typename Downstream>
         requires PropagatingStream<Upstream, Downstream>
-    static auto complete_propagate(Upstream &, Downstream &, sched::InheritedProfile const *,
-                                   sched::InheritedProfile const *, PropagateTag<Op>) -> void;
+    static auto complete_propagate(Upstream &, Downstream &, InheritedProfile const *,
+                                   InheritedProfile const *, PropagateTag<Op>) -> void;
 
     static auto lock_for_owner_replacement(Thread *new_owner, Thread *blocking_thread) -> void;
 
@@ -137,7 +136,7 @@ class OwnedWaitQueue: protected WaitQueue {
     template <typename Applicant>
     static auto unlock_pi_chain_common(Applicant *start, void *stop_point) -> void;
 
-    static auto snapshot_thread_inherited_profile(Thread *thread) -> sched::InheritedProfile;
+    static auto snapshot_thread_inherited_profile(Thread *thread) -> InheritedProfile;
 
     auto park_and_assign_owner_locked(Thread *const curr, time::Deadline const &, Interruptible)
         -> Status;
@@ -159,7 +158,7 @@ class OwnedWaitQueue: protected WaitQueue {
     }
 
     Thread *m_owner;
-    sched::InheritedProfile m_ipv;
+    InheritedProfile m_ipv;
 
     ustl::collections::intrusive::ListMemberHook<> m_managed_hook;
 

@@ -70,9 +70,9 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/mm/alloc_flags.hpp>
-#include <ours/task/sched/common.hpp>
-#include <ours/task/sched/domains.hpp>
-#include <ours/task/sched/scheduler.hpp>
+#include <ours/task/scheduler.hpp>
+#include <ours/task/scheduler_common.hpp>
+#include <ours/task/scheduler_domains.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
@@ -87,9 +87,9 @@
 namespace ours {
 namespace {
     using sched_domain::Knob;
+    using task::Scheduler;
+    using task::StealPolicy;
     using task::Thread;
-    using task::sched::Scheduler;
-    using task::sched::StealPolicy;
     using time::SteadyClock;
 
     /// The most workers a configuration starts.

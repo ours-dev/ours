@@ -46,9 +46,10 @@ and their rationale.
 
 ## Hands off
 
-- `kernel/kernel/task/sched/fair.*`, the Fair/EEVDF discipline, belongs to the
-  user: no edits of any kind, including mechanical renames. Record bugs in it
-  in `docs/repairs` instead.
+- The Fair/EEVDF discipline (`kernel/kernel/task/fair.cpp` and
+  `kernel/include/ours/task/fair.hpp`) belongs to the user: no edits of any
+  kind, including mechanical renames. Record bugs in it in `docs/repairs`
+  instead.
 - An empty class, stub function or uncalled init step is often scaffolding for
   planned work. Never delete one as cleanup; ask, or leave it alone.
 - `WEAK_LINK` on a generic implementation (libc's `mem*`, NUMA stubs) is the

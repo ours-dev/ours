@@ -1,15 +1,15 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_SCHEDULER_STATE_HPP
-#define OURS_TASK_SCHED_SCHEDULER_STATE_HPP 1
+#ifndef OURS_TASK_SCHEDULER_STATE_HPP
+#define OURS_TASK_SCHEDULER_STATE_HPP 1
 
 #include <ours/chrono.hpp>
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/sync/types.hpp>
-#include <ours/task/sched/common.hpp>
-#include <ours/task/sched/profiles.hpp>
-#include <ours/task/sched/types.hpp>
+#include <ours/task/scheduler_common.hpp>
+#include <ours/task/scheduler_profiles.hpp>
+#include <ours/task/scheduler_types.hpp>
 
 #include <atomic>
 
@@ -20,7 +20,7 @@
 
 // #include <cnl/fraction.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 class CpuAffinity {
     using Self = CpuAffinity;
 
@@ -510,6 +510,6 @@ class SchedulerState: public gktl::mixin::Comparable<SchedulerState> {
 template <typename NodeTraits>
 struct SchedulerState::WaitQueueTraits {};
 
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // OURS_TASK_SCHED_SCHEDULER_STATE_HPP
+#endif // OURS_TASK_SCHEDULER_STATE_HPP

@@ -1,13 +1,13 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_SCHED_CLOCK_HPP
-#define OURS_TASK_SCHED_SCHED_CLOCK_HPP 1
+#ifndef OURS_TASK_SCHED_CLOCK_HPP
+#define OURS_TASK_SCHED_CLOCK_HPP 1
 
 #include <ours/chrono.hpp>
 #include <ours/compiler.hpp>
-#include <ours/task/sched/types.hpp>
+#include <ours/task/scheduler_types.hpp>
 
-namespace ours::task::sched {
+namespace ours::task {
 /// This CPU's scheduler clock: what time it is for scheduling decisions, and
 /// when to be interrupted next.
 ///
@@ -74,6 +74,6 @@ class SchedClock {
     SchedTime m_prev_real_clock;
     ClockFlags m_clock_flags;
 };
-} // namespace ours::task::sched
+} // namespace ours::task
 
-#endif // #ifndef OURS_TASK_SCHED_SCHED_CLOCK_HPP
+#endif // #ifndef OURS_TASK_SCHED_CLOCK_HPP

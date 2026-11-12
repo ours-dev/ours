@@ -31,7 +31,7 @@
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/status.hpp>
 #include <ours/task/irq_rcu.hpp>
-#include <ours/task/sched/common.hpp>
+#include <ours/task/scheduler_common.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
