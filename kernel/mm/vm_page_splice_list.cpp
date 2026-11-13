@@ -11,7 +11,7 @@ VmPageSpliceList::~VmPageSpliceList() {
     // allocator, the markers and gaps are nothing to give back.
     for (auto at = m_next_held; at < m_held.size(); ++at) {
         if (auto *const page = m_held[at].slot.page()) {
-            free_frames(page, 0);
+            free_frames(page);
         }
     }
 }

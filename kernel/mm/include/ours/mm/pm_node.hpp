@@ -254,73 +254,32 @@ class PmNode {
     /// after the handoff, with nothing else running.
     static auto setup_watermarks() -> void;
 
-    /// Allocate across the permitted nodes, starting from the implicit local
-    /// node or the explicit home node. ThisNode restricts the walk to the
-    /// home node within the permitted mask and skips thread placement policy.
-    /// The pmm facade owns pressure admission and the wait protocol.
+    /// Why a walk for one block gave nothing: the status, and, for an order-0
+    /// request only, the first zone it passed that is short of its high
+    /// watermark, for whoever asks the reclaimer. A failed walk for a larger
+    /// block never names a zone: a zone with no free block of that order may
+    /// still have plenty of single frames.
+    struct BlockFailure {
+        Status status;
+        ustl::Option<PmZone const &> depleted_zone = ustl::NONE;
+    };
+
+    /// The node's layer of mm::alloc_frames(): walks this node's zones in
+    /// fallback order for |request|, whose home this node is, and takes one
+    /// block from the first zone that has it. That is all of it: the block
+    /// comes back as the zone gave it, and making it ready for its owner is
+    /// the caller's, as are admission, the thread's allocation state and the
+    /// request itself. resolve_request() builds a request and the mm::
+    /// functions are the callers meant to; both it and this member are
+    /// public, and a caller that builds its own request and comes here skips
+    /// the gate, the allocation-state check, the order bound and
+    /// prepare_alloc(). Only tests do.
     [[nodiscard]]
-    static auto alloc_frames(Gaf alloc_flags, usize order = 0,
-                             NodeMask const &fallback = node_online_mask())
-        -> ustl::Result<PmFrame *, Status>;
+    auto alloc_frames(AllocRequest const &request) -> ustl::Result<PmFrame *, BlockFailure>;
 
-    /// A home id outside the node table selects the implicit form, matching
-    /// the existing public pmm interface. An absent in-range node is invalid.
-    [[nodiscard]]
-    static auto alloc_frames(NodeId home, Gaf alloc_flags, usize order = 0,
-                             NodeMask const &fallback = node_online_mask())
-        -> ustl::Result<PmFrame *, Status>;
-
-    /// Allocates exactly |n| pages as a list of blocks, one per set bit of |n|:
-    /// bit k contributes one block of 2^k contiguous pages. Each block is
-    /// contiguous in itself; the blocks are not contiguous with each other.
-    ///
-    /// For example, |n| = 5 (0b101) yields a 1-page block and a 4-page block.
-    ///
-    /// The blocks are taken smallest first. On failure every block already
-    /// taken is freed and the error returned.
-    ///
-    /// Parameters:
-    ///   - |alloc_flags|: Allocation flags specifying memory type, constraints, etc.
-    ///   - |n|: The exact number of pages to allocate, decomposed into binary components
-    ///   - |fallback|: Fallback options if allocation fails in preferred regions
-    ///
-    /// Returns:
-    ///   - On success: A list of PmFrame objects representing the allocated fragments.
-    ///                 The list contains one frame for each set bit in the binary
-    ///                 representation of |n|, with sizes corresponding to 2^bit_position.
-    ///   - On failure: An error Status indicating the reason for allocation failure.
-    [[nodiscard]]
-    static auto alloc_frames_fragment(Gaf alloc_flags, usize n,
-                                      NodeMask const &fallback = node_online_mask())
-        -> ustl::Result<PmFrame::List, Status>;
-
-    [[nodiscard]]
-    static auto alloc_frames_fragment(NodeId home, Gaf alloc_flags, usize n,
-                                      NodeMask const &fallback = node_online_mask())
-        -> ustl::Result<PmFrame::List, Status>;
-
-    /// Allocate a number of order-0 pages to a frame list.
-    ///
-    /// Return the frame list.
-    [[nodiscard]]
-    static auto alloc_frames_bulk(Gaf alloc_flags, usize n,
-                                  NodeMask const &fallback = node_online_mask())
-        -> ustl::Result<PmFrame::List, Status>;
-
-    [[nodiscard]]
-    static auto alloc_frames_bulk(NodeId home, Gaf alloc_flags, usize n,
-                                  NodeMask const &fallback = node_online_mask())
-        -> ustl::Result<PmFrame::List, Status>;
-
-    /// Free a frame.
-    ///
-    /// Static because a frame goes back to the node that owns it, which is
-    /// read out of the frame itself -- not to the node of whoever happens to
-    /// be freeing it. There is nothing for an instance to contribute.
-    static auto free_frames(PmFrame *frame, usize order) -> void;
-
-    /// Free a list of frames, each back to its own node.
-    static auto free_frames(PmFrame::List *list) -> void;
+    /// The node's layer of mm::free_frames(): returns a block of this node's
+    /// to the zone it came from. The frame names both.
+    auto free_frames(PmFrame &frame, usize order) -> void;
 
     /// Whether this node's zone of |type| could serve an allocation of
     /// |order| from its free lists right now; false when the node has no such
@@ -395,21 +354,6 @@ class PmNode {
     /// Requires:
     ///     1). Range [start, end) is sorted by address.
     auto init() -> Status;
-
-    struct BlockFailure {
-        Status status;
-        ustl::Option<PmZone const &> depleted_zone = ustl::NONE;
-    };
-
-    auto take_block(Gaf alloc_flags, usize order, NodeMask const &fallback)
-        -> ustl::Result<PmFrame *, BlockFailure>;
-
-    static auto return_block(PmFrame &frame, usize order) -> void;
-
-    static auto return_blocks(PmFrame::List &list) -> void;
-
-    /// Sample pressure once after a complete allocation or return.
-    static auto observe_pressure(ustl::Option<PmZone const &> depleted_zone = ustl::NONE) -> void;
 
     [[no_unique_address]]
     gktl::Canary m_canary;

@@ -496,7 +496,7 @@ namespace {
                     mm::VmasFlags::None, "largepage.test", &aspace);
                 status != Status::Ok) {
                 log::error("largepage: could not create an address space: {}", to_string(status));
-                mm::free_frames(block, ORDER);
+                mm::free_frames(block);
                 FAIL("create the address space");
             }
             auto &arch = aspace->arch_aspace();
@@ -586,7 +586,7 @@ namespace {
         EXPECT_EQ(mm::PageTableDeposits::nr_held(), held_before,
                   "with the address space gone, every table set aside is back, the one of the "
                   "leaf left mapped too");
-        mm::free_frames(block, ORDER);
+        mm::free_frames(block);
 
         check_blocks();
         check_mappings();

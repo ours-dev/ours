@@ -32,10 +32,12 @@
 ///     ever on an even page count. Use the exhaust-remote option from an idle
 ///     guest with a memory-only NUMA node to check fallback and partial
 ///     rollback.
-///   - Static allocation. Direct class calls honor node restrictions, errors,
-///     and allocation-disable state, and release without a node instance.
-///   - Count helpers. Both direct-map overloads round three pages up to a
-///     usable, zeroed four-page block, including the node-specific template.
+///   - Home allocation. An explicit home, Gaf::ThisNode and an order past the
+///     maximum through mm::alloc_frames(); an empty node set and one without
+///     the home through mm::priv::alloc_frames(), since no public function
+///     takes a node set.
+///   - Count helpers. get_frames_n() rounds three pages up to a usable,
+///     zeroed four-page block, asked once with no home and once with one.
 ///   - AllocState. A thread that disabled allocation must be
 ///     refused on the node-less path and on the path that names a node alike.
 ///
@@ -49,6 +51,8 @@
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
+#include <ours/mm/priv/pmm.hpp>
 #include <ours/mm/priv/zone_candidates.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/event.hpp>
@@ -428,9 +432,12 @@ namespace {
         EXPECT_TRUE(fragment_ok,
                     "alloc_frames_fragment() returns one block per set bit, n pages in all");
 
+        auto bulk = mm::alloc_frames_bulk(mm::ALLOC_KERNEL, 4);
+        auto bulk_ok = !!bulk;
         PmFrame::List list;
-        auto bulk_ok =
-            Status::Ok == mm::alloc_frames(NodeId(MAX_NODES), mm::ALLOC_KERNEL, &list, 4);
+        if (bulk) {
+            list = ustl::move(*bulk);
+        }
         usize frames = 0;
         PmFrame const *previous = nullptr;
         for (auto &frame: list) {
@@ -444,51 +451,51 @@ namespace {
         EXPECT_TRUE(bulk_ok && frames == 4, "alloc_frames_bulk() returns n single frames");
     }
 
-    auto check_static_allocation() -> void {
+    auto check_home_allocation() -> void {
         auto const release = [](ktl::Result<PmFrame *> const &result) {
             if (result && *result) {
-                PmNode::free_frames(*result, (*result)->order());
+                mm::free_frames(*result);
             }
         };
         auto const alloc_flags = mm::ALLOC_KERNEL | mm::Gaf::Zero;
         auto const nid = mm::current_node();
 
-        auto implicit = PmNode::alloc_frames(alloc_flags);
+        auto implicit = mm::alloc_frames(alloc_flags);
         EXPECT_TRUE(implicit && *implicit && (*implicit)->order() == 0,
-                    "static allocation needs no node instance");
+                    "an allocation that names no home starts on the local node");
         release(implicit);
 
-        auto local = PmNode::alloc_frames(alloc_flags | mm::Gaf::ThisNode);
+        auto local = mm::alloc_frames(alloc_flags | mm::Gaf::ThisNode);
         EXPECT_TRUE(local && *local, "ThisNode also accepts the implicit home");
         release(local);
 
-        auto explicit_home = PmNode::alloc_frames(nid, alloc_flags | mm::Gaf::ThisNode);
+        auto explicit_home = mm::alloc_frames(alloc_flags | mm::Gaf::ThisNode, 0, nid);
         EXPECT_TRUE(explicit_home && *explicit_home && (*explicit_home)->nid() == nid,
-                    "static allocation honors an explicit home and ThisNode");
+                    "an allocation honors an explicit home and ThisNode");
         release(explicit_home);
 
-        auto empty = PmNode::alloc_frames(nid, alloc_flags, 0, NodeMask{});
+        auto empty = mm::priv::alloc_frames(alloc_flags, 0, nid, NodeMask{});
         EXPECT_TRUE(!empty && empty.unwrap_err() == Status::OutOfMem,
-                    "static allocation cannot escape an empty allowed-node set");
+                    "an allocation cannot escape an empty allowed-node set");
         release(empty);
 
-        auto oversized = PmNode::alloc_frames(nid, alloc_flags, MAX_FRAME_ORDER + 1);
+        auto oversized = mm::alloc_frames(alloc_flags, MAX_FRAME_ORDER + 1, nid);
         EXPECT_TRUE(!oversized && oversized.unwrap_err() == Status::InvArgs,
-                    "static allocation rejects an order past the maximum");
+                    "an allocation rejects an order past the maximum");
         release(oversized);
 
         auto remote_nodes = PmNode::node_memory_mask();
         remote_nodes.set(nid, false);
         if (remote_nodes.any()) {
             auto pinned =
-                PmNode::alloc_frames(nid, alloc_flags | mm::Gaf::ThisNode, 0, remote_nodes);
+                mm::priv::alloc_frames(alloc_flags | mm::Gaf::ThisNode, 0, nid, remote_nodes);
             EXPECT_TRUE(!pinned && pinned.unwrap_err() == Status::OutOfMem,
                         "ThisNode fails when the allowed mask excludes the requested node");
             release(pinned);
 
-            auto remote = PmNode::alloc_frames(nid, alloc_flags, 0, remote_nodes);
+            auto remote = mm::priv::alloc_frames(alloc_flags, 0, nid, remote_nodes);
             EXPECT_TRUE(remote && *remote && remote_nodes.test((*remote)->nid()),
-                        "static allocation reaches another node permitted by the mask");
+                        "an allocation reaches another node permitted by the mask");
             release(remote);
         } else {
             log::info("pmnode: skip  cross-node allocation needs multiple memory nodes");
@@ -501,29 +508,31 @@ namespace {
     auto check_batch_errors() -> void {
         auto const nid = mm::current_node();
         auto const flags = mm::ALLOC_KERNEL;
-        auto empty_fragment = PmNode::alloc_frames_fragment(NodeId(MAX_NODES), flags, 0);
-        auto empty_bulk = PmNode::alloc_frames_bulk(flags, 0);
+        auto empty_fragment = mm::alloc_frames_fragment(flags, 0);
+        auto empty_bulk = mm::alloc_frames_bulk(flags, 0);
         EXPECT_TRUE(empty_fragment && empty_fragment->empty() && empty_bulk && empty_bulk->empty(),
                     "zero-page batch requests return empty lists");
         if (empty_fragment) {
-            PmNode::free_frames(&*empty_fragment);
+            mm::free_frames(&*empty_fragment);
         }
         if (empty_bulk) {
-            PmNode::free_frames(&*empty_bulk);
+            mm::free_frames(&*empty_bulk);
         }
 
-        auto fragment = mm::alloc_frames_fragment(flags, PARTIAL_FRAGMENT_COUNT, NodeMask::of(nid));
+        auto fragment =
+            mm::alloc_frames_fragment(flags | mm::Gaf::ThisNode, PARTIAL_FRAGMENT_COUNT, nid);
         EXPECT_TRUE(!fragment && fragment.unwrap_err() == Status::InvArgs,
                     "a fragment request fails when a later block exceeds the maximum order");
         if (fragment) {
             mm::free_frames(&*fragment);
         }
 
-        PmFrame::List list;
-        auto const status = mm::alloc_frames(nid, flags, &list, 1, NodeMask{});
-        EXPECT_TRUE(status == Status::OutOfMem && list.empty(),
+        auto bulk = mm::priv::alloc_frames_bulk(flags, 1, nid, NodeMask{});
+        EXPECT_TRUE(!bulk && bulk.unwrap_err() == Status::OutOfMem,
                     "the bulk interface reports an exhausted candidate set");
-        mm::free_frames(&list);
+        if (bulk) {
+            mm::free_frames(&*bulk);
+        }
     }
 
     auto check_node_queries() -> void {
@@ -538,9 +547,9 @@ namespace {
             if (PmNode::node(absent)) {
                 continue;
             }
-            auto single = PmNode::alloc_frames(absent, mm::ALLOC_KERNEL);
-            auto bulk = PmNode::alloc_frames_bulk(absent, mm::ALLOC_KERNEL, 1);
-            auto fragment = PmNode::alloc_frames_fragment(absent, mm::ALLOC_KERNEL, 1);
+            auto single = mm::alloc_frames(mm::ALLOC_KERNEL, 0, absent);
+            auto bulk = mm::alloc_frames_bulk(mm::ALLOC_KERNEL, 1, absent);
+            auto fragment = mm::alloc_frames_fragment(mm::ALLOC_KERNEL, 1, absent);
             EXPECT_TRUE(!mm::node_work_cpus(absent).any() && !mm::node_hard_affinity(absent) &&
                             !mm::node_soft_affinity(absent) && !single &&
                             single.unwrap_err() == Status::InvArgs && !bulk &&
@@ -548,13 +557,13 @@ namespace {
                             fragment.unwrap_err() == Status::InvArgs,
                         "queries and allocation handle an absent node ID");
             if (single) {
-                PmNode::free_frames(*single, (*single)->order());
+                mm::free_frames(*single);
             }
             if (bulk) {
-                PmNode::free_frames(&*bulk);
+                mm::free_frames(&*bulk);
             }
             if (fragment) {
-                PmNode::free_frames(&*fragment);
+                mm::free_frames(&*fragment);
             }
             return;
         }
@@ -578,13 +587,13 @@ namespace {
         nodes.set(local);
         gktl::Counter const hits{hit};
         auto const before = hits.get();
-        auto const fallback = PmNode::alloc_frames(remote_home, mm::ALLOC_KERNEL, 0, nodes);
+        auto const fallback = mm::priv::alloc_frames(mm::ALLOC_KERNEL, 0, remote_home, nodes);
         if (!fallback) {
             return false;
         }
 
         auto const counted_local = (*fallback)->nid() == local && hits.get() == before + 1;
-        PmNode::free_frames(*fallback, 0);
+        mm::free_frames(*fallback);
         return counted_local;
     }
 
@@ -601,10 +610,10 @@ namespace {
             }
             constexpr auto ITERATIONS = usize{8192};
             for (usize i = 0; i < ITERATIONS; ++i) {
-                auto const block = state.zone.take_block(0);
+                auto const block = state.zone.alloc_frames(0);
                 auto const count = state.zone.num_free_frames();
                 if (block) {
-                    state.zone.return_block(block.value(), 0);
+                    state.zone.free_frames(block.value(), 0);
                 }
                 if (count > 1 || state.zone.num_free_frames() > 1) {
                     return 1;
@@ -645,22 +654,21 @@ namespace {
 
     auto check_exhausted_node(NodeId const nid) -> void {
         auto const flags = mm::ALLOC_KERNEL | mm::Gaf::ThisNode;
-        auto const mask = NodeMask::of(nid);
-        auto const reserved = PmNode::alloc_frames(nid, flags, 0, mask);
+        auto const reserved = mm::alloc_frames(flags, 0, nid);
         if (!reserved) {
             FAIL("reserve a page on the memory-only node");
         }
 
         PmFrame::List held;
         for (usize order = MAX_FRAME_ORDER + 1; order > 0; --order) {
-            while (auto block = PmNode::alloc_frames(nid, flags, order - 1, mask)) {
+            while (auto block = mm::alloc_frames(flags, order - 1, nid)) {
                 held.push_back(**block);
             }
         }
-        auto const pinned = PmNode::alloc_frames(nid, flags);
+        auto const pinned = mm::alloc_frames(flags, 0, nid);
         auto const pinned_failed = !pinned && pinned.unwrap_err() == Status::OutOfMem;
         if (pinned) {
-            PmNode::free_frames(*pinned, 0);
+            mm::free_frames(*pinned);
         }
         auto const counted_local = check_local_fallback(nid);
 
@@ -669,34 +677,34 @@ namespace {
         auto const drained = zone && zone->count_free_frames() == 0 &&
                              zone->num_free_frames() == 0 &&
                              !zone->watermark_ok(0, PmZone::Watermark::Min);
-        PmNode::free_frames(last, 0);
+        mm::free_frames(last);
         if (Cpu::num_online_cpus() >= 2) {
             EXPECT_TRUE(drained && check_zone_inventory(*zone),
                         "two CPUs keep an exhausted zone's free count within its one-page "
                         "inventory");
         }
-        auto bulk = PmNode::alloc_frames_bulk(nid, flags, 2, mask);
+        auto bulk = mm::alloc_frames_bulk(flags, 2, nid);
         auto const rejected = !bulk && bulk.unwrap_err() == Status::OutOfMem;
         if (bulk) {
-            PmNode::free_frames(&*bulk);
+            mm::free_frames(&*bulk);
         }
-        auto const restored = PmNode::alloc_frames(nid, flags, 0, mask);
+        auto const restored = mm::alloc_frames(flags, 0, nid);
         auto const restored_last = restored && *restored == last;
         if (restored) {
-            PmNode::free_frames(*restored, 0);
+            mm::free_frames(*restored);
         }
 
-        auto fragment = PmNode::alloc_frames_fragment(nid, flags, PARTIAL_FRAGMENT_COUNT, mask);
+        auto fragment = mm::alloc_frames_fragment(flags, PARTIAL_FRAGMENT_COUNT, nid);
         auto const invalid = !fragment && fragment.unwrap_err() == Status::InvArgs;
         if (fragment) {
-            PmNode::free_frames(&*fragment);
+            mm::free_frames(&*fragment);
         }
-        auto const after_fragment = PmNode::alloc_frames(nid, flags, 0, mask);
+        auto const after_fragment = mm::alloc_frames(flags, 0, nid);
         auto const fragment_restored_last = after_fragment && *after_fragment == last;
         if (after_fragment) {
-            PmNode::free_frames(*after_fragment, 0);
+            mm::free_frames(*after_fragment);
         }
-        PmNode::free_frames(&held);
+        mm::free_frames(&held);
 
         EXPECT_TRUE(pinned_failed, "ThisNode fails after exhausting the requested node");
         EXPECT_TRUE(drained && counted_local,
@@ -718,32 +726,6 @@ namespace {
             }
         }
         KTEST_SKIP("remote exhaustion needs a memory-only node");
-    }
-
-    auto check_address_helpers() -> void {
-        auto const flags = mm::ALLOC_KERNEL;
-        auto addr = PhysAddr::Invalid;
-        auto const frame = mm::alloc_frames(flags, &addr);
-        EXPECT_TRUE(frame && addr == mm::frame_to_phys(*frame),
-                    "allocation writes the physical address of the returned frame");
-        if (frame) {
-            mm::free_frames(mm::frame_to_virt(*frame), 0);
-        }
-
-        auto const without_addr = mm::alloc_frames(flags, nullptr);
-        EXPECT_TRUE(!!without_addr, "the physical address output is optional");
-        if (without_addr) {
-            mm::free_frames(*without_addr, 0);
-        }
-
-        addr = PhysAddr::Invalid;
-        auto const invalid = mm::alloc_frames(flags, &addr, MAX_FRAME_ORDER + 1);
-        EXPECT_TRUE(!invalid && invalid.unwrap_err() == Status::InvArgs &&
-                        addr == PhysAddr::Invalid,
-                    "invalid order is reported and the physical address output is preserved");
-        if (invalid) {
-            mm::free_frames(*invalid, (*invalid)->order());
-        }
     }
 
     auto check_count_helpers() -> void {
@@ -768,7 +750,7 @@ namespace {
             }
 
             // Release the actual allocation even if its geometry was wrong.
-            mm::free_frames(frame, order);
+            mm::free_frames(frame);
             EXPECT_TRUE(ok, "{}", name);
         };
 
@@ -776,7 +758,7 @@ namespace {
         check(mm::get_frames_n<u8>(alloc_flags, 3), MAX_NODES,
               "get_frames_n() returns a usable zeroed block of at least three pages");
         auto const nid = mm::current_node();
-        check(mm::get_frames_n<u8>(nid, alloc_flags | mm::Gaf::ThisNode, 3, NodeMask::of(nid)), nid,
+        check(mm::get_frames_n<u8>(alloc_flags | mm::Gaf::ThisNode, 3, nid), nid,
               "node-specific get_frames_n() honors the node and rounds the count");
     }
 
@@ -785,18 +767,16 @@ namespace {
 
         state.disable();
         auto const nodeless = mm::alloc_frames(mm::ALLOC_KERNEL);
-        auto const by_node = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, 0);
-        auto direct = PmNode::alloc_frames(mm::ALLOC_KERNEL);
-        auto direct_home = PmNode::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL);
+        auto const by_node = mm::alloc_frames(mm::ALLOC_KERNEL, 0, mm::current_node());
         auto const table = mm::alloc_page_table(PAGE_SIZE, PAGE_SIZE);
         auto *const bytes = mm::get_frames<u8>(mm::ALLOC_KERNEL);
-        auto *const local_bytes = mm::get_frames<u8>(mm::current_node(), mm::ALLOC_KERNEL);
+        auto *const local_bytes = mm::get_frames<u8>(mm::ALLOC_KERNEL, 0, mm::current_node());
         state.enable();
 
-        auto const after = mm::alloc_frames(mm::current_node(), mm::ALLOC_KERNEL, 0);
+        auto const after = mm::alloc_frames(mm::ALLOC_KERNEL, 0, mm::current_node());
         EXPECT_TRUE(!nodeless && nodeless.unwrap_err() == Status::AccessDenied && !by_node &&
                         by_node.unwrap_err() == Status::AccessDenied,
-                    "the facade reports AccessDenied with or without an explicit node");
+                    "an allocation reports AccessDenied with or without an explicit node");
         EXPECT_TRUE(!!after, "enabling it again lets the allocation through");
         EXPECT_TRUE(table == PhysAddr{0}, "page-table allocation respects disabled allocation");
         if (table != PhysAddr{0}) {
@@ -805,25 +785,158 @@ namespace {
         EXPECT_TRUE(!bytes && !local_bytes, "typed allocation returns nullptr when disabled");
         for (auto *const ptr: {bytes, local_bytes}) {
             if (ptr) {
-                mm::free_frames(mm::virt_to_frame(ptr), 0);
-            }
-        }
-        EXPECT_TRUE(!direct && direct.unwrap_err() == Status::AccessDenied && !direct_home &&
-                        direct_home.unwrap_err() == Status::AccessDenied,
-                    "static allocation enforces the thread's disabled state with or without a "
-                    "home");
-        for (auto const &result: {direct, direct_home}) {
-            if (result && *result) {
-                PmNode::free_frames(*result, (*result)->order());
+                mm::free_frames(mm::virt_to_frame(ptr));
             }
         }
 
         // Freed even if the check above failed, so the test leaks nothing.
         for (auto const &result: {nodeless, by_node, after}) {
             if (result) {
-                mm::free_frames(*result, 0);
+                mm::free_frames(*result);
             }
         }
+    }
+
+    KTEST(PmNode, SplitBlockMakesBlocksThatAreFreedAlone) {
+        constexpr auto WHOLE = usize{3};
+        constexpr auto NR_FRAMES = usize{1} << WHOLE;
+
+        auto const allocated = mm::alloc_frames(mm::ALLOC_KERNEL, WHOLE);
+        if (!allocated) {
+            FAIL("allocate a block of order {}", WHOLE);
+            return;
+        }
+        auto *const block = *allocated;
+        EXPECT_TRUE(block->order() == WHOLE, "the head of an allocated block records its order");
+
+        // Four blocks of two frames: every other frame is a head of order 1.
+        mm::split_block(block, 1);
+        auto halves_ok = true;
+        for (usize index = 0; index < NR_FRAMES; index += 2) {
+            halves_ok = halves_ok && block[index].order() == 1;
+        }
+        EXPECT_TRUE(halves_ok, "split_block(block, 1) makes four heads of order 1");
+
+        // The first of them again, into two single frames; the others stay.
+        mm::split_block(block);
+        EXPECT_TRUE(block[0].order() == 0 && block[1].order() == 0 && block[2].order() == 1,
+                    "splitting one of the parts leaves the others as they were");
+
+        // Each part is a block of its own now and goes back alone: five frees
+        // for what was one allocation. The EXPECTs above are what check the
+        // split. The frees would not: the buddy asserts only that a block is
+        // aligned to its order, so a part returned at a wrong order that is
+        // still aligned goes through, and the frame ends up free twice.
+        mm::free_frames(&block[0]);
+        mm::free_frames(&block[1]);
+        for (usize index = 2; index < NR_FRAMES; index += 2) {
+            mm::free_frames(&block[index]);
+        }
+    }
+
+    KTEST(PmNode, ContiguousFramesAreAdjacentAlignedAndFreedAlone) {
+        constexpr auto NR_FRAMES = usize{3};
+        // Four pages: more than the three frames need, so the alignment is
+        // what decides the block.
+        constexpr auto ALIGN_LOG2 = usize{PAGE_SHIFT + 2};
+
+        auto run = mm::alloc_frames_contiguous(mm::ALLOC_KERNEL, NR_FRAMES, ALIGN_LOG2);
+        if (!run) {
+            FAIL("allocate {} contiguous frames", NR_FRAMES);
+            return;
+        }
+
+        usize count = 0;
+        auto ok = true;
+        auto expected = PhysAddr{};
+        for (auto &frame: *run) {
+            auto const phys = mm::frame_to_phys(&frame);
+            if (count == 0) {
+                ok = ok && (static_cast<usize>(phys) & ((usize{1} << ALIGN_LOG2) - 1)) == 0;
+            } else {
+                ok = ok && phys == expected;
+            }
+            ok = ok && frame.order() == 0;
+            expected = phys + PAGE_SIZE;
+            count += 1;
+        }
+        EXPECT_TRUE(ok && count == NR_FRAMES,
+                    "the run is {} single frames, adjacent, the first aligned", NR_FRAMES);
+        mm::free_frames(&*run);
+
+        auto none = mm::alloc_frames_contiguous(mm::ALLOC_KERNEL, 0, PAGE_SHIFT);
+        EXPECT_TRUE(!none && none.unwrap_err() == Status::InvArgs, "a run of no frames is refused");
+        if (none) {
+            mm::free_frames(&*none);
+        }
+
+        auto huge =
+            mm::alloc_frames_contiguous(mm::ALLOC_KERNEL, 1, PAGE_SHIFT + MAX_FRAME_ORDER + 1);
+        EXPECT_TRUE(!huge && huge.unwrap_err() == Status::InvArgs,
+                    "an alignment no block has is refused");
+        if (huge) {
+            mm::free_frames(&*huge);
+        }
+    }
+
+    KTEST(PmNode, PinFrameCountsWhateverTheRole) {
+        auto const allocated = mm::alloc_frames(mm::ALLOC_KERNEL);
+        if (!allocated) {
+            FAIL("allocate a frame to pin");
+            return;
+        }
+        // Nobody else knows this frame, so there is no owner's lock to take:
+        // the test is its owner.
+        auto *const frame = *allocated;
+        EXPECT_TRUE(frame->pin_count() == 0, "a frame just allocated holds no pin");
+
+        auto const first = mm::pin_frame(frame);
+        auto const second = mm::pin_frame(frame);
+        EXPECT_TRUE(Status::Ok == first && Status::Ok == second && frame->pin_count() == 2,
+                    "pins count, on a frame with no role");
+
+        // A role is put on over the pins and does not forget them.
+        frame->become<mm::page::MmuBody>();
+        EXPECT_TRUE(frame->pin_count() == 2, "a change of role keeps the pins");
+        frame->set_role(mm::page::Role::None);
+
+        auto const undone = mm::unpin_frame(frame);
+        auto const undone_again = mm::unpin_frame(frame);
+        EXPECT_TRUE(Status::Ok == undone && Status::Ok == undone_again && frame->pin_count() == 0,
+                    "each unpin undoes one pin");
+        EXPECT_TRUE(mm::unpin_frame(frame) == Status::BadState,
+                    "a frame with no pin cannot be unpinned");
+
+        // With no pin left it may go back; a debug build asserts if it could not.
+        mm::free_frames(frame);
+    }
+
+    KTEST(PmNode, PageTablesAreNotTheFrameFailureSite) {
+#if MM_TEST_ALLOC_FAILURE
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+
+        // A page table is its own failure site. A scope armed for the frame
+        // site lets a page table through and fails the next frame asked for
+        // with no home, which is what a test counting frame allocations
+        // relies on.
+        AllocationFailure failure(AllocationSite::Frame);
+        auto const table = mm::alloc_page_table(PAGE_SIZE, PAGE_SIZE);
+        auto const untouched = !failure.triggered();
+        auto const frame = mm::alloc_frames(mm::ALLOC_KERNEL);
+        EXPECT_TRUE(table != PhysAddr{0} && untouched,
+                    "a page-table allocation does not use up the frame site");
+        EXPECT_TRUE(!frame && frame.unwrap_err() == Status::OutOfMem && failure.triggered(),
+                    "the next frame with no home is the one that fails");
+        if (table != PhysAddr{0}) {
+            mm::free_page_table(table, PAGE_SIZE);
+        }
+        if (frame) {
+            mm::free_frames(*frame);
+        }
+#else
+        KTEST_SKIP("needs a build with mm_test_alloc_failure");
+#endif
     }
 
     KTEST(PmNode, MatchesTheMachineItRunsOn) {
@@ -842,8 +955,7 @@ namespace {
             check_remote_exhaustion();
         }
         check_count_helpers();
-        check_address_helpers();
-        check_static_allocation();
+        check_home_allocation();
         check_disabled_allocation();
     }
 } // namespace

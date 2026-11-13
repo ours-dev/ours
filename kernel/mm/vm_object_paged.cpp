@@ -214,22 +214,12 @@ auto VmObjectPaged::create_contiguous(Gaf const alloc_flags, usize const size, u
 
     // Zero, as every page a program can reach is: a device's buffer is not the
     // place for what the last owner of the frames left in them.
-    auto const allocated = alloc_frames(alloc_flags | Gaf::Zero, order);
-    if (!allocated) {
+    //
+    // The frames come as single frames in address order, each its own: they
+    // go into the node one by one and are freed one at a time with it.
+    auto frames = alloc_frames_contiguous(alloc_flags | Gaf::Zero, nr_pages, alignment_log2);
+    if (!frames) {
         return Status::NoMemory;
-    }
-    auto *const block = *allocated;
-
-    // Each frame is its own from here, as if it had been allocated alone (the
-    // way fill_block_locked() treats a large block): the tail goes back now,
-    // one page at a time, and the pages kept go into the node and are freed
-    // one at a time with it.
-    auto const nr_frames = usize{1} << order;
-    for (usize index = 0; index < nr_frames; ++index) {
-        block[index].set_order(0);
-    }
-    for (usize index = nr_pages; index < nr_frames; ++index) {
-        free_frames(&block[index], 0);
     }
 
     auto status = Status::Ok;
@@ -237,13 +227,14 @@ auto VmObjectPaged::create_contiguous(Gaf const alloc_flags, usize const size, u
         Guard guard{cow_pages->lock()};
         cow_pages->lock().assert_held();
         for (usize index = 0; index < nr_pages; ++index) {
-            status = cow_pages->add_new_page_locked(index, &block[index]);
+            auto *const frame = &frames->front().value();
+            frames->pop_front();
+            status = cow_pages->add_new_page_locked(index, frame);
             if (Status::Ok != status) {
                 // What went in is the node's and goes with it; what did not, and
                 // this one, is given back here.
-                for (usize rest = index; rest < nr_pages; ++rest) {
-                    free_frames(&block[rest], 0);
-                }
+                free_frames(frame);
+                free_frames(&*frames);
                 break;
             }
         }

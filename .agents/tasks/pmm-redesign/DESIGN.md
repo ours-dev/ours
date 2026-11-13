@@ -58,7 +58,7 @@ auto split_block(PmFrame *frame, usize order = 0) -> void;
 ```
 
 - `alloc_frames()` is Linux's `alloc_pages_node(nid, gfp, order)` with the node last and defaulted, so the paired overloads with and without a home node become one function: a home of `ANY_NODE` means the calling CPU's node, as an id outside the node table already does today. Eleven declarations become four.
-- No node mask is a public parameter (D4). Production code never passes one; "this node only" is `Gaf::ThisNode`, and a wider restriction comes from the calling thread's placement policy. The mask stays in the internal request, where the resolver fills it, and a test reaches it through the resolver.
+- No node mask is a public parameter (D4). Production code never passes one; "this node only" is `Gaf::ThisNode`, and a wider restriction comes from the calling thread's placement policy. The mask stays an input of the pipeline: the three functions exist in `mm::priv` (`ours/mm/priv/pmm.hpp`) with the node set as a last parameter, the public ones call them with every online node, and a test of a restriction the public interface cannot ask for calls the `priv` form.
 - The list forms are Zircon's `pmm_alloc_pages(count, flags, list)` and `pmm_alloc_contiguous(count, flags, align_log2, pa, list)`, and `free_frames(PmFrame::List *)` is its `pmm_free(list)`. `alloc_frames_bulk()` is today's `alloc_frames(NodeId, Gaf, PmFrame::List *, usize)` under its own name.
 - `free_frames()` takes no order, because the head of a block records it (F2).
 - `get_frames<T>()`, `get_frames_n<T>()` and `alloc_frames_n()` stay as inline wrappers. `alloc_page_table()` and `free_page_table()`, `unwire_frame()`, `wait_for_frame_allocation()`, `set_free_memory_signal()` and the two counts do not change.
@@ -132,11 +132,11 @@ The `Dma` zone and `MigrateType::Reclaimable` stay as they are, without a flag, 
 
 The interface an object has in this task is small. The rest is a place kept for a feature, written down so that the feature has one place to go, and not built until the feature is.
 
-Only the seam is visible outside the PMM. The layers under it carry the same pair of names (E3): `mm::alloc_frames()` calls `PmNode::alloc_frames()`, which calls `PmZone::alloc_frames()`, and `mm::free_frames()` calls `PmNode::free_frames()` on the frame's node, which calls `PmZone::free_frames()`. Nothing else calls the node's or the zone's. They and `PmZone::admits()` are private members reached through `friend`, as `PmNode::take_block()` is today, so that a caller outside cannot skip the seam's admission and gates. Each layer does one thing under the one name: the seam resolves and prepares, the node chooses a zone and looks at its pressure, the zone moves the block under its lock.
+Only the seam is visible outside the PMM. The layers under it carry the same pair of names (E3): `mm::alloc_frames()` calls `PmNode::alloc_frames()`, which calls `PmZone::alloc_frames()`, and `mm::free_frames()` calls `PmNode::free_frames()` on the frame's node, which calls `PmZone::free_frames()`. Nothing else calls the node's or the zone's. The target is that they and `PmZone::admits()` are private members reached through `friend`, so that a caller outside cannot skip the seam's admission and gates. As built (2026-11-12) they are public: `PmZone`'s and `PmNode`'s own tests call them, and sealing both layers is a later step. Each layer does one thing under the one name: the seam resolves and prepares, the node chooses a zone and looks at its pressure, the zone moves the block under its lock.
 
 | Object | Built in this task | A slot, built with its feature |
 |---|---|---|
-| the seam | the nine functions above | `alloc_frames_range(phys, n)` |
+| the seam | the nine functions above, and `adopt_frames(start_pfn, end_pfn)` for memory the buddy has never held | `alloc_frames_range(phys, n)` |
 | `PmFrame` | block order as a contract, tail stamps by the allocator, the pin count in the header | none |
 | `PmZone` | `alloc_frames(order, mobility)`, `free_frames(frame)`, `admits(order, floor, highest_zone)` | `take_range()`, `adopt()` and `retire()`, `fill_cache()` and `drain_cache()` |
 | `PmNode` | `alloc_frames(request)`, `free_frames(frame)`, `add_cpu()` and `remove_cpu()`, `wake_reclaim(zone)`, `reclaim_target()` | none |
@@ -154,7 +154,7 @@ mm::alloc_frames(flags, order, home)         the only entry for one block (D1)
 
 The list forms run the same stages once per block inside one rollback scope. Release is the mirror: `mm::free_frames()` runs `prepare_free(frame)` (not pinned, not queued, not reserved; tail stamps cleared), and hands the block to `PmNode::free_frames()` on the frame's node, which returns it to the zone and looks at the node's pressure once.
 
-`prepare_alloc()` and `prepare_free()` are the two gates every frame passes on its way out of and into stock. Zeroing is in `PmNode::take_block()` today, the role in the buddy, the assertions in `PmNode::return_block()` and the tail stamps in the object cache. The counterparts are Linux's `post_alloc_hook()` and `free_pages_prepare()` in `mm/page_alloc.c`.
+`prepare_alloc()` and `prepare_free()` are the two gates every frame passes on its way out of and into stock. Before this task zeroing was in `PmNode::take_block()`, the role in the buddy, the release assertions in `PmNode::return_block()` and the tail stamps in the object cache. As built, zeroing, the locality counters and the release assertions are in `prepare_alloc()` and `prepare_free()` in `pmm.cpp`; the tail stamps are still the object cache's. The counterparts are Linux's `post_alloc_hook()` and `free_pages_prepare()` in `mm/page_alloc.c`.
 
 ### PmFrame
 
@@ -164,7 +164,7 @@ The list forms run the same stages once per block inside one rollback scope. Rel
 - The allocator stamps the tail frames of every block above order 0 it hands out (`compound_offset`) in `prepare_alloc()` and clears them in `prepare_free()`. The object cache stops doing it.
 - `split_block(PmFrame *, usize to_order = 0)` turns one block into independent blocks of a lower order, each a head with its own order. A VMO splitting a 2 MiB block uses it, and so does `alloc_frames_contiguous()`, which takes a block, splits it and returns the surplus itself.
 
-**Holding a frame (F1).** A pin says: this frame's physical location and its content must stay. It is a property of the frame whatever its role, so the count moves from `page::VmmBody::pinned_count` to the header, into the reference word that has one writer and no reader today. `pin_frame()` and `unpin_frame()` require the caller to hold the lock of the frame's owner.
+**Holding a frame (F1).** A pin says: this frame's physical location and its content must stay. It is a property of the frame whatever its role, so the count moves from `page::VmmBody::pinned_count` to the header. It takes a byte of the half word the compound offset had, which never needs more than sixteen bits. An earlier version of this document put it in the reference word and called that word unused; the object cache takes a reference on a slab's frame when it makes the slab and drops it when it destroys it, so the word stays as it is. The limit stays 255 pins, which `vmo_pin_test.cpp` and `bti_test.cpp` check. `pin_frame()` and `unpin_frame()` require the caller to hold the lock of the frame's owner.
 
 The rule that makes it safe is one sentence: a pin and anything that moves, replaces or reclaims the frame both run under the lock of the frame's owner, and the mover looks at the pin under that lock. For a VMO page the owner's lock is the lock of the tree its `VmCowPages` belongs to, which is where `pin_range_locked()` and `reclaim_page()` already run. The worst interleaving is a pin arriving while a reclaimer holds the page as a candidate: the reclaimer found it under the queue lock, but acts only after it has taken the owner's lock and looked again, so either the pin came first and the reclaimer backs off, or the reclaim came first and the pin finds no page. Zircon's `VmCowPages::PinRangeLocked()` and its eviction path have the same shape.
 

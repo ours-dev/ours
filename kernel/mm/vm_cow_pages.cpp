@@ -170,9 +170,9 @@ auto VmCowPages::unfile_page(VmPage *const page) -> void {
 }
 
 auto VmCowPages::free_page(VmPage *const page) -> void {
-    DEBUG_ASSERT(page->pinned_count() == 0, "a pinned page is being freed");
+    DEBUG_ASSERT(page->pin_count() == 0, "a pinned page is being freed");
     unfile_page(page);
-    free_frames(page, 0);
+    free_frames(page);
 }
 
 VmCowPages::VmCowPages(Gaf alloc_flags, usize size, ustl::Arc<HierarchyState> hierarchy,
@@ -766,8 +766,8 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
     // 512 frames of order 0 from here on, as if each had been allocated alone.
     // The descriptors of one block are contiguous: a block never crosses the
     // memmap's sections (FrameBuddy).
+    split_block(block);
     for (usize i = 0; i < NR_PAGES; ++i) {
-        block[i].set_order(0);
         block[i].become<page::VmmBody>();
     }
 
@@ -781,7 +781,7 @@ auto VmCowPages::fill_block_locked(u64 const offset) -> VmPage * {
                 DEBUG_ASSERT(taken == &block[j]);
             }
             for (usize j = 0; j < NR_PAGES; ++j) {
-                free_frames(&block[j], 0);
+                free_frames(&block[j]);
             }
             return nullptr;
         }
@@ -866,7 +866,7 @@ auto VmCowPages::supply_pages_locked(u64 const offset, u64 const len, VmPageSpli
             // Popped, so the page is this call's to give back when it does not
             // go in: the slot was full, or the map could not grow.
             if (Status::Ok != status) {
-                free_frames(page, 0);
+                free_frames(page);
             }
         } else {
             // A zero marker or a gap: zero either way, and said by the source.
@@ -932,7 +932,7 @@ auto VmCowPages::take_pages_locked(usize const offset, usize const len,
             if (slot.is_empty() || at >= PgOff((offset + len) >> PAGE_SHIFT)) {
                 break;
             }
-            if (slot.is_page() && slot.page()->pinned_count() != 0) {
+            if (slot.is_page() && slot.page()->pin_count() != 0) {
                 return Status::BadState;
             }
         }
@@ -1047,10 +1047,12 @@ auto VmCowPages::commit_range_locked(usize const offset, usize const size, Commi
     if (mode == CommitMode::Pin) {
         // The cursor makes the page the node's own before a device may write it.
         return walk([this](VmPage &page, PgOff const index) -> Status {
-            if (!page.increase_pinned()) {
-                return Status::NoResource;
+            // Under m_lock, the lock of the node that owns the page: the one
+            // pin_frame() asks its caller to hold.
+            if (auto const status = pin_frame(&page); Status::Ok != status) {
+                return status;
             }
-            if (page.pinned_count() == 1) {
+            if (page.pin_count() == 1) {
                 // The reclaimer rechecks the queue under this lock.
                 m_lock.assert_held();
                 queues_of(&page).set_pinned(&page, this, index);
@@ -1073,7 +1075,7 @@ auto VmCowPages::unpin_range_locked(usize const offset, usize const size) -> Sta
     // All or nothing: every page is looked at before any pin is undone.
     for (usize at = 0; at < size; at += PAGE_SIZE) {
         auto const slot = m_pages.lookup(PgOff((offset + at) >> PAGE_SHIFT));
-        if (!slot.is_page() || slot.page()->pinned_count() == 0) {
+        if (!slot.is_page() || slot.page()->pin_count() == 0) {
             return Status::BadState;
         }
     }
@@ -1081,8 +1083,12 @@ auto VmCowPages::unpin_range_locked(usize const offset, usize const size) -> Sta
     for (usize at = 0; at < size; at += PAGE_SIZE) {
         auto const index = PgOff((offset + at) >> PAGE_SHIFT);
         auto *const page = m_pages.lookup(index).page();
-        page->decrease_pinned();
-        if (page->pinned_count() == 0) {
+        // Every page was seen to hold a pin by the loop above, under the lock
+        // still held here.
+        [[maybe_unused]]
+        auto const status = unpin_frame(page);
+        DEBUG_ASSERT(Status::Ok == status, "a page counted as pinned had no pin");
+        if (page->pin_count() == 0) {
             m_nr_pinned_pages -= 1;
             // Filed as its kind says, as when it was put here: a pinned node's
             // pages go back on the pinned queue. A pager's page does not become
@@ -1155,7 +1161,7 @@ auto VmCowPages::cow_page(u64 const offset, FoundContent const &found,
     if (auto const status =
             m_pages.insert_page(PgOff(offset >> PAGE_SHIFT), copy, VmPageList::Tag::Owned);
         Status::Ok != status) {
-        free_frames(copy, 0);
+        free_frames(copy);
         return ktl::err(status);
     }
     file_page_locked(copy, PgOff(offset >> PAGE_SHIFT), Fill::Content);
@@ -1307,7 +1313,7 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     // allocates a second one over the top of it.
     if (auto const status = m_target->m_pages.insert_page(index(), page, VmPageList::Tag::Owned);
         Status::Ok != status) {
-        free_frames(page, 0);
+        free_frames(page);
         return ktl::err(status);
     }
     m_target->file_page_locked(page, index(), Fill::ZeroFork);

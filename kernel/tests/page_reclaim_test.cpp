@@ -135,14 +135,14 @@ namespace {
             flags |= mm::Gaf::ThisNode;
         }
         for (usize i = 0; i < count; ++i) {
-            auto *const frame = mm::alloc_frames(nid, flags, 0).value_or(nullptr);
+            auto *const frame = mm::alloc_frames(flags, 0, nid).value_or(nullptr);
             if (!frame) {
                 return false;
             }
             *reinterpret_cast<u64 *>(mm::PhysMap::phys_to_virt(mm::frame_to_phys(frame))) =
                 pattern(first + i);
             if (pages.append_page(i, frame) != Status::Ok) {
-                mm::free_frames(frame, 0);
+                mm::free_frames(frame);
                 return false;
             }
         }
@@ -667,7 +667,7 @@ namespace {
                     "at OutOfMemory with pages to give, they are given back, and an allocation "
                     "that could wait is served");
         if (served) {
-            mm::free_frames(*served, 0);
+            mm::free_frames(*served);
         }
 
         auto _ = watchdog.set_levels(boot);
@@ -702,7 +702,7 @@ namespace {
         mm::PmFrame::List held;
         mm::PmNode::node(remote)->zone_list()->for_each_local_zone([&held](mm::PmZone &zone) {
             for (usize order = MAX_FRAME_ORDER + 1; order != 0; --order) {
-                while (auto block = zone.take_block(order - 1)) {
+                while (auto block = zone.alloc_frames(order - 1)) {
                     held.push_back(block.value());
                 }
             }
@@ -711,20 +711,20 @@ namespace {
         auto const levels = mm::MemoryWatchdog::get().levels();
         auto const globally_normal =
             levels.pressure_at(mm::approx_free_frame_count()) == mm::MemoryPressure::Normal;
-        auto const missed = mm::alloc_frames(remote, mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0);
+        auto const missed = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, remote);
         auto const exhausted = !missed && missed.unwrap_err() == Status::OutOfMem;
         if (missed) {
-            mm::free_frames(*missed, 0);
+            mm::free_frames(*missed);
         }
         auto const evicted = settle([&] { return remote_vmo->committed_pages(0, P) == 0; });
         auto const kept_local = local_vmo->committed_pages(0, P) == 1;
         bool retried = false;
         if (evicted) {
             auto const recovered =
-                mm::alloc_frames(remote, mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0);
+                mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, remote);
             if (recovered) {
                 retried = (*recovered)->nid() == remote;
-                mm::free_frames(*recovered, 0);
+                mm::free_frames(*recovered);
             }
         }
         mm::free_frames(&held);

@@ -117,51 +117,57 @@ constexpr auto get_order(usize n) -> usize {
     return ustl::countr_zero(ustl::bit_ceil(n));
 }
 
-/// Attempt a block allocation, starting on the local node. With CanWait,
-/// pressure can return ShouldWait. The caller releases its locks before waiting.
+/// Allocates one block of 2^|order| frames. |home| is the node the walk
+/// starts from; the default names no node, and the walk then starts on the
+/// calling CPU's node, after the thread's placement policy has had its say.
+/// The other online nodes are tried after the home, nearest first, unless
+/// |flags| carries Gaf::ThisNode.
+///
+/// With Gaf::CanWait, pressure can answer ShouldWait: the caller releases its
+/// locks and calls wait_for_frame_allocation().
 [[nodiscard]]
-auto alloc_frames(Gaf, usize order = 0, NodeMask const & = node_online_mask())
+auto alloc_frames(Gaf flags, usize order = 0, NodeId home = bootmem::ANY_NODE)
     -> ktl::Result<PmFrame *>;
 
-/// Write the frame's physical address on success when |addr| is supplied.
+/// Allocates |n| single frames as a list. On failure every frame already
+/// taken is returned before the error is.
 [[nodiscard]]
-auto alloc_frames(Gaf, PhysAddr *addr, usize order = 0) -> ktl::Result<PmFrame *>;
+auto alloc_frames_bulk(Gaf flags, usize n, NodeId home = bootmem::ANY_NODE)
+    -> ktl::Result<PmFrame::List>;
 
+/// Allocates exactly |n| pages as a list of blocks, one per set bit of |n|:
+/// bit k contributes one block of 2^k contiguous pages, so |n| = 5 yields a
+/// 1-page block and a 4-page block. Each block is contiguous in itself; the
+/// blocks are not contiguous with each other. They are taken smallest first,
+/// and on failure every block already taken is returned before the error is.
 [[nodiscard]]
-auto alloc_frames_fragment(Gaf, usize, NodeMask const & = node_online_mask())
+auto alloc_frames_fragment(Gaf flags, usize n, NodeId home = bootmem::ANY_NODE)
+    -> ktl::Result<PmFrame::List>;
+
+/// Allocates |n| frames that are adjacent in physical memory, the first at an
+/// address aligned to 2^|align_log2| bytes, as a list in address order. Each
+/// frame is a block of its own and is freed alone, like a frame of
+/// alloc_frames_bulk(); only their addresses say they belong together.
+///
+/// The run comes out of one buddy block, so |n| frames and the alignment both
+/// have to fit the largest order: a request that does not is InvArgs.
+[[nodiscard]]
+auto alloc_frames_contiguous(Gaf flags, usize n, usize align_log2, NodeId home = bootmem::ANY_NODE)
     -> ktl::Result<PmFrame::List>;
 
 /// Allocate one power-of-two block large enough for the requested page count.
 FORCE_INLINE [[nodiscard]]
-inline auto alloc_frames_n(Gaf alloc_flags, usize nr_frames,
-                           NodeMask const &nodes = node_online_mask()) -> ktl::Result<PmFrame *> {
-    return alloc_frames(alloc_flags, get_order(nr_frames), nodes);
-}
-
-/// Allocate an immediate list of single frames.
-[[nodiscard]]
-auto alloc_frames(NodeId, Gaf, PmFrame::List *, usize, NodeMask const & = node_online_mask())
-    -> Status;
-
-/// The same block allocation protocol with an explicit home node.
-[[nodiscard]]
-auto alloc_frames(NodeId, Gaf, usize, NodeMask const & = node_online_mask())
-    -> ktl::Result<PmFrame *>;
-
-/// Allocate one power-of-two block large enough for the requested page count.
-FORCE_INLINE [[nodiscard]]
-inline auto alloc_frames_n(NodeId nid, Gaf alloc_flags, usize nr_frames,
-                           NodeMask const &nodes = node_online_mask()) -> ktl::Result<PmFrame *> {
-    return alloc_frames(nid, alloc_flags, get_order(nr_frames), nodes);
+inline auto alloc_frames_n(Gaf alloc_flags, usize nr_frames, NodeId home = bootmem::ANY_NODE)
+    -> ktl::Result<PmFrame *> {
+    return alloc_frames(alloc_flags, get_order(nr_frames), home);
 }
 
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
 FORCE_INLINE
-auto get_frames(Gaf alloc_flags, usize order = 0, NodeMask const &nodes = node_online_mask())
-    -> T * {
+auto get_frames(Gaf alloc_flags, usize order = 0, NodeId home = bootmem::ANY_NODE) -> T * {
     DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "use alloc_frames() to handle ShouldWait");
-    if (auto frame = alloc_frames(alloc_flags, order, nodes)) {
+    if (auto frame = alloc_frames(alloc_flags, order, home)) {
         return PhysMap::phys_to_virt<T>(frame_to_phys(*frame));
     }
 
@@ -171,30 +177,8 @@ auto get_frames(Gaf alloc_flags, usize order = 0, NodeMask const &nodes = node_o
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
 FORCE_INLINE
-auto get_frames_n(Gaf alloc_flags, usize nr_frames, NodeMask const &nodes = node_online_mask())
-    -> T * {
-    return get_frames<T>(alloc_flags, get_order(nr_frames), nodes);
-}
-
-template <typename T = u8>
-[[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
-FORCE_INLINE
-auto get_frames(NodeId nid, Gaf alloc_flags, usize order = 0,
-                NodeMask const &nodes = node_online_mask()) -> T * {
-    DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "use alloc_frames() to handle ShouldWait");
-    if (auto frame = alloc_frames(nid, alloc_flags, order, nodes)) {
-        return PhysMap::phys_to_virt<T>(frame_to_phys(*frame));
-    }
-
-    return nullptr;
-}
-
-template <typename T = u8>
-[[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
-FORCE_INLINE
-auto get_frames_n(NodeId nid, Gaf alloc_flags, usize nr_frames,
-                  NodeMask const &nodes = node_online_mask()) -> T * {
-    return get_frames<T>(nid, alloc_flags, get_order(nr_frames), nodes);
+auto get_frames_n(Gaf alloc_flags, usize nr_frames, NodeId home = bootmem::ANY_NODE) -> T * {
+    return get_frames<T>(alloc_flags, get_order(nr_frames), home);
 }
 
 /// A fresh, zeroed page-table page, from whichever allocator is up.
@@ -227,11 +211,42 @@ auto alloc_page_table(usize size, usize alignment, NodeId node = bootmem::ANY_NO
 /// build asserts it.
 auto free_page_table(PhysAddr base, usize size) -> void;
 
-/// Returns |frame|'s block to its zone's buddy allocator. The frame must not
-/// be reserved: a frame stamped Reserved at boot has to go through
-/// unwire_frame() first, or the buddy would hold a frame the reserved counts
-/// still claim (a debug build asserts it, in PmNode::free_frames()).
-auto free_frames(PmFrame *frame, usize order = 0) -> void;
+/// Returns the block |frame| heads to its zone's buddy allocator, whole.
+///
+/// How much that is, is the block's to say and not the caller's: the head
+/// frame records the order the block was handed out at, and that is what goes
+/// back. A caller that wants to return part of a block makes the parts blocks
+/// of their own first, by giving each frame it will free alone the order 0.
+/// A frame nothing has allocated counts as a block of one.
+///
+/// The frame must not be reserved: a frame stamped Reserved at boot has to go
+/// through unwire_frame() first, or the buddy would hold a frame the reserved
+/// counts still claim (a debug build asserts it).
+auto free_frames(PmFrame *frame) -> void;
+
+/// Gives the frames of the pfn range [|start|, |end|) to the buddy allocators
+/// for the first time: memory the boot allocator held and no zone ever handed
+/// out -- the ranges still free at the handoff, the kernel's `.init*` area
+/// once boot is done, CPU 0's provisional per-CPU unit. The range is cut into
+/// the largest blocks its alignment allows. None of the frames may be
+/// reserved, as for free_frames().
+///
+/// Not free_frames(): that returns a block, and a block is something an
+/// allocation made, with a head frame that records its order. These frames
+/// were never a block, so there is no order to read and the range is what
+/// says how much is given.
+auto adopt_frames(Pfn start, Pfn end) -> void;
+
+/// Makes the block |frame| heads into blocks of |order| each: a block of
+/// order k becomes 2^(k - |order|) of them, every one with a head frame that
+/// records |order|, so that each can be kept, handed on or freed alone. With
+/// the default a block becomes single frames.
+///
+/// The one way to return part of a block. free_frames() returns a block
+/// whole and reads how much that is from its head, so the parts have to be
+/// blocks before any of them is freed. The caller owns the block, as an
+/// allocation handed it out, and |order| is at most the block's own.
+auto split_block(PmFrame *frame, usize order = 0) -> void;
 
 /// Takes |frame|, reserved since boot, off the reserved books, so that it can
 /// be owned like a frame the allocator handed out: freed to the buddy
@@ -250,8 +265,8 @@ auto free_frames(PmFrame *frame, usize order = 0) -> void;
 auto unwire_frame(PmFrame *frame) -> void;
 
 FORCE_INLINE
-inline auto free_frames(VirtAddr virt_addr, usize order = 0) -> void {
-    return free_frames(virt_to_frame(virt_addr), order);
+inline auto free_frames(VirtAddr virt_addr) -> void {
+    return free_frames(virt_to_frame(virt_addr));
 }
 
 auto free_frames(PmFrame::List *list) -> void;
@@ -314,8 +329,31 @@ enum class DelayedAllocations : u8 {
 auto set_free_memory_signal(usize lower, usize upper, usize delay_level, sync::Event *event,
                             DelayedAllocations delayed) -> bool;
 
+/// Holds |frame| in place: until the matching unpin_frame() it keeps its
+/// physical address and its content, so nothing may reclaim it, replace it or
+/// move it. Pins count, and a frame is held while it has any.
+///
+/// The caller holds the lock of the frame's owner, and the owner keeps one
+/// invariant under that lock: a frame with any pin is filed where its movers
+/// will not take it. For a page of a VMO that is the node's pinned queue and
+/// its count of pinned pages, which VmCowPages updates on the first pin and
+/// the last unpin; reclaim and zero-page dedup go by the queue a page is on,
+/// and cloning and taking pages by the node's count, all under the node's
+/// lock. So a pin either comes first and the page is out of every mover's
+/// way, or comes after the page has gone from its owner and finds nothing to
+/// pin.
+///
+/// NoResource when the frame cannot take another pin (255). BadState for the
+/// head of a free block, which nobody owns. A frame inside a free block is
+/// not told apart: the buddy marks only a free block's head, and pinning a
+/// frame the caller does not own breaks the precondition above whether or not
+/// it is noticed.
+[[nodiscard]]
 auto pin_frame(PmFrame *frame) -> Status;
 
+/// Undoes one pin_frame(), under the same lock. BadState for a frame that has
+/// no pin.
+[[nodiscard]]
 auto unpin_frame(PmFrame *frame) -> Status;
 
 } // namespace ours::mm

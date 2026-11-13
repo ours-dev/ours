@@ -56,7 +56,10 @@ namespace {
 
     auto check_two_regions(mm::VmAspace &aspace) -> void {
         PhysAddr phys{};
-        auto *const frames = mm::alloc_frames(mm::ALLOC_KERNEL, &phys, 1).value_or(nullptr);
+        auto *const frames = mm::alloc_frames(mm::ALLOC_KERNEL, 1).value_or(nullptr);
+        if (frames) {
+            phys = mm::frame_to_phys(frames);
+        }
         if (!frames) {
             EXPECT_TRUE(false, "two contiguous frames are allocated");
             return;
@@ -68,7 +71,7 @@ namespace {
                                       "vmaphys.test");
         if (mapping.is_err()) {
             EXPECT_TRUE(false, "the two frames are mapped as a physical object");
-            mm::free_frames(frames, 1);
+            mm::free_frames(frames);
             return;
         }
         auto const base = mapping.unwrap()->base();
@@ -98,7 +101,7 @@ namespace {
                     "protect rejects empty permissions and leaves the physical PTE unchanged");
 
         auto _ = root->unmap(base, 2 * P);
-        mm::free_frames(frames, 1);
+        mm::free_frames(frames);
     }
 
     /// Puts the calling thread on |next| and loads its page tables, and hands
@@ -127,15 +130,21 @@ namespace {
 
         PhysAddr first_pa{};
         PhysAddr second_pa{};
-        auto *const first = mm::alloc_frames(mm::ALLOC_KERNEL, &first_pa, 0).value_or(nullptr);
-        auto *const second = mm::alloc_frames(mm::ALLOC_KERNEL, &second_pa, 0).value_or(nullptr);
+        auto *const first = mm::alloc_frames(mm::ALLOC_KERNEL).value_or(nullptr);
+        auto *const second = mm::alloc_frames(mm::ALLOC_KERNEL).value_or(nullptr);
+        if (first) {
+            first_pa = mm::frame_to_phys(first);
+        }
+        if (second) {
+            second_pa = mm::frame_to_phys(second);
+        }
         if (!first || !second) {
             EXPECT_TRUE(false, "two frames are allocated for the overwrite");
             if (first) {
-                mm::free_frames(first, 0);
+                mm::free_frames(first);
             }
             if (second) {
-                mm::free_frames(second, 0);
+                mm::free_frames(second);
             }
             return;
         }
@@ -147,8 +156,8 @@ namespace {
                                       "vmaphys.test overwrite");
         if (mapping.is_err()) {
             EXPECT_TRUE(false, "the first frame is mapped, populated");
-            mm::free_frames(first, 0);
-            mm::free_frames(second, 0);
+            mm::free_frames(first);
+            mm::free_frames(second);
             return;
         }
         auto const va = mapping.unwrap()->base();
@@ -188,8 +197,8 @@ namespace {
                     "ErrorIfExisting over the page is AlreadyExists, and leaves it as it was");
 
         auto _ = root->unmap(va, P);
-        mm::free_frames(first, 0);
-        mm::free_frames(second, 0);
+        mm::free_frames(first);
+        mm::free_frames(second);
     }
 
     KTEST(VmaPhys, MapsEachPageToItsOwnFrame) {

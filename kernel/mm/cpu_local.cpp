@@ -163,9 +163,11 @@ class CpuLocal::Mapper {
 
     /// The provisional unit, rounded to a whole buddy order.
     ///
-    /// Only this allocation is rounded, and only so that init() can hand it
-    /// back with a single `free_frames`. Rounding `unit_size()` itself would
-    /// inflate every unit of every chunk to buy that one convenience.
+    /// Only this allocation is rounded. It was, so that init() could hand it
+    /// back with a single `free_frames`; init() now gives it to the buddy with
+    /// adopt_frames(), which takes any range, so the rounding buys nothing
+    /// and costs up to one unit of boot memory. Kept until it is measured
+    /// against the unrounded size (docs/repairs/261112/mm.md).
     static auto replica_span() -> usize {
         auto const pages = round_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
         return (usize{1} << mm::get_order(pages)) * PAGE_SIZE;
@@ -348,7 +350,7 @@ auto CpuLocal::Mapper::build_dense(VirtAddr slot, Gaf alloc_flags) -> Status {
                 std::min(usize(ustl::bit_width(remaining)) - 1, usize(MAX_FRAME_ORDER));
             auto const n = usize{1} << order;
 
-            auto const frame = alloc_frames(nid, alloc_flags, order);
+            auto const frame = alloc_frames(alloc_flags, order, nid);
             if (!frame) {
                 // Earlier units stay mapped. Nothing here is ever torn down,
                 // and the only caller that can fail is init(), which panics.
@@ -393,7 +395,7 @@ auto CpuLocal::Mapper::build_scattered() -> Status {
         }
 
         // Zeroed, so a unit's dynamic area starts clean.
-        auto const frame = alloc_frames(nid, mm::ALLOC_KERNEL | mm::Gaf::Zero, order);
+        auto const frame = alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::Zero, order, nid);
         if (!frame) {
             for (auto done = u32(0); done < group; ++done) {
                 free_frames(&m_group_frames[done]);
@@ -837,11 +839,14 @@ auto CpuLocal::init() -> void {
         Self::access(CURRENT_CPUNUM, cpu) = cpu;
     }
 
-    // Move CPU 0 onto its real unit and release the provisional one. Only
-    // that allocation was rounded to a whole buddy order, so this hands back
+    // Move CPU 0 onto its real unit and give the provisional one to the buddy.
+    // It came from the boot allocator before there was a buddy, so it is
+    // adopted, not freed: no allocation ever made a block of it. Only that
+    // allocation was rounded to a whole buddy order, so this hands over
     // exactly what was taken without inflating unit_size() everywhere.
     attach_to_unit(0, CPU_OFFSETS[0]);
-    free_frames(replica, mm::get_order(Mapper::replica_span() / PAGE_SIZE));
+    auto const replica_pfn = frame_to_pfn(virt_to_frame(replica));
+    adopt_frames(replica_pfn, replica_pfn + Mapper::replica_span() / PAGE_SIZE);
 
     bootstrap(CpuMask::of(0));
 }

@@ -152,16 +152,6 @@ namespace page {
         std::atomic<u16> num_mappings; // 65536 mappings
         std::atomic<u16> num_users;    // 65536 users
 
-        /// How many pins hold this page in place:
-        /// a page with any cannot be reclaimed, zero-deduplicated, taken out of
-        /// its node, or shared with a clone, because something other than the
-        /// CPU, a device that does DMA to it, knows where it is.
-        ///
-        /// Written only under the lock of the node that holds the page, so a
-        /// pin and an unpin never race each other; atomic only so that a reader
-        /// without the lock, a dump or a test, reads a whole value.
-        std::atomic<u8> pinned_count;
-
         /// How many more than one of the copy-on-write tree's leaves can see
         /// this page: zero for a page that has one viewer, and only ever above
         /// zero for a page held by a hidden node, which is what makes it shared.
@@ -274,8 +264,14 @@ class PageFrame {
         m_status.set<Index::Section>(secnum);
         m_status.set<Index::Node>(nid);
         m_status.set<Index::Role>(Role::None);
-        // The one write of the whole field: whatever the descriptor held
-        // before is garbage.
+        // No block yet: a frame is the head of a block only once the buddy
+        // has made one of it, and the buddy writes the order then. Written
+        // here all the same, because free_frames() reads it to learn how much
+        // is being returned, and a frame nothing has allocated must read as a
+        // single frame and not as whatever its storage held.
+        m_status.set<Index::Order>(0);
+        // The one write of the whole Flags field: whatever it held before is
+        // garbage.
         m_status.set<Index::Flags>(Flags::Initialized);
     }
 
@@ -318,7 +314,7 @@ class PageFrame {
     /// Clears Reserved: one half of taking a frame off the reserved books, which
     /// unwire_frame() does for every frame that leaves them (the init area
     /// freed after boot, the boot image adopted by userboot's VMO). It comes
-    /// before the frame is freed: PmNode::free_frames() asserts that the
+    /// before the frame is freed: mm::free_frames() asserts that the
     /// frame it is given is not reserved.
     FORCE_INLINE
     constexpr auto clear_reserved() -> void {
@@ -379,7 +375,55 @@ class PageFrame {
 
     FORCE_INLINE
     auto set_compound_offset(u32 offset) -> void {
-        m_compound.store(offset, std::memory_order_relaxed);
+        DEBUG_ASSERT(offset <= std::numeric_limits<u16>::max(),
+                     "frame {} of a block: no block is that large", offset);
+        m_compound.store(static_cast<u16>(offset), std::memory_order_relaxed);
+    }
+
+    /// How many pins hold this frame in place. A frame with any must keep its
+    /// physical address and its content: it cannot be reclaimed, replaced,
+    /// zero-deduplicated, taken out of its node, or shared with a clone,
+    /// because something other than the CPU, a device that does DMA to it,
+    /// knows where it is.
+    ///
+    /// A fact about the frame whatever its role, which is why it is here and
+    /// not in a role's body: a change of role does not forget a pin, and the
+    /// allocator can check, on the way into stock and out of it, that no
+    /// frame is free while held.
+    ///
+    /// Written only under the lock of the frame's owner (for a page of a VMO,
+    /// the lock of the node that holds it), so a pin and an unpin never race
+    /// each other. Movers do not read it directly: the owner files a frame
+    /// with any pin where its movers will not take it, on the first pin and
+    /// off on the last (see mm::pin_frame()). Atomic only so that a reader
+    /// without the lock, a dump or a test, reads a whole value.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto pin_count() const -> usize {
+        return m_pins.load(std::memory_order_relaxed);
+    }
+
+    /// One more pin. False, and nothing changed, when the count is at its
+    /// limit (255): a pin has to be refused there, not wrapped to none. The
+    /// caller holds the owner's lock, so the read and the write are not one
+    /// atomic step and do not need to be.
+    [[nodiscard]]
+    auto pin() -> bool {
+        auto const now = m_pins.load(std::memory_order_relaxed);
+        if (now == std::numeric_limits<u8>::max()) {
+            return false;
+        }
+        m_pins.store(static_cast<u8>(now + 1), std::memory_order_relaxed);
+        return true;
+    }
+
+    /// One pin fewer. The count is unsigned, so an unpin of none would wrap
+    /// to the limit and hold the frame for ever: an assertion, as drop_share()
+    /// is.
+    auto unpin() -> void {
+        auto const now = m_pins.load(std::memory_order_relaxed);
+        DEBUG_ASSERT(now > 0, "a frame with no pin lost one");
+        m_pins.store(static_cast<u8>(now - 1), std::memory_order_relaxed);
     }
 
     auto get() const -> void {
@@ -462,35 +506,6 @@ class PageFrame {
         return as<page::VmmBody>().num_mappings.load();
     }
 
-    /// See VmmBody::pinned_count.
-    auto pinned_count() const -> usize {
-        return as<page::VmmBody>().pinned_count.load();
-    }
-
-    /// One more pin. False, and nothing changed, when the count is at its limit
-    /// (255): a pin has to be refused there, not wrapped to none. The caller
-    /// holds the lock of the node that holds this page, so the read and the
-    /// write are not one atomic step and do not need to be.
-    [[nodiscard]]
-    auto increase_pinned() -> bool {
-        auto &count = as<page::VmmBody>().pinned_count;
-        auto const now = count.load();
-        if (now == std::numeric_limits<u8>::max()) {
-            return false;
-        }
-        count.store(static_cast<u8>(now + 1));
-        return true;
-    }
-
-    /// One pin fewer. The count is unsigned, so an unpin of none would wrap to
-    /// 255 and hold the page for ever: an assertion, as drop_share() is.
-    auto decrease_pinned() -> void {
-        auto &count = as<page::VmmBody>().pinned_count;
-        auto const now = count.load();
-        DEBUG_ASSERT(now > 0, "a page with no pin lost one");
-        count.store(static_cast<u8>(now - 1));
-    }
-
     /// See VmmBody::share_count. The caller holds the lock of the tree whose
     /// node holds this page.
     auto share_count() const -> u32 {
@@ -543,8 +558,13 @@ class PageFrame {
     // The size of following fields type should be half of a word.
     mutable std::atomic<u32> m_references;
 
-    // Trace the position of current frame in a large frame.
-    mutable std::atomic<u32> m_compound;
+    // Trace the position of current frame in a large frame. Sixteen bits:
+    // the largest block has 2^MAX_FRAME_ORDER frames.
+    mutable std::atomic<u16> m_compound;
+
+    // See pin_count(). It shares the half word the compound offset had, and
+    // leaves one byte of it spare.
+    std::atomic<u8> m_pins;
 
     /// AutoUnlink because Slab::destroy detaches a frame without knowing which
     /// list holds it. One hook serves every role -- see the comment above
@@ -579,6 +599,8 @@ class PageFrame {
 /// TODO(SmallHuaZi): unused so far; large-page support will need it, along
 /// with a bounds check against the end of the section's memmap.
 
+static_assert((usize{1} << MAX_FRAME_ORDER) <= usize{std::numeric_limits<u16>::max()} + 1,
+              "a frame's offset in its block is stored in sixteen bits");
 static_assert(sizeof(PageFrame) == PageFrame::SIZE_LIMIT,
               "the memmap stride is what the role overlay depends on");
 static_assert(alignof(PageFrame) <= PageFrame::ALIGNMENT);

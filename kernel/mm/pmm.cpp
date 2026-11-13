@@ -1,4 +1,5 @@
 #include <ours/assert.hpp>
+#include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/early_mem.hpp>
@@ -9,15 +10,19 @@
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/priv/alloc_failure.hpp>
+#include <ours/mm/priv/pmm.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/spin_lock.hpp>
+#include <ours/task/thread.hpp>
 #include <ours/time/timer.hpp>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 
+#include <gktl/counter.hpp>
+#include <gktl/defer.hpp>
 #include <logz4/log.hpp>
 #include <numa/topology.hpp>
 
@@ -41,8 +46,10 @@ auto approx_free_frame_count() -> usize {
 namespace {
     /// The gate in front of the allocations that can wait (alloc_frames()
     /// with Gaf::CanWait), and the signal for whoever watches free memory
-    /// (set_free_memory_signal()). The facade owns admission. PmNode samples
-    /// the watcher's bounds at the end of an allocation or return.
+    /// (set_free_memory_signal()). The mm:: functions own admission, and
+    /// observe_pressure() below samples the watcher's bounds once at the end
+    /// of each of their allocations or returns. PmNode and PmZone never reach
+    /// it.
     ///
     /// Every allocation and free asks it something, so what they read takes
     /// no lock: atomics, each loaded on its own. The event that wakes waiters
@@ -188,12 +195,180 @@ namespace {
 
 } // namespace
 
-auto PmNode::observe_pressure(ustl::Option<PmZone const &> depleted_zone) -> void {
-    GATE.check_signal();
-    if (depleted_zone) {
-        MemoryReclaimer::get().request(*depleted_zone);
+namespace {
+    GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
+    GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
+
+    /// The gate every block passes on its way out of stock, with no zone lock
+    /// held: what makes a block the buddy gave into the block the caller asked
+    /// for. The zone moved it and the node chose the zone; neither prepares
+    /// it.
+    auto prepare_alloc(PmFrame &frame, AllocRequest const &request) -> void {
+        // A pin says a frame stays where it is, and this one was on a free
+        // list a moment ago. Every mm:: path into stock asserts the same in
+        // prepare_free(), under the same switch, so an owner freeing a pinned
+        // frame is stopped there. What this catches is a count that never
+        // passed prepare_free(): a frame given to PmNode::free_frames() or
+        // PmZone::free_frames() directly, a frame pinned while it was free,
+        // or descriptor storage that was not zeroed (init() does not write the
+        // count). A release build has neither check.
+        DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} leaves a free list with {} pin(s)",
+                     frame_to_phys(&frame), frame.pin_count());
+
+        if (!!(request.flags() & Gaf::Zero)) {
+            std::fill_n(frame_to_virt<isize>(&frame),
+                        (usize{1} << request.order()) * PAGE_SIZE / sizeof(isize), 0);
+        }
+
+        // Counted for the node that gave the block, against the node the
+        // asking CPU is on: a block served from elsewhere is a miss whichever
+        // home the walk started from.
+        if (frame.nid() == CpuNodeMap::node_of(request.initiator())) {
+            PM_NODE_LOCAL_HIT.add(1);
+        } else {
+            PM_NODE_LOCAL_MISS.add(1);
+        }
     }
-}
+
+    /// The gate every block passes on its way into stock, before any lock is
+    /// taken: what must be true of a frame for the buddy to hold it.
+    auto prepare_free(PmFrame const &frame) -> void {
+        // The runtime half of the guard in early_mem.cpp's
+        // free_frames_phys_range(): a reserved frame reaches the buddy only
+        // through unwire_frame(). Nothing else on this path looks at the frame,
+        // so without this a reserved frame would be handed out again still
+        // flagged and still counted.
+        DEBUG_ASSERT(!(frame.flags() & page::Flags::Reserved),
+                     "frame {:#x} is reserved; unwire_frame() it before freeing",
+                     frame_to_phys(&frame));
+        DEBUG_ASSERT(!frame.is_role(page::Role::Vmm) || 0 == frame.page_queue(),
+                     "frame {:#x} is freed while still on a page queue", frame_to_phys(&frame));
+        // Whatever its role: a pin says the frame stays where it is, and a
+        // frame on a free list is about to be someone else's.
+        DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} is freed while {} pin(s) hold it",
+                     frame_to_phys(&frame), frame.pin_count());
+    }
+
+    /// Looks at free memory once, after a whole allocation or return and with
+    /// no zone lock held: signals the watcher when its bounds were left, and
+    /// asks the reclaimer for the node of a zone an allocation found short.
+    auto observe_pressure(ustl::Option<PmZone const &> depleted_zone = ustl::NONE) -> void {
+        GATE.check_signal();
+        if (depleted_zone) {
+            MemoryReclaimer::get().request(*depleted_zone);
+        }
+    }
+
+    auto apply_thread_policy(Gaf &alloc_flags) -> Status {
+        if constexpr (MEMORY_ALLOCATION_POLICY) {
+            if (!!(alloc_flags & Gaf::ThisNode)) {
+                return Status::Ok;
+            }
+            using Kind = AllocPolicy::Kind;
+
+            // The thread's resource lock covers reading the policy and nothing
+            // more: it is what another thread takes to replace it. It used to be
+            // held by every node-less allocation entry around the whole
+            // allocation, slow path included -- a spin lock with interrupts off,
+            // held across a path that could reschedule(). Copying the Arc out is
+            // all that needs it.
+            auto const policy = [] {
+                auto *const thread = task::Thread::Current::get();
+                Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
+                return thread->alloc_state().policy();
+            }();
+            if (policy) {
+                switch (policy->kind()) {
+                    case Kind::Bind:
+                        break;
+                    case Kind::Interleave:
+                        break;
+                    case Kind::Preferred:
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        return Status::Ok;
+    }
+
+    /// The node an allocation starts from: the one named, or the calling
+    /// CPU's once the thread's placement policy has had its say. An id outside
+    /// the node table names no node, which is how a caller says it has no
+    /// preference.
+    auto resolve_home(NodeId nid, Gaf &alloc_flags) -> ktl::Result<PmNode *> {
+        if (nid < MAX_NODES) {
+            if (auto *const node = PmNode::node(nid)) {
+                return ustl::ok(node);
+            }
+            return ustl::err(Status::InvArgs);
+        }
+
+        if (auto const status = apply_thread_policy(alloc_flags); Status::Ok != status) {
+            return ustl::err(status);
+        }
+        auto *const node = CpuNodeMap::local_node();
+        if (!node) {
+            return ustl::err(Status::BadState);
+        }
+        return ustl::ok(node);
+    }
+
+    /// One block for the calling thread out of |home|'s walk, with pressure
+    /// not looked at: the list forms take several and look once.
+    auto alloc_block(PmNode &home, Gaf const alloc_flags, usize const order, NodeMask const &nodes)
+        -> ustl::Result<PmFrame *, PmNode::BlockFailure> {
+        // Whether the calling thread may allocate at all: a thread that has
+        // disabled allocation (AllocState::disable()) is refused here,
+        // whichever way it asked. This is the one function every frame
+        // allocation reaches -- the node-less entries, the ones naming a node,
+        // and the bulk and fragment loops once per step -- so the rule cannot
+        // be walked around.
+        //
+        // It is a different question from where the frame comes from, and only
+        // that one depends on whether the caller named a node. So this is
+        // asked on every path, node named or not, and the placement policy
+        // only on the node-less ones (resolve_home()).
+        //
+        // Thread::Current is always there by now: task::init_early() makes the
+        // boot thread current before the PMM exists.
+        if (!task::Thread::Current::alloc_state().is_enabled()) {
+            return ustl::err(PmNode::BlockFailure{.status = Status::AccessDenied});
+        }
+
+        // Before the request is built: a resolved request never carries an
+        // order the buddy does not have.
+        if (order > MAX_FRAME_ORDER) {
+            return ustl::err(PmNode::BlockFailure{.status = Status::InvArgs});
+        }
+
+        auto const request = resolve_request(
+            alloc_flags, order, nodes, AllocRequest::Origin{.node = home.nid(), .cpu = Cpu::id()});
+        auto const block = home.alloc_frames(request);
+        if (block) {
+            prepare_alloc(**block, request);
+        }
+        return block;
+    }
+
+    /// One block back to the node that owns it, with pressure not looked at.
+    auto free_block(PmFrame &frame, usize const order) -> void {
+        prepare_free(frame);
+
+        // A frame goes back to the node that owns it, which the frame names,
+        // and not to the node of whoever is freeing it.
+        auto *const node = PmNode::node(frame.nid());
+        DEBUG_ASSERT(node, "frame {:#x} belongs to node {}, which does not exist",
+                     frame_to_phys(&frame), frame.nid());
+        node->free_frames(frame, order);
+    }
+
+    auto free_blocks(PmFrame::List &list) -> void {
+        list.clear_and_dispose([](PmFrame *frame) noexcept { free_block(*frame, frame->order()); });
+    }
+} // namespace
 
 auto num_nodes() -> usize {
     return PmNode::num_nodes();
@@ -227,7 +402,7 @@ auto node_soft_affinity(NodeId nid) -> CpuMask const * {
 /// See the declaration in pmm.hpp for why the choice lives here.
 auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
     if (pmm_enabled()) {
-        // Through the node-taking overload, so that `node` means the same thing
+        // With |node| as the home, so that `node` means the same thing
         // on both sides of the handover. It used to be read only by the EarlyMem
         // branch below, which made "a table on node N" honoured before the
         // handover and silently ignored after it -- the caller's argument
@@ -238,14 +413,18 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
         // memory it maps, and a table walk is a chain of dependent loads that
         // the hardware cannot overlap.
         //
-        // bootmem::ANY_NODE is >= MAX_NODES, which this overload forwards to
-        // the node-less one, so "no preference" -- every in-tree caller today --
-        // behaves exactly as before, the thread's NUMA policy included
-        // (applied by PmNode). The AllocState
-        // counter applies either way: PmNode::alloc_frames() checks it for
-        // every caller.
-        auto const result =
-            alloc_frames(node, ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE));
+        // bootmem::ANY_NODE is >= MAX_NODES, which names no node, so "no
+        // preference" -- every in-tree caller today -- starts on the calling
+        // CPU's node, the thread's NUMA policy included (applied by
+        // resolve_home()). The AllocState counter applies either way:
+        // alloc_block() checks it for every caller.
+        //
+        // Through the pipeline under mm::alloc_frames(), not the entry itself:
+        // a page table is the page-table failure site's
+        // (test::AllocationSite::PageTable, asked in PageTable::allocate_table())
+        // and must not also count as a frame asked for with no home.
+        auto const result = priv::alloc_frames(
+            ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE), node, node_online_mask());
         if (!result) {
             return PhysAddr{0};
         }
@@ -291,7 +470,10 @@ auto free_page_table(PhysAddr base, usize size) -> void {
     // discard_all_tables()).
     DEBUG_ASSERT(frame->as<page::MmuBody>().deposits == nullptr,
                  "freeing the page table {:#x} with tables still set aside for it", base);
-    free_frames(frame, get_order(size / PAGE_SIZE));
+    DEBUG_ASSERT(get_order(size / PAGE_SIZE) == frame->order(),
+                 "page table {:#x} of {} bytes was allocated as a block of order {}", base, size,
+                 frame->order());
+    free_frames(frame);
 }
 
 auto free_frame_count() -> usize {
@@ -356,65 +538,242 @@ auto node_possible_mask() -> NodeMask const & {
     return PmNode::node_possible_mask();
 }
 
-auto alloc_frames(Gaf alloc_flags, usize order, NodeMask const &fallback)
-    -> ktl::Result<PmFrame *> {
+namespace priv {
+    auto alloc_frames(Gaf alloc_flags, usize const order, NodeId const home, NodeMask const &nodes)
+        -> ktl::Result<PmFrame *> {
+        if (!!(alloc_flags & Gaf::CanWait)) {
+            if (auto const status = GATE.admit(); Status::Ok != status) {
+                return ustl::err(status);
+            }
+        }
+        // The gate has answered for CanWait; nothing below reads the bit.
+        alloc_flags = alloc_flags & ~Gaf::CanWait;
+
+        auto const node = resolve_home(home, alloc_flags);
+        if (!node) {
+            observe_pressure();
+            return ustl::err(node.unwrap_err());
+        }
+
+        auto const block = alloc_block(**node, alloc_flags, order, nodes);
+        if (!block) {
+            auto const &failure = block.error();
+            observe_pressure(failure.depleted_zone);
+            return ustl::err(failure.status);
+        }
+
+        observe_pressure();
+        return ustl::ok(*block);
+    }
+
+    auto alloc_frames_bulk(Gaf alloc_flags, usize const n, NodeId const home, NodeMask const &nodes)
+        -> ktl::Result<PmFrame::List> {
+        DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "batch allocation is immediate");
+
+        auto observation = gktl::defer([] { observe_pressure(); });
+        auto const node = resolve_home(home, alloc_flags);
+        if (!node) {
+            log::trace("Failed to allocate {} frames with reason: {}", n,
+                       to_string(node.unwrap_err()));
+            return ustl::err(node.unwrap_err());
+        }
+
+        PmFrame::List list;
+        auto rollback = gktl::defer([&list] { free_blocks(list); });
+        for (usize i = 0; i < n; ++i) {
+            auto block = alloc_block(**node, alloc_flags, 0, nodes);
+            if (!block) {
+                log::trace("Failed to allocate {} frames with reason: {}", n,
+                           to_string(block.error().status));
+                return ustl::err(block.error().status);
+            }
+            list.push_back(*block.unwrap());
+        }
+
+        rollback.cancel();
+        return ustl::ok(ustl::move(list));
+    }
+
+    auto alloc_frames_fragment(Gaf alloc_flags, usize n, NodeId const home, NodeMask const &nodes)
+        -> ktl::Result<PmFrame::List> {
+        DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "fragment allocation is immediate");
+
+        auto observation = gktl::defer([] { observe_pressure(); });
+        auto const node = resolve_home(home, alloc_flags);
+        if (!node) {
+            log::trace("Failed to allocate frame with reason: {}", to_string(node.unwrap_err()));
+            return ustl::err(node.unwrap_err());
+        }
+
+        PmFrame::List list;
+        auto rollback = gktl::defer([&list] { free_blocks(list); });
+        // One bit of |n| per step, whether or not it is set. The shift used to
+        // sit inside the branch that allocates, so the first clear bit was
+        // never shifted out: `continue` bumped the order and tested the same
+        // bit again, for ever. Any even |n| hung here -- n = 2 on its first
+        // step.
+        for (usize order = 0; n > 0; order += 1, n >>= 1) {
+            if ((n & 1) == 0) {
+                continue;
+            }
+
+            auto block = alloc_block(**node, alloc_flags, order, nodes);
+            if (!block) {
+                log::trace("Failed to allocate frame with reason: {}",
+                           to_string(block.error().status));
+                return ustl::err(block.error().status);
+            }
+            list.push_back(*block.unwrap());
+        }
+
+        rollback.cancel();
+        return ustl::ok(ustl::move(list));
+    }
+} // namespace priv
+
+auto alloc_frames(Gaf const flags, usize const order, NodeId const home) -> ktl::Result<PmFrame *> {
 #if MM_TEST_ALLOC_FAILURE
-    if (test::AllocationFailure::hit(test::AllocationSite::Frame)) {
+    // The frame site is a frame or block a caller asked for with no home
+    // named, through this entry. A page table is not one: it has a site of
+    // its own, and alloc_page_table() goes to the pipeline underneath this
+    // so that one injected failure is not counted twice.
+    if (home >= MAX_NODES && test::AllocationFailure::hit(test::AllocationSite::Frame)) {
         return ustl::err(Status::OutOfMem);
     }
 #endif
-    return alloc_frames(bootmem::ANY_NODE, alloc_flags, order, fallback);
+    return priv::alloc_frames(flags, order, home, node_online_mask());
 }
 
-auto alloc_frames(Gaf alloc_flags, PhysAddr *addr, usize order) -> ktl::Result<PmFrame *> {
-    auto result = alloc_frames(alloc_flags, order);
-    if (result && addr) {
-        *addr = frame_to_phys(*result);
-    }
-    return result;
-}
-
-auto alloc_frames_fragment(Gaf alloc_flags, usize n, NodeMask const &fallback)
+auto alloc_frames_bulk(Gaf const flags, usize const n, NodeId const home)
     -> ktl::Result<PmFrame::List> {
-    DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "fragment allocation is immediate");
-    auto result = PmNode::alloc_frames_fragment(alloc_flags, n, fallback);
-    if (!result) {
-        log::trace("Failed to allocate frame with reason: {}", to_string(result.unwrap_err()));
-    }
-    return ustl::move(result);
+    return priv::alloc_frames_bulk(flags, n, home, node_online_mask());
 }
 
-auto alloc_frames(NodeId nid, Gaf alloc_flags, PmFrame::List *list, usize n, NodeMask const &nodes)
-    -> Status {
-    DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "batch allocation is immediate");
-    auto result = PmNode::alloc_frames_bulk(nid, alloc_flags, n, nodes);
-    if (!result) {
-        log::trace("Failed to allocate {} frames with reason: {}", n,
-                   to_string(result.unwrap_err()));
-        return result.unwrap_err();
+auto alloc_frames_fragment(Gaf const flags, usize const n, NodeId const home)
+    -> ktl::Result<PmFrame::List> {
+    return priv::alloc_frames_fragment(flags, n, home, node_online_mask());
+}
+
+auto alloc_frames_contiguous(Gaf const flags, usize const n, usize const align_log2,
+                             NodeId const home) -> ktl::Result<PmFrame::List> {
+    DEBUG_ASSERT(!(flags & Gaf::CanWait), "contiguous allocation is immediate");
+    if (n == 0) {
+        return ustl::err(Status::InvArgs);
     }
 
-    *list = ustl::move(*result);
+    // A block is aligned to its own size, so one big enough for the alignment
+    // is aligned as asked: the order is the larger of what the count and the
+    // alignment need. An order no block has is refused by alloc_frames().
+    usize align_order = 0;
+    if (align_log2 > PAGE_SHIFT) {
+        align_order = align_log2 - PAGE_SHIFT;
+    }
+    auto const order = std::max(get_order(n), align_order);
+
+    auto const allocated = alloc_frames(flags, order, home);
+    if (!allocated) {
+        return ustl::err(allocated.unwrap_err());
+    }
+    auto *const block = *allocated;
+
+    // Each frame is its own from here, as if it had been allocated alone. The
+    // first |n| are the run; the rest of the block goes back now, one frame at
+    // a time.
+    split_block(block);
+    PmFrame::List run;
+    for (usize index = 0; index < n; ++index) {
+        run.push_back(block[index]);
+    }
+    auto const nr_frames = usize{1} << order;
+    for (usize index = n; index < nr_frames; ++index) {
+        free_frames(&block[index]);
+    }
+    return ustl::ok(ustl::move(run));
+}
+
+auto free_frames(PmFrame *frame) -> void {
+    DEBUG_ASSERT(frame, "free requires a frame");
+    // A block is returned whole, as it was handed out, and the head records
+    // the order the buddy gave it. A range of memory that was never a block
+    // comes in through adopt_frames(), which is told the range; a single frame
+    // that was never a block may come here, as order 0, which is what init()
+    // leaves in its head (the bootstrap trampoline's buffer, the boot image's
+    // pages once their VMO lets them go).
+    auto const order = frame->order();
+    log::trace("Free frame({:X}, {})", frame_to_phys(frame), order);
+    free_block(*frame, order);
+    observe_pressure();
+}
+
+auto adopt_frames(Pfn start, Pfn const end) -> void {
+    while (start < end) {
+        // Two separate limits, and the alignment one is not optional. A buddy
+        // block of order N is identified by its lowest pfn and finds its partner
+        // at `pfn ^ (1 << N)`; that identity only holds if the block is aligned to
+        // 2^N pages. Hand the allocator a misaligned block and the merge walk
+        // reaches for a "buddy" that belongs to some other block entirely --
+        // which removes a live frame from its list and loses it. A range that
+        // starts anywhere but on a MAX_FRAME_ORDER boundary is the normal case,
+        // so this is not a corner.
+        //
+        // ustl::countr_zero(start) is the largest power of two `start` is
+        // aligned to; the second limit then shrinks that to what is left in the
+        // range.
+        auto order = std::min(usize(MAX_FRAME_ORDER), usize(ustl::countr_zero(start)));
+        while (start + (usize{1} << order) > end) {
+            order -= 1;
+        }
+
+        free_block(*pfn_to_frame(start), order);
+        start += usize{1} << order;
+    }
+    observe_pressure();
+}
+
+auto pin_frame(PmFrame *const frame) -> Status {
+    DEBUG_ASSERT(frame, "pin requires a frame");
+    if (frame->is_role(page::Role::Pmm)) {
+        return Status::BadState;
+    }
+    if (!frame->pin()) {
+        return Status::NoResource;
+    }
     return Status::Ok;
 }
 
-auto alloc_frames(NodeId nid, Gaf alloc_flags, usize order, NodeMask const &nodes)
-    -> ktl::Result<PmFrame *> {
-    if (!!(alloc_flags & Gaf::CanWait)) {
-        if (auto const status = GATE.admit(); Status::Ok != status) {
-            return ustl::err(status);
-        }
+auto unpin_frame(PmFrame *const frame) -> Status {
+    DEBUG_ASSERT(frame, "unpin requires a frame");
+    if (frame->pin_count() == 0) {
+        return Status::BadState;
     }
-    return PmNode::alloc_frames(nid, alloc_flags & ~Gaf::CanWait, order, nodes);
+    frame->unpin();
+    return Status::Ok;
 }
 
-auto free_frames(PmFrame *frame, usize order) -> void {
-    log::trace("Free frame({:X}, {})", frame_to_phys(frame), order);
-    PmNode::free_frames(frame, order);
+auto split_block(PmFrame *const frame, usize const order) -> void {
+    DEBUG_ASSERT(frame, "split requires a block");
+    auto const whole = frame->order();
+    DEBUG_ASSERT(order <= whole, "block {:#x} of order {} cannot be split into blocks of order {}",
+                 frame_to_phys(frame), whole, order);
+    DEBUG_ASSERT(!frame->is_role(page::Role::Pmm), "block {:#x} is split while on a free list",
+                 frame_to_phys(frame));
+    DEBUG_ASSERT((frame_to_pfn(frame) & ((usize{1} << whole) - 1)) == 0,
+                 "frame {:#x} does not head a block of order {}", frame_to_phys(frame), whole);
+
+    // No lock: the block is the caller's, and nothing else reads the order of
+    // a frame that is on no free list. The descriptors of one block are
+    // consecutive, since a block never crosses the memmap's sections
+    // (FrameBuddy), so the new heads are reached by indexing from the old one.
+    auto const nr_frames = usize{1} << whole;
+    auto const step = usize{1} << order;
+    for (usize index = 0; index < nr_frames; index += step) {
+        frame[index].set_order(order);
+    }
 }
 
 auto free_frames(PmFrame::List *list) -> void {
-    PmNode::free_frames(list);
+    free_blocks(*list);
+    observe_pressure();
 }
 
 auto unwire_frame(PmFrame *const frame) -> void {

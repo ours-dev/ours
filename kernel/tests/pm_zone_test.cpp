@@ -73,10 +73,10 @@ namespace {
 
         constexpr auto HALF = BLOCK_FRAMES / 2;
         for (auto i = HALF; i > 0; --i) {
-            zone.return_block(block[i - 1], 0);
+            zone.free_frames(block[i - 1], 0);
         }
         for (auto i = HALF; i < BLOCK_FRAMES; ++i) {
-            zone.return_block(block[i], 0);
+            zone.free_frames(block[i], 0);
         }
 
         auto const after = count_free_blocks(zone);
@@ -116,7 +116,7 @@ namespace {
         PmFrame *later = nullptr;
         PmFrame::List spare;
         for (usize taken = 0; taken <= BLOCKS_PER_SECTION && !later; ++taken) {
-            auto const taken_block = zone.take_block(MAX_FRAME_ORDER);
+            auto const taken_block = zone.alloc_frames(MAX_FRAME_ORDER);
             if (!taken_block) {
                 break;
             }
@@ -143,7 +143,7 @@ namespace {
         }
 
         spare.clear_and_dispose(
-            [&zone](PmFrame *frame) noexcept { zone.return_block(*frame, MAX_FRAME_ORDER); });
+            [&zone](PmFrame *frame) noexcept { zone.free_frames(*frame, MAX_FRAME_ORDER); });
         return later != nullptr;
     }
 

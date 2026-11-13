@@ -283,7 +283,9 @@ a step is in, the code still has the shape described above.
   count, a node id. Never a compound structure as a parameter; the user
   rejected a `FrameRequest` and a `Placement` aggregate on 2026-11-10. One
   function with a trailing default (`home = ANY_NODE`) replaces the paired
-  overloads, no node mask is a public parameter, and whatever else a caller
+  overloads, no node mask is a public parameter (the pipeline takes one in
+  `mm::priv`, `ours/mm/priv/pmm.hpp`, for tests and for a thread's placement
+  policy), and whatever else a caller
   wants (zone ceiling, mobility, floor) is a `Gaf` bit behind a preset, not
   a new parameter. `Gaf` keeps `CanBlock`, `CanWait`, `ThisNode` and `Zero`
   and gains `Movable` and `Dma32`.
@@ -298,10 +300,13 @@ a step is in, the code still has the shape described above.
   designed from what it must support later (swap and eviction, large pages,
   constrained and contiguous allocation, movers), with the node, the zone and
   the frame kept as the principal objects, not a pruning of what exists.
-- `pin_frame()` and `unpin_frame()` in `pmm.hpp` are planned interfaces, for
-  holding a frame against being swapped out. So are `MigrateType` and the
-  `Movable` and `Dynamic` zone types. An undefined declaration or unused enum
-  in the PMM is a statement of a requirement; design for it, never delete it.
+- `pin_frame()` and `unpin_frame()` in `pmm.hpp` were declared and undefined
+  when the user said they are needed, for holding a frame against being
+  swapped out; they are built now (2026-11-12), over a count in the frame
+  header, with the owner's-lock contract written on the declaration.
+  `MigrateType` and the `Movable` and `Dynamic` zone types are still unused
+  and still planned. An undefined declaration or unused enum in the PMM is a
+  statement of a requirement; design for it, never delete it.
 
 ## VMM naming choices (user decision, 2026-11-05)
 

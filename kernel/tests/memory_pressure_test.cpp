@@ -92,7 +92,7 @@ namespace {
                                             mm::DelayedAllocations::Wait);
         auto const delayed = mm::alloc_frames(WAITABLE);
         if (delayed) {
-            mm::free_frames(*delayed, 0);
+            mm::free_frames(*delayed);
             return false;
         }
         return Status::ShouldWait == delayed.unwrap_err();
@@ -154,7 +154,7 @@ namespace {
         auto served = mm::alloc_frames(WAITABLE);
         EXPECT_TRUE(!!served, "with no delay level, a CanWait allocation is served");
         if (served) {
-            mm::free_frames(*served, 0);
+            mm::free_frames(*served);
         }
 
         auto const shut = shut_gate();
@@ -164,20 +164,14 @@ namespace {
             "below the delay level a CanWait allocation answers ShouldWait, and one without "
             "CanWait is served");
         if (plain) {
-            mm::free_frames(*plain, 0);
+            mm::free_frames(*plain);
         }
 
-        auto const by_node = mm::alloc_frames(mm::current_node(), WAITABLE, 0);
-        auto address = PhysAddr::Invalid;
-        auto const with_address = mm::alloc_frames(WAITABLE, &address);
-        EXPECT_TRUE(!by_node && by_node.unwrap_err() == Status::ShouldWait && !with_address &&
-                        with_address.unwrap_err() == Status::ShouldWait &&
-                        address == PhysAddr::Invalid,
-                    "block overloads share pressure admission and keep outputs on ShouldWait");
-        for (auto const &result: {by_node, with_address}) {
-            if (result) {
-                mm::free_frames(*result, 0);
-            }
+        auto const by_node = mm::alloc_frames(WAITABLE, 0, mm::current_node());
+        EXPECT_TRUE(!by_node && by_node.unwrap_err() == Status::ShouldWait,
+                    "an allocation that names its home shares pressure admission");
+        if (by_node) {
+            mm::free_frames(*by_node);
         }
     }
 
@@ -196,7 +190,7 @@ namespace {
                         waiter.frame != nullptr,
                     "a waiter sleeps while the gate is shut, and wakes with a frame when it opens");
         if (waiter.frame != nullptr) {
-            mm::free_frames(waiter.frame, 0);
+            mm::free_frames(waiter.frame);
         }
     }
 
@@ -218,10 +212,10 @@ namespace {
                     "with delayed allocations refused, a waiter wakes with OutOfMem, and a CanWait "
                     "allocation below the level fails at once");
         if (waiter.frame != nullptr) {
-            mm::free_frames(waiter.frame, 0);
+            mm::free_frames(waiter.frame);
         }
         if (refused) {
-            mm::free_frames(*refused, 0);
+            mm::free_frames(*refused);
         }
         open_gate();
     }
@@ -238,7 +232,7 @@ namespace {
         EXPECT_TRUE(shut && !result && result.unwrap_err() == Status::TimeOut,
                     "an interruptible allocation wait times out while the gate stays shut");
         if (result) {
-            mm::free_frames(*result, 0);
+            mm::free_frames(*result);
         }
     }
 
@@ -255,19 +249,19 @@ namespace {
             mm::set_free_memory_signal(0, 0, 0, &rejected, mm::DelayedAllocations::Wait);
         // The first fragment crosses the lower bound before the second fails.
         constexpr auto ROLLBACK = NR_CROSSING | (usize{1} << (MAX_FRAME_ORDER + 1));
-        auto rolled_back = mm::PmNode::alloc_frames_fragment(mm::ALLOC_KERNEL, ROLLBACK);
+        auto rolled_back = mm::alloc_frames_fragment(mm::ALLOC_KERNEL, ROLLBACK);
         auto const invalid = !rolled_back && rolled_back.unwrap_err() == Status::InvArgs;
         if (rolled_back) {
-            mm::PmNode::free_frames(&*rolled_back);
+            mm::free_frames(&*rolled_back);
         }
         auto const quiet = watched.wait(deadline_after(SETTLE)) == Status::TimeOut;
         EXPECT_TRUE(armed_low && invalid && quiet,
                     "a partial withdrawal is rolled back before pressure is sampled");
 
-        auto batch = mm::PmNode::alloc_frames_bulk(mm::ALLOC_USER, NR_CROSSING);
+        auto batch = mm::alloc_frames_bulk(mm::ALLOC_USER, NR_CROSSING);
         auto const low = watched.wait(deadline_after(SETTLE)) == Status::Ok;
         EXPECT_TRUE(armed_low && batch && batch->size() == NR_CROSSING && low,
-                    "a direct PmNode batch below the lower bound signals the event");
+                    "a batch below the lower bound signals the event");
         watched.unsignal();
 
         // And above the upper bound by frees.
@@ -275,11 +269,10 @@ namespace {
         auto const armed_high = mm::set_free_memory_signal(0, during + MARGIN, 0, &watched,
                                                            mm::DelayedAllocations::Wait);
         if (batch) {
-            mm::PmNode::free_frames(&*batch);
+            mm::free_frames(&*batch);
         }
         auto const high = watched.wait(deadline_after(SETTLE)) == Status::Ok;
-        EXPECT_TRUE(armed_high && high,
-                    "a direct PmNode list return above the upper bound signals the event");
+        EXPECT_TRUE(armed_high && high, "a list return above the upper bound signals the event");
         open_gate();
         EXPECT_TRUE(!stale_low && !stale_high && low,
                     "stale bounds are rejected without replacing the armed event");
@@ -466,7 +459,7 @@ namespace {
         }
         auto const critical = settles_at(MemoryPressure::Critical);
         for (usize i = 0; i < taken; ++i) {
-            mm::free_frames(frames[i], 0);
+            mm::free_frames(frames[i]);
         }
         auto const back = settles_at(MemoryPressure::Warning);
         EXPECT_TRUE(taken == 2 * K && critical && back,
@@ -483,10 +476,10 @@ namespace {
                     "at OutOfMemory an allocation that could wait is refused, and one that could "
                     "not is served");
         if (refused) {
-            mm::free_frames(*refused, 0);
+            mm::free_frames(*refused);
         }
         if (served) {
-            mm::free_frames(*served, 0);
+            mm::free_frames(*served);
         }
 
         auto const restored = watchdog.set_levels(boot);
@@ -496,7 +489,7 @@ namespace {
                     "with the boot levels back, the pressure is Normal and an allocation that "
                     "could wait is served");
         if (waited) {
-            mm::free_frames(*waited, 0);
+            mm::free_frames(*waited);
         }
     }
 

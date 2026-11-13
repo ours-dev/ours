@@ -372,7 +372,7 @@ namespace {
             auto held = frame != nullptr && pages.reserve(1) == Status::Ok &&
                         pages.append_page(0, frame) == Status::Ok;
             if (!held && frame != nullptr) {
-                mm::free_frames(frame, 0);
+                mm::free_frames(frame);
             }
             auto const supplied = held && node->supply_pages_locked(P, P, &pages) == Status::Ok;
             auto cursor = node->lookup_cursor_locked(P, P);

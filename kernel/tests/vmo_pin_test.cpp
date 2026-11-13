@@ -64,7 +64,7 @@ namespace {
         }
         auto *const page = found.value().page;
         return {.page = page,
-                .pins = page->pinned_count(),
+                .pins = page->pin_count(),
                 .kind = mm::PmNode::node(page->nid())->page_queues().kind_of(*page)};
     }
 
