@@ -96,9 +96,9 @@ namespace {
             nid = mm::current_node();
         }
         log::info("pmnode:   cpu{} is on node {}; {} node(s) online", cpu, nid,
-                  PmNode::num_online_nodes());
+                  mm::num_online_nodes());
 
-        EXPECT_TRUE(nid < MAX_NODES && PmNode::node(nid) != nullptr,
+        EXPECT_TRUE(nid < MAX_NODES && mm::find_node(nid) != nullptr,
                     "the calling CPU resolves to a node that exists");
         // There is one current_node() now. It used to be three -- a
         // NumaTopology::current_node(), mm::current_node() wrapping it, and
@@ -134,9 +134,9 @@ namespace {
                 }
                 declared_cpus += 1;
                 auto const placed = mm::CpuNodeMap::node_of(each);
-                if (PmNode::node(declared) == nullptr) {
+                if (mm::find_node(declared) == nullptr) {
                     memoryless_cpus += 1;
-                    if (placed >= MAX_NODES || PmNode::node(placed) == nullptr) {
+                    if (placed >= MAX_NODES || mm::find_node(placed) == nullptr) {
                         rehomed = false;
                     }
                     return;
@@ -156,8 +156,8 @@ namespace {
                     "every CPU the firmware placed on a node with no memory runs from one that "
                     "exists");
 
-        auto const online = PmNode::num_online_nodes();
-        EXPECT_TRUE(online >= 1 && online == PmNode::node_online_mask().count(),
+        auto const online = mm::num_online_nodes();
+        EXPECT_TRUE(online >= 1 && online == mm::node_online_mask().count(),
                     "num_online_nodes() counts the Online mask");
     }
 
@@ -210,7 +210,7 @@ namespace {
         // No zone twice, every zone on an online node.
         auto unique_ok = true;
         for (usize i = 0; i < fallback.size(); ++i) {
-            if (!PmNode::node_online_mask().test(fallback[i]->which_node())) {
+            if (!mm::node_online_mask().test(fallback[i]->which_node())) {
                 unique_ok = false;
             }
             for (usize j = i + 1; j < fallback.size(); ++j) {
@@ -236,8 +236,8 @@ namespace {
     }
 
     auto check_fallback_orders(NodeId const nid) -> void {
-        auto const &online = PmNode::node_online_mask();
-        auto const members = online & PmNode::node_memory_mask();
+        auto const &online = mm::node_online_mask();
+        auto const members = online & mm::node_memory_mask();
 
         // Static: MAX_NODES rows is kilobytes on a NUMA build, and a ktest
         // runs on an ordinary thread stack. Single-threaded, like the rest of
@@ -293,7 +293,7 @@ namespace {
 
     /// A request over every online node, which each case then narrows.
     auto request_for(PmNode &node, mm::Gaf const alloc_flags) -> mm::AllocRequest {
-        return mm::resolve_request(alloc_flags, 0, PmNode::node_online_mask(),
+        return mm::resolve_request(alloc_flags, 0, mm::node_online_mask(),
                                    mm::AllocRequest::Origin{.node = node.nid(), .cpu = Cpu::id()});
     }
 
@@ -484,7 +484,7 @@ namespace {
                     "an allocation rejects an order past the maximum");
         release(oversized);
 
-        auto remote_nodes = PmNode::node_memory_mask();
+        auto remote_nodes = mm::node_memory_mask();
         remote_nodes.set(nid, false);
         if (remote_nodes.any()) {
             auto pinned =
@@ -537,14 +537,14 @@ namespace {
 
     auto check_node_queries() -> void {
         auto const nid = mm::current_node();
-        auto *const node = PmNode::node(nid);
-        EXPECT_TRUE(node && mm::num_nodes() == PmNode::num_nodes() &&
+        auto *const node = mm::find_node(nid);
+        EXPECT_TRUE(node && mm::num_nodes() == mm::num_nodes() &&
                         mm::node_work_cpus(nid) == node->work_cpus() &&
                         mm::node_soft_affinity(nid) == &node->soft_affinity() &&
                         mm::node_hard_affinity(nid) == &node->hard_affinity(),
                     "PMM topology queries describe the current node");
         for (NodeId absent = 0; absent < MAX_NODES; ++absent) {
-            if (PmNode::node(absent)) {
+            if (mm::find_node(absent)) {
                 continue;
             }
             auto single = mm::alloc_frames(mm::ALLOC_KERNEL, 0, absent);
@@ -718,8 +718,7 @@ namespace {
         // Run from an idle guest. Target a memory-only node so CPUs retain their local memory.
         auto const home = mm::current_node();
         for (NodeId nid = 0; nid < MAX_NODES; ++nid) {
-            if (nid != home && PmNode::node_memory_mask().test(nid) &&
-                !mm::node_work_cpus(nid).any()) {
+            if (nid != home && mm::node_memory_mask().test(nid) && !mm::node_work_cpus(nid).any()) {
                 mm::MemoryReclaimer::Pause pause{mm::MemoryReclaimer::get()};
                 check_exhausted_node(nid);
                 return;
@@ -941,7 +940,7 @@ namespace {
 
     KTEST(PmNode, MatchesTheMachineItRunsOn) {
         run_topology_checks();
-        PmNode::for_each_node(PmNode::State::Online, [](PmNode &node) {
+        mm::for_each_node(mm::NodeState::Online, [](PmNode &node) {
             log::info("pmnode: node {}", node.nid());
             check_zone_list(node);
             check_fallback_orders(node.nid());

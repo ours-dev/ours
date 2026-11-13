@@ -1,5 +1,5 @@
 #include <ours/mm/early_mem.hpp>
-#include <ours/mm/pm_node.hpp>
+#include <ours/mm/node_table.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/platform/acpi.hpp>
 
@@ -78,7 +78,7 @@ namespace {
                 }
 
                 report->rehomed += 1;
-                mm::PmNode::set_state(NodeId{region.domain}, mm::PmNode::State::Possible);
+                mm::set_node_state(NodeId{region.domain}, mm::NodeState::Possible);
             });
 
         return status != Status::Ok ? status : failure;

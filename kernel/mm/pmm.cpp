@@ -300,7 +300,7 @@ namespace {
     /// preference.
     auto resolve_home(NodeId nid, Gaf &alloc_flags) -> ktl::Result<PmNode *> {
         if (nid < MAX_NODES) {
-            if (auto *const node = PmNode::node(nid)) {
+            if (auto *const node = find_node(nid)) {
                 return ustl::ok(node);
             }
             return ustl::err(Status::InvArgs);
@@ -359,7 +359,7 @@ namespace {
 
         // A frame goes back to the node that owns it, which the frame names,
         // and not to the node of whoever is freeing it.
-        auto *const node = PmNode::node(frame.nid());
+        auto *const node = find_node(frame.nid());
         DEBUG_ASSERT(node, "frame {:#x} belongs to node {}, which does not exist",
                      frame_to_phys(&frame), frame.nid());
         node->free_frames(frame, order);
@@ -370,13 +370,9 @@ namespace {
     }
 } // namespace
 
-auto num_nodes() -> usize {
-    return PmNode::num_nodes();
-}
-
 auto node_work_cpus(NodeId nid) -> CpuMask {
     DEBUG_ASSERT(nid < MAX_NODES);
-    if (auto node = PmNode::node(nid)) {
+    if (auto node = find_node(nid)) {
         return node->work_cpus();
     }
     return CpuMask{};
@@ -384,7 +380,7 @@ auto node_work_cpus(NodeId nid) -> CpuMask {
 
 auto node_hard_affinity(NodeId nid) -> CpuMask const * {
     DEBUG_ASSERT(nid < MAX_NODES);
-    if (auto node = PmNode::node(nid)) {
+    if (auto node = find_node(nid)) {
         return &node->hard_affinity();
     }
     return nullptr;
@@ -392,7 +388,7 @@ auto node_hard_affinity(NodeId nid) -> CpuMask const * {
 
 auto node_soft_affinity(NodeId nid) -> CpuMask const * {
     DEBUG_ASSERT(nid < MAX_NODES);
-    if (auto node = PmNode::node(nid)) {
+    if (auto node = find_node(nid)) {
         return &node->soft_affinity();
     }
     return nullptr;
@@ -528,14 +524,6 @@ auto set_free_memory_signal(usize const lower, usize const upper, usize const de
 /// the firmware declared. Nothing on this path asks kernel/lib/numa anything.
 auto current_node() -> NodeId {
     return CpuNodeMap::node_of(CpuLocal::current_cpu());
-}
-
-auto node_online_mask() -> NodeMask const & {
-    return PmNode::node_online_mask();
-}
-
-auto node_possible_mask() -> NodeMask const & {
-    return PmNode::node_possible_mask();
 }
 
 namespace priv {
@@ -784,7 +772,7 @@ auto unwire_frame(PmFrame *const frame) -> void {
     DEBUG_ASSERT(!frame->is_linked(), "reserved frame {:#x} is on a list", frame_to_phys(frame));
 
     frame->clear_reserved();
-    if (PmNode::node(frame->nid()) != nullptr) {
+    if (find_node(frame->nid()) != nullptr) {
         if (auto *const zone = PmZone::at(frame->nid(), frame->zone())) {
             zone->sub_reserved_frames(1);
         }

@@ -8,6 +8,7 @@
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/init_stage.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/node_table.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_frame.hpp>
 #include <ours/node_mask.hpp>
@@ -92,23 +93,6 @@ auto node_soft_affinity(NodeId nid) -> CpuMask const *;
 [[nodiscard]]
 auto node_hard_affinity(NodeId nid) -> CpuMask const *;
 
-[[nodiscard]]
-auto node_online_mask() -> NodeMask const &;
-
-[[nodiscard]]
-auto node_possible_mask() -> NodeMask const &;
-
-auto num_nodes() -> usize;
-
-FORCE_INLINE
-inline auto num_online_nodes() -> usize {
-    return node_online_mask().count();
-}
-
-FORCE_INLINE
-inline auto num_possible_nodes() -> usize {
-    return node_possible_mask().count();
-}
 
 /// Using constexpr to make those pre-culcalate requests able to
 /// convert the order of frames requested at compiling time.

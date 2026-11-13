@@ -80,7 +80,7 @@ auto CpuNodeMap::local_node() -> PmNode * {
     if (nid >= MAX_NODES) {
         return nullptr;
     }
-    return PmNode::node(nid);
+    return find_node(nid);
 }
 
 auto CpuNodeMap::cache_local_node(CpuNum const cpu, PmNode *const node) -> void {

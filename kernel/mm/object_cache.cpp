@@ -1,7 +1,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/early_mem.hpp>
+#include <ours/mm/node_table.hpp>
 #include <ours/mm/object_cache.hpp>
-#include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/sync/local_lock.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
@@ -493,7 +493,7 @@ auto MemCache::init() -> Status {
     NODE_CACHE = BOOTSTRAP_NODE_CACHE.data();
 
     // Initialize the nodemask to nodes which has normal memories.
-    PmNode::for_each_nid(PmNode::State::Memory, [](NodeId nid) { SLAB_NODES.set(nid); });
+    for_each_nid(NodeState::Memory, [](NodeId nid) { SLAB_NODES.set(nid); });
 
     if (auto const status =
             Self::create_boot(*NODE_CACHE, "cache:node", sizeof(NodeCache), 0, Option::CacheAlign);

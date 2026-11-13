@@ -65,7 +65,7 @@ namespace {
         auto *const page = found.value().page;
         return {.page = page,
                 .pins = page->pin_count(),
-                .kind = mm::PmNode::node(page->nid())->page_queues().kind_of(*page)};
+                .kind = mm::find_node(page->nid())->page_queues().kind_of(*page)};
     }
 
     TA_NO_THREAD_SAFETY_ANALYSIS

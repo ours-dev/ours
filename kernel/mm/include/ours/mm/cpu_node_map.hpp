@@ -38,7 +38,7 @@ class PmNode;
 /// in.
 ///
 /// The table is the truth and the pointer is strictly a function of it --
-/// PmNode::node(node_of(cpu)) -- so it is a cache and is treated as one:
+/// find_node(node_of(cpu)) -- so it is a cache and is treated as one:
 /// local_node() falls back to recomputing it, and a null slot is a miss rather
 /// than a fault. That is the opposite arrangement from the firmware placement
 /// in kernel/lib/numa, which is a second independent fact and so must never be

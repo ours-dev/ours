@@ -220,7 +220,7 @@ A request is put off by one threshold only, the zone's Low floor (N1). The gate'
 
 A wait has to end when nothing can end the shortage: a node whose reclaim pass gave nothing back is marked stuck, and a retry there answers `OutOfMem` and not `ShouldWait`.
 
-The node table and the state masks are file-scope data behind free functions, and CPU membership (publish, claim, move) belongs to `CpuNodeMap`, as `pmm-layering` D2(a) decided.
+The node table and the state masks are file-scope data behind free functions, as `pmm-layering` D2(a) decided. As built (2026-11-12) that is `ours/mm/node_table.hpp`: `find_node(nid)`, `node_mask(NodeState)`, `set_node_state()`, `for_each_node()` and `for_each_nid()`, in the flat `node_*` style `pmm.hpp` already used (the user's choice of the two spellings offered). CPU membership (publish, claim, move) belongs to `CpuNodeMap`.
 
 ### Where each planned feature lands
 

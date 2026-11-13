@@ -8,6 +8,7 @@
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/alloc_flags.hpp>
+#include <ours/mm/node_table.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/priv/alloc_policy.hpp>
@@ -142,7 +143,9 @@ class ZoneList {
     NodeId m_nid;
 };
 
-/// `PmNode` is a class that describes a NUMA domain.
+/// `PmNode` is a class that describes a NUMA domain: its zones and the order
+/// an allocation tries them in, its page queues, and the CPUs working on it.
+/// Which nodes exist is not a node's: see ours/mm/node_table.hpp.
 ///
 /// The memory regions between nodes should be mutually exclusive,
 /// meaning that the memory region of one node should not overlap
@@ -151,73 +154,6 @@ class PmNode {
     using Self = PmNode;
 
   public:
-    /// Whether a node has memory of a zone type is not a state: it is whether
-    /// PmZone::at() has a zone for it.
-    enum class State : u32 {
-        Memory,
-        Online,
-        Possible,
-        NumStates,
-    };
-
-    template <typename F>
-        requires ustl::traits::Invocable<F, NodeId>
-    static auto for_each_nid(State state, F &&f) -> ustl::traits::InvokeResultT<F, NodeId> {
-        return STATES[std::to_underlying(state)].for_each(ustl::forward<F>(f));
-    }
-
-    template <typename F>
-        requires ustl::traits::Invocable<F, Self &>
-    static auto for_each_node(State state, F &&f) -> ustl::traits::InvokeResultT<F, Self &> {
-        return STATES[std::to_underlying(state)].for_each([&f](NodeId nid) {
-            DEBUG_ASSERT(Self::node(nid), "Touched an absent node in {}", __func__);
-            return f(*Self::node(nid));
-        });
-    }
-
-    FORCE_INLINE
-    static auto node_online_mask() -> NodeMask const & {
-        return STATES[std::to_underlying(State::Online)];
-    }
-
-    FORCE_INLINE
-    static auto node_possible_mask() -> NodeMask const & {
-        return STATES[std::to_underlying(State::Possible)];
-    }
-
-    /// The nodes that own memory -- the ones worth falling back to, and so the
-    /// members the fallback order is derived over.
-    FORCE_INLINE
-    static auto node_memory_mask() -> NodeMask const & {
-        return STATES[std::to_underlying(State::Memory)];
-    }
-
-    /// Marks `nid` present in one of the state masks. The NUMA bring-up
-    /// path (SRAT discovery) uses this to declare a domain Possible before
-    /// the PMM builds its nodes.
-    static auto set_state(NodeId nid, State state, bool on = true) -> void {
-        STATES[std::to_underlying(state)].set(nid, on);
-    }
-
-    FORCE_INLINE
-    constexpr static auto node(NodeId nid) -> PmNode * {
-        return NODES[nid];
-    }
-
-    FORCE_INLINE
-    constexpr static auto num_nodes() -> usize {
-        return NUM_NODES;
-    }
-
-    /// Counted off the Online mask. It used to return a NUM_ONLINE_NODES
-    /// counter that nothing ever incremented, so it answered 0 on every
-    /// machine; one fact kept in two places had drifted, and the mask is the
-    /// one init() actually maintains.
-    FORCE_INLINE
-    static auto num_online_nodes() -> usize {
-        return node_online_mask().count();
-    }
-
     static auto bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status;
 
     /// Records |cpu| as working on the node the placement table puts it on,
@@ -393,14 +329,6 @@ class PmNode {
 
     [[no_unique_address]]
     AllocPolicy m_node_policy;
-
-    constexpr static usize NUM_STATES = std::to_underlying(State::NumStates);
-    static std::array<NodeMask, NUM_STATES> STATES;
-
-    static std::array<PmNode *, MAX_NODES> NODES;
-
-    // Th fields bottom is readonly after initializing logically.
-    static usize NUM_NODES;
 };
 
 } // namespace ours::mm

@@ -294,8 +294,13 @@ a step is in, the code still has the shape described above.
   has one boundary: say what it owns and what it never does before adding a
   method to it.
 - `PmNode` is one node: its `ZoneList`, `PageQueues` and CPU masks. The node
-  table and the state masks are file-scope data behind free functions, and
-  CPU membership (publish, claim, move) belongs to `CpuNodeMap`.
+  table and the state masks are file-scope data behind free functions in
+  `ours/mm/node_table.hpp`, spelled in the flat `node_*` style `pmm.hpp`
+  already used (the user's choice, 2026-11-12): `find_node(nid)`,
+  `node_mask(NodeState)`, `set_node_state()`, `for_each_node()`,
+  `for_each_nid()`. Not `node(nid)`: a local variable named `node` is in
+  scope in its own initialiser and would hide it. CPU membership (publish,
+  claim, move) belongs to `CpuNodeMap`.
 - The scope of the pass was reopened the same day: the user wants the PMM
   designed from what it must support later (swap and eviction, large pages,
   constrained and contiguous allocation, movers), with the node, the zone and

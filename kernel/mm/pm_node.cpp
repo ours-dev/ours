@@ -34,7 +34,7 @@ namespace ours::mm {
 auto ZoneList::connect(ustl::views::Span<NodeId const> const order) -> void {
     for (auto const next: order) {
         DEBUG_ASSERT(next != m_nid, "node {} was given itself as a fallback hop", m_nid);
-        PmNode::node(next)->zone_list()->for_each_local_zone(
+        find_node(next)->zone_list()->for_each_local_zone(
             [this](PmZone &zone) { push_fallback(&zone); });
         m_connected.set(next);
     }
@@ -79,9 +79,6 @@ auto ZoneList::dump_fallback() const -> void {
     }
 }
 
-decltype(PmNode::STATES) PmNode::STATES;
-decltype(PmNode::NODES) PmNode::NODES;
-decltype(PmNode::NUM_NODES) PmNode::NUM_NODES;
 
 PmNode::PmNode(NodeId nid)
     : m_canary(this)
@@ -170,7 +167,7 @@ auto PmNode::set_cpu_node(CpuNum const cpu, NodeId const new_nid) -> void {
     }
 
     if (old_nid != MAX_NODES) {
-        if (auto node = PmNode::node(old_nid)) {
+        if (auto node = find_node(old_nid)) {
             node->m_canary.verify<Self>();
             Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
 
@@ -184,7 +181,7 @@ auto PmNode::set_cpu_node(CpuNum const cpu, NodeId const new_nid) -> void {
     // separate invariants, and a CPU appearing in neither for an instant is
     // what a reader of work_cpus() already has to tolerate -- it takes a copy.
     CpuNodeMap::set_node_of(cpu, new_nid);
-    if (auto node = PmNode::node(new_nid)) {
+    if (auto node = find_node(new_nid)) {
         node->m_canary.verify<Self>();
         {
             Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
@@ -202,7 +199,7 @@ auto PmNode::publish_cpu(CpuNum const cpu) -> void {
         return;
     }
 
-    auto *const node = PmNode::node(nid);
+    auto *const node = find_node(nid);
     DEBUG_ASSERT(node, "CPU {} was claimed by node {}, which does not exist", cpu, nid);
     node->m_canary.verify<Self>();
 

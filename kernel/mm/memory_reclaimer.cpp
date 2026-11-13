@@ -59,7 +59,7 @@ auto MemoryReclaimer::take() -> usize {
 }
 
 auto MemoryReclaimer::reclaim(usize const frames) -> usize {
-    return reclaim(frames, PmNode::node_online_mask());
+    return reclaim(frames, node_online_mask());
 }
 
 auto MemoryReclaimer::reclaim(usize const frames, NodeMask const &nodes) -> usize {
@@ -79,16 +79,16 @@ auto MemoryReclaimer::reclaim(usize const frames, NodeMask const &nodes) -> usiz
     // Each call is given what is left, so none takes more than the rest.
     usize freed = 0;
     nodes.for_each([&freed, frames](NodeId nid) {
-        freed += PmNode::node(nid)->page_queues().dedup_zero_pages(frames - freed);
+        freed += find_node(nid)->page_queues().dedup_zero_pages(frames - freed);
     });
     nodes.for_each([&freed, frames](NodeId nid) {
-        freed += PmNode::node(nid)->page_queues().reclaim(frames - freed);
+        freed += find_node(nid)->page_queues().reclaim(frames - freed);
     });
     return freed;
 }
 
 auto MemoryReclaimer::reclaim_node_requests() -> void {
-    PmNode::for_each_node(PmNode::State::Memory, [this](PmNode &node) {
+    for_each_node(NodeState::Memory, [this](PmNode &node) {
         auto &requests = m_zone_requests[node.nid()];
         usize wanted = 0;
         node.zone_list()->for_each_local_zone([&requests, &wanted](PmZone const &zone) {

@@ -65,7 +65,7 @@ namespace {
             return Kind::None;
         }
         auto *const page = found.value().page;
-        return mm::PmNode::node(page->nid())->page_queues().kind_of(*page);
+        return mm::find_node(page->nid())->page_queues().kind_of(*page);
     }
 
     /// Where page |index| of |vmo| is, 0 if it is not there.

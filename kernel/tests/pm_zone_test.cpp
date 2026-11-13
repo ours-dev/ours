@@ -151,7 +151,7 @@ namespace {
         usize spanning = 0;
         usize checked = 0;
 
-        PmNode::for_each_node(PmNode::State::Online, [&](PmNode &node) {
+        mm::for_each_node(mm::NodeState::Online, [&](PmNode &node) {
             node.zone_list()->for_each_local_zone([&](PmZone &zone) {
                 if (!spans_sections(zone)) {
                     return;
