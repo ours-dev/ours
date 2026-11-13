@@ -365,3 +365,61 @@ None.
 - Why is zeroing not the node's job, when the node is where the block first appears?
 - Both gates run with no zone lock held. What would it cost to zero a block under the zone lock?
 - What does the new assertion in `prepare_alloc()` catch that the one in `prepare_free()` cannot, and in which build?
+
+## A page table is not the frame failure site again (2026-11-12)
+
+**Files**
+- `kernel/mm/pmm.cpp` — the `MM_TEST_ALLOC_FAILURE` frame site moves from `priv::alloc_frames()` to the public `alloc_frames()`; `alloc_page_table()` calls `priv::alloc_frames()`
+- `kernel/tests/pm_node_test.cpp` — `PmNode.PageTablesAreNotTheFrameFailureSite`, which runs in a build with `mm_test_alloc_failure = true` and is skipped otherwise
+
+**Symptom**
+Only in a failure-injection build (`mm_test_alloc_failure = true`). A scope armed for `test::AllocationSite::Frame` also counted, and could fail, a page-table allocation that named no node. A test that counts frame allocations to fail the k-th one would see its count used up by page tables, and a map that should have failed for want of a backing page could fail for want of a page table instead, with `NoMemory` from the map path where `OutOfMem` was expected.
+
+**Cause**
+The frame site is defined as "a frame or block requested without an explicit node" (`priv/alloc_failure.hpp`). Before this branch it lived in the node-less `alloc_frames(Gaf, order, NodeMask)`, and `alloc_page_table()` reached the allocator through the other overload, the one taking a `NodeId` first, which had no hook. So a page table only ever counted under its own site, `AllocationSite::PageTable`, asked in `PageTable::allocate_table()`.
+
+The step that gave each shape one signature (5541f0fb) merged the two overloads into one function with `home = ANY_NODE`, and put the hook in the pipeline underneath it, `priv::alloc_frames()`, as "home names no node". `alloc_page_table()` passes `bootmem::ANY_NODE` by default, so it became, by that test, a frame with no home. Two overloads had encoded a distinction the merged function then derived from an argument, and the derivation was wrong for the one caller whose argument meant "no preference" rather than "no explicit node".
+
+The author's verification ran the default build, where the hook is compiled out, so the change of count was invisible there. The pre-landing review of the branch found it by reading.
+
+**Change**
+
+```cpp
+// pmm.cpp, the public entry: the frame site is a request through this entry
+auto alloc_frames(Gaf const flags, usize const order, NodeId const home) -> ktl::Result<PmFrame *> {
+#if MM_TEST_ALLOC_FAILURE
+    if (home >= MAX_NODES && test::AllocationFailure::hit(test::AllocationSite::Frame)) {
+        return ustl::err(Status::OutOfMem);
+    }
+#endif
+    return priv::alloc_frames(flags, order, home, node_online_mask());
+}
+
+// alloc_page_table(): the pipeline underneath, past the frame site
+auto const result = priv::alloc_frames(ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE),
+                                       node, node_online_mask());
+```
+
+Every caller that counted under the frame site before still does: a node-less `alloc_frames()`, `get_frames()`, `alloc_frames_contiguous()` (which goes through the public entry), and `wait_for_frame_allocation()`. Callers naming a real node did not count before and do not now.
+
+**Reference**
+None, this project's own test hook.
+
+**Verification**
+In `out/failure.x86` (`mm_test_alloc_failure = true`): the new test passes; with `alloc_page_table()` pointed back at the public entry as a control, both of its checks fail, as they should. `ktest all` there: 83 ran, 81 passed, 0 failed, 2 skipped. The run is reported FAIL by `kshell_run.py` only for three `Failed to map` error lines, which `VmaPhysical.MapsPhysicalWindowUncached` provokes on purpose with page-table failures and then checks.
+
+Default build: `verify` unchanged (dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 183 passed); `ktest all` 83 ran, 80 passed, 3 skipped, the third skip being the new test.
+
+**Deliberately not done**
+`kshell_run.py` counting the deliberate `Failed to map` lines of a failure-injection build as failures. That is a property of the script and the test, not of this change.
+
+**How it was found**
+The pre-landing review of `feat/pmm-redesign`: one reviewer per dimension over the branch's diff, each finding then given to a second reviewer told to refute it. This one survived.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What did the two old overloads encode that the merged function had to derive, and why was "home names no node" the wrong derivation for page tables?
+- Why did the default build's verification not notice the change?
+- What does the control run prove that the passing run alone does not?

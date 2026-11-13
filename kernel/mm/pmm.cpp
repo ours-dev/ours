@@ -411,8 +411,13 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
         // CPU's node, the thread's NUMA policy included (applied by
         // resolve_home()). The AllocState counter applies either way:
         // alloc_block() checks it for every caller.
-        auto const result =
-            alloc_frames(ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE), node);
+        //
+        // Through the pipeline under mm::alloc_frames(), not the entry itself:
+        // a page table is the page-table failure site's
+        // (test::AllocationSite::PageTable, asked in PageTable::allocate_table())
+        // and must not also count as a frame asked for with no home.
+        auto const result = priv::alloc_frames(
+            ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE), node, node_online_mask());
         if (!result) {
             return PhysAddr{0};
         }
@@ -529,12 +534,6 @@ auto node_possible_mask() -> NodeMask const & {
 namespace priv {
     auto alloc_frames(Gaf alloc_flags, usize const order, NodeId const home, NodeMask const &nodes)
         -> ktl::Result<PmFrame *> {
-#if MM_TEST_ALLOC_FAILURE
-        // The frame site is a frame asked for with no home named.
-        if (home >= MAX_NODES && test::AllocationFailure::hit(test::AllocationSite::Frame)) {
-            return ustl::err(Status::OutOfMem);
-        }
-#endif
         if (!!(alloc_flags & Gaf::CanWait)) {
             if (auto const status = GATE.admit(); Status::Ok != status) {
                 return ustl::err(status);
@@ -626,6 +625,15 @@ namespace priv {
 } // namespace priv
 
 auto alloc_frames(Gaf const flags, usize const order, NodeId const home) -> ktl::Result<PmFrame *> {
+#if MM_TEST_ALLOC_FAILURE
+    // The frame site is a frame or block a caller asked for with no home
+    // named, through this entry. A page table is not one: it has a site of
+    // its own, and alloc_page_table() goes to the pipeline underneath this
+    // so that one injected failure is not counted twice.
+    if (home >= MAX_NODES && test::AllocationFailure::hit(test::AllocationSite::Frame)) {
+        return ustl::err(Status::OutOfMem);
+    }
+#endif
     return priv::alloc_frames(flags, order, home, node_online_mask());
 }
 

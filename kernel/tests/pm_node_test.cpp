@@ -51,6 +51,7 @@
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/priv/alloc_failure.hpp>
 #include <ours/mm/priv/pmm.hpp>
 #include <ours/mm/priv/zone_candidates.hpp>
 #include <ours/node_mask.hpp>
@@ -906,6 +907,34 @@ namespace {
 
         // With no pin left it may go back; a debug build asserts if it could not.
         mm::free_frames(frame);
+    }
+
+    KTEST(PmNode, PageTablesAreNotTheFrameFailureSite) {
+#if MM_TEST_ALLOC_FAILURE
+        using mm::test::AllocationFailure;
+        using mm::test::AllocationSite;
+
+        // A page table is its own failure site. A scope armed for the frame
+        // site lets a page table through and fails the next frame asked for
+        // with no home, which is what a test counting frame allocations
+        // relies on.
+        AllocationFailure failure(AllocationSite::Frame);
+        auto const table = mm::alloc_page_table(PAGE_SIZE, PAGE_SIZE);
+        auto const untouched = !failure.triggered();
+        auto const frame = mm::alloc_frames(mm::ALLOC_KERNEL);
+        EXPECT_TRUE(table != PhysAddr{0} && untouched,
+                    "a page-table allocation does not use up the frame site");
+        EXPECT_TRUE(!frame && frame.unwrap_err() == Status::OutOfMem && failure.triggered(),
+                    "the next frame with no home is the one that fails");
+        if (table != PhysAddr{0}) {
+            mm::free_page_table(table, PAGE_SIZE);
+        }
+        if (frame) {
+            mm::free_frames(*frame);
+        }
+#else
+        KTEST_SKIP("needs a build with mm_test_alloc_failure");
+#endif
     }
 
     KTEST(PmNode, MatchesTheMachineItRunsOn) {
