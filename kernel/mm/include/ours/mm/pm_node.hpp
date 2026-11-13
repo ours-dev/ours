@@ -254,9 +254,11 @@ class PmNode {
     /// after the handoff, with nothing else running.
     static auto setup_watermarks() -> void;
 
-    /// Why a walk for one block gave nothing: the status, and the first zone
-    /// it passed that is short of its high watermark, for whoever asks the
-    /// reclaimer.
+    /// Why a walk for one block gave nothing: the status, and, for an order-0
+    /// request only, the first zone it passed that is short of its high
+    /// watermark, for whoever asks the reclaimer. A failed walk for a larger
+    /// block never names a zone: a zone with no free block of that order may
+    /// still have plenty of single frames.
     struct BlockFailure {
         Status status;
         ustl::Option<PmZone const &> depleted_zone = ustl::NONE;
@@ -267,8 +269,11 @@ class PmNode {
     /// block from the first zone that has it. That is all of it: the block
     /// comes back as the zone gave it, and making it ready for its owner is
     /// the caller's, as are admission, the thread's allocation state and the
-    /// request itself. Only resolve_request() builds a request, and pmm.cpp
-    /// is where it is called.
+    /// request itself. resolve_request() builds a request and the mm::
+    /// functions are the callers meant to; both it and this member are
+    /// public, and a caller that builds its own request and comes here skips
+    /// the gate, the allocation-state check, the order bound and
+    /// prepare_alloc(). Only tests do.
     [[nodiscard]]
     auto alloc_frames(AllocRequest const &request) -> ustl::Result<PmFrame *, BlockFailure>;
 

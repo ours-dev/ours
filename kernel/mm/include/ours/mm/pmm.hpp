@@ -333,14 +333,21 @@ auto set_free_memory_signal(usize lower, usize upper, usize delay_level, sync::E
 /// physical address and its content, so nothing may reclaim it, replace it or
 /// move it. Pins count, and a frame is held while it has any.
 ///
-/// The caller holds the lock of the frame's owner. That is the whole of the
-/// protocol: whatever would move the frame takes the same lock and looks at
-/// PmFrame::pin_count() under it, so a pin either comes first and is seen, or
-/// comes after the frame has gone from its owner and finds nothing to pin.
-/// Filing a pinned page on its node's pinned queue is the owner's to do.
+/// The caller holds the lock of the frame's owner, and the owner keeps one
+/// invariant under that lock: a frame with any pin is filed where its movers
+/// will not take it. For a page of a VMO that is the node's pinned queue and
+/// its count of pinned pages, which VmCowPages updates on the first pin and
+/// the last unpin; reclaim and zero-page dedup go by the queue a page is on,
+/// and cloning and taking pages by the node's count, all under the node's
+/// lock. So a pin either comes first and the page is out of every mover's
+/// way, or comes after the page has gone from its owner and finds nothing to
+/// pin.
 ///
-/// NoResource when the frame cannot take another pin, and BadState for a
-/// frame on a free list, which nobody owns.
+/// NoResource when the frame cannot take another pin (255). BadState for the
+/// head of a free block, which nobody owns. A frame inside a free block is
+/// not told apart: the buddy marks only a free block's head, and pinning a
+/// frame the caller does not own breaks the precondition above whether or not
+/// it is noticed.
 [[nodiscard]]
 auto pin_frame(PmFrame *frame) -> Status;
 

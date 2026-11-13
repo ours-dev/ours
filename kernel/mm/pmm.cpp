@@ -46,8 +46,10 @@ auto approx_free_frame_count() -> usize {
 namespace {
     /// The gate in front of the allocations that can wait (alloc_frames()
     /// with Gaf::CanWait), and the signal for whoever watches free memory
-    /// (set_free_memory_signal()). The facade owns admission. PmNode samples
-    /// the watcher's bounds at the end of an allocation or return.
+    /// (set_free_memory_signal()). The mm:: functions own admission, and
+    /// observe_pressure() below samples the watcher's bounds once at the end
+    /// of each of their allocations or returns. PmNode and PmZone never reach
+    /// it.
     ///
     /// Every allocation and free asks it something, so what they read takes
     /// no lock: atomics, each loaded on its own. The event that wakes waiters
@@ -203,8 +205,13 @@ namespace {
     /// it.
     auto prepare_alloc(PmFrame &frame, AllocRequest const &request) -> void {
         // A pin says a frame stays where it is, and this one was on a free
-        // list a moment ago. A count here was left by an owner that freed the
-        // frame pinned, in a build with no assertion to stop it.
+        // list a moment ago. Every mm:: path into stock asserts the same in
+        // prepare_free(), under the same switch, so an owner freeing a pinned
+        // frame is stopped there. What this catches is a count that never
+        // passed prepare_free(): a frame given to PmNode::free_frames() or
+        // PmZone::free_frames() directly, a frame pinned while it was free,
+        // or descriptor storage that was not zeroed (init() does not write the
+        // count). A release build has neither check.
         DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} leaves a free list with {} pin(s)",
                      frame_to_phys(&frame), frame.pin_count());
 
@@ -687,8 +694,11 @@ auto alloc_frames_contiguous(Gaf const flags, usize const n, usize const align_l
 auto free_frames(PmFrame *frame) -> void {
     DEBUG_ASSERT(frame, "free requires a frame");
     // A block is returned whole, as it was handed out, and the head records
-    // the order the buddy gave it. Memory that was never a block comes in
-    // through adopt_frames(), which is told a range.
+    // the order the buddy gave it. A range of memory that was never a block
+    // comes in through adopt_frames(), which is told the range; a single frame
+    // that was never a block may come here, as order 0, which is what init()
+    // leaves in its head (the bootstrap trampoline's buffer, the boot image's
+    // pages once their VMO lets them go).
     auto const order = frame->order();
     log::trace("Free frame({:X}, {})", frame_to_phys(frame), order);
     free_block(*frame, order);

@@ -36,8 +36,8 @@
 ///     maximum through mm::alloc_frames(); an empty node set and one without
 ///     the home through mm::priv::alloc_frames(), since no public function
 ///     takes a node set.
-///   - Count helpers. Both direct-map overloads round three pages up to a
-///     usable, zeroed four-page block, including the node-specific template.
+///   - Count helpers. get_frames_n() rounds three pages up to a usable,
+///     zeroed four-page block, asked once with no home and once with one.
 ///   - AllocState. A thread that disabled allocation must be
 ///     refused on the node-less path and on the path that names a node alike.
 ///
@@ -823,8 +823,10 @@ namespace {
                     "splitting one of the parts leaves the others as they were");
 
         // Each part is a block of its own now and goes back alone: five frees
-        // for what was one allocation. A debug build asserts in the buddy if
-        // one of them were returned at the wrong size.
+        // for what was one allocation. The EXPECTs above are what check the
+        // split. The frees would not: the buddy asserts only that a block is
+        // aligned to its order, so a part returned at a wrong order that is
+        // still aligned goes through, and the frame ends up free twice.
         mm::free_frames(&block[0]);
         mm::free_frames(&block[1]);
         for (usize index = 2; index < NR_FRAMES; index += 2) {

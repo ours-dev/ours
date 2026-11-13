@@ -423,3 +423,53 @@ None.
 - What did the two old overloads encode that the merged function had to derive, and why was "home names no node" the wrong derivation for page tables?
 - Why did the default build's verification not notice the change?
 - What does the control run prove that the passing run alone does not?
+
+## Corrections to the PMM redesign's comments and change records (2026-11-12)
+
+**Files**
+- `kernel/mm/include/ours/mm/pmm.hpp` — `pin_frame()`'s contract: what keeps a pinned frame in place, and which free frames `BadState` can tell
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `pin_count()`: movers do not read it
+- `kernel/mm/pmm.cpp` — the gate's comment, `prepare_alloc()`'s pin assertion, `free_frames()`'s note on never-allocated frames
+- `kernel/mm/include/ours/mm/pm_node.hpp` — `BlockFailure` names a zone only for order 0; the node's layer is public
+- `kernel/mm/cpu_local.cpp` — `replica_span()`'s reason for rounding
+- `kernel/tests/pm_node_test.cpp` — two comments
+- `docs/repairs/261112/mm.md` — item 1 counts the pin count among the fields that need zeroed storage; new item 2, the provisional unit's rounding
+- `.agents/tasks/pmm-redesign/DESIGN.md`, `.agents/skills/kernel-design/references/mm.md` — present-tense lines that described code that is gone
+
+**Symptom**
+Comments and change records of this branch that say something false about the code. No behaviour changes.
+
+**Cause**
+Each was true of an earlier step, or of the design rather than the code, or was a count made by hand. They were found by the pre-landing review, which gave every finding to a second reviewer told to refute it; these survived. Change records are append-only, so the records' errors are corrected here and not in place:
+
+- `docs/changes/261111/mm.md`, first entry: "there is nothing a caller outside the pipeline could pass it". `resolve_request()` is a public inline in `ours::mm` and `PmNode::alloc_frames(request)` is public; `pm_node_test.cpp` and the host test `alloc_request_smoke.cpp` build requests. Only convention keeps callers on the `mm::` entry until the layers are sealed.
+- `docs/changes/261111/mm.md`, second entry: "Nine test calls pass one" was thirteen, all in `pm_node_test.cpp`; "six calls that need a node set go through `mm::priv`" was five.
+- `docs/changes/261111/mm.md`, the `adopt_frames()` entry, and `free_frames()`'s comment: never-allocated memory does not only enter through `adopt_frames()`. A single never-allocated frame still comes through `free_frames()` as order 0: the bootstrap trampoline's buffer (`free_bootstrap16_buffer()`) and the boot image's pages once the VMO made from them lets them go.
+- `docs/changes/261112/mm.md`, the `free_frames()` entry: "14 production calls" and "37 test calls" were 12 and 39; the total of 51 was right.
+- The `split_block()` entry: "the fifth frame of an order-9 allocation still says 3" cannot happen. A block of order k starts on a multiple of `2^k` pages, and the fifth frame (offset 4) is aligned to only four, so it can have headed at most an order-2 block. The ninth frame (offset 8) is one that could say 3. The same entry's "three writers" of the order field are four, `PageFrame::init()` being the first, and `split_block()` is the one caller of `set_order()` outside the buddy.
+- The pin entry: "whatever would move the frame takes that lock and reads `pin_count()` under it" is not how the movers work. Reclaim and zero-page dedup go by the page queue a page is on, cloning and taking pages by the node's count of pinned pages, and `VmCowPages` keeps both in step with the pin count on the first pin and the last unpin, under the node's lock. `pin_frame()`'s `BadState` for "a frame on a free list" holds only for a free block's head, the one frame the buddy marks.
+- The gates entry: the assertion added to `prepare_alloc()` does not close the release-build gap the pin entry recorded. It is a debug assertion like `prepare_free()`'s, so a release build still frees and hands out a pinned frame unnoticed, and a debug build already stops a pinned free at `prepare_free()`. What the new assertion catches is a count that never passed `prepare_free()`: a frame given to the node's or the zone's `free_frames()` directly, a frame pinned while free, or descriptor storage that was not zeroed.
+
+**Change**
+The comments say the true statements above. The repair item for zeroed storage lists the pin count beside the reference word, the compound offset and the body. The design and the skill say what was built and what is still a target. The provisional per-CPU unit's rounding, which no longer buys anything, is filed as `docs/repairs/261112/mm.md` item 2 rather than changed.
+
+**Reference**
+None.
+
+**Verification**
+`verify` and `ktest all` on the default build after these edits; see the commit. No code line changed outside comments.
+
+**Deliberately not done**
+- Sealing the node's and the zone's layers, which would make the first correction's original statement true.
+- The four findings the refuting reviewers rejected: that the list forms never ask the reclaimer for a depleted zone (their behaviour predates this branch, and no zone is named for an order above 0 either way), that `alloc_frames_contiguous()` observes pressure once per call it makes (each of those is a whole operation), and two readings of present-tense design text as claims about code.
+
+**How it was found**
+The pre-landing review of `feat/pmm-redesign`, with each finding put to a second reviewer told to refute it, and two of the pin findings checked against the code by hand.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can a stale order on the fifth frame of a block be at most 2, and what does the alignment rule say about any frame?
+- What actually keeps a pinned VMO page from being reclaimed, if the reclaimer never reads the pin count?
+- Why does an assertion that runs in exactly the builds where another assertion runs not close a release-build gap?

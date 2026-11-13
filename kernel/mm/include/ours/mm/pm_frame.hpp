@@ -387,14 +387,16 @@ class PageFrame {
     /// knows where it is.
     ///
     /// A fact about the frame whatever its role, which is why it is here and
-    /// not in a role's body: whoever would move a frame reads one field, and
-    /// a change of role does not forget a pin.
+    /// not in a role's body: a change of role does not forget a pin, and the
+    /// allocator can check, on the way into stock and out of it, that no
+    /// frame is free while held.
     ///
     /// Written only under the lock of the frame's owner (for a page of a VMO,
     /// the lock of the node that holds it), so a pin and an unpin never race
-    /// each other, and anything that would move the frame looks at the count
-    /// under that same lock. Atomic only so that a reader without the lock, a
-    /// dump or a test, reads a whole value.
+    /// each other. Movers do not read it directly: the owner files a frame
+    /// with any pin where its movers will not take it, on the first pin and
+    /// off on the last (see mm::pin_frame()). Atomic only so that a reader
+    /// without the lock, a dump or a test, reads a whole value.
     [[nodiscard]]
     FORCE_INLINE
     auto pin_count() const -> usize {

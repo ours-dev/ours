@@ -132,7 +132,7 @@ The `Dma` zone and `MigrateType::Reclaimable` stay as they are, without a flag, 
 
 The interface an object has in this task is small. The rest is a place kept for a feature, written down so that the feature has one place to go, and not built until the feature is.
 
-Only the seam is visible outside the PMM. The layers under it carry the same pair of names (E3): `mm::alloc_frames()` calls `PmNode::alloc_frames()`, which calls `PmZone::alloc_frames()`, and `mm::free_frames()` calls `PmNode::free_frames()` on the frame's node, which calls `PmZone::free_frames()`. Nothing else calls the node's or the zone's. They and `PmZone::admits()` are private members reached through `friend`, as `PmNode::take_block()` is today, so that a caller outside cannot skip the seam's admission and gates. Each layer does one thing under the one name: the seam resolves and prepares, the node chooses a zone and looks at its pressure, the zone moves the block under its lock.
+Only the seam is visible outside the PMM. The layers under it carry the same pair of names (E3): `mm::alloc_frames()` calls `PmNode::alloc_frames()`, which calls `PmZone::alloc_frames()`, and `mm::free_frames()` calls `PmNode::free_frames()` on the frame's node, which calls `PmZone::free_frames()`. Nothing else calls the node's or the zone's. The target is that they and `PmZone::admits()` are private members reached through `friend`, so that a caller outside cannot skip the seam's admission and gates. As built (2026-11-12) they are public: `PmZone`'s and `PmNode`'s own tests call them, and sealing both layers is a later step. Each layer does one thing under the one name: the seam resolves and prepares, the node chooses a zone and looks at its pressure, the zone moves the block under its lock.
 
 | Object | Built in this task | A slot, built with its feature |
 |---|---|---|
@@ -154,7 +154,7 @@ mm::alloc_frames(flags, order, home)         the only entry for one block (D1)
 
 The list forms run the same stages once per block inside one rollback scope. Release is the mirror: `mm::free_frames()` runs `prepare_free(frame)` (not pinned, not queued, not reserved; tail stamps cleared), and hands the block to `PmNode::free_frames()` on the frame's node, which returns it to the zone and looks at the node's pressure once.
 
-`prepare_alloc()` and `prepare_free()` are the two gates every frame passes on its way out of and into stock. Zeroing is in `PmNode::take_block()` today, the role in the buddy, the assertions in `PmNode::return_block()` and the tail stamps in the object cache. The counterparts are Linux's `post_alloc_hook()` and `free_pages_prepare()` in `mm/page_alloc.c`.
+`prepare_alloc()` and `prepare_free()` are the two gates every frame passes on its way out of and into stock. Before this task zeroing was in `PmNode::take_block()`, the role in the buddy, the release assertions in `PmNode::return_block()` and the tail stamps in the object cache. As built, zeroing, the locality counters and the release assertions are in `prepare_alloc()` and `prepare_free()` in `pmm.cpp`; the tail stamps are still the object cache's. The counterparts are Linux's `post_alloc_hook()` and `free_pages_prepare()` in `mm/page_alloc.c`.
 
 ### PmFrame
 

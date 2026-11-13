@@ -163,9 +163,11 @@ class CpuLocal::Mapper {
 
     /// The provisional unit, rounded to a whole buddy order.
     ///
-    /// Only this allocation is rounded, and only so that init() can hand it
-    /// back with a single `free_frames`. Rounding `unit_size()` itself would
-    /// inflate every unit of every chunk to buy that one convenience.
+    /// Only this allocation is rounded. It was, so that init() could hand it
+    /// back with a single `free_frames`; init() now gives it to the buddy with
+    /// adopt_frames(), which takes any range, so the rounding buys nothing
+    /// and costs up to one unit of boot memory. Kept until it is measured
+    /// against the unrounded size (docs/repairs/261112/mm.md).
     static auto replica_span() -> usize {
         auto const pages = round_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
         return (usize{1} << mm::get_order(pages)) * PAGE_SIZE;
