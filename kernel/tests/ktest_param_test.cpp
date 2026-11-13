@@ -24,11 +24,11 @@ KTEST_P(KtestParam, ValueIsOneOfTheTables) {
 
 // The parameter composes with a fixture: the object derives from the fixture
 // and the suite's param base, so one instantiation sees both.
-class KtestParamFixture: public ktest::Fixture {
+class KtestParamFixture: public ktest::Fixture<KtestParamFixture> {
   public:
     usize built_in_setup{};
 
-    void SetUp() override {
+    void SetUp() {
         built_in_setup = 7;
     }
 };

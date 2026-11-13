@@ -100,3 +100,79 @@ None (mechanical refactor; behavior pinned by the host suite and the console gra
 - Why does the default `set_up_stage` answer from the hook's failure count instead of from a flag the walk sets?
 - What makes `EnvironmentRun::tear_down` unwind the attempted prefix rather than the whole registry, and why does a failed TearDown not stop it?
 - `from_words` takes a bool for the `ktest all` rule — what makes that fact un-derivable from the words themselves, and what breaks if the runner stopped passing it?
+
+## The fixtures become CRTP: static stages and one static instance per record (2026-11-13)
+
+**Files**
+
+- `kernel/lib/ktest/include/ktest/fixture.hpp` — `Fixture` becomes `template <typename Derived> class Fixture`: `SetUp()`/`TearDown()` lose `virtual` and stay no-op defaults, and the two new stage methods `run_set_up()`/`run_tear_down()` dispatch through `static_cast<Derived *>(this)` — static dispatch, no virtual table, no virtual destructor. `KTEST_F` no longer reserves a BSS buffer and placement-constructs per run: the macro defines one static object `ktest_instance_<Fixture>_<Name>{}` beside the record — constant-initialized when the fixture is constexpr-constructible, otherwise initialized in the image's constructor pass — and the invoke frames the stages directly with a `BindScope` plus the failure-count gate, the same shape the shared stage runner uses.
+- `kernel/lib/ktest/include/ktest/instantiate.hpp` — a `KTEST_P`/`KTEST_T` test class now derives from its own CRTP root `::ktest::Fixture<Suite_Name_Test>` beside the param base or type, so a fixture-less parameterized body reads the fixture contract through the same base. The parameter suite keeps its per-record storage and `run_fixture`: each record constructs its object with the table value, which a shared static instance cannot do.
+- `kernel/lib/ktest/test/fixture_test.cpp`, `kernel/lib/ktest/test/matcher_test.cpp`, `kernel/lib/ktest/test/instantiate_test.cpp`, `kernel/tests/ktest_fixture_test.cpp`, `kernel/tests/ktest_param_test.cpp` — every fixture class roots itself in `ktest::Fixture<Self>` and shadows the stages without `override`; the expansion-shape asserts now check the CRTP relationships (the fixture roots in its own `Fixture<Self>`, the test derives from the fixture, a fixture-less parameter test is its own root). Environment-derived classes keep `override`: `Environment::SetUp`/`TearDown` are still virtual, and the keyword there is the compiler's check that the environment contract is met.
+
+**Symptom**
+
+None — a design request, not a bug. The user (2026-11-13) asked for the GoogleTest authoring form with a CRTP-generated static test sample. The polymorphic shape was working code: every fixture class paid a vtable and a virtual destructor, and every run of every `KTEST_F` placement-constructed a fresh object into BSS storage and ran one indirect call per stage.
+
+**Cause**
+
+The fixture shape was copied from GoogleTest, and one of its load-bearing pieces does not bear load here. In GoogleTest a test object is heap-constructed fresh per test and deleted through the base pointer, so the virtual destructor is what makes deletion well-defined. In this kernel nothing ever deletes a test object — it lives in the image for the whole run — so the destructor guarded nothing, and the virtual stages bought dispatch the compiler could resolve at compile time for tests that never replace the runner's framing.
+
+**Change**
+
+The base dispatches statically and the object never moves:
+
+```cpp
+// before: virtual stages, per-run placement construction in BSS storage
+class Fixture {
+    virtual ~Fixture() = default;
+    virtual auto SetUp() -> void {}
+    virtual auto TearDown() -> void {}
+};
+// KTEST_F: alignas(Test) unsigned char storage[sizeof(Test)];
+//          run_fixture<Test>(context, storage, body) — construct_at per run
+
+// after: CRTP root, static instance, static dispatch
+template <typename Derived> class Fixture {
+    auto SetUp() -> void {}                       // shadow, not override
+    auto TearDown() -> void {}
+    auto run_set_up() -> void { static_cast<Derived *>(this)->SetUp(); }
+    auto run_tear_down() -> void { static_cast<Derived *>(this)->TearDown(); }
+};
+// KTEST_F: static Fixture_Name_Test ktest_instance_Fixture_Name{};
+//          invoke frames BindScope, run_set_up(), body, run_tear_down()
+```
+
+Shadowing replaces overriding: a fixture that defines `SetUp()` hides the no-op default, and `run_set_up()` resolves to the derived one at compile time — shadowing one stage and not the other is fine, shadowing neither keeps both defaults. The failure semantics are unchanged and pinned by the same host cases as before: a SetUp that records a failure or a skip leaves the body out, and TearDown runs however the body ended, which is what makes it the place to undo SetUp.
+
+The honest divergence from GoogleTest: it constructs a fresh fixture object per test, so one test can never see another's fixture state; the static instance keeps its members for as long as the image runs, so a second test of the suite and a `repeat` pass re-run the body on whatever the last pass left. The macro's comment says so and names the remedies (reset the state in the body, or in the fixture's `SetUp`). This is the price of the static instance the request asked for; where per-record construction is required — a parameterized record's object must be built with its table value — the old storage-plus-`run_fixture` form survives, and is the only place it survives.
+
+**Reference**
+
+CRTP static dispatch is the standard C++ idiom this request named; the stage framing through a non-virtual front (`run_set_up`) that the derived class's method backs onto follows the same object shape as `std::enable_shared_from_this` (a CRTP base whose members act on the derived type through `static_cast`). GoogleTest's polymorphic fixture remains the reference for the authoring surface (`vendor/googletest/googletest/include/gtest/gtest.h`, `TestFixture` with virtual `SetUp`/`TearDown`); the deliberate departures — shadowing instead of overriding, one static instance instead of a fresh object per test — are kernel-side, stated in the macro's comment, and driven by no-heap/no-deletion constraints GoogleTest does not have.
+
+**Verification**
+
+- `boot_check.py --out out/bringup.x86`: build ok; dbg PASS 46/5/0; rel PASS 44/8/0 (7/7 required); host-tests 183/0.
+- Host suite: `ktest-test` 83/83, verdicts unchanged from the features round's pinning.
+- `ktest all` on the dbg image: `ktest: SUMMARY ran=83 passed=80 failed=0 skipped=3` — 83 because the PMM round's four tests joined the image since the refactor record's 79, one of them the third skip; the known skips unchanged otherwise.
+- clang-format clean on every touched file.
+
+**Deliberately not done**
+
+- Keeping `run_fixture` for plain `KTEST_F`. A static instance needs no per-run construction, so the storage form would be dead weight on every fixture test; it lives only where construction carries an argument (the parameter records).
+- A fresh-object-per-test mode. GoogleTest's freshness is the right call where tests must not trust each other, but the instance is static by the request's own terms; the comment documents the consequence rather than paying an allocation-shaped hole in the no-heap rule for a mode nothing uses yet.
+- Shadowing warnings for a fixture that shadows `SetUp` with a different signature. A typo'd `void SetUP()` shadows nothing and runs the default silently; `-Wsuggest-override` cannot help with a non-virtual base, and no test in the tree has made the mistake yet.
+
+**How it was found**
+
+None (the user's design request).
+
+**The user's prediction**
+
+None (the user set the direction — GoogleTest form, CRTP static instance — and approved the plan that this batch implements).
+
+**Three questions you should be able to answer**
+
+- Why does dropping `virtual` from `SetUp` not break a fixture that relies on the base default running when it shadows nothing?
+- A test's body corrupts its fixture's member and the suite's second test then fails: why can that happen here and not in GoogleTest, and what are the two documented remedies?
+- Why does `KTEST_P` keep the storage-plus-`run_fixture` form when `KTEST_F` does not?

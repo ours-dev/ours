@@ -55,7 +55,7 @@ auto described(Matcher const &matcher) -> std::string {
 /// EXPECT_THAT is just an assertion: the fixture carries no state, and the
 /// bodies prove the forms compile and record what they should beside a
 /// KTEST_F's ordinary lifecycle.
-class MatcherBodies: public ktest::Fixture {};
+class MatcherBodies: public ktest::Fixture<MatcherBodies> {};
 
 KTEST_F(MatcherBodies, ComparePasses) {
     KTEST_EXPECT_THAT(42, ktest::Eq(42));

@@ -49,15 +49,15 @@ KtestFixtureEnvironment ENVIRONMENT;
 // reports, and what the first test below asserts on.
 auto const REGISTERED = ktest::add_environment(ENVIRONMENT);
 
-class KtestFixture: public ktest::Fixture {
+class KtestFixture: public ktest::Fixture<KtestFixture> {
   public:
     usize written_in_setup{};
 
-    void SetUp() override {
+    void SetUp() {
         written_in_setup = WRITTEN_IN_SETUP;
     }
 
-    void TearDown() override {
+    void TearDown() {
         FIXTURE_TEARDOWNS += 1;
     }
 };

@@ -35,23 +35,40 @@ namespace ktest {
 
 /// The state a suite's tests share. `KTEST_F(Fixture, Name)` writes its body
 /// as a member of a class derived from the fixture, so the body reads the
-/// fixture's members through `this` and may override SetUp and TearDown to
+/// fixture's members through `this` and may shadow SetUp and TearDown to
 /// build and undo that state around each test. The fixture must be default
 /// constructible; its members the bodies touch are `protected:` or public,
 /// exactly as in GoogleTest.
+///
+/// The base is CRTP, not polymorphic: the stages resolve statically to the
+/// derived class's SetUp/TearDown, and the test's instance is one static
+/// object per record, never deleted through the base — so there is no virtual
+/// table and no virtual destructor to pay for. Shadowing one stage and not
+/// the other is fine; shadowing neither keeps the no-op defaults.
+template <typename Derived>
 class Fixture {
   public:
-    virtual ~Fixture() = default;
-
     /// Runs before each test's body. A failure recorded here — an assertion
     /// or a KTEST_SKIP — leaves the body out: there is no point running a
     /// check against state that could not be built.
-    virtual auto SetUp() -> void {}
+    auto SetUp() -> void {}
 
     /// Runs after each test's body, however far the test got: after a pass,
     /// after a failed check, after an ASSERT returned, and after a SetUp
     /// failure, which is what makes this the place to undo SetUp.
-    virtual auto TearDown() -> void {}
+    auto TearDown() -> void {}
+
+    /// The stage the generated test class's adapter calls before the body,
+    /// resolved statically to the derived class's SetUp.
+    auto run_set_up() -> void {
+        static_cast<Derived *>(this)->SetUp();
+    }
+
+    /// The stage the generated test class's adapter calls after the body,
+    /// resolved statically to the derived class's TearDown.
+    auto run_tear_down() -> void {
+        static_cast<Derived *>(this)->TearDown();
+    }
 };
 
 namespace internal {
@@ -273,7 +290,7 @@ namespace internal {
             std::construct_at(static_cast<Test *>(storage), std::forward<Args>(args)...);
         auto const failures_before_setup = context.failure_count();
         test->SetUp();
-        auto *const state = current_state();
+        auto *const state = ::ktest::internal::current_state();
         auto const setup_broke = state != nullptr && (state->skipped || context.failure_count() !=
                                                                             failures_before_setup);
         if (!setup_broke) {
@@ -289,41 +306,57 @@ namespace internal {
 
 /// Defines one test of a fixture, named `Fixture.Name`. The body that follows
 /// is a member function of `Fixture_Name_Test`, a class the macro derives from
-/// the fixture; `this` is a fixture instance whose SetUp() ran before the body
-/// and whose TearDown() runs after it, however the body ended.
+/// the fixture; `this` is a fixture instance whose set_up() ran before the
+/// body and whose tear_down() runs after it, however the body ended.
+///
+/// The instance is the static test object the macro defines beside the
+/// record: one object per record, constant-initialized when the fixture is
+/// constexpr-constructible and otherwise initialized in the image's
+/// constructor pass — either way before any test runs, and never allocated.
+/// Its members keep whatever the body wrote for as long as the image runs, so
+/// a `repeat` pass re-runs the body on the state the last pass left; a test
+/// that needs fresh state resets it in the body, or takes a fixture whose
+/// set_up does.
 ///
 /// The record goes to `.hsien.tests` like a `KTEST`'s, so the runner reports
-/// the test exactly like a plain one. The fixture object is constructed in the
-/// macro's own static storage — the record side of the design's rule that
-/// registration is a linker section, not a per-test initializer — so no run
-/// allocates, and each test gets a freshly built object.
+/// the test exactly like a plain one. The stages run through the CRTP base's
+/// run_set_up()/run_tear_down(), which resolve to the fixture's SetUp()/
+/// TearDown() at compile time — no virtual table, no virtual destructor, and
+/// the static instance is never deleted through the base.
 ///
 /// The class and its body are file-scope with external linkage, as in
 /// GoogleTest: two `KTEST_F`s that share a full name meet as a duplicate
 /// symbol at link time, where two plain `KTEST`s reach the runner's duplicate
 /// check. Both are an authoring bug; the name is the test's identity.
-#define KTEST_F(fixture_class, name_token)                                                                                 \
-    class fixture_class##_##name_token##_Test final: public fixture_class {                                                \
-      public:                                                                                                              \
-        void ktest_body();                                                                                                 \
-    };                                                                                                                     \
-    namespace {                                                                                                            \
-        alignas(                                                                                                           \
-            fixture_class##_##name_token##_Test) static unsigned char ktest_fixture_storage_##fixture_class##_##name_token \
-            [sizeof(fixture_class##_##name_token##_Test)];                                                                 \
-        void ktest_invoke_##fixture_class##_##name_token(::hsien::Context &context) {                                      \
-            ::ktest::internal::run_fixture<fixture_class##_##name_token##_Test>(                                           \
-                context, ktest_fixture_storage_##fixture_class##_##name_token,                                             \
-                [](fixture_class##_##name_token##_Test &test) { test.ktest_body(); });                                     \
-        }                                                                                                                  \
-        KTEST_RECORD_SECTION(".hsien.tests")                                                                               \
-        FORCE_USED static ::hsien::TestRecord const ktest_record_##fixture_class##_##name_token =                          \
-            {                                                                                                              \
-                .name = #fixture_class "." #name_token,                                                                    \
-                .invoke = ktest_invoke_##fixture_class##_##name_token,                                                     \
-                .location = ::std::source_location::current(),                                                             \
-        };                                                                                                                 \
-    }                                                                                                                      \
+#define KTEST_F(fixture_class, name_token)                                                         \
+    class fixture_class##_##name_token##_Test final: public fixture_class {                        \
+      public:                                                                                      \
+        void ktest_body();                                                                         \
+    };                                                                                             \
+    namespace {                                                                                    \
+        static fixture_class##_##name_token##_Test                                                 \
+            ktest_instance_##fixture_class##_##name_token{};                                       \
+        void ktest_invoke_##fixture_class##_##name_token(::hsien::Context &context) {              \
+            ::ktest::internal::BindScope const scope(context);                                     \
+            auto const failures_before = context.failure_count();                                  \
+            ktest_instance_##fixture_class##_##name_token.run_set_up();                            \
+            auto *const state = ::ktest::internal::current_state();                                \
+            auto const setup_broke =                                                               \
+                state != nullptr &&                                                                \
+                (state->skipped || context.failure_count() != failures_before);                    \
+            if (!setup_broke) {                                                                    \
+                ktest_instance_##fixture_class##_##name_token.ktest_body();                        \
+            }                                                                                      \
+            ktest_instance_##fixture_class##_##name_token.run_tear_down();                         \
+        }                                                                                          \
+        KTEST_RECORD_SECTION(".hsien.tests")                                                       \
+        FORCE_USED static ::hsien::TestRecord const ktest_record_##fixture_class##_##name_token =  \
+            {                                                                                      \
+                .name = #fixture_class "." #name_token,                                            \
+                .invoke = ktest_invoke_##fixture_class##_##name_token,                             \
+                .location = ::std::source_location::current(),                                     \
+        };                                                                                         \
+    }                                                                                              \
     void fixture_class##_##name_token##_Test::ktest_body()
 
 /// Defines the function that runs once before the run's first `KTEST_F` of

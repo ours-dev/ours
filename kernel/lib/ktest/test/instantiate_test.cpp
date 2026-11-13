@@ -61,17 +61,17 @@ KTEST_P(Numbers, FailsWhereAsked) {
 /// The fixture the KTEST_F_P cases drive: SetUp writes a member the body
 /// reads beside its table value, and a member SetUp leaves alone proves the
 /// object is rebuilt per record.
-class ParamsFixture: public ktest::Fixture {
+class ParamsFixture: public ktest::Fixture<ParamsFixture> {
   public:
     int built_in_setup{};
     int left_alone{5};
 
-    void SetUp() override {
+    void SetUp() {
         LOG.push_back("setup");
         built_in_setup = 7;
     }
 
-    void TearDown() override {
+    void TearDown() {
         LOG.push_back("teardown");
     }
 };
@@ -121,8 +121,9 @@ KTEST_T(Boxes, ChecksItsType) {
 
 TEST(KtestParamMacro, ExpansionShape) {
     // The expansion's pieces, checked the only way a host can: by name.
-    static_assert(std::is_base_of_v<ktest::Fixture, Numbers_ReadsItsValue_Test>,
-                  "the macro derives the test's class from ktest::Fixture");
+    static_assert(
+        std::is_base_of_v<ktest::Fixture<Numbers_ReadsItsValue_Test>, Numbers_ReadsItsValue_Test>,
+        "the macro derives the test's class from its own Fixture base");
     static_assert(std::is_base_of_v<Numbers_ParamBase, Numbers_ReadsItsValue_Test>,
                   "the macro derives the test's class from the suite's param base");
     static_assert(sizeof(ktest_param_storage_Numbers_ReadsItsValue) >=
