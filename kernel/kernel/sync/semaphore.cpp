@@ -18,7 +18,7 @@ using task::Thread;
 /// the count, so the count cannot rise while a thread is queued.
 ///
 /// A waiter that times out or is interrupted takes itself off the queue
-/// (WaitQueue::handle_timeout(), Thread::suspend_or_kill()) under the same
+/// (WaitQueueBase::handle_timeout(), Thread::suspend_or_kill()) under the same
 /// queue lock this takes. So a post and a timeout racing for one waiter are
 /// ordered by that lock: if the post dequeues it first, the timeout finds it
 /// gone and the waiter returns Ok with the unit; if the timeout does, the

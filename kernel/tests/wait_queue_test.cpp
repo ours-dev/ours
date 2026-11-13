@@ -7,14 +7,14 @@
 // why:
 //
 //   - its own timeout: a wait with a deadline that nothing signals, which
-//     WaitQueue::handle_timeout() ends from the timer interrupt, and which
+//     WaitQueueBase::handle_timeout() ends from the timer interrupt, and which
 //     answers TimeOut;
 //   - a suspend from another thread while it waits interruptibly, which
 //     Thread::suspend_or_kill() ends through its Parked branch, and which
 //     answers InternalIrqRetry -- not Ok, which would tell the waiter it got
 //     what it waited for.
 //
-// Both reach WaitQueue::unpark_thread() holding the woken thread's PI lock,
+// Both reach WaitQueueBase::unpark_thread() holding the woken thread's PI lock,
 // and until 2026-10-03 that function took the same lock again: dbg_1 would
 // stop on SpinLock::acquire()'s !is_held() assertion, and a build without
 // assertions would spin for good with interrupts off. Nothing in a normal
@@ -28,6 +28,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/sync/event.hpp>
+#include <ours/task/owned_wait_queue.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
@@ -70,6 +71,18 @@ namespace {
                   duration_cast<Microseconds>(elapsed).count());
         EXPECT_EQ(status, Status::TimeOut, "a wait that nothing signals times out");
         EXPECT_TRUE(elapsed >= TIMEOUT, "and not before its deadline");
+    }
+
+    KTEST(WaitQueue, OwnedWaitTimesOut) {
+        task::OwnedWaitQueue queue;
+        auto *const current = task::Thread::Current::get();
+        auto const deadline = time::Deadline::at(time::SteadyClock::now() + TIMEOUT);
+        auto const status = queue.park_and_assign_owner(current, deadline, task::Interruptible::No);
+
+        EXPECT_EQ(status, Status::TimeOut, "the owned wait ends at its deadline");
+        EXPECT_TRUE(current->waiter_state().wait_queue() == nullptr, "the back-pointer is clear");
+        Guard<sync::SpinLock, lockdep::IrqSave> const guard{queue.get_lock()};
+        EXPECT_TRUE(queue.is_empty(), "the timer removed the waiter from the owned queue");
     }
 
     /// Shared between the test and the waiter it suspends. On the heap: a

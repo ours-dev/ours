@@ -337,3 +337,55 @@ None
 - Which accessor is the single entry to the thread's scheduler state?
 - Which discipline still used the forwarding accessor?
 - Why is the access migration a mechanical change?
+
+## Move the scheduler into task (2026-11-07)
+
+**Files**
+- `kernel/include/ours/task/` contains the scheduler headers and the full `scheduler.hpp` declaration.
+- `kernel/kernel/task/` contains the scheduler sources and the `:scheduler` source set.
+- Kernel callers, tests and benchmarks use the new paths and qualified names.
+- `scripts/lldb_ours.py` uses the new scheduler type name and the canonical thread state field.
+- `build/switch/kernel_switchset.gni` and `system/public/ours/status.hpp` point to the new file locations.
+
+**Symptom**
+Scheduler declarations lived in a subdirectory and namespace below task. The main scheduler header forwarded back into that subdirectory and re-exported several names.
+
+**Cause**
+The scheduler's split predated the current ownership of thread state and scheduling operations. The two spellings exposed the same scheduler and its thread-owned state through two include paths.
+
+**Change**
+Before:
+
+```cpp
+#include <ours/task/sched/scheduler.hpp>
+using ours::task::sched::Scheduler;
+```
+
+After:
+
+```cpp
+#include <ours/task/scheduler.hpp>
+using ours::task::Scheduler;
+```
+
+The implementation and headers now sit directly in the task directories. Generic scheduler filenames use the `scheduler_` prefix so the task configuration and type headers keep their distinct paths. GN retains the separate scheduler source set in the task build file and selects the same RR or Fair source. The old `Context` and `SchedEntity` forwarding headers are removed. Fair uses `SchedulerState` directly.
+
+**Reference**
+None, this project's own source layout. The scheduler and wait queues operate on the state owned by `Thread`.
+
+**Verification**
+Changed-line clang-format and GN formatting passed. Clang-tidy ran on 40 C++ files using the RR and Fair compile databases. A normalized comparison of Fair's old and moved files matched after accounting for include paths, namespace, type names and formatting. Python parsed the updated LLDB helper. LLDB imported the helper and found `ours::task::Scheduler`, `ours::task::SchedulerState` and `Thread::m_scheduler_state` in the unstripped debug kernel. RR and Fair each booted both development images, passing 46 dbg shell checks, 44 rel shell checks and 183 host tests. `SchedDomains` and `StealPolicy` passed in both configurations. `Steal` passed with RR and `Hotplug` passed with Fair.
+
+**Deliberately not done**
+None
+
+**How it was found**
+Mapped the include and symbol references before moving the files. This exposed the LLDB helper's old scheduler qualification and thread state field name.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Where does a caller now include the scheduler declaration from?
+- Why do the scheduler config and types headers have a prefix?
+- What selects the source file for the configured discipline?

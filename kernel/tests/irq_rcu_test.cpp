@@ -39,7 +39,7 @@
 #include <ours/status.hpp>
 #include <ours/task/cpu_hotplug.hpp>
 #include <ours/task/irq_rcu.hpp>
-#include <ours/task/sched/common.hpp>
+#include <ours/task/scheduler_common.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/clock_source.hpp>

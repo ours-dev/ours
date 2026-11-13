@@ -406,7 +406,7 @@ def _percpu(target: lldb.SBTarget, symbol: str, offset: int) -> lldb.SBValue | N
 
 
 CURRENT_THREAD = "ours::mm::CpuLocal::Current<ours::task::Thread*>::CURRENT_INSTANCE"
-CURRENT_SCHED = ("ours::mm::CpuLocal::Current<ours::task::sched::Scheduler>::"
+CURRENT_SCHED = ("ours::mm::CpuLocal::Current<ours::task::Scheduler>::"
                  "CURRENT_INSTANCE")
 
 
@@ -464,7 +464,7 @@ def cpus(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionConte
         if sched is None:
             notes.append("no scheduler")
         else:
-            bad = _canary(sched, "ours::task::sched::Scheduler")
+            bad = _canary(sched, "ours::task::Scheduler")
             # A unit exists for every possible CPU, but only the onlined ones
             # ever construct a Scheduler in it. Listing the other twelve as
             # errors buries the four lines that matter, so they are counted and
@@ -666,7 +666,7 @@ def _thread_report(target: lldb.SBTarget, address: int, found_on: int | None) ->
     label = (name.GetSummary() or "?").strip('"') if name.IsValid() else "?"
     state = _enum(_child(thread, "m_state"))
 
-    context = _child(thread, "m_scheduling_context")
+    context = _child(thread, "m_scheduler_state")
     waiter = _child(thread, "m_waiter_state")
     stack = _child(thread, "m_stack")
 
@@ -699,7 +699,7 @@ def _thread_report(target: lldb.SBTarget, address: int, found_on: int | None) ->
     ]
 
     # Only things that are actually wrong. The transient run-queue state is
-    # deliberately NOT checked: kernel/include/ours/task/sched/context.hpp
+    # deliberately NOT checked: kernel/include/ours/task/scheduler_state.hpp
     # records that Rescheduling is never cleared and DequeueDelayed is never
     # written, so a thread sitting in either is the known defect, not news --
     # and a command that cries wolf about it stops being read.

@@ -9,6 +9,7 @@
 #include <ours/status.hpp>
 
 #include <ktest/ktest.hpp>
+#include <ktest/run_plan.hpp>
 
 namespace {
 
@@ -57,6 +58,77 @@ KTEST(Ktest, ReadsRunOptions) {
         EXPECT_EQ(ktest::option_usize("expected", usize{0}), usize{42},
                   "the run option is visible to the test");
     }
+}
+
+/// The matcher half of the assertion family: several EXPECT_THAT forms over
+/// freestanding-safe values, all passing. The failure shape is the host
+/// suite's to check exactly; this run only proves the forms compile, bind
+/// their arguments once and pass on target.
+KTEST(Ktest, MatcherSmoke) {
+    auto const value = 6 * 7;
+    EXPECT_THAT(value, ktest::Eq(42));
+    EXPECT_THAT(value, ktest::Ge(42), "the answer is at least itself");
+    EXPECT_THAT(value, ktest::AllOf(ktest::Ge(40), ktest::Le(45)));
+    EXPECT_THAT(value, ktest::AnyOf(ktest::Eq(41), ktest::Eq(42)));
+
+    auto const *const pointer = &value;
+    EXPECT_THAT(pointer, ktest::NotNull());
+    int const *const null_pointer = nullptr;
+    EXPECT_THAT(null_pointer, ktest::IsNull());
+
+    auto const status = ours::Status::Ok;
+    EXPECT_THAT(status, ktest::Ok());
+
+    ASSERT_THAT(value, ktest::Ne(41));
+}
+
+/// The runner's own options -- shuffle, repeat, shard -- reach the tests
+/// through the same accessors as every other option; the iteration they plan
+/// is the runner's alone. Each test below is silent unless its option was
+/// given, so a plain `ktest all` keeps its summary, and each pairs with an
+/// `expected_<option>` value the host passes beside it -- not
+/// Ktest.ReadsRunOptions's `expected`, which names 42 and would otherwise
+/// read this run's options too.
+
+/// `ktest all shuffle[=SEED] [seed=SEED]`: the seed text arrives whole and
+/// the same parser the runner uses reads it back to what the host named. A
+/// bare `shuffle` carries no value and parses to the runner's default seed.
+KTEST(Ktest, ReadsShuffleOption) {
+    if (!ktest::has_option("shuffle")) {
+        return;
+    }
+    auto const seed = ktest::parse_seed(ktest::option("shuffle"));
+    ASSERT_TRUE(seed.is_ok(), "the seed text parses");
+    if (ktest::has_option("seed")) {
+        EXPECT_EQ(seed.unwrap(), ktest::option_usize("seed", usize{0}),
+                  "the seed is what the host passed");
+    }
+}
+
+/// `ktest all repeat=N [expected_repeat=N]`: the pass count is visible to
+/// the tests, and the run's SUMMARY shows N times the plain selection's
+/// count, which is how the runner's pass loop is seen from outside.
+KTEST(Ktest, ReadsRepeatOption) {
+    if (!ktest::has_option("repeat")) {
+        return;
+    }
+    auto const passes = ktest::option_usize("repeat", usize{0});
+    EXPECT_GE(passes, usize{1}, "repeat carries the pass count");
+    if (ktest::has_option("expected_repeat")) {
+        EXPECT_EQ(passes, ktest::option_usize("expected_repeat", usize{0}),
+                  "the pass count is what the host passed");
+    }
+}
+
+/// `ktest all shard=M/N`: the shard text arrives whole and names a range
+/// inside the registry. Which tests the shard selects is the runner's
+/// arithmetic over the registry indices; the SUMMARY shows its share.
+KTEST(Ktest, ReadsShardOption) {
+    if (!ktest::has_option("shard")) {
+        return;
+    }
+    auto const shard = ktest::Shard::parse(ktest::option("shard"));
+    ASSERT_TRUE(shard.is_ok(), "the shard text parses and names a range inside the registry");
 }
 
 } // namespace

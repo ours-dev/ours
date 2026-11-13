@@ -78,7 +78,7 @@ template("kernel_switchset") {
         "//system/lib/ustl:headers.config",
 
         # <ffl/*.hpp> holds the scheduler's fixed-point and reciprocal
-        # arithmetic, and it is reached from ours/task/sched/common.hpp --
+        # arithmetic, and it is reached from ours/task/scheduler_common.hpp --
         # a header pulled in through Thread by most of kernel-proper, not
         # just by the scheduler's own source_set.
         "//system/lib/ffl:headers.config",

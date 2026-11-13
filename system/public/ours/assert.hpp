@@ -32,38 +32,13 @@ auto vpanic(std::string_view fmt) -> void;
 
 /// Bounds-checked stack sink for panic formatting: never allocates, so
 /// panic() works in heap-less environments (phys).  Truncation is
-/// acceptable for a panic path.
+/// acceptable for a panic path. The write that fills it is
+/// detail::render()'s, through the bounded direct-pointer shape — the
+/// sink's own write cursor advances out of the format's answer, and the
+/// bound is where a message too long for the buffer is cut.
 struct PanicSink {
     char *m_out;
     char *m_end;
-
-    struct Iterator {
-        using iterator_category = std::output_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = void;
-
-        PanicSink *m_sink;
-
-        auto operator=(char const &value) -> Iterator & {
-            if (m_sink->m_out != m_sink->m_end) {
-                *m_sink->m_out = value;
-                ++m_sink->m_out;
-            }
-            return *this;
-        }
-
-        auto operator*() -> Iterator & {
-            return *this;
-        }
-
-        auto operator++() -> Iterator & {
-            return *this;
-        }
-
-        auto operator++(int) -> Iterator {
-            return *this;
-        }
-    };
 };
 
 namespace detail {
@@ -110,7 +85,16 @@ namespace detail {
     FORCE_INLINE
     auto render(PanicSink &sink, std::string_view fmt, Args &&...args) -> void {
         [&](auto &&...prepared) {
-            std::vformat_to(PanicSink::Iterator{&sink}, fmt, std::make_format_args(prepared...));
+            // The write goes through the direct-pointer shape, the one
+            // bounded write the standard machinery runs without an allocator:
+            // vformat_to over the sink's iterator buffers through one that
+            // silently grows past its first 256 bytes with operator new, and
+            // a panic message long enough to cross it would recurse into the
+            // very fault it is reporting. Truncation is acceptable here, and
+            // the bound is where it happens.
+            auto const written = std::__vformat_to_n<std::format_context>(
+                sink.m_out, sink.m_end - sink.m_out, fmt, std::make_format_args(prepared...));
+            sink.m_out = written.out;
         }(decay_format_arg(static_cast<Args &&>(args))...);
     }
 } // namespace detail
