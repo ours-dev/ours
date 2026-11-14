@@ -15,6 +15,7 @@
 #include <span>
 #include <string_view>
 
+#include <gktl/options.hpp>
 #include <ours/status.hpp>
 #include <ustl/result.hpp>
 
@@ -67,31 +68,13 @@ constexpr auto runner_option(std::string_view const name) -> RunnerOption {
 /// Parses an unsigned decimal or hexadecimal digit run: digits only, no sign,
 /// no separators, |base| 10 or 16. InvArgs for an empty value, a
 /// character that is not a digit of |base|, or a value beyond u64's range.
-/// The one digit primitive every number-shaped word here goes through.
+/// The one digit primitive every number-shaped word here goes through; the
+/// body is gktl's, promoted from here when the commands' options builder
+/// needed the same primitive and the runner keeps the name for its callers.
 [[nodiscard]]
 constexpr auto parse_u64(std::string_view const digits, u64 const base = 10)
     -> ustl::Result<u64, ours::Status> {
-    if (digits.empty()) {
-        return ustl::err(ours::Status::InvArgs);
-    }
-    auto parsed = u64{0};
-    for (auto const c: digits) {
-        auto digit = u64{0};
-        if (c >= '0' && c <= '9') {
-            digit = static_cast<u64>(c - '0');
-        } else if (base == 16 && c >= 'a' && c <= 'f') {
-            digit = static_cast<u64>(c - 'a') + 10;
-        } else if (base == 16 && c >= 'A' && c <= 'F') {
-            digit = static_cast<u64>(c - 'A') + 10;
-        } else {
-            return ustl::err(ours::Status::InvArgs);
-        }
-        if (parsed > (~u64{0} - digit) / base) {
-            return ustl::err(ours::Status::InvArgs);
-        }
-        parsed = parsed * base + digit;
-    }
-    return ustl::ok(parsed);
+    return gktl::parse_u64(digits, base);
 }
 
 /// Parses a shuffle seed: `0x`- or `0X`-prefixed hexadecimal, or decimal, and

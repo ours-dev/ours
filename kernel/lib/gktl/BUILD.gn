@@ -18,24 +18,50 @@ cpp_interface("headers") {
     "include/gktl/dyn.hpp",
     "include/gktl/experiment.hpp",
     "include/gktl/init_hook.hpp",
-    "include/gktl/init_hook.hpp",
+    "include/gktl/options.hpp",
     "include/gktl/radix_tree.hpp",
+    "include/gktl/report.hpp",
     "include/gktl/types.hpp",
     "include/gktl/vtable_packer.hpp",
   ]
-  public_deps = [ "//system/lib/ustl:headers" ]
+  public_deps = [
+    "//system/lib/logz4:headers",
+    "//system/lib/ustl:headers",
+  ]
 }
 
-# Host-side test. gktl is a kernel library, but <gktl/defer.hpp> includes
+# Host-side tests. gktl is a kernel library, but <gktl/defer.hpp> includes
 # nothing, so its run-at-most-once contract can be checked by a plain hosted
-# main() like //system/lib/concurrent's chain-lock-test.
+# main() like //system/lib/concurrent's chain-lock-test. The options builder
+# is likewise kernel-header-free, so its grammar and rejection shapes run
+# under googletest on the build machine, the way ktest's own grammar does.
 executable("defer-test") {
   testonly = true
   sources = [ "test/defer_test.cpp" ]
   deps = [ ":headers" ]
 }
 
+executable("options-test") {
+  testonly = true
+  sources = [
+    "test/options_test.cpp",
+    "test/report_test.cpp",
+  ]
+  deps = [
+    ":headers",
+
+    # The reporting half prints through the log, so its cases drive the
+    # library the kernel commands print with.
+    "//system/lib/logz4",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+}
+
 group("tests") {
   testonly = true
-  deps = [ ":defer-test" ]
+  deps = [
+    ":defer-test",
+    ":options-test",
+  ]
 }
