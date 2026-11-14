@@ -1,7 +1,7 @@
 # gktl-options: declarative options for console commands
 
 **Date**: 2026-11-14
-**Status**: Accepted
+**Status**: Done
 
 ## Request
 
