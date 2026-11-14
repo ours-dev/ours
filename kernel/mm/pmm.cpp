@@ -517,7 +517,7 @@ auto set_free_memory_signal(usize const lower, usize const upper, usize const de
 /// pointer is set, because the fold already happened.
 ///
 /// The table is also the only answer that works this early: nothing fills the
-/// per-CPU pointer until PmNode::publish_cpus() runs from an init hook, while
+/// per-CPU pointer until CpuNodeMap::publish_all() runs from an init hook, while
 /// allocation starts asking for a node long before that.
 ///
 /// The table is mm's own (CpuNodeMap), seeded once at bring-up from what

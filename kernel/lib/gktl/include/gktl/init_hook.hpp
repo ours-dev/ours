@@ -32,7 +32,7 @@ enum class InitLevel {
     /// This level used to sit after Vmm, which put every hook registered on it
     /// three levels later than the thing it names: CpuLocal::init() runs inside
     /// init_pmm(), so `CpuLocal + 1` read like "once per-CPU storage exists"
-    /// but meant "after init_vmm()". PmNode::publish_cpus() was registered
+    /// but meant "after init_vmm()". CpuNodeMap::publish_all() was registered
     /// there, which left the per-CPU `PmNode *` null across the first
     /// allocation and hung the boot inside it.
     CpuLocalInternal = PlatformEarly + LEVEL_DELTA,

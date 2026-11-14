@@ -156,30 +156,6 @@ class PmNode {
   public:
     static auto bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status;
 
-    /// Records |cpu| as working on the node the placement table puts it on,
-    /// and caches that node in |cpu|'s slot. Nothing for a CPU still on the
-    /// MAX_NODES sentinel.
-    static auto publish_cpu(CpuNum cpu) -> void;
-
-    /// publish_cpu() for every CPU claimed so far. Run once, from an init
-    /// hook, as soon as per-CPU storage exists; see the definition for why it
-    /// is unconditional rather than going through set_cpu_node().
-    static auto publish_cpus() -> void;
-
-    /// Gives every CPU the firmware reported a node, and publishes it, before
-    /// any of them starts. Run once, from an init hook after the MADT parse;
-    /// see the definition for why bootstrap() could not do this itself.
-    static auto claim_possible_cpus() -> void;
-
-    /// Moves |cpu| to node |nid|: out of its old node's CPU mask, into the new
-    /// one's, and the placement table and its cache along with them.
-    ///
-    /// No caller yet. It is kept because it is the one place that knows what a
-    /// move has to touch, and it is three objects wide -- two nodes' masks,
-    /// each under its own lock, and the placement -- so the next thing that
-    /// re-homes a CPU should not have to rediscover the order.
-    static auto set_cpu_node(CpuNum cpu, NodeId nid) -> void;
-
     /// Works out how many frames the machine holds back from allocation and
     /// gives every zone its share of it as three watermarks.
     ///
@@ -233,13 +209,35 @@ class PmNode {
     }
 
     /// A copy, taken under the node lock. The mask changes whenever a CPU is
-    /// re-homed (`update_cpu_to_node`), so a reference into it would be a
+    /// re-homed (CpuNodeMap::move()), so a reference into it would be a
     /// reference into a value the next re-homing rewrites under the caller;
     /// a copy is the only thing that can be handed out without the lock.
     auto work_cpus() -> CpuMask {
         Guard<sync::SpinLock, IrqSave> guard{get_lock()};
         return m_work_cpus;
     }
+
+    /// Records |cpu| as working on this node, and remove_cpu() takes it out
+    /// again. Each takes this node's lock for this node's mask and nothing
+    /// else: which node a CPU is on is CpuNodeMap's table, and CpuNodeMap is
+    /// the caller, which keeps the table, the two nodes' masks and the
+    /// per-CPU cache in step.
+    auto add_cpu(CpuNum cpu) -> void;
+    auto remove_cpu(CpuNum cpu) -> void;
+
+    /// Adds |cpu| to the hard affinity if the firmware placed it on this
+    /// node. init() already does this for every CPU the firmware's table
+    /// names when the node is made, and today the table is complete by then
+    /// (the SRAT parse fills it at PrePmm + 1, before any node exists), so
+    /// this adds nothing. It keeps publishing a CPU doing what it always did,
+    /// for a firmware table that is filled later.
+    ///
+    /// For the init hooks alone, which run on the boot CPU before any other
+    /// CPU is started: the mask is read without a lock for the rest of the
+    /// system's life, so nothing may write it once another CPU can read it.
+    /// A CPU moved between nodes at run time does not come here. The hard
+    /// affinity is what the firmware said, and does not follow a move.
+    auto join_hard_affinity(CpuNum cpu) -> void;
 
     FORCE_INLINE
     constexpr auto hard_affinity() const -> CpuMask const & {
@@ -296,7 +294,7 @@ class PmNode {
 
     NodeId m_id;
 
-    /// Held with interrupts off. PmNode::publish_cpus() publishes every CPU
+    /// Held with interrupts off. CpuNodeMap::publish_all() publishes every CPU
     /// under it at InitLevel::CpuLocal + 1, long before InitLevel::Threading
     /// gives the boot CPU a thread whose preemption could be held off, and
     /// work_cpus() reads it at run time; IrqSave is the option that is right
@@ -306,17 +304,19 @@ class PmNode {
     /// The affinity based on hardware/software.
     /// Using rules:  (m_hard_affinity & m_soft_affinity)
     ///
-    /// Not under m_lock: both are written once, in init() before the node is
-    /// marked Online, and only read after that. The accessors hand out
-    /// references and the per-CPU allocator caches a pointer to the hard
-    /// mask for the life of the system, neither of which a lock could cover.
-    /// They used to be TA_GUARDED(get_lock()), which no reader honoured and
-    /// no reader could.
+    /// Not under m_lock: both are written in init(), before the node is
+    /// marked Online, and the hard one once more by join_hard_affinity() from
+    /// the init hooks, on the boot CPU before any other CPU is started. They
+    /// are only read after that. The accessors hand out references, which a
+    /// lock could not cover; the one reader outside tests, the per-CPU unit
+    /// mapper (CpuLocal::Mapper), reads the hard mask once, on the boot CPU,
+    /// while CpuLocal::init() lays out the units. They used to be
+    /// TA_GUARDED(get_lock()), which no reader honoured and no reader could.
     CpuMask m_hard_affinity;
     CpuMask m_soft_affinity;
 
     /// Which CPUs work on this node. Unlike the two above this one does
-    /// change after bring-up -- update_cpu_to_node() moves a CPU between
+    /// change after bring-up -- CpuNodeMap::move() moves a CPU between
     /// nodes -- so it stays under the lock, and work_cpus() copies it out.
     CpuMask m_work_cpus TA_GUARDED(get_lock());
 

@@ -58,7 +58,7 @@ namespace {
     /// and spins forever on a list pointer it has mistaken for that
     /// NodeCache's lock.
     ///
-    /// It has to happen here, not in PmNode::publish_cpus(): that hook runs at
+    /// It has to happen here, not in CpuNodeMap::publish_all(): that hook runs at
     /// InitLevel::CpuLocal + 1, while the slab allocator starts asking which
     /// node it is on inside init_pmm(), several init levels earlier. And it
     /// has to come before the nodes' init(), which reads
@@ -72,7 +72,7 @@ namespace {
     /// the running CPU that does the work -- and that would be needed
     /// regardless: a machine that handed us no MADT still has the CPU this code
     /// is executing on, and leaving that one on the sentinel is the exact
-    /// failure above. PmNode::claim_possible_cpus() claims the rest,
+    /// failure above. CpuNodeMap::claim_possible() claims the rest,
     /// once the MADT has been parsed.
     ///
     /// Returns how many CPUs the firmware put on a node that does not exist.

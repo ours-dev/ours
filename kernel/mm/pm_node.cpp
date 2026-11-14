@@ -1,18 +1,13 @@
 #include <ours/assert.hpp>
-#include <ours/cpu.hpp>
-#include <ours/mm/cpu_local.hpp>
-#include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
-#include <ours/mm/pmm.hpp>
 #include <ours/panic.hpp>
 
 #include <algorithm>
 
-#include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
 #include <numa/topology.hpp>
 #include <ustl/function/bind.hpp>
@@ -157,130 +152,29 @@ auto PmNode::dump() const -> void {
     });
 }
 
-auto PmNode::set_cpu_node(CpuNum const cpu, NodeId const new_nid) -> void {
+auto PmNode::add_cpu(CpuNum const cpu) -> void {
+    m_canary.verify<Self>();
     DEBUG_ASSERT(cpu < MAX_CPU);
-    DEBUG_ASSERT(new_nid < MAX_NODES);
 
-    auto const old_nid = CpuNodeMap::node_of(cpu);
-    if (old_nid == new_nid) {
-        return;
-    }
-
-    if (old_nid != MAX_NODES) {
-        if (auto node = find_node(old_nid)) {
-            node->m_canary.verify<Self>();
-            Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
-
-            // Erases ourselves from the node to which the CPU belongs.
-            node->m_work_cpus.set(cpu, 0);
-        }
-    }
-
-    // The table before the cache, because the cache asserts it agrees with the
-    // table. Neither node's lock is held across both: the two masks are
-    // separate invariants, and a CPU appearing in neither for an instant is
-    // what a reader of work_cpus() already has to tolerate -- it takes a copy.
-    CpuNodeMap::set_node_of(cpu, new_nid);
-    if (auto node = find_node(new_nid)) {
-        node->m_canary.verify<Self>();
-        {
-            Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
-            node->m_work_cpus.set(cpu);
-        }
-        CpuNodeMap::cache_local_node(cpu, node);
-    }
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+    m_work_cpus.set(cpu);
 }
 
-auto PmNode::publish_cpu(CpuNum const cpu) -> void {
-    auto const nid = CpuNodeMap::node_of(cpu);
-    if (nid == MAX_NODES) {
-        // Not claimed yet. bootstrap() claims only the CPU it runs on;
-        // claim_possible_cpus() and the NUMA topology parse claim the rest.
-        return;
+auto PmNode::remove_cpu(CpuNum const cpu) -> void {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(cpu < MAX_CPU);
+
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+    m_work_cpus.set(cpu, 0);
+}
+
+auto PmNode::join_hard_affinity(CpuNum const cpu) -> void {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(cpu < MAX_CPU);
+
+    if (numa::Topology::firmware_node(cpu) == m_id) {
+        m_hard_affinity.set(cpu);
     }
-
-    auto *const node = find_node(nid);
-    DEBUG_ASSERT(node, "CPU {} was claimed by node {}, which does not exist", cpu, nid);
-    node->m_canary.verify<Self>();
-
-    {
-        Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
-        node->m_work_cpus.set(cpu);
-        // PmNode::init() builds the hard affinity from
-        // numa::Topology::firmware_node(), but only for the CPUs claimed by
-        // then -- the boot CPU. A CPU claimed later joins it here, so that the
-        // node's mask says the same thing as the table.
-        if (numa::Topology::firmware_node(cpu) == nid) {
-            node->m_hard_affinity.set(cpu);
-        }
-    }
-    CpuNodeMap::cache_local_node(cpu, node);
 }
-
-/// Publishes each CPU's node into its per-CPU slot, now that the slots exist.
-///
-/// Not through set_cpu_node(). bootstrap() has already claimed every CPU with
-/// CpuNodeMap::seed_from_firmware(), so set_cpu_node() finds the old and
-/// new ids equal and returns before it reaches the cache. That is what left
-/// the slot null across the zero-page allocation in init_vmm_preheap(): the
-/// node-less alloc_frames() went on through a null PmNode, and
-/// The allocation walk spun on the ZoneList it read out of address
-/// 0x48. The early return is right for what set_cpu_node() is for -- a CPU
-/// moving between nodes at run time, where nothing changing means nothing to
-/// do -- but the first publish is this function's job, and it has to be
-/// unconditional.
-///
-/// The running CPU is covered by name, the way bootstrap() covers it. The
-/// possible mask is filled by the MADT parse, which runs from
-/// platform_init_apic() at InitLevel::Irq -- three levels after this hook --
-/// so at this point it is empty, and a walk of it alone publishes nothing.
-/// That was the other way this used to fail on the same boot.
-auto PmNode::publish_cpus() -> void {
-    Cpu::possible_mask().for_each(&PmNode::publish_cpu);
-    publish_cpu(CpuLocal::current_cpu());
-}
-
-/// Every CPU the MADT reported gets a node -- before any of them runs.
-///
-/// bootstrap() could only claim the CPU it runs on: the possible mask is
-/// filled by the MADT parse (platform_init_apic(), InitLevel::Irq), long
-/// after the PMM. Every other CPU was left on the MAX_NODES sentinel, and
-/// nothing ever moved it -- the only other claimant is the SRAT parse, which
-/// a kernel built without NUMA never compiles in and a machine without an
-/// SRAT never feeds. So current_node() on an AP answered MAX_NODES, and
-/// the first kmalloc() on an AP -- a user thread's channel_create(), on
-/// CPU1 -- read m_node_caches[MAX_NODES], one past the end, took the
-/// ListMemberHook after the array for a NodeCache, and spun for ever on a list
-/// pointer it had mistaken for that NodeCache's lock. The comment on
-/// claim_unplaced_cpus() in pm_node_init.cpp describes that exact failure for
-/// the boot CPU; this is the same hole for the others.
-///
-/// A CPU no topology source placed goes where the boot CPU went, which is the
-/// first node that owns memory -- the fallback bootstrap() chose, and on a
-/// machine without an SRAT the only node there is.
-auto PmNode::claim_possible_cpus() -> void {
-    auto const fallback = current_node();
-    DEBUG_ASSERT(fallback < MAX_NODES, "the boot CPU has no node");
-
-    // The seed is idempotent: a CPU the firmware placed keeps that node, and
-    // one it did not lands on |fallback|. Running it again once the MADT has
-    // been parsed is how the CPUs that were not in the possible mask during
-    // init_pmm() get placed at all.
-    // The count is not reported again: bootstrap() already said it for every
-    // CPU the firmware bound, and the MADT adds only CPUs the firmware did not.
-    static_cast<void>(CpuNodeMap::seed_from_firmware(fallback, node_possible_mask()));
-    Cpu::possible_mask().for_each(&PmNode::publish_cpu);
-}
-
-/// Once per-CPU storage exists, so that the node-less alloc_frames() can be
-/// called at all. CpuLocal + 1 rather than CpuLocal itself: the hooks at a
-/// level run when that level is announced, and CpuLocal is announced right
-/// after CpuLocal::init() returns -- a hook at exactly that level would run
-/// with the units laid out but before main.cpp had said so.
-GKTL_INIT_HOOK(PublishCpus, PmNode::publish_cpus, gktl::InitLevel::CpuLocal + 1);
-
-/// After InitLevel::Irq, where the MADT parse fills the possible mask, and
-/// before InitLevel::Platform, where x86_bring_aps() starts the CPUs in it.
-GKTL_INIT_HOOK(ClaimPossibleCpus, PmNode::claim_possible_cpus, gktl::InitLevel::Irq + 1);
 
 } // namespace ours::mm

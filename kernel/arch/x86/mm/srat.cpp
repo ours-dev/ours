@@ -194,10 +194,10 @@ namespace {
                 APICIDS[count] = binding.apic_id;
                 CPUS[count] = count;
                 cpu_possible_mask().set(count);
-                // set_firmware_node(), not PmNode::set_cpu_node(): this runs at
+                // set_firmware_node(), not CpuNodeMap::move(): this runs at
                 // PrePmm + 1, before any PmNode exists, and recording what the
                 // firmware declared is all there is to do this early.
-                // set_cpu_node() is the run-time move between two live nodes --
+                // move() is the run-time move between two live nodes --
                 // it would find no node to join, so it wrote only the running
                 // placement and left the firmware table on the sentinel.
                 // bootstrap() then saw the CPU as already claimed and did not
@@ -273,7 +273,7 @@ auto acpi_init_numa() -> Status {
     // reached are then unknown to the topology altogether: not in the
     // possible mask, so bootstrap() does not see them, and with no firmware
     // node, so no node's hard affinity will ever hold them. The MADT reports
-    // them later and claim_possible_cpus() puts them on the boot CPU's node,
+    // them later and CpuNodeMap::claim_possible() puts them on the boot CPU's node,
     // which is somewhere to run and not necessarily where they are. That is
     // a degraded topology, and still better than discarding one whose memory
     // affinities are already applied and cannot be rolled back, and then
