@@ -61,7 +61,7 @@ namespace {
         options.add<u64>("value").help("the value to set the knob to");
         auto const parsed = options.parse(invocation);
         if (parsed.is_err()) {
-            gktl::reject("steal.policy", options, parsed.unwrap_err());
+            gktl::reject(options, parsed.unwrap_err());
             return 1;
         }
         auto const values = parsed.unwrap();
@@ -71,7 +71,7 @@ namespace {
         // The knob named but nothing to set it to: the pair is one request.
         if (!values.has("value")) {
             log::error("steal.policy: name needs value=<number>");
-            gktl::print_usage("steal.policy", options.descriptors());
+            gktl::print_usage(options);
             return 1;
         }
         auto const name = values.get<std::string_view>("name");

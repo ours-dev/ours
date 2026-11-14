@@ -237,6 +237,23 @@ TEST(GktlParse, TheInvocationSkipsTheCommandWord) {
     EXPECT_EQ(invocation.words().size(), usize{2});
 }
 
+TEST(GktlParse, ADefaultedOptionAbsentFromTheLineReadsItsDefault) {
+    auto options = gktl::Options{"demo"};
+    options.add<u64>("seconds").defaults_to(u64{5});
+    // The usage line prints (default 5) for exactly this case, and the
+    // handler reads 5: the declaration promised the value, and the line said
+    // nothing to contradict it.
+    auto const parsed = options.parse({});
+    ASSERT_TRUE(parsed.is_ok());
+    EXPECT_EQ(parsed.unwrap().get<u64>("seconds"), u64{5});
+    EXPECT_FALSE(parsed.unwrap().has("seconds"));
+    // The line contradicting the default still wins.
+    auto const carried = options.parse({"seconds=30"});
+    ASSERT_TRUE(carried.is_ok());
+    EXPECT_EQ(carried.unwrap().get<u64>("seconds"), u64{30});
+    EXPECT_TRUE(carried.unwrap().has("seconds"));
+}
+
 TEST(GktlParsed, ReadsZeroForAnOptionGivenNeither) {
     auto options = gktl::Options{"demo"};
     options.add<u64>("count");

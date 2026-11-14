@@ -72,7 +72,7 @@ auto crash_command(gktl::Invocation const &invocation) -> int {
 
     auto const parsed = options.parse(invocation);
     if (parsed.is_err()) {
-        gktl::reject("crash", options, parsed.unwrap_err());
+        gktl::reject(options, parsed.unwrap_err());
         return 1;
     }
     auto const how = parsed.unwrap().get<std::string_view>("how");

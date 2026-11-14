@@ -279,7 +279,7 @@ namespace {
         options.add<bool>("all").help("run the hardware-only metrics on an emulator too");
         auto const parsed = options.parse(invocation);
         if (parsed.is_err()) {
-            gktl::reject("largepage.bench", options, parsed.unwrap_err());
+            gktl::reject(options, parsed.unwrap_err());
             return 1;
         }
         bench::Run const run("largepage.bench", parsed.unwrap().get<bool>("all"));

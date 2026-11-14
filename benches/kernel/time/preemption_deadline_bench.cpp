@@ -205,7 +205,7 @@ namespace {
         options.add<bool>("csv").help("print the samples as CSV rows instead of lines");
         auto const parsed = options.parse(invocation);
         if (parsed.is_err()) {
-            gktl::reject("preemptdeadline.bench", options, parsed.unwrap_err());
+            gktl::reject(options, parsed.unwrap_err());
             return 1;
         }
         auto const values = parsed.unwrap();

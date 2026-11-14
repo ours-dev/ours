@@ -177,7 +177,7 @@ auto cov_command(gktl::Invocation const &invocation) -> int {
 
     auto const parsed = options.parse(invocation);
     if (parsed.is_err()) {
-        gktl::reject("cov", options, parsed.unwrap_err());
+        gktl::reject(options, parsed.unwrap_err());
         return 1;
     }
     return cov_dump();

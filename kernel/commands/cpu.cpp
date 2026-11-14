@@ -69,18 +69,25 @@ namespace {
 
         auto const parsed = options.parse(invocation);
         if (parsed.is_err()) {
-            gktl::reject("cpu", options, parsed.unwrap_err());
+            gktl::reject(options, parsed.unwrap_err());
             return 1;
         }
         auto const values = parsed.unwrap();
         auto const which = values.get<std::string_view>("verb");
         if (which == "status") {
+            // status names nothing: a cpu word beside it is the old grammar's
+            // usage error, and stays one.
+            if (values.has("cpu")) {
+                log::error("cpu: verb=status takes no cpu");
+                gktl::print_usage(options);
+                return 1;
+            }
             return status();
         }
         // Moving a CPU names it; status has nothing to name.
         if (!values.has("cpu")) {
             log::error("cpu: verb={} needs cpu=<number>", which);
-            gktl::print_usage("cpu", options.descriptors());
+            gktl::print_usage(options);
             return 1;
         }
         auto const cpu = static_cast<CpuNum>(values.get<u64>("cpu"));
