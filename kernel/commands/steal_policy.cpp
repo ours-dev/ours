@@ -55,11 +55,11 @@ namespace {
         return 0;
     }
 
-    auto steal_policy_command(int argc, char **argv) -> int {
+    auto steal_policy_command(gktl::Invocation const &invocation) -> int {
         auto options = gktl::Options{"steal.policy"};
         options.add<std::string_view>("name").help("the knob to set, as steal.policy lists them");
         options.add<u64>("value").help("the value to set the knob to");
-        auto const parsed = options.parse(argc, argv);
+        auto const parsed = options.parse(invocation);
         if (parsed.is_err()) {
             gktl::reject("steal.policy", options, parsed.unwrap_err());
             return 1;

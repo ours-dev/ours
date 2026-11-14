@@ -53,25 +53,27 @@ auto declare_demo(gktl::Options &options) -> void {
 }
 
 TEST(GktlWord, SplitsOnTheFirstEquals) {
-    auto word = gktl::Word{};
-    ASSERT_TRUE(gktl::parse_word("rounds=64", word));
-    EXPECT_EQ(word.name, "rounds");
-    EXPECT_EQ(word.value, "64");
-    EXPECT_TRUE(word.has_value);
+    auto const word = gktl::parse_word("rounds=64");
+    ASSERT_TRUE(word.is_some());
+    EXPECT_EQ(word.value().name, "rounds");
+    EXPECT_EQ(word.value().value, "64");
+    EXPECT_TRUE(word.value().has_value);
 
-    ASSERT_TRUE(gktl::parse_word("csv", word));
-    EXPECT_EQ(word.name, "csv");
-    EXPECT_EQ(word.value, "");
-    EXPECT_FALSE(word.has_value);
+    auto const bare = gktl::parse_word("csv");
+    ASSERT_TRUE(bare.is_some());
+    EXPECT_EQ(bare.value().name, "csv");
+    EXPECT_EQ(bare.value().value, "");
+    EXPECT_FALSE(bare.value().has_value);
 
-    ASSERT_TRUE(gktl::parse_word("mode=", word));
-    EXPECT_EQ(word.name, "mode");
-    EXPECT_EQ(word.value, "");
-    EXPECT_TRUE(word.has_value);
+    auto const empty_value = gktl::parse_word("mode=");
+    ASSERT_TRUE(empty_value.is_some());
+    EXPECT_EQ(empty_value.value().name, "mode");
+    EXPECT_EQ(empty_value.value().value, "");
+    EXPECT_TRUE(empty_value.value().has_value);
 
-    EXPECT_FALSE(gktl::parse_word("=value", word));
-    EXPECT_FALSE(gktl::parse_word("=", word));
-    EXPECT_FALSE(gktl::parse_word("", word));
+    EXPECT_TRUE(gktl::parse_word("=value").is_none());
+    EXPECT_TRUE(gktl::parse_word("=").is_none());
+    EXPECT_TRUE(gktl::parse_word("").is_none());
 }
 
 TEST(GktlPrimitives, ParseU64TakesDigitsOnly) {
@@ -217,19 +219,22 @@ TEST(GktlParse, CustomHookParsesTheShapesPlainDigitsCannot) {
     EXPECT_EQ(options.parse({"seed=0x"}).unwrap_err().fault, gktl::OptionFault::BadValue);
 }
 
-TEST(GktlParse, TheConsoleShapeSkipsTheCommandWord) {
+TEST(GktlParse, TheInvocationSkipsTheCommandWord) {
     auto options = gktl::Options{"demo"};
     declare_demo(options);
-    // Three words the way the console's dispatch leaves them: each one
-    // NUL-terminated in place, argv[0] the command itself.
-    char cmd[] = "demo";
-    char first[] = "mode=time";
-    char second[] = "rounds=8";
-    char *argv[] = {cmd, first, second, nullptr};
-    auto const parsed = options.parse(3, argv);
+    // The invocation the callback is handed: the command's own word first,
+    // the line's options after it, exactly as run_command builds it.
+    auto const words = std::array{std::string_view{"mode=time"}, std::string_view{"rounds=8"}};
+    auto const invocation = gktl::Invocation{"demo", words};
+    auto const parsed = options.parse(invocation);
     ASSERT_TRUE(parsed.is_ok());
     EXPECT_EQ(parsed.unwrap().get<std::string_view>("mode"), "time");
     EXPECT_EQ(parsed.unwrap().get<usize>("rounds"), usize{8});
+
+    // The command word is there for the handler that wants it, and never for
+    // the parse.
+    EXPECT_EQ(invocation.command(), "demo");
+    EXPECT_EQ(invocation.words().size(), usize{2});
 }
 
 TEST(GktlParsed, ReadsZeroForAnOptionGivenNeither) {

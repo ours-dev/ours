@@ -170,12 +170,12 @@ auto cov_dump() -> int {
     return 0;
 }
 
-auto cov_command(int argc, char **argv) -> int {
+auto cov_command(gktl::Invocation const &invocation) -> int {
     constexpr std::string_view VERBS[] = {"dump"};
     auto options = gktl::Options{"cov"};
     options.add<std::string_view>("verb").required().choices(VERBS);
 
-    auto const parsed = options.parse(argc, argv);
+    auto const parsed = options.parse(invocation);
     if (parsed.is_err()) {
         gktl::reject("cov", options, parsed.unwrap_err());
         return 1;

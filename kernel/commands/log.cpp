@@ -117,14 +117,14 @@ auto set_level(gktl::Parsed const &values) -> int {
     return 0;
 }
 
-auto log_command(int argc, char **argv) -> int {
+auto log_command(gktl::Invocation const &invocation) -> int {
     auto options = gktl::Options{"log"};
     options.add<std::string_view>("verb").choices(VERBS).help(
         "dump the record ring, domains lists them, level moves a floor");
     options.add<std::string_view>("domain").help("the domain the verb works on");
     options.add<std::string_view>("level").help(
         "the floor to set, or default to follow the global");
-    auto const parsed = options.parse(argc, argv);
+    auto const parsed = options.parse(invocation);
     if (parsed.is_err()) {
         gktl::reject("log", options, parsed.unwrap_err());
         return 1;

@@ -2,7 +2,11 @@
 /// Copyright (c) 2026 ours Developers
 
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
 #include <gktl/radix_tree.hpp>
+
+#include <array>
+#include <string_view>
 
 #include <ktl/memory_resource.hpp>
 #include <ustl/collections/allocator.hpp>
@@ -86,7 +90,7 @@ namespace {
     }
 } // namespace
 
-auto run_command(int argc, char **argv) -> void {
+auto run_command(int const argc, char **const argv) -> void {
     if (argc <= 0 || argv == nullptr || argv[0] == nullptr) {
         return;
     }
@@ -98,7 +102,18 @@ auto run_command(int argc, char **argv) -> void {
         return;
     }
 
-    auto _ = command->callback(argc, argv);
+    // The one place the console's C shape exists: the count and the pointers
+    // become the invocation's views here, and every handler behind the
+    // callback sees the value and not the array.
+    auto words = std::array<std::string_view, MAX_OPTIONS>{};
+    auto count = usize{0};
+    for (auto i = 1; i < argc && argv[i] != nullptr; ++i) {
+        words[count] = argv[i];
+        count += 1;
+    }
+    auto const invocation = Invocation{argv[0], {words.data(), count}};
+
+    auto _ = command->callback(invocation);
 }
 
 } // namespace gktl

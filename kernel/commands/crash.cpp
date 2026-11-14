@@ -63,14 +63,14 @@ auto panic_together(void *context) -> void {
     ours::panic(PANIC_MESSAGE);
 }
 
-auto crash_command(int argc, char **argv) -> int {
+auto crash_command(gktl::Invocation const &invocation) -> int {
     auto options = gktl::Options{"crash"};
     options.add<std::string_view>("how")
         .required()
         .choices(HOW_CHOICES)
         .help("what to take down: panic, panic-locked or panic-smp");
 
-    auto const parsed = options.parse(argc, argv);
+    auto const parsed = options.parse(invocation);
     if (parsed.is_err()) {
         gktl::reject("crash", options, parsed.unwrap_err());
         return 1;

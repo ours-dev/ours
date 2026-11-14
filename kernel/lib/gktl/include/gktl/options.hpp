@@ -21,6 +21,7 @@
 #ifndef GKTL_OPTIONS_HPP
 #define GKTL_OPTIONS_HPP 1
 
+#include <gktl/command.hpp>
 #include <gktl/types.hpp>
 
 #include <array>
@@ -50,24 +51,22 @@ struct Word {
 /// the options; sixteen leaves slack for a host test driving the full table.
 inline constexpr usize MAX_OPTIONS = 16;
 
-/// Splits one token on its first `=`. False when the name is empty (`=x`,
-/// `=`), which no option can be named.
+/// Splits one token on its first `=`. None when the name is empty (`=x`,
+/// `=`, the empty word), which no option can be named.
 [[nodiscard]]
-constexpr auto parse_word(std::string_view const token, Word &out) -> bool {
+constexpr auto parse_word(std::string_view const token) -> ustl::Option<Word> {
     auto const equals = token.find('=');
     if (equals == std::string_view::npos) {
         if (token.empty()) {
-            return false;
+            return ustl::NONE;
         }
-        out = Word{.name = token, .value = std::string_view{}, .has_value = false};
-        return true;
+        return Word{.name = token, .value = std::string_view{}, .has_value = false};
     }
     auto const name = token.substr(0, equals);
     if (name.empty()) {
-        return false;
+        return ustl::NONE;
     }
-    out = Word{.name = name, .value = token.substr(equals + 1), .has_value = true};
-    return true;
+    return Word{.name = name, .value = token.substr(equals + 1), .has_value = true};
 }
 
 /// Parses an unsigned decimal or hexadecimal digit run: digits only, no sign,
@@ -476,20 +475,21 @@ class Options {
         }
         auto parsed = Parsed{};
         for (auto const word: words) {
-            auto entry = Word{};
-            if (!parse_word(word, entry)) {
+            auto const entry = parse_word(word);
+            if (entry.is_none()) {
                 return ustl::err(Rejection{OptionFault::MalformedWord, {}, word});
             }
-            auto *const descriptor = find(entry.name);
+            auto const &word_value = entry.value();
+            auto *const descriptor = find(word_value.name);
             if (descriptor == nullptr) {
                 if (pass_through_) {
-                    parsed.passthrough_[parsed.passthrough_count_] = entry;
+                    parsed.passthrough_[parsed.passthrough_count_] = word_value;
                     parsed.passthrough_count_ += 1;
                     continue;
                 }
-                return ustl::err(Rejection{OptionFault::UnknownOption, entry.name, word});
+                return ustl::err(Rejection{OptionFault::UnknownOption, word_value.name, word});
             }
-            auto const slot = read(*descriptor, entry, parsed);
+            auto const slot = read(*descriptor, word_value, parsed);
             if (slot.is_err()) {
                 return ustl::err(slot.unwrap_err());
             }
@@ -510,17 +510,11 @@ class Options {
         return parse(std::span<std::string_view const>{words.begin(), words.size()});
     }
 
-    /// The same, from the console's shape: argv[0] is the command itself and
-    /// is not an option.
+    /// The same, from the invocation the callback was handed: the command's
+    /// own word is not an option, and the words are what the line carried.
     [[nodiscard]]
-    auto parse(int const argc, char **const argv) const -> ustl::Result<Parsed, Rejection> {
-        auto words = std::array<std::string_view, MAX_OPTIONS>{};
-        auto count = usize{0};
-        for (auto i = 1; i < argc && argv[i] != nullptr; ++i) {
-            words[count] = argv[i];
-            count += 1;
-        }
-        return parse(std::span<std::string_view const>{words.data(), count});
+    auto parse(Invocation const &invocation) const -> ustl::Result<Parsed, Rejection> {
+        return parse(invocation.words());
     }
 
     /// The command name the error lines and the usage open with.

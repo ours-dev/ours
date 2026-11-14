@@ -60,14 +60,14 @@ namespace {
         return 0;
     }
 
-    auto cpu_command(int argc, char **argv) -> int {
+    auto cpu_command(gktl::Invocation const &invocation) -> int {
         constexpr std::string_view VERBS[] = {"status", "offline", "online"};
         auto options = gktl::Options{"cpu"};
         options.add<std::string_view>("verb").required().choices(VERBS).help(
             "status lists the CPUs, offline and online move one");
         options.add<u64>("cpu").help("the CPU to take offline or bring online");
 
-        auto const parsed = options.parse(argc, argv);
+        auto const parsed = options.parse(invocation);
         if (parsed.is_err()) {
             gktl::reject("cpu", options, parsed.unwrap_err());
             return 1;
