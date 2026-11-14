@@ -108,7 +108,11 @@ constexpr auto get_order(usize n) -> usize {
 /// |flags| carries Gaf::ThisNode.
 ///
 /// With Gaf::CanWait, pressure can answer ShouldWait: the caller releases its
-/// locks and calls wait_for_frame_allocation().
+/// locks and calls wait_for_frame_allocation(). Pressure is either of two
+/// things. The free-memory gate puts a waiting request off while free memory
+/// in the whole machine is below the level its watcher set; and a waiting
+/// request that finds every zone it may use below its Low watermark is put
+/// off there, where one that cannot wait would go on down to Min.
 [[nodiscard]]
 auto alloc_frames(Gaf flags, usize order = 0, NodeId home = bootmem::ANY_NODE)
     -> ktl::Result<PmFrame *>;
@@ -272,15 +276,15 @@ auto free_frame_count() -> usize;
 [[nodiscard]]
 auto approx_free_frame_count() -> usize;
 
-/// Sleeps until the gate opens and takes one frame for the caller, with
-/// |alloc_flags|, which carries CanWait. Called with no lock held, after
-/// alloc_frames(alloc_flags) answered ShouldWait for a single page with the
-/// default node selection.
+/// Sleeps until the gate opens, or a release brings a zone back to admitting
+/// a frame above its Low watermark, and takes one frame for the caller, with |alloc_flags|, which
+/// carries CanWait. Called with no lock held, after alloc_frames(alloc_flags)
+/// answered ShouldWait for a single page with the default node selection.
 ///
 /// Waiters wake one at a time: each that gets its frame wakes the next, so
 /// an opening does not send every waiter after the same frames at once.
-/// Answers ShouldWait when the gate was shut again before this one got a
-/// frame, and the caller waits again; OutOfMem when delayed allocations are
+/// Answers ShouldWait when this one was put off again before it got a
+/// frame, by the gate or at a zone's Low, and the caller waits again; OutOfMem when delayed allocations are
 /// refused (DelayedAllocations::Refuse); TimeOut at |deadline|.
 [[nodiscard]]
 auto wait_for_frame_allocation(Gaf alloc_flags, time::Deadline const &deadline, bool interruptible)

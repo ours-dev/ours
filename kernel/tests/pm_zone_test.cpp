@@ -71,12 +71,14 @@ namespace {
         auto const pfn = mm::frame_to_pfn(block);
         auto const before = count_free_blocks(zone);
 
+        // Straight into the zone, below the allocation pipeline: whether a
+        // release brought the zone back above Low wakes nobody here.
         constexpr auto HALF = BLOCK_FRAMES / 2;
         for (auto i = HALF; i > 0; --i) {
-            zone.free_frames(block[i - 1], 0);
+            auto _ = zone.free_frames(block[i - 1], 0);
         }
         for (auto i = HALF; i < BLOCK_FRAMES; ++i) {
-            zone.free_frames(block[i], 0);
+            auto _ = zone.free_frames(block[i], 0);
         }
 
         auto const after = count_free_blocks(zone);
@@ -142,8 +144,10 @@ namespace {
                       mm::to_string(zone.zone_type()), first_section);
         }
 
-        spare.clear_and_dispose(
-            [&zone](PmFrame *frame) noexcept { zone.free_frames(*frame, MAX_FRAME_ORDER); });
+        // Straight into the zone, as they were taken: no waiter to wake.
+        spare.clear_and_dispose([&zone](PmFrame *frame) noexcept {
+            auto _ = zone.free_frames(*frame, MAX_FRAME_ORDER);
+        });
         return later != nullptr;
     }
 

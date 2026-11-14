@@ -245,18 +245,36 @@ auto PmZone::contains(usize order) -> bool {
     return false;
 }
 
-auto PmZone::free_frames(PmFrame &frame, usize order) -> void {
-    if (is_order_within_pcpu_cache_limit(order)) {
-        m_frame_cache.with_current([](PcpuCache &cache) {
-            // Here no pcpu cache.
-        });
-        m_free_frames += usize{1} << order;
-        return;
-    }
+auto PmZone::free_frames(PmFrame &frame, usize order) -> bool {
+    auto const count = usize{1} << order;
 
-    auto const pfn = frame_to_pfn(&frame);
-    ZoneGuard guard{m_lock};
-    m_buddy.release(&frame, pfn, order);
-    m_free_frames += usize{1} << order;
+    // The count this release's own increment found. An atomic read-modify-
+    // write, so the increments and the allocations' decrements fall in one
+    // order: every time the count climbs over a line, exactly one increment
+    // is the one that took it over, and it is the only one that sees so.
+    // Reading the counter before and after the release instead lets two
+    // releases with an allocation between them both see no crossing.
+    auto const before = [&] {
+        if (is_order_within_pcpu_cache_limit(order)) {
+            m_frame_cache.with_current([](PcpuCache &cache) {
+                // Here no pcpu cache.
+            });
+            return m_free_frames.fetch_add(count);
+        }
+
+        auto const pfn = frame_to_pfn(&frame);
+        ZoneGuard guard{m_lock};
+        m_buddy.release(&frame, pfn, order);
+        return m_free_frames.fetch_add(count);
+    }();
+
+    // The line is where the Low pass starts admitting one frame again for a
+    // request that allows up to Normal, which is every request made today:
+    // Low plus this zone's reserve against such a request, and the same
+    // arithmetic the pass itself uses. Low alone would be one frame early --
+    // at exactly Low the pass still refuses, since a frame taken there would
+    // leave Low - 1.
+    auto const floor = watermark(Watermark::Low) + lowmem_reserve(ZoneType::Normal);
+    return !mm::admits(before, 0, floor) && mm::admits(before + count, 0, floor);
 }
 } // namespace ours::mm

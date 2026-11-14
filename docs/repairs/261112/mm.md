@@ -46,3 +46,23 @@ None, this project's own design.
 
 **Acceptance**
 `verify` on both machines, and the boot log's reserved and free frame counts showing the unit's saving.
+
+## 3. A waiting request confined to one node can wait for ever
+
+**Severity**
+Low: no caller asks for it today. `ALLOC_USER_VMO` names no node and may fall back to every other one.
+
+**Symptom**
+Latent, cannot be triggered today. A request with `Gaf::CanWait` and `Gaf::ThisNode` (or, later, one limited to memory below 4 GiB) on a node whose zones are all below Low is answered `ShouldWait`, and its waiter is woken only by a release that lifts one of those zones back to Low. If the node holds nothing reclaimable and nothing on it is freed, no such release comes: `AnonymousPageRequest::allocate()` logs every 5 s and waits on. The machine-wide refusal the memory watchdog switches on at OutOfMemory does not reach it while the machine as a whole has memory.
+
+**Cause**
+Waiting at a zone's Low (decision N1 of `.agents/tasks/pmm-redesign/DESIGN.md`, as revised on 2026-11-14) needs a way to end the wait when nothing can relieve the zone. The first draft of N1 had one: a node whose reclaim pass gave nothing back is marked stuck, and a request confined to it answers `OutOfMem`. It was left out of the revision because no caller can reach the case.
+
+**Change**
+Have the reclaimer record, per node, that a pass over its page queues freed nothing, clear it on the next release into the node, and make `alloc_block()` answer `OutOfMem` rather than `ShouldWait` for a request whose every candidate node is so marked. Ruled out: a timeout in the waiter, which turns a slow reclaim into a failure.
+
+**Reference**
+Linux `pgdat->kswapd_failures` and `pgdat_balanced()`: a node kswapd has failed on `MAX_RECLAIM_RETRIES` times is left alone until a page is freed into it.
+
+**Acceptance**
+A kernel test on a memory-only node: drain it below Low with nothing reclaimable, ask with `ALLOC_USER_VMO | Gaf::ThisNode`, and see `OutOfMem` after one reclaim pass instead of an endless wait.

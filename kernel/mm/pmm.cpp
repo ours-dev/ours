@@ -199,6 +199,10 @@ namespace {
     GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
     GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
 
+    /// Releases that brought a zone back to admitting a frame at its Low
+    /// watermark, and so woke a waiter. For tests: what a waiter put off at a zone's Low is woken by.
+    GKTL_COUNTER(PM_ZONE_RELIEF, "pm.zone.relief");
+
     /// The gate every block passes on its way out of stock, with no zone lock
     /// held: what makes a block the buddy gave into the block the caller asked
     /// for. The zone moved it and the node chose the zone; neither prepares
@@ -324,8 +328,15 @@ namespace {
     /// second pass was served below Low, and reclaim is wanted then too. A
     /// first pass that succeeds names nothing, though it may have passed over
     /// a short zone on the way to one that admitted the request.
+    ///
+    /// |can_wait| is whether the caller asked for Gaf::CanWait, which the gate
+    /// has answered for by now. Such a request makes the first pass only:
+    /// when no zone admits it at Low it is answered ShouldWait, and waits for
+    /// a zone to rise back above Low, instead of spending the band between
+    /// Low and Min that the requests which cannot wait depend on.
     auto alloc_block(PmNode &home, Gaf const alloc_flags, usize const order, NodeMask const &nodes,
-                     ustl::Option<PmZone const &> &depleted) -> ktl::Result<PmFrame *> {
+                     bool const can_wait, ustl::Option<PmZone const &> &depleted)
+        -> ktl::Result<PmFrame *> {
         // Whether the calling thread may allocate at all: a thread that has
         // disabled allocation (AllocState::disable()) is refused here,
         // whichever way it asked. This is the one function every frame
@@ -364,6 +375,9 @@ namespace {
             if (!depleted) {
                 depleted = block.error().depleted_zone;
             }
+            if (can_wait) {
+                return ustl::err(Status::ShouldWait);
+            }
             block = home.alloc_frames(request, AdmissionPass::Min);
         }
         if (!block) {
@@ -383,7 +397,19 @@ namespace {
         auto *const node = find_node(frame.nid());
         DEBUG_ASSERT(node, "frame {:#x} belongs to node {}, which does not exist",
                      frame_to_phys(&frame), frame.nid());
-        node->free_frames(frame, order);
+
+        // A release that brings the zone back to admitting a frame at its
+        // Low watermark wakes one waiter: a waiting request put off at Low
+        // (alloc_block()) may now be served. Only at that crossing, not on
+        // every release, so a zone above Low wakes nobody. The zone tells it
+        // from the count its own atomic increment found, so of releases
+        // racing each other and allocations, exactly the one that crossed
+        // wakes. A waiter that retries and is beaten to the frame waits
+        // again, for the next crossing.
+        if (node->free_frames(frame, order)) {
+            PM_ZONE_RELIEF.add(1);
+            GATE.pass_on();
+        }
     }
 
     auto free_blocks(PmFrame::List &list) -> void {
@@ -507,9 +533,10 @@ auto wait_for_frame_allocation(Gaf const alloc_flags, time::Deadline const &dead
     }
 
     auto result = alloc_frames(alloc_flags);
-    // The opening goes on to the next waiter, unless the gate shut again
-    // before this one got a frame: then the next opening wakes them. A
-    // refusal goes on too, so that every waiter hears it.
+    // The opening goes on to the next waiter, unless this one was put off
+    // again, by the gate or at a zone's Low: then the next opening, or the
+    // next release that brings a zone back above Low, wakes them. A refusal goes
+    // on too, so that every waiter hears it.
     if (result || Status::ShouldWait != result.unwrap_err()) {
         GATE.pass_on();
     }
@@ -555,7 +582,9 @@ namespace priv {
                 return ustl::err(status);
             }
         }
-        // The gate has answered for CanWait; nothing below reads the bit.
+        // The gate has answered for CanWait; below, only alloc_block() hears
+        // of it, as an argument.
+        auto const can_wait = !!(alloc_flags & Gaf::CanWait);
         alloc_flags = alloc_flags & ~Gaf::CanWait;
 
         auto const node = resolve_home(home, alloc_flags);
@@ -565,7 +594,7 @@ namespace priv {
         }
 
         ustl::Option<PmZone const &> depleted;
-        auto const block = alloc_block(**node, alloc_flags, order, nodes, depleted);
+        auto const block = alloc_block(**node, alloc_flags, order, nodes, can_wait, depleted);
         observe_pressure(depleted);
         return block;
     }
@@ -586,7 +615,7 @@ namespace priv {
         PmFrame::List list;
         auto rollback = gktl::defer([&list] { free_blocks(list); });
         for (usize i = 0; i < n; ++i) {
-            auto block = alloc_block(**node, alloc_flags, 0, nodes, depleted);
+            auto block = alloc_block(**node, alloc_flags, 0, nodes, false, depleted);
             if (!block) {
                 log::trace("Failed to allocate {} frames with reason: {}", n,
                            to_string(block.unwrap_err()));
@@ -623,7 +652,7 @@ namespace priv {
                 continue;
             }
 
-            auto block = alloc_block(**node, alloc_flags, order, nodes, depleted);
+            auto block = alloc_block(**node, alloc_flags, order, nodes, false, depleted);
             if (!block) {
                 log::trace("Failed to allocate frame with reason: {}",
                            to_string(block.unwrap_err()));

@@ -636,7 +636,9 @@ namespace {
                 auto const block = state.zone.alloc_frames(0);
                 auto const count = state.zone.num_free_frames();
                 if (block) {
-                    state.zone.free_frames(block.value(), 0);
+                    // Back into the zone it came from, below the pipeline:
+                    // no waiter to wake.
+                    auto _ = state.zone.free_frames(block.value(), 0);
                 }
                 if (count > 1 || state.zone.num_free_frames() > 1) {
                     return 1;
@@ -1061,6 +1063,112 @@ namespace {
         EXPECT_TRUE(non_blocking_admitted, "at Min a request that cannot block is still served");
         EXPECT_TRUE(at_floor && non_blocking_refused,
                     "at three quarters of Min a request that cannot block is refused too");
+    }
+
+    /// A node other than the calling CPU's with memory in one zone, or null.
+    /// Draining it starves neither this test's node nor the zone order of any
+    /// allocation that does not name it.
+    auto remote_single_zone_node() -> PmNode * {
+        auto const local = mm::current_node();
+        PmNode *found = nullptr;
+        mm::for_each_node(mm::NodeState::Memory, [local, &found](PmNode &node) {
+            if (found || node.nid() == local) {
+                return;
+            }
+            usize zones = 0;
+            node.zone_list()->for_each_local_zone([&zones](PmZone &) { zones += 1; });
+            if (zones == 1) {
+                found = &node;
+            }
+        });
+        return found;
+    }
+
+    KTEST(PmNode, WaitingRequestsStopAtLowAndWakeOnRelief) {
+        using Descriptor = gktl::Counter::Descriptor;
+        auto const *const relief =
+            std::find_if(Descriptor::GLOBAL_DESC_START, Descriptor::GLOBAL_DESC_END,
+                         [](Descriptor const &counter) {
+                             return std::string_view{counter.name} == "pm.zone.relief";
+                         });
+        if (relief == Descriptor::GLOBAL_DESC_END) {
+            FAIL("the relief counter is linked in");
+            return;
+        }
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list()->fallback()[0];
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        auto const min = zone.watermark(PmZone::Watermark::Min);
+        if (low <= min + 2) {
+            KTEST_SKIP("the zone's watermarks are too close to test between");
+        }
+
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        PmFrame::List held;
+        auto const at_low = drain_to(zone, low, held);
+
+        // At Low a waiting request is put off; one that cannot wait is served
+        // by the second pass.
+        auto const waiting = mm::alloc_frames(mm::ALLOC_USER_VMO | mm::Gaf::ThisNode, 0, nid);
+        auto const put_off = !waiting && waiting.unwrap_err() == Status::ShouldWait;
+        if (waiting) {
+            held.push_back(**waiting);
+        }
+        auto const kernel = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, nid);
+        auto const served = kernel && (*kernel)->nid() == nid;
+
+        // The zone is one below Low now. Each release below is counted on one
+        // CPU's counter, read around it with nothing to preempt it, and the
+        // waiting request is tried between them with interrupts on.
+        gktl::Counter const wakes{relief};
+        auto const counted = [&wakes](PmFrame *const block) {
+            arch::AutoInterruptDisabler irq;
+            auto const before = wakes.get();
+            mm::free_frames(block);
+            return wakes.get() - before;
+        };
+
+        // Giving that frame back takes the zone to exactly Low, where the
+        // waiting request is still refused, so it wakes nobody.
+        auto early = isize{1};
+        auto still_put_off = false;
+        if (served) {
+            early = counted(*kernel);
+            auto const again = mm::alloc_frames(mm::ALLOC_USER_VMO | mm::Gaf::ThisNode, 0, nid);
+            still_put_off = !again && again.unwrap_err() == Status::ShouldWait;
+            if (again) {
+                held.push_back(**again);
+            }
+        }
+
+        // The next release takes it above Low, where that request would be
+        // served: one wake. One more, from above Low: none.
+        auto woke = isize{0};
+        auto quiet = isize{1};
+        if (still_put_off) {
+            if (auto front = held.front()) {
+                auto *const block = &front.value();
+                held.pop_front();
+                woke = counted(block);
+            }
+            if (auto front = held.front()) {
+                auto *const block = &front.value();
+                held.pop_front();
+                quiet = counted(block);
+            }
+        }
+        mm::free_frames(&held);
+
+        EXPECT_TRUE(at_low && put_off, "at Low a waiting request is answered ShouldWait");
+        EXPECT_TRUE(served, "at Low a request that cannot wait is served by the second pass");
+        EXPECT_TRUE(early == 0 && still_put_off,
+                    "a release back to exactly Low wakes nobody, and the request is still put off");
+        EXPECT_TRUE(woke == 1, "the release that takes the zone above Low wakes one waiter");
+        EXPECT_TRUE(quiet == 0, "a release from above Low wakes nobody");
     }
 
     KTEST(PmNode, LowZonesKeepAReserve) {

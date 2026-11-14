@@ -125,7 +125,15 @@ class PmZone {
 
     /// The zone's layer of mm::free_frames(): puts a block this zone owns
     /// back into its stock under the zone lock.
-    auto free_frames(PmFrame &frame, usize order) -> void;
+    ///
+    /// Returns whether this release is the one that brought the zone back to
+    /// admitting, in the Low pass, a single frame for a request that allows
+    /// up to Normal. Of several releases racing each other and allocations,
+    /// exactly the one that took the count over that line says so. A caller
+    /// below the allocation pipeline, a test giving back what it took from
+    /// the zone directly, may ignore it.
+    [[nodiscard]]
+    auto free_frames(PmFrame &frame, usize order) -> bool;
 
     /// How many frames this zone could hand out right now, counted out of the
     /// buddy's free lists under the zone lock.

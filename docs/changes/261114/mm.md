@@ -266,3 +266,73 @@ None.
 - Why does the Dma zone keep 478 frames on the default machine and 2996 on the 3 GiB one, when it is the same zone?
 - Why is the reserve indexed by the request's highest allowed zone and not by the zone it would come from?
 - Why is the reserve added in both passes, even for a request that cannot block?
+
+## A waiting request stops at Low, and a release back above Low wakes it (2026-11-14)
+
+**Files**
+- `kernel/mm/pmm.cpp` — `alloc_block()` takes `can_wait`, and a request that asked for `Gaf::CanWait` makes only the first pass, answering `ShouldWait` when no zone admits it at Low; `free_block()` wakes one waiter when the zone says the release brought it back to admitting a frame at Low, and counts it in `pm.zone.relief`
+- `kernel/mm/pm_zone.cpp`, `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_node.cpp`, `kernel/mm/include/ours/mm/pm_node.hpp` — `PmZone::free_frames()` returns whether this release crossed the zone's Low-pass line, from its own atomic increment, and `PmNode::free_frames()` passes it up
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/include/ours/mm/alloc_flags.hpp` — the two things that put a waiting request off, and the two things that wake it
+- `kernel/tests/pm_node_test.cpp` — new `PmNode.WaitingRequestsStopAtLowAndWakeOnRelief`; the remote-node choice is a helper of its own
+- `kernel/tests/pm_zone_test.cpp`, `kernel/tests/pm_node_test.cpp` — the tests that give frames straight back to a zone discard its answer, with `auto _`
+- `docs/repairs/261112/mm.md` — new item 3, a confined waiter nothing can relieve
+
+**Symptom**
+After the watermark change, a request that could wait (a VMO page, `ALLOC_USER_VMO`) and got past the machine-wide gate went on, like any other, to the second pass and down to Min, and was answered `OutOfMem` below that. It was never told to wait for a zone. That happens when the gate's watcher has not armed it yet, when the request is confined to one node, and on a machine large enough that the zones' Low watermarks add up to more than the gate's level (49 MiB by default).
+
+**Cause**
+The gate and the zone floors answer different questions, and the change before this one connected only one of them to waiting. The gate is a policy over the whole machine: while free memory is below the level the memory watchdog set (just under its OutOfMemory level), user-driven growth is put off so that the system, and user space through the pressure it is told about, can react. A zone's Low is a local fact: this zone is short and reclaim has been asked for. A request that can wait should stop at either, and only the gate stopped it.
+
+The first design of this step, decision N1(a), removed the gate's level and put waiting requests off at Low alone. It was set aside on 2026-11-14: on the default machine it would have let VMO pages take memory down to about 3.4 MiB before waiting, where today they wait at 49 MiB, and it would have dropped the machine-wide pressure model the watchdog was built on.
+
+**Change**
+The gate stays. A waiting request is put off at Low as well:
+
+```cpp
+// alloc_block(), after the first pass failed
+if (can_wait) {
+    return ustl::err(Status::ShouldWait);   // wait for a zone, keep off the Low..Min band
+}
+block = home.alloc_frames(request, AdmissionPass::Min);
+```
+
+So the band between Low and Min is left to the requests that cannot wait, which is what it is for. The waiter sleeps on the gate's event, as it does when the gate is shut, and a release wakes it:
+
+```cpp
+// PmZone::free_frames()
+auto const before = m_free_frames.fetch_add(count);          // what this release found
+auto const floor = watermark(Watermark::Low) + lowmem_reserve(ZoneType::Normal);
+return !mm::admits(before, 0, floor) && mm::admits(before + count, 0, floor);
+
+// free_block()
+if (node->free_frames(frame, order)) {
+    GATE.pass_on();   // one waiter retries
+}
+```
+
+Only the release that crosses the line wakes anyone; a zone above it wakes nobody. The line is the one the Low pass uses for a single frame and a request that allows up to Normal, every request made today: at exactly Low the pass still refuses, because the frame would leave Low - 1, so the wake comes with the release that takes the zone to Low + 1. The zone answers from the count its own atomic increment found, not from two reads around the release: increments and decrements fall in one order, so each time the count climbs over the line exactly one release did it and only that one says so. The event resets itself when a waiter takes it, and a signal with no waiter stays set until one comes, so a release that lands between a request's `ShouldWait` and its wait is not lost: the waiter finds the event set and retries at once. A waiter that retries and is put off again waits again, as it does at a shut gate; one that gets its frame passes the wake on.
+
+**Reference**
+Linux has no separate waiting class here: `__alloc_pages_slowpath()` wakes kswapd and a caller that may block reclaims or throttles itself (`reclaim_throttle()`), woken when kswapd brings the node back over its high watermark. Zircon's `PmmNode` puts a `PMM_ALLOC_FLAG_CAN_WAIT` request off while its free count is below the delay level and wakes waiters only through the memory watchdog: the free path signals the watchdog's event when the count rises above the upper bound it was armed with (`IncrementFreeCountLocked()`), and the watchdog thread re-arms the levels with `SetFreeMemorySignal()`, which signals `may_allocate_evt`. Zircon has no per-zone line; the relief wake here signals the waiters' event directly from the free path, where Zircon signals the watchdog's.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 184 passed, on the default and the four-node machine. `ktest all`: default 87 ran, 82 passed, 5 skipped; four nodes 87 ran, 84 passed, 3 skipped, `MemoryPressure.TheGateTheSignalAndTheWatchdog` among the passes. With `MEM=3072` both images boot and `ktest PmNode.*:MemoryPressure.*:PageReclaim.*` passes. The failure-injection build's `ktest all`: 87 ran, 83 passed, 0 failed. clang-tidy reports nothing in `pmm.cpp`, `pm_zone.cpp` or `pm_node.cpp`. The numbers are the same after the review's fixes.
+
+The new test drains another node's zone to Low through the zone itself, with the reclaimer paused: a waiting request is answered `ShouldWait` and one that cannot wait is served. Giving back the frame the second took brings the zone to exactly Low and counts no wake, and the waiting request is still answered `ShouldWait` there; the next release, above Low, counts one; one more counts none. Controls: with waiting requests let into the second pass, the put-off and wake checks fail; with the wake removed, the wake check fails; with the line one frame early (the first version of this change), the exactly-Low and the above-Low checks fail.
+
+A narrow pre-commit review found two faults in the first version, both fixed here: the wake fired at exactly Low, where the waiter is still refused, so it retried, slept again, and the release that did let it in woke nobody; and the comment claimed racing releases could not both miss a crossing, which two reads around the release cannot promise. It also checked that a wake signalled before the waiter sleeps is kept by the self-resetting event, that a waiter woken at a shut gate waits again without spinning, that the zone is known for every freed frame, and that nothing on the free path holds a zone lock when it signals. Not proven: no free under a scheduler or wait-queue lock was found by search, but signalling from such a free would take those locks again.
+
+**Deliberately not done**
+- A waiter confined to one node that nothing can relieve waits for ever; recorded as `docs/repairs/261112/mm.md` item 3.
+- The gate's level is still the watchdog's, with no relation to the zones' watermarks.
+
+**How it was found**
+None. Decision N1 of `.agents/tasks/pmm-redesign/DESIGN.md`, revised as above.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- The gate and a zone's Low both put a waiting request off. What question does each answer, and why is neither enough alone?
+- A release lands after a request was answered `ShouldWait` and before it went to sleep. Why does the waiter not sleep through it?
+- Why does a waiting request skip the second pass, when a kernel request makes it?
