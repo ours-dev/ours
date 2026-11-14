@@ -1063,6 +1063,58 @@ namespace {
                     "at three quarters of Min a request that cannot block is refused too");
     }
 
+    KTEST(PmNode, LowZonesKeepAReserve) {
+        // The table: every zone's reserve against every highest type is one
+        // in LOWMEM_RESERVE_RATIO of what the zones above it on its node
+        // manage, up to that type.
+        auto table_ok = true;
+        PmZone::for_each([&table_ok](PmZone &zone) {
+            auto const row = PmZone::row(zone.which_node());
+            auto const own = std::to_underlying(zone.zone_type());
+            for (usize highest = 0; highest < NR_ZONES_PER_NODE; ++highest) {
+                usize above = 0;
+                for (auto type = own + 1; type <= highest; ++type) {
+                    if (row[type]) {
+                        above += row[type]->managed_frames();
+                    }
+                }
+                if (zone.lowmem_reserve(ZoneType(highest)) !=
+                    above / PmZone::LOWMEM_RESERVE_RATIO) {
+                    table_ok = false;
+                }
+            }
+        });
+        EXPECT_TRUE(table_ok, "each zone keeps 1/256 of the memory above it on its node");
+
+        // The admission: a zone that keeps something back from a request that
+        // allows Normal. Drained to exactly Low plus that reserve through the
+        // zone itself, it refuses such a request and still admits one that
+        // allows nothing above it. A low zone, the last any allocation tries,
+        // so draining it takes nothing anyone else is about to use.
+        PmZone *low = nullptr;
+        PmZone::for_each([&low](PmZone &zone) {
+            if (!low && zone.lowmem_reserve(ZoneType::Normal) != 0) {
+                low = &zone;
+            }
+        });
+        if (!low) {
+            KTEST_SKIP("no zone keeps anything back on this machine");
+        }
+        auto const reserve = low->lowmem_reserve(ZoneType::Normal);
+        auto const floor = low->watermark(PmZone::Watermark::Low);
+
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        PmFrame::List held;
+        auto const drained = drain_to(*low, floor + reserve, held);
+        auto const refused = !low->admits(0, mm::AdmissionPass::Low, true, ZoneType::Normal);
+        auto const admitted = low->admits(0, mm::AdmissionPass::Low, true, low->zone_type());
+        mm::free_frames(&held);
+
+        EXPECT_TRUE(drained && refused,
+                    "at Low plus its reserve a low zone refuses a request that allows Normal");
+        EXPECT_TRUE(admitted, "and still admits a request that allows nothing above it");
+    }
+
     KTEST(PmNode, AllocationsTakeTheHighestZoneFirst) {
         // The zone an ordinary allocation should come from: this node's
         // highest zone with room to spare. A margin, so that the answer does

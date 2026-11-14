@@ -65,6 +65,7 @@ PmZone::PmZone(NodeId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize pres
     // explicit is what the rest of the list does.
     , m_reserved_frames(0)
     , m_watermarks()
+    , m_lowmem_reserve()
     , m_frame_cache()
     // Set up here, once, for every zone -- one the handoff frees nothing into
     // included. No CPU can see the zone yet: create_all() puts it in the
@@ -159,6 +160,29 @@ auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_to
     // panics naming operator new.
     log::info("Zone[{}]: managed {} frames, watermarks {}/{}/{}", m_name, managed, min, min + delta,
               min + delta + delta);
+}
+
+auto PmZone::setup_lowmem_reserve() -> void {
+    // The node's managed frames by type: the input mm::lowmem_reserve() wants.
+    std::array<usize, NR_ZONES_PER_NODE> managed{};
+    auto const row = PmZone::row(m_nid);
+    for (usize type = 0; type < NR_ZONES_PER_NODE; ++type) {
+        if (auto const *const zone = row[type]) {
+            managed[type] = zone->managed_frames();
+        }
+    }
+
+    auto const own = std::to_underlying(m_type);
+    for (usize highest = 0; highest < NR_ZONES_PER_NODE; ++highest) {
+        m_lowmem_reserve[highest] =
+            mm::lowmem_reserve(managed.data(), managed.size(), own, highest, LOWMEM_RESERVE_RATIO);
+    }
+
+    // One short line, for the reason setup_watermarks() gives: the reserve
+    // against a request that allows every zone up to Normal, the one every
+    // allocation makes today.
+    log::info("Zone[{}]: keeps {} frames from requests that allow Normal", m_name,
+              m_lowmem_reserve[std::to_underlying(ZoneType::Normal)]);
 }
 
 auto PmZone::alloc_frames(usize order) -> ustl::Option<PmFrame &> {

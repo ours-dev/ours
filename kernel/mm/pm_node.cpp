@@ -97,7 +97,7 @@ auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
         // Taking the block would leave the zone below the pass's floor: short
         // for this request. Passed over, and the first such zone named in the
         // failure, should the walk fail.
-        if (!zone.admits(request.order(), pass, can_block)) {
+        if (!zone.admits(request.order(), pass, can_block, request.highest_zone())) {
             if (!depleted_zone) {
                 depleted_zone = ustl::some_ref(zone);
             }

@@ -199,3 +199,70 @@ None.
 - Why does the rule first decided ("may block stops at Low") leave the band between Min and Low unused once every preset carries `CanBlock`?
 - An allocation succeeds in the second pass. Why is reclaim still asked for?
 - Why does a caller that cannot block get to go deeper than one that can, when the one that can block cannot actually wait in this allocator?
+
+## Low zones keep a reserve from requests that could go higher (2026-11-14)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/admission.hpp` — `lowmem_reserve()`, the reserve with every input an argument
+- `kernel/mm/tests/admission_smoke.cpp` — the reserve on the default and the 3 GiB machine, and that it sits on top of the floor
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `m_lowmem_reserve`, one entry per highest zone type a request may allow; `setup_lowmem_reserve()`; `lowmem_reserve(highest)`; `LOWMEM_RESERVE_RATIO`; `admits()` takes the request's highest zone and adds the reserve to the floor
+- `kernel/mm/pm_node_init.cpp` — `PmNode::setup_watermarks()` sets every zone's reserve after its watermarks
+- `kernel/mm/pm_node.cpp` — the walk passes `request.highest_zone()`
+- `kernel/tests/pm_node_test.cpp` — new `PmNode.LowZonesKeepAReserve`
+
+**Symptom**
+After the last two changes a node's highest zone is tried first and every zone is held at a floor, but nothing distinguished the low zones once the zones above them were short: an ordinary request then took a low zone down to the same Min an ordinary zone keeps. On the default machine that is all but 19 of the Dma zone's 3388 frames, the only memory a device limited to the first 16 MiB can use.
+
+**Cause**
+The order fixes which zone is spent first, not how much of a low zone may be spent by a request that did not need it. A request whose highest allowed zone is Normal could have been served from Normal or Dma32; the Dma zone is the last place it should land, and when it does land there it should not be allowed to take what a request that can only use Dma would need.
+
+**Change**
+Each zone keeps back, from a request whose highest allowed zone is `h`, one frame in 256 of what the zones above it on its node manage up to `h`:
+
+```cpp
+constexpr auto lowmem_reserve(usize const *managed, usize count, usize own, usize highest,
+                              usize ratio) -> usize {
+    usize above = 0;
+    for (auto type = own + 1; type <= highest && type < count; ++type) {
+        above += managed[type];
+    }
+    return above / ratio;
+}
+// admitted when free - 2^order >= floor + reserve[request's highest zone]
+```
+
+The table is worked out once, after the watermarks, from managed counts that are final by then, and read without a lock after. It is added in both passes, so even a request that cannot block, allowed to a quarter below Min, does not reach a low zone's reserve unless it allows nothing higher.
+
+What the zones keep from a request that allows Normal, which is every request today:
+
+| Machine | Dma | Dma32 | Normal |
+|---|---|---|---|
+| default, 512 MiB | 478 of 3388 | 0 (no Normal zone) | none |
+| 3 GiB | 2996 of 3388 | 2500 | 0 |
+
+The ratio is Linux's default for its DMA and DMA32 zones (decided with the user, 2026-11-14).
+
+**Reference**
+Linux `setup_per_zone_lowmem_reserve()` and `sysctl_lowmem_reserve_ratio[]` in `mm/page_alloc.c`, with `z->lowmem_reserve[highest_zoneidx]` added to the mark in `__zone_watermark_ok()`.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 184 passed, on the default and the four-node machine. `ktest all`: default 86 ran, 82 passed, 4 skipped; four nodes 86 ran, 83 passed, 3 skipped; one more than before on each, the new test. With `MEM=3072` both images boot, the zones log the reserves in the table, and `ktest PmNode.*:PmZone.*:VmoContiguous.*:LargePage.*` passes. The failure-injection build's `ktest all`: 86 ran, 83 passed, 0 failed.
+
+The new kernel test checks every zone's table against the formula from the live managed counts, then drains a low zone that keeps something back to exactly Low plus that reserve, through the zone itself and with the reclaimer paused: a request that allows Normal is refused there, one that allows nothing above the zone is admitted. Control: with the reserve left out of `admits()`, the refusal check fails.
+
+A review by one narrow reviewer checked eight points (the reserve's indexing and bounds, that it reads only the zone's own node and runs after the managed counts are final, that only Dma and Dma32 keep anything today, both passes, the new test's expectations and frees, the log line, the comments) and found nothing.
+
+**Deliberately not done**
+- Different ratios per zone. Linux gives Normal a reserve against Movable (ratio 32); no request here allows Movable, so every Normal zone keeps 0 whatever its ratio.
+- A request that allows only a low zone. No allocation flag asks for one yet (`Gaf::Dma32` is the next item); when one does, its highest zone is the low zone and the reserve against it is 0, which is the point.
+
+**How it was found**
+None. The second half of decision Z3, `.agents/tasks/pmm-redesign/DESIGN.md`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the Dma zone keep 478 frames on the default machine and 2996 on the 3 GiB one, when it is the same zone?
+- Why is the reserve indexed by the request's highest allowed zone and not by the zone it would come from?
+- Why is the reserve added in both passes, even for a request that cannot block?
