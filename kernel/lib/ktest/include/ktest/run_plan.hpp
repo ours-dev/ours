@@ -31,40 +31,6 @@ inline constexpr u64 DEFAULT_SHUFFLE_SEED = 0x243F6A8885A308D3;
 /// shuffle instead of growing the array; 256 is far above the linked tests.
 inline constexpr usize MAX_SHUFFLE_TESTS = 256;
 
-/// Which of the runner's own options |name| is. Anything else is an option
-/// for the tests to read, and the runner ignores it.
-enum class RunnerOption {
-    /// `shuffle` or `shuffle=SEED`: run the selection in a seeded shuffled
-    /// order instead of section order.
-
-    Shuffle,
-
-    /// `repeat=N`: run the whole selection N times; the SUMMARY counts every
-    /// execution.
-    Repeat,
-
-    /// `shard=M/N`: run only the tests whose registry index i satisfies
-    /// i % N == M.
-    Shard,
-
-    /// Any other name.
-    Other,
-};
-
-[[nodiscard]]
-constexpr auto runner_option(std::string_view const name) -> RunnerOption {
-    if (name == "shuffle") {
-        return RunnerOption::Shuffle;
-    }
-    if (name == "repeat") {
-        return RunnerOption::Repeat;
-    }
-    if (name == "shard") {
-        return RunnerOption::Shard;
-    }
-    return RunnerOption::Other;
-}
-
 /// Parses an unsigned decimal or hexadecimal digit run: digits only, no sign,
 /// no separators, |base| 10 or 16. InvArgs for an empty value, a
 /// character that is not a digit of |base|, or a value beyond u64's range.
@@ -130,36 +96,6 @@ struct Shard {
     }
 };
 
-/// Which rule a run's words broke.
-enum class PlanFault {
-    /// More words than one run records — beyond MAX_RUN_OPTIONS.
-    TooManyWords,
-
-    /// A word that is not a `name=value` token: an empty name.
-    MalformedWord,
-
-    /// shuffle, repeat or shard on a run that is not `ktest all`; the
-    /// runner's own options belong to the whole-registry run alone.
-    RunnerWordOnSelection,
-
-    /// shuffle's seed is not a number.
-    BadSeed,
-
-    /// repeat is not a count of at least 1.
-    BadRepeat,
-
-    /// shard is not M/N with 0 <= M < N.
-    BadShard,
-};
-
-/// A run whose words were refused: which rule broke and the word that broke
-/// it — the option's value, the text the console line quotes back. Empty
-/// where the line names no word.
-struct PlanRejection {
-    PlanFault fault;
-    std::string_view word{};
-};
-
 /// One `ktest all` run's iteration plan. The defaults are the plain run: in
 /// section order, once, every test. Built once from the run's words; the
 /// runner walks it, and the tests read the words through it.
@@ -175,66 +111,6 @@ struct RunPlan {
     Option options[MAX_RUN_OPTIONS]{};
     usize option_count{};
 
-    /// Builds the plan from a run's own words. Each word is a `name=value`
-    /// token; the runner's own — shuffle, repeat, shard — set the fields and
-    /// are validated on the way through, and every word is recorded in the
-    /// order given. |runner_options_allowed| is false for a run that selected
-    /// a filter, where the runner's own options do not belong. The rejection
-    /// names the first rule the words broke, in command order.
-    [[nodiscard]]
-    static constexpr auto from_words(std::span<std::string_view const> words,
-                                     bool const runner_options_allowed)
-        -> ustl::Result<RunPlan, PlanRejection> {
-        auto plan = RunPlan{};
-        if (words.size() > MAX_RUN_OPTIONS) {
-            return ustl::err(PlanRejection{PlanFault::TooManyWords, {}});
-        }
-        for (auto const word: words) {
-            auto parsed = Option{};
-            if (!parse_option(word, parsed)) {
-                return ustl::err(PlanRejection{PlanFault::MalformedWord, word});
-            }
-            plan.options[plan.option_count] = parsed;
-            plan.option_count += 1;
-        }
-        for (auto i = usize{0}; i < plan.option_count; ++i) {
-            auto const kind = runner_option(plan.options[i].name);
-            if (kind != RunnerOption::Other && !runner_options_allowed) {
-                return ustl::err(PlanRejection{PlanFault::RunnerWordOnSelection, {}});
-            }
-            auto const &option = plan.options[i];
-            switch (kind) {
-                case RunnerOption::Shuffle: {
-                    auto const seed = parse_seed(option.value);
-                    if (seed.is_err()) {
-                        return ustl::err(PlanRejection{PlanFault::BadSeed, option.value});
-                    }
-                    plan.shuffle = true;
-                    plan.seed = seed.unwrap();
-                    break;
-                }
-                case RunnerOption::Repeat: {
-                    auto const passes = parse_u64(option.value);
-                    if (passes.is_err() || passes.unwrap() == 0) {
-                        return ustl::err(PlanRejection{PlanFault::BadRepeat, option.value});
-                    }
-                    plan.repeat = static_cast<usize>(passes.unwrap());
-                    break;
-                }
-                case RunnerOption::Shard: {
-                    auto const shard = Shard::parse(option.value);
-                    if (shard.is_err()) {
-                        return ustl::err(PlanRejection{PlanFault::BadShard, option.value});
-                    }
-                    plan.shard = shard.unwrap();
-                    break;
-                }
-                case RunnerOption::Other:
-                    break;
-            }
-        }
-        return ustl::ok(plan);
-    }
 };
 
 /// One splitmix64 step: the state advances by the golden-ratio constant, and

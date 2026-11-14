@@ -333,6 +333,14 @@ class Parsed {
 // parse(). It is used in place: add() answers a handle into this object's
 // own table, so copying or moving an Options would strand the handles, and
 // is deleted to keep that from compiling.
+//
+// The tables are sized to the console's word cap and together with the
+// parse()'s answer they are a few kilobytes of frame -- fine for a command
+// that reports and returns, heavy for one whose handler hosts long work on
+// its own stack: the ktest runner runs every test inside its command frame,
+// and there its options sit in file-scope storage instead, the way the
+// runner's other tables do, the one-run-at-a-time guard making the storage
+// exclusive.
 class Options {
   public:
     /// A handle onto one declared option, for the fluent constraints and for

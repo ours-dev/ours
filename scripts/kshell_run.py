@@ -34,29 +34,29 @@ Environment variables such as SMP=1 pass straight through to
 scripts/qemu_boot.py, as they do for the ours-verify skill's boot_check.py.
 
 A `ktest` command (the kernel test runner, //kernel/lib/ktest) is judged by
-its own grammar. A run -- `ktest`, `ktest all`, or `ktest <filter>` -- is done
+its own grammar. A run -- `ktest`, `ktest sel=all`, or `ktest sel=<filter>` -- is done
 at its "ktest: SUMMARY" line, which must appear exactly once, must say
 failed=0, and must say at least one test ran. A registry-level failure (no
 tests linked in, a duplicate test name, a usage error) ends at its
 "ktest: ERROR" line without a summary, and is judged as a failure straight
-away rather than after the command timeout. For `ktest` and `ktest all` the
-script first types `ktest list` and requires the summary's ran= to equal the
+away rather than after the command timeout. For `ktest` and `ktest sel=all` the
+script first types `ktest sel=list` and requires the summary's ran= to equal the
 number of "ktest: TEST" lines: a test that stops being linked in fails the run
 instead of silently disappearing from it. A run that carries repeat= or
 shard= skips that list and the count check, because running the selection
 more than once, or a part of it, is what the option asked for; shuffle only
-reorders, so it keeps the check. `ktest list` itself passes when the
+reorders, so it keeps the check. `ktest sel=list` itself passes when the
 prompt comes back with at least one test listed. While any `ktest` command
 runs, console silence is a hang, as for `lockup verb=spin cpu=all`: the script sends the
 NMI and the lockup report is the diagnosis. Every other command's rules are
 unchanged.
 
-A `ktest death` command is the host's half of the death tests
+A `ktest sel=death` command is the host's half of the death tests
 (//kernel/lib/ktest's KTEST_DEATH): a death test's body is expected to panic
 the kernel, so no boot can serve two of them. The command first reads the
-death list off this boot's `ktest list` -- its "ktest: DEATH Suite.Name"
+death list off this boot's `ktest sel=list` -- its "ktest: DEATH Suite.Name"
 lines -- and then starts a fresh image for each death test the filter
-selects, one boot per test: it types that test's `ktest death <name>` and
+selects, one boot per test: it types that test's `ktest sel=death filter=<name>` and
 judges the boot. PASS is the panic report that follows the runner's
 "ktest: DEATH" line, judged as crash's is -- banner, an error-level message,
 the ring replay between its markers, one banner in all -- with no shell
@@ -475,10 +475,10 @@ def is_ktest(command: str) -> bool:
 
 
 def ktest_lists(command: str) -> bool:
-    """Whether |command| only lists the test registry. `ktest list` takes no
-    options, so the words after the selection do not matter here."""
+    """Whether |command| only lists the test registry. `ktest sel=list`
+    takes no options, so the words after the selection do not matter here."""
     words = command.split()
-    return len(words) >= 2 and words[0] == "ktest" and words[1] in ("list", "?")
+    return len(words) >= 2 and words[0] == "ktest" and words[1] in ("sel=list", "sel=?")
 
 
 def ktest_runs_all(command: str) -> bool:
@@ -486,35 +486,35 @@ def ktest_runs_all(command: str) -> bool:
     `ktest list` gives the count its summary must match. Options after the
     selection (`rounds=256`, `big`) do not change that."""
     words = command.split()
-    return bool(words) and words[0] == "ktest" and (len(words) == 1 or words[1] == "all")
+    return bool(words) and words[0] == "ktest" and (len(words) == 1 or words[1] == "sel=all")
 
 
 def ktest_count_varies(command: str) -> bool:
-    """Whether a `ktest all` run's summary ran= may differ from the number of
+    """Whether a `ktest sel=all` run's summary ran= may differ from the number of
     listed tests: repeat= runs the selection more than once and shard= runs
     part of it, so the list-count equality says nothing there. shuffle only
     reorders, so a run without repeat or shard still checks the count."""
     words = command.split()
-    if words[:2] != ["ktest", "all"] or len(words) == 2:
+    if words[:2] != ["ktest", "sel=all"] or len(words) == 2:
         return False
     return any(word == "repeat" or word.startswith("repeat=")
                or word == "shard" or word.startswith("shard=") for word in words[2:])
 
 
 def ktest_deaths(command: str) -> bool:
-    """Whether |command| invokes the death selection: `ktest death [filter]`.
-    Its first test panics the machine, so the host gives each one a fresh
-    boot, which is a flow of its own in main()."""
+    """Whether |command| invokes the death selection: `ktest sel=death
+    [filter=<glob>]`. Its first test panics the machine, so the host gives
+    each one a fresh boot, which is a flow of its own in main()."""
     words = command.split()
-    return len(words) >= 2 and words[0] == "ktest" and words[1] == "death"
+    return len(words) >= 2 and words[0] == "ktest" and words[1] == "sel=death"
 
 
 def ktest_death_filter(command: str) -> str:
-    """The selection words a `ktest death` command carries, joined the way the
-    kernel's filter grammar joins them. Empty for a bare `ktest death`, which
-    selects every death test."""
+    """The filter= words a `ktest sel=death` command carries, joined the way
+    the kernel's filter grammar joins them. Empty for a bare `ktest
+    sel=death`, which selects every death test."""
     words = command.split()
-    return ":".join(words[2:])
+    return ":".join(word.removeprefix("filter=") for word in words[2:])
 
 
 def ktest_summaries(lines: list[str]) -> list[dict[str, int]]:
@@ -855,7 +855,7 @@ def run_death_tests(console: Console, command: str, args, out, logdir) -> bool:
     the shell fails its test."""
     filter_text = ktest_death_filter(command)
     console.keep()
-    console.type("ktest list")
+    console.type("ktest sel=list")
     listed = console.wait_for(re.compile(re.escape(PROMPT)),
                               time.monotonic() + args.command_timeout)
     list_lines = show("ktest list (death setup)", console.kept(), args.all)
@@ -878,7 +878,7 @@ def run_death_tests(console: Console, command: str, args, out, logdir) -> bool:
 
     verdicts: list[bool] = []
     for name in selection:
-        typed = f"ktest death {name}"
+        typed = f"ktest sel=death filter={name}"
         boot = Console(out, args.image, logdir, args.silence)
         try:
             if not boot.wait_for(re.compile(re.escape(END_MARKER)),
@@ -1021,7 +1021,7 @@ def main(argv: list[str]) -> int:
             expected = None
             if ktest_run and ktest_runs_all(command) and not ktest_count_varies(command):
                 console.keep()
-                console.type("ktest list")
+                console.type("ktest sel=list")
                 listed = console.wait_for(re.compile(re.escape(PROMPT)),
                                           time.monotonic() + args.command_timeout)
                 list_lines = show("ktest list (setup)", console.kept(), args.all)
