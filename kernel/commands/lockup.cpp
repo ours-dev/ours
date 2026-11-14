@@ -42,6 +42,8 @@
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
+#include <gktl/report.hpp>
 #include <lockup_detector/lockup_detector.hpp>
 #include <logz4/log.hpp>
 #include <ustl/option.hpp>
@@ -53,10 +55,6 @@ using namespace ours;
 /// An NMI a CPU sends itself arrives before the next instruction; a second
 /// is a bound for the case where it never does, nothing more.
 constexpr auto NMI_WAIT = Seconds(1);
-
-/// The most digits `lockup spin` reads in a number: a value up to
-/// 999,999,999 cannot overflow on the way in.
-constexpr auto MAX_DIGITS = usize{9};
 
 /// `lockup nmi`. Returns only if the NMI was not sent or never arrived.
 ///
@@ -220,68 +218,61 @@ auto spin_all() -> int {
     return 0;
 }
 
-/// |text| as a decimal number of at most MAX_DIGITS digits, or none.
-auto parse_number(std::string_view const text) -> ustl::Option<u64> {
-    if (text.empty() || text.size() > MAX_DIGITS) {
-        return ustl::NONE;
-    }
-    auto value = u64{0};
-    for (auto const c: text) {
-        if (c < '0' || c > '9') {
-            return ustl::NONE;
-        }
-        value = value * 10 + static_cast<u64>(c - '0');
-    }
-    return ustl::Option<u64>(value);
-}
-
-/// `lockup spin`'s arguments, argv[2] on; usage if they are not `all`, or
-/// a CPU and an optional length.
-auto spin_command(int const argc, char **const argv) -> int {
-    if (argc == 3 && std::string_view(argv[2]) == "all") {
+/// `lockup verb=spin`'s words: `cpu=<all|N>` and an optional `ms=<N>`.
+auto spin_command(gktl::Parsed const &values, gktl::Options const &options) -> int {
+    auto const cpu = values.get<std::string_view>("cpu");
+    if (cpu == "all") {
         return spin_all();
     }
-    if (argc != 3 && argc != 4) {
-        log::warn("usage: lockup spin <cpu> [<ms>] | lockup spin all");
-        return 1;
-    }
-    auto const cpu = parse_number(argv[2]);
-    if (cpu.is_none()) {
-        log::warn("usage: lockup spin <cpu> [<ms>]: <cpu> is a CPU number, or `all`");
+    auto const number = gktl::parse_u64(cpu);
+    if (number.is_err()) {
+        log::warn("lockup: cpu=<all|N> is a CPU number, or `all`, not '{}'", cpu);
+        gktl::print_usage("lockup", options.descriptors());
         return 1;
     }
     auto length = SpinLength();
-    if (argc == 4) {
-        auto const ms = parse_number(argv[3]);
-        if (ms.is_none()) {
-            log::warn("usage: lockup spin <cpu> [<ms>]: <ms> is a number of milliseconds");
-            return 1;
-        }
-        length = SpinLength(Milliseconds(static_cast<Milliseconds::rep>(ms.value())));
+    if (values.has("ms")) {
+        length = SpinLength(Milliseconds(static_cast<Milliseconds::rep>(values.get<u64>("ms"))));
     }
-    return spin(static_cast<CpuNum>(cpu.value()), length);
+    return spin(static_cast<CpuNum>(number.unwrap()), length);
 }
 
 auto lockup_command(int argc, char **argv) -> int {
-    if (argc == 2 && std::string_view(argv[1]) == "status") {
+    constexpr std::string_view VERBS[] = {"status", "nmi", "spin"};
+    auto options = gktl::Options{"lockup"};
+    options.add<std::string_view>("verb").required().choices(VERBS).help(
+        "status prints the checker's notes, nmi dumps every CPU, spin stops a CPU's tick");
+    options.add<std::string_view>("cpu").help("the CPU to spin, or all");
+    options.add<u64>("ms").help("how long to spin, in milliseconds");
+
+    auto const parsed = options.parse(argc, argv);
+    if (parsed.is_err()) {
+        gktl::reject("lockup", options, parsed.unwrap_err());
+        return 1;
+    }
+    auto const values = parsed.unwrap();
+    auto const verb = values.get<std::string_view>("verb");
+    if (verb == "status") {
         // First, so that the checker's last line stays the status's last:
         // scripts/kshell_run.py ends the command there.
         ours::log_console_waits();
         lockup_detector::log_status();
         return 0;
     }
-    if (argc == 2 && std::string_view(argv[1]) == "nmi") {
+    if (verb == "nmi") {
         return dump_by_nmi();
     }
-    if (argc >= 2 && std::string_view(argv[1]) == "spin") {
-        return spin_command(argc, argv);
+    // spin names a CPU; status and nmi have nothing to name.
+    if (!values.has("cpu")) {
+        log::error("lockup: verb=spin needs cpu=<all|N>");
+        gktl::print_usage("lockup", options.descriptors());
+        return 1;
     }
-    log::warn("usage: lockup status | lockup nmi | lockup spin <cpu> [<ms>] | lockup spin all");
-    return 1;
+    return spin_command(values, options);
 }
 } // namespace
 
 GKTL_COMMAND(Lockup, "lockup", lockup_command,
-             "lockup status | nmi | spin <cpu> [<ms>] | spin all: show the checker's notes, dump "
-             "every CPU's state through an NMI, or stop one CPU's tick, or every CPU's, to be "
-             "found by the detector or an NMI")
+             "lockup verb=<status|nmi|spin> [cpu=<all|N>] [ms=<N>]: show the checker's notes, "
+             "dump every CPU's state through an NMI, or stop one CPU's tick, or every CPU's, to "
+             "be found by the detector or an NMI")

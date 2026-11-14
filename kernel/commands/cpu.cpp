@@ -20,6 +20,8 @@
 
 #include <arch/machine.hpp>
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
+#include <gktl/report.hpp>
 #include <logz4/log.hpp>
 #include <ustl/option.hpp>
 
@@ -29,23 +31,6 @@ namespace {
     /// the callback it is in.
     constexpr auto STOP_WORKERS_WITHIN = Seconds(5);
 
-    /// The most digits a CPU number is given in.
-    constexpr usize MAX_DIGITS = 4;
-
-    /// |text| as a decimal CPU number, or none.
-    auto parse_cpu(std::string_view const text) -> ustl::Option<CpuNum> {
-        if (text.empty() || text.size() > MAX_DIGITS) {
-            return ustl::NONE;
-        }
-        auto value = CpuNum{0};
-        for (auto const c: text) {
-            if (c < '0' || c > '9') {
-                return ustl::NONE;
-            }
-            value = static_cast<CpuNum>(value * 10 + static_cast<CpuNum>(c - '0'));
-        }
-        return ustl::Option<CpuNum>(value);
-    }
 
     auto to_string(task::IdleThread::State const state) -> char const * {
         switch (state) {
@@ -76,34 +61,44 @@ namespace {
     }
 
     auto cpu_command(int argc, char **argv) -> int {
-        if (argc == 2 && std::string_view(argv[1]) == "status") {
+        constexpr std::string_view VERBS[] = {"status", "offline", "online"};
+        auto options = gktl::Options{"cpu"};
+        options.add<std::string_view>("verb").required().choices(VERBS).help(
+            "status lists the CPUs, offline and online move one");
+        options.add<u64>("cpu").help("the CPU to take offline or bring online");
+
+        auto const parsed = options.parse(argc, argv);
+        if (parsed.is_err()) {
+            gktl::reject("cpu", options, parsed.unwrap_err());
+            return 1;
+        }
+        auto const values = parsed.unwrap();
+        auto const which = values.get<std::string_view>("verb");
+        if (which == "status") {
             return status();
         }
-        if (argc != 3) {
-            log::warn("usage: cpu status | cpu offline <cpu> | cpu online <cpu>");
+        // Moving a CPU names it; status has nothing to name.
+        if (!values.has("cpu")) {
+            log::error("cpu: verb={} needs cpu=<number>", which);
+            gktl::print_usage("cpu", options.descriptors());
             return 1;
         }
-        auto const which = std::string_view(argv[1]);
-        auto const cpu = parse_cpu(argv[2]);
-        if (cpu.is_none() || (which != "offline" && which != "online")) {
-            log::warn("usage: cpu status | cpu offline <cpu> | cpu online <cpu>");
-            return 1;
-        }
+        auto const cpu = static_cast<CpuNum>(values.get<u64>("cpu"));
         auto const result =
             which == "offline"
-                ? task::take_cpu_offline(cpu.value(), time::Deadline::at(time::SteadyClock::now() +
-                                                                         STOP_WORKERS_WITHIN))
-                : task::bring_cpu_online(cpu.value());
+                ? task::take_cpu_offline(
+                      cpu, time::Deadline::at(time::SteadyClock::now() + STOP_WORKERS_WITHIN))
+                : task::bring_cpu_online(cpu);
         if (result != Status::Ok) {
-            log::warn("cpu {} {}: {}", which, cpu.value(), to_string(result));
+            log::warn("cpu {} {}: {}", which, cpu, to_string(result));
             return 1;
         }
-        log::info("cpu {} {}: ok", which, cpu.value());
+        log::info("cpu {} {}: ok", which, cpu);
         return 0;
     }
 } // namespace
 } // namespace ours
 
 GKTL_COMMAND(Cpu, "cpu", ours::cpu_command,
-             "cpu status | offline <cpu> | online <cpu>: list the CPUs, or take one offline and "
-             "bring it back");
+             "cpu verb=<status|offline|online> [cpu=<N>]: list the CPUs, or take one offline "
+             "and bring it back");

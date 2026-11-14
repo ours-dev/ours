@@ -14,7 +14,7 @@ The kernel shell (//kernel/lib/kshell) reads COM1 and runs registered console
 commands, the *.test commands of //kernel/commands among them. Nothing runs
 them at boot, which is what this is for. The commands are typed once the boot
 is over -- the user shell's closing "--- end ---" line -- one at a time, or
---delay seconds after it, for a command such as `lockup status` whose answer
+--delay seconds after it, for a command such as `lockup verb=status` whose answer
 means more the longer the machine has run. A
 command is done when the kernel
 shell prints its "kshell> " prompt again. The prompt ends no line, so the
@@ -47,7 +47,7 @@ shard= skips that list and the count check, because running the selection
 more than once, or a part of it, is what the option asked for; shuffle only
 reorders, so it keeps the check. `ktest list` itself passes when the
 prompt comes back with at least one test listed. While any `ktest` command
-runs, console silence is a hang, as for `lockup spin all`: the script sends the
+runs, console silence is a hang, as for `lockup verb=spin cpu=all`: the script sends the
 NMI and the lockup report is the diagnosis. Every other command's rules are
 unchanged.
 
@@ -79,25 +79,28 @@ the ring's replay must stand between its two marker lines, and a replay the
 first marker calls a tail of N lines must be no longer than that.
 
 The lockup commands (//kernel/commands/lockup.cpp) that end in the lockup
-detector's report end the machine too, as crash does: `lockup nmi`, and
-`lockup spin` without a length, `lockup spin <cpu>` or `lockup spin all`.
+detector's report end the machine too, as crash does: `lockup verb=nmi`, and
+`lockup verb=spin` without a length, `lockup verb=spin cpu=<N>` or
+`lockup verb=spin cpu=all`.
 Each is judged by its report and the panic after it, which must say what the
 command asked for: one report, one block per CPU and none that did not
-answer, then the panic's message and one banner, as for crash. `lockup nmi`
-is a dump asked for by an NMI. `lockup spin <cpu>` is found by the
-detector's own check, with that CPU's block last and its interrupts off.
-`lockup spin all` leaves no CPU to check the others, so it is reported only
+answer, then the panic's message and one banner, as for crash. `lockup
+verb=nmi` is a dump asked for by an NMI. `lockup verb=spin cpu=<N>` is found
+by the detector's own check, with that CPU's block last and its interrupts
+off. `lockup verb=spin cpu=all` leaves no CPU to check the others, so it is
+reported only
 through the `nmi` this script sends after a silence (below), and every
-block has interrupts off. `lockup spin <cpu> <ms>` returns, and is done at
-its "lockup: cpu<N> has interrupts on again" line; `lockup status` returns
-too, and is done at its last line, the closest any CPU has come to the
+block has interrupts off. `lockup verb=spin cpu=<N> ms=<N>` returns, and is
+done at its "lockup: cpu<N> has interrupts on again" line; `lockup
+verb=status` returns too, and is done at its last line, the closest any CPU
+has come to the
 threshold.
 
 Once the kernel has printed its first line and until the boot's end marker,
 a console silent for --silence seconds (15 by default) means every CPU has
 stopped: a booting kernel logs as it goes. After the end marker a quiet
 console is an idle machine, so silence counts again only while
-`lockup spin all` runs, the one command that stops every CPU. The script then
+`lockup verb=spin cpu=all` runs, the one command that stops every CPU. The script then
 sends `nmi`
 to a QEMU monitor of its own, as boot_check.py types its keys, and keeps
 reading: the NMI reaches the boot CPU, which asks every CPU for its state and
@@ -668,8 +671,8 @@ def ends_machine(command: str) -> bool:
         return True
     if words[0] == "crash":
         return True
-    return words[0] == "lockup" and (words[1:] == ["nmi"]
-                                     or (words[1:2] == ["spin"] and len(words) == 3))
+    return words[0] == "lockup" and (words[1:] == ["verb=nmi"]
+                                     or (words[1:2] == ["verb=spin"] and len(words) == 3))
 
 
 def stops_every_cpu(command: str) -> bool:
@@ -774,11 +777,11 @@ def judge_lockup(command: str, lines: list[str], after: str, console: Console) -
         print(f"{command}: FAIL, {len(missing)} CPU(s) left no state: {missing[0]}")
         return False
     sent = console.nmi_at is not None
-    if words[1] == "nmi":
+    if words[1] == "verb=nmi":
         if asked_by_nmi is None or sent:
             print(f"{command}: FAIL, want the dump its own NMI asks for, not {headers[0].group(0)}")
             return False
-    elif words[2] == "all":
+    elif words[2] == "cpu=all":
         # No CPU ticks, so no CPU is left to check the others: the only way
         # in is the NMI this script sends after the silence.
         if asked_by_nmi is None or not sent:
@@ -792,8 +795,9 @@ def judge_lockup(command: str, lines: list[str], after: str, console: Console) -
     else:
         # The stuck CPU is found by another's check, before any silence, and
         # its block is printed last, so that the crash record's tail keeps it.
-        if stuck is None or int(stuck) != int(words[2]) or sent:
-            print(f"{command}: FAIL, want the detector to find cpu{int(words[2])}, "
+        cpu_word = words[2].removeprefix("cpu=")
+        if stuck is None or int(stuck) != int(cpu_word) or sent:
+            print(f"{command}: FAIL, want the detector to find cpu{int(cpu_word)}, "
                   f"not {headers[0].group(0)}")
             return False
         if blocks[-1].group(1) != stuck or blocks[-1].group(2) != "off":
