@@ -18,24 +18,24 @@ namespace gktl {
 class Invocation {
   public:
     Invocation(std::string_view const command, std::span<std::string_view const> const words)
-        : command_{command}, words_{words} {}
+        : m_command{command}, m_words{words} {}
 
     /// The command's own word: what was looked up, argv[0] in the console's
     /// shape.
     [[nodiscard]]
     auto command() const -> std::string_view {
-        return command_;
+        return m_command;
     }
 
     /// The words after the command, in the order the line carried them.
     [[nodiscard]]
     auto words() const -> std::span<std::string_view const> {
-        return words_;
+        return m_words;
     }
 
   private:
-    std::string_view command_;
-    std::span<std::string_view const> words_;
+    std::string_view m_command;
+    std::span<std::string_view const> m_words;
 };
 
 struct Command {

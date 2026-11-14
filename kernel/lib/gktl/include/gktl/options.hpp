@@ -77,6 +77,7 @@ constexpr auto parse_word(std::string_view const token) -> ustl::Option<Word> {
 [[nodiscard]]
 constexpr auto parse_u64(std::string_view const digits, u64 const base = 10)
     -> ustl::Result<u64, ours::Status> {
+    ASSERT(base == 10 || base == 16, "parse_u64 reads base 10 or 16, not {}", base);
     if (digits.empty()) {
         return ustl::err(ours::Status::InvArgs);
     }
@@ -232,7 +233,7 @@ struct OptionDescriptor {
     OptionKind kind{};
     bool required{false};
     bool has_default{false};
-    Value default_{};
+    Value default_value{};
     U64Parse parse{nullptr};
     Choice choices{};
     char const *help{nullptr};
@@ -258,12 +259,12 @@ class Parsed {
         static_assert(std::is_same_v<T, u64> || std::is_same_v<T, usize> ||
                           std::is_same_v<T, bool> || std::is_same_v<T, std::string_view>,
                       "an option reads as u64, usize, bool or std::string_view");
-        for (auto i = usize{0}; i < count_; ++i) {
-            if (names_[i] != name) {
+        for (auto i = usize{0}; i < m_count; ++i) {
+            if (m_names[i] != name) {
                 continue;
             }
-            ASSERT(kind_of(i) == kind_of<T>(), "option '{}' read as the wrong shape", name);
-            return read_as<T>(values_[i]);
+            ASSERT(m_kinds[i] == kind_of<T>(), "option '{}' read as the wrong shape", name);
+            return read_as<T>(m_values[i]);
         }
         return T{};
     }
@@ -271,8 +272,14 @@ class Parsed {
     /// Whether the line carried |name|, whatever its value.
     [[nodiscard]]
     auto has(std::string_view const name) const -> bool {
-        for (auto i = usize{0}; i < count_; ++i) {
-            if (names_[i] == name) {
+        // Whether the LINE carried the option, not whether a value answers
+        // for it: a defaulted option the line did not mention reads as its
+        // default through get() and answers false here, which is what lets
+        // the runner tell `shuffle` from its seed -- the runner's own
+        // options are the ones it acts on, the defaulted rest are the
+        // declaration's.
+        for (auto i = usize{0}; i < m_count; ++i) {
+            if (m_names[i] == name && m_given[i]) {
                 return true;
             }
         }
@@ -283,7 +290,7 @@ class Parsed {
     /// them. Empty unless the command declared a pass-through.
     [[nodiscard]]
     auto passthrough() const -> std::span<Word const> {
-        return {passthrough_, passthrough_count_};
+        return {m_passthrough, m_passthrough_count};
     }
 
   private:
@@ -301,7 +308,7 @@ class Parsed {
 
     [[nodiscard]]
     constexpr auto kind_of(usize const slot) const -> OptionKind {
-        return kinds_[slot];
+        return m_kinds[slot];
     }
 
     template <typename T>
@@ -318,13 +325,14 @@ class Parsed {
 
     friend class Options;
 
-    std::string_view names_[MAX_OPTIONS]{};
-    OptionKind kinds_[MAX_OPTIONS]{};
-    Value values_[MAX_OPTIONS]{};
-    usize count_{0};
+    std::string_view m_names[MAX_OPTIONS]{};
+    OptionKind m_kinds[MAX_OPTIONS]{};
+    Value m_values[MAX_OPTIONS]{};
+    usize m_count{0};
+    bool m_given[MAX_OPTIONS]{};
 
-    Word passthrough_[MAX_OPTIONS]{};
-    usize passthrough_count_{0};
+    Word m_passthrough[MAX_OPTIONS]{};
+    usize m_passthrough_count{0};
 };
 
 /// A command's declared options. The command builds one in its handler frame,
@@ -350,23 +358,23 @@ class Options {
         /// The shape must match the option's; a mismatch is a misuse the
         /// assertion catches.
         auto defaults_to(u64 const value) -> Arg & {
-            ASSERT(descriptor_->kind == OptionKind::U64, "u64 default on a non-u64 option");
-            descriptor_->default_ = Value{value};
-            descriptor_->has_default = true;
+            ASSERT(m_descriptor->kind == OptionKind::U64, "u64 default on a non-u64 option");
+            m_descriptor->default_value = Value{value};
+            m_descriptor->has_default = true;
             return *this;
         }
 
         auto defaults_to(bool const value) -> Arg & {
-            ASSERT(descriptor_->kind == OptionKind::Bool, "bool default on a non-bool option");
-            descriptor_->default_ = Value{value};
-            descriptor_->has_default = true;
+            ASSERT(m_descriptor->kind == OptionKind::Bool, "bool default on a non-bool option");
+            m_descriptor->default_value = Value{value};
+            m_descriptor->has_default = true;
             return *this;
         }
 
         auto defaults_to(std::string_view const value) -> Arg & {
-            ASSERT(descriptor_->kind == OptionKind::Str, "string default on a non-string option");
-            descriptor_->default_ = Value{value};
-            descriptor_->has_default = true;
+            ASSERT(m_descriptor->kind == OptionKind::Str, "string default on a non-string option");
+            m_descriptor->default_value = Value{value};
+            m_descriptor->has_default = true;
             return *this;
         }
 
@@ -381,7 +389,7 @@ class Options {
         /// The run stops with MissingRequired unless the line carried the
         /// option. A required option needs no default.
         auto required() -> Arg & {
-            descriptor_->required = true;
+            m_descriptor->required = true;
             return *this;
         }
 
@@ -392,22 +400,22 @@ class Options {
         /// outside the table is a BadChoice. Only a Str option takes
         /// choices; the words a number accepts are its digits, not a list.
         auto choices(std::span<std::string_view const> const words) -> Arg & {
-            ASSERT(descriptor_->kind == OptionKind::Str, "choices on a non-string option");
-            descriptor_->choices = Choice{words.data(), words.size()};
+            ASSERT(m_descriptor->kind == OptionKind::Str, "choices on a non-string option");
+            m_descriptor->choices = Choice{words.data(), words.size()};
             return *this;
         }
 
         /// The number-shaped option's own parse: `0x`-prefixed seeds over
         /// plain digits, for one. Only a U64 option takes a hook.
         auto parse(U64Parse const hook) -> Arg & {
-            ASSERT(descriptor_->kind == OptionKind::U64, "parse hook on a non-u64 option");
-            descriptor_->parse = hook;
+            ASSERT(m_descriptor->kind == OptionKind::U64, "parse hook on a non-u64 option");
+            m_descriptor->parse = hook;
             return *this;
         }
 
         /// The option's one-line help, printed by the generated usage.
         auto help(char const *const text) -> Arg & {
-            descriptor_->help = text;
+            m_descriptor->help = text;
             return *this;
         }
 
@@ -417,25 +425,25 @@ class Options {
         template <typename T>
         [[nodiscard]]
         auto value(Parsed const &parsed) const -> T {
-            return parsed.get<T>(descriptor_->name);
+            return parsed.get<T>(m_descriptor->name);
         }
 
         /// The option's name, for the commands that name their options in
         /// their own error lines.
         [[nodiscard]]
         auto name() const -> std::string_view {
-            return descriptor_->name;
+            return m_descriptor->name;
         }
 
       private:
         friend class Options;
 
-        Arg(OptionDescriptor *descriptor) : descriptor_{descriptor} {}
+        Arg(OptionDescriptor *descriptor) : m_descriptor{descriptor} {}
 
-        OptionDescriptor *descriptor_;
+        OptionDescriptor *m_descriptor;
     };
 
-    explicit Options(std::string_view const cmd) : cmd_{cmd} {}
+    explicit Options(std::string_view const cmd) : m_cmd{cmd} {}
 
     Options(Options const &) = delete;
     auto operator=(Options const &) -> Options & = delete;
@@ -447,13 +455,13 @@ class Options {
     /// Parsed::get may drop it.
     template <typename T>
     auto add(std::string_view const name) -> Arg {
-        for (auto i = usize{0}; i < count_; ++i) {
-            ASSERT(descriptors_[i].name != name, "option '{}' declared twice", name);
+        for (auto i = usize{0}; i < m_count; ++i) {
+            ASSERT(m_descriptors[i].name != name, "option '{}' declared twice", name);
         }
-        ASSERT(count_ != MAX_OPTIONS, "more options declared than a command line carries");
-        auto &descriptor = descriptors_[count_];
+        ASSERT(m_count != MAX_OPTIONS, "more options declared than a command line carries");
+        auto &descriptor = m_descriptors[m_count];
         descriptor = OptionDescriptor{.name = name, .kind = kind_of<T>()};
-        count_ += 1;
+        m_count += 1;
         return Arg{&descriptor};
     }
 
@@ -462,7 +470,7 @@ class Options {
     /// test runner, whose options belong to the tests -- declares that it
     /// meant to; every other command's unknown word is an error.
     auto pass_through() -> void {
-        pass_through_ = true;
+        m_pass_through = true;
     }
 
     /// Parses the words after the command. The answer is every value filled,
@@ -482,9 +490,9 @@ class Options {
             auto const &word_value = entry.value();
             auto *const descriptor = find(word_value.name);
             if (descriptor == nullptr) {
-                if (pass_through_) {
-                    parsed.passthrough_[parsed.passthrough_count_] = word_value;
-                    parsed.passthrough_count_ += 1;
+                if (m_pass_through) {
+                    parsed.m_passthrough[parsed.m_passthrough_count] = word_value;
+                    parsed.m_passthrough_count += 1;
                     continue;
                 }
                 return ustl::err(Rejection{OptionFault::UnknownOption, word_value.name, word});
@@ -494,9 +502,23 @@ class Options {
                 return ustl::err(slot.unwrap_err());
             }
         }
-        for (auto i = usize{0}; i < count_; ++i) {
-            if (descriptors_[i].required && !parsed.has(descriptors_[i].name)) {
-                return ustl::err(Rejection{OptionFault::MissingRequired, descriptors_[i].name, {}});
+        for (auto i = usize{0}; i < m_count; ++i) {
+            if (m_descriptors[i].required && !parsed.has(m_descriptors[i].name)) {
+                return ustl::err(
+                    Rejection{OptionFault::MissingRequired, m_descriptors[i].name, {}});
+            }
+            // A defaulted option the line did not mention still answers with
+            // its default -- the declaration promised that value and the
+            // usage line prints it -- but answers has() false: the
+            // distinction between "given" and "defaulted" is what the
+            // runner's all-only rule and a handler's own checks read.
+            if (m_descriptors[i].has_default && !parsed.has(m_descriptors[i].name)) {
+                auto const slot = parsed.m_count;
+                parsed.m_names[slot] = m_descriptors[i].name;
+                parsed.m_kinds[slot] = m_descriptors[i].kind;
+                parsed.m_values[slot] = m_descriptors[i].default_value;
+                parsed.m_given[slot] = false;
+                parsed.m_count += 1;
             }
         }
         return ustl::ok(parsed);
@@ -520,13 +542,13 @@ class Options {
     /// The command name the error lines and the usage open with.
     [[nodiscard]]
     auto cmd() const -> std::string_view {
-        return cmd_;
+        return m_cmd;
     }
 
     /// The declarations, in the order they were added, for the usage printer.
     [[nodiscard]]
     auto descriptors() const -> std::span<OptionDescriptor const> {
-        return {descriptors_, count_};
+        return {m_descriptors, m_count};
     }
 
   private:
@@ -546,9 +568,9 @@ class Options {
 
     [[nodiscard]]
     auto find(std::string_view const name) const -> OptionDescriptor const * {
-        for (auto i = usize{0}; i < count_; ++i) {
-            if (descriptors_[i].name == name) {
-                return &descriptors_[i];
+        for (auto i = usize{0}; i < m_count; ++i) {
+            if (m_descriptors[i].name == name) {
+                return &m_descriptors[i];
             }
         }
         return nullptr;
@@ -566,7 +588,10 @@ class Options {
         // word carried one, the bare name when it did not -- a bare number
         // option given no default is named by its name, a value that failed
         // its parse by its value.
-        auto const given = entry.has_value ? entry.value : entry.name;
+        auto given = entry.name;
+        if (entry.has_value) {
+            given = entry.value;
+        }
         if (!entry.has_value) {
             // A bare word: true for a boolean, the declared default for
             // anything else -- that is how `shuffle` means its default seed.
@@ -575,15 +600,17 @@ class Options {
             if (descriptor.kind == OptionKind::Bool) {
                 value = Value{true};
             } else if (descriptor.has_default) {
-                value = descriptor.default_;
+                value = descriptor.default_value;
             } else {
                 return ustl::err(Rejection{OptionFault::BadValue, descriptor.name, given});
             }
         } else {
             switch (descriptor.kind) {
                 case OptionKind::U64: {
-                    auto const number = descriptor.parse != nullptr ? descriptor.parse(entry.value)
-                                                                    : parse_u64(entry.value);
+                    auto number = parse_u64(entry.value);
+                    if (descriptor.parse != nullptr) {
+                        number = descriptor.parse(entry.value);
+                    }
                     if (number.is_err()) {
                         return ustl::err(Rejection{OptionFault::BadValue, descriptor.name, given});
                     }
@@ -608,26 +635,27 @@ class Options {
                 }
             }
         }
-        auto slot = parsed.count_;
-        for (auto i = usize{0}; i < parsed.count_; ++i) {
-            if (parsed.names_[i] == descriptor.name) {
+        auto slot = parsed.m_count;
+        for (auto i = usize{0}; i < parsed.m_count; ++i) {
+            if (parsed.m_names[i] == descriptor.name) {
                 slot = i;
                 break;
             }
         }
-        parsed.names_[slot] = descriptor.name;
-        parsed.kinds_[slot] = descriptor.kind;
-        parsed.values_[slot] = value;
-        if (slot == parsed.count_) {
-            parsed.count_ += 1;
+        parsed.m_names[slot] = descriptor.name;
+        parsed.m_kinds[slot] = descriptor.kind;
+        parsed.m_values[slot] = value;
+        parsed.m_given[slot] = true;
+        if (slot == parsed.m_count) {
+            parsed.m_count += 1;
         }
         return ustl::ok();
     }
 
-    std::string_view cmd_;
-    OptionDescriptor descriptors_[MAX_OPTIONS]{};
-    usize count_{0};
-    bool pass_through_{false};
+    std::string_view m_cmd;
+    OptionDescriptor m_descriptors[MAX_OPTIONS]{};
+    usize m_count{0};
+    bool m_pass_through{false};
 };
 
 /// Appends to a bounded buffer, answering what fits: the honest truncation a

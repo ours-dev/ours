@@ -227,7 +227,7 @@ auto spin_command(gktl::Parsed const &values, gktl::Options const &options) -> i
     auto const number = gktl::parse_u64(cpu);
     if (number.is_err()) {
         log::warn("lockup: cpu=<all|N> is a CPU number, or `all`, not '{}'", cpu);
-        gktl::print_usage("lockup", options.descriptors());
+        gktl::print_usage(options);
         return 1;
     }
     auto length = SpinLength();
@@ -247,11 +247,20 @@ auto lockup_command(gktl::Invocation const &invocation) -> int {
 
     auto const parsed = options.parse(invocation);
     if (parsed.is_err()) {
-        gktl::reject("lockup", options, parsed.unwrap_err());
+        gktl::reject(options, parsed.unwrap_err());
         return 1;
     }
     auto const values = parsed.unwrap();
     auto const verb = values.get<std::string_view>("verb");
+    if (verb == "status" || verb == "nmi") {
+        // status and nmi name nothing: a cpu or ms word beside them is the
+        // old grammar's usage error, and stays one.
+        if (values.has("cpu") || values.has("ms")) {
+            log::error("lockup: verb={} takes no cpu or ms", verb);
+            gktl::print_usage(options);
+            return 1;
+        }
+    }
     if (verb == "status") {
         // First, so that the checker's last line stays the status's last:
         // scripts/kshell_run.py ends the command there.
@@ -265,7 +274,7 @@ auto lockup_command(gktl::Invocation const &invocation) -> int {
     // spin names a CPU; status and nmi have nothing to name.
     if (!values.has("cpu")) {
         log::error("lockup: verb=spin needs cpu=<all|N>");
-        gktl::print_usage("lockup", options.descriptors());
+        gktl::print_usage(options);
         return 1;
     }
     return spin_command(values, options);

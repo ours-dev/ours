@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include <ktl/memory_resource.hpp>
+#include <logz4/log.hpp>
 #include <ustl/collections/allocator.hpp>
 
 namespace gktl {
@@ -78,12 +79,24 @@ namespace {
         }
 
         if (!TREE.reserve(capacity)) {
+            // Latching TREE_BUILT is what stops a broken image from retrying
+            // the failure on every dispatch; saying so once is what keeps it
+            // from being a mystery -- a console where nothing answers and no
+            // line says why is the worst shape a broken image can take.
             TREE_BUILT = true;
+            log::error("gktl: ERROR the command registry could not reserve {} nodes; no command "
+                       "will answer",
+                       capacity);
             return;
         }
 
         for (auto const *command = COMMANDS_START; command != COMMANDS_END; ++command) {
-            auto _ = TREE.insert(*command);
+            // The insert answers false for a name the key encoder cannot
+            // carry -- anything outside [a-zA-Z0-9. -] -- and for a name some
+            // earlier command already took. Both are authoring bugs the
+            // section walk cannot see, so the first dispatch is where they
+            // must speak, not a registry that quietly omits one command.
+            ASSERT(TREE.insert(*command), "command '{}' did not register", command->cmd);
         }
 
         TREE_BUILT = true;
@@ -105,9 +118,13 @@ auto run_command(int const argc, char **const argv) -> void {
     // The one place the console's C shape exists: the count and the pointers
     // become the invocation's views here, and every handler behind the
     // callback sees the value and not the array.
+    // The console passes at most MAX_OPTIONS words after the command, and
+    // the array is sized to that; a caller with more has them stop here
+    // rather than run past the array -- the truncation itself is what
+    // docs/repairs/261114/kshell-word-cap.md would make a report.
     auto words = std::array<std::string_view, MAX_OPTIONS>{};
     auto count = usize{0};
-    for (auto i = 1; i < argc && argv[i] != nullptr; ++i) {
+    for (auto i = 1; i < argc && argv[i] != nullptr && count != MAX_OPTIONS; ++i) {
         words[count] = argv[i];
         count += 1;
     }

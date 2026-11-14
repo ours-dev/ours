@@ -10,7 +10,6 @@
 
 #include <gktl/options.hpp>
 
-#include <span>
 #include <string_view>
 
 #include <logz4/log.hpp>
@@ -21,12 +20,18 @@ namespace gktl {
 /// bad-argument line carries: `<cmd>: ERROR <the rule> '<the input>'`. A
 /// command handler calls this and returns 1; it never writes its own usage
 /// line by hand any more, because the declarations below the rejection
-/// already know the whole grammar.
-inline auto report_rejection(std::string_view const cmd, Rejection const &rejection) -> void {
+/// already know the whole grammar. The command name comes from the
+/// declarations too: a handler that renames its Options cannot leave its
+/// error lines calling it by the old name.
+inline auto report_rejection(Options const &options, Rejection const &rejection) -> void {
+    auto const cmd = options.cmd();
     switch (rejection.fault) {
         case OptionFault::TooManyWords:
-        case OptionFault::MalformedWord:
             log::error("{}: ERROR {}", cmd, rejection_message(rejection.fault));
+            return;
+        case OptionFault::MalformedWord:
+            log::error("{}: ERROR {} '{}'", cmd, rejection_message(rejection.fault),
+                       rejection.word);
             return;
         case OptionFault::MissingRequired:
             log::error("{}: ERROR {} '{}'", cmd, rejection_message(rejection.fault),
@@ -46,15 +51,20 @@ inline auto report_rejection(std::string_view const cmd, Rejection const &reject
 /// `[rounds=N]`, `[csv]`), the declaration's help, and its default when it
 /// declares one. This is what replaces the hand-written usage strings each
 /// command used to duplicate beside its help text.
-inline auto print_usage(std::string_view const cmd,
-                        std::span<OptionDescriptor const> const descriptors) -> void {
+inline auto print_usage(Options const &options) -> void {
+    auto const cmd = options.cmd();
     log::warn("usage: {}", cmd);
-    for (auto const &descriptor: descriptors) {
+    for (auto const &descriptor: options.descriptors()) {
         char buffer[112];
         auto const word = usage_word(descriptor, buffer, sizeof(buffer));
-        auto const help =
-            descriptor.help != nullptr ? std::string_view{descriptor.help} : std::string_view{};
-        auto const separator = help.empty() ? " " : " - ";
+        auto help = std::string_view{};
+        if (descriptor.help != nullptr) {
+            help = std::string_view{descriptor.help};
+        }
+        auto separator = std::string_view{" "};
+        if (!help.empty()) {
+            separator = " - ";
+        }
         if (!descriptor.has_default) {
             if (help.empty()) {
                 log::warn("  {}", word);
@@ -65,25 +75,26 @@ inline auto print_usage(std::string_view const cmd,
         }
         switch (descriptor.kind) {
             case OptionKind::U64:
-                log::warn("  {}{}{} (default {})", word, separator, help, descriptor.default_.i);
+                log::warn("  {}{}{} (default {})", word, separator, help,
+                          descriptor.default_value.i);
                 break;
             case OptionKind::Bool:
-                log::warn("  {}{}{} (default {})", word, separator, help, descriptor.default_.b);
+                log::warn("  {}{}{} (default {})", word, separator, help,
+                          descriptor.default_value.b);
                 break;
             case OptionKind::Str:
-                log::warn("  {}{}{} (default '{}')", word, separator, help, descriptor.default_.s);
+                log::warn("  {}{}{} (default '{}')", word, separator, help,
+                          descriptor.default_value.s);
                 break;
         }
     }
 }
 
 /// What a handler does with a rejection: the pinned error line and the
-/// generated usage, in that order. The command name is repeated because the
-/// handler has both at hand and the pair travels together everywhere.
-inline auto reject(std::string_view const cmd, Options const &options, Rejection const &rejection)
-    -> void {
-    report_rejection(cmd, rejection);
-    print_usage(cmd, options.descriptors());
+/// generated usage, in that order.
+inline auto reject(Options const &options, Rejection const &rejection) -> void {
+    report_rejection(options, rejection);
+    print_usage(options);
 }
 
 } // namespace gktl

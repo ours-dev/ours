@@ -17,14 +17,19 @@ namespace {
 constexpr std::string_view HOW_CHOICES[] = {"panic", "panic-locked", "panic-smp"};
 
 TEST(GktlReport, EveryFaultPrintsItsPinnedLine) {
+    auto options = gktl::Options{"demo"};
+    options.add<u64>("rounds").defaults_to(u64{64});
+    options.add<std::string_view>("how").choices(HOW_CHOICES);
+    options.add<std::string_view>("mode").defaults_to("time").required();
     // One line per fault, each naming the command, the rule and the input
-    // the way the console's bad-argument lines have always read.
-    gktl::report_rejection("demo", {gktl::OptionFault::UnknownOption, "wat", "wat=1"});
-    gktl::report_rejection("demo", {gktl::OptionFault::BadValue, "rounds", "1x"});
-    gktl::report_rejection("demo", {gktl::OptionFault::BadChoice, "how", "nope"});
-    gktl::report_rejection("demo", {gktl::OptionFault::MissingRequired, "mode", {}});
-    gktl::report_rejection("demo", {gktl::OptionFault::TooManyWords, {}, {}});
-    gktl::report_rejection("demo", {gktl::OptionFault::MalformedWord, {}, "=x"});
+    // the way the console's bad-argument lines have always read. The command
+    // name comes from the declarations, not from the caller.
+    gktl::report_rejection(options, {gktl::OptionFault::UnknownOption, "wat", "wat=1"});
+    gktl::report_rejection(options, {gktl::OptionFault::BadValue, "rounds", "1x"});
+    gktl::report_rejection(options, {gktl::OptionFault::BadChoice, "how", "nope"});
+    gktl::report_rejection(options, {gktl::OptionFault::MissingRequired, "mode", {}});
+    gktl::report_rejection(options, {gktl::OptionFault::TooManyWords, {}, {}});
+    gktl::report_rejection(options, {gktl::OptionFault::MalformedWord, {}, "=x"});
     SUCCEED();
 }
 
@@ -33,7 +38,7 @@ TEST(GktlReport, UsageRendersFromTheDeclarations) {
     options.add<usize>("rounds").defaults_to(u64{64}).help("iterations per leg");
     options.add<bool>("csv");
     options.add<std::string_view>("how").choices(HOW_CHOICES).required();
-    gktl::print_usage("demo", options.descriptors());
+    gktl::print_usage(options);
     SUCCEED();
 }
 
