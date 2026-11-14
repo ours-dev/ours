@@ -18,8 +18,8 @@ namespace ours::mm {
 /// order given.
 ///
 /// m_connected records which nodes were chained in. Each remote node
-/// contributes its own zones in type order -- the list LocalContiguous used to
-/// keep a second copy of.
+/// contributes its own zones from its highest type down, as this node's own
+/// come first (push_zones_of()).
 ///
 /// It used to take a NodeMask and call Router::build() to turn it into an
 /// order, which meant this function read the machine's distance matrix. The
@@ -29,8 +29,8 @@ namespace ours::mm {
 auto ZoneList::connect(ustl::views::Span<NodeId const> const order) -> void {
     for (auto const next: order) {
         DEBUG_ASSERT(next != m_nid, "node {} was given itself as a fallback hop", m_nid);
-        find_node(next)->zone_list()->for_each_local_zone(
-            [this](PmZone &zone) { push_fallback(&zone); });
+        DEBUG_ASSERT(find_node(next), "node {} is a fallback hop but was not brought up", next);
+        push_zones_of(next);
         m_connected.set(next);
     }
 }

@@ -39,7 +39,8 @@
 namespace ours::mm {
 /// A node's zones as its allocations see them: its own, which are its row of
 /// PmZone's table, and the fallback order an allocation looks through -- this
-/// node's own zones first, then every other node's, nearest first. Only the
+/// node's own zones first, then every other node's, nearest first, and each
+/// node's from its highest zone type down. Only the
 /// fallback order is kept here. The node's own zones are read from the table,
 /// their one record; a copy by type here was one fact stored twice, as the
 /// next paragraph says of the queues before it.
@@ -60,16 +61,16 @@ class ZoneList {
     explicit ZoneList(NodeId nid) : m_fallback(), m_connected(), m_nid(nid) {}
 
     /// Puts this node's own zones, its row of the table, at the head of the
-    /// fallback order, in type order -- before connect() appends anyone
-    /// else's.
+    /// fallback order, from the highest type down -- before connect() appends
+    /// anyone else's.
     auto take_local_zones() -> void {
         DEBUG_ASSERT(m_fallback.size() == 0, "node {}'s own zones taken twice, or after connect()",
                      m_nid);
-        for_each_local_zone([this](PmZone &zone) { push_fallback(&zone); });
+        push_zones_of(m_nid);
     }
 
     /// Chains the zones of every node in |order| behind this node's own, in
-    /// the order given.
+    /// the order given, each node's from its highest type down.
     ///
     /// A list of node ids rather than a set: it used to take the set and
     /// derive the order itself, from the machine's distance matrix, which made
@@ -134,6 +135,27 @@ class ZoneList {
     auto push_fallback(PmZone *zone) -> void {
         auto const pushed = m_fallback.push_back(zone);
         DEBUG_ASSERT(pushed, "fallback order overflowed its {} zones", MAX_ZONES);
+    }
+
+    /// Appends node |nid|'s zones to the fallback order from its highest type
+    /// down, skipping the types it has none of.
+    ///
+    /// Highest first because the zones are not interchangeable in the other
+    /// direction. Any request may be served from a high zone, but only a low
+    /// one can serve a request with an address limit (a device that reaches
+    /// only the first 16 MiB, or 512 MiB). Taking ordinary requests from the
+    /// low zones first spends the only memory that has no substitute while
+    /// the memory that has one sits unused. Node first, zone second: a
+    /// node's low zones are still tried before the next node's high ones,
+    /// because a frame on another node costs every access, and a low zone
+    /// spent costs only a later constrained request.
+    auto push_zones_of(NodeId const nid) -> void {
+        auto const row = PmZone::row(nid);
+        for (auto type = row.size(); type > 0; --type) {
+            if (auto *const zone = row[type - 1]) {
+                push_fallback(zone);
+            }
+        }
     }
 
     ustl::collections::StaticVec<ZoneRef, MAX_ZONES> m_fallback;

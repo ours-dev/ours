@@ -180,7 +180,7 @@ Decided (Z1 to Z3). A zone is the stock of one pfn span and the judge of whether
 - `admits(order, floor, wanted_zone)` is the one question a zone answers about itself: would taking `2^order` frames leave it at or above `floor`, plus its reserve against a request whose `wanted_zone` is above it. The candidate walk asks; the zone never chooses.
 - `take_range(start_pfn, n)` succeeds only when the whole range is free. A named physical range uses it now, and a mover clearing a range later.
 - `adopt(start_pfn, end_pfn)` is the one door frames enter stock by: the boot handoff, the init area, and hot add. It counts the frames as managed and observes no pressure. `retire()` is its inverse, for hot removal.
-- The walk goes from the highest zone a request may use downwards (Z2), so that Dma is the last resort and not the first (`docs/repairs/261028/mm.md` item 1).
+- The walk goes from the highest zone a request may use downwards (Z2), so that Dma is the last resort and not the first. Built 2026-11-14 as the order of the fallback list, node first and zone second (each node's zones from the highest type down, then the next node's); the low-zone reserve is left to Z3, where the admission check that would read it is built.
 - The watermarks each mean one thing (Z3): High is where reclaim stops; Low is where it is woken, and the floor of a request with `CanBlock`; Min is the floor of a request without it. The counterpart is Linux's `zone_watermark_ok()` with `lowmem_reserve[]`.
 
 ### PmNode

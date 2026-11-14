@@ -195,17 +195,40 @@ namespace {
         EXPECT_TRUE(by_type_ok && visited == local_count && local_count >= 1,
                     "a node's local zones are its own, one per type, walked in type order");
 
-        // Fallback order: own zones first, in the same order.
+        // Fallback order: own zones first, from the highest type down.
         auto const fallback = list->fallback();
         auto head_ok = fallback.size() >= local_count;
-        usize index = 0;
+        auto index = local_count;
         list->for_each_local_zone([&](PmZone &zone) {
+            index -= 1;
             if (index >= fallback.size() || fallback[index] != &zone) {
                 head_ok = false;
             }
-            index += 1;
         });
-        EXPECT_TRUE(head_ok, "a node's fallback order starts with its own zones");
+        EXPECT_TRUE(head_ok, "a node's fallback order starts with its own zones, highest first");
+
+        // Every node's zones form one run, and within a run the types fall.
+        // A node seen again after another node's run would mean its zones
+        // were split, and a type that rises within a run would mean a low
+        // zone is tried before a higher one of the same node.
+        auto runs_ok = true;
+        NodeMask finished;
+        for (usize i = 0; i < fallback.size(); ++i) {
+            auto const here = fallback[i]->which_node();
+            if (i == 0 || fallback[i - 1]->which_node() != here) {
+                if (finished.test(here)) {
+                    runs_ok = false;
+                }
+                if (i != 0) {
+                    finished.set(fallback[i - 1]->which_node());
+                }
+                continue;
+            }
+            if (fallback[i]->zone_type() >= fallback[i - 1]->zone_type()) {
+                runs_ok = false;
+            }
+        }
+        EXPECT_TRUE(runs_ok, "each node's zones are one run in the fallback order, highest first");
 
         // No zone twice, every zone on an online node.
         auto unique_ok = true;
@@ -936,6 +959,38 @@ namespace {
 #else
         KTEST_SKIP("needs a build with mm_test_alloc_failure");
 #endif
+    }
+
+    KTEST(PmNode, AllocationsTakeTheHighestZoneFirst) {
+        // The zone an ordinary allocation should come from: this node's
+        // highest zone with room to spare. A margin, so that the answer does
+        // not change under the test if another CPU allocates meanwhile.
+        constexpr auto MARGIN = usize{1024};
+        auto const nid = mm::current_node();
+        auto *const node = mm::find_node(nid);
+        if (!node) {
+            FAIL("the calling CPU's node {} is not online", nid);
+            return;
+        }
+        PmZone const *expected = nullptr;
+        node->zone_list()->for_each_local_zone([&expected](PmZone &zone) {
+            if (zone.num_free_frames() > MARGIN) {
+                expected = &zone;
+            }
+        });
+        if (!expected) {
+            KTEST_SKIP("no zone of this node has frames to spare");
+        }
+
+        auto const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, nid);
+        if (!frame) {
+            FAIL("allocate a frame on node {}", nid);
+            return;
+        }
+        EXPECT_TRUE((*frame)->zone() == expected->zone_type(),
+                    "an ordinary allocation comes from the highest zone with room, {} here",
+                    mm::to_string(expected->zone_type()));
+        mm::free_frames(*frame);
     }
 
     KTEST(PmNode, MatchesTheMachineItRunsOn) {
