@@ -123,3 +123,79 @@ None.
 - Why is "lowest zone first" backwards, when every zone's frames are equally good for an ordinary request?
 - Node 0's Dma zone or node 1's Dma32 zone: which does an allocation on node 0 try first, and what is given up by the other choice?
 - What can still drain a low zone after this change, and what is the mechanism that stops it?
+
+## Allocation reads the watermarks: two passes, Low then Min (2026-11-14)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/admission.hpp` — new: `AdmissionPass`, `admission_floor()` and `admits()`, the arithmetic with every input an argument
+- `kernel/mm/tests/admission_smoke.cpp`, `kernel/mm/tests/BUILD.gn` — new host test of it
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — `PmZone::admits(order, pass, can_block)`; `watermark_ok()` uses the same arithmetic
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp` — `PmNode::alloc_frames(request, pass)` passes over a zone that does not admit the request and names the first as short
+- `kernel/mm/pmm.cpp` — `alloc_block()` makes the two passes and reports the short zone to every allocation form, on success as well as failure
+- `kernel/mm/include/ours/mm/alloc_flags.hpp` — `Gaf::CanBlock` has a reader; `ALLOC_USER` carries it
+- `kernel/tests/pm_node_test.cpp` — new `PmNode.AdmissionHoldsAtLowThenAtMin`; the exhausted-node check drains past the floor through the zones themselves
+- `kernel/tests/page_reclaim_test.cpp` — the targeted-reclaim check takes its resupplied frame from the zone
+
+**Symptom**
+Every zone's three watermarks were computed at boot and read by nothing on the allocation path. An allocation took frames from a zone until its buddy was empty: the default machine's Dma32 zone, Min 689 frames, gave up its last frame as readily as its first, and so did the 3388-frame Dma zone below it. The reclaimer was asked for a zone only when an order-0 walk found no frame anywhere, by which time nothing was left to hand out while it worked.
+
+**Cause**
+The watermarks were added with no consumer, and the consumer was put off twice: it needed a place in the layering (`.agents/tasks/pmm-layering/DESIGN.md` D1, the candidate walk), and then a rule. The rule first decided, decision Z3(a) of 2026-11-10, was "a request that may block stops at Low, one that may not at Min". Checked against the callers it failed both ways. Today's presets are `ALLOC_KERNEL` (with `CanBlock`) and `ALLOC_USER` (without it), so user pages would have gone deeper than kernel allocations; and with `ALLOC_USER` given `CanBlock`, as E2 had decided, no caller lacks it, so the band from Min to Low would have been unusable by anyone and every allocation would have failed at Low with nothing to wait for, since this allocator performs no direct reclaim. The user took the revised rule on 2026-11-14.
+
+**Change**
+Two passes over the same candidate zones, in `alloc_block()`:
+
+```cpp
+auto block = home.alloc_frames(request, AdmissionPass::Low);
+if (!block) {
+    if (!depleted) {
+        depleted = block.error().depleted_zone;
+    }
+    block = home.alloc_frames(request, AdmissionPass::Min);
+}
+```
+
+and per zone, in the node's walk, one question the zone answers about itself:
+
+```cpp
+constexpr auto admission_floor(usize min, usize low, AdmissionPass pass, bool can_block) -> usize {
+    if (pass == AdmissionPass::Low) return low;   // everyone, the first time
+    if (can_block) return min;                    // may block: stopped first
+    return min - min / 4;                         // cannot block: nothing else to do
+}
+// admitted when free - 2^order >= floor
+```
+
+So Low is where reclaim is asked for, Min is the floor, and `CanBlock` decides who may go below it. When the first pass fails as a whole, the first zone it found short is named to the reclaimer, even when the second pass then succeeds, because the allocation was served below Low. A first pass that succeeds names nothing, though it may have passed over a short zone on its way to a lower one that admitted the request; reclaim then waits until no zone admits at Low, as Linux wakes kswapd only from the slow path. Every allocation form reports it once: the single-block entry after its passes, the bulk and fragment forms the first short zone across all their blocks.
+
+`ALLOC_USER` is `CanBlock | Zero` now: user objects and pages are allocated from system calls, which may block.
+
+Until `PmNode::setup_watermarks()` runs every watermark is zero, so no boot allocation before it can be refused.
+
+**Reference**
+Linux `get_page_from_freelist()` with `ALLOC_WMARK_LOW` on the fast path, then `__alloc_pages_slowpath()`, which wakes kswapd and retries with `ALLOC_WMARK_MIN`, and lets a caller without `__GFP_DIRECT_RECLAIM` go a quarter further (`ALLOC_NON_BLOCK`, in `__zone_watermark_ok()`). Zircon has no watermarks of this kind; its `PmmNode` delays a `PMM_ALLOC_FLAG_CAN_WAIT` request at a free-memory level instead.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, on the default and the four-node machine; host tests 184 passed, one more than before, the new `admission-smoke`. `ktest all`: four nodes 85 ran, 82 passed, 3 skipped; default machine 85 ran, 81 passed, 4 skipped, the fourth skip being the new test, which needs a second node with memory. With `MEM=3072` both images boot and `ktest PmNode.*:PmZone.*:VmoContiguous.*:LargePage.*` passes. The failure-injection build's `ktest all`: 85 ran, 82 passed, 0 failed.
+
+The new kernel test drains one zone of another node to exactly Low, Min and three quarters of Min through the zone itself, with the reclaimer paused, and checks at each: below Low a blocking request is served by the second pass; at Min it is refused while one that cannot block is served; at three quarters of Min both are refused. Control: with the second pass removed, its first and third checks fail.
+
+A review of the change, two narrow reviewers one after the other, checked eight behavioural points (boot before the watermarks exist, status mapping, one report per operation, the reclaim request's locking, the gate, page-table and per-CPU allocations under pressure, the floor arithmetic, a large order against a zone near Low) and the new tests' expectations. It found three comments false, corrected here, and the `CanWait` consequence listed below.
+
+One run of `ktest all` on the default machine failed `Steal.IdleCpuTakesQueuedThreadsByNodeAndAffinity`, a scheduler test of work stealing that allocates nothing on the path it checks; it passed in four runs of `ktest Steal.*` and in the next full run, and is recorded as a flake in `docs/repairs/261114/kernel-task-sched.md`.
+
+**Deliberately not done**
+- The low-zone reserve, which the next step adds to the floor.
+- `Gaf::CanWait` still meets the machine-wide gate and not the zone's Low floor; making a waiting request stop at Low and get `ShouldWait` is decision N1. Until then a waiting request that gets past the gate and finds every zone below Min gets `OutOfMem`, where before this change it got a frame: the gate only puts a request off when free memory is below its delay level, and nothing ties that level to the zones' Min.
+- Whether a rollback returns the very frame it took on an exhausted node is no longer tested there: nothing past the floor can be taken through `mm::`. The batch errors on a healthy node still exercise the rollback.
+
+**How it was found**
+None. Decision Z3 of `.agents/tasks/pmm-redesign/DESIGN.md`, revised as above.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the rule first decided ("may block stops at Low") leave the band between Min and Low unused once every preset carries `CanBlock`?
+- An allocation succeeds in the second pass. Why is reclaim still asked for?
+- Why does a caller that cannot block get to go deeper than one that can, when the one that can block cannot actually wait in this allocator?

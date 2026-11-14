@@ -85,13 +85,25 @@ PmNode::PmNode(NodeId nid)
     , m_zone_list(nid)
     , m_page_queues() {}
 
-auto PmNode::alloc_frames(AllocRequest const &request) -> ustl::Result<PmFrame *, BlockFailure> {
+auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
+    -> ustl::Result<PmFrame *, BlockFailure> {
     m_canary.verify<Self>();
     DEBUG_ASSERT(request.home_node() == m_id, "node {} was handed a request whose home is node {}",
                  m_id, request.home_node());
 
+    auto const can_block = !!(request.flags() & Gaf::CanBlock);
     ustl::Option<PmZone const &> depleted_zone;
     for (auto &zone: m_zone_list.candidates(request)) {
+        // Taking the block would leave the zone below the pass's floor: short
+        // for this request. Passed over, and the first such zone named in the
+        // failure, should the walk fail.
+        if (!zone.admits(request.order(), pass, can_block)) {
+            if (!depleted_zone) {
+                depleted_zone = ustl::some_ref(zone);
+            }
+            continue;
+        }
+
         auto const block = zone.alloc_frames(request.order());
         if (!block) {
             if (request.order() == 0 && !depleted_zone &&

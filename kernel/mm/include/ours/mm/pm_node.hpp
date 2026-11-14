@@ -188,11 +188,14 @@ class PmNode {
     /// after the handoff, with nothing else running.
     static auto setup_watermarks() -> void;
 
-    /// Why a walk for one block gave nothing: the status, and, for an order-0
-    /// request only, the first zone it passed that is short of its high
-    /// watermark, for whoever asks the reclaimer. A failed walk for a larger
-    /// block never names a zone: a zone with no free block of that order may
-    /// still have plenty of single frames.
+    /// Why a walk for one block gave nothing: the status, and the first zone
+    /// it passed that is short, for whoever asks the reclaimer. A zone is
+    /// short when it did not admit the request (taking the block would have
+    /// left it below the pass's floor, so a large block can find a zone short
+    /// that a single frame would not), or when an order-0 request found no
+    /// frame in it while it was below its high watermark. A zone with no free block of a larger
+    /// order is not short on that account alone: it may still have plenty of
+    /// single frames.
     struct BlockFailure {
         Status status;
         ustl::Option<PmZone const &> depleted_zone = ustl::NONE;
@@ -200,16 +203,20 @@ class PmNode {
 
     /// The node's layer of mm::alloc_frames(): walks this node's zones in
     /// fallback order for |request|, whose home this node is, and takes one
-    /// block from the first zone that has it. That is all of it: the block
+    /// block from the first zone that admits the request in |pass| and has
+    /// the block. A zone that does not admit it is passed over and, the first
+    /// time, named in the failure as short. That is all of it: the block
     /// comes back as the zone gave it, and making it ready for its owner is
-    /// the caller's, as are admission, the thread's allocation state and the
-    /// request itself. resolve_request() builds a request and the mm::
+    /// the caller's, as are the free-memory gate, the thread's allocation
+    /// state and the request itself. resolve_request() builds a request and the mm::
     /// functions are the callers meant to; both it and this member are
     /// public, and a caller that builds its own request and comes here skips
-    /// the gate, the allocation-state check, the order bound and
-    /// prepare_alloc(). Only tests do.
+    /// the gate, the allocation-state check, the order bound, the second
+    /// pass and prepare_alloc(); the watermark of the pass it names still
+    /// holds. Only tests do.
     [[nodiscard]]
-    auto alloc_frames(AllocRequest const &request) -> ustl::Result<PmFrame *, BlockFailure>;
+    auto alloc_frames(AllocRequest const &request, AdmissionPass pass)
+        -> ustl::Result<PmFrame *, BlockFailure>;
 
     /// The node's layer of mm::free_frames(): returns a block of this node's
     /// to the zone it came from. The frame names both.

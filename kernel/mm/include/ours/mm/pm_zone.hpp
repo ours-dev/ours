@@ -6,6 +6,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/pm_frame.hpp>
+#include <ours/mm/priv/admission.hpp>
 #include <ours/mm/priv/frame_buddy.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -255,12 +256,19 @@ class PmZone {
     [[nodiscard]]
     FORCE_INLINE
     auto watermark_ok(usize const order, Watermark const mark) const -> bool {
-        auto const free = num_free_frames();
-        auto const wanted = usize{1} << order;
-        if (free < wanted) {
-            return false;
-        }
-        return free - wanted >= watermark(mark);
+        return mm::admits(num_free_frames(), order, watermark(mark));
+    }
+
+    /// Whether this zone may give 2^|order| frames to a request in |pass|:
+    /// the one question a zone answers about itself for the candidate walk,
+    /// from its own watermarks and free count. |can_block| is the request's;
+    /// the zone reads no allocation flags. A snapshot, like watermark_ok().
+    [[nodiscard]]
+    FORCE_INLINE
+    auto admits(usize const order, AdmissionPass const pass, bool const can_block) const -> bool {
+        auto const floor =
+            admission_floor(watermark(Watermark::Min), watermark(Watermark::Low), pass, can_block);
+        return mm::admits(num_free_frames(), order, floor);
     }
 
     FORCE_INLINE

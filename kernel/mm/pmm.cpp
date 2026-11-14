@@ -317,9 +317,15 @@ namespace {
     }
 
     /// One block for the calling thread out of |home|'s walk, with pressure
-    /// not looked at: the list forms take several and look once.
-    auto alloc_block(PmNode &home, Gaf const alloc_flags, usize const order, NodeMask const &nodes)
-        -> ustl::Result<PmFrame *, PmNode::BlockFailure> {
+    /// not looked at: the list forms take several and look once. When the
+    /// first pass fails as a whole, |depleted| is set to the first zone it
+    /// found short, if it was not set already, and stays set whether or not
+    /// the second pass then brings a block back: an allocation served by the
+    /// second pass was served below Low, and reclaim is wanted then too. A
+    /// first pass that succeeds names nothing, though it may have passed over
+    /// a short zone on the way to one that admitted the request.
+    auto alloc_block(PmNode &home, Gaf const alloc_flags, usize const order, NodeMask const &nodes,
+                     ustl::Option<PmZone const &> &depleted) -> ktl::Result<PmFrame *> {
         // Whether the calling thread may allocate at all: a thread that has
         // disabled allocation (AllocState::disable()) is refused here,
         // whichever way it asked. This is the one function every frame
@@ -335,22 +341,37 @@ namespace {
         // Thread::Current is always there by now: task::init_early() makes the
         // boot thread current before the PMM exists.
         if (!task::Thread::Current::alloc_state().is_enabled()) {
-            return ustl::err(PmNode::BlockFailure{.status = Status::AccessDenied});
+            return ustl::err(Status::AccessDenied);
         }
 
         // Before the request is built: a resolved request never carries an
         // order the buddy does not have.
         if (order > MAX_FRAME_ORDER) {
-            return ustl::err(PmNode::BlockFailure{.status = Status::InvArgs});
+            return ustl::err(Status::InvArgs);
         }
 
         auto const request = resolve_request(
             alloc_flags, order, nodes, AllocRequest::Origin{.node = home.nid(), .cpu = Cpu::id()});
-        auto const block = home.alloc_frames(request);
-        if (block) {
-            prepare_alloc(**block, request);
+
+        // Two passes. The first holds the request at every zone's Low
+        // watermark. Only when no zone admits it there is reclaim asked for,
+        // for the first zone the pass found short, and the second pass lets
+        // the request down to Min (or below, for a caller that cannot block):
+        // the band between Low and Min is spent only after reclaim has been
+        // asked for.
+        auto block = home.alloc_frames(request, AdmissionPass::Low);
+        if (!block) {
+            if (!depleted) {
+                depleted = block.error().depleted_zone;
+            }
+            block = home.alloc_frames(request, AdmissionPass::Min);
         }
-        return block;
+        if (!block) {
+            return ustl::err(block.error().status);
+        }
+
+        prepare_alloc(**block, request);
+        return ustl::ok(*block);
     }
 
     /// One block back to the node that owns it, with pressure not looked at.
@@ -543,22 +564,18 @@ namespace priv {
             return ustl::err(node.unwrap_err());
         }
 
-        auto const block = alloc_block(**node, alloc_flags, order, nodes);
-        if (!block) {
-            auto const &failure = block.error();
-            observe_pressure(failure.depleted_zone);
-            return ustl::err(failure.status);
-        }
-
-        observe_pressure();
-        return ustl::ok(*block);
+        ustl::Option<PmZone const &> depleted;
+        auto const block = alloc_block(**node, alloc_flags, order, nodes, depleted);
+        observe_pressure(depleted);
+        return block;
     }
 
     auto alloc_frames_bulk(Gaf alloc_flags, usize const n, NodeId const home, NodeMask const &nodes)
         -> ktl::Result<PmFrame::List> {
         DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "batch allocation is immediate");
 
-        auto observation = gktl::defer([] { observe_pressure(); });
+        ustl::Option<PmZone const &> depleted;
+        auto observation = gktl::defer([&depleted] { observe_pressure(depleted); });
         auto const node = resolve_home(home, alloc_flags);
         if (!node) {
             log::trace("Failed to allocate {} frames with reason: {}", n,
@@ -569,11 +586,11 @@ namespace priv {
         PmFrame::List list;
         auto rollback = gktl::defer([&list] { free_blocks(list); });
         for (usize i = 0; i < n; ++i) {
-            auto block = alloc_block(**node, alloc_flags, 0, nodes);
+            auto block = alloc_block(**node, alloc_flags, 0, nodes, depleted);
             if (!block) {
                 log::trace("Failed to allocate {} frames with reason: {}", n,
-                           to_string(block.error().status));
-                return ustl::err(block.error().status);
+                           to_string(block.unwrap_err()));
+                return ustl::err(block.unwrap_err());
             }
             list.push_back(*block.unwrap());
         }
@@ -586,7 +603,8 @@ namespace priv {
         -> ktl::Result<PmFrame::List> {
         DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "fragment allocation is immediate");
 
-        auto observation = gktl::defer([] { observe_pressure(); });
+        ustl::Option<PmZone const &> depleted;
+        auto observation = gktl::defer([&depleted] { observe_pressure(depleted); });
         auto const node = resolve_home(home, alloc_flags);
         if (!node) {
             log::trace("Failed to allocate frame with reason: {}", to_string(node.unwrap_err()));
@@ -605,11 +623,11 @@ namespace priv {
                 continue;
             }
 
-            auto block = alloc_block(**node, alloc_flags, order, nodes);
+            auto block = alloc_block(**node, alloc_flags, order, nodes, depleted);
             if (!block) {
                 log::trace("Failed to allocate frame with reason: {}",
-                           to_string(block.error().status));
-                return ustl::err(block.error().status);
+                           to_string(block.unwrap_err()));
+                return ustl::err(block.unwrap_err());
             }
             list.push_back(*block.unwrap());
         }

@@ -717,14 +717,21 @@ namespace {
         }
         auto const evicted = settle([&] { return remote_vmo->committed_pages(0, P) == 0; });
         auto const kept_local = local_vmo->committed_pages(0, P) == 1;
+        // The evicted page went back to the remote node. Taken from the zones
+        // themselves: the node is far below its floor, so an allocation
+        // through mm:: is refused there whatever reclaim gave back.
         bool retried = false;
         if (evicted) {
-            auto const recovered =
-                mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, remote);
-            if (recovered) {
-                retried = (*recovered)->nid() == remote;
-                mm::free_frames(*recovered);
-            }
+            mm::find_node(remote)->zone_list()->for_each_local_zone(
+                [&retried, remote](mm::PmZone &zone) {
+                    if (retried) {
+                        return;
+                    }
+                    if (auto block = zone.alloc_frames(0)) {
+                        retried = block.value().nid() == remote;
+                        mm::free_frames(&block.value());
+                    }
+                });
         }
         mm::free_frames(&held);
         EXPECT_TRUE(globally_normal && exhausted && evicted && retried && kept_local,
