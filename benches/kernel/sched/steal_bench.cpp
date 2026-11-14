@@ -81,6 +81,8 @@
 
 #include <bench/run.hpp>
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
+#include <gktl/report.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
 
@@ -115,7 +117,6 @@ namespace {
 
     constexpr usize DEFAULT_ROUNDS = 7;
     constexpr usize MAX_ROUNDS = 1000;
-    constexpr usize MAX_DIGITS = 4;
 
     /// Steps of the loop between two counts of it. A count is the unit of work
     /// the figures are made of.
@@ -554,53 +555,27 @@ namespace {
         out.sample(config.name, "w2 cpus", "cpus", s.cpus_milli);
     }
 
-    /// |text| as a decimal number up to MAX_DIGITS digits, or 0.
-    auto parse_count(std::string_view const text) -> usize {
-        if (text.empty() || text.size() > MAX_DIGITS) {
-            return 0;
-        }
-        usize value = 0;
-        for (auto const c: text) {
-            if (c < '0' || c > '9') {
-                return 0;
-            }
-            value = value * 10 + static_cast<usize>(c - '0');
-        }
-        return value;
-    }
-
     auto steal_bench(int const argc, char **const argv) -> int {
-        // `csv` and `rounds=N` are this benchmark's own, and `all` is
-        // bench::Run's.
-        auto csv = false;
-        // bench::Run is given `all` as it was typed, and nothing else.
-        auto run_argc = 1;
-        auto all_index = 0;
-        auto rounds = DEFAULT_ROUNDS;
-        auto arguments_ok = true;
-        for (int i = 1; i < argc; ++i) {
-            auto const argument = std::string_view(argv[i]);
-            if (argument == "csv") {
-                csv = true;
-            } else if (argument == "all") {
-                run_argc = 2;
-                all_index = i;
-            } else if (argument.starts_with("rounds=")) {
-                rounds = parse_count(argument.substr(7));
-                if (rounds == 0 || rounds > MAX_ROUNDS) {
-                    arguments_ok = false;
-                }
-            } else {
-                arguments_ok = false;
-            }
-        }
-        if (!arguments_ok) {
-            log::warn("usage: steal.bench [all] [csv] [rounds=N]");
+        auto options = gktl::Options{"steal.bench"};
+        options.add<bool>("all").help("run the hardware-only metrics on an emulator too");
+        options.add<bool>("csv").help("print the samples as CSV rows instead of lines");
+        options.add<usize>("rounds")
+            .defaults_to(usize{DEFAULT_ROUNDS})
+            .help("how many rounds each leg runs");
+        auto const parsed = options.parse(argc, argv);
+        if (parsed.is_err()) {
+            gktl::reject("steal.bench", options, parsed.unwrap_err());
             return 1;
         }
-        char *run_argv[] = {argv[0], argv[all_index]};
-        auto const run = bench::Run("steal.bench", run_argc, run_argv);
-        auto const out = Output{.run = run, .csv = csv};
+        auto const values = parsed.unwrap();
+        auto const rounds = values.get<usize>("rounds");
+        if (rounds == 0 || rounds > MAX_ROUNDS) {
+            log::error("steal.bench: rounds takes a number from 1 to {}", MAX_ROUNDS);
+            gktl::print_usage("steal.bench", options.descriptors());
+            return 1;
+        }
+        auto const run = bench::Run("steal.bench", values.get<bool>("all"));
+        auto const out = Output{.run = run, .csv = values.get<bool>("csv")};
 
         CpuNum cpus[CPUS_NEEDED];
         usize found = 0;
@@ -626,7 +601,7 @@ namespace {
                 return run.finish();
             }
         }
-        if (csv && rounds == 1) {
+        if (values.get<bool>("csv") && rounds == 1) {
             log::warn("steal.bench: one round is the warm-up alone, and prints no raw rows");
         }
 

@@ -21,7 +21,7 @@ What it does, in order:
      are taken from the GKTL_COMMAND registrations in kernel/commands. Both
      then run with any --command given. A test that fails is reported; the
      coverage of what it ran still counts.
-  4. Types `cov dump`. The kernel prints its counters as a raw profile in text
+  4. Types `cov verb=dump`. The kernel prints its counters as a raw profile in text
      lines (kernel/commands/cov.cpp), which are put back together here. Every
      line carries its own offset and the last carries a checksum, because the
      console is shared with the other CPUs' log lines; a dump that does not add
@@ -65,7 +65,7 @@ KERNEL_ELF = f"kernel_x86.dbg.1-{VARIANT}/obj/kernel/products/bin/vmours.with-te
 
 BOOT_TIMEOUT = 90       # seconds for the boot to end
 COMMAND_TIMEOUT = 120   # seconds for one kernel test
-DUMP_TIMEOUT = 30       # seconds for one `cov dump`; a healthy one takes a few
+DUMP_TIMEOUT = 30       # seconds for one `cov verb=dump`; a healthy one takes a few
 DUMP_TRIES = 3
 
 # The tags of kernel/commands/cov.cpp's lines, and the checksum it ends with.
@@ -94,7 +94,7 @@ def fnv1a64(data: bytes) -> int:
 
 
 def parse_dump(text: str) -> Optional[bytes]:
-    """The raw profile a `cov dump` printed in `text`, or None if there is no
+    """The raw profile a `cov verb=dump` printed in `text`, or None if there is no
     dump in it that adds up. The last complete one wins: text may hold several.
 
     A line is one of `COV-BEGIN <size> <chunk>`, `COV <offset> <base64>` and
@@ -259,7 +259,7 @@ def dump(console: kshell_run.Console) -> Optional[bytes]:
         if console.gone or console.panicked:
             return None
         console.keep()
-        console.type("cov dump")
+        console.type("cov verb=dump")
         end = re.compile(r"COV-END [^\n]*\n|cov: [^\n]*\n")
         if not console.wait_for(end, time.monotonic() + DUMP_TIMEOUT, through=True):
             print(f"  dump attempt {attempt}: no end line within {DUMP_TIMEOUT}s", flush=True)

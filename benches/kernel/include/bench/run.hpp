@@ -37,21 +37,14 @@ enum class Needs {
 
 class Run final {
   public:
-    /// |name| starts every line the run prints. |argc| and |argv| are the
-    /// command's: no argument, or `all` to run the hardware metrics on an
-    /// emulator too.
-    Run(char const *const name, int const argc, char **const argv)
-        : m_name(name)
-        , m_machine(arch::machine_kind())
-        , m_all(argc == 2 && std::string_view(argv[1]) == "all")
-        , m_arguments_ok(argc == 1 || m_all) {
+    /// |name| starts every line the run prints. |all| is the command's
+    /// `all` option: set, the hardware metrics are measured on an emulator
+    /// too. The words themselves belong to the command's declared options
+    /// (gktl::Options); by the time the run is built, the line has been
+    /// accepted and there is nothing left to check here.
+    Run(char const *const name, bool const all)
+        : m_name(name), m_machine(arch::machine_kind()), m_all(all) {
         log::info("{}: machine: {}", m_name, arch::to_string(m_machine));
-    }
-
-    /// Whether the command's arguments were ones this convention knows.
-    [[nodiscard]]
-    auto arguments_ok() const -> bool {
-        return m_arguments_ok;
     }
 
     /// Whether |metric| is measured on this run. When it is not, says why;
@@ -89,7 +82,6 @@ class Run final {
     char const *m_name;
     arch::MachineKind m_machine;
     bool m_all;
-    bool m_arguments_ok;
 };
 
 } // namespace bench

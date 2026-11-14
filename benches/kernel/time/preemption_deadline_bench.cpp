@@ -46,6 +46,8 @@
 #include <arch/auto_interrupt_disabler.hpp>
 #include <bench/run.hpp>
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
+#include <gktl/report.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -198,18 +200,17 @@ namespace {
     }
 
     auto preemption_deadline_bench(int argc, char **argv) -> int {
-        // `csv` is this benchmark's own, and the rest is bench::Run's.
-        auto const csv = argc > 1 && std::string_view(argv[argc - 1]) == "csv";
-        auto run_argc = argc;
-        if (csv) {
-            run_argc -= 1;
-        }
-        auto const run = bench::Run("preemptdeadline.bench", run_argc, argv);
-        if (!run.arguments_ok()) {
-            log::warn("usage: preemptdeadline.bench [all] [csv]");
+        auto options = gktl::Options{"preemptdeadline.bench"};
+        options.add<bool>("all").help("run the hardware-only metrics on an emulator too");
+        options.add<bool>("csv").help("print the samples as CSV rows instead of lines");
+        auto const parsed = options.parse(argc, argv);
+        if (parsed.is_err()) {
+            gktl::reject("preemptdeadline.bench", options, parsed.unwrap_err());
             return 1;
         }
-        auto const out = Output{.run = run, .csv = csv};
+        auto const values = parsed.unwrap();
+        auto const run = bench::Run("preemptdeadline.bench", values.get<bool>("all"));
+        auto const out = Output{.run = run, .csv = values.get<bool>("csv")};
 
         if (!hand_offs(out)) {
             return 1;

@@ -45,6 +45,8 @@
 
 #include <bench/run.hpp>
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
+#include <gktl/report.hpp>
 #include <logz4/log.hpp>
 #include <user_copy/user_copy.hpp>
 #include <ustl/rc.hpp>
@@ -272,12 +274,16 @@ namespace {
         return true;
     }
 
-    auto largepage_bench_command(int const argc, char **const argv) -> int {
-        bench::Run const run("largepage.bench", argc, argv);
-        if (!run.arguments_ok()) {
-            log::warn("usage: largepage.bench [all]");
+    auto largepage_bench_command(int argc, char **argv) -> int {
+        auto options = gktl::Options{"largepage.bench"};
+        options.add<bool>("all").help("run the hardware-only metrics on an emulator too");
+        auto const parsed = options.parse(argc, argv);
+        if (parsed.is_err()) {
+            gktl::reject("largepage.bench", options, parsed.unwrap_err());
             return 1;
         }
+        bench::Run const run("largepage.bench", parsed.unwrap().get<bool>("all"));
+
         // Asked before anything is measured, so that a skipped metric is
         // skipped for both kinds alike.
         auto const reads = run.measures("random reads", bench::Needs::Hardware);

@@ -23,6 +23,8 @@
 #include <cstring>
 
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
+#include <gktl/report.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <profdata/profdata.hpp>
@@ -169,15 +171,20 @@ auto cov_dump() -> int {
 }
 
 auto cov_command(int argc, char **argv) -> int {
-    if (argc == 2 && std::string_view(argv[1]) == "dump") {
-        return cov_dump();
+    constexpr std::string_view VERBS[] = {"dump"};
+    auto options = gktl::Options{"cov"};
+    options.add<std::string_view>("verb").required().choices(VERBS);
+
+    auto const parsed = options.parse(argc, argv);
+    if (parsed.is_err()) {
+        gktl::reject("cov", options, parsed.unwrap_err());
+        return 1;
     }
-    reply("usage: cov dump");
-    return 1;
+    return cov_dump();
 }
 
 } // namespace
 
 GKTL_COMMAND(CovDump, "cov", cov_command,
-             "cov dump: print the kernel's coverage counters as a raw profile, for "
+             "cov verb=dump: print the kernel's coverage counters as a raw profile, for "
              "scripts/cov_kernel.py to turn into a file llvm-profdata reads")
