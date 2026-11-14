@@ -555,14 +555,14 @@ namespace {
         out.sample(config.name, "w2 cpus", "cpus", s.cpus_milli);
     }
 
-    auto steal_bench(int const argc, char **const argv) -> int {
+    auto steal_bench(gktl::Invocation const &invocation) -> int {
         auto options = gktl::Options{"steal.bench"};
         options.add<bool>("all").help("run the hardware-only metrics on an emulator too");
         options.add<bool>("csv").help("print the samples as CSV rows instead of lines");
         options.add<usize>("rounds")
             .defaults_to(usize{DEFAULT_ROUNDS})
             .help("how many rounds each leg runs");
-        auto const parsed = options.parse(argc, argv);
+        auto const parsed = options.parse(invocation);
         if (parsed.is_err()) {
             gktl::reject("steal.bench", options, parsed.unwrap_err());
             return 1;

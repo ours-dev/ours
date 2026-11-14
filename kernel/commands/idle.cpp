@@ -150,10 +150,10 @@ namespace {
         });
     }
 
-    auto idle_stats_command(int argc, char **argv) -> int {
+    auto idle_stats_command(gktl::Invocation const &invocation) -> int {
         auto options = gktl::Options{"idle.stats"};
         options.add<u64>("seconds").defaults_to(u64{DEFAULT_SECONDS}).help("the window's length");
-        auto const parsed = options.parse(argc, argv);
+        auto const parsed = options.parse(invocation);
         if (parsed.is_err()) {
             gktl::reject("idle.stats", options, parsed.unwrap_err());
             return 1;

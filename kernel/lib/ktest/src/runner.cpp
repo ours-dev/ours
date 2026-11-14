@@ -342,7 +342,7 @@ namespace {
 
     RunOptions RUN_OPTIONS;
 
-    auto ktest_command(int const argc, char **const argv) -> int {
+    auto ktest_command(gktl::Invocation const &invocation) -> int {
         if (RUNNING) {
             log::error("ktest: ERROR a test run is already in progress");
             return 1;
@@ -367,13 +367,13 @@ namespace {
         // command and the selection, so the words a run takes fit the fixed
         // array the plan records them into; a longer list is refused here,
         // with the count the line actually carried.
-        auto const word_count = argc > 2 ? static_cast<usize>(argc - 2) : usize{0};
+        auto const word_count = invocation.words().size();
         if (word_count > MAX_RUN_OPTIONS) {
             log::error("ktest: ERROR at most {} options, got {}", MAX_RUN_OPTIONS, word_count);
             return 1;
         }
 
-        RUN_OPTIONS.planned = RUN_OPTIONS.options.parse(argc, argv);
+        RUN_OPTIONS.planned = RUN_OPTIONS.options.parse(invocation);
         if (RUN_OPTIONS.planned.is_err()) {
             report_rejection(RUN_OPTIONS.planned.unwrap_err());
             return 1;

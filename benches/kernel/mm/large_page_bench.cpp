@@ -274,10 +274,10 @@ namespace {
         return true;
     }
 
-    auto largepage_bench_command(int argc, char **argv) -> int {
+    auto largepage_bench_command(gktl::Invocation const &invocation) -> int {
         auto options = gktl::Options{"largepage.bench"};
         options.add<bool>("all").help("run the hardware-only metrics on an emulator too");
-        auto const parsed = options.parse(argc, argv);
+        auto const parsed = options.parse(invocation);
         if (parsed.is_err()) {
             gktl::reject("largepage.bench", options, parsed.unwrap_err());
             return 1;

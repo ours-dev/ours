@@ -325,3 +325,89 @@ the user chose with the full migration, 2026-11-14).
   storage, and what makes that safe?
 - Why is `filter=` reserved on non-death runs?
 - What does a bare `shuffle` mean, and through which builder rule?
+
+## The C shape stops at run_command (2026-11-14)
+
+**Files**
+
+- `kernel/lib/gktl/include/gktl/command.hpp` — new: `gktl::Invocation`, the value a handler is invoked with (the command's own word plus the words after it, as views over the line); the `Callback` type becomes `auto (*)(Invocation const &) -> int`.
+- `kernel/lib/gktl/src/command.cpp` — `run_command` builds the Invocation once from the console's count-and-pointers, which is now the only place that shape exists.
+- `kernel/lib/gktl/include/gktl/options.hpp` — `parse(Invocation const &)` joins the parse overloads; `parse_word` loses its out-parameter and answers `ustl::Option<Word>`, per the codebase's no-out-param convention; the `parse(argc, argv)` overload is gone.
+- the twelve handlers (`kernel/commands/*.cpp`, the three benches, `kernel/lib/ktest/src/runner.cpp`, `kernel/mm/pm_frame.cpp` — dump-frame ignores its words) — signatures take `gktl::Invocation const &`.
+- `kernel/lib/gktl/test/options_test.cpp` — the parse_word cases read the Option; the console-shape case drives `options.parse(Invocation{...})`, which is now the real boundary shape.
+
+**Symptom**
+
+Review finding on the round's own API, named by the user: every handler
+still received `int argc, char **argv` — the raw C shape the console hands
+over — and each one immediately converted it into the builder's parse. The
+C-ness the round removed from the parsing had survived in the signature
+every command author writes.
+
+**Cause**
+
+The callback type predates the builder: `auto (*)(int argc, char **argv) ->
+int` was registered the way Zircon's console registers its commands, and
+when the builder arrived it sat beside that signature instead of replacing
+it. The conversion it forced — twelve copies of the same
+`options.parse(argc, argv)` call, each one a small reminder that the type
+system had stopped at the console — was the C idiom wearing new clothes.
+
+**Change**
+
+The count-and-pointers shape is converted once, in `run_command`, into an
+`Invocation` whose views alias the line for exactly the lifetime the raw
+argv had; the callback hands the value on, and a handler's signature reads:
+
+```cpp
+auto crash_command(gktl::Invocation const &invocation) -> int;
+```
+
+The command's own word travels with the words (`invocation.command()`), so
+nothing a handler used argv[0] for is lost. Alongside, `parse_word` stopped
+taking an out-parameter: it answers `ustl::Option<Word>`, the shape the
+review round of 2026-11-13 set for the rest of ktest and the reason its
+`from_words` exists at all.
+
+**Reference**
+
+The review round's own finding — the environment walk's function-pointer-
+plus-void* became virtual stage methods for the same reason: the boundary
+where a C shape meets the object world belongs in one place, and nothing
+downstream of it should see the C. The console itself keeps its `char *`
+line buffer; that is the one side of the boundary C is honest about.
+
+**Verification**
+
+- `boot_check.py` dbg+rel+host green; host `options-test` 22/22, `ktest-test`
+  71/71.
+- On target: `lockup verb=spin cpu=1 ms=200` ok; `crash how=bogus` rejected
+  with the pinned BadChoice line and the generated usage (the machine did
+  not panic, which is the refusal working).
+
+**Deliberately not done**
+
+- Handing the handler an `Options` or a `Parsed` instead of an Invocation.
+  The declarations are the handler's own, built inside its body — the
+  framework cannot parse before the handler has declared what its words
+  are. The Invocation is the honest middle: the line, split, value-typed.
+- Replacing the `int` return with a Status. `run_command` discards it today;
+  changing the contract it ignores is a separate question about what a
+  command's failure means to the console, not a shape fix.
+
+**How it was found**
+
+The user's review of the round ("避免C Style").
+
+**The user's prediction**
+
+None (a shape review the user asked for; behavior pinned by the host suites
+and the console grammar, both unchanged).
+
+**Three questions you should be able to answer**
+
+- Why must the Invocation's views alias the line, and what would copying the
+  words cost?
+- Why can the framework not parse before the handler runs?
+- What makes run_command the right single place for the conversion, and
+  what would go wrong if a handler could still take argc/argv?

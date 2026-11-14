@@ -237,7 +237,7 @@ auto spin_command(gktl::Parsed const &values, gktl::Options const &options) -> i
     return spin(static_cast<CpuNum>(number.unwrap()), length);
 }
 
-auto lockup_command(int argc, char **argv) -> int {
+auto lockup_command(gktl::Invocation const &invocation) -> int {
     constexpr std::string_view VERBS[] = {"status", "nmi", "spin"};
     auto options = gktl::Options{"lockup"};
     options.add<std::string_view>("verb").required().choices(VERBS).help(
@@ -245,7 +245,7 @@ auto lockup_command(int argc, char **argv) -> int {
     options.add<std::string_view>("cpu").help("the CPU to spin, or all");
     options.add<u64>("ms").help("how long to spin, in milliseconds");
 
-    auto const parsed = options.parse(argc, argv);
+    auto const parsed = options.parse(invocation);
     if (parsed.is_err()) {
         gktl::reject("lockup", options, parsed.unwrap_err());
         return 1;

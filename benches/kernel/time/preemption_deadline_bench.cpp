@@ -199,11 +199,11 @@ namespace {
         return true;
     }
 
-    auto preemption_deadline_bench(int argc, char **argv) -> int {
+    auto preemption_deadline_bench(gktl::Invocation const &invocation) -> int {
         auto options = gktl::Options{"preemptdeadline.bench"};
         options.add<bool>("all").help("run the hardware-only metrics on an emulator too");
         options.add<bool>("csv").help("print the samples as CSV rows instead of lines");
-        auto const parsed = options.parse(argc, argv);
+        auto const parsed = options.parse(invocation);
         if (parsed.is_err()) {
             gktl::reject("preemptdeadline.bench", options, parsed.unwrap_err());
             return 1;
