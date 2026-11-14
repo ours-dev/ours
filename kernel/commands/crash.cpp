@@ -1,13 +1,13 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `crash <how>`: take the machine down on purpose, so that the panic path can
-// be tested the way it is used.
+// `crash how=<panic|panic-locked|panic-smp>`: take the machine down on
+// purpose, so that the panic path can be tested the way it is used.
 //
-//   crash panic          call ours::panic() with a fixed message
-//   crash panic-locked   the same, holding the serial logger's lock, as a
-//                        CPU that panics inside a log write does
-//   crash panic-smp      every online CPU panics at the same moment
+//   crash how=panic          call ours::panic() with a fixed message
+//   crash how=panic-locked   the same, holding the serial logger's lock, as a
+//                            CPU that panics inside a log write does
+//   crash how=panic-smp      every online CPU panics at the same moment
 //
 // The panic path cannot be exercised any other way: nothing panics in a
 // healthy boot, and what it prints, and in what order, is the whole of what
@@ -23,10 +23,16 @@
 
 #include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
+#include <gktl/report.hpp>
 #include <logz4/log.hpp>
 
 namespace {
-/// What `crash panic` panics with. Fixed, so that a check reading the serial
+/// The take-downs `crash how=` names, the static table the choices check
+/// reads -- a brace list here would die with the statement that built it.
+constexpr std::string_view HOW_CHOICES[] = {"panic", "panic-locked", "panic-smp"};
+
+/// What `crash how=panic` panics with. Fixed, so that a check reading the serial
 /// log knows which line to look for.
 constexpr auto PANIC_MESSAGE = std::string_view("crash: deliberate panic from the kernel shell");
 
@@ -58,11 +64,18 @@ auto panic_together(void *context) -> void {
 }
 
 auto crash_command(int argc, char **argv) -> int {
-    if (argc != 2) {
-        log::warn("usage: crash panic|panic-locked|panic-smp");
+    auto options = gktl::Options{"crash"};
+    options.add<std::string_view>("how")
+        .required()
+        .choices(HOW_CHOICES)
+        .help("what to take down: panic, panic-locked or panic-smp");
+
+    auto const parsed = options.parse(argc, argv);
+    if (parsed.is_err()) {
+        gktl::reject("crash", options, parsed.unwrap_err());
         return 1;
     }
-    auto const how = std::string_view(argv[1]);
+    auto const how = parsed.unwrap().get<std::string_view>("how");
     if (how == "panic") {
         ours::panic(PANIC_MESSAGE);
     }
@@ -85,10 +98,10 @@ auto crash_command(int argc, char **argv) -> int {
         ours::IpiService::sync_exec(ours::Cpu::online_mask(), panic_together, &rendezvous);
         ours::unreachable();
     }
-    log::warn("usage: crash panic|panic-locked|panic-smp");
-    return 1;
+    ours::unreachable();
 }
 } // namespace
 
 GKTL_COMMAND(Crash, "crash", crash_command,
-             "crash panic|panic-locked|panic-smp: panic on purpose, to test the panic path")
+             "crash how=<panic|panic-locked|panic-smp>: panic on purpose, to test the panic "
+             "path")

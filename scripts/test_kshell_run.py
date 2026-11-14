@@ -34,30 +34,30 @@ def error(text: str) -> str:
 
 class Classify(unittest.TestCase):
     def test_ktest_commands(self):
-        for command in ("ktest", "ktest all", "ktest list", "ktest ?",
-                        "ktest Ktest.*", "ktest Sched.*:-Sched.Slow"):
+        for command in ("ktest", "ktest sel=all", "ktest sel=list", "ktest sel=?",
+                        "ktest sel=Ktest.*", "ktest sel=Sched.*:-Sched.Slow"):
             self.assertTrue(kshell_run.is_ktest(command), command)
         for command in ("lockup status", "samplerclaim.test", "ktestx", ""):
             self.assertFalse(kshell_run.is_ktest(command), command)
 
     def test_list_and_run_forms(self):
-        for command in ("ktest list", "ktest ?"):
+        for command in ("ktest sel=list", "ktest sel=?"):
             self.assertTrue(kshell_run.ktest_lists(command))
             self.assertFalse(kshell_run.ktest_runs_all(command))
-        self.assertFalse(kshell_run.ktest_lists("ktest all"))
-        for command in ("ktest", "ktest all", "ktest all rounds=256"):
+        self.assertFalse(kshell_run.ktest_lists("ktest sel=all"))
+        for command in ("ktest", "ktest sel=all", "ktest sel=all rounds=256"):
             self.assertTrue(kshell_run.ktest_runs_all(command))
-        for command in ("ktest Ktest.*", "ktest Ktest.* rounds=256"):
+        for command in ("ktest sel=Ktest.*", "ktest sel=Ktest.* rounds=256"):
             self.assertFalse(kshell_run.ktest_runs_all(command))
 
     def test_count_varies_for_repeat_and_shard(self):
-        for command in ("ktest all repeat=2", "ktest all repeat", "ktest all shard=1/2",
-                        "ktest all shard", "ktest all shuffle repeat=2",
-                        "ktest all shuffle=5 shard=0/3"):
+        for command in ("ktest sel=all repeat=2", "ktest sel=all repeat", "ktest sel=all shard=1/2",
+                        "ktest sel=all shard", "ktest sel=all shuffle repeat=2",
+                        "ktest sel=all shuffle=5 shard=0/3"):
             self.assertTrue(kshell_run.ktest_count_varies(command), command)
-        for command in ("ktest", "ktest all", "ktest list", "ktest all shuffle",
-                        "ktest all shuffle=305419896", "ktest all rounds=256",
-                        "ktest Ktest.* repeat=2"):
+        for command in ("ktest", "ktest sel=all", "ktest sel=list", "ktest sel=all shuffle",
+                        "ktest sel=all shuffle=305419896", "ktest sel=all rounds=256",
+                        "ktest sel=Ktest.* repeat=2"):
             self.assertFalse(kshell_run.ktest_count_varies(command), command)
 
 
@@ -166,7 +166,7 @@ DEATH_NAME = "KtestDeath.PanicsOnDemand"
 
 
 def death_command() -> str:
-    return f"ktest death {DEATH_NAME}"
+    return f"ktest sel=death filter={DEATH_NAME}"
 
 
 def replay() -> str:
@@ -179,15 +179,17 @@ def replay() -> str:
 
 class DeathClassify(unittest.TestCase):
     def test_death_selection_forms(self):
-        for command in ("ktest death", f"ktest death {DEATH_NAME}", "ktest death KtestDeath.*"):
+        for command in ("ktest sel=death", f"ktest sel=death filter={DEATH_NAME}",
+                        "ktest sel=death filter=KtestDeath.*"):
             self.assertTrue(kshell_run.ktest_deaths(command), command)
-        for command in ("ktest", "ktest all", "ktest list", "ktest Ktest.*", "ktest Death.*"):
+        for command in ("ktest", "ktest sel=all", "ktest sel=list", "ktest sel=Ktest.*",
+                        "ktest sel=Death.*"):
             self.assertFalse(kshell_run.ktest_deaths(command), command)
 
     def test_death_ends_the_machine(self):
-        for command in ("ktest death", f"ktest death {DEATH_NAME}"):
+        for command in ("ktest sel=death", f"ktest sel=death filter={DEATH_NAME}"):
             self.assertTrue(kshell_run.ends_machine(command), command)
-        for command in ("ktest list", "ktest all", "ktest Ktest.*"):
+        for command in ("ktest sel=list", "ktest sel=all", "ktest sel=Ktest.*"):
             self.assertFalse(kshell_run.ends_machine(command), command)
 
 

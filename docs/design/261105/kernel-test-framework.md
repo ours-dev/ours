@@ -134,7 +134,10 @@ Values are printed with `std::format` into a fixed 64-byte stack buffer, truncat
 
 `ktest` is one `GKTL_COMMAND` (`kernel/lib/gktl/include/gktl/command.hpp:21-27`) in the kernel-facing library. The kshell front end splits a COM1 line into at most 16 whitespace-separated arguments and calls `gktl::run_command` (`kernel/lib/kshell/kshell/shell.cpp:44-105`); there is no quoting, so a filter must be one token.
 
-Command grammar:
+Command grammar (superseded 2026-11-14: the whole tree's commands now speak
+one declared-options grammar, and the selection is `sel=`; see
+`docs/changes/261114/gktl-options.md` for the new word forms and the pinned
+error lines):
 
 ```text
 ktest                    run every registered test

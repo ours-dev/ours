@@ -5,13 +5,13 @@
 // take (task::StealPolicy), and how often each CPU has looked and
 // taken, and how long its looks took, whichever CPU made them.
 //
-//   steal.policy                 each knob with its value, default and range,
-//                                then each online CPU's looks, takes and the time
-//                                it spent in steal_work_from()
-//   steal.policy <name> <value>  sets a knob; a name that is none, or a value
-//                                out of the knob's range, changes nothing and is
-//                                logged as an error, so that a script that sweeps
-//                                a knob sees the refusal
+//   steal.policy                    each knob with its value, default and range,
+//                                   then each online CPU's looks, takes and the time
+//                                   it spent in steal_work_from()
+//   steal.policy name=<n> value=<v> sets a knob; a name that is none, or a value
+//                                   out of the knob's range, changes nothing and is
+//                                   logged as an error, so that a script that sweeps
+//                                   a knob sees the refusal
 //
 // A setting takes effect at the next look of any CPU; nothing has to stop. A CPU
 // that is halted looks when something wakes it, and a change of a setting does
@@ -27,32 +27,15 @@
 #include <string_view>
 
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
+#include <gktl/report.hpp>
 #include <logz4/log.hpp>
-#include <ustl/option.hpp>
 
 namespace ours {
 namespace {
     using sched_domain::Knob;
     using task::Scheduler;
     using task::StealPolicy;
-
-    /// The most digits a value is given in: no knob takes more than 1024.
-    constexpr usize MAX_DIGITS = 6;
-
-    /// |text| as a decimal number, or none.
-    auto parse_value(std::string_view const text) -> ustl::Option<usize> {
-        if (text.empty() || text.size() > MAX_DIGITS) {
-            return ustl::NONE;
-        }
-        usize value = 0;
-        for (auto const c: text) {
-            if (c < '0' || c > '9') {
-                return ustl::NONE;
-            }
-            value = value * 10 + static_cast<usize>(c - '0');
-        }
-        return ustl::Option<usize>(value);
-    }
 
     auto show() -> int {
         for (usize i = 0; i < sched_domain::NUM_KNOBS; ++i) {
@@ -73,23 +56,35 @@ namespace {
     }
 
     auto steal_policy_command(int argc, char **argv) -> int {
-        if (argc == 1) {
-            return show();
-        }
-        if (argc != 3) {
-            log::error("usage: steal.policy | steal.policy <name> <value>");
+        auto options = gktl::Options{"steal.policy"};
+        options.add<std::string_view>("name").help("the knob to set, as steal.policy lists them");
+        options.add<u64>("value").help("the value to set the knob to");
+        auto const parsed = options.parse(argc, argv);
+        if (parsed.is_err()) {
+            gktl::reject("steal.policy", options, parsed.unwrap_err());
             return 1;
         }
+        auto const values = parsed.unwrap();
+        if (!values.has("name")) {
+            return show();
+        }
+        // The knob named but nothing to set it to: the pair is one request.
+        if (!values.has("value")) {
+            log::error("steal.policy: name needs value=<number>");
+            gktl::print_usage("steal.policy", options.descriptors());
+            return 1;
+        }
+        auto const name = values.get<std::string_view>("name");
         Knob knob = Knob::Enabled;
-        if (!sched_domain::find_knob(argv[1], knob)) {
-            log::error("steal.policy: {} is not a knob; run steal.policy to list them", argv[1]);
+        if (!sched_domain::find_knob(name, knob)) {
+            log::error("steal.policy: {} is not a knob; run steal.policy to list them", name);
             return 1;
         }
         auto const info = sched_domain::knob_info(knob);
-        auto const value = parse_value(argv[2]);
-        if (value.is_none() || !StealPolicy::set(knob, value.value())) {
+        auto const value = values.get<usize>("value");
+        if (!StealPolicy::set(knob, value)) {
             log::error("steal.policy: {} takes a number from {} to {}, not {}", info.name,
-                       info.lowest, info.highest, argv[2]);
+                       info.lowest, info.highest, value);
             return 1;
         }
         log::info("steal.policy: {} = {}", info.name, StealPolicy::get(knob));
@@ -99,4 +94,4 @@ namespace {
 } // namespace ours
 
 GKTL_COMMAND(StealPolicy, "steal.policy", ours::steal_policy_command,
-             "steal.policy [<name> <value>]: show the work-stealing knobs, or set one");
+             "steal.policy [name=<knob> value=<N>]: show the work-stealing knobs, or set one");

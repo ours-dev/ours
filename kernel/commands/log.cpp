@@ -9,6 +9,8 @@
 #include <string_view>
 
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
+#include <gktl/report.hpp>
 #include <logz4/domain.hpp>
 #include <logz4/filter.hpp>
 #include <logz4/level.hpp>
@@ -41,29 +43,24 @@ auto reply(std::format_string<Args const &...> fmt, Args const &...args) -> void
 /// level name because it is not a level: the domain stops having one.
 constexpr std::string_view FOLLOW_GLOBAL = "default";
 
-auto find_domain(char const *name) -> logz4::Domain * {
+/// The verbs `log verb=` names, the static table the choices check reads.
+constexpr std::string_view VERBS[] = {"dump", "domains", "level"};
+
+auto find_domain(std::string_view const name) -> logz4::Domain * {
     auto *const domain = logz4::Domain::find(name);
     if (domain == nullptr) {
-        reply("log: no domain '{}' (see `log domains`)", name);
+        reply("log: no domain '{}' (see `log verb=domains`)", name);
     }
     return domain;
 }
 
-auto parse_level(char const *name, logz4::Level &level) -> bool {
-    if (!logz4::parse_level(name, level)) {
-        reply("log: unknown level '{}'", name);
-        return false;
-    }
-    return true;
-}
-
-/// `log dump [<domain>]`
-auto dump(int argc, char **argv) -> int {
-    if (argc == 2) {
+/// `log verb=dump [domain=<d>]`
+auto dump(gktl::Parsed const &values) -> int {
+    if (!values.has("domain")) {
         logz4::dump_recent();
         return 0;
     }
-    auto const *const domain = find_domain(argv[2]);
+    auto *const domain = find_domain(values.get<std::string_view>("domain"));
     if (domain == nullptr) {
         return 1;
     }
@@ -85,29 +82,35 @@ auto list_domains() -> int {
     return 0;
 }
 
-/// `log level <level>` moves the global floor; `log level <domain> <level>`
-/// gives one domain its own, and `log level <domain> default` takes it away.
-/// The argument count tells the two apart, so a domain that happens to be
-/// called "warn" is still reachable.
-auto set_level(int argc, char **argv) -> int {
-    auto level = logz4::Level::Info;
-    if (argc == 3) {
-        if (!parse_level(argv[2], level)) {
+/// `log verb=level level=<l>` moves the global floor; `log verb=level
+/// domain=<d> level=<l|default>` gives one domain its own floor, or takes it
+/// away. Which of the two runs is the domain word's presence, so a domain
+/// that happens to be called "warn" is still reachable -- the rule the
+/// argument count used to settle, now settled by which options the line
+/// carried.
+auto set_level(gktl::Parsed const &values) -> int {
+    auto const word = values.get<std::string_view>("level");
+    if (!values.has("domain")) {
+        auto level = logz4::Level::Info;
+        if (!logz4::parse_level(word, level)) {
+            reply("log: unknown level '{}'", word);
             return 1;
         }
         logz4::set_min_level(level);
         return 0;
     }
 
-    auto *const domain = find_domain(argv[2]);
+    auto *const domain = find_domain(values.get<std::string_view>("domain"));
     if (domain == nullptr) {
         return 1;
     }
-    if (argv[3] == FOLLOW_GLOBAL) {
+    if (word == FOLLOW_GLOBAL) {
         domain->clear_min_level();
         return 0;
     }
-    if (!parse_level(argv[3], level)) {
+    auto level = logz4::Level::Info;
+    if (!logz4::parse_level(word, level)) {
+        reply("log: unknown level '{}'", word);
         return 1;
     }
     domain->set_min_level(level);
@@ -115,28 +118,43 @@ auto set_level(int argc, char **argv) -> int {
 }
 
 auto log_command(int argc, char **argv) -> int {
+    auto options = gktl::Options{"log"};
+    options.add<std::string_view>("verb").choices(VERBS).help(
+        "dump the record ring, domains lists them, level moves a floor");
+    options.add<std::string_view>("domain").help("the domain the verb works on");
+    options.add<std::string_view>("level").help(
+        "the floor to set, or default to follow the global");
+    auto const parsed = options.parse(argc, argv);
+    if (parsed.is_err()) {
+        gktl::reject("log", options, parsed.unwrap_err());
+        return 1;
+    }
+    auto const values = parsed.unwrap();
+
     // Bare `log` keeps meaning "dump everything": it is what panic triage
     // and the older notes in docs/ type.
-    if (argc == 1) {
+    if (!values.has("verb")) {
         logz4::dump_recent();
         return 0;
     }
-
-    auto const verb = std::string_view(argv[1]);
-    if (verb == "dump" && argc <= 3) {
-        return dump(argc, argv);
+    auto const verb = values.get<std::string_view>("verb");
+    if (verb == "dump" && !values.has("level")) {
+        return dump(values);
     }
-    if (verb == "domains" && argc == 2) {
+    if (verb == "domains" && !values.has("domain") && !values.has("level")) {
         return list_domains();
     }
-    if (verb == "level" && (argc == 3 || argc == 4)) {
-        return set_level(argc, argv);
+    if (verb == "level" && values.has("level")) {
+        return set_level(values);
     }
-    reply("usage: log [dump [<domain>] | domains | level [<domain>] <level>|default]");
+    // The line was accepted but the words do not compose into one of the
+    // verb's shapes; the usage lines say which words each one takes.
+    reply("usage: log [dump [domain=<d>] | verb=domains | verb=level [domain=<d>] "
+          "level=<level|default>]");
     return 1;
 }
 } // namespace
 
 GKTL_COMMAND(LogDump, "log", log_command,
-             "log [dump [<domain>] | domains | level [<domain>] <level>|default]: "
-             "dump the record ring, list domains, or set the global or a domain's floor")
+             "log [verb=<dump|domains|level>] [domain=<d>] [level=<level|default>]: dump the "
+             "record ring, list domains, or set the global or a domain's floor")

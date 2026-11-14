@@ -277,34 +277,70 @@ namespace {
         return 1;
     }
 
-    /// Logs the one console line a plan rejection maps to, quoting the word
-    /// that broke its rule where the line does. The texts are the host's
+    /// Logs the one console line a rejection maps to, quoting the word that
+    /// broke its rule where the line does. The texts are the host's
     /// contract: kshell_run.py judges a run by its error lines, and the
-    /// change record pins them.
-    auto report_plan_rejection(PlanRejection const &rejection, usize const word_count) -> void {
+    /// change record pins them. The builder's BadValue is the runner's own
+    /// three option faults, named by the option the word carried.
+    auto report_rejection(gktl::Rejection const &rejection) -> void {
         switch (rejection.fault) {
-            case PlanFault::TooManyWords:
-                log::error("ktest: ERROR at most {} options, got {}", MAX_RUN_OPTIONS, word_count);
+            case gktl::OptionFault::UnknownOption:
+            case gktl::OptionFault::BadChoice:
+            case gktl::OptionFault::MissingRequired:
+                // Unreachable: the words the declarations did not claim are
+                // the tests', nothing is required, and no option takes
+                // choices. They stand in the switch so a fault the builder
+                // grows cannot pass silently.
+                log::error("ktest: ERROR usage: ktest sel=<all|list|?|death|<filter>> "
+                           "[filter=<glob>] [name=value ...]");
                 return;
-            case PlanFault::MalformedWord:
-                log::error(
-                    "ktest: ERROR usage: ktest [all|list|?|death|<filter>] [name=value ...]");
+            case gktl::OptionFault::TooManyWords:
+            case gktl::OptionFault::MalformedWord:
+                log::error("ktest: ERROR usage: ktest sel=<all|list|?|death|<filter>> "
+                           "[filter=<glob>] [name=value ...]");
                 return;
-            case PlanFault::RunnerWordOnSelection:
-                log::error("ktest: ERROR shuffle, repeat and shard need \"ktest all\"");
-                return;
-            case PlanFault::BadSeed:
-                log::error("ktest: ERROR shuffle seed is not a number: \"{}\"", rejection.word);
-                return;
-            case PlanFault::BadRepeat:
-                log::error("ktest: ERROR repeat is not a count of at least 1: \"{}\"",
-                           rejection.word);
-                return;
-            case PlanFault::BadShard:
-                log::error("ktest: ERROR shard is not M/N with 0 <= M < N: \"{}\"", rejection.word);
-                return;
+            case gktl::OptionFault::BadValue:
+                break;
+        }
+        if (rejection.name == "shuffle") {
+            log::error("ktest: ERROR shuffle seed is not a number: \"{}\"", rejection.word);
+        } else if (rejection.name == "repeat") {
+            log::error("ktest: ERROR repeat is not a count of at least 1: \"{}\"", rejection.word);
+        } else if (rejection.name == "shard") {
+            log::error("ktest: ERROR shard is not M/N with 0 <= M < N: \"{}\"", rejection.word);
+        } else {
+            log::error("ktest: ERROR usage: ktest sel=<all|list|?|death|<filter>> "
+                       "[filter=<glob>] [name=value ...]");
         }
     }
+
+    /// The ktest command's declared options and the parse they answer.
+    /// Namespace-scope rather than frame-resident because the whole test run
+    /// happens inside this command's frame -- every test body nests below it
+    /// on the same 16 KiB kernel stack -- and that stack should not carry
+    /// what only one console command can use. The one-run-at-a-time guard
+    /// (RUNNING) makes the storage exclusive, as it already does for the
+    /// shuffle order.
+    struct RunOptions {
+        gktl::Options options{"ktest"};
+        ustl::Result<gktl::Parsed, gktl::Rejection> planned{ustl::ok(gktl::Parsed{})};
+
+        RunOptions() {
+            options.add<std::string_view>("sel").help(
+                "all, list, ?, death, or a filter glob naming the tests to run");
+            options.add<std::string_view>("filter").help("the filter of a sel=death run");
+            options.add<u64>("shuffle")
+                .defaults_to(DEFAULT_SHUFFLE_SEED)
+                .parse(&parse_seed)
+                .help("run the selection in a shuffled order, with this seed");
+            options.add<u64>("repeat").help("run the selection this many times");
+            options.add<std::string_view>("shard").help("run only shard M of N, as shard=M/N");
+            // Every word the declarations did not claim belongs to the tests.
+            options.pass_through();
+        }
+    };
+
+    RunOptions RUN_OPTIONS;
 
     auto ktest_command(int const argc, char **const argv) -> int {
         if (RUNNING) {
@@ -314,15 +350,95 @@ namespace {
         RunnerScope const scope;
         ACTIVE_PLAN = RunPlan{};
 
-        // The death selection is its own command shape: one optional filter,
-        // no options, none of the live run's plan. It reads its own section,
-        // so a kernel without live tests still runs its death tests.
-        if (argc >= 2 && std::string_view{argv[1]} == "death") {
-            if (argc > 3) {
-                log::error("ktest: ERROR usage: ktest death [filter]");
+        auto options = gktl::Options{"ktest"};
+        options.add<std::string_view>("sel").help(
+            "all, list, ?, death, or a filter glob naming the tests to run");
+        options.add<std::string_view>("filter").help("the filter of a sel=death run");
+        options.add<u64>("shuffle")
+            .defaults_to(DEFAULT_SHUFFLE_SEED)
+            .parse(&parse_seed)
+            .help("run the selection in a shuffled order, with this seed");
+        options.add<u64>("repeat").help("run the selection this many times");
+        options.add<std::string_view>("shard").help("run only shard M of N, as shard=M/N");
+        // Every word the declarations did not claim belongs to the tests.
+        options.pass_through();
+
+        // The console bounds a command line at 16 words including the
+        // command and the selection, so the words a run takes fit the fixed
+        // array the plan records them into; a longer list is refused here,
+        // with the count the line actually carried.
+        auto const word_count = argc > 2 ? static_cast<usize>(argc - 2) : usize{0};
+        if (word_count > MAX_RUN_OPTIONS) {
+            log::error("ktest: ERROR at most {} options, got {}", MAX_RUN_OPTIONS, word_count);
+            return 1;
+        }
+
+        RUN_OPTIONS.planned = RUN_OPTIONS.options.parse(argc, argv);
+        if (RUN_OPTIONS.planned.is_err()) {
+            report_rejection(RUN_OPTIONS.planned.unwrap_err());
+            return 1;
+        }
+        auto const &values = RUN_OPTIONS.planned.unwrap();
+
+        // Which selection the line named. A bare `ktest` is still sel=all:
+        // it is what triage types, and what the older notes in docs/ record.
+        auto const selection =
+            values.has("sel") ? values.get<std::string_view>("sel") : std::string_view{"all"};
+        auto const all_selected = selection == "all";
+
+        // The runner's own options belong to the all-selection alone: a run
+        // that asked for a part of the registry asked for it as it stands.
+        auto const runner_word =
+            values.has("shuffle") || values.has("repeat") || values.has("shard");
+        if (runner_word && !all_selected) {
+            log::error("ktest: ERROR shuffle, repeat and shard need \"ktest sel=all\"");
+            return 1;
+        }
+
+        // The list selections print the registry and take no other word.
+        if (selection == "list" || selection == "?") {
+            if (word_count != 0) {
+                log::error("ktest: ERROR ktest sel=list takes no options");
                 return 1;
             }
-            return run_death_tests(argc > 2 ? std::string_view{argv[2]} : std::string_view{});
+            auto const *const begin = hsien::section_begin();
+            auto const *const end = hsien::section_end();
+            if (begin == end) {
+                log::error("ktest: ERROR no tests are linked into this kernel");
+                return 1;
+            }
+            if (reject_duplicates(begin, end)) {
+                return 1;
+            }
+            if (reject_duplicates(ktest_death_start, ktest_death_end)) {
+                return 1;
+            }
+            list_tests(begin, end);
+            list_death_tests(ktest_death_start, ktest_death_end);
+            return 0;
+        }
+
+        // The death selection is its own command shape: one boot per test,
+        // the filter word its own, and nothing of the live run's plan. It
+        // reads its own section, so a kernel without live tests still runs
+        // its death tests.
+        if (selection == "death") {
+            auto const carries_filter = values.has("filter");
+            if (word_count != (carries_filter ? 1 : 0) || runner_word) {
+                log::error("ktest: ERROR usage: ktest sel=death [filter=<glob>]");
+                return 1;
+            }
+            auto const *const begin = hsien::section_begin();
+            auto const *const end = hsien::section_end();
+            if (begin == end) {
+                log::error("ktest: ERROR no tests are linked into this kernel");
+                return 1;
+            }
+            if (reject_duplicates(begin, end)) {
+                return 1;
+            }
+            return run_death_tests(carries_filter ? values.get<std::string_view>("filter")
+                                                  : std::string_view{});
         }
 
         auto const *const begin = hsien::section_begin();
@@ -335,61 +451,42 @@ namespace {
             return 1;
         }
 
-        auto list_only = false;
-        auto const *filter = "";
-        // The runner's own options are only valid with `all`, which a bare
-        // `ktest` also is.
-        auto const all_selected = argc < 2 || std::string_view{argv[1]} == "all";
-        if (argc >= 2) {
-            auto const *const argument = argv[1];
-            if (std::string_view{argument} == "list" || std::string_view{argument} == "?") {
-                list_only = true;
-            } else if (std::string_view{argument} != "all") {
-                filter = argument;
-            }
+        // The plan: the runner's own words set its fields, and every word
+        // the tests own is recorded for them, in the order given. A bare
+        // number that means a count -- repeat -- is checked here, where its
+        // word is at hand, rather than in the builder, whose shapes are the
+        // console's, not the run's.
+        auto built = RunPlan{};
+        built.shuffle = values.has("shuffle");
+        if (built.shuffle) {
+            built.seed = values.get<u64>("shuffle");
         }
-        if (list_only && argc > 2) {
-            log::error("ktest: ERROR ktest list takes no options");
-            return 1;
-        }
-
-        // The run's own words, after the selection. The console bounds a
-        // command line at 16 words including the command and the selection,
-        // so the words a run takes fit the fixed array the plan is built
-        // from; a longer list is refused before the plan sees it, with the
-        // count the command actually carried.
-        std::string_view words[MAX_RUN_OPTIONS];
-        auto word_count = usize{0};
-        if (argc > 2) {
-            word_count = static_cast<usize>(argc - 2);
-        }
-        if (word_count > MAX_RUN_OPTIONS) {
-            log::error("ktest: ERROR at most {} options, got {}", MAX_RUN_OPTIONS, word_count);
-            return 1;
-        }
-        for (auto i = usize{0}; i < word_count; ++i) {
-            words[i] = argv[2 + i];
-        }
-
-        // The plan: the runner's own words set its fields, and every word is
-        // recorded for the tests, whatever kind it was. A rejected word ends
-        // the command at its error line, before anything ran. The span is
-        // the words the command carried, not the array's extent: the empty
-        // slots past them are not words.
-        auto planned = RunPlan::from_words(std::span{words, word_count}, all_selected);
-        if (planned.is_err()) {
-            report_plan_rejection(planned.unwrap_err(), word_count);
-            return 1;
-        }
-        ACTIVE_PLAN = planned.unwrap();
-        if (list_only) {
-            if (reject_duplicates(ktest_death_start, ktest_death_end)) {
+        if (values.has("repeat")) {
+            auto const passes = values.get<u64>("repeat");
+            if (passes == 0) {
+                log::error("ktest: ERROR repeat is not a count of at least 1: \"0\"");
                 return 1;
             }
-            list_tests(begin, end);
-            list_death_tests(ktest_death_start, ktest_death_end);
-            return 0;
+            built.repeat = static_cast<usize>(passes);
         }
+        if (values.has("shard")) {
+            auto const word = values.get<std::string_view>("shard");
+            auto const shard = Shard::parse(word);
+            if (shard.is_err()) {
+                log::error("ktest: ERROR shard is not M/N with 0 <= M < N: \"{}\"", word);
+                return 1;
+            }
+            built.shard = shard.unwrap();
+        }
+        for (auto const &word: values.passthrough()) {
+            built.options[built.option_count] = Option{.name = word.name, .value = word.value};
+            built.option_count += 1;
+        }
+        ACTIVE_PLAN = built;
+
+        // The filter a run selects with is the sel word itself when it names
+        // no reserved selection: ktest sel=Ktest.* runs what matches.
+        auto const filter = all_selected ? std::string_view{} : selection;
 
         auto const &plan = ACTIVE_PLAN;
         for (auto i = usize{0}; i < plan.option_count; ++i) {
