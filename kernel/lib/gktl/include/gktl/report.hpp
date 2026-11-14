@@ -77,6 +77,15 @@ inline auto print_usage(std::string_view const cmd,
     }
 }
 
+/// What a handler does with a rejection: the pinned error line and the
+/// generated usage, in that order. The command name is repeated because the
+/// handler has both at hand and the pair travels together everywhere.
+inline auto reject(std::string_view const cmd, Options const &options, Rejection const &rejection)
+    -> void {
+    report_rejection(cmd, rejection);
+    print_usage(cmd, options.descriptors());
+}
+
 } // namespace gktl
 
 #endif // #ifndef GKTL_REPORT_HPP
