@@ -80,14 +80,14 @@ class NamedEnvironment: public ktest::Environment {
     NamedEnvironment(char const *const name = "", bool const setup_succeeds = true)
         : setup_ok(setup_succeeds), m_name(name) {}
 
-    void SetUp() override {
+    void SetUp() {
         LOG.push_back(std::string{m_name} + ".SetUp");
         if (!setup_ok) {
             KTEST_RECORD_MESSAGE("the environment could not come up");
         }
     }
 
-    void TearDown() override {
+    void TearDown() {
         LOG.push_back(std::string{m_name} + ".TearDown");
     }
 
@@ -113,16 +113,16 @@ class FailingTearDownEnvironment: public ktest::Environment {
 
 /// The order case's fixture: SetUp writes the member the body reads, and
 /// both ends of the lifecycle leave a mark.
-class LifecycleFixture: public ktest::Fixture {
+class LifecycleFixture: public ktest::Fixture<LifecycleFixture> {
   public:
     usize value{};
 
-    void SetUp() override {
+    void SetUp() {
         LOG.push_back("setup");
         value = 42;
     }
 
-    void TearDown() override {
+    void TearDown() {
         LOG.push_back("teardown");
     }
 };
@@ -160,14 +160,14 @@ KTEST_F(LifecycleFixture, GetsAFreshFixture) {
 
 /// A fixture whose SetUp cannot build its state, and one whose SetUp
 /// declares the machine unable to exercise the test at all.
-class SetupFailsFixture: public ktest::Fixture {
+class SetupFailsFixture: public ktest::Fixture<SetupFailsFixture> {
   public:
-    void SetUp() override {
+    void SetUp() {
         LOG.push_back("setup");
         KTEST_RECORD_MESSAGE("the setup could not build its state");
     }
 
-    void TearDown() override {
+    void TearDown() {
         LOG.push_back("teardown");
     }
 };
@@ -179,14 +179,14 @@ KTEST_F(SetupFailsFixture, BodyIsLeftOut) {
     SETUP_FAILS_BODY_RAN = true;
 }
 
-class SetupSkipsFixture: public ktest::Fixture {
+class SetupSkipsFixture: public ktest::Fixture<SetupSkipsFixture> {
   public:
-    void SetUp() override {
+    void SetUp() {
         LOG.push_back("setup");
         KTEST_SKIP("this machine cannot exercise it");
     }
 
-    void TearDown() override {
+    void TearDown() {
         LOG.push_back("teardown");
     }
 };
@@ -200,9 +200,9 @@ KTEST_F(SetupSkipsFixture, BodyIsLeftOut) {
 
 /// A fixture whose TearDown fails after a passing body: the verdict the
 /// runner builds must say FAILED all the same.
-class TearDownFailsFixture: public ktest::Fixture {
+class TearDownFailsFixture: public ktest::Fixture<TearDownFailsFixture> {
   public:
-    void TearDown() override {
+    void TearDown() {
         LOG.push_back("teardown");
         KTEST_RECORD_MESSAGE("the teardown could not undo the setup");
     }
@@ -214,9 +214,9 @@ KTEST_F(TearDownFailsFixture, BodyPasses) {
 
 /// A fixture that overrides only SetUp: the base TearDown is the no-op it
 /// defaults to, which is what a fixture with nothing to undo gets.
-class SetUpOnlyFixture: public ktest::Fixture {
+class SetUpOnlyFixture: public ktest::Fixture<SetUpOnlyFixture> {
   public:
-    void SetUp() override {
+    void SetUp() {
         LOG.push_back("setup");
     }
 };
@@ -227,9 +227,9 @@ KTEST_F(SetUpOnlyFixture, DefaultTearDownIsSilent) {
 
 /// A fixture whose body and TearDown both fail: the context counts both,
 /// which is what puts "2 of" in the runner's FAILED line.
-class TwoFailuresFixture: public ktest::Fixture {
+class TwoFailuresFixture: public ktest::Fixture<TwoFailuresFixture> {
   public:
-    void TearDown() override {
+    void TearDown() {
         KTEST_RECORD_MESSAGE("the teardown failed too");
     }
 };
@@ -242,13 +242,13 @@ KTEST_F(TwoFailuresFixture, BodyAndTearDownFail) {
 
 usize HOOKED_SUITE_SETUPS = 0;
 
-class HookedFixture: public ktest::Fixture {
+class HookedFixture: public ktest::Fixture<HookedFixture> {
   public:
-    void SetUp() override {
+    void SetUp() {
         LOG.push_back("fixture-setup");
     }
 
-    void TearDown() override {
+    void TearDown() {
         LOG.push_back("fixture-teardown");
     }
 };
@@ -276,9 +276,8 @@ TEST(KtestFixtureMacro, ExpansionShape) {
     // The expansion's pieces, checked the only way a host can: by name.
     static_assert(std::is_base_of_v<LifecycleFixture, LifecycleFixture_Orderly_Test>,
                   "the macro derives the test's class from the fixture");
-    static_assert(sizeof(ktest_fixture_storage_LifecycleFixture_Orderly) >=
-                      sizeof(LifecycleFixture_Orderly_Test),
-                  "the macro reserves storage that fits the test's object");
+    static_assert(std::is_base_of_v<ktest::Fixture<LifecycleFixture>, LifecycleFixture>,
+                  "the fixture class roots itself in its own Fixture base");
     auto const &record = ktest_record_LifecycleFixture_Orderly;
     EXPECT_STREQ(record.name, "LifecycleFixture.Orderly");
     EXPECT_NE(record.invoke, nullptr);

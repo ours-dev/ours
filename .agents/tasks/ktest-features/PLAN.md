@@ -1,7 +1,7 @@
 # ktest-features: the design's excluded features, now wanted
 
 **Date**: 2026-11-07
-**Status**: Proposed
+**Status**: Done
 
 ## Request
 

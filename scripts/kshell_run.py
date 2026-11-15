@@ -14,7 +14,7 @@ The kernel shell (//kernel/lib/kshell) reads COM1 and runs registered console
 commands, the *.test commands of //kernel/commands among them. Nothing runs
 them at boot, which is what this is for. The commands are typed once the boot
 is over -- the user shell's closing "--- end ---" line -- one at a time, or
---delay seconds after it, for a command such as `lockup status` whose answer
+--delay seconds after it, for a command such as `lockup verb=status` whose answer
 means more the longer the machine has run. A
 command is done when the kernel
 shell prints its "kshell> " prompt again. The prompt ends no line, so the
@@ -34,29 +34,29 @@ Environment variables such as SMP=1 pass straight through to
 scripts/qemu_boot.py, as they do for the ours-verify skill's boot_check.py.
 
 A `ktest` command (the kernel test runner, //kernel/lib/ktest) is judged by
-its own grammar. A run -- `ktest`, `ktest all`, or `ktest <filter>` -- is done
+its own grammar. A run -- `ktest`, `ktest sel=all`, or `ktest sel=<filter>` -- is done
 at its "ktest: SUMMARY" line, which must appear exactly once, must say
 failed=0, and must say at least one test ran. A registry-level failure (no
 tests linked in, a duplicate test name, a usage error) ends at its
 "ktest: ERROR" line without a summary, and is judged as a failure straight
-away rather than after the command timeout. For `ktest` and `ktest all` the
-script first types `ktest list` and requires the summary's ran= to equal the
+away rather than after the command timeout. For `ktest` and `ktest sel=all` the
+script first types `ktest sel=list` and requires the summary's ran= to equal the
 number of "ktest: TEST" lines: a test that stops being linked in fails the run
 instead of silently disappearing from it. A run that carries repeat= or
 shard= skips that list and the count check, because running the selection
 more than once, or a part of it, is what the option asked for; shuffle only
-reorders, so it keeps the check. `ktest list` itself passes when the
+reorders, so it keeps the check. `ktest sel=list` itself passes when the
 prompt comes back with at least one test listed. While any `ktest` command
-runs, console silence is a hang, as for `lockup spin all`: the script sends the
+runs, console silence is a hang, as for `lockup verb=spin cpu=all`: the script sends the
 NMI and the lockup report is the diagnosis. Every other command's rules are
 unchanged.
 
-A `ktest death` command is the host's half of the death tests
+A `ktest sel=death` command is the host's half of the death tests
 (//kernel/lib/ktest's KTEST_DEATH): a death test's body is expected to panic
 the kernel, so no boot can serve two of them. The command first reads the
-death list off this boot's `ktest list` -- its "ktest: DEATH Suite.Name"
+death list off this boot's `ktest sel=list` -- its "ktest: DEATH Suite.Name"
 lines -- and then starts a fresh image for each death test the filter
-selects, one boot per test: it types that test's `ktest death <name>` and
+selects, one boot per test: it types that test's `ktest sel=death filter=<name>` and
 judges the boot. PASS is the panic report that follows the runner's
 "ktest: DEATH" line, judged as crash's is -- banner, an error-level message,
 the ring replay between its markers, one banner in all -- with no shell
@@ -79,25 +79,28 @@ the ring's replay must stand between its two marker lines, and a replay the
 first marker calls a tail of N lines must be no longer than that.
 
 The lockup commands (//kernel/commands/lockup.cpp) that end in the lockup
-detector's report end the machine too, as crash does: `lockup nmi`, and
-`lockup spin` without a length, `lockup spin <cpu>` or `lockup spin all`.
+detector's report end the machine too, as crash does: `lockup verb=nmi`, and
+`lockup verb=spin` without a length, `lockup verb=spin cpu=<N>` or
+`lockup verb=spin cpu=all`.
 Each is judged by its report and the panic after it, which must say what the
 command asked for: one report, one block per CPU and none that did not
-answer, then the panic's message and one banner, as for crash. `lockup nmi`
-is a dump asked for by an NMI. `lockup spin <cpu>` is found by the
-detector's own check, with that CPU's block last and its interrupts off.
-`lockup spin all` leaves no CPU to check the others, so it is reported only
+answer, then the panic's message and one banner, as for crash. `lockup
+verb=nmi` is a dump asked for by an NMI. `lockup verb=spin cpu=<N>` is found
+by the detector's own check, with that CPU's block last and its interrupts
+off. `lockup verb=spin cpu=all` leaves no CPU to check the others, so it is
+reported only
 through the `nmi` this script sends after a silence (below), and every
-block has interrupts off. `lockup spin <cpu> <ms>` returns, and is done at
-its "lockup: cpu<N> has interrupts on again" line; `lockup status` returns
-too, and is done at its last line, the closest any CPU has come to the
+block has interrupts off. `lockup verb=spin cpu=<N> ms=<N>` returns, and is
+done at its "lockup: cpu<N> has interrupts on again" line; `lockup
+verb=status` returns too, and is done at its last line, the closest any CPU
+has come to the
 threshold.
 
 Once the kernel has printed its first line and until the boot's end marker,
 a console silent for --silence seconds (15 by default) means every CPU has
 stopped: a booting kernel logs as it goes. After the end marker a quiet
 console is an idle machine, so silence counts again only while
-`lockup spin all` runs, the one command that stops every CPU. The script then
+`lockup verb=spin cpu=all` runs, the one command that stops every CPU. The script then
 sends `nmi`
 to a QEMU monitor of its own, as boot_check.py types its keys, and keeps
 reading: the NMI reaches the boot CPU, which asks every CPU for its state and
@@ -472,10 +475,10 @@ def is_ktest(command: str) -> bool:
 
 
 def ktest_lists(command: str) -> bool:
-    """Whether |command| only lists the test registry. `ktest list` takes no
-    options, so the words after the selection do not matter here."""
+    """Whether |command| only lists the test registry. `ktest sel=list`
+    takes no options, so the words after the selection do not matter here."""
     words = command.split()
-    return len(words) >= 2 and words[0] == "ktest" and words[1] in ("list", "?")
+    return len(words) >= 2 and words[0] == "ktest" and words[1] in ("sel=list", "sel=?")
 
 
 def ktest_runs_all(command: str) -> bool:
@@ -483,35 +486,35 @@ def ktest_runs_all(command: str) -> bool:
     `ktest list` gives the count its summary must match. Options after the
     selection (`rounds=256`, `big`) do not change that."""
     words = command.split()
-    return bool(words) and words[0] == "ktest" and (len(words) == 1 or words[1] == "all")
+    return bool(words) and words[0] == "ktest" and (len(words) == 1 or words[1] == "sel=all")
 
 
 def ktest_count_varies(command: str) -> bool:
-    """Whether a `ktest all` run's summary ran= may differ from the number of
+    """Whether a `ktest sel=all` run's summary ran= may differ from the number of
     listed tests: repeat= runs the selection more than once and shard= runs
     part of it, so the list-count equality says nothing there. shuffle only
     reorders, so a run without repeat or shard still checks the count."""
     words = command.split()
-    if words[:2] != ["ktest", "all"] or len(words) == 2:
+    if words[:2] != ["ktest", "sel=all"] or len(words) == 2:
         return False
     return any(word == "repeat" or word.startswith("repeat=")
                or word == "shard" or word.startswith("shard=") for word in words[2:])
 
 
 def ktest_deaths(command: str) -> bool:
-    """Whether |command| invokes the death selection: `ktest death [filter]`.
-    Its first test panics the machine, so the host gives each one a fresh
-    boot, which is a flow of its own in main()."""
+    """Whether |command| invokes the death selection: `ktest sel=death
+    [filter=<glob>]`. Its first test panics the machine, so the host gives
+    each one a fresh boot, which is a flow of its own in main()."""
     words = command.split()
-    return len(words) >= 2 and words[0] == "ktest" and words[1] == "death"
+    return len(words) >= 2 and words[0] == "ktest" and words[1] == "sel=death"
 
 
 def ktest_death_filter(command: str) -> str:
-    """The selection words a `ktest death` command carries, joined the way the
-    kernel's filter grammar joins them. Empty for a bare `ktest death`, which
-    selects every death test."""
+    """The filter= words a `ktest sel=death` command carries, joined the way
+    the kernel's filter grammar joins them. Empty for a bare `ktest
+    sel=death`, which selects every death test."""
     words = command.split()
-    return ":".join(words[2:])
+    return ":".join(word.removeprefix("filter=") for word in words[2:])
 
 
 def ktest_summaries(lines: list[str]) -> list[dict[str, int]]:
@@ -668,8 +671,8 @@ def ends_machine(command: str) -> bool:
         return True
     if words[0] == "crash":
         return True
-    return words[0] == "lockup" and (words[1:] == ["nmi"]
-                                     or (words[1:2] == ["spin"] and len(words) == 3))
+    return words[0] == "lockup" and (words[1:] == ["verb=nmi"]
+                                     or (words[1:2] == ["verb=spin"] and len(words) == 3))
 
 
 def stops_every_cpu(command: str) -> bool:
@@ -774,11 +777,11 @@ def judge_lockup(command: str, lines: list[str], after: str, console: Console) -
         print(f"{command}: FAIL, {len(missing)} CPU(s) left no state: {missing[0]}")
         return False
     sent = console.nmi_at is not None
-    if words[1] == "nmi":
+    if words[1] == "verb=nmi":
         if asked_by_nmi is None or sent:
             print(f"{command}: FAIL, want the dump its own NMI asks for, not {headers[0].group(0)}")
             return False
-    elif words[2] == "all":
+    elif words[2] == "cpu=all":
         # No CPU ticks, so no CPU is left to check the others: the only way
         # in is the NMI this script sends after the silence.
         if asked_by_nmi is None or not sent:
@@ -792,8 +795,9 @@ def judge_lockup(command: str, lines: list[str], after: str, console: Console) -
     else:
         # The stuck CPU is found by another's check, before any silence, and
         # its block is printed last, so that the crash record's tail keeps it.
-        if stuck is None or int(stuck) != int(words[2]) or sent:
-            print(f"{command}: FAIL, want the detector to find cpu{int(words[2])}, "
+        cpu_word = words[2].removeprefix("cpu=")
+        if stuck is None or int(stuck) != int(cpu_word) or sent:
+            print(f"{command}: FAIL, want the detector to find cpu{int(cpu_word)}, "
                   f"not {headers[0].group(0)}")
             return False
         if blocks[-1].group(1) != stuck or blocks[-1].group(2) != "off":
@@ -851,7 +855,7 @@ def run_death_tests(console: Console, command: str, args, out, logdir) -> bool:
     the shell fails its test."""
     filter_text = ktest_death_filter(command)
     console.keep()
-    console.type("ktest list")
+    console.type("ktest sel=list")
     listed = console.wait_for(re.compile(re.escape(PROMPT)),
                               time.monotonic() + args.command_timeout)
     list_lines = show("ktest list (death setup)", console.kept(), args.all)
@@ -874,7 +878,7 @@ def run_death_tests(console: Console, command: str, args, out, logdir) -> bool:
 
     verdicts: list[bool] = []
     for name in selection:
-        typed = f"ktest death {name}"
+        typed = f"ktest sel=death filter={name}"
         boot = Console(out, args.image, logdir, args.silence)
         try:
             if not boot.wait_for(re.compile(re.escape(END_MARKER)),
@@ -1017,7 +1021,7 @@ def main(argv: list[str]) -> int:
             expected = None
             if ktest_run and ktest_runs_all(command) and not ktest_count_varies(command):
                 console.keep()
-                console.type("ktest list")
+                console.type("ktest sel=list")
                 listed = console.wait_for(re.compile(re.escape(PROMPT)),
                                           time.monotonic() + args.command_timeout)
                 list_lines = show("ktest list (setup)", console.kept(), args.all)

@@ -32,9 +32,9 @@ namespace internal {
     /// The value half of a value-parameterized suite: the table value this
     /// instantiation's object was built with. The class `KTEST_VALUE_PARAM`
     /// declares derives from this — beside the fixture for `KTEST_F_P`, beside
-    /// a bare `ktest::Fixture` for `KTEST_P` — so a body reads the current
-    /// value with `GetParam()` through the same `this` that reaches the
-    /// fixture's members. Deriving from the suite's base, not being one
+    /// the test's own `Fixture` base for `KTEST_P` — so a body reads the
+    /// current value with `GetParam()` through the same `this` that reaches
+    /// the fixture's members. Deriving from the suite's base, not being one
     /// itself, is what keeps a fixture's single `Fixture` subobject when the
     /// two compose.
     template <typename Param>
@@ -179,7 +179,8 @@ namespace internal {
 /// whole lifecycle of a `KTEST_F` — a fresh object per record, SetUp before
 /// the body, TearDown after it — comes free.
 #define KTEST_P(suite, name)                                                                       \
-    class suite##_##name##_Test final: public ::ktest::Fixture, public suite##_ParamBase {         \
+    class suite##_##name##_Test final: public ::ktest::Fixture<suite##_##name##_Test>,             \
+                                       public suite##_ParamBase {                                  \
       public:                                                                                      \
         using suite##_ParamBase::suite##_ParamBase;                                                \
         void ktest_body();                                                                         \

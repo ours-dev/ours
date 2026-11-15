@@ -48,7 +48,7 @@ auto to_string(ZoneType zone) -> char const * {
     }
 }
 
-static auto cmd_dump_frame(int argc, char **argv) -> int {
+static auto cmd_dump_frame(gktl::Invocation const &invocation) -> int {
     return 0;
 }
 GKTL_COMMAND(FrameDumper, "dump-frame", cmd_dump_frame, "");

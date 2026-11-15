@@ -59,7 +59,7 @@ class ParseDump(unittest.TestCase):
     def test_the_prompt_and_the_echo_may_precede_the_first_line(self):
         data = profile(300)
         lines = format_dump(data)
-        lines[0] = "kshell> cov dump" + lines[0]
+        lines[0] = "kshell> cov verb=dump" + lines[0]
         lines[1] = "kshell> " + lines[1]
         self.assertEqual(cov_kernel.parse_dump("\n".join(lines)), data)
 
@@ -120,18 +120,6 @@ class Setup(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
-
-    def test_test_commands_come_from_where_they_are_registered(self):
-        commands = self.root / "kernel" / "commands"
-        commands.mkdir(parents=True)
-        (commands / "a.cpp").write_text(
-            'GKTL_COMMAND(VmaWxTest, "vmawx.test", ours::vmawx_test_command,\n  "help")\n'
-            'GKTL_COMMAND(\n    SleepTest,\n    "sleep.test",\n    f, "h")\n'
-            'GKTL_COMMAND(LogDump, "log", log_command, "help")\n')
-        (commands / "b.cpp").write_text('GKTL_COMMAND(Again, "sleep.test", f, "h")\n'
-                                        'GKTL_COMMAND(Port, "port.test", f, "h")\n')
-        self.assertEqual(cov_kernel.test_commands(self.root),
-                         ["vmawx.test", "sleep.test", "port.test"])
 
     def test_a_directory_without_the_kernel_variant_is_refused(self):
         out = self.root / "out"

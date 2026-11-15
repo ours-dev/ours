@@ -24,8 +24,9 @@
 #include <string_view>
 
 #include <gktl/command.hpp>
+#include <gktl/options.hpp>
+#include <gktl/report.hpp>
 #include <logz4/log.hpp>
-#include <ustl/option.hpp>
 
 namespace ours {
 namespace {
@@ -116,23 +117,6 @@ namespace {
         take(after);
     }
 
-    auto parse_seconds(std::string_view const text) -> ustl::Option<u64> {
-        if (text.empty() || text.size() > 3) {
-            return ustl::NONE;
-        }
-        auto value = u64{0};
-        for (auto const c: text) {
-            if (c < '0' || c > '9') {
-                return ustl::NONE;
-            }
-            value = value * 10 + static_cast<u64>(c - '0');
-        }
-        if (value == 0 || value > MAX_SECONDS) {
-            return ustl::NONE;
-        }
-        return ustl::Option<u64>(value);
-    }
-
     // Static: two snapshots of MAX_CPU samples each are more than a kernel
     // stack should carry. One command runs at a time on the console.
     Snapshot BEFORE;
@@ -166,17 +150,18 @@ namespace {
         });
     }
 
-    auto idle_stats_command(int argc, char **argv) -> int {
-        auto seconds = DEFAULT_SECONDS;
-        if (argc == 2) {
-            auto const parsed = parse_seconds(argv[1]);
-            if (parsed.is_none()) {
-                log::warn("usage: idle.stats [<seconds>], 1 to {}", MAX_SECONDS);
-                return 1;
-            }
-            seconds = parsed.value();
-        } else if (argc > 2) {
-            log::warn("usage: idle.stats [<seconds>], 1 to {}", MAX_SECONDS);
+    auto idle_stats_command(gktl::Invocation const &invocation) -> int {
+        auto options = gktl::Options{"idle.stats"};
+        options.add<u64>("seconds").defaults_to(u64{DEFAULT_SECONDS}).help("the window's length");
+        auto const parsed = options.parse(invocation);
+        if (parsed.is_err()) {
+            gktl::reject(options, parsed.unwrap_err());
+            return 1;
+        }
+        auto const seconds = parsed.unwrap().get<u64>("seconds");
+        if (seconds == 0 || seconds > MAX_SECONDS) {
+            log::error("idle.stats: seconds takes a number from 1 to {}", MAX_SECONDS);
+            gktl::print_usage(options);
             return 1;
         }
 
@@ -190,4 +175,4 @@ namespace {
 
 GKTL_COMMAND(
     IdleStats, "idle.stats", ours::idle_stats_command,
-    "idle.stats [<seconds>]: timer interrupts, halts and time halted per CPU, over a window");
+    "idle.stats [seconds=N]: timer interrupts, halts and time halted per CPU, over a window");
