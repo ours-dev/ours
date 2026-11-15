@@ -193,6 +193,13 @@ The kernel still tears down sealed mappings during address-space destruction.
   and reads the levels again before it declares (2026-11-02): the walk
   sleeps, and the mutex guards the levels and the declaration.
   `MemoryPressureLevels::make()` is the only builder of a nested value.
+- The boot levels are raised so that the delay level sits above
+  `zone_floor_frame_count()`, every zone's Low floor for an ordinary
+  request capped at its present frames, summed (`covering()`, the user's
+  D1(a), 2026-11-14). Then every zone refusing implies free memory below
+  the delay level, and the gate, not a zone's Low, decides when an
+  ordinary waiting request waits. All three levels move together; levels
+  that do not nest are left for `start()` to refuse.
 
 ## CpuLocal (Linux, not Zircon)
 

@@ -294,6 +294,17 @@ class PmZone {
         return m_lowmem_reserve[std::to_underlying(highest)];
     }
 
+    /// The Low pass's floor for a request that allows up to Normal, which is
+    /// every request made today: Low plus this zone's reserve against such a
+    /// request. With this many free frames or fewer the zone refuses such a
+    /// request a single frame in the Low pass, since taking one would leave
+    /// it below the floor.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto normal_low_floor() const -> usize {
+        return watermark(Watermark::Low) + lowmem_reserve(ZoneType::Normal);
+    }
+
     /// The share of the memory above a zone that it keeps back: one frame in
     /// LOWMEM_RESERVE_RATIO. The same for every zone, 1/256 (decided with
     /// the user, 2026-11-14).

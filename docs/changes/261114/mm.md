@@ -397,3 +397,59 @@ None.
 - Why must the started and paused checks in `request(zone)` come before `mark_short()` and not after?
 - One word with a bit per zone type, or one atomic per zone: what does the single word buy a marker, and what does it buy the thread?
 - A test reads a node's record under a Pause. Which wake could still take it away before this change, and what ends the Pause safely now?
+
+## The watchdog's levels are raised above the zones' floors (2026-11-14)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `PmZone::normal_low_floor()`, the Low pass's floor for a request that allows up to Normal; `free_frames()` uses it for its crossing line
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/pmm.cpp` — new `zone_floor_frame_count()`
+- `kernel/mm/include/ours/mm/memory_watchdog.hpp`, `kernel/mm/memory_watchdog.cpp` — new `MemoryPressureLevels::covering()`; `from_boot_options()` returns the boot levels covered by the zones' floors; the watchdog logs when it raised them
+- `kernel/tests/memory_pressure_test.cpp` — new `MemoryPressure.TheBootLevelsCoverTheZoneFloors`
+
+**Symptom**
+On a machine of about 6 GiB or more, a waiting request (`ALLOC_USER_VMO`, a VMO page) could sleep for ever once memory ran out. Booted at 8 GiB, the zones' floors for an ordinary request are Dma 3386 frames (its reserve of 8036 is more than the zone), Dma32 302 + 7540 and Normal 4619: when every zone refuses, about 61 MiB is still free. The gate shuts below its delay level of 49 MiB and the watchdog declares OutOfMemory below 50 MiB, so neither ever acts; each waiter was put off at a zone's Low and only a release back above Low could wake it.
+
+**Cause**
+The watermark change and decision N1 gave waiting requests a second, local threshold (a zone's Low), while the thresholds that end a wait (the gate's delay level and the OutOfMemory refusal) stayed machine-wide and fixed by boot option. Nothing related the two. The zones' floors grow with memory (Low by about 0.2 % of a zone, the low zones' reserve by 1/256 of what is above them), the boot levels do not, and past about 6 GiB the floors summed exceed the delay level. Between the two lies a state where every zone refuses and the machine-wide count still looks healthy. The N1 record listed the missing relation as not done; this is what it cost.
+
+**Change**
+The decision is the user's (D1(a), 2026-11-14): keep N1 and keep one machine-wide line, but put the line above the floors.
+
+```cpp
+// pmm.cpp: the most free memory there can be while every zone refuses
+total += std::min(zone.normal_low_floor(), zone.present_frames());
+
+// memory_watchdog.cpp
+auto const needed = held + m_debounce + 1;        // delay_level() = oom - debounce > held
+if (m_out_of_memory >= needed) { return *this; }
+auto const raise = needed - m_out_of_memory;      // every level up by the same amount
+```
+
+The argument, for one frame and a request that may use every zone up to Normal on any node: a zone refuses such a request in the Low pass exactly when its free count is at or below its floor, and its free count is never above its present frames. So when every zone refuses, the machine's free count is at most the sum, which is now below the delay level: the request that tries shuts the gate, the watchdog is woken (Critical's lower bound is the delay level), and at OutOfMemory the waiters are refused. The converse holds too: a request the gate lets through finds a zone that admits it, unless the counts moved between the two reads. So for ordinary requests the gate decides when to wait, and a zone's Low catches only that race; requests of a higher order or confined to fewer nodes or zones are not covered (the next change is about confined ones).
+
+Two details. The cap is present frames, not managed: managed grows after boot as reserved frames are given back (the `.init` sections, the boot image), and the first version, capped at managed, came out one frame short at 8 GiB once that happened. All three levels move by the same amount, so each pressure band keeps the width the command line gave it; levels that do not nest are left alone, so a bad command line is still refused by `start()` and not repaired. The 512 MiB and 3 GiB machines keep the configured levels (floors 1362 frames and about 30 MiB); at 8 GiB the levels go up 13 MiB.
+
+**Reference**
+Neither system has this pair. Zircon has no zones: its free-memory levels are the only thresholds, set by `kernel.oom.*`, and a `PMM_ALLOC_FLAG_CAN_WAIT` request waits on them alone. Linux has the zone watermarks and no machine-wide level for allocations: a caller that can reclaim does so itself, and the OOM killer is reached when reclaim makes no progress (`should_reclaim_retry()`, `__alloc_pages_may_oom()`). The relation kept here is this kernel's own, because it has both.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 184 passed, on the default and the four-node machine. `ktest all`: default 89 ran, 83 passed, 6 skipped; four nodes 89 ran, 86 passed, 3 skipped. `MEM=3072` and `MEM=8192`: `ktest PmNode.*:MemoryPressure.*:PageReclaim.*` 13 ran, 9 passed, 0 failed; at 8 GiB the boot log says `kernel.oom levels raised 13 MiB: the zones' floors hold 61 MiB` and the test reports floors of 16213 frames under an OutOfMemory level of 16470 with a debounce of 256. Failure-injection build: 89 ran, 84 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing new in `memory_watchdog.cpp`, `pmm.cpp` or `pm_zone.cpp`.
+
+The new test checks `covering()` on small levels (below, at and far above the delay level, bands kept) and that the boot levels and the levels in force keep the delay level above the floors. The second half only bites where the floors exceed the configured delay level, about 6 GiB and up, which is why the 8 GiB machine is part of this verification: with `from_boot_options()` returning the levels uncovered as a control, both of its checks fail there.
+
+A narrow pre-commit review confirmed the argument (every zone counted on both sides, the floors fixed after boot, the tests that restore the boot levels compare nothing against the raw options) and that an ordinary request let through the gate is put off at Low only by a race. It found that `covering()` would have repaired an OutOfMemory level at or below the debounce, fixed by leaving non-nesting levels alone; that the test called `delay_level()`, which asserts nesting, before asking `is_valid()`; and a comment in `pmm.hpp` that claimed the gate guarantees a zone to every waiting request. Its top finding, that `from_boot_options()` was not wired, came from reading the tree while the control above was in place.
+
+**Deliberately not done**
+- The default verification boots 512 MiB and 3 GiB, where the raise never happens; nothing runs the 8 GiB check routinely.
+- A waiting request of a higher order, or confined to fewer nodes or zones, can still be put off at Low with the gate open; confined ones are the next change.
+
+**How it was found**
+The critic run while preparing `docs/repairs/261112/mm.md` item 3 worked out the floors for large machines; an 8 GiB boot confirmed them.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is "free at most the sum of the floors when every zone refuses" true, and why does the cap have to be present frames rather than managed?
+- With the delay level above the floors, when can an ordinary waiting request still be put off at a zone's Low?
+- Why move all three levels by the same amount instead of only the OutOfMemory level?

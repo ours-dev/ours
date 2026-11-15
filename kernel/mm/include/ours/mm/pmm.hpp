@@ -276,6 +276,24 @@ auto free_frame_count() -> usize;
 [[nodiscard]]
 auto approx_free_frame_count() -> usize;
 
+/// The most free memory the machine can have while every zone refuses a
+/// request that allows up to Normal a single frame in the Low pass: each
+/// zone's PmZone::normal_low_floor(), or all the zone has where that is
+/// less, summed over every zone. Fixed once the watermarks are set at boot:
+/// the cap is a zone's present frames, which do not grow when reserved
+/// frames are given back, as managed frames do.
+///
+/// The memory watchdog keeps the gate's delay level above it
+/// (MemoryPressureLevels::covering()). Then a machine where every zone
+/// refuses an ordinary request is a machine below the delay level, which the
+/// watchdog hears; and a waiting request the gate lets through finds a zone
+/// that admits it, if it is ordinary -- one frame, any node, every zone up
+/// to Normal -- and nothing moved between the gate's count and the zones'.
+/// A request of a higher order, or one confined to fewer nodes or zones, is
+/// not covered.
+[[nodiscard]]
+auto zone_floor_frame_count() -> usize;
+
 /// Sleeps until the gate opens, or a release brings a zone back to admitting
 /// a frame above its Low watermark, and takes one frame for the caller, with |alloc_flags|, which
 /// carries CanWait. Called with no lock held, after alloc_frames(alloc_flags)

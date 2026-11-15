@@ -43,6 +43,20 @@ auto approx_free_frame_count() -> usize {
     return total;
 }
 
+auto zone_floor_frame_count() -> usize {
+    // A zone refusing a frame holds at most its floor, and never more than it
+    // has: a small zone whose reserve is above its size (the Dma zone of a
+    // large machine) refuses with every frame it has free. Present frames,
+    // not managed: managed grows after boot as reserved frames are given back
+    // (the .init sections, the boot image), and a sum taken from it at boot
+    // would fall short of the one later. Present is fixed and above both.
+    usize total = 0;
+    PmZone::for_each([&total](PmZone const &zone) {
+        total += std::min(zone.normal_low_floor(), zone.present_frames());
+    });
+    return total;
+}
+
 namespace {
     /// The gate in front of the allocations that can wait (alloc_frames()
     /// with Gaf::CanWait), and the signal for whoever watches free memory

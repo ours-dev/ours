@@ -269,12 +269,11 @@ auto PmZone::free_frames(PmFrame &frame, usize order) -> bool {
     }();
 
     // The line is where the Low pass starts admitting one frame again for a
-    // request that allows up to Normal, which is every request made today:
-    // Low plus this zone's reserve against such a request, and the same
+    // request that allows up to Normal (normal_low_floor()), with the same
     // arithmetic the pass itself uses. Low alone would be one frame early --
     // at exactly Low the pass still refuses, since a frame taken there would
     // leave Low - 1.
-    auto const floor = watermark(Watermark::Low) + lowmem_reserve(ZoneType::Normal);
+    auto const floor = normal_low_floor();
     return !mm::admits(before, 0, floor) && mm::admits(before + count, 0, floor);
 }
 } // namespace ours::mm
