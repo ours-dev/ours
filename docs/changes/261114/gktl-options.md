@@ -411,3 +411,67 @@ and the console grammar, both unchanged).
 - Why can the framework not parse before the handler runs?
 - What makes run_command the right single place for the conversion, and
   what would go wrong if a handler could still take argc/argv?
+
+## The shapes become a table; Parsed's slots become one object (2026-11-15)
+
+**Files**
+
+- `kernel/lib/gktl/include/gktl/options.hpp` — new: the shape strategy table. Three rows (`U64Shape`, `BoolShape`, `StrShape`), each owning what its kind means as build-time polymorphism -- reading a word's value, reading a bare word, rendering its usage fragment and its default text -- dispatched through a constexpr function-pointer row indexed by the enum. `Options::read` becomes orchestration (the row answers, this lands the slot); `usage_word` asks the row for its inner fragment; the fault phrases are a `FAULT_MESSAGES` row-per-fault table with a static assert tying it to the enum, replacing their switch. `Parsed`'s four parallel arrays became one `Slot` object per landed option (name, kind, value, given) -- the invariant that the four facts agree now holds by construction.
+- `kernel/lib/gktl/include/gktl/report.hpp` -- shape-blind: the default's text is rendered by the shape's row into a bounded buffer, so the usage printer is one uniform `log::warn` and its kind switch is gone.
+
+**Symptom**
+
+None -- the user's (2026-11-15) request that the module match OOP and design patterns. Working code; three switches over `OptionKind` (in `read`, in `usage_word`, in the usage printer) plus one over the fault enum smeared the shape knowledge across both halves of the library.
+
+**Cause**
+
+The shapes grew where the code grew: `read()`'s switch first, the usage fragment beside it, the printer's default rendering wherever the printer landed. Each switch was defensible alone; together they made "what a shape is" a fact the library kept in four places, and a fifth shape (a duration, a composite `M/N`) would have had to touch every one.
+
+**Change**
+
+The pattern is the strategy table under build-time polymorphism -- no virtual functions, a constexpr row of function pointers per shape, indexed by the enum's own order:
+
+```cpp
+struct U64Shape {
+    static auto read_value(OptionDescriptor const &, Word const &)
+        -> ustl::Result<Value, Rejection>;      // digits, or the hook
+    static auto read_bare(OptionDescriptor const &)
+        -> ustl::Result<Value, Rejection>;      // the default, or a bad value
+    static auto usage_inner(OptionDescriptor const &, char *, usize const, usize &) -> void;
+    static auto default_text(Value const &, char *, usize const, usize &) -> void;
+};
+// internal::SHAPES[] -- three rows, one lookup: internal::shape_row(kind)
+```
+
+`Options::read` reduces to row-lookup plus slot landing; the bare-word semantics (a boolean's presence is true, everything else's is its declared default) moved into the rows where they belong. `Slot` is the value object that carries a landed option's four facts as one thing. The fault phrases are data: `FAULT_MESSAGES`, row per fault, static-asserted against the enum. What deliberately stayed a switch: `report_rejection`'s fault cases -- they differ in which inputs the line quotes (two arguments, three, four), which is the line's shape, not a phrase lookup.
+
+**Reference**
+
+The strategy table is the policy-object idiom realized as the repo's own build-time polymorphism (the shape skill's term) rather than virtual dispatch -- the rows are function pointers in a constexpr array, zero heap and zero indirection at run time beyond one indexed load. `Slot` is the same move `std::tuple` of parallel arrays to `std::pair`-of-arrays-to-struct makes in every textbook: the invariant holds by construction instead of by discipline. Zircon's boot-options keeps its per-type parse/print registry as an `OPTION_TYPE` X-macro table -- the same one-place-per-type idea, realized here as rows because the shapes carry behavior, not just declarations.
+
+**Verification**
+
+- `boot_check.py`: build ok; dbg PASS 46/5/0; rel PASS 44/8/0 (7/7 required); host-tests 184/0.
+- Host suites unchanged and green: `options-test` 23/23, `ktest-test` 71/71 -- the same cases the pre-refactor shapes passed.
+- clang-tidy: no diagnostics on the touched files.
+- On target: bare `idle.stats` still reports its default 5 s (the absent-default fill through the new row), `crash how=bogus` still refuses with the choices line (the BadChoice path through the row).
+
+**Deliberately not done**
+
+- A `Reporter` class wrapping `Options` for the two print calls. The functions are stateless operations on another object; wrapping them would be a facade with no state to own, and the codebase's own stateless operations (`hsien::run`, `ktest::add_environment`) are free functions.
+- Replacing the `Value` union with a variant type. The union is asserted trivially copyable, its active member is guarded by the always-on kind assert, and no in-tree variant type is idiomatic here.
+- A uniform fault-line builder that would remove `report_rejection`'s switch. Its cases differ in which inputs the line quotes; a builder would compose strings to feed one format call, and the bounded buffers would outgrow the saving.
+
+**How it was found**
+
+None (the user's refactor request; the switches the change removes were counted before the work started -- four, across two files).
+
+**The user's prediction**
+
+None (a shape refactor; the host suites and the console lines pin the behavior, both unchanged).
+
+**Three questions you should be able to answer**
+
+- Why function-pointer rows instead of virtual dispatch?
+- What does `Slot.given == false` mean, and who reads the difference?
+- Which switch deliberately survived, and what makes it different from the ones removed?
