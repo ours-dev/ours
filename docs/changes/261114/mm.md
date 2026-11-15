@@ -453,3 +453,37 @@ None.
 - Why is "free at most the sum of the floors when every zone refuses" true, and why does the cap have to be present frames rather than managed?
 - With the delay level above the floors, when can an ordinary waiting request still be put off at a zone's Low?
 - Why move all three levels by the same amount instead of only the OutOfMemory level?
+
+## The reserve test picks a zone it can drain (2026-11-14)
+
+**Files**
+- `kernel/tests/pm_node_test.cpp` — `PmNode.LowZonesKeepAReserve` chooses the first zone with a reserve that has more free frames than its Low floor plus that reserve
+
+**Symptom**
+At 8 GiB `PmNode.LowZonesKeepAReserve` failed its admission check: "at Low plus its reserve a low zone refuses a request that allows Normal".
+
+**Cause**
+The test took the first zone with any reserve against Normal and drained it to Low plus that reserve. At 8 GiB that zone is Dma, whose reserve (8036 frames) is larger than the whole zone (3386), so the drain could never reach the line and `drain_to()` reported failure. It was written and checked at 512 MiB and 3 GiB, where Dma's reserve still fits.
+
+**Change**
+The zone must have more free frames than `normal_low_floor()`; at 8 GiB that is Dma32. With no such zone the test skips.
+
+**Reference**
+None, this project's own test.
+
+**Verification**
+`MEM=8192`, `MEM=3072` and the default machine: the test passes; the four-node `ktest all` 89 ran, 86 passed.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+Running the 8 GiB machine for the change above.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can a low zone's reserve be larger than the zone itself, and what does that zone then give an ordinary request?
+- Why does the test drain a low zone rather than the highest one?
+- What would the test have proved had it drained Dma32 at 512 MiB, where Dma32 keeps nothing back?

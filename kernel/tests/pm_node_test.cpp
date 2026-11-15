@@ -1238,15 +1238,18 @@ namespace {
         // allows Normal. Drained to exactly Low plus that reserve through the
         // zone itself, it refuses such a request and still admits one that
         // allows nothing above it. A low zone, the last any allocation tries,
-        // so draining it takes nothing anyone else is about to use.
+        // so draining it takes nothing anyone else is about to use. One with
+        // more free than that line: on a large machine the Dma zone keeps
+        // back more than it has, and cannot be drained down to it.
         PmZone *low = nullptr;
         PmZone::for_each([&low](PmZone &zone) {
-            if (!low && zone.lowmem_reserve(ZoneType::Normal) != 0) {
+            auto const reserve = zone.lowmem_reserve(ZoneType::Normal);
+            if (!low && reserve != 0 && zone.num_free_frames() > zone.normal_low_floor()) {
                 low = &zone;
             }
         });
         if (!low) {
-            KTEST_SKIP("no zone keeps anything back on this machine");
+            KTEST_SKIP("no zone keeps anything back that it can be drained to");
         }
         auto const reserve = low->lowmem_reserve(ZoneType::Normal);
         auto const floor = low->watermark(PmZone::Watermark::Low);
