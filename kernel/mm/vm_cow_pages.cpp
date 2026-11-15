@@ -25,7 +25,7 @@ namespace {
     /// The queues of the node |page|'s frame is on: a page is filed with the
     /// memory it is, wherever its VMO is used from.
     auto queues_of(VmPage const *page) -> PageQueues & {
-        auto *const node = PmNode::node(page->nid());
+        auto *const node = find_node(page->nid());
         DEBUG_ASSERT(node, "a VMO page on node {}, which does not exist", page->nid());
         return node->page_queues();
     }

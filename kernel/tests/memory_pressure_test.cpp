@@ -507,5 +507,42 @@ namespace {
         }
         check_watchdog();
     }
+
+    KTEST(MemoryPressure, TheBootLevelsCoverTheZoneFloors) {
+        // The arithmetic, on levels small enough to read: OutOfMemory 1000,
+        // Critical 2000, Warning 3000, a debounce of 10, so a delay level of
+        // 990.
+        auto const given = mm::MemoryPressureLevels::make(1000, 2000, 3000, 10, Duration::zero());
+        if (!given) {
+            FAIL("the small levels nest");
+            return;
+        }
+        auto const below = given->covering(500);
+        auto const edge = given->covering(990);
+        auto const far = given->covering(5000);
+        EXPECT_TRUE(below.out_of_memory() == 1000 && below.warning() == 3000,
+                    "floors below the delay level leave the levels alone");
+        EXPECT_TRUE(edge.delay_level() == 991 && edge.critical() == 2001 && edge.warning() == 3001,
+                    "floors at the delay level move every level up by one frame");
+        EXPECT_TRUE(far.is_valid() && far.delay_level() == 5001 &&
+                        far.critical() - far.out_of_memory() == 1000 &&
+                        far.warning() - far.critical() == 1000,
+                    "floors far above it move every level up, each band as wide as it was");
+
+        // This machine: what the boot options give and what is in force both
+        // keep the delay level above what the zones' floors hold.
+        auto const held = mm::zone_floor_frame_count();
+        auto const boot = mm::MemoryPressureLevels::from_boot_options();
+        auto const in_force = mm::MemoryWatchdog::get().levels();
+        // delay_level() asserts that the levels nest, so validity is asked
+        // first, and the log prints the parts.
+        log::info("pressure:   the zones' floors hold {} frames; OutOfMemory {} at boot, {} in "
+                  "force, debounce {}",
+                  held, boot.out_of_memory(), in_force.out_of_memory(), boot.debounce());
+        EXPECT_TRUE(boot.is_valid() && boot.delay_level() > held,
+                    "the boot levels keep the delay level above the zones' floors");
+        EXPECT_TRUE(in_force.is_valid() && in_force.delay_level() > held,
+                    "so do the levels the watchdog is running with");
+    }
 } // namespace
 } // namespace ours

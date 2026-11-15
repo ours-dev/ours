@@ -8,6 +8,7 @@
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/alloc_flags.hpp>
+#include <ours/mm/node_table.hpp>
 #include <ours/mm/page_queues.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/priv/alloc_policy.hpp>
@@ -38,7 +39,8 @@
 namespace ours::mm {
 /// A node's zones as its allocations see them: its own, which are its row of
 /// PmZone's table, and the fallback order an allocation looks through -- this
-/// node's own zones first, then every other node's, nearest first. Only the
+/// node's own zones first, then every other node's, nearest first, and each
+/// node's from its highest zone type down. Only the
 /// fallback order is kept here. The node's own zones are read from the table,
 /// their one record; a copy by type here was one fact stored twice, as the
 /// next paragraph says of the queues before it.
@@ -59,16 +61,16 @@ class ZoneList {
     explicit ZoneList(NodeId nid) : m_fallback(), m_connected(), m_nid(nid) {}
 
     /// Puts this node's own zones, its row of the table, at the head of the
-    /// fallback order, in type order -- before connect() appends anyone
-    /// else's.
+    /// fallback order, from the highest type down -- before connect() appends
+    /// anyone else's.
     auto take_local_zones() -> void {
         DEBUG_ASSERT(m_fallback.size() == 0, "node {}'s own zones taken twice, or after connect()",
                      m_nid);
-        for_each_local_zone([this](PmZone &zone) { push_fallback(&zone); });
+        push_zones_of(m_nid);
     }
 
     /// Chains the zones of every node in |order| behind this node's own, in
-    /// the order given.
+    /// the order given, each node's from its highest type down.
     ///
     /// A list of node ids rather than a set: it used to take the set and
     /// derive the order itself, from the machine's distance matrix, which made
@@ -135,6 +137,27 @@ class ZoneList {
         DEBUG_ASSERT(pushed, "fallback order overflowed its {} zones", MAX_ZONES);
     }
 
+    /// Appends node |nid|'s zones to the fallback order from its highest type
+    /// down, skipping the types it has none of.
+    ///
+    /// Highest first because the zones are not interchangeable in the other
+    /// direction. Any request may be served from a high zone, but only a low
+    /// one can serve a request with an address limit (a device that reaches
+    /// only the first 16 MiB, or 4 GiB). Taking ordinary requests from the
+    /// low zones first spends the only memory that has no substitute while
+    /// the memory that has one sits unused. Node first, zone second: a
+    /// node's low zones are still tried before the next node's high ones,
+    /// because a frame on another node costs every access, and a low zone
+    /// spent costs only a later constrained request.
+    auto push_zones_of(NodeId const nid) -> void {
+        auto const row = PmZone::row(nid);
+        for (auto type = row.size(); type > 0; --type) {
+            if (auto *const zone = row[type - 1]) {
+                push_fallback(zone);
+            }
+        }
+    }
+
     ustl::collections::StaticVec<ZoneRef, MAX_ZONES> m_fallback;
 
     /// The remote nodes connect() chained into the fallback order.
@@ -142,7 +165,9 @@ class ZoneList {
     NodeId m_nid;
 };
 
-/// `PmNode` is a class that describes a NUMA domain.
+/// `PmNode` is a class that describes a NUMA domain: its zones and the order
+/// an allocation tries them in, its page queues, and the CPUs working on it.
+/// Which nodes exist is not a node's: see ours/mm/node_table.hpp.
 ///
 /// The memory regions between nodes should be mutually exclusive,
 /// meaning that the memory region of one node should not overlap
@@ -151,98 +176,7 @@ class PmNode {
     using Self = PmNode;
 
   public:
-    /// Whether a node has memory of a zone type is not a state: it is whether
-    /// PmZone::at() has a zone for it.
-    enum class State : u32 {
-        Memory,
-        Online,
-        Possible,
-        NumStates,
-    };
-
-    template <typename F>
-        requires ustl::traits::Invocable<F, NodeId>
-    static auto for_each_nid(State state, F &&f) -> ustl::traits::InvokeResultT<F, NodeId> {
-        return STATES[std::to_underlying(state)].for_each(ustl::forward<F>(f));
-    }
-
-    template <typename F>
-        requires ustl::traits::Invocable<F, Self &>
-    static auto for_each_node(State state, F &&f) -> ustl::traits::InvokeResultT<F, Self &> {
-        return STATES[std::to_underlying(state)].for_each([&f](NodeId nid) {
-            DEBUG_ASSERT(Self::node(nid), "Touched an absent node in {}", __func__);
-            return f(*Self::node(nid));
-        });
-    }
-
-    FORCE_INLINE
-    static auto node_online_mask() -> NodeMask const & {
-        return STATES[std::to_underlying(State::Online)];
-    }
-
-    FORCE_INLINE
-    static auto node_possible_mask() -> NodeMask const & {
-        return STATES[std::to_underlying(State::Possible)];
-    }
-
-    /// The nodes that own memory -- the ones worth falling back to, and so the
-    /// members the fallback order is derived over.
-    FORCE_INLINE
-    static auto node_memory_mask() -> NodeMask const & {
-        return STATES[std::to_underlying(State::Memory)];
-    }
-
-    /// Marks `nid` present in one of the state masks. The NUMA bring-up
-    /// path (SRAT discovery) uses this to declare a domain Possible before
-    /// the PMM builds its nodes.
-    static auto set_state(NodeId nid, State state, bool on = true) -> void {
-        STATES[std::to_underlying(state)].set(nid, on);
-    }
-
-    FORCE_INLINE
-    constexpr static auto node(NodeId nid) -> PmNode * {
-        return NODES[nid];
-    }
-
-    FORCE_INLINE
-    constexpr static auto num_nodes() -> usize {
-        return NUM_NODES;
-    }
-
-    /// Counted off the Online mask. It used to return a NUM_ONLINE_NODES
-    /// counter that nothing ever incremented, so it answered 0 on every
-    /// machine; one fact kept in two places had drifted, and the mask is the
-    /// one init() actually maintains.
-    FORCE_INLINE
-    static auto num_online_nodes() -> usize {
-        return node_online_mask().count();
-    }
-
     static auto bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status;
-
-    /// Records |cpu| as working on the node the placement table puts it on,
-    /// and caches that node in |cpu|'s slot. Nothing for a CPU still on the
-    /// MAX_NODES sentinel.
-    static auto publish_cpu(CpuNum cpu) -> void;
-
-    /// publish_cpu() for every CPU claimed so far. Run once, from an init
-    /// hook, as soon as per-CPU storage exists; see the definition for why it
-    /// is unconditional rather than going through set_cpu_node().
-    static auto publish_cpus() -> void;
-
-    /// Gives every CPU the firmware reported a node, and publishes it, before
-    /// any of them starts. Run once, from an init hook after the MADT parse;
-    /// see the definition for why bootstrap() could not do this itself.
-    static auto claim_possible_cpus() -> void;
-
-    /// Moves |cpu| to node |nid|: out of its old node's CPU mask, into the new
-    /// one's, and the placement table and its cache along with them.
-    ///
-    /// No caller yet. It is kept because it is the one place that knows what a
-    /// move has to touch, and it is three objects wide -- two nodes' masks,
-    /// each under its own lock, and the placement -- so the next thing that
-    /// re-homes a CPU should not have to rediscover the order.
-    static auto set_cpu_node(CpuNum cpu, NodeId nid) -> void;
 
     /// Works out how many frames the machine holds back from allocation and
     /// gives every zone its share of it as three watermarks.
@@ -254,11 +188,14 @@ class PmNode {
     /// after the handoff, with nothing else running.
     static auto setup_watermarks() -> void;
 
-    /// Why a walk for one block gave nothing: the status, and, for an order-0
-    /// request only, the first zone it passed that is short of its high
-    /// watermark, for whoever asks the reclaimer. A failed walk for a larger
-    /// block never names a zone: a zone with no free block of that order may
-    /// still have plenty of single frames.
+    /// Why a walk for one block gave nothing: the status, and the first zone
+    /// it passed that is short, for whoever asks the reclaimer. A zone is
+    /// short when it did not admit the request (taking the block would have
+    /// left it below the pass's floor, so a large block can find a zone short
+    /// that a single frame would not), or when an order-0 request found no
+    /// frame in it while it was below its high watermark. A zone with no free block of a larger
+    /// order is not short on that account alone: it may still have plenty of
+    /// single frames.
     struct BlockFailure {
         Status status;
         ustl::Option<PmZone const &> depleted_zone = ustl::NONE;
@@ -266,20 +203,27 @@ class PmNode {
 
     /// The node's layer of mm::alloc_frames(): walks this node's zones in
     /// fallback order for |request|, whose home this node is, and takes one
-    /// block from the first zone that has it. That is all of it: the block
+    /// block from the first zone that admits the request in |pass| and has
+    /// the block. A zone that does not admit it is passed over and, the first
+    /// time, named in the failure as short. That is all of it: the block
     /// comes back as the zone gave it, and making it ready for its owner is
-    /// the caller's, as are admission, the thread's allocation state and the
-    /// request itself. resolve_request() builds a request and the mm::
+    /// the caller's, as are the free-memory gate, the thread's allocation
+    /// state and the request itself. resolve_request() builds a request and the mm::
     /// functions are the callers meant to; both it and this member are
     /// public, and a caller that builds its own request and comes here skips
-    /// the gate, the allocation-state check, the order bound and
-    /// prepare_alloc(). Only tests do.
+    /// the gate, the allocation-state check, the order bound, the second
+    /// pass and prepare_alloc(); the watermark of the pass it names still
+    /// holds. Only tests do.
     [[nodiscard]]
-    auto alloc_frames(AllocRequest const &request) -> ustl::Result<PmFrame *, BlockFailure>;
+    auto alloc_frames(AllocRequest const &request, AdmissionPass pass)
+        -> ustl::Result<PmFrame *, BlockFailure>;
 
     /// The node's layer of mm::free_frames(): returns a block of this node's
-    /// to the zone it came from. The frame names both.
-    auto free_frames(PmFrame &frame, usize order) -> void;
+    /// to the zone it came from. The frame names both. Returns what the
+    /// zone's free_frames() does: whether this release brought the zone back
+    /// to admitting a frame at its Low watermark.
+    [[nodiscard]]
+    auto free_frames(PmFrame &frame, usize order) -> bool;
 
     /// Whether this node's zone of |type| could serve an allocation of
     /// |order| from its free lists right now; false when the node has no such
@@ -297,13 +241,35 @@ class PmNode {
     }
 
     /// A copy, taken under the node lock. The mask changes whenever a CPU is
-    /// re-homed (`update_cpu_to_node`), so a reference into it would be a
+    /// re-homed (CpuNodeMap::move()), so a reference into it would be a
     /// reference into a value the next re-homing rewrites under the caller;
     /// a copy is the only thing that can be handed out without the lock.
     auto work_cpus() -> CpuMask {
         Guard<sync::SpinLock, IrqSave> guard{get_lock()};
         return m_work_cpus;
     }
+
+    /// Records |cpu| as working on this node, and remove_cpu() takes it out
+    /// again. Each takes this node's lock for this node's mask and nothing
+    /// else: which node a CPU is on is CpuNodeMap's table, and CpuNodeMap is
+    /// the caller, which keeps the table, the two nodes' masks and the
+    /// per-CPU cache in step.
+    auto add_cpu(CpuNum cpu) -> void;
+    auto remove_cpu(CpuNum cpu) -> void;
+
+    /// Adds |cpu| to the hard affinity if the firmware placed it on this
+    /// node. init() already does this for every CPU the firmware's table
+    /// names when the node is made, and today the table is complete by then
+    /// (the SRAT parse fills it at PrePmm + 1, before any node exists), so
+    /// this adds nothing. It keeps publishing a CPU doing what it always did,
+    /// for a firmware table that is filled later.
+    ///
+    /// For the init hooks alone, which run on the boot CPU before any other
+    /// CPU is started: the mask is read without a lock for the rest of the
+    /// system's life, so nothing may write it once another CPU can read it.
+    /// A CPU moved between nodes at run time does not come here. The hard
+    /// affinity is what the firmware said, and does not follow a move.
+    auto join_hard_affinity(CpuNum cpu) -> void;
 
     FORCE_INLINE
     constexpr auto hard_affinity() const -> CpuMask const & {
@@ -325,6 +291,23 @@ class PmNode {
     auto page_queues() -> PageQueues & {
         return m_page_queues;
     }
+
+    /// Marks |zone|, one of this node's, as short: an allocation found it
+    /// below its floor and wants it reclaimed. True when this is the first
+    /// mark since take_reclaim_target() last took the node's record, and the
+    /// caller then wakes whatever takes it; false when an earlier mark is
+    /// still waiting, and its wake has already gone out. The node only
+    /// records: it wakes nothing itself, so it does not depend on the
+    /// reclaimer above it (MemoryReclaimer::request() is the caller).
+    [[nodiscard]]
+    auto mark_short(PmZone const &zone) -> bool;
+
+    /// Takes the node's record of short zones, and answers how many frames
+    /// the marked ones are short of High, read now: zero when nothing was
+    /// marked or the marked zones have recovered since. The take clears the
+    /// record, so each mark is answered once.
+    [[nodiscard]]
+    auto take_reclaim_target() -> usize;
 
     /// TA_RETURN_CAPABILITY ties the accessor to the member for the
     /// thread-safety analysis, so `TA_GUARDED(get_lock())` on the masks below and
@@ -360,7 +343,7 @@ class PmNode {
 
     NodeId m_id;
 
-    /// Held with interrupts off. PmNode::publish_cpus() publishes every CPU
+    /// Held with interrupts off. CpuNodeMap::publish_all() publishes every CPU
     /// under it at InitLevel::CpuLocal + 1, long before InitLevel::Threading
     /// gives the boot CPU a thread whose preemption could be held off, and
     /// work_cpus() reads it at run time; IrqSave is the option that is right
@@ -370,17 +353,19 @@ class PmNode {
     /// The affinity based on hardware/software.
     /// Using rules:  (m_hard_affinity & m_soft_affinity)
     ///
-    /// Not under m_lock: both are written once, in init() before the node is
-    /// marked Online, and only read after that. The accessors hand out
-    /// references and the per-CPU allocator caches a pointer to the hard
-    /// mask for the life of the system, neither of which a lock could cover.
-    /// They used to be TA_GUARDED(get_lock()), which no reader honoured and
-    /// no reader could.
+    /// Not under m_lock: both are written in init(), before the node is
+    /// marked Online, and the hard one once more by join_hard_affinity() from
+    /// the init hooks, on the boot CPU before any other CPU is started. They
+    /// are only read after that. The accessors hand out references, which a
+    /// lock could not cover; the one reader outside tests, the per-CPU unit
+    /// mapper (CpuLocal::Mapper), reads the hard mask once, on the boot CPU,
+    /// while CpuLocal::init() lays out the units. They used to be
+    /// TA_GUARDED(get_lock()), which no reader honoured and no reader could.
     CpuMask m_hard_affinity;
     CpuMask m_soft_affinity;
 
     /// Which CPUs work on this node. Unlike the two above this one does
-    /// change after bring-up -- update_cpu_to_node() moves a CPU between
+    /// change after bring-up -- CpuNodeMap::move() moves a CPU between
     /// nodes -- so it stays under the lock, and work_cpus() copies it out.
     CpuMask m_work_cpus TA_GUARDED(get_lock());
 
@@ -391,16 +376,15 @@ class PmNode {
     ZoneList m_zone_list;
     PageQueues m_page_queues;
 
+    /// The zones of this node an allocation has marked short since the
+    /// reclaimer last took the record, one bit per zone type. One word, so
+    /// that one exchange takes the whole record and one fetch_or tells a
+    /// marker whether it is the first; those two atomic read-modify-writes
+    /// are the only writes it has.
+    std::atomic<u32> m_short_zones;
+
     [[no_unique_address]]
     AllocPolicy m_node_policy;
-
-    constexpr static usize NUM_STATES = std::to_underlying(State::NumStates);
-    static std::array<NodeMask, NUM_STATES> STATES;
-
-    static std::array<PmNode *, MAX_NODES> NODES;
-
-    // Th fields bottom is readonly after initializing logically.
-    static usize NUM_NODES;
 };
 
 } // namespace ours::mm

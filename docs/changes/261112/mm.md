@@ -473,3 +473,65 @@ None.
 - Why can a stale order on the fifth frame of a block be at most 2, and what does the alignment rule say about any frame?
 - What actually keeps a pinned VMO page from being reclaimed, if the reclaimer never reads the pin count?
 - Why does an assertion that runs in exactly the builds where another assertion runs not close a release-build gap?
+
+## The node table leaves PmNode: ours/mm/node_table.hpp (2026-11-12)
+
+**Files**
+- `kernel/mm/include/ours/mm/node_table.hpp`, `kernel/mm/node_table.cpp` — new: `NodeState`, `find_node()`, `node_mask()`, `set_node_state()`, `num_nodes()`, `for_each_node()`, `for_each_nid()`, the mask shorthands, and `priv::register_node()` for bring-up
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp` — `PmNode::State`, the eleven static members over the table and its three static arrays go
+- `kernel/mm/pm_node_init.cpp` — `create_nodes()` registers through the table; `init()` sets states through it
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/pmm.cpp` — the node-mask queries move to the new header, which `pmm.hpp` includes; their forwards to `PmNode` go
+- `kernel/arch/x86/mm/srat.cpp`, `kernel/mm/object_cache.cpp` — include `node_table.hpp` and no longer `pm_node.hpp`
+- `kernel/mm/memory_reclaimer.cpp`, `page_queues.cpp`, `memmap_init.cpp`, `vm_cow_pages.cpp`, `cpu_node_map.cpp`, `cpu_node_map.hpp` and six test files — the new spellings
+- `kernel/mm/BUILD.gn` — `node_table.cpp`
+
+**Symptom**
+None. Which nodes exist, and their states, are recorded and answered as before.
+
+**Cause**
+`PmNode` was two things: one node, and the table of all nodes. The second was its static members: the state masks (`STATES`), the node pointers (`NODES`), their count, and eleven functions over them. A class whose static half has nothing to do with any instance makes every user of the table include the node's whole definition, its zone list, page queues, lock and allocation policy, to ask "is node 2 online". `srat.cpp`, an arch file, included `pm_node.hpp` for exactly one call, `PmNode::set_state(nid, PmNode::State::Possible)`, and `object_cache.cpp` for one `for_each_nid()`.
+
+Linux keeps the same split: `pg_data_t` is a node, and `node_data[]` and `node_states[]` are plain globals in `mm/page_alloc.c`, asked through `NODE_DATA()`, `node_state()` and `for_each_node_state()`. This was decision D2(a) of `.agents/tasks/pmm-layering/DESIGN.md` on 2026-10-28, not built until now.
+
+**Change**
+The table is file-scope data in `node_table.cpp`, behind free functions in the flat `node_*` style `pmm.hpp` already used for `node_online_mask()` and `num_nodes()`:
+
+```cpp
+// before
+auto *const node = PmNode::node(nid);
+PmNode::set_state(nid, PmNode::State::Possible);
+PmNode::for_each_node(PmNode::State::Memory, [](PmNode &node) { ... });
+
+// after
+auto *const node = find_node(nid);
+set_node_state(nid, NodeState::Possible);
+for_each_node(NodeState::Memory, [](PmNode &node) { ... });
+```
+
+The lookup is `find_node()` and not `node()`: in `auto *const node = node(nid);` the variable is already in scope in its own initialiser, so the call would name the variable and not compile, and that line is the common one.
+
+Registration is the one write into the node pointers, and only bring-up may make it, so it is `priv::register_node(nid, node)`, which asserts a node is registered once. `PmNode::bootstrap()`, `setup_watermarks()` and `create_nodes()` stay static members for now: they are bring-up of every node at once, and the CPU-membership statics are the next step.
+
+`for_each_node()` takes `PmNode &` with `PmNode` only declared, so the header does not include `pm_node.hpp`; a caller that touches the node's members includes it itself, as before.
+
+**Reference**
+Linux `node_data[]`, `node_states[]`, `NODE_DATA()` and `for_each_node_state()` (`include/linux/nodemask.h`, `mm/page_alloc.c`).
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree, counts unchanged: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 183 passed, on the default and the four-node machine. `ktest all` on dbg, both machines: 83 ran, 80 passed, 3 skipped. `ktest PmNode.*:PmZone.*:PageQueues.*:PageReclaim.*` on four nodes after the include changes: 8 ran, 7 passed, 1 skipped. `format_cpp.py` and `format_gn.py` clean; clang-tidy reports nothing in `node_table.cpp`, `pm_node.cpp`, `pm_node_init.cpp`, `pmm.cpp` or `srat.cpp` (the last against the NUMA build, the only one that compiles it).
+
+**Deliberately not done**
+- The CPU membership statics (`publish_cpu()`, `publish_cpus()`, `claim_possible_cpus()`, `set_cpu_node()`), which go to `CpuNodeMap` in the next step.
+- The bring-up statics, `bootstrap()`, `setup_watermarks()` and `create_nodes()`.
+- `memmap_init.cpp`, `memory_reclaimer.cpp`, `page_queues.cpp`, `vm_cow_pages.cpp` and `cpu_node_map.cpp` keep `pm_node.hpp`: each touches a node's members.
+
+**How it was found**
+None. The node table of `.agents/tasks/pmm-redesign/DESIGN.md`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does `auto *const node = node(nid);` not compile, and what does that say about naming a lookup?
+- What did `srat.cpp` have to include before this change, and why does that matter for an arch file?
+- Why can `for_each_node()` hand out `PmNode &` without including `pm_node.hpp`?

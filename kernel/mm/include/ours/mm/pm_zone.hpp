@@ -6,6 +6,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/pm_frame.hpp>
+#include <ours/mm/priv/admission.hpp>
 #include <ours/mm/priv/frame_buddy.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -124,7 +125,15 @@ class PmZone {
 
     /// The zone's layer of mm::free_frames(): puts a block this zone owns
     /// back into its stock under the zone lock.
-    auto free_frames(PmFrame &frame, usize order) -> void;
+    ///
+    /// Returns whether this release is the one that brought the zone back to
+    /// admitting, in the Low pass, a single frame for a request that allows
+    /// up to Normal. Of several releases racing each other and allocations,
+    /// exactly the one that took the count over that line says so. A caller
+    /// below the allocation pipeline, a test giving back what it took from
+    /// the zone directly, may ignore it.
+    [[nodiscard]]
+    auto free_frames(PmFrame &frame, usize order) -> bool;
 
     /// How many frames this zone could hand out right now, counted out of the
     /// buddy's free lists under the zone lock.
@@ -255,13 +264,51 @@ class PmZone {
     [[nodiscard]]
     FORCE_INLINE
     auto watermark_ok(usize const order, Watermark const mark) const -> bool {
-        auto const free = num_free_frames();
-        auto const wanted = usize{1} << order;
-        if (free < wanted) {
-            return false;
-        }
-        return free - wanted >= watermark(mark);
+        return mm::admits(num_free_frames(), order, watermark(mark));
     }
+
+    /// Whether this zone may give 2^|order| frames to a request in |pass|:
+    /// the one question a zone answers about itself for the candidate walk,
+    /// from its own watermarks, its reserve and its free count. |can_block|
+    /// and |highest| are the request's: whether it may block, and the
+    /// highest zone type it allows, which decides how much of this zone is
+    /// held back from it. The zone reads no allocation flags. A snapshot,
+    /// like watermark_ok().
+    [[nodiscard]]
+    FORCE_INLINE
+    auto admits(usize const order, AdmissionPass const pass, bool const can_block,
+                ZoneType const highest) const -> bool {
+        auto const floor =
+            admission_floor(watermark(Watermark::Min), watermark(Watermark::Low), pass, can_block);
+        return mm::admits(num_free_frames(), order, floor + lowmem_reserve(highest));
+    }
+
+    /// The frames of this zone held back from a request whose highest
+    /// allowed zone type is |highest|: a share of what the zones above this
+    /// one on the same node manage, up to |highest| (mm::lowmem_reserve()).
+    /// Zero until PmNode::setup_watermarks() has run, and for a |highest| at
+    /// or below this zone's own type.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto lowmem_reserve(ZoneType const highest) const -> usize {
+        return m_lowmem_reserve[std::to_underlying(highest)];
+    }
+
+    /// The Low pass's floor for a request that allows up to Normal, which is
+    /// every request made today: Low plus this zone's reserve against such a
+    /// request. With this many free frames or fewer the zone refuses such a
+    /// request a single frame in the Low pass, since taking one would leave
+    /// it below the floor.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto normal_low_floor() const -> usize {
+        return watermark(Watermark::Low) + lowmem_reserve(ZoneType::Normal);
+    }
+
+    /// The share of the memory above a zone that it keeps back: one frame in
+    /// LOWMEM_RESERVE_RATIO. The same for every zone, 1/256 (decided with
+    /// the user, 2026-11-14).
+    constexpr static usize LOWMEM_RESERVE_RATIO = 256;
 
     FORCE_INLINE
     constexpr auto is_below_high_wmark() const -> bool {
@@ -294,6 +341,12 @@ class PmZone {
     /// allocating.
     auto setup_watermarks(usize reserve_frames, usize managed_total) -> void;
 
+    /// Works out this zone's reserve against every highest zone type a
+    /// request may allow, from the managed frames of the zones above it on
+    /// its node. Called once, by PmNode::setup_watermarks(), after every
+    /// zone's managed count is final and while no CPU is allocating.
+    auto setup_lowmem_reserve() -> void;
+
     /// Every zone, at its node and type; null where a node has no memory of a
     /// type. Written by create_all() alone. A fixed grid of every node the
     /// kernel can have by every type, so that a zone is found by its two
@@ -325,6 +378,10 @@ class PmZone {
     std::atomic<usize> m_reserved_frames;
 
     std::array<usize, std::to_underlying(Watermark::Count)> m_watermarks;
+
+    /// By the highest zone type a request allows. Written once, by
+    /// setup_lowmem_reserve(), and read without the zone lock after.
+    std::array<usize, NR_ZONES_PER_NODE> m_lowmem_reserve;
 
     typedef FramePcpuCache<MAX_PCPU_CACHE_ORDER> PcpuCache;
     CpuLocal::PerCpu<PcpuCache> m_frame_cache;

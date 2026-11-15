@@ -38,7 +38,7 @@ class PmNode;
 /// in.
 ///
 /// The table is the truth and the pointer is strictly a function of it --
-/// PmNode::node(node_of(cpu)) -- so it is a cache and is treated as one:
+/// find_node(node_of(cpu)) -- so it is a cache and is treated as one:
 /// local_node() falls back to recomputing it, and a null slot is a miss rather
 /// than a fault. That is the opposite arrangement from the firmware placement
 /// in kernel/lib/numa, which is a second independent fact and so must never be
@@ -68,9 +68,9 @@ class CpuNodeMap: private CpuLocal::Current<PmNode *> {
         return NODE_OF_CPU[cpu];
     }
 
-    /// Places |cpu| on |nid|. Both the seed at bring-up and a run-time move
-    /// come through here; the nodes' own CPU masks belong to PmNode, which
-    /// updates them around this call.
+    /// Places |cpu| on |nid| in the table, and nothing else. Both the seed at
+    /// bring-up and move() come through here; the nodes' own CPU masks are
+    /// each node's, and publish() and move() update them around this call.
     FORCE_INLINE
     static auto set_node_of(CpuNum const cpu, NodeId const nid) -> void {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
@@ -97,7 +97,7 @@ class CpuNodeMap: private CpuLocal::Current<PmNode *> {
     /// The calling CPU's node, answered even before the cache exists.
     ///
     /// The cached pointer when there is one, and otherwise the table and the
-    /// node it names. The slot is filled by PmNode::publish_cpus(), an init
+    /// node it names. The slot is filled by publish_all(), an init
     /// hook at InitLevel::CpuLocal + 1 -- after CpuLocal::init(), which
     /// allocates the per-CPU units themselves and the page tables that map
     /// them. Read before that, the slot answers null, and a null PmNode is not
@@ -110,8 +110,8 @@ class CpuNodeMap: private CpuLocal::Current<PmNode *> {
     ///
     /// Null means no node has claimed this CPU at all, which is a caller error
     /// rather than a shortage: bootstrap() claims the CPU it runs on before the
-    /// first allocation, and PmNode::claim_possible_cpus() the rest before any
-    /// of them starts.
+    /// first allocation, and claim_possible() the rest before any of them
+    /// starts.
     static auto local_node() -> PmNode *;
 
     /// Points |cpu|'s slot at |node|, which must be the node the table places
@@ -121,6 +121,30 @@ class CpuNodeMap: private CpuLocal::Current<PmNode *> {
     /// there is nothing to ask whether the units exist yet. Every caller is an
     /// init hook at InitLevel::CpuLocal + 1 or later, or a run-time move.
     static auto cache_local_node(CpuNum cpu, PmNode *node) -> void;
+
+    /// Makes |cpu|'s place in the table known to the node and to the cache:
+    /// records it as working on the node the table puts it on, and points its
+    /// slot at that node. Nothing for a CPU still on the MAX_NODES sentinel.
+    static auto publish(CpuNum cpu) -> void;
+
+    /// publish() for every CPU claimed so far. Run once, from an init hook,
+    /// as soon as per-CPU storage exists; see the definition for why it is
+    /// unconditional rather than going through move().
+    static auto publish_all() -> void;
+
+    /// Gives every CPU the firmware reported a node, and publishes it, before
+    /// any of them starts. Run once, from an init hook after the MADT parse;
+    /// see the definition for why node bring-up could not do this itself.
+    static auto claim_possible() -> void;
+
+    /// Moves |cpu| to node |nid|: out of its old node's CPU mask, into the new
+    /// one's, and the table and its cache along with them.
+    ///
+    /// No caller yet. It is kept because it is the one place that knows what a
+    /// move has to touch, and it is three objects wide -- two nodes' masks,
+    /// each under its own lock, and the table -- so the next thing that
+    /// re-homes a CPU should not have to rediscover the order.
+    static auto move(CpuNum cpu, NodeId nid) -> void;
 
   private:
     /// MAX_NODES from the first instruction, by constinit, because this is

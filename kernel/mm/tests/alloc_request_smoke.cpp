@@ -27,6 +27,7 @@ using ours::NodeMask;
 using ours::mm::AllocRequest;
 using ours::mm::Gaf;
 using ours::mm::resolve_request;
+using ours::mm::ZoneType;
 
 auto FAILURES = 0;
 
@@ -98,6 +99,23 @@ auto empty_mask_stays_empty() -> void {
           "an empty mask stays empty: resolving does not invent a node to allow");
 }
 
+/// Which requests the pipeline treats as confined: those that may use less
+/// memory than an ordinary one, by node or by zone type.
+auto confinement() -> void {
+    auto const nodes = mask_of(HOME, OTHER);
+    auto const ordinary = resolve_request(Gaf::Zero, 0, nodes, HERE);
+    auto const this_node = resolve_request(Gaf::ThisNode, 0, nodes, HERE);
+
+    check(!ordinary.is_confined(), "an ordinary request is not confined");
+    check(this_node.is_confined(), "ThisNode confines a request to its home node");
+    check(ordinary.with_zone_range(ZoneType::Dma, ZoneType::Dma32).is_confined(),
+          "a zone range that stops below Normal confines a request");
+    check(ordinary.with_zone_range(ZoneType::Dma32, ZoneType::Normal).is_confined(),
+          "a zone range that starts above Dma confines it too");
+    check(!ordinary.with_zone_range(ZoneType::Dma, ZoneType::Movable).is_confined(),
+          "a zone range wider than Dma through Normal does not");
+}
+
 } // namespace
 
 auto main() -> int {
@@ -106,6 +124,7 @@ auto main() -> int {
     with_this_node_including_home();
     with_this_node_excluding_home();
     empty_mask_stays_empty();
+    confinement();
 
     if (FAILURES != 0) {
         std::printf("alloc-request-smoke: FAILED -- %d check(s)\n", FAILURES);

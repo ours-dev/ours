@@ -97,7 +97,7 @@ namespace {
     }
 
     /// After the MADT parse has filled the possible mask and the node table
-    /// has placed every CPU in it (PmNode::claim_possible_cpus(), at
+    /// has placed every CPU in it (CpuNodeMap::claim_possible(), at
     /// InitLevel::Irq + 1), and before the other CPUs start: main.cpp announces
     /// Threading, which runs this, and only then creates the thread that calls
     /// init_platform() and with it x86_bring_aps(). The boot options were

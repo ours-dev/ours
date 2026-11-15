@@ -96,9 +96,9 @@ namespace {
             nid = mm::current_node();
         }
         log::info("pmnode:   cpu{} is on node {}; {} node(s) online", cpu, nid,
-                  PmNode::num_online_nodes());
+                  mm::num_online_nodes());
 
-        EXPECT_TRUE(nid < MAX_NODES && PmNode::node(nid) != nullptr,
+        EXPECT_TRUE(nid < MAX_NODES && mm::find_node(nid) != nullptr,
                     "the calling CPU resolves to a node that exists");
         // There is one current_node() now. It used to be three -- a
         // NumaTopology::current_node(), mm::current_node() wrapping it, and
@@ -134,9 +134,9 @@ namespace {
                 }
                 declared_cpus += 1;
                 auto const placed = mm::CpuNodeMap::node_of(each);
-                if (PmNode::node(declared) == nullptr) {
+                if (mm::find_node(declared) == nullptr) {
                     memoryless_cpus += 1;
-                    if (placed >= MAX_NODES || PmNode::node(placed) == nullptr) {
+                    if (placed >= MAX_NODES || mm::find_node(placed) == nullptr) {
                         rehomed = false;
                     }
                     return;
@@ -156,8 +156,8 @@ namespace {
                     "every CPU the firmware placed on a node with no memory runs from one that "
                     "exists");
 
-        auto const online = PmNode::num_online_nodes();
-        EXPECT_TRUE(online >= 1 && online == PmNode::node_online_mask().count(),
+        auto const online = mm::num_online_nodes();
+        EXPECT_TRUE(online >= 1 && online == mm::node_online_mask().count(),
                     "num_online_nodes() counts the Online mask");
     }
 
@@ -195,22 +195,45 @@ namespace {
         EXPECT_TRUE(by_type_ok && visited == local_count && local_count >= 1,
                     "a node's local zones are its own, one per type, walked in type order");
 
-        // Fallback order: own zones first, in the same order.
+        // Fallback order: own zones first, from the highest type down.
         auto const fallback = list->fallback();
         auto head_ok = fallback.size() >= local_count;
-        usize index = 0;
+        auto index = local_count;
         list->for_each_local_zone([&](PmZone &zone) {
+            index -= 1;
             if (index >= fallback.size() || fallback[index] != &zone) {
                 head_ok = false;
             }
-            index += 1;
         });
-        EXPECT_TRUE(head_ok, "a node's fallback order starts with its own zones");
+        EXPECT_TRUE(head_ok, "a node's fallback order starts with its own zones, highest first");
+
+        // Every node's zones form one run, and within a run the types fall.
+        // A node seen again after another node's run would mean its zones
+        // were split, and a type that rises within a run would mean a low
+        // zone is tried before a higher one of the same node.
+        auto runs_ok = true;
+        NodeMask finished;
+        for (usize i = 0; i < fallback.size(); ++i) {
+            auto const here = fallback[i]->which_node();
+            if (i == 0 || fallback[i - 1]->which_node() != here) {
+                if (finished.test(here)) {
+                    runs_ok = false;
+                }
+                if (i != 0) {
+                    finished.set(fallback[i - 1]->which_node());
+                }
+                continue;
+            }
+            if (fallback[i]->zone_type() >= fallback[i - 1]->zone_type()) {
+                runs_ok = false;
+            }
+        }
+        EXPECT_TRUE(runs_ok, "each node's zones are one run in the fallback order, highest first");
 
         // No zone twice, every zone on an online node.
         auto unique_ok = true;
         for (usize i = 0; i < fallback.size(); ++i) {
-            if (!PmNode::node_online_mask().test(fallback[i]->which_node())) {
+            if (!mm::node_online_mask().test(fallback[i]->which_node())) {
                 unique_ok = false;
             }
             for (usize j = i + 1; j < fallback.size(); ++j) {
@@ -236,8 +259,8 @@ namespace {
     }
 
     auto check_fallback_orders(NodeId const nid) -> void {
-        auto const &online = PmNode::node_online_mask();
-        auto const members = online & PmNode::node_memory_mask();
+        auto const &online = mm::node_online_mask();
+        auto const members = online & mm::node_memory_mask();
 
         // Static: MAX_NODES rows is kilobytes on a NUMA build, and a ktest
         // runs on an ordinary thread stack. Single-threaded, like the rest of
@@ -293,7 +316,7 @@ namespace {
 
     /// A request over every online node, which each case then narrows.
     auto request_for(PmNode &node, mm::Gaf const alloc_flags) -> mm::AllocRequest {
-        return mm::resolve_request(alloc_flags, 0, PmNode::node_online_mask(),
+        return mm::resolve_request(alloc_flags, 0, mm::node_online_mask(),
                                    mm::AllocRequest::Origin{.node = node.nid(), .cpu = Cpu::id()});
     }
 
@@ -484,7 +507,7 @@ namespace {
                     "an allocation rejects an order past the maximum");
         release(oversized);
 
-        auto remote_nodes = PmNode::node_memory_mask();
+        auto remote_nodes = mm::node_memory_mask();
         remote_nodes.set(nid, false);
         if (remote_nodes.any()) {
             auto pinned =
@@ -537,14 +560,14 @@ namespace {
 
     auto check_node_queries() -> void {
         auto const nid = mm::current_node();
-        auto *const node = PmNode::node(nid);
-        EXPECT_TRUE(node && mm::num_nodes() == PmNode::num_nodes() &&
+        auto *const node = mm::find_node(nid);
+        EXPECT_TRUE(node && mm::num_nodes() == mm::num_nodes() &&
                         mm::node_work_cpus(nid) == node->work_cpus() &&
                         mm::node_soft_affinity(nid) == &node->soft_affinity() &&
                         mm::node_hard_affinity(nid) == &node->hard_affinity(),
                     "PMM topology queries describe the current node");
         for (NodeId absent = 0; absent < MAX_NODES; ++absent) {
-            if (PmNode::node(absent)) {
+            if (mm::find_node(absent)) {
                 continue;
             }
             auto single = mm::alloc_frames(mm::ALLOC_KERNEL, 0, absent);
@@ -613,7 +636,9 @@ namespace {
                 auto const block = state.zone.alloc_frames(0);
                 auto const count = state.zone.num_free_frames();
                 if (block) {
-                    state.zone.free_frames(block.value(), 0);
+                    // Back into the zone it came from, below the pipeline:
+                    // no waiter to wake.
+                    auto _ = state.zone.free_frames(block.value(), 0);
                 }
                 if (count > 1 || state.zone.num_free_frames() > 1) {
                     return 1;
@@ -659,12 +684,22 @@ namespace {
             FAIL("reserve a page on the memory-only node");
         }
 
+        // Through mm:: until the node refuses, which is at its zones' Min
+        // floor now, and then through the zones themselves, which have no
+        // floor, so that the node is empty for the checks below.
         PmFrame::List held;
         for (usize order = MAX_FRAME_ORDER + 1; order > 0; --order) {
             while (auto block = mm::alloc_frames(flags, order - 1, nid)) {
                 held.push_back(**block);
             }
         }
+        mm::find_node(nid)->zone_list()->for_each_local_zone([&held](PmZone &zone) {
+            for (usize order = MAX_FRAME_ORDER + 1; order > 0; --order) {
+                while (auto block = zone.alloc_frames(order - 1)) {
+                    held.push_back(block.value());
+                }
+            }
+        });
         auto const pinned = mm::alloc_frames(flags, 0, nid);
         auto const pinned_failed = !pinned && pinned.unwrap_err() == Status::OutOfMem;
         if (pinned) {
@@ -683,43 +718,43 @@ namespace {
                         "two CPUs keep an exhausted zone's free count within its one-page "
                         "inventory");
         }
+        // One frame free and a floor above it: every list form is refused on
+        // the first block, and the one free frame stays where it is. Whether
+        // a rollback returns the very frame it took is no longer reachable
+        // here, since nothing past the floor can be taken through mm::; the
+        // batch errors on a healthy node cover the rollback itself.
+        auto const one_free = [zone] {
+            return zone && zone->num_free_frames() == 1 && zone->count_free_frames() == 1;
+        };
         auto bulk = mm::alloc_frames_bulk(flags, 2, nid);
         auto const rejected = !bulk && bulk.unwrap_err() == Status::OutOfMem;
         if (bulk) {
             mm::free_frames(&*bulk);
         }
-        auto const restored = mm::alloc_frames(flags, 0, nid);
-        auto const restored_last = restored && *restored == last;
-        if (restored) {
-            mm::free_frames(*restored);
-        }
+        auto const restored_last = one_free();
 
         auto fragment = mm::alloc_frames_fragment(flags, PARTIAL_FRAGMENT_COUNT, nid);
-        auto const invalid = !fragment && fragment.unwrap_err() == Status::InvArgs;
+        auto const invalid = !fragment && fragment.unwrap_err() == Status::OutOfMem;
         if (fragment) {
             mm::free_frames(&*fragment);
         }
-        auto const after_fragment = mm::alloc_frames(flags, 0, nid);
-        auto const fragment_restored_last = after_fragment && *after_fragment == last;
-        if (after_fragment) {
-            mm::free_frames(*after_fragment);
-        }
+        auto const fragment_restored_last = one_free();
         mm::free_frames(&held);
 
         EXPECT_TRUE(pinned_failed, "ThisNode fails after exhausting the requested node");
         EXPECT_TRUE(drained && counted_local,
                     "fallback from the exhausted remote home supplies and counts a local page");
-        EXPECT_TRUE(rejected && restored_last, "a partial bulk allocation returns its page");
+        EXPECT_TRUE(rejected && restored_last,
+                    "a bulk allocation refused at the floor leaves the free frame in place");
         EXPECT_TRUE(invalid && fragment_restored_last,
-                    "a partial fragment allocation returns its page");
+                    "a fragment allocation refused at the floor leaves the free frame in place");
     }
 
     auto check_remote_exhaustion() -> void {
         // Run from an idle guest. Target a memory-only node so CPUs retain their local memory.
         auto const home = mm::current_node();
         for (NodeId nid = 0; nid < MAX_NODES; ++nid) {
-            if (nid != home && PmNode::node_memory_mask().test(nid) &&
-                !mm::node_work_cpus(nid).any()) {
+            if (nid != home && mm::node_memory_mask().test(nid) && !mm::node_work_cpus(nid).any()) {
                 mm::MemoryReclaimer::Pause pause{mm::MemoryReclaimer::get()};
                 check_exhausted_node(nid);
                 return;
@@ -939,9 +974,405 @@ namespace {
 #endif
     }
 
+    /// Takes order-0 frames out of |zone| through the zone itself, which has no
+    /// floor, until its free count is |target|, onto |held|. Larger blocks
+    /// first while they fit, so that a zone of a hundred thousand frames is
+    /// drained in a few hundred calls.
+    auto drain_to(PmZone &zone, usize const target, PmFrame::List &held) -> bool {
+        for (usize order = MAX_FRAME_ORDER + 1; order > 0; --order) {
+            auto const size = usize{1} << (order - 1);
+            while (zone.num_free_frames() >= target + size) {
+                auto block = zone.alloc_frames(order - 1);
+                if (!block) {
+                    break;
+                }
+                held.push_back(block.value());
+            }
+        }
+        return zone.num_free_frames() == target;
+    }
+
+    KTEST(PmNode, AdmissionHoldsAtLowThenAtMin) {
+        // A node other than the calling CPU's, with one zone, so that every
+        // allocation below asks exactly one zone and the test does not starve
+        // its own node. The four-node machine has three; one node has none.
+        auto const local = mm::current_node();
+        PmNode *target = nullptr;
+        mm::for_each_node(mm::NodeState::Memory, [local, &target](PmNode &node) {
+            if (target || node.nid() == local) {
+                return;
+            }
+            usize zones = 0;
+            node.zone_list()->for_each_local_zone([&zones](PmZone &) { zones += 1; });
+            if (zones == 1) {
+                target = &node;
+            }
+        });
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list()->fallback()[0];
+        auto const min = zone.watermark(PmZone::Watermark::Min);
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        if (min < 4 || low <= min + 1) {
+            KTEST_SKIP("the zone's watermarks are too close to test between");
+        }
+
+        // Reclaim would give frames back to the zone while the test holds its
+        // count still. Nothing reclaims while this lives.
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        auto const blocking = mm::ALLOC_KERNEL | mm::Gaf::ThisNode;
+        auto const non_blocking = mm::Gaf::ThisNode;
+        PmFrame::List held;
+
+        // At Low: the first pass refuses, the second lets a blocking request
+        // down to Min.
+        auto const at_low = drain_to(zone, low, held);
+        auto below_low = mm::alloc_frames(blocking, 0, nid);
+        auto const second_pass = below_low && (*below_low)->nid() == nid;
+        if (below_low) {
+            held.push_back(**below_low);
+        }
+
+        // At Min: a blocking request is refused, one that cannot block is not.
+        auto const at_min = drain_to(zone, min, held);
+        auto const refused = mm::alloc_frames(blocking, 0, nid);
+        auto const blocking_refused = !refused && refused.unwrap_err() == Status::OutOfMem;
+        if (refused) {
+            held.push_back(**refused);
+        }
+        auto const deeper = mm::alloc_frames(non_blocking, 0, nid);
+        auto const non_blocking_admitted = deeper && (*deeper)->nid() == nid;
+        if (deeper) {
+            held.push_back(**deeper);
+        }
+
+        // At three quarters of Min: nobody.
+        auto const at_floor = drain_to(zone, min - min / 4, held);
+        auto const last = mm::alloc_frames(non_blocking, 0, nid);
+        auto const non_blocking_refused = !last && last.unwrap_err() == Status::OutOfMem;
+        if (last) {
+            held.push_back(**last);
+        }
+        mm::free_frames(&held);
+
+        EXPECT_TRUE(at_low && second_pass,
+                    "below Low a blocking request is served by the second pass, down to Min");
+        EXPECT_TRUE(at_min && blocking_refused, "at Min a blocking request is refused");
+        EXPECT_TRUE(non_blocking_admitted, "at Min a request that cannot block is still served");
+        EXPECT_TRUE(at_floor && non_blocking_refused,
+                    "at three quarters of Min a request that cannot block is refused too");
+    }
+
+    /// A node other than the calling CPU's with memory in one zone, or null.
+    /// Draining it starves neither this test's node nor the zone order of any
+    /// allocation that does not name it.
+    auto remote_single_zone_node() -> PmNode * {
+        auto const local = mm::current_node();
+        PmNode *found = nullptr;
+        mm::for_each_node(mm::NodeState::Memory, [local, &found](PmNode &node) {
+            if (found || node.nid() == local) {
+                return;
+            }
+            usize zones = 0;
+            node.zone_list()->for_each_local_zone([&zones](PmZone &) { zones += 1; });
+            if (zones == 1) {
+                found = &node;
+            }
+        });
+        return found;
+    }
+
+    KTEST(PmNode, WaitingRequestsStopAtLowAndWakeOnRelief) {
+        using Descriptor = gktl::Counter::Descriptor;
+        auto const *const relief =
+            std::find_if(Descriptor::GLOBAL_DESC_START, Descriptor::GLOBAL_DESC_END,
+                         [](Descriptor const &counter) {
+                             return std::string_view{counter.name} == "pm.zone.relief";
+                         });
+        if (relief == Descriptor::GLOBAL_DESC_END) {
+            FAIL("the relief counter is linked in");
+            return;
+        }
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list()->fallback()[0];
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        auto const min = zone.watermark(PmZone::Watermark::Min);
+        if (low <= min + 2) {
+            KTEST_SKIP("the zone's watermarks are too close to test between");
+        }
+
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        PmFrame::List held;
+        auto const at_low = drain_to(zone, low, held);
+
+        // An ordinary waiting request, on a machine that is this node alone:
+        // the node set is the test's stand-in for the machine, so the request
+        // is not confined (it does not ask for Gaf::ThisNode) and every zone
+        // it may use is this one. A request that did ask for ThisNode would
+        // go on to Min instead (AConfinedWaitingRequestGoesOnToMin).
+        auto const ask_waiting = [nid] {
+            return mm::priv::alloc_frames(mm::ALLOC_USER_VMO, 0, nid, NodeMask::of(nid));
+        };
+
+        // At Low a waiting request is put off; one that cannot wait is served
+        // by the second pass.
+        auto const waiting = ask_waiting();
+        auto const put_off = !waiting && waiting.unwrap_err() == Status::ShouldWait;
+        if (waiting) {
+            held.push_back(**waiting);
+        }
+        auto const kernel = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, nid);
+        auto const served = kernel && (*kernel)->nid() == nid;
+
+        // The zone is one below Low now. Each release below is counted on one
+        // CPU's counter, read around it with nothing to preempt it, and the
+        // waiting request is tried between them with interrupts on.
+        gktl::Counter const wakes{relief};
+        auto const counted = [&wakes](PmFrame *const block) {
+            arch::AutoInterruptDisabler irq;
+            auto const before = wakes.get();
+            mm::free_frames(block);
+            return wakes.get() - before;
+        };
+
+        // Giving that frame back takes the zone to exactly Low, where the
+        // waiting request is still refused, so it wakes nobody.
+        auto early = isize{1};
+        auto still_put_off = false;
+        if (served) {
+            early = counted(*kernel);
+            auto const again = ask_waiting();
+            still_put_off = !again && again.unwrap_err() == Status::ShouldWait;
+            if (again) {
+                held.push_back(**again);
+            }
+        }
+
+        // The next release takes it above Low: one wake, and the request it
+        // woke for is served now. One more release, from above Low: none.
+        auto woke = isize{0};
+        auto served_after = false;
+        auto quiet = isize{1};
+        if (still_put_off) {
+            if (auto front = held.front()) {
+                auto *const block = &front.value();
+                held.pop_front();
+                woke = counted(block);
+            }
+            auto const retried = ask_waiting();
+            served_after = retried && (*retried)->nid() == nid;
+            if (retried) {
+                held.push_back(**retried);
+            }
+            if (auto front = held.front()) {
+                auto *const block = &front.value();
+                held.pop_front();
+                quiet = counted(block);
+            }
+        }
+        mm::free_frames(&held);
+
+        EXPECT_TRUE(at_low && put_off, "at Low a waiting request is answered ShouldWait");
+        EXPECT_TRUE(served, "at Low a request that cannot wait is served by the second pass");
+        EXPECT_TRUE(early == 0 && still_put_off,
+                    "a release back to exactly Low wakes nobody, and the request is still put off");
+        EXPECT_TRUE(woke == 1 && served_after,
+                    "the release that takes the zone above Low wakes one waiter, and it is served");
+        EXPECT_TRUE(quiet == 0, "a release from above Low wakes nobody");
+    }
+
+    KTEST(PmNode, AConfinedWaitingRequestGoesOnToMin) {
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list()->fallback()[0];
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        auto const min = zone.watermark(PmZone::Watermark::Min);
+        if (low <= min + 1) {
+            KTEST_SKIP("the zone's watermarks are too close to test between");
+        }
+
+        // A waiting request confined to the target node: the machine's count
+        // says nothing about that node, so nothing would be bound to end a
+        // wait there.
+        auto const confined = [nid] {
+            return mm::alloc_frames(mm::ALLOC_USER_VMO | mm::Gaf::ThisNode, 0, nid);
+        };
+
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        PmFrame::List held;
+
+        // At Low it is not put off: the Min pass serves it from its node.
+        auto const at_low = drain_to(zone, low, held);
+        auto const served = confined();
+        auto const from_node = served && (*served)->nid() == nid;
+        if (served) {
+            held.push_back(**served);
+        }
+
+        // At Min it fails, where an ordinary one would have been put off at Low.
+        auto const at_min = drain_to(zone, min, held);
+        auto const refused = confined();
+        auto const out_of_mem = !refused && refused.unwrap_err() == Status::OutOfMem;
+        if (refused) {
+            held.push_back(**refused);
+        }
+
+        // With no node to use at all -- ThisNode, and a node set without its
+        // home -- it fails at once rather than waiting on nothing.
+        auto const other = NodeMask::of(mm::current_node());
+        auto const nowhere =
+            mm::priv::alloc_frames(mm::ALLOC_USER_VMO | mm::Gaf::ThisNode, 0, nid, other);
+        auto const nowhere_fails = !nowhere && nowhere.unwrap_err() == Status::OutOfMem;
+        if (nowhere) {
+            held.push_back(**nowhere);
+        }
+        mm::free_frames(&held);
+
+        EXPECT_TRUE(at_low && from_node,
+                    "at Low a confined waiting request is served by the Min pass, from its node");
+        EXPECT_TRUE(at_min && out_of_mem, "at Min it answers OutOfMem, not ShouldWait");
+        EXPECT_TRUE(nowhere_fails, "with no node it may use, it answers OutOfMem at once");
+    }
+
+    KTEST(PmNode, AShortZoneIsMarkedOnceAndTakenOnce) {
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto &zone = *target->zone_list()->fallback()[0];
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        auto const high = zone.watermark(PmZone::Watermark::High);
+
+        // Paused, so that nothing else marks this node or takes its record
+        // while the test reads it: while a Pause lives the reclaimer drops
+        // every report and its thread takes no node's record. What an earlier
+        // report left is taken first, so that the first mark below is the
+        // first. A report that passed its check just before the Pause began
+        // could still mark the node; nothing allocates on this node now.
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        auto _ = target->take_reclaim_target();
+
+        // Above High: the mark is kept, and asks for nothing.
+        auto const above = zone.num_free_frames() >= high;
+        auto const first = target->mark_short(zone);
+        auto const second = target->mark_short(zone);
+        auto const nothing = target->take_reclaim_target();
+
+        // At Low: the distance to High, once.
+        PmFrame::List held;
+        auto const at_low = drain_to(zone, low, held);
+        auto const again = target->mark_short(zone);
+        auto const wanted = target->take_reclaim_target();
+        auto const taken = target->take_reclaim_target();
+        mm::free_frames(&held);
+
+        EXPECT_TRUE(above && first && !second,
+                    "the first mark says it is the first; a second before the take does not");
+        EXPECT_TRUE(nothing == 0, "a marked zone at or above High asks for nothing");
+        EXPECT_TRUE(at_low && again, "after a take the next mark is the first again");
+        EXPECT_TRUE(wanted == high - low, "a marked zone at Low asks for the distance to High");
+        EXPECT_TRUE(taken == 0, "the take clears the record");
+    }
+
+    KTEST(PmNode, LowZonesKeepAReserve) {
+        // The table: every zone's reserve against every highest type is one
+        // in LOWMEM_RESERVE_RATIO of what the zones above it on its node
+        // manage, up to that type.
+        auto table_ok = true;
+        PmZone::for_each([&table_ok](PmZone &zone) {
+            auto const row = PmZone::row(zone.which_node());
+            auto const own = std::to_underlying(zone.zone_type());
+            for (usize highest = 0; highest < NR_ZONES_PER_NODE; ++highest) {
+                usize above = 0;
+                for (auto type = own + 1; type <= highest; ++type) {
+                    if (row[type]) {
+                        above += row[type]->managed_frames();
+                    }
+                }
+                if (zone.lowmem_reserve(ZoneType(highest)) !=
+                    above / PmZone::LOWMEM_RESERVE_RATIO) {
+                    table_ok = false;
+                }
+            }
+        });
+        EXPECT_TRUE(table_ok, "each zone keeps 1/256 of the memory above it on its node");
+
+        // The admission: a zone that keeps something back from a request that
+        // allows Normal. Drained to exactly Low plus that reserve through the
+        // zone itself, it refuses such a request and still admits one that
+        // allows nothing above it. A low zone, the last any allocation tries,
+        // so draining it takes nothing anyone else is about to use. One with
+        // more free than that line: on a large machine the Dma zone keeps
+        // back more than it has, and cannot be drained down to it.
+        PmZone *low = nullptr;
+        PmZone::for_each([&low](PmZone &zone) {
+            auto const reserve = zone.lowmem_reserve(ZoneType::Normal);
+            if (!low && reserve != 0 && zone.num_free_frames() > zone.normal_low_floor()) {
+                low = &zone;
+            }
+        });
+        if (!low) {
+            KTEST_SKIP("no zone keeps anything back that it can be drained to");
+        }
+        auto const reserve = low->lowmem_reserve(ZoneType::Normal);
+        auto const floor = low->watermark(PmZone::Watermark::Low);
+
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        PmFrame::List held;
+        auto const drained = drain_to(*low, floor + reserve, held);
+        auto const refused = !low->admits(0, mm::AdmissionPass::Low, true, ZoneType::Normal);
+        auto const admitted = low->admits(0, mm::AdmissionPass::Low, true, low->zone_type());
+        mm::free_frames(&held);
+
+        EXPECT_TRUE(drained && refused,
+                    "at Low plus its reserve a low zone refuses a request that allows Normal");
+        EXPECT_TRUE(admitted, "and still admits a request that allows nothing above it");
+    }
+
+    KTEST(PmNode, AllocationsTakeTheHighestZoneFirst) {
+        // The zone an ordinary allocation should come from: this node's
+        // highest zone with room to spare. A margin, so that the answer does
+        // not change under the test if another CPU allocates meanwhile.
+        constexpr auto MARGIN = usize{1024};
+        auto const nid = mm::current_node();
+        auto *const node = mm::find_node(nid);
+        if (!node) {
+            FAIL("the calling CPU's node {} is not online", nid);
+            return;
+        }
+        PmZone const *expected = nullptr;
+        node->zone_list()->for_each_local_zone([&expected](PmZone &zone) {
+            if (zone.num_free_frames() > MARGIN) {
+                expected = &zone;
+            }
+        });
+        if (!expected) {
+            KTEST_SKIP("no zone of this node has frames to spare");
+        }
+
+        auto const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, nid);
+        if (!frame) {
+            FAIL("allocate a frame on node {}", nid);
+            return;
+        }
+        EXPECT_TRUE((*frame)->zone() == expected->zone_type(),
+                    "an ordinary allocation comes from the highest zone with room, {} here",
+                    mm::to_string(expected->zone_type()));
+        mm::free_frames(*frame);
+    }
+
     KTEST(PmNode, MatchesTheMachineItRunsOn) {
         run_topology_checks();
-        PmNode::for_each_node(PmNode::State::Online, [](PmNode &node) {
+        mm::for_each_node(mm::NodeState::Online, [](PmNode &node) {
             log::info("pmnode: node {}", node.nid());
             check_zone_list(node);
             check_fallback_orders(node.nid());

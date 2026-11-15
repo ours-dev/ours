@@ -278,7 +278,7 @@ auto PageQueues::take_accessed(PhysAddr const pa, usize const size) -> bool {
     if (first == get_zero_page()) {
         return false;
     }
-    if (&PmNode::node(first->nid())->page_queues() != this) {
+    if (&find_node(first->nid())->page_queues() != this) {
         return false;
     }
     for (usize offset = 0; offset < size; offset += PAGE_SIZE) {
@@ -565,7 +565,7 @@ namespace {
     auto start_page_aging() -> void {
         auto const seconds = boot::options().page_aging_seconds();
         auto const period = duration_cast<Duration>(Seconds(seconds));
-        PmNode::for_each_node(PmNode::State::Online, [seconds, period](PmNode &node) {
+        for_each_node(NodeState::Online, [seconds, period](PmNode &node) {
             if (auto const status = node.page_queues().start_runners(period);
                 Status::Ok != status) {
                 log::error("mm: no page aging thread for node {}: {}", node.nid(),

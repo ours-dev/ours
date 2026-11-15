@@ -15,6 +15,7 @@ if (toolchain_environment == "kernel") {
       "memory_reclaimer.cpp",
       "memory_watchdog.cpp",
       "cpu_node_map.cpp",
+      "node_table.cpp",
       "object_cache.cpp",
       "page_queues.cpp",
       "page_table_deposits.cpp",

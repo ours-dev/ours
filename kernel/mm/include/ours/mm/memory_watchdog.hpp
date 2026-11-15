@@ -48,9 +48,26 @@ class MemoryPressureLevels {
         usize upper;
     };
 
-    /// The levels the `kernel.oom.*` boot options give. Not necessarily valid.
+    /// The levels the `kernel.oom.*` boot options give, raised where this
+    /// machine's zone floors need it: covering(zone_floor_frame_count()).
+    /// Not necessarily valid.
     [[nodiscard]]
     static auto from_boot_options() -> MemoryPressureLevels;
+
+    /// These levels with the delay level above |held| frames: unchanged
+    /// when it already is, or when they do not nest (start() refuses those),
+    /// and otherwise all three levels moved up by the same amount, so that
+    /// each band keeps the width it was given.
+    ///
+    /// |held| is the most free memory there can be while every zone refuses
+    /// an ordinary request (zone_floor_frame_count()). With the delay level
+    /// above it, every zone refusing means free memory below the delay
+    /// level: the gate shuts and the watchdog is woken, and at OutOfMemory
+    /// the waiters are refused. Below it, every zone could refuse while
+    /// free memory stayed above the delay level, and a waiting request put
+    /// off at a zone's Low would wait for a release that need never come.
+    [[nodiscard]]
+    auto covering(usize held) const -> MemoryPressureLevels;
 
     /// A value whose levels nest. InvArgs when they do not.
     [[nodiscard]]

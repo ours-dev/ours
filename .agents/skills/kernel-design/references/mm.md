@@ -193,6 +193,19 @@ The kernel still tears down sealed mappings during address-space destruction.
   and reads the levels again before it declares (2026-11-02): the walk
   sleeps, and the mutex guards the levels and the declaration.
   `MemoryPressureLevels::make()` is the only builder of a nested value.
+- The boot levels are raised so that the delay level sits above
+  `zone_floor_frame_count()`, every zone's Low floor for an ordinary
+  request capped at its present frames, summed (`covering()`, the user's
+  D1(a), 2026-11-14). Then every zone refusing implies free memory below
+  the delay level, and the gate, not a zone's Low, decides when an
+  ordinary waiting request waits. All three levels move together; levels
+  that do not nest are left for `start()` to refuse.
+- A confined waiting request -- `Gaf::ThisNode`, or a zone range
+  narrower than Dma through Normal (`AllocRequest::is_confined()`) -- is
+  not put off at a zone's Low: it makes the Min pass and answers `OutOfMem`
+  below it (the user's D2(b), 2026-11-14). The machine-wide gate and
+  watchdog count memory it cannot use, so nothing would be bound to end its
+  wait. A node set narrowed without `ThisNode` is not confined.
 
 ## CpuLocal (Linux, not Zircon)
 
@@ -258,8 +271,15 @@ page queues. Admission and waits use the global gate. The node-scoped
 reclaim request is advisory and preserves the immediate allocation result.
 
 A block attempt carries its optional depleted zone in its typed failure.
-The reclaimer stores Idle and Pending as per-zone enum states. Owner-directed
-block return requires a frame reference at the zone boundary.
+Each node records its short zones in one atomic word, a bit per zone
+type (2026-11-14, N2): `MemoryReclaimer::request(zone)` marks it and
+signals when the mark is the node's first since the thread took it, and
+the thread takes it with `PmNode::take_reclaim_target()`. The node never
+calls the reclaimer. The checks that drop a report (not started, paused)
+come before the mark, so a record that is not empty always has a wake on
+its way; while a Pause lives the thread takes no record, and the last
+Pause to end wakes it. Owner-directed block return requires a frame
+reference at the zone boundary.
 
 ## PMM allocation pipeline (user decision, 2026-11-10)
 
@@ -294,8 +314,13 @@ a step is in, the code still has the shape described above.
   has one boundary: say what it owns and what it never does before adding a
   method to it.
 - `PmNode` is one node: its `ZoneList`, `PageQueues` and CPU masks. The node
-  table and the state masks are file-scope data behind free functions, and
-  CPU membership (publish, claim, move) belongs to `CpuNodeMap`.
+  table and the state masks are file-scope data behind free functions in
+  `ours/mm/node_table.hpp`, spelled in the flat `node_*` style `pmm.hpp`
+  already used (the user's choice, 2026-11-12): `find_node(nid)`,
+  `node_mask(NodeState)`, `set_node_state()`, `for_each_node()`,
+  `for_each_nid()`. Not `node(nid)`: a local variable named `node` is in
+  scope in its own initialiser and would hide it. CPU membership (publish,
+  claim, move) belongs to `CpuNodeMap`.
 - The scope of the pass was reopened the same day: the user wants the PMM
   designed from what it must support later (swap and eviction, large pages,
   constrained and contiguous allocation, movers), with the node, the zone and

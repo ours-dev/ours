@@ -171,11 +171,11 @@ namespace {
             return {};
         }
         auto *const page = found.value().page;
-        return {.page = page, .kind = mm::PmNode::node(page->nid())->page_queues().kind_of(*page)};
+        return {.page = page, .kind = mm::find_node(page->nid())->page_queues().kind_of(*page)};
     }
 
     auto queues_of(mm::VmPage const &page) -> mm::PageQueues & {
-        return mm::PmNode::node(page.nid())->page_queues();
+        return mm::find_node(page.nid())->page_queues();
     }
 
     auto word_at(mm::VmObjectPaged &vmo, usize const index, u64 *const out) -> bool {
@@ -185,7 +185,7 @@ namespace {
     /// Every reclaimable page on every node.
     auto nr_reclaimable() -> usize {
         usize total = 0;
-        mm::PmNode::for_each_node(mm::PmNode::State::Online, [&total](mm::PmNode &node) {
+        mm::for_each_node(mm::NodeState::Online, [&total](mm::PmNode &node) {
             total += node.page_queues().count(Kind::Reclaimable);
         });
         return total;
@@ -209,8 +209,8 @@ namespace {
         auto const baseline = nr_reclaimable();
         // Two pages, a rotation of every node, two more: ages 1, 1, 0, 0.
         auto const supplied = vmo && supply(*vmo, 0, 2);
-        mm::PmNode::for_each_node(mm::PmNode::State::Online,
-                                  [](mm::PmNode &node) { node.page_queues().rotate(); });
+        mm::for_each_node(mm::NodeState::Online,
+                          [](mm::PmNode &node) { node.page_queues().rotate(); });
         auto const supplied_more = supplied && supply(*vmo, 2, 2);
         if (!supplied_more) {
             FAIL("a VMO of four supplied pages is made");
@@ -358,7 +358,7 @@ namespace {
         }
         usize freed = 0;
         while (!stress.done.load(std::memory_order_acquire)) {
-            mm::PmNode::for_each_node(mm::PmNode::State::Online, [&freed](mm::PmNode &node) {
+            mm::for_each_node(mm::NodeState::Online, [&freed](mm::PmNode &node) {
                 freed += node.page_queues().reclaim(3);
             });
             task::Thread::Current::yield();
@@ -536,10 +536,9 @@ namespace {
             if (started) {
                 usize freed = 0;
                 while (!race.done.load(std::memory_order_acquire)) {
-                    mm::PmNode::for_each_node(mm::PmNode::State::Online,
-                                              [&freed](mm::PmNode &node) {
-                                                  freed += node.page_queues().dedup_zero_pages(8);
-                                              });
+                    mm::for_each_node(mm::NodeState::Online, [&freed](mm::PmNode &node) {
+                        freed += node.page_queues().dedup_zero_pages(8);
+                    });
                     task::Thread::Current::yield();
                 }
                 i32 code = 0;
@@ -678,7 +677,7 @@ namespace {
         auto const local = mm::current_node();
         NodeId remote = MAX_NODES;
         for (NodeId nid = 0; nid < MAX_NODES; ++nid) {
-            if (nid != local && mm::PmNode::node_memory_mask().test(nid) &&
+            if (nid != local && mm::node_memory_mask().test(nid) &&
                 !mm::node_work_cpus(nid).any()) {
                 remote = nid;
                 break;
@@ -700,7 +699,7 @@ namespace {
         }
 
         mm::PmFrame::List held;
-        mm::PmNode::node(remote)->zone_list()->for_each_local_zone([&held](mm::PmZone &zone) {
+        mm::find_node(remote)->zone_list()->for_each_local_zone([&held](mm::PmZone &zone) {
             for (usize order = MAX_FRAME_ORDER + 1; order != 0; --order) {
                 while (auto block = zone.alloc_frames(order - 1)) {
                     held.push_back(block.value());
@@ -718,14 +717,21 @@ namespace {
         }
         auto const evicted = settle([&] { return remote_vmo->committed_pages(0, P) == 0; });
         auto const kept_local = local_vmo->committed_pages(0, P) == 1;
+        // The evicted page went back to the remote node. Taken from the zones
+        // themselves: the node is far below its floor, so an allocation
+        // through mm:: is refused there whatever reclaim gave back.
         bool retried = false;
         if (evicted) {
-            auto const recovered =
-                mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, remote);
-            if (recovered) {
-                retried = (*recovered)->nid() == remote;
-                mm::free_frames(*recovered);
-            }
+            mm::find_node(remote)->zone_list()->for_each_local_zone(
+                [&retried, remote](mm::PmZone &zone) {
+                    if (retried) {
+                        return;
+                    }
+                    if (auto block = zone.alloc_frames(0)) {
+                        retried = block.value().nid() == remote;
+                        mm::free_frames(&block.value());
+                    }
+                });
         }
         mm::free_frames(&held);
         EXPECT_TRUE(globally_normal && exhausted && evicted && retried && kept_local,

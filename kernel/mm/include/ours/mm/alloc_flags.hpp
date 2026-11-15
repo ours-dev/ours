@@ -11,15 +11,21 @@ namespace ours::mm {
 /// Physical-frame allocation flags, also carried through the heap and VMOs.
 /// Bit values are preserved from the original allocation interface.
 enum class Gaf : u32 {
-    /// The caller's context permits blocking. Reserved for zone admission
-    /// policy; the current allocator does not consult this bit or perform
-    /// direct reclaim. It does not make an allocation wait for memory.
+    /// The caller's context permits blocking. It decides how deep an
+    /// allocation may take a zone once memory is short: a caller that may
+    /// block stops at a zone's Min watermark, one that may not at three
+    /// quarters of it (AdmissionPass). It does not make an allocation wait
+    /// for memory, and the allocator performs no direct reclaim.
     CanBlock = 7_bit,
 
-    /// alloc_frames() may answer ShouldWait under memory pressure. The
-    /// caller drops its locks before wait_for_frame_allocation(), which
-    /// retries for one page. The mm::alloc_frames() block interface handles
-    /// admission and returns the outcome without sleeping.
+    /// alloc_frames() may answer ShouldWait under memory pressure: when the
+    /// free-memory gate is shut, or when every zone the request may use is
+    /// below its Low watermark and the request is not confined to one node
+    /// or to fewer zones (a confined one goes on to Min instead, and fails
+    /// there; AllocRequest::is_confined()). The caller drops its locks before
+    /// wait_for_frame_allocation(), which retries for one page. The
+    /// mm::alloc_frames() block interface handles admission and returns the
+    /// outcome without sleeping.
     CanWait = 8_bit,
 
     /// Allocate only from the explicit node or the current CPU's node if
@@ -36,8 +42,9 @@ USTL_ENABLE_ENUM_BITMASK(Gaf);
 /// request to wait under memory pressure.
 inline constexpr auto ALLOC_KERNEL = Gaf::CanBlock;
 
-/// Memory visible to a process is zeroed and fails rather than waits.
-inline constexpr auto ALLOC_USER = Gaf::Zero;
+/// Memory visible to a process is zeroed and fails rather than waits. It is
+/// allocated from a system call, which may block.
+inline constexpr auto ALLOC_USER = Gaf::CanBlock | Gaf::Zero;
 
 /// User VMO pages may be delayed under pressure. The VMO's own objects still
 /// use the immediate kernel allocation path.

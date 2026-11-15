@@ -65,6 +65,7 @@ PmZone::PmZone(NodeId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize pres
     // explicit is what the rest of the list does.
     , m_reserved_frames(0)
     , m_watermarks()
+    , m_lowmem_reserve()
     , m_frame_cache()
     // Set up here, once, for every zone -- one the handoff frees nothing into
     // included. No CPU can see the zone yet: create_all() puts it in the
@@ -161,6 +162,29 @@ auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_to
               min + delta + delta);
 }
 
+auto PmZone::setup_lowmem_reserve() -> void {
+    // The node's managed frames by type: the input mm::lowmem_reserve() wants.
+    std::array<usize, NR_ZONES_PER_NODE> managed{};
+    auto const row = PmZone::row(m_nid);
+    for (usize type = 0; type < NR_ZONES_PER_NODE; ++type) {
+        if (auto const *const zone = row[type]) {
+            managed[type] = zone->managed_frames();
+        }
+    }
+
+    auto const own = std::to_underlying(m_type);
+    for (usize highest = 0; highest < NR_ZONES_PER_NODE; ++highest) {
+        m_lowmem_reserve[highest] =
+            mm::lowmem_reserve(managed.data(), managed.size(), own, highest, LOWMEM_RESERVE_RATIO);
+    }
+
+    // One short line, for the reason setup_watermarks() gives: the reserve
+    // against a request that allows every zone up to Normal, the one every
+    // allocation makes today.
+    log::info("Zone[{}]: keeps {} frames from requests that allow Normal", m_name,
+              m_lowmem_reserve[std::to_underlying(ZoneType::Normal)]);
+}
+
 auto PmZone::alloc_frames(usize order) -> ustl::Option<PmFrame &> {
     // A zone below its high watermark is running short, and this gate still
     // has no writer for the flag, so it never fires. It also tests the wrong
@@ -221,18 +245,35 @@ auto PmZone::contains(usize order) -> bool {
     return false;
 }
 
-auto PmZone::free_frames(PmFrame &frame, usize order) -> void {
-    if (is_order_within_pcpu_cache_limit(order)) {
-        m_frame_cache.with_current([](PcpuCache &cache) {
-            // Here no pcpu cache.
-        });
-        m_free_frames += usize{1} << order;
-        return;
-    }
+auto PmZone::free_frames(PmFrame &frame, usize order) -> bool {
+    auto const count = usize{1} << order;
 
-    auto const pfn = frame_to_pfn(&frame);
-    ZoneGuard guard{m_lock};
-    m_buddy.release(&frame, pfn, order);
-    m_free_frames += usize{1} << order;
+    // The count this release's own increment found. An atomic read-modify-
+    // write, so the increments and the allocations' decrements fall in one
+    // order: every time the count climbs over a line, exactly one increment
+    // is the one that took it over, and it is the only one that sees so.
+    // Reading the counter before and after the release instead lets two
+    // releases with an allocation between them both see no crossing.
+    auto const before = [&] {
+        if (is_order_within_pcpu_cache_limit(order)) {
+            m_frame_cache.with_current([](PcpuCache &cache) {
+                // Here no pcpu cache.
+            });
+            return m_free_frames.fetch_add(count);
+        }
+
+        auto const pfn = frame_to_pfn(&frame);
+        ZoneGuard guard{m_lock};
+        m_buddy.release(&frame, pfn, order);
+        return m_free_frames.fetch_add(count);
+    }();
+
+    // The line is where the Low pass starts admitting one frame again for a
+    // request that allows up to Normal (normal_low_floor()), with the same
+    // arithmetic the pass itself uses. Low alone would be one frame early --
+    // at exactly Low the pass still refuses, since a frame taken there would
+    // leave Low - 1.
+    auto const floor = normal_low_floor();
+    return !mm::admits(before, 0, floor) && mm::admits(before + count, 0, floor);
 }
 } // namespace ours::mm
