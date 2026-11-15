@@ -197,3 +197,66 @@ None.
 - Why does a compare-and-swap that succeeds not prove that what you read before it is still true, and what two cures are there?
 - Why is it enough to lock only the transition from Open to Shut, and not every admission?
 - What would have reopened a gate left shut this way, and why might it never come on a quiet machine?
+
+## A Pause and the thread's take of a node record are one decision (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/memory_reclaimer.hpp`, `kernel/mm/memory_reclaimer.cpp` — new `take_node_target()`, which asks `paused()` and takes under a new spin lock `m_take_lock`; the `Pause` constructor, now out of line, takes that lock once after counting itself in; `reclaim_node_requests()` walks a taken record through a new private `walk()` under `m_reclaim_lock` without asking `paused()` again; `run()` no longer asks it; the Pause contract and two comments rewritten to match
+- `kernel/tests/pm_node_test.cpp` — new `PmNode.APausedReclaimerTakesNoNodeRecord`; a drain test's comment no longer claims nothing reclaims under a Pause
+- `.agents/skills/kernel-design/references/mm.md` — the rule for the take
+
+**Symptom**
+A Pause could lose node records. `run()` asked `paused()` once, then `reclaim_node_requests()` took every node's record and walked it through `reclaim()`, which asks `paused()` again and returns 0. A Pause that began between the two looks found the records taken and the walks refused: the marks were gone and no walk had run. That broke the contract N2 wrote ("while a Pause lives the thread takes no record"), and on SMP it could fail `PmNode.AShortZoneIsMarkedOnceAndTakenOnce`, since the previous test's Pause signals the thread as that test starts.
+
+**Cause**
+Check-then-act across two calls: the decision "may the thread take records now" was made by one look at `paused()`, and the action came later, with a second look that could disagree. Neither look excluded a Pause from beginning between them.
+
+**Change**
+The take and the start of a Pause are ordered by one lock, and a taken record is always walked:
+
+```cpp
+auto MemoryReclaimer::take_node_target(PmNode &node) -> usize {
+    Guard<sync::SpinLock, IrqSave> guard{m_take_lock};
+    if (paused()) { return 0; }                     // the record stays for later
+    return node.take_reclaim_target();
+}
+
+MemoryReclaimer::Pause::Pause(MemoryReclaimer &reclaimer) : m_reclaimer(reclaimer) {
+    m_reclaimer.m_pauses.fetch_add(1, std::memory_order_acq_rel);
+    Guard<sync::SpinLock, IrqSave> guard{m_reclaimer.m_take_lock};   // waits out a take in progress
+}
+
+// reclaim_node_requests(), per node
+auto const wanted = take_node_target(node);
+if (wanted == 0) { return; }
+Guard guard{m_reclaim_lock};
+freed = walk(wanted, NodeMask::of(node.nid()));     // not refused by a Pause that began since
+```
+
+The argument. The take's critical section and the constructor's are excluded from each other by the lock. If the take's runs first, it took the record before the Pause took effect, and its walk runs. If the constructor's runs first, its unlock synchronizes with the take's lock, and the count it added is sequenced before that unlock, so the take sees the Pause and leaves the record. Once the constructor returns, no take starts; and no taken record is dropped, because the walk of a taken record is not refused. The lock is held for one node's take, which reads counters and never sleeps, so a Pause waits out at most that, never a walk.
+
+So a Pause now means nothing new is reclaimed: `request()` is dropped, `reclaim()` refuses, the thread takes no record. What had already started runs to its end, as a walk past `reclaim()`'s locked check always did; the walk of a record taken just before the Pause is now one of those. The other way out was to put a record back when its walk is refused, but the put-back lands after the Pause has begun, under a test reading the record, which is what the contract exists to prevent.
+
+**Reference**
+None: the Pause is this kernel's own test seam.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed, on the default and the four-node machine. `ktest all`: default 92 ran, 84 passed, 8 skipped; four nodes 92 ran, 89 passed, 3 skipped; `MEM=8192` `ktest sel=MemoryPressure.*:PmNode.*:PageReclaim.*` 16 ran, 10 passed, 0 failed. Failure-injection build: 92 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `memory_reclaimer.cpp`.
+
+The new test marks another node's zone under a Pause and asks the take for it: the record stays (a second mark is not the first); without a Pause the take clears it. Control: with the take not asking `paused()`, the test fails its Pause check. The test exercises the take's decision; the ordering against a Pause that begins mid-pass rests on the argument above, since that interleaving cannot be produced on demand.
+
+A narrow pre-commit review worked through the orderings of the count, the constructor's lock and the take's lock and found no take after a Pause's constructor returns and no record taken and dropped; confirmed the lock is a leaf held across no sleep and that both callers of `walk()` hold `m_reclaim_lock`; and found three comments the change left stale (the report path, `m_reclaim_lock`'s holders, a drain test's "nothing reclaims"), now rewritten.
+
+**Deliberately not done**
+- A walk already under way as a Pause begins still runs, as before; a test draining a node assumes nothing marked that node short just before.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M1, from the pressure reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why do two looks at `paused()`, one before the take and one before the walk, still let a Pause lose a record?
+- Why must the Pause constructor take `m_take_lock` after its `fetch_add`, and not before?
+- Why walk a record taken just before a Pause instead of putting it back?

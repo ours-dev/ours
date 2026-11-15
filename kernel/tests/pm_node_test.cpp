@@ -1020,7 +1020,9 @@ namespace {
         }
 
         // Reclaim would give frames back to the zone while the test holds its
-        // count still. Nothing reclaims while this lives.
+        // count still. Nothing new is reclaimed while this lives; only a walk
+        // already under way as it began could still run, and nothing marks
+        // this node short beforehand.
         mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
         auto const blocking = mm::ALLOC_KERNEL | mm::Gaf::ThisNode;
         auto const non_blocking = mm::Gaf::ThisNode;
@@ -1241,6 +1243,41 @@ namespace {
                     "at Low a confined waiting request is served by the Min pass, from its node");
         EXPECT_TRUE(at_min && out_of_mem, "at Min it answers OutOfMem, not ShouldWait");
         EXPECT_TRUE(nowhere_fails, "with no node it may use, it answers OutOfMem at once");
+    }
+
+    KTEST(PmNode, APausedReclaimerTakesNoNodeRecord) {
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto &zone = *target->zone_list()->fallback()[0];
+        auto &reclaimer = mm::MemoryReclaimer::get();
+
+        // While a Pause lives, the thread's take leaves a marked record as it
+        // is: a second mark is still not the first. The zone sits above High,
+        // so the take's answer is 0 either way; the record is what tells.
+        auto marked = false;
+        auto refused = usize{1};
+        auto kept = false;
+        {
+            mm::MemoryReclaimer::Pause const no_reclaim{reclaimer};
+            auto _ = target->take_reclaim_target();
+            marked = target->mark_short(zone);
+            refused = reclaimer.take_node_target(*target);
+            kept = !target->mark_short(zone);
+            auto _ = target->take_reclaim_target();
+        }
+
+        // Without one, the take clears it. The thread may take it first,
+        // woken as the Pause ended; either way the next mark is the first.
+        auto const marked_again = target->mark_short(zone);
+        auto _ = reclaimer.take_node_target(*target);
+        auto const taken = target->mark_short(zone);
+        auto _ = target->take_reclaim_target();
+
+        EXPECT_TRUE(marked && refused == 0 && kept,
+                    "while a Pause lives the take leaves a node's record alone");
+        EXPECT_TRUE(marked_again && taken, "without a Pause the take clears it");
     }
 
     KTEST(PmNode, AShortZoneIsMarkedOnceAndTakenOnce) {

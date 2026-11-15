@@ -8,11 +8,13 @@
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
+#include <ours/sync/spin_lock.hpp>
 #include <ours/types.hpp>
 
 #include <atomic>
 
 namespace ours::mm {
+class PmNode;
 class PmZone;
 
 /// Gives memory back when the memory watchdog says it runs short: the pages
@@ -67,24 +69,28 @@ class MemoryReclaimer {
     /// already running is waited out first. Takes locks that sleep.
     auto reclaim(usize frames) -> usize;
 
-    /// While one is alive nothing is reclaimed, request() or reclaim(): for a
-    /// test that drives the watchdog to pressures free memory is not at, and
-    /// wants to see it decide and not what reclaiming does to the answer.
+    /// The thread's take of |node|'s record of short zones
+    /// (PmNode::take_reclaim_target()), refused while a Pause lives: then 0,
+    /// and the record left as it is. Decided under m_take_lock, which a Pause
+    /// takes as it begins, so no take starts once a Pause has begun.
+    [[nodiscard]]
+    auto take_node_target(PmNode &node) -> usize;
+
+    /// While one is alive nothing new is reclaimed: request() is dropped,
+    /// reclaim() refuses, and the thread takes no node's record of short
+    /// zones, so a test can read one undisturbed. For a test that drives the
+    /// watchdog to pressures free memory is not at, and wants to see it
+    /// decide and not what reclaiming does to the answer.
     ///
-    /// Nor does the thread take any node's record of short zones, so a test
-    /// can read one undisturbed even when a wake was already on its way. A
-    /// report that passed its check just before the Pause began can still
-    /// mark a node; the last Pause to end wakes the thread, which takes it.
+    /// What had already started runs to its end: a walk under way, and the
+    /// walk of a record the thread took before the Pause began (a record is
+    /// never taken and then dropped). A report that passed its check just
+    /// before the Pause began can still mark a node; the last Pause to end
+    /// wakes the thread, which takes it.
     class Pause {
       public:
-        explicit Pause(MemoryReclaimer &reclaimer) : m_reclaimer(reclaimer) {
-            m_reclaimer.m_pauses.fetch_add(1, std::memory_order_acq_rel);
-        }
-        ~Pause() {
-            if (m_reclaimer.m_pauses.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                m_reclaimer.m_signal.signal();
-            }
-        }
+        explicit Pause(MemoryReclaimer &reclaimer);
+        ~Pause();
 
         Pause(Pause const &) = delete;
         auto operator=(Pause const &) -> Pause & = delete;
@@ -118,11 +124,25 @@ class MemoryReclaimer {
 
     std::atomic<usize> m_pauses{0};
 
-    /// Held for one reclaim() and nothing else. request() does not take it:
+    /// Held for one walk, reclaim()'s or the walk of a node record the thread
+    /// took (reclaim_node_requests()), and nothing else. request() does not take it:
     /// the watchdog calls request() while holding its own mutex, and a walk
     /// sleeps in the locks it takes, so taking this there would make every
     /// look wait the walk out.
     sync::Mutex m_reclaim_lock;
+
+    /// Orders the thread's take of a node record against the start of a
+    /// Pause: take_node_target() asks paused() and takes under it, and a
+    /// Pause takes it once after counting itself in. Held for one node's
+    /// take, which reads counters and never sleeps, so a Pause waits out at
+    /// most that, never a walk.
+    sync::SpinLock m_take_lock;
+
+    /// The walk itself, zero pages and then pager pages on |nodes|, up to
+    /// |frames|: what reclaim() does once it has decided to. Declared after
+    /// the lock it requires, which the annotation names.
+    TA_REQUIRES(m_reclaim_lock)
+    auto walk(usize frames, NodeMask const &nodes) -> usize;
 };
 
 } // namespace ours::mm
