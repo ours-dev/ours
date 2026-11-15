@@ -200,6 +200,10 @@ The kernel still tears down sealed mappings during address-space destruction.
   the delay level, and the gate, not a zone's Low, decides when an
   ordinary waiting request waits. All three levels move together; levels
   that do not nest are left for `start()` to refuse.
+- Nothing below the request reads `Gaf` bits (review M4, 2026-11-15):
+  `AllocRequest` answers `may_block()`, `may_wait()`, `waits_at_low()`,
+  `zeroes()` and `is_confined()`, `flags()` stays the caller's flags
+  whole, and `alloc_block()` asks the gate from the request.
 - A confined waiting request -- `Gaf::ThisNode`, or a zone range
   narrower than Dma through Normal (`AllocRequest::is_confined()`) -- is
   not put off at a zone's Low: it makes the Min pass and answers `OutOfMem`

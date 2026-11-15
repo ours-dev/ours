@@ -91,13 +91,12 @@ auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
     DEBUG_ASSERT(request.home_node() == m_id, "node {} was handed a request whose home is node {}",
                  m_id, request.home_node());
 
-    auto const can_block = !!(request.flags() & Gaf::CanBlock);
     ustl::Option<PmZone const &> depleted_zone;
     for (auto &zone: m_zone_list.candidates(request)) {
         // Taking the block would leave the zone below the pass's floor: short
         // for this request. Passed over, and the first such zone named in the
         // failure, should the walk fail.
-        if (!zone.admits(request.order(), pass, can_block, request.highest_zone())) {
+        if (!zone.admits(request.order(), pass, request.may_block(), request.highest_zone())) {
             if (!depleted_zone) {
                 depleted_zone = ustl::some_ref(zone);
             }

@@ -128,7 +128,7 @@ The `Dma` zone and `MigrateType::Reclaimable` stay as they are, without a flag, 
 | the seam (`mm::` functions) | nothing but the node table, at file scope | the one entry: resolve the request, pick the home node, run the gates | touches a buddy, holds a zone lock |
 | `CpuNodeMap` | which node each CPU is on | where is this CPU | allocates |
 
-`Gaf` is read in two places only: the resolver, which turns it into the request's zone ceiling, mobility and floor, and `prepare_alloc()`, which reads `Zero`. A zone is handed an order, a mobility and a floor, never a `Gaf`.
+`Gaf` is read in two places only: the resolver, which turns it into the request's zone ceiling, mobility and floor, and `prepare_alloc()`, which reads `Zero`. A zone is handed an order, a mobility and a floor, never a `Gaf`. As built (2026-11-15, review M4): the request answers every question about the flags (`may_block()`, `may_wait()`, `waits_at_low()`, `zeroes()`, `is_confined()`) and keeps the flags whole; the gate is asked from the request in `alloc_block()`. One raw read is left above it: the placement policy reads `ThisNode` before any request exists, which review M7 is about.
 
 ### Built now, and slots for later
 

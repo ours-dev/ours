@@ -274,7 +274,7 @@ namespace {
         DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} leaves a free list with {} pin(s)",
                      frame_to_phys(&frame), frame.pin_count());
 
-        if (!!(request.flags() & Gaf::Zero)) {
+        if (request.zeroes()) {
             std::fill_n(frame_to_virt<isize>(&frame),
                         (usize{1} << request.order()) * PAGE_SIZE / sizeof(isize), 0);
         }
@@ -384,16 +384,18 @@ namespace {
     /// first pass that succeeds names nothing, though it may have passed over
     /// a short zone on the way to one that admitted the request.
     ///
-    /// |can_wait| is whether the caller asked for Gaf::CanWait, which the gate
-    /// has answered for by now. Such a request, unless it is confined
-    /// (AllocRequest::is_confined()), makes the first pass only: when no zone
-    /// admits it at Low it is answered ShouldWait, and waits for a zone to
-    /// rise back above Low, instead of spending the band between Low and Min
-    /// that the requests which cannot wait depend on. A confined one makes
-    /// both passes, as a request that cannot wait does.
+    /// A request that can wait (AllocRequest::may_wait()) asks the free-memory
+    /// gate before any zone, after the refusals that are about the request
+    /// itself (a thread that disabled allocation, an order the buddy does not
+    /// have, a home that does not exist), which it gets first. Unless it is
+    /// confined, it then makes the first pass only
+    /// (AllocRequest::waits_at_low()): when no zone admits it at Low it is
+    /// answered ShouldWait, and waits for a zone to rise back above Low,
+    /// instead of spending the band between Low and Min that the requests
+    /// which cannot wait depend on. A confined one makes both passes, as a
+    /// request that cannot wait does.
     auto alloc_block(PmNode &home, Gaf const alloc_flags, usize const order, NodeMask const &nodes,
-                     bool const can_wait, ustl::Option<PmZone const &> &depleted)
-        -> ktl::Result<PmFrame *> {
+                     ustl::Option<PmZone const &> &depleted) -> ktl::Result<PmFrame *> {
         // Whether the calling thread may allocate at all: a thread that has
         // disabled allocation (AllocState::disable()) is refused here,
         // whichever way it asked. This is the one function every frame
@@ -421,6 +423,15 @@ namespace {
         auto const request = resolve_request(
             alloc_flags, order, nodes, AllocRequest::Origin{.node = home.nid(), .cpu = Cpu::id()});
 
+        // The gate first, for a request that can wait: it decides for the
+        // whole machine whether such a request may go ahead now, before any
+        // zone is asked.
+        if (request.may_wait()) {
+            if (auto const status = GATE.admit(); Status::Ok != status) {
+                return ustl::err(status);
+            }
+        }
+
         // Two passes. The first holds the request at every zone's Low
         // watermark. Only when no zone admits it there is reclaim asked for,
         // for the first zone the pass found short, and the second pass lets
@@ -436,7 +447,7 @@ namespace {
             // band. A confined one does not: the gate and the watchdog count
             // memory it cannot use, so nothing is bound to end its wait, and
             // it goes on to Min and fails there like one that cannot wait.
-            if (can_wait && !request.is_confined()) {
+            if (request.waits_at_low()) {
                 return ustl::err(Status::ShouldWait);
             }
             block = home.alloc_frames(request, AdmissionPass::Min);
@@ -638,16 +649,8 @@ auto current_node() -> NodeId {
 namespace priv {
     auto alloc_frames(Gaf alloc_flags, usize const order, NodeId const home, NodeMask const &nodes)
         -> ktl::Result<PmFrame *> {
-        if (!!(alloc_flags & Gaf::CanWait)) {
-            if (auto const status = GATE.admit(); Status::Ok != status) {
-                return ustl::err(status);
-            }
-        }
-        // The gate has answered for CanWait; below, only alloc_block() hears
-        // of it, as an argument.
-        auto const can_wait = !!(alloc_flags & Gaf::CanWait);
-        alloc_flags = alloc_flags & ~Gaf::CanWait;
-
+        // The flags go down whole: the request built from them answers what
+        // they mean, the gate included (alloc_block()).
         auto const node = resolve_home(home, alloc_flags);
         if (!node) {
             observe_pressure();
@@ -655,7 +658,7 @@ namespace priv {
         }
 
         ustl::Option<PmZone const &> depleted;
-        auto const block = alloc_block(**node, alloc_flags, order, nodes, can_wait, depleted);
+        auto const block = alloc_block(**node, alloc_flags, order, nodes, depleted);
         observe_pressure(depleted);
         return block;
     }
@@ -676,7 +679,7 @@ namespace priv {
         PmFrame::List list;
         auto rollback = gktl::defer([&list] { free_blocks(list); });
         for (usize i = 0; i < n; ++i) {
-            auto block = alloc_block(**node, alloc_flags, 0, nodes, false, depleted);
+            auto block = alloc_block(**node, alloc_flags, 0, nodes, depleted);
             if (!block) {
                 log::trace("Failed to allocate {} frames with reason: {}", n,
                            to_string(block.unwrap_err()));
@@ -713,7 +716,7 @@ namespace priv {
                 continue;
             }
 
-            auto block = alloc_block(**node, alloc_flags, order, nodes, false, depleted);
+            auto block = alloc_block(**node, alloc_flags, order, nodes, depleted);
             if (!block) {
                 log::trace("Failed to allocate frame with reason: {}",
                            to_string(block.unwrap_err()));

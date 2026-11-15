@@ -313,3 +313,60 @@ None.
 - Why do ownership hand-offs through the zone lock make the writes to a frame safe but not the buddy's read of a frame it does not own?
 - Why is a relaxed load and store, and not a compare-and-swap, enough for `set_status()`?
 - What would a compiler be allowed to do with a racing plain read that it may not do with a relaxed atomic one?
+
+## The request answers what the caller's flags mean (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — `AllocRequest` gains `may_block()`, `may_wait()`, `waits_at_low()` and `zeroes()`; `flags()`'s comment says what reads it and what does not
+- `kernel/mm/pmm.cpp` — `priv::alloc_frames()` no longer asks the gate nor strips `Gaf::CanWait`; `alloc_block()` loses its `can_wait` parameter, asks the gate after building the request when it can wait, and stops at Low when `waits_at_low()`; `prepare_alloc()` asks `zeroes()`
+- `kernel/mm/pm_node.cpp` — `PmNode::alloc_frames()` hands the zone `request.may_block()`
+- `kernel/mm/tests/alloc_request_smoke.cpp` — what the request answers for a VMO page, a confined request, a narrowed zone range and no flags
+- `.agents/tasks/pmm-redesign/DESIGN.md`, `.agents/skills/kernel-design/references/mm.md` — the as-built rule
+
+**Symptom**
+The pipeline decoded the caller's `Gaf` in six places: `CanWait` in the entry, which stripped it before building the request and carried it beside the request as a `bool`; `CanBlock` in `PmNode::alloc_frames()`; `Zero` in `prepare_alloc()`; `ThisNode` in the resolver, in `is_confined()` and in the placement policy. `AllocRequest::flags()` said "What the caller asked for, unchanged", which was false on the single-block path. The design allows two readers.
+
+**Cause**
+Each step added the bit it needed where it needed it. The `bool` came from N1: the stop at Low needed to know about `CanWait` after the gate had been asked, and the flags had already lost it.
+
+**Change**
+The request owns the meaning of the flags, and everything below it asks:
+
+```cpp
+// AllocRequest
+auto may_block() const -> bool    { return !!(m_alloc_flags & Gaf::CanBlock); }
+auto may_wait() const -> bool     { return !!(m_alloc_flags & Gaf::CanWait); }
+auto waits_at_low() const -> bool { return may_wait() && !is_confined(); }
+auto zeroes() const -> bool       { return !!(m_alloc_flags & Gaf::Zero); }
+
+// alloc_block(), after resolve_request()
+if (request.may_wait()) {
+    if (auto const status = GATE.admit(); Status::Ok != status) { return ustl::err(status); }
+}
+...
+if (request.waits_at_low()) { return ustl::err(Status::ShouldWait); }
+```
+
+Asking the gate from `alloc_block()` moves it after the refusals that are about the request itself: a waiting request from a thread that disabled allocation, with an order the buddy does not have, or naming a home that does not exist, now gets that answer and not `ShouldWait`, and no longer shuts the gate on its way out. No caller depends on the old order (`wait_for_frame_allocation()` passes on anything but `ShouldWait`; the VMO paths branch only on it). The pressure observation now also runs after a gate refusal; with the gate shut the event has already been taken, so it signals nothing new. One raw read is left above the request: the placement policy reads `ThisNode` before any request exists, the subject of review M7.
+
+**Reference**
+None: an object-boundary change inside this kernel's pipeline. Linux's `struct alloc_context` plays the same part for `gfp_t` in `__alloc_pages()`, holding what the mask resolved to.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed (`alloc-request-smoke` with six new checks), on the default and the four-node machine. `ktest all`: default 92 ran, 84 passed, 8 skipped; four nodes 92 ran, 89 passed, 3 skipped; `MEM=8192` `ktest sel=MemoryPressure.*:PmNode.*:PageReclaim.*` 16 ran, 10 passed, 0 failed. Failure-injection build: 92 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing new in `pmm.cpp` or `pm_node.cpp`. Control: with `alloc_block()` not asking the gate, `MemoryPressure.TheGateTheSignalAndTheWatchdog` fails five of its gate checks; the D2 test already fails when `waits_at_low()` ignores confinement.
+
+A narrow pre-commit review confirmed the only behaviour change is the order of refusals above, that nothing below the entry asserts on `CanWait`, and that no raw decode is left in `alloc_block()`, `PmNode` or `prepare_alloc()`. It found a host check that could not catch the strip it named (the strip lived in the kernel entry; the kernel's gate tests are what catch it, and the check now tests a narrowed zone range instead), and two comments that overclaimed (the gate is asked "before any zone", not "first"; the request decides what the bits mean below it, not everywhere).
+
+**Deliberately not done**
+- The placement policy's read of `ThisNode`; review M7.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M4, from the pipeline reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What made `AllocRequest::flags()`'s comment false, and why was the `bool` beside the request a symptom of the same thing?
+- Why does asking the gate after the request's own refusals give a disabled thread a better answer?
+- Why does the zone take `may_block()` and not the caller's flags?
