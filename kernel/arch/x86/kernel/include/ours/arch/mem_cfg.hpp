@@ -15,7 +15,7 @@
 /// the memory such a device can use.
 #define ARCH_MAX_DMA_PFN (16_mb >> PAGE_SHIFT)
 #define ARCH_MAX_DMA32_PFN (4_gb >> PAGE_SHIFT)
-#define ARHC_MAX_PFN_LIMIT (64_gb >> PAGE_SHIFT)
+#define ARCH_MAX_PFN_LIMIT (64_gb >> PAGE_SHIFT)
 
 namespace ours {
 template <mm::ZoneType>
@@ -27,7 +27,7 @@ using MaxZonePfn =
 using ArchPmmZoneConfig =
     ustl::TypeList<MaxZonePfn<mm::ZoneType::Dma, ARCH_MAX_DMA_PFN, OURS_CONFIG_ZONE_DMA>,
                    MaxZonePfn<mm::ZoneType::Dma32, ARCH_MAX_DMA32_PFN, OURS_CONFIG_ZONE_DMA32>,
-                   MaxZonePfn<mm::ZoneType::Normal, ARHC_MAX_PFN_LIMIT>>;
+                   MaxZonePfn<mm::ZoneType::Normal, ARCH_MAX_PFN_LIMIT>>;
 } // namespace ours
 
 #endif // #ifndef OURS_ARCH_MEM_CFG_HPP

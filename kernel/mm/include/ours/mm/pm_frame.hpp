@@ -109,7 +109,10 @@ namespace page {
     // drifting apart. <ours/node_mask.hpp> computes it from the count now, so
     // there is nothing left for an assertion to check.
 
-    using Status = ustl::BitFields<
+    /// The frame's packed status: role, flags, block order, zone, section and
+    /// node in one word. StatusWord rather than Status, which inside page::
+    /// would hide ours::Status, the result type every mm operation returns.
+    using StatusWord = ustl::BitFields<
         Field<Index::Role, Role, ustl::bit_width(std::to_underlying(Role::Count))>,
         Field<Index::Flags, Flags, ustl::bit_width(std::to_underlying(Flags::Count))>,
         Field<Index::Order, usize, ustl::bit_width(static_cast<usize>(MAX_FRAME_ORDER))>,
@@ -121,7 +124,7 @@ namespace page {
         Field<Index::Node, NodeId, MAX_NODES_BITS, OURS_CONFIG_NUMA>>;
 
     /// Per-role payload. Exactly one of these is live at a time, selected by
-    /// `Index::Role` in the Status word above.
+    /// `Index::Role` in the status word above.
     ///
     /// They are deliberately plain data: no constructors, no destructors, no
     /// intrusive *containers*. A role change is then just "zero the union and
@@ -260,44 +263,46 @@ class PageFrame {
     auto init(ZoneType ztype, SecNum secnum, NodeId nid) -> void {
         DEBUG_ASSERT(!(flags() & Flags::Initialized), "Duplicated to initialize a frame");
 
-        m_status.set<Index::ZoneType>(ztype);
-        m_status.set<Index::Section>(secnum);
-        m_status.set<Index::Node>(nid);
-        m_status.set<Index::Role>(Role::None);
+        // Built whole and stored once: nothing of what the storage held
+        // before survives.
+        auto word = page::StatusWord{};
+        word.set<Index::ZoneType>(ztype);
+        word.set<Index::Section>(secnum);
+        word.set<Index::Node>(nid);
+        word.set<Index::Role>(Role::None);
         // No block yet: a frame is the head of a block only once the buddy
         // has made one of it, and the buddy writes the order then. Written
         // here all the same, because free_frames() reads it to learn how much
         // is being returned, and a frame nothing has allocated must read as a
         // single frame and not as whatever its storage held.
-        m_status.set<Index::Order>(0);
-        // The one write of the whole Flags field: whatever it held before is
-        // garbage.
-        m_status.set<Index::Flags>(Flags::Initialized);
+        word.set<Index::Order>(0);
+        word.set<Index::Flags>(Flags::Initialized);
+        m_status.store(word.into<page::StatusWord::StorageUnit>(), std::memory_order_relaxed);
     }
 
     FORCE_INLINE
-    constexpr auto nid() const -> NodeId {
-        return m_status.get<Index::Node>();
+    auto nid() const -> NodeId {
+        return status().get<Index::Node>();
     }
 
     FORCE_INLINE
-    constexpr auto zone() const -> ZoneType {
-        return m_status.get<Index::ZoneType>();
+    auto zone() const -> ZoneType {
+        return status().get<Index::ZoneType>();
     }
 
     FORCE_INLINE
-    constexpr auto secnum() const -> SecNum {
-        return m_status.get<Index::Section>();
+    auto secnum() const -> SecNum {
+        return status().get<Index::Section>();
     }
 
     FORCE_INLINE
-    constexpr auto order() const -> usize {
-        return m_status.get<Index::Order>();
+    auto order() const -> usize {
+        return status().get<Index::Order>();
     }
 
     FORCE_INLINE
-    constexpr auto set_order(usize order) -> void {
-        m_status.set<Index::Order>(order);
+    auto set_order(usize order) -> void {
+        set_status<Index::Order>(order);
     }
 
     /// Sets Reserved and leaves the other flags alone. It counts nothing:
@@ -308,7 +313,7 @@ class PageFrame {
     FORCE_INLINE
     auto mark_reserved() -> void {
         DEBUG_ASSERT(!(flags() & Flags::Reserved), "frame reserved twice");
-        m_status.set<Index::Flags>(flags() | Flags::Reserved);
+        set_status<Index::Flags>(flags() | Flags::Reserved);
     }
 
     /// Clears Reserved: one half of taking a frame off the reserved books, which
@@ -317,33 +322,33 @@ class PageFrame {
     /// before the frame is freed: mm::free_frames() asserts that the
     /// frame it is given is not reserved.
     FORCE_INLINE
-    constexpr auto clear_reserved() -> void {
-        m_status.set<Index::Flags>(flags() & ~Flags::Reserved);
+    auto clear_reserved() -> void {
+        set_status<Index::Flags>(flags() & ~Flags::Reserved);
     }
 
     FORCE_INLINE
-    constexpr auto role() const -> Role {
-        return m_status.get<Index::Role>();
+    auto role() const -> Role {
+        return status().get<Index::Role>();
     }
 
     FORCE_INLINE
-    constexpr auto set_role(Role role) -> void {
-        m_status.set<Index::Role>(role);
+    auto set_role(Role role) -> void {
+        set_status<Index::Role>(role);
     }
 
     FORCE_INLINE
-    constexpr auto is_role(Role role) const -> bool {
+    auto is_role(Role role) const -> bool {
         return this->role() == role;
     }
 
     FORCE_INLINE
-    constexpr auto phys_size() const -> usize {
+    auto phys_size() const -> usize {
         return (usize{1} << order()) << PAGE_SHIFT;
     }
 
     FORCE_INLINE
-    constexpr auto flags() const -> Flags {
-        return m_status.get<Index::Flags>();
+    auto flags() const -> Flags {
+        return status().get<Index::Flags>();
     }
 
     auto dump() const -> void;
@@ -447,7 +452,7 @@ class PageFrame {
         for (auto &byte: m_body) {
             byte = std::byte{};
         }
-        m_status.set<Index::Role>(Body::ROLE);
+        set_status<Index::Role>(Body::ROLE);
         return *ustl::mem::start_lifetime_as<Body>(&m_body);
     }
 
@@ -553,7 +558,37 @@ class PageFrame {
     USTL_NO_MOVEABLE_AND_COPYABLE(PageFrame);
 
   private:
-    page::Status m_status;
+    /// The status word as it is now, decoded from one relaxed load.
+    ///
+    /// The word is read by more than the frame's owner: the buddy reads a
+    /// partner it does not own to decide a merge, and anyone may ask a frame
+    /// its node, zone or section. A plain word read while its owner writes it
+    /// is a data race, undefined however harmless the hardware makes it, so
+    /// the word is an atomic. Relaxed is enough: what decides a merge, the Pmm
+    /// role and its order, changes only under the lock of the zone the frame
+    /// belongs to, which orders it for that zone's buddy; a partner of another
+    /// zone is turned away by its zone and node, which never change after
+    /// init; and every other field is true of the frame whenever it is read.
+    FORCE_INLINE
+    auto status() const -> page::StatusWord {
+        return page::StatusWord::from_raw(m_status.load(std::memory_order_relaxed));
+    }
+
+    /// Rewrites field |Id| of the word: a relaxed load and a relaxed store,
+    /// not a read-modify-write. The word has one writer at a time -- the
+    /// frame's owner, or the buddy under the zone lock while the frame is
+    /// free -- so nothing writes between the two, and a reader sees the word
+    /// before or after, never torn.
+    template <auto Id>
+    FORCE_INLINE
+    auto set_status(page::StatusWord::ValueTypeOf<Id> const &value) -> void {
+        auto word = status();
+        word.template set<Id>(value);
+        m_status.store(word.template into<page::StatusWord::StorageUnit>(),
+                       std::memory_order_relaxed);
+    }
+
+    std::atomic<page::StatusWord::StorageUnit> m_status;
 
     // The size of following fields type should be half of a word.
     mutable std::atomic<u32> m_references;
@@ -601,6 +636,11 @@ class PageFrame {
 
 static_assert((usize{1} << MAX_FRAME_ORDER) <= usize{std::numeric_limits<u16>::max()} + 1,
               "a frame's offset in its block is stored in sixteen bits");
+// The status word is read and written with plain loads and stores of one
+// word; a status atomic that needed a lock would hide one in every
+// accessor.
+static_assert(std::atomic<page::StatusWord::StorageUnit>::is_always_lock_free,
+              "the frame's status word is a lock-free atomic");
 static_assert(sizeof(PageFrame) == PageFrame::SIZE_LIMIT,
               "the memmap stride is what the role overlay depends on");
 static_assert(alignof(PageFrame) <= PageFrame::ALIGNMENT);

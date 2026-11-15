@@ -72,7 +72,7 @@ auto AnonymousPageRequest::make_active(Gaf const alloc_flags) -> void {
     m_alloc_flags = alloc_flags;
 }
 
-auto AnonymousPageRequest::allocate(bool const interruptible) -> Status {
+auto AnonymousPageRequest::allocate(task::Interruptible const interruptible) -> Status {
     DEBUG_ASSERT(m_active, "waited on a request that was never raised");
     m_active = false;
 
@@ -108,7 +108,14 @@ auto AnonymousPageRequest::allocate(bool const interruptible) -> Status {
 /// the one it needed and returned.
 auto MultiPageRequest::wait(bool const suspendable) -> Status {
     if (m_anonymous.is_active()) {
-        return m_anonymous.allocate(suspendable);
+        // A suspendable wait is one a suspend or a kill may end: what the
+        // scheduler calls interruptible. The page-source side keeps the bool
+        // its provider interface takes.
+        auto interruptible = task::Interruptible::No;
+        if (suspendable) {
+            interruptible = task::Interruptible::Yes;
+        }
+        return m_anonymous.allocate(interruptible);
     }
     return m_read.wait(suspendable);
 }

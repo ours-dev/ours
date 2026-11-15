@@ -510,11 +510,11 @@ namespace {
         auto remote_nodes = mm::node_memory_mask();
         remote_nodes.set(nid, false);
         if (remote_nodes.any()) {
-            auto pinned =
+            auto home_excluded =
                 mm::priv::alloc_frames(alloc_flags | mm::Gaf::ThisNode, 0, nid, remote_nodes);
-            EXPECT_TRUE(!pinned && pinned.unwrap_err() == Status::OutOfMem,
+            EXPECT_TRUE(!home_excluded && home_excluded.unwrap_err() == Status::OutOfMem,
                         "ThisNode fails when the allowed mask excludes the requested node");
-            release(pinned);
+            release(home_excluded);
 
             auto remote = mm::priv::alloc_frames(alloc_flags, 0, nid, remote_nodes);
             EXPECT_TRUE(remote && *remote && remote_nodes.test((*remote)->nid()),
@@ -700,10 +700,10 @@ namespace {
                 }
             }
         });
-        auto const pinned = mm::alloc_frames(flags, 0, nid);
-        auto const pinned_failed = !pinned && pinned.unwrap_err() == Status::OutOfMem;
-        if (pinned) {
-            mm::free_frames(*pinned);
+        auto const this_node = mm::alloc_frames(flags, 0, nid);
+        auto const this_node_failed = !this_node && this_node.unwrap_err() == Status::OutOfMem;
+        if (this_node) {
+            mm::free_frames(*this_node);
         }
         auto const counted_local = check_local_fallback(nid);
 
@@ -734,19 +734,19 @@ namespace {
         auto const restored_last = one_free();
 
         auto fragment = mm::alloc_frames_fragment(flags, PARTIAL_FRAGMENT_COUNT, nid);
-        auto const invalid = !fragment && fragment.unwrap_err() == Status::OutOfMem;
+        auto const fragment_refused = !fragment && fragment.unwrap_err() == Status::OutOfMem;
         if (fragment) {
             mm::free_frames(&*fragment);
         }
         auto const fragment_restored_last = one_free();
         mm::free_frames(&held);
 
-        EXPECT_TRUE(pinned_failed, "ThisNode fails after exhausting the requested node");
+        EXPECT_TRUE(this_node_failed, "ThisNode fails after exhausting the requested node");
         EXPECT_TRUE(drained && counted_local,
                     "fallback from the exhausted remote home supplies and counts a local page");
         EXPECT_TRUE(rejected && restored_last,
                     "a bulk allocation refused at the floor leaves the free frame in place");
-        EXPECT_TRUE(invalid && fragment_restored_last,
+        EXPECT_TRUE(fragment_refused && fragment_restored_last,
                     "a fragment allocation refused at the floor leaves the free frame in place");
     }
 
@@ -1020,7 +1020,9 @@ namespace {
         }
 
         // Reclaim would give frames back to the zone while the test holds its
-        // count still. Nothing reclaims while this lives.
+        // count still. Nothing new is reclaimed while this lives; only a walk
+        // already under way as it began could still run, and nothing marks
+        // this node short beforehand.
         mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
         auto const blocking = mm::ALLOC_KERNEL | mm::Gaf::ThisNode;
         auto const non_blocking = mm::Gaf::ThisNode;
@@ -1241,6 +1243,41 @@ namespace {
                     "at Low a confined waiting request is served by the Min pass, from its node");
         EXPECT_TRUE(at_min && out_of_mem, "at Min it answers OutOfMem, not ShouldWait");
         EXPECT_TRUE(nowhere_fails, "with no node it may use, it answers OutOfMem at once");
+    }
+
+    KTEST(PmNode, APausedReclaimerTakesNoNodeRecord) {
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto &zone = *target->zone_list()->fallback()[0];
+        auto &reclaimer = mm::MemoryReclaimer::get();
+
+        // While a Pause lives, the thread's take leaves a marked record as it
+        // is: a second mark is still not the first. The zone sits above High,
+        // so the take's answer is 0 either way; the record is what tells.
+        auto marked = false;
+        auto refused = usize{1};
+        auto kept = false;
+        {
+            mm::MemoryReclaimer::Pause const no_reclaim{reclaimer};
+            auto _ = target->take_reclaim_target();
+            marked = target->mark_short(zone);
+            refused = reclaimer.take_node_target(*target);
+            kept = !target->mark_short(zone);
+            auto _ = target->take_reclaim_target();
+        }
+
+        // Without one, the take clears it. The thread may take it first,
+        // woken as the Pause ended; either way the next mark is the first.
+        auto const marked_again = target->mark_short(zone);
+        auto _ = reclaimer.take_node_target(*target);
+        auto const taken = target->mark_short(zone);
+        auto _ = target->take_reclaim_target();
+
+        EXPECT_TRUE(marked && refused == 0 && kept,
+                    "while a Pause lives the take leaves a node's record alone");
+        EXPECT_TRUE(marked_again && taken, "without a Pause the take clears it");
     }
 
     KTEST(PmNode, AShortZoneIsMarkedOnceAndTakenOnce) {

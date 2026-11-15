@@ -277,7 +277,9 @@ signals when the mark is the node's first since the thread took it, and
 the thread takes it with `PmNode::take_reclaim_target()`. The node never
 calls the reclaimer. The checks that drop a report (not started, paused)
 come before the mark, so a record that is not empty always has a wake on
-its way; while a Pause lives the thread takes no record, and the last
+its way; while a Pause lives the thread takes no record (the take asks
+`paused()` under `m_take_lock`, which a Pause takes as it begins), a
+record taken just before is walked rather than dropped, and the last
 Pause to end wakes it. Owner-directed block return requires a frame
 reference at the zone boundary.
 

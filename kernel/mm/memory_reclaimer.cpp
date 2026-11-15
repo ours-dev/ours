@@ -49,8 +49,9 @@ auto MemoryReclaimer::request(PmZone const &zone) -> void {
     // set, and every later mark on that node then answers that a wake has
     // already gone out -- so a report dropped after marking would swallow the
     // wakes of all the reports after it. A Pause that begins after this check
-    // finds a mark whose wake goes out anyway; the thread takes it and
-    // reclaims nothing, as every walk under a Pause does.
+    // finds a mark whose wake goes out anyway; the thread's take is refused
+    // while the Pause lives (take_node_target()), and the last Pause to end
+    // wakes it to take the mark then.
     if (!m_started.load(std::memory_order_acquire) || paused()) {
         return;
     }
@@ -61,6 +62,28 @@ auto MemoryReclaimer::request(PmZone const &zone) -> void {
     if (find_node(zone.which_node())->mark_short(zone)) {
         m_signal.signal();
     }
+}
+
+MemoryReclaimer::Pause::Pause(MemoryReclaimer &reclaimer) : m_reclaimer(reclaimer) {
+    m_reclaimer.m_pauses.fetch_add(1, std::memory_order_acq_rel);
+    // Waits out a take that read paused() before the count above: once this
+    // returns, every take that starts sees the Pause. A take that finished
+    // first has its walk to run, which goes on (see reclaim_node_requests()).
+    Guard<sync::SpinLock, IrqSave> guard{m_reclaimer.m_take_lock};
+}
+
+MemoryReclaimer::Pause::~Pause() {
+    if (m_reclaimer.m_pauses.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        m_reclaimer.m_signal.signal();
+    }
+}
+
+auto MemoryReclaimer::take_node_target(PmNode &node) -> usize {
+    Guard<sync::SpinLock, IrqSave> guard{m_take_lock};
+    if (paused()) {
+        return 0;
+    }
+    return node.take_reclaim_target();
 }
 
 auto MemoryReclaimer::take() -> usize {
@@ -85,6 +108,10 @@ auto MemoryReclaimer::reclaim(usize const frames, NodeMask const &nodes) -> usiz
     if (paused()) {
         return 0;
     }
+    return walk(frames, nodes);
+}
+
+auto MemoryReclaimer::walk(usize const frames, NodeMask const &nodes) -> usize {
     // Each call is given what is left, so none takes more than the rest.
     usize freed = 0;
     nodes.for_each([&freed, frames](NodeId nid) {
@@ -98,12 +125,20 @@ auto MemoryReclaimer::reclaim(usize const frames, NodeMask const &nodes) -> usiz
 
 auto MemoryReclaimer::reclaim_node_requests() -> void {
     for_each_node(NodeState::Memory, [this](PmNode &node) {
-        auto const wanted = node.take_reclaim_target();
-        if (wanted != 0) {
-            auto const freed = reclaim(wanted, NodeMask::of(node.nid()));
-            log::debug("mm: node {} gave back {} of {} frames requested", node.nid(), freed,
-                       wanted);
+        auto const wanted = take_node_target(node);
+        if (wanted == 0) {
+            return;
         }
+        // Walked whatever happens next. Through reclaim() a Pause beginning
+        // now would refuse the walk, and the record, already taken, would be
+        // lost; a walk whose record was taken is a walk already under way,
+        // which a Pause does not stop.
+        usize freed = 0;
+        {
+            Guard guard{m_reclaim_lock};
+            freed = walk(wanted, NodeMask::of(node.nid()));
+        }
+        log::debug("mm: node {} gave back {} of {} frames requested", node.nid(), freed, wanted);
     });
 }
 
@@ -115,12 +150,10 @@ auto MemoryReclaimer::run() -> i32 {
             auto const freed = reclaim(wanted);
             log::info("mm: gave back {} of {} frames that were asked", freed, wanted);
         }
-        // Not while a Pause lives: a test may be reading a node's record. A
-        // mark left meanwhile keeps the record non-empty with its wake spent,
-        // so the last Pause to end signals again, and this takes it then.
-        if (!paused()) {
-            reclaim_node_requests();
-        }
+        // Each node's take asks whether a Pause lives (take_node_target()). A
+        // mark it leaves keeps the record non-empty with its wake spent, so
+        // the last Pause to end signals again, and this takes it then.
+        reclaim_node_requests();
     }
 }
 

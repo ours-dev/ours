@@ -187,8 +187,8 @@ class AllocRequest final {
     /// with_* methods above, both of which start from a request that was
     /// resolved -- so there is no path to an AllocRequest whose fields were
     /// never worked out from a caller's ask.
-    friend auto resolve_request(Gaf alloc_flags, usize order, NodeMask const &fallback,
-                                Origin origin) -> AllocRequest;
+    friend auto resolve_request(Gaf alloc_flags, usize order, NodeMask const &nodes, Origin origin)
+        -> AllocRequest;
 
     constexpr AllocRequest(Gaf const alloc_flags, usize const order, NodeMask const &allowed_nodes,
                            Origin const origin, ZoneType const lowest_zone,
@@ -225,9 +225,9 @@ class AllocRequest final {
 /// "resolved" true of every request that exists.
 [[nodiscard]]
 FORCE_INLINE
-inline auto resolve_request(Gaf const alloc_flags, usize const order, NodeMask const &fallback,
+inline auto resolve_request(Gaf const alloc_flags, usize const order, NodeMask const &nodes,
                             AllocRequest::Origin const origin) -> AllocRequest {
-    auto allowed = fallback;
+    auto allowed = nodes;
     if (!!(alloc_flags & Gaf::ThisNode)) {
         allowed &= NodeMask::of(origin.node);
     }

@@ -13,6 +13,7 @@
 #include <ours/mm/pm_frame.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/status.hpp>
+#include <ours/task/types.hpp>
 
 #include <bootmem/types.hpp>
 #include <ktl/result.hpp>
@@ -307,8 +308,8 @@ auto zone_floor_frame_count() -> usize;
 /// frame, by the gate or at a zone's Low, and the caller waits again; OutOfMem when delayed allocations are
 /// refused (DelayedAllocations::Refuse); TimeOut at |deadline|.
 [[nodiscard]]
-auto wait_for_frame_allocation(Gaf alloc_flags, time::Deadline const &deadline, bool interruptible)
-    -> ktl::Result<PmFrame *>;
+auto wait_for_frame_allocation(Gaf alloc_flags, time::Deadline const &deadline,
+                               task::Interruptible interruptible) -> ktl::Result<PmFrame *>;
 
 /// What a CanWait allocation gets when it finds free memory below the delay
 /// level.

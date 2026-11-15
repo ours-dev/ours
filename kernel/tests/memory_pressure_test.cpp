@@ -45,7 +45,9 @@
 #include <ours/time/clock.hpp>
 
 #include <array>
+#include <atomic>
 
+#include <arch/spin_hint.hpp>
 #include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <user_copy/user_copy.hpp>
@@ -109,8 +111,8 @@ namespace {
     auto wait_routine(void *const arg) -> i32 {
         auto &waiter = *static_cast<Waiter *>(arg);
         while (true) {
-            auto result =
-                mm::wait_for_frame_allocation(WAITABLE, deadline_after(LOST_AFTER), false);
+            auto result = mm::wait_for_frame_allocation(WAITABLE, deadline_after(LOST_AFTER),
+                                                        task::Interruptible::No);
             if (result) {
                 waiter.frame = *result;
                 waiter.status = Status::Ok;
@@ -223,10 +225,10 @@ namespace {
     auto check_timeout() -> void {
         auto const shut = shut_gate();
         auto const deadline = deadline_after(SETTLE);
-        auto result = mm::wait_for_frame_allocation(WAITABLE, deadline, true);
+        auto result = mm::wait_for_frame_allocation(WAITABLE, deadline, task::Interruptible::Yes);
         if (!result && result.unwrap_err() == Status::ShouldWait) {
             // Closing the gate can leave a wakeup from its previous opening.
-            result = mm::wait_for_frame_allocation(WAITABLE, deadline, true);
+            result = mm::wait_for_frame_allocation(WAITABLE, deadline, task::Interruptible::Yes);
         }
         open_gate();
         EXPECT_TRUE(shut && !result && result.unwrap_err() == Status::TimeOut,
@@ -506,6 +508,99 @@ namespace {
             open_gate();
         }
         check_watchdog();
+    }
+
+    /// One CPU admitting allocations that can wait, as fast as it can, while
+    /// another re-arms the gate under it. |attempts| counts the allocations
+    /// it has finished, so the re-arming side can tell when one it may have
+    /// raced has landed.
+    struct Admitter {
+        std::atomic<bool> stop{false};
+        std::atomic<usize> attempts{0};
+    };
+
+    auto admit_routine(void *const arg) -> i32 {
+        auto &admitter = *static_cast<Admitter *>(arg);
+        while (!admitter.stop.load(std::memory_order_acquire)) {
+            auto const result = mm::alloc_frames(WAITABLE);
+            if (result) {
+                mm::free_frames(*result);
+            }
+            admitter.attempts.fetch_add(1, std::memory_order_release);
+        }
+        return 0;
+    }
+
+    /// Spins until |admitter| has finished |more| allocations after now.
+    /// False if it has not within LOST_AFTER: the admitter is not running.
+    auto wait_for_attempts(Admitter const &admitter, usize const more) -> bool {
+        auto const target = admitter.attempts.load(std::memory_order_acquire) + more;
+        auto const give_up = time::SteadyClock::now() + LOST_AFTER;
+        while (admitter.attempts.load(std::memory_order_acquire) < target) {
+            if (time::SteadyClock::now() >= give_up) {
+                return false;
+            }
+            arch::spin_hint();
+        }
+        return true;
+    }
+
+    KTEST(MemoryPressure, TheGateIsNeverShutOnALevelNoLongerInForce) {
+        // Each round arms a level no free count reaches, so the admitter's
+        // next allocation decides to shut the gate, and then at once no
+        // level at all. An allocation that read the first level but shut the
+        // gate after the second was stored has shut it on a level no longer
+        // in force: the gate stays shut with nothing to open it. After the
+        // second store the main thread waits for the admitter's allocation
+        // in flight and one more to finish, so any such shut has landed, and
+        // then asks: with no level, only a stale shut answers ShouldWait.
+        //
+        // A race, so a pass is evidence rather than proof; it needs a second
+        // CPU for the admitter to race on at all.
+        mm::MemoryWatchdog::Hold hold{mm::MemoryWatchdog::get()};
+        Admitter admitter;
+        auto *const thread =
+            Thread::spawn("mempressure-admitter", admit_routine, &admitter, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            FAIL("a thread for the admitter");
+            return;
+        }
+        if (Status::Ok != thread->resume()) {
+            FAIL("the admitter starts");
+            return;
+        }
+
+        // The probe is confined to this CPU's node, so a zone below its Low
+        // watermark cannot answer it ShouldWait (it goes on to Min): only a
+        // shut gate can.
+        constexpr usize ROUNDS = 40000;
+        usize stale = 0;
+        auto running = true;
+        for (usize round = 0; round < ROUNDS && running; ++round) {
+            auto _ = mm::set_free_memory_signal(0, NO_BOUND, NO_BOUND, nullptr,
+                                                mm::DelayedAllocations::Wait);
+            auto _ =
+                mm::set_free_memory_signal(0, NO_BOUND, 0, nullptr, mm::DelayedAllocations::Wait);
+            running = wait_for_attempts(admitter, 2);
+            auto const probe = mm::alloc_frames(WAITABLE | mm::Gaf::ThisNode);
+            if (probe) {
+                mm::free_frames(*probe);
+            } else if (probe.unwrap_err() == Status::ShouldWait) {
+                stale += 1;
+            }
+        }
+
+        // The admitter reads |admitter| on this stack until it stops, so it
+        // is joined for as long as that takes; its loop never sleeps.
+        admitter.stop.store(true, std::memory_order_release);
+        i32 retcode = 0;
+        auto _ = thread->join(&retcode, time::Deadline::infinite());
+        open_gate();
+        log::info("pressure:   {} rounds, {} admissions, {} stale shuts", ROUNDS,
+                  admitter.attempts.load(std::memory_order_relaxed), stale);
+
+        EXPECT_TRUE(running, "the admitter keeps admitting while the gate is re-armed");
+        EXPECT_TRUE(stale == 0, "the gate is never left shut on a level no longer in force");
     }
 
     KTEST(MemoryPressure, TheBootLevelsCoverTheZoneFloors) {
