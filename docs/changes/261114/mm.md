@@ -336,3 +336,64 @@ None.
 - The gate and a zone's Low both put a waiting request off. What question does each answer, and why is neither enough alone?
 - A release lands after a request was answered `ShouldWait` and before it went to sleep. Why does the waiter not sleep through it?
 - Why does a waiting request skip the second pass, when a kernel request makes it?
+
+## The record of a short zone moves into its node (2026-11-14)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp` — `PmNode::mark_short()` and `PmNode::take_reclaim_target()`, over a new `m_short_zones`, one atomic word with a bit per zone type
+- `kernel/mm/include/ours/mm/memory_reclaimer.hpp`, `kernel/mm/memory_reclaimer.cpp` — `m_zone_requests` and `RequestState` go; `request(PmZone const &)` marks the zone's node and signals on the first mark; the thread takes each node's target; while a Pause lives the thread takes no node's record, and the last Pause to end wakes it
+- `kernel/tests/pm_node_test.cpp` — new `PmNode.AShortZoneIsMarkedOnceAndTakenOnce`
+- `docs/repairs/261114/kernel-task-sched.md` — a second sighting of the steal flake, on another check
+
+**Symptom**
+None in behaviour. The reclaimer kept its own `m_zone_requests[MAX_NODES][NR_ZONES_PER_NODE]` of Idle and Pending states, indexed by raw node and zone ids: a second copy of the node topology, outside the nodes, holding state about the nodes' zones.
+
+**Cause**
+When allocations first reported a short zone, the reclaimer was the only thing that read the report, so the report was kept where it was read. Since the watermark change, a failed Low pass is what asks for reclaim, and the next step (`docs/repairs/261112/mm.md` item 3) needs a node to know that reclaiming it gave nothing back. Both facts are about the node, and decision N2 of `.agents/tasks/pmm-redesign/DESIGN.md` put them there.
+
+**Change**
+The node records and answers; the reclaimer wakes itself (option (b) of N2, the user's choice: the node does not call the reclaimer above it).
+
+```cpp
+// PmNode
+auto mark_short(PmZone const &zone) -> bool {        // true: first mark since the last take
+    return m_short_zones.fetch_or(bit(zone), acq_rel) == 0;
+}
+auto take_reclaim_target() -> usize {                // clears the record
+    auto const marked = m_short_zones.exchange(0, acq_rel);
+    // sum High - free over the marked zones, read now
+}
+
+// MemoryReclaimer::request(zone), from observe_pressure()
+if (!started || paused()) { return; }                // before the mark, not after
+if (find_node(zone.which_node())->mark_short(zone)) { m_signal.signal(); }
+```
+
+The invariant is that a record that is not empty always has a wake on its way: every mark that finds the word at zero is followed by a signal, and the self-resetting event keeps a signal that finds the thread busy. That is why the started and paused checks come before the mark. A mark nothing will take stays set, every later mark on the node answers that a wake is already out, and the thread would never be told again. One word per node rather than one atomic per zone: one exchange takes the node's whole record, and one fetch_or tells a marker whether it is the first. Two zone types marked before a take now cost one signal where they cost two.
+
+The Pause change came out of the review. A Pause dropped reports but did not stop the thread from taking a node's record when a wake already in flight arrived, so a test reading a record under a Pause could have it taken away. Now the thread skips the node records while a Pause lives, and the last Pause to end signals it, so a mark that slipped in at the Pause's start is taken afterwards rather than left set with its wake spent.
+
+**Reference**
+Linux keeps the request in the node: `wakeup_kswapd()` writes `pgdat->kswapd_highest_zoneidx` and `pgdat->kswapd_order` and wakes `pgdat->kswapd_wait`, and `kswapd()` reads both and resets them to `MAX_NR_ZONES` and 0 before it balances the node (`mm/vmscan.c`). The record here is a set of zone types rather than a highest index and an order, there is one reclaimer thread rather than one per node, and the take is one atomic exchange where Linux's reads and resets may lose a racing request. Zircon has no zones and no such record: eviction is asked for by the memory watchdog over the whole machine, which `request(frames)` already follows.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 184 passed, on the default and the four-node machine. `ktest all`: default 88 ran, 82 passed, 6 skipped (the new test needs a second node); four nodes 88 ran, 85 passed, 3 skipped, after one run where `Steal.IdleCpuTakesQueuedThreadsByNodeAndAffinity` failed (the filed flake, on another check). With `MEM=3072` both images boot and `ktest PmNode.*:MemoryPressure.*:PageReclaim.*` passes, 12 ran and 8 passed. The failure-injection build: 88 ran, 83 passed, 0 failed; the run is reported as failed only because of the three deliberate `Failed to map` lines, which the same suites print without this change (`docs/repairs/261105/kernel-test-framework.md`). clang-tidy reports nothing in `pm_node.cpp` or `memory_reclaimer.cpp`.
+
+The new test marks another node's zone and takes it under a Pause: the first mark says it is the first and a second does not; a marked zone above High asks for nothing; drained to Low, the next mark is the first again and the take answers High - Low; a second take answers 0. Controls: with `mark_short()` always answering true, the first check fails; with the take reading the word without clearing it, the after-a-take and the clears-the-record checks fail.
+
+A narrow pre-commit review checked the lost-wake invariant (including a Pause beginning or ending between the check and the mark), equivalence with the old code, that the asserted zone always belongs to the node it is marked on, the ordering comment, and layering. It found the test could have its record taken by a wake in flight, fixed by the Pause change above, and a header comment that called a report before start "dropped as an ask is", when an ask before start is kept.
+
+**Deliberately not done**
+- The node does not yet record that reclaiming it gave nothing back; that is `docs/repairs/261112/mm.md` item 3, the next step, and it builds on this record.
+- No test drives a report end to end through the thread to a reclaim on that node; none did before either.
+
+**How it was found**
+None. Decision N2 of `.agents/tasks/pmm-redesign/DESIGN.md`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why must the started and paused checks in `request(zone)` come before `mark_short()` and not after?
+- One word with a bit per zone type, or one atomic per zone: what does the single word buy a marker, and what does it buy the thread?
+- A test reads a node's record under a Pause. Which wake could still take it away before this change, and what ends the Pause safely now?

@@ -204,7 +204,7 @@ class PmNode {
 
 - `alloc_frames()` walks the node's candidates for the request, asks each zone `admits()` and takes from the first that does. `free_frames()` returns a block to the zone of this node it came from, and wakes one waiter when that lifts the zone back above Low.
 - `wake_reclaim(zone)` is called by the entry when a walk found a zone below its floor: it marks the node as wanting reclaim and wakes the reclaimer. The counterpart is Linux's `wakeup_kswapd()`.
-- `reclaim_target()` is what the reclaimer asks each node: how many frames its zones are short of High, and zero for a node nobody marked. The mark is the node's (N2); the thread and the order of the walk (zero pages, then pager pages) stay with `MemoryReclaimer`, above the PMM.
+- `reclaim_target()` is what the reclaimer asks each node: how many frames its zones are short of High, and zero for a node nobody marked. The mark is the node's (N2); the thread and the order of the walk (zero pages, then pager pages) stay with `MemoryReclaimer`, above the PMM. As built (2026-11-14, N2 option (b), the user's choice): the node only records, as `mark_short(zone) -> bool` (true on the first mark since the last take) and `take_reclaim_target()`, and `MemoryReclaimer::request(zone)` marks and wakes its own thread, so `PmNode` does not depend on the reclaimer; `wake_reclaim()` and `reclaim_target()` above are the draft's names.
 
 One request that waits, on a node that is short:
 

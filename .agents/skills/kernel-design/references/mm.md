@@ -258,8 +258,15 @@ page queues. Admission and waits use the global gate. The node-scoped
 reclaim request is advisory and preserves the immediate allocation result.
 
 A block attempt carries its optional depleted zone in its typed failure.
-The reclaimer stores Idle and Pending as per-zone enum states. Owner-directed
-block return requires a frame reference at the zone boundary.
+Each node records its short zones in one atomic word, a bit per zone
+type (2026-11-14, N2): `MemoryReclaimer::request(zone)` marks it and
+signals when the mark is the node's first since the thread took it, and
+the thread takes it with `PmNode::take_reclaim_target()`. The node never
+calls the reclaimer. The checks that drop a report (not started, paused)
+come before the mark, so a record that is not empty always has a wake on
+its way; while a Pause lives the thread takes no record, and the last
+Pause to end wakes it. Owner-directed block return requires a frame
+reference at the zone boundary.
 
 ## PMM allocation pipeline (user decision, 2026-11-10)
 

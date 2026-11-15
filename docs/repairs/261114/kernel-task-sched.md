@@ -6,7 +6,7 @@
 Low: a test that fails without a change to what it tests, so a red run says nothing about the change under test.
 
 **Symptom**
-One of six runs on 2026-11-14 (`ktest all` on the default machine, `feat/pmm-redesign` at the watermark-admission change) failed with `steal_test.cpp:436: heavy.steals == u64{1}: expected 0, actual 1 -- the idle CPU takes the one waiting thread although the mean is above its ...`. Four runs of `ktest Steal.*` alone and the next full run passed on the same build.
+One of six runs on 2026-11-14 (`ktest all` on the default machine, `feat/pmm-redesign` at the watermark-admission change) failed with `steal_test.cpp:436: heavy.steals == u64{1}: expected 0, actual 1 -- the idle CPU takes the one waiting thread although the mean is above its ...`. Four runs of `ktest Steal.*` alone and the next full run passed on the same build. A second sighting the same day, `ktest all` on the four-node machine at the change that moved the short-zone record into the node, failed a different check: `steal_test.cpp:608: round.looks >= 1 && round.steals == 0 && !round.movable_seen_on_thief`; the next run passed.
 
 **Cause**
 Not established. The check counts steals in a window, and a steal that happens before or after the window it means to observe, or a CPU going idle at a different moment, changes the count. The change under test at the time touched only frame allocation, which the steal path does not call.

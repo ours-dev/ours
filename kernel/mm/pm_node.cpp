@@ -74,7 +74,6 @@ auto ZoneList::dump_fallback() const -> void {
     }
 }
 
-
 PmNode::PmNode(NodeId nid)
     : m_canary(this)
     , m_id(nid)
@@ -83,7 +82,8 @@ PmNode::PmNode(NodeId nid)
     , m_soft_affinity()
     , m_start_pfn()
     , m_zone_list(nid)
-    , m_page_queues() {}
+    , m_page_queues()
+    , m_short_zones(0) {}
 
 auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
     -> ustl::Result<PmFrame *, BlockFailure> {
@@ -128,6 +128,50 @@ auto PmNode::free_frames(PmFrame &frame, usize const order) -> bool {
     DEBUG_ASSERT(zone, "frame {:#x} is in no zone", frame_to_phys(&frame));
 
     return zone->free_frames(frame, order);
+}
+
+namespace {
+    /// |type|'s bit in a node's record of short zones.
+    constexpr auto short_zone_bit(ZoneType const type) -> u32 {
+        static_assert(NR_ZONES_PER_NODE <= 32, "the record holds one bit per zone type in a u32");
+        return u32{1} << std::to_underlying(type);
+    }
+} // namespace
+
+auto PmNode::mark_short(PmZone const &zone) -> bool {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(zone.which_node() == m_id, "a zone of node {} was marked short on node {}",
+                 zone.which_node(), m_id);
+
+    // The bits carry no other data with them -- the take reads the zones'
+    // counts afresh -- so the order only has to keep each read-modify-write
+    // whole, which any order does. acq_rel is the order the record had in
+    // the reclaimer, kept.
+    return m_short_zones.fetch_or(short_zone_bit(zone.zone_type()), std::memory_order_acq_rel) == 0;
+}
+
+auto PmNode::take_reclaim_target() -> usize {
+    m_canary.verify<Self>();
+
+    auto const marked = m_short_zones.exchange(0, std::memory_order_acq_rel);
+    if (marked == 0) {
+        return 0;
+    }
+
+    // Each marked zone is read again: the mark says an allocation found it
+    // short, not how short it is now.
+    usize wanted = 0;
+    m_zone_list.for_each_local_zone([marked, &wanted](PmZone const &zone) {
+        if ((marked & short_zone_bit(zone.zone_type())) == 0) {
+            return;
+        }
+        auto const free = zone.num_free_frames();
+        auto const high = zone.watermark(PmZone::Watermark::High);
+        if (free < high) {
+            wanted += high - free;
+        }
+    });
+    return wanted;
 }
 
 auto PmNode::contains(usize const order, ZoneType const type) -> bool {

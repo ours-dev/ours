@@ -45,11 +45,20 @@ auto MemoryReclaimer::request(usize const frames) -> void {
 }
 
 auto MemoryReclaimer::request(PmZone const &zone) -> void {
+    // Checked before the mark, not after. A mark nothing will take stays
+    // set, and every later mark on that node then answers that a wake has
+    // already gone out -- so a report dropped after marking would swallow the
+    // wakes of all the reports after it. A Pause that begins after this check
+    // finds a mark whose wake goes out anyway; the thread takes it and
+    // reclaims nothing, as every walk under a Pause does.
     if (!m_started.load(std::memory_order_acquire) || paused()) {
         return;
     }
-    auto &request = m_zone_requests[zone.which_node()][std::to_underlying(zone.zone_type())];
-    if (request.exchange(RequestState::Pending, std::memory_order_acq_rel) == RequestState::Idle) {
+    // The node records; the wake is this reclaimer's own. Every mark that
+    // finds the record empty is followed by a signal, so a record that is not
+    // empty always has a wake on its way to the thread, and the event keeps
+    // a signal that finds the thread busy.
+    if (find_node(zone.which_node())->mark_short(zone)) {
         m_signal.signal();
     }
 }
@@ -89,20 +98,7 @@ auto MemoryReclaimer::reclaim(usize const frames, NodeMask const &nodes) -> usiz
 
 auto MemoryReclaimer::reclaim_node_requests() -> void {
     for_each_node(NodeState::Memory, [this](PmNode &node) {
-        auto &requests = m_zone_requests[node.nid()];
-        usize wanted = 0;
-        node.zone_list()->for_each_local_zone([&requests, &wanted](PmZone const &zone) {
-            auto &request = requests[std::to_underlying(zone.zone_type())];
-            if (request.exchange(RequestState::Idle, std::memory_order_acq_rel) ==
-                RequestState::Idle) {
-                return;
-            }
-            auto const free = zone.num_free_frames();
-            auto const high = zone.watermark(PmZone::Watermark::High);
-            if (free < high) {
-                wanted += high - free;
-            }
-        });
+        auto const wanted = node.take_reclaim_target();
         if (wanted != 0) {
             auto const freed = reclaim(wanted, NodeMask::of(node.nid()));
             log::debug("mm: node {} gave back {} of {} frames requested", node.nid(), freed,
@@ -119,7 +115,12 @@ auto MemoryReclaimer::run() -> i32 {
             auto const freed = reclaim(wanted);
             log::info("mm: gave back {} of {} frames that were asked", freed, wanted);
         }
-        reclaim_node_requests();
+        // Not while a Pause lives: a test may be reading a node's record. A
+        // mark left meanwhile keeps the record non-empty with its wake spent,
+        // so the last Pause to end signals again, and this takes it then.
+        if (!paused()) {
+            reclaim_node_requests();
+        }
     }
 }
 

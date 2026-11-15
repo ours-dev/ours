@@ -1171,6 +1171,46 @@ namespace {
         EXPECT_TRUE(quiet == 0, "a release from above Low wakes nobody");
     }
 
+    KTEST(PmNode, AShortZoneIsMarkedOnceAndTakenOnce) {
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto &zone = *target->zone_list()->fallback()[0];
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        auto const high = zone.watermark(PmZone::Watermark::High);
+
+        // Paused, so that nothing else marks this node or takes its record
+        // while the test reads it: while a Pause lives the reclaimer drops
+        // every report and its thread takes no node's record. What an earlier
+        // report left is taken first, so that the first mark below is the
+        // first. A report that passed its check just before the Pause began
+        // could still mark the node; nothing allocates on this node now.
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        auto _ = target->take_reclaim_target();
+
+        // Above High: the mark is kept, and asks for nothing.
+        auto const above = zone.num_free_frames() >= high;
+        auto const first = target->mark_short(zone);
+        auto const second = target->mark_short(zone);
+        auto const nothing = target->take_reclaim_target();
+
+        // At Low: the distance to High, once.
+        PmFrame::List held;
+        auto const at_low = drain_to(zone, low, held);
+        auto const again = target->mark_short(zone);
+        auto const wanted = target->take_reclaim_target();
+        auto const taken = target->take_reclaim_target();
+        mm::free_frames(&held);
+
+        EXPECT_TRUE(above && first && !second,
+                    "the first mark says it is the first; a second before the take does not");
+        EXPECT_TRUE(nothing == 0, "a marked zone at or above High asks for nothing");
+        EXPECT_TRUE(at_low && again, "after a take the next mark is the first again");
+        EXPECT_TRUE(wanted == high - low, "a marked zone at Low asks for the distance to High");
+        EXPECT_TRUE(taken == 0, "the take clears the record");
+    }
+
     KTEST(PmNode, LowZonesKeepAReserve) {
         // The table: every zone's reserve against every highest type is one
         // in LOWMEM_RESERVE_RATIO of what the zones above it on its node

@@ -292,6 +292,23 @@ class PmNode {
         return m_page_queues;
     }
 
+    /// Marks |zone|, one of this node's, as short: an allocation found it
+    /// below its floor and wants it reclaimed. True when this is the first
+    /// mark since take_reclaim_target() last took the node's record, and the
+    /// caller then wakes whatever takes it; false when an earlier mark is
+    /// still waiting, and its wake has already gone out. The node only
+    /// records: it wakes nothing itself, so it does not depend on the
+    /// reclaimer above it (MemoryReclaimer::request() is the caller).
+    [[nodiscard]]
+    auto mark_short(PmZone const &zone) -> bool;
+
+    /// Takes the node's record of short zones, and answers how many frames
+    /// the marked ones are short of High, read now: zero when nothing was
+    /// marked or the marked zones have recovered since. The take clears the
+    /// record, so each mark is answered once.
+    [[nodiscard]]
+    auto take_reclaim_target() -> usize;
+
     /// TA_RETURN_CAPABILITY ties the accessor to the member for the
     /// thread-safety analysis, so `TA_GUARDED(get_lock())` on the masks below and
     /// a `Guard<sync::SpinLock, IrqSave> guard{node->get_lock()}` at a call
@@ -358,6 +375,13 @@ class PmNode {
 
     ZoneList m_zone_list;
     PageQueues m_page_queues;
+
+    /// The zones of this node an allocation has marked short since the
+    /// reclaimer last took the record, one bit per zone type. One word, so
+    /// that one exchange takes the whole record and one fetch_or tells a
+    /// marker whether it is the first; those two atomic read-modify-writes
+    /// are the only writes it has.
+    std::atomic<u32> m_short_zones;
 
     [[no_unique_address]]
     AllocPolicy m_node_policy;
