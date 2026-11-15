@@ -104,3 +104,37 @@ None.
 - What does a bare `true` at a call site fail to tell its reader that `task::Interruptible::Yes` does?
 - Why convert once at `MultiPageRequest::wait()` rather than change the provider interface too?
 - What ends an interruptible wait for a frame, and what does the caller see then?
+
+## ARCH_MAX_PFN_LIMIT is spelled ARCH (2026-11-15)
+
+**Files**
+- `kernel/arch/x86/kernel/include/ours/arch/mem_cfg.hpp` — `ARHC_MAX_PFN_LIMIT` renamed `ARCH_MAX_PFN_LIMIT`, its definition and its one use
+
+**Symptom**
+The Normal zone's bound beside `ARCH_MAX_DMA_PFN` and `ARCH_MAX_DMA32_PFN` was spelled `ARHC_MAX_PFN_LIMIT`, so a search for the arch's zone bounds by their prefix missed it.
+
+**Cause**
+A typo from the first commit.
+
+**Change**
+The rename; the value (64 GiB) is unchanged.
+
+**Reference**
+None.
+
+**Verification**
+`verify` on the default and the four-node machine: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+Noticed beside the Dma32 bound on 2026-11-14 and left for its own change.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a misspelled macro still compile and work when its one use is spelled the same way?
+- What would a search for `ARCH_MAX_` have told a reader about the zone bounds before this change?
+- Why is a bound like this a macro at all here, when the codebase defines constants with `constexpr`?
