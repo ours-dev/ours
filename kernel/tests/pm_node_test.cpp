@@ -510,11 +510,11 @@ namespace {
         auto remote_nodes = mm::node_memory_mask();
         remote_nodes.set(nid, false);
         if (remote_nodes.any()) {
-            auto pinned =
+            auto home_excluded =
                 mm::priv::alloc_frames(alloc_flags | mm::Gaf::ThisNode, 0, nid, remote_nodes);
-            EXPECT_TRUE(!pinned && pinned.unwrap_err() == Status::OutOfMem,
+            EXPECT_TRUE(!home_excluded && home_excluded.unwrap_err() == Status::OutOfMem,
                         "ThisNode fails when the allowed mask excludes the requested node");
-            release(pinned);
+            release(home_excluded);
 
             auto remote = mm::priv::alloc_frames(alloc_flags, 0, nid, remote_nodes);
             EXPECT_TRUE(remote && *remote && remote_nodes.test((*remote)->nid()),
@@ -700,10 +700,10 @@ namespace {
                 }
             }
         });
-        auto const pinned = mm::alloc_frames(flags, 0, nid);
-        auto const pinned_failed = !pinned && pinned.unwrap_err() == Status::OutOfMem;
-        if (pinned) {
-            mm::free_frames(*pinned);
+        auto const this_node = mm::alloc_frames(flags, 0, nid);
+        auto const this_node_failed = !this_node && this_node.unwrap_err() == Status::OutOfMem;
+        if (this_node) {
+            mm::free_frames(*this_node);
         }
         auto const counted_local = check_local_fallback(nid);
 
@@ -734,19 +734,19 @@ namespace {
         auto const restored_last = one_free();
 
         auto fragment = mm::alloc_frames_fragment(flags, PARTIAL_FRAGMENT_COUNT, nid);
-        auto const invalid = !fragment && fragment.unwrap_err() == Status::OutOfMem;
+        auto const fragment_refused = !fragment && fragment.unwrap_err() == Status::OutOfMem;
         if (fragment) {
             mm::free_frames(&*fragment);
         }
         auto const fragment_restored_last = one_free();
         mm::free_frames(&held);
 
-        EXPECT_TRUE(pinned_failed, "ThisNode fails after exhausting the requested node");
+        EXPECT_TRUE(this_node_failed, "ThisNode fails after exhausting the requested node");
         EXPECT_TRUE(drained && counted_local,
                     "fallback from the exhausted remote home supplies and counts a local page");
         EXPECT_TRUE(rejected && restored_last,
                     "a bulk allocation refused at the floor leaves the free frame in place");
-        EXPECT_TRUE(invalid && fragment_restored_last,
+        EXPECT_TRUE(fragment_refused && fragment_restored_last,
                     "a fragment allocation refused at the floor leaves the free frame in place");
     }
 
