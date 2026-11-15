@@ -43,6 +43,20 @@ auto approx_free_frame_count() -> usize {
     return total;
 }
 
+auto zone_floor_frame_count() -> usize {
+    // A zone refusing a frame holds at most its floor, and never more than it
+    // has: a small zone whose reserve is above its size (the Dma zone of a
+    // large machine) refuses with every frame it has free. Present frames,
+    // not managed: managed grows after boot as reserved frames are given back
+    // (the .init sections, the boot image), and a sum taken from it at boot
+    // would fall short of the one later. Present is fixed and above both.
+    usize total = 0;
+    PmZone::for_each([&total](PmZone const &zone) {
+        total += std::min(zone.normal_low_floor(), zone.present_frames());
+    });
+    return total;
+}
+
 namespace {
     /// The gate in front of the allocations that can wait (alloc_frames()
     /// with Gaf::CanWait), and the signal for whoever watches free memory
@@ -199,6 +213,10 @@ namespace {
     GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
     GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
 
+    /// Releases that brought a zone back to admitting a frame at its Low
+    /// watermark, and so woke a waiter. For tests: what a waiter put off at a zone's Low is woken by.
+    GKTL_COUNTER(PM_ZONE_RELIEF, "pm.zone.relief");
+
     /// The gate every block passes on its way out of stock, with no zone lock
     /// held: what makes a block the buddy gave into the block the caller asked
     /// for. The zone moved it and the node chose the zone; neither prepares
@@ -300,7 +318,7 @@ namespace {
     /// preference.
     auto resolve_home(NodeId nid, Gaf &alloc_flags) -> ktl::Result<PmNode *> {
         if (nid < MAX_NODES) {
-            if (auto *const node = PmNode::node(nid)) {
+            if (auto *const node = find_node(nid)) {
                 return ustl::ok(node);
             }
             return ustl::err(Status::InvArgs);
@@ -317,9 +335,24 @@ namespace {
     }
 
     /// One block for the calling thread out of |home|'s walk, with pressure
-    /// not looked at: the list forms take several and look once.
-    auto alloc_block(PmNode &home, Gaf const alloc_flags, usize const order, NodeMask const &nodes)
-        -> ustl::Result<PmFrame *, PmNode::BlockFailure> {
+    /// not looked at: the list forms take several and look once. When the
+    /// first pass fails as a whole, |depleted| is set to the first zone it
+    /// found short, if it was not set already, and stays set whether or not
+    /// the second pass then brings a block back: an allocation served by the
+    /// second pass was served below Low, and reclaim is wanted then too. A
+    /// first pass that succeeds names nothing, though it may have passed over
+    /// a short zone on the way to one that admitted the request.
+    ///
+    /// |can_wait| is whether the caller asked for Gaf::CanWait, which the gate
+    /// has answered for by now. Such a request, unless it is confined
+    /// (AllocRequest::is_confined()), makes the first pass only: when no zone
+    /// admits it at Low it is answered ShouldWait, and waits for a zone to
+    /// rise back above Low, instead of spending the band between Low and Min
+    /// that the requests which cannot wait depend on. A confined one makes
+    /// both passes, as a request that cannot wait does.
+    auto alloc_block(PmNode &home, Gaf const alloc_flags, usize const order, NodeMask const &nodes,
+                     bool const can_wait, ustl::Option<PmZone const &> &depleted)
+        -> ktl::Result<PmFrame *> {
         // Whether the calling thread may allocate at all: a thread that has
         // disabled allocation (AllocState::disable()) is refused here,
         // whichever way it asked. This is the one function every frame
@@ -335,22 +368,44 @@ namespace {
         // Thread::Current is always there by now: task::init_early() makes the
         // boot thread current before the PMM exists.
         if (!task::Thread::Current::alloc_state().is_enabled()) {
-            return ustl::err(PmNode::BlockFailure{.status = Status::AccessDenied});
+            return ustl::err(Status::AccessDenied);
         }
 
         // Before the request is built: a resolved request never carries an
         // order the buddy does not have.
         if (order > MAX_FRAME_ORDER) {
-            return ustl::err(PmNode::BlockFailure{.status = Status::InvArgs});
+            return ustl::err(Status::InvArgs);
         }
 
         auto const request = resolve_request(
             alloc_flags, order, nodes, AllocRequest::Origin{.node = home.nid(), .cpu = Cpu::id()});
-        auto const block = home.alloc_frames(request);
-        if (block) {
-            prepare_alloc(**block, request);
+
+        // Two passes. The first holds the request at every zone's Low
+        // watermark. Only when no zone admits it there is reclaim asked for,
+        // for the first zone the pass found short, and the second pass lets
+        // the request down to Min (or below, for a caller that cannot block):
+        // the band between Low and Min is spent only after reclaim has been
+        // asked for.
+        auto block = home.alloc_frames(request, AdmissionPass::Low);
+        if (!block) {
+            if (!depleted) {
+                depleted = block.error().depleted_zone;
+            }
+            // An ordinary waiting request waits here rather than spend the
+            // band. A confined one does not: the gate and the watchdog count
+            // memory it cannot use, so nothing is bound to end its wait, and
+            // it goes on to Min and fails there like one that cannot wait.
+            if (can_wait && !request.is_confined()) {
+                return ustl::err(Status::ShouldWait);
+            }
+            block = home.alloc_frames(request, AdmissionPass::Min);
         }
-        return block;
+        if (!block) {
+            return ustl::err(block.error().status);
+        }
+
+        prepare_alloc(**block, request);
+        return ustl::ok(*block);
     }
 
     /// One block back to the node that owns it, with pressure not looked at.
@@ -359,10 +414,22 @@ namespace {
 
         // A frame goes back to the node that owns it, which the frame names,
         // and not to the node of whoever is freeing it.
-        auto *const node = PmNode::node(frame.nid());
+        auto *const node = find_node(frame.nid());
         DEBUG_ASSERT(node, "frame {:#x} belongs to node {}, which does not exist",
                      frame_to_phys(&frame), frame.nid());
-        node->free_frames(frame, order);
+
+        // A release that brings the zone back to admitting a frame at its
+        // Low watermark wakes one waiter: a waiting request put off at Low
+        // (alloc_block()) may now be served. Only at that crossing, not on
+        // every release, so a zone above Low wakes nobody. The zone tells it
+        // from the count its own atomic increment found, so of releases
+        // racing each other and allocations, exactly the one that crossed
+        // wakes. A waiter that retries and is beaten to the frame waits
+        // again, for the next crossing.
+        if (node->free_frames(frame, order)) {
+            PM_ZONE_RELIEF.add(1);
+            GATE.pass_on();
+        }
     }
 
     auto free_blocks(PmFrame::List &list) -> void {
@@ -370,13 +437,9 @@ namespace {
     }
 } // namespace
 
-auto num_nodes() -> usize {
-    return PmNode::num_nodes();
-}
-
 auto node_work_cpus(NodeId nid) -> CpuMask {
     DEBUG_ASSERT(nid < MAX_NODES);
-    if (auto node = PmNode::node(nid)) {
+    if (auto node = find_node(nid)) {
         return node->work_cpus();
     }
     return CpuMask{};
@@ -384,7 +447,7 @@ auto node_work_cpus(NodeId nid) -> CpuMask {
 
 auto node_hard_affinity(NodeId nid) -> CpuMask const * {
     DEBUG_ASSERT(nid < MAX_NODES);
-    if (auto node = PmNode::node(nid)) {
+    if (auto node = find_node(nid)) {
         return &node->hard_affinity();
     }
     return nullptr;
@@ -392,7 +455,7 @@ auto node_hard_affinity(NodeId nid) -> CpuMask const * {
 
 auto node_soft_affinity(NodeId nid) -> CpuMask const * {
     DEBUG_ASSERT(nid < MAX_NODES);
-    if (auto node = PmNode::node(nid)) {
+    if (auto node = find_node(nid)) {
         return &node->soft_affinity();
     }
     return nullptr;
@@ -490,9 +553,10 @@ auto wait_for_frame_allocation(Gaf const alloc_flags, time::Deadline const &dead
     }
 
     auto result = alloc_frames(alloc_flags);
-    // The opening goes on to the next waiter, unless the gate shut again
-    // before this one got a frame: then the next opening wakes them. A
-    // refusal goes on too, so that every waiter hears it.
+    // The opening goes on to the next waiter, unless this one was put off
+    // again, by the gate or at a zone's Low: then the next opening, or the
+    // next release that brings a zone back above Low, wakes them. A refusal goes
+    // on too, so that every waiter hears it.
     if (result || Status::ShouldWait != result.unwrap_err()) {
         GATE.pass_on();
     }
@@ -521,21 +585,13 @@ auto set_free_memory_signal(usize const lower, usize const upper, usize const de
 /// pointer is set, because the fold already happened.
 ///
 /// The table is also the only answer that works this early: nothing fills the
-/// per-CPU pointer until PmNode::publish_cpus() runs from an init hook, while
+/// per-CPU pointer until CpuNodeMap::publish_all() runs from an init hook, while
 /// allocation starts asking for a node long before that.
 ///
 /// The table is mm's own (CpuNodeMap), seeded once at bring-up from what
 /// the firmware declared. Nothing on this path asks kernel/lib/numa anything.
 auto current_node() -> NodeId {
     return CpuNodeMap::node_of(CpuLocal::current_cpu());
-}
-
-auto node_online_mask() -> NodeMask const & {
-    return PmNode::node_online_mask();
-}
-
-auto node_possible_mask() -> NodeMask const & {
-    return PmNode::node_possible_mask();
 }
 
 namespace priv {
@@ -546,7 +602,9 @@ namespace priv {
                 return ustl::err(status);
             }
         }
-        // The gate has answered for CanWait; nothing below reads the bit.
+        // The gate has answered for CanWait; below, only alloc_block() hears
+        // of it, as an argument.
+        auto const can_wait = !!(alloc_flags & Gaf::CanWait);
         alloc_flags = alloc_flags & ~Gaf::CanWait;
 
         auto const node = resolve_home(home, alloc_flags);
@@ -555,22 +613,18 @@ namespace priv {
             return ustl::err(node.unwrap_err());
         }
 
-        auto const block = alloc_block(**node, alloc_flags, order, nodes);
-        if (!block) {
-            auto const &failure = block.error();
-            observe_pressure(failure.depleted_zone);
-            return ustl::err(failure.status);
-        }
-
-        observe_pressure();
-        return ustl::ok(*block);
+        ustl::Option<PmZone const &> depleted;
+        auto const block = alloc_block(**node, alloc_flags, order, nodes, can_wait, depleted);
+        observe_pressure(depleted);
+        return block;
     }
 
     auto alloc_frames_bulk(Gaf alloc_flags, usize const n, NodeId const home, NodeMask const &nodes)
         -> ktl::Result<PmFrame::List> {
         DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "batch allocation is immediate");
 
-        auto observation = gktl::defer([] { observe_pressure(); });
+        ustl::Option<PmZone const &> depleted;
+        auto observation = gktl::defer([&depleted] { observe_pressure(depleted); });
         auto const node = resolve_home(home, alloc_flags);
         if (!node) {
             log::trace("Failed to allocate {} frames with reason: {}", n,
@@ -581,11 +635,11 @@ namespace priv {
         PmFrame::List list;
         auto rollback = gktl::defer([&list] { free_blocks(list); });
         for (usize i = 0; i < n; ++i) {
-            auto block = alloc_block(**node, alloc_flags, 0, nodes);
+            auto block = alloc_block(**node, alloc_flags, 0, nodes, false, depleted);
             if (!block) {
                 log::trace("Failed to allocate {} frames with reason: {}", n,
-                           to_string(block.error().status));
-                return ustl::err(block.error().status);
+                           to_string(block.unwrap_err()));
+                return ustl::err(block.unwrap_err());
             }
             list.push_back(*block.unwrap());
         }
@@ -598,7 +652,8 @@ namespace priv {
         -> ktl::Result<PmFrame::List> {
         DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "fragment allocation is immediate");
 
-        auto observation = gktl::defer([] { observe_pressure(); });
+        ustl::Option<PmZone const &> depleted;
+        auto observation = gktl::defer([&depleted] { observe_pressure(depleted); });
         auto const node = resolve_home(home, alloc_flags);
         if (!node) {
             log::trace("Failed to allocate frame with reason: {}", to_string(node.unwrap_err()));
@@ -617,11 +672,11 @@ namespace priv {
                 continue;
             }
 
-            auto block = alloc_block(**node, alloc_flags, order, nodes);
+            auto block = alloc_block(**node, alloc_flags, order, nodes, false, depleted);
             if (!block) {
                 log::trace("Failed to allocate frame with reason: {}",
-                           to_string(block.error().status));
-                return ustl::err(block.error().status);
+                           to_string(block.unwrap_err()));
+                return ustl::err(block.unwrap_err());
             }
             list.push_back(*block.unwrap());
         }
@@ -784,7 +839,7 @@ auto unwire_frame(PmFrame *const frame) -> void {
     DEBUG_ASSERT(!frame->is_linked(), "reserved frame {:#x} is on a list", frame_to_phys(frame));
 
     frame->clear_reserved();
-    if (PmNode::node(frame->nid()) != nullptr) {
+    if (find_node(frame->nid()) != nullptr) {
         if (auto *const zone = PmZone::at(frame->nid(), frame->zone())) {
             zone->sub_reserved_frames(1);
         }

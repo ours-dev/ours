@@ -21,7 +21,7 @@ namespace ours::task {
 /// Built once, at InitLevel::Threading, before any CPU but the first runs the
 /// scheduler, and read-only after: no lock. Empty before that, which makes a
 /// look for work find nothing rather than something wrong. A CPU placed on
-/// another node later (PmNode::set_cpu_node(), which has no caller yet) does
+/// another node later (CpuNodeMap::move(), which has no caller yet) does
 /// not change it (item 35 of docs/repairs/261103/kernel-task-sched.md).
 [[nodiscard]]
 auto domains_of(CpuNum cpu) -> sched_domain::Domains const &;

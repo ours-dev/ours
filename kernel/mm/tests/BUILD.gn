@@ -97,6 +97,25 @@ executable("alloc-request-smoke") {
   visibility = [ "*" ]
 }
 
+executable("admission-smoke") {
+  testonly = true
+
+  # The admission arithmetic is inline in priv/admission.hpp, which includes
+  # nothing but ours/types.hpp, so there is no mm source to compile.
+  sources = [ "admission_smoke.cpp" ]
+  include_dirs = [ "//kernel/include" ]
+  configs += [ "//kernel/mm:headers.config" ]
+  deps = [
+    "//kernel/lib/arch:headers",
+    "//kernel/arch/x86:headers",
+    "//system/lib/ustl:headers",
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
 executable("address-smoke") {
   testonly = true
   sources = [ "address_smoke.cpp" ]
@@ -122,5 +141,6 @@ group("tests") {
     ":frame-buddy-smoke",
     ":protection-ranges-smoke",
     ":alloc-request-smoke",
+    ":admission-smoke",
   ]
 }

@@ -83,7 +83,7 @@ namespace {
         }
         auto *const page = found.value().page;
         return {.page = page,
-                .kind = mm::PmNode::node(page->nid())->page_queues().kind_of(*page),
+                .kind = mm::find_node(page->nid())->page_queues().kind_of(*page),
                 .owner = page->get_object(),
                 .index = page->get_pgoff()};
     }
@@ -95,7 +95,7 @@ namespace {
 
     /// Every queue's count on node 0, the one node of the default build.
     auto counts() -> std::array<usize, 5> {
-        auto &queues = mm::PmNode::node(0)->page_queues();
+        auto &queues = mm::find_node(0)->page_queues();
         return {queues.count(Kind::None), queues.count(Kind::Pinned), queues.count(Kind::Anonymous),
                 queues.count(Kind::AnonymousZeroFork), queues.count(Kind::Reclaimable)};
     }
@@ -208,7 +208,7 @@ namespace {
     auto check_aging_thread() -> void {
         // The next rotation is due at most a period after the last one, so
         // waiting a period and a second sees one, whenever the last one was.
-        auto const &queues = mm::PmNode::node(0)->page_queues();
+        auto const &queues = mm::find_node(0)->page_queues();
         auto const before = queues.rotations();
         auto const period = Seconds(boot::options().page_aging_seconds());
         auto _ = task::Thread::Current::sleep_for(period + Seconds(1), task::Interruptible::No);
@@ -234,8 +234,8 @@ namespace {
         // Every node rotated first, before the pages are supplied: that puts
         // each aging thread's next rotation a period away, so none of its own
         // lands between the checks below, whichever node the pages come from.
-        mm::PmNode::for_each_node(mm::PmNode::State::Online,
-                                  [](mm::PmNode &node) { node.page_queues().rotate(); });
+        mm::for_each_node(mm::NodeState::Online,
+                          [](mm::PmNode &node) { node.page_queues().rotate(); });
 
         auto vmo = supplied_vmo();
         auto page = Filed{};
@@ -245,7 +245,7 @@ namespace {
         if (!page.page || page.kind != Kind::Reclaimable) {
             FAIL("allocate a supplied page to age");
         }
-        auto &queues = mm::PmNode::node(page.page->nid())->page_queues();
+        auto &queues = mm::find_node(page.page->nid())->page_queues();
         EXPECT_TRUE(queues.age_of(*page.page) == 0, "a supplied page is in the newest generation");
 
         queues.rotate();
@@ -273,12 +273,12 @@ namespace {
 
     /// Every node rotated, each harvesting first: the pages may be on any.
     auto rotate_every_node() -> void {
-        mm::PmNode::for_each_node(mm::PmNode::State::Online,
-                                  [](mm::PmNode &node) { node.page_queues().rotate(); });
+        mm::for_each_node(mm::NodeState::Online,
+                          [](mm::PmNode &node) { node.page_queues().rotate(); });
     }
 
     auto age_of(Filed const &filed) -> usize {
-        return mm::PmNode::node(filed.page->nid())->page_queues().age_of(*filed.page);
+        return mm::find_node(filed.page->nid())->page_queues().age_of(*filed.page);
     }
 
     /// Both pages of a supplied VMO mapped, present, into an address space of

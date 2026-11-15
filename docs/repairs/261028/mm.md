@@ -4,30 +4,6 @@ Found while working through `.agents/tasks/pmm-layering/PLAN.md`, each one besid
 
 Item numbers are not reused and the remaining items are not renumbered when one is fixed, so a gap in the sequence means that item has been done and the entries in `docs/changes/` that point at a number still point at the right thing. Fixed so far: item 2 (2026-10-28, `eb9b5abb`, recorded in `docs/changes/261028/mm.md` under "Choosing a zone becomes an object"). Deleting it belonged in that commit and was missed there; the subagent that found the omission left it alone rather than sweeping another session's bookkeeping into its own commits, which was right.
 
-## 1. The zone walk drains the scarcest zone first
-
-**Severity**
-Medium. Wrong ordering today on every allocation, but no caller can be harmed by it yet, because no caller can ask for a particular zone. It becomes a real shortage the day one can.
-
-**Symptom**
-Latent, cannot be triggered today. Once a driver needs frames from `ZoneType::Dma` or `ZoneType::Dma32`, it will find them gone: ordinary kernel and user allocations will have consumed the low zones first, while `ZoneType::Normal` still has most of its memory. On a machine where the Dma zone is the usual 16 MiB, that is a few thousand frames and it goes early in boot.
-
-**Cause**
-`ZoneList::insert_local_zone()` (`kernel/mm/include/ours/mm/pm_node.hpp:59`) stores a zone at `static_cast<usize>(ztype)` and pushes it onto the fallback order in call order, and `ZoneList::connect()` appends each remote node's zones "in type order". `ZoneIterator::move_next()` (`kernel/mm/include/ours/mm/priv/zone_iterator.hpp:57`) then walks `zones[next++]` ascending. `ZoneType::Dma` is 0, so every allocation tries Dma, then Dma32, then Normal, and takes from the first that can serve it.
-
-That is backwards. The low zones are the only ones that can satisfy an address-constrained request; the Normal zone can satisfy everything else. Spending the constrained memory on unconstrained requests is spending the only supply that has no substitute. Linux orders the zonelist from the highest zone down for exactly this reason, and keeps `lowmem_reserve[]` on top of that so a request permitted to use a low zone still cannot take the last of it.
-
-**Change**
-Walk the permitted range from the highest zone type down, so `set_zone_range(Dma, Normal)` tries Normal first and falls back toward Dma. The iterator already carries both bounds, and `lower_zone_type` is currently unread (item 2), so this is where that bound starts meaning something.
-
-Whether a reserve on top of the ordering is also wanted is a separate question and should not be decided here: `lowmem_reserve[]` exists because ordering alone still lets a flood of unconstrained allocations reach the low zones once Normal is empty. Worth raising with the user once a zone-constrained caller exists and the trade-off can be stated against a real consumer.
-
-**Reference**
-Linux `build_zonelists()` and `build_zonerefs_node()` in `mm/page_alloc.c`, which fill the zonelist from `MAX_NR_ZONES - 1` downwards, and `setup_per_zone_lowmem_reserve()` with the `lowmem_reserve[]` check inside `__zone_watermark_ok()`. Zircon has no counterpart: it has no zones.
-
-**Acceptance**
-A kshell test that allocates until `ZoneType::Normal` is empty and then asserts the Dma and Dma32 zones still hold most of their frames, read through `PmZone::count_free_frames()`. Both images still boot.
-
 ## 4. `PmZone::find_frame()` is declared and never defined
 
 **Severity**

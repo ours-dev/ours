@@ -86,6 +86,8 @@ Inside the allocator the resolved `AllocRequest` stays: it is an internal value 
 
 `ALLOC_USER` gains `CanBlock` and `Movable`; it is `Zero` alone today, which under Z3 would let a user page take a zone lower than a kernel allocation may.
 
+As of 2026-11-14 (the user's choice): the Dma32 zone ends at 4 GiB, as the table says, and neither new bit is built until something asks for it. Two corrections from the survey made then. Zircon has no `PMM_ALLOC_FLAG_LO_MEM` any more (removed as unused; a device's reach is its BTI's `aspace_size()`), so `Dma32` has no Zircon counterpart. And `Movable` must not go into `ALLOC_USER`: the dispatchers are made with `new (ALLOC_USER)`, which reaches slab pages through kmalloc, so the bit belongs in `ALLOC_USER_VMO`, with Pinned and contiguous VMOs and the slab allocator dropping it. Grouping by mobility, when it comes, is a performance item: 2 MiB pageblocks with their type held outside the frame's status word, after a fragmentation baseline.
+
 Why the rest of `gfp_t` gets no bit: each of those exists in Linux because drivers and filesystems allocate inside the kernel, and here they do not.
 
 | Linux dimension | Why a monolithic kernel needs it | Here |
@@ -180,7 +182,7 @@ Decided (Z1 to Z3). A zone is the stock of one pfn span and the judge of whether
 - `admits(order, floor, wanted_zone)` is the one question a zone answers about itself: would taking `2^order` frames leave it at or above `floor`, plus its reserve against a request whose `wanted_zone` is above it. The candidate walk asks; the zone never chooses.
 - `take_range(start_pfn, n)` succeeds only when the whole range is free. A named physical range uses it now, and a mover clearing a range later.
 - `adopt(start_pfn, end_pfn)` is the one door frames enter stock by: the boot handoff, the init area, and hot add. It counts the frames as managed and observes no pressure. `retire()` is its inverse, for hot removal.
-- The walk goes from the highest zone a request may use downwards (Z2), so that Dma is the last resort and not the first (`docs/repairs/261028/mm.md` item 1).
+- The walk goes from the highest zone a request may use downwards (Z2), so that Dma is the last resort and not the first. Built 2026-11-14 as the order of the fallback list, node first and zone second (each node's zones from the highest type down, then the next node's); the low-zone reserve is left to Z3, where the admission check that would read it is built. Z3 is built as revised with the user on 2026-11-14: two passes, Low for every request and then Min (three quarters of Min for a caller that cannot block), and each low zone keeping 1/256 of the memory above it from requests that could use a higher zone.
 - The watermarks each mean one thing (Z3): High is where reclaim stops; Low is where it is woken, and the floor of a request with `CanBlock`; Min is the floor of a request without it. The counterpart is Linux's `zone_watermark_ok()` with `lowmem_reserve[]`.
 
 ### PmNode
@@ -204,7 +206,7 @@ class PmNode {
 
 - `alloc_frames()` walks the node's candidates for the request, asks each zone `admits()` and takes from the first that does. `free_frames()` returns a block to the zone of this node it came from, and wakes one waiter when that lifts the zone back above Low.
 - `wake_reclaim(zone)` is called by the entry when a walk found a zone below its floor: it marks the node as wanting reclaim and wakes the reclaimer. The counterpart is Linux's `wakeup_kswapd()`.
-- `reclaim_target()` is what the reclaimer asks each node: how many frames its zones are short of High, and zero for a node nobody marked. The mark is the node's (N2); the thread and the order of the walk (zero pages, then pager pages) stay with `MemoryReclaimer`, above the PMM.
+- `reclaim_target()` is what the reclaimer asks each node: how many frames its zones are short of High, and zero for a node nobody marked. The mark is the node's (N2); the thread and the order of the walk (zero pages, then pager pages) stay with `MemoryReclaimer`, above the PMM. As built (2026-11-14, N2 option (b), the user's choice): the node only records, as `mark_short(zone) -> bool` (true on the first mark since the last take) and `take_reclaim_target()`, and `MemoryReclaimer::request(zone)` marks and wakes its own thread, so `PmNode` does not depend on the reclaimer; `wake_reclaim()` and `reclaim_target()` above are the draft's names.
 
 One request that waits, on a node that is short:
 
@@ -216,11 +218,11 @@ free_frames()                  a zone rises above Low: its node wakes one waiter
 waiter                         retries; on success wakes the next waiter, on ShouldWait sleeps again
 ```
 
-A request is put off by one threshold only, the zone's Low floor (N1). The gate's delay level and its Shut state go, because they are a second, machine-wide threshold for the same decision, and a request confined to one node or to memory below 4 GiB can be short while the machine-wide count is healthy. What stays machine-wide is what is machine-wide: the watchdog's signal over total free memory, from which it reports pressure to user space; its switch at OutOfMemory that makes every waiter and every later `CanWait` request answer `OutOfMem` (Zircon's `pmm_stop_returning_should_wait()`); and the waiters, which are one event and not one per node, since a request may fall back to another node and a relief anywhere is a reason to retry.
+As built (2026-11-14, N1 revised with the user): the machine-wide gate stays, and a waiting request is also put off at a zone's Low, answering `ShouldWait` without the second pass; a release that brings a zone back to admitting a frame at Low (the count's own increment crossing Low plus the zone's reserve) wakes one waiter on the gate's event. The rest of this paragraph is the first draft, set aside because it removed the gate. A request is put off by one threshold only, the zone's Low floor (N1). The gate's delay level and its Shut state go, because they are a second, machine-wide threshold for the same decision, and a request confined to one node or to memory below 4 GiB can be short while the machine-wide count is healthy. What stays machine-wide is what is machine-wide: the watchdog's signal over total free memory, from which it reports pressure to user space; its switch at OutOfMemory that makes every waiter and every later `CanWait` request answer `OutOfMem` (Zircon's `pmm_stop_returning_should_wait()`); and the waiters, which are one event and not one per node, since a request may fall back to another node and a relief anywhere is a reason to retry.
 
-A wait has to end when nothing can end the shortage: a node whose reclaim pass gave nothing back is marked stuck, and a retry there answers `OutOfMem` and not `ShouldWait`.
+As built (2026-11-14): the watchdog's levels are raised so that the gate's delay level sits above the zones' floors summed (D1(a)), which makes the gate end every ordinary wait, and a confined waiting request is not put off at Low at all (D2(b)); the stuck mark below was not built. A wait has to end when nothing can end the shortage: a node whose reclaim pass gave nothing back is marked stuck, and a retry there answers `OutOfMem` and not `ShouldWait`.
 
-The node table and the state masks are file-scope data behind free functions, and CPU membership (publish, claim, move) belongs to `CpuNodeMap`, as `pmm-layering` D2(a) decided.
+The node table and the state masks are file-scope data behind free functions, as `pmm-layering` D2(a) decided. As built (2026-11-12) that is `ours/mm/node_table.hpp`: `find_node(nid)`, `node_mask(NodeState)`, `set_node_state()`, `for_each_node()` and `for_each_nid()`, in the flat `node_*` style `pmm.hpp` already used (the user's choice of the two spellings offered). CPU membership (publish, claim, move) belongs to `CpuNodeMap`.
 
 ### Where each planned feature lands
 

@@ -33,11 +33,32 @@ auto to_string(MemoryPressure const pressure) -> char const * {
 
 auto MemoryPressureLevels::from_boot_options() -> MemoryPressureLevels {
     auto const &options = boot::options();
-    return {usize{options.oom_out_of_memory_mb()} * FRAMES_PER_MIB,
-            usize{options.oom_critical_mb()} * FRAMES_PER_MIB,
-            usize{options.oom_warning_mb()} * FRAMES_PER_MIB,
-            usize{options.oom_debounce_mb()} * FRAMES_PER_MIB,
-            duration_cast<Duration>(Seconds(options.oom_hysteresis_seconds()))};
+    MemoryPressureLevels const given{
+        usize{options.oom_out_of_memory_mb()} * FRAMES_PER_MIB,
+        usize{options.oom_critical_mb()} * FRAMES_PER_MIB,
+        usize{options.oom_warning_mb()} * FRAMES_PER_MIB,
+        usize{options.oom_debounce_mb()} * FRAMES_PER_MIB,
+        duration_cast<Duration>(Seconds(options.oom_hysteresis_seconds()))};
+    return given.covering(zone_floor_frame_count());
+}
+
+auto MemoryPressureLevels::covering(usize const held) const -> MemoryPressureLevels {
+    // Levels that do not nest are left as they are, for start() to refuse: a
+    // bad command line is reported, not repaired. The raise keeps every gap,
+    // but it would lift an OutOfMemory level at or below the debounce over
+    // it, and quietly start a watchdog on levels nobody gave.
+    if (!is_valid()) {
+        return *this;
+    }
+    // delay_level() is the OutOfMemory level less the debounce, and it has
+    // to be strictly above |held|.
+    auto const needed = held + m_debounce + 1;
+    if (m_out_of_memory >= needed) {
+        return *this;
+    }
+    auto const raise = needed - m_out_of_memory;
+    return {m_out_of_memory + raise, m_critical + raise, m_warning + raise, m_debounce,
+            m_hysteresis};
 }
 
 auto MemoryPressureLevels::make(usize const out_of_memory, usize const critical,
@@ -224,6 +245,14 @@ namespace {
     INIT_CODE
     auto start_memory_watchdog() -> void {
         auto const levels = MemoryPressureLevels::from_boot_options();
+        // Said once, here, because the levels the log and the command line
+        // show are then not the ones in force.
+        auto const given = usize{boot::options().oom_out_of_memory_mb()} * FRAMES_PER_MIB;
+        if (levels.out_of_memory() > given) {
+            log::info("mm: kernel.oom levels raised {} MiB: the zones' floors hold {} MiB",
+                      (levels.out_of_memory() - given + FRAMES_PER_MIB - 1) / FRAMES_PER_MIB,
+                      zone_floor_frame_count() / FRAMES_PER_MIB);
+        }
         auto const status = MemoryWatchdog::get().start(levels);
         if (Status::InvArgs == status) {
             log::error("mm: the kernel.oom levels {}/{}/{} MiB with a debounce of {} MiB do not "

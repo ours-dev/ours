@@ -159,7 +159,7 @@ namespace {
                     frame->set_role(role);
                 }
 
-                auto *const node = PmNode::node(frame->nid());
+                auto *const node = find_node(frame->nid());
                 if (node == nullptr) {
                     continue;
                 }
@@ -222,7 +222,7 @@ auto init_memmap() -> void {
     auto const status = EarlyMem::visit_usable(
         EarlyMem::min_address(), EarlyMem::max_address(), bootmem::ANY_NODE,
         [&](bootmem::MemoryRegion const region) {
-            auto const node = PmNode::node(region.node);
+            auto const node = find_node(region.node);
             DEBUG_ASSERT(node != nullptr, "");
 
             start_pfn = phys_to_pfn(region.range.base);

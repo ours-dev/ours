@@ -133,6 +133,25 @@ class AllocRequest final {
         return m_highest_zone;
     }
 
+    /// Whether this request asked for less memory than an ordinary one: its
+    /// home node alone (Gaf::ThisNode), or a narrower range of zone types
+    /// than Dma through Normal. A node set narrowed any other way -- the
+    /// mask a test hands mm::priv::alloc_frames(), which stands in for a
+    /// smaller machine -- does not count (docs/repairs/261114/mm.md).
+    ///
+    /// The free-memory gate and the memory watchdog count the whole
+    /// machine, so they say nothing about the memory such a request can
+    /// use: its zones can all be short while the machine's count is healthy,
+    /// and then nothing machine-wide is bound to end a wait of its own. So
+    /// it is not put off at a zone's Low when it could wait; it goes on to
+    /// Min like a request that cannot, and fails there (alloc_block()).
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto is_confined() const -> bool {
+        return !!(m_alloc_flags & Gaf::ThisNode) || m_lowest_zone != ZoneType::Dma ||
+               m_highest_zone < ZoneType::Normal;
+    }
+
     /// This request restricted to |nodes|, as a new value.
     ///
     /// The sanctioned way to vary a resolved request, and the reason the

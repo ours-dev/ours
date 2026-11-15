@@ -10,7 +10,6 @@
 #include <ours/sync/mutex.hpp>
 #include <ours/types.hpp>
 
-#include <array>
 #include <atomic>
 
 namespace ours::mm {
@@ -46,8 +45,13 @@ class MemoryReclaimer {
     /// free memory just read, and the thread has not run between them.
     auto request(usize frames) -> void;
 
-    /// Queue a shortage observed by an allocation. The worker samples the
-    /// zone again and walks only its node's page queues.
+    /// Records a shortage an allocation observed in |zone|, in the zone's
+    /// node (PmNode::mark_short()), and wakes the thread when that is the
+    /// node's first mark since the thread last took its record. The thread
+    /// takes each node's record (PmNode::take_reclaim_target()), which reads
+    /// the marked zones again, and walks only that node's page queues.
+    /// Dropped while the thread is not running, since nothing would take the
+    /// mark, and while a Pause lives, as an ask is then.
     auto request(PmZone const &zone) -> void;
 
     /// The ask the thread has not taken, or 0. The thread walks what this
@@ -66,13 +70,20 @@ class MemoryReclaimer {
     /// While one is alive nothing is reclaimed, request() or reclaim(): for a
     /// test that drives the watchdog to pressures free memory is not at, and
     /// wants to see it decide and not what reclaiming does to the answer.
+    ///
+    /// Nor does the thread take any node's record of short zones, so a test
+    /// can read one undisturbed even when a wake was already on its way. A
+    /// report that passed its check just before the Pause began can still
+    /// mark a node; the last Pause to end wakes the thread, which takes it.
     class Pause {
       public:
         explicit Pause(MemoryReclaimer &reclaimer) : m_reclaimer(reclaimer) {
             m_reclaimer.m_pauses.fetch_add(1, std::memory_order_acq_rel);
         }
         ~Pause() {
-            m_reclaimer.m_pauses.fetch_sub(1, std::memory_order_acq_rel);
+            if (m_reclaimer.m_pauses.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                m_reclaimer.m_signal.signal();
+            }
         }
 
         Pause(Pause const &) = delete;
@@ -83,11 +94,6 @@ class MemoryReclaimer {
     };
 
   private:
-    enum class RequestState : u8 {
-        Idle,
-        Pending,
-    };
-
     MemoryReclaimer() = default;
 
     /// The thread: sleeps until a request, then reclaims what was asked.
@@ -107,10 +113,6 @@ class MemoryReclaimer {
 
     /// What has been asked and not yet taken by the thread.
     std::atomic<usize> m_wanted{0};
-
-    /// One pending request per zone, coalesced until the worker samples it.
-    std::array<std::array<std::atomic<RequestState>, NR_ZONES_PER_NODE>, MAX_NODES>
-        m_zone_requests{};
 
     std::atomic<bool> m_started{false};
 

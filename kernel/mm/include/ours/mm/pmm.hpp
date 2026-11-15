@@ -8,6 +8,7 @@
 #include <ours/mm/alloc_flags.hpp>
 #include <ours/mm/init_stage.hpp>
 #include <ours/mm/memmap.hpp>
+#include <ours/mm/node_table.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_frame.hpp>
 #include <ours/node_mask.hpp>
@@ -92,23 +93,6 @@ auto node_soft_affinity(NodeId nid) -> CpuMask const *;
 [[nodiscard]]
 auto node_hard_affinity(NodeId nid) -> CpuMask const *;
 
-[[nodiscard]]
-auto node_online_mask() -> NodeMask const &;
-
-[[nodiscard]]
-auto node_possible_mask() -> NodeMask const &;
-
-auto num_nodes() -> usize;
-
-FORCE_INLINE
-inline auto num_online_nodes() -> usize {
-    return node_online_mask().count();
-}
-
-FORCE_INLINE
-inline auto num_possible_nodes() -> usize {
-    return node_possible_mask().count();
-}
 
 /// Using constexpr to make those pre-culcalate requests able to
 /// convert the order of frames requested at compiling time.
@@ -124,7 +108,13 @@ constexpr auto get_order(usize n) -> usize {
 /// |flags| carries Gaf::ThisNode.
 ///
 /// With Gaf::CanWait, pressure can answer ShouldWait: the caller releases its
-/// locks and calls wait_for_frame_allocation().
+/// locks and calls wait_for_frame_allocation(). Pressure is either of two
+/// things. The free-memory gate puts a waiting request off while free memory
+/// in the whole machine is below the level its watcher set; and a waiting
+/// request that finds every zone it may use below its Low watermark is put
+/// off there, where one that cannot wait would go on down to Min. A waiting
+/// request confined to one node (Gaf::ThisNode) is not put off at Low: it
+/// goes on to Min, and answers OutOfMem below it.
 [[nodiscard]]
 auto alloc_frames(Gaf flags, usize order = 0, NodeId home = bootmem::ANY_NODE)
     -> ktl::Result<PmFrame *>;
@@ -288,15 +278,33 @@ auto free_frame_count() -> usize;
 [[nodiscard]]
 auto approx_free_frame_count() -> usize;
 
-/// Sleeps until the gate opens and takes one frame for the caller, with
-/// |alloc_flags|, which carries CanWait. Called with no lock held, after
-/// alloc_frames(alloc_flags) answered ShouldWait for a single page with the
-/// default node selection.
+/// The most free memory the machine can have while every zone refuses a
+/// request that allows up to Normal a single frame in the Low pass: each
+/// zone's PmZone::normal_low_floor(), or all the zone has where that is
+/// less, summed over every zone. Fixed once the watermarks are set at boot:
+/// the cap is a zone's present frames, which do not grow when reserved
+/// frames are given back, as managed frames do.
+///
+/// The memory watchdog keeps the gate's delay level above it
+/// (MemoryPressureLevels::covering()). Then a machine where every zone
+/// refuses an ordinary request is a machine below the delay level, which the
+/// watchdog hears; and a waiting request the gate lets through finds a zone
+/// that admits it, if it is ordinary -- one frame, any node, every zone up
+/// to Normal -- and nothing moved between the gate's count and the zones'.
+/// A request of a higher order, or one confined to fewer nodes or zones, is
+/// not covered.
+[[nodiscard]]
+auto zone_floor_frame_count() -> usize;
+
+/// Sleeps until the gate opens, or a release brings a zone back to admitting
+/// a frame above its Low watermark, and takes one frame for the caller, with |alloc_flags|, which
+/// carries CanWait. Called with no lock held, after alloc_frames(alloc_flags)
+/// answered ShouldWait for a single page with the default node selection.
 ///
 /// Waiters wake one at a time: each that gets its frame wakes the next, so
 /// an opening does not send every waiter after the same frames at once.
-/// Answers ShouldWait when the gate was shut again before this one got a
-/// frame, and the caller waits again; OutOfMem when delayed allocations are
+/// Answers ShouldWait when this one was put off again before it got a
+/// frame, by the gate or at a zone's Low, and the caller waits again; OutOfMem when delayed allocations are
 /// refused (DelayedAllocations::Refuse); TimeOut at |deadline|.
 [[nodiscard]]
 auto wait_for_frame_allocation(Gaf alloc_flags, time::Deadline const &deadline, bool interruptible)

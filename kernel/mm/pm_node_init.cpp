@@ -29,7 +29,7 @@ namespace {
     auto find_possible_nodes() -> Status {
         return EarlyMem::visit_usable(EarlyMem::min_address(), EarlyMem::max_address(),
                                       bootmem::ANY_NODE, [](bootmem::MemoryRegion const region) {
-                                          PmNode::set_state(region.node, PmNode::State::Possible);
+                                          set_node_state(region.node, NodeState::Possible);
                                           return true;
                                       });
     }
@@ -58,7 +58,7 @@ namespace {
     /// and spins forever on a list pointer it has mistaken for that
     /// NodeCache's lock.
     ///
-    /// It has to happen here, not in PmNode::publish_cpus(): that hook runs at
+    /// It has to happen here, not in CpuNodeMap::publish_all(): that hook runs at
     /// InitLevel::CpuLocal + 1, while the slab allocator starts asking which
     /// node it is on inside init_pmm(), several init levels earlier. And it
     /// has to come before the nodes' init(), which reads
@@ -72,7 +72,7 @@ namespace {
     /// the running CPU that does the work -- and that would be needed
     /// regardless: a machine that handed us no MADT still has the CPU this code
     /// is executing on, and leaving that one on the sentinel is the exact
-    /// failure above. PmNode::claim_possible_cpus() claims the rest,
+    /// failure above. CpuNodeMap::claim_possible() claims the rest,
     /// once the MADT has been parsed.
     ///
     /// Returns how many CPUs the firmware put on a node that does not exist.
@@ -105,12 +105,12 @@ namespace {
         // it -- and collapsing them here would have quietly left a
         // memory-less node with no fallback order at all, which is the one
         // node that cannot do without one.
-        auto const members = nodes & PmNode::node_memory_mask();
+        auto const members = nodes & node_memory_mask();
         numa::build_fallback_orders(nodes, members, &FALLBACK_ORDERS);
 
         nodes.for_each([](NodeId const nid) {
             auto const &order = FALLBACK_ORDERS[nid];
-            PmNode::node(nid)->zone_list()->connect(
+            find_node(nid)->zone_list()->connect(
                 ustl::views::Span<NodeId const>{order.data(), order.size()});
         });
     }
@@ -164,7 +164,7 @@ namespace {
     }
 
     auto dump_fallback_queues(NodeMask const &nodes) -> void {
-        nodes.for_each([](NodeId const nid) { PmNode::node(nid)->zone_list()->dump_fallback(); });
+        nodes.for_each([](NodeId const nid) { find_node(nid)->zone_list()->dump_fallback(); });
     }
 } // namespace
 
@@ -220,7 +220,7 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
     }
 
     nodes.for_each([](NodeId const nid) {
-        auto const status = PmNode::node(nid)->init();
+        auto const status = find_node(nid)->init();
         ASSERT(status == Status::Ok);
     });
 
@@ -246,12 +246,16 @@ auto PmNode::setup_watermarks() -> void {
     PmZone::for_each([reserve_frames, managed_total](PmZone &zone) {
         zone.setup_watermarks(reserve_frames, managed_total);
     });
+    // After every zone's watermarks, though it reads only managed counts:
+    // those are final once the reservations are counted, which is what this
+    // function already waits for.
+    PmZone::for_each([](PmZone &zone) { zone.setup_lowmem_reserve(); });
 }
 
 /// Creates and registers a PmNode for every node in |nodes|.
 ///
 /// A step of its own, ahead of init(), because the steps after it reach across
-/// nodes: connect() walks every node's ZoneList, so the whole NODES table
+/// nodes: connect() walks every node's ZoneList, so the whole node table
 /// has to be populated before any of it runs. Registration lives here rather
 /// than at the end of init() for the same reason -- a node published only once
 /// it has finished initialising is invisible to the node that initialises
@@ -273,8 +277,7 @@ auto PmNode::create_nodes(NodeMask const &nodes) -> Status {
         }
 
         new (node) PmNode(nid);
-        NODES[nid] = node;
-        NUM_NODES += 1;
+        priv::register_node(nid, *node);
     });
     return status;
 }
@@ -287,9 +290,9 @@ auto PmNode::init() -> Status {
     m_spanned_frames = node_end_pfn - node_start_pfn;
 
     if (m_spanned_frames != 0) {
-        set_state(m_id, State::Memory);
+        set_node_state(m_id, NodeState::Memory);
     }
-    set_state(m_id, State::Online);
+    set_node_state(m_id, NodeState::Online);
 
     for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
         if (numa::Topology::firmware_node(cpu) == m_id) {
@@ -306,9 +309,9 @@ auto PmNode::init() -> Status {
     }
     m_zone_list.take_local_zones();
 
-    // NODES[m_id] and NUM_NODES are not touched here: bootstrap() publishes a
-    // node when it creates it, before this runs. See the comment there.
-    DEBUG_ASSERT(NODES[m_id] == this);
+    // The table is not touched here: create_nodes() registers a node when it
+    // creates it, before this runs. See the comment there.
+    DEBUG_ASSERT(find_node(m_id) == this);
     return Status::Ok;
 }
 
