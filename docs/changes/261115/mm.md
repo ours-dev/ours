@@ -138,3 +138,62 @@ None.
 - Why does a misspelled macro still compile and work when its one use is spelled the same way?
 - What would a search for `ARCH_MAX_` have told a reader about the zone bounds before this change?
 - Why is a bound like this a macro at all here, when the codebase defines constants with `constexpr`?
+
+## The gate is shut under the watcher's lock (2026-11-15)
+
+**Files**
+- `kernel/mm/pmm.cpp` — `FreeMemoryGate::admit()` keeps its lock-free paths and hands the shut to a new `shut()`, which decides again under `m_watcher_lock` and tells the watcher of every shut; comments on the class and the lock
+- `kernel/tests/memory_pressure_test.cpp` — new `MemoryPressure.TheGateIsNeverShutOnALevelNoLongerInForce`
+
+**Symptom**
+Rarely, the free-memory gate could be left shut with free memory inside the watcher's bounds. Nothing then signals the watcher, so nothing opens the gate: every allocation that can wait answers `ShouldWait`, every waiter woken by a relief is put off again, and a VMO page fault loops in `AnonymousPageRequest::allocate()` until free memory happens to leave the bounds.
+
+**Cause**
+`admit()` read the state, the delay level and the free count one after another, and then compare-and-swapped the state from `Open` to `Shut`. A compare-and-swap compares a value, not a history: the watcher's `set()` stores `Open` again when it re-arms, so a swap decided on reads made before a re-arm still found `Open` and succeeded. The gate was then shut on a delay level no longer in force. This is the ABA problem. Two smaller gaps came with it: the shutting allocation returned before `observe_pressure()`, so it never signalled the watcher itself, and `set()`'s bounds were changed under a lock the allocation side never took. The code dates from 2026-10-29; since N1 every ordinary wait ends at this gate.
+
+**Change**
+Only the rare transition is serialized:
+
+```cpp
+auto FreeMemoryGate::admit() -> Status {
+    // lock-free: Shut -> ShouldWait; free >= level -> Ok; Refusing -> OutOfMem
+    return shut();
+}
+
+auto FreeMemoryGate::shut() -> Status {
+    {
+        Guard<sync::SpinLock, IrqSave> guard{m_watcher_lock};   // the lock set() writes under
+        // state, level and free again: the ones in force
+        m_state.store(State::Shut, std::memory_order_release);
+        armed = m_signal_event.exchange(nullptr, std::memory_order_acq_rel);
+    }
+    if (armed) { armed->signal(); }   // outside the lock, as every signal is
+    return Status::ShouldWait;
+}
+```
+
+The invariant: a shut gate means free memory was below the delay level in force when it shut, and the watcher has been told. Every write of the state is now made under `m_watcher_lock`, so `set()` cannot land between the decision and the shut, and the decision reads what `set()` last stored. The watcher is told of every shut unconditionally, by taking the armed event under the lock and signalling it after: the first version called `check_signal()` instead, which looks at the bounds again, and frees can bring free memory back inside them before it looks (at Critical the lower bound is the delay level itself), so nobody would signal and the gate would stay shut on a count the watcher would have opened it at. A watcher told of a shut it need not act on looks, finds free memory in bounds, and its `set()` opens the gate. The lock is a leaf: nothing is taken under it, and the zone walk inside reads atomics. The allocations that find the gate already shut, or free memory above the level, never take it. The alternative was a generation stored beside the state in one atomic word and bumped by `set()`, which keeps the shut lock-free but makes both sides harder to read; the shut is rare enough that a lock costs nothing measurable.
+
+**Reference**
+Zircon decides and signals in one step under the node's lock: `decrement_free_count_locked()` trips the free-pages level (`trip_free_pages_level_locked()`) and signals the memory event (`signal_free_memory_change_locked()`) with the lock held, and `set_free_memory_signal()` writes the levels under the same lock (`kernel/vm/pmm_node.rs`).
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed, on the default and the four-node machine. `ktest all`: default 91 ran, 84 passed, 7 skipped; four nodes 91 ran, 88 passed, 3 skipped; `MEM=8192` `ktest sel=MemoryPressure.*:PmNode.*:PageReclaim.*` 15 ran, 10 passed, 0 failed. Failure-injection build: 91 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `pmm.cpp`.
+
+The new test races a thread that admits waiting allocations as fast as it can against the main thread, which in each of 40000 rounds arms a level no free count reaches and then no level at all, waits for the admitter's allocation in flight and one more to finish, and asks with a probe confined to its node (so a zone at Low cannot answer it `ShouldWait`): with no level, only a stale shut does. It takes about six seconds. With the fix, 0 stale shuts in every run (about 118000 admissions each). Control: with the old compare-and-swap restored, the test failed in four runs of four, one to three stale shuts each; at 4000 rounds it had caught the race in only three runs of five, which is why the count is ten times that. It is a race, so a pass is evidence rather than proof; the argument above is what the fix rests on.
+
+A narrow pre-commit review confirmed that every write of the state is under the lock, that the lock is a leaf taken only by callers that hold no spin lock, and the memory orders. It found the gap the unconditional signal closes (a high finding against the first version), that the probe could have counted a zone stopping at Low as a stale shut (hence the confined probe), and that the test could spin for ever or leave the admitter reading a dead stack if it never ran (the spin now gives up after five seconds and the join waits for the admitter to stop).
+
+**Deliberately not done**
+- `set()` still disarms and re-arms the event in steps; a `check_signal()` from an allocation that moves free memory in that window sees no event and signals nothing. The next allocation or free signals it, and a shut now signals for itself.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, H1, from the correctness reviewer's reading of `admit()` against `set()`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a compare-and-swap that succeeds not prove that what you read before it is still true, and what two cures are there?
+- Why is it enough to lock only the transition from Open to Shut, and not every admission?
+- What would have reopened a gate left shut this way, and why might it never come on a quiet machine?

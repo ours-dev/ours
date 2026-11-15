@@ -67,8 +67,8 @@ namespace {
     ///
     /// Every allocation and free asks it something, so what they read takes
     /// no lock: atomics, each loaded on its own. The event that wakes waiters
-    /// and the lock that orders the watcher's calls are touched only by
-    /// waiters and by the watcher.
+    /// is touched only by waiters and by the watcher, and the watcher's lock
+    /// by the watcher and by the rare allocation that shuts the gate.
     class FreeMemoryGate {
       public:
         /// Whether a CanWait allocation may go ahead: Ok, ShouldWait while the
@@ -94,6 +94,11 @@ namespace {
                  DelayedAllocations delayed) -> bool;
 
       private:
+        /// admit()'s slow path, for an allocation that found free memory
+        /// below the level with the gate open: decides again under the
+        /// watcher's lock, and shuts the gate if that still holds.
+        auto shut() -> Status;
+
         enum class State : u8 {
             /// A CanWait allocation that finds free memory below the delay
             /// level shuts the gate.
@@ -120,8 +125,11 @@ namespace {
         /// Wakes the waiters, one per signal.
         sync::Event m_may_allocate{sync::Event::Options::AutoUnsignal};
 
-        /// Orders the calls of set() among themselves. The allocation side
-        /// never takes it.
+        /// Orders set() and shut(): every write of m_state is made under it.
+        /// So a shut is decided against the delay level set() last stored,
+        /// and set() cannot land between the decision and the shut. Only the
+        /// allocation that shuts the gate takes it on the allocation side,
+        /// which is the rare path; the reads stay lock-free.
         sync::SpinLock m_watcher_lock;
     };
 
@@ -130,8 +138,33 @@ namespace {
     FreeMemoryGate GATE;
 
     auto FreeMemoryGate::admit() -> Status {
-        auto state = m_state.load(std::memory_order_acquire);
-        while (true) {
+        auto const state = m_state.load(std::memory_order_acquire);
+        if (state == State::Shut) {
+            return Status::ShouldWait;
+        }
+        auto const level = m_delay_level.load(std::memory_order_relaxed);
+        if (level == 0 || approx_free_frame_count() >= level) {
+            return Status::Ok;
+        }
+        if (state == State::Refusing) {
+            return Status::OutOfMem;
+        }
+        return shut();
+    }
+
+    auto FreeMemoryGate::shut() -> Status {
+        // The reads above were each a moment apart, and a watcher may have
+        // armed the gate again since: with a lower level, or open again with
+        // the same Open value, which a compare-and-swap on the state alone
+        // cannot tell from the one it read. A gate shut on such stale reads
+        // stays shut with free memory inside the watcher's bounds, where
+        // nothing signals it and so nothing opens it. Under the lock set()
+        // writes under, the state, the level and the free count read here
+        // are the ones in force when the gate shuts.
+        sync::Event *armed = nullptr;
+        {
+            Guard<sync::SpinLock, IrqSave> guard{m_watcher_lock};
+            auto const state = m_state.load(std::memory_order_relaxed);
             if (state == State::Shut) {
                 return Status::ShouldWait;
             }
@@ -142,13 +175,24 @@ namespace {
             if (state == State::Refusing) {
                 return Status::OutOfMem;
             }
-            // Below the level with the gate open: shut it. A watcher that
-            // changed the state meanwhile is answered from its new state.
-            if (m_state.compare_exchange_weak(state, State::Shut, std::memory_order_acq_rel,
-                                              std::memory_order_acquire)) {
-                return Status::ShouldWait;
-            }
+            m_state.store(State::Shut, std::memory_order_release);
+            // The watcher is told of every shut, whatever free memory does
+            // next. Not through check_signal(), which looks at the bounds
+            // again: frees can bring free memory back inside them before it
+            // looks (at Critical the lower bound is the delay level itself),
+            // and then nobody signals, and the gate stays shut on a count
+            // the watcher would have opened it at. Taken under the lock, so
+            // the event is the one in force at the shut; a set() after this
+            // arms a new one and opens the gate itself.
+            armed = m_signal_event.exchange(nullptr, std::memory_order_acq_rel);
         }
+        // Outside the lock, as every signal is. With no event armed (a test
+        // driving the gate by hand) nothing is told, and the next set()
+        // opens the gate.
+        if (armed) {
+            armed->signal();
+        }
+        return Status::ShouldWait;
     }
 
     auto FreeMemoryGate::check_signal() -> void {
