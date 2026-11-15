@@ -73,20 +73,15 @@ inline auto print_usage(Options const &options) -> void {
             }
             continue;
         }
-        switch (descriptor.kind) {
-            case OptionKind::U64:
-                log::warn("  {}{}{} (default {})", word, separator, help,
-                          descriptor.default_value.i);
-                break;
-            case OptionKind::Bool:
-                log::warn("  {}{}{} (default {})", word, separator, help,
-                          descriptor.default_value.b);
-                break;
-            case OptionKind::Str:
-                log::warn("  {}{}{} (default '{}')", word, separator, help,
-                          descriptor.default_value.s);
-                break;
-        }
+        // The default's text is the shape's to render -- digits, true/false,
+        // or the quoted word -- so this loop stays shape-blind.
+        char default_buffer[32];
+        auto default_at = usize{0};
+        internal::shape_row(descriptor.kind)
+            .default_text(descriptor.default_value, default_buffer, sizeof(default_buffer),
+                          default_at);
+        auto const default_text = std::string_view{default_buffer, default_at};
+        log::warn("  {}{}{} (default {})", word, separator, help, default_text);
     }
 }
 

@@ -204,25 +204,60 @@ struct Rejection {
     std::string_view word;
 };
 
+/// The fault's fixed phrasing, one row per fault in the enum's order: the
+/// data, not a switch -- a fault the enum grows must grow its phrase in the
+/// same row, and the static_assert below refuses a row count that does not
+/// answer for every fault.
+inline constexpr std::array FAULT_MESSAGES{
+    std::string_view{"has no option named"},
+    std::string_view{"could not read a value for"},
+    std::string_view{"is not one of the choices for"},
+    std::string_view{"needs"},
+    std::string_view{"carries more words than a command line can hold"},
+    std::string_view{"carries a word with an empty name"},
+};
+static_assert(FAULT_MESSAGES.size() == std::to_underlying(OptionFault::MalformedWord) + 1);
+
 /// The fault's fixed phrasing, the one word of every error line that names
 /// the rule rather than the input. The report composes the line around it.
 [[nodiscard]]
 constexpr auto rejection_message(OptionFault const fault) -> std::string_view {
-    switch (fault) {
-        case OptionFault::UnknownOption:
-            return "has no option named";
-        case OptionFault::BadValue:
-            return "could not read a value for";
-        case OptionFault::BadChoice:
-            return "is not one of the choices for";
-        case OptionFault::MissingRequired:
-            return "needs";
-        case OptionFault::TooManyWords:
-            return "carries more words than a command line can hold";
-        case OptionFault::MalformedWord:
-            return "carries a word with an empty name";
+    return FAULT_MESSAGES[std::to_underlying(fault)];
+}
+
+/// Appends to a bounded buffer, answering what fits: the honest truncation a
+/// fragment too long for |out| suffers, the same contract the console's own
+/// 128-byte lines put on everything a command prints.
+constexpr auto append(char *const out, usize const cap, usize &at, std::string_view const text)
+    -> void {
+    for (auto const c: text) {
+        if (at == cap) {
+            return;
+        }
+        out[at] = c;
+        at += 1;
     }
-    return "was rejected";
+}
+
+/// Appends |value| in decimal. There is no <charconv> in this environment, so
+/// the digits go in by hand, least significant first out of a scratch array.
+constexpr auto append_decimal(u64 const value, char *const out, usize const cap, usize &at)
+    -> void {
+    if (value == 0) {
+        append(out, cap, at, "0");
+        return;
+    }
+    char digits[20];
+    auto count = usize{0};
+    auto rest = value;
+    while (rest != 0) {
+        digits[count] = static_cast<char>('0' + rest % 10);
+        rest /= 10;
+        count += 1;
+    }
+    for (auto i = count; i != 0; --i) {
+        append(out, cap, at, std::string_view{&digits[i - 1], 1});
+    }
 }
 
 /// One declared option: its name and shape, its constraints, and where its
@@ -237,6 +272,151 @@ struct OptionDescriptor {
     U64Parse parse{nullptr};
     Choice choices{};
     char const *help{nullptr};
+};
+
+/// One shape's behavior, as build-time polymorphism: what reading a word of
+/// this kind answers, what a bare word of it means, how its usage fragment
+/// and its default render. The three rows below are the only place in the
+/// library that asks "which shape is this" -- the parse, the usage fragments
+/// and the report all go through the table, so a shape the enum grows is one
+/// row here and nowhere else.
+struct U64Shape {
+    static auto read_value(OptionDescriptor const &descriptor, Word const &entry)
+        -> ustl::Result<Value, Rejection> {
+        auto number = parse_u64(entry.value);
+        if (descriptor.parse != nullptr) {
+            number = descriptor.parse(entry.value);
+        }
+        if (number.is_err()) {
+            return ustl::err(Rejection{OptionFault::BadValue, descriptor.name, entry.value});
+        }
+        return ustl::ok(Value{number.unwrap()});
+    }
+
+    static auto read_bare(OptionDescriptor const &descriptor) -> ustl::Result<Value, Rejection> {
+        if (descriptor.has_default) {
+            return ustl::ok(descriptor.default_value);
+        }
+        return ustl::err(Rejection{OptionFault::BadValue, descriptor.name, descriptor.name});
+    }
+
+    static auto usage_inner(OptionDescriptor const &, char *const out, usize const cap, usize &at)
+        -> void {
+        append(out, cap, at, "=N");
+    }
+
+    static auto default_text(Value const &value, char *const out, usize const cap, usize &at)
+        -> void {
+        append_decimal(value.i, out, cap, at);
+    }
+};
+
+struct BoolShape {
+    static auto read_value(OptionDescriptor const &descriptor, Word const &entry)
+        -> ustl::Result<Value, Rejection> {
+        auto const flag = parse_bool_strict(entry.value);
+        if (flag.is_none()) {
+            return ustl::err(Rejection{OptionFault::BadValue, descriptor.name, entry.value});
+        }
+        return ustl::ok(Value{flag.value()});
+    }
+
+    /// A bare boolean word is the word set true -- presence is the boolean.
+    static auto read_bare(OptionDescriptor const &) -> ustl::Result<Value, Rejection> {
+        return ustl::ok(Value{true});
+    }
+
+    static auto usage_inner(OptionDescriptor const &, char *const, usize const, usize &) -> void {}
+
+    static auto default_text(Value const &value, char *const out, usize const cap, usize &at)
+        -> void {
+        append(out, cap, at, value.b ? "true" : "false");
+    }
+};
+
+struct StrShape {
+    static auto read_value(OptionDescriptor const &descriptor, Word const &entry)
+        -> ustl::Result<Value, Rejection> {
+        if (descriptor.choices.count != 0 && !descriptor.choices.accepts(entry.value)) {
+            return ustl::err(Rejection{OptionFault::BadChoice, descriptor.name, entry.value});
+        }
+        return ustl::ok(Value{entry.value});
+    }
+
+    static auto read_bare(OptionDescriptor const &descriptor) -> ustl::Result<Value, Rejection> {
+        if (descriptor.has_default) {
+            return ustl::ok(descriptor.default_value);
+        }
+        return ustl::err(Rejection{OptionFault::BadValue, descriptor.name, descriptor.name});
+    }
+
+    static auto usage_inner(OptionDescriptor const &descriptor, char *const out, usize const cap,
+                            usize &at) -> void {
+        append(out, cap, at, "=");
+        if (descriptor.choices.count != 0) {
+            append(out, cap, at, "<");
+            for (auto i = usize{0}; i < descriptor.choices.count; ++i) {
+                if (i != 0) {
+                    append(out, cap, at, "|");
+                }
+                append(out, cap, at, descriptor.choices.words[i]);
+            }
+            append(out, cap, at, ">");
+        } else {
+            append(out, cap, at, "<text>");
+        }
+    }
+
+    static auto default_text(Value const &value, char *const out, usize const cap, usize &at)
+        -> void {
+        append(out, cap, at, "'");
+        append(out, cap, at, value.s);
+        append(out, cap, at, "'");
+    }
+};
+
+namespace internal {
+
+    struct ShapeRow {
+        using ReadValue = auto (*)(OptionDescriptor const &, Word const &)
+            -> ustl::Result<Value, Rejection>;
+        using ReadBare = auto (*)(OptionDescriptor const &) -> ustl::Result<Value, Rejection>;
+        using UsageInner = auto (*)(OptionDescriptor const &, char *, usize const, usize &) -> void;
+        using DefaultText = auto (*)(Value const &, char *, usize const, usize &) -> void;
+
+        ReadValue read_value;
+        ReadBare read_bare;
+        UsageInner usage_inner;
+        DefaultText default_text;
+    };
+
+    /// The table the one kind lookup answers through, indexed by the enum's
+    /// own order.
+    inline constexpr ShapeRow SHAPES[]{
+        {&U64Shape::read_value, &U64Shape::read_bare, &U64Shape::usage_inner,
+         &U64Shape::default_text},
+        {&BoolShape::read_value, &BoolShape::read_bare, &BoolShape::usage_inner,
+         &BoolShape::default_text},
+        {&StrShape::read_value, &StrShape::read_bare, &StrShape::usage_inner,
+         &StrShape::default_text},
+    };
+    static_assert(SHAPES[std::to_underlying(OptionKind::Str)].read_value == &StrShape::read_value);
+
+    [[nodiscard]]
+    constexpr auto shape_row(OptionKind const kind) -> ShapeRow const & {
+        return SHAPES[std::to_underlying(kind)];
+    }
+
+} // namespace internal
+
+/// One landed option: the name, the shape that fills it, the value, and
+/// whether the line carried it -- one object, so the four facts travel
+/// together and cannot fall out of step the way parallel arrays can.
+struct Slot {
+    std::string_view name{};
+    OptionKind kind{};
+    Value value{};
+    bool given{false};
 };
 
 /// The answer parse() returns when the line is accepted: every declared
@@ -260,11 +440,11 @@ class Parsed {
                           std::is_same_v<T, bool> || std::is_same_v<T, std::string_view>,
                       "an option reads as u64, usize, bool or std::string_view");
         for (auto i = usize{0}; i < m_count; ++i) {
-            if (m_names[i] != name) {
+            if (m_slots[i].name != name) {
                 continue;
             }
-            ASSERT(m_kinds[i] == kind_of<T>(), "option '{}' read as the wrong shape", name);
-            return read_as<T>(m_values[i]);
+            ASSERT(m_slots[i].kind == kind_of<T>(), "option '{}' read as the wrong shape", name);
+            return read_as<T>(m_slots[i].value);
         }
         return T{};
     }
@@ -279,7 +459,7 @@ class Parsed {
         // options are the ones it acts on, the defaulted rest are the
         // declaration's.
         for (auto i = usize{0}; i < m_count; ++i) {
-            if (m_names[i] == name && m_given[i]) {
+            if (m_slots[i].name == name && m_slots[i].given) {
                 return true;
             }
         }
@@ -306,11 +486,6 @@ class Parsed {
         }
     }
 
-    [[nodiscard]]
-    constexpr auto kind_of(usize const slot) const -> OptionKind {
-        return m_kinds[slot];
-    }
-
     template <typename T>
     [[nodiscard]]
     static constexpr auto read_as(Value const &value) -> T {
@@ -325,11 +500,8 @@ class Parsed {
 
     friend class Options;
 
-    std::string_view m_names[MAX_OPTIONS]{};
-    OptionKind m_kinds[MAX_OPTIONS]{};
-    Value m_values[MAX_OPTIONS]{};
+    Slot m_slots[MAX_OPTIONS]{};
     usize m_count{0};
-    bool m_given[MAX_OPTIONS]{};
 
     Word m_passthrough[MAX_OPTIONS]{};
     usize m_passthrough_count{0};
@@ -513,11 +685,10 @@ class Options {
             // distinction between "given" and "defaulted" is what the
             // runner's all-only rule and a handler's own checks read.
             if (m_descriptors[i].has_default && !parsed.has(m_descriptors[i].name)) {
-                auto const slot = parsed.m_count;
-                parsed.m_names[slot] = m_descriptors[i].name;
-                parsed.m_kinds[slot] = m_descriptors[i].kind;
-                parsed.m_values[slot] = m_descriptors[i].default_value;
-                parsed.m_given[slot] = false;
+                parsed.m_slots[parsed.m_count] = Slot{.name = m_descriptors[i].name,
+                                                      .kind = m_descriptors[i].kind,
+                                                      .value = m_descriptors[i].default_value,
+                                                      .given = false};
                 parsed.m_count += 1;
             }
         }
@@ -583,69 +754,29 @@ class Options {
     [[nodiscard]]
     auto read(OptionDescriptor const &descriptor, Word const &entry, Parsed &parsed) const
         -> ustl::Result<void, Rejection> {
-        auto value = Value{};
-        // What the error line quotes as "given": the value half when the
-        // word carried one, the bare name when it did not -- a bare number
-        // option given no default is named by its name, a value that failed
-        // its parse by its value.
-        auto given = entry.name;
-        if (entry.has_value) {
-            given = entry.value;
-        }
-        if (!entry.has_value) {
-            // A bare word: true for a boolean, the declared default for
-            // anything else -- that is how `shuffle` means its default seed.
-            // Bare over an option with neither shape nor default reads as
-            // nothing the option promised, and that is a bad value.
-            if (descriptor.kind == OptionKind::Bool) {
-                value = Value{true};
-            } else if (descriptor.has_default) {
-                value = descriptor.default_value;
-            } else {
-                return ustl::err(Rejection{OptionFault::BadValue, descriptor.name, given});
-            }
-        } else {
-            switch (descriptor.kind) {
-                case OptionKind::U64: {
-                    auto number = parse_u64(entry.value);
-                    if (descriptor.parse != nullptr) {
-                        number = descriptor.parse(entry.value);
-                    }
-                    if (number.is_err()) {
-                        return ustl::err(Rejection{OptionFault::BadValue, descriptor.name, given});
-                    }
-                    value = Value{number.unwrap()};
-                    break;
-                }
-                case OptionKind::Bool: {
-                    auto const flag = parse_bool_strict(entry.value);
-                    if (flag.is_none()) {
-                        return ustl::err(Rejection{OptionFault::BadValue, descriptor.name, given});
-                    }
-                    value = Value{flag.value()};
-                    break;
-                }
-                case OptionKind::Str: {
-                    if (descriptor.choices.count != 0 && !descriptor.choices.accepts(entry.value)) {
-                        return ustl::err(
-                            Rejection{OptionFault::BadChoice, descriptor.name, entry.value});
-                    }
-                    value = Value{entry.value};
-                    break;
-                }
-            }
+        // The shape's row answers what the word's value -- or its bare
+        // presence -- means; this only lands the slot. A bare word is true
+        // for a boolean and the declared default for anything else, which is
+        // how `shuffle` means its default seed; bare over an option with
+        // neither shape default nor boolean reads as nothing the option
+        // promised, and that is the row's bad value.
+        auto const &shape = internal::shape_row(descriptor.kind);
+        auto value =
+            entry.has_value ? shape.read_value(descriptor, entry) : shape.read_bare(descriptor);
+        if (value.is_err()) {
+            return ustl::err(value.unwrap_err());
         }
         auto slot = parsed.m_count;
         for (auto i = usize{0}; i < parsed.m_count; ++i) {
-            if (parsed.m_names[i] == descriptor.name) {
+            if (parsed.m_slots[i].name == descriptor.name) {
                 slot = i;
                 break;
             }
         }
-        parsed.m_names[slot] = descriptor.name;
-        parsed.m_kinds[slot] = descriptor.kind;
-        parsed.m_values[slot] = value;
-        parsed.m_given[slot] = true;
+        parsed.m_slots[slot] = Slot{.name = descriptor.name,
+                                    .kind = descriptor.kind,
+                                    .value = value.unwrap(),
+                                    .given = true};
         if (slot == parsed.m_count) {
             parsed.m_count += 1;
         }
@@ -657,20 +788,6 @@ class Options {
     usize m_count{0};
     bool m_pass_through{false};
 };
-
-/// Appends to a bounded buffer, answering what fits: the honest truncation a
-/// fragment too long for |out| suffers, the same contract the console's own
-/// 128-byte lines put on everything a command prints.
-constexpr auto append(char *const out, usize const cap, usize &at, std::string_view const text)
-    -> void {
-    for (auto const c: text) {
-        if (at == cap) {
-            return;
-        }
-        out[at] = c;
-        at += 1;
-    }
-}
 
 /// The usage fragment one option renders as: `how=<panic|panic-locked>` for a
 /// required string option with choices, `[rounds=N]` for an optional number,
@@ -684,29 +801,7 @@ inline auto usage_word(OptionDescriptor const &descriptor, char *const out, usiz
         append(out, cap, at, "[");
     }
     append(out, cap, at, descriptor.name);
-    switch (descriptor.kind) {
-        case OptionKind::U64:
-            append(out, cap, at, "=N");
-            break;
-        case OptionKind::Bool:
-            break;
-        case OptionKind::Str: {
-            append(out, cap, at, "=");
-            if (descriptor.choices.count != 0) {
-                append(out, cap, at, "<");
-                for (auto i = usize{0}; i < descriptor.choices.count; ++i) {
-                    if (i != 0) {
-                        append(out, cap, at, "|");
-                    }
-                    append(out, cap, at, descriptor.choices.words[i]);
-                }
-                append(out, cap, at, ">");
-            } else {
-                append(out, cap, at, "<text>");
-            }
-            break;
-        }
-    }
+    internal::shape_row(descriptor.kind).usage_inner(descriptor, out, cap, at);
     if (!descriptor.required) {
         append(out, cap, at, "]");
     }
