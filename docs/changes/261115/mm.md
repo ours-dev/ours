@@ -260,3 +260,56 @@ None.
 - Why do two looks at `paused()`, one before the take and one before the walk, still let a Pause lose a record?
 - Why must the Pause constructor take `m_take_lock` after its `fetch_add`, and not before?
 - Why walk a record taken just before a Pause instead of putting it back?
+
+## The frame's status word is an atomic (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `m_status` is `std::atomic<page::StatusWord::StorageUnit>`; reads go through a private `status()`, writes through a private `set_status<Id>()`; `init()` builds the word whole and stores it once; the status accessors are no longer `constexpr`; a `static_assert` requires the atomic to be lock-free
+
+**Symptom**
+None visible: a data race, undefined behaviour by the C++ memory model while every x86 build happened to do the right thing. `FrameBuddy::is_mergeable()` reads a partner frame's role, order, zone and node under the zone lock, and the partner's owner writes the same word without that lock (`become()`, `set_order()` from `split_block()`, `clear_reserved()` from `unwire_frame()`). Anyone asking a frame its node, zone or section races the owner the same way.
+
+**Cause**
+The word was a plain `ustl::BitFields` value. Ownership hands a frame from one writer to the next through the zone lock, so no write was ever lost, but ownership orders writes, not reads: the buddy reads a frame it does not own at a moment its owner may be writing it. A conflicting non-atomic read and write with no happens-before between them is a data race whatever the hardware does with it; the compiler is entitled to assume it cannot happen.
+
+**Change**
+The representation changes and nothing else: the same bit layout, decoded from one relaxed load (`StatusWord::from_raw()`), and written with a relaxed load and a relaxed store of the whole word (`into()`).
+
+```cpp
+auto status() const -> page::StatusWord {
+    return page::StatusWord::from_raw(m_status.load(std::memory_order_relaxed));
+}
+
+template <auto Id>
+auto set_status(page::StatusWord::ValueTypeOf<Id> const &value) -> void {
+    auto word = status();
+    word.template set<Id>(value);
+    m_status.store(word.template into<page::StatusWord::StorageUnit>(), std::memory_order_relaxed);
+}
+```
+
+A load and a store, not a read-modify-write, because the word has one writer at a time, the frame's owner or the buddy under the zone lock while the frame is free; the old code did the same load-modify-store on plain memory, so nothing that worked before changes. Relaxed is enough: what decides a merge, the Pmm role and its order, changes only under the zone lock, which orders it, and every other field is true of the frame whenever it is read. On x86 a relaxed load or store of a word is the plain move it was before, so nothing costs more. The other way out, a separate atomic byte for the free-block marker alone, would have left the node, zone and section reads racing and made the role a fact kept in two places.
+
+**Reference**
+Linux keeps `page->flags` under the same discipline: atomic bit operations, or `READ_ONCE()` and `WRITE_ONCE()` and the non-atomic `__SetPage*()` only while the page is exclusively owned; the buddy marker lives in `page_type`, set under `zone->lock` and read across owners with `data_race()` (`page_is_buddy()`, `mm/internal.h`).
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed (the buddy's host test among them), on the default and the four-node machine. `ktest all`: default 92 ran, 84 passed, 8 skipped; four nodes 92 ran, 89 passed, 3 skipped; `MEM=8192` `ktest sel=MemoryPressure.*:PmNode.*:PageReclaim.*:PmZone.*` 17 ran, 11 passed, 0 failed. Failure-injection build: 92 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `pm_frame.hpp`.
+
+No test shows the change: a data race on a word has no observable failure on x86, and the kernel has no race detector. The guarantee is the type, and the `static_assert` keeps it a lock-free one.
+
+A narrow pre-commit review traced every writer of the word (the boot stamps before the buddy exists; the buddy's insert, remove and hand-out under the zone lock, on frames on its own lists; `split_block()` on the caller's own block; `unwire_frame()` on a reserved frame no buddy holds; `become()` on frames just allocated) and found no two that can reach one frame at once, so the load and store lose no update. It found no reader that needs more than relaxed, no constant-evaluated use of the accessors, the storage unit a 64-bit word that is lock-free on x86_64, riscv64 and the host, and the layout unchanged. It noted that a partner in another zone's span would be written under that zone's lock; the merge turns it away by zone and node, and the comment now says so.
+
+**Deliberately not done**
+- The role body and the list hook stay plain storage: the review found no read of either across owners (the buddy touches a partner's hook only once it is Pmm, under the zone lock).
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M2, from the correctness reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why do ownership hand-offs through the zone lock make the writes to a frame safe but not the buddy's read of a frame it does not own?
+- Why is a relaxed load and store, and not a compare-and-swap, enough for `set_status()`?
+- What would a compiler be allowed to do with a racing plain read that it may not do with a relaxed atomic one?
