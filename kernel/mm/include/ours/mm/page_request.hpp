@@ -8,6 +8,7 @@
 #include <ours/status.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
+#include <ours/task/types.hpp>
 #include <ours/types.hpp>
 
 #include <ustl/collections/intrusive/list.hpp>
@@ -279,7 +280,7 @@ class AnonymousPageRequest {
     /// OutOfMem when delayed allocations are refused, or the status of an
     /// interrupted wait. Each lost race (ShouldWait) waits again, and every
     /// 5 seconds of waiting is reported. The request is not raised after it.
-    auto allocate(bool interruptible) -> Status;
+    auto allocate(task::Interruptible interruptible) -> Status;
 
     [[nodiscard]]
     auto has_frame() const -> bool {

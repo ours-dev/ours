@@ -81,7 +81,8 @@ namespace {
 
         /// Sleeps until the gate opens, or turns to refusing: Ok, or the
         /// status of a sleep that ended otherwise.
-        auto wait_for_opening(time::Deadline const &deadline, bool interruptible) -> Status;
+        auto wait_for_opening(time::Deadline const &deadline, task::Interruptible interruptible)
+            -> Status;
 
         /// An opening, or a refusal, passed on to the next waiter.
         auto pass_on() -> void {
@@ -166,13 +167,9 @@ namespace {
         }
     }
 
-    auto FreeMemoryGate::wait_for_opening(time::Deadline const &deadline, bool const interruptible)
-        -> Status {
-        auto how = task::Interruptible::No;
-        if (interruptible) {
-            how = task::Interruptible::Yes;
-        }
-        return m_may_allocate.wait(deadline, how);
+    auto FreeMemoryGate::wait_for_opening(time::Deadline const &deadline,
+                                          task::Interruptible const interruptible) -> Status {
+        return m_may_allocate.wait(deadline, interruptible);
     }
 
     auto FreeMemoryGate::set(usize const lower, usize const upper, usize const delay_level,
@@ -546,7 +543,7 @@ auto free_frame_count() -> usize {
 }
 
 auto wait_for_frame_allocation(Gaf const alloc_flags, time::Deadline const &deadline,
-                               bool const interruptible) -> ktl::Result<PmFrame *> {
+                               task::Interruptible const interruptible) -> ktl::Result<PmFrame *> {
     DEBUG_ASSERT(!!(alloc_flags & Gaf::CanWait), "a wait for a frame by a caller that cannot wait");
     if (auto const status = GATE.wait_for_opening(deadline, interruptible); Status::Ok != status) {
         return ustl::err(status);

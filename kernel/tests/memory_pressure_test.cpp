@@ -109,8 +109,8 @@ namespace {
     auto wait_routine(void *const arg) -> i32 {
         auto &waiter = *static_cast<Waiter *>(arg);
         while (true) {
-            auto result =
-                mm::wait_for_frame_allocation(WAITABLE, deadline_after(LOST_AFTER), false);
+            auto result = mm::wait_for_frame_allocation(WAITABLE, deadline_after(LOST_AFTER),
+                                                        task::Interruptible::No);
             if (result) {
                 waiter.frame = *result;
                 waiter.status = Status::Ok;
@@ -223,10 +223,10 @@ namespace {
     auto check_timeout() -> void {
         auto const shut = shut_gate();
         auto const deadline = deadline_after(SETTLE);
-        auto result = mm::wait_for_frame_allocation(WAITABLE, deadline, true);
+        auto result = mm::wait_for_frame_allocation(WAITABLE, deadline, task::Interruptible::Yes);
         if (!result && result.unwrap_err() == Status::ShouldWait) {
             // Closing the gate can leave a wakeup from its previous opening.
-            result = mm::wait_for_frame_allocation(WAITABLE, deadline, true);
+            result = mm::wait_for_frame_allocation(WAITABLE, deadline, task::Interruptible::Yes);
         }
         open_gate();
         EXPECT_TRUE(shut && !result && result.unwrap_err() == Status::TimeOut,

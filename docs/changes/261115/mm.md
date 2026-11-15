@@ -68,3 +68,39 @@ None.
 - What two different things would "fallback" have meant in one call from `alloc_block()` to `resolve_request()`?
 - Why is a stale name a defect here rather than a cosmetic issue?
 - Which test check named `invalid` would have read as a bug report had it failed?
+
+## The anonymous-page wait carries task::Interruptible, not a bool (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/pmm.cpp` — `wait_for_frame_allocation()` and `FreeMemoryGate::wait_for_opening()` take `task::Interruptible`; the gate's bool-to-enum conversion goes
+- `kernel/mm/include/ours/mm/page_request.hpp`, `kernel/mm/page_request.cpp` — `AnonymousPageRequest::allocate()` takes `task::Interruptible`; `MultiPageRequest::wait()` converts its `suspendable` bool once, with a comment saying the two words mean the same
+- `kernel/tests/memory_pressure_test.cpp` — the three calls pass `task::Interruptible::Yes` or `No` instead of `true` or `false`
+
+**Symptom**
+One fact had two names and a type that said neither: `MultiPageRequest::wait(bool suspendable)` passed it to `AnonymousPageRequest::allocate(bool interruptible)`, then to `wait_for_frame_allocation(..., bool interruptible)`, and the gate turned the bool back into the `task::Interruptible` the event takes. A call read `wait_for_frame_allocation(flags, deadline, true)`.
+
+**Cause**
+The anonymous-page wait was added beside the page-source wait, whose provider interface (`PageProvider::wait_on_event(event, bool suspendable)`) already carried the bool, and the bool was passed along.
+
+**Change**
+The mm side of the anonymous-page wait takes the enum from `MultiPageRequest::wait()` down to the event. The page-source side keeps its `bool suspendable`: it is a provider interface with implementations outside mm, and changing it is a separate step.
+
+**Reference**
+Zircon's `PageRequest::Wait(bool suspendable)` uses the same word for the same thing; the enum is this kernel's own (`kernel/include/ours/task/types.hpp`).
+
+**Verification**
+`verify` on the default and the four-node machine: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed; the failure-injection build builds. `ktest all` on the default machine 90 ran, 83 passed, 7 skipped; `ktest sel=MemoryPressure.*:Pager*:PageSource*:Vmo*` 7 ran, 7 passed.
+
+**Deliberately not done**
+- `PageProvider::wait_on_event()` and `MultiPageRequest::wait()` still take `bool suspendable`.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor findings, naming.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does a bare `true` at a call site fail to tell its reader that `task::Interruptible::Yes` does?
+- Why convert once at `MultiPageRequest::wait()` rather than change the provider interface too?
+- What ends an interruptible wait for a frame, and what does the caller see then?
