@@ -112,7 +112,9 @@ constexpr auto get_order(usize n) -> usize {
 /// things. The free-memory gate puts a waiting request off while free memory
 /// in the whole machine is below the level its watcher set; and a waiting
 /// request that finds every zone it may use below its Low watermark is put
-/// off there, where one that cannot wait would go on down to Min.
+/// off there, where one that cannot wait would go on down to Min. A waiting
+/// request confined to one node (Gaf::ThisNode) is not put off at Low: it
+/// goes on to Min, and answers OutOfMem below it.
 [[nodiscard]]
 auto alloc_frames(Gaf flags, usize order = 0, NodeId home = bootmem::ANY_NODE)
     -> ktl::Result<PmFrame *>;

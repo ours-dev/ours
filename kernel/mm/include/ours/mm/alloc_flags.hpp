@@ -20,7 +20,9 @@ enum class Gaf : u32 {
 
     /// alloc_frames() may answer ShouldWait under memory pressure: when the
     /// free-memory gate is shut, or when every zone the request may use is
-    /// below its Low watermark. The caller drops its locks before
+    /// below its Low watermark and the request is not confined to one node
+    /// or to fewer zones (a confined one goes on to Min instead, and fails
+    /// there; AllocRequest::is_confined()). The caller drops its locks before
     /// wait_for_frame_allocation(), which retries for one page. The
     /// mm::alloc_frames() block interface handles admission and returns the
     /// outcome without sleeping.

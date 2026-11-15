@@ -1111,9 +1111,18 @@ namespace {
         PmFrame::List held;
         auto const at_low = drain_to(zone, low, held);
 
+        // An ordinary waiting request, on a machine that is this node alone:
+        // the node set is the test's stand-in for the machine, so the request
+        // is not confined (it does not ask for Gaf::ThisNode) and every zone
+        // it may use is this one. A request that did ask for ThisNode would
+        // go on to Min instead (AConfinedWaitingRequestGoesOnToMin).
+        auto const ask_waiting = [nid] {
+            return mm::priv::alloc_frames(mm::ALLOC_USER_VMO, 0, nid, NodeMask::of(nid));
+        };
+
         // At Low a waiting request is put off; one that cannot wait is served
         // by the second pass.
-        auto const waiting = mm::alloc_frames(mm::ALLOC_USER_VMO | mm::Gaf::ThisNode, 0, nid);
+        auto const waiting = ask_waiting();
         auto const put_off = !waiting && waiting.unwrap_err() == Status::ShouldWait;
         if (waiting) {
             held.push_back(**waiting);
@@ -1138,22 +1147,28 @@ namespace {
         auto still_put_off = false;
         if (served) {
             early = counted(*kernel);
-            auto const again = mm::alloc_frames(mm::ALLOC_USER_VMO | mm::Gaf::ThisNode, 0, nid);
+            auto const again = ask_waiting();
             still_put_off = !again && again.unwrap_err() == Status::ShouldWait;
             if (again) {
                 held.push_back(**again);
             }
         }
 
-        // The next release takes it above Low, where that request would be
-        // served: one wake. One more, from above Low: none.
+        // The next release takes it above Low: one wake, and the request it
+        // woke for is served now. One more release, from above Low: none.
         auto woke = isize{0};
+        auto served_after = false;
         auto quiet = isize{1};
         if (still_put_off) {
             if (auto front = held.front()) {
                 auto *const block = &front.value();
                 held.pop_front();
                 woke = counted(block);
+            }
+            auto const retried = ask_waiting();
+            served_after = retried && (*retried)->nid() == nid;
+            if (retried) {
+                held.push_back(**retried);
             }
             if (auto front = held.front()) {
                 auto *const block = &front.value();
@@ -1167,8 +1182,65 @@ namespace {
         EXPECT_TRUE(served, "at Low a request that cannot wait is served by the second pass");
         EXPECT_TRUE(early == 0 && still_put_off,
                     "a release back to exactly Low wakes nobody, and the request is still put off");
-        EXPECT_TRUE(woke == 1, "the release that takes the zone above Low wakes one waiter");
+        EXPECT_TRUE(woke == 1 && served_after,
+                    "the release that takes the zone above Low wakes one waiter, and it is served");
         EXPECT_TRUE(quiet == 0, "a release from above Low wakes nobody");
+    }
+
+    KTEST(PmNode, AConfinedWaitingRequestGoesOnToMin) {
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list()->fallback()[0];
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        auto const min = zone.watermark(PmZone::Watermark::Min);
+        if (low <= min + 1) {
+            KTEST_SKIP("the zone's watermarks are too close to test between");
+        }
+
+        // A waiting request confined to the target node: the machine's count
+        // says nothing about that node, so nothing would be bound to end a
+        // wait there.
+        auto const confined = [nid] {
+            return mm::alloc_frames(mm::ALLOC_USER_VMO | mm::Gaf::ThisNode, 0, nid);
+        };
+
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        PmFrame::List held;
+
+        // At Low it is not put off: the Min pass serves it from its node.
+        auto const at_low = drain_to(zone, low, held);
+        auto const served = confined();
+        auto const from_node = served && (*served)->nid() == nid;
+        if (served) {
+            held.push_back(**served);
+        }
+
+        // At Min it fails, where an ordinary one would have been put off at Low.
+        auto const at_min = drain_to(zone, min, held);
+        auto const refused = confined();
+        auto const out_of_mem = !refused && refused.unwrap_err() == Status::OutOfMem;
+        if (refused) {
+            held.push_back(**refused);
+        }
+
+        // With no node to use at all -- ThisNode, and a node set without its
+        // home -- it fails at once rather than waiting on nothing.
+        auto const other = NodeMask::of(mm::current_node());
+        auto const nowhere =
+            mm::priv::alloc_frames(mm::ALLOC_USER_VMO | mm::Gaf::ThisNode, 0, nid, other);
+        auto const nowhere_fails = !nowhere && nowhere.unwrap_err() == Status::OutOfMem;
+        if (nowhere) {
+            held.push_back(**nowhere);
+        }
+        mm::free_frames(&held);
+
+        EXPECT_TRUE(at_low && from_node,
+                    "at Low a confined waiting request is served by the Min pass, from its node");
+        EXPECT_TRUE(at_min && out_of_mem, "at Min it answers OutOfMem, not ShouldWait");
+        EXPECT_TRUE(nowhere_fails, "with no node it may use, it answers OutOfMem at once");
     }
 
     KTEST(PmNode, AShortZoneIsMarkedOnceAndTakenOnce) {

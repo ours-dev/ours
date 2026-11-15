@@ -487,3 +487,65 @@ None.
 - Why can a low zone's reserve be larger than the zone itself, and what does that zone then give an ordinary request?
 - Why does the test drain a low zone rather than the highest one?
 - What would the test have proved had it drained Dma32 at 512 MiB, where Dma32 keeps nothing back?
+
+## A confined waiting request goes on to Min instead of waiting at Low (2026-11-14)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — new `AllocRequest::is_confined()`: `Gaf::ThisNode`, or a zone range narrower than Dma through Normal
+- `kernel/mm/pmm.cpp` — `alloc_block()` puts a waiting request off at Low only when it is not confined
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/include/ours/mm/alloc_flags.hpp` — what `ShouldWait` means for a confined request
+- `kernel/tests/pm_node_test.cpp` — new `PmNode.AConfinedWaitingRequestGoesOnToMin`; `PmNode.WaitingRequestsStopAtLowAndWakeOnRelief` asks through a one-node stand-in machine and now also checks that the woken request is served
+- `kernel/mm/tests/alloc_request_smoke.cpp` — which requests are confined
+- `docs/repairs/261112/mm.md` — item 3 removed; `docs/repairs/261114/mm.md` — the two holes it leaves, both latent
+
+**Symptom**
+Latent, no caller asked for it: a waiting request confined to one node (`ALLOC_USER_VMO | Gaf::ThisNode`) on a node whose zones were all below Low was answered `ShouldWait`, and only a release on that node back above Low could wake it; with nothing reclaimable there it waited for ever (`docs/repairs/261112/mm.md` item 3). A confined request whose node set left it no node at all (`ThisNode` with its home outside the set) found no zone, named none short, and was answered `ShouldWait` too, waiting on nothing.
+
+**Cause**
+The wait at a zone's Low (N1) is only safe when something is bound to end it. For an ordinary request the previous change made sure of that: every zone refusing it means the machine is below the gate's delay level, where the gate and the watchdog act. A confined request counts against memory it may use, while the gate and the watchdog count the machine, so its zones can all be short while the machine looks healthy.
+
+**Change**
+The user's D2(b), 2026-11-14: a confined waiting request is not put off at Low. It makes the Min pass like a request that cannot wait, still asks for reclaim for the zone it found short, and answers `OutOfMem` below Min.
+
+```cpp
+// alloc_block(), after the Low pass failed
+if (can_wait && !request.is_confined()) {
+    return ustl::err(Status::ShouldWait);
+}
+block = home.alloc_frames(request, AdmissionPass::Min);
+
+// AllocRequest
+return !!(m_alloc_flags & Gaf::ThisNode) || m_lowest_zone != ZoneType::Dma ||
+       m_highest_zone < ZoneType::Normal;
+```
+
+So a confined request trades the wait for the Low-to-Min band: it spends memory the requests that cannot wait depend on, and fails where an ordinary one would have waited. A caller asking for one node already accepts failure (`Gaf::ThisNode` says so). The zone-range half answers nothing today, since no `Gaf` bit narrows the range; it is there so that a request limited to memory below 4 GiB, when `Gaf::Dma32` is built, is confined from the start. The empty-node-set case now answers `OutOfMem` from both passes, with no zone named and so no reclaim asked.
+
+The first draft of this fix, the one item 3 described, was a per-node "reclaim gave nothing back" mark that a retry would turn into `OutOfMem`. Worked through before this step, it needed five parts to be correct: the home carried through the wait, a generation instead of a bit (the bit can be set after the crossing that should clear it), "the queues ran out" instead of "freed nothing", a reclaim that says when it did not run, and a periodic retry because the one-at-a-time wake stops at the first waiter still put off. And for zone-limited waiters the node is the wrong unit. That machinery is not needed while confined requests do not wait.
+
+The wake test changed with it. It asked with `ThisNode`, which is now confined, so it asks through `mm::priv::alloc_frames()` with the target node as the whole node set: the set stands in for a one-node machine and the request is ordinary. It also retries after the release that takes the zone above Low, and sees the request served, where it used to check only that the relief counter moved.
+
+**Reference**
+Neither system has the case. Zircon has no node-confined allocation, and its `PMM_ALLOC_FLAG_CAN_WAIT` waits on machine-wide levels alone. Linux's `__GFP_THISNODE` allocations make no wait of this kind at all: they reclaim or fail, and are excluded from the OOM killer (`__alloc_pages_may_oom()` returns early for them), which is the same trade, failure in place of an unbounded wait.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 184 passed (`alloc-request-smoke` with its five new checks), on the default and the four-node machine. `ktest all`: default 90 ran, 83 passed, 7 skipped (both node tests need a second node); four nodes 90 ran, 87 passed, 3 skipped. `MEM=3072` and `MEM=8192`: `ktest PmNode.*:MemoryPressure.*:PageReclaim.*` 14 ran, 9 passed, 0 failed. Failure-injection build: 90 ran, 84 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `pmm.cpp`.
+
+The new test drains another node's zone with the reclaimer paused: at Low a confined waiting request is served by the Min pass from that node; at Min it answers `OutOfMem`; with a node set that leaves it no node it answers `OutOfMem` at once. Control: with the confinement check removed, all three checks fail (the first two get `ShouldWait`, the third `ShouldWait` on nothing).
+
+A narrow pre-commit review confirmed that no caller combines `CanWait` with `ThisNode`, an explicit home or a node set, that nothing relies on a confined request answering `ShouldWait`, and that the empty-set case reports no zone. It found the stale header comment on `alloc_block()`, the wording of `is_confined()` (it promised "less memory" while checking only the flag and the range), and the wake test's missing retry, all fixed; and two latent holes, recorded in `docs/repairs/261114/mm.md`: a confined request put off by the gate retries on the waking CPU's node, and a node set narrowed without `ThisNode` is not treated as confined.
+
+**Deliberately not done**
+- The wait path still carries only the flags; `docs/repairs/261114/mm.md` item 1.
+- A future placement policy that narrows the node set has to narrow the request, or the rule has to look at the node set; item 2 there.
+
+**How it was found**
+None. `docs/repairs/261112/mm.md` item 3, decided with the user as D2(b).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the machine-wide gate end an ordinary request's wait but not a confined one's?
+- What does a confined waiting request give up by going on to Min, and why is that acceptable for `Gaf::ThisNode`?
+- The wake test now asks through a one-node node set without `ThisNode`. Why is that request ordinary, and what would make the test change meaning later?

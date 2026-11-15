@@ -344,10 +344,12 @@ namespace {
     /// a short zone on the way to one that admitted the request.
     ///
     /// |can_wait| is whether the caller asked for Gaf::CanWait, which the gate
-    /// has answered for by now. Such a request makes the first pass only:
-    /// when no zone admits it at Low it is answered ShouldWait, and waits for
-    /// a zone to rise back above Low, instead of spending the band between
-    /// Low and Min that the requests which cannot wait depend on.
+    /// has answered for by now. Such a request, unless it is confined
+    /// (AllocRequest::is_confined()), makes the first pass only: when no zone
+    /// admits it at Low it is answered ShouldWait, and waits for a zone to
+    /// rise back above Low, instead of spending the band between Low and Min
+    /// that the requests which cannot wait depend on. A confined one makes
+    /// both passes, as a request that cannot wait does.
     auto alloc_block(PmNode &home, Gaf const alloc_flags, usize const order, NodeMask const &nodes,
                      bool const can_wait, ustl::Option<PmZone const &> &depleted)
         -> ktl::Result<PmFrame *> {
@@ -389,7 +391,11 @@ namespace {
             if (!depleted) {
                 depleted = block.error().depleted_zone;
             }
-            if (can_wait) {
+            // An ordinary waiting request waits here rather than spend the
+            // band. A confined one does not: the gate and the watchdog count
+            // memory it cannot use, so nothing is bound to end its wait, and
+            // it goes on to Min and fails there like one that cannot wait.
+            if (can_wait && !request.is_confined()) {
                 return ustl::err(Status::ShouldWait);
             }
             block = home.alloc_frames(request, AdmissionPass::Min);

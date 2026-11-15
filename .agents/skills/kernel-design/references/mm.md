@@ -200,6 +200,12 @@ The kernel still tears down sealed mappings during address-space destruction.
   the delay level, and the gate, not a zone's Low, decides when an
   ordinary waiting request waits. All three levels move together; levels
   that do not nest are left for `start()` to refuse.
+- A confined waiting request -- `Gaf::ThisNode`, or a zone range
+  narrower than Dma through Normal (`AllocRequest::is_confined()`) -- is
+  not put off at a zone's Low: it makes the Min pass and answers `OutOfMem`
+  below it (the user's D2(b), 2026-11-14). The machine-wide gate and
+  watchdog count memory it cannot use, so nothing would be bound to end its
+  wait. A node set narrowed without `ThisNode` is not confined.
 
 ## CpuLocal (Linux, not Zircon)
 
