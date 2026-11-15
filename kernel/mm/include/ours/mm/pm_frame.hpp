@@ -109,7 +109,10 @@ namespace page {
     // drifting apart. <ours/node_mask.hpp> computes it from the count now, so
     // there is nothing left for an assertion to check.
 
-    using Status = ustl::BitFields<
+    /// The frame's packed status: role, flags, block order, zone, section and
+    /// node in one word. StatusWord rather than Status, which inside page::
+    /// would hide ours::Status, the result type every mm operation returns.
+    using StatusWord = ustl::BitFields<
         Field<Index::Role, Role, ustl::bit_width(std::to_underlying(Role::Count))>,
         Field<Index::Flags, Flags, ustl::bit_width(std::to_underlying(Flags::Count))>,
         Field<Index::Order, usize, ustl::bit_width(static_cast<usize>(MAX_FRAME_ORDER))>,
@@ -121,7 +124,7 @@ namespace page {
         Field<Index::Node, NodeId, MAX_NODES_BITS, OURS_CONFIG_NUMA>>;
 
     /// Per-role payload. Exactly one of these is live at a time, selected by
-    /// `Index::Role` in the Status word above.
+    /// `Index::Role` in the status word above.
     ///
     /// They are deliberately plain data: no constructors, no destructors, no
     /// intrusive *containers*. A role change is then just "zero the union and
@@ -553,7 +556,7 @@ class PageFrame {
     USTL_NO_MOVEABLE_AND_COPYABLE(PageFrame);
 
   private:
-    page::Status m_status;
+    page::StatusWord m_status;
 
     // The size of following fields type should be half of a word.
     mutable std::atomic<u32> m_references;
