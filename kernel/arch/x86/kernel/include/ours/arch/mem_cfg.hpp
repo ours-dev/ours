@@ -9,8 +9,12 @@
 
 #include <ustl/util/type_list.hpp>
 
+/// The zone bounds are the address limits of devices: Dma is what an ISA
+/// device reaches (24-bit addresses), Dma32 what a device with 32-bit
+/// addresses reaches. A lower Dma32 bound only makes the zone a fraction of
+/// the memory such a device can use.
 #define ARCH_MAX_DMA_PFN (16_mb >> PAGE_SHIFT)
-#define ARCH_MAX_DMA32_PFN (512_mb >> PAGE_SHIFT)
+#define ARCH_MAX_DMA32_PFN (4_gb >> PAGE_SHIFT)
 #define ARHC_MAX_PFN_LIMIT (64_gb >> PAGE_SHIFT)
 
 namespace ours {

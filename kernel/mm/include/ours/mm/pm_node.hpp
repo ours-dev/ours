@@ -143,7 +143,7 @@ class ZoneList {
     /// Highest first because the zones are not interchangeable in the other
     /// direction. Any request may be served from a high zone, but only a low
     /// one can serve a request with an address limit (a device that reaches
-    /// only the first 16 MiB, or 512 MiB). Taking ordinary requests from the
+    /// only the first 16 MiB, or 4 GiB). Taking ordinary requests from the
     /// low zones first spends the only memory that has no substitute while
     /// the memory that has one sits unused. Node first, zone second: a
     /// node's low zones are still tried before the next node's high ones,

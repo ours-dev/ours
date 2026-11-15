@@ -86,6 +86,8 @@ Inside the allocator the resolved `AllocRequest` stays: it is an internal value 
 
 `ALLOC_USER` gains `CanBlock` and `Movable`; it is `Zero` alone today, which under Z3 would let a user page take a zone lower than a kernel allocation may.
 
+As of 2026-11-14 (the user's choice): the Dma32 zone ends at 4 GiB, as the table says, and neither new bit is built until something asks for it. Two corrections from the survey made then. Zircon has no `PMM_ALLOC_FLAG_LO_MEM` any more (removed as unused; a device's reach is its BTI's `aspace_size()`), so `Dma32` has no Zircon counterpart. And `Movable` must not go into `ALLOC_USER`: the dispatchers are made with `new (ALLOC_USER)`, which reaches slab pages through kmalloc, so the bit belongs in `ALLOC_USER_VMO`, with Pinned and contiguous VMOs and the slab allocator dropping it. Grouping by mobility, when it comes, is a performance item: 2 MiB pageblocks with their type held outside the frame's status word, after a fragmentation baseline.
+
 Why the rest of `gfp_t` gets no bit: each of those exists in Linux because drivers and filesystems allocate inside the kernel, and here they do not.
 
 | Linux dimension | Why a monolithic kernel needs it | Here |

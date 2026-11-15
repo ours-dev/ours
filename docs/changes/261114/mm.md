@@ -549,3 +549,53 @@ None.
 - Why does the machine-wide gate end an ordinary request's wait but not a confined one's?
 - What does a confined waiting request give up by going on to Min, and why is that acceptable for `Gaf::ThisNode`?
 - The wake test now asks through a one-node node set without `ThisNode`. Why is that request ordinary, and what would make the test change meaning later?
+
+## The Dma32 zone ends at 4 GiB (2026-11-14)
+
+**Files**
+- `kernel/arch/x86/kernel/include/ours/arch/mem_cfg.hpp` — `ARCH_MAX_DMA32_PFN` is 4 GiB, with a comment saying what the bounds are
+- `kernel/mm/include/ours/mm/pm_node.hpp` — the fallback-order comment's example address limit
+- `kernel/mm/tests/admission_smoke.cpp` — the comment on where its 640150 frames of Normal came from
+- `.agents/tasks/pmm-redesign/DESIGN.md` — the bound fixed, `Gaf::Dma32` and `Gaf::Movable` deferred, and what the survey found about both
+
+**Symptom**
+The Dma32 zone, the memory a device with 32-bit addresses can reach, ended at 512 MiB. On the 3 GiB machine it held 122515 frames of the roughly 520000 below 4 GiB, and everything from 512 MiB to 4 GiB was Normal: an ordinary request took it first, and the low-zone reserve protected an eighth of what a 32-bit device could use.
+
+**Cause**
+The value came with the first commit (1387a1a3, as `MB(512)`) and nothing records why. Nothing read it but the platform's zone-bound table (`kernel/platform/pc/memory.cpp`); phys keeps its own 4 GiB bounds, the early allocator and the physmap use no zone bound, and that table's own comment already said "DMA32's 4 GiB".
+
+**Change**
+`ARCH_MAX_DMA32_PFN` is `4_gb >> PAGE_SHIFT`. The user chose the bound alone (2026-11-14): `Gaf::Dma32` and `Gaf::Movable` stay unbuilt until something asks for them.
+
+What moved, read from the boot logs:
+
+| Machine | Dma32 frames | Normal frames | Dma32 keeps from Normal requests | Zones' floors |
+|---|---|---|---|---|
+| 512 MiB (default) | 122507, unchanged | none | 0 | 1362, unchanged |
+| 1 GiB, four nodes | every node's zone is Dma32; nodes 2 and 3 were Normal | none | 0 | unchanged |
+| 3 GiB | 518897, was 122515 | 248217, was 640150 | 969, was 2500 | 6487, was 7992 |
+| 8 GiB | 518897, was 126972 | 1538457, was 1930384 | 6009, was 7540 | 14682, was 16213 |
+
+At 8 GiB the watchdog's levels are now raised 9 MiB instead of 13. Below about 2.8 GiB QEMU puts all memory under 4 GiB, so the two machines `verify` boots have no zone above Dma32 now; the four-node machine used to have Normal on two nodes.
+
+**Reference**
+Linux's `MAX_DMA32_PFN` is 4 GiB (`arch/x86/include/asm/dma.h`). Zircon has no low-memory zone: it removed `PMM_ALLOC_FLAG_LO_MEM` in 2026 as unused, and leaves what a device can reach to its BTI (`Bti::aspace_size()`).
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 184 passed, on the default and the four-node machine. `ktest all`: default 90 ran, 83 passed, 7 skipped; four nodes 90 ran, 87 passed, 3 skipped; `MEM=3072` and `MEM=8192` 90 ran, 83 passed, 7 skipped each, `MemoryPressure.TheBootLevelsCoverTheZoneFloors` among the passes. Failure-injection build: 90 ran, 84 passed, 0 failed, with the three known `Failed to map` lines. The numbers in the table match a model of the watermark, reserve and floor arithmetic made beforehand to within half a percent.
+
+**Deliberately not done**
+- `Gaf::Dma32`: nothing in the kernel needs memory below 4 GiB, and its natural user, an option on `vmo_create_contiguous` for 32-bit devices, is ABI to decide with its first driver.
+- `Gaf::Movable`: grouping free memory by mobility is a performance item, and nothing gives memory back by physical range yet. When it is built, it must not go into `ALLOC_USER`, which also makes every dispatcher through the slab allocator.
+- `ARHC_MAX_PFN_LIMIT` beside it is misspelled; left for its own change.
+
+**How it was found**
+The survey made while introducing `Gaf::Dma32` and `Gaf::Movable`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a low zone's bound decide how much memory the lowmem reserve protects?
+- Why did the Dma32 zone grow fourfold at 3 GiB but only by a third of a node's memory at 8 GiB?
+- Why does no machine `verify` boots routinely have a Normal zone any more?

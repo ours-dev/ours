@@ -70,7 +70,8 @@ auto walk_down() -> void {
 }
 
 /// The reserve on the default machine (Dma 3388 frames, Dma32 122515, no
-/// Normal) and on a 3 GiB one (Normal 640150), by type index: Dma 0, Dma32 1,
+/// Normal) and on one with 640150 frames of Normal above that (the 3 GiB
+/// machine while Dma32 ended at 512 MiB), by type index: Dma 0, Dma32 1,
 /// Normal 2, and two types above that no node has here.
 auto reserves() -> void {
     constexpr auto RATIO = usize{256};
