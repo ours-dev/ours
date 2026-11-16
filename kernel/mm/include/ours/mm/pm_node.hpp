@@ -250,11 +250,12 @@ class PmNode {
         -> ustl::Result<PmFrame *, BlockFailure>;
 
     /// The node's layer of mm::free_frames(): returns a block of this node's
-    /// to the zone it came from. The frame names both. Returns what the
+    /// to the zone it came from. The frame names both, and its head the
+    /// block's order. Returns what the
     /// zone's free_frames() does: whether this release brought the zone back
     /// to admitting a frame at its Low watermark.
     [[nodiscard]]
-    auto free_frames(PmFrame &frame, usize order) -> bool;
+    auto free_frames(PmFrame &frame) -> bool;
 
     /// Whether this node's zone of |type| could serve an allocation of
     /// |order| from its free lists right now; false when the node has no such

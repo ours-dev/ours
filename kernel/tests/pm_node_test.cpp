@@ -651,7 +651,7 @@ namespace {
                 if (block) {
                     // Back into the zone it came from, below the pipeline:
                     // no waiter to wake.
-                    auto _ = state.zone.free_frames(block.value(), 0);
+                    auto _ = state.zone.free_frames(block.value());
                 }
                 if (count > 1 || state.zone.num_free_frames() > 1) {
                     return 1;
@@ -1323,6 +1323,52 @@ namespace {
         EXPECT_TRUE(cleared, "freed, the parts keep no stamp");
         EXPECT_TRUE(coalesced,
                     "the parts, freed by their heads, coalesce back to where the zone was");
+    }
+
+    KTEST(PmNode, AdoptedFramesReturnToTheirZone) {
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto &zone = *target->zone_list().fallback()[0];
+        auto const profile = [&zone] {
+            std::array<usize, MAX_FRAME_ORDER + 1> blocks{};
+            for (usize order = 0; order <= MAX_FRAME_ORDER; ++order) {
+                blocks[order] = zone.free_blocks(order);
+            }
+            return blocks;
+        };
+
+        // Eight frames taken from the zone below the pipeline, as memory that
+        // was never handed out through it, then given back as two ranges that
+        // do not start on the block's boundary. [1, 8) leaves free blocks of
+        // one, two and four frames, and [0, 1) joins them into the whole. The
+        // buddy coalesces whatever it is given, so the profile cannot tell
+        // how the range was carved; what it shows is that adoption reaches
+        // the right zone with the right counts. A misaligned block would not
+        // get this far: the buddy's release() asserts alignment in every
+        // build.
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        auto const before = profile();
+        auto const free_before = zone.num_free_frames();
+        auto block = zone.alloc_frames(3);
+        if (!block) {
+            FAIL("an order-3 block from zone {}", mm::to_string(zone.zone_type()));
+            return;
+        }
+        auto const pfn = mm::frame_to_pfn(&block.value());
+        auto const taken = zone.num_free_frames() == free_before - 8;
+
+        mm::adopt_frames(pfn + 1, pfn + 8);
+        auto const carved = zone.free_blocks(0) == before[0] + 1 &&
+                            zone.free_blocks(1) == before[1] + 1 &&
+                            zone.free_blocks(2) == before[2] + 1;
+        mm::adopt_frames(pfn, pfn + 1);
+        auto const whole = profile() == before && zone.num_free_frames() == free_before;
+
+        EXPECT_TRUE(taken, "the block leaves the zone's count");
+        EXPECT_TRUE(carved, "an unaligned range leaves free blocks of one, two and four frames");
+        EXPECT_TRUE(whole, "with its last frame adopted, the block is whole again");
     }
 
     KTEST(PmNode, APausedReclaimerTakesNoNodeRecord) {

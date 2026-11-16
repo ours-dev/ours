@@ -86,7 +86,7 @@ auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
     return ustl::err(BlockFailure{.status = Status::OutOfMem, .depleted_zone = depleted_zone});
 }
 
-auto PmNode::free_frames(PmFrame &frame, usize const order) -> bool {
+auto PmNode::free_frames(PmFrame &frame) -> bool {
     m_canary.verify<Self>();
     DEBUG_ASSERT(frame.nid() == m_id, "frame {:#x} of node {} was returned to node {}",
                  frame_to_phys(&frame), frame.nid(), m_id);
@@ -94,7 +94,7 @@ auto PmNode::free_frames(PmFrame &frame, usize const order) -> bool {
     auto *const zone = m_zone_list.local_zone(frame.zone());
     DEBUG_ASSERT(zone, "frame {:#x} is in no zone", frame_to_phys(&frame));
 
-    return zone->free_frames(frame, order);
+    return zone->free_frames(frame);
 }
 
 namespace {

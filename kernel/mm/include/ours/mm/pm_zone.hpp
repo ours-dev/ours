@@ -124,7 +124,8 @@ class PmZone {
     auto alloc_frames(usize order) -> ustl::Option<PmFrame &>;
 
     /// The zone's layer of mm::free_frames(): puts a block this zone owns
-    /// back into its stock under the zone lock.
+    /// back into its stock under the zone lock. How much is the block's to
+    /// say: the order its head records.
     ///
     /// Returns whether this release is the one that brought the zone back to
     /// admitting, in the Low pass, a single frame for a request that allows
@@ -133,7 +134,17 @@ class PmZone {
     /// below the allocation pipeline, a test giving back what it took from
     /// the zone directly, may ignore it.
     [[nodiscard]]
-    auto free_frames(PmFrame &frame, usize order) -> bool;
+    auto free_frames(PmFrame &frame) -> bool;
+
+    /// Takes the frames [|start|, |end|) of this zone that were never a
+    /// block -- memory the boot handoff gives the allocator, memory the
+    /// kernel gives up after boot -- into its stock, as the largest aligned
+    /// blocks they make. The range lies within the zone's span. Returns how
+    /// many of those blocks brought the zone back to admitting a frame at
+    /// Low, each as free_frames() would: allocations between two blocks can
+    /// take the zone back below, so one range can cross more than once.
+    [[nodiscard]]
+    auto adopt(Pfn start, Pfn end) -> usize;
 
     /// How many frames this zone could hand out right now, counted out of the
     /// buddy's free lists under the zone lock.

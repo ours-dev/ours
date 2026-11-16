@@ -72,13 +72,16 @@ namespace {
         auto const before = count_free_blocks(zone);
 
         // Straight into the zone, below the allocation pipeline: whether a
-        // release brought the zone back above Low wakes nobody here.
+        // release brought the zone back above Low wakes nobody here. Split
+        // first: a block is freed by its head, at the order the head records,
+        // so each frame freed alone has to be a block of its own.
+        block->split(0);
         constexpr auto HALF = BLOCK_FRAMES / 2;
         for (auto i = HALF; i > 0; --i) {
-            auto _ = zone.free_frames(block[i - 1], 0);
+            auto _ = zone.free_frames(block[i - 1]);
         }
         for (auto i = HALF; i < BLOCK_FRAMES; ++i) {
-            auto _ = zone.free_frames(block[i], 0);
+            auto _ = zone.free_frames(block[i]);
         }
 
         auto const after = count_free_blocks(zone);
@@ -145,9 +148,8 @@ namespace {
         }
 
         // Straight into the zone, as they were taken: no waiter to wake.
-        spare.clear_and_dispose([&zone](PmFrame *frame) noexcept {
-            auto _ = zone.free_frames(*frame, MAX_FRAME_ORDER);
-        });
+        spare.clear_and_dispose(
+            [&zone](PmFrame *frame) noexcept { auto _ = zone.free_frames(*frame); });
         return later != nullptr;
     }
 

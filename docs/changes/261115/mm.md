@@ -533,3 +533,58 @@ None.
 - Why does a stale order in a frame inside an allocated block make freeing that frame give its memory two owners?
 - What makes `compound_offset() == 0` a test for "head" once the allocator stamps every block?
 - Why must `split()` re-stamp the tails, and not only set the new heads' orders?
+
+## The zone adopts memory itself, and a block is freed by its head alone (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — new `PmZone::adopt(start, end)`, which carves a range within the zone's span into the largest aligned blocks, checks each head as `prepare_free()` would, releases each under the zone lock and counts it, and returns how many blocks crossed the Low line; `free_frames()` takes no order and reads the head's
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp` — `PmNode::free_frames()` takes no order
+- `kernel/mm/pmm.cpp` — `adopt_frames()` hands each zone the part of the range it holds, asserting in every build that the walk advances, and wakes a waiter per crossing; `free_block()` takes no order; `prepare_alloc()`'s comment names `adopt()` among the checked paths into stock
+- `kernel/tests/pm_zone_test.cpp`, `kernel/tests/pm_node_test.cpp` — frees without an order (the zone test splits its block before freeing it frame by frame); new `PmNode.AdoptedFramesReturnToTheirZone`
+
+**Symptom**
+`adopt_frames()` carved ranges by the buddy's alignment rule in the pipeline, where the design says no buddy logic lives, and handed `free_block()` an order the head frame did not record. That one caller was why `PmNode::free_frames()` and `PmZone::free_frames()` still took an order, so code below the pipeline could free a block at an order its head disagreed with. The carving also ignored zone bounds: only a debug assertion in the buddy checked that a carved block lay in one zone.
+
+**Cause**
+Adoption was written in the pipeline for this task (`DESIGN.md` built it there and listed `PmZone::adopt` as a later slot), and F2(b)'s "free takes no order" was built for the public entry but not for the two layers below it.
+
+**Change**
+The zone adopts, and every free reads the order from the head:
+
+```cpp
+// mm::adopt_frames(): one zone at a time
+auto *const zone = PmZone::at(first->nid(), first->zone());
+auto const stop = std::min(end, zone->end_pfn());
+for (auto crossings = zone->adopt(start, stop); crossings > 0; --crossings) {
+    GATE.pass_on();
+}
+
+// PmZone::adopt(): the largest aligned block that fits, under the lock, one at a time
+// PmZone::free_frames(PmFrame &frame): auto const order = frame.order();
+```
+
+A range is one node's memory (the boot handoff gives a region at a time, CpuLocal a replica, and the `.init` sections come back after boot), so splitting it at each zone's end is enough, and each zone carves inside its own bounds, which also fixes the old carving's blindness to zone boundaries that are not max-order aligned. A zone that does not hold the walk's frame would stop it from advancing, so that is an `ASSERT` in every build. `adopt()` returns a count of crossings, not a flag: allocations between two of its blocks can take the zone back below Low, and the old path woke a waiter for every block that crossed.
+
+**Reference**
+Linux carves memory handed to the buddy allocator the same way (`__free_pages_memory()` in `mm/memblock.c`: the largest order the start's alignment and the remaining length allow).
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed, on the default and the four-node machine; the boot handoff itself now goes through `PmZone::adopt()`. `ktest all`: default 94 ran, 84 passed, 10 skipped, in two runs after one run, twelve times slower than normal, failed `MutexStress.AllWorkersFinishBeforeTheTimeout` on its 20-second limit (filed as `docs/repairs/261115/kernel-sync.md`); four nodes 94 ran, 91 passed, 3 skipped. `MEM=3072` and `MEM=8192`: `ktest sel=MemoryPressure.*:PmNode.*:PageReclaim.*:PmZone.*` 19 ran, 11 passed, 0 failed. Failure-injection build: 94 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing new in `pm_zone.cpp`, `pmm.cpp` or `pm_node.cpp`.
+
+The new test takes eight frames from a quiet remote zone below the pipeline and adopts them back as `[1, 8)` and then `[0, 1)`: the first leaves free blocks of one, two and four frames, and the second makes the zone's profile and count exactly what they were. Two controls taught what it can show. With adoption made frame by frame it still passed: the buddy coalesces singles into the same blocks, so the profile cannot tell how a range was carved, and its check now says only what it can (the alignment itself is the buddy's `release()` assertion, in every build). With adoption not counting its frames the boot panicked, every zone empty, before the test could run.
+
+A narrow pre-commit review confirmed that every adoption range is one node's memory and splits correctly by type at zone ends, that nothing the old per-block `prepare_free()` did is lost for the three callers' frames, that no free relied on an order other than the head's, and that the test is sound. It found the five points fixed above: one wake per call where the old path woke per crossing; a debug-only guard where a bad stamp would hang the walk in a release build; an alignment comment that described silent corruption where the buddy now panics; `prepare_alloc()`'s comment claiming every path into stock checks pins, which `adopt()` now does; and a comment that left out the `.init` reclaim that runs after boot.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M5, from the pipeline reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a buddy block have to be aligned to its own size, and what decides the largest block a range can start with?
+- Why can `adopt_frames()` split a range at zone ends without checking every frame's zone?
+- Why does `adopt()` return a count of crossings rather than whether it crossed?

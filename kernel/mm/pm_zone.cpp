@@ -13,6 +13,7 @@
 #include <utility>
 
 #include <logz4/log.hpp>
+#include <ustl/bit.hpp>
 namespace ours::mm {
 namespace {
     /// The zone lock is taken with interrupts off, on the allocation and the
@@ -245,7 +246,8 @@ auto PmZone::contains(usize order) -> bool {
     return false;
 }
 
-auto PmZone::free_frames(PmFrame &frame, usize order) -> bool {
+auto PmZone::free_frames(PmFrame &frame) -> bool {
+    auto const order = frame.order();
     auto const count = usize{1} << order;
 
     // The count this release's own increment found. An atomic read-modify-
@@ -275,5 +277,58 @@ auto PmZone::free_frames(PmFrame &frame, usize order) -> bool {
     // leave Low - 1.
     auto const floor = normal_low_floor();
     return !mm::admits(before, 0, floor) && mm::admits(before + count, 0, floor);
+}
+
+auto PmZone::adopt(Pfn start, Pfn const end) -> usize {
+    DEBUG_ASSERT(start_pfn() <= start && start <= end && end <= end_pfn(),
+                 "[{:#x}, {:#x}) is not within zone {}'s span [{:#x}, {:#x})", start, end, m_name,
+                 start_pfn(), end_pfn());
+
+    auto const floor = normal_low_floor();
+    usize crossings = 0;
+    while (start < end) {
+        // Two separate limits, and the alignment one is not optional. A buddy
+        // block of order N is identified by its lowest pfn and finds its
+        // partner at `pfn ^ (1 << N)`; that identity only holds if the block
+        // is aligned to 2^N pages. A misaligned block would send the merge
+        // walk to a "buddy" that belongs to some other block entirely, and
+        // remove a live frame from its list, which is why release() asserts
+        // the alignment in every build. A range that starts anywhere but on a
+        // MAX_FRAME_ORDER boundary is the normal case, so this is not a
+        // corner.
+        //
+        // countr_zero(start) is the largest power of two |start| is aligned
+        // to; the second limit shrinks that to what is left of the range.
+        auto order = std::min(usize(MAX_FRAME_ORDER), usize(ustl::countr_zero(start)));
+        while (start + (usize{1} << order) > end) {
+            order -= 1;
+        }
+        auto const count = usize{1} << order;
+        auto *const frame = pfn_to_frame(start);
+        // What prepare_free() checks of a block going back, for a block that
+        // was never one: not reserved, held by no pin, the head of nothing,
+        // and this zone's.
+        DEBUG_ASSERT(!(frame->flags() & page::Flags::Reserved),
+                     "frame {:#x} is reserved; unwire it before the zone adopts it",
+                     frame_to_phys(frame));
+        DEBUG_ASSERT(frame->pin_count() == 0 && frame->is_head(),
+                     "frame {:#x} is adopted pinned or inside a block", frame_to_phys(frame));
+        DEBUG_ASSERT(frame->nid() == m_nid && frame->zone() == m_type,
+                     "frame {:#x} of node {} is not zone {} of node {}'s", frame_to_phys(frame),
+                     frame->nid(), m_name, m_nid);
+
+        // One block at a time under the lock, so interrupts are never held
+        // off for a whole range; the count as free_frames() keeps it.
+        auto const before = [&] {
+            ZoneGuard guard{m_lock};
+            m_buddy.release(frame, start, order);
+            return m_free_frames.fetch_add(count);
+        }();
+        if (!mm::admits(before, 0, floor) && mm::admits(before + count, 0, floor)) {
+            crossings += 1;
+        }
+        start += count;
+    }
+    return crossings;
 }
 } // namespace ours::mm

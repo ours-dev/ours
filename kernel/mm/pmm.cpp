@@ -264,8 +264,8 @@ namespace {
     /// it.
     auto prepare_alloc(PmFrame &frame, AllocRequest const &request) -> void {
         // A pin says a frame stays where it is, and this one was on a free
-        // list a moment ago. Every mm:: path into stock asserts the same in
-        // prepare_free(), under the same switch, so an owner freeing a pinned
+        // list a moment ago. Every mm:: path into stock asserts the same, in
+        // prepare_free() or PmZone::adopt(), under the same switch, so an owner freeing a pinned
         // frame is stopped there. What this catches is a count that never
         // passed prepare_free(): a frame given to PmNode::free_frames() or
         // PmZone::free_frames() directly, a frame pinned while it was free,
@@ -473,7 +473,7 @@ namespace {
     }
 
     /// One block back to the node that owns it, with pressure not looked at.
-    auto free_block(PmFrame &frame, usize const order) -> void {
+    auto free_block(PmFrame &frame) -> void {
         prepare_free(frame);
 
         // A frame goes back to the node that owns it, which the frame names,
@@ -490,14 +490,14 @@ namespace {
         // racing each other and allocations, exactly the one that crossed
         // wakes. A waiter that retries and is beaten to the frame waits
         // again, for the next crossing.
-        if (node->free_frames(frame, order)) {
+        if (node->free_frames(frame)) {
             PM_ZONE_RELIEF.add(1);
             GATE.pass_on();
         }
     }
 
     auto free_blocks(PmFrame::List &list) -> void {
-        list.clear_and_dispose([](PmFrame *frame) noexcept { free_block(*frame, frame->order()); });
+        list.clear_and_dispose([](PmFrame *frame) noexcept { free_block(*frame); });
     }
 } // namespace
 
@@ -810,33 +810,33 @@ auto free_frames(PmFrame *frame) -> void {
     // that was never a block may come here, as order 0, which is what init()
     // leaves in its head (the bootstrap trampoline's buffer, the boot image's
     // pages once their VMO lets them go).
-    auto const order = frame->order();
-    log::trace("Free frame({:X}, {})", frame_to_phys(frame), order);
-    free_block(*frame, order);
+    log::trace("Free frame({:X}, {})", frame_to_phys(frame), frame->order());
+    free_block(*frame);
     observe_pressure();
 }
 
 auto adopt_frames(Pfn start, Pfn const end) -> void {
+    // Each zone the range runs through adopts its part, which it carves into
+    // blocks itself (PmZone::adopt()). A range is one node's memory -- the
+    // boot handoff gives a region at a time, CpuLocal a replica, and the
+    // .init sections come back after boot (EarlyMem::reclaim_init_area()) --
+    // so the zones split it by type, at their bounds.
     while (start < end) {
-        // Two separate limits, and the alignment one is not optional. A buddy
-        // block of order N is identified by its lowest pfn and finds its partner
-        // at `pfn ^ (1 << N)`; that identity only holds if the block is aligned to
-        // 2^N pages. Hand the allocator a misaligned block and the merge walk
-        // reaches for a "buddy" that belongs to some other block entirely --
-        // which removes a live frame from its list and loses it. A range that
-        // starts anywhere but on a MAX_FRAME_ORDER boundary is the normal case,
-        // so this is not a corner.
-        //
-        // ustl::countr_zero(start) is the largest power of two `start` is
-        // aligned to; the second limit then shrinks that to what is left in the
-        // range.
-        auto order = std::min(usize(MAX_FRAME_ORDER), usize(ustl::countr_zero(start)));
-        while (start + (usize{1} << order) > end) {
-            order -= 1;
+        auto const *const first = pfn_to_frame(start);
+        auto *const zone = PmZone::at(first->nid(), first->zone());
+        // In every build: a zone that does not hold the frame would leave
+        // |stop| at or before |start|, and the walk would hang, or go back
+        // and adopt frames already free.
+        ASSERT(zone && zone->start_pfn() <= start && start < zone->end_pfn(),
+               "frame {:#x} is in no zone of node {}", frame_to_phys(first), first->nid());
+        auto const stop = std::min(end, zone->end_pfn());
+        // Each block that brings a zone back above Low wakes a waiter, as a
+        // release in free_block() does.
+        for (auto crossings = zone->adopt(start, stop); crossings > 0; --crossings) {
+            PM_ZONE_RELIEF.add(1);
+            GATE.pass_on();
         }
-
-        free_block(*pfn_to_frame(start), order);
-        start += usize{1} << order;
+        start = stop;
     }
     observe_pressure();
 }
