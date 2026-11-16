@@ -116,6 +116,27 @@ auto confinement() -> void {
           "a zone range wider than Dma through Normal does not");
 }
 
+/// What the request answers about the caller's flags. That the entry hands
+/// CanWait on rather than stripping it is the kernel's gate tests' to catch:
+/// this test builds requests directly.
+auto flag_answers() -> void {
+    auto const nodes = mask_of(HOME, OTHER);
+    auto const vmo = resolve_request(Gaf::CanBlock | Gaf::CanWait | Gaf::Zero, 0, nodes, HERE);
+    auto const confined = resolve_request(Gaf::CanWait | Gaf::ThisNode, 0, nodes, HERE);
+    auto const immediate = resolve_request(Gaf{}, 0, nodes, HERE);
+
+    check(vmo.may_block() && vmo.may_wait() && vmo.zeroes(),
+          "a VMO page may block, may wait and is zeroed");
+    check(vmo.waits_at_low(), "an ordinary request that can wait stops at Low");
+    check(confined.may_wait() && !confined.waits_at_low(),
+          "a confined request that can wait goes on to Min");
+    check(!vmo.with_zone_range(ZoneType::Dma, ZoneType::Dma32).waits_at_low(),
+          "so does one whose zone range stops below Normal");
+    check(!immediate.may_block() && !immediate.may_wait() && !immediate.zeroes() &&
+              !immediate.waits_at_low(),
+          "a request with no flags answers no to each");
+}
+
 } // namespace
 
 auto main() -> int {
@@ -125,6 +146,7 @@ auto main() -> int {
     with_this_node_excluding_home();
     empty_mask_stays_empty();
     confinement();
+    flag_answers();
 
     if (FAILURES != 0) {
         std::printf("alloc-request-smoke: FAILED -- %d check(s)\n", FAILURES);

@@ -264,8 +264,8 @@ namespace {
     /// it.
     auto prepare_alloc(PmFrame &frame, AllocRequest const &request) -> void {
         // A pin says a frame stays where it is, and this one was on a free
-        // list a moment ago. Every mm:: path into stock asserts the same in
-        // prepare_free(), under the same switch, so an owner freeing a pinned
+        // list a moment ago. Every mm:: path into stock asserts the same, in
+        // prepare_free() or PmZone::adopt(), under the same switch, so an owner freeing a pinned
         // frame is stopped there. What this catches is a count that never
         // passed prepare_free(): a frame given to PmNode::free_frames() or
         // PmZone::free_frames() directly, a frame pinned while it was free,
@@ -274,7 +274,12 @@ namespace {
         DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} leaves a free list with {} pin(s)",
                      frame_to_phys(&frame), frame.pin_count());
 
-        if (!!(request.flags() & Gaf::Zero)) {
+        // The block's layout: its order on the head and each tail's distance
+        // from it, so that any frame of the block leads back to the head and
+        // only the head can be freed (prepare_free()).
+        frame.make_block(request.order());
+
+        if (request.zeroes()) {
             std::fill_n(frame_to_virt<isize>(&frame),
                         (usize{1} << request.order()) * PAGE_SIZE / sizeof(isize), 0);
         }
@@ -291,7 +296,7 @@ namespace {
 
     /// The gate every block passes on its way into stock, before any lock is
     /// taken: what must be true of a frame for the buddy to hold it.
-    auto prepare_free(PmFrame const &frame) -> void {
+    auto prepare_free(PmFrame &frame) -> void {
         // The runtime half of the guard in early_mem.cpp's
         // free_frames_phys_range(): a reserved frame reaches the buddy only
         // through unwire_frame(). Nothing else on this path looks at the frame,
@@ -306,6 +311,13 @@ namespace {
         // frame on a free list is about to be someone else's.
         DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} is freed while {} pin(s) hold it",
                      frame_to_phys(&frame), frame.pin_count());
+        // Only a block's head may be freed: a frame inside a block would be
+        // freed at whatever order it last held, while the head still owns it,
+        // and the frames would have two owners. split_block() first, to free
+        // the parts of a block apart.
+        DEBUG_ASSERT(frame.is_head(), "frame {:#x} is frame {} of a block, not its head",
+                     frame_to_phys(&frame), frame.compound_offset());
+        frame.clear_block();
     }
 
     /// Looks at free memory once, after a whole allocation or return and with
@@ -384,16 +396,18 @@ namespace {
     /// first pass that succeeds names nothing, though it may have passed over
     /// a short zone on the way to one that admitted the request.
     ///
-    /// |can_wait| is whether the caller asked for Gaf::CanWait, which the gate
-    /// has answered for by now. Such a request, unless it is confined
-    /// (AllocRequest::is_confined()), makes the first pass only: when no zone
-    /// admits it at Low it is answered ShouldWait, and waits for a zone to
-    /// rise back above Low, instead of spending the band between Low and Min
-    /// that the requests which cannot wait depend on. A confined one makes
-    /// both passes, as a request that cannot wait does.
+    /// A request that can wait (AllocRequest::may_wait()) asks the free-memory
+    /// gate before any zone, after the refusals that are about the request
+    /// itself (a thread that disabled allocation, an order the buddy does not
+    /// have, a home that does not exist), which it gets first. Unless it is
+    /// confined, it then makes the first pass only
+    /// (AllocRequest::waits_at_low()): when no zone admits it at Low it is
+    /// answered ShouldWait, and waits for a zone to rise back above Low,
+    /// instead of spending the band between Low and Min that the requests
+    /// which cannot wait depend on. A confined one makes both passes, as a
+    /// request that cannot wait does.
     auto alloc_block(PmNode &home, Gaf const alloc_flags, usize const order, NodeMask const &nodes,
-                     bool const can_wait, ustl::Option<PmZone const &> &depleted)
-        -> ktl::Result<PmFrame *> {
+                     ustl::Option<PmZone const &> &depleted) -> ktl::Result<PmFrame *> {
         // Whether the calling thread may allocate at all: a thread that has
         // disabled allocation (AllocState::disable()) is refused here,
         // whichever way it asked. This is the one function every frame
@@ -421,6 +435,15 @@ namespace {
         auto const request = resolve_request(
             alloc_flags, order, nodes, AllocRequest::Origin{.node = home.nid(), .cpu = Cpu::id()});
 
+        // The gate first, for a request that can wait: it decides for the
+        // whole machine whether such a request may go ahead now, before any
+        // zone is asked.
+        if (request.may_wait()) {
+            if (auto const status = GATE.admit(); Status::Ok != status) {
+                return ustl::err(status);
+            }
+        }
+
         // Two passes. The first holds the request at every zone's Low
         // watermark. Only when no zone admits it there is reclaim asked for,
         // for the first zone the pass found short, and the second pass lets
@@ -436,7 +459,7 @@ namespace {
             // band. A confined one does not: the gate and the watchdog count
             // memory it cannot use, so nothing is bound to end its wait, and
             // it goes on to Min and fails there like one that cannot wait.
-            if (can_wait && !request.is_confined()) {
+            if (request.waits_at_low()) {
                 return ustl::err(Status::ShouldWait);
             }
             block = home.alloc_frames(request, AdmissionPass::Min);
@@ -450,7 +473,7 @@ namespace {
     }
 
     /// One block back to the node that owns it, with pressure not looked at.
-    auto free_block(PmFrame &frame, usize const order) -> void {
+    auto free_block(PmFrame &frame) -> void {
         prepare_free(frame);
 
         // A frame goes back to the node that owns it, which the frame names,
@@ -467,14 +490,14 @@ namespace {
         // racing each other and allocations, exactly the one that crossed
         // wakes. A waiter that retries and is beaten to the frame waits
         // again, for the next crossing.
-        if (node->free_frames(frame, order)) {
+        if (node->free_frames(frame)) {
             PM_ZONE_RELIEF.add(1);
             GATE.pass_on();
         }
     }
 
     auto free_blocks(PmFrame::List &list) -> void {
-        list.clear_and_dispose([](PmFrame *frame) noexcept { free_block(*frame, frame->order()); });
+        list.clear_and_dispose([](PmFrame *frame) noexcept { free_block(*frame); });
     }
 } // namespace
 
@@ -638,16 +661,8 @@ auto current_node() -> NodeId {
 namespace priv {
     auto alloc_frames(Gaf alloc_flags, usize const order, NodeId const home, NodeMask const &nodes)
         -> ktl::Result<PmFrame *> {
-        if (!!(alloc_flags & Gaf::CanWait)) {
-            if (auto const status = GATE.admit(); Status::Ok != status) {
-                return ustl::err(status);
-            }
-        }
-        // The gate has answered for CanWait; below, only alloc_block() hears
-        // of it, as an argument.
-        auto const can_wait = !!(alloc_flags & Gaf::CanWait);
-        alloc_flags = alloc_flags & ~Gaf::CanWait;
-
+        // The flags go down whole: the request built from them answers what
+        // they mean, the gate included (alloc_block()).
         auto const node = resolve_home(home, alloc_flags);
         if (!node) {
             observe_pressure();
@@ -655,7 +670,7 @@ namespace priv {
         }
 
         ustl::Option<PmZone const &> depleted;
-        auto const block = alloc_block(**node, alloc_flags, order, nodes, can_wait, depleted);
+        auto const block = alloc_block(**node, alloc_flags, order, nodes, depleted);
         observe_pressure(depleted);
         return block;
     }
@@ -676,7 +691,7 @@ namespace priv {
         PmFrame::List list;
         auto rollback = gktl::defer([&list] { free_blocks(list); });
         for (usize i = 0; i < n; ++i) {
-            auto block = alloc_block(**node, alloc_flags, 0, nodes, false, depleted);
+            auto block = alloc_block(**node, alloc_flags, 0, nodes, depleted);
             if (!block) {
                 log::trace("Failed to allocate {} frames with reason: {}", n,
                            to_string(block.unwrap_err()));
@@ -713,7 +728,7 @@ namespace priv {
                 continue;
             }
 
-            auto block = alloc_block(**node, alloc_flags, order, nodes, false, depleted);
+            auto block = alloc_block(**node, alloc_flags, order, nodes, depleted);
             if (!block) {
                 log::trace("Failed to allocate frame with reason: {}",
                            to_string(block.unwrap_err()));
@@ -795,33 +810,33 @@ auto free_frames(PmFrame *frame) -> void {
     // that was never a block may come here, as order 0, which is what init()
     // leaves in its head (the bootstrap trampoline's buffer, the boot image's
     // pages once their VMO lets them go).
-    auto const order = frame->order();
-    log::trace("Free frame({:X}, {})", frame_to_phys(frame), order);
-    free_block(*frame, order);
+    log::trace("Free frame({:X}, {})", frame_to_phys(frame), frame->order());
+    free_block(*frame);
     observe_pressure();
 }
 
 auto adopt_frames(Pfn start, Pfn const end) -> void {
+    // Each zone the range runs through adopts its part, which it carves into
+    // blocks itself (PmZone::adopt()). A range is one node's memory -- the
+    // boot handoff gives a region at a time, CpuLocal a replica, and the
+    // .init sections come back after boot (EarlyMem::reclaim_init_area()) --
+    // so the zones split it by type, at their bounds.
     while (start < end) {
-        // Two separate limits, and the alignment one is not optional. A buddy
-        // block of order N is identified by its lowest pfn and finds its partner
-        // at `pfn ^ (1 << N)`; that identity only holds if the block is aligned to
-        // 2^N pages. Hand the allocator a misaligned block and the merge walk
-        // reaches for a "buddy" that belongs to some other block entirely --
-        // which removes a live frame from its list and loses it. A range that
-        // starts anywhere but on a MAX_FRAME_ORDER boundary is the normal case,
-        // so this is not a corner.
-        //
-        // ustl::countr_zero(start) is the largest power of two `start` is
-        // aligned to; the second limit then shrinks that to what is left in the
-        // range.
-        auto order = std::min(usize(MAX_FRAME_ORDER), usize(ustl::countr_zero(start)));
-        while (start + (usize{1} << order) > end) {
-            order -= 1;
+        auto const *const first = pfn_to_frame(start);
+        auto *const zone = PmZone::at(first->nid(), first->zone());
+        // In every build: a zone that does not hold the frame would leave
+        // |stop| at or before |start|, and the walk would hang, or go back
+        // and adopt frames already free.
+        ASSERT(zone && zone->start_pfn() <= start && start < zone->end_pfn(),
+               "frame {:#x} is in no zone of node {}", frame_to_phys(first), first->nid());
+        auto const stop = std::min(end, zone->end_pfn());
+        // Each block that brings a zone back above Low wakes a waiter, as a
+        // release in free_block() does.
+        for (auto crossings = zone->adopt(start, stop); crossings > 0; --crossings) {
+            PM_ZONE_RELIEF.add(1);
+            GATE.pass_on();
         }
-
-        free_block(*pfn_to_frame(start), order);
-        start += usize{1} << order;
+        start = stop;
     }
     observe_pressure();
 }
@@ -856,15 +871,10 @@ auto split_block(PmFrame *const frame, usize const order) -> void {
     DEBUG_ASSERT((frame_to_pfn(frame) & ((usize{1} << whole) - 1)) == 0,
                  "frame {:#x} does not head a block of order {}", frame_to_phys(frame), whole);
 
-    // No lock: the block is the caller's, and nothing else reads the order of
-    // a frame that is on no free list. The descriptors of one block are
-    // consecutive, since a block never crosses the memmap's sections
-    // (FrameBuddy), so the new heads are reached by indexing from the old one.
-    auto const nr_frames = usize{1} << whole;
-    auto const step = usize{1} << order;
-    for (usize index = 0; index < nr_frames; index += step) {
-        frame[index].set_order(order);
-    }
+    // No lock: the block is the caller's, and nothing else reads the layout
+    // of a block that is on no free list. The frame does the work: the new
+    // heads' orders and their tails' offsets (PmFrame::split()).
+    frame->split(order);
 }
 
 auto free_frames(PmFrame::List *list) -> void {

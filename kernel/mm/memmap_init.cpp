@@ -156,7 +156,7 @@ namespace {
 
                 frame->mark_reserved();
                 if (role != page::Role::None) {
-                    frame->set_role(role);
+                    frame->stamp_role(role);
                 }
 
                 auto *const node = find_node(frame->nid());
@@ -227,7 +227,7 @@ auto init_memmap() -> void {
 
             start_pfn = phys_to_pfn(region.range.base);
             end_pfn = phys_to_pfn(region.range.end());
-            node->zone_list()->for_each_local_zone([&](PmZone &zone) {
+            node->zone_list().for_each_local_zone([&](PmZone &zone) {
                 start_pfn = init_memmap_zone(zone.zone_type(), zone.start_pfn(), zone.end_pfn(),
                                              start_pfn, end_pfn, hole_start_pfn, region.node);
 

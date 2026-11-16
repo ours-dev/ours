@@ -15,7 +15,7 @@ auto FrameBuddy::acquire_inner(PmFrame *frame, Order lower_order, Order upper_or
         upper_order -= 1;
         insert_frame(&frame[usize{1} << upper_order], upper_order);
     }
-    frame->set_order(lower_order);
+    frame->set_order(lower_order, FrameBuddyKey{});
 }
 
 auto FrameBuddy::allocate(Order target_order) -> ustl::Option<PmFrame &> {

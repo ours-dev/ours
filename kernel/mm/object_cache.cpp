@@ -77,38 +77,24 @@ namespace {
         // Note that SLAB_MIN_ORDER/SLAB_MAX_ORDER/SLAB_MIN_OBJECTS are
         // never assigned anywhere yet, so they are all zero: max_objects caps
         // at one page's worth and every slab comes out order 0. That is a safe
-        // place to sit, and raising SLAB_MAX_ORDER later is what the tail
-        // stamping in slab::create exists to make survivable.
+        // place to sit, and raising SLAB_MAX_ORDER later is survivable because
+        // the allocator stamps the tails of every block it hands out
+        // (PmFrame::make_block()), which kfree's walk back to the head needs.
         return std::max<u32>(SLAB_MIN_ORDER, order_for_bytes(min_objects * size));
     }
 } // namespace
 
 namespace slab {
 
-    /// Records, on each tail descriptor of a multi-frame slab, how far it sits
-    /// from the head, so that frame_to_folio can walk back from an interior
-    /// object address to the descriptor holding the metadata.
-    ///
-    /// |stamp| false clears them again. Clearing is not optional: the buddy may
-    /// hand these frames out separately next time, and a stale offset would send
-    /// frame_to_folio walking backwards out of the block it was given.
-    ///
-    /// A buddy block never straddles a section, so the tails are always the
-    /// neighbouring entries of one memmap array and plain indexing reaches them.
-    static auto stamp_compound_offsets(Slab *head, usize order, bool stamp) -> void {
-        auto const nr_frames = usize{1} << order;
-        for (usize i = 1; i < nr_frames; ++i) {
-            head[i].set_compound_offset(stamp ? static_cast<u32>(i) : 0U);
-        }
-    }
-
     auto destroy(Slab *slab) -> void {
         DEBUG_ASSERT(slab->as<Body>().num_inuse == 0);
 
         slab->put();
         slab->unlink();
-        auto const order = slab->order();
-        stamp_compound_offsets(slab, order, false);
+        // The tails of a multi-frame slab need no clearing here: the allocator
+        // stamped them when it handed the block out and clears them as it
+        // takes it back (PmFrame::make_block(), clear_block()).
+        //
         // Handed back still tagged Slab. The buddy allocator reads Role::Pmm as
         // "this frame is on my free list" (FrameBuddy::is_mergeable()), and only
         // its own insert_frame(), under the zone lock, may say so. This used to
@@ -202,9 +188,7 @@ namespace slab {
         // Claim the fresh frame for the slab role: clears the payload and stamps
         // the tag in one step.
         frame->become<Body>();
-        stamp_compound_offsets(frame, order, true);
         if (auto status = init(frame, owner, node_cache, size, next_offset); Status::Ok != status) {
-            stamp_compound_offsets(frame, order, false);
             // Not stamped Pmm here either; see destroy().
             mm::free_frames(frame);
             return nullptr;

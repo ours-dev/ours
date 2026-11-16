@@ -37,8 +37,8 @@ namespace page {
     /// Only the roles something writes are here. Io, Lru, Heap and Folio went
     /// because nothing ever became them: LRU membership is a page queue, as
     /// for any Vmm page; kmalloc pages are Slab and vmalloc pages Vmm; and a
-    /// compound page is the m_compound stamp, which a Slab of order above 0
-    /// carries too, so it cannot be an exclusive role.
+    /// compound page is the m_compound stamp, which every allocated block
+    /// above order 0 carries, whatever its role, so it cannot be a role.
     enum class Role : u32 {
         /// Allocated, with no owner yet: what the buddy hands out and what
         /// init() leaves, so also a reserved boot frame other than a page
@@ -231,6 +231,17 @@ namespace page {
 
 } // namespace page
 
+class FrameBuddy;
+
+/// What a frame asks to be moved onto or off a buddy free list: a passkey only
+/// FrameBuddy can make, so only it can write Role::Pmm. A friend declaration
+/// would open every private member of the frame to the buddy; this opens two
+/// functions, and only to the one caller that may use them.
+class FrameBuddyKey {
+    friend class FrameBuddy;
+    FrameBuddyKey() = default;
+};
+
 /// The descriptor for one physical frame.
 ///
 /// There is exactly one of these per frame, and it plays different roles over
@@ -300,8 +311,11 @@ class PageFrame {
         return status().get<Index::Order>();
     }
 
+    /// The order the buddy hands a block out at, written on its head as it
+    /// leaves the free list. Anyone else changes a block's layout through
+    /// make_block() or split(), which stamp the tails with it.
     FORCE_INLINE
-    auto set_order(usize order) -> void {
+    auto set_order(usize order, FrameBuddyKey) -> void {
         set_status<Index::Order>(order);
     }
 
@@ -331,8 +345,37 @@ class PageFrame {
         return status().get<Index::Role>();
     }
 
+    /// Puts the frame on a free list as the head of a block of 2^|order|:
+    /// Role::Pmm and the order, in one store. FrameBuddy::insert_frame()
+    /// alone can call it, under the zone lock.
     FORCE_INLINE
-    auto set_role(Role role) -> void {
+    auto enter_free_list(usize order, FrameBuddyKey) -> void {
+        auto word = status();
+        word.set<Index::Role>(Role::Pmm);
+        word.set<Index::Order>(order);
+        m_status.store(word.into<page::StatusWord::StorageUnit>(), std::memory_order_relaxed);
+    }
+
+    /// Takes the frame off a free list: Role::None, the role of a frame
+    /// nobody has made anything of. FrameBuddy::remove_frame() alone can call
+    /// it, under the zone lock.
+    FORCE_INLINE
+    auto leave_free_list(FrameBuddyKey) -> void {
+        DEBUG_ASSERT(role() == Role::Pmm, "frame {:p} leaves a free list it was not on",
+                     static_cast<void const *>(this));
+        set_status<Index::Role>(Role::None);
+    }
+
+    /// Writes a role and sets up no body: None, or the role a reserved boot
+    /// frame plays, stamped before the buddy exists (memmap_init stamps a
+    /// boot page table Mmu, its payload left as the memmap storage holds
+    /// it, zeroed). Never Pmm, which only the buddy writes (enter_free_list()):
+    /// a frame that says Pmm while on no list is coalesced as though it were
+    /// free. A role whose body must be set up is become()'s.
+    FORCE_INLINE
+    auto stamp_role(Role role) -> void {
+        ASSERT(role != Role::Pmm, "frame {:p} stamped Pmm by hand",
+               static_cast<void const *>(this));
         set_status<Index::Role>(role);
     }
 
@@ -369,10 +412,9 @@ class PageFrame {
     /// single frame, which is what zeroed memmap storage already says.
     ///
     /// This is what lets `frame_to_folio` walk from an interior address back
-    /// to the descriptor that carries the block's metadata. Whoever claims a
-    /// multi-frame block is responsible for stamping the tails and for
-    /// clearing them again before handing the block back -- see slab::create
-    /// and slab::destroy, the only pair doing so today.
+    /// to the descriptor that carries the block's metadata. The allocator
+    /// stamps the tails of every block it hands out and clears them when the
+    /// block comes back (make_block(), clear_block()); split() re-stamps.
     FORCE_INLINE
     auto compound_offset() const -> u32 {
         return m_compound.load(std::memory_order_relaxed);
@@ -383,6 +425,52 @@ class PageFrame {
         DEBUG_ASSERT(offset <= std::numeric_limits<u16>::max(),
                      "frame {} of a block: no block is that large", offset);
         m_compound.store(static_cast<u16>(offset), std::memory_order_relaxed);
+    }
+
+    /// Whether this frame heads a block rather than sitting inside one. Every
+    /// tail of a block the allocator handed out says how far it is from its
+    /// head, so a frame that says 0 is a head (or a block of one frame).
+    [[nodiscard]]
+    FORCE_INLINE
+    auto is_head() const -> bool {
+        return compound_offset() == 0;
+    }
+
+    /// Makes this frame the head of an allocated block of 2^|order| frames:
+    /// its order, and every tail's distance from it, so that any frame of the
+    /// block leads back to the head and only the head reads as one.
+    /// prepare_alloc() calls it for every block it hands out; one store per
+    /// frame, less than touching the block's memory once.
+    ///
+    /// The tails are reached by indexing from the head: a block never
+    /// crosses a section of the memmap, so its descriptors are consecutive.
+    auto make_block(usize const order) -> void {
+        set_status<Index::Order>(order);
+        stamp_tails(0, usize{1} << order);
+    }
+
+    /// Splits the block this frame heads into blocks of 2^|order| frames,
+    /// each a head of its own order with its tails stamped from it. The
+    /// caller owns the block; nothing else reads it while it is on no list.
+    auto split(usize const order) -> void {
+        auto const whole = this->order();
+        DEBUG_ASSERT(order <= whole, "a block of order {} cannot be split into blocks of order {}",
+                     whole, order);
+        auto const step = usize{1} << order;
+        for (usize head = 0; head < (usize{1} << whole); head += step) {
+            this[head].set_status<Index::Order>(order);
+            stamp_tails(head, step);
+        }
+    }
+
+    /// Undoes make_block() before the block goes back to a free list: every
+    /// tail's offset back to 0, as a frame on no block says. The buddy may hand
+    /// these frames out separately next time.
+    auto clear_block() -> void {
+        auto const nr_frames = usize{1} << order();
+        for (usize i = 1; i < nr_frames; ++i) {
+            this[i].set_compound_offset(0);
+        }
     }
 
     /// How many pins hold this frame in place. A frame with any must keep its
@@ -441,8 +529,8 @@ class PageFrame {
     /// Takes on |Body|'s role: clears the payload and stamps the tag.
     ///
     /// This is the only thing that writes the role and the payload together;
-    /// the buddy (insert_frame(), remove_frame()) and the boot stamp write
-    /// the role alone, through set_role(). Reading a frame -- taking its
+    /// the buddy writes the role alone through enter_free_list() and
+    /// leave_free_list(), and the boot stamp through stamp_role(). Reading a frame -- taking its
     /// address, dumping it, asking what it is -- must never change it.
     template <typename Body>
     FORCE_INLINE
@@ -558,6 +646,14 @@ class PageFrame {
     USTL_NO_MOVEABLE_AND_COPYABLE(PageFrame);
 
   private:
+    /// Stamps the |count| frames from |head| on as one block: the head's
+    /// offset 0, each tail its distance from it.
+    auto stamp_tails(usize const head, usize const count) -> void {
+        for (usize i = 0; i < count; ++i) {
+            this[head + i].set_compound_offset(static_cast<u32>(i));
+        }
+    }
+
     /// The status word as it is now, decoded from one relaxed load.
     ///
     /// The word is read by more than the frame's owner: the buddy reads a

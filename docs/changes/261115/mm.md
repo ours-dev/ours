@@ -313,3 +313,278 @@ None.
 - Why do ownership hand-offs through the zone lock make the writes to a frame safe but not the buddy's read of a frame it does not own?
 - Why is a relaxed load and store, and not a compare-and-swap, enough for `set_status()`?
 - What would a compiler be allowed to do with a racing plain read that it may not do with a relaxed atomic one?
+
+## The request answers what the caller's flags mean (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — `AllocRequest` gains `may_block()`, `may_wait()`, `waits_at_low()` and `zeroes()`; `flags()`'s comment says what reads it and what does not
+- `kernel/mm/pmm.cpp` — `priv::alloc_frames()` no longer asks the gate nor strips `Gaf::CanWait`; `alloc_block()` loses its `can_wait` parameter, asks the gate after building the request when it can wait, and stops at Low when `waits_at_low()`; `prepare_alloc()` asks `zeroes()`
+- `kernel/mm/pm_node.cpp` — `PmNode::alloc_frames()` hands the zone `request.may_block()`
+- `kernel/mm/tests/alloc_request_smoke.cpp` — what the request answers for a VMO page, a confined request, a narrowed zone range and no flags
+- `.agents/tasks/pmm-redesign/DESIGN.md`, `.agents/skills/kernel-design/references/mm.md` — the as-built rule
+
+**Symptom**
+The pipeline decoded the caller's `Gaf` in six places: `CanWait` in the entry, which stripped it before building the request and carried it beside the request as a `bool`; `CanBlock` in `PmNode::alloc_frames()`; `Zero` in `prepare_alloc()`; `ThisNode` in the resolver, in `is_confined()` and in the placement policy. `AllocRequest::flags()` said "What the caller asked for, unchanged", which was false on the single-block path. The design allows two readers.
+
+**Cause**
+Each step added the bit it needed where it needed it. The `bool` came from N1: the stop at Low needed to know about `CanWait` after the gate had been asked, and the flags had already lost it.
+
+**Change**
+The request owns the meaning of the flags, and everything below it asks:
+
+```cpp
+// AllocRequest
+auto may_block() const -> bool    { return !!(m_alloc_flags & Gaf::CanBlock); }
+auto may_wait() const -> bool     { return !!(m_alloc_flags & Gaf::CanWait); }
+auto waits_at_low() const -> bool { return may_wait() && !is_confined(); }
+auto zeroes() const -> bool       { return !!(m_alloc_flags & Gaf::Zero); }
+
+// alloc_block(), after resolve_request()
+if (request.may_wait()) {
+    if (auto const status = GATE.admit(); Status::Ok != status) { return ustl::err(status); }
+}
+...
+if (request.waits_at_low()) { return ustl::err(Status::ShouldWait); }
+```
+
+Asking the gate from `alloc_block()` moves it after the refusals that are about the request itself: a waiting request from a thread that disabled allocation, with an order the buddy does not have, or naming a home that does not exist, now gets that answer and not `ShouldWait`, and no longer shuts the gate on its way out. No caller depends on the old order (`wait_for_frame_allocation()` passes on anything but `ShouldWait`; the VMO paths branch only on it). The pressure observation now also runs after a gate refusal; with the gate shut the event has already been taken, so it signals nothing new. One raw read is left above the request: the placement policy reads `ThisNode` before any request exists, the subject of review M7.
+
+**Reference**
+None: an object-boundary change inside this kernel's pipeline. Linux's `struct alloc_context` plays the same part for `gfp_t` in `__alloc_pages()`, holding what the mask resolved to.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed (`alloc-request-smoke` with six new checks), on the default and the four-node machine. `ktest all`: default 92 ran, 84 passed, 8 skipped; four nodes 92 ran, 89 passed, 3 skipped; `MEM=8192` `ktest sel=MemoryPressure.*:PmNode.*:PageReclaim.*` 16 ran, 10 passed, 0 failed. Failure-injection build: 92 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing new in `pmm.cpp` or `pm_node.cpp`. Control: with `alloc_block()` not asking the gate, `MemoryPressure.TheGateTheSignalAndTheWatchdog` fails five of its gate checks; the D2 test already fails when `waits_at_low()` ignores confinement.
+
+A narrow pre-commit review confirmed the only behaviour change is the order of refusals above, that nothing below the entry asserts on `CanWait`, and that no raw decode is left in `alloc_block()`, `PmNode` or `prepare_alloc()`. It found a host check that could not catch the strip it named (the strip lived in the kernel entry; the kernel's gate tests are what catch it, and the check now tests a narrowed zone range instead), and two comments that overclaimed (the gate is asked "before any zone", not "first"; the request decides what the bits mean below it, not everywhere).
+
+**Deliberately not done**
+- The placement policy's read of `ThisNode`; review M7.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M4, from the pipeline reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What made `AllocRequest::flags()`'s comment false, and why was the `bool` beside the request a symptom of the same thing?
+- Why does asking the gate after the request's own refusals give a disabled thread a better answer?
+- Why does the zone take `may_block()` and not the caller's flags?
+
+## Only the node builds its zone list (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_node.hpp` — `PmNode::zone_list()` returns `ZoneList const &`; `ZoneList::take_local_zones()` and `connect()` are private, with `PmNode` their one friend; `for_each_zone()` and `for_each_zone_if()` are defined in the header, `const`, and without the ternary; `m_connected` and `PmNode`'s unused `friend class ZoneList` go; `fallback()` is `[[nodiscard]]`; new private static `PmNode::connect_all()`
+- `kernel/mm/pm_node.cpp` — the template definitions that were here, and the write to `m_connected`, go
+- `kernel/mm/pm_node_init.cpp` — `connect_nodes()` is `PmNode::connect_all()`, which reaches each node's list as a member
+- `kernel/mm/memmap_init.cpp`, `kernel/tests/pm_node_test.cpp`, `kernel/tests/page_reclaim_test.cpp`, `kernel/tests/pm_zone_test.cpp` — `zone_list().` for `zone_list()->`; a new check that `for_each_zone()` walks the fallback order and stops at the first answer
+
+**Symptom**
+Every allocation walks a node's fallback order without a lock, on the premise that it is written only at boot. Nothing kept that premise: `zone_list()` handed out a `ZoneList *`, and its `connect()` and `take_local_zones()` were public, so any caller could rewrite the order under a running allocation. `for_each_zone()` and `for_each_zone_if()` were declared in the header and defined only in `pm_node.cpp`, so a call from any other file would have failed to link (neither had a caller, and the second used a ternary). `m_connected` was written and never read, and `PmNode` named `ZoneList` a friend it never needed.
+
+**Cause**
+The list began as a set of queues the node and bring-up both filled, and the access stayed open after the fallback order became something only bring-up builds.
+
+**Change**
+The node owns the verbs that build its list, and everyone else reads it:
+
+```cpp
+auto zone_list() const -> ZoneList const &;     // PmNode: readers get it const
+
+class ZoneList {
+  private:
+    friend class PmNode;                          // the only builder
+    auto take_local_zones() -> void;
+    auto connect(ustl::views::Span<NodeId const> order) -> void;
+};
+
+auto PmNode::connect_all(NodeMask const &nodes) -> void;   // bring-up, a private static
+```
+
+Two locks on one door: a caller outside the node cannot name the builders (private) and could not call them on what it holds anyway (const). The unused walk templates stay, as a reader's way to visit the order, now defined where every caller can reach them.
+
+**Reference**
+None: an encapsulation change inside this kernel.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed, on the default and the four-node machine. `ktest all`: default 92 ran, 84 passed, 8 skipped; four nodes, where `connect_all()` chains every node, 92 ran, 89 passed, 3 skipped. Failure-injection build: 92 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `pm_node.cpp` or `pm_node_init.cpp`; the `fallback()` warning that predated this change is gone. Control: a test line calling `zone_list().connect({})` fails to compile, both because `connect` is private and because the list is const.
+
+**Deliberately not done**
+- `PmNode::zone(type)` and `PmNode::for_each_zone()`, which the review suggested as readers on the node itself; the const list already gives readers everything without letting them write.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M8, from the objects reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a list every allocation walks without a lock need its writers sealed, and not just documented?
+- Why make `connect_all()` a private static of `PmNode` instead of leaving it a free function in `pm_node_init.cpp`?
+- Why does a template defined only in a `.cpp` file fail to link when another file calls it?
+
+## Only the buddy can put a frame on a free list (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — new passkey `FrameBuddyKey`, which only `FrameBuddy` can make; `PageFrame::set_role()` gives way to `enter_free_list(order, key)` (Role::Pmm and the order in one store), `leave_free_list(key)` (Role::None, asserting the frame was Pmm) and `stamp_role(role)` (any role but Pmm, asserted); `become()`'s comment names the new writers
+- `kernel/mm/include/ours/mm/priv/frame_buddy.hpp` — `insert_frame()` and `remove_frame()` use the key; `free_count()` and `empty()` are `[[nodiscard]]`
+- `kernel/mm/memmap_init.cpp`, `kernel/tests/pm_node_test.cpp` — `stamp_role()`
+- `kernel/mm/tests/frame_buddy_smoke.cpp` — the span-edge case makes its two outside frames free in neighbouring one-frame buddies instead of stamping Pmm on frames on no list
+
+**Symptom**
+`Role::Pmm` means "on a buddy free list", and the buddy coalesces with any neighbour that says it. Its comment said only `FrameBuddy::insert_frame()` writes it, after a dying slab and later `frame_to_phys()` had said it of frames on no list, which were then handed out twice. But `set_role(Role)` was public and took any role, Pmm included: the protection was a comment.
+
+**Cause**
+One setter served three writers with different rights: the buddy, which alone may say a frame is free; the boot stamp, which marks reserved frames before the buddy exists; and a test resetting a role.
+
+**Change**
+Each writer gets the operation it may perform, and the buddy's are reachable only by the buddy:
+
+```cpp
+class FrameBuddyKey {
+    friend class FrameBuddy;
+    FrameBuddyKey() = default;            // private: only FrameBuddy can make one
+};
+
+auto enter_free_list(usize order, FrameBuddyKey) -> void;   // Pmm and the order
+auto leave_free_list(FrameBuddyKey) -> void;                // back to None
+auto stamp_role(Role role) -> void;                         // anything but Pmm
+```
+
+A passkey rather than a friend: `friend class FrameBuddy` on the frame would open every private member of it to the buddy, including the status word's raw store; the key opens two functions, to the one caller that may use them. Since C++20 a class with a user-declared constructor is not an aggregate, so neither `FrameBuddyKey{}` nor a bare `{}` argument can make one outside the buddy.
+
+The buddy host test had been using the forbidden state as its probe: two frames just outside a buddy's span stamped Pmm while on no list, to show that only the span check keeps the merge off them. It now frees them into neighbouring buddies, the state a neighbouring zone's frames are really in, and checks that they stay on those buddies' lists; without the span check the merge would unlink them from the wrong list and the check fails.
+
+**Reference**
+Linux guards the same fact by keeping the buddy marker out of the flags an owner may set: `PageBuddy` is a `page_type`, written by `__SetPageBuddy()` and `__ClearPageBuddy()` only from the buddy allocator under `zone->lock` (`set_buddy_order()` and `del_page_from_free_list()` in `mm/page_alloc.c`).
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed (`frame-buddy-smoke` among them), on the default and the four-node machine. `ktest all`: default 92 ran, 84 passed, 8 skipped; four nodes 92 ran, 89 passed, 3 skipped. Failure-injection build: 92 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `frame_buddy.cpp` or `memmap_init.cpp`, the two `[[nodiscard]]` warnings that predated this change included. Control: a test line calling `enter_free_list(0, {})` and `leave_free_list(mm::FrameBuddyKey{})` fails to compile, both calling the key's private constructor.
+
+A narrow pre-commit review confirmed every path off a free list goes through `remove_frame()` on a Pmm frame, that nothing relied on the role being written before the order, that nothing outside the buddy can write Pmm (no body type carries it, `stamp_role()` refuses it, a key cannot be made or obtained outside the buddy), that the boot stamp passes only Mmu or None, and that the host test still tests the span check and destroys its neighbour buddies safely. It found the two comments fixed above: `become()` still named `set_role()`, and `stamp_role()` claimed to write only bodiless roles while the boot stamp writes Mmu.
+
+**Deliberately not done**
+- The boot stamp still marks a boot page table Mmu without `become<MmuBody>()`; its payload is the zeroed memmap storage, as before.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M9, from the objects reviewer; the passkey is T5 of the same review.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does a passkey give that `friend class FrameBuddy` on the frame would not?
+- Why can code outside `FrameBuddy` not write `FrameBuddyKey{}`, given that the class is empty?
+- Why was the old host test's probe, a frame saying Pmm on no list, the very state this change forbids?
+
+## A block's layout belongs to its head frame (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `PageFrame` gains `is_head()`, `make_block(order)`, `split(order)`, `clear_block()` and a private `stamp_tails()`; `set_order()` takes the buddy's key; the compound-offset and role comments say who stamps
+- `kernel/mm/frame_buddy.cpp` — `acquire_inner()` passes its key to `set_order()`
+- `kernel/mm/include/ours/mm/pmm.hpp` — `free_frames()`'s comment sends a caller returning part of a block to `split_block()`
+- `kernel/mm/pmm.cpp` — `prepare_alloc()` stamps every block it hands out (`make_block()`); `prepare_free()` takes the frame non-const, asserts it is a head and clears its tails; `split_block()` forwards to `PmFrame::split()`
+- `kernel/mm/object_cache.cpp` — `stamp_compound_offsets()` and its three calls go; `calculate_order()`'s comment names the allocator's stamping
+- `kernel/tests/pm_node_test.cpp` — new `PmNode.ABlockCarriesItsLayoutAndCoalescesBack`
+
+**Symptom**
+Nothing owned a block's layout. `split_block()` rewrote head orders from outside the frame, tail offsets were stamped only by the object cache, and the buddy leaves stale orders in the frames inside an allocated block. So `free_frames(&block[4])` on an order-3 block freed `[4, 8)` at whatever order frame 4 last held, while the head still owned all eight frames: two owners of the same frames, and nothing asserted. No path in the tree did that; nothing would have stopped one.
+
+**Cause**
+Decision F2(b) of `.agents/tasks/pmm-redesign/DESIGN.md` (2026-11-10) put the layout with the allocator: the allocator stamps the tails of every block it hands out and clears them when the block comes back, `free_frames()` takes no order, the object cache stops stamping. The order half was built with `split_block()`; the tail half was not.
+
+**Change**
+The head frame carries the block's layout, and the allocator's two gates write and check it:
+
+```cpp
+// PmFrame
+auto is_head() const -> bool { return compound_offset() == 0; }
+auto make_block(usize order) -> void;   // the order, and each tail its distance from the head
+auto split(usize order) -> void;        // each part's order, and its tails from its own head
+auto clear_block() -> void;             // the tails back to 0
+
+// prepare_alloc():  frame.make_block(request.order());
+// prepare_free():   DEBUG_ASSERT(frame.is_head(), ...); frame.clear_block();
+```
+
+Every tail of a block the allocator handed out says how far it is from its head, so a frame that says 0 is a head, and freeing anything else trips the assertion. The cost is one relaxed store per frame of the block on the way out and one on the way back, less than touching the block's memory once (a zeroed block writes every byte of it). The object cache's own stamping goes: it allocates and frees through the same gates, and `frame_to_folio()` still walks back from an interior object to the slab's head. The tails are reached by indexing from the head, which holds because a block never crosses a section of the memmap.
+
+**Reference**
+Linux stamps tails for compound pages only (`prep_compound_page()` in `mm/page_alloc.c`, each tail pointing at its head through `compound_head`), and only when the caller asks for one with `__GFP_COMP`. Here every block above order 0 is one, which F2 chose so that large pages and contiguous allocations share one layout.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed, on the default and the four-node machine. `ktest all`: default 93 ran, 84 passed, 9 skipped; four nodes 93 ran, 90 passed, 3 skipped, with no head assertion anywhere; `MEM=8192` `ktest sel=MemoryPressure.*:PmNode.*:PageReclaim.*:PmZone.*:Vmo*:LargePage*` 22 ran, 15 passed, 0 failed. Failure-injection build: 93 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing new in `pmm.cpp` or `object_cache.cpp`.
+
+The new test takes an order-3 block from a quiet remote node with the reclaimer paused: every tail names its head; split into blocks of two, each part is a head of order 1 with its tail one away; freed by their heads, the parts keep no stamp and the zone's free blocks by order and free frames are exactly as before. That last check is the part of F2's test plan the review found missing. Control: with `make_block()` and `split()` setting orders but no tails, the stamp checks fail.
+
+A narrow pre-commit review traced every free path to `prepare_free()` with a head whose tails were stamped (contiguous allocations and VMO large pages split first; slabs, CpuLocal groups, page tables, lists and boot frames free heads), confirmed that a block never crosses a memmap section and that nothing else reads tail offsets concurrently, and found the test sound. It found three comments that still described the old ownership: `free_frames()` told a caller to make parts by setting order 0, which now trips the head check (it now says `split_block()`); `calculate_order()` credited `slab::create` with the stamping; and the role comment said only slabs carry the stamp. With `set_order()` public, a caller could still change a block's order without its tails; it now takes the buddy's key (`FrameBuddyKey`), as only `acquire_inner()` called it.
+
+**Deliberately not done**
+- The head check is a `DEBUG_ASSERT`, like the other checks in `prepare_free()`; a release build frees an interior frame unchecked.
+- `adopt_frames()` still hands `free_block()` an order of its own; that is M5, next.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M6, from the pipeline reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a stale order in a frame inside an allocated block make freeing that frame give its memory two owners?
+- What makes `compound_offset() == 0` a test for "head" once the allocator stamps every block?
+- Why must `split()` re-stamp the tails, and not only set the new heads' orders?
+
+## The zone adopts memory itself, and a block is freed by its head alone (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — new `PmZone::adopt(start, end)`, which carves a range within the zone's span into the largest aligned blocks, checks each head as `prepare_free()` would, releases each under the zone lock and counts it, and returns how many blocks crossed the Low line; `free_frames()` takes no order and reads the head's
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp` — `PmNode::free_frames()` takes no order
+- `kernel/mm/pmm.cpp` — `adopt_frames()` hands each zone the part of the range it holds, asserting in every build that the walk advances, and wakes a waiter per crossing; `free_block()` takes no order; `prepare_alloc()`'s comment names `adopt()` among the checked paths into stock
+- `kernel/tests/pm_zone_test.cpp`, `kernel/tests/pm_node_test.cpp` — frees without an order (the zone test splits its block before freeing it frame by frame); new `PmNode.AdoptedFramesReturnToTheirZone`
+
+**Symptom**
+`adopt_frames()` carved ranges by the buddy's alignment rule in the pipeline, where the design says no buddy logic lives, and handed `free_block()` an order the head frame did not record. That one caller was why `PmNode::free_frames()` and `PmZone::free_frames()` still took an order, so code below the pipeline could free a block at an order its head disagreed with. The carving also ignored zone bounds: only a debug assertion in the buddy checked that a carved block lay in one zone.
+
+**Cause**
+Adoption was written in the pipeline for this task (`DESIGN.md` built it there and listed `PmZone::adopt` as a later slot), and F2(b)'s "free takes no order" was built for the public entry but not for the two layers below it.
+
+**Change**
+The zone adopts, and every free reads the order from the head:
+
+```cpp
+// mm::adopt_frames(): one zone at a time
+auto *const zone = PmZone::at(first->nid(), first->zone());
+auto const stop = std::min(end, zone->end_pfn());
+for (auto crossings = zone->adopt(start, stop); crossings > 0; --crossings) {
+    GATE.pass_on();
+}
+
+// PmZone::adopt(): the largest aligned block that fits, under the lock, one at a time
+// PmZone::free_frames(PmFrame &frame): auto const order = frame.order();
+```
+
+A range is one node's memory (the boot handoff gives a region at a time, CpuLocal a replica, and the `.init` sections come back after boot), so splitting it at each zone's end is enough, and each zone carves inside its own bounds, which also fixes the old carving's blindness to zone boundaries that are not max-order aligned. A zone that does not hold the walk's frame would stop it from advancing, so that is an `ASSERT` in every build. `adopt()` returns a count of crossings, not a flag: allocations between two of its blocks can take the zone back below Low, and the old path woke a waiter for every block that crossed.
+
+**Reference**
+Linux carves memory handed to the buddy allocator the same way (`__free_pages_memory()` in `mm/memblock.c`: the largest order the start's alignment and the remaining length allow).
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed, on the default and the four-node machine; the boot handoff itself now goes through `PmZone::adopt()`. `ktest all`: default 94 ran, 84 passed, 10 skipped, in two runs after one run, twelve times slower than normal, failed `MutexStress.AllWorkersFinishBeforeTheTimeout` on its 20-second limit (filed as `docs/repairs/261115/kernel-sync.md`); four nodes 94 ran, 91 passed, 3 skipped. `MEM=3072` and `MEM=8192`: `ktest sel=MemoryPressure.*:PmNode.*:PageReclaim.*:PmZone.*` 19 ran, 11 passed, 0 failed. Failure-injection build: 94 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing new in `pm_zone.cpp`, `pmm.cpp` or `pm_node.cpp`.
+
+The new test takes eight frames from a quiet remote zone below the pipeline and adopts them back as `[1, 8)` and then `[0, 1)`: the first leaves free blocks of one, two and four frames, and the second makes the zone's profile and count exactly what they were. Two controls taught what it can show. With adoption made frame by frame it still passed: the buddy coalesces singles into the same blocks, so the profile cannot tell how a range was carved, and its check now says only what it can (the alignment itself is the buddy's `release()` assertion, in every build). With adoption not counting its frames the boot panicked, every zone empty, before the test could run.
+
+A narrow pre-commit review confirmed that every adoption range is one node's memory and splits correctly by type at zone ends, that nothing the old per-block `prepare_free()` did is lost for the three callers' frames, that no free relied on an order other than the head's, and that the test is sound. It found the five points fixed above: one wake per call where the old path woke per crossing; a debug-only guard where a bad stamp would hang the walk in a release build; an alignment comment that described silent corruption where the buddy now panics; `prepare_alloc()`'s comment claiming every path into stock checks pins, which `adopt()` now does; and a comment that left out the `.init` reclaim that runs after boot.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M5, from the pipeline reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a buddy block have to be aligned to its own size, and what decides the largest block a range can start with?
+- Why can `adopt_frames()` split a range at zone ends without checking every frame's zone?
+- Why does `adopt()` return a count of crossings rather than whether it crossed?

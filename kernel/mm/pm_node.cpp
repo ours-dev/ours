@@ -31,39 +31,7 @@ auto ZoneList::connect(ustl::views::Span<NodeId const> const order) -> void {
         DEBUG_ASSERT(next != m_nid, "node {} was given itself as a fallback hop", m_nid);
         DEBUG_ASSERT(find_node(next), "node {} is a fallback hop but was not brought up", next);
         push_zones_of(next);
-        m_connected.set(next);
     }
-}
-
-/// Visits the zones in allocation order: the fallback list already *is* that
-/// order, this node's own zones first and the remote ones in the order
-/// connect() computed.
-///
-/// A callback returning void visits every zone. One returning a value stops at
-/// the first result that tests true and yields it -- which is what makes this
-/// usable as "take a frame from the first zone that can spare one" rather than
-/// only as a traversal.
-template <typename F>
-auto ZoneList::for_each_zone(F &&f) -> ustl::traits::InvokeResultT<F, PmZone &> {
-    using Result = ustl::traits::InvokeResultT<F, PmZone &>;
-
-    if constexpr (std::is_void_v<Result>) {
-        for (auto *const zone: m_fallback) {
-            f(*zone);
-        }
-    } else {
-        for (auto *const zone: m_fallback) {
-            if (auto result = f(*zone)) {
-                return result;
-            }
-        }
-        return Result{};
-    }
-}
-
-template <typename F, typename Predicate>
-auto ZoneList::for_each_zone_if(F &&f, Predicate &&p) -> ustl::traits::InvokeResultT<F, PmZone &> {
-    return for_each_zone([&](PmZone &zone) { return p(zone) ? f(zone) : decltype(f(zone)){}; });
 }
 
 auto ZoneList::dump_fallback() const -> void {
@@ -91,13 +59,12 @@ auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
     DEBUG_ASSERT(request.home_node() == m_id, "node {} was handed a request whose home is node {}",
                  m_id, request.home_node());
 
-    auto const can_block = !!(request.flags() & Gaf::CanBlock);
     ustl::Option<PmZone const &> depleted_zone;
     for (auto &zone: m_zone_list.candidates(request)) {
         // Taking the block would leave the zone below the pass's floor: short
         // for this request. Passed over, and the first such zone named in the
         // failure, should the walk fail.
-        if (!zone.admits(request.order(), pass, can_block, request.highest_zone())) {
+        if (!zone.admits(request.order(), pass, request.may_block(), request.highest_zone())) {
             if (!depleted_zone) {
                 depleted_zone = ustl::some_ref(zone);
             }
@@ -119,7 +86,7 @@ auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
     return ustl::err(BlockFailure{.status = Status::OutOfMem, .depleted_zone = depleted_zone});
 }
 
-auto PmNode::free_frames(PmFrame &frame, usize const order) -> bool {
+auto PmNode::free_frames(PmFrame &frame) -> bool {
     m_canary.verify<Self>();
     DEBUG_ASSERT(frame.nid() == m_id, "frame {:#x} of node {} was returned to node {}",
                  frame_to_phys(&frame), frame.nid(), m_id);
@@ -127,7 +94,7 @@ auto PmNode::free_frames(PmFrame &frame, usize const order) -> bool {
     auto *const zone = m_zone_list.local_zone(frame.zone());
     DEBUG_ASSERT(zone, "frame {:#x} is in no zone", frame_to_phys(&frame));
 
-    return zone->free_frames(frame, order);
+    return zone->free_frames(frame);
 }
 
 namespace {

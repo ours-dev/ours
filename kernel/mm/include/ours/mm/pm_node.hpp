@@ -58,26 +58,7 @@ class ZoneList {
     using ZoneRef = PmZone *;
     using Zones = ustl::views::Span<ZoneRef const>;
 
-    explicit ZoneList(NodeId nid) : m_fallback(), m_connected(), m_nid(nid) {}
-
-    /// Puts this node's own zones, its row of the table, at the head of the
-    /// fallback order, from the highest type down -- before connect() appends
-    /// anyone else's.
-    auto take_local_zones() -> void {
-        DEBUG_ASSERT(m_fallback.size() == 0, "node {}'s own zones taken twice, or after connect()",
-                     m_nid);
-        push_zones_of(m_nid);
-    }
-
-    /// Chains the zones of every node in |order| behind this node's own, in
-    /// the order given, each node's from its highest type down.
-    ///
-    /// A list of node ids rather than a set: it used to take the set and
-    /// derive the order itself, from the machine's distance matrix, which made
-    /// "which nodes" and "in what order" one argument and put a NUMA concept
-    /// inside the allocator's data structure. The derivation is
-    /// numa::build_fallback_orders() now, and this appends what it was handed.
-    auto connect(ustl::views::Span<NodeId const> order) -> void;
+    explicit ZoneList(NodeId nid) : m_fallback(), m_nid(nid) {}
 
     /// This node's zone of |ztype|, or null when the node has none.
     [[nodiscard]]
@@ -98,14 +79,41 @@ class ZoneList {
         }
     }
 
-    /// Visits the zones in fallback order. A callback returning void visits
-    /// every zone; one returning a value stops at the first result that tests
-    /// true and yields it.
+    /// Visits the zones in fallback order: this node's own first, then the
+    /// remote ones in the order connect() was given. A callback returning
+    /// void visits every zone; one returning a value stops at the first
+    /// result that tests true and yields it, which makes this "take from the
+    /// first zone that can spare it" rather than only a traversal.
+    ///
+    /// Defined here, in the header, because a template defined in one
+    /// source file is not there for a caller in any other.
     template <typename F>
-    auto for_each_zone(F &&f) -> ustl::traits::InvokeResultT<F, PmZone &>;
+    auto for_each_zone(F &&f) const -> ustl::traits::InvokeResultT<F, PmZone &> {
+        using Result = ustl::traits::InvokeResultT<F, PmZone &>;
+        if constexpr (std::is_void_v<Result>) {
+            for (auto *const zone: m_fallback) {
+                f(*zone);
+            }
+        } else {
+            for (auto *const zone: m_fallback) {
+                if (auto result = f(*zone)) {
+                    return result;
+                }
+            }
+            return Result{};
+        }
+    }
 
+    /// for_each_zone() over the zones |p| accepts.
     template <typename F, typename Predicate>
-    auto for_each_zone_if(F &&f, Predicate &&p) -> ustl::traits::InvokeResultT<F, PmZone &>;
+    auto for_each_zone_if(F &&f, Predicate &&p) const -> ustl::traits::InvokeResultT<F, PmZone &> {
+        return for_each_zone([&](PmZone &zone) -> ustl::traits::InvokeResultT<F, PmZone &> {
+            if (p(zone)) {
+                return f(zone);
+            }
+            return {};
+        });
+    }
 
     /// The node's row of the table, by type, holes included, for a walk that
     /// filters as it goes.
@@ -116,6 +124,7 @@ class ZoneList {
     }
 
     /// The fallback order.
+    [[nodiscard]]
     FORCE_INLINE
     auto fallback() const -> Zones {
         return Zones{m_fallback.data(), m_fallback.size()};
@@ -131,6 +140,31 @@ class ZoneList {
     auto dump_fallback() const -> void;
 
   private:
+    /// Only the node that owns the list builds it, at bring-up: every
+    /// allocation walks the fallback order without a lock, on the premise
+    /// that nothing writes it after boot, and the two builders being reachable
+    /// from the node alone is what keeps that premise.
+    friend class PmNode;
+
+    /// Puts this node's own zones, its row of the table, at the head of the
+    /// fallback order, from the highest type down -- before connect() appends
+    /// anyone else's.
+    auto take_local_zones() -> void {
+        DEBUG_ASSERT(m_fallback.size() == 0, "node {}'s own zones taken twice, or after connect()",
+                     m_nid);
+        push_zones_of(m_nid);
+    }
+
+    /// Chains the zones of every node in |order| behind this node's own, in
+    /// the order given, each node's from its highest type down.
+    ///
+    /// A list of node ids rather than a set: it used to take the set and
+    /// derive the order itself, from the machine's distance matrix, which made
+    /// "which nodes" and "in what order" one argument and put a NUMA concept
+    /// inside the allocator's data structure. The derivation is
+    /// numa::build_fallback_orders() now, and this appends what it was handed.
+    auto connect(ustl::views::Span<NodeId const> order) -> void;
+
     FORCE_INLINE
     auto push_fallback(PmZone *zone) -> void {
         auto const pushed = m_fallback.push_back(zone);
@@ -159,9 +193,6 @@ class ZoneList {
     }
 
     ustl::collections::StaticVec<ZoneRef, MAX_ZONES> m_fallback;
-
-    /// The remote nodes connect() chained into the fallback order.
-    NodeMask m_connected;
     NodeId m_nid;
 };
 
@@ -219,11 +250,12 @@ class PmNode {
         -> ustl::Result<PmFrame *, BlockFailure>;
 
     /// The node's layer of mm::free_frames(): returns a block of this node's
-    /// to the zone it came from. The frame names both. Returns what the
+    /// to the zone it came from. The frame names both, and its head the
+    /// block's order. Returns what the
     /// zone's free_frames() does: whether this release brought the zone back
     /// to admitting a frame at its Low watermark.
     [[nodiscard]]
-    auto free_frames(PmFrame &frame, usize order) -> bool;
+    auto free_frames(PmFrame &frame) -> bool;
 
     /// Whether this node's zone of |type| could serve an allocation of
     /// |order| from its free lists right now; false when the node has no such
@@ -281,9 +313,13 @@ class PmNode {
         return m_soft_affinity;
     }
 
+    /// The node's zones and the order its allocations try them in, to read.
+    /// Only the node builds the list, at bring-up (connect_all()); a caller
+    /// gets it const, so nothing can rewrite the order the allocations walk
+    /// without a lock.
     FORCE_INLINE
-    constexpr auto zone_list() -> ZoneList * {
-        return &m_zone_list;
+    constexpr auto zone_list() const -> ZoneList const & {
+        return m_zone_list;
     }
 
     /// The queues this node's VMO pages are filed on, by kind and by age.
@@ -318,8 +354,6 @@ class PmNode {
     }
 
   private:
-    friend class ZoneList;
-
     PmNode(NodeId nid);
 
     ~PmNode() = default;
@@ -329,6 +363,10 @@ class PmNode {
     /// Creates and registers a PmNode for every node in |nodes|; one of
     /// bootstrap()'s steps. See pm_node_init.cpp.
     static auto create_nodes(NodeMask const &nodes) -> Status;
+
+    /// Gives every node in |nodes| its fallback order, from one derivation
+    /// over the machine; one of bootstrap()'s steps. See pm_node_init.cpp.
+    static auto connect_all(NodeMask const &nodes) -> void;
 
     /// Initialize this node: its span, its zones, its hard affinity. The
     /// primary task involves verifying the existence of the specified PFN

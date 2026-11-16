@@ -65,7 +65,12 @@ class AllocRequest final {
         CpuNum cpu;
     };
 
-    /// What the caller asked for, unchanged.
+    /// What the caller asked for, unchanged, for logs and tests. Nothing below
+    /// the request reads bits out of it: the pipeline asks the request the
+    /// questions below (may_block(), may_wait(), waits_at_low(), zeroes(),
+    /// is_confined()), so what each bit means is decided here. Above it, the
+    /// public entries check their preconditions on the raw flags, and the
+    /// placement policy reads Gaf::ThisNode before any request exists.
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto flags() const -> Gaf {
@@ -150,6 +155,41 @@ class AllocRequest final {
     constexpr auto is_confined() const -> bool {
         return !!(m_alloc_flags & Gaf::ThisNode) || m_lowest_zone != ZoneType::Dma ||
                m_highest_zone < ZoneType::Normal;
+    }
+
+    /// Whether the caller's context permits blocking (Gaf::CanBlock). It
+    /// picks the floor of the Min pass: Min for a request that may block,
+    /// three quarters of Min for one that may not (admission_floor()). It
+    /// does not make the request wait.
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto may_block() const -> bool {
+        return !!(m_alloc_flags & Gaf::CanBlock);
+    }
+
+    /// Whether the caller can wait for memory (Gaf::CanWait): such a request
+    /// asks the free-memory gate before any zone, and may be answered
+    /// ShouldWait.
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto may_wait() const -> bool {
+        return !!(m_alloc_flags & Gaf::CanWait);
+    }
+
+    /// Whether a Low pass that finds no zone answers this request ShouldWait
+    /// instead of going on to Min: a request that can wait and is not
+    /// confined. A confined one goes on to Min (is_confined()).
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto waits_at_low() const -> bool {
+        return may_wait() && !is_confined();
+    }
+
+    /// Whether the block is zeroed before it is handed out (Gaf::Zero).
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto zeroes() const -> bool {
+        return !!(m_alloc_flags & Gaf::Zero);
     }
 
     /// This request restricted to |nodes|, as a new value.
