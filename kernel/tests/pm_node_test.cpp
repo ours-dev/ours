@@ -1258,6 +1258,73 @@ namespace {
         EXPECT_TRUE(nowhere_fails, "with no node it may use, it answers OutOfMem at once");
     }
 
+    KTEST(PmNode, ABlockCarriesItsLayoutAndCoalescesBack) {
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list().fallback()[0];
+
+        // The zone's free blocks by order, and its free frames: what a block
+        // taken and given back in parts must leave as it found. A quiet node,
+        // and the reclaimer paused, so nothing else moves them meanwhile.
+        auto const profile = [&zone] {
+            std::array<usize, MAX_FRAME_ORDER + 1> blocks{};
+            for (usize order = 0; order <= MAX_FRAME_ORDER; ++order) {
+                blocks[order] = zone.free_blocks(order);
+            }
+            return blocks;
+        };
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        auto const before = profile();
+        auto const free_before = zone.num_free_frames();
+
+        constexpr usize ORDER = 3;
+        constexpr usize FRAMES = usize{1} << ORDER;
+        auto const block = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, ORDER, nid);
+        if (!block) {
+            FAIL("an order-{} block from node {}", ORDER, nid);
+            return;
+        }
+        auto *const head = *block;
+        auto const frame = [head](usize const index) {
+            return mm::pfn_to_frame(mm::frame_to_pfn(head) + index);
+        };
+
+        auto stamped = head->is_head() && head->order() == ORDER;
+        for (usize index = 1; index < FRAMES; ++index) {
+            stamped =
+                stamped && frame(index)->compound_offset() == index && !frame(index)->is_head();
+        }
+
+        // Split into blocks of two: heads at even frames, each tail one away.
+        mm::split_block(head, 1);
+        auto split_ok = true;
+        for (usize index = 0; index < FRAMES; ++index) {
+            if (index % 2 == 0) {
+                split_ok = split_ok && frame(index)->is_head() && frame(index)->order() == 1;
+            } else {
+                split_ok = split_ok && frame(index)->compound_offset() == 1;
+            }
+        }
+
+        for (usize index = 0; index < FRAMES; index += 2) {
+            mm::free_frames(frame(index));
+        }
+        auto cleared = true;
+        for (usize index = 0; index < FRAMES; ++index) {
+            cleared = cleared && frame(index)->compound_offset() == 0;
+        }
+        auto const coalesced = profile() == before && zone.num_free_frames() == free_before;
+
+        EXPECT_TRUE(stamped, "a block handed out names its head on every tail");
+        EXPECT_TRUE(split_ok, "a split stamps each part as a block of its own");
+        EXPECT_TRUE(cleared, "freed, the parts keep no stamp");
+        EXPECT_TRUE(coalesced,
+                    "the parts, freed by their heads, coalesce back to where the zone was");
+    }
+
     KTEST(PmNode, APausedReclaimerTakesNoNodeRecord) {
         auto *const target = remote_single_zone_node();
         if (!target) {

@@ -476,3 +476,60 @@ None.
 - What does a passkey give that `friend class FrameBuddy` on the frame would not?
 - Why can code outside `FrameBuddy` not write `FrameBuddyKey{}`, given that the class is empty?
 - Why was the old host test's probe, a frame saying Pmm on no list, the very state this change forbids?
+
+## A block's layout belongs to its head frame (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `PageFrame` gains `is_head()`, `make_block(order)`, `split(order)`, `clear_block()` and a private `stamp_tails()`; `set_order()` takes the buddy's key; the compound-offset and role comments say who stamps
+- `kernel/mm/frame_buddy.cpp` — `acquire_inner()` passes its key to `set_order()`
+- `kernel/mm/include/ours/mm/pmm.hpp` — `free_frames()`'s comment sends a caller returning part of a block to `split_block()`
+- `kernel/mm/pmm.cpp` — `prepare_alloc()` stamps every block it hands out (`make_block()`); `prepare_free()` takes the frame non-const, asserts it is a head and clears its tails; `split_block()` forwards to `PmFrame::split()`
+- `kernel/mm/object_cache.cpp` — `stamp_compound_offsets()` and its three calls go; `calculate_order()`'s comment names the allocator's stamping
+- `kernel/tests/pm_node_test.cpp` — new `PmNode.ABlockCarriesItsLayoutAndCoalescesBack`
+
+**Symptom**
+Nothing owned a block's layout. `split_block()` rewrote head orders from outside the frame, tail offsets were stamped only by the object cache, and the buddy leaves stale orders in the frames inside an allocated block. So `free_frames(&block[4])` on an order-3 block freed `[4, 8)` at whatever order frame 4 last held, while the head still owned all eight frames: two owners of the same frames, and nothing asserted. No path in the tree did that; nothing would have stopped one.
+
+**Cause**
+Decision F2(b) of `.agents/tasks/pmm-redesign/DESIGN.md` (2026-11-10) put the layout with the allocator: the allocator stamps the tails of every block it hands out and clears them when the block comes back, `free_frames()` takes no order, the object cache stops stamping. The order half was built with `split_block()`; the tail half was not.
+
+**Change**
+The head frame carries the block's layout, and the allocator's two gates write and check it:
+
+```cpp
+// PmFrame
+auto is_head() const -> bool { return compound_offset() == 0; }
+auto make_block(usize order) -> void;   // the order, and each tail its distance from the head
+auto split(usize order) -> void;        // each part's order, and its tails from its own head
+auto clear_block() -> void;             // the tails back to 0
+
+// prepare_alloc():  frame.make_block(request.order());
+// prepare_free():   DEBUG_ASSERT(frame.is_head(), ...); frame.clear_block();
+```
+
+Every tail of a block the allocator handed out says how far it is from its head, so a frame that says 0 is a head, and freeing anything else trips the assertion. The cost is one relaxed store per frame of the block on the way out and one on the way back, less than touching the block's memory once (a zeroed block writes every byte of it). The object cache's own stamping goes: it allocates and frees through the same gates, and `frame_to_folio()` still walks back from an interior object to the slab's head. The tails are reached by indexing from the head, which holds because a block never crosses a section of the memmap.
+
+**Reference**
+Linux stamps tails for compound pages only (`prep_compound_page()` in `mm/page_alloc.c`, each tail pointing at its head through `compound_head`), and only when the caller asks for one with `__GFP_COMP`. Here every block above order 0 is one, which F2 chose so that large pages and contiguous allocations share one layout.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed, on the default and the four-node machine. `ktest all`: default 93 ran, 84 passed, 9 skipped; four nodes 93 ran, 90 passed, 3 skipped, with no head assertion anywhere; `MEM=8192` `ktest sel=MemoryPressure.*:PmNode.*:PageReclaim.*:PmZone.*:Vmo*:LargePage*` 22 ran, 15 passed, 0 failed. Failure-injection build: 93 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing new in `pmm.cpp` or `object_cache.cpp`.
+
+The new test takes an order-3 block from a quiet remote node with the reclaimer paused: every tail names its head; split into blocks of two, each part is a head of order 1 with its tail one away; freed by their heads, the parts keep no stamp and the zone's free blocks by order and free frames are exactly as before. That last check is the part of F2's test plan the review found missing. Control: with `make_block()` and `split()` setting orders but no tails, the stamp checks fail.
+
+A narrow pre-commit review traced every free path to `prepare_free()` with a head whose tails were stamped (contiguous allocations and VMO large pages split first; slabs, CpuLocal groups, page tables, lists and boot frames free heads), confirmed that a block never crosses a memmap section and that nothing else reads tail offsets concurrently, and found the test sound. It found three comments that still described the old ownership: `free_frames()` told a caller to make parts by setting order 0, which now trips the head check (it now says `split_block()`); `calculate_order()` credited `slab::create` with the stamping; and the role comment said only slabs carry the stamp. With `set_order()` public, a caller could still change a block's order without its tails; it now takes the buddy's key (`FrameBuddyKey`), as only `acquire_inner()` called it.
+
+**Deliberately not done**
+- The head check is a `DEBUG_ASSERT`, like the other checks in `prepare_free()`; a release build frees an interior frame unchecked.
+- `adopt_frames()` still hands `free_block()` an order of its own; that is M5, next.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M6, from the pipeline reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a stale order in a frame inside an allocated block make freeing that frame give its memory two owners?
+- What makes `compound_offset() == 0` a test for "head" once the allocator stamps every block?
+- Why must `split()` re-stamp the tails, and not only set the new heads' orders?

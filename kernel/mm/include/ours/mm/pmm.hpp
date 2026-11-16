@@ -207,7 +207,7 @@ auto free_page_table(PhysAddr base, usize size) -> void;
 /// How much that is, is the block's to say and not the caller's: the head
 /// frame records the order the block was handed out at, and that is what goes
 /// back. A caller that wants to return part of a block makes the parts blocks
-/// of their own first, by giving each frame it will free alone the order 0.
+/// of their own first, with split_block(): only a block's head can be freed.
 /// A frame nothing has allocated counts as a block of one.
 ///
 /// The frame must not be reserved: a frame stamped Reserved at boot has to go

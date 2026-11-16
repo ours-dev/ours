@@ -274,6 +274,11 @@ namespace {
         DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} leaves a free list with {} pin(s)",
                      frame_to_phys(&frame), frame.pin_count());
 
+        // The block's layout: its order on the head and each tail's distance
+        // from it, so that any frame of the block leads back to the head and
+        // only the head can be freed (prepare_free()).
+        frame.make_block(request.order());
+
         if (request.zeroes()) {
             std::fill_n(frame_to_virt<isize>(&frame),
                         (usize{1} << request.order()) * PAGE_SIZE / sizeof(isize), 0);
@@ -291,7 +296,7 @@ namespace {
 
     /// The gate every block passes on its way into stock, before any lock is
     /// taken: what must be true of a frame for the buddy to hold it.
-    auto prepare_free(PmFrame const &frame) -> void {
+    auto prepare_free(PmFrame &frame) -> void {
         // The runtime half of the guard in early_mem.cpp's
         // free_frames_phys_range(): a reserved frame reaches the buddy only
         // through unwire_frame(). Nothing else on this path looks at the frame,
@@ -306,6 +311,13 @@ namespace {
         // frame on a free list is about to be someone else's.
         DEBUG_ASSERT(frame.pin_count() == 0, "frame {:#x} is freed while {} pin(s) hold it",
                      frame_to_phys(&frame), frame.pin_count());
+        // Only a block's head may be freed: a frame inside a block would be
+        // freed at whatever order it last held, while the head still owns it,
+        // and the frames would have two owners. split_block() first, to free
+        // the parts of a block apart.
+        DEBUG_ASSERT(frame.is_head(), "frame {:#x} is frame {} of a block, not its head",
+                     frame_to_phys(&frame), frame.compound_offset());
+        frame.clear_block();
     }
 
     /// Looks at free memory once, after a whole allocation or return and with
@@ -859,15 +871,10 @@ auto split_block(PmFrame *const frame, usize const order) -> void {
     DEBUG_ASSERT((frame_to_pfn(frame) & ((usize{1} << whole) - 1)) == 0,
                  "frame {:#x} does not head a block of order {}", frame_to_phys(frame), whole);
 
-    // No lock: the block is the caller's, and nothing else reads the order of
-    // a frame that is on no free list. The descriptors of one block are
-    // consecutive, since a block never crosses the memmap's sections
-    // (FrameBuddy), so the new heads are reached by indexing from the old one.
-    auto const nr_frames = usize{1} << whole;
-    auto const step = usize{1} << order;
-    for (usize index = 0; index < nr_frames; index += step) {
-        frame[index].set_order(order);
-    }
+    // No lock: the block is the caller's, and nothing else reads the layout
+    // of a block that is on no free list. The frame does the work: the new
+    // heads' orders and their tails' offsets (PmFrame::split()).
+    frame->split(order);
 }
 
 auto free_frames(PmFrame::List *list) -> void {
