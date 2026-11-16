@@ -609,7 +609,13 @@ namespace {
 
     auto check_pressure() -> void {
         auto &watchdog = mm::MemoryWatchdog::get();
-        auto const boot = mm::MemoryPressureLevels::from_boot_options();
+        // What is in force, to put back afterwards.
+        auto const in_force = watchdog.levels();
+        if (!in_force) {
+            FAIL("the watchdog is running");
+            return;
+        }
+        auto const boot = *in_force;
 
         // Nothing older than what is made here for the reclaimer to find first.
         mm::MemoryReclaimer::get().reclaim(~usize{0});
@@ -626,7 +632,8 @@ namespace {
             if (!levels) {
                 return Status::InvArgs;
             }
-            return watchdog.set_levels(*levels);
+            watchdog.set_levels(*levels);
+            return Status::Ok;
         };
         auto free = mm::approx_free_frame_count();
         auto set = use_levels(free - 40, free + 8, free + 17);
@@ -654,7 +661,7 @@ namespace {
         Giveable more;
         if (!more.make()) {
             EXPECT_TRUE(false, "pages are made for the reclaimer at OutOfMemory");
-            auto _ = watchdog.set_levels(boot);
+            watchdog.set_levels(boot);
             return;
         }
         free = mm::approx_free_frame_count();
@@ -669,7 +676,7 @@ namespace {
             mm::free_frames(*served);
         }
 
-        auto _ = watchdog.set_levels(boot);
+        watchdog.set_levels(boot);
         settle([&] { return watchdog.pressure() == mm::MemoryPressure::Normal; });
     }
 
@@ -708,8 +715,8 @@ namespace {
         });
 
         auto const levels = mm::MemoryWatchdog::get().levels();
-        auto const globally_normal =
-            levels.pressure_at(mm::approx_free_frame_count()) == mm::MemoryPressure::Normal;
+        auto const globally_normal = levels && levels->pressure_at(mm::approx_free_frame_count()) ==
+                                                   mm::MemoryPressure::Normal;
         auto const missed = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, remote);
         auto const exhausted = !missed && missed.unwrap_err() == Status::OutOfMem;
         if (missed) {

@@ -198,8 +198,12 @@ The kernel still tears down sealed mappings during address-space destruction.
   request capped at its present frames, summed (`covering()`, the user's
   D1(a), 2026-11-14). Then every zone refusing implies free memory below
   the delay level, and the gate, not a zone's Low, decides when an
-  ordinary waiting request waits. All three levels move together; levels
-  that do not nest are left for `start()` to refuse.
+  ordinary waiting request waits. All three levels move together.
+- `MemoryPressureLevels` nests by type (review M10, 2026-11-15): no
+  default constructor, `make()` the only builder, and a bad `kernel.oom`
+  command line refused there by the watchdog's init hook, which then
+  starts no watchdog. The watchdog holds its levels as an `Option`, set
+  only by `start()`; tests put back what `levels()` gave them.
 - Nothing below the request reads `Gaf` bits (review M4, 2026-11-15):
   `AllocRequest` answers `may_block()`, `may_wait()`, `waits_at_low()`,
   `zeroes()` and `is_confined()`, `flags()` stays the caller's flags
