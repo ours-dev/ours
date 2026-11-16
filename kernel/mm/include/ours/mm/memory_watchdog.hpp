@@ -37,9 +37,11 @@ auto to_string(MemoryPressure pressure) -> char const *;
 /// memory has gone the debounce past a level, and declares a lower pressure
 /// only the hysteresis after its last change.
 ///
-/// make() is the way to build one that nests. from_boot_options() can be
-/// otherwise, and start() then refuses it: a bad command line is reported,
-/// not subtracted.
+/// Every value nests: each level above the one below by more than the
+/// debounce, and the lowest above the debounce, so each pressure has a range
+/// of its own the debounce does not swallow. make() is the only way to build
+/// one and refuses levels that do not; a bad command line is refused there,
+/// by the watchdog's init hook, and reported, not repaired.
 class MemoryPressureLevels {
   public:
     /// The free memory the PMM keeps quiet about at one pressure, in frames.
@@ -48,16 +50,10 @@ class MemoryPressureLevels {
         usize upper;
     };
 
-    /// The levels the `kernel.oom.*` boot options give, raised where this
-    /// machine's zone floors need it: covering(zone_floor_frame_count()).
-    /// Not necessarily valid.
-    [[nodiscard]]
-    static auto from_boot_options() -> MemoryPressureLevels;
-
     /// These levels with the delay level above |held| frames: unchanged
-    /// when it already is, or when they do not nest (start() refuses those),
-    /// and otherwise all three levels moved up by the same amount, so that
-    /// each band keeps the width it was given.
+    /// when it already is, and otherwise all three levels moved up by the
+    /// same amount, so that each band keeps the width it was given and the
+    /// levels still nest.
     ///
     /// |held| is the most free memory there can be while every zone refuses
     /// an ordinary request (zone_floor_frame_count()). With the delay level
@@ -69,16 +65,10 @@ class MemoryPressureLevels {
     [[nodiscard]]
     auto covering(usize held) const -> MemoryPressureLevels;
 
-    /// A value whose levels nest. InvArgs when they do not.
+    /// Levels that nest, or InvArgs when these do not.
     [[nodiscard]]
     static auto make(usize out_of_memory, usize critical, usize warning, usize debounce,
                      Duration hysteresis) -> ustl::Result<MemoryPressureLevels, Status>;
-
-    /// Each level above the one before by more than the debounce, and the
-    /// lowest above it too: then every pressure has a range of its own that
-    /// the debounce does not swallow.
-    [[nodiscard]]
-    auto is_valid() const -> bool;
 
     /// The pressure at |free| frames of free memory.
     [[nodiscard]]
@@ -119,10 +109,9 @@ class MemoryPressureLevels {
     }
 
   private:
-    friend class MemoryWatchdog;
-
-    /// Not started: the watchdog replaces this in start().
-    MemoryPressureLevels() = default;
+    /// Whether these levels nest; make() asks it before building one.
+    [[nodiscard]]
+    static auto nest(usize out_of_memory, usize critical, usize warning, usize debounce) -> bool;
 
     MemoryPressureLevels(usize out_of_memory, usize critical, usize warning, usize debounce,
                          Duration hysteresis)
@@ -132,11 +121,11 @@ class MemoryPressureLevels {
         , m_debounce(debounce)
         , m_hysteresis(hysteresis) {}
 
-    usize m_out_of_memory = 0;
-    usize m_critical = 0;
-    usize m_warning = 0;
-    usize m_debounce = 0;
-    Duration m_hysteresis{};
+    usize m_out_of_memory;
+    usize m_critical;
+    usize m_warning;
+    usize m_debounce;
+    Duration m_hysteresis;
 };
 
 class MemoryReclaimer;
@@ -148,7 +137,8 @@ class MemoryReclaimer;
 /// declared OutOfMemory, with nothing to reclaim, they are refused. Each
 /// change of pressure is logged.
 ///
-/// Started at boot with the levels the `kernel.oom.*` boot options give.
+/// Started at boot with the levels the `kernel.oom.*` boot options give,
+/// raised where the zones' floors need it.
 class MemoryWatchdog {
     using Self = MemoryWatchdog;
 
@@ -159,8 +149,8 @@ class MemoryWatchdog {
     MemoryWatchdog(Self const &) = delete;
     auto operator=(Self const &) -> Self & = delete;
 
-    /// Starts its thread, watching with |levels|. InvArgs for levels that
-    /// are not is_valid(), OutOfMem when there is no thread for it.
+    /// Starts its thread, watching with |levels|. OutOfMem when there is no
+    /// thread for it.
     auto start(MemoryPressureLevels const &levels) -> Status;
 
     /// The pressure last declared.
@@ -169,15 +159,15 @@ class MemoryWatchdog {
         return m_pressure.load(std::memory_order_acquire);
     }
 
-    /// The levels in use.
+    /// The levels in use, or none before start().
     [[nodiscard]]
-    auto levels() const -> MemoryPressureLevels;
+    auto levels() const -> ustl::Option<MemoryPressureLevels>;
 
-    /// Replaces the levels, and the watchdog looks again at once, without
-    /// waiting for the hysteresis to declare a lower pressure. InvArgs for
-    /// levels that are not is_valid(). For tests, which move the levels to
-    /// where free memory is, rather than free memory to where they are.
-    auto set_levels(MemoryPressureLevels const &levels) -> Status;
+    /// Replaces the levels of a started watchdog, and it looks again at once,
+    /// without waiting for the hysteresis to declare a lower pressure. For tests,
+    /// which move the levels to where free memory is, rather than free
+    /// memory to where they are, and put back what levels() gave them.
+    auto set_levels(MemoryPressureLevels const &levels) -> void;
 
     /// While one is alive the watchdog arms nothing: for a test that drives
     /// the PMM's gate and signal by hand. The guard is what lockdep records.
@@ -229,7 +219,9 @@ class MemoryWatchdog {
     /// Held while the thread looks and arms the PMM, and for as long as a
     /// Hold lives; not while the thread sleeps.
     mutable sync::Mutex m_lock;
-    MemoryPressureLevels m_levels TA_GUARDED(m_lock){};
+    /// None until start(): there are no levels to watch with before the
+    /// boot options have been read.
+    ustl::Option<MemoryPressureLevels> m_levels TA_GUARDED(m_lock);
 
     /// set_levels() asks for the next look to declare what it finds, lower
     /// pressure or not: a test moves the levels and wants the answer now.

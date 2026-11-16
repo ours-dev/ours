@@ -588,3 +588,56 @@ None.
 - Why does a buddy block have to be aligned to its own size, and what decides the largest block a range can start with?
 - Why can `adopt_frames()` split a range at zone ends without checking every frame's zone?
 - Why does `adopt()` return a count of crossings rather than whether it crossed?
+
+## The pressure levels nest by type (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/memory_watchdog.hpp`, `kernel/mm/memory_watchdog.cpp` — `MemoryPressureLevels` loses its default constructor, `is_valid()`, `from_boot_options()` and the friend that used the constructor; `make()` checks a private `nest()` written with differences instead of sums; `covering()` asserts that its raise fits; `bounds_of()` and `delay_level()` lose their assertions; `MemoryWatchdog` holds `ustl::Option<MemoryPressureLevels>`, `start()` no longer answers `InvArgs`, `set_levels()` returns nothing and asserts a started watchdog, `levels()` returns the `Option`; the init hook builds the boot levels with `make()`, refuses and reports a bad command line, covers them once and logs a raise
+- `kernel/tests/memory_pressure_test.cpp`, `kernel/tests/page_reclaim_test.cpp` — put back the levels in force (`levels()`) instead of recomputing boot levels; new checks that `make()` refuses levels that do not nest, including where a sum would wrap
+- `.agents/skills/kernel-design/references/mm.md` — the rule for the levels
+
+**Symptom**
+"The levels nest" was not true of the type. A private default constructor built all-zero levels for the watchdog's member, and `from_boot_options()` and `covering()` could return levels that do not nest, so the check was repeated in `start()`, `set_levels()` and `covering()` and asserted in `bounds_of()` and `delay_level()`, where an invalid value would wrap their unsigned subtractions. The init hook redid `from_boot_options()`'s unit conversion and floor sum just to log, and a test had to ask `is_valid()` before `delay_level()`. `nest()`'s predecessor also used sums, which wrap for levels near the top of the range and let levels that do not nest through.
+
+**Cause**
+The type was built before the watchdog had a "not started" state of its own, so a value of the type stood in for "no levels yet", and every consumer had to ask which it held.
+
+**Change**
+A value of the type is levels that nest, and "no levels yet" is the watchdog's `Option`:
+
+```cpp
+static auto make(usize oom, usize critical, usize warning, usize debounce, Duration h)
+    -> ustl::Result<MemoryPressureLevels, Status>;          // the only builder
+// nest(): oom > debounce && critical > oom && critical - oom > debounce && ...
+
+ustl::Option<MemoryPressureLevels> m_levels TA_GUARDED(m_lock);   // MemoryWatchdog, none until start()
+
+// the init hook
+auto const given = MemoryPressureLevels::make(<kernel.oom.* options>);
+if (!given) { log::error(...); return; }                     // no watchdog
+auto const levels = given->covering(zone_floor_frame_count());
+```
+
+A bad command line is refused where the levels are made, in the init hook, instead of in `start()`, with the same message and the same outcome: no watchdog. The review had marked that move as changing a documented contract; what changes is only where the refusal happens. The levels in force are the same value as before, and the floors are summed once instead of twice.
+
+**Reference**
+None: this kernel's own watchdog type.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed, on the default and the four-node machine. `ktest all`: default 94 ran, 84 passed, 10 skipped; four nodes 94 ran, 91 passed, 3 skipped. `MEM=8192`: the boot log says `kernel.oom levels raised 9 MiB: the zones' floors hold 57 MiB` as before, and `ktest sel=MemoryPressure.*:PmNode.*:PageReclaim.*` 18 ran, 10 passed, 0 failed. Failure-injection build: 94 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `memory_watchdog.cpp`. Control: a test line that default-constructs the type or calls `is_valid()` fails to compile. The init hook's refusal message is not exercised: the boot command line is built into the image, and the decision it reports is `make()`'s, which the new checks cover.
+
+A narrow pre-commit review confirmed that `look()` cannot run before `start()` stores the levels, that no caller sets levels before `start()`, that the init hook's messages and the levels in force are unchanged, and that restoring the levels in force is equivalent for tests run in sequence. It found the stale design rule (it said `start()` refuses levels that do not nest), the wrapping sums in `nest()` and in `covering()`'s raise (both now checked: differences in `nest()`, an assertion in `covering()`), and that a `set_levels()` before `start()` would make "levels set" stop meaning "watchdog running" (now asserted).
+
+**Deliberately not done**
+None.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M10, from the pressure reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What did the all-zero default value stand for, and why is an `Option` in the watchdog the honest place for it?
+- Why can `critical > out_of_memory + debounce` accept levels that do not nest, and how do differences avoid it?
+- Why does refusing a bad command line in the init hook rather than in `start()` change nothing the user sees?

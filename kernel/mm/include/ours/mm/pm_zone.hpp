@@ -155,11 +155,45 @@ class PmZone {
     [[nodiscard]]
     auto count_free_frames() -> usize;
 
-    /// How many free blocks of exactly |order| this zone holds, under the zone
-    /// lock. Which orders the free memory sits at is what shows whether freed
-    /// blocks coalesce; for diagnostics and tests, not a hot path.
+    /// A zone's free memory as its buddy holds it: how many free blocks sit at
+    /// each order, and how many frames are free. Which orders the free memory
+    /// sits at is what shows whether freed blocks coalesce, so a block given
+    /// back in parts, coalescing as it should, leaves the zone's profile equal
+    /// to the one it found. For diagnostics and tests, not a hot path.
+    class FreeBlockProfile {
+      public:
+        /// Free blocks of exactly |order|.
+        [[nodiscard]]
+        auto blocks(usize const order) const -> usize {
+            return m_blocks[order];
+        }
+
+        /// Free frames, in blocks of every order.
+        [[nodiscard]]
+        auto frames() const -> usize {
+            return m_frames;
+        }
+
+        /// This profile with one more free block of |order|: what the release
+        /// of such a block leaves when it coalesces with nothing.
+        [[nodiscard]]
+        auto with_block(usize order) const -> FreeBlockProfile;
+
+        auto operator==(FreeBlockProfile const &) const -> bool = default;
+
+      private:
+        friend class PmZone;
+        FreeBlockProfile() = default;
+
+        std::array<usize, FrameBuddy::NUM_ORDERS> m_blocks{};
+        usize m_frames = 0;
+    };
+
+    /// This zone's free-block profile, read in one hold of the zone lock, so
+    /// that the counts are of one moment: a block in mid-split or mid-merge on
+    /// another CPU is never counted at two orders, or at none.
     [[nodiscard]]
-    auto free_blocks(usize order) -> usize;
+    auto free_block_profile() -> FreeBlockProfile;
 
     auto find_frame(usize order) -> PmFrame *;
 

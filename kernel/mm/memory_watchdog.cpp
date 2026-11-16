@@ -31,32 +31,21 @@ auto to_string(MemoryPressure const pressure) -> char const * {
     return "?";
 }
 
-auto MemoryPressureLevels::from_boot_options() -> MemoryPressureLevels {
-    auto const &options = boot::options();
-    MemoryPressureLevels const given{
-        usize{options.oom_out_of_memory_mb()} * FRAMES_PER_MIB,
-        usize{options.oom_critical_mb()} * FRAMES_PER_MIB,
-        usize{options.oom_warning_mb()} * FRAMES_PER_MIB,
-        usize{options.oom_debounce_mb()} * FRAMES_PER_MIB,
-        duration_cast<Duration>(Seconds(options.oom_hysteresis_seconds()))};
-    return given.covering(zone_floor_frame_count());
-}
-
 auto MemoryPressureLevels::covering(usize const held) const -> MemoryPressureLevels {
-    // Levels that do not nest are left as they are, for start() to refuse: a
-    // bad command line is reported, not repaired. The raise keeps every gap,
-    // but it would lift an OutOfMemory level at or below the debounce over
-    // it, and quietly start a watchdog on levels nobody gave.
-    if (!is_valid()) {
-        return *this;
-    }
+    // These levels nest, and the raise keeps every gap and only lifts the
+    // lowest level further above the debounce, so the result nests too.
     // delay_level() is the OutOfMemory level less the debounce, and it has
-    // to be strictly above |held|.
+    // to be strictly above |held|. In every build: levels that wrapped would
+    // not nest, and nothing downstream checks again. Boot levels and a
+    // machine's floors are far from the top of the range.
+    ASSERT(held < NO_BOUND - m_debounce, "{} frames held is too many to cover", held);
     auto const needed = held + m_debounce + 1;
     if (m_out_of_memory >= needed) {
         return *this;
     }
     auto const raise = needed - m_out_of_memory;
+    ASSERT(raise <= NO_BOUND - m_debounce - m_warning,
+           "levels with Warning at {} cannot be raised by {}", m_warning, raise);
     return {m_out_of_memory + raise, m_critical + raise, m_warning + raise, m_debounce,
             m_hysteresis};
 }
@@ -65,16 +54,20 @@ auto MemoryPressureLevels::make(usize const out_of_memory, usize const critical,
                                 usize const warning, usize const debounce,
                                 Duration const hysteresis)
     -> ustl::Result<MemoryPressureLevels, Status> {
-    MemoryPressureLevels levels{out_of_memory, critical, warning, debounce, hysteresis};
-    if (!levels.is_valid()) {
+    if (!nest(out_of_memory, critical, warning, debounce)) {
         return ustl::err(Status::InvArgs);
     }
-    return ustl::ok(levels);
+    return ustl::ok(MemoryPressureLevels{out_of_memory, critical, warning, debounce, hysteresis});
 }
 
-auto MemoryPressureLevels::is_valid() const -> bool {
-    return m_out_of_memory > m_debounce && m_critical > m_out_of_memory + m_debounce &&
-           m_warning > m_critical + m_debounce;
+auto MemoryPressureLevels::nest(usize const out_of_memory, usize const critical,
+                                usize const warning, usize const debounce) -> bool {
+    // Differences, not sums: a sum of two large levels wraps and would let
+    // levels that do not nest through. The last term keeps the widest bound
+    // bounds_of() gives, the warning level plus the debounce, from wrapping.
+    return out_of_memory > debounce && critical > out_of_memory &&
+           critical - out_of_memory > debounce && warning > critical &&
+           warning - critical > debounce && debounce <= NO_BOUND - warning;
 }
 
 auto MemoryPressureLevels::pressure_at(usize const free) const -> MemoryPressure {
@@ -91,8 +84,7 @@ auto MemoryPressureLevels::pressure_at(usize const free) const -> MemoryPressure
 }
 
 auto MemoryPressureLevels::bounds_of(MemoryPressure const pressure) const -> Bounds {
-    // The subtractions below are unsigned. An invalid value wraps them.
-    DEBUG_ASSERT(is_valid(), "the levels do not nest");
+    // The subtractions below are unsigned; levels that nest never wrap them.
     switch (pressure) {
         case MemoryPressure::Normal:
             return {.lower = m_warning - m_debounce, .upper = NO_BOUND};
@@ -107,7 +99,6 @@ auto MemoryPressureLevels::bounds_of(MemoryPressure const pressure) const -> Bou
 }
 
 auto MemoryPressureLevels::delay_level() const -> usize {
-    DEBUG_ASSERT(is_valid(), "the levels do not nest");
     return m_out_of_memory - m_debounce;
 }
 
@@ -117,9 +108,6 @@ auto MemoryWatchdog::get() -> Self & {
 }
 
 auto MemoryWatchdog::start(MemoryPressureLevels const &levels) -> Status {
-    if (!levels.is_valid()) {
-        return Status::InvArgs;
-    }
     {
         Guard guard{m_lock};
         m_levels = levels;
@@ -138,22 +126,21 @@ auto MemoryWatchdog::start(MemoryPressureLevels const &levels) -> Status {
     return Status::Ok;
 }
 
-auto MemoryWatchdog::levels() const -> MemoryPressureLevels {
+auto MemoryWatchdog::levels() const -> ustl::Option<MemoryPressureLevels> {
     Guard guard{m_lock};
     return m_levels;
 }
 
-auto MemoryWatchdog::set_levels(MemoryPressureLevels const &levels) -> Status {
-    if (!levels.is_valid()) {
-        return Status::InvArgs;
-    }
+auto MemoryWatchdog::set_levels(MemoryPressureLevels const &levels) -> void {
     {
         Guard guard{m_lock};
+        // Levels mean a running watchdog (levels()): only what start() began
+        // may be moved.
+        DEBUG_ASSERT(m_levels.is_some(), "the watchdog's levels are set before it was started");
         m_levels = levels;
         m_skip_hysteresis = true;
     }
     m_signal.signal();
-    return Status::Ok;
 }
 
 auto MemoryWatchdog::run() -> i32 {
@@ -172,14 +159,16 @@ auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
     usize frames = 0;
     {
         Guard guard{m_lock};
+        // The thread is started by start(), which sets the levels first.
+        DEBUG_ASSERT(m_levels.is_some(), "the watchdog looks before it was started");
         auto const free = approx_free_frame_count();
-        auto const found = m_levels.pressure_at(free);
+        auto const found = m_levels->pressure_at(free);
         if (found == MemoryPressure::OutOfMemory) {
             // Nothing waits for a thread here: the allocations that could wait
             // are about to be refused, so what can be given back is given back
             // first, on this thread. The distance is to the upper edge of this
             // pressure's bounds.
-            auto const goal = m_levels.bounds_of(found).upper;
+            auto const goal = m_levels->bounds_of(found).upper;
             if (goal > free) {
                 frames = goal - free;
             }
@@ -198,19 +187,19 @@ auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
 
     Guard guard{m_lock};
     auto free = approx_free_frame_count();
-    auto found = m_levels.pressure_at(free);
+    auto found = m_levels->pressure_at(free);
     if (found == MemoryPressure::Warning || found == MemoryPressure::Critical) {
-        m_reclaimer.request(m_levels.bounds_of(found).upper - free);
+        m_reclaimer.request(m_levels->bounds_of(found).upper - free);
     }
     auto const now = time::SteadyClock::now();
 
     auto deadline = time::Deadline::infinite();
     auto declare = !m_declared_once || m_skip_hysteresis || found > m_declared;
     if (!declare && found < m_declared) {
-        if (now - m_declared_at >= m_levels.hysteresis()) {
+        if (now - m_declared_at >= m_levels->hysteresis()) {
             declare = true;
         } else {
-            deadline = time::Deadline::at(m_declared_at + m_levels.hysteresis());
+            deadline = time::Deadline::at(m_declared_at + m_levels->hysteresis());
         }
     }
     m_skip_hysteresis = false;
@@ -232,8 +221,8 @@ auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
     if (found == MemoryPressure::OutOfMemory) {
         delayed = DelayedAllocations::Refuse;
     }
-    auto const bounds = m_levels.bounds_of(found);
-    if (!set_free_memory_signal(bounds.lower, bounds.upper, m_levels.delay_level(), &m_signal,
+    auto const bounds = m_levels->bounds_of(found);
+    if (!set_free_memory_signal(bounds.lower, bounds.upper, m_levels->delay_level(), &m_signal,
                                 delayed)) {
         return ustl::NONE;
     }
@@ -244,22 +233,36 @@ namespace {
     /// The init hook takes a plain function, as the thread does.
     INIT_CODE
     auto start_memory_watchdog() -> void {
-        auto const levels = MemoryPressureLevels::from_boot_options();
-        // Said once, here, because the levels the log and the command line
-        // show are then not the ones in force.
-        auto const given = usize{boot::options().oom_out_of_memory_mb()} * FRAMES_PER_MIB;
-        if (levels.out_of_memory() > given) {
-            log::info("mm: kernel.oom levels raised {} MiB: the zones' floors hold {} MiB",
-                      (levels.out_of_memory() - given + FRAMES_PER_MIB - 1) / FRAMES_PER_MIB,
-                      zone_floor_frame_count() / FRAMES_PER_MIB);
-        }
-        auto const status = MemoryWatchdog::get().start(levels);
-        if (Status::InvArgs == status) {
+        // The levels the kernel.oom.* boot options give. Levels that do not
+        // nest are refused here and reported, not repaired: there is then no
+        // watchdog.
+        auto const &options = boot::options();
+        auto const given = MemoryPressureLevels::make(
+            usize{options.oom_out_of_memory_mb()} * FRAMES_PER_MIB,
+            usize{options.oom_critical_mb()} * FRAMES_PER_MIB,
+            usize{options.oom_warning_mb()} * FRAMES_PER_MIB,
+            usize{options.oom_debounce_mb()} * FRAMES_PER_MIB,
+            duration_cast<Duration>(Seconds(options.oom_hysteresis_seconds())));
+        if (!given) {
             log::error("mm: the kernel.oom levels {}/{}/{} MiB with a debounce of {} MiB do not "
                        "nest; no memory watchdog",
-                       levels.out_of_memory() / FRAMES_PER_MIB, levels.critical() / FRAMES_PER_MIB,
-                       levels.warning() / FRAMES_PER_MIB, levels.debounce() / FRAMES_PER_MIB);
-        } else if (Status::Ok != status) {
+                       options.oom_out_of_memory_mb(), options.oom_critical_mb(),
+                       options.oom_warning_mb(), options.oom_debounce_mb());
+            return;
+        }
+
+        // Raised where this machine's zone floors need it, and said once,
+        // here, because the levels the log and the command line show are
+        // then not the ones in force.
+        auto const held = zone_floor_frame_count();
+        auto const levels = given->covering(held);
+        if (levels.out_of_memory() > given->out_of_memory()) {
+            log::info("mm: kernel.oom levels raised {} MiB: the zones' floors hold {} MiB",
+                      (levels.out_of_memory() - given->out_of_memory() + FRAMES_PER_MIB - 1) /
+                          FRAMES_PER_MIB,
+                      held / FRAMES_PER_MIB);
+        }
+        if (auto const status = MemoryWatchdog::get().start(levels); Status::Ok != status) {
             log::error("mm: no thread for the memory watchdog: {}", to_string(status));
         }
     }
