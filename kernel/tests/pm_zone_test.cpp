@@ -27,14 +27,12 @@
 /// section it may have to take every max-order block of the first; those go
 /// back untouched at the end.
 ///
-/// The counts are read under the zone lock, but not all at once: another CPU
-/// allocating from or freeing into the zone between the two readings would
-/// move them. Run it from an idle shell.
+/// Each profile is read in one hold of the zone lock, but the two are not:
+/// another CPU allocating from or freeing into the zone between them would
+/// move the counts. Run it from an idle shell.
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
-
-#include <array>
 
 #include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
@@ -52,24 +50,14 @@ namespace {
     /// hand out before an allocation has to come from a later one.
     constexpr auto BLOCKS_PER_SECTION = usize{1} << (PFN_SECTION_SHIFT - MAX_FRAME_ORDER);
 
-    using Counts = std::array<usize, NR_FRAME_ORDERS>;
-
-    auto count_free_blocks(PmZone &zone) -> Counts {
-        Counts counts{};
-        for (usize order = 0; order < NR_FRAME_ORDERS; ++order) {
-            counts[order] = zone.free_blocks(order);
-        }
-        return counts;
-    }
-
     /// Frees |block|, a max-order block taken from |zone|, one frame at a time
-    /// and says whether the zone's lists gained one max-order block and
-    /// nothing below it. The lower half goes top down, so each frame freed
+    /// and says whether the zone's profile gained one max-order block and
+    /// nothing else. The lower half goes top down, so each frame freed
     /// finds its partner above it; the upper half bottom up, so each finds it
     /// below: the merge steps both ways from the descriptor in hand.
     auto frees_back_whole(PmZone &zone, PmFrame *const block, char const *const where) -> bool {
         auto const pfn = mm::frame_to_pfn(block);
-        auto const before = count_free_blocks(zone);
+        auto const before = zone.free_block_profile();
 
         // Straight into the zone, below the allocation pipeline: whether a
         // release brought the zone back above Low wakes nobody here. Split
@@ -84,17 +72,19 @@ namespace {
             auto _ = zone.free_frames(block[i]);
         }
 
-        auto const after = count_free_blocks(zone);
-        auto whole = true;
-        for (usize order = 0; order < NR_FRAME_ORDERS; ++order) {
-            auto expected = before[order];
-            if (order == MAX_FRAME_ORDER) {
-                expected += 1;
+        auto const after = zone.free_block_profile();
+        auto const expected = before.with_block(MAX_FRAME_ORDER);
+        auto const whole = after == expected;
+        if (!whole) {
+            for (usize order = 0; order < NR_FRAME_ORDERS; ++order) {
+                if (after.blocks(order) != expected.blocks(order)) {
+                    log::info("PmZone:     order {}: {} free block(s) expected, {} found", order,
+                              expected.blocks(order), after.blocks(order));
+                }
             }
-            if (after[order] != expected) {
-                whole = false;
-                log::info("PmZone:     order {}: {} free block(s) before, {} after", order,
-                          before[order], after[order]);
+            if (after.frames() != expected.frames()) {
+                log::info("PmZone:     {} free frame(s) expected, {} counted", expected.frames(),
+                          after.frames());
             }
         }
         auto outcome = "coalesced";

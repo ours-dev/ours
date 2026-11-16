@@ -872,9 +872,11 @@ namespace {
 
         // Each part is a block of its own now and goes back alone: five frees
         // for what was one allocation. The EXPECTs above are what check the
-        // split. The frees would not: the buddy asserts only that a block is
-        // aligned to its order, so a part returned at a wrong order that is
-        // still aligned goes through, and the frame ends up free twice.
+        // split. The frees here would not: the buddy asserts only that a block
+        // is aligned to its order, so a part returned at a wrong order that is
+        // still aligned goes through, and the frame ends up free twice. On a
+        // node quiet enough to read its zone's profile around them,
+        // ABlockCarriesItsLayoutAndCoalescesBack checks the frees too.
         mm::free_frames(&block[0]);
         mm::free_frames(&block[1]);
         for (usize index = 2; index < NR_FRAMES; index += 2) {
@@ -987,99 +989,6 @@ namespace {
 #endif
     }
 
-    /// Takes order-0 frames out of |zone| through the zone itself, which has no
-    /// floor, until its free count is |target|, onto |held|. Larger blocks
-    /// first while they fit, so that a zone of a hundred thousand frames is
-    /// drained in a few hundred calls.
-    auto drain_to(PmZone &zone, usize const target, PmFrame::List &held) -> bool {
-        for (usize order = MAX_FRAME_ORDER + 1; order > 0; --order) {
-            auto const size = usize{1} << (order - 1);
-            while (zone.num_free_frames() >= target + size) {
-                auto block = zone.alloc_frames(order - 1);
-                if (!block) {
-                    break;
-                }
-                held.push_back(block.value());
-            }
-        }
-        return zone.num_free_frames() == target;
-    }
-
-    KTEST(PmNode, AdmissionHoldsAtLowThenAtMin) {
-        // A node other than the calling CPU's, with one zone, so that every
-        // allocation below asks exactly one zone and the test does not starve
-        // its own node. The four-node machine has three; one node has none.
-        auto const local = mm::current_node();
-        PmNode *target = nullptr;
-        mm::for_each_node(mm::NodeState::Memory, [local, &target](PmNode &node) {
-            if (target || node.nid() == local) {
-                return;
-            }
-            usize zones = 0;
-            node.zone_list().for_each_local_zone([&zones](PmZone &) { zones += 1; });
-            if (zones == 1) {
-                target = &node;
-            }
-        });
-        if (!target) {
-            KTEST_SKIP("needs a second node with memory in one zone");
-        }
-        auto const nid = target->nid();
-        auto &zone = *target->zone_list().fallback()[0];
-        auto const min = zone.watermark(PmZone::Watermark::Min);
-        auto const low = zone.watermark(PmZone::Watermark::Low);
-        if (min < 4 || low <= min + 1) {
-            KTEST_SKIP("the zone's watermarks are too close to test between");
-        }
-
-        // Reclaim would give frames back to the zone while the test holds its
-        // count still. Nothing new is reclaimed while this lives; only a walk
-        // already under way as it began could still run, and nothing marks
-        // this node short beforehand.
-        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
-        auto const blocking = mm::ALLOC_KERNEL | mm::Gaf::ThisNode;
-        auto const non_blocking = mm::Gaf::ThisNode;
-        PmFrame::List held;
-
-        // At Low: the first pass refuses, the second lets a blocking request
-        // down to Min.
-        auto const at_low = drain_to(zone, low, held);
-        auto below_low = mm::alloc_frames(blocking, 0, nid);
-        auto const second_pass = below_low && (*below_low)->nid() == nid;
-        if (below_low) {
-            held.push_back(**below_low);
-        }
-
-        // At Min: a blocking request is refused, one that cannot block is not.
-        auto const at_min = drain_to(zone, min, held);
-        auto const refused = mm::alloc_frames(blocking, 0, nid);
-        auto const blocking_refused = !refused && refused.unwrap_err() == Status::OutOfMem;
-        if (refused) {
-            held.push_back(**refused);
-        }
-        auto const deeper = mm::alloc_frames(non_blocking, 0, nid);
-        auto const non_blocking_admitted = deeper && (*deeper)->nid() == nid;
-        if (deeper) {
-            held.push_back(**deeper);
-        }
-
-        // At three quarters of Min: nobody.
-        auto const at_floor = drain_to(zone, min - min / 4, held);
-        auto const last = mm::alloc_frames(non_blocking, 0, nid);
-        auto const non_blocking_refused = !last && last.unwrap_err() == Status::OutOfMem;
-        if (last) {
-            held.push_back(**last);
-        }
-        mm::free_frames(&held);
-
-        EXPECT_TRUE(at_low && second_pass,
-                    "below Low a blocking request is served by the second pass, down to Min");
-        EXPECT_TRUE(at_min && blocking_refused, "at Min a blocking request is refused");
-        EXPECT_TRUE(non_blocking_admitted, "at Min a request that cannot block is still served");
-        EXPECT_TRUE(at_floor && non_blocking_refused,
-                    "at three quarters of Min a request that cannot block is refused too");
-    }
-
     /// A node other than the calling CPU's with memory in one zone, or null.
     /// Draining it starves neither this test's node nor the zone order of any
     /// allocation that does not name it.
@@ -1097,6 +1006,125 @@ namespace {
             }
         });
         return found;
+    }
+
+    /// One zone held still while a test drains it. The reclaimer is paused,
+    /// so it gives the zone nothing back while the test counts; every frame
+    /// the test takes is held here, and given back when the trial ends,
+    /// however the test ends.
+    ///
+    /// The frames go back in the destructor's body, which runs before any
+    /// member is destroyed, the Pause among them: the zone is whole again
+    /// before reclaim may look at it. Not a KTEST_F fixture: a fixture is one
+    /// static instance for every test that names it, which would hold the
+    /// Pause for good.
+    class ZoneTrial {
+      public:
+        explicit ZoneTrial(PmZone &zone) : m_zone(zone), m_no_reclaim(mm::MemoryReclaimer::get()) {}
+
+        ~ZoneTrial() {
+            mm::free_frames(&m_held);
+        }
+
+        ZoneTrial(ZoneTrial const &) = delete;
+        auto operator=(ZoneTrial const &) -> ZoneTrial & = delete;
+
+        /// Takes frames out of the zone through the zone itself, which has no
+        /// floor, until its free count is |target|. Larger blocks first while
+        /// they fit, so that a zone of a hundred thousand frames is drained in
+        /// a few hundred calls. Whether the count reached |target|.
+        auto drain_to(usize const target) -> bool {
+            for (usize order = MAX_FRAME_ORDER + 1; order > 0; --order) {
+                auto const size = usize{1} << (order - 1);
+                while (m_zone.num_free_frames() >= target + size) {
+                    auto block = m_zone.alloc_frames(order - 1);
+                    if (!block) {
+                        break;
+                    }
+                    m_held.push_back(block.value());
+                }
+            }
+            return m_zone.num_free_frames() == target;
+        }
+
+        /// Holds the frame an allocation through the pipeline gave the test,
+        /// if it gave one, until the trial ends.
+        auto keep(ktl::Result<PmFrame *> const &result) -> void {
+            if (result) {
+                m_held.push_back(**result);
+            }
+        }
+
+        /// Hands one held frame back to the test, which gives it back itself;
+        /// null when the trial holds none.
+        auto hand_over() -> PmFrame * {
+            auto front = m_held.front();
+            if (!front) {
+                return nullptr;
+            }
+            auto *const frame = &front.value();
+            m_held.pop_front();
+            return frame;
+        }
+
+      private:
+        PmZone &m_zone;
+        mm::MemoryReclaimer::Pause const m_no_reclaim;
+        PmFrame::List m_held;
+    };
+
+    KTEST(PmNode, AdmissionHoldsAtLowThenAtMin) {
+        // A node other than the calling CPU's, with one zone, so that every
+        // allocation below asks exactly one zone and the test does not starve
+        // its own node. The four-node machine has three; one node has none.
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list().fallback()[0];
+        auto const min = zone.watermark(PmZone::Watermark::Min);
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        if (min < 4 || low <= min + 1) {
+            KTEST_SKIP("the zone's watermarks are too close to test between");
+        }
+
+        // Reclaim would give frames back to the zone while the test holds its
+        // count still. Nothing new is reclaimed while the trial lives; only a
+        // walk already under way as it began could still run, and nothing
+        // marks this node short beforehand.
+        ZoneTrial trial{zone};
+        auto const blocking = mm::ALLOC_KERNEL | mm::Gaf::ThisNode;
+        auto const non_blocking = mm::Gaf::ThisNode;
+
+        // At Low: the first pass refuses, the second lets a blocking request
+        // down to Min.
+        auto const at_low = trial.drain_to(low);
+        auto const below_low = mm::alloc_frames(blocking, 0, nid);
+        auto const second_pass = below_low && (*below_low)->nid() == nid;
+        trial.keep(below_low);
+
+        // At Min: a blocking request is refused, one that cannot block is not.
+        auto const at_min = trial.drain_to(min);
+        auto const refused = mm::alloc_frames(blocking, 0, nid);
+        auto const blocking_refused = !refused && refused.unwrap_err() == Status::OutOfMem;
+        trial.keep(refused);
+        auto const deeper = mm::alloc_frames(non_blocking, 0, nid);
+        auto const non_blocking_admitted = deeper && (*deeper)->nid() == nid;
+        trial.keep(deeper);
+
+        // At three quarters of Min: nobody.
+        auto const at_floor = trial.drain_to(min - min / 4);
+        auto const last = mm::alloc_frames(non_blocking, 0, nid);
+        auto const non_blocking_refused = !last && last.unwrap_err() == Status::OutOfMem;
+        trial.keep(last);
+
+        EXPECT_TRUE(at_low && second_pass,
+                    "below Low a blocking request is served by the second pass, down to Min");
+        EXPECT_TRUE(at_min && blocking_refused, "at Min a blocking request is refused");
+        EXPECT_TRUE(non_blocking_admitted, "at Min a request that cannot block is still served");
+        EXPECT_TRUE(at_floor && non_blocking_refused,
+                    "at three quarters of Min a request that cannot block is refused too");
     }
 
     KTEST(PmNode, WaitingRequestsStopAtLowAndWakeOnRelief) {
@@ -1122,9 +1150,8 @@ namespace {
             KTEST_SKIP("the zone's watermarks are too close to test between");
         }
 
-        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
-        PmFrame::List held;
-        auto const at_low = drain_to(zone, low, held);
+        ZoneTrial trial{zone};
+        auto const at_low = trial.drain_to(low);
 
         // An ordinary waiting request, on a machine that is this node alone:
         // the node set is the test's stand-in for the machine, so the request
@@ -1139,11 +1166,14 @@ namespace {
         // by the second pass.
         auto const waiting = ask_waiting();
         auto const put_off = !waiting && waiting.unwrap_err() == Status::ShouldWait;
-        if (waiting) {
-            held.push_back(**waiting);
-        }
+        trial.keep(waiting);
         auto const kernel = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, nid);
         auto const served = kernel && (*kernel)->nid() == nid;
+        if (!served) {
+            // Not the frame the releases below are counted with: held, so
+            // that the trial still gives it back.
+            trial.keep(kernel);
+        }
 
         // The zone is one below Low now. Each release below is counted on one
         // CPU's counter, read around it with nothing to preempt it, and the
@@ -1164,9 +1194,7 @@ namespace {
             early = counted(*kernel);
             auto const again = ask_waiting();
             still_put_off = !again && again.unwrap_err() == Status::ShouldWait;
-            if (again) {
-                held.push_back(**again);
-            }
+            trial.keep(again);
         }
 
         // The next release takes it above Low: one wake, and the request it
@@ -1175,23 +1203,16 @@ namespace {
         auto served_after = false;
         auto quiet = isize{1};
         if (still_put_off) {
-            if (auto front = held.front()) {
-                auto *const block = &front.value();
-                held.pop_front();
+            if (auto *const block = trial.hand_over()) {
                 woke = counted(block);
             }
             auto const retried = ask_waiting();
             served_after = retried && (*retried)->nid() == nid;
-            if (retried) {
-                held.push_back(**retried);
-            }
-            if (auto front = held.front()) {
-                auto *const block = &front.value();
-                held.pop_front();
+            trial.keep(retried);
+            if (auto *const block = trial.hand_over()) {
                 quiet = counted(block);
             }
         }
-        mm::free_frames(&held);
 
         EXPECT_TRUE(at_low && put_off, "at Low a waiting request is answered ShouldWait");
         EXPECT_TRUE(served, "at Low a request that cannot wait is served by the second pass");
@@ -1222,24 +1243,19 @@ namespace {
             return mm::alloc_frames(mm::ALLOC_USER_VMO | mm::Gaf::ThisNode, 0, nid);
         };
 
-        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
-        PmFrame::List held;
+        ZoneTrial trial{zone};
 
         // At Low it is not put off: the Min pass serves it from its node.
-        auto const at_low = drain_to(zone, low, held);
+        auto const at_low = trial.drain_to(low);
         auto const served = confined();
         auto const from_node = served && (*served)->nid() == nid;
-        if (served) {
-            held.push_back(**served);
-        }
+        trial.keep(served);
 
         // At Min it fails, where an ordinary one would have been put off at Low.
-        auto const at_min = drain_to(zone, min, held);
+        auto const at_min = trial.drain_to(min);
         auto const refused = confined();
         auto const out_of_mem = !refused && refused.unwrap_err() == Status::OutOfMem;
-        if (refused) {
-            held.push_back(**refused);
-        }
+        trial.keep(refused);
 
         // With no node to use at all -- ThisNode, and a node set without its
         // home -- it fails at once rather than waiting on nothing.
@@ -1247,10 +1263,7 @@ namespace {
         auto const nowhere =
             mm::priv::alloc_frames(mm::ALLOC_USER_VMO | mm::Gaf::ThisNode, 0, nid, other);
         auto const nowhere_fails = !nowhere && nowhere.unwrap_err() == Status::OutOfMem;
-        if (nowhere) {
-            held.push_back(**nowhere);
-        }
-        mm::free_frames(&held);
+        trial.keep(nowhere);
 
         EXPECT_TRUE(at_low && from_node,
                     "at Low a confined waiting request is served by the Min pass, from its node");
@@ -1266,19 +1279,11 @@ namespace {
         auto const nid = target->nid();
         auto &zone = *target->zone_list().fallback()[0];
 
-        // The zone's free blocks by order, and its free frames: what a block
-        // taken and given back in parts must leave as it found. A quiet node,
-        // and the reclaimer paused, so nothing else moves them meanwhile.
-        auto const profile = [&zone] {
-            std::array<usize, MAX_FRAME_ORDER + 1> blocks{};
-            for (usize order = 0; order <= MAX_FRAME_ORDER; ++order) {
-                blocks[order] = zone.free_blocks(order);
-            }
-            return blocks;
-        };
+        // What a block taken and given back in parts must leave as it found:
+        // the zone's free-block profile. A quiet node, and the reclaimer
+        // paused, so nothing else moves it meanwhile.
         mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
-        auto const before = profile();
-        auto const free_before = zone.num_free_frames();
+        auto const before = zone.free_block_profile();
 
         constexpr usize ORDER = 3;
         constexpr usize FRAMES = usize{1} << ORDER;
@@ -1301,28 +1306,49 @@ namespace {
         // Split into blocks of two: heads at even frames, each tail one away.
         mm::split_block(head, 1);
         auto split_ok = true;
-        for (usize index = 0; index < FRAMES; ++index) {
-            if (index % 2 == 0) {
-                split_ok = split_ok && frame(index)->is_head() && frame(index)->order() == 1;
-            } else {
-                split_ok = split_ok && frame(index)->compound_offset() == 1;
-            }
+        for (usize index = 0; index < FRAMES; index += 2) {
+            split_ok = split_ok && frame(index)->is_head() && frame(index)->order() == 1 &&
+                       frame(index + 1)->compound_offset() == 1;
         }
 
-        for (usize index = 0; index < FRAMES; index += 2) {
-            mm::free_frames(frame(index));
+        // The lower two of those again, down to single frames; the upper two
+        // stay blocks of two.
+        constexpr usize SINGLES = FRAMES / 2;
+        mm::split_block(frame(0));
+        mm::split_block(frame(2));
+        auto singles_ok = true;
+        for (usize index = 0; index < SINGLES; ++index) {
+            singles_ok = singles_ok && frame(index)->is_head() && frame(index)->order() == 0 &&
+                         frame(index)->compound_offset() == 0;
         }
+        for (auto index = SINGLES; index < FRAMES; index += 2) {
+            singles_ok = singles_ok && frame(index)->order() == 1;
+        }
+
+        // Each part goes back through the seam alone. The blocks of two by
+        // their heads, then the single frames one by one: the first pair top
+        // down, so each frame finds its partner above it, the second bottom
+        // up, so each finds it below, and the last one closes the block.
+        mm::free_frames(frame(4));
+        mm::free_frames(frame(6));
+        mm::free_frames(frame(1));
+        mm::free_frames(frame(0));
+        mm::free_frames(frame(2));
+        mm::free_frames(frame(3));
         auto cleared = true;
         for (usize index = 0; index < FRAMES; ++index) {
             cleared = cleared && frame(index)->compound_offset() == 0;
         }
-        auto const coalesced = profile() == before && zone.num_free_frames() == free_before;
+        auto const coalesced = zone.free_block_profile() == before;
 
         EXPECT_TRUE(stamped, "a block handed out names its head on every tail");
         EXPECT_TRUE(split_ok, "a split stamps each part as a block of its own");
+        EXPECT_TRUE(singles_ok,
+                    "a part split to order 0 is single frames, and the other parts stay");
         EXPECT_TRUE(cleared, "freed, the parts keep no stamp");
         EXPECT_TRUE(coalesced,
-                    "the parts, freed by their heads, coalesce back to where the zone was");
+                    "the parts, single frames among them, freed alone coalesce back to where "
+                    "the zone was");
     }
 
     KTEST(PmNode, AdoptedFramesReturnToTheirZone) {
@@ -1331,13 +1357,6 @@ namespace {
             KTEST_SKIP("needs a second node with memory in one zone");
         }
         auto &zone = *target->zone_list().fallback()[0];
-        auto const profile = [&zone] {
-            std::array<usize, MAX_FRAME_ORDER + 1> blocks{};
-            for (usize order = 0; order <= MAX_FRAME_ORDER; ++order) {
-                blocks[order] = zone.free_blocks(order);
-            }
-            return blocks;
-        };
 
         // Eight frames taken from the zone below the pipeline, as memory that
         // was never handed out through it, then given back as two ranges that
@@ -1349,26 +1368,66 @@ namespace {
         // get this far: the buddy's release() asserts alignment in every
         // build.
         mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
-        auto const before = profile();
-        auto const free_before = zone.num_free_frames();
+        auto const before = zone.free_block_profile();
         auto block = zone.alloc_frames(3);
         if (!block) {
             FAIL("an order-3 block from zone {}", mm::to_string(zone.zone_type()));
             return;
         }
         auto const pfn = mm::frame_to_pfn(&block.value());
-        auto const taken = zone.num_free_frames() == free_before - 8;
+        auto const without = zone.free_block_profile();
+        auto const taken = without.frames() == before.frames() - 8;
 
+        // The block's own partners are not free, so the three pieces stay as
+        // they are, and nothing else in the zone moves.
         mm::adopt_frames(pfn + 1, pfn + 8);
-        auto const carved = zone.free_blocks(0) == before[0] + 1 &&
-                            zone.free_blocks(1) == before[1] + 1 &&
-                            zone.free_blocks(2) == before[2] + 1;
+        auto const carved =
+            zone.free_block_profile() == without.with_block(0).with_block(1).with_block(2);
         mm::adopt_frames(pfn, pfn + 1);
-        auto const whole = profile() == before && zone.num_free_frames() == free_before;
+        auto const whole = zone.free_block_profile() == before;
 
         EXPECT_TRUE(taken, "the block leaves the zone's count");
         EXPECT_TRUE(carved, "an unaligned range leaves free blocks of one, two and four frames");
         EXPECT_TRUE(whole, "with its last frame adopted, the block is whole again");
+    }
+
+    KTEST(PmNode, AContiguousRunGivesItsSurplusBack) {
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list().fallback()[0];
+
+        // Three frames aligned to four pages come out of one block of four:
+        // the fourth is surplus, and goes back to the zone as the run is made.
+        // A quiet node, and the reclaimer paused, so the zone's profile moves
+        // only with the run.
+        constexpr auto NR_FRAMES = usize{3};
+        constexpr auto ALIGN_LOG2 = usize{PAGE_SHIFT + 2};
+        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        auto const before = zone.free_block_profile();
+        auto run = mm::alloc_frames_contiguous(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, NR_FRAMES,
+                                               ALIGN_LOG2, nid);
+        if (!run) {
+            FAIL("{} contiguous frames from node {}", NR_FRAMES, nid);
+            return;
+        }
+        auto const during = zone.free_block_profile();
+        auto from_node = true;
+        for (auto &frame: *run) {
+            from_node = from_node && frame.nid() == nid;
+        }
+        // Frame by frame, each a block of its own; the last one finds the
+        // surplus free beside it and closes the block of four.
+        mm::free_frames(&*run);
+        auto const after = zone.free_block_profile();
+
+        EXPECT_TRUE(from_node, "the run comes from the node it names");
+        EXPECT_TRUE(during.frames() == before.frames() - NR_FRAMES,
+                    "only the run leaves the zone: the surplus frame is free again");
+        EXPECT_TRUE(after == before,
+                    "the run, freed frame by frame, coalesces back to where the zone was");
     }
 
     KTEST(PmNode, APausedReclaimerTakesNoNodeRecord) {
@@ -1421,7 +1480,7 @@ namespace {
         // report left is taken first, so that the first mark below is the
         // first. A report that passed its check just before the Pause began
         // could still mark the node; nothing allocates on this node now.
-        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
+        ZoneTrial trial{zone};
         auto _ = target->take_reclaim_target();
 
         // Above High: the mark is kept, and asks for nothing.
@@ -1431,12 +1490,10 @@ namespace {
         auto const nothing = target->take_reclaim_target();
 
         // At Low: the distance to High, once.
-        PmFrame::List held;
-        auto const at_low = drain_to(zone, low, held);
+        auto const at_low = trial.drain_to(low);
         auto const again = target->mark_short(zone);
         auto const wanted = target->take_reclaim_target();
         auto const taken = target->take_reclaim_target();
-        mm::free_frames(&held);
 
         EXPECT_TRUE(above && first && !second,
                     "the first mark says it is the first; a second before the take does not");
@@ -1489,12 +1546,10 @@ namespace {
         auto const reserve = low->lowmem_reserve(ZoneType::Normal);
         auto const floor = low->watermark(PmZone::Watermark::Low);
 
-        mm::MemoryReclaimer::Pause const no_reclaim{mm::MemoryReclaimer::get()};
-        PmFrame::List held;
-        auto const drained = drain_to(*low, floor + reserve, held);
+        ZoneTrial trial{*low};
+        auto const drained = trial.drain_to(floor + reserve);
         auto const refused = !low->admits(0, mm::AdmissionPass::Low, true, ZoneType::Normal);
         auto const admitted = low->admits(0, mm::AdmissionPass::Low, true, low->zone_type());
-        mm::free_frames(&held);
 
         EXPECT_TRUE(drained && refused,
                     "at Low plus its reserve a low zone refuses a request that allows Normal");

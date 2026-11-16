@@ -229,9 +229,24 @@ auto PmZone::count_free_frames() -> usize {
     return total;
 }
 
-auto PmZone::free_blocks(usize order) -> usize {
+auto PmZone::FreeBlockProfile::with_block(usize const order) const -> FreeBlockProfile {
+    DEBUG_ASSERT(order < FrameBuddy::NUM_ORDERS, "no block has order {}", order);
+    auto profile = *this;
+    profile.m_blocks[order] += 1;
+    profile.m_frames += usize{1} << order;
+    return profile;
+}
+
+auto PmZone::free_block_profile() -> FreeBlockProfile {
+    FreeBlockProfile profile;
     ZoneGuard guard{m_lock};
-    return m_buddy.free_count(order);
+    for (FrameBuddy::Order order = 0; order < FrameBuddy::NUM_ORDERS; ++order) {
+        profile.m_blocks[order] = m_buddy.free_count(order);
+    }
+    // Moved under the zone lock, by the buddy's transfers, so it is of the
+    // same moment as the lists.
+    profile.m_frames = num_free_frames();
+    return profile;
 }
 
 auto PmZone::contains(usize order) -> bool {
