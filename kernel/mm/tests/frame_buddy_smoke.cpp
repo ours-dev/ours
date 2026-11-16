@@ -195,11 +195,12 @@ auto test_two_arrays() -> int {
 
 /// A span whose ends are not aligned to a max-order block, as a zone's need
 /// not be, over two arrays. Just outside each end lies a descriptor of the
-/// same zone and node that says it is a free order-0 block: as far as the
-/// descriptor can tell, the first frame's and the last frame's partner. Only
-/// the span check keeps the merge from unlinking it, which, being on no list,
-/// it cannot survive. Every frame of the span is freed one by one, then all
-/// are taken again: merges and splits both reach the first and the last pfn.
+/// same zone and node that is a free order-0 block of another buddy, as a
+/// neighbouring zone's would be: as far as the descriptor can tell, the first
+/// frame's and the last frame's partner. Only the span check keeps the merge
+/// from unlinking it, which would take it off its own buddy's list. Every
+/// frame of the span is freed one by one, then all are taken again: merges
+/// and splits both reach the first and the last pfn.
 auto test_span_edges() -> int {
     constexpr auto BLOCK = usize{1} << FrameBuddy::MAX_ORDER;
     constexpr auto BASE = Pfn{0x8000};
@@ -215,11 +216,13 @@ auto test_span_edges() -> int {
         return &upper[pfn - BASE - BLOCK];
     };
 
+    // The two frames just outside the span are free in buddies of their own,
+    // as a neighbouring zone's would be: Pmm, order 0, and not this buddy's.
+    FrameBuddy below(START - 1, START);
+    FrameBuddy above(END, END + 1);
+    below.release(frame_of(START - 1), START - 1, 0);
+    above.release(frame_of(END), END, 0);
     std::array<PmFrame *, 2> const outside{frame_of(START - 1), frame_of(END)};
-    for (auto *frame: outside) {
-        frame->set_role(PageFrame::Role::Pmm);
-        frame->set_order(0);
-    }
 
     FrameBuddy buddy(START, END);
     for (auto pfn = START; pfn < END; ++pfn) {
@@ -250,12 +253,13 @@ auto test_span_edges() -> int {
     }
 
     for (auto *frame: outside) {
-        if (check(frame->role() == PageFrame::Role::Pmm && !frame->is_linked(),
+        if (check(frame->role() == PageFrame::Role::Pmm && frame->is_linked(),
                   "the descriptors outside the span are untouched")) {
             return 1;
         }
     }
-    return 0;
+    return check(below.free_count(0) == 1 && above.free_count(0) == 1,
+                 "the neighbouring buddies still hold their one frame each");
 }
 } // namespace
 

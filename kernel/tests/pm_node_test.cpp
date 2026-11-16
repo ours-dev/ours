@@ -946,7 +946,7 @@ namespace {
         // A role is put on over the pins and does not forget them.
         frame->become<mm::page::MmuBody>();
         EXPECT_TRUE(frame->pin_count() == 2, "a change of role keeps the pins");
-        frame->set_role(mm::page::Role::None);
+        frame->stamp_role(mm::page::Role::None);
 
         auto const undone = mm::unpin_frame(frame);
         auto const undone_again = mm::unpin_frame(frame);

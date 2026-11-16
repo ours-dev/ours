@@ -64,7 +64,9 @@ class FrameBuddy {
     /// as every buddy block is: its partner is found by flipping one bit.
     auto release(PmFrame *frame, Pfn pfn, Order order) -> void;
 
+    [[nodiscard]]
     auto free_count(Order order) const -> usize;
+    [[nodiscard]]
     auto empty(Order order) const -> bool;
 
   private:
@@ -105,14 +107,13 @@ class FrameBuddy {
     auto remove_frame(PmFrame *frame, Order order) -> void {
         auto const to_erase = m_lists[order].iterator_to(*frame);
         auto _ = m_lists[order].erase(to_erase);
-        frame->set_role(PageFrame::Role::None);
+        frame->leave_free_list(FrameBuddyKey{});
     }
 
     FORCE_INLINE
     auto insert_frame(PmFrame *frame, Order order) -> void {
         m_lists[order].push_back(*frame);
-        frame->set_role(PageFrame::Role::Pmm);
-        frame->set_order(order);
+        frame->enter_free_list(order, FrameBuddyKey{});
     }
 
     /// Splits the block of 2^|upper_order| frames at |frame| down to

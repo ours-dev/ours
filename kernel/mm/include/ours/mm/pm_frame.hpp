@@ -231,6 +231,17 @@ namespace page {
 
 } // namespace page
 
+class FrameBuddy;
+
+/// What a frame asks to be moved onto or off a buddy free list: a passkey only
+/// FrameBuddy can make, so only it can write Role::Pmm. A friend declaration
+/// would open every private member of the frame to the buddy; this opens two
+/// functions, and only to the one caller that may use them.
+class FrameBuddyKey {
+    friend class FrameBuddy;
+    FrameBuddyKey() = default;
+};
+
 /// The descriptor for one physical frame.
 ///
 /// There is exactly one of these per frame, and it plays different roles over
@@ -331,8 +342,37 @@ class PageFrame {
         return status().get<Index::Role>();
     }
 
+    /// Puts the frame on a free list as the head of a block of 2^|order|:
+    /// Role::Pmm and the order, in one store. FrameBuddy::insert_frame()
+    /// alone can call it, under the zone lock.
     FORCE_INLINE
-    auto set_role(Role role) -> void {
+    auto enter_free_list(usize order, FrameBuddyKey) -> void {
+        auto word = status();
+        word.set<Index::Role>(Role::Pmm);
+        word.set<Index::Order>(order);
+        m_status.store(word.into<page::StatusWord::StorageUnit>(), std::memory_order_relaxed);
+    }
+
+    /// Takes the frame off a free list: Role::None, the role of a frame
+    /// nobody has made anything of. FrameBuddy::remove_frame() alone can call
+    /// it, under the zone lock.
+    FORCE_INLINE
+    auto leave_free_list(FrameBuddyKey) -> void {
+        DEBUG_ASSERT(role() == Role::Pmm, "frame {:p} leaves a free list it was not on",
+                     static_cast<void const *>(this));
+        set_status<Index::Role>(Role::None);
+    }
+
+    /// Writes a role and sets up no body: None, or the role a reserved boot
+    /// frame plays, stamped before the buddy exists (memmap_init stamps a
+    /// boot page table Mmu, its payload left as the memmap storage holds
+    /// it, zeroed). Never Pmm, which only the buddy writes (enter_free_list()):
+    /// a frame that says Pmm while on no list is coalesced as though it were
+    /// free. A role whose body must be set up is become()'s.
+    FORCE_INLINE
+    auto stamp_role(Role role) -> void {
+        ASSERT(role != Role::Pmm, "frame {:p} stamped Pmm by hand",
+               static_cast<void const *>(this));
         set_status<Index::Role>(role);
     }
 
@@ -441,8 +481,8 @@ class PageFrame {
     /// Takes on |Body|'s role: clears the payload and stamps the tag.
     ///
     /// This is the only thing that writes the role and the payload together;
-    /// the buddy (insert_frame(), remove_frame()) and the boot stamp write
-    /// the role alone, through set_role(). Reading a frame -- taking its
+    /// the buddy writes the role alone through enter_free_list() and
+    /// leave_free_list(), and the boot stamp through stamp_role(). Reading a frame -- taking its
     /// address, dumping it, asking what it is -- must never change it.
     template <typename Body>
     FORCE_INLINE

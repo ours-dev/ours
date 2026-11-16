@@ -422,3 +422,57 @@ None.
 - Why does a list every allocation walks without a lock need its writers sealed, and not just documented?
 - Why make `connect_all()` a private static of `PmNode` instead of leaving it a free function in `pm_node_init.cpp`?
 - Why does a template defined only in a `.cpp` file fail to link when another file calls it?
+
+## Only the buddy can put a frame on a free list (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — new passkey `FrameBuddyKey`, which only `FrameBuddy` can make; `PageFrame::set_role()` gives way to `enter_free_list(order, key)` (Role::Pmm and the order in one store), `leave_free_list(key)` (Role::None, asserting the frame was Pmm) and `stamp_role(role)` (any role but Pmm, asserted); `become()`'s comment names the new writers
+- `kernel/mm/include/ours/mm/priv/frame_buddy.hpp` — `insert_frame()` and `remove_frame()` use the key; `free_count()` and `empty()` are `[[nodiscard]]`
+- `kernel/mm/memmap_init.cpp`, `kernel/tests/pm_node_test.cpp` — `stamp_role()`
+- `kernel/mm/tests/frame_buddy_smoke.cpp` — the span-edge case makes its two outside frames free in neighbouring one-frame buddies instead of stamping Pmm on frames on no list
+
+**Symptom**
+`Role::Pmm` means "on a buddy free list", and the buddy coalesces with any neighbour that says it. Its comment said only `FrameBuddy::insert_frame()` writes it, after a dying slab and later `frame_to_phys()` had said it of frames on no list, which were then handed out twice. But `set_role(Role)` was public and took any role, Pmm included: the protection was a comment.
+
+**Cause**
+One setter served three writers with different rights: the buddy, which alone may say a frame is free; the boot stamp, which marks reserved frames before the buddy exists; and a test resetting a role.
+
+**Change**
+Each writer gets the operation it may perform, and the buddy's are reachable only by the buddy:
+
+```cpp
+class FrameBuddyKey {
+    friend class FrameBuddy;
+    FrameBuddyKey() = default;            // private: only FrameBuddy can make one
+};
+
+auto enter_free_list(usize order, FrameBuddyKey) -> void;   // Pmm and the order
+auto leave_free_list(FrameBuddyKey) -> void;                // back to None
+auto stamp_role(Role role) -> void;                         // anything but Pmm
+```
+
+A passkey rather than a friend: `friend class FrameBuddy` on the frame would open every private member of it to the buddy, including the status word's raw store; the key opens two functions, to the one caller that may use them. Since C++20 a class with a user-declared constructor is not an aggregate, so neither `FrameBuddyKey{}` nor a bare `{}` argument can make one outside the buddy.
+
+The buddy host test had been using the forbidden state as its probe: two frames just outside a buddy's span stamped Pmm while on no list, to show that only the span check keeps the merge off them. It now frees them into neighbouring buddies, the state a neighbouring zone's frames are really in, and checks that they stay on those buddies' lists; without the span check the merge would unlink them from the wrong list and the check fails.
+
+**Reference**
+Linux guards the same fact by keeping the buddy marker out of the flags an owner may set: `PageBuddy` is a `page_type`, written by `__SetPageBuddy()` and `__ClearPageBuddy()` only from the buddy allocator under `zone->lock` (`set_buddy_order()` and `del_page_from_free_list()` in `mm/page_alloc.c`).
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed (`frame-buddy-smoke` among them), on the default and the four-node machine. `ktest all`: default 92 ran, 84 passed, 8 skipped; four nodes 92 ran, 89 passed, 3 skipped. Failure-injection build: 92 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `frame_buddy.cpp` or `memmap_init.cpp`, the two `[[nodiscard]]` warnings that predated this change included. Control: a test line calling `enter_free_list(0, {})` and `leave_free_list(mm::FrameBuddyKey{})` fails to compile, both calling the key's private constructor.
+
+A narrow pre-commit review confirmed every path off a free list goes through `remove_frame()` on a Pmm frame, that nothing relied on the role being written before the order, that nothing outside the buddy can write Pmm (no body type carries it, `stamp_role()` refuses it, a key cannot be made or obtained outside the buddy), that the boot stamp passes only Mmu or None, and that the host test still tests the span check and destroys its neighbour buddies safely. It found the two comments fixed above: `become()` still named `set_role()`, and `stamp_role()` claimed to write only bodiless roles while the boot stamp writes Mmu.
+
+**Deliberately not done**
+- The boot stamp still marks a boot page table Mmu without `become<MmuBody>()`; its payload is the zeroed memmap storage, as before.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M9, from the objects reviewer; the passkey is T5 of the same review.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does a passkey give that `friend class FrameBuddy` on the frame would not?
+- Why can code outside `FrameBuddy` not write `FrameBuddyKey{}`, given that the class is empty?
+- Why was the old host test's probe, a frame saying Pmm on no list, the very state this change forbids?

@@ -156,7 +156,7 @@ namespace {
 
                 frame->mark_reserved();
                 if (role != page::Role::None) {
-                    frame->set_role(role);
+                    frame->stamp_role(role);
                 }
 
                 auto *const node = find_node(frame->nid());
