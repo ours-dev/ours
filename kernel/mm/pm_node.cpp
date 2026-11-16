@@ -31,39 +31,7 @@ auto ZoneList::connect(ustl::views::Span<NodeId const> const order) -> void {
         DEBUG_ASSERT(next != m_nid, "node {} was given itself as a fallback hop", m_nid);
         DEBUG_ASSERT(find_node(next), "node {} is a fallback hop but was not brought up", next);
         push_zones_of(next);
-        m_connected.set(next);
     }
-}
-
-/// Visits the zones in allocation order: the fallback list already *is* that
-/// order, this node's own zones first and the remote ones in the order
-/// connect() computed.
-///
-/// A callback returning void visits every zone. One returning a value stops at
-/// the first result that tests true and yields it -- which is what makes this
-/// usable as "take a frame from the first zone that can spare one" rather than
-/// only as a traversal.
-template <typename F>
-auto ZoneList::for_each_zone(F &&f) -> ustl::traits::InvokeResultT<F, PmZone &> {
-    using Result = ustl::traits::InvokeResultT<F, PmZone &>;
-
-    if constexpr (std::is_void_v<Result>) {
-        for (auto *const zone: m_fallback) {
-            f(*zone);
-        }
-    } else {
-        for (auto *const zone: m_fallback) {
-            if (auto result = f(*zone)) {
-                return result;
-            }
-        }
-        return Result{};
-    }
-}
-
-template <typename F, typename Predicate>
-auto ZoneList::for_each_zone_if(F &&f, Predicate &&p) -> ustl::traits::InvokeResultT<F, PmZone &> {
-    return for_each_zone([&](PmZone &zone) { return p(zone) ? f(zone) : decltype(f(zone)){}; });
 }
 
 auto ZoneList::dump_fallback() const -> void {

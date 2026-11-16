@@ -164,7 +164,7 @@ namespace {
     /// The checks one node's ZoneList must pass; see the file comment.
     auto check_zone_list(PmNode &node) -> void {
         auto const nid = node.nid();
-        auto const *const list = node.zone_list();
+        auto const &list = node.zone_list();
 
         // By type: every non-null slot holds a zone of that type on this node,
         // and for_each_local_zone() visits exactly those, in type order.
@@ -172,7 +172,7 @@ namespace {
         usize local_count = 0;
         for (usize i = 0; i < NR_ZONES_PER_NODE; ++i) {
             auto const type = ZoneType(i);
-            if (auto *const zone = list->local_zone(type)) {
+            if (auto *const zone = list.local_zone(type)) {
                 local_count += 1;
                 if (zone->which_node() != nid || zone->zone_type() != type) {
                     by_type_ok = false;
@@ -181,12 +181,12 @@ namespace {
         }
         usize visited = 0;
         auto last_type = usize(0);
-        list->for_each_local_zone([&](PmZone &zone) {
+        list.for_each_local_zone([&](PmZone &zone) {
             auto const type = static_cast<usize>(zone.zone_type());
             if (visited != 0 && type <= last_type) {
                 by_type_ok = false;
             }
-            if (list->local_zone(zone.zone_type()) != &zone) {
+            if (list.local_zone(zone.zone_type()) != &zone) {
                 by_type_ok = false;
             }
             last_type = type;
@@ -196,10 +196,10 @@ namespace {
                     "a node's local zones are its own, one per type, walked in type order");
 
         // Fallback order: own zones first, from the highest type down.
-        auto const fallback = list->fallback();
+        auto const fallback = list.fallback();
         auto head_ok = fallback.size() >= local_count;
         auto index = local_count;
-        list->for_each_local_zone([&](PmZone &zone) {
+        list.for_each_local_zone([&](PmZone &zone) {
             index -= 1;
             if (index >= fallback.size() || fallback[index] != &zone) {
                 head_ok = false;
@@ -243,6 +243,19 @@ namespace {
             }
         }
         EXPECT_TRUE(unique_ok, "no zone appears twice in a fallback order");
+
+        // The walk the list offers visits the same zones in the same order,
+        // and stops at the first zone a callback returns.
+        usize walked = 0;
+        auto walk_ok = true;
+        list.for_each_zone([&](PmZone &zone) {
+            walk_ok = walk_ok && walked < fallback.size() && fallback[walked] == &zone;
+            walked += 1;
+        });
+        auto const *const first = list.for_each_zone([](PmZone &zone) { return &zone; });
+        EXPECT_TRUE(walk_ok && walked == fallback.size() &&
+                        (fallback.size() == 0 || first == fallback[0]),
+                    "for_each_zone walks the fallback order and stops at the first answer");
 
         // Remote zones nearest node first.
         auto distance_ok = true;
@@ -321,13 +334,13 @@ namespace {
     }
 
     auto check_zone_candidates(PmNode &node) -> void {
-        auto const *const list = node.zone_list();
+        auto const &list = node.zone_list();
 
         usize local_count = 0;
-        list->for_each_local_zone([&local_count](PmZone &) { local_count += 1; });
+        list.for_each_local_zone([&local_count](PmZone &) { local_count += 1; });
 
         usize dma_count = 0;
-        for (auto *const zone: list->fallback()) {
+        for (auto *const zone: list.fallback()) {
             if (zone->zone_type() == ZoneType::Dma) {
                 dma_count += 1;
             }
@@ -336,7 +349,7 @@ namespace {
         // Holes: the by-type array has a null for each missing type, and the
         // selector must step over them rather than stop or dereference one.
         auto const all = request_for(node, mm::ALLOC_KERNEL);
-        mm::ZoneCandidates const holes{list->local_zones(), all};
+        mm::ZoneCandidates const holes{list.local_zones(), all};
         EXPECT_EQ(count_selected(holes), local_count,
                   "ZoneCandidates steps over the holes in the by-type array");
 
@@ -344,7 +357,7 @@ namespace {
         auto without_local = all.allowed_nodes();
         without_local.set(node.nid(), false);
         auto const others = all.with_nodes(without_local);
-        auto const remote_walk = list->candidates(others);
+        auto const remote_walk = list.candidates(others);
         auto remote_ok = true;
         usize remote = 0;
         for (auto &zone: remote_walk) {
@@ -353,12 +366,12 @@ namespace {
             }
             remote += 1;
         }
-        EXPECT_TRUE(remote_ok && remote == list->fallback().size() - local_count,
+        EXPECT_TRUE(remote_ok && remote == list.fallback().size() - local_count,
                     "ZoneCandidates's node mask filters out the excluded node");
 
         // Upper bound: Dma as the ceiling yields only Dma zones.
         auto const low_only = all.with_zone_range(all.lowest_zone(), ZoneType::Dma);
-        auto const low_walk = list->candidates(low_only);
+        auto const low_walk = list.candidates(low_only);
         auto upper_ok = true;
         usize dma = 0;
         for (auto &zone: low_walk) {
@@ -374,7 +387,7 @@ namespace {
         // floor of Dma32 must keep a caller off the Dma zones entirely. This
         // is the case that could not have been written before.
         auto const high_only = all.with_zone_range(ZoneType::Dma32, all.highest_zone());
-        auto const high_walk = list->candidates(high_only);
+        auto const high_walk = list.candidates(high_only);
         auto lower_ok = true;
         usize above = 0;
         for (auto &zone: high_walk) {
@@ -383,7 +396,7 @@ namespace {
             }
             above += 1;
         }
-        EXPECT_TRUE(lower_ok && above == list->fallback().size() - dma_count,
+        EXPECT_TRUE(lower_ok && above == list.fallback().size() - dma_count,
                     "ZoneCandidates's lower bound keeps a caller off the zones below it");
 
         // Gaf::ThisNode, through the path that serves it: resolve_request()
@@ -392,7 +405,7 @@ namespace {
         // replaced switched between two candidate lists instead, which is a
         // second mechanism for the same intent.
         auto const this_node = request_for(node, mm::ALLOC_KERNEL | mm::Gaf::ThisNode);
-        auto const local_walk = list->candidates(this_node);
+        auto const local_walk = list.candidates(this_node);
         auto this_node_ok = true;
         usize local_selected = 0;
         for (auto &zone: local_walk) {
@@ -402,7 +415,7 @@ namespace {
             local_selected += 1;
         }
         log::info("pmnode:   ThisNode selected {} of {} zone(s) in the fallback order",
-                  local_selected, list->fallback().size());
+                  local_selected, list.fallback().size());
         EXPECT_TRUE(this_node_ok && local_selected == local_count,
                     "Gaf::ThisNode narrows the request's node mask, and the selector "
                     "honours it");
@@ -412,7 +425,7 @@ namespace {
         auto ok = true;
         for (usize i = 0; i < NR_ZONES_PER_NODE; ++i) {
             auto const type = ZoneType(i);
-            auto *const zone = node.zone_list()->local_zone(type);
+            auto *const zone = node.zone_list().local_zone(type);
             if (!zone) {
                 if (node.contains(0, type)) {
                     ok = false; // No zone of this type, so nothing to hold.
@@ -693,7 +706,7 @@ namespace {
                 held.push_back(**block);
             }
         }
-        mm::find_node(nid)->zone_list()->for_each_local_zone([&held](PmZone &zone) {
+        mm::find_node(nid)->zone_list().for_each_local_zone([&held](PmZone &zone) {
             for (usize order = MAX_FRAME_ORDER + 1; order > 0; --order) {
                 while (auto block = zone.alloc_frames(order - 1)) {
                     held.push_back(block.value());
@@ -1003,7 +1016,7 @@ namespace {
                 return;
             }
             usize zones = 0;
-            node.zone_list()->for_each_local_zone([&zones](PmZone &) { zones += 1; });
+            node.zone_list().for_each_local_zone([&zones](PmZone &) { zones += 1; });
             if (zones == 1) {
                 target = &node;
             }
@@ -1012,7 +1025,7 @@ namespace {
             KTEST_SKIP("needs a second node with memory in one zone");
         }
         auto const nid = target->nid();
-        auto &zone = *target->zone_list()->fallback()[0];
+        auto &zone = *target->zone_list().fallback()[0];
         auto const min = zone.watermark(PmZone::Watermark::Min);
         auto const low = zone.watermark(PmZone::Watermark::Low);
         if (min < 4 || low <= min + 1) {
@@ -1078,7 +1091,7 @@ namespace {
                 return;
             }
             usize zones = 0;
-            node.zone_list()->for_each_local_zone([&zones](PmZone &) { zones += 1; });
+            node.zone_list().for_each_local_zone([&zones](PmZone &) { zones += 1; });
             if (zones == 1) {
                 found = &node;
             }
@@ -1102,7 +1115,7 @@ namespace {
             KTEST_SKIP("needs a second node with memory in one zone");
         }
         auto const nid = target->nid();
-        auto &zone = *target->zone_list()->fallback()[0];
+        auto &zone = *target->zone_list().fallback()[0];
         auto const low = zone.watermark(PmZone::Watermark::Low);
         auto const min = zone.watermark(PmZone::Watermark::Min);
         if (low <= min + 2) {
@@ -1195,7 +1208,7 @@ namespace {
             KTEST_SKIP("needs a second node with memory in one zone");
         }
         auto const nid = target->nid();
-        auto &zone = *target->zone_list()->fallback()[0];
+        auto &zone = *target->zone_list().fallback()[0];
         auto const low = zone.watermark(PmZone::Watermark::Low);
         auto const min = zone.watermark(PmZone::Watermark::Min);
         if (low <= min + 1) {
@@ -1250,7 +1263,7 @@ namespace {
         if (!target) {
             KTEST_SKIP("needs a second node with memory in one zone");
         }
-        auto &zone = *target->zone_list()->fallback()[0];
+        auto &zone = *target->zone_list().fallback()[0];
         auto &reclaimer = mm::MemoryReclaimer::get();
 
         // While a Pause lives, the thread's take leaves a marked record as it
@@ -1285,7 +1298,7 @@ namespace {
         if (!target) {
             KTEST_SKIP("needs a second node with memory in one zone");
         }
-        auto &zone = *target->zone_list()->fallback()[0];
+        auto &zone = *target->zone_list().fallback()[0];
         auto const low = zone.watermark(PmZone::Watermark::Low);
         auto const high = zone.watermark(PmZone::Watermark::High);
 
@@ -1387,7 +1400,7 @@ namespace {
             return;
         }
         PmZone const *expected = nullptr;
-        node->zone_list()->for_each_local_zone([&expected](PmZone &zone) {
+        node->zone_list().for_each_local_zone([&expected](PmZone &zone) {
             if (zone.num_free_frames() > MARGIN) {
                 expected = &zone;
             }

@@ -370,3 +370,55 @@ None.
 - What made `AllocRequest::flags()`'s comment false, and why was the `bool` beside the request a symptom of the same thing?
 - Why does asking the gate after the request's own refusals give a disabled thread a better answer?
 - Why does the zone take `may_block()` and not the caller's flags?
+
+## Only the node builds its zone list (2026-11-15)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_node.hpp` — `PmNode::zone_list()` returns `ZoneList const &`; `ZoneList::take_local_zones()` and `connect()` are private, with `PmNode` their one friend; `for_each_zone()` and `for_each_zone_if()` are defined in the header, `const`, and without the ternary; `m_connected` and `PmNode`'s unused `friend class ZoneList` go; `fallback()` is `[[nodiscard]]`; new private static `PmNode::connect_all()`
+- `kernel/mm/pm_node.cpp` — the template definitions that were here, and the write to `m_connected`, go
+- `kernel/mm/pm_node_init.cpp` — `connect_nodes()` is `PmNode::connect_all()`, which reaches each node's list as a member
+- `kernel/mm/memmap_init.cpp`, `kernel/tests/pm_node_test.cpp`, `kernel/tests/page_reclaim_test.cpp`, `kernel/tests/pm_zone_test.cpp` — `zone_list().` for `zone_list()->`; a new check that `for_each_zone()` walks the fallback order and stops at the first answer
+
+**Symptom**
+Every allocation walks a node's fallback order without a lock, on the premise that it is written only at boot. Nothing kept that premise: `zone_list()` handed out a `ZoneList *`, and its `connect()` and `take_local_zones()` were public, so any caller could rewrite the order under a running allocation. `for_each_zone()` and `for_each_zone_if()` were declared in the header and defined only in `pm_node.cpp`, so a call from any other file would have failed to link (neither had a caller, and the second used a ternary). `m_connected` was written and never read, and `PmNode` named `ZoneList` a friend it never needed.
+
+**Cause**
+The list began as a set of queues the node and bring-up both filled, and the access stayed open after the fallback order became something only bring-up builds.
+
+**Change**
+The node owns the verbs that build its list, and everyone else reads it:
+
+```cpp
+auto zone_list() const -> ZoneList const &;     // PmNode: readers get it const
+
+class ZoneList {
+  private:
+    friend class PmNode;                          // the only builder
+    auto take_local_zones() -> void;
+    auto connect(ustl::views::Span<NodeId const> order) -> void;
+};
+
+auto PmNode::connect_all(NodeMask const &nodes) -> void;   // bring-up, a private static
+```
+
+Two locks on one door: a caller outside the node cannot name the builders (private) and could not call them on what it holds anyway (const). The unused walk templates stay, as a reader's way to visit the order, now defined where every caller can reach them.
+
+**Reference**
+None: an encapsulation change inside this kernel.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed, on the default and the four-node machine. `ktest all`: default 92 ran, 84 passed, 8 skipped; four nodes, where `connect_all()` chains every node, 92 ran, 89 passed, 3 skipped. Failure-injection build: 92 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `pm_node.cpp` or `pm_node_init.cpp`; the `fallback()` warning that predated this change is gone. Control: a test line calling `zone_list().connect({})` fails to compile, both because `connect` is private and because the list is const.
+
+**Deliberately not done**
+- `PmNode::zone(type)` and `PmNode::for_each_zone()`, which the review suggested as readers on the node itself; the const list already gives readers everything without letting them write.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M8, from the objects reviewer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a list every allocation walks without a lock need its writers sealed, and not just documented?
+- Why make `connect_all()` a private static of `PmNode` instead of leaving it a free function in `pm_node_init.cpp`?
+- Why does a template defined only in a `.cpp` file fail to link when another file calls it?

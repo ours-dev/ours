@@ -699,7 +699,7 @@ namespace {
         }
 
         mm::PmFrame::List held;
-        mm::find_node(remote)->zone_list()->for_each_local_zone([&held](mm::PmZone &zone) {
+        mm::find_node(remote)->zone_list().for_each_local_zone([&held](mm::PmZone &zone) {
             for (usize order = MAX_FRAME_ORDER + 1; order != 0; --order) {
                 while (auto block = zone.alloc_frames(order - 1)) {
                     held.push_back(block.value());
@@ -722,7 +722,7 @@ namespace {
         // through mm:: is refused there whatever reclaim gave back.
         bool retried = false;
         if (evicted) {
-            mm::find_node(remote)->zone_list()->for_each_local_zone(
+            mm::find_node(remote)->zone_list().for_each_local_zone(
                 [&retried, remote](mm::PmZone &zone) {
                     if (retried) {
                         return;
