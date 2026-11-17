@@ -90,3 +90,45 @@ None.
 - Which readers and writers race on the table, and what is the worst interleaving?
 - Why is relaxed enough here, and what would need acquire and release?
 - Why did the slot's local read not need to change?
+
+## Page tables are asked for as a caller that cannot block (2026-11-17)
+
+**Files**
+- `kernel/mm/pmm.cpp` — `alloc_page_table()` asks `Gaf::Zero` instead of `ALLOC_KERNEL | Gaf::Zero`, and says why
+
+**Symptom**
+`alloc_page_table()` carried `Gaf::CanBlock` while both of its callers, `PageTable::allocate_table()` and `PageTableDeposits::reserve()`, run under a page table's spin lock with interrupts off. The flag did not make it sleep; it picked the floor of the Min pass, so page tables stopped at Min while every other caller that cannot block may go a quarter below it.
+
+**Cause**
+`Gaf::CanBlock` describes the caller's context (Z3 of the redesign): a caller that may block is stopped first, at Min, and one that may not keeps the band below it. A flag that says the opposite of the context gives the request the wrong floor, quietly.
+
+**Change**
+
+```cpp
+// before
+priv::alloc_frames(ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE), node, node_online_mask());
+// after: every caller holds a page table's spin lock with interrupts off
+priv::alloc_frames(Gaf::Zero, get_order(size / PAGE_SIZE), node, node_online_mask());
+```
+
+Page-table allocations may now take a zone down to three quarters of Min, as atomic callers do: a page table is what lets the mapping that needs it go on.
+
+**Reference**
+Linux allocates page-table pages before it takes the page-table lock (`__pte_alloc()` allocates, then takes `pmd_lock()` and checks whether another thread populated it first), so its page tables can sleep (`GFP_PGTABLE_KERNEL`). Doing the same here is option B, filed below.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. The `ktest all` runs on every shape are recorded with the last change of this group.
+
+**Deliberately not done**
+Allocating page-table pages outside the lock, so that they could block (option B): a change to the architecture's page-table code, not chosen for now.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 37, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does `Gaf::CanBlock` change for a request, and what does it not?
+- Why did page tables stop at Min before, and why may they go below it now?
+- What would allocating page tables outside the lock buy, and what does it cost?

@@ -619,8 +619,15 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
         // a page table is the page-table failure site's
         // (test::AllocationSite::PageTable, asked in PageTable::allocate_table())
         // and must not also count as a frame asked for with no home.
-        auto const result = priv::alloc_frames(
-            ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE), node, node_online_mask());
+        //
+        // Without Gaf::CanBlock: every caller holds a page table's spin lock
+        // with interrupts off (PageTable::allocate_table(),
+        // PageTableDeposits::reserve()), so it cannot block, and says so. Its
+        // Min pass therefore goes a quarter below Min, as every caller that
+        // cannot block does (admission_floor()): a page table is what lets the
+        // mapping that needs it go on.
+        auto const result =
+            priv::alloc_frames(Gaf::Zero, get_order(size / PAGE_SIZE), node, node_online_mask());
         if (!result) {
             return PhysAddr{0};
         }
