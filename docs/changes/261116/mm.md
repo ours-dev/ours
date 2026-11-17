@@ -304,7 +304,7 @@ static_assert(MAX_PCPU_CACHE_ORDER == 0, "the per-CPU frame cache has no take or
 `unpin()` mirrors `pin()`: it returns false and changes nothing when the frame holds no pin, so the rule is checked once, by the frame. A span with no present frame now leaves its table cell null, which every reader of the table already handles; a span with one present frame still asserts, as before. Kept on purpose: `PmZone::Flags::Initialized` and `Contiguous`, `PmNode::m_node_policy` (the node's default placement policy, as Linux keeps `preferred_node_policy[]`) and `m_soft_affinity`, which are stubs for requirements, not dead state.
 
 **Reference**
-Linux `zone_watermark_ok()` and `pgdat_balanced()` ask the zone about its own watermarks; `alloc_pages_exact()` is unrelated. None for the rest: this kernel's own leftovers.
+Linux `zone_watermark_ok()` and `pgdat_balanced()` ask the zone about its own watermarks. None for the rest: this kernel's own leftovers.
 
 **Verification**
 `verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. The `ktest all` runs on every shape are recorded with the test batch that follows, on the tree that holds both. A narrow pre-commit review found no behaviour change and no reader of a removed member; it found that the first wording of `BlockFailure`'s comment said a failed walk is always `OutOfMem`, while the caller turns a failed Low pass into `ShouldWait` (reworded: the status is the caller's).
@@ -322,3 +322,52 @@ None.
 - Why was the per-CPU free branch a leak waiting for a constant to change, and why does a `static_assert` beat deleting the slot?
 - What does "tell, don't ask" buy in `shortfall_to_high()` that two getters do not?
 - Why is it safe to leave a zone's table cell null for a span with no present frame?
+
+## The watchdog keeps its declaration as one value, and start() undoes itself on failure (2026-11-16)
+
+**Files**
+- `kernel/mm/include/ours/mm/memory_watchdog.hpp`, `kernel/mm/memory_watchdog.cpp` — `m_declared`, `m_declared_at` and `m_declared_once` become `ustl::Option<Declaration>`; a file-local `reclaim_distance()` replaces two hand computations in `look()`; `start()` returns `resume()`'s status and takes its levels back when the thread does not run
+
+**Symptom**
+Latent, from the review's minor list. The last declaration was three fields and a bool saying whether the other two meant anything. `look()` worked out "how far below the upper edge" twice, once guarded and once not. `start()` discarded `resume()`'s status and left its levels set when the spawn failed, so `levels()` and `set_levels()`'s assertion took a watchdog with no thread for a running one; `MemoryReclaimer::start()` already returned the status.
+
+**Cause**
+A value that may be absent is an `Option`, not a value plus a flag beside it that every reader must check first. A computation done in two places drifts: one site had the guard and the other relied on an argument for why it needed none. And an operation that sets state before it can fail has to put it back on failure, or the state says something that is not true.
+
+**Change**
+
+```cpp
+struct Declaration { MemoryPressure pressure; time::SteadyClock::TimePoint at; };
+ustl::Option<Declaration> m_declared TA_GUARDED(m_lock);      // none before the first look
+...
+auto declare = !m_declared || m_skip_hysteresis || found > m_declared->pressure;
+...
+m_declared = ustl::some(Declaration{.pressure = found, .at = now});
+
+// start(): levels first, as the thread reads them first; back to none if it never runs
+auto const status = thread->resume();
+if (status != Status::Ok) { unstart(); }
+return status;
+```
+
+`m_pressure` stays an atomic beside it, since `pressure()` reads it without the lock; `m_skip_hysteresis` stays a bool, an override of the next look rather than part of the declaration (clearing the declaration instead would log an unchanged pressure again).
+
+**Reference**
+None: this kernel's own watchdog.
+
+**Verification**
+Recorded with the test batch that follows, on the tree that holds both.
+
+**Deliberately not done**
+A shared start helper for the two service threads: they live in two files, and a helper would need a header of its own for two callers.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 30, 31 and 32.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does `Option<Declaration>` rule out that a flag beside two fields did not?
+- Why must `start()` take its levels back when `resume()` fails, and which assertion would otherwise lie?
+- Why does `m_pressure` stay apart from the declaration?

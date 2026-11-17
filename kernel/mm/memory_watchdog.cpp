@@ -15,6 +15,18 @@ namespace ours::mm {
 namespace {
     constexpr usize FRAMES_PER_MIB = 1_mb / PAGE_SIZE;
     constexpr usize NO_BOUND = ~usize{0};
+
+    /// How far |free| frames are below the upper edge of |pressure|'s
+    /// bounds, which is where reclaim at that pressure aims; zero when they
+    /// are not below it.
+    auto reclaim_distance(MemoryPressureLevels const &levels, MemoryPressure const pressure,
+                          usize const free) -> usize {
+        auto const upper = levels.bounds_of(pressure).upper;
+        if (upper > free) {
+            return upper - free;
+        }
+        return 0;
+    }
 } // namespace
 
 auto to_string(MemoryPressure const pressure) -> char const * {
@@ -108,10 +120,17 @@ auto MemoryWatchdog::get() -> Self & {
 }
 
 auto MemoryWatchdog::start(MemoryPressureLevels const &levels) -> Status {
+    // Set before the thread exists, which looks at them first thing; taken
+    // back if it never runs, so that "levels set" keeps meaning "watchdog
+    // running" (set_levels() asserts on it).
     {
         Guard guard{m_lock};
         m_levels = levels;
     }
+    auto const unstart = [this] {
+        Guard guard{m_lock};
+        m_levels = ustl::NONE;
+    };
 
     // Thread::spawn() takes a plain function: this one only finds the
     // watchdog it was handed and runs it.
@@ -119,11 +138,15 @@ auto MemoryWatchdog::start(MemoryPressureLevels const &levels) -> Status {
         "memory-watchdog", [](void *const self) -> i32 { return static_cast<Self *>(self)->run(); },
         this, task::DEFAULT_PRIORITY);
     if (thread == nullptr) {
+        unstart();
         return Status::OutOfMem;
     }
     auto _ = thread->detach();
-    auto _ = thread->resume();
-    return Status::Ok;
+    auto const status = thread->resume();
+    if (status != Status::Ok) {
+        unstart();
+    }
+    return status;
 }
 
 auto MemoryWatchdog::levels() const -> ustl::Option<MemoryPressureLevels> {
@@ -166,12 +189,8 @@ auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
         if (found == MemoryPressure::OutOfMemory) {
             // Nothing waits for a thread here: the allocations that could wait
             // are about to be refused, so what can be given back is given back
-            // first, on this thread. The distance is to the upper edge of this
-            // pressure's bounds.
-            auto const goal = m_levels->bounds_of(found).upper;
-            if (goal > free) {
-                frames = goal - free;
-            }
+            // first, on this thread.
+            frames = reclaim_distance(*m_levels, found, free);
         }
     }
     if (frames != 0) {
@@ -189,29 +208,27 @@ auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
     auto free = approx_free_frame_count();
     auto found = m_levels->pressure_at(free);
     if (found == MemoryPressure::Warning || found == MemoryPressure::Critical) {
-        m_reclaimer.request(m_levels->bounds_of(found).upper - free);
+        m_reclaimer.request(reclaim_distance(*m_levels, found, free));
     }
     auto const now = time::SteadyClock::now();
 
     auto deadline = time::Deadline::infinite();
-    auto declare = !m_declared_once || m_skip_hysteresis || found > m_declared;
-    if (!declare && found < m_declared) {
-        if (now - m_declared_at >= m_levels->hysteresis()) {
+    auto declare = !m_declared || m_skip_hysteresis || found > m_declared->pressure;
+    if (!declare && found < m_declared->pressure) {
+        if (now - m_declared->at >= m_levels->hysteresis()) {
             declare = true;
         } else {
-            deadline = time::Deadline::at(m_declared_at + m_levels->hysteresis());
+            deadline = time::Deadline::at(m_declared->at + m_levels->hysteresis());
         }
     }
     m_skip_hysteresis = false;
-    if (declare && (!m_declared_once || found != m_declared)) {
+    if (declare && (!m_declared || found != m_declared->pressure)) {
         log::info("mm: memory pressure {}, {} MiB free", to_string(found), free / FRAMES_PER_MIB);
         if (found == MemoryPressure::OutOfMemory) {
             log::warn("mm: out of memory, and nothing to reclaim: allocations that could wait "
                       "are refused");
         }
-        m_declared = found;
-        m_declared_at = now;
-        m_declared_once = true;
+        m_declared = ustl::some(Declaration{.pressure = found, .at = now});
         m_pressure.store(found, std::memory_order_release);
     }
 

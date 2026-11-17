@@ -223,18 +223,25 @@ class MemoryWatchdog {
     /// boot options have been read.
     ustl::Option<MemoryPressureLevels> m_levels TA_GUARDED(m_lock);
 
+    /// A declaration of pressure: what was declared, and when.
+    struct Declaration {
+        MemoryPressure pressure;
+        time::SteadyClock::TimePoint at;
+    };
+
+    /// The pressure declared last and when; none before the first look.
+    /// look()'s own, under m_lock like the rest of a look.
+    ustl::Option<Declaration> m_declared TA_GUARDED(m_lock);
+
     /// set_levels() asks for the next look to declare what it finds, lower
-    /// pressure or not: a test moves the levels and wants the answer now.
+    /// pressure or not: a test moves the levels and wants the answer now. An
+    /// override of the next look's hysteresis, not part of the declaration:
+    /// clearing m_declared instead would log an unchanged pressure again.
     bool m_skip_hysteresis TA_GUARDED(m_lock) = false;
 
-    /// What pressure() answers: written by look() alone.
+    /// What pressure() answers, the declaration's pressure kept apart so that
+    /// it can be read without m_lock: written by look() alone.
     std::atomic<MemoryPressure> m_pressure{MemoryPressure::Normal};
-
-    /// The pressure declared last and when, and whether anything has been
-    /// yet: look()'s own, under m_lock like the rest of a look.
-    MemoryPressure m_declared TA_GUARDED(m_lock) = MemoryPressure::Normal;
-    time::SteadyClock::TimePoint m_declared_at TA_GUARDED(m_lock){};
-    bool m_declared_once TA_GUARDED(m_lock) = false;
 };
 
 } // namespace ours::mm
