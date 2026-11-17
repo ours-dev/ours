@@ -632,7 +632,7 @@ namespace {
             if (!levels) {
                 return Status::InvArgs;
             }
-            watchdog.set_levels(*levels);
+            watchdog.set_levels(levels->cover_zone_floors());
             return Status::Ok;
         };
         auto free = mm::approx_free_frame_count();
@@ -661,7 +661,7 @@ namespace {
         Giveable more;
         if (!more.make()) {
             EXPECT_TRUE(false, "pages are made for the reclaimer at OutOfMemory");
-            watchdog.set_levels(boot);
+            watchdog.set_levels(boot.cover_zone_floors());
             return;
         }
         free = mm::approx_free_frame_count();
@@ -676,7 +676,7 @@ namespace {
             mm::free_frames(*served);
         }
 
-        watchdog.set_levels(boot);
+        watchdog.set_levels(boot.cover_zone_floors());
         settle([&] { return watchdog.pressure() == mm::MemoryPressure::Normal; });
     }
 

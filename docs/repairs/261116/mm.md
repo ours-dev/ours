@@ -19,3 +19,23 @@ Linux reads `current->mempolicy` without a lock on the allocation path (`get_tas
 
 **Acceptance**
 A report in `docs/perf/<YYMMDD>/` with the baseline and each chosen stage's samples, and, if a candidate is taken, its change record.
+
+## 2. A contiguous run gives its surplus back one frame and one pressure observation at a time
+
+**Severity**
+Low, performance, unmeasured: no wrong result.
+
+**Symptom**
+`alloc_frames_contiguous()` in `kernel/mm/pmm.cpp` takes a block of `2^order` frames for a run of `n`, splits it to single frames and frees the `2^order - n` it does not need with one `free_frames()` call each. Each call takes the zone lock once and observes the pressure once (`observe_pressure()`, which re-sums every zone's free count when the watcher's signal is armed). A run of 17 frames gives back 15 frames that way, one of 257 gives back 255.
+
+**Cause**
+The surplus is freed through the per-frame public entry, which is right for a block handed out, while the frames being given back are one contiguous range the allocator still owns as a unit. The observation rule is "once per entry call", so a loop over the entry multiplies it.
+
+**Change**
+Measure first, as CLAUDE.md asks of performance work: a `benches/` benchmark of `alloc_frames_contiguous()` plus freeing the run, with `n` just above a power of two (17, 257) and just below (15, 255), with the signal armed and not, giving cycles per call and zone-lock acquisitions per call. Candidates once the cost is known, each the user's to choose: (a) give the surplus back as one `PmFrame::List` through `free_frames(PmFrame::List *)`, one observation; (b) give it back as the largest aligned blocks it splits into, through the zone's adoption (`PmZone::adopt()` carves a range into aligned blocks already), fewer locks and fewer buddy merges; (c) leave it, if the measurement says the cost is noise.
+
+**Reference**
+Linux `alloc_pages_exact()` in `mm/page_alloc.c` frees the tail with `make_alloc_exact()`, one `free_page()` per page, the same shape as today; `free_pages_exact()` frees a run page by page too.
+
+**Acceptance**
+A report in `docs/perf/<YYMMDD>/` with the baseline and each chosen stage's samples, and, if a candidate is taken, its change record.

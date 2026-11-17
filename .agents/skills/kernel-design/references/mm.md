@@ -207,7 +207,7 @@ The kernel still tears down sealed mappings during address-space destruction.
 - Nothing below the request reads `Gaf` bits (review M4, 2026-11-15):
   `AllocRequest` answers `may_block()`, `may_wait()`, `waits_at_low()`,
   `zeroes()` and `is_confined()`, `flags()` stays the caller's flags
-  whole, and `alloc_block()` asks the gate from the request.
+  whole, and `AllocationRun::take()` asks the gate from the request.
 - A confined waiting request -- `Gaf::ThisNode`, or a zone range
   narrower than Dma through Normal (`AllocRequest::is_confined()`) -- is
   not put off at a zone's Low: it makes the Min pass and answers `OutOfMem`
@@ -297,12 +297,16 @@ This supersedes the static `PmNode` allocation interface above; the design is
 `.agents/tasks/pmm-redesign/DESIGN.md`. It lands one step at a time, so until
 a step is in, the code still has the shape described above.
 
-- The `mm::` free functions in `pmm.cpp` are the one pipeline across nodes:
-  gate admission, `resolve_request()`, the home node's member
-  `alloc_frames(request)`, then zeroing, counters and the pressure
-  observation outside the zone lock. `PmNode` has no static allocation or
-  release operation. The static layer was a second entry with the same
-  signature that skipped admission, and no production code called it.
+- The `mm::` entries in `pmm.cpp` are the one pipeline across nodes. Each
+  call runs on an `AllocationRun` on the entry's stack, private to the file
+  (review M3, 2026-11-16): `begin()` resolves the home once, `take(order)`
+  makes one block (gate admission, `resolve_request()`, the home node's
+  member `alloc_frames(request)`, zeroing and counters), and its destructor
+  observes the pressure once, outside the zone lock, however the call ends.
+  The release entries observe once at their end. `PmNode` has no static
+  allocation or release operation. The static layer was a second entry with
+  the same signature that skipped admission, and no production code called
+  it.
 - The layers under the seam carry the seam's names (the user's, 2026-11-10):
   `PmNode::alloc_frames()` and `free_frames()`, `PmZone::alloc_frames()` and
   `free_frames()`, private and reached through `friend`. These replace

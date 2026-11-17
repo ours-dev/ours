@@ -31,6 +31,8 @@ enum class MemoryPressure : u8 {
 [[nodiscard]]
 auto to_string(MemoryPressure pressure) -> char const *;
 
+class CoveredLevels;
+
 /// Where each pressure begins, in frames of free memory: below the warning
 /// level it is Warning, below the critical level Critical, below the
 /// out-of-memory level OutOfMemory. The watchdog looks again only once free
@@ -64,6 +66,12 @@ class MemoryPressureLevels {
     /// off at a zone's Low would wait for a release that need never come.
     [[nodiscard]]
     auto covering(usize held) const -> MemoryPressureLevels;
+
+    /// These levels covering this machine's zone floors, read here
+    /// (zone_floor_frame_count()): the only way to the levels a watchdog runs
+    /// with (CoveredLevels).
+    [[nodiscard]]
+    auto cover_zone_floors() const -> CoveredLevels;
 
     /// Levels that nest, or InvArgs when these do not.
     [[nodiscard]]
@@ -128,6 +136,38 @@ class MemoryPressureLevels {
     Duration m_hysteresis;
 };
 
+/// Levels whose delay level is above every frame the zones' floors can hold
+/// (MemoryPressureLevels::covering()): with them, every zone refusing an
+/// ordinary request means free memory below the delay level, so the gate
+/// shuts and the watchdog is woken, and a request put off at a zone's Low has
+/// something bound to end its wait. The only levels a watchdog takes
+/// (MemoryWatchdog::start(), set_levels()), and made only by
+/// MemoryPressureLevels::cover_zone_floors(), which reads the floors itself:
+/// levels that skip the rule do not compile.
+class CoveredLevels {
+  public:
+    [[nodiscard]]
+    auto levels() const -> MemoryPressureLevels const & {
+        return m_levels;
+    }
+
+    /// The frames the zones' floors hold, which the levels were raised above
+    /// where they were not already.
+    [[nodiscard]]
+    auto held() const -> usize {
+        return m_held;
+    }
+
+  private:
+    friend class MemoryPressureLevels;
+
+    CoveredLevels(MemoryPressureLevels const &levels, usize const held)
+        : m_levels(levels), m_held(held) {}
+
+    MemoryPressureLevels m_levels;
+    usize m_held;
+};
+
 class MemoryReclaimer;
 
 /// A kernel thread that watches how much memory is free, through the PMM's
@@ -151,7 +191,7 @@ class MemoryWatchdog {
 
     /// Starts its thread, watching with |levels|. OutOfMem when there is no
     /// thread for it.
-    auto start(MemoryPressureLevels const &levels) -> Status;
+    auto start(CoveredLevels const &levels) -> Status;
 
     /// The pressure last declared.
     [[nodiscard]]
@@ -167,7 +207,7 @@ class MemoryWatchdog {
     /// without waiting for the hysteresis to declare a lower pressure. For tests,
     /// which move the levels to where free memory is, rather than free
     /// memory to where they are, and put back what levels() gave them.
-    auto set_levels(MemoryPressureLevels const &levels) -> void;
+    auto set_levels(CoveredLevels const &levels) -> void;
 
     /// While one is alive the watchdog arms nothing: for a test that drives
     /// the PMM's gate and signal by hand. The guard is what lockdep records.
@@ -223,18 +263,25 @@ class MemoryWatchdog {
     /// boot options have been read.
     ustl::Option<MemoryPressureLevels> m_levels TA_GUARDED(m_lock);
 
+    /// A declaration of pressure: what was declared, and when.
+    struct Declaration {
+        MemoryPressure pressure;
+        time::SteadyClock::TimePoint at;
+    };
+
+    /// The pressure declared last and when; none before the first look.
+    /// look()'s own, under m_lock like the rest of a look.
+    ustl::Option<Declaration> m_declared TA_GUARDED(m_lock);
+
     /// set_levels() asks for the next look to declare what it finds, lower
-    /// pressure or not: a test moves the levels and wants the answer now.
+    /// pressure or not: a test moves the levels and wants the answer now. An
+    /// override of the next look's hysteresis, not part of the declaration:
+    /// clearing m_declared instead would log an unchanged pressure again.
     bool m_skip_hysteresis TA_GUARDED(m_lock) = false;
 
-    /// What pressure() answers: written by look() alone.
+    /// What pressure() answers, the declaration's pressure kept apart so that
+    /// it can be read without m_lock: written by look() alone.
     std::atomic<MemoryPressure> m_pressure{MemoryPressure::Normal};
-
-    /// The pressure declared last and when, and whether anything has been
-    /// yet: look()'s own, under m_lock like the rest of a look.
-    MemoryPressure m_declared TA_GUARDED(m_lock) = MemoryPressure::Normal;
-    time::SteadyClock::TimePoint m_declared_at TA_GUARDED(m_lock){};
-    bool m_declared_once TA_GUARDED(m_lock) = false;
 };
 
 } // namespace ours::mm

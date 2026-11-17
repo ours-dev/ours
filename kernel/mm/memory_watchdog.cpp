@@ -15,6 +15,18 @@ namespace ours::mm {
 namespace {
     constexpr usize FRAMES_PER_MIB = 1_mb / PAGE_SIZE;
     constexpr usize NO_BOUND = ~usize{0};
+
+    /// How far |free| frames are below the upper edge of |pressure|'s
+    /// bounds, which is where reclaim at that pressure aims; zero when they
+    /// are not below it.
+    auto reclaim_distance(MemoryPressureLevels const &levels, MemoryPressure const pressure,
+                          usize const free) -> usize {
+        auto const upper = levels.bounds_of(pressure).upper;
+        if (upper > free) {
+            return upper - free;
+        }
+        return 0;
+    }
 } // namespace
 
 auto to_string(MemoryPressure const pressure) -> char const * {
@@ -48,6 +60,11 @@ auto MemoryPressureLevels::covering(usize const held) const -> MemoryPressureLev
            "levels with Warning at {} cannot be raised by {}", m_warning, raise);
     return {m_out_of_memory + raise, m_critical + raise, m_warning + raise, m_debounce,
             m_hysteresis};
+}
+
+auto MemoryPressureLevels::cover_zone_floors() const -> CoveredLevels {
+    auto const held = zone_floor_frame_count();
+    return CoveredLevels{covering(held), held};
 }
 
 auto MemoryPressureLevels::make(usize const out_of_memory, usize const critical,
@@ -107,11 +124,18 @@ auto MemoryWatchdog::get() -> Self & {
     return WATCHDOG;
 }
 
-auto MemoryWatchdog::start(MemoryPressureLevels const &levels) -> Status {
+auto MemoryWatchdog::start(CoveredLevels const &levels) -> Status {
+    // Set before the thread exists, which looks at them first thing; taken
+    // back if it never runs, so that "levels set" keeps meaning "watchdog
+    // running" (set_levels() asserts on it).
     {
         Guard guard{m_lock};
-        m_levels = levels;
+        m_levels = levels.levels();
     }
+    auto const unstart = [this] {
+        Guard guard{m_lock};
+        m_levels = ustl::NONE;
+    };
 
     // Thread::spawn() takes a plain function: this one only finds the
     // watchdog it was handed and runs it.
@@ -119,11 +143,15 @@ auto MemoryWatchdog::start(MemoryPressureLevels const &levels) -> Status {
         "memory-watchdog", [](void *const self) -> i32 { return static_cast<Self *>(self)->run(); },
         this, task::DEFAULT_PRIORITY);
     if (thread == nullptr) {
+        unstart();
         return Status::OutOfMem;
     }
     auto _ = thread->detach();
-    auto _ = thread->resume();
-    return Status::Ok;
+    auto const status = thread->resume();
+    if (status != Status::Ok) {
+        unstart();
+    }
+    return status;
 }
 
 auto MemoryWatchdog::levels() const -> ustl::Option<MemoryPressureLevels> {
@@ -131,13 +159,13 @@ auto MemoryWatchdog::levels() const -> ustl::Option<MemoryPressureLevels> {
     return m_levels;
 }
 
-auto MemoryWatchdog::set_levels(MemoryPressureLevels const &levels) -> void {
+auto MemoryWatchdog::set_levels(CoveredLevels const &levels) -> void {
     {
         Guard guard{m_lock};
         // Levels mean a running watchdog (levels()): only what start() began
         // may be moved.
         DEBUG_ASSERT(m_levels.is_some(), "the watchdog's levels are set before it was started");
-        m_levels = levels;
+        m_levels = levels.levels();
         m_skip_hysteresis = true;
     }
     m_signal.signal();
@@ -166,12 +194,8 @@ auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
         if (found == MemoryPressure::OutOfMemory) {
             // Nothing waits for a thread here: the allocations that could wait
             // are about to be refused, so what can be given back is given back
-            // first, on this thread. The distance is to the upper edge of this
-            // pressure's bounds.
-            auto const goal = m_levels->bounds_of(found).upper;
-            if (goal > free) {
-                frames = goal - free;
-            }
+            // first, on this thread.
+            frames = reclaim_distance(*m_levels, found, free);
         }
     }
     if (frames != 0) {
@@ -189,29 +213,27 @@ auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
     auto free = approx_free_frame_count();
     auto found = m_levels->pressure_at(free);
     if (found == MemoryPressure::Warning || found == MemoryPressure::Critical) {
-        m_reclaimer.request(m_levels->bounds_of(found).upper - free);
+        m_reclaimer.request(reclaim_distance(*m_levels, found, free));
     }
     auto const now = time::SteadyClock::now();
 
     auto deadline = time::Deadline::infinite();
-    auto declare = !m_declared_once || m_skip_hysteresis || found > m_declared;
-    if (!declare && found < m_declared) {
-        if (now - m_declared_at >= m_levels->hysteresis()) {
+    auto declare = !m_declared || m_skip_hysteresis || found > m_declared->pressure;
+    if (!declare && found < m_declared->pressure) {
+        if (now - m_declared->at >= m_levels->hysteresis()) {
             declare = true;
         } else {
-            deadline = time::Deadline::at(m_declared_at + m_levels->hysteresis());
+            deadline = time::Deadline::at(m_declared->at + m_levels->hysteresis());
         }
     }
     m_skip_hysteresis = false;
-    if (declare && (!m_declared_once || found != m_declared)) {
+    if (declare && (!m_declared || found != m_declared->pressure)) {
         log::info("mm: memory pressure {}, {} MiB free", to_string(found), free / FRAMES_PER_MIB);
         if (found == MemoryPressure::OutOfMemory) {
             log::warn("mm: out of memory, and nothing to reclaim: allocations that could wait "
                       "are refused");
         }
-        m_declared = found;
-        m_declared_at = now;
-        m_declared_once = true;
+        m_declared = ustl::some(Declaration{.pressure = found, .at = now});
         m_pressure.store(found, std::memory_order_release);
     }
 
@@ -254,15 +276,15 @@ namespace {
         // Raised where this machine's zone floors need it, and said once,
         // here, because the levels the log and the command line show are
         // then not the ones in force.
-        auto const held = zone_floor_frame_count();
-        auto const levels = given->covering(held);
+        auto const covered = given->cover_zone_floors();
+        auto const &levels = covered.levels();
         if (levels.out_of_memory() > given->out_of_memory()) {
             log::info("mm: kernel.oom levels raised {} MiB: the zones' floors hold {} MiB",
                       (levels.out_of_memory() - given->out_of_memory() + FRAMES_PER_MIB - 1) /
                           FRAMES_PER_MIB,
-                      held / FRAMES_PER_MIB);
+                      covered.held() / FRAMES_PER_MIB);
         }
-        if (auto const status = MemoryWatchdog::get().start(levels); Status::Ok != status) {
+        if (auto const status = MemoryWatchdog::get().start(covered); Status::Ok != status) {
             log::error("mm: no thread for the memory watchdog: {}", to_string(status));
         }
     }

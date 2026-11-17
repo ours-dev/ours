@@ -37,6 +37,21 @@
 #include <ustl/views/span.hpp>
 
 namespace ours::mm {
+class CpuNodeMap;
+class PmNode;
+
+/// A pass to a node's CPU bookkeeping (PmNode::add_cpu(), remove_cpu(),
+/// join_hard_affinity()). Which node a CPU works on is CpuNodeMap's table,
+/// and CpuNodeMap is what keeps the table, the nodes' masks and the per-CPU
+/// cache in step, so it is the one that can make a key; the node itself makes
+/// one too, for the hard affinity it builds when it is made. A friend would
+/// open every private member; the key opens these three calls.
+class CpuPlacementKey {
+    friend class CpuNodeMap;
+    friend class PmNode;
+    CpuPlacementKey() = default;
+};
+
 /// A node's zones as its allocations see them: its own, which are its row of
 /// PmZone's table, and the fallback order an allocation looks through -- this
 /// node's own zones first, then every other node's, nearest first, and each
@@ -219,16 +234,18 @@ class PmNode {
     /// after the handoff, with nothing else running.
     static auto setup_watermarks() -> void;
 
-    /// Why a walk for one block gave nothing: the status, and the first zone
-    /// it passed that is short, for whoever asks the reclaimer. A zone is
-    /// short when it did not admit the request (taking the block would have
-    /// left it below the pass's floor, so a large block can find a zone short
-    /// that a single frame would not), or when an order-0 request found no
-    /// frame in it while it was below its high watermark. A zone with no free block of a larger
-    /// order is not short on that account alone: it may still have plenty of
-    /// single frames.
+    /// Why a walk for one block gave nothing: no zone both admitted the request
+    /// at the pass's floor and had a block. What status that becomes is the
+    /// caller's (ShouldWait after a Low pass a waiting request stops at,
+    /// OutOfMem after the Min pass), so the failure carries only the first
+    /// zone the walk passed that is short, if any, for whoever asks the
+    /// reclaimer. A zone is short when it did not admit the request (taking
+    /// the block would have left it below the pass's floor, so a large block
+    /// can find a zone short that a single frame would not), or when an
+    /// order-0 request found no frame in it while it was below its high
+    /// watermark. A zone with no free block of a larger order is not short on
+    /// that account alone: it may still have plenty of single frames.
     struct BlockFailure {
-        Status status;
         ustl::Option<PmZone const &> depleted_zone = ustl::NONE;
     };
 
@@ -286,8 +303,8 @@ class PmNode {
     /// else: which node a CPU is on is CpuNodeMap's table, and CpuNodeMap is
     /// the caller, which keeps the table, the two nodes' masks and the
     /// per-CPU cache in step.
-    auto add_cpu(CpuNum cpu) -> void;
-    auto remove_cpu(CpuNum cpu) -> void;
+    auto add_cpu(CpuNum cpu, CpuPlacementKey) -> void;
+    auto remove_cpu(CpuNum cpu, CpuPlacementKey) -> void;
 
     /// Adds |cpu| to the hard affinity if the firmware placed it on this
     /// node. init() already does this for every CPU the firmware's table
@@ -301,7 +318,7 @@ class PmNode {
     /// system's life, so nothing may write it once another CPU can read it.
     /// A CPU moved between nodes at run time does not come here. The hard
     /// affinity is what the firmware said, and does not follow a move.
-    auto join_hard_affinity(CpuNum cpu) -> void;
+    auto join_hard_affinity(CpuNum cpu, CpuPlacementKey) -> void;
 
     FORCE_INLINE
     constexpr auto hard_affinity() const -> CpuMask const & {

@@ -154,7 +154,7 @@ class AllocRequest final {
     /// use: its zones can all be short while the machine's count is healthy,
     /// and then nothing machine-wide is bound to end a wait of its own. So
     /// it is not put off at a zone's Low when it could wait; it goes on to
-    /// Min like a request that cannot, and fails there (alloc_block()).
+    /// Min like a request that cannot, and fails there (AllocationRun::take()).
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto is_confined() const -> bool {
@@ -192,12 +192,17 @@ class AllocRequest final {
     }
 
     /// Whether a Low pass that finds no zone answers this request ShouldWait
-    /// instead of going on to Min: a request that can wait and is not
-    /// confined. A confined one goes on to Min (is_confined()).
+    /// instead of going on to Min, as far as the request can say: one that
+    /// can wait, is not confined (is_confined()), and allows no zone above
+    /// Normal. The watchdog's levels cover the zones' floors against a
+    /// request that allows up to Normal (zone_floor_frame_count()); a request
+    /// that allows more has higher floors in the zones below, which nothing
+    /// covers, so nothing is bound to end its wait either. The gate decides
+    /// the rest: with no watchdog armed, no request waits (AllocationRun).
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto waits_at_low() const -> bool {
-        return may_wait() && !is_confined();
+        return may_wait() && !is_confined() && m_highest_zone <= ZoneType::Normal;
     }
 
     /// Whether the block is zeroed before it is handed out (Gaf::Zero).

@@ -100,6 +100,46 @@ namespace {
         return Status::ShouldWait == delayed.unwrap_err();
     }
 
+    /// Puts the gate back as boot leaves it when the scope ends. The gate is
+    /// global state the next check starts from, so a check that moves it
+    /// declares one of these first, and every way out of it, a FAIL
+    /// included, leaves the gate open. A check that arms the signal with an
+    /// event on its own stack declares this after the event, so the signal
+    /// is disarmed before the event goes away.
+    class GateRestore {
+      public:
+        GateRestore() = default;
+        GateRestore(GateRestore const &) = delete;
+        GateRestore(GateRestore &&) = delete;
+        auto operator=(GateRestore const &) -> GateRestore & = delete;
+        auto operator=(GateRestore &&) -> GateRestore & = delete;
+
+        ~GateRestore() {
+            open_gate();
+        }
+    };
+
+    /// Spawns a thread of |routine| on |arg|, in |aspace| when that is not
+    /// null (the kernel's otherwise), and lets it run. Null if it could not
+    /// be spawned or did not start; a thread spawned but not started is not
+    /// reaped, since nothing would ever end it for a join.
+    [[nodiscard]]
+    auto spawn_running(char const *const name, Thread::StartRoutine const routine, void *const arg,
+                       mm::VmAspace *const aspace) -> Thread * {
+        auto *const thread = Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            return nullptr;
+        }
+        if (aspace != nullptr) {
+            thread->set_aspace(aspace);
+        }
+        if (thread->resume() != Status::Ok) {
+            log::error("mempressure: {} was spawned but did not start", name);
+            return nullptr;
+        }
+        return thread;
+    }
+
     /// What one waiter came back with.
     struct Waiter {
         Status status = Status::BadState;
@@ -125,13 +165,9 @@ namespace {
         }
     }
 
+    [[nodiscard]]
     auto start(Waiter *const waiter) -> Thread * {
-        auto *const thread =
-            Thread::spawn("mempressure-waiter", wait_routine, waiter, task::DEFAULT_PRIORITY);
-        if (thread != nullptr) {
-            auto _ = thread->resume();
-        }
-        return thread;
+        return spawn_running("mempressure-waiter", wait_routine, waiter, nullptr);
     }
 
     /// Whether |thread| is still running after SETTLE: asleep in its wait.
@@ -152,6 +188,7 @@ namespace {
     }
 
     auto check_gate() -> void {
+        GateRestore restore;
         open_gate();
         auto served = mm::alloc_frames(WAITABLE);
         EXPECT_TRUE(!!served, "with no delay level, a CanWait allocation is served");
@@ -178,11 +215,11 @@ namespace {
     }
 
     auto check_waiter() -> void {
+        GateRestore restore;
         auto const shut = shut_gate();
         Waiter waiter;
         auto *const thread = start(&waiter);
         if (thread == nullptr) {
-            open_gate();
             FAIL("start a waiter thread");
         }
         auto const asleep = still_waiting(thread);
@@ -197,11 +234,11 @@ namespace {
     }
 
     auto check_refusal() -> void {
+        GateRestore restore;
         auto const shut = shut_gate();
         Waiter waiter;
         auto *const thread = start(&waiter);
         if (thread == nullptr) {
-            open_gate();
             FAIL("start a waiter thread");
         }
         auto const asleep = still_waiting(thread);
@@ -219,10 +256,10 @@ namespace {
         if (refused) {
             mm::free_frames(*refused);
         }
-        open_gate();
     }
 
     auto check_timeout() -> void {
+        GateRestore restore;
         auto const shut = shut_gate();
         auto const deadline = deadline_after(SETTLE);
         auto result = mm::wait_for_frame_allocation(WAITABLE, deadline, task::Interruptible::Yes);
@@ -230,7 +267,6 @@ namespace {
             // Closing the gate can leave a wakeup from its previous opening.
             result = mm::wait_for_frame_allocation(WAITABLE, deadline, task::Interruptible::Yes);
         }
-        open_gate();
         EXPECT_TRUE(shut && !result && result.unwrap_err() == Status::TimeOut,
                     "an interruptible allocation wait times out while the gate stays shut");
         if (result) {
@@ -241,6 +277,8 @@ namespace {
     auto check_signal() -> void {
         sync::Event watched;
         sync::Event rejected;
+        // Declared after the events, so the signal is disarmed before they go.
+        GateRestore restore;
         // Free memory pushed below the lower bound by allocations.
         auto const before = mm::approx_free_frame_count();
         auto const armed_low = mm::set_free_memory_signal(before - MARGIN, NO_BOUND, 0, &watched,
@@ -275,7 +313,6 @@ namespace {
         }
         auto const high = watched.wait(deadline_after(SETTLE)) == Status::Ok;
         EXPECT_TRUE(armed_high && high, "a list return above the upper bound signals the event");
-        open_gate();
         EXPECT_TRUE(!stale_low && !stale_high && low,
                     "stale bounds are rejected without replacing the armed event");
     }
@@ -322,15 +359,12 @@ namespace {
     /// gate opened. One that is still asleep then is woken with a refusal, so
     /// that the test never waits on it for ever.
     auto run_shut(mm::VmAspace *const aspace, VmoAccess *const access) -> bool {
+        GateRestore restore;
         auto const shut = shut_gate();
-        auto *const thread =
-            Thread::spawn("mempressure-access", access_routine, access, task::DEFAULT_PRIORITY);
+        auto *const thread = spawn_running("mempressure-access", access_routine, access, aspace);
         if (thread == nullptr) {
-            open_gate();
             return false;
         }
-        thread->set_aspace(aspace);
-        auto _ = thread->resume();
 
         auto const asleep = still_waiting(thread);
         open_gate();
@@ -341,7 +375,6 @@ namespace {
         log::error("mempressure: an access slept on after the gate opened; refusing it");
         refuse();
         auto _ = thread->join(&retcode, time::Deadline::infinite());
-        open_gate();
         return false;
     }
 
@@ -451,7 +484,7 @@ namespace {
             if (!levels) {
                 return false;
             }
-            watchdog.set_levels(*levels);
+            watchdog.set_levels(levels->cover_zone_floors());
             return settles_at(expected);
         };
         EXPECT_TRUE(settles_at(MemoryPressure::Normal),
@@ -497,7 +530,7 @@ namespace {
             mm::free_frames(*served);
         }
 
-        watchdog.set_levels(boot);
+        watchdog.set_levels(boot.cover_zone_floors());
         auto const normal = settles_at(MemoryPressure::Normal);
         auto waited = mm::alloc_frames(WAITABLE);
         EXPECT_TRUE(normal && !!waited,
@@ -512,13 +545,15 @@ namespace {
         {
             // These drive the gate and the signal by hand.
             mm::MemoryWatchdog::Hold hold{mm::MemoryWatchdog::get()};
+            // Declared after the hold, so the gate is open again before the
+            // watchdog arms it for itself.
+            GateRestore restore;
             check_gate();
             check_waiter();
             check_refusal();
             check_timeout();
             check_signal();
             check_vmo();
-            open_gate();
         }
         check_watchdog();
     }
@@ -571,16 +606,14 @@ namespace {
         // A race, so a pass is evidence rather than proof; it needs a second
         // CPU for the admitter to race on at all.
         mm::MemoryWatchdog::Hold hold{mm::MemoryWatchdog::get()};
+        // Declared after the hold, so the gate is open again before the
+        // watchdog arms it for itself.
+        GateRestore restore;
         Admitter admitter;
         auto *const thread =
-            Thread::spawn("mempressure-admitter", admit_routine, &admitter, task::DEFAULT_PRIORITY);
+            spawn_running("mempressure-admitter", admit_routine, &admitter, nullptr);
         if (thread == nullptr) {
-            FAIL("a thread for the admitter");
-            return;
-        }
-        if (Status::Ok != thread->resume()) {
-            FAIL("the admitter starts");
-            return;
+            FAIL("a running thread for the admitter");
         }
 
         // The probe is confined to this CPU's node, so a zone below its Low
@@ -608,7 +641,6 @@ namespace {
         admitter.stop.store(true, std::memory_order_release);
         i32 retcode = 0;
         auto _ = thread->join(&retcode, time::Deadline::infinite());
-        open_gate();
         log::info("pressure:   {} rounds, {} admissions, {} stale shuts", ROUNDS,
                   admitter.attempts.load(std::memory_order_relaxed), stale);
 

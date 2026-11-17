@@ -214,3 +214,206 @@ None.
 - Why does a setter only the calling thread may use let that thread read its policy without a lock, and what would another-thread setters cost?
 - Why is a request Bind narrowed confined while a mask the caller narrowed is not, and what would hang without the rule?
 - Why must the turn be counted after the resolver, and what goes wrong with Interleave if a `ThisNode` request takes one?
+
+## One allocation call is an AllocationRun, which looks at the pressure once on every way out (2026-11-16)
+
+**Files**
+- `kernel/mm/pmm.cpp` — `alloc_block(home, flags, order, nodes, depleted&)` becomes `AllocationRun`, private to the file: the constructor takes the flags and the node set, `begin(home)` resolves the home once, `take(order)` is the old body, the destructor observes the pressure once; `priv::alloc_frames`, `alloc_frames_bulk` and `alloc_frames_fragment` build one on their stack
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — a comment names `AllocationRun::take()`
+- `.agents/tasks/pmm-redesign/DESIGN.md`, `.agents/skills/kernel-design/references/mm.md` — D1(b) as built: the stages are members of a per-call object, not free functions
+
+**Symptom**
+Latent. One call of the allocation pipeline was threaded through parameters: `alloc_block()` took five, the last an in-out `depleted` every caller declared and passed back; the three entries repeated one skeleton (resolve the home, loop, observe); and the rule "look at the pressure once, after the whole call, whichever way it ends" was written out at four sites on the allocation side, two of them as a `gktl::defer` that had to be declared before the rollback so that it ran after it.
+
+**Cause**
+State that lives exactly as long as one call, and a postcondition that must hold on every exit path, are what an object on the call's stack is for: its members are the state, and its destructor is the one place an "exactly once, at the end" rule can be kept without each exit path remembering it. Passing the state down as parameters leaves the invariant with the callers, and every new entry has to restate it. Linux keeps the same per-call state in `struct alloc_context`, filled once by `prepare_alloc_pages()` and read by the fast and slow paths.
+
+**Change**
+
+```cpp
+// before: bulk, and fragment the same
+ustl::Option<PmZone const &> depleted;
+auto observation = gktl::defer([&depleted] { observe_pressure(depleted); });
+auto const node = resolve_home(home);
+if (!node) { return ustl::err(node.unwrap_err()); }
+PmFrame::List list;
+auto rollback = gktl::defer([&list] { free_blocks(list); });
+for (...) { auto block = alloc_block(*node, alloc_flags, 0, nodes, depleted); ... }
+
+// after
+AllocationRun run{alloc_flags, nodes};          // before the list: destroyed after the rollback
+if (auto const status = run.begin(home); Status::Ok != status) { return ustl::err(status); }
+PmFrame::List list;
+auto rollback = gktl::defer([&list] { free_blocks(list); });
+for (...) { auto block = run.take(0); ... }
+// ~AllocationRun(): observe_pressure(m_depleted), once
+```
+
+`begin()` rather than a constructor that resolves, since a constructor cannot report failure here (no exceptions) and the run must still observe when resolution fails, as the old code did. The release entries keep their one `observe_pressure()` each: a release has no home and no depleted zone, and a run built for it would be half initialised (option B, declined). The home is still held twice, in the run and in each request, as the second reviewer of M3 noted; the gain is the skeleton and the observation rule. The intent of D1(b), one entry no caller can bypass, stands: the type is private to `pmm.cpp`.
+
+**Reference**
+Linux `struct alloc_context` in `mm/internal.h`, filled by `prepare_alloc_pages()` in `mm/page_alloc.c` and passed to `get_page_from_freelist()` and `__alloc_pages_slowpath()`. Linux has no per-call destructor; its pressure work (`wakeup_kswapd()`) is called from inside the slow path.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree on the default and the four-node machine: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. `ktest all`: default 97 ran, 84 passed, 13 skipped; four nodes 97 ran, 94 passed, 3 skipped. Failure-injection build: 97 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `pmm.cpp`. Control: with the destructor's observation removed, `MemoryPressure.TheGateTheSignalAndTheWatchdog` fails three checks, so the observation the run owns is the one the tests depend on.
+
+A narrow pre-commit review (two reviewers, each finding checked by a second agent) found the behaviour unchanged on every path: the same refusals in the same order, one observation on success, on a `begin()` failure, on a first `take()` failure and halfway through a list, the first depleted zone kept across a later success, the rollback before the observation, and no lock held across it. It found the class not declared `final` (fixed) and this record missing (written). Refuted: that the design note's "observes once" is wrong for `alloc_frames_contiguous()`, which is one run and then one release per surplus frame, each observing at its end as the note says.
+
+**Deliberately not done**
+The release side (option B): a release has no home, and its entries already observe once in one line each. The duplicated home in the run and the request.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M3, from the OOP reviewer; option A, the user's call.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is a destructor the right place for "observe the pressure once, after the whole call", and what did each entry have to remember before?
+- Why must the run be declared before the rollback list, and what would change if it were declared after?
+- Why does `begin()` exist instead of a constructor that resolves the home?
+
+## Dead zone state goes, and the zone answers how short of High it is (2026-11-16)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — the per-CPU cache's two unreachable branches in `alloc_frames()`/`free_frames()` removed and a `static_assert` on `MAX_PCPU_CACHE_ORDER`, the cache type and member kept as the planned slot; `Flags::BelowHighWmark`, `is_below_high_wmark()` and the dead gate removed; `shortfall_to_high()` added; `m_node` and the undefined `find_frame()` removed; `create_all()` makes no zone of a span with no present frame
+- `kernel/mm/pm_node.cpp`, `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node_init.cpp` — the node asks `shortfall_to_high()` in its two places; `BlockFailure` loses its always-`OutOfMem` status; `init()` no longer writes `m_node`
+- `kernel/mm/include/ours/mm/pm_frame.hpp`, `kernel/mm/pmm.cpp` — `set_compound_offset()` private; `unpin()` returns `bool` like `pin()`, and `unpin_frame()` checks once
+- `kernel/mm/include/ours/mm/cpu_local.hpp` — a comment that named `PmZone::alloc_frames()` as a user of `with_current()`
+
+**Symptom**
+Latent, from the review's minor list (`.agents/tasks/pmm-redesign/REVIEW.md`). Every allocation opened with a test of a flag no code ever set, under a comment saying it tested the wrong line. Two branches for a per-CPU cache were unreachable only because a constant was 0, and the free branch counted a frame free without putting it on any list: raising the constant would have leaked every freed frame. `PmNode` worked out "below High" and "how far below" from two getters in two places. `PmZone::m_node` was written at bring-up and read by nothing, `find_frame()` was declared and never defined, `BlockFailure::status` was always `OutOfMem`, `set_compound_offset()` let any caller rewrite a tail without its head, and `unpin_frame()` checked for zero pins and then `unpin()` asserted the same. A zone span that is all holes stopped the boot on an assertion.
+
+**Cause**
+State and code left from steps that moved the decision elsewhere: admission moved into `PmZone::admits()` and the pipeline, which made the flag gate dead; the frame took its block layout (review M6), which made the public offset setter a way round it. The cache branches were scaffolding written before the cache had a take or return path. Asking a zone for its numbers and deciding outside it is the shape "tell, don't ask" warns about (review T4): the second place that computes it is where the two can drift.
+
+**Change**
+
+```cpp
+// before, in PmNode, twice
+auto const free = zone.num_free_frames();
+auto const high = zone.watermark(PmZone::Watermark::High);
+if (free < high) { wanted += high - free; }
+// after: the zone answers, from one read of its count
+wanted += zone.shortfall_to_high();
+
+// the cache: no order can reach it until it has a take and a return path
+static_assert(MAX_PCPU_CACHE_ORDER == 0, "the per-CPU frame cache has no take or return path");
+```
+
+`unpin()` mirrors `pin()`: it returns false and changes nothing when the frame holds no pin, so the rule is checked once, by the frame. A span with no present frame now leaves its table cell null, which every reader of the table already handles; a span with one present frame still asserts, as before. Kept on purpose: `PmZone::Flags::Initialized` and `Contiguous`, `PmNode::m_node_policy` (the node's default placement policy, as Linux keeps `preferred_node_policy[]`) and `m_soft_affinity`, which are stubs for requirements, not dead state.
+
+**Reference**
+Linux `zone_watermark_ok()` and `pgdat_balanced()` ask the zone about its own watermarks. None for the rest: this kernel's own leftovers.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. The `ktest all` runs on every shape are recorded with the test batch that follows, on the tree that holds both. A narrow pre-commit review found no behaviour change and no reader of a removed member; it found that the first wording of `BlockFailure`'s comment said a failed walk is always `OutOfMem`, while the caller turns a failed Low pass into `ShouldWait` (reworded: the status is the caller's).
+
+**Deliberately not done**
+The design questions among the minor items (pin rules' owner, the reserved books' owner, the machine-wide sums, node bring-up, public node and zone layers, and the rest): put to the user. A one-frame zone: the assertion that refuses it is left, since nothing shows what such a zone would do to the watermark arithmetic.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 10, 12, 14, 15, 19, 21, 22, 24, 33, 38 and 41, triaged against the current code by a workflow on 2026-11-16.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why was the per-CPU free branch a leak waiting for a constant to change, and why does a `static_assert` beat deleting the slot?
+- What does "tell, don't ask" buy in `shortfall_to_high()` that two getters do not?
+- Why is it safe to leave a zone's table cell null for a span with no present frame?
+
+## The watchdog keeps its declaration as one value, and start() undoes itself on failure (2026-11-16)
+
+**Files**
+- `kernel/mm/include/ours/mm/memory_watchdog.hpp`, `kernel/mm/memory_watchdog.cpp` — `m_declared`, `m_declared_at` and `m_declared_once` become `ustl::Option<Declaration>`; a file-local `reclaim_distance()` replaces two hand computations in `look()`; `start()` returns `resume()`'s status and takes its levels back when the thread does not run
+
+**Symptom**
+Latent, from the review's minor list. The last declaration was three fields and a bool saying whether the other two meant anything. `look()` worked out "how far below the upper edge" twice, once guarded and once not. `start()` discarded `resume()`'s status and left its levels set when the spawn failed, so `levels()` and `set_levels()`'s assertion took a watchdog with no thread for a running one; `MemoryReclaimer::start()` already returned the status.
+
+**Cause**
+A value that may be absent is an `Option`, not a value plus a flag beside it that every reader must check first. A computation done in two places drifts: one site had the guard and the other relied on an argument for why it needed none. And an operation that sets state before it can fail has to put it back on failure, or the state says something that is not true.
+
+**Change**
+
+```cpp
+struct Declaration { MemoryPressure pressure; time::SteadyClock::TimePoint at; };
+ustl::Option<Declaration> m_declared TA_GUARDED(m_lock);      // none before the first look
+...
+auto declare = !m_declared || m_skip_hysteresis || found > m_declared->pressure;
+...
+m_declared = ustl::some(Declaration{.pressure = found, .at = now});
+
+// start(): levels first, as the thread reads them first; back to none if it never runs
+auto const status = thread->resume();
+if (status != Status::Ok) { unstart(); }
+return status;
+```
+
+`m_pressure` stays an atomic beside it, since `pressure()` reads it without the lock; `m_skip_hysteresis` stays a bool, an override of the next look rather than part of the declaration (clearing the declaration instead would log an unchanged pressure again).
+
+**Reference**
+None: this kernel's own watchdog.
+
+**Verification**
+Recorded with the test batch that follows, on the tree that holds both.
+
+**Deliberately not done**
+A shared start helper for the two service threads: they live in two files, and a helper would need a header of its own for two callers.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 30, 31 and 32.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does `Option<Declaration>` rule out that a flag beside two fields did not?
+- Why must `start()` take its levels back when `resume()` fails, and which assertion would otherwise lie?
+- Why does `m_pressure` stay apart from the declaration?
+
+## A node's CPU bookkeeping takes a key only the CPU map makes (2026-11-16)
+
+**Files**
+- `kernel/mm/include/ours/mm/cpu_node_map.hpp`, `kernel/mm/cpu_node_map.cpp` — `set_node_of()` and `cache_local_node()` private; the base's comment says what the private base does and does not hide
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp` — `CpuPlacementKey`, a passkey `PmNode::add_cpu()`, `remove_cpu()` and `join_hard_affinity()` take; `ZoneList::connect()` asserts no node is chained twice
+- `kernel/mm/pm_node_init.cpp` — `init()` builds its hard affinity through `join_hard_affinity()` instead of repeating it; `claim_unplaced_cpus()`, a pure forward, goes, its comment moved to the call
+
+**Symptom**
+Latent, from the review's minor list. Which node a CPU works on is three facts kept in step (the table, the two nodes' masks, the per-CPU cache), and `CpuNodeMap` is what keeps them so; yet the table's and the cache's writers were public, and so were the nodes' mask updates, so any caller could move one of the three alone. The base comment said sharing the slot was "not reachable", which it is for anything naming `CpuLocal::Current<PmNode *>`. `init()` repeated `join_hard_affinity()`'s test inline, and the fallback order's "each node once" was checked only by a test.
+
+**Cause**
+An invariant over several objects has one keeper, and every write that can break it should go through the keeper. A passkey says which caller that is for one function, where a friend would open every private member (review T5, and M9's `FrameBuddyKey`).
+
+**Change**
+
+```cpp
+class CpuPlacementKey {
+    friend class CpuNodeMap;   // keeps the table, the masks and the cache in step
+    friend class PmNode;       // builds its own hard affinity when it is made
+    CpuPlacementKey() = default;
+};
+auto add_cpu(CpuNum cpu, CpuPlacementKey) -> void;
+auto remove_cpu(CpuNum cpu, CpuPlacementKey) -> void;
+auto join_hard_affinity(CpuNum cpu, CpuPlacementKey) -> void;
+```
+
+**Reference**
+None: this kernel's own CPU-to-node map.
+
+**Verification**
+Recorded with the test batch that follows, on the tree that holds both.
+
+**Deliberately not done**
+A slot type of the map's own instead of `CpuLocal::Current<PmNode *>`: it would cost the one-instruction scalar read. The node table's other invariants and the two-phase bring-up are among the design questions put to the user.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 16, 23 and 52.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which three facts does a CPU's placement consist of, and why must one class write all three?
+- What does a passkey open that a friend does not, and the other way round?
+- Why does `connect()` assert in a debug build what the test already checks?

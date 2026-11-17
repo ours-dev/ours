@@ -420,13 +420,6 @@ class PageFrame {
         return m_compound.load(std::memory_order_relaxed);
     }
 
-    FORCE_INLINE
-    auto set_compound_offset(u32 offset) -> void {
-        DEBUG_ASSERT(offset <= std::numeric_limits<u16>::max(),
-                     "frame {} of a block: no block is that large", offset);
-        m_compound.store(static_cast<u16>(offset), std::memory_order_relaxed);
-    }
-
     /// Whether this frame heads a block rather than sitting inside one. Every
     /// tail of a block the allocator handed out says how far it is from its
     /// head, so a frame that says 0 is a head (or a block of one frame).
@@ -510,13 +503,17 @@ class PageFrame {
         return true;
     }
 
-    /// One pin fewer. The count is unsigned, so an unpin of none would wrap
-    /// to the limit and hold the frame for ever: an assertion, as drop_share()
-    /// is.
-    auto unpin() -> void {
+    /// One pin fewer. False, and nothing changed, when the frame holds none:
+    /// the count is unsigned, so an unpin of none would wrap to the limit and
+    /// hold the frame for ever. The mirror of pin(), and under the same lock.
+    [[nodiscard]]
+    auto unpin() -> bool {
         auto const now = m_pins.load(std::memory_order_relaxed);
-        DEBUG_ASSERT(now > 0, "a frame with no pin lost one");
+        if (now == 0) {
+            return false;
+        }
         m_pins.store(static_cast<u8>(now - 1), std::memory_order_relaxed);
+        return true;
     }
 
     auto get() const -> void {
@@ -646,6 +643,16 @@ class PageFrame {
     USTL_NO_MOVEABLE_AND_COPYABLE(PageFrame);
 
   private:
+    /// A tail's distance from its head: written only by the head's own
+    /// block operations (make_block(), split(), clear_block()), so that a
+    /// tail cannot be told it belongs to a head that does not know it.
+    FORCE_INLINE
+    auto set_compound_offset(u32 offset) -> void {
+        DEBUG_ASSERT(offset <= std::numeric_limits<u16>::max(),
+                     "frame {} of a block: no block is that large", offset);
+        m_compound.store(static_cast<u16>(offset), std::memory_order_relaxed);
+    }
+
     /// Stamps the |count| frames from |head| on as one block: the head's
     /// offset 0, each tail its distance from it.
     auto stamp_tails(usize const head, usize const count) -> void {

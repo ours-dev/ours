@@ -85,6 +85,17 @@ namespace {
         auto wait_for_opening(time::Deadline const &deadline, task::Interruptible interruptible)
             -> Status;
 
+        /// Whether a request put off now has something bound to end its wait:
+        /// the watchdog has armed the gate, so it will shut it, open it, or
+        /// refuse its waiters as free memory moves. Before the watchdog starts,
+        /// or with none (levels the command line gave that do not nest), the
+        /// delay level is zero and only a release could end a wait, which need
+        /// never come.
+        [[nodiscard]]
+        auto ends_waits() const -> bool {
+            return m_delay_level.load(std::memory_order_relaxed) != 0;
+        }
+
         /// An opening, or a refusal, passed on to the next waiter.
         auto pass_on() -> void {
             m_may_allocate.signal();
@@ -380,115 +391,168 @@ namespace {
         return ustl::ok(Home{.node = node->nid(), .policy = thread_policy()});
     }
 
-    /// One block for the calling thread out of |home|'s walk, with pressure
-    /// not looked at: the list forms take several and look once. When the
-    /// first pass fails as a whole, |depleted| is set to the first zone it
-    /// found short, if it was not set already, and stays set whether or not
-    /// the second pass then brings a block back: an allocation served by the
-    /// second pass was served below Low, and reclaim is wanted then too. A
-    /// first pass that succeeds names nothing, though it may have passed over
-    /// a short zone on the way to one that admitted the request.
+    /// One run of the allocation pipeline: one call of an mm:: entry, from the
+    /// home it resolves once to the look at free memory it takes once at the
+    /// end. It lives on the entry's stack for the length of the call, and the
+    /// stages of the pipeline are its members: begin() resolves where the run
+    /// starts, take() makes one block, and the destructor looks at the
+    /// pressure. "Once, after the whole call, whichever way it ends" is so the
+    /// destructor's to keep rather than each entry's: a run that fails in
+    /// begin(), in its first take() or halfway through a list looks once all
+    /// the same, after the list's rollback has given its blocks back.
     ///
-    /// A request that can wait (AllocRequest::may_wait()) asks the free-memory
-    /// gate before any zone, after the refusals that are about the request
-    /// itself (a thread that disabled allocation, an order the buddy does not
-    /// have, a home that does not exist), which it gets first. Unless it is
-    /// confined, it then makes the first pass only
-    /// (AllocRequest::waits_at_low()): when no zone admits it at Low it is
-    /// answered ShouldWait, and waits for a zone to rise back above Low,
-    /// instead of spending the band between Low and Min that the requests
-    /// which cannot wait depend on. A confined one makes both passes, as a
-    /// request that cannot wait does.
-    auto alloc_block(Home const &home, Gaf const alloc_flags, usize const order,
-                     NodeMask const &nodes, ustl::Option<PmZone const &> &depleted)
-        -> ktl::Result<PmFrame *> {
-        // Whether the calling thread may allocate at all: a thread that has
-        // disabled allocation (AllocState::disable()) is refused here,
-        // whichever way it asked. This is the one function every frame
-        // allocation reaches -- the node-less entries, the ones naming a node,
-        // and the bulk and fragment loops once per step -- so the rule cannot
-        // be walked around.
-        //
-        // It is a different question from where the frame comes from, and only
-        // that one depends on whether the caller named a node. So this is
-        // asked on every path, node named or not, and the placement policy
-        // only on the node-less ones (resolve_home(), resolve_request()).
-        //
-        // Thread::Current is always there by now: task::init_early() makes the
-        // boot thread current before the PMM exists.
-        if (!task::Thread::Current::alloc_state().is_enabled()) {
-            return ustl::err(Status::AccessDenied);
+    /// Private to this file, so that no caller outside the mm:: entries can
+    /// make one: an allocation cannot skip a stage by calling one directly.
+    class AllocationRun final {
+      public:
+        AllocationRun(Gaf const flags, NodeMask const &nodes) : m_flags(flags), m_nodes(nodes) {}
+
+        ~AllocationRun() {
+            observe_pressure(m_depleted);
         }
 
-        // Before the request is built: a resolved request never carries an
-        // order the buddy does not have.
-        if (order > MAX_FRAME_ORDER) {
-            return ustl::err(Status::InvArgs);
-        }
+        AllocationRun(AllocationRun const &) = delete;
+        auto operator=(AllocationRun const &) -> AllocationRun & = delete;
 
-        // Each block the policy places is a turn of its own, so that an
-        // Interleave moves on per block, in the bulk and fragment loops too.
-        // The turn is counted once the request says the policy placed it:
-        // whether Gaf::ThisNode kept the policy out is the resolver's call.
-        auto policy = ustl::Option<AllocPolicy const &>{};
-        AllocState *state = nullptr;
-        auto turn = usize{0};
-        if (home.policy) {
-            policy = ustl::some_ref(*home.policy);
-            state = &task::Thread::Current::alloc_state();
-            turn = state->policy_turn();
-        }
-        auto const request = resolve_request(
-            alloc_flags, order, nodes, AllocRequest::Origin{.node = home.node, .cpu = Cpu::id()},
-            policy, turn);
-        if (request.placed_by_policy()) {
-            state->count_policy_turn();
-        }
-        // The node the walk starts from is the request's: the policy may have
-        // moved it off the one resolve_home() found, to a node of the set the
-        // caller allowed. A set naming a node that is not up names nothing to
-        // walk from.
-        auto *const start = find_node(request.home_node());
-        if (!start) {
-            return ustl::err(Status::InvArgs);
-        }
-
-        // The gate first, for a request that can wait: it decides for the
-        // whole machine whether such a request may go ahead now, before any
-        // zone is asked.
-        if (request.may_wait()) {
-            if (auto const status = GATE.admit(); Status::Ok != status) {
-                return ustl::err(status);
+        /// Resolves the node every take() of this run starts from, and the
+        /// placement policy that has its say over it (resolve_home()). Once,
+        /// before the first take(): a list of blocks is one resolution.
+        [[nodiscard]]
+        auto begin(NodeId const home) -> Status {
+            DEBUG_ASSERT(!m_home, "a run resolves its home once");
+            auto resolved = resolve_home(home);
+            if (!resolved) {
+                return resolved.unwrap_err();
             }
+            m_home = ustl::some(ustl::move(*resolved));
+            return Status::Ok;
         }
 
-        // Two passes. The first holds the request at every zone's Low
-        // watermark. Only when no zone admits it there is reclaim asked for,
-        // for the first zone the pass found short, and the second pass lets
-        // the request down to Min (or below, for a caller that cannot block):
-        // the band between Low and Min is spent only after reclaim has been
-        // asked for.
-        auto block = start->alloc_frames(request, AdmissionPass::Low);
-        if (!block) {
-            if (!depleted) {
-                depleted = block.error().depleted_zone;
+        /// One block of 2^|order| frames for the calling thread, out of the
+        /// walk from the run's home. When the first pass fails as a whole, the
+        /// run remembers the first zone it found short, if it has none yet,
+        /// whether or not the second pass then brings a block back: an
+        /// allocation served by the second pass was served below Low, and
+        /// reclaim is wanted then too. A first pass that succeeds names
+        /// nothing, though it may have passed over a short zone on the way to
+        /// one that admitted the request. The destructor asks reclaim for it.
+        ///
+        /// A request that can wait (AllocRequest::may_wait()) asks the
+        /// free-memory gate before any zone, after the refusals that are about
+        /// the request itself (a thread that disabled allocation, an order the
+        /// buddy does not have, a home that does not exist), which it gets
+        /// first. Unless it is confined, it then makes the first pass only
+        /// (AllocRequest::waits_at_low()): when no zone admits it at Low it is
+        /// answered ShouldWait, and waits for a zone to rise back above Low,
+        /// instead of spending the band between Low and Min that the requests
+        /// which cannot wait depend on. A confined one makes both passes, as a
+        /// request that cannot wait does.
+        [[nodiscard]]
+        auto take(usize const order) -> ktl::Result<PmFrame *> {
+            DEBUG_ASSERT(m_home, "a run takes a block only after begin()");
+            // Whether the calling thread may allocate at all: a thread that has
+            // disabled allocation (AllocState::disable()) is refused here,
+            // whichever way it asked. This is the one function every frame
+            // allocation reaches -- the node-less entries, the ones naming a node,
+            // and the bulk and fragment loops once per step -- so the rule cannot
+            // be walked around.
+            //
+            // It is a different question from where the frame comes from, and only
+            // that one depends on whether the caller named a node. So this is
+            // asked on every path, node named or not, and the placement policy
+            // only on the node-less ones (begin(), resolve_request()).
+            //
+            // Thread::Current is always there by now: task::init_early() makes the
+            // boot thread current before the PMM exists.
+            if (!task::Thread::Current::alloc_state().is_enabled()) {
+                return ustl::err(Status::AccessDenied);
             }
-            // An ordinary waiting request waits here rather than spend the
-            // band. A confined one does not: the gate and the watchdog count
-            // memory it cannot use, so nothing is bound to end its wait, and
-            // it goes on to Min and fails there like one that cannot wait.
-            if (request.waits_at_low()) {
-                return ustl::err(Status::ShouldWait);
+
+            // Before the request is built: a resolved request never carries an
+            // order the buddy does not have.
+            if (order > MAX_FRAME_ORDER) {
+                return ustl::err(Status::InvArgs);
             }
-            block = start->alloc_frames(request, AdmissionPass::Min);
-        }
-        if (!block) {
-            return ustl::err(block.error().status);
+
+            // Each block the policy places is a turn of its own, so that an
+            // Interleave moves on per block, in the bulk and fragment loops too.
+            // The turn is counted once the request says the policy placed it:
+            // whether Gaf::ThisNode kept the policy out is the resolver's call.
+            auto policy = ustl::Option<AllocPolicy const &>{};
+            AllocState *state = nullptr;
+            auto turn = usize{0};
+            if (m_home->policy) {
+                policy = ustl::some_ref(*m_home->policy);
+                state = &task::Thread::Current::alloc_state();
+                turn = state->policy_turn();
+            }
+            auto const request = resolve_request(
+                m_flags, order, m_nodes,
+                AllocRequest::Origin{.node = m_home->node, .cpu = Cpu::id()}, policy, turn);
+            if (request.placed_by_policy()) {
+                state->count_policy_turn();
+            }
+            // The node the walk starts from is the request's: the policy may have
+            // moved it off the one begin() found, to a node of the set the
+            // caller allowed. A set naming a node that is not up names nothing to
+            // walk from.
+            auto *const start = find_node(request.home_node());
+            if (!start) {
+                return ustl::err(Status::InvArgs);
+            }
+
+            // The gate first, for a request that can wait: it decides for the
+            // whole machine whether such a request may go ahead now, before any
+            // zone is asked.
+            if (request.may_wait()) {
+                if (auto const status = GATE.admit(); Status::Ok != status) {
+                    return ustl::err(status);
+                }
+            }
+
+            // Two passes. The first holds the request at every zone's Low
+            // watermark. Only when no zone admits it there is reclaim asked for,
+            // for the first zone the pass found short, and the second pass lets
+            // the request down to Min (or below, for a caller that cannot block):
+            // the band between Low and Min is spent only after reclaim has been
+            // asked for.
+            auto block = start->alloc_frames(request, AdmissionPass::Low);
+            if (!block) {
+                if (!m_depleted) {
+                    m_depleted = block.error().depleted_zone;
+                }
+                // An ordinary waiting request waits here rather than spend the
+                // band. A confined one does not: the gate and the watchdog count
+                // memory it cannot use, so nothing is bound to end its wait, and
+                // it goes on to Min and fails there like one that cannot wait.
+                // Nor does any request while no watchdog has armed the gate:
+                // then nothing at all is bound to end a wait.
+                if (request.waits_at_low() && GATE.ends_waits()) {
+                    return ustl::err(Status::ShouldWait);
+                }
+                block = start->alloc_frames(request, AdmissionPass::Min);
+            }
+            if (!block) {
+                return ustl::err(Status::OutOfMem);
+            }
+
+            prepare_alloc(**block, request);
+            return ustl::ok(*block);
         }
 
-        prepare_alloc(**block, request);
-        return ustl::ok(*block);
-    }
+      private:
+        Gaf const m_flags;
+
+        /// The nodes the caller allows; the policy may narrow them per block.
+        NodeMask const m_nodes;
+
+        /// None until begin().
+        ustl::Option<Home> m_home;
+
+        /// The first zone a first pass of this run found short, for the
+        /// destructor to ask reclaim for.
+        ustl::Option<PmZone const &> m_depleted;
+    };
 
     /// One block back to the node that owns it, with pressure not looked at.
     auto free_block(PmFrame &frame) -> void {
@@ -502,7 +566,7 @@ namespace {
 
         // A release that brings the zone back to admitting a frame at its
         // Low watermark wakes one waiter: a waiting request put off at Low
-        // (alloc_block()) may now be served. Only at that crossing, not on
+        // (AllocationRun::take()) may now be served. Only at that crossing, not on
         // every release, so a zone above Low wakes nobody. The zone tells it
         // from the count its own atomic increment found, so of releases
         // racing each other and allocations, exactly the one that crossed
@@ -562,14 +626,21 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
         // preference" -- every in-tree caller today -- starts on the calling
         // CPU's node, the thread's NUMA policy included (applied by
         // resolve_home()). The AllocState counter applies either way:
-        // alloc_block() checks it for every caller.
+        // AllocationRun::take() checks it for every caller.
         //
         // Through the pipeline under mm::alloc_frames(), not the entry itself:
         // a page table is the page-table failure site's
         // (test::AllocationSite::PageTable, asked in PageTable::allocate_table())
         // and must not also count as a frame asked for with no home.
-        auto const result = priv::alloc_frames(
-            ALLOC_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE), node, node_online_mask());
+        //
+        // Without Gaf::CanBlock: every caller holds a page table's spin lock
+        // with interrupts off (PageTable::allocate_table(),
+        // PageTableDeposits::reserve()), so it cannot block, and says so. Its
+        // Min pass therefore goes a quarter below Min, as every caller that
+        // cannot block does (admission_floor()): a page table is what lets the
+        // mapping that needs it go on.
+        auto const result =
+            priv::alloc_frames(Gaf::Zero, get_order(size / PAGE_SIZE), node, node_online_mask());
         if (!result) {
             return PhysAddr{0};
         }
@@ -695,36 +766,30 @@ namespace priv {
     auto alloc_frames(Gaf alloc_flags, usize const order, NodeId const home, NodeMask const &nodes)
         -> ktl::Result<PmFrame *> {
         // The flags go down whole: the request built from them answers what
-        // they mean, the gate included (alloc_block()).
-        auto const node = resolve_home(home);
-        if (!node) {
-            observe_pressure();
-            return ustl::err(node.unwrap_err());
+        // they mean, the gate included (AllocationRun::take()).
+        AllocationRun run{alloc_flags, nodes};
+        if (auto const status = run.begin(home); Status::Ok != status) {
+            return ustl::err(status);
         }
-
-        ustl::Option<PmZone const &> depleted;
-        auto const block = alloc_block(*node, alloc_flags, order, nodes, depleted);
-        observe_pressure(depleted);
-        return block;
+        return run.take(order);
     }
 
     auto alloc_frames_bulk(Gaf alloc_flags, usize const n, NodeId const home, NodeMask const &nodes)
         -> ktl::Result<PmFrame::List> {
         DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "batch allocation is immediate");
 
-        ustl::Option<PmZone const &> depleted;
-        auto observation = gktl::defer([&depleted] { observe_pressure(depleted); });
-        auto const node = resolve_home(home);
-        if (!node) {
-            log::trace("Failed to allocate {} frames with reason: {}", n,
-                       to_string(node.unwrap_err()));
-            return ustl::err(node.unwrap_err());
+        // Before the list, so that it is destroyed after the rollback: the
+        // run looks at the pressure once the blocks are back.
+        AllocationRun run{alloc_flags, nodes};
+        if (auto const status = run.begin(home); Status::Ok != status) {
+            log::trace("Failed to allocate {} frames with reason: {}", n, to_string(status));
+            return ustl::err(status);
         }
 
         PmFrame::List list;
         auto rollback = gktl::defer([&list] { free_blocks(list); });
         for (usize i = 0; i < n; ++i) {
-            auto block = alloc_block(*node, alloc_flags, 0, nodes, depleted);
+            auto block = run.take(0);
             if (!block) {
                 log::trace("Failed to allocate {} frames with reason: {}", n,
                            to_string(block.unwrap_err()));
@@ -741,12 +806,11 @@ namespace priv {
         -> ktl::Result<PmFrame::List> {
         DEBUG_ASSERT(!(alloc_flags & Gaf::CanWait), "fragment allocation is immediate");
 
-        ustl::Option<PmZone const &> depleted;
-        auto observation = gktl::defer([&depleted] { observe_pressure(depleted); });
-        auto const node = resolve_home(home);
-        if (!node) {
-            log::trace("Failed to allocate frame with reason: {}", to_string(node.unwrap_err()));
-            return ustl::err(node.unwrap_err());
+        // Before the list, as in alloc_frames_bulk().
+        AllocationRun run{alloc_flags, nodes};
+        if (auto const status = run.begin(home); Status::Ok != status) {
+            log::trace("Failed to allocate frame with reason: {}", to_string(status));
+            return ustl::err(status);
         }
 
         PmFrame::List list;
@@ -761,7 +825,7 @@ namespace priv {
                 continue;
             }
 
-            auto block = alloc_block(*node, alloc_flags, order, nodes, depleted);
+            auto block = run.take(order);
             if (!block) {
                 log::trace("Failed to allocate frame with reason: {}",
                            to_string(block.unwrap_err()));
@@ -887,10 +951,9 @@ auto pin_frame(PmFrame *const frame) -> Status {
 
 auto unpin_frame(PmFrame *const frame) -> Status {
     DEBUG_ASSERT(frame, "unpin requires a frame");
-    if (frame->pin_count() == 0) {
+    if (!frame->unpin()) {
         return Status::BadState;
     }
-    frame->unpin();
     return Status::Ok;
 }
 

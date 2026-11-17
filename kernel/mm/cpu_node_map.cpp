@@ -90,7 +90,8 @@ auto CpuNodeMap::cache_local_node(CpuNum const cpu, PmNode *const node) -> void 
     DEBUG_ASSERT(node->nid() == node_of(cpu),
                  "CPU {} is placed on node {}, so its cache cannot hold node {}", cpu, node_of(cpu),
                  node->nid());
-    Slot::set(node, cpu);
+    // move() writes another CPU's slot while that CPU may be reading it.
+    std::atomic_ref<PmNode *>{Slot::get(cpu)}.store(node, std::memory_order_relaxed);
 }
 
 auto CpuNodeMap::publish(CpuNum const cpu) -> void {
@@ -104,12 +105,12 @@ auto CpuNodeMap::publish(CpuNum const cpu) -> void {
     auto *const node = find_node(nid);
     DEBUG_ASSERT(node, "CPU {} was claimed by node {}, which does not exist", cpu, nid);
 
-    node->add_cpu(cpu);
+    node->add_cpu(cpu, CpuPlacementKey{});
     // The node's init() builds the hard affinity from
     // numa::Topology::firmware_node() when the node is made. A CPU published
     // here joins it the same way, so that the node's mask says the same thing
     // as the firmware's table whenever the CPU was claimed.
-    node->join_hard_affinity(cpu);
+    node->join_hard_affinity(cpu, CpuPlacementKey{});
     cache_local_node(cpu, node);
 }
 
@@ -146,9 +147,9 @@ auto CpuNodeMap::publish_all() -> void {
 /// the first kmalloc() on an AP -- a user thread's channel_create(), on
 /// CPU1 -- read m_node_caches[MAX_NODES], one past the end, took the
 /// ListMemberHook after the array for a NodeCache, and spun for ever on a list
-/// pointer it had mistaken for that NodeCache's lock. The comment on
-/// claim_unplaced_cpus() in pm_node_init.cpp describes that exact failure for
-/// the boot CPU; this is the same hole for the others.
+/// pointer it had mistaken for that NodeCache's lock. The comment on the first
+/// seed in PmNode's bring-up (pm_node_init.cpp) describes that exact failure
+/// for the boot CPU; this is the same hole for the others.
 ///
 /// A CPU no topology source placed goes where the boot CPU went, which is the
 /// first node that owns memory -- the fallback node bring-up chose, and on a
@@ -180,7 +181,7 @@ auto CpuNodeMap::move(CpuNum const cpu, NodeId const new_nid) -> void {
 
     if (old_nid != MAX_NODES) {
         if (auto *const node = find_node(old_nid)) {
-            node->remove_cpu(cpu);
+            node->remove_cpu(cpu, CpuPlacementKey{});
         }
     }
 
@@ -191,7 +192,7 @@ auto CpuNodeMap::move(CpuNum const cpu, NodeId const new_nid) -> void {
     // takes a copy.
     set_node_of(cpu, new_nid);
     if (auto *const node = find_node(new_nid)) {
-        node->add_cpu(cpu);
+        node->add_cpu(cpu, CpuPlacementKey{});
         cache_local_node(cpu, node);
     }
 }

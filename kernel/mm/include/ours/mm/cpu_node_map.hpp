@@ -26,6 +26,7 @@
 #include <ours/types.hpp>
 
 #include <array>
+#include <atomic>
 
 namespace ours::mm {
 class PmNode;
@@ -45,12 +46,19 @@ class PmNode;
 /// written from here.
 ///
 /// The base is where the per-CPU slot lives, and it is inherited privately on
-/// purpose. CpuLocal::Current's storage belongs to the instantiation, not to
-/// the class that derives it, so a second class deriving
-/// CpuLocal::Current<PmNode *> would silently share this one slot; and its
-/// get()/set() invite `CpuNodeMap::get()->m_id`, which reads CURRENT_INSTANCE
-/// as an ordinary pointer -- the fold-to-a-constant trap described on
-/// current_node(). Neither is reachable through this interface.
+/// purpose: its get()/set() invite `CpuNodeMap::get()->m_id`, which reads
+/// CURRENT_INSTANCE as an ordinary pointer -- the fold-to-a-constant trap
+/// described on current_node() -- and the private base keeps them out of this
+/// class's interface. It cannot keep them out of reach altogether.
+/// CpuLocal::Current's storage belongs to the instantiation, not to the class
+/// that derives it, so anything that names CpuLocal::Current<PmNode *> itself
+/// reaches this one slot; a slot type of its own would cost the one-instruction
+/// read the scalar form gives, so the rule is that nothing else names it.
+///
+/// The writers of the table and the cache are private for the same reason, and
+/// the nodes' CPU bookkeeping takes a CpuPlacementKey that only this class
+/// (and a node building its own hard affinity) can make: one class keeps the
+/// table, the masks and the cache in step.
 class CpuNodeMap: private CpuLocal::Current<PmNode *> {
     using Self = CpuNodeMap;
     using Slot = CpuLocal::Current<PmNode *>;
@@ -65,16 +73,7 @@ class CpuNodeMap: private CpuLocal::Current<PmNode *> {
     FORCE_INLINE
     static auto node_of(CpuNum const cpu) -> NodeId {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        return NODE_OF_CPU[cpu];
-    }
-
-    /// Places |cpu| on |nid| in the table, and nothing else. Both the seed at
-    /// bring-up and move() come through here; the nodes' own CPU masks are
-    /// each node's, and publish() and move() update them around this call.
-    FORCE_INLINE
-    static auto set_node_of(CpuNum const cpu, NodeId const nid) -> void {
-        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        NODE_OF_CPU[cpu] = nid;
+        return std::atomic_ref<NodeId>{NODE_OF_CPU[cpu]}.load(std::memory_order_relaxed);
     }
 
     /// Seeds the table from what the firmware declared, and places anything
@@ -114,14 +113,6 @@ class CpuNodeMap: private CpuLocal::Current<PmNode *> {
     /// starts.
     static auto local_node() -> PmNode *;
 
-    /// Points |cpu|'s slot at |node|, which must be the node the table places
-    /// it on -- the cache is only ever a copy of that composition.
-    ///
-    /// Only after CpuLocal::init(): this writes through the per-CPU base, and
-    /// there is nothing to ask whether the units exist yet. Every caller is an
-    /// init hook at InitLevel::CpuLocal + 1 or later, or a run-time move.
-    static auto cache_local_node(CpuNum cpu, PmNode *node) -> void;
-
     /// Makes |cpu|'s place in the table known to the node and to the cache:
     /// records it as working on the node the table puts it on, and points its
     /// slot at that node. Nothing for a CPU still on the MAX_NODES sentinel.
@@ -147,8 +138,34 @@ class CpuNodeMap: private CpuLocal::Current<PmNode *> {
     static auto move(CpuNum cpu, NodeId nid) -> void;
 
   private:
+    /// Places |cpu| on |nid| in the table, and nothing else. Both the seed at
+    /// bring-up and move() come through here; the nodes' own CPU masks are
+    /// each node's, and publish() and move() update them around this call.
+    FORCE_INLINE
+    static auto set_node_of(CpuNum const cpu, NodeId const nid) -> void {
+        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
+        std::atomic_ref<NodeId>{NODE_OF_CPU[cpu]}.store(nid, std::memory_order_relaxed);
+    }
+
+    /// Points |cpu|'s slot at |node|, which must be the node the table places
+    /// it on -- the cache is only ever a copy of that composition.
+    ///
+    /// Only after CpuLocal::init(): this writes through the per-CPU base, and
+    /// there is nothing to ask whether the units exist yet. Every caller is an
+    /// init hook at InitLevel::CpuLocal + 1 or later, or a run-time move.
+    static auto cache_local_node(CpuNum cpu, PmNode *node) -> void;
+
     /// MAX_NODES from the first instruction, by constinit, because this is
     /// read before any init hook could fill it.
+    ///
+    /// Read by every CPU with no lock, and written at bring-up and by move(),
+    /// which re-homes a CPU from another one: each entry is read and written
+    /// whole, as a relaxed atomic. Nothing else is ordered by it -- a reader
+    /// that sees the old node or the new one has a valid place to start an
+    /// allocation either way, and the nodes' masks are each node's own, under
+    /// its lock. The per-CPU slot is the same: its own CPU reads it with one
+    /// %gs-relative load, a single instruction, and another CPU writes it
+    /// through a relaxed atomic (cache_local_node()).
     static std::array<NodeId, MAX_CPU> NODE_OF_CPU;
 };
 
