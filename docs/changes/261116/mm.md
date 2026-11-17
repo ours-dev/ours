@@ -214,3 +214,61 @@ None.
 - Why does a setter only the calling thread may use let that thread read its policy without a lock, and what would another-thread setters cost?
 - Why is a request Bind narrowed confined while a mask the caller narrowed is not, and what would hang without the rule?
 - Why must the turn be counted after the resolver, and what goes wrong with Interleave if a `ThisNode` request takes one?
+
+## One allocation call is an AllocationRun, which looks at the pressure once on every way out (2026-11-16)
+
+**Files**
+- `kernel/mm/pmm.cpp` — `alloc_block(home, flags, order, nodes, depleted&)` becomes `AllocationRun`, private to the file: the constructor takes the flags and the node set, `begin(home)` resolves the home once, `take(order)` is the old body, the destructor observes the pressure once; `priv::alloc_frames`, `alloc_frames_bulk` and `alloc_frames_fragment` build one on their stack
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — a comment names `AllocationRun::take()`
+- `.agents/tasks/pmm-redesign/DESIGN.md`, `.agents/skills/kernel-design/references/mm.md` — D1(b) as built: the stages are members of a per-call object, not free functions
+
+**Symptom**
+Latent. One call of the allocation pipeline was threaded through parameters: `alloc_block()` took five, the last an in-out `depleted` every caller declared and passed back; the three entries repeated one skeleton (resolve the home, loop, observe); and the rule "look at the pressure once, after the whole call, whichever way it ends" was written out at four sites on the allocation side, two of them as a `gktl::defer` that had to be declared before the rollback so that it ran after it.
+
+**Cause**
+State that lives exactly as long as one call, and a postcondition that must hold on every exit path, are what an object on the call's stack is for: its members are the state, and its destructor is the one place an "exactly once, at the end" rule can be kept without each exit path remembering it. Passing the state down as parameters leaves the invariant with the callers, and every new entry has to restate it. Linux keeps the same per-call state in `struct alloc_context`, filled once by `prepare_alloc_pages()` and read by the fast and slow paths.
+
+**Change**
+
+```cpp
+// before: bulk, and fragment the same
+ustl::Option<PmZone const &> depleted;
+auto observation = gktl::defer([&depleted] { observe_pressure(depleted); });
+auto const node = resolve_home(home);
+if (!node) { return ustl::err(node.unwrap_err()); }
+PmFrame::List list;
+auto rollback = gktl::defer([&list] { free_blocks(list); });
+for (...) { auto block = alloc_block(*node, alloc_flags, 0, nodes, depleted); ... }
+
+// after
+AllocationRun run{alloc_flags, nodes};          // before the list: destroyed after the rollback
+if (auto const status = run.begin(home); Status::Ok != status) { return ustl::err(status); }
+PmFrame::List list;
+auto rollback = gktl::defer([&list] { free_blocks(list); });
+for (...) { auto block = run.take(0); ... }
+// ~AllocationRun(): observe_pressure(m_depleted), once
+```
+
+`begin()` rather than a constructor that resolves, since a constructor cannot report failure here (no exceptions) and the run must still observe when resolution fails, as the old code did. The release entries keep their one `observe_pressure()` each: a release has no home and no depleted zone, and a run built for it would be half initialised (option B, declined). The home is still held twice, in the run and in each request, as the second reviewer of M3 noted; the gain is the skeleton and the observation rule. The intent of D1(b), one entry no caller can bypass, stands: the type is private to `pmm.cpp`.
+
+**Reference**
+Linux `struct alloc_context` in `mm/internal.h`, filled by `prepare_alloc_pages()` in `mm/page_alloc.c` and passed to `get_page_from_freelist()` and `__alloc_pages_slowpath()`. Linux has no per-call destructor; its pressure work (`wakeup_kswapd()`) is called from inside the slow path.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree on the default and the four-node machine: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. `ktest all`: default 97 ran, 84 passed, 13 skipped; four nodes 97 ran, 94 passed, 3 skipped. Failure-injection build: 97 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `pmm.cpp`. Control: with the destructor's observation removed, `MemoryPressure.TheGateTheSignalAndTheWatchdog` fails three checks, so the observation the run owns is the one the tests depend on.
+
+A narrow pre-commit review (two reviewers, each finding checked by a second agent) found the behaviour unchanged on every path: the same refusals in the same order, one observation on success, on a `begin()` failure, on a first `take()` failure and halfway through a list, the first depleted zone kept across a later success, the rollback before the observation, and no lock held across it. It found the class not declared `final` (fixed) and this record missing (written). Refuted: that the design note's "observes once" is wrong for `alloc_frames_contiguous()`, which is one run and then one release per surplus frame, each observing at its end as the note says.
+
+**Deliberately not done**
+The release side (option B): a release has no home, and its entries already observe once in one line each. The duplicated home in the run and the request.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, M3, from the OOP reviewer; option A, the user's call.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is a destructor the right place for "observe the pressure once, after the whole call", and what did each entry have to remember before?
+- Why must the run be declared before the rollback list, and what would change if it were declared after?
+- Why does `begin()` exist instead of a constructor that resolves the home?

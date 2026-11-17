@@ -154,7 +154,7 @@ class AllocRequest final {
     /// use: its zones can all be short while the machine's count is healthy,
     /// and then nothing machine-wide is bound to end a wait of its own. So
     /// it is not put off at a zone's Low when it could wait; it goes on to
-    /// Min like a request that cannot, and fails there (alloc_block()).
+    /// Min like a request that cannot, and fails there (AllocationRun::take()).
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto is_confined() const -> bool {
