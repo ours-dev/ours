@@ -484,7 +484,7 @@ namespace {
             if (!levels) {
                 return false;
             }
-            watchdog.set_levels(*levels);
+            watchdog.set_levels(levels->cover_zone_floors());
             return settles_at(expected);
         };
         EXPECT_TRUE(settles_at(MemoryPressure::Normal),
@@ -530,7 +530,7 @@ namespace {
             mm::free_frames(*served);
         }
 
-        watchdog.set_levels(boot);
+        watchdog.set_levels(boot.cover_zone_floors());
         auto const normal = settles_at(MemoryPressure::Normal);
         auto waited = mm::alloc_frames(WAITABLE);
         EXPECT_TRUE(normal && !!waited,

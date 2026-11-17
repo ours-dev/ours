@@ -62,6 +62,11 @@ auto MemoryPressureLevels::covering(usize const held) const -> MemoryPressureLev
             m_hysteresis};
 }
 
+auto MemoryPressureLevels::cover_zone_floors() const -> CoveredLevels {
+    auto const held = zone_floor_frame_count();
+    return CoveredLevels{covering(held), held};
+}
+
 auto MemoryPressureLevels::make(usize const out_of_memory, usize const critical,
                                 usize const warning, usize const debounce,
                                 Duration const hysteresis)
@@ -119,13 +124,13 @@ auto MemoryWatchdog::get() -> Self & {
     return WATCHDOG;
 }
 
-auto MemoryWatchdog::start(MemoryPressureLevels const &levels) -> Status {
+auto MemoryWatchdog::start(CoveredLevels const &levels) -> Status {
     // Set before the thread exists, which looks at them first thing; taken
     // back if it never runs, so that "levels set" keeps meaning "watchdog
     // running" (set_levels() asserts on it).
     {
         Guard guard{m_lock};
-        m_levels = levels;
+        m_levels = levels.levels();
     }
     auto const unstart = [this] {
         Guard guard{m_lock};
@@ -154,13 +159,13 @@ auto MemoryWatchdog::levels() const -> ustl::Option<MemoryPressureLevels> {
     return m_levels;
 }
 
-auto MemoryWatchdog::set_levels(MemoryPressureLevels const &levels) -> void {
+auto MemoryWatchdog::set_levels(CoveredLevels const &levels) -> void {
     {
         Guard guard{m_lock};
         // Levels mean a running watchdog (levels()): only what start() began
         // may be moved.
         DEBUG_ASSERT(m_levels.is_some(), "the watchdog's levels are set before it was started");
-        m_levels = levels;
+        m_levels = levels.levels();
         m_skip_hysteresis = true;
     }
     m_signal.signal();
@@ -271,15 +276,15 @@ namespace {
         // Raised where this machine's zone floors need it, and said once,
         // here, because the levels the log and the command line show are
         // then not the ones in force.
-        auto const held = zone_floor_frame_count();
-        auto const levels = given->covering(held);
+        auto const covered = given->cover_zone_floors();
+        auto const &levels = covered.levels();
         if (levels.out_of_memory() > given->out_of_memory()) {
             log::info("mm: kernel.oom levels raised {} MiB: the zones' floors hold {} MiB",
                       (levels.out_of_memory() - given->out_of_memory() + FRAMES_PER_MIB - 1) /
                           FRAMES_PER_MIB,
-                      held / FRAMES_PER_MIB);
+                      covered.held() / FRAMES_PER_MIB);
         }
-        if (auto const status = MemoryWatchdog::get().start(levels); Status::Ok != status) {
+        if (auto const status = MemoryWatchdog::get().start(covered); Status::Ok != status) {
             log::error("mm: no thread for the memory watchdog: {}", to_string(status));
         }
     }

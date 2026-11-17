@@ -72,7 +72,7 @@ std::atomic_ref<PmNode *>{Slot::get(cpu)}.store(node, std::memory_order_relaxed)
 The slot's own reader is a `%gs`-relative load in inline assembly, one instruction, so it is not a C++ access the model could tear; the remote writer is the one that needed to change. On x86 a relaxed load or store of a word is the plain `mov` it was, so nothing is slower.
 
 **Reference**
-Linux keeps the CPU-to-node map as a per-CPU `numa_node` read with `this_cpu_read()` and written with `this_cpu_write()`/`set_cpu_numa_node()`, `READ_ONCE`/`WRITE_ONCE`-style single-word accesses (`include/linux/topology.h`).
+Linux keeps the CPU-to-node map as a per-CPU `numa_node`, read by `cpu_to_node()` and written by `set_cpu_numa_node()` (`include/linux/topology.h`) as plain single-word accesses: the kernel's own memory model counts an aligned word access as whole, which C++'s does not, so here the same accesses are spelled as relaxed atomics.
 
 **Verification**
 `verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. Not exercised: `move()` has no caller, so no run reaches the race this closes.
@@ -132,3 +132,57 @@ None.
 - What does `Gaf::CanBlock` change for a request, and what does it not?
 - Why did page tables stop at Min before, and why may they go below it now?
 - What would allocating page tables outside the lock buy, and what does it cost?
+
+## A watchdog runs only with levels that cover the zones' floors, by type (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/memory_watchdog.hpp`, `kernel/mm/memory_watchdog.cpp` — `CoveredLevels`, made only by `MemoryPressureLevels::cover_zone_floors()`, which reads `zone_floor_frame_count()` itself; `MemoryWatchdog::start()` and `set_levels()` take it; the init hook covers through it and logs the raise from it
+- `kernel/tests/memory_pressure_test.cpp`, `kernel/tests/page_reclaim_test.cpp` — the levels the tests move to, and the ones they put back, go through `cover_zone_floors()`
+
+**Symptom**
+Latent. Rule D1(a), the delay level above every frame the zones' floors can hold, is what makes the gate end every ordinary wait (a zone refusing at Low then implies free memory below the delay level). It was applied by the init hook alone: `start()` and `set_levels()` took any levels that nest, so a test, or a later caller, could run the watchdog with levels that break it, and nothing would say so.
+
+**Cause**
+A rule kept by one caller of an interface is a convention; a rule the interface's parameter type carries is kept by every caller. The same move as review M10, which made "the levels nest" a property of `MemoryPressureLevels`: here "the levels cover the floors" is a property of `CoveredLevels`, and the only way to make one reads the floors.
+
+**Change**
+
+```cpp
+class CoveredLevels {                 // made only by cover_zone_floors()
+  public:
+    auto levels() const -> MemoryPressureLevels const &;
+    auto held() const -> usize;       // the floors it was covered against
+  private:
+    friend class MemoryPressureLevels;
+    CoveredLevels(MemoryPressureLevels const &levels, usize held);
+    ...
+};
+auto MemoryPressureLevels::cover_zone_floors() const -> CoveredLevels {
+    auto const held = zone_floor_frame_count();
+    return CoveredLevels{covering(held), held};
+}
+auto MemoryWatchdog::start(CoveredLevels const &levels) -> Status;
+auto MemoryWatchdog::set_levels(CoveredLevels const &levels) -> void;
+```
+
+`covering(held)` stays, pure, for the test that checks its arithmetic with made-up floors. The tests' levels sit near the free memory of the moment, far above the floors, so covering leaves them as they were.
+
+**Reference**
+None: this kernel's own watchdog rule (D1(a), 2026-11-14).
+
+**Verification**
+On the tree that holds this and the next change, in the `feat/pmm-redesign` worktree: `verify` on the default and the four-node machine, dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. `ktest all`: default 100 ran, 84 passed, 16 skipped; four nodes 100 ran, 96 passed, 4 skipped; failure-injection build 100 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. At 8 GiB the pressure and reclaim suites pass, and the levels in force cover the floors (14682 frames held, OutOfMemory at 14939). Control: a test that hands `set_levels()` raw levels fails to compile ("no viable conversion from `MemoryPressureLevels` to `CoveredLevels`"). A narrow pre-commit review found that the forward declaration of `CoveredLevels` had been put between `MemoryPressureLevels` and its doc comment, which then documented the wrong declaration (moved), and that this record was not yet written; refuted: that the design reference's D1(a) bullet had gone stale.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 28, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does D1(a) guarantee, and which wait could hang without it?
+- Why does `cover_zone_floors()` read the floors itself rather than take them as an argument?
+- Why do the tests' levels come through unchanged?

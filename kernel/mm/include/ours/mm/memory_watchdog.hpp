@@ -31,6 +31,8 @@ enum class MemoryPressure : u8 {
 [[nodiscard]]
 auto to_string(MemoryPressure pressure) -> char const *;
 
+class CoveredLevels;
+
 /// Where each pressure begins, in frames of free memory: below the warning
 /// level it is Warning, below the critical level Critical, below the
 /// out-of-memory level OutOfMemory. The watchdog looks again only once free
@@ -64,6 +66,12 @@ class MemoryPressureLevels {
     /// off at a zone's Low would wait for a release that need never come.
     [[nodiscard]]
     auto covering(usize held) const -> MemoryPressureLevels;
+
+    /// These levels covering this machine's zone floors, read here
+    /// (zone_floor_frame_count()): the only way to the levels a watchdog runs
+    /// with (CoveredLevels).
+    [[nodiscard]]
+    auto cover_zone_floors() const -> CoveredLevels;
 
     /// Levels that nest, or InvArgs when these do not.
     [[nodiscard]]
@@ -128,6 +136,38 @@ class MemoryPressureLevels {
     Duration m_hysteresis;
 };
 
+/// Levels whose delay level is above every frame the zones' floors can hold
+/// (MemoryPressureLevels::covering()): with them, every zone refusing an
+/// ordinary request means free memory below the delay level, so the gate
+/// shuts and the watchdog is woken, and a request put off at a zone's Low has
+/// something bound to end its wait. The only levels a watchdog takes
+/// (MemoryWatchdog::start(), set_levels()), and made only by
+/// MemoryPressureLevels::cover_zone_floors(), which reads the floors itself:
+/// levels that skip the rule do not compile.
+class CoveredLevels {
+  public:
+    [[nodiscard]]
+    auto levels() const -> MemoryPressureLevels const & {
+        return m_levels;
+    }
+
+    /// The frames the zones' floors hold, which the levels were raised above
+    /// where they were not already.
+    [[nodiscard]]
+    auto held() const -> usize {
+        return m_held;
+    }
+
+  private:
+    friend class MemoryPressureLevels;
+
+    CoveredLevels(MemoryPressureLevels const &levels, usize const held)
+        : m_levels(levels), m_held(held) {}
+
+    MemoryPressureLevels m_levels;
+    usize m_held;
+};
+
 class MemoryReclaimer;
 
 /// A kernel thread that watches how much memory is free, through the PMM's
@@ -151,7 +191,7 @@ class MemoryWatchdog {
 
     /// Starts its thread, watching with |levels|. OutOfMem when there is no
     /// thread for it.
-    auto start(MemoryPressureLevels const &levels) -> Status;
+    auto start(CoveredLevels const &levels) -> Status;
 
     /// The pressure last declared.
     [[nodiscard]]
@@ -167,7 +207,7 @@ class MemoryWatchdog {
     /// without waiting for the hysteresis to declare a lower pressure. For tests,
     /// which move the levels to where free memory is, rather than free
     /// memory to where they are, and put back what levels() gave them.
-    auto set_levels(MemoryPressureLevels const &levels) -> void;
+    auto set_levels(CoveredLevels const &levels) -> void;
 
     /// While one is alive the watchdog arms nothing: for a test that drives
     /// the PMM's gate and signal by hand. The guard is what lockdep records.
