@@ -207,6 +207,8 @@ auto flag_answers(SmokeChecks &checks) -> void {
                  "a confined request that can wait goes on to Min");
     checks.check(!vmo.with_zone_range(ZoneType::Dma, ZoneType::Dma32).waits_at_low(),
                  "so does one whose zone range stops below Normal");
+    checks.check(!vmo.with_zone_range(ZoneType::Dma, ZoneType::Movable).waits_at_low(),
+                 "and one that allows a zone above Normal, whose floors nothing covers");
     checks.check(!immediate.may_block() && !immediate.may_wait() && !immediate.zeroes() &&
                      !immediate.waits_at_low(),
                  "a request with no flags answers no to each");

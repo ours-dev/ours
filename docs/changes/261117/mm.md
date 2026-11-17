@@ -186,3 +186,52 @@ None.
 - What does D1(a) guarantee, and which wait could hang without it?
 - Why does `cover_zone_floors()` read the floors itself rather than take them as an argument?
 - Why do the tests' levels come through unchanged?
+
+## A waiting request is put off at Low only when something is bound to end its wait (2026-11-17)
+
+**Files**
+- `kernel/mm/pmm.cpp` — `FreeMemoryGate::ends_waits()`: the watchdog has armed the gate; `AllocationRun::take()` puts a request off at Low only when it does
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — `waits_at_low()` also requires that the request allow no zone above Normal
+- `kernel/mm/tests/alloc_request_smoke.cpp`, `kernel/tests/pm_node_test.cpp` — a request allowing Movable does not wait at Low; `AWaitingRequestGoesOnToMinWithNoWatchdog`
+
+**Symptom**
+Latent. With no watchdog armed, which is the case before its init hook runs and for good when the `kernel.oom` levels do not nest (review M10 refuses them and starts none), the gate's delay level is zero and it admits everything; a waiting request put off at a zone's Low then waits on the gate's event, which only a release crossing a zone's Low signals. If nothing is released, and nothing reclaimable is left, it waits for ever: no watchdog declares OutOfMemory, so nothing refuses it. Separately, a request allowing zones above Normal has higher floors in the zones below (their reserve against it), which the watchdog's levels do not cover, so the same wait could hang there; no `Gaf` bit makes such a request today.
+
+**Cause**
+"A request put off at Low is woken" was a property of the whole system (watchdog started, levels covering the floors, only Normal-bounded requests), stated in DESIGN.md and assumed by `alloc_block()`, not checked where the decision to wait is made. The decision to put a request off has to ask whether anything can end the wait, the same question that already sends a confined request on to Min.
+
+**Change**
+
+```cpp
+// FreeMemoryGate
+auto ends_waits() const -> bool { return m_delay_level.load(std::memory_order_relaxed) != 0; }
+
+// AllocationRun::take(), after a Low pass that found no zone
+if (request.waits_at_low() && GATE.ends_waits()) { return ustl::err(Status::ShouldWait); }
+block = start->alloc_frames(request, AdmissionPass::Min);
+
+// AllocRequest
+return may_wait() && !is_confined() && m_highest_zone <= ZoneType::Normal;   // waits_at_low()
+```
+
+A request that is not put off makes the Min pass, as one that cannot wait does, and fails there with `OutOfMem` if the zones are below Min too: an answer instead of a wait. A relaxed read is enough: a waiter that reads zero just as the watchdog arms the gate goes on to Min once more, which is what every request did before the gate existed.
+
+**Reference**
+None: Linux does not put allocations off on a gate; its waits end through `__alloc_pages_slowpath()`'s retry loop and the OOM killer.
+
+**Verification**
+As for the change before. Control: with `take()` asking `waits_at_low()` alone, `AWaitingRequestGoesOnToMinWithNoWatchdog` fails (the request is answered `ShouldWait`). The narrow pre-commit review found that `WaitingRequestsStopAtLowAndReliefIsCountedOnce` now relied on a gate the watchdog had armed without arming it itself, so it would fail with no watchdog, or in a shuffled run right after a test that left the gate unarmed (it holds the watchdog and arms the gate by hand now), and that `alloc_frames()`'s documentation in `pmm.hpp` did not give the new conditions (it does now). Refuted: that the confined and bound waiting-request tests pass vacuously while the gate is unarmed (the gate is armed when they run, and confinement alone sends them to Min), and that the comment on `ends_waits()` overstates the case before the watchdog starts.
+
+**Deliberately not done**
+Falling back to default levels when the command line's do not nest (option B): it would undo M10's "refused and reported, not repaired".
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 36, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What ends the wait of a request put off at Low, and what is missing when no watchdog runs?
+- Why is a relaxed read of the delay level enough here?
+- Why does a request allowing Movable not wait at Low, while one allowing up to Normal does?

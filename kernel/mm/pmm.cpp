@@ -85,6 +85,17 @@ namespace {
         auto wait_for_opening(time::Deadline const &deadline, task::Interruptible interruptible)
             -> Status;
 
+        /// Whether a request put off now has something bound to end its wait:
+        /// the watchdog has armed the gate, so it will shut it, open it, or
+        /// refuse its waiters as free memory moves. Before the watchdog starts,
+        /// or with none (levels the command line gave that do not nest), the
+        /// delay level is zero and only a release could end a wait, which need
+        /// never come.
+        [[nodiscard]]
+        auto ends_waits() const -> bool {
+            return m_delay_level.load(std::memory_order_relaxed) != 0;
+        }
+
         /// An opening, or a refusal, passed on to the next waiter.
         auto pass_on() -> void {
             m_may_allocate.signal();
@@ -514,7 +525,9 @@ namespace {
                 // band. A confined one does not: the gate and the watchdog count
                 // memory it cannot use, so nothing is bound to end its wait, and
                 // it goes on to Min and fails there like one that cannot wait.
-                if (request.waits_at_low()) {
+                // Nor does any request while no watchdog has armed the gate:
+                // then nothing at all is bound to end a wait.
+                if (request.waits_at_low() && GATE.ends_waits()) {
                     return ustl::err(Status::ShouldWait);
                 }
                 block = start->alloc_frames(request, AdmissionPass::Min);

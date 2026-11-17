@@ -54,6 +54,7 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/memory_reclaimer.hpp>
+#include <ours/mm/memory_watchdog.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
@@ -1197,6 +1198,18 @@ namespace {
             KTEST_SKIP("the zone's watermarks are too close to test between");
         }
 
+        // A request is put off at Low only while the gate is armed, which the
+        // watchdog does at boot; armed here by hand, with the watchdog held,
+        // so that the test does not depend on whether a watchdog runs or has
+        // armed the gate again since the test before. The delay level is one
+        // frame, which free memory never reaches, so the gate itself never
+        // shuts. When the Hold goes the watchdog looks and arms it as it was.
+        mm::MemoryWatchdog::Hold const no_watchdog{mm::MemoryWatchdog::get()};
+        auto const armed =
+            mm::set_free_memory_signal(0, ~usize{0}, 1, nullptr, mm::DelayedAllocations::Wait);
+        if (!armed) {
+            FAIL("arm the gate by hand");
+        }
         ZoneTrial trial{zone};
         auto const at_low = trial.drain_to(low);
 
@@ -1269,6 +1282,44 @@ namespace {
                     "the release that takes the zone above Low counts one relief, and a retried "
                     "waiting request is served");
         EXPECT_TRUE(quiet == 0, "a release from above Low counts no relief");
+    }
+
+    KTEST(PmNode, AWaitingRequestGoesOnToMinWithNoWatchdog) {
+        // The gate as it is before the watchdog starts, or with none: open,
+        // with no delay level. A request put off at Low then has nothing
+        // bound to end its wait but a release that need never come, so it is
+        // not put off: it goes on to Min, as one that cannot wait does.
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list().fallback()[0];
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        auto const min = zone.watermark(PmZone::Watermark::Min);
+        if (low <= min + 1) {
+            KTEST_SKIP("the zone's watermarks are too close to test between");
+        }
+
+        // While the Hold lives the watchdog arms nothing; when it goes, the
+        // watchdog looks and arms the gate again. Before the trial, so that
+        // the zone is whole again first.
+        mm::MemoryWatchdog::Hold const no_watchdog{mm::MemoryWatchdog::get()};
+        auto const disarmed =
+            mm::set_free_memory_signal(0, ~usize{0}, 0, nullptr, mm::DelayedAllocations::Wait);
+        ZoneTrial trial{zone};
+
+        // The node set stands in for a machine that is this node alone, as in
+        // WaitingRequestsStopAtLowAndReliefIsCountedOnce: an ordinary request,
+        // which an armed gate would put off here.
+        auto const at_low = trial.drain_to(low);
+        auto const waiting = mm::priv::alloc_frames(mm::ALLOC_USER_VMO, 0, nid, NodeMask::of(nid));
+        auto const served = waiting && (*waiting)->nid() == nid;
+        trial.keep(waiting);
+
+        EXPECT_TRUE(disarmed && at_low && served,
+                    "with no watchdog to end a wait, a waiting request at Low is served by the "
+                    "Min pass");
     }
 
     KTEST(PmNode, AConfinedWaitingRequestGoesOnToMin) {
