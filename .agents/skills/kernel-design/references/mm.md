@@ -382,4 +382,9 @@ variant, with a blank line between entries.
 
 The allocation-state policy accessor is AllocState::policy(), without a
 get_ prefix. It still returns a retained Arc; the allocator copies it under
-the thread resource lock before using it.
+the thread resource lock before using it (`docs/repairs/261116/mm.md` item 1
+measures that lock). The policy answers through `AllocPolicy::place(local,
+allowed)`, a home node and a node set, and only `resolve_request()` asks it:
+for an allocation that names no node and does not carry `Gaf::ThisNode`
+(review M7, 2026-11-16). A named node is the caller's choice; no policy moves
+it.

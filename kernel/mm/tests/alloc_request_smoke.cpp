@@ -24,6 +24,7 @@ namespace {
 using ours::CpuNum;
 using ours::NodeId;
 using ours::NodeMask;
+using ours::mm::AllocPolicy;
 using ours::mm::AllocRequest;
 using ours::mm::Gaf;
 using ours::mm::resolve_request;
@@ -99,6 +100,23 @@ auto empty_mask_stays_empty() -> void {
           "an empty mask stays empty: resolving does not invent a node to allow");
 }
 
+/// The thread's placement policy, asked for an allocation that names no node.
+/// A default policy places it where it was, and Gaf::ThisNode keeps the policy
+/// out: the narrowing to the home node is the same with one as without.
+auto placement_policy() -> void {
+    auto const nodes = mask_of(HOME, OTHER);
+    AllocPolicy const policy{};
+    auto const placed = resolve_request(Gaf::Zero, 0, nodes, HERE, ustl::some_ref(policy));
+    auto const confined = resolve_request(Gaf::ThisNode, 0, nodes, HERE, ustl::some_ref(policy));
+
+    check(placed.home_node() == HOME && placed.allowed_nodes().test(HOME) &&
+              placed.allowed_nodes().test(OTHER),
+          "a default policy leaves the home node and the caller's mask as they are");
+    check(confined.home_node() == HOME && confined.allowed_nodes().test(HOME) &&
+              !confined.allowed_nodes().test(OTHER),
+          "with ThisNode the policy is not asked: the request is its home node's alone");
+}
+
 /// Which requests the pipeline treats as confined: those that may use less
 /// memory than an ordinary one, by node or by zone type.
 auto confinement() -> void {
@@ -145,6 +163,7 @@ auto main() -> int {
     with_this_node_including_home();
     with_this_node_excluding_home();
     empty_mask_stays_empty();
+    placement_policy();
     confinement();
     flag_answers();
 

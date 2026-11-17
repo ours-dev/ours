@@ -8,9 +8,12 @@
 // range below needs; it is the one heavy include, and the host test builds
 // with it the same way the other mm smoke tests do.
 #include <ours/mm/alloc_flags.hpp>
+#include <ours/mm/priv/alloc_policy.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/types.hpp>
+
+#include <ustl/option.hpp>
 
 namespace ours::mm {
 /// One allocation, resolved: what the caller asked for and what the allocator
@@ -68,9 +71,9 @@ class AllocRequest final {
     /// What the caller asked for, unchanged, for logs and tests. Nothing below
     /// the request reads bits out of it: the pipeline asks the request the
     /// questions below (may_block(), may_wait(), waits_at_low(), zeroes(),
-    /// is_confined()), so what each bit means is decided here. Above it, the
-    /// public entries check their preconditions on the raw flags, and the
-    /// placement policy reads Gaf::ThisNode before any request exists.
+    /// is_confined()), so what each bit means is decided here. Above it, only
+    /// the public entries' precondition checks read the raw flags; whether
+    /// Gaf::ThisNode keeps the placement policy out is resolve_request()'s.
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto flags() const -> Gaf {
@@ -227,8 +230,8 @@ class AllocRequest final {
     /// with_* methods above, both of which start from a request that was
     /// resolved -- so there is no path to an AllocRequest whose fields were
     /// never worked out from a caller's ask.
-    friend auto resolve_request(Gaf alloc_flags, usize order, NodeMask const &nodes, Origin origin)
-        -> AllocRequest;
+    friend auto resolve_request(Gaf alloc_flags, usize order, NodeMask const &nodes, Origin origin,
+                                ustl::Option<AllocPolicy const &> policy) -> AllocRequest;
 
     constexpr AllocRequest(Gaf const alloc_flags, usize const order, NodeMask const &allowed_nodes,
                            Origin const origin, ZoneType const lowest_zone,
@@ -256,20 +259,32 @@ class AllocRequest final {
 
 /// Resolves a caller's ask into the request every layer below reads.
 ///
-/// Pure: everything it needs is an argument, including the calling CPU, so the
-/// same code runs in a host test without a kernel. That is also why it takes
-/// |origin| rather than reading the current node and CPU -- which node serves
-/// an allocation is a different question, answered before this one.
+/// Pure: everything it needs is an argument, including the calling CPU and
+/// the thread's placement policy, so the same code runs in a host test without
+/// a kernel. That is also why it takes |origin| rather than reading the
+/// current node and CPU.
+///
+/// |policy| is the calling thread's, for an allocation that names no node;
+/// none for one that does, since a node named is the caller's choice and no
+/// policy moves it. Gaf::ThisNode keeps the policy out too: the request is
+/// its home node's alone, whatever the policy would say. Otherwise the policy
+/// places it (AllocPolicy::place()): it may move the home and narrow the nodes.
 ///
 /// The only way to build an AllocRequest from nothing, which is what makes
 /// "resolved" true of every request that exists.
 [[nodiscard]]
 FORCE_INLINE
 inline auto resolve_request(Gaf const alloc_flags, usize const order, NodeMask const &nodes,
-                            AllocRequest::Origin const origin) -> AllocRequest {
+                            AllocRequest::Origin origin,
+                            ustl::Option<AllocPolicy const &> const policy = ustl::NONE)
+    -> AllocRequest {
     auto allowed = nodes;
     if (!!(alloc_flags & Gaf::ThisNode)) {
         allowed &= NodeMask::of(origin.node);
+    } else if (policy) {
+        auto const placement = policy->place(origin.node, nodes);
+        origin.node = placement.home;
+        allowed = placement.nodes;
     }
 
     return AllocRequest{
