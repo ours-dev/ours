@@ -48,9 +48,6 @@ PmZone::PmZone(NodeId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize pres
     // Initializer order follows the member declaration order in pm-zone.hpp.
     : m_canary(this)
     , m_name(to_string(type))
-    // m_node is filled in by PmNode::init(), when the node takes its row of the
-    // table: the zone is made before any node exists.
-    , m_node(nullptr)
     , m_nid(nid)
     , m_flags(Flags::Initialized)
     , m_type(type)
@@ -112,16 +109,22 @@ auto PmZone::create_all(ustl::views::Span<Pfn> const max_zone_pfn, NodeMask cons
                 continue;
             }
 
+            // A span that is all holes is no zone: its cell stays null, as for
+            // a type the node has no memory of, which every reader of the
+            // table already allows for.
+            auto const num_present_frames =
+                EarlyMem::count_present_frames(zone_start_pfn, zone_end_pfn);
+            if (num_present_frames == 0) {
+                continue;
+            }
+            ASSERT(num_present_frames > 1);
+
             // From the node's own memory: the boot allocator searches only the
             // node it is given.
             auto *const zone = EarlyMem::allocate<PmZone>(1, nid, bootmem::MemoryType::KernelData);
             if (!zone) {
                 panic("No enough memory to place node[{}].zone[{}]", nid, to_string(ztype));
             }
-
-            auto const num_present_frames =
-                EarlyMem::count_present_frames(zone_start_pfn, zone_end_pfn);
-            ASSERT(num_present_frames > 1);
 
             new (zone) PmZone(nid, ztype, zone_start_pfn, zone_end_pfn, num_present_frames);
             TABLE[nid][i] = zone;
@@ -187,27 +190,9 @@ auto PmZone::setup_lowmem_reserve() -> void {
 }
 
 auto PmZone::alloc_frames(usize order) -> ustl::Option<PmFrame &> {
-    // A zone below its high watermark is running short, and this gate still
-    // has no writer for the flag, so it never fires. It also tests the wrong
-    // line: the high watermark is where a zone becomes worth reclaiming, not
-    // where allocations are refused. Both are the admission gate's own change,
-    // which moves this decision out of the zone altogether -- see
-    // .agents/tasks/pmm-layering/PLAN.md step 8. The term that distinguished a
-    // caller able to wait went with AllocationOptions, which was always empty
-    // and so never distinguished anything.
-    if (is_below_high_wmark()) {
-        return ustl::NONE;
-    }
-
-    if (is_order_within_pcpu_cache_limit(order)) {
-        auto const cached = m_frame_cache.with_current(
-            [](PcpuCache &cache) { return ustl::Option<PmFrame &>{ustl::NONE}; });
-        if (cached) {
-            m_free_frames -= usize{1} << order;
-            return cached;
-        }
-    }
-
+    // Admission is the pipeline's, before it comes here (admits()); the zone
+    // only hands out what its buddy has. A per-CPU cache would answer first,
+    // in front of the buddy, once it is built (MAX_PCPU_CACHE_ORDER).
     ZoneGuard guard{m_lock};
     auto const taken = m_buddy.allocate(order);
     if (taken) {
@@ -272,13 +257,6 @@ auto PmZone::free_frames(PmFrame &frame) -> bool {
     // Reading the counter before and after the release instead lets two
     // releases with an allocation between them both see no crossing.
     auto const before = [&] {
-        if (is_order_within_pcpu_cache_limit(order)) {
-            m_frame_cache.with_current([](PcpuCache &cache) {
-                // Here no pcpu cache.
-            });
-            return m_free_frames.fetch_add(count);
-        }
-
         auto const pfn = frame_to_pfn(&frame);
         ZoneGuard guard{m_lock};
         m_buddy.release(&frame, pfn, order);

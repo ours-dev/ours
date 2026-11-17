@@ -448,7 +448,7 @@ class CpuLocal::PerCpu {
 
     /// Unlike the static `CpuLocal::with_current`, the callback takes only the
     /// object: a handle already names one thing, and the CPU number is a
-    /// `current_cpu()` away. This is the shape PmZone::alloc_frames() uses.
+    /// `current_cpu()` away.
     template <typename F>
     FORCE_INLINE
     auto with_current(F &&f) -> ustl::traits::InvokeResultT<F, T &> {

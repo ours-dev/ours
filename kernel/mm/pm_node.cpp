@@ -73,8 +73,7 @@ auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
 
         auto const block = zone.alloc_frames(request.order());
         if (!block) {
-            if (request.order() == 0 && !depleted_zone &&
-                zone.num_free_frames() < zone.watermark(PmZone::Watermark::High)) {
+            if (request.order() == 0 && !depleted_zone && zone.shortfall_to_high() != 0) {
                 depleted_zone = ustl::some_ref(zone);
             }
             continue;
@@ -83,7 +82,7 @@ auto PmNode::alloc_frames(AllocRequest const &request, AdmissionPass const pass)
         return ustl::ok(&block.value());
     }
 
-    return ustl::err(BlockFailure{.status = Status::OutOfMem, .depleted_zone = depleted_zone});
+    return ustl::err(BlockFailure{.depleted_zone = depleted_zone});
 }
 
 auto PmNode::free_frames(PmFrame &frame) -> bool {
@@ -132,11 +131,7 @@ auto PmNode::take_reclaim_target() -> usize {
         if ((marked & short_zone_bit(zone.zone_type())) == 0) {
             return;
         }
-        auto const free = zone.num_free_frames();
-        auto const high = zone.watermark(PmZone::Watermark::High);
-        if (free < high) {
-            wanted += high - free;
-        }
+        wanted += zone.shortfall_to_high();
     });
     return wanted;
 }

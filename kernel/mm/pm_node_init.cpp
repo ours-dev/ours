@@ -303,11 +303,6 @@ auto PmNode::init() -> Status {
 
     // The node's zones were cut before it was made (PmZone::create_all()): it
     // takes its row of the table, first in its own fallback order.
-    for (auto *const zone: PmZone::row(m_id)) {
-        if (zone) {
-            zone->m_node = this;
-        }
-    }
     m_zone_list.take_local_zones();
 
     // The table is not touched here: create_nodes() registers a node when it

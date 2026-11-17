@@ -272,3 +272,53 @@ None.
 - Why is a destructor the right place for "observe the pressure once, after the whole call", and what did each entry have to remember before?
 - Why must the run be declared before the rollback list, and what would change if it were declared after?
 - Why does `begin()` exist instead of a constructor that resolves the home?
+
+## Dead zone state goes, and the zone answers how short of High it is (2026-11-16)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — the per-CPU cache's two unreachable branches in `alloc_frames()`/`free_frames()` removed and a `static_assert` on `MAX_PCPU_CACHE_ORDER`, the cache type and member kept as the planned slot; `Flags::BelowHighWmark`, `is_below_high_wmark()` and the dead gate removed; `shortfall_to_high()` added; `m_node` and the undefined `find_frame()` removed; `create_all()` makes no zone of a span with no present frame
+- `kernel/mm/pm_node.cpp`, `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node_init.cpp` — the node asks `shortfall_to_high()` in its two places; `BlockFailure` loses its always-`OutOfMem` status; `init()` no longer writes `m_node`
+- `kernel/mm/include/ours/mm/pm_frame.hpp`, `kernel/mm/pmm.cpp` — `set_compound_offset()` private; `unpin()` returns `bool` like `pin()`, and `unpin_frame()` checks once
+- `kernel/mm/include/ours/mm/cpu_local.hpp` — a comment that named `PmZone::alloc_frames()` as a user of `with_current()`
+
+**Symptom**
+Latent, from the review's minor list (`.agents/tasks/pmm-redesign/REVIEW.md`). Every allocation opened with a test of a flag no code ever set, under a comment saying it tested the wrong line. Two branches for a per-CPU cache were unreachable only because a constant was 0, and the free branch counted a frame free without putting it on any list: raising the constant would have leaked every freed frame. `PmNode` worked out "below High" and "how far below" from two getters in two places. `PmZone::m_node` was written at bring-up and read by nothing, `find_frame()` was declared and never defined, `BlockFailure::status` was always `OutOfMem`, `set_compound_offset()` let any caller rewrite a tail without its head, and `unpin_frame()` checked for zero pins and then `unpin()` asserted the same. A zone span that is all holes stopped the boot on an assertion.
+
+**Cause**
+State and code left from steps that moved the decision elsewhere: admission moved into `PmZone::admits()` and the pipeline, which made the flag gate dead; the frame took its block layout (review M6), which made the public offset setter a way round it. The cache branches were scaffolding written before the cache had a take or return path. Asking a zone for its numbers and deciding outside it is the shape "tell, don't ask" warns about (review T4): the second place that computes it is where the two can drift.
+
+**Change**
+
+```cpp
+// before, in PmNode, twice
+auto const free = zone.num_free_frames();
+auto const high = zone.watermark(PmZone::Watermark::High);
+if (free < high) { wanted += high - free; }
+// after: the zone answers, from one read of its count
+wanted += zone.shortfall_to_high();
+
+// the cache: no order can reach it until it has a take and a return path
+static_assert(MAX_PCPU_CACHE_ORDER == 0, "the per-CPU frame cache has no take or return path");
+```
+
+`unpin()` mirrors `pin()`: it returns false and changes nothing when the frame holds no pin, so the rule is checked once, by the frame. A span with no present frame now leaves its table cell null, which every reader of the table already handles; a span with one present frame still asserts, as before. Kept on purpose: `PmZone::Flags::Initialized` and `Contiguous`, `PmNode::m_node_policy` (the node's default placement policy, as Linux keeps `preferred_node_policy[]`) and `m_soft_affinity`, which are stubs for requirements, not dead state.
+
+**Reference**
+Linux `zone_watermark_ok()` and `pgdat_balanced()` ask the zone about its own watermarks; `alloc_pages_exact()` is unrelated. None for the rest: this kernel's own leftovers.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. The `ktest all` runs on every shape are recorded with the test batch that follows, on the tree that holds both. A narrow pre-commit review found no behaviour change and no reader of a removed member; it found that the first wording of `BlockFailure`'s comment said a failed walk is always `OutOfMem`, while the caller turns a failed Low pass into `ShouldWait` (reworded: the status is the caller's).
+
+**Deliberately not done**
+The design questions among the minor items (pin rules' owner, the reserved books' owner, the machine-wide sums, node bring-up, public node and zone layers, and the rest): put to the user. A one-frame zone: the assertion that refuses it is left, since nothing shows what such a zone would do to the watermark arithmetic.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 10, 12, 14, 15, 19, 21, 22, 24, 33, 38 and 41, triaged against the current code by a workflow on 2026-11-16.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why was the per-CPU free branch a leak waiting for a constant to change, and why does a `static_assert` beat deleting the slot?
+- What does "tell, don't ask" buy in `shortfall_to_high()` that two getters do not?
+- Why is it safe to leave a zone's table cell null for a span with no present frame?

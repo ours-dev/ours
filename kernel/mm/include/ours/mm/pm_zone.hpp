@@ -38,8 +38,12 @@ class PmZone {
     using Self = PmZone;
 
   public:
-    /// FIXME(SmallHuaZi) The cache per cpu has not been finished
+    /// The orders a per-CPU frame cache in front of the buddy would hold. That
+    /// cache is a later step (DESIGN.md) with no take or return path yet, so
+    /// no order goes to it, and raising this stops the build rather than
+    /// sending frames to a cache that would never give them back.
     constexpr static usize MAX_PCPU_CACHE_ORDER = 0;
+    static_assert(MAX_PCPU_CACHE_ORDER == 0, "the per-CPU frame cache has no take or return path");
 
     /// Allocation and reclaim thresholds, ordered from lowest to highest.
     enum class Watermark : u32 {
@@ -195,8 +199,6 @@ class PmZone {
     [[nodiscard]]
     auto free_block_profile() -> FreeBlockProfile;
 
-    auto find_frame(usize order) -> PmFrame *;
-
     FORCE_INLINE
     constexpr auto which_node() const -> NodeId {
         return m_nid;
@@ -350,15 +352,24 @@ class PmZone {
         return watermark(Watermark::Low) + lowmem_reserve(ZoneType::Normal);
     }
 
+    /// How many frames this zone is short of its high watermark, which is
+    /// where reclaim stops; zero at or above it. One read of the free count,
+    /// so the answer is of one moment.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto shortfall_to_high() const -> usize {
+        auto const free = num_free_frames();
+        auto const high = watermark(Watermark::High);
+        if (free < high) {
+            return high - free;
+        }
+        return 0;
+    }
+
     /// The share of the memory above a zone that it keeps back: one frame in
     /// LOWMEM_RESERVE_RATIO. The same for every zone, 1/256 (decided with
     /// the user, 2026-11-14).
     constexpr static usize LOWMEM_RESERVE_RATIO = 256;
-
-    FORCE_INLINE
-    constexpr auto is_below_high_wmark() const -> bool {
-        return !!(m_flags & Flags::BelowHighWmark);
-    }
 
   private:
     USTL_NO_MOVEABLE_AND_COPYABLE(PmZone);
@@ -366,16 +377,10 @@ class PmZone {
     enum class Flags : u32 {
         Initialized = 0_bit,
         Contiguous = 1_bit,
-        BelowHighWmark = 2_bit,
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
     friend class PmNode;
-
-    FORCE_INLINE
-    static auto is_order_within_pcpu_cache_limit(usize order) -> bool {
-        return order < MAX_PCPU_CACHE_ORDER;
-    }
 
     /// Scales this zone's three watermarks out of the machine-wide reserve.
     ///
@@ -400,7 +405,6 @@ class PmZone {
 
     gktl::Canary m_canary;
     char const *m_name;
-    PmNode *m_node;
     NodeId m_nid;
     Flags m_flags;
 

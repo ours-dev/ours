@@ -219,16 +219,18 @@ class PmNode {
     /// after the handoff, with nothing else running.
     static auto setup_watermarks() -> void;
 
-    /// Why a walk for one block gave nothing: the status, and the first zone
-    /// it passed that is short, for whoever asks the reclaimer. A zone is
-    /// short when it did not admit the request (taking the block would have
-    /// left it below the pass's floor, so a large block can find a zone short
-    /// that a single frame would not), or when an order-0 request found no
-    /// frame in it while it was below its high watermark. A zone with no free block of a larger
-    /// order is not short on that account alone: it may still have plenty of
-    /// single frames.
+    /// Why a walk for one block gave nothing: no zone both admitted the request
+    /// at the pass's floor and had a block. What status that becomes is the
+    /// caller's (ShouldWait after a Low pass a waiting request stops at,
+    /// OutOfMem after the Min pass), so the failure carries only the first
+    /// zone the walk passed that is short, if any, for whoever asks the
+    /// reclaimer. A zone is short when it did not admit the request (taking
+    /// the block would have left it below the pass's floor, so a large block
+    /// can find a zone short that a single frame would not), or when an
+    /// order-0 request found no frame in it while it was below its high
+    /// watermark. A zone with no free block of a larger order is not short on
+    /// that account alone: it may still have plenty of single frames.
     struct BlockFailure {
-        Status status;
         ustl::Option<PmZone const &> depleted_zone = ustl::NONE;
     };
 

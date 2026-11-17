@@ -520,7 +520,7 @@ namespace {
                 block = start->alloc_frames(request, AdmissionPass::Min);
             }
             if (!block) {
-                return ustl::err(block.error().status);
+                return ustl::err(Status::OutOfMem);
             }
 
             prepare_alloc(**block, request);
@@ -931,10 +931,9 @@ auto pin_frame(PmFrame *const frame) -> Status {
 
 auto unpin_frame(PmFrame *const frame) -> Status {
     DEBUG_ASSERT(frame, "unpin requires a frame");
-    if (frame->pin_count() == 0) {
+    if (!frame->unpin()) {
         return Status::BadState;
     }
-    frame->unpin();
     return Status::Ok;
 }
 
