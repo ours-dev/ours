@@ -1,5 +1,6 @@
 #include <ours/assert.hpp>
 #include <ours/cpu.hpp>
+#include <ours/mm/alloc_state.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/early_mem.hpp>
@@ -330,61 +331,53 @@ namespace {
         }
     }
 
-    auto apply_thread_policy(Gaf &alloc_flags) -> Status {
+    /// Where an allocation starts, before the request is resolved: the node
+    /// it names or the calling CPU's, and the placement policy that has its
+    /// say over the latter.
+    struct Home {
+        /// The node named, or the calling CPU's.
+        NodeId node;
+
+        /// The calling thread's placement policy, for an allocation that
+        /// names no node; null for one that does, and for a thread without
+        /// one. resolve_request() decides whether it is asked.
+        ustl::Arc<AllocPolicy> policy;
+    };
+
+    /// The calling thread's placement policy, or null.
+    ///
+    /// The thread's resource lock covers reading the policy and nothing more:
+    /// the policy may be replaced only under it (set_thread_policy()). It used
+    /// to be held by every node-less allocation entry around the whole
+    /// allocation, slow path included -- a spin lock with interrupts off, held
+    /// across a path that could reschedule(). Copying the Arc out is all that
+    /// needs it.
+    auto thread_policy() -> ustl::Arc<AllocPolicy> {
         if constexpr (MEMORY_ALLOCATION_POLICY) {
-            if (!!(alloc_flags & Gaf::ThisNode)) {
-                return Status::Ok;
-            }
-            using Kind = AllocPolicy::Kind;
-
-            // The thread's resource lock covers reading the policy and nothing
-            // more: it is what another thread takes to replace it. It used to be
-            // held by every node-less allocation entry around the whole
-            // allocation, slow path included -- a spin lock with interrupts off,
-            // held across a path that could reschedule(). Copying the Arc out is
-            // all that needs it.
-            auto const policy = [] {
-                auto *const thread = task::Thread::Current::get();
-                Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
-                return thread->alloc_state().policy();
-            }();
-            if (policy) {
-                switch (policy->kind()) {
-                    case Kind::Bind:
-                        break;
-                    case Kind::Interleave:
-                        break;
-                    case Kind::Preferred:
-                        break;
-                    default:
-                        break;
-                }
-            }
+            auto *const thread = task::Thread::Current::get();
+            Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
+            return thread->alloc_state().policy();
         }
-
-        return Status::Ok;
+        return {};
     }
 
     /// The node an allocation starts from: the one named, or the calling
-    /// CPU's once the thread's placement policy has had its say. An id outside
+    /// CPU's with the thread's placement policy to have its say. An id outside
     /// the node table names no node, which is how a caller says it has no
     /// preference.
-    auto resolve_home(NodeId nid, Gaf &alloc_flags) -> ktl::Result<PmNode *> {
+    auto resolve_home(NodeId const nid) -> ktl::Result<Home> {
         if (nid < MAX_NODES) {
-            if (auto *const node = find_node(nid)) {
-                return ustl::ok(node);
+            if (find_node(nid)) {
+                return ustl::ok(Home{.node = nid, .policy = {}});
             }
             return ustl::err(Status::InvArgs);
         }
 
-        if (auto const status = apply_thread_policy(alloc_flags); Status::Ok != status) {
-            return ustl::err(status);
-        }
         auto *const node = CpuNodeMap::local_node();
         if (!node) {
             return ustl::err(Status::BadState);
         }
-        return ustl::ok(node);
+        return ustl::ok(Home{.node = node->nid(), .policy = thread_policy()});
     }
 
     /// One block for the calling thread out of |home|'s walk, with pressure
@@ -406,8 +399,9 @@ namespace {
     /// instead of spending the band between Low and Min that the requests
     /// which cannot wait depend on. A confined one makes both passes, as a
     /// request that cannot wait does.
-    auto alloc_block(PmNode &home, Gaf const alloc_flags, usize const order, NodeMask const &nodes,
-                     ustl::Option<PmZone const &> &depleted) -> ktl::Result<PmFrame *> {
+    auto alloc_block(Home const &home, Gaf const alloc_flags, usize const order,
+                     NodeMask const &nodes, ustl::Option<PmZone const &> &depleted)
+        -> ktl::Result<PmFrame *> {
         // Whether the calling thread may allocate at all: a thread that has
         // disabled allocation (AllocState::disable()) is refused here,
         // whichever way it asked. This is the one function every frame
@@ -418,7 +412,7 @@ namespace {
         // It is a different question from where the frame comes from, and only
         // that one depends on whether the caller named a node. So this is
         // asked on every path, node named or not, and the placement policy
-        // only on the node-less ones (resolve_home()).
+        // only on the node-less ones (resolve_home(), resolve_request()).
         //
         // Thread::Current is always there by now: task::init_early() makes the
         // boot thread current before the PMM exists.
@@ -432,8 +426,32 @@ namespace {
             return ustl::err(Status::InvArgs);
         }
 
+        // Each block the policy places is a turn of its own, so that an
+        // Interleave moves on per block, in the bulk and fragment loops too.
+        // The turn is counted once the request says the policy placed it:
+        // whether Gaf::ThisNode kept the policy out is the resolver's call.
+        auto policy = ustl::Option<AllocPolicy const &>{};
+        AllocState *state = nullptr;
+        auto turn = usize{0};
+        if (home.policy) {
+            policy = ustl::some_ref(*home.policy);
+            state = &task::Thread::Current::alloc_state();
+            turn = state->policy_turn();
+        }
         auto const request = resolve_request(
-            alloc_flags, order, nodes, AllocRequest::Origin{.node = home.nid(), .cpu = Cpu::id()});
+            alloc_flags, order, nodes, AllocRequest::Origin{.node = home.node, .cpu = Cpu::id()},
+            policy, turn);
+        if (request.placed_by_policy()) {
+            state->count_policy_turn();
+        }
+        // The node the walk starts from is the request's: the policy may have
+        // moved it off the one resolve_home() found, to a node of the set the
+        // caller allowed. A set naming a node that is not up names nothing to
+        // walk from.
+        auto *const start = find_node(request.home_node());
+        if (!start) {
+            return ustl::err(Status::InvArgs);
+        }
 
         // The gate first, for a request that can wait: it decides for the
         // whole machine whether such a request may go ahead now, before any
@@ -450,7 +468,7 @@ namespace {
         // the request down to Min (or below, for a caller that cannot block):
         // the band between Low and Min is spent only after reclaim has been
         // asked for.
-        auto block = home.alloc_frames(request, AdmissionPass::Low);
+        auto block = start->alloc_frames(request, AdmissionPass::Low);
         if (!block) {
             if (!depleted) {
                 depleted = block.error().depleted_zone;
@@ -462,7 +480,7 @@ namespace {
             if (request.waits_at_low()) {
                 return ustl::err(Status::ShouldWait);
             }
-            block = home.alloc_frames(request, AdmissionPass::Min);
+            block = start->alloc_frames(request, AdmissionPass::Min);
         }
         if (!block) {
             return ustl::err(block.error().status);
@@ -658,19 +676,34 @@ auto current_node() -> NodeId {
     return CpuNodeMap::node_of(CpuLocal::current_cpu());
 }
 
+auto set_thread_policy(ustl::Arc<AllocPolicy> policy) -> ustl::Arc<AllocPolicy> {
+    auto *const thread = task::Thread::Current::get();
+    auto &state = thread->alloc_state();
+    ustl::Arc<AllocPolicy> replaced;
+    {
+        Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
+        replaced = ustl::move(state.m_policy);
+        state.m_policy = ustl::move(policy);
+        state.m_policy_turns = 0;
+    }
+    // Handed back rather than dropped here: the last reference frees the
+    // policy, which is not done with interrupts off under a spin lock.
+    return replaced;
+}
+
 namespace priv {
     auto alloc_frames(Gaf alloc_flags, usize const order, NodeId const home, NodeMask const &nodes)
         -> ktl::Result<PmFrame *> {
         // The flags go down whole: the request built from them answers what
         // they mean, the gate included (alloc_block()).
-        auto const node = resolve_home(home, alloc_flags);
+        auto const node = resolve_home(home);
         if (!node) {
             observe_pressure();
             return ustl::err(node.unwrap_err());
         }
 
         ustl::Option<PmZone const &> depleted;
-        auto const block = alloc_block(**node, alloc_flags, order, nodes, depleted);
+        auto const block = alloc_block(*node, alloc_flags, order, nodes, depleted);
         observe_pressure(depleted);
         return block;
     }
@@ -681,7 +714,7 @@ namespace priv {
 
         ustl::Option<PmZone const &> depleted;
         auto observation = gktl::defer([&depleted] { observe_pressure(depleted); });
-        auto const node = resolve_home(home, alloc_flags);
+        auto const node = resolve_home(home);
         if (!node) {
             log::trace("Failed to allocate {} frames with reason: {}", n,
                        to_string(node.unwrap_err()));
@@ -691,7 +724,7 @@ namespace priv {
         PmFrame::List list;
         auto rollback = gktl::defer([&list] { free_blocks(list); });
         for (usize i = 0; i < n; ++i) {
-            auto block = alloc_block(**node, alloc_flags, 0, nodes, depleted);
+            auto block = alloc_block(*node, alloc_flags, 0, nodes, depleted);
             if (!block) {
                 log::trace("Failed to allocate {} frames with reason: {}", n,
                            to_string(block.unwrap_err()));
@@ -710,7 +743,7 @@ namespace priv {
 
         ustl::Option<PmZone const &> depleted;
         auto observation = gktl::defer([&depleted] { observe_pressure(depleted); });
-        auto const node = resolve_home(home, alloc_flags);
+        auto const node = resolve_home(home);
         if (!node) {
             log::trace("Failed to allocate frame with reason: {}", to_string(node.unwrap_err()));
             return ustl::err(node.unwrap_err());
@@ -728,7 +761,7 @@ namespace priv {
                 continue;
             }
 
-            auto block = alloc_block(**node, alloc_flags, order, nodes, depleted);
+            auto block = alloc_block(*node, alloc_flags, order, nodes, depleted);
             if (!block) {
                 log::trace("Failed to allocate frame with reason: {}",
                            to_string(block.unwrap_err()));

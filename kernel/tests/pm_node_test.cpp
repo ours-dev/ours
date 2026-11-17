@@ -45,6 +45,7 @@
 /// exist only in a booted kernel.
 #include <ours/cpu.hpp>
 #include <ours/mm/alloc_flags.hpp>
+#include <ours/mm/alloc_state.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/memory_reclaimer.hpp>
@@ -64,6 +65,7 @@
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <gktl/counter.hpp>
+#include <heap/new.hpp>
 #include <ktest/ktest.hpp>
 #include <logz4/log.hpp>
 #include <numa/fallback_order.hpp>
@@ -1586,6 +1588,168 @@ namespace {
                     "an ordinary allocation comes from the highest zone with room, {} here",
                     mm::to_string(expected->zone_type()));
         mm::free_frames(*frame);
+    }
+
+    /// The calling thread's placement policy while one lives, and the one it
+    /// replaced put back after, however the test ends.
+    class PolicyScope {
+      public:
+        explicit PolicyScope(ustl::Arc<mm::AllocPolicy> policy)
+            : m_replaced(mm::set_thread_policy(ustl::move(policy))) {}
+
+        ~PolicyScope() {
+            // The policy this scope set, let go of here, outside the lock.
+            auto _ = mm::set_thread_policy(ustl::move(m_replaced));
+        }
+
+        PolicyScope(PolicyScope const &) = delete;
+        auto operator=(PolicyScope const &) -> PolicyScope & = delete;
+
+      private:
+        ustl::Arc<mm::AllocPolicy> m_replaced;
+    };
+
+    /// The node of one order-0 frame asked for with no node named, or
+    /// MAX_NODES when there was none; the frame goes straight back.
+    auto node_less_frame_node() -> NodeId {
+        auto const frame = mm::alloc_frames(mm::ALLOC_KERNEL);
+        if (!frame) {
+            return NodeId{MAX_NODES};
+        }
+        auto const nid = (*frame)->nid();
+        mm::free_frames(*frame);
+        return nid;
+    }
+
+    /// A placement policy of its own, for a PolicyScope: null when there is no
+    /// memory for one. The policy is built in place from the factory's value.
+    template <typename Make>
+    auto new_policy(Make const &make) -> ustl::Arc<mm::AllocPolicy> {
+        auto *const policy = new (mm::ALLOC_KERNEL) mm::AllocPolicy(make());
+        if (!policy) {
+            return {};
+        }
+        return ustl::Arc<mm::AllocPolicy>::adopt(policy);
+    }
+
+    KTEST(PmNode, APlacementPolicyPlacesNodeLessAllocations) {
+        using mm::AllocPolicy;
+
+        // A node with memory other than the calling CPU's, for Preferred and
+        // Bind: a frame from it is one Default placement would not give. If
+        // the thread moves to one of its CPUs meanwhile, the checks still
+        // pass and only stop telling the two apart; nothing here can fail
+        // for it. And the two lowest nodes with memory, for Interleave, whose
+        // order is its own wherever the thread runs.
+        auto const local = mm::current_node();
+        auto away = NodeId{MAX_NODES};
+        auto first = NodeId{MAX_NODES};
+        auto second = NodeId{MAX_NODES};
+        mm::node_memory_mask().for_each([local, &away, &first, &second](NodeId const nid) {
+            if (away == MAX_NODES && nid != local) {
+                away = nid;
+            }
+            if (first == MAX_NODES) {
+                first = nid;
+            } else if (second == MAX_NODES) {
+                second = nid;
+            }
+        });
+        if (second == MAX_NODES || away == MAX_NODES) {
+            KTEST_SKIP("needs two nodes with memory");
+        }
+
+        // Preferred: its node, for a frame that names none; a frame that
+        // names a node is the caller's choice, and the policy leaves it, and
+        // takes no turn for it.
+        auto preferred_node = NodeId{MAX_NODES};
+        auto named_node = NodeId{MAX_NODES};
+        if (auto policy = new_policy([away] { return AllocPolicy::preferred(away); })) {
+            PolicyScope const scope{ustl::move(policy)};
+            preferred_node = node_less_frame_node();
+            if (auto const named = mm::alloc_frames(mm::ALLOC_KERNEL, 0, local)) {
+                named_node = (*named)->nid();
+                mm::free_frames(*named);
+            }
+        }
+
+        // Bind: only its node, twice, so that three turns in all are taken
+        // before the Interleave below: were setting a policy not to start the
+        // turns again, it would start on its second node, not its first.
+        auto bound_node = NodeId{MAX_NODES};
+        auto bound_again = NodeId{MAX_NODES};
+        if (auto policy = new_policy([away] { return AllocPolicy::bind(NodeMask::of(away)); })) {
+            PolicyScope const scope{ustl::move(policy)};
+            bound_node = node_less_frame_node();
+            bound_again = node_less_frame_node();
+        }
+
+        // Interleave: its nodes in turn, the lower first, one turn per frame.
+        std::array<NodeId, 4> interleaved{};
+        auto round = NodeMask::of(first);
+        round.set(second);
+        if (auto policy = new_policy([&round] { return AllocPolicy::interleave(round); })) {
+            PolicyScope const scope{ustl::move(policy)};
+            for (auto &nid: interleaved) {
+                nid = node_less_frame_node();
+            }
+        }
+        auto const restored = !task::Thread::Current::alloc_state().policy();
+
+        EXPECT_TRUE(preferred_node == away,
+                    "under Preferred a frame with no node named comes from its node {}", away);
+        EXPECT_TRUE(named_node == local,
+                    "a frame that names node {} comes from it, whatever the policy prefers", local);
+        EXPECT_TRUE(bound_node == away && bound_again == away,
+                    "under Bind a frame comes from its node {}", away);
+        EXPECT_TRUE(interleaved[0] == first && interleaved[1] == second &&
+                        interleaved[2] == first && interleaved[3] == second,
+                    "under Interleave frames come from nodes {} and {} in turn, from the first",
+                    first, second);
+        EXPECT_TRUE(restored, "the thread's policy is none again once the scopes end");
+    }
+
+    KTEST(PmNode, ABoundWaitingRequestGoesOnToMin) {
+        // A thread bound to a node with one zone, other than the calling
+        // CPU's, so that draining it starves nobody: the machine's free count
+        // stays healthy, which is what made waiting at Low hang for a request
+        // the gate and the watchdog cannot speak for.
+        auto *const target = remote_single_zone_node();
+        if (!target) {
+            KTEST_SKIP("needs a second node with memory in one zone");
+        }
+        auto const nid = target->nid();
+        auto &zone = *target->zone_list().fallback()[0];
+        auto const low = zone.watermark(PmZone::Watermark::Low);
+        auto const min = zone.watermark(PmZone::Watermark::Min);
+        if (low <= min + 1) {
+            KTEST_SKIP("the zone's watermarks are too close to test between");
+        }
+        auto policy = new_policy([nid] { return mm::AllocPolicy::bind(NodeMask::of(nid)); });
+        if (!policy) {
+            FAIL("a Bind policy for node {}", nid);
+        }
+
+        ZoneTrial trial{zone};
+        PolicyScope const scope{ustl::move(policy)};
+        auto const ask_waiting = [] { return mm::alloc_frames(mm::ALLOC_USER_VMO); };
+
+        // At Low it is not put off: the Min pass serves it from its node.
+        auto const at_low = trial.drain_to(low);
+        auto const served = ask_waiting();
+        auto const from_node = served && (*served)->nid() == nid;
+        trial.keep(served);
+
+        // At Min it fails, where an unbound one would wait at Low for a
+        // release on a node the machine's count says nothing about.
+        auto const at_min = trial.drain_to(min);
+        auto const refused = ask_waiting();
+        auto const out_of_mem = !refused && refused.unwrap_err() == Status::OutOfMem;
+        trial.keep(refused);
+
+        EXPECT_TRUE(at_low && from_node,
+                    "at Low a bound waiting request is served by the Min pass, from its node");
+        EXPECT_TRUE(at_min && out_of_mem, "at Min it answers OutOfMem, not ShouldWait");
     }
 
     KTEST(PmNode, MatchesTheMachineItRunsOn) {
