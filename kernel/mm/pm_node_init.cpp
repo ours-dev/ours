@@ -45,41 +45,6 @@ namespace {
         return first;
     }
 
-    /// Gives every CPU that no topology source claimed the node |fallback|.
-    ///
-    /// The firmware's CPU-to-node table starts out filled with MAX_NODES
-    /// -- the "no node known yet" sentinel -- and the only thing that ever
-    /// overwrites it is a topology source: on x86 the SRAT parse, which a
-    /// kernel built without NUMA never compiles in and a machine without an
-    /// SRAT never feeds. Left on the sentinel, that is what current_node()
-    /// returns, and its callers index MAX_NODES-long arrays with it --
-    /// MemCache::allocate() reads m_node_caches[MAX_NODES], one past the
-    /// end, takes the ListMemberHook that follows the array for a NodeCache,
-    /// and spins forever on a list pointer it has mistaken for that
-    /// NodeCache's lock.
-    ///
-    /// It has to happen here, not in CpuNodeMap::publish_all(): that hook runs at
-    /// InitLevel::CpuLocal + 1, while the slab allocator starts asking which
-    /// node it is on inside init_pmm(), several init levels earlier. And it
-    /// has to come before the nodes' init(), which reads
-    /// numa::Topology::firmware_node() to build each node's hard affinity.
-    ///
-    /// The possible mask is usually empty here: the MADT parse that fills it
-    /// (assign_cpunum_for_apic(), from platform_init_apic()) runs at
-    /// InitLevel::Irq, long after platform_init_pmm(). The exception is a NUMA
-    /// build on a machine with an SRAT, whose parse sets a possible bit for
-    /// every CPU it binds, at PrePmm + 1. Otherwise it is the explicit claim of
-    /// the running CPU that does the work -- and that would be needed
-    /// regardless: a machine that handed us no MADT still has the CPU this code
-    /// is executing on, and leaving that one on the sentinel is the exact
-    /// failure above. CpuNodeMap::claim_possible() claims the rest,
-    /// once the MADT has been parsed.
-    ///
-    /// Returns how many CPUs the firmware put on a node that does not exist.
-    auto claim_unplaced_cpus(NodeId const fallback, NodeMask const &nodes) -> usize {
-        return CpuNodeMap::seed_from_firmware(fallback, nodes);
-    }
-
     /// The whole fallback table, asked of kernel/lib/numa once and reused for
     /// every node.
     ///
@@ -186,12 +151,42 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
         // every allocation would fail somewhere less obvious than here.
         return Status::BadState;
     }
-    // Said, because it is the firmware's placement overruled: these CPUs are
-    // on a proximity domain with no memory, which this kernel does not bring
-    // up as a node, so they run from the fallback and belong to no node's
-    // hard affinity. Said here and not at the second seed, which would only
-    // repeat the same CPUs.
-    if (auto const refused = claim_unplaced_cpus(fallback, nodes); refused != 0) {
+    // Every CPU that no topology source claimed goes to the node |fallback|.
+    //
+    // The firmware's CPU-to-node table starts out filled with MAX_NODES
+    // -- the "no node known yet" sentinel -- and the only thing that ever
+    // overwrites it is a topology source: on x86 the SRAT parse, which a
+    // kernel built without NUMA never compiles in and a machine without an
+    // SRAT never feeds. Left on the sentinel, that is what current_node()
+    // returns, and its callers index MAX_NODES-long arrays with it --
+    // MemCache::allocate() reads m_node_caches[MAX_NODES], one past the
+    // end, takes the ListMemberHook that follows the array for a NodeCache,
+    // and spins forever on a list pointer it has mistaken for that
+    // NodeCache's lock.
+    //
+    // It has to happen here, not in CpuNodeMap::publish_all(): that hook runs at
+    // InitLevel::CpuLocal + 1, while the slab allocator starts asking which
+    // node it is on inside init_pmm(), several init levels earlier. And it
+    // has to come before the nodes' init(), which reads
+    // numa::Topology::firmware_node() to build each node's hard affinity.
+    //
+    // The possible mask is usually empty here: the MADT parse that fills it
+    // (assign_cpunum_for_apic(), from platform_init_apic()) runs at
+    // InitLevel::Irq, long after platform_init_pmm(). The exception is a NUMA
+    // build on a machine with an SRAT, whose parse sets a possible bit for
+    // every CPU it binds, at PrePmm + 1. Otherwise it is the explicit claim of
+    // the running CPU that does the work -- and that would be needed
+    // regardless: a machine that handed us no MADT still has the CPU this code
+    // is executing on, and leaving that one on the sentinel is the exact
+    // failure above. CpuNodeMap::claim_possible() claims the rest,
+    // once the MADT has been parsed.
+    //
+    // The count it returns is said, because it is the firmware's placement
+    // overruled: these CPUs are on a proximity domain with no memory, which
+    // this kernel does not bring up as a node, so they run from the fallback
+    // and belong to no node's hard affinity. Said here and not at the second
+    // seed, which would only repeat the same CPUs.
+    if (auto const refused = CpuNodeMap::seed_from_firmware(fallback, nodes); refused != 0) {
         log::info("pmm: the firmware put {} CPU(s) on a node with no memory; they run from node {}",
                   refused, fallback);
     }
@@ -296,9 +291,7 @@ auto PmNode::init() -> Status {
     set_node_state(m_id, NodeState::Online);
 
     for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
-        if (numa::Topology::firmware_node(cpu) == m_id) {
-            m_hard_affinity.set(cpu);
-        }
+        join_hard_affinity(cpu, CpuPlacementKey{});
     }
 
     // The node's zones were cut before it was made (PmZone::create_all()): it

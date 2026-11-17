@@ -371,3 +371,49 @@ None.
 - What does `Option<Declaration>` rule out that a flag beside two fields did not?
 - Why must `start()` take its levels back when `resume()` fails, and which assertion would otherwise lie?
 - Why does `m_pressure` stay apart from the declaration?
+
+## A node's CPU bookkeeping takes a key only the CPU map makes (2026-11-16)
+
+**Files**
+- `kernel/mm/include/ours/mm/cpu_node_map.hpp`, `kernel/mm/cpu_node_map.cpp` — `set_node_of()` and `cache_local_node()` private; the base's comment says what the private base does and does not hide
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp` — `CpuPlacementKey`, a passkey `PmNode::add_cpu()`, `remove_cpu()` and `join_hard_affinity()` take; `ZoneList::connect()` asserts no node is chained twice
+- `kernel/mm/pm_node_init.cpp` — `init()` builds its hard affinity through `join_hard_affinity()` instead of repeating it; `claim_unplaced_cpus()`, a pure forward, goes, its comment moved to the call
+
+**Symptom**
+Latent, from the review's minor list. Which node a CPU works on is three facts kept in step (the table, the two nodes' masks, the per-CPU cache), and `CpuNodeMap` is what keeps them so; yet the table's and the cache's writers were public, and so were the nodes' mask updates, so any caller could move one of the three alone. The base comment said sharing the slot was "not reachable", which it is for anything naming `CpuLocal::Current<PmNode *>`. `init()` repeated `join_hard_affinity()`'s test inline, and the fallback order's "each node once" was checked only by a test.
+
+**Cause**
+An invariant over several objects has one keeper, and every write that can break it should go through the keeper. A passkey says which caller that is for one function, where a friend would open every private member (review T5, and M9's `FrameBuddyKey`).
+
+**Change**
+
+```cpp
+class CpuPlacementKey {
+    friend class CpuNodeMap;   // keeps the table, the masks and the cache in step
+    friend class PmNode;       // builds its own hard affinity when it is made
+    CpuPlacementKey() = default;
+};
+auto add_cpu(CpuNum cpu, CpuPlacementKey) -> void;
+auto remove_cpu(CpuNum cpu, CpuPlacementKey) -> void;
+auto join_hard_affinity(CpuNum cpu, CpuPlacementKey) -> void;
+```
+
+**Reference**
+None: this kernel's own CPU-to-node map.
+
+**Verification**
+Recorded with the test batch that follows, on the tree that holds both.
+
+**Deliberately not done**
+A slot type of the map's own instead of `CpuLocal::Current<PmNode *>`: it would cost the one-instruction scalar read. The node table's other invariants and the two-phase bring-up are among the design questions put to the user.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 16, 23 and 52.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which three facts does a CPU's placement consist of, and why must one class write all three?
+- What does a passkey open that a friend does not, and the other way round?
+- Why does `connect()` assert in a debug build what the test already checks?

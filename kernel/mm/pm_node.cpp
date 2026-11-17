@@ -17,9 +17,8 @@ namespace ours::mm {
 /// Chains the zones of every node in |order| behind this node's own, in the
 /// order given.
 ///
-/// m_connected records which nodes were chained in. Each remote node
-/// contributes its own zones from its highest type down, as this node's own
-/// come first (push_zones_of()).
+/// Each remote node contributes its own zones from its highest type down, as
+/// this node's own come first (push_zones_of()), and each node once.
 ///
 /// It used to take a NodeMask and call Router::build() to turn it into an
 /// order, which meant this function read the machine's distance matrix. The
@@ -27,9 +26,16 @@ namespace ours::mm {
 /// arrives here is already a list of node ids, and the only thing left to
 /// decide is nothing.
 auto ZoneList::connect(ustl::views::Span<NodeId const> const order) -> void {
+    // Each node's zones once: a hop given twice would put its zones in the
+    // walk twice, and every allocation that falls back that far would ask
+    // them twice.
+    NodeMask chained;
     for (auto const next: order) {
         DEBUG_ASSERT(next != m_nid, "node {} was given itself as a fallback hop", m_nid);
         DEBUG_ASSERT(find_node(next), "node {} is a fallback hop but was not brought up", next);
+        DEBUG_ASSERT(!chained.test(next), "node {} appears twice in node {}'s fallback order", next,
+                     m_nid);
+        chained.set(next);
         push_zones_of(next);
     }
 }
@@ -170,7 +176,7 @@ auto PmNode::dump() const -> void {
     });
 }
 
-auto PmNode::add_cpu(CpuNum const cpu) -> void {
+auto PmNode::add_cpu(CpuNum const cpu, CpuPlacementKey) -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(cpu < MAX_CPU);
 
@@ -178,7 +184,7 @@ auto PmNode::add_cpu(CpuNum const cpu) -> void {
     m_work_cpus.set(cpu);
 }
 
-auto PmNode::remove_cpu(CpuNum const cpu) -> void {
+auto PmNode::remove_cpu(CpuNum const cpu, CpuPlacementKey) -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(cpu < MAX_CPU);
 
@@ -186,7 +192,7 @@ auto PmNode::remove_cpu(CpuNum const cpu) -> void {
     m_work_cpus.set(cpu, 0);
 }
 
-auto PmNode::join_hard_affinity(CpuNum const cpu) -> void {
+auto PmNode::join_hard_affinity(CpuNum const cpu, CpuPlacementKey) -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(cpu < MAX_CPU);
 
