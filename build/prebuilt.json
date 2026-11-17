@@ -1,0 +1,490 @@
+{
+  "host": "mac-arm64",
+  "tools": {
+    "clang": {
+      "dest": "clang/llvm-23",
+      "sources": [
+        {
+          "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.0-rc3/LLVM-23.1.0-rc3-macOS-ARM64.tar.xz",
+          "sha256": "d23dc0baf29225e2975447f29bbc98b4fc3779001e91adc4a5d7d95854681e79",
+          "strip": 1,
+          "keep": [
+            "bin/clang",
+            "bin/clang++",
+            "bin/clang-23",
+            "bin/clang-format",
+            "bin/clang-tidy",
+            "bin/ld.lld",
+            "bin/lld",
+            "bin/llvm-ar",
+            "bin/llvm-cov",
+            "bin/llvm-ifs",
+            "bin/llvm-nm",
+            "bin/llvm-objcopy",
+            "bin/llvm-objdump",
+            "bin/llvm-profdata",
+            "bin/llvm-ranlib",
+            "bin/llvm-readelf",
+            "bin/llvm-readobj",
+            "bin/llvm-size",
+            "bin/llvm-strings",
+            "bin/llvm-strip",
+            "include/c++",
+            "lib/clang/23/include",
+            "lib/clang/23/lib/darwin/libclang_rt.profile_osx.a"
+          ]
+        },
+        {
+          "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.0-rc3/LLVM-23.1.0-rc3-Linux-X64.tar.xz",
+          "sha256": "76ec17df0b0401d9427dbaf6403c2dfc5b5daeda1553567f738003117d45bf7d",
+          "strip": 1,
+          "keep": [
+            "lib/clang/23/lib/x86_64-unknown-linux-gnu/libclang_rt.builtins.a"
+          ],
+          "rename": {
+            "lib/clang/23/lib/x86_64-unknown-linux-gnu": "lib/clang/23/lib/x86_64-unknown-none-elf"
+          }
+        }
+      ],
+      "files": {
+        ".versions/clang.cipd_version": "{\n  \"instance_id\": \"llvm-23.1.0-rc3\"\n}\n"
+      },
+      "check": {
+        "command": [
+          "bin/clang",
+          "--version"
+        ],
+        "expect": "clang version 23.1.0-rc3"
+      }
+    },
+    "gn": {
+      "dest": "gn",
+      "sources": [
+        {
+          "url": "https://chrome-infra-packages.appspot.com/dl/gn/gn/mac-arm64/+/git_revision:e0a6ab04a113b2dd039cab7c21c6f387e0d881ee",
+          "sha256": "71720f4328f3e5d093f59809dd017f64ea19a4aef8882b5a27726d08b709c437",
+          "format": "zip",
+          "keep": [
+            "gn"
+          ]
+        }
+      ],
+      "check": {
+        "command": [
+          "gn",
+          "--version"
+        ],
+        "expect": "2530 (e0a6ab04a113)"
+      }
+    },
+    "ninja": {
+      "dest": "ninja",
+      "sources": [
+        {
+          "url": "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-mac.zip",
+          "sha256": "c99048673aa765960a99cf10c6ddb9f1fad506099ff0a0e137ad8960a88f321b",
+          "format": "zip",
+          "keep": [
+            "ninja"
+          ]
+        }
+      ],
+      "check": {
+        "command": [
+          "ninja",
+          "--version"
+        ],
+        "expect": "1.13.2"
+      }
+    },
+    "ccache": {
+      "dest": "ccache",
+      "sources": [
+        {
+          "url": "https://github.com/ccache/ccache/releases/download/v4.14.1/ccache-4.14.1-darwin.tar.gz",
+          "sha256": "c279fa81e2e806b4d9e64d4a06cb569a84ef54151feef796e5d4f4e95a464563",
+          "strip": 1
+        }
+      ],
+      "check": {
+        "command": [
+          "ccache",
+          "--version"
+        ],
+        "expect": "ccache version 4.14.1"
+      }
+    },
+    "rust": {
+      "dest": "rust/stable",
+      "sources": [
+        {
+          "url": "https://static.rust-lang.org/dist/rust-1.96.0-aarch64-apple-darwin.tar.xz",
+          "sha256": "f04a974f3579d3524f6b9bc6490a27c9fb358050e7cd8a641945f30bf24c1dce",
+          "strip": 1,
+          "keep": [
+            "rustc/bin",
+            "rustc/lib",
+            "cargo/bin",
+            "rust-std-aarch64-apple-darwin/lib"
+          ],
+          "rename": {
+            "rustc": "",
+            "cargo": "",
+            "rust-std-aarch64-apple-darwin": ""
+          }
+        }
+      ],
+      "files": {
+        ".versions/rust.cipd_version": "{\n  \"instance_id\": \"rust-1.96.0\"\n}\n"
+      },
+      "check": {
+        "command": [
+          "bin/rustc",
+          "--version"
+        ],
+        "expect": "rustc 1.96.0"
+      }
+    },
+    "gcc": {
+      "dest": "gcc/mac-arm64",
+      "files": {
+        ".versions/gcc.cipd_version": "{\n  \"instance_id\": \"unavailable-on-macos-host\"\n}\n"
+      }
+    },
+    "qemu": {
+      "dest": "qemu",
+      "sources": [
+        {
+          "bottle": "qemu",
+          "tag": "11.1.1",
+          "platform": "arm64_sequoia",
+          "sha256": "1fe8d43ce8ffc27303b74c9c8147226d83e1389e3093446ac91684bda8f057df",
+          "keep": [
+            "bin/qemu-system-x86_64",
+            "share/qemu"
+          ]
+        },
+        {
+          "bottle": "capstone",
+          "tag": "5.0.9",
+          "platform": "arm64_sequoia",
+          "sha256": "a6fbf1343829afa5521e8fdba9f0d05246cad3c8caf4833af6d826baaf0db795",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "dtc",
+          "tag": "1.8.1",
+          "platform": "arm64_sequoia",
+          "sha256": "2b800aed01f5ebfc9cbb685536ad1625d1d702ab850bd34639865d3457c4f2e8",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "gettext",
+          "tag": "1.0-2",
+          "platform": "arm64_sequoia",
+          "sha256": "98a116d35792ccd730360ffc8c0d8fc5799b2282b96bb7696192c573f064a331",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "glib",
+          "tag": "2.88.3-1",
+          "platform": "arm64_sequoia",
+          "sha256": "ca168ac34920f6ee13187d8e88af7d55c50b582fa78a5511e15fe9dd875e8b40",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "gmp",
+          "tag": "6.3.0-1",
+          "platform": "arm64_sequoia",
+          "sha256": "b30bf31c50c294e0981d2a7cb4c149e9c43f50f3cf4f7f552c3dcf9da66b95b5",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "gnutls",
+          "tag": "3.8.13_2-1",
+          "platform": "arm64_sequoia",
+          "sha256": "0c8ba0cb42636a98b28a2c173b33c4298a286972a9838d27602f0bbc860acdbb",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "jpeg-turbo",
+          "tag": "3.2.0-1",
+          "platform": "arm64_sequoia",
+          "sha256": "6dc55edcd33c693e474299ed2bba3c472ac1331cbe300066ec8ef99b88fab17c",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "json-c",
+          "tag": "0.19-1",
+          "platform": "arm64_sequoia",
+          "sha256": "5624048dbb067f1a6d3784081029c3d738edeefd57188ce6724bb93d01aa53aa",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "libidn2",
+          "tag": "2.3.8",
+          "platform": "arm64_sequoia",
+          "sha256": "1eb02bfa40ec00b7ea64d8608fcf2115069d99de5a35eb3e2b3ac444a695ea46",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "libpng",
+          "tag": "1.6.58-1",
+          "platform": "arm64_sequoia",
+          "sha256": "bc998bd8497a87e10e613348858c295a38f29f12914408ccbec81f0d0c2e77c8",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "libslirp",
+          "tag": "4.9.4",
+          "platform": "arm64_sequoia",
+          "sha256": "78dc33e108213bceb8f4b8a9d0293c0ff578a806ace4dfc4199af8c9714a2ffe",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "libssh",
+          "tag": "0.12.2",
+          "platform": "arm64_sequoia",
+          "sha256": "6e339868a129237e8fdeadd4934784ad1a877dde2726551610412553e7e5e6aa",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "libtasn1",
+          "tag": "4.21.0",
+          "platform": "arm64_sequoia",
+          "sha256": "973e0fd7d529808f53fa9ae281020bcbcc750a1dff60e5e5bc37c0da274cca5e",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "libunistring",
+          "tag": "1.4.2-1",
+          "platform": "arm64_sequoia",
+          "sha256": "513bf2378982459bf3daf286cec9d50d3f491686f8caa8749604de3be4e6db77",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "libusb",
+          "tag": "1.0.30",
+          "platform": "arm64_sequoia",
+          "sha256": "a8d271bd5d9e7065987960caa52a9130d7fe6321ff1bad751499e465d0413e38",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "libyaml",
+          "tag": "0.2.5",
+          "platform": "arm64_sequoia",
+          "sha256": "0ec9bf8082245c008803b42dcae3e6a0c8cd7a67aed589d9b6482b115c0a543b",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "lz4",
+          "tag": "1.10.0-3",
+          "platform": "arm64_sequoia",
+          "sha256": "91674f1c7407b1f7b73d5bd1d85ed1abaaca93be3b68607af4ef3df632540ac0",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "lzo",
+          "tag": "2.10",
+          "platform": "arm64_sequoia",
+          "sha256": "6bb0401c41a18fd37071ec9591fe053a808f07552ff7ea22542faa470eb8e589",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "ncurses",
+          "tag": "6.6-1",
+          "platform": "arm64_sequoia",
+          "sha256": "624d54c6e62bd32186aeb69e61c5252414dbc7c4c35b3d72ac16280ac5d25e60",
+          "keep": [
+            "lib",
+            "share/terminfo"
+          ]
+        },
+        {
+          "bottle": "nettle",
+          "tag": "4.0",
+          "platform": "arm64_sequoia",
+          "sha256": "01050aa13ce3825fc1b81f1a3c5994a165301b9d5223a9fb9015d122bde5ca3e",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "openssl@3",
+          "tag": "3.6.3-2",
+          "platform": "arm64_sequoia",
+          "sha256": "fe8806b81ab6906d2e355e7455b60fd73e2746bf8eaa257e03029b7fbadb51f4",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "p11-kit",
+          "tag": "0.26.5-1",
+          "platform": "arm64_sequoia",
+          "sha256": "6a61302c1be785c331903fe9252f87d0d4ca722fda0697c4e22f6063cd4f1be2",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "pcre2",
+          "tag": "10.47_1-1",
+          "platform": "arm64_sequoia",
+          "sha256": "9b067178f5e377fd456f5758cef68ba8ce87a7baf290ba8fe3022633b1d80a6d",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "pixman",
+          "tag": "0.46.4-1",
+          "platform": "arm64_sequoia",
+          "sha256": "86f5fc013d2b22bbe41c1c14661287bf8e8e4c3ac95cd05b08b886d24918fe34",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "snappy",
+          "tag": "1.2.2",
+          "platform": "arm64_sequoia",
+          "sha256": "326d8c9a73e0990a43fefe96d2e29355fcd6f42906710017bd1a3baf4401bb33",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "vde",
+          "tag": "2.3.3",
+          "platform": "arm64_sequoia",
+          "sha256": "1e3ffe05a0f354b3909f74d3374fc036156c438147f5ac8dd34a8f747071e9f8",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "xz",
+          "tag": "5.8.3",
+          "platform": "arm64_sequoia",
+          "sha256": "c4be907ac8459f8b3e764c06287cc88b79c1d5c16a2db1c0335e1facf4fd4dbe",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "zstd",
+          "tag": "1.5.7_1-1",
+          "platform": "arm64_sequoia",
+          "sha256": "0d159e33f335907c25ccfaec309948ce66b540e91070ecbbbad763f634fc31b2",
+          "keep": [
+            "lib"
+          ]
+        }
+      ],
+      "check": {
+        "command": [
+          "bin/qemu-system-x86_64",
+          "--version"
+        ],
+        "library_path": "lib",
+        "expect": "QEMU emulator version 11.1.1"
+      }
+    },
+    "grub": {
+      "dest": "grub",
+      "sources": [
+        {
+          "bottle": "x86_64-elf-grub",
+          "tag": "2.12-1",
+          "platform": "arm64_sequoia",
+          "sha256": "5c7bf91186736387bce0a339c643572cbd603ff797360e3077b3d56568d9ede6",
+          "keep": [
+            "bin",
+            "lib"
+          ]
+        },
+        {
+          "bottle": "mtools",
+          "tag": "4.0.49",
+          "platform": "arm64_sequoia",
+          "sha256": "a0f6aad93ce1be47de8f0d965033933a895f026caa8efc14e61431e6e5025d5f",
+          "keep": [
+            "bin"
+          ]
+        },
+        {
+          "bottle": "xz",
+          "tag": "5.8.3",
+          "platform": "arm64_sequoia",
+          "sha256": "c4be907ac8459f8b3e764c06287cc88b79c1d5c16a2db1c0335e1facf4fd4dbe",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "gettext",
+          "tag": "1.0-2",
+          "platform": "arm64_sequoia",
+          "sha256": "98a116d35792ccd730360ffc8c0d8fc5799b2282b96bb7696192c573f064a331",
+          "keep": [
+            "lib"
+          ]
+        },
+        {
+          "bottle": "libunistring",
+          "tag": "1.4.2-1",
+          "platform": "arm64_sequoia",
+          "sha256": "513bf2378982459bf3daf286cec9d50d3f491686f8caa8749604de3be4e6db77",
+          "keep": [
+            "lib"
+          ]
+        }
+      ],
+      "check": {
+        "command": [
+          "bin/x86_64-elf-grub-mkimage",
+          "--version"
+        ],
+        "library_path": "lib",
+        "expect": "2.12"
+      }
+    }
+  }
+}
