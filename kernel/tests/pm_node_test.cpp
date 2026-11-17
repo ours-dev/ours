@@ -29,9 +29,14 @@
 ///     now, almost unchanged.
 ///   - contains(). Declared for a long time and defined only recently.
 ///   - Fragment and bulk allocation. alloc_frames_fragment() used to loop for
-///     ever on an even page count. Use the exhaust-remote option from an idle
-///     guest with a memory-only NUMA node to check fallback and partial
-///     rollback.
+///     ever on an even page count. Fallback from an exhausted node and the
+///     list forms refused at its floor are PmNode.FallsBackFromAnExhaustedRemoteNode,
+///     a test of its own, run with the exhaust-remote option from an idle
+///     guest with a memory-only NUMA node.
+///   - Node queries. num_nodes() agrees with the ids find_node() answers, and
+///     the current node's queries describe it. What an absent node id
+///     answers is PmNode.AbsentNodesAnswerNothing, skipped where every id is
+///     in use.
 ///   - Home allocation. An explicit home, Gaf::ThisNode and an order past the
 ///     maximum through mm::alloc_frames(); an empty node set and one without
 ///     the home through mm::priv::alloc_frames(), since no public function
@@ -62,6 +67,7 @@
 #include <algorithm>
 #include <array>
 #include <string_view>
+#include <utility>
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <gktl/counter.hpp>
@@ -82,6 +88,33 @@ namespace {
     using mm::ZoneType;
     using numa::Topology;
     using ours::NodeMask;
+
+    /// The descriptor of the counter called |name|, or null when no counter
+    /// of that name is linked into this kernel.
+    [[nodiscard]]
+    auto find_counter(std::string_view const name) -> gktl::Counter::Descriptor const * {
+        using Descriptor = gktl::Counter::Descriptor;
+        auto const *const found = std::find_if(
+            Descriptor::GLOBAL_DESC_START, Descriptor::GLOBAL_DESC_END,
+            [name](Descriptor const &each) { return std::string_view{each.name} == name; });
+        if (found == Descriptor::GLOBAL_DESC_END) {
+            return nullptr;
+        }
+        return found;
+    }
+
+    /// How far |counter| moved while |act| ran. A counter keeps one slot per
+    /// CPU and get() reads the calling CPU's, so both reads and |act| between
+    /// them run with interrupts off: nothing preempts the thread or moves it
+    /// to another CPU, whose slot would answer the second read instead.
+    template <typename F>
+    [[nodiscard]]
+    auto count_around(gktl::Counter const &counter, F &&act) -> isize {
+        arch::AutoInterruptDisabler irq;
+        auto const before = counter.get();
+        std::forward<F>(act)();
+        return counter.get() - before;
+    }
 
     auto run_topology_checks() -> void {
         // The CPU and its node are two reads, and the test is that the second
@@ -184,7 +217,7 @@ namespace {
         usize visited = 0;
         auto last_type = usize(0);
         list.for_each_local_zone([&](PmZone &zone) {
-            auto const type = static_cast<usize>(zone.zone_type());
+            auto const type = std::to_underlying(zone.zone_type());
             if (visited != 0 && type <= last_type) {
                 by_type_ok = false;
             }
@@ -576,62 +609,50 @@ namespace {
     auto check_node_queries() -> void {
         auto const nid = mm::current_node();
         auto *const node = mm::find_node(nid);
-        EXPECT_TRUE(node && mm::num_nodes() == mm::num_nodes() &&
+        // num_nodes() against the node table walked id by id: every id that
+        // find_node() answers is one node.
+        usize found = 0;
+        for (NodeId each = 0; each < MAX_NODES; ++each) {
+            if (mm::find_node(each)) {
+                found += 1;
+            }
+        }
+        EXPECT_TRUE(node && found == mm::num_nodes() &&
                         mm::node_work_cpus(nid) == node->work_cpus() &&
                         mm::node_soft_affinity(nid) == &node->soft_affinity() &&
                         mm::node_hard_affinity(nid) == &node->hard_affinity(),
                     "PMM topology queries describe the current node");
-        for (NodeId absent = 0; absent < MAX_NODES; ++absent) {
-            if (mm::find_node(absent)) {
-                continue;
-            }
-            auto single = mm::alloc_frames(mm::ALLOC_KERNEL, 0, absent);
-            auto bulk = mm::alloc_frames_bulk(mm::ALLOC_KERNEL, 1, absent);
-            auto fragment = mm::alloc_frames_fragment(mm::ALLOC_KERNEL, 1, absent);
-            EXPECT_TRUE(!mm::node_work_cpus(absent).any() && !mm::node_hard_affinity(absent) &&
-                            !mm::node_soft_affinity(absent) && !single &&
-                            single.unwrap_err() == Status::InvArgs && !bulk &&
-                            bulk.unwrap_err() == Status::InvArgs && !fragment &&
-                            fragment.unwrap_err() == Status::InvArgs,
-                        "queries and allocation handle an absent node ID");
-            if (single) {
-                mm::free_frames(*single);
-            }
-            if (bulk) {
-                mm::free_frames(&*bulk);
-            }
-            if (fragment) {
-                mm::free_frames(&*fragment);
-            }
-            return;
-        }
     }
 
     auto check_local_fallback(NodeId const remote_home) -> bool {
-        using Descriptor = gktl::Counter::Descriptor;
-        auto const *const hit =
-            std::find_if(Descriptor::GLOBAL_DESC_START, Descriptor::GLOBAL_DESC_END,
-                         [](Descriptor const &counter) {
-                             return std::string_view{counter.name} == "pm.node.local.hit";
-                         });
-        if (hit == Descriptor::GLOBAL_DESC_END) {
+        auto const *const hit = find_counter("pm.node.local.hit");
+        if (!hit) {
             return false;
         }
 
-        // Read one CPU's counter around the attempt without a preemption or interrupt.
-        arch::AutoInterruptDisabler irq;
-        auto const local = mm::current_node();
-        auto nodes = NodeMask::of(remote_home);
-        nodes.set(local);
+        // Read one CPU's counter around the attempt without a preemption or
+        // interrupt. The local node is read inside that window too, so it is
+        // the node the allocation itself took as local.
         gktl::Counter const hits{hit};
-        auto const before = hits.get();
-        auto const fallback = mm::priv::alloc_frames(mm::ALLOC_KERNEL, 0, remote_home, nodes);
-        if (!fallback) {
+        auto local = NodeId{MAX_NODES};
+        PmFrame *frame = nullptr;
+        auto const counted = count_around(hits, [remote_home, &local, &frame] {
+            local = mm::current_node();
+            auto nodes = NodeMask::of(remote_home);
+            nodes.set(local);
+            // No flags: interrupts are off here, so this caller cannot block,
+            // and the request must not carry ALLOC_KERNEL's Gaf::CanBlock.
+            auto const fallback = mm::priv::alloc_frames(mm::Gaf{}, 0, remote_home, nodes);
+            if (fallback) {
+                frame = *fallback;
+            }
+        });
+        if (!frame) {
             return false;
         }
 
-        auto const counted_local = (*fallback)->nid() == local && hits.get() == before + 1;
-        mm::free_frames(*fallback);
+        auto const counted_local = frame->nid() == local && counted == 1;
+        mm::free_frames(frame);
         return counted_local;
     }
 
@@ -782,7 +803,6 @@ namespace {
         auto const check = [](u8 *const bytes, NodeId const expected_node, char const *const name) {
             if (!bytes) {
                 FAIL("{}", name);
-                return;
             }
 
             auto *const frame = mm::virt_to_frame(bytes);
@@ -812,16 +832,47 @@ namespace {
               "node-specific get_frames_n() honors the node and rounds the count");
     }
 
-    auto check_disabled_allocation() -> void {
-        auto &state = task::Thread::Current::alloc_state();
+    /// Allocation disabled for the calling thread while one lives, and enabled
+    /// again after, however the scope ends, so that a check cannot leave the
+    /// thread unable to allocate.
+    class AllocationsDisabled {
+      public:
+        explicit AllocationsDisabled(mm::AllocState &state) : m_state(state) {
+            m_state.disable();
+        }
 
-        state.disable();
-        auto const nodeless = mm::alloc_frames(mm::ALLOC_KERNEL);
-        auto const by_node = mm::alloc_frames(mm::ALLOC_KERNEL, 0, mm::current_node());
-        auto const table = mm::alloc_page_table(PAGE_SIZE, PAGE_SIZE);
-        auto *const bytes = mm::get_frames<u8>(mm::ALLOC_KERNEL);
-        auto *const local_bytes = mm::get_frames<u8>(mm::ALLOC_KERNEL, 0, mm::current_node());
-        state.enable();
+        ~AllocationsDisabled() {
+            m_state.enable();
+        }
+
+        AllocationsDisabled(AllocationsDisabled const &) = delete;
+        auto operator=(AllocationsDisabled const &) -> AllocationsDisabled & = delete;
+
+      private:
+        mm::AllocState &m_state;
+    };
+
+    auto check_disabled_allocation() -> void {
+        // What each allocation answered while allocation was disabled. The
+        // lambda is the scope that holds it disabled: everything it returns
+        // was asked for inside, and allocation is enabled again once it does.
+        struct Refused {
+            ktl::Result<PmFrame *> nodeless;
+            ktl::Result<PmFrame *> by_node;
+            PhysAddr table;
+            u8 *bytes;
+            u8 *local_bytes;
+        };
+        auto const [nodeless, by_node, table, bytes, local_bytes] = [] {
+            AllocationsDisabled const disabled{task::Thread::Current::alloc_state()};
+            return Refused{
+                .nodeless = mm::alloc_frames(mm::ALLOC_KERNEL),
+                .by_node = mm::alloc_frames(mm::ALLOC_KERNEL, 0, mm::current_node()),
+                .table = mm::alloc_page_table(PAGE_SIZE, PAGE_SIZE),
+                .bytes = mm::get_frames<u8>(mm::ALLOC_KERNEL),
+                .local_bytes = mm::get_frames<u8>(mm::ALLOC_KERNEL, 0, mm::current_node()),
+            };
+        }();
 
         auto const after = mm::alloc_frames(mm::ALLOC_KERNEL, 0, mm::current_node());
         EXPECT_TRUE(!nodeless && nodeless.unwrap_err() == Status::AccessDenied && !by_node &&
@@ -854,7 +905,6 @@ namespace {
         auto const allocated = mm::alloc_frames(mm::ALLOC_KERNEL, WHOLE);
         if (!allocated) {
             FAIL("allocate a block of order {}", WHOLE);
-            return;
         }
         auto *const block = *allocated;
         EXPECT_TRUE(block->order() == WHOLE, "the head of an allocated block records its order");
@@ -895,7 +945,6 @@ namespace {
         auto run = mm::alloc_frames_contiguous(mm::ALLOC_KERNEL, NR_FRAMES, ALIGN_LOG2);
         if (!run) {
             FAIL("allocate {} contiguous frames", NR_FRAMES);
-            return;
         }
 
         usize count = 0;
@@ -935,7 +984,6 @@ namespace {
         auto const allocated = mm::alloc_frames(mm::ALLOC_KERNEL);
         if (!allocated) {
             FAIL("allocate a frame to pin");
-            return;
         }
         // Nobody else knows this frame, so there is no owner's lock to take:
         // the test is its owner.
@@ -944,7 +992,7 @@ namespace {
 
         auto const first = mm::pin_frame(frame);
         auto const second = mm::pin_frame(frame);
-        EXPECT_TRUE(Status::Ok == first && Status::Ok == second && frame->pin_count() == 2,
+        EXPECT_TRUE(first == Status::Ok && second == Status::Ok && frame->pin_count() == 2,
                     "pins count, on a frame with no role");
 
         // A role is put on over the pins and does not forget them.
@@ -954,7 +1002,7 @@ namespace {
 
         auto const undone = mm::unpin_frame(frame);
         auto const undone_again = mm::unpin_frame(frame);
-        EXPECT_TRUE(Status::Ok == undone && Status::Ok == undone_again && frame->pin_count() == 0,
+        EXPECT_TRUE(undone == Status::Ok && undone_again == Status::Ok && frame->pin_count() == 0,
                     "each unpin undoes one pin");
         EXPECT_TRUE(mm::unpin_frame(frame) == Status::BadState,
                     "a frame with no pin cannot be unpinned");
@@ -1129,16 +1177,13 @@ namespace {
                     "at three quarters of Min a request that cannot block is refused too");
     }
 
-    KTEST(PmNode, WaitingRequestsStopAtLowAndWakeOnRelief) {
-        using Descriptor = gktl::Counter::Descriptor;
-        auto const *const relief =
-            std::find_if(Descriptor::GLOBAL_DESC_START, Descriptor::GLOBAL_DESC_END,
-                         [](Descriptor const &counter) {
-                             return std::string_view{counter.name} == "pm.zone.relief";
-                         });
-        if (relief == Descriptor::GLOBAL_DESC_END) {
+    // No thread waits in this test: what it measures is the pm.zone.relief
+    // counter, which counts the wake a release would send to waiters, and a
+    // waiting request retried on this same thread after the release.
+    KTEST(PmNode, WaitingRequestsStopAtLowAndReliefIsCountedOnce) {
+        auto const *const relief = find_counter("pm.zone.relief");
+        if (!relief) {
             FAIL("the relief counter is linked in");
-            return;
         }
         auto *const target = remote_single_zone_node();
         if (!target) {
@@ -1180,16 +1225,13 @@ namespace {
         // The zone is one below Low now. Each release below is counted on one
         // CPU's counter, read around it with nothing to preempt it, and the
         // waiting request is tried between them with interrupts on.
-        gktl::Counter const wakes{relief};
-        auto const counted = [&wakes](PmFrame *const block) {
-            arch::AutoInterruptDisabler irq;
-            auto const before = wakes.get();
-            mm::free_frames(block);
-            return wakes.get() - before;
+        gktl::Counter const reliefs{relief};
+        auto const counted = [&reliefs](PmFrame *const block) {
+            return count_around(reliefs, [block] { mm::free_frames(block); });
         };
 
         // Giving that frame back takes the zone to exactly Low, where the
-        // waiting request is still refused, so it wakes nobody.
+        // waiting request is still refused, so it counts no relief.
         auto early = isize{1};
         auto still_put_off = false;
         if (served) {
@@ -1199,14 +1241,16 @@ namespace {
             trial.keep(again);
         }
 
-        // The next release takes it above Low: one wake, and the request it
-        // woke for is served now. One more release, from above Low: none.
-        auto woke = isize{0};
+        // The next release crosses Low: it counts one relief, the wake it
+        // would send a waiter. Nothing waits here, so the same request is
+        // retried on this thread instead, and is served now. One more
+        // release, from above Low, counts none.
+        auto crossing = isize{0};
         auto served_after = false;
         auto quiet = isize{1};
         if (still_put_off) {
             if (auto *const block = trial.hand_over()) {
-                woke = counted(block);
+                crossing = counted(block);
             }
             auto const retried = ask_waiting();
             served_after = retried && (*retried)->nid() == nid;
@@ -1219,10 +1263,12 @@ namespace {
         EXPECT_TRUE(at_low && put_off, "at Low a waiting request is answered ShouldWait");
         EXPECT_TRUE(served, "at Low a request that cannot wait is served by the second pass");
         EXPECT_TRUE(early == 0 && still_put_off,
-                    "a release back to exactly Low wakes nobody, and the request is still put off");
-        EXPECT_TRUE(woke == 1 && served_after,
-                    "the release that takes the zone above Low wakes one waiter, and it is served");
-        EXPECT_TRUE(quiet == 0, "a release from above Low wakes nobody");
+                    "a release back to exactly Low counts no relief, and the request is still put "
+                    "off");
+        EXPECT_TRUE(crossing == 1 && served_after,
+                    "the release that takes the zone above Low counts one relief, and a retried "
+                    "waiting request is served");
+        EXPECT_TRUE(quiet == 0, "a release from above Low counts no relief");
     }
 
     KTEST(PmNode, AConfinedWaitingRequestGoesOnToMin) {
@@ -1292,7 +1338,6 @@ namespace {
         auto const block = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, ORDER, nid);
         if (!block) {
             FAIL("an order-{} block from node {}", ORDER, nid);
-            return;
         }
         auto *const head = *block;
         auto const frame = [head](usize const index) {
@@ -1374,7 +1419,6 @@ namespace {
         auto block = zone.alloc_frames(3);
         if (!block) {
             FAIL("an order-3 block from zone {}", mm::to_string(zone.zone_type()));
-            return;
         }
         auto const pfn = mm::frame_to_pfn(&block.value());
         auto const without = zone.free_block_profile();
@@ -1413,7 +1457,6 @@ namespace {
                                                ALIGN_LOG2, nid);
         if (!run) {
             FAIL("{} contiguous frames from node {}", NR_FRAMES, nid);
-            return;
         }
         auto const during = zone.free_block_profile();
         auto from_node = true;
@@ -1560,18 +1603,19 @@ namespace {
 
     KTEST(PmNode, AllocationsTakeTheHighestZoneFirst) {
         // The zone an ordinary allocation should come from: this node's
-        // highest zone with room to spare. A margin, so that the answer does
-        // not change under the test if another CPU allocates meanwhile.
+        // highest zone with room to spare above the line the first pass
+        // admits at, Low plus the reserve the zone keeps from a request that
+        // allows Normal. A margin, so that the answer does not change under
+        // the test if another CPU allocates meanwhile.
         constexpr auto MARGIN = usize{1024};
         auto const nid = mm::current_node();
         auto *const node = mm::find_node(nid);
         if (!node) {
             FAIL("the calling CPU's node {} is not online", nid);
-            return;
         }
         PmZone const *expected = nullptr;
         node->zone_list().for_each_local_zone([&expected](PmZone &zone) {
-            if (zone.num_free_frames() > MARGIN) {
+            if (zone.num_free_frames() > zone.normal_low_floor() + MARGIN) {
                 expected = &zone;
             }
         });
@@ -1582,7 +1626,6 @@ namespace {
         auto const frame = mm::alloc_frames(mm::ALLOC_KERNEL | mm::Gaf::ThisNode, 0, nid);
         if (!frame) {
             FAIL("allocate a frame on node {}", nid);
-            return;
         }
         EXPECT_TRUE((*frame)->zone() == expected->zone_type(),
                     "an ordinary allocation comes from the highest zone with room, {} here",
@@ -1764,12 +1807,50 @@ namespace {
         check_fragment_and_bulk();
         check_batch_errors();
         check_node_queries();
-        if (ktest::has_option("exhaust-remote")) {
-            check_remote_exhaustion();
-        }
         check_count_helpers();
         check_home_allocation();
         check_disabled_allocation();
+    }
+
+    // A test of its own, so that the guest it needs -- idle, with a
+    // memory-only node -- being absent skips this alone rather than the
+    // whole of MatchesTheMachineItRunsOn.
+    KTEST(PmNode, FallsBackFromAnExhaustedRemoteNode) {
+        if (!ktest::has_option("exhaust-remote")) {
+            KTEST_SKIP("needs the exhaust-remote option");
+        }
+        check_remote_exhaustion();
+    }
+
+    KTEST(PmNode, AbsentNodesAnswerNothing) {
+        // The first id with no node behind it. A machine that uses every id
+        // -- the default build, where MAX_NODES is 1 -- has none to ask.
+        auto absent = NodeId{0};
+        while (absent < MAX_NODES && mm::find_node(absent)) {
+            absent += 1;
+        }
+        if (absent >= MAX_NODES) {
+            KTEST_SKIP("every node id is in use");
+        }
+
+        auto const single = mm::alloc_frames(mm::ALLOC_KERNEL, 0, absent);
+        auto bulk = mm::alloc_frames_bulk(mm::ALLOC_KERNEL, 1, absent);
+        auto fragment = mm::alloc_frames_fragment(mm::ALLOC_KERNEL, 1, absent);
+        EXPECT_TRUE(!mm::node_work_cpus(absent).any() && !mm::node_hard_affinity(absent) &&
+                        !mm::node_soft_affinity(absent) && !single &&
+                        single.unwrap_err() == Status::InvArgs && !bulk &&
+                        bulk.unwrap_err() == Status::InvArgs && !fragment &&
+                        fragment.unwrap_err() == Status::InvArgs,
+                    "queries and allocation handle absent node {}", absent);
+        if (single) {
+            mm::free_frames(*single);
+        }
+        if (bulk) {
+            mm::free_frames(&*bulk);
+        }
+        if (fragment) {
+            mm::free_frames(&*fragment);
+        }
     }
 } // namespace
 } // namespace ours
