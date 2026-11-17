@@ -384,7 +384,14 @@ The allocation-state policy accessor is AllocState::policy(), without a
 get_ prefix. It still returns a retained Arc; the allocator copies it under
 the thread resource lock before using it (`docs/repairs/261116/mm.md` item 1
 measures that lock). The policy answers through `AllocPolicy::place(local,
-allowed)`, a home node and a node set, and only `resolve_request()` asks it:
-for an allocation that names no node and does not carry `Gaf::ThisNode`
-(review M7, 2026-11-16). A named node is the caller's choice; no policy moves
-it.
+allowed, turn)`, a home node and a node set, and only `resolve_request()`
+asks it: for an allocation that names no node and does not carry
+`Gaf::ThisNode` (review M7, 2026-11-16). A named node is the caller's choice;
+no policy moves it. The kinds follow Linux mempolicy: Preferred moves the
+home, Bind narrows the nodes and leaves the home (so the walk stays nearest
+first), Interleave moves the home round its nodes by the turn. A policy is
+immutable and shared; the turn is the thread's (`AllocState::policy_turn()`),
+counted only for a request the policy placed, and reset when the policy is
+set. Only the calling thread sets its policy (`mm::set_thread_policy()`). A
+request Bind narrowed is confined (`AllocRequest::is_confined()`), so it goes
+on to Min rather than wait at Low.

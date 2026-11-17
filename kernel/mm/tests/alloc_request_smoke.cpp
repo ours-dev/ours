@@ -43,6 +43,7 @@ auto check(bool const ok, char const *const name) -> void {
 
 constexpr auto HOME = NodeId{1};
 constexpr auto OTHER = NodeId{2};
+constexpr auto THIRD = NodeId{3};
 constexpr auto CPU = CpuNum{3};
 
 /// Deliberately a node id and a CPU number that differ, so that a request
@@ -115,6 +116,69 @@ auto placement_policy() -> void {
     check(confined.home_node() == HOME && confined.allowed_nodes().test(HOME) &&
               !confined.allowed_nodes().test(OTHER),
           "with ThisNode the policy is not asked: the request is its home node's alone");
+    check(placed.placed_by_policy() && !confined.placed_by_policy(),
+          "a request the policy placed says so, and takes a turn; one with ThisNode does not");
+}
+
+/// Preferred moves the home to its node, when the caller allows that node,
+/// and keeps every node the caller allows to fall back to.
+auto preferred_policy() -> void {
+    auto const nodes = mask_of(HOME, OTHER);
+    auto const policy = AllocPolicy::preferred(OTHER);
+    auto const placed = resolve_request(Gaf::Zero, 0, nodes, HERE, ustl::some_ref(policy));
+    auto const absent = AllocPolicy::preferred(THIRD);
+    auto const unplaced = resolve_request(Gaf::Zero, 0, nodes, HERE, ustl::some_ref(absent));
+
+    check(placed.home_node() == OTHER && placed.allowed_nodes() == nodes && !placed.is_confined(),
+          "Preferred starts from its node and may fall back to any the caller allows");
+    check(unplaced.home_node() == HOME && unplaced.allowed_nodes() == nodes,
+          "Preferred leaves the home where it was when the caller does not allow its node");
+}
+
+/// Bind narrows the nodes to its own and leaves the home, and the request it
+/// narrowed is confined: the machine's free count says nothing about its nodes.
+auto bind_policy() -> void {
+    auto const nodes = mask_of(HOME, OTHER);
+    auto const policy = AllocPolicy::bind(NodeMask::of(OTHER));
+    auto const bound = resolve_request(Gaf::CanWait, 0, nodes, HERE, ustl::some_ref(policy));
+    auto const wide = AllocPolicy::bind(mask_of(HOME, OTHER));
+    auto const unnarrowed = resolve_request(Gaf::CanWait, 0, nodes, HERE, ustl::some_ref(wide));
+    auto const elsewhere = AllocPolicy::bind(NodeMask::of(THIRD));
+    auto const nowhere = resolve_request(Gaf::Zero, 0, nodes, HERE, ustl::some_ref(elsewhere));
+
+    check(bound.home_node() == HOME && bound.allowed_nodes() == NodeMask::of(OTHER),
+          "Bind keeps the home and narrows the nodes to its own");
+    check(bound.is_confined() && !bound.waits_at_low(),
+          "a request Bind narrowed is confined, and goes on to Min rather than wait");
+    check(!unnarrowed.is_confined() && unnarrowed.waits_at_low(),
+          "a Bind that leaves every allowed node narrows nothing and confines nothing");
+    check(!nowhere.allowed_nodes().any(),
+          "a Bind to nodes the caller does not allow leaves nothing to allocate from");
+}
+
+/// Interleave moves the home round its allowed nodes, one turn per
+/// allocation, lowest id first, and keeps every allowed node to fall back to.
+auto interleave_policy() -> void {
+    NodeMask nodes = mask_of(HOME, OTHER);
+    nodes.set(THIRD);
+    auto const policy = AllocPolicy::interleave(mask_of(OTHER, THIRD));
+    auto homes_ok = true;
+    for (usize turn = 0; turn < 4; ++turn) {
+        auto const request =
+            resolve_request(Gaf::Zero, 0, nodes, HERE, ustl::some_ref(policy), turn);
+        auto expected = OTHER;
+        if (turn % 2 == 1) {
+            expected = THIRD;
+        }
+        homes_ok = homes_ok && request.home_node() == expected &&
+                   request.allowed_nodes() == nodes && !request.is_confined();
+    }
+    auto const narrow =
+        resolve_request(Gaf::Zero, 0, mask_of(HOME, THIRD), HERE, ustl::some_ref(policy), 0);
+
+    check(homes_ok, "Interleave takes its nodes in turn and may fall back to any allowed");
+    check(narrow.home_node() == THIRD,
+          "Interleave goes round only the nodes of its own the caller allows");
 }
 
 /// Which requests the pipeline treats as confined: those that may use less
@@ -164,6 +228,9 @@ auto main() -> int {
     with_this_node_excluding_home();
     empty_mask_stays_empty();
     placement_policy();
+    preferred_policy();
+    bind_policy();
+    interleave_policy();
     confinement();
     flag_answers();
 

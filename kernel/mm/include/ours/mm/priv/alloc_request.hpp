@@ -14,6 +14,7 @@
 #include <ours/types.hpp>
 
 #include <ustl/option.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace ours::mm {
 /// One allocation, resolved: what the caller asked for and what the allocator
@@ -141,11 +142,12 @@ class AllocRequest final {
         return m_highest_zone;
     }
 
-    /// Whether this request asked for less memory than an ordinary one: its
-    /// home node alone (Gaf::ThisNode), or a narrower range of zone types
-    /// than Dma through Normal. A node set narrowed any other way -- the
-    /// mask a test hands mm::priv::alloc_frames(), which stands in for a
-    /// smaller machine -- does not count (docs/repairs/261114/mm.md).
+    /// Whether this request may use less memory than an ordinary one: its
+    /// home node alone (Gaf::ThisNode), fewer nodes than its caller allowed
+    /// because the thread's placement policy narrowed them (Bind), or a
+    /// narrower range of zone types than Dma through Normal. A node set the
+    /// caller narrowed -- the mask a test hands mm::priv::alloc_frames(),
+    /// which stands in for a smaller machine -- does not count.
     ///
     /// The free-memory gate and the memory watchdog count the whole
     /// machine, so they say nothing about the memory such a request can
@@ -156,8 +158,18 @@ class AllocRequest final {
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto is_confined() const -> bool {
-        return !!(m_alloc_flags & Gaf::ThisNode) || m_lowest_zone != ZoneType::Dma ||
-               m_highest_zone < ZoneType::Normal;
+        return !!(m_alloc_flags & Gaf::ThisNode) || !!(m_resolved & Resolved::PolicyNarrowed) ||
+               m_lowest_zone != ZoneType::Dma || m_highest_zone < ZoneType::Normal;
+    }
+
+    /// Whether the thread's placement policy placed this request: it was
+    /// handed one, named no node and did not carry Gaf::ThisNode. A request
+    /// the policy placed has used up one of the thread's turns
+    /// (AllocState::count_policy_turn()); one it did not place has not.
+    [[nodiscard]]
+    FORCE_INLINE
+    constexpr auto placed_by_policy() const -> bool {
+        return !!(m_resolved & Resolved::PolicyPlaced);
     }
 
     /// Whether the caller's context permits blocking (Gaf::CanBlock). It
@@ -225,21 +237,37 @@ class AllocRequest final {
     }
 
   private:
+    /// What resolving found out about the request that its caller's flags do
+    /// not say. Set once, by resolve_request().
+    enum class Resolved : u8 {
+        None = 0,
+
+        /// The thread's placement policy placed it (placed_by_policy()).
+        PolicyPlaced = 1U << 0,
+
+        /// The thread's placement policy left it fewer nodes than its caller
+        /// allowed (Bind): the request is confined (is_confined()).
+        PolicyNarrowed = 1U << 1,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Resolved);
+
     /// resolve_request() is the only thing that can build one from scratch.
     /// Everything else either copies a request or derives one with the two
     /// with_* methods above, both of which start from a request that was
     /// resolved -- so there is no path to an AllocRequest whose fields were
     /// never worked out from a caller's ask.
     friend auto resolve_request(Gaf alloc_flags, usize order, NodeMask const &nodes, Origin origin,
-                                ustl::Option<AllocPolicy const &> policy) -> AllocRequest;
+                                ustl::Option<AllocPolicy const &> policy, usize policy_turn)
+        -> AllocRequest;
 
     constexpr AllocRequest(Gaf const alloc_flags, usize const order, NodeMask const &allowed_nodes,
-                           Origin const origin, ZoneType const lowest_zone,
+                           Origin const origin, Resolved const resolved, ZoneType const lowest_zone,
                            ZoneType const highest_zone)
         : m_alloc_flags(alloc_flags)
         , m_order(order)
         , m_allowed_nodes(allowed_nodes)
         , m_origin(origin)
+        , m_resolved(resolved)
         , m_lowest_zone(lowest_zone)
         , m_highest_zone(highest_zone) {}
 
@@ -252,6 +280,8 @@ class AllocRequest final {
     /// class sees. home_node() and initiator() are still the way out: nothing
     /// wants the pair back.
     Origin m_origin;
+
+    Resolved m_resolved;
 
     ZoneType m_lowest_zone;
     ZoneType m_highest_zone;
@@ -268,7 +298,10 @@ class AllocRequest final {
 /// none for one that does, since a node named is the caller's choice and no
 /// policy moves it. Gaf::ThisNode keeps the policy out too: the request is
 /// its home node's alone, whatever the policy would say. Otherwise the policy
-/// places it (AllocPolicy::place()): it may move the home and narrow the nodes.
+/// places it (AllocPolicy::place()): it may move the home and narrow the nodes,
+/// and a request whose nodes it narrowed is confined. |policy_turn| is how
+/// many allocations the thread handed |policy| before this one, which is what
+/// Interleave counts.
 ///
 /// The only way to build an AllocRequest from nothing, which is what makes
 /// "resolved" true of every request that exists.
@@ -276,15 +309,21 @@ class AllocRequest final {
 FORCE_INLINE
 inline auto resolve_request(Gaf const alloc_flags, usize const order, NodeMask const &nodes,
                             AllocRequest::Origin origin,
-                            ustl::Option<AllocPolicy const &> const policy = ustl::NONE)
-    -> AllocRequest {
+                            ustl::Option<AllocPolicy const &> const policy = ustl::NONE,
+                            usize const policy_turn = 0) -> AllocRequest {
+    using Resolved = AllocRequest::Resolved;
     auto allowed = nodes;
+    auto resolved = Resolved::None;
     if (!!(alloc_flags & Gaf::ThisNode)) {
         allowed &= NodeMask::of(origin.node);
     } else if (policy) {
-        auto const placement = policy->place(origin.node, nodes);
+        auto const placement = policy->place(origin.node, nodes, policy_turn);
         origin.node = placement.home;
         allowed = placement.nodes;
+        resolved |= Resolved::PolicyPlaced;
+        if (allowed != nodes) {
+            resolved |= Resolved::PolicyNarrowed;
+        }
     }
 
     return AllocRequest{
@@ -292,6 +331,7 @@ inline auto resolve_request(Gaf const alloc_flags, usize const order, NodeMask c
         order,
         allowed,
         origin,
+        resolved,
         // No Gaf bit names a zone, so every allocation may use Dma through
         // Normal. Movable and Dynamic are above the bound deliberately: a
         // caller that has not said it can take movable memory must not be

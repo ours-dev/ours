@@ -1,5 +1,6 @@
 #include <ours/assert.hpp>
 #include <ours/cpu.hpp>
+#include <ours/mm/alloc_state.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/cpu_node_map.hpp>
 #include <ours/mm/early_mem.hpp>
@@ -346,9 +347,8 @@ namespace {
     /// The calling thread's placement policy, or null.
     ///
     /// The thread's resource lock covers reading the policy and nothing more:
-    /// the policy may be replaced only under it (Thread::m_resource_lock),
-    /// though nothing replaces one yet, since AllocState has no setter. It
-    /// used to be held by every node-less allocation entry around the whole
+    /// the policy may be replaced only under it (set_thread_policy()). It used
+    /// to be held by every node-less allocation entry around the whole
     /// allocation, slow path included -- a spin lock with interrupts off, held
     /// across a path that could reschedule(). Copying the Arc out is all that
     /// needs it.
@@ -426,18 +426,32 @@ namespace {
             return ustl::err(Status::InvArgs);
         }
 
+        // Each block the policy places is a turn of its own, so that an
+        // Interleave moves on per block, in the bulk and fragment loops too.
+        // The turn is counted once the request says the policy placed it:
+        // whether Gaf::ThisNode kept the policy out is the resolver's call.
         auto policy = ustl::Option<AllocPolicy const &>{};
+        AllocState *state = nullptr;
+        auto turn = usize{0};
         if (home.policy) {
             policy = ustl::some_ref(*home.policy);
+            state = &task::Thread::Current::alloc_state();
+            turn = state->policy_turn();
         }
-        auto const request =
-            resolve_request(alloc_flags, order, nodes,
-                            AllocRequest::Origin{.node = home.node, .cpu = Cpu::id()}, policy);
+        auto const request = resolve_request(
+            alloc_flags, order, nodes, AllocRequest::Origin{.node = home.node, .cpu = Cpu::id()},
+            policy, turn);
+        if (request.placed_by_policy()) {
+            state->count_policy_turn();
+        }
         // The node the walk starts from is the request's: the policy may have
-        // moved it off the one resolve_home() found. Every node a placement
-        // names is one with memory, which find_node() always answers for.
+        // moved it off the one resolve_home() found, to a node of the set the
+        // caller allowed. A set naming a node that is not up names nothing to
+        // walk from.
         auto *const start = find_node(request.home_node());
-        DEBUG_ASSERT(start, "the request's home node {} is not online", request.home_node());
+        if (!start) {
+            return ustl::err(Status::InvArgs);
+        }
 
         // The gate first, for a request that can wait: it decides for the
         // whole machine whether such a request may go ahead now, before any
@@ -660,6 +674,21 @@ auto set_free_memory_signal(usize const lower, usize const upper, usize const de
 /// the firmware declared. Nothing on this path asks kernel/lib/numa anything.
 auto current_node() -> NodeId {
     return CpuNodeMap::node_of(CpuLocal::current_cpu());
+}
+
+auto set_thread_policy(ustl::Arc<AllocPolicy> policy) -> ustl::Arc<AllocPolicy> {
+    auto *const thread = task::Thread::Current::get();
+    auto &state = thread->alloc_state();
+    ustl::Arc<AllocPolicy> replaced;
+    {
+        Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
+        replaced = ustl::move(state.m_policy);
+        state.m_policy = ustl::move(policy);
+        state.m_policy_turns = 0;
+    }
+    // Handed back rather than dropped here: the last reference frees the
+    // policy, which is not done with interrupts off under a spin lock.
+    return replaced;
 }
 
 namespace priv {

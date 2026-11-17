@@ -149,3 +149,68 @@ None.
 - Why could no policy have reached a request through `apply_thread_policy(Gaf &)`, however its cases were written?
 - Why does `Gaf::ThisNode` keep the policy out, and why is the resolver the place to decide that?
 - Why is the policy asked once per block rather than once per call, and which policy needs that?
+
+## Preferred, Bind and Interleave are built, set by the thread itself, and a bound request is confined (2026-11-16)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/alloc_policy.hpp` — `AllocPolicy` gains the factories `local()`, `preferred(node)`, `bind(nodes)`, `interleave(nodes)`, const members (the policy is immutable), and a `place(local, allowed, turn)` that answers for every kind; the unused `m_prev_nid` and `m_allowed_nodes` are gone
+- `kernel/mm/include/ours/mm/alloc_state.hpp` — `mm::set_thread_policy()`, the calling thread's only setter; the thread's turn counter (`policy_turn()`, `count_policy_turn()`)
+- `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — a private `Resolved` flags word (`PolicyPlaced`, `PolicyNarrowed`); `placed_by_policy()`; `is_confined()` counts a request the policy narrowed; `resolve_request()` takes the turn
+- `kernel/mm/pmm.cpp` — `set_thread_policy()`; `alloc_block()` hands the policy the thread's turn, counts it only when the request says the policy placed it, and refuses with `InvArgs` a home no node answers for
+- `kernel/mm/tests/alloc_request_smoke.cpp`, `kernel/tests/pm_node_test.cpp` — each kind on the host; on the four-node machine, `APlacementPolicyPlacesNodeLessAllocations` and `ABoundWaitingRequestGoesOnToMin`
+- `docs/repairs/261114/mm.md` — item 2 (a narrowed node set not treated as confined) deleted: fixed here
+- `docs/repairs/261116/mm.md` — item 1 rewritten for the self-only setter, which makes a lockless own-thread read a real candidate
+- `.agents/skills/kernel-design/references/mm.md`, `.agents/tasks/pmm-redesign/DESIGN.md` — the rules
+
+**Symptom**
+Latent: no thread could have a placement policy. The previous step gave the policy an answer it could carry; there was still nothing to answer with and no way to set one.
+
+**Cause**
+Not a mistake but the step the user asked for (option C of M7, 2026-11-16, with the four recommended choices). Each choice has a reason worth keeping:
+- Only the calling thread sets its policy. Then its own allocations can never race a replacement, so the lock on the read path protects only readers on other threads; that is what Linux relies on to read `current->mempolicy` without a lock.
+- The policy object is immutable and the Interleave position is the thread's. An immutable object shared through an `Arc` needs no synchronisation of its own; a shared cursor inside it would need an atomic read-modify-write on every allocation, and two threads sharing one policy would steal each other's turns.
+- A request Bind narrowed is confined. The gate and the watchdog count the whole machine. A request that may use only node N can find N's zones short while the machine's count is healthy, and then nothing machine-wide is bound to end a wait at Low: the hang the rule already closed for `ThisNode`. A node set the caller narrowed (a test's stand-in for a smaller machine) still does not count, which is why the request records that the policy narrowed it rather than comparing masks.
+- A turn is counted only for a request the policy placed. Counting before the resolver decided would let a `ThisNode` request, which the policy never sees, take a turn: alternate the two under Interleave{A, B} and every ordinary allocation lands on B.
+
+**Change**
+
+```cpp
+// the kinds, as place() answers them
+case Kind::Preferred:  if (allowed.test(m_preferred)) { return {.home = m_preferred, .nodes = allowed}; } break;
+case Kind::Bind:       return {.home = local, .nodes = allowed & m_nodes};
+case Kind::Interleave: { auto const round = allowed & m_nodes;
+                         if (round.any()) { return {.home = nth_node(round, turn % round.count()), .nodes = allowed}; }
+                         break; }
+
+// alloc_block(): the turn is read, handed over, and counted only if used
+turn = state->policy_turn();
+auto const request = resolve_request(flags, order, nodes, origin, policy, turn);
+if (request.placed_by_policy()) { state->count_policy_turn(); }
+
+// the setter: the calling thread's, swapped under its resource lock with interrupts off
+auto set_thread_policy(ustl::Arc<AllocPolicy> policy) -> ustl::Arc<AllocPolicy>;   // returns the old one
+```
+
+The old policy is handed back rather than dropped under the lock, since the last reference frees it. Setting a policy starts the turns again, so an Interleave begins on its lowest node. Bind leaves the home on the calling CPU's node so that the walk still goes nearest first through the bound nodes; an empty intersection leaves nothing to allocate from, and the allocation fails.
+
+**Reference**
+Linux `mm/mempolicy.c`: `policy_nodemask()` (`MPOL_BIND` gives the policy's nodes as the mask, `MPOL_PREFERRED` gives its node as the preferred nid), `interleave_nodes()` (`next_node_in(current->il_prev, pol->nodes)`), `do_set_mempolicy()` (only `current`, under `task_lock()`, and it resets `il_prev`), `alloc_pages_noprof()` (the task policy is skipped for `__GFP_THISNODE` and `in_interrupt()`). Departures: Interleave picks by a turn modulo the allowed nodes, as `interleave_nid()` does for an index, rather than stepping from the last node, which is the same while the node set does not change; confinement of a bound request is this project's own rule, since Linux has no gate.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree on the default and the four-node machine: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed, `alloc-request-smoke` checking each kind. `ktest all`: default 97 ran, 84 passed, 13 skipped (the two new tests skip on one node); four nodes 97 ran, 94 passed, 3 skipped. Failure-injection build: 97 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `pmm.cpp`. Controls, each reverted: Interleave always taking its first node fails the host check and the kernel test; `is_confined()` ignoring `PolicyNarrowed` fails the host check and `ABoundWaitingRequestGoesOnToMin` (the bound request is answered `ShouldWait` instead of `OutOfMem` at Min); the setter not resetting the turns fails `APlacementPolicyPlacesNodeLessAllocations`, which takes three turns before its Interleave for that reason.
+
+A narrow pre-commit review (three reviewers, each finding checked by a second agent) confirmed the turn spent by a `ThisNode` request (fixed: `PolicyPlaced` and `count_policy_turn()`), that the kernel test could not tell whether setting a policy resets the turns (fixed: an odd number of turns before the Interleave, and the control above), that its Preferred and Bind checks could not fail when the thread ran on the target node (fixed: the target is a node other than the calling CPU's), that deleting the old repair item needed its own acceptance test (added: `ABoundWaitingRequestGoesOnToMin`), and that the repair items, the design notes and this record had not been updated in the change. Refuted: that `ThisNode` should still apply Bind (it keeps every policy out, as Linux's `__GFP_THISNODE` does), that an empty Bind must not ask the gate first, and that interrupt-context allocations are a defect today (none allocates with no node named).
+
+**Deliberately not done**
+A syscall to set a policy: the setter is kernel-internal, and a user-space interface is its own work. Interrupt context: an allocation made there while a thread is current would read that thread's policy and count a turn; nothing allocates there with no node named, and there is no in-interrupt query to keep it out, so the comment on the counter says so. The per-allocation lock stays, as `docs/repairs/261116/mm.md` item 1, to be measured first. `VmMapping`'s and `PmNode`'s unused `AllocPolicy` members are left as they were.
+
+**How it was found**
+None: a feature, `.agents/tasks/pmm-redesign/REVIEW.md` M7, option C.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a setter only the calling thread may use let that thread read its policy without a lock, and what would another-thread setters cost?
+- Why is a request Bind narrowed confined while a mask the caller narrowed is not, and what would hang without the rule?
+- Why must the turn be counted after the resolver, and what goes wrong with Interleave if a `ThisNode` request takes one?
