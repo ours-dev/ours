@@ -26,6 +26,7 @@
 #include <ours/types.hpp>
 
 #include <array>
+#include <atomic>
 
 namespace ours::mm {
 class PmNode;
@@ -72,7 +73,7 @@ class CpuNodeMap: private CpuLocal::Current<PmNode *> {
     FORCE_INLINE
     static auto node_of(CpuNum const cpu) -> NodeId {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        return NODE_OF_CPU[cpu];
+        return std::atomic_ref<NodeId>{NODE_OF_CPU[cpu]}.load(std::memory_order_relaxed);
     }
 
     /// Seeds the table from what the firmware declared, and places anything
@@ -143,7 +144,7 @@ class CpuNodeMap: private CpuLocal::Current<PmNode *> {
     FORCE_INLINE
     static auto set_node_of(CpuNum const cpu, NodeId const nid) -> void {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        NODE_OF_CPU[cpu] = nid;
+        std::atomic_ref<NodeId>{NODE_OF_CPU[cpu]}.store(nid, std::memory_order_relaxed);
     }
 
     /// Points |cpu|'s slot at |node|, which must be the node the table places
@@ -156,6 +157,15 @@ class CpuNodeMap: private CpuLocal::Current<PmNode *> {
 
     /// MAX_NODES from the first instruction, by constinit, because this is
     /// read before any init hook could fill it.
+    ///
+    /// Read by every CPU with no lock, and written at bring-up and by move(),
+    /// which re-homes a CPU from another one: each entry is read and written
+    /// whole, as a relaxed atomic. Nothing else is ordered by it -- a reader
+    /// that sees the old node or the new one has a valid place to start an
+    /// allocation either way, and the nodes' masks are each node's own, under
+    /// its lock. The per-CPU slot is the same: its own CPU reads it with one
+    /// %gs-relative load, a single instruction, and another CPU writes it
+    /// through a relaxed atomic (cache_local_node()).
     static std::array<NodeId, MAX_CPU> NODE_OF_CPU;
 };
 

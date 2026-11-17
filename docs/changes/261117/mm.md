@@ -49,3 +49,44 @@ None.
 - Why must `GateRestore` be declared after the stack `Event`s in `check_signal()`?
 - Why did a `KTEST_SKIP` in a helper turn the whole composite test into a skip?
 - What could `AllocationsTakeTheHighestZoneFirst` expect wrongly with a bare margin, and why does the zone's own floor fix it?
+
+## The CPU-to-node table and the per-CPU node slot are read and written whole (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/cpu_node_map.hpp`, `kernel/mm/cpu_node_map.cpp` — `node_of()` and `set_node_of()` go through `std::atomic_ref<NodeId>`, relaxed; `cache_local_node()` writes another CPU's slot through `std::atomic_ref<PmNode *>`, relaxed; the table's comment says who reads and writes it and why relaxed is enough
+
+**Symptom**
+Latent: `move()` has no caller yet. Once it has one, it writes a CPU's table entry and per-CPU slot from another CPU while any CPU may be reading them with no lock, as plain memory: a data race, which the C++ memory model makes undefined however harmless a word-sized store looks on the machine.
+
+**Cause**
+The objects: the table `NODE_OF_CPU`, one `NodeId` per CPU; each CPU's slot, a `PmNode *` copy of `find_node(table[cpu])`. The readers: `current_node()` and `local_node()` on any CPU, with no lock. The writers: the seed at bring-up, `publish()`, and `move()` from another CPU. The worst interleaving: a reader loads the entry while `move()` stores it. The invariant each reader needs is only "a node that exists, or the not-placed sentinel"; nothing is ordered after the read, since an allocation may start on any node. So the fix is atomicity, not ordering: each word read and written whole, relaxed.
+
+**Change**
+
+```cpp
+return std::atomic_ref<NodeId>{NODE_OF_CPU[cpu]}.load(std::memory_order_relaxed);        // node_of()
+std::atomic_ref<NodeId>{NODE_OF_CPU[cpu]}.store(nid, std::memory_order_relaxed);         // set_node_of()
+std::atomic_ref<PmNode *>{Slot::get(cpu)}.store(node, std::memory_order_relaxed);        // cache_local_node()
+```
+
+The slot's own reader is a `%gs`-relative load in inline assembly, one instruction, so it is not a C++ access the model could tear; the remote writer is the one that needed to change. On x86 a relaxed load or store of a word is the plain `mov` it was, so nothing is slower.
+
+**Reference**
+Linux keeps the CPU-to-node map as a per-CPU `numa_node` read with `this_cpu_read()` and written with `this_cpu_write()`/`set_cpu_numa_node()`, `READ_ONCE`/`WRITE_ONCE`-style single-word accesses (`include/linux/topology.h`).
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. Not exercised: `move()` has no caller, so no run reaches the race this closes.
+
+**Deliberately not done**
+Ordering the table, the slot and the two nodes' masks as one transaction: a reader that sees them out of step for an instant gets a valid answer, as the comment on `move()` already says of the masks.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 39, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which readers and writers race on the table, and what is the worst interleaving?
+- Why is relaxed enough here, and what would need acquire and release?
+- Why did the slot's local read not need to change?

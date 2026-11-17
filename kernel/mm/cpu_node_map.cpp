@@ -90,7 +90,8 @@ auto CpuNodeMap::cache_local_node(CpuNum const cpu, PmNode *const node) -> void 
     DEBUG_ASSERT(node->nid() == node_of(cpu),
                  "CPU {} is placed on node {}, so its cache cannot hold node {}", cpu, node_of(cpu),
                  node->nid());
-    Slot::set(node, cpu);
+    // move() writes another CPU's slot while that CPU may be reading it.
+    std::atomic_ref<PmNode *>{Slot::get(cpu)}.store(node, std::memory_order_relaxed);
 }
 
 auto CpuNodeMap::publish(CpuNum const cpu) -> void {
