@@ -72,3 +72,65 @@ None
 - Why does a missing `.prebuilt.json` stamp make the script refuse to replace a directory, instead of treating it as stale?
 - How can a download through a proxy report success yet be wrong, and what in an HTTP response lets the client notice?
 - Why do unrelocated Homebrew bottles still load their libraries here, and what would break if `scripts/qemu_boot.py` stopped setting `DYLD_LIBRARY_PATH`?
+
+## One CI entry point, scripts/ci.py, proven in a clean clone (2026-11-17)
+
+**Files**
+- `scripts/ci.py` — new: `check --base`, `verify`, `artifacts`, `all`; what the CI workflow will call.
+- `scripts/test_ci.py` — new: 7 tests on throwaway repositories and build directories.
+- `scripts/gitdiff.py` — the revision "what changed" is measured from is `OURS_DIFF_BASE` when set, HEAD otherwise.
+- `scripts/lint_docs.py` — lists changed documents against that same revision.
+- `docs/repairs/261117/ci.md` — new: the stale `bits` entry in `.gitmodules`.
+
+**Symptom**
+Latent, cannot be triggered today: the pre-commit checks could not run in CI at all. `format_cpp.py` and `lint_docs.py` judge "the lines you changed", measured as `git diff HEAD`. On a CI runner the checkout is the pushed commit with a clean working tree, so the diff is empty and every file reads as unchanged. Shown in the dry run on a commit with a misformatted line:
+
+```text
+$ python3 scripts/format_cpp.py --check kernel/lib/ktest/src/runner.cpp
+kernel/lib/ktest/src/runner.cpp: clean: no changed lines
+```
+
+**Cause**
+The checkers answer "what did I change" with one hard-wired reference point, HEAD, which is right for an edit (the working tree against the last commit) and for a commit (the index against its parent), and wrong for a push, where the change is a range of commits that already ends at HEAD. Only checking whole files would avoid the question, and that is not an option here: about a sixth of the C++ is not clang-format clean, so a whole-file check fails every push for code nobody touched.
+
+**Change**
+The reference point became a variable with HEAD as its default:
+
+```python
+# before (gitdiff.py)
+["git", "diff", "-U0", "-M", "--no-color", "HEAD"]
+# after
+["git", "diff", "-U0", "-M", "--no-color", base_rev()]   # OURS_DIFF_BASE or HEAD
+```
+
+`ci.py check --base REV` sets it to the merge base of REV and HEAD, so a branch is judged on its own commits and not on what its base gained meanwhile, and passes the changed files to the same three checkers the pre-commit hook runs, then runs the scripts' unit tests. A REV of forty zeros (GitHub's "before" for a branch's first push) means `origin/main`. Two differences from the hook, on purpose: a checker that cannot run fails the check (on a runner that is a broken setup, not a laptop missing a tool), and `all` runs every stage even after one fails, so one run reports a format slip and a failing boot together.
+
+`ci.py artifacts` takes the image list from the build's `product_info.json` and the unstripped ELFs from each image's `.debug.json`, both GN metadata, so a new image needs no edit to the script. Each `.debug.json` carries one record for the image itself (`obi`, `image`, `label`) besides the ELF records; the first dry run failed with `KeyError: 'debug'` on it, which the test fixture now includes.
+
+Rejected: `git reset --soft <base>` before checking (works on a runner, but makes the command destructive to run locally, and the point is that it runs the same on both); an argument on every checker (three interfaces and the hook to change, for what is one setting of the whole run).
+
+**Reference**
+None, this project's own tooling. `git clang-format <commit>` takes the same reference point as an argument for the same reason.
+
+**Verification**
+- `python3 -m unittest scripts/test_ci.py`: 7 passed; the checker suites (`test_lint_docs`, `test_format_cpp`, `test_gitdiff`, `test_precommit`): 96 passed.
+- Clean clone of `baseline/20260824` at 7e98c2e6 with submodules into `.worktrees/ci-dryrun`, `prebuilt` linked to the step-1 fetched tree, these scripts added as one commit, `python3 scripts/ci.py all --base HEAD~1`: check PASS (4 files changed, no C++/GN/docs among them; script tests PASS), build ok in 69.7 s (cold cache), dbg PASS (46 passed, 5 skipped), rel PASS (44 passed, 8 skipped, 7/7 required), host-tests PASS (185 passed), artifacts PASS (32 files, 140 MB, 1:43 end to end).
+- All six submodules resolved at their pinned commits from their own remotes, the private `lockdep` and `concurrent` over SSH included.
+- Negative: a commit adding a misformatted function to `runner.cpp` and a skipped heading level to this file makes `check --base HEAD~1` exit 1, naming only the new lines (`runner.cpp: formatted: would change`; `ci.md:78: heading-level`).
+- Not verified: anything on a GitHub runner (step 3).
+
+**Deliberately not done**
+- The `bits` entry in `.gitmodules` is left; it is recorded in `docs/repairs/261117/ci.md`, since removing a dependency declaration is the user's call.
+- The full-history clone of `vendor/nlohmann_json` failed twice through the local HTTP proxy (`curl 18`, early EOF); a shallow `git submodule update --depth 1` without the proxy took 7 s. That is this machine's network, not the repository, so nothing changed for it; GitHub's checkout action fetches submodules shallow anyway.
+- No fix to the one host test that fails in the shared baseline checkout: it comes from another session's uncommitted `kernel/lib/ktest` edits, and the committed tree passes all 185.
+
+**How it was found**
+The clean clone was the experiment: everything the build needs had to come from git and the step-1 manifest. The expected failures (uncommitted files the build reads, submodule pins that differ from the working directories, absolute paths into a home directory) did not appear. The diff-base gap was found by reading `gitdiff.repo_diff` while designing `check`, and confirmed by the negative test above.
+
+**The user's prediction**
+None
+
+**Three questions you should be able to answer**
+- Why does a checker that compares against HEAD see nothing on a CI runner, and why is the merge base, not REV itself, the right thing to compare against?
+- Why must the changed-lines check stay changed-lines in CI instead of checking whole files?
+- What would a test of `artifacts` have to contain to catch the `KeyError` the first dry run hit?
