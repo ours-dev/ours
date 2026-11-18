@@ -265,28 +265,26 @@ class PmZone {
         return m_reserved_frames;
     }
 
-    /// Records |count| frames of this zone as taken before the buddy existed.
-    ///
-    /// Only init_memmap() calls this, single-threaded, once per reserved range.
-    /// It exists because m_reserved_frames had no writer at all: the field is
-    /// documented as the difference between present and managed frames, and
-    /// PmNode::dump() printed it, but every zone reported zero however much
-    /// early memory it had lost.
-    FORCE_INLINE
-    auto add_reserved_frames(usize const count) -> void {
-        m_reserved_frames += count;
+    /// Wires |frame|, a present frame of this zone taken before the buddy
+    /// existed, into the reserved books: marks it Reserved and counts it in
+    /// reserved_frames(), which managed_frames() and so the watermarks are
+    /// worked out from. One call for the two, so that the flag and the count
+    /// cannot disagree. Bring-up's alone (stamp_reserved_frames()),
+    /// single-threaded.
+    auto wire(PmFrame &frame) -> void {
+        frame.mark_reserved(WireKey{});
+        m_reserved_frames += 1;
     }
 
-    /// Gives back |count| reserved frames that are reserved no more
-    /// (unwire_frame()): the kernel's `.init*` sections once boot is done, and
-    /// the boot image's frames once userboot has them. The subtraction is
-    /// atomic, like the addition; the check before it is not, which is enough
-    /// for frames that each have one owner unwiring them, and for a count only
-    /// diagnostics read.
-    FORCE_INLINE
-    auto sub_reserved_frames(usize const count) -> void {
-        DEBUG_ASSERT(count <= m_reserved_frames, "more reserved frames released than recorded");
-        m_reserved_frames -= count;
+    /// Takes |frame| off the reserved books, the flag and the count together:
+    /// the kernel's `.init*` sections once boot is done, the boot image's
+    /// frames once userboot has them (mm::unwire_frame()). The subtraction is
+    /// atomic; the check before it is not, which is enough for frames that
+    /// each have one owner unwiring them.
+    auto unwire(PmFrame &frame) -> void {
+        DEBUG_ASSERT(m_reserved_frames != 0, "more reserved frames unwired than were wired");
+        frame.clear_reserved(WireKey{});
+        m_reserved_frames -= 1;
     }
 
     FORCE_INLINE

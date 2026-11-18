@@ -44,6 +44,11 @@ namespace priv {
         static auto zone_key() -> ZoneLayerKey {
             return ZoneLayerKey{};
         }
+
+        [[nodiscard]]
+        static auto wire_key() -> WireKey {
+            return WireKey{};
+        }
     };
 } // namespace priv
 
@@ -1000,11 +1005,17 @@ auto unwire_frame(PmFrame *const frame) -> void {
                  frame_to_phys(frame));
     DEBUG_ASSERT(!frame->is_linked(), "reserved frame {:#x} is on a list", frame_to_phys(frame));
 
-    frame->clear_reserved();
+    // Off the books through its zone, the flag and the count together; the
+    // flag alone for a frame no zone counted (memmap's bring-up marked it
+    // with no zone to count it in).
+    PmZone *zone = nullptr;
     if (find_node(frame->nid()) != nullptr) {
-        if (auto *const zone = PmZone::at(frame->nid(), frame->zone())) {
-            zone->sub_reserved_frames(1);
-        }
+        zone = PmZone::at(frame->nid(), frame->zone());
+    }
+    if (zone != nullptr) {
+        zone->unwire(*frame);
+    } else {
+        frame->clear_reserved(priv::Pipeline::wire_key());
     }
 }
 

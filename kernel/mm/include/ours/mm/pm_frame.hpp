@@ -233,6 +233,26 @@ namespace page {
 } // namespace page
 
 class FrameBuddy;
+class PmZone;
+
+namespace priv {
+    class MemmapInit;
+    class Pipeline;
+} // namespace priv
+
+/// A pass to a frame's Reserved flag (PageFrame::mark_reserved(),
+/// clear_reserved()). A frame wired into the reserved books is the flag and
+/// one count in its zone, and PmZone::wire() and unwire() are what write the
+/// two together, so the zone makes the key. So does what marks a frame
+/// reserved with no zone to count it in: memmap's bring-up, for a hole and for
+/// a reservation whose node has no zone of the frame's type, and the
+/// pipeline, which unwires such a frame (mm::unwire_frame()).
+class WireKey final {
+    friend class PmZone;
+    friend class priv::MemmapInit;
+    friend class priv::Pipeline;
+    WireKey() = default;
+};
 
 /// What a frame asks to be moved onto or off a buddy free list: a passkey only
 /// FrameBuddy can make, so only it can write Role::Pmm. A friend declaration
@@ -321,23 +341,25 @@ class PageFrame {
     }
 
     /// Sets Reserved and leaves the other flags alone. It counts nothing:
-    /// stamp_reserved_frames() adds the frames it marks to the node's and
-    /// zone's reserved counts, and a hole is marked but never counted. A
-    /// frame is marked once. The stamp skips one already Reserved, so a
-    /// second mark would be a frame the stamp counted twice.
+    /// PmZone::wire() counts the frame in its zone along with the mark, and
+    /// two kinds are marked but never counted (WireKey): a hole, and a
+    /// reservation whose node has no zone of the frame's type. A frame is
+    /// marked once. The stamp skips one already Reserved, so a second mark
+    /// would be a frame the stamp counted twice.
     FORCE_INLINE
-    auto mark_reserved() -> void {
+    auto mark_reserved(WireKey) -> void {
         DEBUG_ASSERT(!(flags() & Flags::Reserved), "frame reserved twice");
         set_status<Index::Flags>(flags() | Flags::Reserved);
     }
 
-    /// Clears Reserved: one half of taking a frame off the reserved books, which
-    /// unwire_frame() does for every frame that leaves them (the init area
-    /// freed after boot, the boot image adopted by userboot's VMO). It comes
-    /// before the frame is freed: mm::free_frames() asserts that the
-    /// frame it is given is not reserved.
+    /// Clears Reserved: the frame's half of taking it off the reserved books,
+    /// which every frame leaving them does through mm::unwire_frame() (the
+    /// init area freed after boot, the boot image adopted by userboot's VMO):
+    /// PmZone::unwire() clears it with the count, and a frame no zone counted
+    /// has the flag cleared alone. It comes before the frame is freed:
+    /// mm::free_frames() asserts that the frame it is given is not reserved.
     FORCE_INLINE
-    auto clear_reserved() -> void {
+    auto clear_reserved(WireKey) -> void {
         set_status<Index::Flags>(flags() & ~Flags::Reserved);
     }
 

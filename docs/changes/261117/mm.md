@@ -339,3 +339,55 @@ None.
 - Why does the free-frame rule belong to the frame rather than to the seam?
 - What does `mm::pin_frame()` still say that the frame cannot?
 - Why can the read and the write of the pin count be two steps?
+
+## The reserved books are wired and unwired by the zone, flag and count together (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — `PmZone::wire(PmFrame &)` marks a frame Reserved and counts it; `unwire(PmFrame &)` clears it and uncounts it; `add_reserved_frames()` and `sub_reserved_frames()` are gone
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `WireKey`; `mark_reserved()` and `clear_reserved()` take it (made by `PmZone`, `priv::MemmapInit` and `priv::Pipeline`)
+- `kernel/mm/memmap_init.cpp` — `priv::MemmapInit`, bring-up's door for holes and for frames with no zone to count them in; `stamp_reserved_frames()` wires through the zone
+- `kernel/mm/pmm.cpp` — `mm::unwire_frame()` unwires through the zone; `priv::Pipeline::wire_key()` for a frame no zone counted
+
+**Symptom**
+Latent, from the review's minor list. A reserved frame is two records: the frame's Reserved flag and one in its zone's reserved count, from which `managed_frames()`, and so every watermark and low-zone reserve, is worked out. Bring-up wrote them with two calls (`mark_reserved()`, then `add_reserved_frames(1)`), and `mm::unwire_frame()` cleared them with two (`clear_reserved()`, then `sub_reserved_frames(1)`). A caller that wrote one and not the other would leave the count and the flags disagreeing, and the watermarks wrong, with nothing to notice.
+
+**Cause**
+One fact kept in two places needs one owner that writes both. The zone holds the count and knows its frames, so it is that owner; the frame's flag setters take a key so that only the zone, and the two places that mark a frame no zone counts, can write the flag alone. The names are the user's (2026-11-17): `wire()` and `unwire()`, the pair `mm::unwire_frame()` already began, and the word for boot-reserved pages in Zircon's `boot_reserve_wire()`.
+
+**Change**
+
+```cpp
+auto PmZone::wire(PmFrame &frame) -> void {          // bring-up
+    frame.mark_reserved(WireKey{});
+    m_reserved_frames += 1;
+}
+auto PmZone::unwire(PmFrame &frame) -> void {        // mm::unwire_frame()
+    frame.clear_reserved(WireKey{});
+    m_reserved_frames -= 1;
+}
+
+// stamp_reserved_frames(): through the zone where there is one
+if (zone != nullptr) { zone->wire(*frame); } else { frame->mark_reserved(priv::MemmapInit::wire_key()); }
+```
+
+Every frame is marked and counted exactly as before: a hole is marked and never counted, a reservation on a node with no zone of its type is marked and not counted, and the rest are both.
+
+**Reference**
+Zircon `boot_reserve_wire()` (`kernel/vm/bootreserve.cc`) marks the boot-reserved ranges' pages wired; Linux keeps the equivalent as `PageReserved()` on the page and `zone->managed_pages` counted apart (`adjust_managed_page_count()`, `free_reserved_page()`), the two written together by its helpers.
+
+**Verification**
+On the tree that holds this and the change before, in the `feat/pmm-redesign` worktree: `verify` on the default and the four-node machine, dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. `ktest all`: default 100 ran, 84 passed, 16 skipped; four nodes 100 ran, 96 passed, 4 skipped; failure-injection build 100 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. At 8 GiB the zones' floors hold 14682 frames, as before this change, so every zone's managed count, which the floors are worked out from, is unchanged. clang-tidy reports nothing in `memmap_init.cpp` or `pmm.cpp`. A narrow pre-commit review found the comments of `mark_reserved()` and `clear_reserved()` naming only holes as marked but uncounted and only the zone as the way off the books (both now name the zone-less reservation too); refuted: that `wire()` and `unwire()` should take a key themselves (they keep the flag and the count together, which is the invariant; who calls them is bring-up and `mm::unwire_frame()` alone, and nothing outside could desynchronise the books through them).
+
+**Deliberately not done**
+Renaming the flag and the count to "wired": the fact is "held since boot", which `Reserved` names; `wire` and `unwire` are the acts of putting a frame on and off those books.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 8 and 13, decided by the user on 2026-11-17 (option A, named by the user).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which two records make a frame reserved, and what goes wrong if they disagree?
+- Why is the zone the owner, and why do two other places still hold a key to the flag?
+- Why do `wire()` and `unwire()` not need a key of their own?

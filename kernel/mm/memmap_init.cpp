@@ -12,6 +12,20 @@
 #include <ustl/mem/align.hpp>
 
 namespace ours::mm {
+namespace priv {
+    /// Bring-up's door to a frame's Reserved flag (WireKey), for what it
+    /// marks with no zone to count it in: a hole, and a reservation on a node
+    /// with no zone of the frame's type. A present frame of a zone is wired
+    /// through the zone (PmZone::wire()), which counts it as it marks it.
+    class MemmapInit final {
+      public:
+        [[nodiscard]]
+        static auto wire_key() -> WireKey {
+            return WireKey{};
+        }
+    };
+} // namespace priv
+
 namespace {
     /// The frames in a hole. They get a descriptor too -- marked reserved, so
     /// nothing hands them out -- because a pfn inside a zone's span has to
@@ -28,7 +42,7 @@ namespace {
 
             auto frame = pfn_to_frame(pfn);
             frame->init(ztype, pfn_to_secnum(pfn), nid);
-            frame->mark_reserved();
+            frame->mark_reserved(priv::MemmapInit::wire_key());
         }
     }
 
@@ -154,17 +168,23 @@ namespace {
                     continue;
                 }
 
-                frame->mark_reserved();
+                // Wired through its zone, which marks it and counts it in one
+                // call; marked alone where there is no zone to count it in.
+                auto *const node = find_node(frame->nid());
+                PmZone *zone = nullptr;
+                if (node != nullptr) {
+                    zone = PmZone::at(frame->nid(), frame->zone());
+                }
+                if (zone != nullptr) {
+                    zone->wire(*frame);
+                } else {
+                    frame->mark_reserved(priv::MemmapInit::wire_key());
+                }
                 if (role != page::Role::None) {
                     frame->stamp_role(role);
                 }
-
-                auto *const node = find_node(frame->nid());
                 if (node == nullptr) {
                     continue;
-                }
-                if (auto *const zone = PmZone::at(frame->nid(), frame->zone())) {
-                    zone->add_reserved_frames(1);
                 }
                 frames_by_type[usize(reservation.type)] += 1;
             }
