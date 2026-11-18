@@ -8,6 +8,7 @@
 #include <ours/mm/pm_frame.hpp>
 #include <ours/mm/priv/admission.hpp>
 #include <ours/mm/priv/frame_buddy.hpp>
+#include <ours/mm/priv/layer_keys.hpp>
 #include <ours/node_mask.hpp>
 #include <ours/sync/spin_lock.hpp>
 
@@ -123,9 +124,10 @@ class PmZone {
     /// The zone's layer of mm::alloc_frames(): takes a block of 2^|order|
     /// frames out of this zone's stock under the zone lock, or none if the
     /// zone cannot serve it. It chooses nothing and prepares nothing: which
-    /// zone to ask is the node's decision, and zeroing is the caller's.
+    /// zone to ask is the node's decision, and zeroing is the caller's. The
+    /// node's walk, and tests, hold the key (ZoneLayerKey).
     [[nodiscard]]
-    auto alloc_frames(usize order) -> ustl::Option<PmFrame &>;
+    auto alloc_frames(usize order, ZoneLayerKey) -> ustl::Option<PmFrame &>;
 
     /// The zone's layer of mm::free_frames(): puts a block this zone owns
     /// back into its stock under the zone lock. How much is the block's to
@@ -138,7 +140,7 @@ class PmZone {
     /// below the allocation pipeline, a test giving back what it took from
     /// the zone directly, may ignore it.
     [[nodiscard]]
-    auto free_frames(PmFrame &frame) -> bool;
+    auto free_frames(PmFrame &frame, ZoneLayerKey) -> bool;
 
     /// Takes the frames [|start|, |end|) of this zone that were never a
     /// block -- memory the boot handoff gives the allocator, memory the
@@ -148,7 +150,20 @@ class PmZone {
     /// Low, each as free_frames() would: allocations between two blocks can
     /// take the zone back below, so one range can cross more than once.
     [[nodiscard]]
-    auto adopt(Pfn start, Pfn end) -> usize;
+    auto adopt(Pfn start, Pfn end, ZoneLayerKey) -> usize;
+
+    /// Works out how many frames the machine holds back from allocation and
+    /// gives every zone its share of it as three watermarks, then every
+    /// zone's reserve against the zones above it on its node. The zone
+    /// table's, like create_all() and for_each(): it touches every zone and
+    /// no node.
+    ///
+    /// Later than create_all(), because it needs numbers that cannot exist
+    /// then: a zone's managed total is what is present minus what the boot
+    /// allocator took, and the reservations are only counted once
+    /// init_memmap() has walked them. Called from init_pmm() after the
+    /// handoff, with nothing else running.
+    static auto setup_all_watermarks() -> void;
 
     /// How many frames this zone could hand out right now, counted out of the
     /// buddy's free lists under the zone lock.
@@ -248,28 +263,26 @@ class PmZone {
         return m_reserved_frames;
     }
 
-    /// Records |count| frames of this zone as taken before the buddy existed.
-    ///
-    /// Only init_memmap() calls this, single-threaded, once per reserved range.
-    /// It exists because m_reserved_frames had no writer at all: the field is
-    /// documented as the difference between present and managed frames, and
-    /// PmNode::dump() printed it, but every zone reported zero however much
-    /// early memory it had lost.
-    FORCE_INLINE
-    auto add_reserved_frames(usize const count) -> void {
-        m_reserved_frames += count;
+    /// Wires |frame|, a present frame of this zone taken before the buddy
+    /// existed, into the reserved books: marks it Reserved and counts it in
+    /// reserved_frames(), which managed_frames() and so the watermarks are
+    /// worked out from. One call for the two, so that the flag and the count
+    /// cannot disagree. Bring-up's alone (stamp_reserved_frames()),
+    /// single-threaded.
+    auto wire(PmFrame &frame) -> void {
+        frame.mark_reserved(WireKey{});
+        m_reserved_frames += 1;
     }
 
-    /// Gives back |count| reserved frames that are reserved no more
-    /// (unwire_frame()): the kernel's `.init*` sections once boot is done, and
-    /// the boot image's frames once userboot has them. The subtraction is
-    /// atomic, like the addition; the check before it is not, which is enough
-    /// for frames that each have one owner unwiring them, and for a count only
-    /// diagnostics read.
-    FORCE_INLINE
-    auto sub_reserved_frames(usize const count) -> void {
-        DEBUG_ASSERT(count <= m_reserved_frames, "more reserved frames released than recorded");
-        m_reserved_frames -= count;
+    /// Takes |frame| off the reserved books, the flag and the count together:
+    /// the kernel's `.init*` sections once boot is done, the boot image's
+    /// frames once userboot has them (mm::unwire_frame()). The subtraction is
+    /// atomic; the check before it is not, which is enough for frames that
+    /// each have one owner unwiring them.
+    auto unwire(PmFrame &frame) -> void {
+        DEBUG_ASSERT(m_reserved_frames != 0, "more reserved frames unwired than were wired");
+        frame.clear_reserved(WireKey{});
+        m_reserved_frames -= 1;
     }
 
     FORCE_INLINE
@@ -285,14 +298,23 @@ class PmZone {
     /// How many frames this zone's free count has to stay at or above for an
     /// allocation held to |mark| to be admitted.
     ///
-    /// Zero until PmNode::setup_watermarks() has run, and zero admits
+    /// Zero until setup_all_watermarks() has run, and zero admits
     /// everything -- which is what every zone looks like for the whole of
     /// bring-up, on purpose: there is nothing to hold memory back for before
     /// the allocator is serving anyone.
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto watermark(Watermark const mark) const -> usize {
-        return m_watermarks[std::to_underlying(mark)];
+        switch (mark) {
+            case Watermark::Min:
+                return m_watermarks.min;
+            case Watermark::Low:
+                return m_watermarks.low;
+            case Watermark::High:
+            case Watermark::Count:
+                break;
+        }
+        return m_watermarks.high;
     }
 
     /// Whether |order| frames can come out of this zone without taking its
@@ -325,15 +347,14 @@ class PmZone {
     FORCE_INLINE
     auto admits(usize const order, AdmissionPass const pass, bool const can_block,
                 ZoneType const highest) const -> bool {
-        auto const floor =
-            admission_floor(watermark(Watermark::Min), watermark(Watermark::Low), pass, can_block);
+        auto const floor = m_watermarks.floor(pass, can_block);
         return mm::admits(num_free_frames(), order, floor + lowmem_reserve(highest));
     }
 
     /// The frames of this zone held back from a request whose highest
     /// allowed zone type is |highest|: a share of what the zones above this
     /// one on the same node manage, up to |highest| (mm::lowmem_reserve()).
-    /// Zero until PmNode::setup_watermarks() has run, and for a |highest| at
+    /// Zero until setup_all_watermarks() has run, and for a |highest| at
     /// or below this zone's own type.
     [[nodiscard]]
     FORCE_INLINE
@@ -380,20 +401,18 @@ class PmZone {
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
-    friend class PmNode;
-
     /// Scales this zone's three watermarks out of the machine-wide reserve.
     ///
     /// |reserve_frames| is how many frames the machine holds back altogether
     /// and |managed_total| how many every zone manages between them, so this
     /// zone takes the share of the reserve that matches its share of the
-    /// memory. Called once, by PmNode::setup_watermarks(), while no CPU is
+    /// memory. Called once, by setup_all_watermarks(), while no CPU is
     /// allocating.
     auto setup_watermarks(usize reserve_frames, usize managed_total) -> void;
 
     /// Works out this zone's reserve against every highest zone type a
     /// request may allow, from the managed frames of the zones above it on
-    /// its node. Called once, by PmNode::setup_watermarks(), after every
+    /// its node. Called once, by setup_all_watermarks(), after every
     /// zone's managed count is final and while no CPU is allocating.
     auto setup_lowmem_reserve() -> void;
 
@@ -406,6 +425,11 @@ class PmZone {
     gktl::Canary m_canary;
     char const *m_name;
     NodeId m_nid;
+
+    /// The zone's state facts: set up (Initialized, set by the constructor),
+    /// and a span with no hole (Contiguous, which nothing sets yet), for
+    /// compaction and contiguous allocation to ask. Nothing reads them yet.
+    [[maybe_unused]]
     Flags m_flags;
 
     sync::SpinLock m_lock;
@@ -426,7 +450,7 @@ class PmZone {
 
     std::atomic<usize> m_reserved_frames;
 
-    std::array<usize, std::to_underlying(Watermark::Count)> m_watermarks;
+    Watermarks m_watermarks;
 
     /// By the highest zone type a request allows. Written once, by
     /// setup_lowmem_reserve(), and read without the zone lock after.

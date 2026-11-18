@@ -272,7 +272,7 @@ class AnonymousPageRequest {
 
     [[nodiscard]]
     auto is_active() const -> bool {
-        return m_active;
+        return m_state == State::Raised;
     }
 
     /// Sleeps, with no lock held, until the PMM hands out a frame, and keeps
@@ -284,22 +284,40 @@ class AnonymousPageRequest {
 
     [[nodiscard]]
     auto has_frame() const -> bool {
-        return m_frame != nullptr;
+        return m_state == State::Holding;
     }
 
     /// The frame the wait got, for the retried call to use, and the request
-    /// no longer holds it.
+    /// no longer holds it; null when it holds none.
     [[nodiscard]]
     auto take_frame() -> PmFrame * {
-        auto *const frame = m_frame;
-        m_frame = nullptr;
-        return frame;
+        if (m_state != State::Holding) {
+            return nullptr;
+        }
+        m_state = State::Idle;
+        return m_frame;
     }
 
   private:
-    bool m_active = false;
-    Gaf m_alloc_flags = Gaf{};
-    PmFrame *m_frame = nullptr;
+    /// Where the request is, as one value: nothing raised; raised for an
+    /// allocation with m_alloc_flags (make_active()); or holding the frame a
+    /// wait got, m_frame (allocate()). The two payloads share their storage,
+    /// so a request cannot be raised and holding a frame at once, which three
+    /// separate fields allowed.
+    enum class State : u8 {
+        Idle,
+        Raised,
+        Holding,
+    };
+
+    State m_state = State::Idle;
+    union {
+        /// In Raised: the flags of the allocation that was turned away.
+        Gaf m_alloc_flags = Gaf{};
+
+        /// In Holding: the frame the wait got.
+        PmFrame *m_frame;
+    };
 };
 
 /// A bundle of the typed sub-requests one page fault may need to raise: the

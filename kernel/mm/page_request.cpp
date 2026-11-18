@@ -60,21 +60,23 @@ auto PageRequest::wait(bool const suspendable) -> Status {
 }
 
 AnonymousPageRequest::~AnonymousPageRequest() {
-    if (m_frame) {
+    if (m_state == State::Holding) {
         free_frames(m_frame);
     }
 }
 
 auto AnonymousPageRequest::make_active(Gaf const alloc_flags) -> void {
-    DEBUG_ASSERT(!m_frame, "raised while it still holds the frame of the last wait");
+    DEBUG_ASSERT(m_state != State::Holding,
+                 "raised while it still holds the frame of the last wait");
     DEBUG_ASSERT(!!(alloc_flags & Gaf::CanWait), "raised for an allocation that cannot wait");
-    m_active = true;
+    m_state = State::Raised;
     m_alloc_flags = alloc_flags;
 }
 
 auto AnonymousPageRequest::allocate(task::Interruptible const interruptible) -> Status {
-    DEBUG_ASSERT(m_active, "waited on a request that was never raised");
-    m_active = false;
+    DEBUG_ASSERT(m_state == State::Raised, "waited on a request that was never raised");
+    auto const alloc_flags = m_alloc_flags;
+    m_state = State::Idle;
 
     // A wait this long means nobody is opening the gate: reported, so that a
     // stuck watcher shows in the log rather than as a silent hang. Not given
@@ -84,9 +86,10 @@ auto AnonymousPageRequest::allocate(task::Interruptible const interruptible) -> 
     while (true) {
         auto const deadline =
             time::Deadline::at(time::SteadyClock::now() + Seconds(REPORT_EVERY_SECONDS));
-        auto result = wait_for_frame_allocation(m_alloc_flags, deadline, interruptible);
+        auto result = wait_for_frame_allocation(alloc_flags, deadline, interruptible);
         if (result) {
             m_frame = *result;
+            m_state = State::Holding;
             return Status::Ok;
         }
         auto const status = result.unwrap_err();

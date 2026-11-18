@@ -42,6 +42,54 @@ namespace {
     /// allocations start being turned away at Low.
     constexpr auto WATERMARK_SCALE = usize(10);
     constexpr auto WATERMARK_SCALE_UNIT = usize(10000);
+
+    /// floor(sqrt(value)), one bit of the answer at a time, highest first.
+    ///
+    /// Here because the machine-wide reserve grows with the square root of
+    /// memory rather than in proportion to it. A fixed fraction that is right
+    /// on a small machine holds back gigabytes on a large one, and how much
+    /// has to stay free for the kernel to make progress simply does not grow
+    /// linearly with how much there is.
+    auto isqrt(usize value) -> usize {
+        if (value <= 1) {
+            return value;
+        }
+
+        // The highest even bit position at or below the top set bit: the
+        // answer's top bit cannot sit higher than half of that.
+        auto bit = usize{1} << ((ustl::bit_width(value) - 1) & ~usize{1});
+        auto result = usize{0};
+        while (bit != 0) {
+            auto const probe = result + bit;
+            result >>= 1;
+            if (value >= probe) {
+                value -= probe;
+                result += bit;
+            }
+            bit >>= 2;
+        }
+        return result;
+    }
+
+    /// How many frames the whole machine holds back from allocation, which the
+    /// zones then divide between them as their Min watermarks.
+    ///
+    /// Four times the square root of the memory in KiB, clamped at both ends,
+    /// converted back into frames. The clamps are what make the curve usable
+    /// rather than merely monotonic: without the lower one a small machine
+    /// reserves so little that the kernel cannot allocate its way out of
+    /// trouble, and without the upper one a very large machine reserves
+    /// hundreds of megabytes it will never need at once.
+    auto machine_reserve_frames(usize const managed_total) -> usize {
+        constexpr auto KIB_PER_FRAME = usize(PAGE_SIZE / 1024);
+        constexpr auto MIN_RESERVE_KIB = usize(128);
+        constexpr auto MAX_RESERVE_KIB = usize(256 * 1024);
+
+        auto const managed_kib = managed_total * KIB_PER_FRAME;
+        auto const reserve_kib =
+            std::clamp(isqrt(managed_kib * 16), MIN_RESERVE_KIB, MAX_RESERVE_KIB);
+        return reserve_kib / KIB_PER_FRAME;
+    }
 } // namespace
 
 PmZone::PmZone(NodeId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize present_frames)
@@ -132,6 +180,29 @@ auto PmZone::create_all(ustl::views::Span<Pfn> const max_zone_pfn, NodeMask cons
     });
 }
 
+auto PmZone::setup_all_watermarks() -> void {
+    // Every zone's managed total, summed, is the denominator each zone's share
+    // is taken out of.
+    usize managed_total = 0;
+    PmZone::for_each([&managed_total](PmZone &zone) { managed_total += zone.managed_frames(); });
+
+    if (managed_total == 0) {
+        // The division in setup_watermarks() would be by zero. PmNode::bootstrap()
+        // already refuses a machine whose nodes own no usable memory, so this
+        // is the second belt rather than the first.
+        return;
+    }
+
+    auto const reserve_frames = machine_reserve_frames(managed_total);
+    PmZone::for_each([reserve_frames, managed_total](PmZone &zone) {
+        zone.setup_watermarks(reserve_frames, managed_total);
+    });
+    // After every zone's watermarks, though it reads only managed counts:
+    // those are final once the reservations are counted, which is what this
+    // function already waits for.
+    PmZone::for_each([](PmZone &zone) { zone.setup_lowmem_reserve(); });
+}
+
 auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_total) -> void {
     DEBUG_ASSERT(managed_total != 0, "no zone manages a single frame");
 
@@ -152,9 +223,7 @@ auto PmZone::setup_watermarks(usize const reserve_frames, usize const managed_to
     // Low. The fraction of the zone is what keeps the band usable there.
     auto const delta = std::max(min >> 2, managed * WATERMARK_SCALE / WATERMARK_SCALE_UNIT);
 
-    m_watermarks[std::to_underlying(Watermark::Min)] = min;
-    m_watermarks[std::to_underlying(Watermark::Low)] = min + delta;
-    m_watermarks[std::to_underlying(Watermark::High)] = min + delta + delta;
+    m_watermarks = Watermarks{.min = min, .low = min + delta, .high = min + delta + delta};
 
     // One line, and a short one on purpose. logz4 hands std::vformat_to a
     // bounded output iterator, and libc++ gives up on its own 256-byte buffer
@@ -189,7 +258,7 @@ auto PmZone::setup_lowmem_reserve() -> void {
               m_lowmem_reserve[std::to_underlying(ZoneType::Normal)]);
 }
 
-auto PmZone::alloc_frames(usize order) -> ustl::Option<PmFrame &> {
+auto PmZone::alloc_frames(usize order, ZoneLayerKey) -> ustl::Option<PmFrame &> {
     // Admission is the pipeline's, before it comes here (admits()); the zone
     // only hands out what its buddy has. A per-CPU cache would answer first,
     // in front of the buddy, once it is built (MAX_PCPU_CACHE_ORDER).
@@ -246,7 +315,7 @@ auto PmZone::contains(usize order) -> bool {
     return false;
 }
 
-auto PmZone::free_frames(PmFrame &frame) -> bool {
+auto PmZone::free_frames(PmFrame &frame, ZoneLayerKey) -> bool {
     auto const order = frame.order();
     auto const count = usize{1} << order;
 
@@ -272,7 +341,7 @@ auto PmZone::free_frames(PmFrame &frame) -> bool {
     return !mm::admits(before, 0, floor) && mm::admits(before + count, 0, floor);
 }
 
-auto PmZone::adopt(Pfn start, Pfn const end) -> usize {
+auto PmZone::adopt(Pfn start, Pfn const end, ZoneLayerKey) -> usize {
     DEBUG_ASSERT(start_pfn() <= start && start <= end && end <= end_pfn(),
                  "[{:#x}, {:#x}) is not within zone {}'s span [{:#x}, {:#x})", start, end, m_name,
                  start_pfn(), end_pfn());

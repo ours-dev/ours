@@ -55,54 +55,6 @@ namespace {
     /// MAX_NODES is 1, where each row has capacity zero.
     numa::FallbackOrders FALLBACK_ORDERS;
 
-    /// floor(sqrt(value)), one bit of the answer at a time, highest first.
-    ///
-    /// Here because the machine-wide reserve grows with the square root of
-    /// memory rather than in proportion to it. A fixed fraction that is right
-    /// on a small machine holds back gigabytes on a large one, and how much
-    /// has to stay free for the kernel to make progress simply does not grow
-    /// linearly with how much there is.
-    auto isqrt(usize value) -> usize {
-        if (value <= 1) {
-            return value;
-        }
-
-        // The highest even bit position at or below the top set bit: the
-        // answer's top bit cannot sit higher than half of that.
-        auto bit = usize{1} << ((ustl::bit_width(value) - 1) & ~usize{1});
-        auto result = usize{0};
-        while (bit != 0) {
-            auto const probe = result + bit;
-            result >>= 1;
-            if (value >= probe) {
-                value -= probe;
-                result += bit;
-            }
-            bit >>= 2;
-        }
-        return result;
-    }
-
-    /// How many frames the whole machine holds back from allocation, which the
-    /// zones then divide between them as their Min watermarks.
-    ///
-    /// Four times the square root of the memory in KiB, clamped at both ends,
-    /// converted back into frames. The clamps are what make the curve usable
-    /// rather than merely monotonic: without the lower one a small machine
-    /// reserves so little that the kernel cannot allocate its way out of
-    /// trouble, and without the upper one a very large machine reserves
-    /// hundreds of megabytes it will never need at once.
-    auto machine_reserve_frames(usize const managed_total) -> usize {
-        constexpr auto KIB_PER_FRAME = usize(PAGE_SIZE / 1024);
-        constexpr auto MIN_RESERVE_KIB = usize(128);
-        constexpr auto MAX_RESERVE_KIB = usize(256 * 1024);
-
-        auto const managed_kib = managed_total * KIB_PER_FRAME;
-        auto const reserve_kib =
-            std::clamp(isqrt(managed_kib * 16), MIN_RESERVE_KIB, MAX_RESERVE_KIB);
-        return reserve_kib / KIB_PER_FRAME;
-    }
-
     auto dump_fallback_queues(NodeMask const &nodes) -> void {
         nodes.for_each([](NodeId const nid) { find_node(nid)->zone_list().dump_fallback(); });
     }
@@ -225,29 +177,6 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
     return Status::Ok;
 }
 
-auto PmNode::setup_watermarks() -> void {
-    // Every zone's managed total, summed, is the denominator each zone's share
-    // is taken out of.
-    usize managed_total = 0;
-    PmZone::for_each([&managed_total](PmZone &zone) { managed_total += zone.managed_frames(); });
-
-    if (managed_total == 0) {
-        // The division in setup_watermarks() would be by zero. bootstrap()
-        // already refuses a machine whose nodes own no usable memory, so this
-        // is the second belt rather than the first.
-        return;
-    }
-
-    auto const reserve_frames = machine_reserve_frames(managed_total);
-    PmZone::for_each([reserve_frames, managed_total](PmZone &zone) {
-        zone.setup_watermarks(reserve_frames, managed_total);
-    });
-    // After every zone's watermarks, though it reads only managed counts:
-    // those are final once the reservations are counted, which is what this
-    // function already waits for.
-    PmZone::for_each([](PmZone &zone) { zone.setup_lowmem_reserve(); });
-}
-
 /// Creates and registers a PmNode for every node in |nodes|.
 ///
 /// A step of its own, ahead of init(), because the steps after it reach across
@@ -285,10 +214,11 @@ auto PmNode::init() -> Status {
     m_start_pfn = node_start_pfn;
     m_spanned_frames = node_end_pfn - node_start_pfn;
 
+    // Online first: a node owns memory only once it is up (node_table.hpp).
+    set_node_state(m_id, NodeState::Online);
     if (m_spanned_frames != 0) {
         set_node_state(m_id, NodeState::Memory);
     }
-    set_node_state(m_id, NodeState::Online);
 
     for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
         join_hard_affinity(cpu, CpuPlacementKey{});

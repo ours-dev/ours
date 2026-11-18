@@ -180,19 +180,19 @@ The kernel still tears down sealed mappings during address-space destruction.
   request at Warning and Critical, served on its own thread, and a synchronous
   `reclaim()` on the watchdog's thread at OutOfMemory, before anything is
   refused. Zero pages go before pager pages. The target is the distance to the
-  upper edge of the pressure's bounds. One walk at a time, on
-  `m_reclaim_lock`, which `request()` does not take (2026-11-01): OutOfMemory
-  waits out a walk already running, then walks itself, because the walk it
-  waited for was asked the Warning or Critical distance. That walk calls
-  `take()` first and drops the result, so an ask the thread has not taken
-  is not walked afterwards (2026-11-01). Two asks still waiting keep the
-  larger. The watchdog is built holding that reclaimer; `look()` does not
-  call `get()`. A test's
-  `Hold` is a `Guard` on the watchdog mutex, dropped before the wake, so
-  lockdep sees the hold. `look()` drops `m_lock` for the OutOfMemory walk
-  and reads the levels again before it declares (2026-11-02): the walk
-  sleeps, and the mutex guards the levels and the declaration.
-  `MemoryPressureLevels::make()` is the only builder of a nested value.
+  upper edge of the pressure's bounds. One walk at a time, on `m_reclaim_lock`,
+  which `request()` does not take (2026-11-01): OutOfMemory waits out a walk
+  already running, then walks itself, because the walk it waited for was asked
+  the Warning or Critical distance. That walk is `reclaim_superseding()`, which
+  drops the ask the thread has not taken before it walks, so that ask is not
+  walked afterwards (2026-11-01; the reclaimer's own entry since 2026-11-17,
+  `take()` private). Two asks still waiting keep the larger. The watchdog is
+  built holding that reclaimer; `look()` does not call `get()`. A test's `Hold`
+  is a `Guard` on the watchdog mutex, dropped before the wake, so lockdep sees
+  the hold. `look()` drops `m_lock` for the OutOfMemory walk and reads the
+  levels again before it declares (2026-11-02): the walk sleeps, and the mutex
+  guards the levels and the declaration. `MemoryPressureLevels::make()` is the
+  only builder of a nested value.
 - The boot levels are raised so that the delay level sits above
   `zone_floor_frame_count()`, every zone's Low floor for an ordinary
   request capped at its present frames, summed (`covering()`, the user's
@@ -309,9 +309,26 @@ a step is in, the code still has the shape described above.
   it.
 - The layers under the seam carry the seam's names (the user's, 2026-11-10):
   `PmNode::alloc_frames()` and `free_frames()`, `PmZone::alloc_frames()` and
-  `free_frames()`, private and reached through `friend`. These replace
-  `take_block()` and `return_block()`; access says which layer is the entry,
-  so the name need not.
+  `free_frames()`. These replace `take_block()` and `return_block()`; access
+  says which layer is the entry, so the name need not. They are sealed with
+  passkeys (review items 25 and 40, the user's choice of 2026-11-17,
+  `ours/mm/priv/layer_keys.hpp`): the node layer's pair takes a
+  `NodeLayerKey` only the pipeline (`priv::Pipeline`, defined in `pmm.cpp`)
+  makes, and the zone layer's pair and `adopt()` take a `ZoneLayerKey` only
+  `PmNode` and the pipeline make. A friend would open every private member;
+  a key opens the calls. Kernel tests have their own door,
+  `ours/mm/test/layer_keys.hpp`, which nothing else includes.
+  `PmZone::admits()` stays a public query. The watermark setup is
+  `PmZone::setup_all_watermarks()`, a static of the zone table beside
+  `create_all()` that needs no key; the per-zone steps are private.
+- The PMM calls up to one service, the reclaimer, through its singleton
+  (`observe_pressure()` calls `MemoryReclaimer::request(zone)`); the watchdog is
+  handed down as an event (`set_free_memory_signal()`). The asymmetry is kept on
+  purpose (review minor item 29, 2026-11-17): the reclaimer drops a report while
+  a Pause lives, before it marks (`request(zone)`), and a mark made under the
+  PMM would no longer be dropped, but kept and taken after the Pause. Waiters
+  for a frame are `FrameWaiters`, not the gate's: the gate admits and signals
+  the watcher, and wakes one waiter when it is armed again.
 - The public PMM interface takes primitive parameters, as Linux's
   `alloc_pages()` and Zircon's `pmm_alloc_page()` do: a `Gaf`, an order or a
   count, a node id. Never a compound structure as a parameter; the user

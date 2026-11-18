@@ -50,6 +50,7 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/test/layer_keys.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -708,7 +709,7 @@ namespace {
         mm::PmFrame::List held;
         mm::find_node(remote)->zone_list().for_each_local_zone([&held](mm::PmZone &zone) {
             for (usize order = MAX_FRAME_ORDER + 1; order != 0; --order) {
-                while (auto block = zone.alloc_frames(order - 1)) {
+                while (auto block = zone.alloc_frames(order - 1, mm::test::LayerKeys::zone())) {
                     held.push_back(block.value());
                 }
             }
@@ -734,7 +735,7 @@ namespace {
                     if (retried) {
                         return;
                     }
-                    if (auto block = zone.alloc_frames(0)) {
+                    if (auto block = zone.alloc_frames(0, mm::test::LayerKeys::zone())) {
                         retried = block.value().nid() == remote;
                         mm::free_frames(&block.value());
                     }

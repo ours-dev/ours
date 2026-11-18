@@ -12,25 +12,28 @@
 #include "smoke_checks.hpp"
 
 namespace {
-using ours::mm::admission_floor;
 using ours::mm::AdmissionPass;
 using ours::mm::admits;
 using ours::mm::lowmem_reserve;
+using ours::mm::Watermarks;
 using ours::mm::test::SmokeChecks;
 
 constexpr auto MIN = usize{689};
 constexpr auto LOW = usize{861};
 
+/// The zone the numbers are from. High is Low plus the band again.
+constexpr auto ZONE = Watermarks{.min = MIN, .low = LOW, .high = LOW + (LOW - MIN)};
+
 auto floors(SmokeChecks &checks) -> void {
-    checks.check(admission_floor(MIN, LOW, AdmissionPass::Low, true) == LOW &&
-                     admission_floor(MIN, LOW, AdmissionPass::Low, false) == LOW,
+    checks.check(ZONE.floor(AdmissionPass::Low, true) == LOW &&
+                     ZONE.floor(AdmissionPass::Low, false) == LOW,
                  "the first pass holds every request at Low");
-    checks.check(admission_floor(MIN, LOW, AdmissionPass::Min, true) == MIN,
+    checks.check(ZONE.floor(AdmissionPass::Min, true) == MIN,
                  "the second pass lets a request that may block down to Min");
-    checks.check(admission_floor(MIN, LOW, AdmissionPass::Min, false) == MIN - MIN / 4,
+    checks.check(ZONE.floor(AdmissionPass::Min, false) == MIN - MIN / 4,
                  "the second pass lets a request that cannot block a quarter below Min");
-    checks.check(admission_floor(0, 0, AdmissionPass::Low, true) == 0 &&
-                     admission_floor(0, 0, AdmissionPass::Min, false) == 0,
+    checks.check(Watermarks{}.floor(AdmissionPass::Low, true) == 0 &&
+                     Watermarks{}.floor(AdmissionPass::Min, false) == 0,
                  "with no watermarks set yet, nothing is held back");
 }
 
@@ -48,15 +51,15 @@ auto counts(SmokeChecks &checks) -> void {
 /// count falling, the request an ordinary one that may block.
 auto walk_down(SmokeChecks &checks) -> void {
     auto const first = [](usize const free) {
-        return admits(free, 0, admission_floor(MIN, LOW, AdmissionPass::Low, true));
+        return admits(free, 0, ZONE.floor(AdmissionPass::Low, true));
     };
     auto const second = [](usize const free) {
-        return admits(free, 0, admission_floor(MIN, LOW, AdmissionPass::Min, true));
+        return admits(free, 0, ZONE.floor(AdmissionPass::Min, true));
     };
     checks.check(first(900), "at 900 free the first pass admits");
     checks.check(!first(800) && second(800), "at 800 the first pass refuses and the second admits");
     checks.check(!first(MIN) && !second(MIN), "at Min both passes refuse a request that may block");
-    checks.check(admits(MIN, 0, admission_floor(MIN, LOW, AdmissionPass::Min, false)),
+    checks.check(admits(MIN, 0, ZONE.floor(AdmissionPass::Min, false)),
                  "at Min a request that cannot block is still admitted");
 }
 

@@ -7,6 +7,16 @@
 /// working on it; which domains there are, and which of them are online or own
 /// memory, is a fact about all of them, so it lives here at file scope behind
 /// free functions and not as static members of PmNode.
+///
+/// What the table keeps true, asserted where it is written:
+///   - a node is registered once, and never removed;
+///   - Online and Memory are given only to a registered node, and Memory only
+///     to one already Online, so that every node in either mask is one
+///     find_node() answers for and for_each_node() can walk;
+///   - Possible is the firmware's and the boot memory map's, given before any
+///     node exists, and needs none.
+/// Nothing changes a state once bring-up is done; that one is not asserted,
+/// since nothing marks the end of bring-up.
 #ifndef OURS_MM_NODE_TABLE_HPP
 #define OURS_MM_NODE_TABLE_HPP 1
 
@@ -51,7 +61,8 @@ auto node_mask(NodeState state) -> NodeMask const &;
 
 /// Puts node |nid| in |state|, or takes it out. Bring-up and the firmware
 /// parse (SRAT) call it, before any node is used; nothing changes a state
-/// after bring-up today.
+/// after bring-up today. Online and Memory need a registered node, and Memory
+/// one already Online (asserted).
 auto set_node_state(NodeId nid, NodeState state, bool on = true) -> void;
 
 /// How many nodes were brought up.

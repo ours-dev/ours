@@ -26,25 +26,34 @@ enum class AdmissionPass : u8 {
     Min,
 };
 
-/// The frames a zone keeps back from a request in |pass|: it may not take the
-/// zone's free count below this. |min| and |low| are the zone's watermarks;
-/// |can_block| is whether the caller's context permits blocking.
-///
-/// A caller that cannot block gets the deeper floor because it has nothing
-/// else to do: it cannot wait for memory to come back. One that can block is
-/// stopped first, so that the band below Min is left to the callers that have
-/// no alternative.
-[[nodiscard]]
-constexpr auto admission_floor(usize const min, usize const low, AdmissionPass const pass,
-                               bool const can_block) -> usize {
-    if (pass == AdmissionPass::Low) {
-        return low;
+/// A zone's three watermarks, in frames: Min, the floor; Low, where reclaim is
+/// woken and the first pass stops; High, where reclaim stops. One value with
+/// named fields, so that the two an admission reads cannot be handed over the
+/// wrong way round, as two adjacent counts of one type could.
+struct Watermarks {
+    usize min = 0;
+    usize low = 0;
+    usize high = 0;
+
+    /// The frames the zone keeps back from a request in |pass|: it may not
+    /// take the zone's free count below this. |can_block| is whether the
+    /// caller's context permits blocking.
+    ///
+    /// A caller that cannot block gets the deeper floor because it has nothing
+    /// else to do: it cannot wait for memory to come back. One that can block
+    /// is stopped first, so that the band below Min is left to the callers
+    /// that have no alternative.
+    [[nodiscard]]
+    constexpr auto floor(AdmissionPass const pass, bool const can_block) const -> usize {
+        if (pass == AdmissionPass::Low) {
+            return low;
+        }
+        if (can_block) {
+            return min;
+        }
+        return min - min / 4;
     }
-    if (can_block) {
-        return min;
-    }
-    return min - min / 4;
-}
+};
 
 /// Whether 2^|order| frames can come out of a zone with |free| free frames and
 /// leave at least |floor|.

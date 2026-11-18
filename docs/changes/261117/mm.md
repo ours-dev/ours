@@ -235,3 +235,251 @@ None.
 - What ends the wait of a request put off at Low, and what is missing when no watchdog runs?
 - Why is a relaxed read of the delay level enough here?
 - Why does a request allowing Movable not wait at Low, while one allowing up to Normal does?
+
+## The node and zone layers under the pipeline take a passkey (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/layer_keys.hpp` (new) — `NodeLayerKey` (made by `priv::Pipeline` and `test::LayerKeys`) and `ZoneLayerKey` (made by `PmNode`, `priv::Pipeline` and `test::LayerKeys`)
+- `kernel/mm/include/ours/mm/test/layer_keys.hpp` (new) — `test::LayerKeys`, the kernel tests' door
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp`, `kernel/mm/pm_node_init.cpp` — `PmNode::alloc_frames()` and `free_frames()` take a `NodeLayerKey`; the node makes a `ZoneLayerKey` for its walk and for bring-up's watermark setup
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `PmZone::alloc_frames()`, `free_frames()`, `adopt()`, `setup_watermarks()` and `setup_lowmem_reserve()` take a `ZoneLayerKey`; `friend class PmNode` is gone, which showed `m_flags` is read by nothing (kept, marked)
+- `kernel/mm/pmm.cpp` — `priv::Pipeline`, the pipeline's door, and its keys at the four calls down
+- `kernel/tests/pm_zone_test.cpp`, `kernel/tests/pm_node_test.cpp`, `kernel/tests/page_reclaim_test.cpp` — through the test door; `LowZonesKeepAReserve` also checks the reserve through the node's walk
+- `.agents/skills/kernel-design/references/mm.md`, `.agents/tasks/pmm-redesign/DESIGN.md` — the layers' access as built (the reference said "private and reached through friend", which they never were)
+
+**Symptom**
+Latent. The node's and the zone's `alloc_frames()` and `free_frames()` were public, so any caller could go under the pipeline: a block freed straight into a zone skipped `prepare_free()`'s checks (reserved, pinned, not a head), `clear_block()`, the relief wake a waiter at Low depends on, and the pressure observation; a block taken straight from a zone skipped the thread's allocation switch, every floor, zeroing and the counters. Only `pmm.cpp` and the tests did it, by convention.
+
+**Cause**
+"Only the pipeline calls the layers under it" is an invariant over callers, and a public member states the opposite. A friend would state it, but opens every private member of the class to the friend; a passkey, a type only the intended caller can construct, taken as a parameter, opens one function to one caller (review T5). Tests legitimately need to go under: draining a zone below every floor is what the pipeline will not do, so they get a door of their own, named for what it is.
+
+**Change**
+
+```cpp
+class NodeLayerKey {                         // priv/layer_keys.hpp
+    friend class priv::Pipeline;             // defined only in pmm.cpp
+    friend class test::LayerKeys;            // ours/mm/test/layer_keys.hpp
+    NodeLayerKey() = default;
+};
+auto PmNode::alloc_frames(AllocRequest const &, AdmissionPass, NodeLayerKey) -> ...;
+auto PmZone::free_frames(PmFrame &, ZoneLayerKey) -> bool;
+
+// pmm.cpp
+auto block = start->alloc_frames(request, AdmissionPass::Low, priv::Pipeline::node_key());
+// a test
+auto block = zone.alloc_frames(order, mm::test::LayerKeys::zone());
+```
+
+What the keys do not prevent, said in their comments: another file could define its own `priv::Pipeline`, and any file can include the test door. They guard against reaching the layers by mistake, which is the risk, not on purpose. `LowZonesKeepAReserve` now also walks the node with a request that allows nothing above the low zone, which shows the walk asks each zone with the request's own highest type; its refusal half stays a question to the zone, since a request that allows Normal would be served by the zones above.
+
+**Reference**
+None for the keys: a C++ idiom (the passkey). Linux keeps its zone allocator's internals (`rmqueue()`, `__free_one_page()`) `static` to `mm/page_alloc.c`, file scope doing what the keys do across this kernel's files.
+
+**Verification**
+`verify` in the `feat/pmm-redesign` worktree on the default and the four-node machine: dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. `ktest all`: default 100 ran, 84 passed, 16 skipped; four nodes 100 ran, 96 passed, 4 skipped, `LowZonesKeepAReserve` with its new walk check among the passes; failure-injection build 100 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. clang-tidy reports nothing in `pmm.cpp`, `pm_zone.cpp` and `pm_node.cpp`. Control: a test that builds `mm::ZoneLayerKey{}` itself fails to compile ("calling a private constructor of class `ZoneLayerKey`").
+
+A narrow pre-commit review (two reviewers, each finding checked by a second agent; the first attempt lost both to dropped connections and was run again) found two blank lines left where the friend block was removed (one deleted), `PmNode::free_frames()`'s comment putting the waiter's wake before the release when it comes after and depends on its result (corrected), and the new classes not declared `final` (they are now). Refuted: that a public `PmNode::setup_watermarks()` makes the zone's keyed setup pointless (it was the caller before and is still the only one), that another file defining `priv::Pipeline` breaks the seal (said in the comments, and an ODR violation besides), and that the design document's older "target" sentence must go (it keeps its history with a dated note, as the rest of it does).
+
+**Deliberately not done**
+Sealing `PmZone::admits()`, a query with no effect. Removing `m_flags`, a stub for state the zone will need.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 25, 40, 42 and 53, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does a block freed straight into a zone skip, and which of those can leave a thread waiting for ever?
+- What does a passkey open that a friend does not, and what does neither stop?
+- Why do tests need a door under the pipeline at all?
+
+## A frame keeps every rule of its pins with the count (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `PageFrame::pin()` and `unpin()` return `Status` and hold every rule: the head of a free block (`Role::Pmm`) is refused, a full count (255) is refused, an unpin of none is refused
+- `kernel/mm/pmm.cpp` — `mm::pin_frame()` and `unpin_frame()` forward; their documentation keeps the caller's side of the contract (the owner's lock)
+
+**Symptom**
+Latent, from the review's minor list. The rule "a free block's head is pinned by nobody" was checked by `mm::pin_frame()`, the count's limit by `PageFrame::pin()`. `pin()` is public, so a caller going straight to the frame skipped the first rule.
+
+**Cause**
+The frame knows its own role, so "a free frame cannot be pinned" is a fact about the frame, like the limit beside it. Split between the seam and the frame, each half was right and the whole was kept by convention.
+
+**Change**
+
+```cpp
+auto PageFrame::pin() -> Status {
+    if (is_role(Role::Pmm)) { return Status::BadState; }
+    if (m_pins.load(std::memory_order_relaxed) == std::numeric_limits<u8>::max()) { return Status::NoResource; }
+    ...
+    return Status::Ok;
+}
+auto pin_frame(PmFrame *frame) -> Status { return frame->pin(); }   // the contract lives here
+```
+
+The same answers in the same order as before, so callers see no change.
+
+**Reference**
+None: the pin count is this kernel's own (F1 of the redesign).
+
+**Verification**
+Recorded with the next change, on the tree that holds both.
+
+**Deliberately not done**
+Removing `mm::pin_frame()`: it is where the caller's half of the contract, the owner's lock, is written down.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 7, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the free-frame rule belong to the frame rather than to the seam?
+- What does `mm::pin_frame()` still say that the frame cannot?
+- Why can the read and the write of the pin count be two steps?
+
+## The reserved books are wired and unwired by the zone, flag and count together (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — `PmZone::wire(PmFrame &)` marks a frame Reserved and counts it; `unwire(PmFrame &)` clears it and uncounts it; `add_reserved_frames()` and `sub_reserved_frames()` are gone
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `WireKey`; `mark_reserved()` and `clear_reserved()` take it (made by `PmZone`, `priv::MemmapInit` and `priv::Pipeline`)
+- `kernel/mm/memmap_init.cpp` — `priv::MemmapInit`, bring-up's door for holes and for frames with no zone to count them in; `stamp_reserved_frames()` wires through the zone
+- `kernel/mm/pmm.cpp` — `mm::unwire_frame()` unwires through the zone; `priv::Pipeline::wire_key()` for a frame no zone counted
+
+**Symptom**
+Latent, from the review's minor list. A reserved frame is two records: the frame's Reserved flag and one in its zone's reserved count, from which `managed_frames()`, and so every watermark and low-zone reserve, is worked out. Bring-up wrote them with two calls (`mark_reserved()`, then `add_reserved_frames(1)`), and `mm::unwire_frame()` cleared them with two (`clear_reserved()`, then `sub_reserved_frames(1)`). A caller that wrote one and not the other would leave the count and the flags disagreeing, and the watermarks wrong, with nothing to notice.
+
+**Cause**
+One fact kept in two places needs one owner that writes both. The zone holds the count and knows its frames, so it is that owner; the frame's flag setters take a key so that only the zone, and the two places that mark a frame no zone counts, can write the flag alone. The names are the user's (2026-11-17): `wire()` and `unwire()`, the pair `mm::unwire_frame()` already began, and the word for boot-reserved pages in Zircon's `boot_reserve_wire()`.
+
+**Change**
+
+```cpp
+auto PmZone::wire(PmFrame &frame) -> void {          // bring-up
+    frame.mark_reserved(WireKey{});
+    m_reserved_frames += 1;
+}
+auto PmZone::unwire(PmFrame &frame) -> void {        // mm::unwire_frame()
+    frame.clear_reserved(WireKey{});
+    m_reserved_frames -= 1;
+}
+
+// stamp_reserved_frames(): through the zone where there is one
+if (zone != nullptr) { zone->wire(*frame); } else { frame->mark_reserved(priv::MemmapInit::wire_key()); }
+```
+
+Every frame is marked and counted exactly as before: a hole is marked and never counted, a reservation on a node with no zone of its type is marked and not counted, and the rest are both.
+
+**Reference**
+Zircon `boot_reserve_wire()` (`kernel/vm/bootreserve.cc`) marks the boot-reserved ranges' pages wired; Linux keeps the equivalent as `PageReserved()` on the page and `zone->managed_pages` counted apart (`adjust_managed_page_count()`, `free_reserved_page()`), the two written together by its helpers.
+
+**Verification**
+On the tree that holds this and the change before, in the `feat/pmm-redesign` worktree: `verify` on the default and the four-node machine, dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. `ktest all`: default 100 ran, 84 passed, 16 skipped; four nodes 100 ran, 96 passed, 4 skipped; failure-injection build 100 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. At 8 GiB the zones' floors hold 14682 frames, as before this change, so every zone's managed count, which the floors are worked out from, is unchanged. clang-tidy reports nothing in `memmap_init.cpp` or `pmm.cpp`. A narrow pre-commit review found the comments of `mark_reserved()` and `clear_reserved()` naming only holes as marked but uncounted and only the zone as the way off the books (both now name the zone-less reservation too); refuted: that `wire()` and `unwire()` should take a key themselves (they keep the flag and the count together, which is the invariant; who calls them is bring-up and `mm::unwire_frame()` alone, and nothing outside could desynchronise the books through them).
+
+**Deliberately not done**
+Renaming the flag and the count to "wired": the fact is "held since boot", which `Reserved` names; `wire` and `unwire` are the acts of putting a frame on and off those books.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor items 8 and 13, decided by the user on 2026-11-17 (option A, named by the user).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which two records make a frame reserved, and what goes wrong if they disagree?
+- Why is the zone the owner, and why do two other places still hold a key to the flag?
+- Why do `wire()` and `unwire()` not need a key of their own?
+
+## The node table writes down what it keeps true, and asserts it where it is written (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/node_table.hpp` — the table's invariants: a node registered once; Online and Memory only for a registered node, Memory only for one already Online; Possible needs none
+- `kernel/mm/node_table.cpp` — `set_node_state()` asserts them
+- `kernel/mm/pm_node_init.cpp` — `PmNode::init()` sets Online before Memory
+
+**Symptom**
+Latent, from the review's minor list. The node table's rules held only because bring-up wrote the masks in a workable order: nothing said that every node in the Online or Memory mask is one `find_node()` answers for, though `for_each_node()` dereferences what it finds, and `set_node_state()` is a public function SRAT's parse calls too.
+
+**Cause**
+An invariant spread over a public free function, `PmNode::init()` and bring-up's order is kept by whoever happens to write it next. Writing it down where the state lives, and asserting it at the one writer, is the smallest change that makes a wrong order fail at once instead of later in a walk.
+
+**Change**
+
+```cpp
+auto set_node_state(NodeId nid, NodeState state, bool on) -> void {
+    if (on && (state == NodeState::Online || state == NodeState::Memory)) {
+        DEBUG_ASSERT(NODES[nid] != nullptr, "node {} is given state {} before it is registered", ...);
+    }
+    if (on && state == NodeState::Memory) {
+        DEBUG_ASSERT(STATES[Online].test(nid), "node {} owns memory before it is online", nid);
+    }
+    STATES[std::to_underlying(state)].set(nid, on);
+}
+```
+
+`init()` wrote Memory before Online; it writes Online first now, and nothing reads either between the two writes.
+
+**Reference**
+Linux `node_set_online()` and `node_set_state(N_MEMORY)` in `include/linux/nodemask.h` keep the same masks without asserting an order; `node_states_set_node()` sets `N_MEMORY` after a node is online.
+
+**Verification**
+Recorded with the next change, on the tree that holds both. Control: with `init()` writing Memory first again, the debug image stops at boot on "node 0 owns memory before it is online".
+
+**Deliberately not done**
+Asserting that no state changes after bring-up: nothing marks its end. A key on `set_node_state()` (option B): SRAT, in the architecture's code, would need one too.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 17, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which invariant does `for_each_node()` depend on, and what happens when it breaks?
+- Why does Possible need no registered node?
+- Why was asserting chosen over a key on the writer?
+
+## The machine-wide watermark setup belongs to the zone table (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — `PmZone::setup_all_watermarks()`, a static beside `create_all()` and `for_each()`, with `isqrt()` and `machine_reserve_frames()`; the per-zone `setup_watermarks()` and `setup_lowmem_reserve()` are private again and take no key
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node_init.cpp` — `PmNode::setup_watermarks()` and the two helpers are gone
+- `kernel/mm/init_pmm.cpp` — calls `PmZone::setup_all_watermarks()`
+- `kernel/mm/include/ours/mm/priv/layer_keys.hpp`, `.agents/skills/kernel-design/references/mm.md` — `ZoneLayerKey` no longer covers the watermark setup
+
+**Symptom**
+Latent, from the review's minor list. `PmNode::setup_watermarks()` touched no node: it summed every zone's managed frames, worked out the machine's reserve and gave each zone its share. It sat on `PmNode` so that it could reach `PmZone`'s private setup, first as a friend and since the passkeys through `ZoneLayerKey`.
+
+**Cause**
+A function belongs with the data it works on. The zone table already has its other machine-wide statics (`create_all()`, `for_each()`, the `TABLE` itself, a decision of 2026-10-29), and the setup reads and writes zones alone; with it there, the per-zone steps need no key and can be private.
+
+**Change**
+
+```cpp
+// init_pmm()
+PmZone::setup_all_watermarks();    // was PmNode::setup_watermarks()
+```
+
+The same arithmetic, order (every zone's watermarks before any low-zone reserve) and guard for a machine with no managed memory; only where it lives changed.
+
+**Reference**
+Linux keeps the same step in `mm/page_alloc.c`: `setup_per_zone_wmarks()` and `setup_per_zone_lowmem_reserve()`, file-scope functions over every zone, with `calculate_min_free_kbytes()` for the machine's reserve.
+
+**Verification**
+On the tree that holds this and the change before, in the `feat/pmm-redesign` worktree: `verify` on the default and the four-node machine, dbg 46 passed and 5 skipped, rel 44 passed and 8 skipped with 7/7 required, host tests 185 passed. `ktest all`: default 100 ran, 84 passed, 16 skipped; four nodes 100 ran, 96 passed, 4 skipped; failure-injection build 100 ran, 85 passed, 0 failed, with the three known `Failed to map` lines. At 8 GiB the zones' floors still hold 14682 frames, so every watermark came out as before. clang-tidy reports nothing in the changed sources. A narrow pre-commit review of both changes found the design reference still saying the watermark setup takes a `ZoneLayerKey` (corrected).
+
+**Deliberately not done**
+Moving `bootstrap()` and `create_nodes()`: they use `PmNode`'s private constructor and `init()`.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 18, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did `setup_watermarks()` live on `PmNode`, and why does that reason no longer hold?
+- What does the zone table's `setup_all_watermarks()` compute, and in which order?
+- Why can the per-zone steps be private now?
