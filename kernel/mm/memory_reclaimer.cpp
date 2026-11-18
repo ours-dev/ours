@@ -94,6 +94,11 @@ auto MemoryReclaimer::reclaim(usize const frames) -> usize {
     return reclaim(frames, node_online_mask());
 }
 
+auto MemoryReclaimer::reclaim_superseding(usize const frames) -> usize {
+    auto _ = take();
+    return reclaim(frames);
+}
+
 auto MemoryReclaimer::reclaim(usize const frames, NodeMask const &nodes) -> usize {
     // A pause, or nothing asked, does not wait out a walk already running.
     // The tests that pause the reclaimer must not block behind one.

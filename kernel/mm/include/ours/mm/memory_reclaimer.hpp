@@ -56,18 +56,18 @@ class MemoryReclaimer {
     /// mark, and while a Pause lives, as an ask is then.
     auto request(PmZone const &zone) -> void;
 
-    /// The ask the thread has not taken, or 0. The thread walks what this
-    /// returns. A synchronous reclaim calls it and drops the result: that
-    /// walk has its own count, and an ask left from an earlier look is not
-    /// walked after it.
-    [[nodiscard]]
-    auto take() -> usize;
-
     /// Gives back up to |frames| frames now, on the calling thread: zero
     /// pages on every node first, then pager pages on every node. How many
     /// frames it gave back, 0 while a Pause lives or |frames| is 0. A walk
     /// already running is waited out first. Takes locks that sleep.
     auto reclaim(usize frames) -> usize;
+
+    /// reclaim(), in place of the ask the thread has not taken: the ask is
+    /// dropped first. Each is a distance from the free memory read when it was
+    /// made, so the ask left from an earlier look is stale once this walk has
+    /// its own count, and walking it afterwards would reclaim after free
+    /// memory is back. The watchdog's walk at OutOfMemory.
+    auto reclaim_superseding(usize frames) -> usize;
 
     /// The thread's take of |node|'s record of short zones
     /// (PmNode::take_reclaim_target()), refused while a Pause lives: then 0,
@@ -100,6 +100,11 @@ class MemoryReclaimer {
     };
 
   private:
+    /// The ask the thread has not taken, or 0. The thread walks what this
+    /// returns; reclaim_superseding() drops it.
+    [[nodiscard]]
+    auto take() -> usize;
+
     MemoryReclaimer() = default;
 
     /// The thread: sleeps until a request, then reclaims what was asked.

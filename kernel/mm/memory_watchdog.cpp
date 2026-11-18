@@ -199,11 +199,9 @@ auto MemoryWatchdog::look() -> ustl::Option<time::Deadline> {
         }
     }
     if (frames != 0) {
-        // This walk has its own count. An ask the thread has not taken is an
-        // earlier distance, and reclaim() would spend it even after free
-        // memory is back.
-        auto _ = m_reclaimer.take();
-        auto const freed = m_reclaimer.reclaim(frames);
+        // This walk has its own count, in place of any ask the thread has
+        // not taken (reclaim_superseding()).
+        auto const freed = m_reclaimer.reclaim_superseding(frames);
         if (freed != 0) {
             log::info("mm: out of memory: gave back {} frames before refusing anything", freed);
         }

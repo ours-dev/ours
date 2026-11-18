@@ -86,3 +86,46 @@ None.
 - Which events wake a waiter, and why does a waiter pass the wake on?
 - Why is a waiter put off again not to pass it on?
 - What did the gate keep, and why is waking a waiter still something it does?
+
+## A synchronous walk replaces the reclaimer's pending ask through the reclaimer's own entry (2026-11-18)
+
+**Files**
+- `kernel/mm/include/ours/mm/memory_reclaimer.hpp`, `kernel/mm/memory_reclaimer.cpp` — `reclaim_superseding(frames)`; `take()` private
+- `kernel/mm/memory_watchdog.cpp` — the OutOfMemory walk calls it
+
+**Symptom**
+From the review's minor list: `take()` was public only so that the watchdog could carry out the reclaimer's rule that a synchronous walk replaces the ask the thread has not taken (`auto _ = m_reclaimer.take(); m_reclaimer.reclaim(frames);`).
+
+**Cause**
+A rule about the reclaimer's own pending ask belongs in the reclaimer; a caller that has to know to call two functions in order is keeping the reclaimer's invariant for it.
+
+**Change**
+
+```cpp
+auto MemoryReclaimer::reclaim_superseding(usize const frames) -> usize {
+    auto _ = take();      // the ask from an earlier look is stale once this walk has its own count
+    return reclaim(frames);
+}
+```
+
+The same calls in the same order on the same thread as the watchdog made.
+
+**Reference**
+None: this kernel's own reclaimer.
+
+**Verification**
+As for the waiters' change, on the tree that holds this group.
+
+**Deliberately not done**
+Having `reclaim()` itself drop the ask (option B): tests call `reclaim()` to flush, and dropping the ask after waiting out a running walk rather than before would change the order the watchdog relies on.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 26, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the pending ask stale once a synchronous walk has its own count?
+- Why does the drop come before the walk, not after?
+- Who still calls `take()`, and why may they?
