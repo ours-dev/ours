@@ -32,6 +32,17 @@ auto node_mask(NodeState const state) -> NodeMask const & {
 }
 
 auto set_node_state(NodeId const nid, NodeState const state, bool const on) -> void {
+    DEBUG_ASSERT(nid < MAX_NODES, "node id {} is outside the node table", nid);
+    if (on && (state == NodeState::Online || state == NodeState::Memory)) {
+        // Every node in these masks is one find_node() answers for:
+        // for_each_node() dereferences what it finds.
+        DEBUG_ASSERT(NODES[nid] != nullptr, "node {} is given state {} before it is registered",
+                     nid, std::to_underlying(state));
+    }
+    if (on && state == NodeState::Memory) {
+        DEBUG_ASSERT(STATES[std::to_underlying(NodeState::Online)].test(nid),
+                     "node {} owns memory before it is online", nid);
+    }
     STATES[std::to_underlying(state)].set(nid, on);
 }
 

@@ -285,10 +285,11 @@ auto PmNode::init() -> Status {
     m_start_pfn = node_start_pfn;
     m_spanned_frames = node_end_pfn - node_start_pfn;
 
+    // Online first: a node owns memory only once it is up (node_table.hpp).
+    set_node_state(m_id, NodeState::Online);
     if (m_spanned_frames != 0) {
         set_node_state(m_id, NodeState::Memory);
     }
-    set_node_state(m_id, NodeState::Online);
 
     for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
         join_hard_affinity(cpu, CpuPlacementKey{});

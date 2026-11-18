@@ -391,3 +391,52 @@ None.
 - Which two records make a frame reserved, and what goes wrong if they disagree?
 - Why is the zone the owner, and why do two other places still hold a key to the flag?
 - Why do `wire()` and `unwire()` not need a key of their own?
+
+## The node table writes down what it keeps true, and asserts it where it is written (2026-11-17)
+
+**Files**
+- `kernel/mm/include/ours/mm/node_table.hpp` — the table's invariants: a node registered once; Online and Memory only for a registered node, Memory only for one already Online; Possible needs none
+- `kernel/mm/node_table.cpp` — `set_node_state()` asserts them
+- `kernel/mm/pm_node_init.cpp` — `PmNode::init()` sets Online before Memory
+
+**Symptom**
+Latent, from the review's minor list. The node table's rules held only because bring-up wrote the masks in a workable order: nothing said that every node in the Online or Memory mask is one `find_node()` answers for, though `for_each_node()` dereferences what it finds, and `set_node_state()` is a public function SRAT's parse calls too.
+
+**Cause**
+An invariant spread over a public free function, `PmNode::init()` and bring-up's order is kept by whoever happens to write it next. Writing it down where the state lives, and asserting it at the one writer, is the smallest change that makes a wrong order fail at once instead of later in a walk.
+
+**Change**
+
+```cpp
+auto set_node_state(NodeId nid, NodeState state, bool on) -> void {
+    if (on && (state == NodeState::Online || state == NodeState::Memory)) {
+        DEBUG_ASSERT(NODES[nid] != nullptr, "node {} is given state {} before it is registered", ...);
+    }
+    if (on && state == NodeState::Memory) {
+        DEBUG_ASSERT(STATES[Online].test(nid), "node {} owns memory before it is online", nid);
+    }
+    STATES[std::to_underlying(state)].set(nid, on);
+}
+```
+
+`init()` wrote Memory before Online; it writes Online first now, and nothing reads either between the two writes.
+
+**Reference**
+Linux `node_set_online()` and `node_set_state(N_MEMORY)` in `include/linux/nodemask.h` keep the same masks without asserting an order; `node_states_set_node()` sets `N_MEMORY` after a node is online.
+
+**Verification**
+Recorded with the next change, on the tree that holds both. Control: with `init()` writing Memory first again, the debug image stops at boot on "node 0 owns memory before it is online".
+
+**Deliberately not done**
+Asserting that no state changes after bring-up: nothing marks its end. A key on `set_node_state()` (option B): SRAT, in the architecture's code, would need one too.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 17, decided by the user on 2026-11-17 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which invariant does `for_each_node()` depend on, and what happens when it breaks?
+- Why does Possible need no registered node?
+- Why was asserting chosen over a key on the writer?
