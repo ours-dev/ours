@@ -130,6 +130,14 @@ namespace {
                  DelayedAllocations delayed) -> bool;
 
       private:
+        /// Whether |free| frames lie outside the bounds [|lower|, |upper|],
+        /// which is when the watcher's event is signalled. set() asks it of the
+        /// bounds it is about to store, check_signal() of the stored ones.
+        [[nodiscard]]
+        static auto outside(usize const free, usize const lower, usize const upper) -> bool {
+            return free < lower || free > upper;
+        }
+
         /// admit()'s slow path, for an allocation that found free memory
         /// below the level with the gate open: decides again under the
         /// watcher's lock, and shuts the gate if that still holds.
@@ -236,8 +244,8 @@ namespace {
             return;
         }
         auto const free = approx_free_frame_count();
-        if (free >= m_signal_lower.load(std::memory_order_relaxed) &&
-            free <= m_signal_upper.load(std::memory_order_relaxed)) {
+        if (!outside(free, m_signal_lower.load(std::memory_order_relaxed),
+                     m_signal_upper.load(std::memory_order_relaxed))) {
             return;
         }
         // Two CPUs may both see the bounds left; the one that takes the event
@@ -261,8 +269,7 @@ namespace {
         {
             Guard<sync::SpinLock, IrqSave> guard{m_watcher_lock};
             if (event) {
-                auto const free = approx_free_frame_count();
-                if (free < lower || free > upper) {
+                if (outside(approx_free_frame_count(), lower, upper)) {
                     return false;
                 }
             }
