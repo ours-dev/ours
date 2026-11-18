@@ -209,3 +209,52 @@ None.
 - Which combinations of the three old fields were invalid, and what kept them out?
 - Why must `allocate()` copy the flags before it stores the frame?
 - What does a union cost here, and what would a variant have added?
+
+## A zone's watermarks are one value, and the admission floor is its member (2026-11-18)
+
+**Files**
+- `kernel/mm/include/ours/mm/priv/admission.hpp` — `Watermarks { min, low, high }` with `floor(pass, can_block)`, in place of `admission_floor(min, low, pass, can_block)`
+- `kernel/mm/include/ours/mm/pm_zone.hpp`, `kernel/mm/pm_zone.cpp` — the zone holds a `Watermarks`; `watermark(mark)` reads its fields; `admits()` asks its `floor()`
+- `kernel/mm/tests/admission_smoke.cpp` — builds a `Watermarks`
+- `kernel/mm/pmm.cpp`, `kernel/mm/include/ours/mm/priv/alloc_request.hpp` — comments that named `admission_floor()`
+
+**Symptom**
+From the review's minor list: `admission_floor(min, low, pass, can_block)` took two counts of one type side by side, so a call that swapped them compiled and set every zone's first-pass floor at Min.
+
+**Cause**
+Two adjacent parameters of one type are a swap waiting to happen, the same reason `AllocRequest::Origin` names the node and the CPU. A value with named fields, built with designated initialisers, cannot be filled the wrong way round without the names saying so, and the floor it computes belongs to it.
+
+**Change**
+
+```cpp
+struct Watermarks {
+    usize min = 0;
+    usize low = 0;
+    usize high = 0;
+    constexpr auto floor(AdmissionPass pass, bool can_block) const -> usize;
+};
+m_watermarks = Watermarks{.min = min, .low = min + delta, .high = min + delta + delta};
+auto const floor = m_watermarks.floor(pass, can_block);
+```
+
+The same arithmetic and the same stored values; `watermark(Watermark)` still answers each by name.
+
+**Reference**
+Linux keeps a zone's watermarks as an array indexed by `WMARK_MIN`, `WMARK_LOW`, `WMARK_HIGH` (`zone->_watermark`, read through `min_wmark_pages()` and its siblings).
+
+**Verification**
+As for the change before, on the tree that holds this group.
+
+**Deliberately not done**
+`lowmem_reserve()`'s pointer and count (option B's span): not chosen.
+
+**How it was found**
+`.agents/tasks/pmm-redesign/REVIEW.md`, minor item 49, decided by the user on 2026-11-18 (option A).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What would a swapped Min and Low have done to every allocation?
+- Why does a struct with designated initialisers stop the swap where two parameters did not?
+- Why is the floor a member of the watermarks rather than of the zone?

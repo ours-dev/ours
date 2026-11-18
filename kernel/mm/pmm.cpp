@@ -691,7 +691,7 @@ auto alloc_page_table(usize size, usize alignment, NodeId node) -> PhysAddr {
         // with interrupts off (PageTable::allocate_table(),
         // PageTableDeposits::reserve()), so it cannot block, and says so. Its
         // Min pass therefore goes a quarter below Min, as every caller that
-        // cannot block does (admission_floor()): a page table is what lets the
+        // cannot block does (Watermarks::floor()): a page table is what lets the
         // mapping that needs it go on.
         auto const result =
             priv::alloc_frames(Gaf::Zero, get_order(size / PAGE_SIZE), node, node_online_mask());

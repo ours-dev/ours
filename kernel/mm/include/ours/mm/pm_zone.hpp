@@ -305,7 +305,16 @@ class PmZone {
     [[nodiscard]]
     FORCE_INLINE
     constexpr auto watermark(Watermark const mark) const -> usize {
-        return m_watermarks[std::to_underlying(mark)];
+        switch (mark) {
+            case Watermark::Min:
+                return m_watermarks.min;
+            case Watermark::Low:
+                return m_watermarks.low;
+            case Watermark::High:
+            case Watermark::Count:
+                break;
+        }
+        return m_watermarks.high;
     }
 
     /// Whether |order| frames can come out of this zone without taking its
@@ -338,8 +347,7 @@ class PmZone {
     FORCE_INLINE
     auto admits(usize const order, AdmissionPass const pass, bool const can_block,
                 ZoneType const highest) const -> bool {
-        auto const floor =
-            admission_floor(watermark(Watermark::Min), watermark(Watermark::Low), pass, can_block);
+        auto const floor = m_watermarks.floor(pass, can_block);
         return mm::admits(num_free_frames(), order, floor + lowmem_reserve(highest));
     }
 
@@ -442,7 +450,7 @@ class PmZone {
 
     std::atomic<usize> m_reserved_frames;
 
-    std::array<usize, std::to_underlying(Watermark::Count)> m_watermarks;
+    Watermarks m_watermarks;
 
     /// By the highest zone type a request allows. Written once, by
     /// setup_lowmem_reserve(), and read without the zone lock after.

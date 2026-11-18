@@ -174,7 +174,7 @@ class AllocRequest final {
 
     /// Whether the caller's context permits blocking (Gaf::CanBlock). It
     /// picks the floor of the Min pass: Min for a request that may block,
-    /// three quarters of Min for one that may not (admission_floor()). It
+    /// three quarters of Min for one that may not (Watermarks::floor()). It
     /// does not make the request wait.
     [[nodiscard]]
     FORCE_INLINE
